@@ -16,6 +16,11 @@ what order. Treat it as living documentation, not historical record.
   protocols, file formats, and drivers. **Update it whenever a dependency
   decision is made**, even if the decision is "rejected." Mark each entry as
   `proposed`, `adopted`, or `rejected` so the rationale is traceable.
+- **`plans/backlog.md`** — short list of things noticed in passing that don't
+  belong in the current step (cleanups, follow-ups, ideas). Add to it instead
+  of doing drive-by work; review and prune it whenever a new phase or step is
+  being planned. Keep it small — if it's growing, that's a signal to fold
+  items into a phase or drop them.
 
 When a planning document and the code disagree, fix whichever is wrong in the
 same change — never leave them inconsistent.
@@ -25,10 +30,16 @@ same change — never leave them inconsistent.
 Prefer many small commits that each leave the repo in a working state over a
 single large commit.
 
+- Identify any missing dependencies or technologies before starting. If a
+  step needs something not already in `plans/technology-inventory.md`,
+  surface that decision first — don't quietly bring in a new library
+  mid-step.
 - Break a phase into the smallest steps that still produce something
   observable (a passing test, a runnable demo, a committed doc update).
 - Each step should be independently reviewable: clear scope, clear
-  before/after, no drive-by changes.
+  before/after, no drive-by changes. If you spot something worth doing that
+  isn't part of the current step, add it to `plans/backlog.md` and keep
+  going.
 - If a step starts sprawling, stop and split it. It's cheaper to land two
   focused commits than to untangle one.
 - Keep documentation updates in the same commit as the code change they
@@ -99,7 +110,8 @@ When editing existing code:
 - Don't "improve" adjacent code, comments, or formatting.
 - Don't refactor things that aren't broken.
 - Match existing style, even if you'd do it differently.
-- If you notice unrelated dead code, mention it — don't delete it.
+- If you notice unrelated dead code, log it in `plans/backlog.md` — don't
+  delete it inline.
 
 When your changes create orphans:
 
