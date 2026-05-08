@@ -42,9 +42,14 @@ The candidate attributes to weigh:
 - **Maintenance health.** Release cadence, time-to-fix on issues, number of
   active maintainers, last-commit recency, whether it has a single bus
   factor.
-- **Observability of behavior.** How easy is it to see what the library is
-  doing? Logging hooks, metrics, deterministic behavior, ability to step
-  through it in a debugger, source availability.
+- **Project openness.** How transparently is the project developed? Source
+  availability is the floor; the real question is whether design discussion,
+  issues, RFCs, release rationale, and decision history happen in the open.
+  Closed-development-with-public-tarball releases hide why things change and
+  what's coming next; open development means we can read the reasoning, file
+  bugs that get acknowledged, and anticipate breakage. Distinct from
+  maintenance health — a project can be active and still opaque, or quiet
+  but fully in the open.
 - **Cost.** License terms, commercial fees, vendor lock-in, redistribution
   constraints. Includes the cost of *not* using it (build it ourselves).
 - **Popularity / ecosystem.** Stars and download counts are weak signals on
@@ -59,8 +64,7 @@ be deprioritized. Offer a recommendation up front based on the need:
 - For driver / vendor SDK choices, lean on **cost** (license) and
   **maintenance health** — we'll be stuck with the choice for a long time.
 - For decode/parsing libraries on the critical path (DBC, BLF, CAN frame
-  handling), lean on **feature set**, **performance**, and
-  **observability**.
+  handling), lean on **feature set**, **performance**, and **quality**.
 - For protocol / transport choices, lean on **architectural fit** and
   **performance**.
 - For framework-shaped choices (UI toolkits, app frameworks), lean on
