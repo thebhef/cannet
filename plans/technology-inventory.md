@@ -18,7 +18,26 @@ and the license / platform constraints we need to be aware of.
 
 ### GUI / Application Framework
 
-_TBD — selected during Alpha0._
+- **Tauri** — `proposed`. Rust backend + system WebView frontend. Pairs well
+  with our Rust-friendly server-tier work (ZMQ, binary protocols), fully
+  permissive licensing (MIT + Apache-2.0), small footprint. Frontend stack
+  TBD (likely TypeScript + a virtualized grid + a Canvas/WebGL plot lib).
+  Risk: WebKitGTK feature/perf parity on Linux — validated in Phase 1
+  spike.
+- **Electron** — `proposed (fallback)`. Documented fallback if Tauri's
+  per-OS WebView fragmentation blocks us. Same JS frontend, swap the host
+  shell. Trade-off: ~150 MB bundle, heavier RAM, Node backend instead of
+  Rust.
+- **Qt 6** — `rejected`. Excellent feature set but LGPL relink discipline
+  and the lurking commercial-license question add friction we don't need;
+  prior PySide experience surfaced ergonomic pain getting complex layouts
+  right.
+- **Dear ImGui + ImPlot** — `rejected`. MIT and very fast, but immediate-
+  mode aesthetic and reinvention of standard desktop chrome don't match
+  user expectations for a CAN analyzer.
+- **wxWidgets** — `rejected`. Permissive license and native widgets, but
+  dated tooling (wxAUI), weaker plotting story, and smaller community than
+  the alternatives.
 
 ### CAN / CANFD Abstraction
 
