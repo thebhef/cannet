@@ -26,6 +26,16 @@ get ahead of the plan.
 
 The candidate attributes to weigh:
 
+- **Feature set.** Does the candidate actually do the things we need it to
+  do? List the must-have capabilities for *this* decision and check each
+  one off. A library that "almost" covers the need but punts on a critical
+  feature is a false economy. Distinguish must-haves from nice-to-haves.
+- **Architectural fit.** Does the candidate's shape — its concurrency
+  model, data model, runtime, threading assumptions, where it lives in the
+  process — align with the architecture in `plans/`? A library can have
+  every feature we want and still warp the system around itself. Note: a
+  candidate's *features* and its *fit* are independent — separate them
+  deliberately when scoring.
 - **Performance.** Throughput, latency, memory footprint, allocation
   behavior. Matters most on hot paths (CAN frame ingest, decode, network
   transport).
@@ -49,9 +59,13 @@ be deprioritized. Offer a recommendation up front based on the need:
 - For driver / vendor SDK choices, lean on **cost** (license) and
   **maintenance health** — we'll be stuck with the choice for a long time.
 - For decode/parsing libraries on the critical path (DBC, BLF, CAN frame
-  handling), lean on **performance** and **observability**.
-- For protocol / transport choices, lean on **architectural fit** (next
-  step) and **performance**.
+  handling), lean on **feature set**, **performance**, and
+  **observability**.
+- For protocol / transport choices, lean on **architectural fit** and
+  **performance**.
+- For framework-shaped choices (UI toolkits, app frameworks), lean on
+  **feature set** and **architectural fit** — the shape of the framework
+  pervades everything that touches it.
 - For tooling that's only used at build/test time, lean on **popularity**
   and **maintenance** so we don't get stranded.
 
@@ -75,22 +89,21 @@ last-release date, and a one-line summary of what it is.
 If you're not sure what's available, say so before guessing — search, ask
 the user, or read recent docs rather than fabricating options.
 
-## 4. Evaluate architectural resonance and integration cost
+## 4. Evaluate integration mechanics
 
-For each candidate, assess:
+Architectural fit was already scored in step 2. Here, work out the concrete
+mechanics of adopting each candidate:
 
-- **Fit with the CAN abstraction.** Does it produce/consume frames in a
-  shape that the abstraction in `plans/` can absorb without ceremony? Or
-  does adopting it warp the abstraction?
-- **Fit with the client/server split.** Does it run on the server side, the
-  client side, or both? Does it force a language/runtime choice on either?
 - **Integration cost.** Estimated work to wire it in (hours/days, not
   months). Include any glue code, bindings, or adapter layers needed.
 - **Exit cost.** If we adopt it and later want out, how localized is the
   blast radius? Wrapped behind an interface, or threaded throughout?
+- **Constraints it imposes.** Does it force a language/runtime choice,
+  pin a transitive dependency, require a specific build system, or dictate
+  where it can run (client, server, both)?
 
-A library that scores well on the per-attribute axes can still be the wrong
-choice if it doesn't fit the architecture. Call that out explicitly.
+If the integration mechanics surface a fit problem that step 2 missed,
+loop back and update the architectural-fit score — don't paper over it.
 
 ## 5. Recommend and record
 
