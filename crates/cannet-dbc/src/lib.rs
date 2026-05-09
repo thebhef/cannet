@@ -11,7 +11,7 @@ pub use decode::{decode_signal_bits, sign_extend};
 use std::collections::HashMap;
 
 use cannet_core::CanFrame;
-use can_dbc::{Dbc, MessageId, MultiplexIndicator, Signal, ValueType};
+use can_dbc::{Dbc, MessageId, MultiplexIndicator, Signal, SignalExtendedValueType, ValueType};
 
 /// A parsed DBC database, indexed for fast frame lookup.
 pub struct Database {
@@ -26,7 +26,15 @@ struct MessageEntry {
     name: String,
     /// Expected payload length in bytes from the DBC `BO_` declaration.
     expected_len: usize,
-    signals: Vec<Signal>,
+    signals: Vec<SignalEntry>,
+}
+
+struct SignalEntry {
+    signal: Signal,
+    /// Mirrors `SIG_VALTYPE_`. Defaults to integer when no entry is
+    /// declared; `IEEEfloat32Bit` / `IEEEdouble64bit` switch the bit
+    /// pattern from "scaled integer" to a real IEEE float.
+    extended_type: SignalExtendedValueType,
 }
 
 impl Database {
@@ -34,12 +42,23 @@ impl Database {
     pub fn parse(text: &str) -> Result<Self, DbcError> {
         let dbc = Dbc::try_from(text).map_err(|e| DbcError::Parse(e.to_string()))?;
         let mut messages = HashMap::with_capacity(dbc.messages.len());
-        for msg in dbc.messages {
+        for msg in &dbc.messages {
             let expected_len = usize::try_from(msg.size).unwrap_or(usize::MAX);
+            let signals = msg
+                .signals
+                .iter()
+                .map(|s| SignalEntry {
+                    extended_type: dbc
+                        .extended_value_type_for_signal(msg.id, &s.name)
+                        .copied()
+                        .unwrap_or(SignalExtendedValueType::SignedOrUnsignedInteger),
+                    signal: s.clone(),
+                })
+                .collect();
             let entry = MessageEntry {
-                name: msg.name,
+                name: msg.name.clone(),
                 expected_len,
-                signals: msg.signals,
+                signals,
             };
             messages.insert(msg.id, entry);
         }
@@ -76,12 +95,12 @@ fn decode_message<'a>(entry: &'a MessageEntry, data: &[u8]) -> DecodedMessage<'a
     let multiplexor_value = entry
         .signals
         .iter()
-        .find(|s| matches!(s.multiplexer_indicator, MultiplexIndicator::Multiplexor))
+        .find(|s| matches!(s.signal.multiplexer_indicator, MultiplexIndicator::Multiplexor))
         .and_then(|s| decode_signal(s, data).map(|d| d.raw_unsigned));
 
     let mut signals = Vec::with_capacity(entry.signals.len());
     for sig in &entry.signals {
-        let include = match sig.multiplexer_indicator {
+        let include = match sig.signal.multiplexer_indicator {
             MultiplexIndicator::Plain | MultiplexIndicator::Multiplexor => true,
             MultiplexIndicator::MultiplexedSignal(selector)
             | MultiplexIndicator::MultiplexorAndMultiplexedSignal(selector) => {
@@ -104,7 +123,8 @@ fn decode_message<'a>(entry: &'a MessageEntry, data: &[u8]) -> DecodedMessage<'a
     }
 }
 
-fn decode_signal<'a>(sig: &'a Signal, data: &[u8]) -> Option<DecodedSignal<'a>> {
+fn decode_signal<'a>(entry: &'a SignalEntry, data: &[u8]) -> Option<DecodedSignal<'a>> {
+    let sig = &entry.signal;
     let start_bit = usize::try_from(sig.start_bit).ok()?;
     let size = usize::try_from(sig.size).ok()?;
     let raw_unsigned = decode_signal_bits(data, start_bit, size, sig.byte_order)?;
@@ -123,10 +143,18 @@ fn decode_signal<'a>(sig: &'a Signal, data: &[u8]) -> Option<DecodedSignal<'a>> 
     // exactly, larger ones lose precision but match the convention used
     // by every other DBC tool. Allow the cast explicitly here.
     #[allow(clippy::cast_precision_loss)]
-    let physical = if sig.value_type == ValueType::Signed {
-        (raw_signed as f64).mul_add(sig.factor, sig.offset)
-    } else {
-        (raw_unsigned as f64).mul_add(sig.factor, sig.offset)
+    let physical = match entry.extended_type {
+        SignalExtendedValueType::IEEEfloat32Bit if size == 32 => {
+            let bits = u32::try_from(raw_unsigned).ok()?;
+            f64::from(f32::from_bits(bits)).mul_add(sig.factor, sig.offset)
+        }
+        SignalExtendedValueType::IEEEdouble64bit if size == 64 => {
+            f64::from_bits(raw_unsigned).mul_add(sig.factor, sig.offset)
+        }
+        _ if sig.value_type == ValueType::Signed => {
+            (raw_signed as f64).mul_add(sig.factor, sig.offset)
+        }
+        _ => (raw_unsigned as f64).mul_add(sig.factor, sig.offset),
     };
 
     Some(DecodedSignal {
@@ -207,6 +235,12 @@ BO_ 512 MuxedMsg: 8 ECU1
  SG_ Mode0Field m0 : 8|16@1+ (1,0) [0|0] "" ECU2
  SG_ Mode1Field m1 : 8|16@1+ (1,0) [0|0] "" ECU2
  SG_ Always : 24|8@1+ (1,0) [0|0] "" ECU2
+
+BO_ 513 FloatMsg: 8 ECU1
+ SG_ Lat : 0|32@1+ (1,0) [-90|90] "deg" ECU2
+ SG_ Alt : 32|32@1- (0.01,0) [0|0] "m" ECU2
+
+SIG_VALTYPE_ 513 Lat : 1;
 "#;
 
     fn make_frame(raw_id: u32, extended: bool, data: Vec<u8>) -> CanFrame {
@@ -230,7 +264,7 @@ BO_ 512 MuxedMsg: 8 ECU1
     #[test]
     fn parses_sample_dbc() {
         let db = Database::parse(SAMPLE_DBC).unwrap();
-        assert_eq!(db.message_count(), 5);
+        assert_eq!(db.message_count(), 6);
     }
 
     #[test]
@@ -343,6 +377,31 @@ BO_ 512 MuxedMsg: 8 ECU1
         assert!(names.contains(&"Mode1Field"));
         let m1 = signal_by_name(&decoded, "Mode1Field");
         assert_eq!(m1.raw_unsigned, 0x3412);
+    }
+
+    #[test]
+    fn decodes_ieee_float_signal_via_sig_valtype() {
+        // Lat is declared as a 32-bit signal with `SIG_VALTYPE_ ... 1;`
+        // — the bits should be interpreted as IEEE 754 f32, not as a
+        // scaled integer. Alt has no SIG_VALTYPE_ entry, so it falls
+        // through to the signed-int path and exercises the regression
+        // case for the rest of the message.
+        let db = Database::parse(SAMPLE_DBC).unwrap();
+        let lat: f32 = 37.7749;
+        let alt_raw_i32: i32 = -1234;
+        let mut data = vec![0u8; 8];
+        data[0..4].copy_from_slice(&lat.to_le_bytes());
+        data[4..8].copy_from_slice(&alt_raw_i32.to_le_bytes());
+
+        let frame = make_frame(513, false, data);
+        let decoded = db.decode(&frame).unwrap();
+
+        let lat_sig = signal_by_name(&decoded, "Lat");
+        assert!((lat_sig.value - f64::from(lat)).abs() < 1e-5, "got {}", lat_sig.value);
+        assert_eq!(lat_sig.unit, "deg");
+
+        let alt_sig = signal_by_name(&decoded, "Alt");
+        assert!((alt_sig.value - (f64::from(alt_raw_i32) * 0.01)).abs() < 1e-9);
     }
 
     #[test]

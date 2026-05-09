@@ -274,7 +274,9 @@ version = "0.0.0"
 name = "cannet-dbc"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "can-dbc",
+ "cannet-blf",
  "cannet-core",
 ]
 

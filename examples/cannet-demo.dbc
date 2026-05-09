@@ -1,0 +1,87 @@
+VERSION "cannet-demo 1.0"
+
+NS_ :
+	NS_DESC_
+	CM_
+	BA_DEF_
+	BA_
+	VAL_
+	CAT_DEF_
+	CAT_
+	FILTER
+	BA_DEF_DEF_
+	EV_DATA_
+	ENVVAR_DATA_
+	SGTYPE_
+	SGTYPE_VAL_
+	BA_DEF_SGTYPE_
+	BA_SGTYPE_
+	SIG_TYPE_REF_
+	VAL_TABLE_
+	SIG_GROUP_
+	SIG_VALTYPE_
+	SIGTYPE_VALTYPE_
+	BO_TX_BU_
+	BA_DEF_REL_
+	BA_REL_
+	BA_DEF_DEF_REL_
+	BU_SG_REL_
+	BU_EV_REL_
+	BU_BO_REL_
+	SG_MUL_VAL_
+
+BS_:
+
+BU_: ECU1 ECU2 GW
+
+BO_ 256 VehicleState: 8 ECU1
+ SG_ VehSpeed : 0|16@1+ (0.01,0) [0|655.35] "km/h" GW
+ SG_ EngineRpm : 16|16@1+ (0.25,0) [0|16383.75] "rpm" GW
+ SG_ GearLever : 32|3@1+ (1,0) [0|7] "" GW
+ SG_ BrakePedal : 35|8@1+ (0.5,0) [0|127.5] "%" GW
+
+BO_ 2566865125 BatteryDiag: 8 ECU2
+ SG_ BattVoltage : 0|16@1+ (0.01,0) [0|655.35] "V" GW
+ SG_ BattTemp : 16|16@1- (0.1,-40) [-3276.8|3236.7] "degC" GW
+ SG_ BattCurrent : 32|16@1- (0.05,0) [-1638.4|1638.35] "A" GW
+
+BO_ 512 SensorMux: 8 ECU1
+ SG_ SensorId M : 0|4@1+ (1,0) [0|3] "" GW
+ SG_ TempSensor m0 : 8|16@1- (0.01,25) [-302.43|352.43] "degC" GW
+ SG_ PressureSensor m1 : 8|16@1+ (0.1,0) [0|6553.5] "kPa" GW
+ SG_ HumiditySensor m2 : 8|16@1+ (0.1,0) [0|100] "%" GW
+ SG_ AccelSensor m3 : 8|16@1- (0.001,0) [-32.768|32.767] "g" GW
+
+BO_ 2566876178 GpsPosition: 16 GW
+ SG_ Latitude : 0|32@1+ (1,0) [-90|90] "deg" ECU1
+ SG_ Longitude : 32|32@1+ (1,0) [-180|180] "deg" ECU1
+ SG_ Altitude : 64|32@1- (0.01,0) [-21474836.48|21474836.47] "m" ECU1
+ SG_ HDOP : 96|8@1+ (0.1,0) [0|25.5] "" ECU1
+
+BO_ 768 AdasState: 32 ECU2
+ SG_ ObjectCount : 0|8@1+ (1,0) [0|255] "" GW
+ SG_ TargetDistance0 : 8|16@1- (0.01,0) [-327.68|327.67] "m" GW
+ SG_ TargetDistance1 : 24|16@1- (0.01,0) [-327.68|327.67] "m" GW
+ SG_ TargetDistance2 : 40|16@1- (0.01,0) [-327.68|327.67] "m" GW
+ SG_ TargetDistance3 : 56|16@1- (0.01,0) [-327.68|327.67] "m" GW
+ SG_ TargetDistance4 : 72|16@1- (0.01,0) [-327.68|327.67] "m" GW
+ SG_ TargetDistance5 : 88|16@1- (0.01,0) [-327.68|327.67] "m" GW
+ SG_ TargetDistance6 : 104|16@1- (0.01,0) [-327.68|327.67] "m" GW
+ SG_ TargetDistance7 : 120|16@1- (0.01,0) [-327.68|327.67] "m" GW
+
+CM_ BO_ 256 "Periodic vehicle dynamics, 50 ms cadence on classic CAN, standard 11-bit ID.";
+CM_ BO_ 2566865125 "Battery diagnostic block, 100 ms cadence on classic CAN, extended 29-bit ID.";
+CM_ BO_ 512 "Multiplexed sensor block, 20 ms cadence on classic CAN, four selectable signal sets.";
+CM_ BO_ 2566876178 "GPS position, 1 s cadence on CAN FD, extended ID. Latitude and Longitude are IEEE-754 single floats.";
+CM_ BO_ 768 "ADAS object distances, 10 ms cadence on CAN FD, standard ID.";
+
+CM_ SG_ 256 GearLever "Discrete gear position. Decode via VAL_ table.";
+CM_ SG_ 512 SensorId "Multiplexor selector. 0=Temp, 1=Pressure, 2=Humidity, 3=Accel.";
+CM_ SG_ 2566876178 Latitude "IEEE-754 32-bit float, degrees.";
+CM_ SG_ 2566876178 Longitude "IEEE-754 32-bit float, degrees.";
+
+VAL_ 256 GearLever 0 "P" 1 "R" 2 "N" 3 "D" 4 "S" 5 "L" 6 "Manual" 7 "Reserved";
+VAL_ 512 SensorId 0 "Temp" 1 "Pressure" 2 "Humidity" 3 "Accel";
+
+SIG_VALTYPE_ 2566876178 Latitude : 1;
+SIG_VALTYPE_ 2566876178 Longitude : 1;

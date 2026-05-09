@@ -9,5 +9,9 @@ publish.workspace = true
 cannet-core = { path = "../cannet-core" }
 can-dbc = "9"
 
+[dev-dependencies]
+cannet-blf = { path = "../cannet-blf" }
+anyhow = "1"
+
 [lints]
 workspace = true
