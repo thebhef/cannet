@@ -43,7 +43,15 @@ plans/           Living planning docs (see CLAUDE.md).
 All platforms need:
 
 - **Rust** stable. Install via [rustup](https://rustup.rs/).
-- **Node.js** 20+ and **pnpm** 9+. `npm i -g pnpm` if you don't have it.
+- **Node.js** 20+. Recommended: install [Node.js 24 LTS](https://nodejs.org/en/download)
+  via the official installer or your platform's package manager.
+- **pnpm** 9+. Once Node is installed, the simplest install is
+  `npm install -g pnpm`. Alternatives:
+  [Corepack](https://nodejs.org/api/corepack.html) (`corepack enable && corepack prepare pnpm@latest --activate`),
+  the [standalone pnpm installers](https://pnpm.io/installation) (`curl -fsSL https://get.pnpm.io/install.sh | sh -`
+  on macOS/Linux, `iwr https://get.pnpm.io/install.ps1 -useb | iex` on Windows PowerShell),
+  or your OS package manager (`brew install pnpm`, `winget install pnpm`, etc.).
+  Verify with `pnpm --version`.
 
 Plus platform-specific build tooling for Tauri's WebView host:
 
@@ -103,6 +111,41 @@ opening attaches a database for live decoding.
 > its own but won't bring up a usable window — the host expects either
 > a Vite dev server (which `tauri dev` starts for you) or a built
 > frontend at `apps/gui/dist`. Use the `pnpm tauri` commands above.
+
+### Build artifacts
+
+`pnpm --dir apps/gui tauri build` produces a single platform-native
+executable (with the React bundle embedded) plus an installer for each
+target's distribution format. Sizes below are from the Phase-1 build —
+they'll grow as features land.
+
+| Path (relative to repo root) | Platform | Size | Notes |
+|---|---|---|---|
+| `target/release/cannet-gui` | host platform | ~11 MB | The standalone executable. Links dynamically against the platform's WebView library. |
+| `target/release/bundle/deb/cannet_<ver>_amd64.deb` | Linux (Debian/Ubuntu) | ~3.3 MB | `apt install ./cannet_*.deb`. |
+| `target/release/bundle/rpm/cannet-<ver>-1.x86_64.rpm` | Linux (Fedora/RHEL/openSUSE) | ~3.3 MB | `dnf install ./cannet-*.rpm`. |
+| `target/release/bundle/appimage/cannet_<ver>_amd64.AppImage` | Linux (any glibc-compatible distro) | ~80 MB* | Self-contained: bundles WebKitGTK and friends. `chmod +x` and run. |
+| `target/release/bundle/dmg/cannet_<ver>_x64.dmg` | macOS | — | Drag-to-Applications disk image. |
+| `target/release/bundle/macos/cannet.app` | macOS | — | The raw `.app` bundle, codesignable. |
+| `target/release/bundle/msi/cannet_<ver>_x64_en-US.msi` | Windows | — | MSI installer. |
+| `target/release/bundle/nsis/cannet_<ver>_x64-setup.exe` | Windows | — | NSIS installer. |
+
+\* AppImage size is approximate; the bundling step needs FUSE on the
+build host, so it doesn't run in some sandboxed CI environments. The
+`.deb` / `.rpm` paths above are confirmed sizes from a recent local
+release build.
+
+The bare `cannet-gui` binary is **not** statically self-contained:
+
+- **Linux:** depends on `libwebkit2gtk-4.1-0` at runtime (same package
+  family installed during the build prerequisites). If you want a
+  hand-it-to-someone-else single file, ship the AppImage.
+- **Windows:** depends on the Microsoft Edge WebView2 runtime. Win11
+  and current Win10 ship it; older systems install it once.
+- **macOS:** uses the system WebKit framework; no extra runtime.
+
+Cross-platform builds aren't a thing today — produce each target on
+the matching OS (or via cross-compilation in CI).
 
 ## Tests and lint
 
