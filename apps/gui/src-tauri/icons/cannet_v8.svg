@@ -1,0 +1,44 @@
+<svg viewBox="0 40 740 410" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="cannet logo">
+  <style>
+    .cn-logo { --logo-letter: #2f4a63; --logo-line: #c9a94a; --logo-dot: #c9a94a; }
+  </style>
+  <g class="cn-logo">
+    <!-- C as a filled path: outer R=170, inner R=110, thickness 60, opening 38° -->
+    <path d="M 353.96 115.34
+             A 170 170 0 1 0 353.96 324.66
+             L 306.68 287.72
+             A 110 110 0 1 1 306.68 152.28
+             Z"
+      fill="#2f4a63"/>
+
+    <!-- N -->
+    <g fill="#2f4a63">
+      <polygon points="408,60 456,60 634,380 586,380"/>
+      <path d="M 408 60 L 456 60 L 456 368
+               Q 456 380 444 380 L 408 380
+               Q 400 380 400 372 L 400 68
+               Q 400 60 408 60 Z"/>
+      <path d="M 598 60 L 634 60
+               Q 642 60 642 68 L 642 372
+               Q 642 380 634 380 L 586 380 L 586 72
+               Q 586 60 598 60 Z"/>
+    </g>
+
+    <!-- Data line -->
+    <polyline points="80,310 150,225 215,285 280,180 345,255 410,150 475,235 540,170 605,215 670,130"
+      fill="none" stroke="#c9a94a" stroke-width="11"
+      stroke-linejoin="round" stroke-linecap="round"/>
+    <g fill="#c9a94a">
+      <circle cx="80"  cy="310" r="11"/>
+      <circle cx="150" cy="225" r="11"/>
+      <circle cx="215" cy="285" r="11"/>
+      <circle cx="280" cy="180" r="11"/>
+      <circle cx="345" cy="255" r="11"/>
+      <circle cx="410" cy="150" r="11"/>
+      <circle cx="475" cy="235" r="11"/>
+      <circle cx="540" cy="170" r="11"/>
+      <circle cx="605" cy="215" r="11"/>
+      <circle cx="670" cy="130" r="11"/>
+    </g>
+  </g>
+</svg>
