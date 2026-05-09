@@ -1,16 +1,9 @@
 [package]
-name = "blf-source"
+name = "cannet-core"
 version = "0.0.0"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
-
-[dependencies]
-can-core = { path = "../can-core" }
-blf_asc = "0.2"
-
-[dev-dependencies]
-tempfile = "3"
 
 [lints]
 workspace = true

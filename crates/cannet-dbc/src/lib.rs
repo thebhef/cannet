@@ -2,7 +2,7 @@
 //!
 //! Parsing is delegated to the `can-dbc` crate, which produces an AST.
 //! This crate builds an indexed, decode-friendly view on top of that AST
-//! and runs the bit-extraction maths against `can_core::Frame` payloads.
+//! and runs the bit-extraction maths against `cannet_core::Frame` payloads.
 
 mod decode;
 
@@ -10,7 +10,7 @@ pub use decode::{decode_signal_bits, sign_extend};
 
 use std::collections::HashMap;
 
-use can_core::Frame;
+use cannet_core::Frame;
 use can_dbc::{Dbc, MessageId, MultiplexIndicator, Signal, ValueType};
 
 /// A parsed DBC database, indexed for fast frame lookup.
@@ -177,7 +177,7 @@ impl std::error::Error for DbcError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use can_core::{CanId, Direction, Frame};
+    use cannet_core::{CanId, Direction, Frame};
 
     const SAMPLE_DBC: &str = r#"VERSION ""
 

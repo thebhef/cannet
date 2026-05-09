@@ -1,4 +1,4 @@
-// Mirrors the Rust shapes in src-tauri/src/wire.rs. Kept manually in sync
+// Mirrors the Rust shapes in src-tauri/src/ipc.rs. Kept manually in sync
 // because the two surfaces are small enough that a code generator would
 // be more friction than benefit at Phase 1.
 

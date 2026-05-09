@@ -125,15 +125,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "blf-source"
-version = "0.0.0"
-dependencies = [
- "blf_asc",
- "can-core",
- "tempfile",
-]
-
-[[package]]
 name = "blf_asc"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -244,10 +235,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "can-core"
-version = "0.0.0"
-
-[[package]]
 name = "can-dbc"
 version = "9.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -271,25 +258,38 @@ dependencies = [
 ]
 
 [[package]]
-name = "cannet-app"
+name = "cannet-blf"
 version = "0.0.0"
 dependencies = [
- "blf-source",
- "can-core",
+ "blf_asc",
+ "cannet-core",
+ "tempfile",
+]
+
+[[package]]
+name = "cannet-core"
+version = "0.0.0"
+
+[[package]]
+name = "cannet-dbc"
+version = "0.0.0"
+dependencies = [
+ "can-dbc",
+ "cannet-core",
+]
+
+[[package]]
+name = "cannet-gui"
+version = "0.0.0"
+dependencies = [
+ "cannet-blf",
+ "cannet-core",
  "cannet-dbc",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
-]
-
-[[package]]
-name = "cannet-dbc"
-version = "0.0.0"
-dependencies = [
- "can-core",
- "can-dbc",
 ]
 
 [[package]]

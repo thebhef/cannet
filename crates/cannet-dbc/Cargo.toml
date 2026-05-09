@@ -6,7 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-can-core = { path = "../can-core" }
+cannet-core = { path = "../cannet-core" }
 can-dbc = "9"
 
 [lints]

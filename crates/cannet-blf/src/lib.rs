@@ -1,15 +1,15 @@
-//! Vector BLF log file as a [`can_core::FrameSource`].
+//! Vector BLF log file as a [`cannet_core::FrameSource`].
 //!
 //! Wraps `blf_asc::BlfReader` and translates each `blf_asc::Message` into
-//! a `can_core::Frame`, picking the right `FramePayload` variant based on
+//! a `cannet_core::Frame`, picking the right `FramePayload` variant based on
 //! the BLF object flags (classic data / FD / remote / error). The wire
 //! shape from the underlying parser is hidden behind this adapter so the
-//! rest of the system only ever sees `can_core` types.
+//! rest of the system only ever sees `cannet_core` types.
 
 use std::path::Path;
 
 use blf_asc::{BlfError, BlfReader, Message};
-use can_core::{
+use cannet_core::{
     CanId, Direction, FdFlags, Frame, FrameError, FramePayload, FrameSource, IdError,
 };
 
@@ -157,7 +157,7 @@ fn seconds_to_nanos(seconds: f64) -> Result<u64, BlfSourceError> {
 mod tests {
     use super::*;
     use blf_asc::{ArbitrationId, BlfWriter, DataBytes};
-    use can_core::{pump, FrameSink};
+    use cannet_core::{pump, FrameSink};
 
     /// `blf_asc` only round-trips absolute timestamps when they fit a
     /// SYSTEMTIME header (≥ 1990-01-01). Tests use this base + a small

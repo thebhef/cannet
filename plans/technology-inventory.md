@@ -45,7 +45,7 @@ and the license / platform constraints we need to be aware of.
 
 ### CAN / CANFD Abstraction
 
-In-process: a hand-written `can-core` crate defines the frame types and
+In-process: a hand-written `cannet-core` crate defines the frame types and
 producer/consumer interfaces. No external dependency for the abstraction
 itself — kept deliberately small so a network transport can slot in later
 without reshaping callers.
@@ -93,7 +93,7 @@ _TBD — populated as we set up cross-platform builds._
 ### Testing / Profiling
 
 - **`tempfile`** crate — `adopted` in Phase 1 (dev-dependency only). Used by
-  `blf-source` tests to round-trip BLF fixtures through a real file. MIT /
+  `cannet-blf` tests to round-trip BLF fixtures through a real file. MIT /
   Apache-2.0.
 
 _Profiling instrumentation TBD — populated in Phase 4._

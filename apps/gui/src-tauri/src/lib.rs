@@ -6,18 +6,18 @@
 //! file is exhausted; the frontend renders them in a virtualized trace
 //! view. A `log-finished` event closes out the run.
 
-mod wire;
+mod ipc;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, Manager};
 
-use blf_source::BlfFrameSource;
-use can_core::FrameSource;
+use cannet_blf::BlfFrameSource;
+use cannet_core::FrameSource;
 use cannet_dbc::{Database, DecodedSignal};
 
-use wire::{
+use ipc::{
     DecodedRecord, FrameBatch, FrameRecord, LogFinished, OpenLogResult, SignalRecord,
 };
 

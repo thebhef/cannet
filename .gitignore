@@ -2,9 +2,9 @@
 
 # Frontend
 node_modules
-app/dist
-app/src-tauri/gen/
-app/tsconfig.tsbuildinfo
+apps/gui/dist
+apps/gui/src-tauri/gen/
+apps/gui/tsconfig.tsbuildinfo
 
 # Editor / OS
 .DS_Store

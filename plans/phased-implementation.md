@@ -18,17 +18,17 @@ Scope:
 - **CAN abstraction.** In-process representation of CAN and CAN FD frames plus
   the producer/consumer interfaces that everything downstream (trace, decode,
   plotting) will read from. Designed so a network transport can slot in later
-  without reshaping callers. Realised as `crates/can-core` (rustdoc on
-  `can_core` describes the source/sink contract).
+  without reshaping callers. Realised as `crates/cannet-core` (rustdoc on
+  `cannet_core` describes the source/sink contract).
 - **BLF log reader.** Parses Vector `.blf` files and streams frames through the
   CAN abstraction. No replay-rate control required yet beyond "stream as fast
-  as the consumer drains." Realised as `crates/blf-source`
-  (`BlfFrameSource` adapts `blf_asc::BlfReader` to `can_core::FrameSource`).
+  as the consumer drains." Realised as `crates/cannet-blf`
+  (`BlfFrameSource` adapts `blf_asc::BlfReader` to `cannet_core::FrameSource`).
 - **Basic trace window.** Scrollable list of frames with timestamp, channel,
   ID, DLC, and data bytes. Pause / resume; auto-scroll toggle. Performance
   target: keep up with a typical BLF replay without dropping frames or stalling
-  the UI thread. Realised as `app/src/TraceView.tsx` using
-  `@tanstack/react-virtual`; the Tauri host (`app/src-tauri`) batches
+  the UI thread. Realised as `apps/gui/src/TraceView.tsx` using
+  `@tanstack/react-virtual`; the Tauri host (`apps/gui/src-tauri`) batches
   frame events at 256 frames per `frame-batch` IPC message.
 - **DBC decoding.** Load a DBC, attach it to a channel, and render decoded
   signal values in the trace view (expand a frame to see signals). Realised as
@@ -40,7 +40,7 @@ Exit criteria:
 - Launch the GUI, open a BLF + DBC pair from disk, see decoded traffic live in
   a trace window. ✅
 - CAN abstraction has a documented interface; BLF reader and trace view both
-  go through it. ✅ (rustdoc on `can_core::lib`; both producers and consumers
+  go through it. ✅ (rustdoc on `cannet_core::lib`; both producers and consumers
   cross only `Frame` / `FrameSource` / `FrameSink`.)
 
 ### Running the GUI
@@ -55,9 +55,9 @@ sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libssl-dev \
 Then from the repo root:
 
 ```
-pnpm --dir app install
-pnpm --dir app tauri dev      # development build
-pnpm --dir app tauri build    # release bundle
+pnpm --dir apps/gui install
+pnpm --dir apps/gui tauri dev      # development build
+pnpm --dir apps/gui tauri build    # release bundle
 ```
 
 `pnpm tauri dev` launches the cannet window. Use **Open BLF…** to pick a

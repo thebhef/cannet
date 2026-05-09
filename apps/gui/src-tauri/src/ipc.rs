@@ -3,7 +3,7 @@
 //! Kept in one place so the React-side TypeScript types can mirror them
 //! without spelunking through other modules.
 
-use can_core::{Direction, Frame, FramePayload};
+use cannet_core::{Direction, Frame, FramePayload};
 
 /// One trace-row's worth of data, ready for the trace view.
 #[derive(serde::Serialize, Clone)]
