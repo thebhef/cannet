@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/can-core", "crates/blf-source"]
+members = ["crates/can-core", "crates/blf-source", "crates/cannet-dbc"]
 
 [workspace.package]
 edition = "2021"
