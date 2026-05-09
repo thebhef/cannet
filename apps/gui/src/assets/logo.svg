@@ -3,11 +3,16 @@
     .cn-logo { --logo-letter: #2f4a63; --logo-line: #c9a94a; --logo-dot: #c9a94a; }
   </style>
   <g class="cn-logo">
-    <!-- C as a filled path: outer R=170, inner R=110, thickness 60, opening 38° -->
-    <path d="M 353.96 115.34
-             A 170 170 0 1 0 353.96 324.66
-             L 306.68 287.72
-             A 110 110 0 1 1 306.68 152.28
+    <!-- C as a filled path: outer R=170, inner R=110, opening 38°, all four throat corners filleted at r=12 -->
+    <path d="M 346.57 105.88
+             A 170 170 0 1 0 346.57 334.12
+             A 12 12 0 0 0 344.51 317.27
+             L 316.14 295.11
+             A 12 12 0 0 0 299.29 297.18
+             A 110 110 0 1 1 299.29 142.82
+             A 12 12 0 0 0 316.14 144.89
+             L 344.51 122.73
+             A 12 12 0 0 0 346.57 105.88
              Z"
       fill="#2f4a63"/>
 
@@ -24,21 +29,39 @@
                Q 586 60 598 60 Z"/>
     </g>
 
-    <!-- Data line -->
-    <polyline points="80,310 150,225 215,285 280,180 345,255 410,150 475,235 540,170 605,215 670,130"
+    <!-- Data line: relief stroke (background color) drawn first, gold stroke on top -->
+    <!-- Background-relief layer -->
+    <polyline points="75,315 155,235 220,145 290,270 350,280 415,245 480,95 555,240 620,195 680,170"
+      fill="none" stroke="#f4f1e8" stroke-width="25"
+      stroke-linejoin="round" stroke-linecap="round"/>
+    <g fill="#f4f1e8">
+      <circle cx="75"  cy="315" r="20"/>
+      <circle cx="155" cy="235" r="20"/>
+      <circle cx="220" cy="145" r="20"/>
+      <circle cx="290" cy="270" r="20"/>
+      <circle cx="350" cy="280" r="20"/>
+      <circle cx="415" cy="245" r="20"/>
+      <circle cx="480" cy="95"  r="20"/>
+      <circle cx="555" cy="240" r="20"/>
+      <circle cx="620" cy="195" r="20"/>
+      <circle cx="680" cy="170" r="20"/>
+    </g>
+
+    <!-- Gold plotline on top -->
+    <polyline points="75,315 155,235 220,145 290,270 350,280 415,245 480,95 555,240 620,195 680,170"
       fill="none" stroke="#c9a94a" stroke-width="11"
       stroke-linejoin="round" stroke-linecap="round"/>
     <g fill="#c9a94a">
-      <circle cx="80"  cy="310" r="11"/>
-      <circle cx="150" cy="225" r="11"/>
-      <circle cx="215" cy="285" r="11"/>
-      <circle cx="280" cy="180" r="11"/>
-      <circle cx="345" cy="255" r="11"/>
-      <circle cx="410" cy="150" r="11"/>
-      <circle cx="475" cy="235" r="11"/>
-      <circle cx="540" cy="170" r="11"/>
-      <circle cx="605" cy="215" r="11"/>
-      <circle cx="670" cy="130" r="11"/>
+      <circle cx="75"  cy="315" r="13"/>
+      <circle cx="155" cy="235" r="13"/>
+      <circle cx="220" cy="145" r="13"/>
+      <circle cx="290" cy="270" r="13"/>
+      <circle cx="350" cy="280" r="13"/>
+      <circle cx="415" cy="245" r="13"/>
+      <circle cx="480" cy="95"  r="13"/>
+      <circle cx="555" cy="240" r="13"/>
+      <circle cx="620" cy="195" r="13"/>
+      <circle cx="680" cy="170" r="13"/>
     </g>
   </g>
 </svg>
