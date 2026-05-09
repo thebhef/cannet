@@ -1,1 +1,11 @@
 /target
+
+# Frontend
+node_modules
+app/dist
+app/src-tauri/gen/
+app/tsconfig.tsbuildinfo
+
+# Editor / OS
+.DS_Store
+*.swp

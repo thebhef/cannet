@@ -1,0 +1,32 @@
+[package]
+name = "cannet-app"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "cannet_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+can-core = { path = "../../crates/can-core" }
+blf-source = { path = "../../crates/blf-source" }
+cannet-dbc = { path = "../../crates/cannet-dbc" }
+
+[features]
+# Disable Tauri's default 'custom-protocol' feature in dev so the WebView
+# loads from the Vite dev server. cargo tauri build re-enables it.
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
