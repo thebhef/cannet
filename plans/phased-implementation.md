@@ -86,6 +86,9 @@ Exit criteria:
   and see decoded traffic with no functional regressions vs. Phase 1.
 - The same GUI build works against either an in-process source or a remote
   server.
+- README and `plans/phased-implementation.md` reflect the new server crate,
+  its run command, and the wire protocol; rustdoc on the protocol crate
+  describes the message set.
 
 ## Phase 3 — Vector, Kvaser, and PEAK CAN Driver Support
 
@@ -107,6 +110,8 @@ Exit criteria:
   bound to real hardware and have the GUI receive live traffic from it.
 - Vendor-specific code is isolated to its own server / adapter; nothing
   vendor-specific leaks into the GUI.
+- README lists each vendor's prerequisites (drivers, SDK, OS support
+  matrix) and the command to launch its server.
 
 ## Phase 4 — Performance Profiling Baseline
 
@@ -130,3 +135,4 @@ Exit criteria:
 - Documented, repeatable profiling procedure.
 - Baseline numbers committed for the current build, with enough detail that a
   later contributor can reproduce them and notice regressions.
+- README points at the profiling doc and the baseline file.
