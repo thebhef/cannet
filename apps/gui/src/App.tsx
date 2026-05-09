@@ -118,7 +118,14 @@ export function App() {
     setDbcPath(selected);
   }, []);
 
-  const status = renderStatus(state, dbcPath, framesRef.current.length);
+  const handleClear = useCallback(() => {
+    framesRef.current = [];
+    pauseBufferRef.current = [];
+    setVersion((v) => v + 1);
+  }, []);
+
+  const frameCount = framesRef.current.length;
+  const status = renderStatus(state, dbcPath, frameCount);
 
   return (
     <main className="app">
@@ -133,6 +140,9 @@ export function App() {
             disabled={state.kind === "idle"}
           >
             {paused ? "Resume" : "Pause"}
+          </button>
+          <button onClick={handleClear} disabled={frameCount === 0}>
+            Clear
           </button>
           <label className="checkbox">
             <input
