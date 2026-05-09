@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-import logoUrl from "./assets/logo.svg";
+// Import the SVG source so we can inline it into the DOM. Inlining is
+// what lets the title-bar CSS reach into the logo and override colors;
+// `<img src=…>` would isolate the SVG document and ignore our app CSS.
+import logoSvg from "./assets/logo.svg?raw";
 
 const win = getCurrentWindow();
 
@@ -25,7 +28,12 @@ export function TitleBar() {
 
   return (
     <div className="titlebar" data-tauri-drag-region>
-      <img className="titlebar-logo" src={logoUrl} alt="" data-tauri-drag-region />
+      <span
+        className="titlebar-logo"
+        data-tauri-drag-region
+        aria-hidden="true"
+        dangerouslySetInnerHTML={{ __html: logoSvg }}
+      />
       <span className="titlebar-name" data-tauri-drag-region>cannet</span>
       <div className="titlebar-spacer" data-tauri-drag-region />
       <button

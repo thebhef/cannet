@@ -37,10 +37,39 @@ main.app {
 }
 
 .titlebar-logo {
+  display: inline-flex;
+  align-items: center;
   height: 18px;
-  width: auto;
   margin: 0 8px 0 10px;
   pointer-events: none;
+}
+
+.titlebar-logo svg {
+  height: 100%;
+  width: auto;
+  display: block;
+}
+
+/* Re-skin the inlined logo for dark chrome:
+   - letters take the gold (was the trace color)
+   - trace takes the navy (was the letter color)
+   - relief blends into the title-bar background
+   The standalone logo.svg keeps its hardcoded light-theme defaults so
+   `tauri icon` rasterizes cleanly for OS bundles. */
+.titlebar-logo .cn-letter {
+  fill: #c9a94a;
+}
+.titlebar-logo .cn-trace {
+  stroke: #2f4a63;
+}
+.titlebar-logo .cn-trace-dots {
+  fill: #2f4a63;
+}
+.titlebar-logo .cn-trace-relief {
+  stroke: #0a0d12;
+}
+.titlebar-logo .cn-trace-relief-dots {
+  fill: #0a0d12;
 }
 
 .titlebar-name {

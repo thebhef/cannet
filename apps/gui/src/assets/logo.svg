@@ -1,23 +1,28 @@
 <svg viewBox="0 40 740 410" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="cannet logo">
   <style>
-    .cn-logo { --logo-letter: #2f4a63; --logo-line: #c9a94a; --logo-dot: #c9a94a; }
+    /* Hardcoded fills/strokes below are the light-theme defaults so the
+       standalone file rasterizes correctly when fed to `tauri icon` for
+       OS bundles. When the SVG is inlined in the React app, the title-
+       bar CSS overrides via these class names to swap palette for dark
+       chrome. */
   </style>
   <g class="cn-logo">
     <!-- C as a filled path: outer R=170, inner R=110, opening 38°, all four throat corners filleted at r=12 -->
-    <path d="M 346.57 105.88
-             A 170 170 0 1 0 346.57 334.12
-             A 12 12 0 0 0 344.51 317.27
-             L 316.14 295.11
-             A 12 12 0 0 0 299.29 297.18
-             A 110 110 0 1 1 299.29 142.82
-             A 12 12 0 0 0 316.14 144.89
-             L 344.51 122.73
-             A 12 12 0 0 0 346.57 105.88
-             Z"
+    <path class="cn-letter"
+      d="M 346.57 105.88
+         A 170 170 0 1 0 346.57 334.12
+         A 12 12 0 0 0 344.51 317.27
+         L 316.14 295.11
+         A 12 12 0 0 0 299.29 297.18
+         A 110 110 0 1 1 299.29 142.82
+         A 12 12 0 0 0 316.14 144.89
+         L 344.51 122.73
+         A 12 12 0 0 0 346.57 105.88
+         Z"
       fill="#2f4a63"/>
 
     <!-- N -->
-    <g fill="#2f4a63">
+    <g class="cn-letter" fill="#2f4a63">
       <polygon points="408,60 456,60 634,380 586,380"/>
       <path d="M 408 60 L 456 60 L 456 368
                Q 456 380 444 380 L 408 380
@@ -29,12 +34,13 @@
                Q 586 60 598 60 Z"/>
     </g>
 
-    <!-- Data line: relief stroke (background color) drawn first, gold stroke on top -->
+    <!-- Data line: relief stroke (background-matching) drawn first, plot stroke on top -->
     <!-- Background-relief layer -->
-    <polyline points="75,315 155,235 220,145 290,270 350,280 415,245 480,95 555,240 620,195 680,170"
+    <polyline class="cn-trace-relief"
+      points="75,315 155,235 220,145 290,270 350,280 415,245 480,95 555,240 620,195 680,170"
       fill="none" stroke="#f4f1e8" stroke-width="25"
       stroke-linejoin="round" stroke-linecap="round"/>
-    <g fill="#f4f1e8">
+    <g class="cn-trace-relief-dots" fill="#f4f1e8">
       <circle cx="75"  cy="315" r="20"/>
       <circle cx="155" cy="235" r="20"/>
       <circle cx="220" cy="145" r="20"/>
@@ -47,11 +53,12 @@
       <circle cx="680" cy="170" r="20"/>
     </g>
 
-    <!-- Gold plotline on top -->
-    <polyline points="75,315 155,235 220,145 290,270 350,280 415,245 480,95 555,240 620,195 680,170"
+    <!-- Plotline on top -->
+    <polyline class="cn-trace"
+      points="75,315 155,235 220,145 290,270 350,280 415,245 480,95 555,240 620,195 680,170"
       fill="none" stroke="#c9a94a" stroke-width="11"
       stroke-linejoin="round" stroke-linecap="round"/>
-    <g fill="#c9a94a">
+    <g class="cn-trace-dots" fill="#c9a94a">
       <circle cx="75"  cy="315" r="13"/>
       <circle cx="155" cy="235" r="13"/>
       <circle cx="220" cy="145" r="13"/>
