@@ -24,6 +24,58 @@ main.app {
   height: 100%;
 }
 
+/* Custom title bar -----------------------------------------------------*/
+.titlebar {
+  display: flex;
+  align-items: center;
+  height: 30px;
+  flex: 0 0 auto;
+  background: #0a0d12;
+  border-bottom: 1px solid #1f2630;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.titlebar-logo {
+  width: 18px;
+  height: 18px;
+  margin: 0 8px 0 10px;
+  pointer-events: none;
+}
+
+.titlebar-name {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: #94a3b8;
+}
+
+.titlebar-spacer {
+  flex: 1 1 auto;
+  height: 100%;
+}
+
+.titlebar-button {
+  width: 46px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 0;
+  color: #cbd5e1;
+  cursor: pointer;
+  padding: 0;
+}
+
+.titlebar-button:hover {
+  background: #1f2630;
+}
+
+.titlebar-close:hover {
+  background: #c0392b;
+  color: #fff;
+}
+
 header {
   padding: 0.5rem 0.75rem;
   border-bottom: 1px solid #1f2630;

@@ -9,6 +9,7 @@ import type {
   LogFinished,
   OpenLogResult,
 } from "./types";
+import { TitleBar } from "./TitleBar";
 import { TraceView } from "./TraceView";
 
 type LogState =
@@ -129,6 +130,7 @@ export function App() {
 
   return (
     <main className="app">
+      <TitleBar />
       <header>
         <div className="toolbar">
           <button onClick={handleOpenLog}>Open BLF…</button>
