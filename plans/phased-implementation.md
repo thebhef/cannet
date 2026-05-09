@@ -6,63 +6,88 @@ the next one starts. Concrete library / framework choices live in
 
 ## Phase 1 — Alpha0 GUI
 
-Status: **shipped**. Workspace layout, run instructions, and the realised
-mapping of scope items onto crates / modules are documented at the end of
-this section.
+Status: **shipped**. The realised mapping of scope items onto crates /
+modules, plus the design refinements that landed during implementation,
+are captured below. Full per-OS prerequisites and the `pnpm tauri` run
+flow live in [`../README.md`](../README.md).
 
-First end-to-end vertical slice: open the app, point it at a BLF log, and watch
-decoded traffic scroll in a trace window.
+First end-to-end vertical slice: open the app, point it at a BLF log,
+and watch decoded traffic scroll in a trace window.
 
-Scope:
+Scope (all delivered):
 
-- **CAN abstraction.** In-process representation of CAN and CAN FD frames plus
-  the producer/consumer interfaces that everything downstream (trace, decode,
-  plotting) will read from. Designed so a network transport can slot in later
-  without reshaping callers. Realised as `crates/cannet-core` (rustdoc on
-  `cannet_core` describes the source/sink contract).
-- **BLF log reader.** Parses Vector `.blf` files and streams frames through the
-  CAN abstraction. No replay-rate control required yet beyond "stream as fast
-  as the consumer drains." Realised as `crates/cannet-blf`
-  (`BlfCanFrameSource` adapts `blf_asc::BlfReader` to `cannet_core::CanFrameSource`).
-- **Basic trace window.** Scrollable list of frames with timestamp, channel,
-  ID, DLC, and data bytes. Pause / resume; auto-scroll toggle. Performance
-  target: keep up with a typical BLF replay without dropping frames or stalling
-  the UI thread. Realised as `apps/gui/src/TraceView.tsx` using
-  `@tanstack/react-virtual`; the Tauri host (`apps/gui/src-tauri`) batches
-  frame events at 256 frames per `can-frame-batch` IPC message.
-- **DBC decoding.** Load a DBC, attach it to a channel, and render decoded
-  signal values in the trace view (expand a frame to see signals). Realised as
-  `crates/cannet-dbc` (uses `can-dbc` for parsing; runtime decoder lives in
-  `cannet-dbc::decode`).
+- **CAN abstraction.** In-process representation of CAN and CAN FD frames
+  plus the producer/consumer interfaces that everything downstream
+  (trace, decode, plotting) will read from. Designed so a network
+  transport can slot in later without reshaping callers. Realised as
+  `crates/cannet-core` (rustdoc on `cannet_core` describes the
+  source/sink contract). Names are CAN-explicit (`CanFrame`,
+  `CanFrameSource`, `CanFrameSink`) so non-CAN buses can sit beside
+  them later without renames.
+- **BLF log reader.** Parses Vector `.blf` files and streams frames
+  through the CAN abstraction. No replay-rate control yet beyond
+  "stream as fast as the consumer drains." Realised as
+  `crates/cannet-blf` (`BlfCanFrameSource` adapts `blf-asc::BlfReader`
+  to `cannet_core::CanFrameSource`).
+- **Basic trace window.** Virtualized list of frames with #, timestamp,
+  channel, direction, ID, type (classic / CAN-FD / RTR / err), length,
+  data bytes, and decoded-message name; expand a row to see decoded
+  signals on a grid. Toolbar exposes Open BLF, Attach DBC, Pause /
+  Resume, Clear, and an auto-scroll toggle. Realised as
+  `apps/gui/src/TraceView.tsx` using `@tanstack/react-virtual`; the
+  Tauri host (`apps/gui/src-tauri`) batches frame events at 256 frames
+  per `can-frame-batch` IPC message. The OS title bar is hidden in
+  favour of a custom `TitleBar.tsx` so the cannet branding lives in
+  the window chrome.
+- **DBC decoding.** Load a DBC and decode every matching frame's
+  signals; expand a frame in the trace view to see them. The DBC is
+  process-global, not per-channel — per-channel scoping is deferred
+  until the multi-source story (Phase 2/3) makes the choice meaningful.
+  Attaching a DBC after a BLF is already open retro-decodes existing
+  trace rows in 1000-frame batches via the `decode_frames` IPC command,
+  so the visible state always reflects the current database. Float /
+  double signals declared via `SIG_VALTYPE_` decode as IEEE 754, not as
+  scaled integers (added once the demo fixture exposed the gap).
+  Realised as `crates/cannet-dbc` (uses `can-dbc` for parsing; runtime
+  decoder lives in the crate root).
+
+Architecture refinements that landed during implementation:
+
+- **Frontend-resident trace store.** Trace data lives in a
+  `useRef<CanFrameRecord[]>` inside the React app, with a version
+  counter to wake the virtualizer. The Tauri host streams frames but
+  doesn't keep a buffer. The trace view is a *view* over the live
+  pump, not the source of truth — explicit, persistable trace capture
+  lives in `features.md` as a future feature, not Phase 1 scope.
+- **DBC in shared backend state.** `AppState::database` is a
+  `Mutex<Option<Database>>` shared between the BLF pump thread and the
+  IPC commands. `attach_dbc` / `detach_dbc` mutate it; the pump reads
+  it per frame; `decode_frames` reads it for the retro-decode path.
+  Separating "which DBC are we using right now" from "which BLF are we
+  replaying right now" is what lets the user attach/swap a DBC without
+  reopening the log.
+
+Demo fixture:
+
+- `examples/cannet-demo.blf` + `cannet-demo.dbc` cover standard and
+  extended IDs, classic CAN and CAN FD payloads up to 32 bytes,
+  unsigned/signed/float signal types, factor & offset, multiplexed
+  signal blocks, value tables, and five different cadences. Generated
+  deterministically by `examples/generate_blf.py`.
+  `cargo run --example verify_decode -p cannet-dbc` round-trips the
+  fixture through `cannet-blf` + `cannet-dbc` as a sanity script.
 
 Exit criteria:
 
-- Launch the GUI, open a BLF + DBC pair from disk, see decoded traffic live in
-  a trace window. ✅
-- CAN abstraction has a documented interface; BLF reader and trace view both
-  go through it. ✅ (rustdoc on `cannet_core::lib`; both producers and consumers
-  cross only `CanFrame` / `CanFrameSource` / `CanFrameSink`.)
-
-### Running the GUI
-
-Linux build deps (Ubuntu / Debian):
-
-```
-sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libssl-dev \
-    libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
-```
-
-Then from the repo root:
-
-```
-pnpm --dir apps/gui install
-pnpm --dir apps/gui tauri dev      # development build
-pnpm --dir apps/gui tauri build    # release bundle
-```
-
-`pnpm tauri dev` launches the cannet window. Use **Open BLF…** to pick a
-log; **Attach DBC…** before opening (or in a separate run) attaches a
-database for live decoding.
+- Launch the GUI, open a BLF + DBC pair from disk, see decoded traffic
+  live in a trace window. ✅
+- CAN abstraction has a documented interface; BLF reader and trace view
+  both go through it. ✅ (rustdoc on `cannet_core`; both producers and
+  consumers cross only `CanFrame` / `CanFrameSource` / `CanFrameSink`.)
+- Documentation reflects what shipped: README covers per-OS
+  prerequisites, the `pnpm tauri dev / build` flow, and the build-
+  artifacts list; `plans/` records the realised scope; rustdoc covers
+  the public surface. ✅
 
 ## Phase 2 — Client / Server Implementation
 
