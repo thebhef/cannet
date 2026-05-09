@@ -37,8 +37,8 @@ main.app {
 }
 
 .titlebar-logo {
-  width: 18px;
   height: 18px;
+  width: auto;
   margin: 0 8px 0 10px;
   pointer-events: none;
 }

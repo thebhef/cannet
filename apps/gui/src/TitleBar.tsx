@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-import logoUrl from "./assets/logo.png";
+import logoUrl from "./assets/logo.svg";
 
 const win = getCurrentWindow();
 
