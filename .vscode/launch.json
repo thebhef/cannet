@@ -1,0 +1,43 @@
+{
+  // Tauri dev = two halves: a Vite dev server serving the React app and a
+  // Rust binary that loads it. We start Vite as a backgrounded task and
+  // wait for it to print "ready" before launching the Rust host under
+  // CodeLLDB. Breakpoints in apps/gui/src-tauri/src/**.rs and any of the
+  // workspace library crates work normally.
+  //
+  // Frontend (WebView) debugging is separate: right-click → Inspect
+  // Element in the running window opens Chromium DevTools. No launch
+  // entry needed for that.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug cannet-gui (dev, with Vite)",
+      "cargo": {
+        "args": [
+          "build",
+          "--manifest-path=./apps/gui/src-tauri/Cargo.toml"
+        ]
+      },
+      "preLaunchTask": "vite:dev",
+      "env": {
+        "RUST_BACKTRACE": "1"
+      }
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug cannet-gui (release bundle)",
+      "cargo": {
+        "args": [
+          "build",
+          "--release",
+          "--features=custom-protocol",
+          "--manifest-path=./apps/gui/src-tauri/Cargo.toml"
+        ]
+      },
+      "preLaunchTask": "frontend:build"
+    }
+  ]
+}

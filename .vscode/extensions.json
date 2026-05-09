@@ -1,0 +1,12 @@
+{
+  // Extensions VS Code suggests when opening this workspace. Anything
+  // strictly required for the F5 debug flow (CodeLLDB) is listed first.
+  "recommendations": [
+    "rust-lang.rust-analyzer",
+    "vadimcn.vscode-lldb",
+    "tauri-apps.tauri-vscode",
+    "tamasfe.even-better-toml",
+    "fill-labs.dependi",
+    "esbenp.prettier-vscode"
+  ]
+}

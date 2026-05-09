@@ -19,4 +19,18 @@ work or admit it isn't going to happen and delete it.
 
 ## Items
 
-_Empty._
+- `[feat]` `cannet-dbc`: surface DBC value-tables (`VAL_`) in
+  `DecodedSignal` so the trace view can show enum labels.
+- `[perf]` `cannet-core`: revisit `CanFramePayload::Classic`/`Fd` to share
+  a fixed-size inline buffer instead of `Vec<u8>` once the trace store /
+  benchmark in Phase 4 shows allocator pressure.
+- `[docs]` `cannet-blf`: f64 BLF timestamps lose sub-µs precision at
+  modern absolute times; document this in the user-facing GUI when
+  surfaced timestamps look quantised.
+- `[ui]` trace view: resizeable column widths.
+- `[ui]` trace view: configurable visible columns (show/hide each).
+- `[ui]` trace view: dock / undock as a separate window.
+- `[ui]` trace view: alternate "by ID" mode that collapses to one row
+  per arbitration-id with the latest payload, instead of chronological.
+- `[ui]` trace view: list decoded signals on their own lines under the
+  message row instead of expand-to-show.

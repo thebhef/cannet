@@ -58,6 +58,32 @@ Write the test first, watch it fail, then make it pass.
 - Tests should be fast and deterministic. If a test needs hardware, network,
   or large fixtures, isolate it so the default suite stays quick.
 
+## Documentation
+
+Docs are a deliverable, not an afterthought. The repository carries three
+layers of documentation, and each has a specific job:
+
+- **`README.md`** — the entry point for someone who has just cloned the
+  repo. It must answer: what is this, what's in it, what do I need to
+  build it on every supported OS, and how do I run it. Update it
+  whenever any of those answers change (new module, new dependency,
+  new prerequisite, new run command).
+- **`plans/`** — the roadmap and rationale. See "Planning" above.
+- **rustdoc on crate roots and stable public APIs** — the contract for
+  in-process consumers. When a public type or trait changes shape, its
+  rustdoc changes with it, in the same commit.
+
+Rules:
+
+- Keep doc updates in the same commit as the code change they describe.
+  A behavioral change without a corresponding doc update is incomplete.
+- Every phase has a documentation deliverable as part of its exit
+  criteria: the README reflects what now ships, `plans/` records what
+  changed and why, and rustdoc covers any new public API. A phase is
+  not done until its docs match what the code does.
+- When you spot a doc-vs-code mismatch, fix whichever is wrong in the
+  same change — never leave them inconsistent.
+
 ## Completing the plan as documented
 
 Follow the phased plan in order. When reality forces a change:

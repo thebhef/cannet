@@ -26,3 +26,7 @@ High-performance CAN traffic analyzer.
 - projects - includes window layouts, bus configs, references DBCs. Should be json file. DBC should be reloadable from disk at any time.
 - virtual CAN bus layer: allow mapping CAN channels to logical project channels
 - reading from .blf logs (should just stream messages through our CAN abstraction)
+- trace capture: explicit start / stop recording across all subscribed
+  channels, with the captured frames persistable to .blf. The trace
+  view stays a *view* over a capture (live or finished), not the
+  source of truth for the data — that lives in the capture itself.

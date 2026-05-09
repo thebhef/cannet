@@ -1,0 +1,241 @@
+:root {
+  color-scheme: dark;
+  font-family:
+    ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, sans-serif;
+  background: #0e1116;
+  color: #d8dee9;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+main.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* Custom title bar -----------------------------------------------------*/
+.titlebar {
+  display: flex;
+  align-items: center;
+  height: 30px;
+  flex: 0 0 auto;
+  background: #0a0d12;
+  border-bottom: 1px solid #1f2630;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.titlebar-logo {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  margin: 0 8px 0 10px;
+  pointer-events: none;
+}
+
+.titlebar-logo svg {
+  height: 100%;
+  width: auto;
+  display: block;
+}
+
+/* Re-skin the inlined logo for dark chrome:
+   - letters take the gold (was the trace color)
+   - trace takes the navy (was the letter color)
+   - relief blends into the title-bar background
+   The standalone logo.svg keeps its hardcoded light-theme defaults so
+   `tauri icon` rasterizes cleanly for OS bundles. */
+.titlebar-logo .cn-letter {
+  fill: #c9a94a;
+}
+.titlebar-logo .cn-trace {
+  stroke: #2f4a63;
+}
+.titlebar-logo .cn-trace-dots {
+  fill: #2f4a63;
+}
+.titlebar-logo .cn-trace-relief {
+  stroke: #0a0d12;
+}
+.titlebar-logo .cn-trace-relief-dots {
+  fill: #0a0d12;
+}
+
+.titlebar-name {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: #94a3b8;
+}
+
+.titlebar-spacer {
+  flex: 1 1 auto;
+  height: 100%;
+}
+
+.titlebar-button {
+  width: 46px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 0;
+  color: #cbd5e1;
+  cursor: pointer;
+  padding: 0;
+}
+
+.titlebar-button:hover {
+  background: #1f2630;
+}
+
+.titlebar-close:hover {
+  background: #c0392b;
+  color: #fff;
+}
+
+header {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid #1f2630;
+  flex: 0 0 auto;
+}
+
+.toolbar {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 0.4rem;
+}
+
+.toolbar button {
+  background: #1c2230;
+  color: #e2e8f0;
+  border: 1px solid #2c3444;
+  border-radius: 4px;
+  padding: 0.25rem 0.6rem;
+  cursor: pointer;
+  font: inherit;
+}
+
+.toolbar button:hover:not(:disabled) {
+  background: #2a3447;
+}
+
+.toolbar button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.toolbar label.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  user-select: none;
+  font-size: 0.85rem;
+}
+
+.status {
+  font-size: 0.78rem;
+  color: #94a3b8;
+}
+
+/* Trace table -----------------------------------------------------------*/
+.trace {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo,
+    Consolas, monospace;
+  font-size: 12px;
+  line-height: 22px;
+}
+
+.trace-header,
+.trace-row {
+  display: grid;
+  grid-template-columns:
+    [idx] 60px [time] 110px [ch] 36px [dir] 36px [id] 96px
+    [kind] 110px [len] 40px [data] 1fr [msg] 220px;
+  align-items: start;
+  padding: 0 0.6rem;
+  white-space: nowrap;
+}
+
+.trace-header {
+  background: #131923;
+  color: #94a3b8;
+  border-bottom: 1px solid #1f2630;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.trace-rows {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  contain: strict;
+}
+
+.trace-row {
+  border-bottom: 1px solid #11161e;
+  cursor: default;
+}
+
+.trace-row.expanded {
+  background: #11161e;
+}
+
+.trace-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.col-data {
+  color: #c5d2e0;
+  letter-spacing: 0.02em;
+}
+
+.col-msg {
+  color: #93c5fd;
+}
+
+.hint {
+  color: #475569;
+}
+
+.signals {
+  grid-column: 1 / -1;
+  padding: 0.25rem 0 0.4rem 60px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 2px 18px;
+}
+
+.signal {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  border-bottom: 1px dashed #1f2630;
+}
+
+.signal-name {
+  color: #cbd5e1;
+}
+
+.signal-value {
+  color: #fde68a;
+}
