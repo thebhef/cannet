@@ -84,30 +84,6 @@ Rules:
 - When you spot a doc-vs-code mismatch, fix whichever is wrong in the
   same change — never leave them inconsistent.
 
-## Build performance
-
-The workspace pulls in `tauri`, `webkit2gtk`, and a long tail of macros, so a
-cold build is slow and a `cargo clean` discards a lot of work. Run
-[`sccache`](https://github.com/mozilla/sccache) as a `rustc` wrapper so
-compiled artifacts persist across `target/` wipes and branch switches.
-
-One-time install:
-
-```sh
-cargo install sccache
-```
-
-Per-shell setup (add to your shell profile or a per-repo direnv):
-
-```sh
-export RUSTC_WRAPPER=sccache
-export CARGO_INCREMENTAL=0
-```
-
-`CARGO_INCREMENTAL=0` is **required** — sccache silently bypasses caching
-when incremental compilation is on, and `cargo build` defaults to incremental
-in dev profiles. Inspect cache effectiveness with `sccache --show-stats`.
-
 ## Completing the plan as documented
 
 Follow the phased plan in order. When reality forces a change:
