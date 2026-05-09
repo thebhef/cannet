@@ -6,6 +6,7 @@
     "vadimcn.vscode-lldb",
     "tauri-apps.tauri-vscode",
     "tamasfe.even-better-toml",
-    "fill-labs.dependi"
+    "fill-labs.dependi",
+    "esbenp.prettier-vscode"
   ]
 }
