@@ -92,4 +92,8 @@ _TBD — populated as we set up cross-platform builds._
 
 ### Testing / Profiling
 
-_TBD — populated alongside the performance profiling baseline phase._
+- **`tempfile`** crate — `adopted` in Phase 1 (dev-dependency only). Used by
+  `blf-source` tests to round-trip BLF fixtures through a real file. MIT /
+  Apache-2.0.
+
+_Profiling instrumentation TBD — populated in Phase 4._
