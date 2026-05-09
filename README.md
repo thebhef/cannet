@@ -10,14 +10,14 @@ adapters. See [`plans/`](plans/) for the detailed roadmap.
 
 ```
 crates/
-  cannet-core/   Frame model + FrameSource / FrameSink traits.
+  cannet-core/   CanFrame model + CanFrameSource / CanFrameSink traits.
                  Every other crate either produces or consumes through
                  these — the seam where future network transports and
                  hardware adapters slot in. See its rustdoc for the
                  contract.
-  cannet-blf/    `BlfFrameSource`: Vector BLF files as a FrameSource.
+  cannet-blf/    `BlfCanFrameSource`: Vector BLF files as a CanFrameSource.
                  Wraps `blf-asc` and translates each object into a
-                 `cannet_core::Frame` (classic / FD / remote / error).
+                 `cannet_core::CanFrame` (classic / FD / remote / error).
   cannet-dbc/    `Database::parse(text)` + `decode(frame)`.
                  Hand-rolled bit extraction (LE / Motorola sequential
                  BE), sign extension, multiplexed-signal filtering.
@@ -30,7 +30,7 @@ apps/
     src-tauri/       Rust host (`cannet-gui` crate). The single Tauri
                      command `open_log` spawns a worker that pushes
                      frames at the frontend in 256-frame batches via
-                     a `frame-batch` IPC event.
+                     a `can-frame-batch` IPC event.
                      `src/ipc.rs` defines the IPC payload shapes;
                      `wire` is reserved for the Phase-2 cannet-wire
                      network protocol.

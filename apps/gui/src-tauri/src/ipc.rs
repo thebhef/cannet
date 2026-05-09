@@ -3,11 +3,11 @@
 //! Kept in one place so the React-side TypeScript types can mirror them
 //! without spelunking through other modules.
 
-use cannet_core::{Direction, Frame, FramePayload};
+use cannet_core::{Direction, CanFrame, CanFramePayload};
 
 /// One trace-row's worth of data, ready for the trace view.
 #[derive(serde::Serialize, Clone)]
-pub struct FrameRecord {
+pub struct CanFrameRecord {
     /// Source timestamp converted to seconds. f64 is what BLF round-trips
     /// natively, and JSON numbers can't safely carry u64 nanoseconds.
     pub timestamp_seconds: f64,
@@ -15,14 +15,14 @@ pub struct FrameRecord {
     pub id: u32,
     pub extended: bool,
     pub direction: &'static str,
-    pub kind: FrameKindWire,
+    pub kind: CanFrameKind,
     pub data: Vec<u8>,
     pub decoded: Option<DecodedRecord>,
 }
 
 #[derive(serde::Serialize, Clone)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum FrameKindWire {
+pub enum CanFrameKind {
     Classic,
     Fd { brs: bool, esi: bool },
     Remote { dlc: u8 },
@@ -43,25 +43,25 @@ pub struct SignalRecord {
     pub unit: String,
 }
 
-impl FrameRecord {
+impl CanFrameRecord {
     #[allow(clippy::cast_precision_loss)]
-    pub fn from_frame(frame: &Frame, decoded: Option<DecodedRecord>) -> Self {
+    pub fn from_frame(frame: &CanFrame, decoded: Option<DecodedRecord>) -> Self {
         let timestamp_seconds = (frame.timestamp_ns as f64) / 1e9;
         let direction = match frame.direction {
             Direction::Rx => "Rx",
             Direction::Tx => "Tx",
         };
         let (kind, data) = match &frame.payload {
-            FramePayload::Classic(d) => (FrameKindWire::Classic, d.clone()),
-            FramePayload::Fd { data, flags } => (
-                FrameKindWire::Fd {
+            CanFramePayload::Classic(d) => (CanFrameKind::Classic, d.clone()),
+            CanFramePayload::Fd { data, flags } => (
+                CanFrameKind::Fd {
                     brs: flags.bitrate_switch,
                     esi: flags.error_state_indicator,
                 },
                 data.clone(),
             ),
-            FramePayload::Remote { dlc } => (FrameKindWire::Remote { dlc: *dlc }, Vec::new()),
-            FramePayload::Error => (FrameKindWire::Error, Vec::new()),
+            CanFramePayload::Remote { dlc } => (CanFrameKind::Remote { dlc: *dlc }, Vec::new()),
+            CanFramePayload::Error => (CanFrameKind::Error, Vec::new()),
         };
         Self {
             timestamp_seconds,
@@ -87,8 +87,8 @@ pub struct OpenLogResult {
 
 /// Emitted alongside frame batches as the log progresses.
 #[derive(serde::Serialize, Clone)]
-pub struct FrameBatch {
-    pub frames: Vec<FrameRecord>,
+pub struct CanFrameBatch {
+    pub frames: Vec<CanFrameRecord>,
 }
 
 /// Emitted when the log finishes (cleanly or with an error).

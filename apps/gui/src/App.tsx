@@ -4,8 +4,8 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import type {
-  FrameBatch,
-  FrameRecord,
+  CanFrameBatch,
+  CanFrameRecord,
   LogFinished,
   OpenLogResult,
 } from "./types";
@@ -22,13 +22,13 @@ export function App() {
   // Frames live in a ref so appending a batch doesn't deep-copy the array
   // back to React. `version` is bumped on each mutation to wake the
   // virtualizer's measurement.
-  const framesRef = useRef<FrameRecord[]>([]);
+  const framesRef = useRef<CanFrameRecord[]>([]);
   const [version, setVersion] = useState(0);
 
   const [state, setState] = useState<LogState>({ kind: "idle" });
   const [paused, setPaused] = useState(false);
   const pausedRef = useRef(false);
-  const pauseBufferRef = useRef<FrameRecord[]>([]);
+  const pauseBufferRef = useRef<CanFrameRecord[]>([]);
   useEffect(() => {
     pausedRef.current = paused;
     if (!paused && pauseBufferRef.current.length > 0) {
@@ -46,7 +46,7 @@ export function App() {
     const unlistens: Array<Promise<() => void>> = [];
 
     unlistens.push(
-      listen<FrameBatch>("frame-batch", (event) => {
+      listen<CanFrameBatch>("can-frame-batch", (event) => {
         const incoming = event.payload.frames;
         if (pausedRef.current) {
           pauseBufferRef.current.push(...incoming);

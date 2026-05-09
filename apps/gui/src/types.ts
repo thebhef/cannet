@@ -2,7 +2,7 @@
 // because the two surfaces are small enough that a code generator would
 // be more friction than benefit at Phase 1.
 
-export type FrameKind =
+export type CanFrameKind =
   | { kind: "classic" }
   | { kind: "fd"; brs: boolean; esi: boolean }
   | { kind: "remote"; dlc: number }
@@ -19,19 +19,19 @@ export interface DecodedRecord {
   signals: SignalRecord[];
 }
 
-export interface FrameRecord {
+export interface CanFrameRecord {
   timestamp_seconds: number;
   channel: number;
   id: number;
   extended: boolean;
   direction: "Rx" | "Tx";
-  kind: FrameKind;
+  kind: CanFrameKind;
   data: number[];
   decoded: DecodedRecord | null;
 }
 
-export interface FrameBatch {
-  frames: FrameRecord[];
+export interface CanFrameBatch {
+  frames: CanFrameRecord[];
 }
 
 export type LogFinished =

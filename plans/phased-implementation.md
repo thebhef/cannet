@@ -23,13 +23,13 @@ Scope:
 - **BLF log reader.** Parses Vector `.blf` files and streams frames through the
   CAN abstraction. No replay-rate control required yet beyond "stream as fast
   as the consumer drains." Realised as `crates/cannet-blf`
-  (`BlfFrameSource` adapts `blf_asc::BlfReader` to `cannet_core::FrameSource`).
+  (`BlfCanFrameSource` adapts `blf_asc::BlfReader` to `cannet_core::CanFrameSource`).
 - **Basic trace window.** Scrollable list of frames with timestamp, channel,
   ID, DLC, and data bytes. Pause / resume; auto-scroll toggle. Performance
   target: keep up with a typical BLF replay without dropping frames or stalling
   the UI thread. Realised as `apps/gui/src/TraceView.tsx` using
   `@tanstack/react-virtual`; the Tauri host (`apps/gui/src-tauri`) batches
-  frame events at 256 frames per `frame-batch` IPC message.
+  frame events at 256 frames per `can-frame-batch` IPC message.
 - **DBC decoding.** Load a DBC, attach it to a channel, and render decoded
   signal values in the trace view (expand a frame to see signals). Realised as
   `crates/cannet-dbc` (uses `can-dbc` for parsing; runtime decoder lives in
@@ -41,7 +41,7 @@ Exit criteria:
   a trace window. ✅
 - CAN abstraction has a documented interface; BLF reader and trace view both
   go through it. ✅ (rustdoc on `cannet_core::lib`; both producers and consumers
-  cross only `Frame` / `FrameSource` / `FrameSink`.)
+  cross only `CanFrame` / `CanFrameSource` / `CanFrameSink`.)
 
 ### Running the GUI
 

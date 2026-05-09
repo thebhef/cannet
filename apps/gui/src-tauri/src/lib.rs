@@ -13,12 +13,12 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, Manager};
 
-use cannet_blf::BlfFrameSource;
-use cannet_core::FrameSource;
+use cannet_blf::BlfCanFrameSource;
+use cannet_core::CanFrameSource;
 use cannet_dbc::{Database, DecodedSignal};
 
 use ipc::{
-    DecodedRecord, FrameBatch, FrameRecord, LogFinished, OpenLogResult, SignalRecord,
+    DecodedRecord, CanFrameBatch, CanFrameRecord, LogFinished, OpenLogResult, SignalRecord,
 };
 
 /// Frames per emitted batch. Smaller batches cut latency; larger ones cut
@@ -59,7 +59,7 @@ fn open_log(
 ) -> Result<OpenLogResult, String> {
     // Open the BLF synchronously so the user gets immediate feedback if
     // the path is wrong.
-    let source = BlfFrameSource::open(&blf_path).map_err(|e| e.to_string())?;
+    let source = BlfCanFrameSource::open(&blf_path).map_err(|e| e.to_string())?;
 
     let database = match dbc_path.as_deref() {
         Some(path) => Some(load_database(path)?),
@@ -90,13 +90,13 @@ fn load_database(path: &str) -> Result<Database, String> {
     Database::parse(&text).map_err(|e| format!("failed to parse DBC at {path}: {e}"))
 }
 
-// `BlfFrameSource` and `Database` are owned by this thread for its
+// `BlfCanFrameSource` and `Database` are owned by this thread for its
 // lifetime; clippy's "pass by reference" suggestion doesn't fit the
 // thread-spawn site.
 #[allow(clippy::needless_pass_by_value)]
-fn run_pump(app: &AppHandle, mut source: BlfFrameSource, database: Option<Database>) {
+fn run_pump(app: &AppHandle, mut source: BlfCanFrameSource, database: Option<Database>) {
     let total = Arc::new(AtomicU64::new(0));
-    let mut batch: Vec<FrameRecord> = Vec::with_capacity(BATCH_SIZE);
+    let mut batch: Vec<CanFrameRecord> = Vec::with_capacity(BATCH_SIZE);
 
     loop {
         let frame = match source.next_frame() {
@@ -123,7 +123,7 @@ fn run_pump(app: &AppHandle, mut source: BlfFrameSource, database: Option<Databa
             })
         });
 
-        batch.push(FrameRecord::from_frame(&frame, decoded));
+        batch.push(CanFrameRecord::from_frame(&frame, decoded));
         total.fetch_add(1, Ordering::Relaxed);
 
         if batch.len() >= BATCH_SIZE {
@@ -138,12 +138,12 @@ fn run_pump(app: &AppHandle, mut source: BlfFrameSource, database: Option<Databa
     );
 }
 
-fn flush_batch(app: &AppHandle, batch: &mut Vec<FrameRecord>) {
+fn flush_batch(app: &AppHandle, batch: &mut Vec<CanFrameRecord>) {
     if batch.is_empty() {
         return;
     }
     let frames = std::mem::replace(batch, Vec::with_capacity(BATCH_SIZE));
-    let _ = app.emit("frame-batch", FrameBatch { frames });
+    let _ = app.emit("can-frame-batch", CanFrameBatch { frames });
 }
 
 fn signal_to_wire(sig: &DecodedSignal<'_>) -> SignalRecord {

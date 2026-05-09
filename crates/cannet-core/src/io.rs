@@ -1,11 +1,11 @@
-//! Producer / consumer interfaces over `Frame`.
+//! Producer / consumer interfaces over `CanFrame`.
 //!
-//! The Phase 1 BLF reader implements `FrameSource`; the trace view (and
-//! eventually the Phase 2 server) implement `FrameSink`. `pump` drains a
+//! The Phase 1 BLF reader implements `CanFrameSource`; the trace view (and
+//! eventually the Phase 2 server) implement `CanFrameSink`. `pump` drains a
 //! source into a sink until the source signals end-of-stream, so callers
 //! don't reinvent the loop.
 
-use crate::frame::Frame;
+use crate::frame::CanFrame;
 
 /// A pull-based stream of CAN frames.
 ///
@@ -13,17 +13,17 @@ use crate::frame::Frame;
 /// the stream is exhausted (e.g. end of file), or `Err` on a recoverable
 /// or fatal source error — the caller decides which by inspecting the
 /// concrete error type.
-pub trait FrameSource {
+pub trait CanFrameSource {
     type Error;
 
-    fn next_frame(&mut self) -> Result<Option<Frame>, Self::Error>;
+    fn next_frame(&mut self) -> Result<Option<CanFrame>, Self::Error>;
 }
 
 /// A push-based consumer of CAN frames.
-pub trait FrameSink {
+pub trait CanFrameSink {
     type Error;
 
-    fn submit(&mut self, frame: Frame) -> Result<(), Self::Error>;
+    fn submit(&mut self, frame: CanFrame) -> Result<(), Self::Error>;
 }
 
 /// Drain `source` into `sink` until the source returns `Ok(None)`.
@@ -32,8 +32,8 @@ pub trait FrameSink {
 /// into [`PumpError::Source`] and the sink error into [`PumpError::Sink`].
 pub fn pump<S, K>(source: &mut S, sink: &mut K) -> Result<(), PumpError<S::Error, K::Error>>
 where
-    S: FrameSource,
-    K: FrameSink,
+    S: CanFrameSource,
+    K: CanFrameSink,
 {
     while let Some(frame) = source.next_frame().map_err(PumpError::Source)? {
         sink.submit(frame).map_err(PumpError::Sink)?;
@@ -72,33 +72,33 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frame::{CanId, Direction, Frame};
+    use crate::frame::{CanId, Direction, CanFrame};
 
-    fn make_frame(ts: u64) -> Frame {
+    fn make_frame(ts: u64) -> CanFrame {
         let id = CanId::standard(0x100).unwrap();
         let tag = u8::try_from(ts & 0xFF).unwrap();
-        Frame::classic(ts, 0, id, Direction::Rx, vec![tag]).unwrap()
+        CanFrame::classic(ts, 0, id, Direction::Rx, vec![tag]).unwrap()
     }
 
     struct VecSource {
-        frames: std::vec::IntoIter<Frame>,
+        frames: std::vec::IntoIter<CanFrame>,
     }
 
-    impl FrameSource for VecSource {
+    impl CanFrameSource for VecSource {
         type Error = std::convert::Infallible;
-        fn next_frame(&mut self) -> Result<Option<Frame>, Self::Error> {
+        fn next_frame(&mut self) -> Result<Option<CanFrame>, Self::Error> {
             Ok(self.frames.next())
         }
     }
 
     #[derive(Default)]
     struct VecSink {
-        captured: Vec<Frame>,
+        captured: Vec<CanFrame>,
     }
 
-    impl FrameSink for VecSink {
+    impl CanFrameSink for VecSink {
         type Error = std::convert::Infallible;
-        fn submit(&mut self, frame: Frame) -> Result<(), Self::Error> {
+        fn submit(&mut self, frame: CanFrame) -> Result<(), Self::Error> {
             self.captured.push(frame);
             Ok(())
         }
@@ -134,9 +134,9 @@ mod tests {
         }
     }
     impl std::error::Error for SourceErr {}
-    impl FrameSource for FailingSource {
+    impl CanFrameSource for FailingSource {
         type Error = SourceErr;
-        fn next_frame(&mut self) -> Result<Option<Frame>, Self::Error> {
+        fn next_frame(&mut self) -> Result<Option<CanFrame>, Self::Error> {
             Err(SourceErr)
         }
     }
@@ -158,9 +158,9 @@ mod tests {
         }
     }
     impl std::error::Error for SinkErr {}
-    impl FrameSink for FailingSink {
+    impl CanFrameSink for FailingSink {
         type Error = SinkErr;
-        fn submit(&mut self, _: Frame) -> Result<(), Self::Error> {
+        fn submit(&mut self, _: CanFrame) -> Result<(), Self::Error> {
             Err(SinkErr)
         }
     }

@@ -84,25 +84,25 @@ pub enum Direction {
 
 /// CAN FD-specific bits carried alongside a data frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct FdFlags {
+pub struct CanFdFlags {
     pub bitrate_switch: bool,
     pub error_state_indicator: bool,
 }
 
 /// What kind of frame this is on the wire.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FramePayload {
+pub enum CanFramePayload {
     /// Classic CAN data frame, 0..=8 payload bytes.
     Classic(Vec<u8>),
     /// CAN FD data frame, 0..=64 payload bytes plus FD flags.
-    Fd { data: Vec<u8>, flags: FdFlags },
+    Fd { data: Vec<u8>, flags: CanFdFlags },
     /// Classic CAN remote-transmission-request frame; carries DLC only.
     Remote { dlc: u8 },
     /// Bus error frame surfaced by the controller.
     Error,
 }
 
-impl FramePayload {
+impl CanFramePayload {
     pub fn data(&self) -> &[u8] {
         match self {
             Self::Classic(d) | Self::Fd { data: d, .. } => d.as_slice(),
@@ -117,7 +117,7 @@ impl FramePayload {
 
 /// A timestamped CAN / CAN FD frame as observed on a logical channel.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Frame {
+pub struct CanFrame {
     /// Source-defined timestamp in nanoseconds (file offset, hardware
     /// counter, etc — comparison is only meaningful within one source).
     pub timestamp_ns: u64,
@@ -125,26 +125,26 @@ pub struct Frame {
     pub channel: u8,
     pub id: CanId,
     pub direction: Direction,
-    pub payload: FramePayload,
+    pub payload: CanFramePayload,
 }
 
-impl Frame {
+impl CanFrame {
     pub fn classic(
         timestamp_ns: u64,
         channel: u8,
         id: CanId,
         direction: Direction,
         data: Vec<u8>,
-    ) -> Result<Self, FrameError> {
+    ) -> Result<Self, CanFrameError> {
         if data.len() > CLASSIC_DATA_MAX {
-            return Err(FrameError::ClassicPayloadTooLarge(data.len()));
+            return Err(CanFrameError::ClassicPayloadTooLarge(data.len()));
         }
         Ok(Self {
             timestamp_ns,
             channel,
             id,
             direction,
-            payload: FramePayload::Classic(data),
+            payload: CanFramePayload::Classic(data),
         })
     }
 
@@ -154,17 +154,17 @@ impl Frame {
         id: CanId,
         direction: Direction,
         data: Vec<u8>,
-        flags: FdFlags,
-    ) -> Result<Self, FrameError> {
+        flags: CanFdFlags,
+    ) -> Result<Self, CanFrameError> {
         if data.len() > FD_DATA_MAX {
-            return Err(FrameError::FdPayloadTooLarge(data.len()));
+            return Err(CanFrameError::FdPayloadTooLarge(data.len()));
         }
         Ok(Self {
             timestamp_ns,
             channel,
             id,
             direction,
-            payload: FramePayload::Fd { data, flags },
+            payload: CanFramePayload::Fd { data, flags },
         })
     }
 
@@ -180,7 +180,7 @@ impl Frame {
             channel,
             id,
             direction,
-            payload: FramePayload::Remote { dlc },
+            payload: CanFramePayload::Remote { dlc },
         }
     }
 
@@ -190,18 +190,18 @@ impl Frame {
             channel,
             id,
             direction,
-            payload: FramePayload::Error,
+            payload: CanFramePayload::Error,
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FrameError {
+pub enum CanFrameError {
     ClassicPayloadTooLarge(usize),
     FdPayloadTooLarge(usize),
 }
 
-impl fmt::Display for FrameError {
+impl fmt::Display for CanFrameError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ClassicPayloadTooLarge(n) => write!(
@@ -215,7 +215,7 @@ impl fmt::Display for FrameError {
     }
 }
 
-impl std::error::Error for FrameError {}
+impl std::error::Error for CanFrameError {}
 
 #[cfg(test)]
 mod tests {
@@ -261,7 +261,7 @@ mod tests {
     #[test]
     fn classic_frame_round_trips_payload() {
         let id = CanId::standard(0x123).unwrap();
-        let frame = Frame::classic(1_000, 0, id, Direction::Rx, vec![1, 2, 3]).unwrap();
+        let frame = CanFrame::classic(1_000, 0, id, Direction::Rx, vec![1, 2, 3]).unwrap();
         assert_eq!(frame.payload.data(), &[1, 2, 3]);
         assert!(!frame.payload.is_fd());
     }
@@ -269,17 +269,17 @@ mod tests {
     #[test]
     fn classic_frame_rejects_oversize_payload() {
         let id = CanId::standard(0x1).unwrap();
-        let err = Frame::classic(0, 0, id, Direction::Rx, vec![0; 9]).unwrap_err();
-        assert_eq!(err, FrameError::ClassicPayloadTooLarge(9));
+        let err = CanFrame::classic(0, 0, id, Direction::Rx, vec![0; 9]).unwrap_err();
+        assert_eq!(err, CanFrameError::ClassicPayloadTooLarge(9));
     }
 
     #[test]
     fn fd_frame_carries_brs_and_esi() {
         let id = CanId::extended(0x1AB).unwrap();
-        let flags = FdFlags { bitrate_switch: true, error_state_indicator: false };
-        let frame = Frame::fd(0, 1, id, Direction::Tx, vec![0xDE, 0xAD], flags).unwrap();
+        let flags = CanFdFlags { bitrate_switch: true, error_state_indicator: false };
+        let frame = CanFrame::fd(0, 1, id, Direction::Tx, vec![0xDE, 0xAD], flags).unwrap();
         match &frame.payload {
-            FramePayload::Fd { data, flags } => {
+            CanFramePayload::Fd { data, flags } => {
                 assert_eq!(data, &[0xDE, 0xAD]);
                 assert!(flags.bitrate_switch);
                 assert!(!flags.error_state_indicator);
@@ -291,31 +291,31 @@ mod tests {
     #[test]
     fn fd_frame_accepts_64_byte_payload() {
         let id = CanId::standard(0x1).unwrap();
-        let frame = Frame::fd(0, 0, id, Direction::Rx, vec![0; 64], FdFlags::default()).unwrap();
+        let frame = CanFrame::fd(0, 0, id, Direction::Rx, vec![0; 64], CanFdFlags::default()).unwrap();
         assert_eq!(frame.payload.data().len(), 64);
     }
 
     #[test]
     fn fd_frame_rejects_oversize_payload() {
         let id = CanId::standard(0x1).unwrap();
-        let err = Frame::fd(0, 0, id, Direction::Rx, vec![0; 65], FdFlags::default()).unwrap_err();
-        assert_eq!(err, FrameError::FdPayloadTooLarge(65));
+        let err = CanFrame::fd(0, 0, id, Direction::Rx, vec![0; 65], CanFdFlags::default()).unwrap_err();
+        assert_eq!(err, CanFrameError::FdPayloadTooLarge(65));
     }
 
     #[test]
     fn remote_frame_has_no_payload_bytes() {
         let id = CanId::standard(0x7FF).unwrap();
-        let frame = Frame::remote(0, 0, id, Direction::Rx, 4);
+        let frame = CanFrame::remote(0, 0, id, Direction::Rx, 4);
         assert_eq!(frame.payload.data(), &[]);
-        assert!(matches!(frame.payload, FramePayload::Remote { dlc: 4 }));
+        assert!(matches!(frame.payload, CanFramePayload::Remote { dlc: 4 }));
     }
 
     #[test]
     fn error_frame_has_no_payload_bytes() {
         let id = CanId::standard(0).unwrap();
-        let frame = Frame::error(0, 0, id, Direction::Rx);
+        let frame = CanFrame::error(0, 0, id, Direction::Rx);
         assert_eq!(frame.payload.data(), &[]);
-        assert!(matches!(frame.payload, FramePayload::Error));
+        assert!(matches!(frame.payload, CanFramePayload::Error));
     }
 
     #[test]

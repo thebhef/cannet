@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
-import type { FrameRecord } from "./types";
+import type { CanFrameRecord } from "./types";
 import {
   formatData,
   formatId,
@@ -11,7 +11,7 @@ import {
 } from "./format";
 
 interface TraceViewProps {
-  frames: FrameRecord[];
+  frames: CanFrameRecord[];
   /** Bumped each time `frames` is mutated in place. */
   version: number;
   autoScroll: boolean;

@@ -1,7 +1,7 @@
-//! Vector BLF log file as a [`cannet_core::FrameSource`].
+//! Vector BLF log file as a [`cannet_core::CanFrameSource`].
 //!
 //! Wraps `blf_asc::BlfReader` and translates each `blf_asc::Message` into
-//! a `cannet_core::Frame`, picking the right `FramePayload` variant based on
+//! a `cannet_core::CanFrame`, picking the right `CanFramePayload` variant based on
 //! the BLF object flags (classic data / FD / remote / error). The wire
 //! shape from the underlying parser is hidden behind this adapter so the
 //! rest of the system only ever sees `cannet_core` types.
@@ -10,15 +10,15 @@ use std::path::Path;
 
 use blf_asc::{BlfError, BlfReader, Message};
 use cannet_core::{
-    CanId, Direction, FdFlags, Frame, FrameError, FramePayload, FrameSource, IdError,
+    CanId, Direction, CanFdFlags, CanFrame, CanFrameError, CanFramePayload, CanFrameSource, IdError,
 };
 
-/// A `FrameSource` backed by a Vector BLF log file.
-pub struct BlfFrameSource {
+/// A `CanFrameSource` backed by a Vector BLF log file.
+pub struct BlfCanFrameSource {
     reader: BlfReader,
 }
 
-impl BlfFrameSource {
+impl BlfCanFrameSource {
     /// Open `path` as a BLF file. Returns an error if the file can't be
     /// opened or fails BLF header validation.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, BlfSourceError> {
@@ -27,10 +27,10 @@ impl BlfFrameSource {
     }
 }
 
-impl FrameSource for BlfFrameSource {
+impl CanFrameSource for BlfCanFrameSource {
     type Error = BlfSourceError;
 
-    fn next_frame(&mut self) -> Result<Option<Frame>, Self::Error> {
+    fn next_frame(&mut self) -> Result<Option<CanFrame>, Self::Error> {
         match self.reader.next_message()? {
             Some(msg) => Ok(Some(message_to_frame(&msg)?)),
             None => Ok(None),
@@ -42,14 +42,14 @@ impl FrameSource for BlfFrameSource {
 pub enum BlfSourceError {
     /// Underlying BLF parser error.
     Blf(BlfError),
-    /// BLF channel field overflowed `Frame`'s 0..=255 channel space.
+    /// BLF channel field overflowed `CanFrame`'s 0..=255 channel space.
     ChannelOutOfRange(u16),
     /// BLF row carried a CAN id that didn't fit its declared addressing
     /// mode (standard / extended).
     InvalidId(IdError),
     /// Payload length didn't match the constraints of the chosen frame
     /// variant (e.g. >8 bytes on a classic frame).
-    InvalidFrame(FrameError),
+    InvalidFrame(CanFrameError),
     /// Negative or non-finite timestamp, which BLF should never produce.
     InvalidTimestamp(f64),
 }
@@ -59,7 +59,7 @@ impl std::fmt::Display for BlfSourceError {
         match self {
             Self::Blf(e) => write!(f, "blf parser error: {e}"),
             Self::ChannelOutOfRange(c) => {
-                write!(f, "blf channel {c} exceeds Frame::channel u8 range")
+                write!(f, "blf channel {c} exceeds CanFrame::channel u8 range")
             }
             Self::InvalidId(e) => write!(f, "invalid CAN id in BLF row: {e}"),
             Self::InvalidFrame(e) => write!(f, "invalid frame produced from BLF row: {e}"),
@@ -89,13 +89,13 @@ impl From<IdError> for BlfSourceError {
         Self::InvalidId(value)
     }
 }
-impl From<FrameError> for BlfSourceError {
-    fn from(value: FrameError) -> Self {
+impl From<CanFrameError> for BlfSourceError {
+    fn from(value: CanFrameError) -> Self {
         Self::InvalidFrame(value)
     }
 }
 
-fn message_to_frame(msg: &Message) -> Result<Frame, BlfSourceError> {
+fn message_to_frame(msg: &Message) -> Result<CanFrame, BlfSourceError> {
     let timestamp_ns = seconds_to_nanos(msg.timestamp)?;
     let channel = u8::try_from(msg.channel)
         .map_err(|_| BlfSourceError::ChannelOutOfRange(msg.channel))?;
@@ -110,30 +110,30 @@ fn message_to_frame(msg: &Message) -> Result<Frame, BlfSourceError> {
     let direction = if msg.is_rx { Direction::Rx } else { Direction::Tx };
 
     let payload = if msg.is_error_frame {
-        FramePayload::Error
+        CanFramePayload::Error
     } else if msg.is_remote_frame {
-        FramePayload::Remote { dlc: msg.dlc }
+        CanFramePayload::Remote { dlc: msg.dlc }
     } else if msg.is_fd {
-        let flags = FdFlags {
+        let flags = CanFdFlags {
             bitrate_switch: msg.bitrate_switch,
             error_state_indicator: msg.error_state_indicator,
         };
-        FramePayload::Fd { data: msg.data.to_vec(), flags }
+        CanFramePayload::Fd { data: msg.data.to_vec(), flags }
     } else {
-        FramePayload::Classic(msg.data.to_vec())
+        CanFramePayload::Classic(msg.data.to_vec())
     };
 
-    // The validating constructors live on Frame, but we already chose the
+    // The validating constructors live on CanFrame, but we already chose the
     // payload variant explicitly above. Re-check via the constructors so
     // any length violation surfaces as InvalidFrame instead of silently
     // producing a malformed frame.
     match payload {
-        FramePayload::Classic(data) => Ok(Frame::classic(timestamp_ns, channel, id, direction, data)?),
-        FramePayload::Fd { data, flags } => {
-            Ok(Frame::fd(timestamp_ns, channel, id, direction, data, flags)?)
+        CanFramePayload::Classic(data) => Ok(CanFrame::classic(timestamp_ns, channel, id, direction, data)?),
+        CanFramePayload::Fd { data, flags } => {
+            Ok(CanFrame::fd(timestamp_ns, channel, id, direction, data, flags)?)
         }
-        FramePayload::Remote { dlc } => Ok(Frame::remote(timestamp_ns, channel, id, direction, dlc)),
-        FramePayload::Error => Ok(Frame::error(timestamp_ns, channel, id, direction)),
+        CanFramePayload::Remote { dlc } => Ok(CanFrame::remote(timestamp_ns, channel, id, direction, dlc)),
+        CanFramePayload::Error => Ok(CanFrame::error(timestamp_ns, channel, id, direction)),
     }
 }
 
@@ -157,7 +157,7 @@ fn seconds_to_nanos(seconds: f64) -> Result<u64, BlfSourceError> {
 mod tests {
     use super::*;
     use blf_asc::{ArbitrationId, BlfWriter, DataBytes};
-    use cannet_core::{pump, FrameSink};
+    use cannet_core::{pump, CanFrameSink};
 
     /// `blf_asc` only round-trips absolute timestamps when they fit a
     /// SYSTEMTIME header (≥ 1990-01-01). Tests use this base + a small
@@ -190,10 +190,10 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct VecSink(Vec<Frame>);
-    impl FrameSink for VecSink {
+    struct VecSink(Vec<CanFrame>);
+    impl CanFrameSink for VecSink {
         type Error = std::convert::Infallible;
-        fn submit(&mut self, frame: Frame) -> Result<(), Self::Error> {
+        fn submit(&mut self, frame: CanFrame) -> Result<(), Self::Error> {
             self.0.push(frame);
             Ok(())
         }
@@ -205,7 +205,7 @@ mod tests {
         let path = dir.path().join("classic.blf");
         write_fixture(&path, &[message(0.0, 0x123, vec![1, 2, 3, 4])]);
 
-        let mut source = BlfFrameSource::open(&path).unwrap();
+        let mut source = BlfCanFrameSource::open(&path).unwrap();
         let mut sink = VecSink::default();
         pump(&mut source, &mut sink).unwrap();
 
@@ -228,11 +228,11 @@ mod tests {
         };
         write_fixture(&path, &[msg]);
 
-        let mut source = BlfFrameSource::open(&path).unwrap();
+        let mut source = BlfCanFrameSource::open(&path).unwrap();
         let frame = source.next_frame().unwrap().unwrap();
         assert!(frame.id.is_extended());
         assert_eq!(frame.id.raw(), 0x01AB_CDEF);
-        // Frame is at offset 0.001 s. blf_asc round-trips timestamps as
+        // CanFrame is at offset 0.001 s. blf_asc round-trips timestamps as
         // f64 seconds, which loses sub-microsecond precision at modern
         // absolute timestamps; accept ±1 µs of slop.
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -255,10 +255,10 @@ mod tests {
         };
         write_fixture(&path, &[msg]);
 
-        let mut source = BlfFrameSource::open(&path).unwrap();
+        let mut source = BlfCanFrameSource::open(&path).unwrap();
         let frame = source.next_frame().unwrap().unwrap();
         match &frame.payload {
-            FramePayload::Fd { data, flags } => {
+            CanFramePayload::Fd { data, flags } => {
                 assert_eq!(data.len(), 12);
                 assert!(flags.bitrate_switch);
                 assert!(!flags.error_state_indicator);
@@ -274,7 +274,7 @@ mod tests {
         let msg = Message { is_rx: false, ..message(0.0, 0x10, vec![]) };
         write_fixture(&path, &[msg]);
 
-        let mut source = BlfFrameSource::open(&path).unwrap();
+        let mut source = BlfCanFrameSource::open(&path).unwrap();
         let frame = source.next_frame().unwrap().unwrap();
         assert_eq!(frame.direction, Direction::Tx);
     }
@@ -285,13 +285,13 @@ mod tests {
         let path = dir.path().join("empty.blf");
         write_fixture(&path, &[]);
 
-        let mut source = BlfFrameSource::open(&path).unwrap();
+        let mut source = BlfCanFrameSource::open(&path).unwrap();
         assert!(source.next_frame().unwrap().is_none());
     }
 
     #[test]
     fn open_missing_file_errors() {
-        let Err(err) = BlfFrameSource::open("/nonexistent/path/no.blf") else {
+        let Err(err) = BlfCanFrameSource::open("/nonexistent/path/no.blf") else {
             panic!("expected error opening nonexistent file");
         };
         assert!(matches!(err, BlfSourceError::Blf(_)));

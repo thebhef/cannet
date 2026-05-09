@@ -2,7 +2,7 @@
 //!
 //! Parsing is delegated to the `can-dbc` crate, which produces an AST.
 //! This crate builds an indexed, decode-friendly view on top of that AST
-//! and runs the bit-extraction maths against `cannet_core::Frame` payloads.
+//! and runs the bit-extraction maths against `cannet_core::CanFrame` payloads.
 
 mod decode;
 
@@ -10,7 +10,7 @@ pub use decode::{decode_signal_bits, sign_extend};
 
 use std::collections::HashMap;
 
-use cannet_core::Frame;
+use cannet_core::CanFrame;
 use can_dbc::{Dbc, MessageId, MultiplexIndicator, Signal, ValueType};
 
 /// A parsed DBC database, indexed for fast frame lookup.
@@ -53,7 +53,7 @@ impl Database {
 
     /// Decode `frame` against this database. Returns `None` if no message
     /// in the database matches the frame's id (and addressing mode).
-    pub fn decode<'a>(&'a self, frame: &Frame) -> Option<DecodedMessage<'a>> {
+    pub fn decode<'a>(&'a self, frame: &CanFrame) -> Option<DecodedMessage<'a>> {
         let key = frame_to_message_id(frame)?;
         let entry = self.messages.get(&key)?;
         let data = frame.payload.data();
@@ -61,7 +61,7 @@ impl Database {
     }
 }
 
-fn frame_to_message_id(frame: &Frame) -> Option<MessageId> {
+fn frame_to_message_id(frame: &CanFrame) -> Option<MessageId> {
     let raw = frame.id.raw();
     if frame.id.is_extended() {
         Some(MessageId::Extended(raw))
@@ -177,7 +177,7 @@ impl std::error::Error for DbcError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cannet_core::{CanId, Direction, Frame};
+    use cannet_core::{CanId, Direction, CanFrame};
 
     const SAMPLE_DBC: &str = r#"VERSION ""
 
@@ -209,13 +209,13 @@ BO_ 512 MuxedMsg: 8 ECU1
  SG_ Always : 24|8@1+ (1,0) [0|0] "" ECU2
 "#;
 
-    fn make_frame(raw_id: u32, extended: bool, data: Vec<u8>) -> Frame {
+    fn make_frame(raw_id: u32, extended: bool, data: Vec<u8>) -> CanFrame {
         let id = if extended {
             CanId::extended(raw_id).unwrap()
         } else {
             CanId::standard(raw_id).unwrap()
         };
-        Frame::classic(0, 0, id, Direction::Rx, data).unwrap()
+        CanFrame::classic(0, 0, id, Direction::Rx, data).unwrap()
     }
 
     fn signal_by_name<'a>(msg: &'a DecodedMessage<'_>, name: &str) -> &'a DecodedSignal<'a> {
