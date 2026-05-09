@@ -1,14 +1,11 @@
 //! In-process CAN abstraction.
 //!
-//! Phase 1 scope: frame types and producer/consumer interfaces. The shapes
-//! land in follow-up commits; this skeleton just establishes the crate so
-//! the workspace builds.
+//! See `frame` for the wire-shape types. Producer/consumer traits land in a
+//! follow-up commit.
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn workspace_smoke() {
-        // Placeholder — replaced by real coverage as the abstraction lands.
-        assert_eq!(2 + 2, 4);
-    }
-}
+mod frame;
+
+pub use frame::{
+    CanId, Direction, EXTENDED_ID_MAX, FD_DATA_MAX, FdFlags, Frame, FrameError, FramePayload,
+    IdError, CLASSIC_DATA_MAX, STANDARD_ID_MAX,
+};
