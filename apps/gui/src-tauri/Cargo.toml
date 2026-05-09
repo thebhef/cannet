@@ -26,7 +26,8 @@ cannet-blf = { path = "../../../crates/cannet-blf" }
 cannet-dbc = { path = "../../../crates/cannet-dbc" }
 
 [features]
-# Disable Tauri's default 'custom-protocol' feature in dev so the WebView
-# loads from the Vite dev server. cargo tauri build re-enables it.
-default = ["custom-protocol"]
+# `pnpm tauri build` enables `custom-protocol` for production bundles,
+# which has Tauri embed the built frontend into the binary. Plain
+# `cargo build` leaves it off so the Rust host can compile without
+# the frontend having been built yet.
 custom-protocol = ["tauri/custom-protocol"]
