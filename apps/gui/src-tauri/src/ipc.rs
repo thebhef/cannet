@@ -80,9 +80,28 @@ impl CanFrameRecord {
 #[derive(serde::Serialize, Clone)]
 pub struct OpenLogResult {
     pub blf_path: String,
-    pub dbc_path: Option<String>,
-    /// Number of messages found in the DBC, if one was attached.
-    pub dbc_message_count: Option<usize>,
+}
+
+/// Returned from `attach_dbc` once the file is parsed and stored.
+#[derive(serde::Serialize, Clone)]
+pub struct DbcInfo {
+    pub dbc_path: String,
+    pub message_count: usize,
+}
+
+/// Frontend → backend payload for `decode_frames`. Carries the minimum
+/// needed to identify a message and decode its bytes; we deliberately
+/// reconstruct nothing about the original payload kind because cannet-dbc
+/// only looks at id + bytes.
+#[derive(serde::Deserialize)]
+pub struct DecodeRequest {
+    /// Channel is currently informational on the wire — we keep it so
+    /// future per-channel DBC scoping can use it without a schema change.
+    #[allow(dead_code)]
+    pub channel: u8,
+    pub id: u32,
+    pub extended: bool,
+    pub data: Vec<u8>,
 }
 
 /// Emitted alongside frame batches as the log progresses.

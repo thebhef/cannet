@@ -6,6 +6,9 @@ import { open } from "@tauri-apps/plugin-dialog";
 import type {
   CanFrameBatch,
   CanFrameRecord,
+  DbcInfo,
+  DecodeRequest,
+  DecodedRecord,
   LogFinished,
   OpenLogResult,
 } from "./types";
@@ -102,13 +105,12 @@ export function App() {
     try {
       const result = await invoke<OpenLogResult>("open_log", {
         blfPath: selected,
-        dbcPath,
       });
       setState({ kind: "loading", result });
     } catch (err) {
       setState({ kind: "error", message: String(err) });
     }
-  }, [dbcPath]);
+  }, []);
 
   const handleAttachDbc = useCallback(async () => {
     const selected = await open({
@@ -116,7 +118,23 @@ export function App() {
       filters: [{ name: "DBC", extensions: ["dbc"] }],
     });
     if (typeof selected !== "string") return;
-    setDbcPath(selected);
+
+    try {
+      const info = await invoke<DbcInfo>("attach_dbc", { path: selected });
+      setDbcPath(info.dbc_path);
+    } catch (err) {
+      setState({ kind: "error", message: String(err) });
+      return;
+    }
+
+    // Retro-decode any frames that arrived before the DBC was attached
+    // (or that were decoded against the previous DBC). New frames keep
+    // arriving with the new DBC's decoded info via the pump, so we only
+    // touch the snapshot of `framesRef.current` taken at this moment.
+    if (framesRef.current.length > 0) {
+      await retroDecode(framesRef.current);
+      setVersion((v) => v + 1);
+    }
   }, []);
 
   const handleClear = useCallback(() => {
@@ -191,4 +209,28 @@ function renderStatus(
 function shortenPath(path: string): string {
   const slash = path.lastIndexOf("/");
   return slash >= 0 ? path.slice(slash + 1) : path;
+}
+
+const RETRO_DECODE_BATCH = 1000;
+
+/// Re-decode existing trace rows against the currently-attached DBC.
+/// Mutates the frames in place — they're plain objects shared with React
+/// state via framesRef, so updating .decoded is visible after the next
+/// version bump.
+async function retroDecode(frames: CanFrameRecord[]): Promise<void> {
+  for (let i = 0; i < frames.length; i += RETRO_DECODE_BATCH) {
+    const slice = frames.slice(i, i + RETRO_DECODE_BATCH);
+    const requests: DecodeRequest[] = slice.map((f) => ({
+      channel: f.channel,
+      id: f.id,
+      extended: f.extended,
+      data: f.data,
+    }));
+    const decoded = await invoke<(DecodedRecord | null)[]>("decode_frames", {
+      frames: requests,
+    });
+    for (let j = 0; j < slice.length; j++) {
+      slice[j].decoded = decoded[j];
+    }
+  }
 }

@@ -40,6 +40,16 @@ export type LogFinished =
 
 export interface OpenLogResult {
   blf_path: string;
-  dbc_path: string | null;
-  dbc_message_count: number | null;
+}
+
+export interface DbcInfo {
+  dbc_path: string;
+  message_count: number;
+}
+
+export interface DecodeRequest {
+  channel: number;
+  id: number;
+  extended: boolean;
+  data: number[];
 }

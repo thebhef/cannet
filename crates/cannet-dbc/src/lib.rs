@@ -73,16 +73,26 @@ impl Database {
     /// Decode `frame` against this database. Returns `None` if no message
     /// in the database matches the frame's id (and addressing mode).
     pub fn decode<'a>(&'a self, frame: &CanFrame) -> Option<DecodedMessage<'a>> {
-        let key = frame_to_message_id(frame)?;
+        self.decode_raw(frame.id, frame.payload.data())
+    }
+
+    /// Decode by raw `(id, data)` without needing a `CanFrame`. The trace
+    /// view uses this to retro-decode already-displayed frames when the
+    /// user attaches a DBC after the fact.
+    pub fn decode_raw<'a>(
+        &'a self,
+        id: cannet_core::CanId,
+        data: &[u8],
+    ) -> Option<DecodedMessage<'a>> {
+        let key = canid_to_message_id(id)?;
         let entry = self.messages.get(&key)?;
-        let data = frame.payload.data();
         Some(decode_message(entry, data))
     }
 }
 
-fn frame_to_message_id(frame: &CanFrame) -> Option<MessageId> {
-    let raw = frame.id.raw();
-    if frame.id.is_extended() {
+fn canid_to_message_id(id: cannet_core::CanId) -> Option<MessageId> {
+    let raw = id.raw();
+    if id.is_extended() {
         Some(MessageId::Extended(raw))
     } else {
         Some(MessageId::Standard(u16::try_from(raw).ok()?))
