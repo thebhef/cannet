@@ -19,10 +19,23 @@ High-performance CAN traffic analyzer.
 - server mode - findable on network (MVP is just addressable; discovery can be later)
 - rest-of-bus simulation; mvp is a gridview with live values
 - crc and sequence count calculation in arbitrary fields of the CAN message
-- dbc ingestion
+- dbc ingestion: cover the common features and attributes of DBC, not just
+  basic signals (value tables, comments, attribute definitions/values, signal
+  groups, transmitter nodes, cycle times)
+- multiplexing values: first-class support for both classic and extended
+  multiplexing. Decoded views must show only the signals applicable to the
+  currently-active multiplexor selection.
+- custom DBC attributes as an application design surface: project-defined
+  attributes (CRC fields, sequence counters, transmit hints, naming
+  overrides) configure application behavior through the DBC itself rather
+  than a parallel sidecar config.
 - eds ingestion
 - can traffic decoding
 - CANopen SDO and PDO decoding from EDS
-- projects - includes window layouts, bus configs, references DBCs. Should be json file. DBC should be reloadable from disk at any time.
+- projects - includes window layouts, bus configs, references DBCs. Should be
+  json file. DBC should be reloadable from disk at any time, and reload must
+  update existing signals **in place** — open trace views, plots, and
+  subscriptions on unchanged signals keep working without being torn down
+  and rebuilt.
 - virtual CAN bus layer: allow mapping CAN channels to logical project channels
 - reading from .blf logs (should just stream messages through our CAN abstraction)
