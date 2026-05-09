@@ -123,7 +123,6 @@ export function App() {
   return (
     <main className="app">
       <header>
-        <h1>cannet</h1>
         <div className="toolbar">
           <button onClick={handleOpenLog}>Open BLF…</button>
           <button onClick={handleAttachDbc}>
