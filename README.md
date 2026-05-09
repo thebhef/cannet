@@ -72,8 +72,8 @@ WebKit framework Tauri uses on macOS. Nothing else is needed.
 
 ### Windows
 
-1. **Microsoft Visual C++ Build Tools.** Install
-   [Visual Studio 2022 Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+1. **Microsoft Visual C++ Build Tools.** Install the
+   [Visual Studio 2026 Build Tools](https://visualstudio.microsoft.com/downloads/)
    (free) and select the **"Desktop development with C++"** workload.
    This provides `link.exe`, the Windows SDK, and the MSVC headers
    that the Rust MSVC toolchain (the default on Windows) links
