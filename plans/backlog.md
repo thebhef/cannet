@@ -34,3 +34,9 @@ work or admit it isn't going to happen and delete it.
   per arbitration-id with the latest payload, instead of chronological.
 - `[ui]` trace view: list decoded signals on their own lines under the
   message row instead of expand-to-show.
+- `[feat]` `cannet-server` (Phase 2+): multi-client support. Phase 2 is
+  single-client per server; a second connection is rejected with
+  `Error::BUSY`. Lift this when there's a real use case (e.g. a second
+  GUI session or a CI watcher tailing alongside a developer): server
+  fans out received frames to all connected clients, and arbitrates /
+  interleaves transmits on the same interface from multiple clients.
