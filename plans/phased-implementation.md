@@ -92,28 +92,62 @@ Exit criteria:
 ## Phase 2 — Client / Server Implementation
 
 Split the data source from the GUI so the analyzer can run against a remote
-bus.
+bus, and establish the wire protocol that all later driver work will plug
+into.
 
 Scope:
 
-- Define the wire protocol for CAN frames between client and server (built on
-  the abstraction from Phase 1).
-- Server can be spawned with any CAN abstraction input. For this iteration the
-  only supported input is BLF: the server loads a BLF file at startup and
-  streams it on a loop when the client commands replay.
-- Client (the GUI from Phase 1) connects to a server by address, subscribes to
-  frames, and renders them through the existing trace + decode pipeline.
-- Server is addressable on the network. Discovery is **not** in scope yet.
+- Define the wire protocol as a tonic / gRPC service in a new
+  `crates/cannet-wire` crate. The service exposes `ListInterfaces` (unary
+  discovery — what CAN interfaces does this server provide?) and `Session`
+  (a single bidirectional stream of `Envelope` messages with `Subscribe`,
+  `Unsubscribe`, `FrameBatch`, and `Error` variants). Frame movement is
+  symmetric: either side sends frames on a subscribed interface using the
+  same wire shape. The protocol does not model cyclic / scheduled emission
+  — sending on a cadence is a feature of the client transmit UI in
+  Phase 3, not the wire.
+- The wire protocol is the universal driver contract. A server can run
+  in-process (Phase 2's BLF replay), as a sidecar (Phase 4 wrappers around
+  `python-can`), or on the network. The same `.proto` covers all three;
+  only the transport varies.
+- `cannet-wire` provides batching adapters between `Stream<CanFrame>` and
+  `Stream<FrameBatch>` so the application code on either side speaks the
+  Phase 1 `cannet-core` types and never deals with batching directly.
+  `FrameBatch` is the only frame-carrying envelope variant — single
+  frames are batches of size one, emitted by the latency-flush rule.
+- New `crates/cannet-server` runs the gRPC service. Phase 2's only
+  supported input is BLF: the server loads a file at startup and streams
+  it on a loop while clients are subscribed to its interfaces. Looping is
+  a server-CLI concern, not a wire concern. BLF is read-only, so the
+  server rejects client transmits with `Error::TX_REJECTED`.
+- Phase 2 is **single-client per server**: a second connection is
+  rejected with `Error::BUSY`. Multi-client fanout is in
+  `plans/backlog.md`.
+- New `crates/cannet-client` implements `cannet_core::CanFrameSource` over
+  a tonic client, so the GUI's existing trace + decode pipeline consumes a
+  remote server with no changes to its consumer code. The GUI grows a
+  connection panel (host:port + interface picker driven by
+  `ListInterfaces`) alongside the in-process BLF path.
+- Server is addressable by host:port. Discovery is **not** in scope.
+- TLS via tonic's `tls` feature (rustls) is configurable but **off by
+  default**; plaintext on loopback is the dev / demo flow. Cert UX
+  (fingerprint pinning, project-file persistence) is deferred until the
+  project-file feature lands.
 
 Exit criteria:
 
-- GUI on machine A can connect to a server on machine B, command BLF replay,
-  and see decoded traffic with no functional regressions vs. Phase 1.
-- The same GUI build works against either an in-process source or a remote
-  server.
-- README and `plans/phased-implementation.md` reflect the new server crate,
-  its run command, and the wire protocol; rustdoc on the protocol crate
-  describes the message set.
+- GUI on machine A connects to a server on machine B, lists the
+  interfaces it exposes, subscribes to one, and sees decoded traffic in
+  the trace view with no functional regressions vs. Phase 1.
+- The wire protocol carries client-side transmit envelopes; the BLF
+  server rejects them with `Error::TX_REJECTED`. Actually delivering tx
+  to a writable bus is Phase 3 / Phase 4 work.
+- The same GUI build works against either an in-process server or a
+  remote server, picked at connect time.
+- README documents the new `cannet-server` crate, its CLI, and the
+  connect flow; `plans/phased-implementation.md` matches what shipped;
+  rustdoc on `cannet-wire` describes the service surface and the
+  batching adapters.
 
 ## Phase 3 — Transmit, Multiple Windows, and Docking
 
