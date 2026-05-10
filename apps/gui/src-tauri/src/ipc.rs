@@ -117,3 +117,41 @@ pub enum LogFinished {
     Ok { total: u64 },
     Error { message: String },
 }
+
+/// One CAN interface as exposed by a remote `cannet-server`. Mirrors
+/// `cannet_client::Interface`, kept here so the React side has a stable
+/// snake_case payload to deserialize against.
+#[derive(serde::Serialize, Clone)]
+pub struct InterfaceRecord {
+    pub id: String,
+    pub display_name: String,
+    pub fd_capable: bool,
+}
+
+impl From<cannet_client::Interface> for InterfaceRecord {
+    fn from(value: cannet_client::Interface) -> Self {
+        Self {
+            id: value.id,
+            display_name: value.display_name,
+            fd_capable: value.fd_capable,
+        }
+    }
+}
+
+/// One subscription as committed by `connect_remote_server`. Echoes the
+/// `interface_id → channel` mapping the host chose so the frontend can
+/// label trace rows by interface.
+#[derive(serde::Serialize, Clone)]
+pub struct SubscriptionRecord {
+    pub interface_id: String,
+    pub channel: u8,
+}
+
+/// Returned from `connect_remote_server` once the gRPC session is up
+/// and the pump thread has been spawned.
+#[derive(serde::Serialize, Clone)]
+pub struct RemoteSessionResult {
+    pub address: String,
+    pub interfaces: Vec<InterfaceRecord>,
+    pub subscriptions: Vec<SubscriptionRecord>,
+}
