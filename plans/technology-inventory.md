@@ -50,8 +50,54 @@ producer/consumer interfaces. No external dependency for the abstraction
 itself — kept deliberately small so a network transport can slot in later
 without reshaping callers.
 
-- Network transport: ZMQ — `proposed` (Phase 2). Transport for CAN frames
-  between client and server. Not pulled in yet.
+- Network transport: **tonic / gRPC over HTTP/2** — `proposed` (Phase 2).
+  Apache-2.0. Rust server and Rust client both speak gRPC; the service
+  definition lives as `.proto` files in a new `crates/cannet-wire` crate
+  with `tonic-build` codegen on both ends. Encoding is protobuf via
+  `prost`. Service surface (Phase 2 baseline): `Hello`, `StreamFrames`
+  (server-streaming), `StartStream` / `StopStream`, `Subscribe` /
+  `Unsubscribe`, `Error`. Phase 3 grows it with transmit RPCs; Phase 4
+  with bus-config and bus-state RPCs. Chosen for: schema-evolution
+  discipline (protobuf field tags, `reserved`, unknown-field
+  preservation), generic RPC plumbing — request/response correlation,
+  server-streaming, cancellation, flow control — handled by the runtime
+  rather than hand-rolled, and trivial cross-language client support
+  (gRPC has runtimes for every mainstream language) which directly
+  serves the Phase 4 affordance for Python servers wrapping
+  `python-can`. Hot-path overhead vs. raw TCP framing is sub-percent
+  for our payload sizes (256-frame batches ≈ 10–15 KB) and gets
+  re-validated in Phase 5.
+- Network transport (alternatives considered):
+  - **Raw TCP with length-prefixed framing + `prost`** — `rejected`
+    (Phase 2 evaluation). Lowest possible framing overhead, but the
+    "free" performance comes at the cost of hand-rolling the generic
+    RPC layer ourselves: request/response correlation, server-streaming
+    semantics, cancellation, sink multiplexing, half-close, backpressure.
+    Subtle async-networking failure modes are easy to ship broken and
+    hard to catch in review. Cross-language clients (e.g. Phase 4
+    Python hardware servers) would each need our envelope reimplemented
+    rather than picking up an off-the-shelf gRPC runtime.
+  - **Raw TCP with length-prefixed framing + `bincode` / `postcard`** —
+    `rejected` (Phase 2 evaluation). Same RPC-layer problem as above,
+    plus weak schema-evolution semantics: most struct/enum changes are
+    wire-breaking unless we hand-roll versioned envelopes. Discipline
+    by convention is not the same as discipline enforced by tooling,
+    and the schema grows non-trivially through Phases 3–4
+    (transmit, cyclic transmit, bus config, bus state, hardware
+    metadata).
+  - **ZMQ** — `rejected` (Phase 2 evaluation). MPL-2.0 (libzmq) + MIT
+    (`zmq` Rust binding). Permissive enough, but the sync C binding
+    doesn't compose with the tokio runtime we already use, the
+    pure-Rust `zeromq` reimplementation is sparsely maintained, and
+    ZMQ's pattern set (PUB/SUB + ROUTER/DEALER) pushes toward a
+    two-socket design where one bidirectional stream covers our needs.
+    Doesn't solve the schema/encoding problem either — that's still
+    ours to pick on top.
+  - **WebSockets via `tokio-tungstenite`** — `rejected` (Phase 2
+    evaluation). MIT and well-maintained, but the HTTP-upgrade
+    handshake and per-frame masking exist to serve browser clients we
+    don't have — the GUI client is the Tauri host (Rust). Same
+    schema/encoding question as raw TCP and no offsetting benefit.
 
 ### Hardware Drivers
 
