@@ -37,7 +37,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use cannet_blf::BlfCanFrameSource;
-use cannet_client::{FrameReceiver, SessionHandle, Subscription};
+use cannet_client::{SessionHandle, Subscription};
 use cannet_core::{CanFrameSource, CanId};
 use cannet_dbc::{Database, DecodedSignal};
 
@@ -107,32 +107,27 @@ pub fn run() {
         .expect("error while running cannet");
 }
 
-/// Periodic emitter that fires `trace-grew` events whenever the store's
-/// count or rate has changed. Runs on Tauri's tokio runtime, so it
-/// neither owns nor blocks any worker thread.
+/// Periodic emitter that fires `trace-grew` events on a fixed cadence.
+/// Runs on Tauri's tokio runtime; doesn't own or block any worker
+/// thread. The unconditional emit is intentional — the rate must be
+/// able to fall to zero promptly when streaming stops, and at 10 Hz
+/// with a small payload the IPC cost is negligible compared to the
+/// frame traffic itself.
 fn spawn_trace_grew_emitter(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(TRACE_GREW_TICK);
-        let mut last_count: u64 = 0;
         loop {
             interval.tick().await;
             let state: State<'_, AppState> = app.state();
-            let count = state.trace_store.len() as u64;
+            let count = u64::try_from(state.trace_store.len()).unwrap_or(u64::MAX);
             let frames_per_second = state.trace_store.frames_per_second();
-            // Always emit on count change; otherwise emit only when rate
-            // crossed below the "actively streaming" threshold so the
-            // status line drops to "0 fps" promptly when the source
-            // pauses.
-            if count != last_count || (last_count > 0 && frames_per_second == 0.0 && count == last_count) {
-                let _ = app.emit(
-                    "trace-grew",
-                    TraceGrew {
-                        count,
-                        frames_per_second,
-                    },
-                );
-                last_count = count;
-            }
+            let _ = app.emit(
+                "trace-grew",
+                TraceGrew {
+                    count,
+                    frames_per_second,
+                },
+            );
         }
     });
 }
