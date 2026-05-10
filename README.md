@@ -33,6 +33,13 @@ crates/
                  Single-client per server (multi-client deferred to
                  backlog); transmit envelopes are rejected. Ships a
                  `cannet-server` binary; lib is reusable.
+  cannet-client/ Phase-2 gRPC client. `list_interfaces` is a one-shot
+                 async RPC for the connection panel. `connect_and_
+                 subscribe` returns a `RemoteCanFrameSource` (sync
+                 `cannet_core::CanFrameSource`) backed by a worker
+                 thread that owns its own tokio runtime, opens a
+                 `Session`, and pumps incoming frames into a sync
+                 mpsc queue. Drops cleanly on `Drop`.
 
 apps/
   gui/           Tauri 2 + React 18 + Vite trace viewer.
