@@ -1,0 +1,30 @@
+[package]
+name = "cannet-server"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "cannet-server"
+path = "src/main.rs"
+
+[dependencies]
+async-stream = "0.3"
+cannet-blf = { path = "../cannet-blf" }
+cannet-core = { path = "../cannet-core" }
+cannet-wire = { path = "../cannet-wire" }
+clap = { version = "4", features = ["derive"] }
+futures-core = "0.3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync"] }
+tokio-stream = { version = "0.1", features = ["time"] }
+tonic = "0.12"
+
+[dev-dependencies]
+blf_asc = "0.2"
+futures = "0.3"
+tempfile = "3"
+tokio-stream = { version = "0.1", features = ["net", "time"] }
+
+[lints]
+workspace = true

@@ -27,6 +27,12 @@ crates/
                  stubs, conversion helpers between `cannet_core`
                  frames and the wire types, and a batching adapter
                  layer so application code stays in `Stream<CanFrame>`.
+  cannet-server/ Phase-2 BLF replay server. Loads a BLF into memory at
+                 startup, exposes its channels as gRPC interfaces, and
+                 streams them on a loop while a client is subscribed.
+                 Single-client per server (multi-client deferred to
+                 backlog); transmit envelopes are rejected. Ships a
+                 `cannet-server` binary; lib is reusable.
 
 apps/
   gui/           Tauri 2 + React 18 + Vite trace viewer.
@@ -117,6 +123,25 @@ opening attaches a database for live decoding.
 > its own but won't bring up a usable window — the host expects either
 > a Vite dev server (which `tauri dev` starts for you) or a built
 > frontend at `apps/gui/dist`. Use the `pnpm tauri` commands above.
+
+### Phase-2 BLF replay server
+
+Phase 2 splits the data source out behind a gRPC service. The GUI
+side of that split lands in a later step; for now the server is
+runnable on its own:
+
+```sh
+cargo run -p cannet-server -- examples/cannet-demo.blf
+# → loaded N interface(s) from examples/cannet-demo.blf
+# → listening on 127.0.0.1:50051
+```
+
+It loads the BLF into memory, exposes its channels as gRPC
+interfaces (`blf:0`, `blf:1`, …), and replays them on a loop
+while a client is subscribed. `--bind <addr>` picks a different
+listen address (default `127.0.0.1:50051`). The server is
+single-client per process and rejects client transmits with
+`Error::TX_REJECTED` (BLF is read-only). Stop with Ctrl-C.
 
 ### Build artifacts
 
