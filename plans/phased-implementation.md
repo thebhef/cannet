@@ -115,7 +115,54 @@ Exit criteria:
   its run command, and the wire protocol; rustdoc on the protocol crate
   describes the message set.
 
-## Phase 3 — Vector, Kvaser, and PEAK CAN Driver Support
+## Phase 3 — Transmit, Multiple Windows, and Docking
+
+Round out the GUI surface area before vendor drivers complicate the data
+path. Doing this on top of the Phase 2 client/server split means multi-window
+state has to flow through the same wire protocol from the start, rather than
+being retrofitted later.
+
+Scope:
+
+- **Transmit window.** A panel that composes CAN / CAN FD frames (id, type,
+  channel, payload, optional cycle time) and submits them to the active
+  source. The CAN abstraction grows a transmit path so the GUI can send
+  through either an in-process source or a remote server. When a DBC is
+  attached, the transmit window offers signal-by-signal entry for any
+  matching message id (factor / offset / endianness applied during encode);
+  raw byte entry is always available as the fallback for ids the DBC
+  doesn't cover.
+- **Multiple trace windows and multiple transmit windows.** The GUI supports
+  more than one of each, each independently configurable (filters and column
+  set for trace; frame definitions for transmit). The frontend trace store
+  becomes per-window rather than a single global ref.
+- **Window docking.** Trace and transmit panels can be split, tabbed, and
+  docked within the main window; layout is preserved across app restarts.
+  Undocking into separate OS windows is **not** required for this phase —
+  it's tracked in the backlog for a later GUI pass.
+
+Out of scope (deferred to later phases / backlog):
+
+- Project files that persist multi-window layouts alongside bus configs and
+  DBC references — the persistence introduced here is a single layout blob,
+  not the full project format from `features.md`.
+- Tear-out / multi-OS-window docking.
+
+Exit criteria:
+
+- Two trace windows and one transmit window can be open simultaneously,
+  each with its own filter / column / frame state, with no regressions vs.
+  Phase 2 throughput.
+- Sending a frame from a transmit window reaches the bus through both the
+  in-process source and the Phase 2 remote server, in both raw-byte mode
+  and (with a DBC attached) signal-by-signal encoded mode.
+- Window layout (which panels are open, their dock positions, their
+  per-panel config) survives an app restart.
+- README documents the transmit workflow and how to manage / reset the
+  saved layout; rustdoc covers any new public surface on the CAN
+  abstraction (notably the transmit path).
+
+## Phase 4 — Vector, Kvaser, and PEAK CAN Driver Support
 
 Replace the BLF-only server with real hardware sources.
 
@@ -138,7 +185,7 @@ Exit criteria:
 - README lists each vendor's prerequisites (drivers, SDK, OS support
   matrix) and the command to launch its server.
 
-## Phase 4 — Performance Profiling Baseline
+## Phase 5 — Performance Profiling Baseline
 
 Make performance measurable before we keep piling features on.
 
@@ -151,7 +198,7 @@ Scope:
   dropped-frame counts).
 - Pick instrumentation: in-process counters/timers, sampling profiler hooks,
   and a reproducible workload (likely a standard BLF replay at a known rate).
-- Capture an initial baseline against the Phase 3 build for each supported
+- Capture an initial baseline against the Phase 4 build for each supported
   source (BLF replay + at least one hardware vendor) and check it in so future
   changes can be compared against it.
 

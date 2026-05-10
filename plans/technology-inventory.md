@@ -96,4 +96,4 @@ _TBD — populated as we set up cross-platform builds._
   `cannet-blf` tests to round-trip BLF fixtures through a real file. MIT /
   Apache-2.0.
 
-_Profiling instrumentation TBD — populated in Phase 4._
+_Profiling instrumentation TBD — populated in Phase 5._
