@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/cannet-core", "crates/cannet-blf", "crates/cannet-dbc", "crates/cannet-wire", "crates/cannet-server", "apps/gui/src-tauri"]
+members = ["crates/cannet-core", "crates/cannet-blf", "crates/cannet-dbc", "crates/cannet-wire", "crates/cannet-server", "crates/cannet-client", "apps/gui/src-tauri"]
 
 [workspace.package]
 edition = "2021"
