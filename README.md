@@ -131,11 +131,14 @@ opening attaches a database for live decoding.
 > a Vite dev server (which `tauri dev` starts for you) or a built
 > frontend at `apps/gui/dist`. Use the `pnpm tauri` commands above.
 
-### Phase-2 BLF replay server
+### Phase-2 client / server demo
 
-Phase 2 splits the data source out behind a gRPC service. The GUI
-side of that split lands in a later step; for now the server is
-runnable on its own:
+Phase 2 splits the data source out behind a gRPC service. The
+`cannet-server` binary loads a BLF and replays it on a loop;
+the GUI's toolbar grew a connection panel that consumes the
+same protocol.
+
+In one terminal, start a server:
 
 ```sh
 cargo run -p cannet-server -- examples/cannet-demo.blf
@@ -143,12 +146,23 @@ cargo run -p cannet-server -- examples/cannet-demo.blf
 # → listening on 127.0.0.1:50051
 ```
 
-It loads the BLF into memory, exposes its channels as gRPC
-interfaces (`blf:0`, `blf:1`, …), and replays them on a loop
-while a client is subscribed. `--bind <addr>` picks a different
-listen address (default `127.0.0.1:50051`). The server is
-single-client per process and rejects client transmits with
-`Error::TX_REJECTED` (BLF is read-only). Stop with Ctrl-C.
+It exposes the BLF's channels as gRPC interfaces (`blf:0`,
+`blf:1`, …) and replays them on a loop while a client is
+subscribed. `--bind <addr>` picks a different listen address
+(default `127.0.0.1:50051`). The server is single-client per
+process and rejects client transmits with `Error::TX_REJECTED`
+(BLF is read-only). Stop with Ctrl-C.
+
+In another terminal, start the GUI as usual (`pnpm --dir
+apps/gui tauri dev`). The toolbar's `host:port` input defaults
+to `127.0.0.1:50051`; clicking **Connect** subscribes to every
+interface the server lists and starts streaming frames into the
+trace view. **Disconnect** ends the session. The GUI can
+attach a DBC the same way it does for a local BLF — decoding
+runs against whichever frames are currently flowing.
+
+The `Open BLF…` and `Connect` flows share the same trace store,
+so frames from either source render through the same view.
 
 ### Build artifacts
 

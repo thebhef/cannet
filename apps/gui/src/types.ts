@@ -53,3 +53,20 @@ export interface DecodeRequest {
   extended: boolean;
   data: number[];
 }
+
+export interface InterfaceRecord {
+  id: string;
+  display_name: string;
+  fd_capable: boolean;
+}
+
+export interface SubscriptionRecord {
+  interface_id: string;
+  channel: number;
+}
+
+export interface RemoteSessionResult {
+  address: string;
+  interfaces: InterfaceRecord[];
+  subscriptions: SubscriptionRecord[];
+}
