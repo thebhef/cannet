@@ -25,7 +25,7 @@ cannet-core = { path = "../../../crates/cannet-core" }
 cannet-blf = { path = "../../../crates/cannet-blf" }
 cannet-client = { path = "../../../crates/cannet-client" }
 cannet-dbc = { path = "../../../crates/cannet-dbc" }
-tokio = { version = "1", features = ["rt-multi-thread"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 
 [features]
 # `pnpm tauri build` enables `custom-protocol` for production bundles,

@@ -98,7 +98,8 @@ impl TraceStore {
         let now = Instant::now();
         let mut inner = self.inner.lock().expect("trace store mutex poisoned");
         inner.frames.push(frame);
-        inner.rate_samples.push_back((now, inner.frames.len()));
+        let count = inner.frames.len();
+        inner.rate_samples.push_back((now, count));
         prune_rate_samples(&mut inner.rate_samples, now);
     }
 
