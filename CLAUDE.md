@@ -40,6 +40,15 @@ single large commit.
   before/after, no drive-by changes. If you spot something worth doing that
   isn't part of the current step, add it to `plans/backlog.md` and keep
   going.
+- Reviewability is about content as much as size. A small diff of
+  hand-rolled async networking, threading, or protocol framing is harder
+  to spot-check than a larger diff that defines a schema and leans on a
+  vetted library for the failure-mode-rich parts. When slicing work — and
+  when choosing between build-it-ourselves and adopt-a-library — prefer
+  shapes where the hand-written surface is small and the hard parts are
+  either generated, library-provided, or exercised by tests. Reviewers
+  catch mistakes in code they can read; the goal is to give them code
+  they can read.
 - If a step starts sprawling, stop and split it. It's cheaper to land two
   focused commits than to untangle one.
 - Keep documentation updates in the same commit as the code change they
