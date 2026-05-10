@@ -110,6 +110,16 @@ without reshaping callers.
     handshake and per-frame masking exist to serve browser clients we
     don't have — the GUI client is the Tauri host (Rust). Same
     schema/encoding question as raw TCP and no offsetting benefit.
+- **`async-stream`** crate (v0.3, MIT) — `adopted` in Phase 2.
+  Provides the `stream! {}` macro that lets the wire crate's
+  `unbatch_frames` adapter and the server's looping replay
+  source be expressed as ordinary async control flow (loop / await /
+  yield) rather than as hand-rolled `Stream` impls with manual
+  `Pin` plumbing. Used in `cannet-wire` and `cannet-server`.
+- **`clap`** crate (v4, MIT/Apache) — `adopted` in Phase 2 for the
+  `cannet-server` CLI (positional BLF path, `--bind` address). The
+  Rust ecosystem standard for derive-macro CLI parsing; small
+  enough not to be controversial.
 
 ### Hardware Drivers
 
