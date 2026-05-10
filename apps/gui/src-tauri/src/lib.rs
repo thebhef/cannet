@@ -4,31 +4,35 @@
 //! Two source modes share one frontend pipeline:
 //!
 //! - `open_log(blf_path)` — opens a Vector BLF file and spawns a worker
-//!   thread that streams `can-frame-batch` events at the frontend until
-//!   the file is exhausted.
+//!   thread that streams frames into the trace store until the file is
+//!   exhausted.
 //! - `connect_remote_server(address)` — connects to a `cannet-server`
 //!   over gRPC, lists its interfaces, subscribes to all of them, and
-//!   spawns the same kind of worker thread to push frames at the
-//!   frontend. `disconnect_remote_server` ends the session.
+//!   spawns the same kind of worker thread to push frames into the
+//!   trace store. `disconnect_remote_server` ends the session.
 //!
 //! Both worker threads run [`run_pump`], which is generic over
-//! `CanFrameSource` — it doesn't know or care which source it's draining,
-//! so DBC decoding, IPC batching, and `log-finished` semantics behave
-//! identically across modes.
+//! `CanFrameSource` — it doesn't know or care which source it's
+//! draining; it just appends each frame to the shared
+//! [`TraceStore`].
+//!
+//! The trace UI is a *view* over [`TraceStore`]: it asks for slices via
+//! `fetch_trace_range` and renders virtualized rows around the current
+//! viewport. A `trace-grew` IPC event ticks at ~10 Hz with the latest
+//! `count` and frame rate so the status line and auto-scroll stay
+//! current without the host having to push every frame over IPC.
 //!
 //! The current DBC lives in shared backend state (`AppState::database`)
-//! so that:
-//!   - the worker decodes incoming frames against whatever DBC is
-//!     attached at the moment each frame arrives, and
-//!   - the frontend can call `decode_frames` to retro-decode already-
-//!     displayed rows when a DBC is attached after the source was
-//!     opened.
+//! so that the per-fetch decoder always uses the most recently
+//! attached database. There is no retro-decode walk; attaching a DBC
+//! mid-stream just changes what subsequent fetches return.
 
 mod ipc;
+mod trace_store;
 
 use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -38,19 +42,21 @@ use cannet_core::{CanFrameSource, CanId};
 use cannet_dbc::{Database, DecodedSignal};
 
 use ipc::{
-    CanFrameBatch, CanFrameRecord, DbcInfo, DecodeRequest, DecodedRecord, InterfaceRecord,
-    LogFinished, OpenLogResult, RemoteSessionResult, SignalRecord,
+    DbcInfo, DecodedRecord, InterfaceRecord, LogFinished, OpenLogResult,
+    RemoteSessionResult, SignalRecord, TraceFrameRecord, TraceGrew,
 };
+use trace_store::{RawTraceFrame, TraceStore};
 
-/// Frames per emitted batch. Smaller batches cut latency; larger ones cut
-/// IPC overhead. 256 is roughly one screenful of trace rows and keeps
-/// IPC chatter modest on multi-MHz BLF replays.
-const BATCH_SIZE: usize = 256;
+/// How often the host pushes a `trace-grew` IPC event with the latest
+/// count + rate. Slow enough to not flood the frontend, fast enough that
+/// the status line and auto-scroll feel live.
+const TRACE_GREW_TICK: Duration = Duration::from_millis(100);
 
 /// Process-wide state shared between commands and pump threads.
 struct AppState {
     /// Currently-attached DBC, if any. Mutated by `attach_dbc` /
-    /// `detach_dbc`; read by the pump and by `decode_frames`.
+    /// `detach_dbc`; read by `fetch_trace_range` to decode the slice
+    /// against whatever DBC is current at fetch time.
     database: Mutex<Option<Database>>,
     /// Active remote session, if any. The handle is stashed here while
     /// the corresponding pump thread drains frames from the
@@ -58,6 +64,10 @@ struct AppState {
     /// and drops it, signalling the worker to close the gRPC stream;
     /// the pump thread then sees `Ok(None)` and exits cleanly.
     remote_session: Mutex<Option<SessionHandle>>,
+    /// The trace model — the single source of truth for the captured
+    /// stream. Pump threads append; `fetch_trace_range` reads slices
+    /// out for the trace view to render.
+    trace_store: TraceStore,
 }
 
 /// Boot the Tauri runtime.
@@ -73,12 +83,14 @@ pub fn run() {
         .manage(AppState {
             database: Mutex::new(None),
             remote_session: Mutex::new(None),
+            trace_store: TraceStore::new(),
         })
         .invoke_handler(tauri::generate_handler![
             open_log,
             attach_dbc,
             detach_dbc,
-            decode_frames,
+            fetch_trace_range,
+            clear_trace_store,
             list_remote_interfaces,
             connect_remote_server,
             disconnect_remote_server,
@@ -88,14 +100,43 @@ pub fn run() {
             // Tauri assigns "main" by default for the first window in the
             // config; we rely on that here.
             debug_assert!(app.get_webview_window("main").is_some());
+            spawn_trace_grew_emitter(app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("error while running cannet");
 }
 
-// Tauri's command macro deserializes arguments into owned values, so the
-// `needless_pass_by_value` flavour of clippy doesn't apply here.
+/// Periodic emitter that fires `trace-grew` events whenever the store's
+/// count or rate has changed. Runs on Tauri's tokio runtime, so it
+/// neither owns nor blocks any worker thread.
+fn spawn_trace_grew_emitter(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(TRACE_GREW_TICK);
+        let mut last_count: u64 = 0;
+        loop {
+            interval.tick().await;
+            let state: State<'_, AppState> = app.state();
+            let count = state.trace_store.len() as u64;
+            let frames_per_second = state.trace_store.frames_per_second();
+            // Always emit on count change; otherwise emit only when rate
+            // crossed below the "actively streaming" threshold so the
+            // status line drops to "0 fps" promptly when the source
+            // pauses.
+            if count != last_count || (last_count > 0 && frames_per_second == 0.0 && count == last_count) {
+                let _ = app.emit(
+                    "trace-grew",
+                    TraceGrew {
+                        count,
+                        frames_per_second,
+                    },
+                );
+                last_count = count;
+            }
+        }
+    });
+}
+
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 fn open_log(app: AppHandle, blf_path: String) -> Result<OpenLogResult, String> {
@@ -138,26 +179,50 @@ fn detach_dbc(state: State<'_, AppState>) {
     *state.database.lock().expect("database mutex poisoned") = None;
 }
 
+/// Pull a `[start, end)` slice out of the trace store and decode each
+/// frame against the currently-attached DBC. The caller is expected to
+/// be the trace view, sizing `end - start` to the visible window plus a
+/// small prefetch pad.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-fn decode_frames(
+fn fetch_trace_range(
     state: State<'_, AppState>,
-    frames: Vec<DecodeRequest>,
-) -> Vec<Option<DecodedRecord>> {
+    start: u64,
+    end: u64,
+) -> Vec<TraceFrameRecord> {
+    let start_us = usize::try_from(start).unwrap_or(usize::MAX);
+    let end_us = usize::try_from(end).unwrap_or(usize::MAX);
+    let raw = state.trace_store.slice(start_us, end_us);
     let guard = state.database.lock().expect("database mutex poisoned");
-    let Some(db) = guard.as_ref() else {
-        return vec![None; frames.len()];
-    };
-    frames.iter().map(|req| decode_one(db, req)).collect()
+    let db = guard.as_ref();
+    raw.into_iter()
+        .enumerate()
+        .map(|(i, frame)| {
+            #[allow(clippy::cast_possible_truncation)]
+            let absolute_index = start + i as u64;
+            let decoded = db.and_then(|db| decode_raw_frame(db, &frame));
+            TraceFrameRecord::from_raw(absolute_index, &frame, decoded)
+        })
+        .collect()
 }
 
-fn decode_one(db: &Database, req: &DecodeRequest) -> Option<DecodedRecord> {
-    let id = if req.extended {
-        CanId::extended(req.id).ok()?
+/// Drop every stored frame. The frontend's Clear button is the typical
+/// caller. The next `trace-grew` tick will fire with the new count
+/// (zero), prompting the trace view to drop its row cache.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn clear_trace_store(state: State<'_, AppState>) {
+    state.trace_store.clear();
+}
+
+fn decode_raw_frame(db: &Database, frame: &RawTraceFrame) -> Option<DecodedRecord> {
+    let id = if frame.extended {
+        CanId::extended(frame.id).ok()?
     } else {
-        CanId::standard(req.id).ok()?
+        CanId::standard(frame.id).ok()?
     };
-    db.decode_raw(id, &req.data).map(|m| DecodedRecord {
+    let data = frame.payload.data();
+    db.decode_raw(id, data).map(|m| DecodedRecord {
         name: m.name.to_string(),
         signals: m.signals.iter().map(signal_to_wire).collect(),
     })
@@ -256,8 +321,7 @@ async fn connect_remote_server(
 }
 
 /// Drop the active remote session's [`SessionHandle`]. The pump thread
-/// notices via `Ok(None)` from its next `next_frame` call, flushes any
-/// buffered frames, emits `log-finished`, and exits.
+/// notices via `Ok(None)` from its next `next_frame` call and exits.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 fn disconnect_remote_server(state: State<'_, AppState>) {
@@ -278,15 +342,16 @@ where
     S::Error: fmt::Display,
 {
     let state: State<'_, AppState> = app.state();
-    let total = AtomicU64::new(0);
-    let mut batch: Vec<CanFrameRecord> = Vec::with_capacity(BATCH_SIZE);
+    let mut total: u64 = 0;
 
     loop {
-        let frame = match source.next_frame() {
-            Ok(Some(f)) => f,
+        match source.next_frame() {
+            Ok(Some(frame)) => {
+                state.trace_store.append(RawTraceFrame::from(frame));
+                total = total.saturating_add(1);
+            }
             Ok(None) => break,
             Err(e) => {
-                flush_batch(app, &mut batch);
                 let _ = app.emit(
                     "log-finished",
                     LogFinished::Error {
@@ -295,43 +360,10 @@ where
                 );
                 return;
             }
-        };
-
-        // Hold the lock just long enough to decode this one frame.
-        // Attach/detach are rare so contention is negligible.
-        let decoded = {
-            let guard = state.database.lock().expect("database mutex poisoned");
-            guard.as_ref().and_then(|db| {
-                db.decode(&frame).map(|m| DecodedRecord {
-                    name: m.name.to_string(),
-                    signals: m.signals.iter().map(signal_to_wire).collect(),
-                })
-            })
-        };
-
-        batch.push(CanFrameRecord::from_frame(&frame, decoded));
-        total.fetch_add(1, Ordering::Relaxed);
-
-        if batch.len() >= BATCH_SIZE {
-            flush_batch(app, &mut batch);
         }
     }
 
-    flush_batch(app, &mut batch);
-    let _ = app.emit(
-        "log-finished",
-        LogFinished::Ok {
-            total: total.load(Ordering::Relaxed),
-        },
-    );
-}
-
-fn flush_batch(app: &AppHandle, batch: &mut Vec<CanFrameRecord>) {
-    if batch.is_empty() {
-        return;
-    }
-    let frames = std::mem::replace(batch, Vec::with_capacity(BATCH_SIZE));
-    let _ = app.emit("can-frame-batch", CanFrameBatch { frames });
+    let _ = app.emit("log-finished", LogFinished::Ok { total });
 }
 
 fn signal_to_wire(sig: &DecodedSignal<'_>) -> SignalRecord {

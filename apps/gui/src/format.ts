@@ -1,12 +1,12 @@
-import type { CanFrameRecord } from "./types";
+import type { TraceFrameRecord } from "./types";
 
-export function formatId(frame: CanFrameRecord): string {
+export function formatId(frame: TraceFrameRecord): string {
   const width = frame.extended ? 8 : 3;
   const hex = frame.id.toString(16).toUpperCase().padStart(width, "0");
   return `${frame.extended ? "x" : "s"}:${hex}`;
 }
 
-export function formatKind(frame: CanFrameRecord): string {
+export function formatKind(frame: TraceFrameRecord): string {
   switch (frame.kind.kind) {
     case "classic":
       return "CAN";
@@ -24,7 +24,7 @@ export function formatKind(frame: CanFrameRecord): string {
   }
 }
 
-export function formatData(frame: CanFrameRecord): string {
+export function formatData(frame: TraceFrameRecord): string {
   return frame.data
     .map((b) => b.toString(16).toUpperCase().padStart(2, "0"))
     .join(" ");
