@@ -1,0 +1,223 @@
+//! End-to-end tests: spin up cannet-server in-process, drive it via
+//! cannet-client. Validates that the client-side `CanFrameSource`
+//! adapter behaves exactly like a Phase-1 in-process source from the
+//! consumer's perspective.
+
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+
+use blf_asc::{ArbitrationId, BlfWriter, DataBytes, Message};
+use cannet_client::{
+    connect_and_subscribe, list_interfaces, ConnectionError, RemoteCanFrameSource, Subscription,
+};
+use cannet_core::CanFrameSource;
+use cannet_server::{CannetServerImpl, LoopingBlfReplay};
+use tokio::net::TcpListener;
+use tokio_stream::wrappers::TcpListenerStream;
+use tonic::transport::Server;
+
+const TS_BASE: f64 = 1_700_000_000.0;
+
+fn classic_msg(timestamp: f64, channel: u16, id: u32, data: Vec<u8>) -> Message {
+    Message {
+        timestamp: TS_BASE + timestamp,
+        arbitration_id: ArbitrationId(id),
+        is_extended_id: false,
+        is_remote_frame: false,
+        is_rx: true,
+        is_error_frame: false,
+        is_fd: false,
+        bitrate_switch: false,
+        error_state_indicator: false,
+        dlc: u8::try_from(data.len()).unwrap(),
+        data: DataBytes(data),
+        channel,
+    }
+}
+
+fn write_fixture(path: &Path, msgs: &[Message]) {
+    let mut writer = BlfWriter::create(path).unwrap();
+    for m in msgs {
+        writer.on_message_received(m).unwrap();
+    }
+    writer.finish().unwrap();
+}
+
+async fn spawn_server() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    let dir = tempfile::tempdir().unwrap();
+    let blf_path = dir.path().join("test.blf");
+    write_fixture(
+        &blf_path,
+        &[
+            classic_msg(0.001, 0, 0x100, vec![1, 2]),
+            classic_msg(0.002, 0, 0x101, vec![3, 4]),
+            classic_msg(0.003, 1, 0x200, vec![5]),
+            classic_msg(0.004, 1, 0x201, vec![6, 7]),
+        ],
+    );
+    let replay = Arc::new(LoopingBlfReplay::open(&blf_path).unwrap());
+    drop(dir);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let stream = TcpListenerStream::new(listener);
+    let svc = CannetServerImpl::new(replay).into_service();
+    let handle = tokio::spawn(async move {
+        Server::builder()
+            .add_service(svc)
+            .serve_with_incoming(stream)
+            .await
+            .unwrap();
+    });
+    (addr, handle)
+}
+
+/// `connect_and_subscribe` is sync. The test runtime owns the server
+/// task; the client lives in a worker thread the function spawns.
+fn drain_n(source: &mut RemoteCanFrameSource, n: usize) -> Vec<cannet_core::CanFrame> {
+    let mut frames = Vec::with_capacity(n);
+    for _ in 0..n {
+        match source.next_frame() {
+            Ok(Some(frame)) => frames.push(frame),
+            Ok(None) => panic!("source ended early"),
+            Err(e) => panic!("source errored: {e}"),
+        }
+    }
+    frames
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn list_interfaces_round_trip() {
+    let (addr, server) = spawn_server().await;
+    let interfaces = list_interfaces(&addr.to_string()).await.unwrap();
+    assert_eq!(interfaces.len(), 2);
+    assert_eq!(interfaces[0].id, "blf:0");
+    assert_eq!(interfaces[1].id, "blf:1");
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn subscribe_one_interface_yields_frames_with_chosen_channel() {
+    let (addr, server) = spawn_server().await;
+    let address = addr.to_string();
+
+    let mut source = tokio::task::spawn_blocking(move || {
+        connect_and_subscribe(
+            &address,
+            vec![Subscription {
+                interface_id: "blf:0".into(),
+                channel: 7,
+            }],
+        )
+    })
+    .await
+    .unwrap()
+    .unwrap();
+
+    let frames = tokio::task::spawn_blocking(move || {
+        let frames = drain_n(&mut source, 4);
+        (source, frames)
+    })
+    .await
+    .unwrap()
+    .1;
+
+    assert!(frames.iter().all(|f| f.channel == 7));
+    assert!(frames
+        .iter()
+        .all(|f| f.id.raw() == 0x100 || f.id.raw() == 0x101));
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn subscribing_to_unknown_interface_surfaces_server_error() {
+    let (addr, server) = spawn_server().await;
+    let address = addr.to_string();
+
+    let mut source = tokio::task::spawn_blocking(move || {
+        connect_and_subscribe(
+            &address,
+            vec![Subscription {
+                interface_id: "blf:99".into(),
+                channel: 0,
+            }],
+        )
+    })
+    .await
+    .unwrap()
+    .unwrap();
+
+    let result = tokio::task::spawn_blocking(move || source.next_frame())
+        .await
+        .unwrap();
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, ConnectionError::Server { .. }),
+        "expected Server error variant, got {err:?}",
+    );
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dropping_source_disconnects_cleanly() {
+    let (addr, server) = spawn_server().await;
+    let address = addr.to_string();
+
+    // Open + drop the source. No assertion on the server side here
+    // beyond "the test doesn't hang" — the worker thread should exit
+    // when the runtime drops, releasing the gRPC stream.
+    tokio::task::spawn_blocking(move || {
+        let source = connect_and_subscribe(
+            &address,
+            vec![Subscription {
+                interface_id: "blf:0".into(),
+                channel: 0,
+            }],
+        )
+        .unwrap();
+        drop(source);
+    })
+    .await
+    .unwrap();
+
+    // After the first session ends, a fresh connect should succeed
+    // (i.e. the server's BUSY flag was released).
+    let address = addr.to_string();
+    let interfaces = list_interfaces(&address).await.unwrap();
+    assert_eq!(interfaces.len(), 2);
+
+    // Give the server's busy guard a generous moment to fire — it
+    // releases on the per-session task drop, not synchronously when
+    // the request stream closes.
+    let mut subsequent = None;
+    for _ in 0..40 {
+        let address = address.clone();
+        match tokio::task::spawn_blocking(move || {
+            connect_and_subscribe(
+                &address,
+                vec![Subscription {
+                    interface_id: "blf:0".into(),
+                    channel: 0,
+                }],
+            )
+        })
+        .await
+        .unwrap()
+        {
+            Ok(s) => {
+                subsequent = Some(s);
+                break;
+            }
+            Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    }
+    let mut subsequent = subsequent.expect("second session never accepted after disconnect");
+
+    // Confirm frames flow on the second session.
+    let frames = tokio::task::spawn_blocking(move || drain_n(&mut subsequent, 1))
+        .await
+        .unwrap();
+    assert_eq!(frames.len(), 1);
+    server.abort();
+}
