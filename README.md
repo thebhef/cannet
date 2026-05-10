@@ -22,6 +22,11 @@ crates/
   cannet-dbc/    `Database::parse(text)` + `decode(frame)`.
                  Hand-rolled bit extraction (LE / Motorola sequential
                  BE), sign extension, multiplexed-signal filtering.
+  cannet-wire/   Phase-2 wire protocol: tonic / gRPC service definition
+                 (`proto/cannet.proto`), generated client + server
+                 stubs, conversion helpers between `cannet_core`
+                 frames and the wire types, and a batching adapter
+                 layer so application code stays in `Stream<CanFrame>`.
 
 apps/
   gui/           Tauri 2 + React 18 + Vite trace viewer.
