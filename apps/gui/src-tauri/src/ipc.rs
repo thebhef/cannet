@@ -3,13 +3,19 @@
 //! Kept in one place so the React-side TypeScript types can mirror them
 //! without spelunking through other modules.
 
-use cannet_core::{Direction, CanFrame, CanFramePayload};
+use cannet_core::{Direction, CanFramePayload};
 
-/// One trace-row's worth of data, ready for the trace view.
+use crate::trace_store::RawTraceFrame;
+
+/// One trace-row's worth of data ready for the trace view, returned by
+/// `fetch_trace_range`. Carries its absolute index in the trace store
+/// so the frontend cache can key on it directly.
 #[derive(serde::Serialize, Clone)]
-pub struct CanFrameRecord {
-    /// Source timestamp converted to seconds. f64 is what BLF round-trips
-    /// natively, and JSON numbers can't safely carry u64 nanoseconds.
+pub struct TraceFrameRecord {
+    /// 0-based absolute index in the trace store.
+    pub index: u64,
+    /// Source timestamp converted to seconds. JSON numbers can't safely
+    /// carry u64 nanoseconds, so the host divides on the way out.
     pub timestamp_seconds: f64,
     pub channel: u8,
     pub id: u32,
@@ -43,9 +49,13 @@ pub struct SignalRecord {
     pub unit: String,
 }
 
-impl CanFrameRecord {
+impl TraceFrameRecord {
     #[allow(clippy::cast_precision_loss)]
-    pub fn from_frame(frame: &CanFrame, decoded: Option<DecodedRecord>) -> Self {
+    pub fn from_raw(
+        index: u64,
+        frame: &RawTraceFrame,
+        decoded: Option<DecodedRecord>,
+    ) -> Self {
         let timestamp_seconds = (frame.timestamp_ns as f64) / 1e9;
         let direction = match frame.direction {
             Direction::Rx => "Rx",
@@ -64,6 +74,7 @@ impl CanFrameRecord {
             CanFramePayload::Error => (CanFrameKind::Error, Vec::new()),
         };
         Self {
+            index,
             timestamp_seconds,
             channel: frame.channel,
             id: frame.id.raw(),
@@ -89,25 +100,15 @@ pub struct DbcInfo {
     pub message_count: usize,
 }
 
-/// Frontend → backend payload for `decode_frames`. Carries the minimum
-/// needed to identify a message and decode its bytes; we deliberately
-/// reconstruct nothing about the original payload kind because cannet-dbc
-/// only looks at id + bytes.
-#[derive(serde::Deserialize)]
-pub struct DecodeRequest {
-    /// Channel is currently informational on the wire — we keep it so
-    /// future per-channel DBC scoping can use it without a schema change.
-    #[allow(dead_code)]
-    pub channel: u8,
-    pub id: u32,
-    pub extended: bool,
-    pub data: Vec<u8>,
-}
-
-/// Emitted alongside frame batches as the log progresses.
+/// Periodic IPC event carrying the trace store's current size and rate.
+/// Fired at ~10 Hz when there's been activity since the last tick.
 #[derive(serde::Serialize, Clone)]
-pub struct CanFrameBatch {
-    pub frames: Vec<CanFrameRecord>,
+pub struct TraceGrew {
+    /// Total number of frames in the store right now.
+    pub count: u64,
+    /// Estimated current frame rate (frames per second over the last
+    /// second of appends).
+    pub frames_per_second: f64,
 }
 
 /// Emitted when the log finishes (cleanly or with an error).

@@ -40,3 +40,15 @@ work or admit it isn't going to happen and delete it.
   GUI session or a CI watcher tailing alongside a developer): server
   fans out received frames to all connected clients, and arbitrates /
   interleaves transmits on the same interface from multiple clients.
+- `[feat]` `cannet-gui::TraceStore`: disk-spill for long-running
+  sessions. Phase 2 keeps the trace in `Vec<RawTraceFrame>`; that's
+  fine for hours but not for days. Future implementation keeps a
+  hot-tail window in memory and spills older frames to an append-only
+  on-disk file (compact binary frame records — explicit `.blf`
+  captures are a separate "Save Capture" feature, not the cache
+  format). The `TraceStore::append` / `len` / `slice` surface stays;
+  trait-ify when there's a second implementation.
+- `[feat]` `cannet-gui`: explicit "Save Capture…" toolbar action that
+  exports the current `TraceStore` contents to a `.blf` file via
+  `blf_asc::BlfWriter`. The features-doc entry "trace capture:
+  persistable to .blf" lives here.

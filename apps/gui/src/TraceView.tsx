@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
-import type { CanFrameRecord } from "./types";
+import type { TraceFrameRecord } from "./types";
 import {
   formatData,
   formatId,
@@ -11,23 +11,41 @@ import {
 } from "./format";
 
 interface TraceViewProps {
-  frames: CanFrameRecord[];
-  /** Bumped each time `frames` is mutated in place. */
+  /// Total number of frames in the host-side trace store. Drives the
+  /// virtualizer's scrollable height.
+  count: number;
+  /// Bumped when the cache contents change (chunk arrival, cache
+  /// invalidation). Tells the virtualizer to re-measure.
   version: number;
   autoScroll: boolean;
+  /// Synchronous lookup. Returns null if the row's chunk hasn't been
+  /// fetched yet; the row renders as a placeholder.
+  getFrame: (index: number) => TraceFrameRecord | null;
+  /// Called whenever the visible range changes so the parent can
+  /// trigger chunk fetches around it.
+  ensureVisible: (startIndex: number, endIndex: number) => void;
 }
 
 const ROW_HEIGHT = 22;
 const EXPANDED_ROW_HEIGHT = 22 + 18 * 6; // generous default for ≤6 signals
 
-export function TraceView({ frames, version, autoScroll }: TraceViewProps) {
+export function TraceView({
+  count,
+  version,
+  autoScroll,
+  getFrame,
+  ensureVisible,
+}: TraceViewProps) {
   const parentRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
 
-  const baseTimestamp = frames.length > 0 ? frames[0].timestamp_seconds : null;
+  // Pin the timestamp baseline to the first row's timestamp once we've
+  // seen one. Recomputing every render would shift the displayed
+  // relative times as new chunks land.
+  const baseTimestampRef = useRef<number | null>(null);
 
   const virtualizer = useVirtualizer({
-    count: frames.length,
+    count,
     getScrollElement: () => parentRef.current,
     estimateSize: (index) =>
       expanded.has(index) ? EXPANDED_ROW_HEIGHT : ROW_HEIGHT,
@@ -35,8 +53,8 @@ export function TraceView({ frames, version, autoScroll }: TraceViewProps) {
     getItemKey: (index) => index,
   });
 
-  // Tell the virtualizer the underlying data changed without forcing a
-  // full re-render of every visible row.
+  // Tell the virtualizer the underlying data changed (cache update) so
+  // it re-measures any rows that were placeholders.
   useEffect(() => {
     virtualizer.measure();
   }, [version, virtualizer]);
@@ -46,13 +64,33 @@ export function TraceView({ frames, version, autoScroll }: TraceViewProps) {
     virtualizer.measure();
   }, [expanded, virtualizer]);
 
-  // Auto-scroll: if enabled, keep pinned to the bottom as new frames land.
+  // Auto-scroll: pin to bottom as new frames land.
   useLayoutEffect(() => {
-    if (!autoScroll || frames.length === 0) return;
-    virtualizer.scrollToIndex(frames.length - 1, { align: "end" });
-  }, [autoScroll, frames.length, virtualizer]);
+    if (!autoScroll || count === 0) return;
+    virtualizer.scrollToIndex(count - 1, { align: "end" });
+  }, [autoScroll, count, virtualizer]);
 
   const items = virtualizer.getVirtualItems();
+
+  // Drive prefetch off the visible range. ensureVisible is debounced
+  // upstream by "skip if cached or in-flight", so calling it on every
+  // render is cheap.
+  useEffect(() => {
+    if (items.length === 0) return;
+    const start = items[0].index;
+    const end = items[items.length - 1].index + 1;
+    ensureVisible(start, end);
+  }, [items, ensureVisible]);
+
+  // Update the timestamp baseline once a first row has loaded.
+  if (baseTimestampRef.current === null && count > 0) {
+    const first = getFrame(0);
+    if (first) baseTimestampRef.current = first.timestamp_seconds;
+  }
+  // Reset baseline when the trace is cleared.
+  if (count === 0 && baseTimestampRef.current !== null) {
+    baseTimestampRef.current = null;
+  }
 
   const toggleExpanded = (index: number) => {
     setExpanded((prev) => {
@@ -84,14 +122,14 @@ export function TraceView({ frames, version, autoScroll }: TraceViewProps) {
           }}
         >
           {items.map((virtualRow) => {
-            const frame = frames[virtualRow.index];
+            const frame = getFrame(virtualRow.index);
             const isExpanded = expanded.has(virtualRow.index);
             return (
               <div
                 key={virtualRow.key}
                 ref={virtualizer.measureElement}
                 data-index={virtualRow.index}
-                className={`trace-row ${isExpanded ? "expanded" : ""}`}
+                className={`trace-row ${isExpanded ? "expanded" : ""} ${frame ? "" : "loading"}`}
                 style={{
                   position: "absolute",
                   top: 0,
@@ -100,38 +138,18 @@ export function TraceView({ frames, version, autoScroll }: TraceViewProps) {
                   transform: `translateY(${virtualRow.start}px)`,
                 }}
                 onClick={() =>
-                  frame.decoded && toggleExpanded(virtualRow.index)
+                  frame?.decoded && toggleExpanded(virtualRow.index)
                 }
               >
-                <span className="col-idx">{virtualRow.index + 1}</span>
-                <span className="col-time">
-                  {formatTimestamp(frame.timestamp_seconds, baseTimestamp)}
-                </span>
-                <span className="col-ch">{frame.channel}</span>
-                <span className="col-dir">{frame.direction}</span>
-                <span className="col-id">{formatId(frame)}</span>
-                <span className="col-kind">{formatKind(frame)}</span>
-                <span className="col-len">{frame.data.length}</span>
-                <span className="col-data">{formatData(frame)}</span>
-                <span className="col-msg">
-                  {frame.decoded ? frame.decoded.name : ""}
-                  {frame.decoded ? (
-                    <span className="hint">
-                      {isExpanded ? " ▾" : " ▸"}
-                    </span>
-                  ) : null}
-                </span>
-                {isExpanded && frame.decoded && (
-                  <div className="signals">
-                    {frame.decoded.signals.map((sig) => (
-                      <div className="signal" key={sig.name}>
-                        <span className="signal-name">{sig.name}</span>
-                        <span className="signal-value">
-                          {formatSignalValue(sig.value, sig.unit)}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
+                {frame ? (
+                  <RowContents
+                    frame={frame}
+                    rowIndex={virtualRow.index}
+                    isExpanded={isExpanded}
+                    baseTimestamp={baseTimestampRef.current}
+                  />
+                ) : (
+                  <span className="col-idx">{virtualRow.index + 1}</span>
                 )}
               </div>
             );
@@ -139,5 +157,52 @@ export function TraceView({ frames, version, autoScroll }: TraceViewProps) {
         </div>
       </div>
     </div>
+  );
+}
+
+interface RowContentsProps {
+  frame: TraceFrameRecord;
+  rowIndex: number;
+  isExpanded: boolean;
+  baseTimestamp: number | null;
+}
+
+function RowContents({
+  frame,
+  rowIndex,
+  isExpanded,
+  baseTimestamp,
+}: RowContentsProps) {
+  return (
+    <>
+      <span className="col-idx">{rowIndex + 1}</span>
+      <span className="col-time">
+        {formatTimestamp(frame.timestamp_seconds, baseTimestamp)}
+      </span>
+      <span className="col-ch">{frame.channel}</span>
+      <span className="col-dir">{frame.direction}</span>
+      <span className="col-id">{formatId(frame)}</span>
+      <span className="col-kind">{formatKind(frame)}</span>
+      <span className="col-len">{frame.data.length}</span>
+      <span className="col-data">{formatData(frame)}</span>
+      <span className="col-msg">
+        {frame.decoded ? frame.decoded.name : ""}
+        {frame.decoded ? (
+          <span className="hint">{isExpanded ? " ▾" : " ▸"}</span>
+        ) : null}
+      </span>
+      {isExpanded && frame.decoded && (
+        <div className="signals">
+          {frame.decoded.signals.map((sig) => (
+            <div className="signal" key={sig.name}>
+              <span className="signal-name">{sig.name}</span>
+              <span className="signal-value">
+                {formatSignalValue(sig.value, sig.unit)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
   );
 }

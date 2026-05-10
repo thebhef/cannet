@@ -169,6 +169,10 @@ header {
   opacity: 0.6;
 }
 
+.trace-row.loading {
+  opacity: 0.4;
+}
+
 .status {
   font-size: 0.78rem;
   color: #94a3b8;
