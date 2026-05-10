@@ -1,0 +1,125 @@
+syntax = "proto3";
+
+package cannet.v1;
+
+// CAN frame transport between cannet clients and servers.
+//
+// Two RPCs: `ListInterfaces` for on-demand discovery of the interfaces
+// a server provides, and `Session` for a single bidirectional Envelope
+// stream. Frame movement is symmetric — either side sends frames on a
+// subscribed interface using the same wire shape.
+//
+// Cyclic / scheduled emission is not modelled at the wire layer.
+// Sending on a cadence is a feature of the client transmit UI.
+service CannetServer {
+  // Stateless query: what CAN interfaces does this server expose?
+  rpc ListInterfaces(ListInterfacesRequest) returns (InterfaceList);
+
+  // A single bidirectional stream of Envelopes for the lifetime of a
+  // client session. Closing the stream ends the session.
+  rpc Session(stream Envelope) returns (stream Envelope);
+}
+
+message ListInterfacesRequest {}
+
+message InterfaceList {
+  repeated Interface interfaces = 1;
+}
+
+message Interface {
+  // Stable, human-readable identifier. Persistable to project files.
+  string id = 1;
+  // Display label for UI rendering.
+  string display_name = 2;
+  // Whether this interface accepts CAN FD frames.
+  bool fd_capable = 3;
+  // Phase 4 will add: bitrate, sample point, current bus state, ...
+}
+
+// A multiplexed message exchanged on the Session stream. Either peer
+// may send any variant.
+message Envelope {
+  oneof body {
+    Subscribe subscribe = 1;
+    Unsubscribe unsubscribe = 2;
+    FrameBatch frame_batch = 3;
+    Error error = 4;
+  }
+}
+
+message Subscribe {
+  string interface_id = 1;
+}
+
+message Unsubscribe {
+  string interface_id = 1;
+}
+
+// A batch of CAN frames originating on a single interface.
+//
+// FrameBatch is the only frame-carrying envelope variant — single
+// frames travel as a batch of size one. The batching policy (max
+// frames per batch, max latency) is a sender-side concern; the
+// receiver simply unbatches.
+message FrameBatch {
+  string interface_id = 1;
+  repeated Frame frames = 2;
+}
+
+message Frame {
+  // Sender's monotonic timestamp in nanoseconds.
+  uint64 timestamp_ns = 1;
+  // CAN identifier (raw bits).
+  uint32 can_id = 2;
+  // True for 29-bit extended ids; false for 11-bit standard.
+  bool extended = 3;
+  // Whether this frame originated from the bus (Rx) or was emitted
+  // by the sender (Tx, including tx-confirms).
+  Direction direction = 4;
+  FrameKind kind = 5;
+  // Payload bytes. Empty for Remote and Error kinds. Length implies
+  // DLC for Classic and Fd kinds.
+  bytes data = 6;
+  // CAN FD: bit-rate-switch flag. Ignored for non-FD kinds.
+  bool brs = 7;
+  // CAN FD: error-state-indicator flag. Ignored for non-FD kinds.
+  bool esi = 8;
+  // Remote: requested DLC (0..=15). Ignored for non-Remote kinds.
+  uint32 dlc = 9;
+}
+
+enum Direction {
+  DIRECTION_UNSPECIFIED = 0;
+  DIRECTION_RX = 1;
+  DIRECTION_TX = 2;
+}
+
+enum FrameKind {
+  FRAME_KIND_UNSPECIFIED = 0;
+  FRAME_KIND_CLASSIC = 1;
+  FRAME_KIND_FD = 2;
+  FRAME_KIND_REMOTE = 3;
+  FRAME_KIND_ERROR = 4;
+}
+
+// Out-of-band error reported by either peer on the Session stream.
+message Error {
+  Code code = 1;
+  // Human-readable detail. Optional.
+  string message = 2;
+
+  enum Code {
+    CODE_UNSPECIFIED = 0;
+    // The interface_id named by Subscribe / Unsubscribe / FrameBatch
+    // is not exposed by this server.
+    CODE_UNKNOWN_INTERFACE = 1;
+    // A FrameBatch arrived for an interface this peer has not
+    // subscribed to.
+    CODE_NOT_SUBSCRIBED = 2;
+    // A transmit was rejected — read-only source, bus-off, etc.
+    CODE_TX_REJECTED = 3;
+    // Server already has a connected client (Phase 2 single-client
+    // restriction).
+    CODE_BUSY = 4;
+  }
+}
