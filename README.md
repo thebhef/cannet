@@ -3,7 +3,8 @@
 A CAN-bus analyzer. Phase 1 (alpha0) ships a single-process GUI that
 opens a Vector BLF log, decodes it against a DBC, and streams the
 result into a virtualized trace view. Phase 2 splits the data source
-out behind a network protocol; Phase 3 adds per-vendor hardware
+out behind a network protocol; Phase 3 fills in transmit, multiple
+trace/transmit windows, and docking; Phase 4 adds per-vendor hardware
 adapters. See [`plans/`](plans/) for the detailed roadmap.
 
 ## Repository layout
