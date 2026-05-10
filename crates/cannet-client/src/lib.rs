@@ -134,10 +134,14 @@ pub fn connect_and_subscribe(
 
     match ready_rx.recv() {
         Ok(Ok(())) => Ok(RemoteCanFrameSource {
-            rx: frame_rx,
-            shutdown_tx: Some(shutdown_tx),
-            _thread: thread,
-            subscriptions,
+            receiver: FrameReceiver {
+                rx: frame_rx,
+                subscriptions,
+            },
+            handle: SessionHandle {
+                shutdown_tx: Some(shutdown_tx),
+                _thread: thread,
+            },
         }),
         Ok(Err(e)) => Err(e),
         Err(_) => Err(ConnectionError::Thread(
@@ -146,36 +150,38 @@ pub fn connect_and_subscribe(
     }
 }
 
-/// The sync `CanFrameSource` returned by [`connect_and_subscribe`].
+/// The combined receive + shutdown handle returned by
+/// [`connect_and_subscribe`].
 ///
-/// Dropping the source signals the worker thread to shut down: the
-/// gRPC `Session` stream is closed and the worker thread exits. The
-/// drop returns immediately rather than joining the thread, so the
-/// server side's session-end may complete slightly after the source
-/// is gone.
+/// Convenient when one piece of code owns the whole session — it
+/// implements [`CanFrameSource`] directly. When the receive side and
+/// shutdown side need to live in different threads (e.g. a pump
+/// thread drains frames while a control surface decides when to
+/// disconnect), use [`Self::into_parts`] to split them. Dropping the
+/// [`SessionHandle`] from the control thread signals the worker to
+/// exit, and the [`FrameReceiver`] in the pump thread observes
+/// end-of-stream on its next [`CanFrameSource::next_frame`] call.
 pub struct RemoteCanFrameSource {
-    rx: mpsc::Receiver<Result<CanFrame, ConnectionError>>,
-    shutdown_tx: Option<oneshot::Sender<()>>,
-    _thread: thread::JoinHandle<()>,
-    subscriptions: Vec<Subscription>,
-}
-
-impl Drop for RemoteCanFrameSource {
-    fn drop(&mut self) {
-        if let Some(tx) = self.shutdown_tx.take() {
-            // The receiver may have already been polled and dropped;
-            // either way we just need to wake the worker so it can exit.
-            let _ = tx.send(());
-        }
-    }
+    receiver: FrameReceiver,
+    handle: SessionHandle,
 }
 
 impl RemoteCanFrameSource {
-    /// The subscriptions this source was opened with, in the order they
-    /// were requested.
+    /// The subscriptions this session was opened with, in the order
+    /// they were requested.
     #[must_use]
     pub fn subscriptions(&self) -> &[Subscription] {
-        &self.subscriptions
+        self.receiver.subscriptions()
+    }
+
+    /// Split into the receive half and the shutdown handle. Drop the
+    /// [`SessionHandle`] to disconnect; the [`FrameReceiver`] will
+    /// observe end-of-stream on its next
+    /// [`CanFrameSource::next_frame`] call.
+    #[must_use]
+    pub fn into_parts(self) -> (SessionHandle, FrameReceiver) {
+        let Self { receiver, handle } = self;
+        (handle, receiver)
     }
 }
 
@@ -183,10 +189,63 @@ impl CanFrameSource for RemoteCanFrameSource {
     type Error = ConnectionError;
 
     fn next_frame(&mut self) -> Result<Option<CanFrame>, Self::Error> {
+        self.receiver.next_frame()
+    }
+}
+
+/// Receive half of a remote session. Implements [`CanFrameSource`]
+/// blockingly: `Ok(Some(frame))` per delivered frame, `Ok(None)` once
+/// the worker exits (cleanly or via [`SessionHandle`] drop), `Err(_)`
+/// for an in-band server error or transport failure.
+pub struct FrameReceiver {
+    rx: mpsc::Receiver<Result<CanFrame, ConnectionError>>,
+    subscriptions: Vec<Subscription>,
+}
+
+impl FrameReceiver {
+    /// The subscriptions this session was opened with, in the order
+    /// they were requested.
+    #[must_use]
+    pub fn subscriptions(&self) -> &[Subscription] {
+        &self.subscriptions
+    }
+}
+
+impl CanFrameSource for FrameReceiver {
+    type Error = ConnectionError;
+
+    fn next_frame(&mut self) -> Result<Option<CanFrame>, Self::Error> {
         match self.rx.recv() {
             Ok(Ok(frame)) => Ok(Some(frame)),
             Ok(Err(e)) => Err(e),
             Err(_) => Ok(None),
+        }
+    }
+}
+
+/// Shutdown handle for a remote session. Drop it (or call
+/// [`Self::shutdown`]) to disconnect; the worker thread exits and any
+/// [`FrameReceiver`] sharing the same session sees `Ok(None)` from its
+/// next [`CanFrameSource::next_frame`] call.
+pub struct SessionHandle {
+    shutdown_tx: Option<oneshot::Sender<()>>,
+    _thread: thread::JoinHandle<()>,
+}
+
+impl SessionHandle {
+    /// Synchronously signal the worker to disconnect. Equivalent to
+    /// dropping the handle; provided for explicitness at call sites.
+    pub fn shutdown(self) {
+        // Drop fires here, sending the signal.
+    }
+}
+
+impl Drop for SessionHandle {
+    fn drop(&mut self) {
+        if let Some(tx) = self.shutdown_tx.take() {
+            // Best-effort: the receiver may already have woken on its
+            // own (e.g. the server closed the stream).
+            let _ = tx.send(());
         }
     }
 }

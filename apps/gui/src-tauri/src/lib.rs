@@ -1,32 +1,45 @@
-//! Cannet Tauri host. Wires the Phase-1 BLF / DBC stack to the React
-//! frontend.
+//! Cannet Tauri host. Wires the Phase-1 BLF / DBC stack and the Phase-2
+//! remote-server client to the React frontend.
 //!
-//! `open_log(blf_path)` spawns a worker thread that streams
-//! `can-frame-batch` events at the frontend until the file is exhausted;
-//! the frontend renders them in a virtualized trace view. A
-//! `log-finished` event closes out the run.
+//! Two source modes share one frontend pipeline:
+//!
+//! - `open_log(blf_path)` — opens a Vector BLF file and spawns a worker
+//!   thread that streams `can-frame-batch` events at the frontend until
+//!   the file is exhausted.
+//! - `connect_remote_server(address)` — connects to a `cannet-server`
+//!   over gRPC, lists its interfaces, subscribes to all of them, and
+//!   spawns the same kind of worker thread to push frames at the
+//!   frontend. `disconnect_remote_server` ends the session.
+//!
+//! Both worker threads run [`run_pump`], which is generic over
+//! `CanFrameSource` — it doesn't know or care which source it's draining,
+//! so DBC decoding, IPC batching, and `log-finished` semantics behave
+//! identically across modes.
 //!
 //! The current DBC lives in shared backend state (`AppState::database`)
 //! so that:
 //!   - the worker decodes incoming frames against whatever DBC is
 //!     attached at the moment each frame arrives, and
 //!   - the frontend can call `decode_frames` to retro-decode already-
-//!     displayed rows when a DBC is attached after the BLF was opened.
+//!     displayed rows when a DBC is attached after the source was
+//!     opened.
 
 mod ipc;
 
+use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use cannet_blf::BlfCanFrameSource;
+use cannet_client::{FrameReceiver, SessionHandle, Subscription};
 use cannet_core::{CanFrameSource, CanId};
 use cannet_dbc::{Database, DecodedSignal};
 
 use ipc::{
-    CanFrameBatch, CanFrameRecord, DbcInfo, DecodeRequest, DecodedRecord, LogFinished,
-    OpenLogResult, SignalRecord,
+    CanFrameBatch, CanFrameRecord, DbcInfo, DecodeRequest, DecodedRecord, InterfaceRecord,
+    LogFinished, OpenLogResult, RemoteSessionResult, SignalRecord,
 };
 
 /// Frames per emitted batch. Smaller batches cut latency; larger ones cut
@@ -34,11 +47,17 @@ use ipc::{
 /// IPC chatter modest on multi-MHz BLF replays.
 const BATCH_SIZE: usize = 256;
 
-/// Process-wide state shared between commands and the BLF pump thread.
+/// Process-wide state shared between commands and pump threads.
 struct AppState {
     /// Currently-attached DBC, if any. Mutated by `attach_dbc` /
     /// `detach_dbc`; read by the pump and by `decode_frames`.
     database: Mutex<Option<Database>>,
+    /// Active remote session, if any. The handle is stashed here while
+    /// the corresponding pump thread drains frames from the
+    /// `FrameReceiver`. `disconnect_remote_server` takes the handle out
+    /// and drops it, signalling the worker to close the gRPC stream;
+    /// the pump thread then sees `Ok(None)` and exits cleanly.
+    remote_session: Mutex<Option<SessionHandle>>,
 }
 
 /// Boot the Tauri runtime.
@@ -53,12 +72,16 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             database: Mutex::new(None),
+            remote_session: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             open_log,
             attach_dbc,
             detach_dbc,
-            decode_frames
+            decode_frames,
+            list_remote_interfaces,
+            connect_remote_server,
+            disconnect_remote_server,
         ])
         .setup(|app| {
             // Make sure the main window has the id our capabilities expect.
@@ -140,10 +163,120 @@ fn decode_one(db: &Database, req: &DecodeRequest) -> Option<DecodedRecord> {
     })
 }
 
-// `BlfCanFrameSource` is owned by this thread for its lifetime; clippy's
+/// One-shot RPC: connect, list the server's interfaces, disconnect.
+/// Used by the connection panel before the user commits to a session.
+#[tauri::command]
+async fn list_remote_interfaces(address: String) -> Result<Vec<InterfaceRecord>, String> {
+    let interfaces = cannet_client::list_interfaces(&address)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(interfaces.into_iter().map(InterfaceRecord::from).collect())
+}
+
+/// Connect to a `cannet-server`, list its interfaces, subscribe to all
+/// of them (each gets `channel = its index in the list`), and spawn a
+/// pump thread to push frames at the frontend.
+///
+/// At most one remote session may be active at a time — second call
+/// while one is open returns an error.
+#[tauri::command]
+async fn connect_remote_server(
+    app: AppHandle,
+    address: String,
+) -> Result<RemoteSessionResult, String> {
+    let interfaces = cannet_client::list_interfaces(&address)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if interfaces.is_empty() {
+        return Err(format!("server at {address} exposes no interfaces"));
+    }
+
+    let subscriptions: Vec<Subscription> = interfaces
+        .iter()
+        .enumerate()
+        .map(|(i, iface)| Subscription {
+            interface_id: iface.id.clone(),
+            channel: u8::try_from(i).unwrap_or(u8::MAX),
+        })
+        .collect();
+
+    let address_for_thread = address.clone();
+    let subs_for_thread = subscriptions.clone();
+    let source = tokio::task::spawn_blocking(move || {
+        cannet_client::connect_and_subscribe(&address_for_thread, subs_for_thread)
+    })
+    .await
+    .map_err(|e| format!("subscribe task panicked: {e}"))?
+    .map_err(|e| e.to_string())?;
+
+    let (handle, receiver) = source.into_parts();
+
+    {
+        let state: State<'_, AppState> = app.state();
+        let mut guard = state
+            .remote_session
+            .lock()
+            .expect("remote_session mutex poisoned");
+        if guard.is_some() {
+            // Drop `handle` here, which sends shutdown to the worker we
+            // just spawned. Subsequent pump-thread spawn is skipped.
+            return Err("already connected to a remote server".into());
+        }
+        *guard = Some(handle);
+    }
+
+    let app_for_thread = app.clone();
+    std::thread::Builder::new()
+        .name("cannet-remote-pump".into())
+        .spawn(move || {
+            run_pump(&app_for_thread, receiver);
+            // The pump exited (server hung up or user disconnected).
+            // Clear the stashed handle so a fresh connect can start.
+            let state: State<'_, AppState> = app_for_thread.state();
+            let _ = state
+                .remote_session
+                .lock()
+                .expect("remote_session mutex poisoned")
+                .take();
+        })
+        .map_err(|e| format!("failed to spawn remote pump thread: {e}"))?;
+
+    Ok(RemoteSessionResult {
+        address,
+        subscriptions: subscriptions
+            .iter()
+            .map(|s| ipc::SubscriptionRecord {
+                interface_id: s.interface_id.clone(),
+                channel: s.channel,
+            })
+            .collect(),
+        interfaces: interfaces.into_iter().map(InterfaceRecord::from).collect(),
+    })
+}
+
+/// Drop the active remote session's [`SessionHandle`]. The pump thread
+/// notices via `Ok(None)` from its next `next_frame` call, flushes any
+/// buffered frames, emits `log-finished`, and exits.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn disconnect_remote_server(state: State<'_, AppState>) {
+    let handle = state
+        .remote_session
+        .lock()
+        .expect("remote_session mutex poisoned")
+        .take();
+    drop(handle);
+}
+
+// `source` is owned by this thread for its lifetime; clippy's
 // "pass by reference" suggestion doesn't fit the thread-spawn site.
 #[allow(clippy::needless_pass_by_value)]
-fn run_pump(app: &AppHandle, mut source: BlfCanFrameSource) {
+fn run_pump<S>(app: &AppHandle, mut source: S)
+where
+    S: CanFrameSource,
+    S::Error: fmt::Display,
+{
     let state: State<'_, AppState> = app.state();
     let total = AtomicU64::new(0);
     let mut batch: Vec<CanFrameRecord> = Vec::with_capacity(BATCH_SIZE);

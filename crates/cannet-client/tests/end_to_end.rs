@@ -9,11 +9,13 @@ use std::time::Duration;
 
 use blf_asc::{ArbitrationId, BlfWriter, DataBytes, Message};
 use cannet_client::{
-    connect_and_subscribe, list_interfaces, ConnectionError, RemoteCanFrameSource, Subscription,
+    connect_and_subscribe, list_interfaces, ConnectionError, FrameReceiver, RemoteCanFrameSource,
+    SessionHandle, Subscription,
 };
 use cannet_core::CanFrameSource;
 use cannet_server::{CannetServerImpl, LoopingBlfReplay};
 use tokio::net::TcpListener;
+use tokio::time::timeout;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 
@@ -156,6 +158,64 @@ async fn subscribing_to_unknown_interface_surfaces_server_error() {
         matches!(err, ConnectionError::Server { .. }),
         "expected Server error variant, got {err:?}",
     );
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn into_parts_lets_handle_and_receiver_live_in_different_threads() {
+    let (addr, server) = spawn_server().await;
+    let address = addr.to_string();
+
+    // Open a session and immediately split it. The handle goes to one
+    // task; the receiver to another. Frames flow until the handle is
+    // dropped; the receiver then observes end-of-stream.
+    let (handle, mut receiver): (SessionHandle, FrameReceiver) =
+        tokio::task::spawn_blocking(move || {
+            let source = connect_and_subscribe(
+                &address,
+                vec![Subscription {
+                    interface_id: "blf:0".into(),
+                    channel: 0,
+                }],
+            )
+            .unwrap();
+            source.into_parts()
+        })
+        .await
+        .unwrap();
+
+    // Drain a frame to confirm the split session is live.
+    let receiver = tokio::task::spawn_blocking(move || {
+        use cannet_core::CanFrameSource;
+        receiver.next_frame().unwrap().expect("expected at least one frame");
+        receiver
+    })
+    .await
+    .unwrap();
+
+    // Dropping only the handle (in the test runtime thread, not the
+    // worker thread) signals shutdown.
+    drop(handle);
+
+    // The receiver, still living in a blocking task, should see
+    // end-of-stream within a generous timeout.
+    let saw_end = tokio::task::spawn_blocking(move || {
+        use cannet_core::CanFrameSource;
+        let mut receiver = receiver;
+        loop {
+            match receiver.next_frame() {
+                Ok(Some(_)) => {}
+                Ok(None) => return true,
+                Err(_) => return false,
+            }
+        }
+    });
+    let result = timeout(Duration::from_secs(5), saw_end).await.unwrap().unwrap();
+    assert!(
+        result,
+        "FrameReceiver did not observe end-of-stream after SessionHandle drop",
+    );
+
     server.abort();
 }
 

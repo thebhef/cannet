@@ -11,6 +11,7 @@ import type {
   DecodedRecord,
   LogFinished,
   OpenLogResult,
+  RemoteSessionResult,
 } from "./types";
 import { TitleBar } from "./TitleBar";
 import { TraceView } from "./TraceView";
@@ -20,7 +21,12 @@ type LogState =
   | { kind: "loading"; result: OpenLogResult }
   | { kind: "running"; result: OpenLogResult; received: number }
   | { kind: "done"; result: OpenLogResult; total: number }
+  | { kind: "remote-connecting"; address: string }
+  | { kind: "remote-running"; result: RemoteSessionResult; received: number }
+  | { kind: "remote-done"; result: RemoteSessionResult; total: number }
   | { kind: "error"; message: string };
+
+const DEFAULT_REMOTE_ADDRESS = "127.0.0.1:50051";
 
 export function App() {
   // Frames live in a ref so appending a batch doesn't deep-copy the array
@@ -44,6 +50,7 @@ export function App() {
 
   const [autoScroll, setAutoScroll] = useState(true);
   const [dbcPath, setDbcPath] = useState<string | null>(null);
+  const [remoteAddress, setRemoteAddress] = useState(DEFAULT_REMOTE_ADDRESS);
 
   // Wire up Tauri event listeners once.
   useEffect(() => {
@@ -58,28 +65,44 @@ export function App() {
           framesRef.current.push(...incoming);
         }
         setVersion((v) => v + 1);
-        setState((s) =>
-          s.kind === "loading"
-            ? { kind: "running", result: s.result, received: incoming.length }
-            : s.kind === "running"
-              ? { ...s, received: s.received + incoming.length }
-              : s,
-        );
+        setState((s) => {
+          if (s.kind === "loading") {
+            return { kind: "running", result: s.result, received: incoming.length };
+          }
+          if (s.kind === "running") {
+            return { ...s, received: s.received + incoming.length };
+          }
+          if (s.kind === "remote-connecting") {
+            // Frames started flowing before connect_remote_server resolved.
+            // The result will be filled in by handleConnect on success;
+            // for now stay in remote-connecting to keep the UI consistent.
+            return s;
+          }
+          if (s.kind === "remote-running") {
+            return { ...s, received: s.received + incoming.length };
+          }
+          return s;
+        });
       }),
     );
 
     unlistens.push(
       listen<LogFinished>("log-finished", (event) => {
         if (event.payload.status === "ok") {
-          setState((s) =>
-            s.kind === "running" || s.kind === "loading"
-              ? {
-                  kind: "done",
-                  result: s.kind === "loading" ? s.result : s.result,
-                  total: event.payload.status === "ok" ? event.payload.total : 0,
-                }
-              : s,
-          );
+          const total = event.payload.total;
+          setState((s) => {
+            if (s.kind === "loading" || s.kind === "running") {
+              return { kind: "done", result: s.result, total };
+            }
+            if (s.kind === "remote-connecting") {
+              // Server hung up before any frames arrived (rare).
+              return { kind: "idle" };
+            }
+            if (s.kind === "remote-running") {
+              return { kind: "remote-done", result: s.result, total };
+            }
+            return s;
+          });
         } else {
           setState({ kind: "error", message: event.payload.message });
         }
@@ -143,8 +166,37 @@ export function App() {
     setVersion((v) => v + 1);
   }, []);
 
+  const handleConnect = useCallback(async () => {
+    const address = remoteAddress.trim();
+    if (!address) return;
+
+    framesRef.current = [];
+    pauseBufferRef.current = [];
+    setVersion((v) => v + 1);
+    setState({ kind: "remote-connecting", address });
+
+    try {
+      const result = await invoke<RemoteSessionResult>("connect_remote_server", {
+        address,
+      });
+      setState({ kind: "remote-running", result, received: 0 });
+    } catch (err) {
+      setState({ kind: "error", message: String(err) });
+    }
+  }, [remoteAddress]);
+
+  const handleDisconnect = useCallback(async () => {
+    try {
+      await invoke("disconnect_remote_server");
+    } catch (err) {
+      setState({ kind: "error", message: String(err) });
+    }
+  }, []);
+
   const frameCount = framesRef.current.length;
   const status = renderStatus(state, dbcPath, frameCount);
+  const remoteConnected =
+    state.kind === "remote-connecting" || state.kind === "remote-running";
 
   return (
     <main className="app">
@@ -155,6 +207,24 @@ export function App() {
           <button onClick={handleAttachDbc}>
             {dbcPath ? "Replace DBC…" : "Attach DBC…"}
           </button>
+          <span className="toolbar-separator" aria-hidden="true" />
+          <input
+            className="remote-address"
+            type="text"
+            value={remoteAddress}
+            onChange={(e) => setRemoteAddress(e.target.value)}
+            placeholder="host:port"
+            disabled={remoteConnected}
+            aria-label="remote server address"
+          />
+          {remoteConnected ? (
+            <button onClick={handleDisconnect}>Disconnect</button>
+          ) : (
+            <button onClick={handleConnect} disabled={!remoteAddress.trim()}>
+              Connect
+            </button>
+          )}
+          <span className="toolbar-separator" aria-hidden="true" />
           <button
             onClick={() => setPaused((p) => !p)}
             disabled={state.kind === "idle"}
@@ -194,13 +264,21 @@ function renderStatus(
     : "no DBC attached";
   switch (state.kind) {
     case "idle":
-      return `Open a BLF log to begin. ${dbc}.`;
+      return `Open a BLF log or connect to a server to begin. ${dbc}.`;
     case "loading":
       return `Opening ${shortenPath(state.result.blf_path)} … ${dbc}.`;
     case "running":
       return `Streaming ${shortenPath(state.result.blf_path)} (${frameCount} frames). ${dbc}.`;
     case "done":
       return `Done: ${state.total} frames from ${shortenPath(state.result.blf_path)}. ${dbc}.`;
+    case "remote-connecting":
+      return `Connecting to ${state.address} … ${dbc}.`;
+    case "remote-running": {
+      const ifaces = state.result.interfaces.length;
+      return `Streaming from ${state.result.address} (${ifaces} interface${ifaces === 1 ? "" : "s"}, ${frameCount} frames). ${dbc}.`;
+    }
+    case "remote-done":
+      return `Disconnected from ${state.result.address}: ${state.total} frames received. ${dbc}.`;
     case "error":
       return `Error: ${state.message}`;
   }

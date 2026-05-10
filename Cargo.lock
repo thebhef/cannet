@@ -430,6 +430,7 @@ name = "cannet-gui"
 version = "0.0.0"
 dependencies = [
  "cannet-blf",
+ "cannet-client",
  "cannet-core",
  "cannet-dbc",
  "serde",
@@ -437,6 +438,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "tokio",
 ]
 
 [[package]]
