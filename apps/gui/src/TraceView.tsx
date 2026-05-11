@@ -13,7 +13,6 @@ import {
   ROW_HEIGHT,
   buildPlacements,
   maxAnchorRow,
-  maxScrollTop,
   rowFromScroll,
   scaledHeight,
   scrollForRow,
@@ -27,7 +26,7 @@ interface TraceViewProps {
   /// (e.g. a placeholder row's data just landed). Not read directly.
   version: number;
   /// `true`: the view pins to the live tail. `false`: the view stays
-  /// where the user scrolled to, even as `count` grows.
+  /// on the row the user scrolled to, even as `count` grows.
   autoScroll: boolean;
   baseTimestampSeconds: number | null;
   getFrame: (absoluteIndex: number) => TraceFrameRecord | null;
@@ -38,9 +37,9 @@ interface TraceViewProps {
 }
 
 /// Re-pin scrollTop only when it drifts from the target by more than
-/// this. Keeps the count-growth / auto-scroll re-pin from also firing
-/// on every user scroll (where the target ends up a pixel or two off
-/// the user's position due to row-index rounding).
+/// this. The target derived from a user-scrolled row is a pixel or two
+/// off the user's actual scrollTop (row-index rounding); the generous
+/// threshold keeps that from being treated as drift worth correcting.
 const REPIN_THRESHOLD_PX = ROW_HEIGHT;
 
 export function TraceView({
@@ -53,36 +52,34 @@ export function TraceView({
 }: TraceViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(600);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  // Absolute row at the top of the viewport, and the single source of
+  // truth for what's shown: `firstVisibleRow` and the scrollbar
+  // position both derive from it, so the rendered rows never depend on
+  // the live `scrollTop` and can't jitter when `count` grows
+  // underneath the user. While `autoScroll` is on a layout effect
+  // keeps it pinned to the live tail (`maxAnchorRow`); a user scroll
+  // re-points it at whatever row the scrollbar now sits on; the re-pin
+  // effect drags `scrollTop` to match as the trace lengthens (which
+  // shifts the row↔scroll mapping past ~730k rows, where it's
+  // compressed).
+  const [anchoredRow, setAnchoredRow] = useState(0);
 
-  // Set true when we move scrollTop ourselves (the re-pin effect) so
-  // the resulting scroll event isn't mistaken for a user scroll.
+  // Set true when *we* move scrollTop (the re-pin effect) so the
+  // resulting scroll event isn't taken for a user scroll — which would
+  // both disable auto-scroll and re-anchor the view to itself.
   const programmaticScrollRef = useRef(false);
-  // Absolute row the view stays anchored at while auto-scroll is off.
-  // Updated on every user scroll; consulted by `targetScrollTop` and
-  // the re-pin effect when `count` grows so the same row stays put
-  // even though the scaled scrollbar's row↔scroll mapping shifted.
-  //
-  // NOTE: this ref is read during render (via `targetScrollTop`). That
-  // is only safe because the one writer — `handleScroll` — always
-  // pairs the write with `setScrollTop`, forcing a re-render that
-  // re-reads it. Don't mutate it without an accompanying state update.
-  const anchoredRowRef = useRef(0);
 
   const rows = visibleRowCount(viewportHeight);
   const spacerHeight = scaledHeight(count, viewportHeight);
-  const maxScroll = maxScrollTop(count, viewportHeight);
   const anchorMax = maxAnchorRow(count, viewportHeight);
-
-  const firstVisibleRow = autoScroll
-    ? anchorMax
-    : rowFromScroll(scrollTop, count, viewportHeight);
+  const firstVisibleRow = Math.min(anchorMax, Math.max(0, anchoredRow));
   const lastVisibleRow = Math.min(count, firstVisibleRow + rows);
-  const targetScrollTop = autoScroll
-    ? maxScroll
-    : scrollForRow(anchoredRowRef.current, count, viewportHeight);
+  // `scrollForRow(anchorMax)` is exactly the bottom (`maxScrollTop`),
+  // so this is "the bottom" while auto-scrolling and the anchored
+  // row's scrollTop otherwise.
+  const targetScrollTop = scrollForRow(firstVisibleRow, count, viewportHeight);
 
   // Observe viewport size so the visible-row count tracks resizes.
   useEffect(() => {
@@ -105,43 +102,46 @@ export function TraceView({
     ensureVisible(firstVisibleRow, lastVisibleRow);
   }, [firstVisibleRow, lastVisibleRow, count, ensureVisible]);
 
-  // Re-pin the scroll position when (and only when) auto-scroll mode
-  // or the trace length changes — never in response to a user scroll
-  // (`scrollTop` deliberately isn't in the dep list). Covers both
-  // "follow the live tail" (auto-scroll on, `targetScrollTop ===
-  // maxScroll`) and "stay on the anchored row as `count` grows". The
-  // generous threshold means the pixel-or-two target/actual mismatch
-  // from row-index rounding on a user scroll doesn't trip it.
+  // While auto-scrolling, keep the anchor glued to the live tail. This
+  // is also what makes turning auto-scroll off (toolbar checkbox) a
+  // no-op visually: the anchor is already the tail row, so nothing
+  // jumps.
+  useLayoutEffect(() => {
+    if (autoScroll && anchoredRow !== anchorMax) setAnchoredRow(anchorMax);
+  }, [autoScroll, anchorMax, anchoredRow]);
+
+  // Keep the actual scroll position in sync with where the view wants
+  // to be. Fires only when the *target* moves — i.e. on auto-scroll
+  // following the tail or on `count` growth shifting the mapping under
+  // the anchor — never on a user scroll, because `handleScroll` sets
+  // the anchor to the position the user just scrolled to, so the
+  // target already matches (within the threshold).
   useLayoutEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     if (Math.abs(el.scrollTop - targetScrollTop) > REPIN_THRESHOLD_PX) {
       programmaticScrollRef.current = true;
       el.scrollTop = targetScrollTop;
-      setScrollTop(targetScrollTop);
     }
-  }, [targetScrollTop, autoScroll, count, viewportHeight]);
+  }, [targetScrollTop]);
 
   // Reset transient view state when the trace is cleared.
   useEffect(() => {
     if (count === 0) {
       setExpanded(new Set());
-      setScrollTop(0);
-      anchoredRowRef.current = 0;
+      setAnchoredRow(0);
     }
   }, [count]);
 
   const handleScroll = useCallback(() => {
     const el = containerRef.current;
     if (!el) return;
-    const top = el.scrollTop;
     if (programmaticScrollRef.current) {
       programmaticScrollRef.current = false;
       return;
     }
     if (autoScroll) onAutoScrollDisabled();
-    anchoredRowRef.current = rowFromScroll(top, count, viewportHeight);
-    setScrollTop(top);
+    setAnchoredRow(rowFromScroll(el.scrollTop, count, viewportHeight));
   }, [autoScroll, onAutoScrollDisabled, count, viewportHeight]);
 
   const toggleExpanded = useCallback((absoluteIndex: number) => {
