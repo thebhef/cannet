@@ -23,7 +23,7 @@ work or admit it isn't going to happen and delete it.
   `DecodedSignal` so the trace view can show enum labels.
 - `[perf]` `cannet-core`: revisit `CanFramePayload::Classic`/`Fd` to share
   a fixed-size inline buffer instead of `Vec<u8>` once the trace store /
-  benchmark in Phase 6 shows allocator pressure.
+  benchmark in Phase 7 shows allocator pressure.
 - `[docs]` `cannet-blf`: f64 BLF timestamps lose sub-µs precision at
   modern absolute times; document this in the user-facing GUI when
   surfaced timestamps look quantised.
@@ -37,10 +37,10 @@ work or admit it isn't going to happen and delete it.
 - `[feat]` real in-process writable CAN source — a local virtual bus
   (Linux `vcan` via socketcan) and/or an in-memory loopback-bus type in
   `cannet-core` (a `CanFrameSink` paired with a `CanFrameSource`). Phase
-  3's transmit path ships a host-side tx-confirm row plus a
+  5's transmit path ships a host-side tx-confirm row plus a
   `cannet-server --loopback` mode instead, which covers demo and test;
   this is the honest version for actually exercising a writable bus
-  without hardware. Reconsider when hardware work (Phase 5) is staged or
+  without hardware. Reconsider when hardware work (Phase 6) is staged or
   if local TX testing needs more than the loopback server.
 - `[feat]` `cannet-server` (Phase 2+): multi-client support. Phase 2 is
   single-client per server; a second connection is rejected with
