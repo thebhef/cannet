@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
 
 import type { TraceFrameRecord } from "./types";
 import {
@@ -11,160 +10,140 @@ import {
 } from "./format";
 
 interface TraceViewProps {
-  /// Number of rows the virtualizer represents (the size of the
-  /// visible window). Always less than or equal to WINDOW_SIZE.
-  displayedCount: number;
-  /// Absolute index of the row that's at view index 0. Slides as
-  /// the user paged-scrolls outside the visible window.
-  displayOffset: number;
-  /// Bumped when the cache contents change so the virtualizer
-  /// re-measures placeholder rows.
+  count: number;
+  /// Bumped when chunk-cache contents change so the view re-renders.
   version: number;
+  /// `true`: scroll position is pinned to the live tail; `false`: the
+  /// view is anchored at `anchorRow`.
   autoScroll: boolean;
-  /// Recorded timestamp of absolute row 0, in seconds. Used as the
-  /// zero-point for the time column. `null` until the first frame
-  /// has been fetched.
+  /// Absolute row index that the view should keep at the top of the
+  /// viewport while `autoScroll` is false.
+  anchorRow: number;
   baseTimestampSeconds: number | null;
-  /// Synchronous lookup by absolute index. Returns `null` until the
-  /// covering chunk lands; the row renders as a placeholder.
   getFrame: (absoluteIndex: number) => TraceFrameRecord | null;
-  /// Called whenever the visible *absolute* range changes so the
-  /// parent can drive chunk fetches.
-  ensureVisible: (absStart: number, absEnd: number) => void;
-  /// Whether sliding the window backward / forward is currently
-  /// available (only when paused with room to slide).
-  canSlideBack: boolean;
-  canSlideForward: boolean;
-  onSlideBack: () => void;
-  onSlideForward: () => void;
-  /// Called when the user wheels upward. The parent uses this to
-  /// auto-engage pause when the view is live-tailing, so the user
-  /// can actually reach the top edge of the visible window (otherwise
-  /// autoscroll keeps yanking them back).
-  onUserScrollUp: () => void;
+  ensureVisible: (start: number, end: number) => void;
+  /// Called when the user moves the scroll position themselves. The
+  /// parent typically responds by turning off autoScroll and
+  /// remembering the new anchor row.
+  onUserScroll: (newAnchorRow: number) => void;
 }
 
 const ROW_HEIGHT = 22;
 const EXPANDED_ROW_HEIGHT = 22 + 18 * 6;
-/// Pixel threshold for treating a scroll position as "at the edge".
-/// Browsers can leave a fractional pixel of slop; 4 px is generous.
-const SCROLL_EDGE_PX = 4;
+/// Cap on the rendered scroll-container height. Browsers cap CSS
+/// dimensions around 17M (Firefox) - 33M (Chromium) pixels; 16M
+/// stays safely under both. Past roughly 730k rows the scrollbar
+/// represents the trace at a compressed scale — each scrollbar
+/// pixel covers multiple rows. Mouse-wheel and arrow keys still
+/// resolve row-by-row because the visible row math runs off the
+/// (continuous) scrollTop value rather than discrete pixel
+/// positions.
+const MAX_SCROLL_HEIGHT_PX = 16_000_000;
 
 export function TraceView({
-  displayedCount,
-  displayOffset,
-  version,
+  count,
   autoScroll,
+  anchorRow,
   baseTimestampSeconds,
   getFrame,
   ensureVisible,
-  canSlideBack,
-  canSlideForward,
-  onSlideBack,
-  onSlideForward,
-  onUserScrollUp,
+  onUserScroll,
 }: TraceViewProps) {
-  const parentRef = useRef<HTMLDivElement>(null);
-  // Expanded rows are tracked by absolute index so a slide doesn't
-  // "expand" a different row at the same view index.
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [viewportHeight, setViewportHeight] = useState(600);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
 
-  const virtualizer = useVirtualizer({
-    count: displayedCount,
-    getScrollElement: () => parentRef.current,
-    estimateSize: (index) =>
-      expanded.has(displayOffset + index) ? EXPANDED_ROW_HEIGHT : ROW_HEIGHT,
-    overscan: 16,
-    getItemKey: (index) => displayOffset + index,
-  });
+  // Number of rows that fit in the viewport plus a small overshoot
+  // so partial top/bottom rows draw cleanly.
+  const visibleRowCount = Math.ceil(viewportHeight / ROW_HEIGHT) + 2;
 
+  // Total height of all rows at native 1:1 scale, capped to a value
+  // browsers can actually represent.
+  const naturalHeight = count * ROW_HEIGHT;
+  const scaledHeight = Math.max(
+    viewportHeight,
+    Math.min(naturalHeight, MAX_SCROLL_HEIGHT_PX),
+  );
+
+  // The highest row index that can appear at the top of the viewport
+  // without leaving blank space at the bottom.
+  const maxAnchorRow = Math.max(0, count - visibleRowCount);
+  const maxScroll = Math.max(1, scaledHeight - viewportHeight);
+
+  // First visible row — either the live tail or the user's anchor,
+  // clamped to a valid range.
+  const firstVisibleRow = autoScroll
+    ? maxAnchorRow
+    : Math.min(maxAnchorRow, Math.max(0, anchorRow));
+  const lastVisibleRow = Math.min(count, firstVisibleRow + visibleRowCount);
+
+  // scrollTop that puts `firstVisibleRow` at the top of the viewport.
+  const targetScrollTop =
+    maxAnchorRow === 0 ? 0 : (firstVisibleRow / maxAnchorRow) * maxScroll;
+
+  // When we change scrollTop ourselves to match a count or anchor
+  // update, the browser fires a scroll event. We don't want that to
+  // be treated as a user scroll — flag it so handleScroll skips its
+  // "user moved the scrollbar" branch.
+  const programmaticScrollRef = useRef(false);
+
+  // Observe viewport size so the visible row count updates on resize.
   useEffect(() => {
-    virtualizer.measure();
-  }, [version, virtualizer]);
-
-  useLayoutEffect(() => {
-    virtualizer.measure();
-  }, [expanded, virtualizer]);
-
-  // Live-tail autoscroll — pin to the bottom of the visible window.
-  // (When paused, autoScroll is false and the user controls position.)
-  useLayoutEffect(() => {
-    if (!autoScroll || displayedCount === 0) return;
-    virtualizer.scrollToIndex(displayedCount - 1, { align: "end" });
-  }, [autoScroll, displayedCount, displayOffset, virtualizer]);
-
-  const items = virtualizer.getVirtualItems();
-
-  // Drive prefetch off the visible *absolute* range.
-  useEffect(() => {
-    if (items.length === 0) return;
-    const startView = items[0].index;
-    const endView = items[items.length - 1].index + 1;
-    ensureVisible(displayOffset + startView, displayOffset + endView);
-  }, [items, displayOffset, ensureVisible]);
-
-  // Mouse-wheel / touchpad upward intent should auto-pause if we're
-  // live-tailing; otherwise autoscroll keeps yanking the user back
-  // and they can't reach the top edge to slide.
-  useEffect(() => {
-    const el = parentRef.current;
-    if (!el) return;
-    const onWheel = (e: WheelEvent) => {
-      if (e.deltaY < 0) onUserScrollUp();
+    if (!containerRef.current) return;
+    const update = () => {
+      if (containerRef.current) {
+        setViewportHeight(containerRef.current.clientHeight);
+      }
     };
-    el.addEventListener("wheel", onWheel, { passive: true });
-    return () => el.removeEventListener("wheel", onWheel);
-  }, [onUserScrollUp]);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(containerRef.current);
+    return () => ro.disconnect();
+  }, []);
 
-  // Sliding: when paused and the user scrolls past the top or bottom
-  // edge of the visible window, ask the parent to slide the window.
-  // After the slide propagates (displayOffset prop changes), restore
-  // the scroll position so the row the user was looking at stays
-  // visible at the same place on screen.
-  const pendingSlideRef = useRef<{
-    type: "back" | "forward";
-    preOffset: number;
-  } | null>(null);
+  // Tell the parent which absolute rows are currently visible so it
+  // can fetch the covering chunks.
+  useEffect(() => {
+    if (count === 0) return;
+    ensureVisible(firstVisibleRow, lastVisibleRow);
+  }, [firstVisibleRow, lastVisibleRow, count, ensureVisible]);
 
-  const handleScroll = useCallback(() => {
-    if (pendingSlideRef.current) return; // a previous slide hasn't settled yet
-    const el = parentRef.current;
-    if (!el) return;
-    const { scrollTop, scrollHeight, clientHeight } = el;
-    if (scrollTop <= SCROLL_EDGE_PX && canSlideBack) {
-      pendingSlideRef.current = { type: "back", preOffset: displayOffset };
-      onSlideBack();
-    } else if (
-      scrollHeight - clientHeight - scrollTop <= SCROLL_EDGE_PX &&
-      canSlideForward
-    ) {
-      pendingSlideRef.current = { type: "forward", preOffset: displayOffset };
-      onSlideForward();
-    }
-  }, [canSlideBack, canSlideForward, displayOffset, onSlideBack, onSlideForward]);
-
+  // Push scrollTop to match the computed target whenever it drifts
+  // (count growth in autoScroll mode, anchor change, viewport
+  // resize, etc.).
   useLayoutEffect(() => {
-    const pending = pendingSlideRef.current;
-    if (!pending) return;
-    if (pending.preOffset === displayOffset) return; // slide hasn't propagated yet
-    pendingSlideRef.current = null;
-    const el = parentRef.current;
+    const el = containerRef.current;
     if (!el) return;
-    const offsetDelta = pending.preOffset - displayOffset; // >0 if slid back, <0 if forward
-    if (pending.type === "back") {
-      // The previously top-of-viewport row was at view index 0,
-      // absolute idx preOffset. After sliding back, that absolute idx
-      // is at view index (preOffset - displayOffset) = offsetDelta.
-      // Put it at the top of the viewport.
-      el.scrollTop = offsetDelta * ROW_HEIGHT;
-    } else {
-      // Slid forward (offsetDelta is negative). The previously
-      // bottom-of-viewport row was at view index displayedCount - 1
-      // in the old layout; in the new layout it's at view index
-      // (displayedCount - 1) - (-offsetDelta). Put it at the bottom.
-      el.scrollTop = el.scrollHeight - el.clientHeight + offsetDelta * ROW_HEIGHT;
+    if (Math.abs(el.scrollTop - targetScrollTop) > 0.5) {
+      programmaticScrollRef.current = true;
+      el.scrollTop = targetScrollTop;
     }
-  }, [displayOffset]);
+  }, [targetScrollTop]);
+
+  // Reset transient view state when the trace is cleared.
+  useEffect(() => {
+    if (count === 0) {
+      setExpanded(new Set());
+    }
+  }, [count]);
+
+  const handleScroll = useCallback(
+    (e: React.UIEvent<HTMLDivElement>) => {
+      if (programmaticScrollRef.current) {
+        programmaticScrollRef.current = false;
+        return;
+      }
+      if (maxAnchorRow === 0) return;
+      const newScrollTop = e.currentTarget.scrollTop;
+      const fraction = newScrollTop / maxScroll;
+      const newAnchor = Math.min(
+        maxAnchorRow,
+        Math.max(0, Math.round(fraction * maxAnchorRow)),
+      );
+      onUserScroll(newAnchor);
+    },
+    [maxAnchorRow, maxScroll, onUserScroll],
+  );
 
   const toggleExpanded = (absoluteIndex: number) => {
     setExpanded((prev) => {
@@ -174,6 +153,16 @@ export function TraceView({
       return next;
     });
   };
+
+  // Per-visible-row stacking offset, accounting for expanded rows
+  // (which take EXPANDED_ROW_HEIGHT instead of ROW_HEIGHT).
+  const placements: { absIdx: number; topOffset: number; isExpanded: boolean }[] = [];
+  let cursor = 0;
+  for (let absIdx = firstVisibleRow; absIdx < lastVisibleRow; absIdx++) {
+    const isExp = expanded.has(absIdx);
+    placements.push({ absIdx, topOffset: cursor, isExpanded: isExp });
+    cursor += isExp ? EXPANDED_ROW_HEIGHT : ROW_HEIGHT;
+  }
 
   return (
     <div className="trace">
@@ -188,41 +177,35 @@ export function TraceView({
         <span className="col-data">data</span>
         <span className="col-msg">message</span>
       </div>
-      <div ref={parentRef} className="trace-rows" onScroll={handleScroll}>
-        <div
-          style={{
-            height: virtualizer.getTotalSize(),
-            position: "relative",
-          }}
-        >
-          {items.map((virtualRow) => {
-            const absoluteIndex = displayOffset + virtualRow.index;
-            const frame = getFrame(absoluteIndex);
-            const isExpanded = expanded.has(absoluteIndex);
+      <div ref={containerRef} className="trace-rows" onScroll={handleScroll}>
+        <div style={{ height: scaledHeight, position: "relative" }}>
+          {placements.map(({ absIdx, topOffset, isExpanded }) => {
+            const frame = getFrame(absIdx);
             return (
               <div
-                key={virtualRow.key}
-                ref={virtualizer.measureElement}
-                data-index={virtualRow.index}
+                key={absIdx}
                 className={`trace-row ${isExpanded ? "expanded" : ""} ${frame ? "" : "loading"}`}
                 style={{
                   position: "absolute",
-                  top: 0,
+                  // The visible rows ride along with scrollTop so they
+                  // appear at the same viewport positions regardless
+                  // of how the scrollbar is scaled.
+                  top: targetScrollTop + topOffset,
                   left: 0,
                   right: 0,
-                  transform: `translateY(${virtualRow.start}px)`,
+                  height: isExpanded ? EXPANDED_ROW_HEIGHT : ROW_HEIGHT,
                 }}
-                onClick={() => frame?.decoded && toggleExpanded(absoluteIndex)}
+                onClick={() => frame?.decoded && toggleExpanded(absIdx)}
               >
                 {frame ? (
                   <RowContents
                     frame={frame}
-                    absoluteIndex={absoluteIndex}
+                    absoluteIndex={absIdx}
                     isExpanded={isExpanded}
                     baseTimestamp={baseTimestampSeconds}
                   />
                 ) : (
-                  <span className="col-idx">{(absoluteIndex + 1).toLocaleString()}</span>
+                  <span className="col-idx">{(absIdx + 1).toLocaleString()}</span>
                 )}
               </div>
             );
