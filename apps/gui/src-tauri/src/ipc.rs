@@ -109,6 +109,13 @@ pub struct TraceGrew {
     /// Estimated current frame rate (frames per second over the last
     /// second of appends).
     pub frames_per_second: f64,
+    /// The last frames in the store (up to a fixed cap), already decoded
+    /// against the currently-attached DBC. The auto-scrolling trace view
+    /// paints its live tail straight from this instead of round-tripping
+    /// to `fetch_trace_range` for rows the chunk cache hasn't caught up
+    /// with — without it, every tick repainted the visible window as a
+    /// band of placeholders until the follow-up fetch landed.
+    pub tail: Vec<TraceFrameRecord>,
 }
 
 /// Emitted when the log finishes (cleanly or with an error).

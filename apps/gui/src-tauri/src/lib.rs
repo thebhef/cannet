@@ -19,8 +19,10 @@
 //! The trace UI is a *view* over [`TraceStore`]: it asks for slices via
 //! `fetch_trace_range` and renders virtualized rows around the current
 //! viewport. A `trace-grew` IPC event ticks at ~10 Hz with the latest
-//! `count` and frame rate so the status line and auto-scroll stay
-//! current without the host having to push every frame over IPC.
+//! `count`, frame rate, and a short decoded *tail* of the newest frames
+//! — the count/rate keep the status line and scrollbar current, and the
+//! tail lets the auto-scrolling view paint the live edge without a
+//! fetch round-trip — so the host never has to push every frame.
 //!
 //! The current DBC lives in shared backend state (`AppState::database`)
 //! so that the per-fetch decoder always uses the most recently
@@ -51,6 +53,13 @@ use trace_store::{RawTraceFrame, TraceStore};
 /// count + rate. Slow enough to not flood the frontend, fast enough that
 /// the status line and auto-scroll feel live.
 const TRACE_GREW_TICK: Duration = Duration::from_millis(100);
+
+/// How many trailing frames to ship with each `trace-grew` event so the
+/// auto-scrolling trace view can paint its live tail without a fetch
+/// round-trip. Comfortably larger than any plausible visible-row count
+/// (≈256 rows is ~5600 px of trace area), so the whole auto-scroll
+/// window is covered even on a big display.
+const TRACE_GREW_TAIL: u64 = 256;
 
 /// Process-wide state shared between commands and pump threads.
 struct AppState {
@@ -121,11 +130,14 @@ fn spawn_trace_grew_emitter(app: AppHandle) {
             let state: State<'_, AppState> = app.state();
             let count = u64::try_from(state.trace_store.len()).unwrap_or(u64::MAX);
             let frames_per_second = state.trace_store.frames_per_second();
+            let tail =
+                collect_trace_records(state.inner(), count.saturating_sub(TRACE_GREW_TAIL), count);
             let _ = app.emit(
                 "trace-grew",
                 TraceGrew {
                     count,
                     frames_per_second,
+                    tail,
                 },
             );
         }
@@ -175,16 +187,11 @@ fn detach_dbc(state: State<'_, AppState>) {
 }
 
 /// Pull a `[start, end)` slice out of the trace store and decode each
-/// frame against the currently-attached DBC. The caller is expected to
-/// be the trace view, sizing `end - start` to the visible window plus a
-/// small prefetch pad.
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-fn fetch_trace_range(
-    state: State<'_, AppState>,
-    start: u64,
-    end: u64,
-) -> Vec<TraceFrameRecord> {
+/// frame against the currently-attached DBC. Shared by the
+/// `fetch_trace_range` command (trace-view scrolling) and the
+/// `trace-grew` tail (auto-scroll live tail). Out-of-range or
+/// oversized ranges clamp to what's stored, matching [`TraceStore::slice`].
+fn collect_trace_records(state: &AppState, start: u64, end: u64) -> Vec<TraceFrameRecord> {
     let start_us = usize::try_from(start).unwrap_or(usize::MAX);
     let end_us = usize::try_from(end).unwrap_or(usize::MAX);
     let raw = state.trace_store.slice(start_us, end_us);
@@ -199,6 +206,20 @@ fn fetch_trace_range(
             TraceFrameRecord::from_raw(absolute_index, &frame, decoded)
         })
         .collect()
+}
+
+/// Pull a `[start, end)` slice out of the trace store and decode each
+/// frame against the currently-attached DBC. The caller is expected to
+/// be the trace view, sizing `end - start` to the visible window plus a
+/// small prefetch pad.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn fetch_trace_range(
+    state: State<'_, AppState>,
+    start: u64,
+    end: u64,
+) -> Vec<TraceFrameRecord> {
+    collect_trace_records(state.inner(), start, end)
 }
 
 /// Drop every stored frame. The frontend's Clear button is the typical
@@ -366,5 +387,59 @@ fn signal_to_wire(sig: &DecodedSignal<'_>) -> SignalRecord {
         name: sig.name.to_string(),
         value: sig.value,
         unit: sig.unit.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cannet_core::{CanFramePayload, Direction};
+
+    fn dummy_frame(ts_ns: u64, id: u32) -> RawTraceFrame {
+        RawTraceFrame {
+            timestamp_ns: ts_ns,
+            channel: 0,
+            id,
+            extended: false,
+            direction: Direction::Rx,
+            payload: CanFramePayload::Classic(vec![]),
+        }
+    }
+
+    fn test_state() -> AppState {
+        AppState {
+            database: Mutex::new(None),
+            remote_session: Mutex::new(None),
+            trace_store: TraceStore::new(),
+        }
+    }
+
+    #[test]
+    fn collect_trace_records_uses_absolute_indices() {
+        let state = test_state();
+        for i in 0u32..10 {
+            state.trace_store.append(dummy_frame(u64::from(i) * 1_000, i));
+        }
+        let mid = collect_trace_records(&state, 3, 6);
+        assert_eq!(mid.iter().map(|r| r.index).collect::<Vec<_>>(), vec![3, 4, 5]);
+        assert_eq!(mid.iter().map(|r| r.id).collect::<Vec<_>>(), vec![3, 4, 5]);
+        // No DBC attached -> nothing decoded.
+        assert!(mid.iter().all(|r| r.decoded.is_none()));
+    }
+
+    #[test]
+    fn collect_trace_records_clamps_like_slice() {
+        let state = test_state();
+        for i in 0u32..10 {
+            state.trace_store.append(dummy_frame(0, i));
+        }
+        // Oversized end: the trace-grew tail asks for `[count - TAIL, count)`,
+        // and when there are fewer than TAIL frames the start saturates to 0.
+        let tail = collect_trace_records(&state, 10u64.saturating_sub(TRACE_GREW_TAIL), 10);
+        assert_eq!(tail.len(), 10);
+        assert_eq!(tail.first().map(|r| r.index), Some(0));
+        assert_eq!(tail.last().map(|r| r.index), Some(9));
+        // Entirely past the end -> empty.
+        assert!(collect_trace_records(&state, 20, 30).is_empty());
     }
 }
