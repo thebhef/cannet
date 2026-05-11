@@ -169,8 +169,11 @@ header {
   opacity: 0.6;
 }
 
-.trace-row.loading {
-  opacity: 0.4;
+/* Placeholder rows render only the row index until their chunk
+   loads. They share the normal row color so autoscroll past freshly-
+   appended rows doesn't flash dim → bright. */
+.trace-row.loading .col-idx {
+  opacity: 0.6;
 }
 
 .status {
