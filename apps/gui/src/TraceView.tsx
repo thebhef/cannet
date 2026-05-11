@@ -37,6 +37,11 @@ interface TraceViewProps {
   canSlideForward: boolean;
   onSlideBack: () => void;
   onSlideForward: () => void;
+  /// Called when the user wheels upward. The parent uses this to
+  /// auto-engage pause when the view is live-tailing, so the user
+  /// can actually reach the top edge of the visible window (otherwise
+  /// autoscroll keeps yanking them back).
+  onUserScrollUp: () => void;
 }
 
 const ROW_HEIGHT = 22;
@@ -57,6 +62,7 @@ export function TraceView({
   canSlideForward,
   onSlideBack,
   onSlideForward,
+  onUserScrollUp,
 }: TraceViewProps) {
   const parentRef = useRef<HTMLDivElement>(null);
   // Expanded rows are tracked by absolute index so a slide doesn't
@@ -96,6 +102,19 @@ export function TraceView({
     const endView = items[items.length - 1].index + 1;
     ensureVisible(displayOffset + startView, displayOffset + endView);
   }, [items, displayOffset, ensureVisible]);
+
+  // Mouse-wheel / touchpad upward intent should auto-pause if we're
+  // live-tailing; otherwise autoscroll keeps yanking the user back
+  // and they can't reach the top edge to slide.
+  useEffect(() => {
+    const el = parentRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY < 0) onUserScrollUp();
+    };
+    el.addEventListener("wheel", onWheel, { passive: true });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [onUserScrollUp]);
 
   // Sliding: when paused and the user scrolls past the top or bottom
   // edge of the visible window, ask the parent to slide the window.
