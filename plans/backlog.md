@@ -52,3 +52,12 @@ work or admit it isn't going to happen and delete it.
   exports the current `TraceStore` contents to a `.blf` file via
   `blf_asc::BlfWriter`. The features-doc entry "trace capture:
   persistable to .blf" lives here.
+- `[feat]` `cannet-gui`: VS Code-style command palette (Cmd/Ctrl+
+  Shift+P) for keyboard-driven access to toolbar actions
+  (Open BLF…, Attach DBC…, Connect / Disconnect, Clear, Go to row,
+  Save Capture…). Useful once the toolbar grows past a single line
+  in Phase 3.
+- `[feat]` `cannet-gui`: "Go to row…" navigation
+  (Cmd/Ctrl+G) — type an absolute index, the trace view scrolls
+  there. Especially valuable past ~730k rows where the scaled
+  scrollbar's per-pixel resolution gets coarse.
