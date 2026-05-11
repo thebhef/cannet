@@ -49,10 +49,12 @@ apps/
                      scaled virtualizer — the scroll container caps at
                      16M px and maps scrollTop to an absolute row
                      index, so the scrollbar represents the whole trace
-                     regardless of size; rows expand to show decoded
-                     signals. The scroll/stacking arithmetic lives in
-                     `traceViewport.ts` (unit-tested in
-                     `traceViewport.test.ts`).
+                     regardless of size; the mouse wheel is handled in
+                     row units so a notch never skips a screenful even
+                     when that mapping is compressed. Rows expand to
+                     show decoded signals. The scroll/stacking
+                     arithmetic lives in `traceViewport.ts` (unit-tested
+                     in `traceViewport.test.ts`).
     src-tauri/       Rust host (`cannet-gui` crate). Owns the trace
                      model (`trace_store.rs`); the BLF and remote pumps
                      append frames, and the frontend pulls slices via
@@ -135,11 +137,15 @@ cannet window. Use **Open BLF…** to pick a log; **Attach DBC…** before
 opening attaches a database for live decoding.
 
 The window below the toolbar is a dockable panel area. **Add trace
-panel** opens another trace view; panels can be dragged, split, and
-tabbed into whatever layout you like, and each trace panel keeps its
-own scroll position and auto-scroll toggle. The layout is remembered
-between runs (stored locally for now — project files, in a later
-Phase 3 step, will own it along with bus configs and DBC references).
+panel** opens another trace view (as a new tab in the active group).
+Drag a panel by its tab and drop it against an edge of the area to
+split it side-by-side, or onto another panel to tab them together;
+each trace panel keeps its own scroll position and auto-scroll toggle.
+(Tearing a panel out into a separate OS window isn't supported yet —
+docking is within the one window; the tear-out item is in
+`plans/backlog.md`.) The layout is remembered between runs (stored
+locally for now — project files, in a later Phase 3 step, will own it
+along with bus configs and DBC references).
 
 > **Note:** plain `cargo run -p cannet-gui` will build the Rust host on
 > its own but won't bring up a usable window — the host expects either
