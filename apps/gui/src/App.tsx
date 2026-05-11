@@ -39,11 +39,10 @@ export function App() {
   const [count, setCount] = useState(0);
   const [framesPerSecond, setFramesPerSecond] = useState(0);
 
-  // Scroll mode. While `autoScroll` is true the trace view pins to
-  // the live tail; while false the view stays anchored at
-  // `anchorRow` even as count grows.
+  // While `autoScroll` is true the trace view pins to the live tail;
+  // while false it stays where the user scrolled to. A user scroll in
+  // the trace flips this off (via onAutoScrollDisabled below).
   const [autoScroll, setAutoScroll] = useState(true);
-  const [anchorRow, setAnchorRow] = useState(0);
 
   // Chunked cache of fetched trace rows, keyed by chunk index.
   const chunkCacheRef = useRef<Map<number, TraceFrameRecord[]>>(new Map());
@@ -70,7 +69,6 @@ export function App() {
 
   const resetView = useCallback(() => {
     setAutoScroll(true);
-    setAnchorRow(0);
     setBaseTimestampSeconds(null);
   }, []);
 
@@ -254,12 +252,11 @@ export function App() {
     }
   }, []);
 
-  // The trace view calls this when the user moves the scroll bar
-  // themselves. Turn off live-tailing and remember where they
-  // anchored so subsequent count growth doesn't drag them along.
-  const handleUserScroll = useCallback((newAnchorRow: number) => {
+  // The trace view calls this when the user scrolls the trace
+  // themselves while live-tailing was on — flip it off so the view
+  // stays where they put it.
+  const handleAutoScrollDisabled = useCallback(() => {
     setAutoScroll(false);
-    setAnchorRow(newAnchorRow);
   }, []);
 
   const handleToggleAutoScroll = useCallback((next: boolean) => {
@@ -346,11 +343,10 @@ export function App() {
         count={count}
         version={version}
         autoScroll={autoScroll}
-        anchorRow={anchorRow}
         baseTimestampSeconds={baseTimestampSeconds}
         getFrame={getFrame}
         ensureVisible={ensureVisible}
-        onUserScroll={handleUserScroll}
+        onAutoScrollDisabled={handleAutoScrollDisabled}
       />
     </main>
   );
