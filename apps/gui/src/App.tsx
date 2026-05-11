@@ -408,6 +408,10 @@ export function App() {
         <div className="status">{status}</div>
       </header>
       <TraceDataContext.Provider value={traceData}>
+        {/* dockview drags tabs with the HTML5 drag-and-drop API, which
+            Tauri's OS-level drag-drop handler breaks on WebView2 — hence
+            `dragDropEnabled: false` in tauri.conf.json. The GUI takes
+            files via the dialog plugin, not by drop, so nothing is lost. */}
         <DockviewReact
           className="dock-area"
           theme={themeAbyss}
