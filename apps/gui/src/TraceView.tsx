@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 
 import type { TraceFrameRecord } from "./types";
 import {
@@ -11,8 +18,9 @@ import {
 
 interface TraceViewProps {
   count: number;
-  /// Bumped when chunk-cache contents change so the view re-renders
-  /// (e.g. a placeholder row's data just landed).
+  /// Bumped by the parent when chunk-cache contents change; its only
+  /// job is to re-render this component so `getFrame` is re-consulted
+  /// (e.g. a placeholder row's data just landed). Not read directly.
   version: number;
   /// `true`: the view pins to the live tail. `false`: the view stays
   /// where the user scrolled to, even as `count` grows.
@@ -49,10 +57,6 @@ export function TraceView({
   onAutoScrollDisabled,
 }: TraceViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  // The inner element that holds the visible rows; we move it
-  // imperatively in the scroll handler so it tracks the scroll bar
-  // without waiting for a React render.
-  const innerRef = useRef<HTMLDivElement>(null);
 
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(600);
@@ -130,9 +134,6 @@ export function TraceView({
     if (Math.abs(el.scrollTop - targetScrollTop) > REPIN_THRESHOLD_PX) {
       programmaticScrollRef.current = true;
       el.scrollTop = targetScrollTop;
-      if (innerRef.current) {
-        innerRef.current.style.transform = `translate3d(0, ${targetScrollTop}px, 0)`;
-      }
       setScrollTop(targetScrollTop);
     }
   }, [targetScrollTop, autoScroll, count, viewportHeight]);
@@ -153,9 +154,6 @@ export function TraceView({
     if (!el) return;
     programmaticScrollRef.current = true;
     el.scrollTop = maxScroll;
-    if (innerRef.current) {
-      innerRef.current.style.transform = `translate3d(0, ${maxScroll}px, 0)`;
-    }
     setScrollTop(maxScroll);
   }, [autoScroll]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -163,11 +161,6 @@ export function TraceView({
     const el = containerRef.current;
     if (!el) return;
     const top = el.scrollTop;
-    // Move the rows synchronously, before the browser paints, so the
-    // visible rows don't lag the scrollbar by a frame.
-    if (innerRef.current) {
-      innerRef.current.style.transform = `translate3d(0, ${top}px, 0)`;
-    }
     if (programmaticScrollRef.current) {
       programmaticScrollRef.current = false;
       return;
@@ -177,18 +170,19 @@ export function TraceView({
     setScrollTop(top);
   }, [autoScroll, onAutoScrollDisabled, rowFromScroll]);
 
-  const toggleExpanded = (absoluteIndex: number) => {
+  const toggleExpanded = useCallback((absoluteIndex: number) => {
     setExpanded((prev) => {
       const next = new Set(prev);
       if (next.has(absoluteIndex)) next.delete(absoluteIndex);
       else next.add(absoluteIndex);
       return next;
     });
-  };
+  }, []);
 
-  // Visible rows, stacked from the top of the inner element. Keyed by
-  // viewport position (not absolute index) so the DOM nodes stay put
-  // across scrolls — only their content changes.
+  // Visible rows, stacked from the top of the sticky viewport. Keyed
+  // by viewport position (not absolute index) so the DOM nodes stay
+  // put across scrolls — only their content changes when the window
+  // shifts.
   const placements: {
     posKey: number;
     absIdx: number;
@@ -218,48 +212,30 @@ export function TraceView({
         <span className="col-msg">message</span>
       </div>
       <div ref={containerRef} className="trace-rows" onScroll={handleScroll}>
+        {/* Spacer: gives the scrollbar the trace's full (scaled) extent. */}
         <div style={{ height: scaledHeight, position: "relative" }}>
+          {/* Sticky viewport: the compositor keeps this pinned to the
+              top of the scroll area, so the rows never lag the
+              scrollbar — React only swaps their content. */}
           <div
-            ref={innerRef}
             style={{
-              position: "absolute",
+              position: "sticky",
               top: 0,
-              left: 0,
-              right: 0,
-              transform: `translate3d(0, ${scrollTop}px, 0)`,
-              willChange: "transform",
+              height: viewportHeight,
+              overflow: "hidden",
             }}
           >
-            {placements.map(({ posKey, absIdx, top, isExpanded }) => {
-              const frame = getFrame(absIdx);
-              return (
-                <div
-                  key={posKey}
-                  className={`trace-row ${isExpanded ? "expanded" : ""} ${frame ? "" : "loading"}`}
-                  style={{
-                    position: "absolute",
-                    top,
-                    left: 0,
-                    right: 0,
-                    height: isExpanded ? EXPANDED_ROW_HEIGHT : ROW_HEIGHT,
-                  }}
-                  onClick={() => frame?.decoded && toggleExpanded(absIdx)}
-                >
-                  {frame ? (
-                    <RowContents
-                      frame={frame}
-                      absoluteIndex={absIdx}
-                      isExpanded={isExpanded}
-                      baseTimestamp={baseTimestampSeconds}
-                    />
-                  ) : (
-                    <span className="col-idx">
-                      {(absIdx + 1).toLocaleString()}
-                    </span>
-                  )}
-                </div>
-              );
-            })}
+            {placements.map(({ posKey, absIdx, top, isExpanded }) => (
+              <Row
+                key={posKey}
+                top={top}
+                absoluteIndex={absIdx}
+                isExpanded={isExpanded}
+                frame={getFrame(absIdx)}
+                baseTimestamp={baseTimestampSeconds}
+                onToggle={toggleExpanded}
+              />
+            ))}
           </div>
         </div>
       </div>
@@ -267,49 +243,64 @@ export function TraceView({
   );
 }
 
-interface RowContentsProps {
-  frame: TraceFrameRecord;
+interface RowProps {
+  top: number;
   absoluteIndex: number;
   isExpanded: boolean;
+  frame: TraceFrameRecord | null;
   baseTimestamp: number | null;
+  onToggle: (absoluteIndex: number) => void;
 }
 
-function RowContents({
-  frame,
+const Row = memo(function Row({
+  top,
   absoluteIndex,
   isExpanded,
+  frame,
   baseTimestamp,
-}: RowContentsProps) {
+  onToggle,
+}: RowProps) {
+  const height = isExpanded ? EXPANDED_ROW_HEIGHT : ROW_HEIGHT;
   return (
-    <>
-      <span className="col-idx">{(absoluteIndex + 1).toLocaleString()}</span>
-      <span className="col-time">
-        {formatTimestamp(frame.timestamp_seconds, baseTimestamp)}
-      </span>
-      <span className="col-ch">{frame.channel}</span>
-      <span className="col-dir">{frame.direction}</span>
-      <span className="col-id">{formatId(frame)}</span>
-      <span className="col-kind">{formatKind(frame)}</span>
-      <span className="col-len">{frame.data.length}</span>
-      <span className="col-data">{formatData(frame)}</span>
-      <span className="col-msg">
-        {frame.decoded ? frame.decoded.name : ""}
-        {frame.decoded ? (
-          <span className="hint">{isExpanded ? " ▾" : " ▸"}</span>
-        ) : null}
-      </span>
-      {isExpanded && frame.decoded && (
-        <div className="signals">
-          {frame.decoded.signals.map((sig) => (
-            <div className="signal" key={sig.name}>
-              <span className="signal-name">{sig.name}</span>
-              <span className="signal-value">
-                {formatSignalValue(sig.value, sig.unit)}
-              </span>
+    <div
+      className={`trace-row ${isExpanded ? "expanded" : ""} ${frame ? "" : "loading"}`}
+      style={{ position: "absolute", top, left: 0, right: 0, height }}
+      onClick={() => frame?.decoded && onToggle(absoluteIndex)}
+    >
+      {frame ? (
+        <>
+          <span className="col-idx">{(absoluteIndex + 1).toLocaleString()}</span>
+          <span className="col-time">
+            {formatTimestamp(frame.timestamp_seconds, baseTimestamp)}
+          </span>
+          <span className="col-ch">{frame.channel}</span>
+          <span className="col-dir">{frame.direction}</span>
+          <span className="col-id">{formatId(frame)}</span>
+          <span className="col-kind">{formatKind(frame)}</span>
+          <span className="col-len">{frame.data.length}</span>
+          <span className="col-data">{formatData(frame)}</span>
+          <span className="col-msg">
+            {frame.decoded ? frame.decoded.name : ""}
+            {frame.decoded ? (
+              <span className="hint">{isExpanded ? " ▾" : " ▸"}</span>
+            ) : null}
+          </span>
+          {isExpanded && frame.decoded && (
+            <div className="signals">
+              {frame.decoded.signals.map((sig) => (
+                <div className="signal" key={sig.name}>
+                  <span className="signal-name">{sig.name}</span>
+                  <span className="signal-value">
+                    {formatSignalValue(sig.value, sig.unit)}
+                  </span>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          )}
+        </>
+      ) : (
+        <span className="col-idx">{(absoluteIndex + 1).toLocaleString()}</span>
       )}
-    </>
+    </div>
   );
-}
+});
