@@ -245,6 +245,31 @@ Out of scope (deferred to later phases / backlog):
   main window only. Tracked in `plans/backlog.md`.
 - **EDS references in the project file** — added when CANopen work begins.
 
+Implementation notes (in progress):
+
+- **Panel shell: `dockview`** (see `technology-inventory.md`). The
+  trace view moved into `apps/gui/src/TracePanel.tsx`, a dockview panel
+  component; `App.tsx` hosts the `DockviewReact` area and an "Add trace
+  panel" action.
+- **One host-side capture; panels are independent views over it.** The
+  Phase-2 `TraceStore` stays a single host-side capture. Rather than a
+  separate frontend store per panel, the capture-level view plumbing
+  (frame count, the chunk cache + `getFrame`, the `ensureVisible`
+  prefetch hook) lives in one `TraceData` React context shared by every
+  trace panel; what's *per panel* is the scroll position, the
+  auto-scroll toggle, and the expanded-row set — already per-instance
+  inside `TraceView`. Same intent as "the frontend store becomes
+  per-window" (panels are independent), simpler shape (no duplicated
+  cache of identical data).
+- **Auto-scroll is per panel now.** It moved out of the global toolbar
+  into each trace panel's slim toolbar; Phase 1/2's single global
+  auto-scroll checkbox is gone.
+- **Layout persistence is a placeholder.** Until the project file lands
+  (later in this phase), the dockview layout is saved to `localStorage`
+  and restored on launch — i.e. the "default project". Project files
+  will own the layout (plus bus configs and DBC refs) and supersede
+  this.
+
 Exit criteria:
 
 - Two trace panels and a transmit panel can be open simultaneously inside
