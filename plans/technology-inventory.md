@@ -27,10 +27,11 @@ and the license / platform constraints we need to be aware of.
   stack inside the Tauri WebView. Mainstream ecosystem, strong virtualized
   grid options. MIT-licensed.
 - **`dockview`** (v6, MIT) — `adopted` in Phase 3 for the multi-panel
-  shell: arbitrary split / tab / drag / resize layouts of trace,
-  transmit, and (Phase 4) plot panels inside the single app window. A
-  dock manager is exactly the "lean on a vetted library for the
-  failure-mode-rich parts" call from `CLAUDE.md` — hand-rolling
+  shell: arbitrary split / tab / drag / resize layouts of trace and
+  project panels (and the plot / transmit panels that arrive in
+  Phases 4–5) inside the single app window. A dock manager is exactly
+  the "lean on a vetted library for the failure-mode-rich parts" call
+  from `CLAUDE.md` — hand-rolling
   drag-and-drop docking is a lot of fiddly UI state to get right.
   Chosen for: TypeScript-native with a first-class React package
   (`dockview`), a serialisable layout model (`api.toJSON()` /
@@ -103,7 +104,7 @@ without reshaping callers.
   variant; the wire crate exposes batching adapters so application
   code consumes `Stream<CanFrame>` and never sees the batch. Cyclic /
   scheduled emission is **not** part of the wire — sending on a
-  cadence is a feature of the client transmit UI. Phase 5 grows the
+  cadence is a feature of the client transmit UI. Phase 6 grows the
   surface with bus-config and bus-state RPCs. Optional TLS via the
   `tls` feature (rustls) for non-loopback connections; plaintext
   loopback is the dev default.
@@ -112,13 +113,13 @@ without reshaping callers.
   request/response correlation, stream lifecycle, cancellation, flow
   control — handled by the runtime rather than hand-rolled, trivial
   cross-language client support (gRPC has runtimes for every
-  mainstream language) which directly serves the Phase 5 affordance
+  mainstream language) which directly serves the Phase 6 affordance
   for Python servers wrapping `python-can`, and a service shape that
   doubles as the universal driver contract — in-process drivers,
   sidecar processes, and remote test rigs all implement the same
   `.proto`. Hot-path overhead vs. raw TCP framing is sub-percent for
   our payload sizes (256-frame batches ≈ 10–15 KB) and gets
-  re-validated in Phase 6.
+  re-validated in Phase 7.
 - Network transport (alternatives considered):
   - **Raw TCP with length-prefixed framing + `prost`** — `rejected`
     (Phase 2 evaluation). Lowest possible framing overhead, but the
@@ -126,7 +127,7 @@ without reshaping callers.
     RPC layer ourselves: request/response correlation, server-streaming
     semantics, cancellation, sink multiplexing, half-close, backpressure.
     Subtle async-networking failure modes are easy to ship broken and
-    hard to catch in review. Cross-language clients (e.g. Phase 5
+    hard to catch in review. Cross-language clients (e.g. Phase 6
     Python hardware servers) would each need our envelope reimplemented
     rather than picking up an off-the-shelf gRPC runtime.
   - **Raw TCP with length-prefixed framing + `bincode` / `postcard`** —
@@ -223,4 +224,4 @@ _TBD — populated as we set up cross-platform builds._
   because v3+ requires Vite 6+ while the app is on Vite 5. MIT. Run via
   `pnpm --dir apps/gui test`.
 
-_Profiling instrumentation TBD — populated in Phase 6._
+_Profiling instrumentation TBD — populated in Phase 7._
