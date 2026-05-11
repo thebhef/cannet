@@ -43,19 +43,22 @@ crates/
 
 apps/
   gui/           Tauri 2 + React 18 + Vite trace viewer.
-    src/             React frontend. `TraceView.tsx` is a hand-rolled
-                     scaled virtualizer — the scroll container caps
-                     at 16M px and maps scrollTop to absolute row
-                     index, so the scrollbar represents the whole
-                     trace regardless of size. Rows expand to show
-                     decoded signals.
-    src-tauri/       Rust host (`cannet-gui` crate). The single Tauri
-                     command `open_log` spawns a worker that pushes
-                     frames at the frontend in 256-frame batches via
-                     a `can-frame-batch` IPC event.
-                     `src/ipc.rs` defines the IPC payload shapes;
-                     `wire` is reserved for the Phase-2 cannet-wire
-                     network protocol.
+    src/             React frontend. `TraceView.tsx` is the hand-rolled
+                     scaled virtualizer — the scroll container caps at
+                     16M px and maps scrollTop to an absolute row
+                     index, so the scrollbar represents the whole trace
+                     regardless of size; rows expand to show decoded
+                     signals. The scroll/stacking arithmetic lives in
+                     `traceViewport.ts` (unit-tested in
+                     `traceViewport.test.ts`).
+    src-tauri/       Rust host (`cannet-gui` crate). Owns the trace
+                     model (`trace_store.rs`); the BLF and remote pumps
+                     append frames, and the frontend pulls slices via
+                     the `fetch_trace_range` command (decoded against
+                     the current DBC at fetch time) plus a `trace-grew`
+                     IPC tick (~10 Hz: count, rate, and a decoded tail
+                     of the newest rows for flicker-free auto-scroll).
+                     `src/ipc.rs` holds the IPC payload shapes.
 
 plans/           Living planning docs (see CLAUDE.md).
 ```
@@ -218,6 +221,7 @@ the matching OS (or via cross-compilation in CI).
 ```sh
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+pnpm --dir apps/gui test           # frontend unit tests (vitest)
 pnpm --dir apps/gui build          # type-checks and bundles the frontend
 ```
 
