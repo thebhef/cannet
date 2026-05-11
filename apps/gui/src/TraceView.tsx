@@ -11,83 +11,94 @@ import {
 
 interface TraceViewProps {
   count: number;
-  /// Bumped when chunk-cache contents change so the view re-renders.
+  /// Bumped when chunk-cache contents change so the view re-renders
+  /// (e.g. a placeholder row's data just landed).
   version: number;
-  /// `true`: scroll position is pinned to the live tail; `false`: the
-  /// view is anchored at `anchorRow`.
+  /// `true`: the view pins to the live tail. `false`: the view stays
+  /// where the user scrolled to, even as `count` grows.
   autoScroll: boolean;
-  /// Absolute row index that the view should keep at the top of the
-  /// viewport while `autoScroll` is false.
-  anchorRow: number;
   baseTimestampSeconds: number | null;
   getFrame: (absoluteIndex: number) => TraceFrameRecord | null;
   ensureVisible: (start: number, end: number) => void;
-  /// Called when the user moves the scroll position themselves. The
-  /// parent typically responds by turning off autoScroll and
-  /// remembering the new anchor row.
-  onUserScroll: (newAnchorRow: number) => void;
+  /// Called when the user scrolls the view themselves while
+  /// `autoScroll` was on, so the parent can uncheck it.
+  onAutoScrollDisabled: () => void;
 }
 
 const ROW_HEIGHT = 22;
 const EXPANDED_ROW_HEIGHT = 22 + 18 * 6;
 /// Cap on the rendered scroll-container height. Browsers cap CSS
-/// dimensions around 17M (Firefox) - 33M (Chromium) pixels; 16M
-/// stays safely under both. Past roughly 730k rows the scrollbar
-/// represents the trace at a compressed scale — each scrollbar
-/// pixel covers multiple rows. Mouse-wheel and arrow keys still
-/// resolve row-by-row because the visible row math runs off the
-/// (continuous) scrollTop value rather than discrete pixel
-/// positions.
+/// dimensions around 17M (Firefox) - 33M (WebKit/Chromium) px; 16M is
+/// safely under both. Past roughly 730k rows the scrollbar represents
+/// the trace at a compressed scale (each scrollbar pixel covers
+/// multiple rows); the mouse wheel still resolves finely because it
+/// moves scrollTop by a fixed pixel count regardless of the scale.
 const MAX_SCROLL_HEIGHT_PX = 16_000_000;
+/// Re-pin scrollTop only when it drifts from the target by more than
+/// this. Keeps the count-growth / auto-scroll re-pin from also firing
+/// on every user scroll (where the target ends up a pixel or two off
+/// the user's position due to row-index rounding).
+const REPIN_THRESHOLD_PX = ROW_HEIGHT;
 
 export function TraceView({
   count,
   autoScroll,
-  anchorRow,
   baseTimestampSeconds,
   getFrame,
   ensureVisible,
-  onUserScroll,
+  onAutoScrollDisabled,
 }: TraceViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  // The inner element that holds the visible rows; we move it
+  // imperatively in the scroll handler so it tracks the scroll bar
+  // without waiting for a React render.
+  const innerRef = useRef<HTMLDivElement>(null);
+
+  const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(600);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
 
-  // Number of rows that fit in the viewport plus a small overshoot
-  // so partial top/bottom rows draw cleanly.
-  const visibleRowCount = Math.ceil(viewportHeight / ROW_HEIGHT) + 2;
+  // Set true when we move scrollTop ourselves (auto-scroll re-pin,
+  // count-growth re-pin) so the resulting scroll event isn't mistaken
+  // for a user scroll.
+  const programmaticScrollRef = useRef(false);
+  // Absolute row the view should stay anchored at while auto-scroll
+  // is off. Updated on every user scroll; consulted on count growth.
+  const anchoredRowRef = useRef(0);
 
-  // Total height of all rows at native 1:1 scale, capped to a value
-  // browsers can actually represent.
+  const visibleRowCount = Math.ceil(viewportHeight / ROW_HEIGHT) + 2;
   const naturalHeight = count * ROW_HEIGHT;
   const scaledHeight = Math.max(
     viewportHeight,
     Math.min(naturalHeight, MAX_SCROLL_HEIGHT_PX),
   );
-
-  // The highest row index that can appear at the top of the viewport
-  // without leaving blank space at the bottom.
-  const maxAnchorRow = Math.max(0, count - visibleRowCount);
   const maxScroll = Math.max(1, scaledHeight - viewportHeight);
+  const maxAnchorRow = Math.max(0, count - visibleRowCount);
 
-  // First visible row — either the live tail or the user's anchor,
-  // clamped to a valid range.
-  const firstVisibleRow = autoScroll
-    ? maxAnchorRow
-    : Math.min(maxAnchorRow, Math.max(0, anchorRow));
+  const rowFromScroll = useCallback(
+    (top: number) => {
+      if (maxAnchorRow === 0) return 0;
+      const fraction = Math.min(1, Math.max(0, top / maxScroll));
+      return Math.min(maxAnchorRow, Math.round(fraction * maxAnchorRow));
+    },
+    [maxAnchorRow, maxScroll],
+  );
+
+  const scrollForRow = useCallback(
+    (row: number) => {
+      if (maxAnchorRow === 0) return 0;
+      return (Math.min(maxAnchorRow, Math.max(0, row)) / maxAnchorRow) * maxScroll;
+    },
+    [maxAnchorRow, maxScroll],
+  );
+
+  const firstVisibleRow = autoScroll ? maxAnchorRow : rowFromScroll(scrollTop);
   const lastVisibleRow = Math.min(count, firstVisibleRow + visibleRowCount);
+  const targetScrollTop = autoScroll
+    ? maxScroll
+    : scrollForRow(anchoredRowRef.current);
 
-  // scrollTop that puts `firstVisibleRow` at the top of the viewport.
-  const targetScrollTop =
-    maxAnchorRow === 0 ? 0 : (firstVisibleRow / maxAnchorRow) * maxScroll;
-
-  // When we change scrollTop ourselves to match a count or anchor
-  // update, the browser fires a scroll event. We don't want that to
-  // be treated as a user scroll — flag it so handleScroll skips its
-  // "user moved the scrollbar" branch.
-  const programmaticScrollRef = useRef(false);
-
-  // Observe viewport size so the visible row count updates on resize.
+  // Observe viewport size so the visible-row count tracks resizes.
   useEffect(() => {
     if (!containerRef.current) return;
     const update = () => {
@@ -101,49 +112,70 @@ export function TraceView({
     return () => ro.disconnect();
   }, []);
 
-  // Tell the parent which absolute rows are currently visible so it
-  // can fetch the covering chunks.
+  // Tell the parent which absolute rows are visible so it can fetch
+  // the covering chunks.
   useEffect(() => {
     if (count === 0) return;
     ensureVisible(firstVisibleRow, lastVisibleRow);
   }, [firstVisibleRow, lastVisibleRow, count, ensureVisible]);
 
-  // Push scrollTop to match the computed target whenever it drifts
-  // (count growth in autoScroll mode, anchor change, viewport
-  // resize, etc.).
+  // Re-pin the scroll position when (and only when) auto-scroll mode
+  // or the trace length changes — never in response to a user scroll
+  // (scrollTop deliberately isn't in the dep list). The generous
+  // threshold means the tiny target/actual mismatch from row-index
+  // rounding on a user scroll doesn't trip it.
   useLayoutEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    if (Math.abs(el.scrollTop - targetScrollTop) > 0.5) {
+    if (Math.abs(el.scrollTop - targetScrollTop) > REPIN_THRESHOLD_PX) {
       programmaticScrollRef.current = true;
       el.scrollTop = targetScrollTop;
+      if (innerRef.current) {
+        innerRef.current.style.transform = `translate3d(0, ${targetScrollTop}px, 0)`;
+      }
+      setScrollTop(targetScrollTop);
     }
-  }, [targetScrollTop]);
+  }, [targetScrollTop, autoScroll, count, viewportHeight]);
 
   // Reset transient view state when the trace is cleared.
   useEffect(() => {
     if (count === 0) {
       setExpanded(new Set());
+      setScrollTop(0);
+      anchoredRowRef.current = 0;
     }
   }, [count]);
 
-  const handleScroll = useCallback(
-    (e: React.UIEvent<HTMLDivElement>) => {
-      if (programmaticScrollRef.current) {
-        programmaticScrollRef.current = false;
-        return;
-      }
-      if (maxAnchorRow === 0) return;
-      const newScrollTop = e.currentTarget.scrollTop;
-      const fraction = newScrollTop / maxScroll;
-      const newAnchor = Math.min(
-        maxAnchorRow,
-        Math.max(0, Math.round(fraction * maxAnchorRow)),
-      );
-      onUserScroll(newAnchor);
-    },
-    [maxAnchorRow, maxScroll, onUserScroll],
-  );
+  // When auto-scroll is turned back on, snap to the live tail.
+  useLayoutEffect(() => {
+    if (!autoScroll) return;
+    const el = containerRef.current;
+    if (!el) return;
+    programmaticScrollRef.current = true;
+    el.scrollTop = maxScroll;
+    if (innerRef.current) {
+      innerRef.current.style.transform = `translate3d(0, ${maxScroll}px, 0)`;
+    }
+    setScrollTop(maxScroll);
+  }, [autoScroll]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleScroll = useCallback(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const top = el.scrollTop;
+    // Move the rows synchronously, before the browser paints, so the
+    // visible rows don't lag the scrollbar by a frame.
+    if (innerRef.current) {
+      innerRef.current.style.transform = `translate3d(0, ${top}px, 0)`;
+    }
+    if (programmaticScrollRef.current) {
+      programmaticScrollRef.current = false;
+      return;
+    }
+    if (autoScroll) onAutoScrollDisabled();
+    anchoredRowRef.current = rowFromScroll(top);
+    setScrollTop(top);
+  }, [autoScroll, onAutoScrollDisabled, rowFromScroll]);
 
   const toggleExpanded = (absoluteIndex: number) => {
     setExpanded((prev) => {
@@ -154,14 +186,22 @@ export function TraceView({
     });
   };
 
-  // Per-visible-row stacking offset, accounting for expanded rows
-  // (which take EXPANDED_ROW_HEIGHT instead of ROW_HEIGHT).
-  const placements: { absIdx: number; topOffset: number; isExpanded: boolean }[] = [];
+  // Visible rows, stacked from the top of the inner element. Keyed by
+  // viewport position (not absolute index) so the DOM nodes stay put
+  // across scrolls — only their content changes.
+  const placements: {
+    posKey: number;
+    absIdx: number;
+    top: number;
+    isExpanded: boolean;
+  }[] = [];
   let cursor = 0;
-  for (let absIdx = firstVisibleRow; absIdx < lastVisibleRow; absIdx++) {
-    const isExp = expanded.has(absIdx);
-    placements.push({ absIdx, topOffset: cursor, isExpanded: isExp });
-    cursor += isExp ? EXPANDED_ROW_HEIGHT : ROW_HEIGHT;
+  for (let pos = 0; pos < visibleRowCount; pos++) {
+    const absIdx = firstVisibleRow + pos;
+    if (absIdx >= count) break;
+    const isExpanded = expanded.has(absIdx);
+    placements.push({ posKey: pos, absIdx, top: cursor, isExpanded });
+    cursor += isExpanded ? EXPANDED_ROW_HEIGHT : ROW_HEIGHT;
   }
 
   return (
@@ -179,40 +219,48 @@ export function TraceView({
       </div>
       <div ref={containerRef} className="trace-rows" onScroll={handleScroll}>
         <div style={{ height: scaledHeight, position: "relative" }}>
-          {placements.map(({ absIdx, topOffset, isExpanded }) => {
-            const frame = getFrame(absIdx);
-            return (
-              <div
-                key={absIdx}
-                className={`trace-row ${isExpanded ? "expanded" : ""} ${frame ? "" : "loading"}`}
-                style={{
-                  position: "absolute",
-                  top: 0,
-                  left: 0,
-                  right: 0,
-                  height: isExpanded ? EXPANDED_ROW_HEIGHT : ROW_HEIGHT,
-                  // GPU-compositable transform instead of `top:`; the
-                  // browser doesn't have to relayout every visible row
-                  // on each scroll event, which kept the position
-                  // tracking from feeling smooth.
-                  transform: `translate3d(0, ${targetScrollTop + topOffset}px, 0)`,
-                  willChange: "transform",
-                }}
-                onClick={() => frame?.decoded && toggleExpanded(absIdx)}
-              >
-                {frame ? (
-                  <RowContents
-                    frame={frame}
-                    absoluteIndex={absIdx}
-                    isExpanded={isExpanded}
-                    baseTimestamp={baseTimestampSeconds}
-                  />
-                ) : (
-                  <span className="col-idx">{(absIdx + 1).toLocaleString()}</span>
-                )}
-              </div>
-            );
-          })}
+          <div
+            ref={innerRef}
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              right: 0,
+              transform: `translate3d(0, ${scrollTop}px, 0)`,
+              willChange: "transform",
+            }}
+          >
+            {placements.map(({ posKey, absIdx, top, isExpanded }) => {
+              const frame = getFrame(absIdx);
+              return (
+                <div
+                  key={posKey}
+                  className={`trace-row ${isExpanded ? "expanded" : ""} ${frame ? "" : "loading"}`}
+                  style={{
+                    position: "absolute",
+                    top,
+                    left: 0,
+                    right: 0,
+                    height: isExpanded ? EXPANDED_ROW_HEIGHT : ROW_HEIGHT,
+                  }}
+                  onClick={() => frame?.decoded && toggleExpanded(absIdx)}
+                >
+                  {frame ? (
+                    <RowContents
+                      frame={frame}
+                      absoluteIndex={absIdx}
+                      isExpanded={isExpanded}
+                      baseTimestamp={baseTimestampSeconds}
+                    />
+                  ) : (
+                    <span className="col-idx">
+                      {(absIdx + 1).toLocaleString()}
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
       </div>
     </div>
