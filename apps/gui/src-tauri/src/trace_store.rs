@@ -128,13 +128,17 @@ impl TraceStore {
         inner.frames[start..end].to_vec()
     }
 
-    /// Drop every stored frame. Keeps the rate estimator's history
-    /// because the consumer (the frontend) tends to clear in response
-    /// to a user action, not a stream event — preserving past rate
-    /// makes the displayed value continuous across the click.
+    /// Drop every stored frame and release the backing allocations.
+    ///
+    /// `Vec::clear` / `VecDeque::clear` only reset the length — the
+    /// (possibly enormous, after a long replay) buffers would stay
+    /// resident. Replacing them with fresh empties hands the memory
+    /// back to the allocator, so a small session after a large one
+    /// doesn't carry the large session's footprint.
     pub fn clear(&self) {
         let mut inner = self.inner.lock().expect("trace store mutex poisoned");
-        inner.frames.clear();
+        inner.frames = Vec::new();
+        inner.rate_samples = VecDeque::new();
     }
 
     /// Estimated current append rate in frames per second.
