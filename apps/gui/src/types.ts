@@ -34,10 +34,13 @@ export interface TraceFrameRecord {
   decoded: DecodedRecord | null;
 }
 
-/// Periodic IPC event carrying the trace store's current size + rate.
+/// Periodic IPC event carrying the trace store's current size + rate,
+/// plus a short decoded tail of the newest frames so the auto-scrolling
+/// trace view can paint the live edge without a fetch round-trip.
 export interface TraceGrew {
   count: number;
   frames_per_second: number;
+  tail: TraceFrameRecord[];
 }
 
 export type LogFinished =

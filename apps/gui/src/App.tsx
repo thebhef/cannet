@@ -48,6 +48,13 @@ export function App() {
   const chunkCacheRef = useRef<Map<number, TraceFrameRecord[]>>(new Map());
   const cacheOrderRef = useRef<number[]>([]);
   const inflightChunksRef = useRef<Set<number>>(new Set());
+  // The newest frames, as carried by the most recent `trace-grew`
+  // event — a contiguous run ending at the live tail. `getFrame`
+  // consults this when the chunk cache hasn't caught up, which is what
+  // keeps auto-scroll from flashing placeholders. `tailStartRef` is
+  // the absolute index of `tailFramesRef.current[0]`.
+  const tailFramesRef = useRef<TraceFrameRecord[]>([]);
+  const tailStartRef = useRef(0);
   const [version, setVersion] = useState(0);
 
   const [state, setState] = useState<LogState>({ kind: "idle" });
@@ -64,6 +71,8 @@ export function App() {
     chunkCacheRef.current.clear();
     cacheOrderRef.current = [];
     inflightChunksRef.current.clear();
+    tailFramesRef.current = [];
+    tailStartRef.current = 0;
     setVersion((v) => v + 1);
   }, []);
 
@@ -123,7 +132,7 @@ export function App() {
 
     unlistens.push(
       listen<TraceGrew>("trace-grew", (event) => {
-        const { count: newCount, frames_per_second } = event.payload;
+        const { count: newCount, frames_per_second, tail } = event.payload;
         setCount((prev) => {
           if (newCount < prev) {
             invalidateCache();
@@ -132,6 +141,8 @@ export function App() {
           return newCount;
         });
         setFramesPerSecond(frames_per_second);
+        tailFramesRef.current = tail;
+        tailStartRef.current = tail.length > 0 ? tail[0].index : newCount;
         refreshStalePartialChunks(newCount);
       }),
     );
@@ -266,8 +277,15 @@ export function App() {
   const getFrame = useCallback((index: number): TraceFrameRecord | null => {
     const chunkIdx = Math.floor(index / CHUNK_SIZE);
     const chunk = chunkCacheRef.current.get(chunkIdx);
-    if (!chunk) return null;
-    return chunk[index - chunkIdx * CHUNK_SIZE] ?? null;
+    const fromChunk = chunk ? chunk[index - chunkIdx * CHUNK_SIZE] : undefined;
+    if (fromChunk) return fromChunk;
+    // Not (yet) in the chunk cache — fall back to the live tail
+    // carried by the most recent `trace-grew`, which covers the newest
+    // rows the auto-scroll window shows.
+    const tail = tailFramesRef.current;
+    const tailOffset = index - tailStartRef.current;
+    if (tailOffset >= 0 && tailOffset < tail.length) return tail[tailOffset];
+    return null;
   }, []);
 
   const ensureVisible = useCallback(
