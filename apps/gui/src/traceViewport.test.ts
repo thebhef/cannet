@@ -11,7 +11,7 @@ import {
   scaledHeight,
   scrollForRow,
   visibleRowCount,
-  wheelDeltaRows,
+  wheelDeltaPx,
 } from "./traceViewport";
 
 const VH = 660; // 30 rows tall; visibleRowCount === 32
@@ -81,20 +81,19 @@ describe("rowFromScroll / scrollForRow", () => {
   });
 });
 
-describe("wheelDeltaRows / maxWheelRows", () => {
-  it("reads pixel deltas as row-height-sized steps", () => {
-    expect(wheelDeltaRows(ROW_HEIGHT * 3, 0, VH)).toBe(3);
-    expect(wheelDeltaRows(-ROW_HEIGHT, 0, VH)).toBe(-1);
-    expect(wheelDeltaRows(100, 0, VH)).toBeCloseTo(100 / ROW_HEIGHT);
+describe("wheelDeltaPx / maxWheelRows", () => {
+  it("passes pixel deltas through unchanged", () => {
+    expect(wheelDeltaPx(100, 0, VH)).toBe(100);
+    expect(wheelDeltaPx(-37, 0, VH)).toBe(-37);
   });
 
-  it("reads line deltas as one row each and page deltas as a viewport", () => {
-    expect(wheelDeltaRows(3, 1, VH)).toBe(3);
-    expect(wheelDeltaRows(1, 2, VH)).toBe(visibleRowCount(VH));
-    expect(wheelDeltaRows(-2, 2, VH)).toBe(-2 * visibleRowCount(VH));
+  it("reads line deltas as a row each and page deltas as a viewport", () => {
+    expect(wheelDeltaPx(3, 1, VH)).toBe(3 * ROW_HEIGHT);
+    expect(wheelDeltaPx(1, 2, VH)).toBe(VH);
+    expect(wheelDeltaPx(-2, 2, VH)).toBe(-2 * VH);
   });
 
-  it("caps a wheel step below a screenful so a notch can't skip a window", () => {
+  it("caps a stepped wheel move below a screenful so a notch can't skip a window", () => {
     for (const vh of [120, VH, 1200]) {
       expect(maxWheelRows(vh)).toBeGreaterThanOrEqual(1);
       expect(maxWheelRows(vh)).toBeLessThan(visibleRowCount(vh));

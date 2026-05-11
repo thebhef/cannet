@@ -49,10 +49,11 @@ apps/
                      scaled virtualizer — the scroll container caps at
                      16M px and maps scrollTop to an absolute row
                      index, so the scrollbar represents the whole trace
-                     regardless of size; the mouse wheel is handled in
-                     row units so a notch never skips a screenful even
-                     when that mapping is compressed. Rows expand to
-                     show decoded signals. The scroll/stacking
+                     regardless of size; the mouse wheel scrolls
+                     natively but falls back to row-stepped scrolling
+                     when a notch would otherwise skip a screenful (huge
+                     traces, where that mapping is compressed). Rows
+                     expand to show decoded signals. The scroll/stacking
                      arithmetic lives in `traceViewport.ts` (unit-tested
                      in `traceViewport.test.ts`).
     src-tauri/       Rust host (`cannet-gui` crate). Owns the trace
