@@ -61,6 +61,27 @@ export function App() {
     setVersion((v) => v + 1);
   }, []);
 
+  // Drop any cached chunk whose tail has grown past the cached length.
+  // A chunk fetched while the store was still growing arrives partial
+  // (cached length < CHUNK_SIZE); without this, those rows would
+  // render as placeholders forever because ensureVisible treats
+  // "in cache" as "complete".
+  const evictStalePartialChunks = useCallback((newCount: number) => {
+    const toEvict: number[] = [];
+    for (const [chunkIdx, chunk] of chunkCacheRef.current) {
+      const chunkStart = chunkIdx * CHUNK_SIZE;
+      if (chunk.length < CHUNK_SIZE && chunkStart + chunk.length < newCount) {
+        toEvict.push(chunkIdx);
+      }
+    }
+    if (toEvict.length === 0) return;
+    for (const c of toEvict) chunkCacheRef.current.delete(c);
+    cacheOrderRef.current = cacheOrderRef.current.filter(
+      (c) => !toEvict.includes(c),
+    );
+    setVersion((v) => v + 1);
+  }, []);
+
   // Wire up Tauri event listeners once.
   useEffect(() => {
     const unlistens: Array<Promise<() => void>> = [];
@@ -74,6 +95,7 @@ export function App() {
           return newCount;
         });
         setFramesPerSecond(frames_per_second);
+        evictStalePartialChunks(newCount);
       }),
     );
 
@@ -103,7 +125,7 @@ export function App() {
     return () => {
       unlistens.forEach((p) => p.then((fn) => fn()));
     };
-  }, [invalidateCache]);
+  }, [invalidateCache, evictStalePartialChunks]);
 
   const handleOpenLog = useCallback(async () => {
     const selected = await open({
