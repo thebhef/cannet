@@ -148,10 +148,21 @@ cargo run -p cannet-server -- examples/cannet-demo.blf
 
 It exposes the BLF's channels as gRPC interfaces (`blf:0`,
 `blf:1`, …) and replays them on a loop while a client is
-subscribed. `--bind <addr>` picks a different listen address
-(default `127.0.0.1:50051`). The server is single-client per
-process and rejects client transmits with `Error::TX_REJECTED`
-(BLF is read-only). Stop with Ctrl-C.
+subscribed.
+
+CLI flags:
+
+- `--bind <addr>` — listen address (default `127.0.0.1:50051`).
+- `--rate <multiplier>` — replay pacing. `1.0` plays the BLF at
+  its recorded cadence (real-time emulation, the closest match
+  to a hardware bus); `100` plays it 100× faster; `0` (the
+  default) disables pacing entirely and emits frames as fast as
+  the consumer drains. The default is intended for development
+  and tests; for a realistic emulation, use `--rate 1`.
+
+The server is single-client per process and rejects client
+transmits with `Error::TX_REJECTED` (BLF is read-only). Stop
+with Ctrl-C.
 
 In another terminal, start the GUI as usual (`pnpm --dir
 apps/gui tauri dev`). The toolbar's `host:port` input defaults
