@@ -112,9 +112,11 @@ export function App() {
     [refreshChunk],
   );
 
-  // Replace partial chunks (cached length < CHUNK_SIZE) in place when
-  // their tail grows so already-visible rows don't go through a
-  // missing intermediate state on the next paint.
+  // A cached chunk goes stale when more frames land in its range after
+  // it was fetched. Re-fetch any such partial chunk so the chunk cache
+  // stays consistent for when the user scrolls back into it. (The live
+  // edge the auto-scrolling view shows is served from the `trace-grew`
+  // tail overlay, not from here.)
   const refreshStalePartialChunks = useCallback(
     (newCount: number) => {
       for (const [chunkIdx, chunk] of chunkCacheRef.current) {

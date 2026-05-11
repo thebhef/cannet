@@ -1,11 +1,4 @@
-import {
-  memo,
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import type { TraceFrameRecord } from "./types";
 import {
@@ -15,6 +8,17 @@ import {
   formatSignalValue,
   formatTimestamp,
 } from "./format";
+import {
+  EXPANDED_ROW_HEIGHT,
+  ROW_HEIGHT,
+  buildPlacements,
+  maxAnchorRow,
+  maxScrollTop,
+  rowFromScroll,
+  scaledHeight,
+  scrollForRow,
+  visibleRowCount,
+} from "./traceViewport";
 
 interface TraceViewProps {
   count: number;
@@ -33,15 +37,6 @@ interface TraceViewProps {
   onAutoScrollDisabled: () => void;
 }
 
-const ROW_HEIGHT = 22;
-const EXPANDED_ROW_HEIGHT = 22 + 18 * 6;
-/// Cap on the rendered scroll-container height. Browsers cap CSS
-/// dimensions around 17M (Firefox) - 33M (WebKit/Chromium) px; 16M is
-/// safely under both. Past roughly 730k rows the scrollbar represents
-/// the trace at a compressed scale (each scrollbar pixel covers
-/// multiple rows); the mouse wheel still resolves finely because it
-/// moves scrollTop by a fixed pixel count regardless of the scale.
-const MAX_SCROLL_HEIGHT_PX = 16_000_000;
 /// Re-pin scrollTop only when it drifts from the target by more than
 /// this. Keeps the count-growth / auto-scroll re-pin from also firing
 /// on every user scroll (where the target ends up a pixel or two off
@@ -62,45 +57,32 @@ export function TraceView({
   const [viewportHeight, setViewportHeight] = useState(600);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
 
-  // Set true when we move scrollTop ourselves (auto-scroll re-pin,
-  // count-growth re-pin) so the resulting scroll event isn't mistaken
-  // for a user scroll.
+  // Set true when we move scrollTop ourselves (the re-pin effect) so
+  // the resulting scroll event isn't mistaken for a user scroll.
   const programmaticScrollRef = useRef(false);
-  // Absolute row the view should stay anchored at while auto-scroll
-  // is off. Updated on every user scroll; consulted on count growth.
+  // Absolute row the view stays anchored at while auto-scroll is off.
+  // Updated on every user scroll; consulted by `targetScrollTop` and
+  // the re-pin effect when `count` grows so the same row stays put
+  // even though the scaled scrollbar's row↔scroll mapping shifted.
+  //
+  // NOTE: this ref is read during render (via `targetScrollTop`). That
+  // is only safe because the one writer — `handleScroll` — always
+  // pairs the write with `setScrollTop`, forcing a re-render that
+  // re-reads it. Don't mutate it without an accompanying state update.
   const anchoredRowRef = useRef(0);
 
-  const visibleRowCount = Math.ceil(viewportHeight / ROW_HEIGHT) + 2;
-  const naturalHeight = count * ROW_HEIGHT;
-  const scaledHeight = Math.max(
-    viewportHeight,
-    Math.min(naturalHeight, MAX_SCROLL_HEIGHT_PX),
-  );
-  const maxScroll = Math.max(1, scaledHeight - viewportHeight);
-  const maxAnchorRow = Math.max(0, count - visibleRowCount);
+  const rows = visibleRowCount(viewportHeight);
+  const spacerHeight = scaledHeight(count, viewportHeight);
+  const maxScroll = maxScrollTop(count, viewportHeight);
+  const anchorMax = maxAnchorRow(count, viewportHeight);
 
-  const rowFromScroll = useCallback(
-    (top: number) => {
-      if (maxAnchorRow === 0) return 0;
-      const fraction = Math.min(1, Math.max(0, top / maxScroll));
-      return Math.min(maxAnchorRow, Math.round(fraction * maxAnchorRow));
-    },
-    [maxAnchorRow, maxScroll],
-  );
-
-  const scrollForRow = useCallback(
-    (row: number) => {
-      if (maxAnchorRow === 0) return 0;
-      return (Math.min(maxAnchorRow, Math.max(0, row)) / maxAnchorRow) * maxScroll;
-    },
-    [maxAnchorRow, maxScroll],
-  );
-
-  const firstVisibleRow = autoScroll ? maxAnchorRow : rowFromScroll(scrollTop);
-  const lastVisibleRow = Math.min(count, firstVisibleRow + visibleRowCount);
+  const firstVisibleRow = autoScroll
+    ? anchorMax
+    : rowFromScroll(scrollTop, count, viewportHeight);
+  const lastVisibleRow = Math.min(count, firstVisibleRow + rows);
   const targetScrollTop = autoScroll
     ? maxScroll
-    : scrollForRow(anchoredRowRef.current);
+    : scrollForRow(anchoredRowRef.current, count, viewportHeight);
 
   // Observe viewport size so the visible-row count tracks resizes.
   useEffect(() => {
@@ -125,9 +107,11 @@ export function TraceView({
 
   // Re-pin the scroll position when (and only when) auto-scroll mode
   // or the trace length changes — never in response to a user scroll
-  // (scrollTop deliberately isn't in the dep list). The generous
-  // threshold means the tiny target/actual mismatch from row-index
-  // rounding on a user scroll doesn't trip it.
+  // (`scrollTop` deliberately isn't in the dep list). Covers both
+  // "follow the live tail" (auto-scroll on, `targetScrollTop ===
+  // maxScroll`) and "stay on the anchored row as `count` grows". The
+  // generous threshold means the pixel-or-two target/actual mismatch
+  // from row-index rounding on a user scroll doesn't trip it.
   useLayoutEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -147,16 +131,6 @@ export function TraceView({
     }
   }, [count]);
 
-  // When auto-scroll is turned back on, snap to the live tail.
-  useLayoutEffect(() => {
-    if (!autoScroll) return;
-    const el = containerRef.current;
-    if (!el) return;
-    programmaticScrollRef.current = true;
-    el.scrollTop = maxScroll;
-    setScrollTop(maxScroll);
-  }, [autoScroll]); // eslint-disable-line react-hooks/exhaustive-deps
-
   const handleScroll = useCallback(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -166,9 +140,9 @@ export function TraceView({
       return;
     }
     if (autoScroll) onAutoScrollDisabled();
-    anchoredRowRef.current = rowFromScroll(top);
+    anchoredRowRef.current = rowFromScroll(top, count, viewportHeight);
     setScrollTop(top);
-  }, [autoScroll, onAutoScrollDisabled, rowFromScroll]);
+  }, [autoScroll, onAutoScrollDisabled, count, viewportHeight]);
 
   const toggleExpanded = useCallback((absoluteIndex: number) => {
     setExpanded((prev) => {
@@ -179,24 +153,7 @@ export function TraceView({
     });
   }, []);
 
-  // Visible rows, stacked from the top of the sticky viewport. Keyed
-  // by viewport position (not absolute index) so the DOM nodes stay
-  // put across scrolls — only their content changes when the window
-  // shifts.
-  const placements: {
-    posKey: number;
-    absIdx: number;
-    top: number;
-    isExpanded: boolean;
-  }[] = [];
-  let cursor = 0;
-  for (let pos = 0; pos < visibleRowCount; pos++) {
-    const absIdx = firstVisibleRow + pos;
-    if (absIdx >= count) break;
-    const isExpanded = expanded.has(absIdx);
-    placements.push({ posKey: pos, absIdx, top: cursor, isExpanded });
-    cursor += isExpanded ? EXPANDED_ROW_HEIGHT : ROW_HEIGHT;
-  }
+  const placements = buildPlacements(firstVisibleRow, count, rows, expanded);
 
   return (
     <div className="trace">
@@ -213,7 +170,7 @@ export function TraceView({
       </div>
       <div ref={containerRef} className="trace-rows" onScroll={handleScroll}>
         {/* Spacer: gives the scrollbar the trace's full (scaled) extent. */}
-        <div style={{ height: scaledHeight, position: "relative" }}>
+        <div style={{ height: spacerHeight, position: "relative" }}>
           {/* Sticky viewport: the compositor keeps this pinned to the
               top of the scroll area, so the rows never lag the
               scrollbar — React only swaps their content. */}
@@ -267,9 +224,9 @@ const Row = memo(function Row({
       style={{ position: "absolute", top, left: 0, right: 0, height }}
       onClick={() => frame?.decoded && onToggle(absoluteIndex)}
     >
-      {frame ? (
+      <span className="col-idx">{(absoluteIndex + 1).toLocaleString()}</span>
+      {frame && (
         <>
-          <span className="col-idx">{(absoluteIndex + 1).toLocaleString()}</span>
           <span className="col-time">
             {formatTimestamp(frame.timestamp_seconds, baseTimestamp)}
           </span>
@@ -298,8 +255,6 @@ const Row = memo(function Row({
             </div>
           )}
         </>
-      ) : (
-        <span className="col-idx">{(absoluteIndex + 1).toLocaleString()}</span>
       )}
     </div>
   );
