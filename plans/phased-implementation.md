@@ -34,7 +34,7 @@ Scope (all delivered):
   data bytes, and decoded-message name; expand a row to see decoded
   signals on a grid. Toolbar exposes Open BLF, Attach DBC, Pause /
   Resume, Clear, and an auto-scroll toggle. Realised as
-  `apps/gui/src/TraceView.tsx` using `@tanstack/react-virtual`; the
+  `apps/gui/src/TraceView.tsx` (hand-rolled scaled virtualizer); the
   Tauri host (`apps/gui/src-tauri`) batches frame events at 256 frames
   per `can-frame-batch` IPC message. The OS title bar is hidden in
   favour of a custom `TitleBar.tsx` so the cannet branding lives in

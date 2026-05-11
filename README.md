@@ -43,9 +43,12 @@ crates/
 
 apps/
   gui/           Tauri 2 + React 18 + Vite trace viewer.
-    src/             React frontend. `TraceView.tsx` virtualizes the
-                     row list with @tanstack/react-virtual; rows expand
-                     to show decoded signals.
+    src/             React frontend. `TraceView.tsx` is a hand-rolled
+                     scaled virtualizer — the scroll container caps
+                     at 16M px and maps scrollTop to absolute row
+                     index, so the scrollbar represents the whole
+                     trace regardless of size. Rows expand to show
+                     decoded signals.
     src-tauri/       Rust host (`cannet-gui` crate). The single Tauri
                      command `open_log` spawns a worker that pushes
                      frames at the frontend in 256-frame batches via
