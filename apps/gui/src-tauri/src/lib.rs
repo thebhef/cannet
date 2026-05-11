@@ -13,8 +13,10 @@
 //!
 //! Both worker threads run [`run_pump`], which is generic over
 //! `CanFrameSource` — it doesn't know or care which source it's
-//! draining; it just appends each frame to the shared
-//! [`TraceStore`].
+//! draining; it just appends each frame to the shared [`TraceStore`]
+//! until the source ends or a stop flag is set (the latter is how
+//! `disconnect_remote_server` halts a session without first draining
+//! the gRPC task's frame backlog).
 //!
 //! The trace UI is a *view* over [`TraceStore`]: it asks for slices via
 //! `fetch_trace_range` and renders virtualized rows around the current
@@ -33,7 +35,8 @@ mod ipc;
 mod trace_store;
 
 use std::fmt;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -67,12 +70,13 @@ struct AppState {
     /// `detach_dbc`; read by `fetch_trace_range` to decode the slice
     /// against whatever DBC is current at fetch time.
     database: Mutex<Option<Database>>,
-    /// Active remote session, if any. The handle is stashed here while
-    /// the corresponding pump thread drains frames from the
-    /// `FrameReceiver`. `disconnect_remote_server` takes the handle out
-    /// and drops it, signalling the worker to close the gRPC stream;
-    /// the pump thread then sees `Ok(None)` and exits cleanly.
-    remote_session: Mutex<Option<SessionHandle>>,
+    /// Active remote session, if any: the gRPC [`SessionHandle`] plus a
+    /// stop flag the pump thread watches. `disconnect_remote_server`
+    /// takes both out, sets the flag, and drops the handle — the flag
+    /// makes the pump exit promptly instead of first draining whatever
+    /// frames the gRPC task already buffered, and dropping the handle
+    /// closes the stream. The pump thread clears this slot on exit.
+    remote_session: Mutex<Option<(SessionHandle, Arc<AtomicBool>)>>,
     /// The trace model — the single source of truth for the captured
     /// stream. Pump threads append; `fetch_trace_range` reads slices
     /// out for the trace view to render.
@@ -159,7 +163,9 @@ fn open_log(app: AppHandle, blf_path: String) -> Result<OpenLogResult, String> {
     std::thread::Builder::new()
         .name("cannet-blf-pump".into())
         .spawn(move || {
-            run_pump(&app_for_thread, source);
+            // The BLF pump ends at end-of-file; nothing signals it to
+            // stop early, so the flag is just a never-set placeholder.
+            run_pump(&app_for_thread, source, Arc::new(AtomicBool::new(false)));
         })
         .map_err(|e| format!("failed to spawn pump thread: {e}"))?;
 
@@ -212,13 +218,15 @@ fn collect_trace_records(state: &AppState, start: u64, end: u64) -> Vec<TraceFra
 /// frame against the currently-attached DBC. The caller is expected to
 /// be the trace view, sizing `end - start` to the visible window plus a
 /// small prefetch pad.
+///
+/// `async` so Tauri runs it off the main thread: under a fast replay
+/// the pump thread takes the trace-store lock thousands of times a
+/// second, so the clone-and-decode here can stall briefly — keeping it
+/// off the UI thread keeps the window (and `disconnect`) responsive.
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-fn fetch_trace_range(
-    state: State<'_, AppState>,
-    start: u64,
-    end: u64,
-) -> Vec<TraceFrameRecord> {
+#[allow(clippy::unused_async)] // `async` is what makes Tauri run it off the main thread
+async fn fetch_trace_range(app: AppHandle, start: u64, end: u64) -> Vec<TraceFrameRecord> {
+    let state: State<'_, AppState> = app.state();
     collect_trace_records(state.inner(), start, end)
 }
 
@@ -292,6 +300,7 @@ async fn connect_remote_server(
     .map_err(|e| e.to_string())?;
 
     let (handle, receiver) = source.into_parts();
+    let stop = Arc::new(AtomicBool::new(false));
 
     {
         let state: State<'_, AppState> = app.state();
@@ -304,16 +313,16 @@ async fn connect_remote_server(
             // just spawned. Subsequent pump-thread spawn is skipped.
             return Err("already connected to a remote server".into());
         }
-        *guard = Some(handle);
+        *guard = Some((handle, Arc::clone(&stop)));
     }
 
     let app_for_thread = app.clone();
     std::thread::Builder::new()
         .name("cannet-remote-pump".into())
         .spawn(move || {
-            run_pump(&app_for_thread, receiver);
+            run_pump(&app_for_thread, receiver, stop);
             // The pump exited (server hung up or user disconnected).
-            // Clear the stashed handle so a fresh connect can start.
+            // Clear the stashed session so a fresh connect can start.
             let state: State<'_, AppState> = app_for_thread.state();
             let _ = state
                 .remote_session
@@ -336,23 +345,30 @@ async fn connect_remote_server(
     })
 }
 
-/// Drop the active remote session's [`SessionHandle`]. The pump thread
-/// notices via `Ok(None)` from its next `next_frame` call and exits.
+/// End the active remote session: set the pump's stop flag and drop the
+/// [`SessionHandle`]. The flag makes the pump break out of its loop on
+/// the next iteration — without first replaying whatever frames the
+/// gRPC task already buffered, which under a fast replay can be a large
+/// backlog — and dropping the handle closes the stream. The pump then
+/// emits `log-finished` and clears the session slot.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 fn disconnect_remote_server(state: State<'_, AppState>) {
-    let handle = state
+    let session = state
         .remote_session
         .lock()
         .expect("remote_session mutex poisoned")
         .take();
-    drop(handle);
+    if let Some((handle, stop)) = session {
+        stop.store(true, Ordering::Relaxed);
+        drop(handle);
+    }
 }
 
 // `source` is owned by this thread for its lifetime; clippy's
 // "pass by reference" suggestion doesn't fit the thread-spawn site.
 #[allow(clippy::needless_pass_by_value)]
-fn run_pump<S>(app: &AppHandle, mut source: S)
+fn run_pump<S>(app: &AppHandle, mut source: S, stop: Arc<AtomicBool>)
 where
     S: CanFrameSource,
     S::Error: fmt::Display,
@@ -361,6 +377,9 @@ where
     let mut total: u64 = 0;
 
     loop {
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
         match source.next_frame() {
             Ok(Some(frame)) => {
                 state.trace_store.append(RawTraceFrame::from(frame));
