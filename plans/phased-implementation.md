@@ -187,22 +187,34 @@ path. Doing this on top of the Phase 2 client/server split means panel
 state and bus configuration flow through the same wire protocol from the
 start, rather than being retrofitted later.
 
-This is a large phase; land it in small, independently demoable steps —
-roughly: transmit path + transmit panel, then the multi-panel docking
-shell (with the trace panel ported into it), then resizable / hideable
-trace columns, then the project panel and the project file. Each step
-should leave the app runnable.
+This is a large phase; land it in small, independently demoable steps,
+each leaving the app runnable. The realised order: the multi-panel
+docking shell first (trace view ported into it), then resizable /
+hideable trace columns, then the transmit path + transmit panel, then
+the project panel and project file.
 
 Scope:
 
 - **Transmit panel.** A panel that composes CAN / CAN FD frames (id, type,
-  channel, payload, optional cycle time) and submits them to the active
-  source. The CAN abstraction grows a transmit path so the GUI can send
-  through either an in-process source or a remote server. When a DBC is
-  attached, the transmit panel offers signal-by-signal entry for any
-  matching message id (factor / offset / endianness applied during encode);
-  raw byte entry is always available as the fallback for ids the DBC
-  doesn't cover.
+  channel, payload, optional cycle time) and sends them. When a DBC is
+  attached, the panel offers signal-by-signal entry for any matching
+  message id (factor / offset / endianness applied during encode); raw
+  byte entry is always available as the fallback for ids the DBC doesn't
+  cover. Where a sent frame goes:
+  - It always appears in the trace as a `Tx`-direction row (a tx-confirm)
+    — what a real analyzer shows for your own transmits — so the
+    compose / encode path is observable with no writable source at all.
+  - If a remote session is open, it's also sent over the wire (the
+    `cannet-core` / wire abstraction grows the transmit direction — the
+    client emits frame envelopes, not just subscribes). The Phase-2 BLF
+    replay server is read-only and answers `Error::TX_REJECTED`, which
+    the UI surfaces. A new `cannet-server --loopback` mode exposes a
+    writable interface that echoes received transmits back, so the wire
+    transmit path can be demonstrated succeeding end to end.
+  - An *actual* in-process writable bus (Linux `vcan` / socketcan, or an
+    in-memory loopback-bus type) is **not** in scope — see "out of
+    scope" and `plans/backlog.md`. Phase 3's tx-confirm + `--loopback`
+    server cover demo and test without it.
 - **Multi-panel main window with arbitrary layouts.** The GUI hosts
   multiple panels inside one OS window: more than one trace panel, more
   than one transmit panel, and a project panel (below). Panels can be
@@ -210,10 +222,12 @@ Scope:
   window — the layout shell is a docking-layout library (see
   `technology-inventory.md`), not hand-rolled. Each panel is independently
   configurable: trace panels carry their own filter set and column set;
-  transmit panels carry their own frame definitions. The frontend trace
-  store becomes per-trace-panel rather than a single global ref. The
-  layout system is designed up front so the Phase 4 plot panel slots in
-  as just another panel type.
+  transmit panels carry their own frame definitions. Trace panels are
+  independent views over the one host-side capture — each with its own
+  scroll position, auto-scroll toggle, and expanded-row set — replacing
+  Phase 1's single global frontend ref (see the implementation note
+  below). The layout system is designed up front so the Phase 4 plot
+  panel slots in as just another panel type.
 - **Resizable and hideable trace columns.** Trace panels support
   drag-resizing column widths and toggling individual columns on/off
   (#, timestamp, channel, direction, ID, type, length, data, decoded
@@ -241,6 +255,11 @@ Out of scope (deferred to later phases / backlog):
 - **Virtual CAN bus layer** — mapping logical project channels onto source
   channels (`features.md`). Phase 3's project file records concrete bus
   configs; the logical-channel indirection is a later phase.
+- **A real in-process writable CAN bus** — the Phase-3 transmit path
+  delivers over the wire (including `cannet-server --loopback`) and shows
+  a tx-confirm row in the trace; an actual local virtual-bus device
+  (Linux `vcan` / socketcan) or an in-memory loopback-bus type in
+  `cannet-core` is a later add. Tracked in `plans/backlog.md`.
 - **Tear-out into separate OS windows** — docking is within the single
   main window only. Tracked in `plans/backlog.md`.
 - **EDS references in the project file** — added when CANopen work begins.
@@ -278,9 +297,12 @@ Exit criteria:
   throughput.
 - Trace-panel columns can be drag-resized and individually shown / hidden,
   and that state persists with the panel.
-- Sending a frame from a transmit panel reaches the bus through both the
-  in-process source and the Phase 2 remote server, in both raw-byte mode
-  and (with a DBC attached) signal-by-signal encoded mode.
+- Sending a frame from a transmit panel shows it in the trace as a `Tx`
+  row, and — when a remote session is open — delivers it over the wire:
+  the read-only BLF server answers `Error::TX_REJECTED` (surfaced in the
+  UI), and a `cannet-server --loopback` accepts the transmit and echoes
+  it back into the trace. Works in both raw-byte mode and (with a DBC
+  attached) signal-by-signal encoded mode.
 - Opening a saved project restores the panel layout, the per-panel config,
   the bus / connection config, and the DBC reference(s); "reload DBC"
   picks up edits made to the file on disk; launching the app with no
