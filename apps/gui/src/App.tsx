@@ -26,51 +26,40 @@ type LogState =
 
 const DEFAULT_REMOTE_ADDRESS = "127.0.0.1:50051";
 
-/// Number of frames per cache chunk.
+/// Number of frames per cache chunk. Each chunk is fetched in one
+/// IPC round-trip; smaller = more fetches but cheaper each, larger =
+/// fewer fetches but each is bigger.
 const CHUNK_SIZE = 500;
-/// LRU budget for the chunk cache. Sized to comfortably cover the
-/// visible window plus prefetch. 120 chunks * 500 frames ≈ 60k rows;
-/// at ~150 bytes/row in JS that's around 9 MB — small.
+/// LRU budget for the chunk cache. 120 chunks * 500 frames = 60 k
+/// rows cached, plenty to cover the viewport plus scroll prefetch
+/// even at high scroll velocities.
 const CACHE_CHUNKS = 120;
-/// Maximum rows the view's virtualizer represents at once. The full
-/// trace lives in the Rust-side store; the frontend only ever holds
-/// this many rows in its scrollable container. Sized well under any
-/// browser's CSS dimension limit (50k * 22px ≈ 1.1M px; browsers cap
-/// around 17M-33M px) — also small enough that several trace windows
-/// in a future Phase-3 layout don't pile up.
-const WINDOW_SIZE = 50_000;
-/// How far the window slides when the user scrolls past its top or
-/// bottom edge while paused. Smaller = finer control; larger = fewer
-/// slides to traverse a long trace.
-const SLIDE_AMOUNT = Math.floor(WINDOW_SIZE / 2);
 
 export function App() {
   const [count, setCount] = useState(0);
   const [framesPerSecond, setFramesPerSecond] = useState(0);
-  /// `null` while live-tailing — the view follows count. A number
-  /// while paused — the view's upper-bound (exclusive) is anchored
-  /// here, regardless of how count grows. Sliding mutates this.
-  const [windowAnchor, setWindowAnchor] = useState<number | null>(null);
 
+  // Scroll mode. While `autoScroll` is true the trace view pins to
+  // the live tail; while false the view stays anchored at
+  // `anchorRow` even as count grows.
+  const [autoScroll, setAutoScroll] = useState(true);
+  const [anchorRow, setAnchorRow] = useState(0);
+
+  // Chunked cache of fetched trace rows, keyed by chunk index.
   const chunkCacheRef = useRef<Map<number, TraceFrameRecord[]>>(new Map());
   const cacheOrderRef = useRef<number[]>([]);
   const inflightChunksRef = useRef<Set<number>>(new Set());
   const [version, setVersion] = useState(0);
 
   const [state, setState] = useState<LogState>({ kind: "idle" });
-
-  const [autoScroll, setAutoScroll] = useState(true);
-  const [paused, setPaused] = useState(false);
   const [dbcPath, setDbcPath] = useState<string | null>(null);
   const [remoteAddress, setRemoteAddress] = useState(DEFAULT_REMOTE_ADDRESS);
 
-  /// Captured once: the timestamp of absolute row 0. Survives sliding
-  /// the view away from the start. Reset on Clear / new source.
-  const [baseTimestampSeconds, setBaseTimestampSeconds] = useState<number | null>(null);
-
-  const viewCount = windowAnchor ?? count;
-  const displayedCount = Math.min(viewCount, WINDOW_SIZE);
-  const displayOffset = viewCount - displayedCount;
+  // Captured once: timestamp of absolute row 0. Survives the user
+  // scrolling anywhere in the trace; reset on Clear / new source.
+  const [baseTimestampSeconds, setBaseTimestampSeconds] = useState<number | null>(
+    null,
+  );
 
   const invalidateCache = useCallback(() => {
     chunkCacheRef.current.clear();
@@ -79,9 +68,9 @@ export function App() {
     setVersion((v) => v + 1);
   }, []);
 
-  const resetWindow = useCallback(() => {
-    setWindowAnchor(null);
-    setPaused(false);
+  const resetView = useCallback(() => {
+    setAutoScroll(true);
+    setAnchorRow(0);
     setBaseTimestampSeconds(null);
   }, []);
 
@@ -116,11 +105,9 @@ export function App() {
     [refreshChunk],
   );
 
-  // Re-fetch any cached chunk whose tail has grown past the cached
-  // length. A chunk fetched while the store was still growing arrives
-  // partial; we replace it in place when the refresh lands rather than
-  // evicting first, so already-visible rows never go through a missing
-  // intermediate state on the next paint.
+  // Replace partial chunks (cached length < CHUNK_SIZE) in place when
+  // their tail grows so already-visible rows don't go through a
+  // missing intermediate state on the next paint.
   const refreshStalePartialChunks = useCallback(
     (newCount: number) => {
       for (const [chunkIdx, chunk] of chunkCacheRef.current) {
@@ -133,7 +120,6 @@ export function App() {
     [refreshChunk],
   );
 
-  // Wire up Tauri event listeners once.
   useEffect(() => {
     const unlistens: Array<Promise<() => void>> = [];
 
@@ -179,17 +165,19 @@ export function App() {
     };
   }, [invalidateCache, refreshStalePartialChunks]);
 
-  // Capture the timestamp of absolute row 0 once it's available.
+  // Once row 0 is available, capture its timestamp as the zero-point
+  // for the time column.
   useEffect(() => {
     if (baseTimestampSeconds !== null) return;
     if (count === 0) return;
-    void invoke<TraceFrameRecord[]>("fetch_trace_range", { start: 0, end: 1 }).then(
-      (frames) => {
-        if (frames.length > 0) {
-          setBaseTimestampSeconds(frames[0].timestamp_seconds);
-        }
-      },
-    );
+    void invoke<TraceFrameRecord[]>("fetch_trace_range", {
+      start: 0,
+      end: 1,
+    }).then((frames) => {
+      if (frames.length > 0) {
+        setBaseTimestampSeconds(frames[0].timestamp_seconds);
+      }
+    });
   }, [count, baseTimestampSeconds]);
 
   const handleOpenLog = useCallback(async () => {
@@ -202,13 +190,15 @@ export function App() {
     try {
       await invoke("clear_trace_store");
       invalidateCache();
-      resetWindow();
-      const result = await invoke<OpenLogResult>("open_log", { blfPath: selected });
+      resetView();
+      const result = await invoke<OpenLogResult>("open_log", {
+        blfPath: selected,
+      });
       setState({ kind: "loading", result });
     } catch (err) {
       setState({ kind: "error", message: String(err) });
     }
-  }, [invalidateCache, resetWindow]);
+  }, [invalidateCache, resetView]);
 
   const handleAttachDbc = useCallback(async () => {
     const selected = await open({
@@ -234,9 +224,9 @@ export function App() {
       setState({ kind: "error", message: String(err) });
     }
     invalidateCache();
-    resetWindow();
+    resetView();
     setCount(0);
-  }, [invalidateCache, resetWindow]);
+  }, [invalidateCache, resetView]);
 
   const handleConnect = useCallback(async () => {
     const address = remoteAddress.trim();
@@ -245,7 +235,7 @@ export function App() {
     try {
       await invoke("clear_trace_store");
       invalidateCache();
-      resetWindow();
+      resetView();
       setState({ kind: "remote-connecting", address });
       const result = await invoke<RemoteSessionResult>("connect_remote_server", {
         address,
@@ -254,7 +244,7 @@ export function App() {
     } catch (err) {
       setState({ kind: "error", message: String(err) });
     }
-  }, [remoteAddress, invalidateCache, resetWindow]);
+  }, [remoteAddress, invalidateCache, resetView]);
 
   const handleDisconnect = useCallback(async () => {
     try {
@@ -264,48 +254,17 @@ export function App() {
     }
   }, []);
 
-  const handlePauseToggle = useCallback(() => {
-    setPaused((wasPaused) => {
-      if (wasPaused) {
-        // Resuming: rejoin the live tail.
-        setWindowAnchor(null);
-        return false;
-      }
-      // Pausing: anchor the window where it currently is.
-      setWindowAnchor(count);
-      return true;
-    });
-  }, [count]);
+  // The trace view calls this when the user moves the scroll bar
+  // themselves. Turn off live-tailing and remember where they
+  // anchored so subsequent count growth doesn't drag them along.
+  const handleUserScroll = useCallback((newAnchorRow: number) => {
+    setAutoScroll(false);
+    setAnchorRow(newAnchorRow);
+  }, []);
 
-  /// Called by TraceView when the user wheels upward. If we're
-  /// live-tailing, this is the user's intent to step out of the tail
-  /// (autoscroll otherwise yanks them back, making the top edge of
-  /// the visible window unreachable). Engages pause silently —
-  /// equivalent to the user having clicked Pause first.
-  const handleUserScrollUp = useCallback(() => {
-    if (windowAnchor === null) {
-      setPaused(true);
-      setWindowAnchor(count);
-    }
-  }, [windowAnchor, count]);
-
-  const handleSlideBack = useCallback(() => {
-    // Engage pause if the user hit the edge while still live-tailing
-    // (mouse-wheel users get the auto-pause via handleUserScrollUp, but
-    // scrollbar-drag-to-top doesn't fire wheel events).
-    setPaused(true);
-    setWindowAnchor((prev) => {
-      const base = prev ?? count;
-      return Math.max(WINDOW_SIZE, base - SLIDE_AMOUNT);
-    });
-  }, [count]);
-
-  const handleSlideForward = useCallback(() => {
-    setWindowAnchor((prev) => {
-      if (prev === null) return null; // already at live tail
-      return Math.min(count, prev + SLIDE_AMOUNT);
-    });
-  }, [count]);
+  const handleToggleAutoScroll = useCallback((next: boolean) => {
+    setAutoScroll(next);
+  }, []);
 
   const getFrame = useCallback((index: number): TraceFrameRecord | null => {
     const chunkIdx = Math.floor(index / CHUNK_SIZE);
@@ -321,9 +280,12 @@ export function App() {
       if (safeEnd <= 0) return;
       const firstChunk = Math.floor(startIndex / CHUNK_SIZE);
       const lastChunk = Math.floor((safeEnd - 1) / CHUNK_SIZE);
-      // Prefetch one chunk past the visible end.
+      // Prefetch one chunk on either side so brisk scrolling doesn't
+      // bottom out into placeholders at chunk boundaries.
+      const prefetchStart = Math.max(0, firstChunk - 1);
       const prefetchEnd = lastChunk + 1;
-      for (let c = firstChunk; c <= prefetchEnd; c++) {
+      for (let c = prefetchStart; c <= prefetchEnd; c++) {
+        if (c < 0) continue;
         if (c * CHUNK_SIZE >= count) break;
         fetchChunk(c);
       }
@@ -332,18 +294,8 @@ export function App() {
   );
 
   const status = useMemo(
-    () =>
-      renderStatus(
-        state,
-        dbcPath,
-        count,
-        framesPerSecond,
-        viewCount,
-        displayOffset,
-        displayedCount,
-        paused,
-      ),
-    [state, dbcPath, count, framesPerSecond, viewCount, displayOffset, displayedCount, paused],
+    () => renderStatus(state, dbcPath, count, framesPerSecond),
+    [state, dbcPath, count, framesPerSecond],
   );
 
   const remoteConnected =
@@ -376,9 +328,6 @@ export function App() {
             </button>
           )}
           <span className="toolbar-separator" aria-hidden="true" />
-          <button onClick={handlePauseToggle} disabled={state.kind === "idle"}>
-            {paused ? "Resume" : "Pause"}
-          </button>
           <button onClick={handleClear} disabled={count === 0}>
             Clear
           </button>
@@ -386,7 +335,7 @@ export function App() {
             <input
               type="checkbox"
               checked={autoScroll}
-              onChange={(e) => setAutoScroll(e.target.checked)}
+              onChange={(e) => handleToggleAutoScroll(e.target.checked)}
             />
             auto-scroll
           </label>
@@ -394,18 +343,14 @@ export function App() {
         <div className="status">{status}</div>
       </header>
       <TraceView
-        displayedCount={displayedCount}
-        displayOffset={displayOffset}
+        count={count}
         version={version}
-        autoScroll={autoScroll && !paused}
+        autoScroll={autoScroll}
+        anchorRow={anchorRow}
         baseTimestampSeconds={baseTimestampSeconds}
         getFrame={getFrame}
         ensureVisible={ensureVisible}
-        canSlideBack={displayOffset > 0}
-        canSlideForward={paused && viewCount < count}
-        onSlideBack={handleSlideBack}
-        onSlideForward={handleSlideForward}
-        onUserScrollUp={handleUserScrollUp}
+        onUserScroll={handleUserScroll}
       />
     </main>
   );
@@ -416,37 +361,26 @@ function renderStatus(
   dbcPath: string | null,
   frameCount: number,
   framesPerSecond: number,
-  viewCount: number,
-  displayOffset: number,
-  displayedCount: number,
-  paused: boolean,
 ): string {
   const dbc = dbcPath ? `DBC: ${shortenPath(dbcPath)}` : "no DBC attached";
   const fps = framesPerSecond > 0 ? ` · ${formatRate(framesPerSecond)}` : "";
-  // Show the row range only when the visible window doesn't cover
-  // the whole trace — otherwise it duplicates the frame count.
-  const windowing = displayOffset > 0 || viewCount < frameCount;
-  const rows = windowing
-    ? ` · rows ${formatNumber(displayOffset + 1)}–${formatNumber(displayOffset + displayedCount)}`
-    : "";
-  const pausedTag = paused ? " · paused" : "";
   switch (state.kind) {
     case "idle":
       return `Open a BLF log or connect to a server to begin. ${dbc}.`;
     case "loading":
       return `Opening ${shortenPath(state.result.blf_path)} … ${dbc}.`;
     case "running":
-      return `Streaming ${shortenPath(state.result.blf_path)} (${formatNumber(frameCount)} frames${fps}${rows}${pausedTag}). ${dbc}.`;
+      return `Streaming ${shortenPath(state.result.blf_path)} (${formatNumber(frameCount)} frames${fps}). ${dbc}.`;
     case "done":
-      return `Done: ${formatNumber(state.total)} frames from ${shortenPath(state.result.blf_path)}${rows}. ${dbc}.`;
+      return `Done: ${formatNumber(state.total)} frames from ${shortenPath(state.result.blf_path)}. ${dbc}.`;
     case "remote-connecting":
       return `Connecting to ${state.address} … ${dbc}.`;
     case "remote-running": {
       const ifaces = state.result.interfaces.length;
-      return `Streaming from ${state.result.address} (${ifaces} interface${ifaces === 1 ? "" : "s"}, ${formatNumber(frameCount)} frames${fps}${rows}${pausedTag}). ${dbc}.`;
+      return `Streaming from ${state.result.address} (${ifaces} interface${ifaces === 1 ? "" : "s"}, ${formatNumber(frameCount)} frames${fps}). ${dbc}.`;
     }
     case "remote-done":
-      return `Disconnected from ${state.result.address}: ${formatNumber(state.total)} frames received${rows}. ${dbc}.`;
+      return `Disconnected from ${state.result.address}: ${formatNumber(state.total)} frames received. ${dbc}.`;
     case "error":
       return `Error: ${state.message}`;
   }
