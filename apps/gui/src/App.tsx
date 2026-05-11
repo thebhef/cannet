@@ -277,16 +277,32 @@ export function App() {
     });
   }, [count]);
 
+  /// Called by TraceView when the user wheels upward. If we're
+  /// live-tailing, this is the user's intent to step out of the tail
+  /// (autoscroll otherwise yanks them back, making the top edge of
+  /// the visible window unreachable). Engages pause silently —
+  /// equivalent to the user having clicked Pause first.
+  const handleUserScrollUp = useCallback(() => {
+    if (windowAnchor === null) {
+      setPaused(true);
+      setWindowAnchor(count);
+    }
+  }, [windowAnchor, count]);
+
   const handleSlideBack = useCallback(() => {
+    // Engage pause if the user hit the edge while still live-tailing
+    // (mouse-wheel users get the auto-pause via handleUserScrollUp, but
+    // scrollbar-drag-to-top doesn't fire wheel events).
+    setPaused(true);
     setWindowAnchor((prev) => {
-      if (prev === null) return prev;
-      return Math.max(WINDOW_SIZE, prev - SLIDE_AMOUNT);
+      const base = prev ?? count;
+      return Math.max(WINDOW_SIZE, base - SLIDE_AMOUNT);
     });
-  }, []);
+  }, [count]);
 
   const handleSlideForward = useCallback(() => {
     setWindowAnchor((prev) => {
-      if (prev === null) return prev;
+      if (prev === null) return null; // already at live tail
       return Math.min(count, prev + SLIDE_AMOUNT);
     });
   }, [count]);
@@ -385,10 +401,11 @@ export function App() {
         baseTimestampSeconds={baseTimestampSeconds}
         getFrame={getFrame}
         ensureVisible={ensureVisible}
-        canSlideBack={paused && displayOffset > 0}
+        canSlideBack={displayOffset > 0}
         canSlideForward={paused && viewCount < count}
         onSlideBack={handleSlideBack}
         onSlideForward={handleSlideForward}
+        onUserScrollUp={handleUserScrollUp}
       />
     </main>
   );
@@ -406,29 +423,30 @@ function renderStatus(
 ): string {
   const dbc = dbcPath ? `DBC: ${shortenPath(dbcPath)}` : "no DBC attached";
   const fps = framesPerSecond > 0 ? ` · ${formatRate(framesPerSecond)}` : "";
-  const window =
-    viewCount < frameCount || displayOffset > 0
-      ? ` · viewing ${formatNumber(displayOffset + 1)}–${formatNumber(displayOffset + displayedCount)} of ${formatNumber(frameCount)}${paused ? " (paused)" : ""}`
-      : paused
-        ? " (paused)"
-        : "";
+  // Show the row range only when the visible window doesn't cover
+  // the whole trace — otherwise it duplicates the frame count.
+  const windowing = displayOffset > 0 || viewCount < frameCount;
+  const rows = windowing
+    ? ` · rows ${formatNumber(displayOffset + 1)}–${formatNumber(displayOffset + displayedCount)}`
+    : "";
+  const pausedTag = paused ? " · paused" : "";
   switch (state.kind) {
     case "idle":
       return `Open a BLF log or connect to a server to begin. ${dbc}.`;
     case "loading":
       return `Opening ${shortenPath(state.result.blf_path)} … ${dbc}.`;
     case "running":
-      return `Streaming ${shortenPath(state.result.blf_path)} (${formatNumber(frameCount)} frames${fps}${window}). ${dbc}.`;
+      return `Streaming ${shortenPath(state.result.blf_path)} (${formatNumber(frameCount)} frames${fps}${rows}${pausedTag}). ${dbc}.`;
     case "done":
-      return `Done: ${formatNumber(state.total)} frames from ${shortenPath(state.result.blf_path)}${window}. ${dbc}.`;
+      return `Done: ${formatNumber(state.total)} frames from ${shortenPath(state.result.blf_path)}${rows}. ${dbc}.`;
     case "remote-connecting":
       return `Connecting to ${state.address} … ${dbc}.`;
     case "remote-running": {
       const ifaces = state.result.interfaces.length;
-      return `Streaming from ${state.result.address} (${ifaces} interface${ifaces === 1 ? "" : "s"}, ${formatNumber(frameCount)} frames${fps}${window}). ${dbc}.`;
+      return `Streaming from ${state.result.address} (${ifaces} interface${ifaces === 1 ? "" : "s"}, ${formatNumber(frameCount)} frames${fps}${rows}${pausedTag}). ${dbc}.`;
     }
     case "remote-done":
-      return `Disconnected from ${state.result.address}: ${formatNumber(state.total)} frames received${window}. ${dbc}.`;
+      return `Disconnected from ${state.result.address}: ${formatNumber(state.total)} frames received${rows}. ${dbc}.`;
     case "error":
       return `Error: ${state.message}`;
   }
