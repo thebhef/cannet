@@ -97,12 +97,16 @@ export function TraceView({
     return () => ro.disconnect();
   }, []);
 
-  // Tell the parent which absolute rows are visible so it can fetch
-  // the covering chunks.
+  // Tell the parent which absolute rows are visible so it can prefetch
+  // the covering chunks — but skip this while auto-scrolling: the
+  // `trace-grew` overlay already carries enough trailing frames to
+  // cover every visible row, so prefetching there would just churn the
+  // shared chunk cache (at a high frame rate the live edge moves many
+  // chunks per tick, evicting other panels' rows from the LRU).
   useEffect(() => {
-    if (count === 0) return;
+    if (count === 0 || autoScroll) return;
     ensureVisible(firstVisibleRow, lastVisibleRow);
-  }, [firstVisibleRow, lastVisibleRow, count, ensureVisible]);
+  }, [autoScroll, firstVisibleRow, lastVisibleRow, count, ensureVisible]);
 
   // While auto-scrolling, keep the anchor glued to the live tail. This
   // is also what makes turning auto-scroll off (toolbar checkbox) a
