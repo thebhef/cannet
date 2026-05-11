@@ -26,24 +26,34 @@ type LogState =
 
 const DEFAULT_REMOTE_ADDRESS = "127.0.0.1:50051";
 
-/// Number of frames per cache chunk. The trace view's virtualizer asks
-/// for individual rows; we serve them out of a per-chunk cache, so
-/// fetching a missing row pulls its whole chunk in one IPC round-trip.
+/// Number of frames per cache chunk.
 const CHUNK_SIZE = 500;
-/// LRU budget for the chunk cache. With 500-frame chunks this is 5 000
-/// frames, enough to cover a deep viewport plus generous prefetch
-/// without creeping back toward the original "everything in memory"
-/// problem.
-const CACHE_CHUNKS = 10;
+/// LRU budget for the chunk cache. Sized to comfortably cover the
+/// visible window plus prefetch. 120 chunks * 500 frames ≈ 60k rows;
+/// at ~150 bytes/row in JS that's around 9 MB — small.
+const CACHE_CHUNKS = 120;
+/// Maximum rows the view's virtualizer represents at once. The full
+/// trace lives in the Rust-side store; the frontend only ever holds
+/// this many rows in its scrollable container. Sized well under any
+/// browser's CSS dimension limit (50k * 22px ≈ 1.1M px; browsers cap
+/// around 17M-33M px) — also small enough that several trace windows
+/// in a future Phase-3 layout don't pile up.
+const WINDOW_SIZE = 50_000;
+/// How far the window slides when the user scrolls past its top or
+/// bottom edge while paused. Smaller = finer control; larger = fewer
+/// slides to traverse a long trace.
+const SLIDE_AMOUNT = Math.floor(WINDOW_SIZE / 2);
 
 export function App() {
   const [count, setCount] = useState(0);
   const [framesPerSecond, setFramesPerSecond] = useState(0);
+  /// `null` while live-tailing — the view follows count. A number
+  /// while paused — the view's upper-bound (exclusive) is anchored
+  /// here, regardless of how count grows. Sliding mutates this.
+  const [windowAnchor, setWindowAnchor] = useState<number | null>(null);
 
-  // Chunked cache of fetched trace rows. Keyed by chunk index
-  // (= floor(absoluteIndex / CHUNK_SIZE)).
   const chunkCacheRef = useRef<Map<number, TraceFrameRecord[]>>(new Map());
-  const cacheOrderRef = useRef<number[]>([]); // LRU, oldest first
+  const cacheOrderRef = useRef<number[]>([]);
   const inflightChunksRef = useRef<Set<number>>(new Set());
   const [version, setVersion] = useState(0);
 
@@ -54,6 +64,14 @@ export function App() {
   const [dbcPath, setDbcPath] = useState<string | null>(null);
   const [remoteAddress, setRemoteAddress] = useState(DEFAULT_REMOTE_ADDRESS);
 
+  /// Captured once: the timestamp of absolute row 0. Survives sliding
+  /// the view away from the start. Reset on Clear / new source.
+  const [baseTimestampSeconds, setBaseTimestampSeconds] = useState<number | null>(null);
+
+  const viewCount = windowAnchor ?? count;
+  const displayedCount = Math.min(viewCount, WINDOW_SIZE);
+  const displayOffset = viewCount - displayedCount;
+
   const invalidateCache = useCallback(() => {
     chunkCacheRef.current.clear();
     cacheOrderRef.current = [];
@@ -61,22 +79,59 @@ export function App() {
     setVersion((v) => v + 1);
   }, []);
 
+  const resetWindow = useCallback(() => {
+    setWindowAnchor(null);
+    setPaused(false);
+    setBaseTimestampSeconds(null);
+  }, []);
+
+  const refreshChunk = useCallback(async (chunkIdx: number) => {
+    if (inflightChunksRef.current.has(chunkIdx)) return;
+    inflightChunksRef.current.add(chunkIdx);
+    try {
+      const start = chunkIdx * CHUNK_SIZE;
+      const end = start + CHUNK_SIZE;
+      const frames = await invoke<TraceFrameRecord[]>("fetch_trace_range", {
+        start,
+        end,
+      });
+      chunkCacheRef.current.set(chunkIdx, frames);
+      cacheOrderRef.current = cacheOrderRef.current.filter((c) => c !== chunkIdx);
+      cacheOrderRef.current.push(chunkIdx);
+      while (cacheOrderRef.current.length > CACHE_CHUNKS) {
+        const evict = cacheOrderRef.current.shift();
+        if (evict !== undefined) chunkCacheRef.current.delete(evict);
+      }
+      setVersion((v) => v + 1);
+    } finally {
+      inflightChunksRef.current.delete(chunkIdx);
+    }
+  }, []);
+
+  const fetchChunk = useCallback(
+    (chunkIdx: number) => {
+      if (chunkCacheRef.current.has(chunkIdx)) return;
+      void refreshChunk(chunkIdx);
+    },
+    [refreshChunk],
+  );
+
   // Re-fetch any cached chunk whose tail has grown past the cached
   // length. A chunk fetched while the store was still growing arrives
-  // partial (cached length < CHUNK_SIZE); we replace it in place when
-  // the refresh lands rather than evicting first, so rows that were
-  // already visible never go through a "missing" state on the next
-  // paint — that was the autoscroll flicker.
-  const refreshStalePartialChunks = useCallback((newCount: number) => {
-    for (const [chunkIdx, chunk] of chunkCacheRef.current) {
-      const chunkStart = chunkIdx * CHUNK_SIZE;
-      if (chunk.length < CHUNK_SIZE && chunkStart + chunk.length < newCount) {
-        void refreshChunk(chunkIdx);
+  // partial; we replace it in place when the refresh lands rather than
+  // evicting first, so already-visible rows never go through a missing
+  // intermediate state on the next paint.
+  const refreshStalePartialChunks = useCallback(
+    (newCount: number) => {
+      for (const [chunkIdx, chunk] of chunkCacheRef.current) {
+        const chunkStart = chunkIdx * CHUNK_SIZE;
+        if (chunk.length < CHUNK_SIZE && chunkStart + chunk.length < newCount) {
+          void refreshChunk(chunkIdx);
+        }
       }
-    }
-    // refreshChunk's own setVersion fires when the fetch lands.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    },
+    [refreshChunk],
+  );
 
   // Wire up Tauri event listeners once.
   useEffect(() => {
@@ -86,8 +141,10 @@ export function App() {
       listen<TraceGrew>("trace-grew", (event) => {
         const { count: newCount, frames_per_second } = event.payload;
         setCount((prev) => {
-          // Count went down → store was cleared; drop the cache.
-          if (newCount < prev) invalidateCache();
+          if (newCount < prev) {
+            invalidateCache();
+            setBaseTimestampSeconds(null);
+          }
           return newCount;
         });
         setFramesPerSecond(frames_per_second);
@@ -104,7 +161,6 @@ export function App() {
               return { kind: "done", result: s.result, total };
             }
             if (s.kind === "remote-connecting") {
-              // Server hung up before any frames arrived (rare).
               return { kind: "idle" };
             }
             if (s.kind === "remote-running") {
@@ -123,6 +179,19 @@ export function App() {
     };
   }, [invalidateCache, refreshStalePartialChunks]);
 
+  // Capture the timestamp of absolute row 0 once it's available.
+  useEffect(() => {
+    if (baseTimestampSeconds !== null) return;
+    if (count === 0) return;
+    void invoke<TraceFrameRecord[]>("fetch_trace_range", { start: 0, end: 1 }).then(
+      (frames) => {
+        if (frames.length > 0) {
+          setBaseTimestampSeconds(frames[0].timestamp_seconds);
+        }
+      },
+    );
+  }, [count, baseTimestampSeconds]);
+
   const handleOpenLog = useCallback(async () => {
     const selected = await open({
       multiple: false,
@@ -133,14 +202,13 @@ export function App() {
     try {
       await invoke("clear_trace_store");
       invalidateCache();
-      const result = await invoke<OpenLogResult>("open_log", {
-        blfPath: selected,
-      });
+      resetWindow();
+      const result = await invoke<OpenLogResult>("open_log", { blfPath: selected });
       setState({ kind: "loading", result });
     } catch (err) {
       setState({ kind: "error", message: String(err) });
     }
-  }, [invalidateCache]);
+  }, [invalidateCache, resetWindow]);
 
   const handleAttachDbc = useCallback(async () => {
     const selected = await open({
@@ -156,9 +224,6 @@ export function App() {
       setState({ kind: "error", message: String(err) });
       return;
     }
-
-    // The store's frames are unchanged but their decoded view just did,
-    // so cached chunks are stale. Drop them; the next render refetches.
     invalidateCache();
   }, [invalidateCache]);
 
@@ -168,12 +233,10 @@ export function App() {
     } catch (err) {
       setState({ kind: "error", message: String(err) });
     }
-    // The trace-grew listener will fire shortly with count=0 and
-    // invalidate the cache; do it eagerly here too so the UI reflects
-    // immediately.
     invalidateCache();
+    resetWindow();
     setCount(0);
-  }, [invalidateCache]);
+  }, [invalidateCache, resetWindow]);
 
   const handleConnect = useCallback(async () => {
     const address = remoteAddress.trim();
@@ -182,6 +245,7 @@ export function App() {
     try {
       await invoke("clear_trace_store");
       invalidateCache();
+      resetWindow();
       setState({ kind: "remote-connecting", address });
       const result = await invoke<RemoteSessionResult>("connect_remote_server", {
         address,
@@ -190,7 +254,7 @@ export function App() {
     } catch (err) {
       setState({ kind: "error", message: String(err) });
     }
-  }, [remoteAddress, invalidateCache]);
+  }, [remoteAddress, invalidateCache, resetWindow]);
 
   const handleDisconnect = useCallback(async () => {
     try {
@@ -200,61 +264,39 @@ export function App() {
     }
   }, []);
 
-  // The actual fetch + cache-replace. Always refetches when called;
-  // de-duped against concurrent invocations via inflightChunksRef.
-  // Callers (`fetchChunk`, `refreshStalePartialChunks`) decide whether
-  // to issue the fetch in the first place.
-  const refreshChunk = useCallback(async (chunkIdx: number) => {
-    if (inflightChunksRef.current.has(chunkIdx)) return;
-    inflightChunksRef.current.add(chunkIdx);
-    try {
-      const start = chunkIdx * CHUNK_SIZE;
-      const end = start + CHUNK_SIZE;
-      const frames = await invoke<TraceFrameRecord[]>("fetch_trace_range", {
-        start,
-        end,
-      });
-      // The store may have been cleared between request and response.
-      // Cache the chunk regardless — out-of-range rows just won't be
-      // looked up by getFrame, and the LRU drops them soon enough.
-      chunkCacheRef.current.set(chunkIdx, frames);
-      cacheOrderRef.current = cacheOrderRef.current.filter(
-        (c) => c !== chunkIdx,
-      );
-      cacheOrderRef.current.push(chunkIdx);
-      while (cacheOrderRef.current.length > CACHE_CHUNKS) {
-        const evict = cacheOrderRef.current.shift();
-        if (evict !== undefined) chunkCacheRef.current.delete(evict);
+  const handlePauseToggle = useCallback(() => {
+    setPaused((wasPaused) => {
+      if (wasPaused) {
+        // Resuming: rejoin the live tail.
+        setWindowAnchor(null);
+        return false;
       }
-      setVersion((v) => v + 1);
-    } finally {
-      inflightChunksRef.current.delete(chunkIdx);
-    }
+      // Pausing: anchor the window where it currently is.
+      setWindowAnchor(count);
+      return true;
+    });
+  }, [count]);
+
+  const handleSlideBack = useCallback(() => {
+    setWindowAnchor((prev) => {
+      if (prev === null) return prev;
+      return Math.max(WINDOW_SIZE, prev - SLIDE_AMOUNT);
+    });
   }, []);
 
-  // Fetch a chunk only if it's missing from the cache. Used by the
-  // visible-range driver — already-cached chunks aren't disturbed.
-  const fetchChunk = useCallback(
-    (chunkIdx: number) => {
-      if (chunkCacheRef.current.has(chunkIdx)) return;
-      void refreshChunk(chunkIdx);
-    },
-    [refreshChunk],
-  );
+  const handleSlideForward = useCallback(() => {
+    setWindowAnchor((prev) => {
+      if (prev === null) return prev;
+      return Math.min(count, prev + SLIDE_AMOUNT);
+    });
+  }, [count]);
 
-  // Synchronous lookup for the trace view. Returns null if the
-  // covering chunk hasn't been fetched yet; the trace view renders a
-  // placeholder and calls ensureVisible. The closure reads from refs,
-  // so it stays correct without re-binding.
-  const getFrame = useCallback(
-    (index: number): TraceFrameRecord | null => {
-      const chunkIdx = Math.floor(index / CHUNK_SIZE);
-      const chunk = chunkCacheRef.current.get(chunkIdx);
-      if (!chunk) return null;
-      return chunk[index - chunkIdx * CHUNK_SIZE] ?? null;
-    },
-    [],
-  );
+  const getFrame = useCallback((index: number): TraceFrameRecord | null => {
+    const chunkIdx = Math.floor(index / CHUNK_SIZE);
+    const chunk = chunkCacheRef.current.get(chunkIdx);
+    if (!chunk) return null;
+    return chunk[index - chunkIdx * CHUNK_SIZE] ?? null;
+  }, []);
 
   const ensureVisible = useCallback(
     (startIndex: number, endIndex: number) => {
@@ -263,9 +305,7 @@ export function App() {
       if (safeEnd <= 0) return;
       const firstChunk = Math.floor(startIndex / CHUNK_SIZE);
       const lastChunk = Math.floor((safeEnd - 1) / CHUNK_SIZE);
-      // Prefetch one chunk past the visible end so autoscroll
-      // crossing a chunk boundary doesn't have to wait an IPC
-      // round-trip for the next chunk to render.
+      // Prefetch one chunk past the visible end.
       const prefetchEnd = lastChunk + 1;
       for (let c = firstChunk; c <= prefetchEnd; c++) {
         if (c * CHUNK_SIZE >= count) break;
@@ -276,8 +316,18 @@ export function App() {
   );
 
   const status = useMemo(
-    () => renderStatus(state, dbcPath, count, framesPerSecond),
-    [state, dbcPath, count, framesPerSecond],
+    () =>
+      renderStatus(
+        state,
+        dbcPath,
+        count,
+        framesPerSecond,
+        viewCount,
+        displayOffset,
+        displayedCount,
+        paused,
+      ),
+    [state, dbcPath, count, framesPerSecond, viewCount, displayOffset, displayedCount, paused],
   );
 
   const remoteConnected =
@@ -310,10 +360,7 @@ export function App() {
             </button>
           )}
           <span className="toolbar-separator" aria-hidden="true" />
-          <button
-            onClick={() => setPaused((p) => !p)}
-            disabled={state.kind === "idle"}
-          >
+          <button onClick={handlePauseToggle} disabled={state.kind === "idle"}>
             {paused ? "Resume" : "Pause"}
           </button>
           <button onClick={handleClear} disabled={count === 0}>
@@ -331,11 +378,17 @@ export function App() {
         <div className="status">{status}</div>
       </header>
       <TraceView
-        count={count}
+        displayedCount={displayedCount}
+        displayOffset={displayOffset}
         version={version}
         autoScroll={autoScroll && !paused}
+        baseTimestampSeconds={baseTimestampSeconds}
         getFrame={getFrame}
         ensureVisible={ensureVisible}
+        canSlideBack={paused && displayOffset > 0}
+        canSlideForward={paused && viewCount < count}
+        onSlideBack={handleSlideBack}
+        onSlideForward={handleSlideForward}
       />
     </main>
   );
@@ -346,28 +399,36 @@ function renderStatus(
   dbcPath: string | null,
   frameCount: number,
   framesPerSecond: number,
+  viewCount: number,
+  displayOffset: number,
+  displayedCount: number,
+  paused: boolean,
 ): string {
-  const dbc = dbcPath
-    ? `DBC: ${shortenPath(dbcPath)}`
-    : "no DBC attached";
+  const dbc = dbcPath ? `DBC: ${shortenPath(dbcPath)}` : "no DBC attached";
   const fps = framesPerSecond > 0 ? ` · ${formatRate(framesPerSecond)}` : "";
+  const window =
+    viewCount < frameCount || displayOffset > 0
+      ? ` · viewing ${formatNumber(displayOffset + 1)}–${formatNumber(displayOffset + displayedCount)} of ${formatNumber(frameCount)}${paused ? " (paused)" : ""}`
+      : paused
+        ? " (paused)"
+        : "";
   switch (state.kind) {
     case "idle":
       return `Open a BLF log or connect to a server to begin. ${dbc}.`;
     case "loading":
       return `Opening ${shortenPath(state.result.blf_path)} … ${dbc}.`;
     case "running":
-      return `Streaming ${shortenPath(state.result.blf_path)} (${frameCount} frames${fps}). ${dbc}.`;
+      return `Streaming ${shortenPath(state.result.blf_path)} (${formatNumber(frameCount)} frames${fps}${window}). ${dbc}.`;
     case "done":
-      return `Done: ${state.total} frames from ${shortenPath(state.result.blf_path)}. ${dbc}.`;
+      return `Done: ${formatNumber(state.total)} frames from ${shortenPath(state.result.blf_path)}${window}. ${dbc}.`;
     case "remote-connecting":
       return `Connecting to ${state.address} … ${dbc}.`;
     case "remote-running": {
       const ifaces = state.result.interfaces.length;
-      return `Streaming from ${state.result.address} (${ifaces} interface${ifaces === 1 ? "" : "s"}, ${frameCount} frames${fps}). ${dbc}.`;
+      return `Streaming from ${state.result.address} (${ifaces} interface${ifaces === 1 ? "" : "s"}, ${formatNumber(frameCount)} frames${fps}${window}). ${dbc}.`;
     }
     case "remote-done":
-      return `Disconnected from ${state.result.address}: ${state.total} frames received. ${dbc}.`;
+      return `Disconnected from ${state.result.address}: ${formatNumber(state.total)} frames received${window}. ${dbc}.`;
     case "error":
       return `Error: ${state.message}`;
   }
@@ -377,6 +438,10 @@ function formatRate(fps: number): string {
   if (fps >= 10_000) return `${(fps / 1000).toFixed(1)}k fps`;
   if (fps >= 100) return `${Math.round(fps)} fps`;
   return `${fps.toFixed(1)} fps`;
+}
+
+function formatNumber(n: number): string {
+  return n.toLocaleString();
 }
 
 function shortenPath(path: string): string {
