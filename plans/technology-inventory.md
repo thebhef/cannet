@@ -26,8 +26,14 @@ and the license / platform constraints we need to be aware of.
 - **React 18 + Vite + TypeScript** — `adopted` in Phase 1 as the frontend
   stack inside the Tauri WebView. Mainstream ecosystem, strong virtualized
   grid options. MIT-licensed.
-- **`@tanstack/react-virtual`** — `adopted` in Phase 1 for trace-window row
-  virtualization. MIT.
+- **`@tanstack/react-virtual`** — `adopted` in Phase 1, `removed` in
+  Phase 2. The library's count-based virtualizer doesn't handle the
+  browser's CSS dimension cap (≈17M-33M px depending on the engine):
+  past ~1.5M rows at 22 px each, scrollTo no longer resolves
+  individual rows. Replaced with a hand-rolled scaled-scrollbar
+  virtualizer (`apps/gui/src/TraceView.tsx`) that caps the scroll
+  container at 16M px and maps scrollTop fractionally to absolute
+  row index. ~120 lines, no external dep.
 - **Electron** — `proposed (fallback)`. Documented fallback if Tauri's
   per-OS WebView fragmentation blocks us. Same JS frontend, swap the host
   shell. Trade-off: ~150 MB bundle, heavier RAM, Node backend instead of
