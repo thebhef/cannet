@@ -13,10 +13,12 @@ import {
   ROW_HEIGHT,
   buildPlacements,
   maxAnchorRow,
+  maxWheelRows,
   rowFromScroll,
   scaledHeight,
   scrollForRow,
   visibleRowCount,
+  wheelDeltaRows,
 } from "./traceViewport";
 
 interface TraceViewProps {
@@ -71,6 +73,12 @@ export function TraceView({
   // both disable auto-scroll and re-anchor the view to itself.
   const programmaticScrollRef = useRef(false);
 
+  // Fractional carry for wheel scrolling: a wheel event's row delta is
+  // rarely a whole number (a 100 px notch ≈ 4.5 rows; a trackpad sends
+  // many sub-row deltas), so the remainder accrues here until it makes
+  // a whole row.
+  const wheelAccumRef = useRef(0);
+
   const rows = visibleRowCount(viewportHeight);
   const spacerHeight = scaledHeight(count, viewportHeight);
   const anchorMax = maxAnchorRow(count, viewportHeight);
@@ -124,6 +132,45 @@ export function TraceView({
       el.scrollTop = targetScrollTop;
     }
   }, [targetScrollTop]);
+
+  // Own the wheel. Letting the browser scroll natively would translate
+  // a fixed-pixel notch through the (possibly compressed) scaled
+  // scrollbar — fine for a small trace, but a huge one turns one notch
+  // into a jump that skips a screenful of rows. Instead, convert the
+  // wheel delta to a bounded row count and move the anchor directly;
+  // the re-pin layout effect drags the scrollbar to follow. Attached
+  // imperatively so the listener can be non-passive (`preventDefault`).
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (e.ctrlKey) return; // ctrl+wheel is zoom — leave it alone
+      if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return; // horizontal scroll
+      e.preventDefault();
+      const max = maxWheelRows(viewportHeight);
+      wheelAccumRef.current += wheelDeltaRows(e.deltaY, e.deltaMode, viewportHeight);
+      let delta = Math.trunc(wheelAccumRef.current);
+      wheelAccumRef.current -= delta;
+      if (delta > max) {
+        delta = max;
+        wheelAccumRef.current = 0;
+      } else if (delta < -max) {
+        delta = -max;
+        wheelAccumRef.current = 0;
+      }
+      if (delta === 0) return;
+      if (autoScroll) {
+        if (delta > 0) return; // already pinned to the tail
+        onAutoScrollDisabled(); // wheel-up: release the pin to look back
+      }
+      setAnchoredRow((r) => {
+        const base = autoScroll ? anchorMax : Math.min(anchorMax, Math.max(0, r));
+        return Math.min(anchorMax, Math.max(0, base + delta));
+      });
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [viewportHeight, autoScroll, anchorMax, onAutoScrollDisabled]);
 
   // Reset transient view state when the trace is cleared.
   useEffect(() => {
