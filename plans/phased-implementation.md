@@ -34,38 +34,38 @@ Scope (all delivered):
   data bytes, and decoded-message name; expand a row to see decoded
   signals on a grid. Toolbar exposes Open BLF, Attach DBC, Pause /
   Resume, Clear, and an auto-scroll toggle. Realised as
-  `apps/gui/src/TraceView.tsx` (hand-rolled scaled virtualizer); the
-  Tauri host (`apps/gui/src-tauri`) batches frame events at 256 frames
-  per `can-frame-batch` IPC message. The OS title bar is hidden in
-  favour of a custom `TitleBar.tsx` so the cannet branding lives in
-  the window chrome.
+  `apps/gui/src/TraceView.tsx`. The OS title bar is hidden in favour of
+  a custom `TitleBar.tsx` so the cannet branding lives in the window
+  chrome. (Phase 2 reworked the data path behind this view — see that
+  section's refinements.)
 - **DBC decoding.** Load a DBC and decode every matching frame's
   signals; expand a frame in the trace view to see them. The DBC is
   process-global, not per-channel — per-channel scoping is deferred
   until the multi-source story (Phase 2/3) makes the choice meaningful.
-  Attaching a DBC after a BLF is already open retro-decodes existing
-  trace rows in 1000-frame batches via the `decode_frames` IPC command,
-  so the visible state always reflects the current database. Float /
-  double signals declared via `SIG_VALTYPE_` decode as IEEE 754, not as
-  scaled integers (added once the demo fixture exposed the gap).
-  Realised as `crates/cannet-dbc` (uses `can-dbc` for parsing; runtime
-  decoder lives in the crate root).
+  Attaching a DBC after a BLF is already open re-decodes the affected
+  trace rows, so the visible state always reflects the current
+  database. Float / double signals declared via `SIG_VALTYPE_` decode
+  as IEEE 754, not as scaled integers (added once the demo fixture
+  exposed the gap). Realised as `crates/cannet-dbc` (uses `can-dbc` for
+  parsing; runtime decoder lives in the crate root).
 
 Architecture refinements that landed during implementation:
 
-- **Frontend-resident trace store.** Trace data lives in a
-  `useRef<CanFrameRecord[]>` inside the React app, with a version
-  counter to wake the virtualizer. The Tauri host streams frames but
-  doesn't keep a buffer. The trace view is a *view* over the live
-  pump, not the source of truth — explicit, persistable trace capture
-  lives in `features.md` as a future feature, not Phase 1 scope.
+- **Trace store as the model; the view is a view over it.** The trace
+  data is the model layer and the trace window renders a slice of it;
+  explicit, persistable trace capture is a future feature
+  (`features.md`), not Phase 1 scope. Phase 1 kept the store
+  frontend-resident (`useRef<CanFrameRecord[]>` + a version counter to
+  wake the virtualizer); Phase 2 moved it host-side into
+  `apps/gui/src-tauri/src/trace_store.rs` so the BLF and remote pumps
+  share one model — see Phase 2's refinements.
 - **DBC in shared backend state.** `AppState::database` is a
-  `Mutex<Option<Database>>` shared between the BLF pump thread and the
-  IPC commands. `attach_dbc` / `detach_dbc` mutate it; the pump reads
-  it per frame; `decode_frames` reads it for the retro-decode path.
-  Separating "which DBC are we using right now" from "which BLF are we
-  replaying right now" is what lets the user attach/swap a DBC without
-  reopening the log.
+  `Mutex<Option<Database>>`. `attach_dbc` / `detach_dbc` swap it; the
+  IPC slice path reads it when serving rows (Phase 1: the `decode_frames`
+  retro-decode command; Phase 2: `fetch_trace_range` and the
+  `trace-grew` tail, decode-on-fetch). Separating "which DBC are we
+  using right now" from "which source are we streaming right now" is
+  what lets the user attach/swap a DBC without reopening the log.
 
 Demo fixture:
 
@@ -133,6 +133,37 @@ Scope:
   default**; plaintext on loopback is the dev / demo flow. Cert UX
   (fingerprint pinning, project-file persistence) is deferred until the
   project-file feature lands.
+
+Refinements that landed during implementation:
+
+- **Host-side trace store.** `apps/gui/src-tauri/src/trace_store.rs`
+  (`TraceStore` / `RawTraceFrame`) is the model layer, replacing
+  Phase 1's frontend-resident store. The BLF and remote pumps both
+  append; the frontend pulls `[start, end)` slices via the
+  `fetch_trace_range` Tauri command, decoded against the current DBC
+  at fetch time. This retires Phase 1's per-frame `can-frame-batch`
+  push and the `decode_frames` retro-decode command — no stored
+  decoded state, no retro-decode walk. `clear()` releases the backing
+  allocations so a small session after a big replay doesn't carry the
+  old footprint.
+- **`trace-grew` IPC tick.** In place of the per-frame push, the host
+  emits `trace-grew` at ~10 Hz with the current frame count, the
+  estimated rate (status line), and a short decoded *tail* of the
+  newest frames so the auto-scrolling trace view can paint the live
+  edge without a fetch round-trip. The frontend chunk-caches fetched
+  slices (LRU) and prefetches a chunk on either side of the viewport.
+- **Scaled-scrollbar trace view.** `apps/gui/src/TraceView.tsx` is a
+  hand-rolled virtualizer whose scroll container is the trace scaled
+  into a browser-safe height (capped at 16M px), so the scrollbar
+  represents the whole trace at any size; visible rows live in a
+  `position: sticky` element the compositor keeps pinned, so they
+  never lag the scrollbar. The pure geometry (scrollTop ↔ row index,
+  row stacking) lives in `apps/gui/src/traceViewport.ts` with unit
+  tests (`traceViewport.test.ts`, run by `pnpm --dir apps/gui test`).
+- **Server replay pacing.** `cannet-server --rate <multiplier>`:
+  `1.0` replays at the BLF's recorded cadence (real-time emulation),
+  `N` plays it N× faster, `0` (default) disables pacing entirely.
+  Looping and pacing are server-CLI concerns, not wire concerns.
 
 Exit criteria:
 

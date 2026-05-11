@@ -128,7 +128,7 @@ pub enum LogFinished {
 
 /// One CAN interface as exposed by a remote `cannet-server`. Mirrors
 /// `cannet_client::Interface`, kept here so the React side has a stable
-/// snake_case payload to deserialize against.
+/// `snake_case` payload to deserialize against.
 #[derive(serde::Serialize, Clone)]
 pub struct InterfaceRecord {
     pub id: String,
