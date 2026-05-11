@@ -250,6 +250,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)] // 0.0 is the exact no-samples sentinel.
     fn rate_is_zero_with_no_samples() {
         let store = TraceStore::new();
         assert_eq!(store.frames_per_second(), 0.0);

@@ -169,5 +169,10 @@ _TBD — populated as we set up cross-platform builds._
 - **`tempfile`** crate — `adopted` in Phase 1 (dev-dependency only). Used by
   `cannet-blf` tests to round-trip BLF fixtures through a real file. MIT /
   Apache-2.0.
+- **Vitest** (v2, dev-dependency in `apps/gui`) — `adopted` in Phase 2 for
+  frontend unit tests. Runs `apps/gui/src/traceViewport.ts` (the trace
+  view's pure scroll/stacking arithmetic) without a DOM. Pinned to v2
+  because v3+ requires Vite 6+ while the app is on Vite 5. MIT. Run via
+  `pnpm --dir apps/gui test`.
 
 _Profiling instrumentation TBD — populated in Phase 5._
