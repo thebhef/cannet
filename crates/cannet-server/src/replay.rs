@@ -1,16 +1,17 @@
 //! In-memory BLF replay source for the Phase-2 server.
 //!
-//! Loads a BLF file completely into memory at startup, partitions its
-//! frames by channel, and exposes one [`Interface`] per channel. The
-//! server crate iterates each channel's frames in a loop while a client
-//! is subscribed.
+//! Loads a BLF file completely into memory at startup and exposes the
+//! frames in their original recording order alongside the set of
+//! interfaces (BLF channels) seen. Per-frame ordering is preserved so
+//! the server pump can walk the buffer once per loop and pace
+//! emissions against each frame's recorded timestamp.
 //!
 //! The "in-memory" choice is deliberate for Phase 2: it keeps the
 //! server's hot path completely allocation-free per frame, and it makes
 //! looping trivial (just walk the slice again). For multi-GB BLFs the
 //! tradeoff is wrong — that's a Phase 5 perf concern, not a Phase 2 one.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use cannet_blf::{BlfCanFrameSource, BlfSourceError};
@@ -32,23 +33,31 @@ pub struct Interface {
 /// A BLF file loaded into memory and ready to replay.
 pub struct LoopingBlfReplay {
     interfaces: Vec<Interface>,
-    /// Frames grouped by channel, in their original BLF order.
-    frames_by_channel: BTreeMap<u8, Vec<CanFrame>>,
+    interface_id_by_channel: BTreeMap<u8, String>,
+    /// All frames from the BLF, in their original (timestamp-ordered)
+    /// recording order. The server pump walks this slice once per loop
+    /// and skips frames whose channel isn't currently subscribed; that
+    /// way pacing follows the recording's whole-bus timeline rather
+    /// than per-channel timing, which matches what real hardware
+    /// produces.
+    frames: Vec<CanFrame>,
 }
 
 impl LoopingBlfReplay {
-    /// Open `path`, drain it, and partition the frames by channel.
+    /// Open `path` and drain it into memory.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, ReplayError> {
         let mut source = BlfCanFrameSource::open(path)?;
-        let mut frames_by_channel: BTreeMap<u8, Vec<CanFrame>> = BTreeMap::new();
+        let mut frames: Vec<CanFrame> = Vec::new();
+        let mut channels: BTreeSet<u8> = BTreeSet::new();
         let mut fd_capable: BTreeMap<u8, bool> = BTreeMap::new();
         while let Some(frame) = source.next_frame()? {
             let entry_fd = matches!(frame.payload, CanFramePayload::Fd { .. });
             *fd_capable.entry(frame.channel).or_insert(false) |= entry_fd;
-            frames_by_channel.entry(frame.channel).or_default().push(frame);
+            channels.insert(frame.channel);
+            frames.push(frame);
         }
-        let interfaces = frames_by_channel
-            .keys()
+        let interfaces: Vec<Interface> = channels
+            .iter()
             .map(|&channel| Interface {
                 id: format!("blf:{channel}"),
                 display_name: format!("BLF channel {channel}"),
@@ -56,7 +65,15 @@ impl LoopingBlfReplay {
                 channel,
             })
             .collect();
-        Ok(Self { interfaces, frames_by_channel })
+        let interface_id_by_channel: BTreeMap<u8, String> = interfaces
+            .iter()
+            .map(|iface| (iface.channel, iface.id.clone()))
+            .collect();
+        Ok(Self {
+            interfaces,
+            interface_id_by_channel,
+            frames,
+        })
     }
 
     /// All interfaces exposed by this replay, in ascending channel order.
@@ -65,10 +82,19 @@ impl LoopingBlfReplay {
         &self.interfaces
     }
 
-    /// Frames recorded on `channel`, or `None` if no such channel exists.
+    /// All frames from the BLF, in their original recording order.
     #[must_use]
-    pub fn frames_for_channel(&self, channel: u8) -> Option<&[CanFrame]> {
-        self.frames_by_channel.get(&channel).map(Vec::as_slice)
+    pub fn frames(&self) -> &[CanFrame] {
+        &self.frames
+    }
+
+    /// Wire `interface_id` corresponding to the given BLF channel, or
+    /// `None` if no frame on that channel was recorded.
+    #[must_use]
+    pub fn interface_id_for_channel(&self, channel: u8) -> Option<&str> {
+        self.interface_id_by_channel
+            .get(&channel)
+            .map(String::as_str)
     }
 
     /// Look up the interface metadata by wire `interface_id`.
@@ -145,7 +171,7 @@ mod tests {
     }
 
     #[test]
-    fn partitions_frames_by_channel() {
+    fn enumerates_interfaces_in_channel_order() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("multi.blf");
         write_fixture(
@@ -161,9 +187,7 @@ mod tests {
         assert_eq!(replay.interfaces().len(), 2);
         assert_eq!(replay.interfaces()[0].id, "blf:0");
         assert_eq!(replay.interfaces()[1].id, "blf:1");
-        assert_eq!(replay.frames_for_channel(0).unwrap().len(), 2);
-        assert_eq!(replay.frames_for_channel(1).unwrap().len(), 1);
-        assert!(replay.frames_for_channel(2).is_none());
+        assert!(replay.interface_id_for_channel(2).is_none());
     }
 
     #[test]
@@ -187,22 +211,21 @@ mod tests {
     }
 
     #[test]
-    fn frames_keep_their_recorded_order() {
+    fn frames_keep_recorded_order_across_channels() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("order.blf");
         write_fixture(
             &path,
             &[
                 classic_msg(0.001, 0, 0x10, vec![1]),
-                classic_msg(0.002, 0, 0x11, vec![2]),
-                classic_msg(0.003, 0, 0x12, vec![3]),
+                classic_msg(0.002, 1, 0x20, vec![2]),
+                classic_msg(0.003, 0, 0x11, vec![3]),
             ],
         );
 
         let replay = LoopingBlfReplay::open(&path).unwrap();
-        let frames = replay.frames_for_channel(0).unwrap();
-        let ids: Vec<u32> = frames.iter().map(|f| f.id.raw()).collect();
-        assert_eq!(ids, vec![0x10, 0x11, 0x12]);
+        let ids: Vec<u32> = replay.frames().iter().map(|f| f.id.raw()).collect();
+        assert_eq!(ids, vec![0x10, 0x20, 0x11]);
     }
 
     #[test]
@@ -213,5 +236,6 @@ mod tests {
 
         let replay = LoopingBlfReplay::open(&path).unwrap();
         assert!(replay.interfaces().is_empty());
+        assert!(replay.frames().is_empty());
     }
 }
