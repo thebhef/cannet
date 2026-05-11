@@ -187,13 +187,16 @@ export function TraceView({
                 className={`trace-row ${isExpanded ? "expanded" : ""} ${frame ? "" : "loading"}`}
                 style={{
                   position: "absolute",
-                  // The visible rows ride along with scrollTop so they
-                  // appear at the same viewport positions regardless
-                  // of how the scrollbar is scaled.
-                  top: targetScrollTop + topOffset,
+                  top: 0,
                   left: 0,
                   right: 0,
                   height: isExpanded ? EXPANDED_ROW_HEIGHT : ROW_HEIGHT,
+                  // GPU-compositable transform instead of `top:`; the
+                  // browser doesn't have to relayout every visible row
+                  // on each scroll event, which kept the position
+                  // tracking from feeling smooth.
+                  transform: `translate3d(0, ${targetScrollTop + topOffset}px, 0)`,
+                  willChange: "transform",
                 }}
                 onClick={() => frame?.decoded && toggleExpanded(absIdx)}
               >
