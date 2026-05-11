@@ -3,7 +3,7 @@
 //! Phase 2's only supported input is BLF: a server is constructed with a
 //! [`LoopingBlfReplay`] loaded from a file at startup, and that replay is
 //! streamed forever (looping at end-of-file) to whichever client is
-//! currently subscribed. Phase 5 will introduce hardware-backed sources;
+//! currently subscribed. Phase 6 will introduce hardware-backed sources;
 //! this crate stays focused on BLF for now.
 //!
 //! ## Crate layout
