@@ -41,12 +41,12 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use cannet_wire::{
-    batch_to_proto,
+    frame_to_proto,
     proto::{
         cannet_server_server::{CannetServer as CannetServerTrait, CannetServerServer},
         envelope::Body,
         error::Code,
-        Envelope, Error as ErrorMsg, Interface as ProtoInterface, InterfaceList,
+        Envelope, Error as ErrorMsg, FrameBatch, Interface as ProtoInterface, InterfaceList,
         ListInterfacesRequest, Subscribe, Unsubscribe,
     },
 };
@@ -229,6 +229,17 @@ async fn pump_paced(
         return;
     }
 
+    // Pre-compute the recorded duration of one BLF lap. Each loop
+    // iteration shifts emitted timestamps forward by N * loop_duration
+    // so the consumer sees a strictly monotonic time even though the
+    // BLF restarts.
+    let loop_duration_ns = frames
+        .last()
+        .unwrap()
+        .timestamp_ns
+        .saturating_sub(frames.first().unwrap().timestamp_ns);
+    let mut loop_offset_ns: u64 = 0;
+
     loop {
         // Skip the whole loop body if the client hasn't subscribed to
         // anything yet — otherwise rate=0 + no-subs walks the BLF in a
@@ -258,8 +269,6 @@ async fn pump_paced(
             }
 
             let Some(interface_id) = replay.interface_id_for_channel(frame.channel) else {
-                // Cooperatively yield so other tasks can run between
-                // skipped frames at rate=0.
                 tokio::task::yield_now().await;
                 continue;
             };
@@ -272,14 +281,22 @@ async fn pump_paced(
                 continue;
             }
 
-            let batch = batch_to_proto(interface_id.to_string(), std::slice::from_ref(frame));
+            // Emit with a timestamp shifted into the current lap so the
+            // consumer's view of time keeps incrementing across loops.
+            let mut proto_frame = frame_to_proto(frame);
+            proto_frame.timestamp_ns = proto_frame.timestamp_ns.saturating_add(loop_offset_ns);
             let envelope = Envelope {
-                body: Some(Body::FrameBatch(batch)),
+                body: Some(Body::FrameBatch(FrameBatch {
+                    interface_id: interface_id.to_string(),
+                    frames: vec![proto_frame],
+                })),
             };
             if outgoing.send(Ok(envelope)).await.is_err() {
                 return;
             }
         }
+
+        loop_offset_ns = loop_offset_ns.saturating_add(loop_duration_ns);
     }
 }
 
