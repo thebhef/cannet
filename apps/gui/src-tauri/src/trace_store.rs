@@ -29,12 +29,13 @@
 //! ## Rate estimation
 //!
 //! The store keeps a rolling window of `(Instant, total_count)`
-//! samples — one per append, pruned to a fixed window
-//! ([`RATE_WINDOW`]) on each touch. [`Self::frames_per_second`] is the
-//! count delta over the wall time spanned by the surviving samples,
-//! returning `0.0` if there's not yet enough signal to estimate.
-//! Bounded memory: at any instantaneous append rate `R` we hold
-//! `R × RATE_WINDOW.as_secs()` entries.
+//! samples, one taken at most every [`RATE_SAMPLE_INTERVAL`] — a
+//! sample *per appended frame* would balloon the deque at high replay
+//! rates for no extra signal, since [`Self::frames_per_second`] only
+//! reads the window's endpoints. The window is pruned to
+//! [`RATE_WINDOW`] on each touch; the rate is the count delta over the
+//! wall time the surviving samples span, or `0.0` if there isn't yet
+//! enough signal to estimate.
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -47,6 +48,13 @@ use cannet_core::{CanFrame, CanFramePayload, Direction};
 /// per-batch jitter (256-frame batches at 60+ fps) doesn't bounce the
 /// reading around.
 const RATE_WINDOW: Duration = Duration::from_secs(1);
+
+/// Minimum spacing between rate samples. At a multi-thousand-frame/s
+/// replay a per-frame sample would pile up tens of thousands of deque
+/// entries each second; bounding the cadence caps the deque at roughly
+/// `RATE_WINDOW / RATE_SAMPLE_INTERVAL` entries while still tracking
+/// the rate closely enough for a status line.
+const RATE_SAMPLE_INTERVAL: Duration = Duration::from_millis(20);
 
 /// One row in the trace store. Owned, undecoded.
 #[derive(Debug, Clone)]
@@ -93,14 +101,22 @@ impl TraceStore {
         }
     }
 
-    /// Append a frame to the tail of the trace. Records a rate sample.
+    /// Append a frame to the tail of the trace. Records a rate sample
+    /// if at least [`RATE_SAMPLE_INTERVAL`] has passed since the last
+    /// one.
     pub fn append(&self, frame: RawTraceFrame) {
         let now = Instant::now();
         let mut inner = self.inner.lock().expect("trace store mutex poisoned");
         inner.frames.push(frame);
         let count = inner.frames.len();
-        inner.rate_samples.push_back((now, count));
-        prune_rate_samples(&mut inner.rate_samples, now);
+        let due = match inner.rate_samples.back() {
+            Some(&(last, _)) => now.duration_since(last) >= RATE_SAMPLE_INTERVAL,
+            None => true,
+        };
+        if due {
+            inner.rate_samples.push_back((now, count));
+            prune_rate_samples(&mut inner.rate_samples, now);
+        }
     }
 
     /// Number of frames currently stored.
