@@ -61,25 +61,21 @@ export function App() {
     setVersion((v) => v + 1);
   }, []);
 
-  // Drop any cached chunk whose tail has grown past the cached length.
-  // A chunk fetched while the store was still growing arrives partial
-  // (cached length < CHUNK_SIZE); without this, those rows would
-  // render as placeholders forever because ensureVisible treats
-  // "in cache" as "complete".
-  const evictStalePartialChunks = useCallback((newCount: number) => {
-    const toEvict: number[] = [];
+  // Re-fetch any cached chunk whose tail has grown past the cached
+  // length. A chunk fetched while the store was still growing arrives
+  // partial (cached length < CHUNK_SIZE); we replace it in place when
+  // the refresh lands rather than evicting first, so rows that were
+  // already visible never go through a "missing" state on the next
+  // paint — that was the autoscroll flicker.
+  const refreshStalePartialChunks = useCallback((newCount: number) => {
     for (const [chunkIdx, chunk] of chunkCacheRef.current) {
       const chunkStart = chunkIdx * CHUNK_SIZE;
       if (chunk.length < CHUNK_SIZE && chunkStart + chunk.length < newCount) {
-        toEvict.push(chunkIdx);
+        void refreshChunk(chunkIdx);
       }
     }
-    if (toEvict.length === 0) return;
-    for (const c of toEvict) chunkCacheRef.current.delete(c);
-    cacheOrderRef.current = cacheOrderRef.current.filter(
-      (c) => !toEvict.includes(c),
-    );
-    setVersion((v) => v + 1);
+    // refreshChunk's own setVersion fires when the fetch lands.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Wire up Tauri event listeners once.
@@ -95,7 +91,7 @@ export function App() {
           return newCount;
         });
         setFramesPerSecond(frames_per_second);
-        evictStalePartialChunks(newCount);
+        refreshStalePartialChunks(newCount);
       }),
     );
 
@@ -125,7 +121,7 @@ export function App() {
     return () => {
       unlistens.forEach((p) => p.then((fn) => fn()));
     };
-  }, [invalidateCache, evictStalePartialChunks]);
+  }, [invalidateCache, refreshStalePartialChunks]);
 
   const handleOpenLog = useCallback(async () => {
     const selected = await open({
@@ -204,8 +200,11 @@ export function App() {
     }
   }, []);
 
-  const fetchChunk = useCallback(async (chunkIdx: number) => {
-    if (chunkCacheRef.current.has(chunkIdx)) return;
+  // The actual fetch + cache-replace. Always refetches when called;
+  // de-duped against concurrent invocations via inflightChunksRef.
+  // Callers (`fetchChunk`, `refreshStalePartialChunks`) decide whether
+  // to issue the fetch in the first place.
+  const refreshChunk = useCallback(async (chunkIdx: number) => {
     if (inflightChunksRef.current.has(chunkIdx)) return;
     inflightChunksRef.current.add(chunkIdx);
     try {
@@ -233,6 +232,16 @@ export function App() {
     }
   }, []);
 
+  // Fetch a chunk only if it's missing from the cache. Used by the
+  // visible-range driver — already-cached chunks aren't disturbed.
+  const fetchChunk = useCallback(
+    (chunkIdx: number) => {
+      if (chunkCacheRef.current.has(chunkIdx)) return;
+      void refreshChunk(chunkIdx);
+    },
+    [refreshChunk],
+  );
+
   // Synchronous lookup for the trace view. Returns null if the
   // covering chunk hasn't been fetched yet; the trace view renders a
   // placeholder and calls ensureVisible. The closure reads from refs,
@@ -254,10 +263,13 @@ export function App() {
       if (safeEnd <= 0) return;
       const firstChunk = Math.floor(startIndex / CHUNK_SIZE);
       const lastChunk = Math.floor((safeEnd - 1) / CHUNK_SIZE);
-      for (let c = firstChunk; c <= lastChunk; c++) {
-        if (chunkCacheRef.current.has(c)) continue;
-        if (inflightChunksRef.current.has(c)) continue;
-        void fetchChunk(c);
+      // Prefetch one chunk past the visible end so autoscroll
+      // crossing a chunk boundary doesn't have to wait an IPC
+      // round-trip for the next chunk to render.
+      const prefetchEnd = lastChunk + 1;
+      for (let c = firstChunk; c <= prefetchEnd; c++) {
+        if (c * CHUNK_SIZE >= count) break;
+        fetchChunk(c);
       }
     },
     [count, fetchChunk],
