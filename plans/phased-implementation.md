@@ -107,7 +107,7 @@ Scope:
   — sending on a cadence is a feature of the client transmit UI in
   Phase 3, not the wire.
 - The wire protocol is the universal driver contract. A server can run
-  in-process (Phase 2's BLF replay), as a sidecar (Phase 4 wrappers around
+  in-process (Phase 2's BLF replay), as a sidecar (Phase 5 wrappers around
   `python-can`), or on the network. The same `.proto` covers all three;
   only the transport varies.
 - `cannet-wire` provides batching adapters between `Stream<CanFrame>` and
@@ -172,7 +172,7 @@ Exit criteria:
   the trace view with no functional regressions vs. Phase 1.
 - The wire protocol carries client-side transmit envelopes; the BLF
   server rejects them with `Error::TX_REJECTED`. Actually delivering tx
-  to a writable bus is Phase 3 / Phase 4 work.
+  to a writable bus is Phase 3 / Phase 5 work.
 - The same GUI build works against either an in-process server or a
   remote server, picked at connect time.
 - README documents the new `cannet-server` crate, its CLI, and the
@@ -180,54 +180,149 @@ Exit criteria:
   rustdoc on `cannet-wire` describes the service surface and the
   batching adapters.
 
-## Phase 3 — Transmit, Multiple Windows, and Docking
+## Phase 3 — Transmit, Panel Layouts, and Projects
 
 Round out the GUI surface area before vendor drivers complicate the data
-path. Doing this on top of the Phase 2 client/server split means multi-window
-state has to flow through the same wire protocol from the start, rather than
-being retrofitted later.
+path. Doing this on top of the Phase 2 client/server split means panel
+state and bus configuration flow through the same wire protocol from the
+start, rather than being retrofitted later.
+
+This is a large phase; land it in small, independently demoable steps —
+roughly: transmit path + transmit panel, then the multi-panel docking
+shell (with the trace panel ported into it), then resizable / hideable
+trace columns, then the project panel and the project file. Each step
+should leave the app runnable.
 
 Scope:
 
-- **Transmit window.** A panel that composes CAN / CAN FD frames (id, type,
+- **Transmit panel.** A panel that composes CAN / CAN FD frames (id, type,
   channel, payload, optional cycle time) and submits them to the active
   source. The CAN abstraction grows a transmit path so the GUI can send
   through either an in-process source or a remote server. When a DBC is
-  attached, the transmit window offers signal-by-signal entry for any
+  attached, the transmit panel offers signal-by-signal entry for any
   matching message id (factor / offset / endianness applied during encode);
   raw byte entry is always available as the fallback for ids the DBC
   doesn't cover.
-- **Multiple trace windows and multiple transmit windows.** The GUI supports
-  more than one of each, each independently configurable (filters and column
-  set for trace; frame definitions for transmit). The frontend trace store
-  becomes per-window rather than a single global ref.
-- **Window docking.** Trace and transmit panels can be split, tabbed, and
-  docked within the main window; layout is preserved across app restarts.
-  Undocking into separate OS windows is **not** required for this phase —
-  it's tracked in the backlog for a later GUI pass.
+- **Multi-panel main window with arbitrary layouts.** The GUI hosts
+  multiple panels inside one OS window: more than one trace panel, more
+  than one transmit panel, and a project panel (below). Panels can be
+  split, tabbed, dragged, and resized into arbitrary layouts within the
+  window — the layout shell is a docking-layout library (see
+  `technology-inventory.md`), not hand-rolled. Each panel is independently
+  configurable: trace panels carry their own filter set and column set;
+  transmit panels carry their own frame definitions. The frontend trace
+  store becomes per-trace-panel rather than a single global ref. The
+  layout system is designed up front so the Phase 4 plot panel slots in
+  as just another panel type.
+- **Resizable and hideable trace columns.** Trace panels support
+  drag-resizing column widths and toggling individual columns on/off
+  (#, timestamp, channel, direction, ID, type, length, data, decoded
+  name). Column widths and visibility are part of a trace panel's
+  per-panel config, so they round-trip through the project file. (Folds
+  in the two `[ui]` trace-column items from `plans/backlog.md`.)
+- **Project panel + project file.** A project is a JSON file
+  (`features.md`: "projects — includes window layouts, bus configs,
+  references DBCs … DBC should be reloadable from disk at any time").
+  Opening a project restores the panel layout (which panels exist, their
+  dock positions, their per-panel config), the bus / connection
+  configuration (in-process BLF path and/or remote server host:port plus
+  subscribed interfaces), and the DBC reference(s) by path. The project
+  panel is the UI for New / Open / Save / Save As, lists the configured
+  buses, and shows the referenced DBC(s) with a "reload from disk" action
+  — a project's DBC reference is a path, not an embedded copy, so reload
+  re-reads the file. The most-recently-opened project is reopened on
+  launch, so panel layout survives an app restart by virtue of living in
+  the project file rather than in a separate layout blob.
 
 Out of scope (deferred to later phases / backlog):
 
-- Project files that persist multi-window layouts alongside bus configs and
-  DBC references — the persistence introduced here is a single layout blob,
-  not the full project format from `features.md`.
-- Tear-out / multi-OS-window docking.
+- **The plot panel itself** — Phase 4. Phase 3 only has to leave room for
+  it in the layout system.
+- **Virtual CAN bus layer** — mapping logical project channels onto source
+  channels (`features.md`). Phase 3's project file records concrete bus
+  configs; the logical-channel indirection is a later phase.
+- **Tear-out into separate OS windows** — docking is within the single
+  main window only. Tracked in `plans/backlog.md`.
+- **EDS references in the project file** — added when CANopen work begins.
 
 Exit criteria:
 
-- Two trace windows and one transmit window can be open simultaneously,
-  each with its own filter / column / frame state, with no regressions vs.
-  Phase 2 throughput.
-- Sending a frame from a transmit window reaches the bus through both the
+- Two trace panels and a transmit panel can be open simultaneously inside
+  one window, split / tabbed into a custom layout, each with its own
+  filter / column / frame state, with no regressions vs. Phase 2
+  throughput.
+- Trace-panel columns can be drag-resized and individually shown / hidden,
+  and that state persists with the panel.
+- Sending a frame from a transmit panel reaches the bus through both the
   in-process source and the Phase 2 remote server, in both raw-byte mode
   and (with a DBC attached) signal-by-signal encoded mode.
-- Window layout (which panels are open, their dock positions, their
-  per-panel config) survives an app restart.
-- README documents the transmit workflow and how to manage / reset the
-  saved layout; rustdoc covers any new public surface on the CAN
-  abstraction (notably the transmit path).
+- Opening a saved project restores the panel layout, the per-panel config,
+  the bus / connection config, and the DBC reference(s); "reload DBC"
+  picks up edits made to the file on disk; launching the app with no
+  arguments reopens the last project.
+- README documents the transmit workflow, the panel / layout UI (how to
+  split, tab, and reset a layout), and the project-file workflow (create /
+  open / save, where it lives, what it contains); rustdoc covers any new
+  public surface on the CAN abstraction (notably the transmit path) and
+  on the project-file types.
 
-## Phase 4 — Vector, Kvaser, and PEAK CAN Driver Support
+## Phase 4 — Signal Plotting
+
+A plotting view in the spirit of vSignalyzer / TSMaster: pick decoded
+signals and watch them over time — live and historical — in one or more
+plot panels docked alongside the trace and transmit panels from Phase 3.
+
+Scope:
+
+- **Plot panel.** A new panel type in the Phase 3 layout system. A plot
+  panel hosts one or more signal traces on a shared time axis; the user
+  adds a trace by picking a (message, signal) pair from the attached DBC.
+  Multiple plot panels can be open, each with its own signal set and axis
+  configuration.
+- **Signal sampling over the trace store.** The data-path work: a sampler
+  that walks the trace store for frames matching a signal's message id,
+  decodes the signal, and yields a `(timestamp, value)` series for a
+  requested time range — the plotting analogue of the trace view's
+  decode-on-fetch slice. Live plots extend as the trace grows (driven by
+  the same `trace-grew` tick); a paused or finished capture is queried
+  over a fixed range.
+- **Plot interaction.** Pan / zoom on the time axis, per-trace or shared
+  y-axis with auto and manual scaling, a movable cursor that reads out
+  each trace's value at that instant, and a "follow live edge" toggle
+  mirroring the trace view's auto-scroll. Enum-valued signals (DBC value
+  tables) render as a stepped state plot.
+- **Plot panels in the project file.** A plot panel's signal set and axis
+  config round-trip through the Phase 3 project file like any other
+  panel's config.
+- **Plotting library.** Selected here (see `technology-inventory.md`): it
+  has to handle high-rate streaming time-series (tens of thousands of
+  points, growing live) without choking the WebView, support multiple
+  independent plots, and carry a permissive license. A candidate
+  shortlist is recorded in the inventory now; the pick and the rejected
+  alternatives get written up when this phase starts.
+
+Out of scope (deferred to later phases / backlog):
+
+- **XY / scatter plots, gauges, and bitfield / flag panels** —
+  `features.md` lists "bitfield views, with flag indicators per signal"
+  and arbitrary plotting; Phase 4's MVP is time-series line / step plots.
+  The bitfield view and non-time-series plot types are a later GUI pass.
+- **Math channels** — derived signals computed from other signals.
+
+Exit criteria:
+
+- A plot panel can be added to the layout, populated with several signals
+  from the attached DBC, and shows them updating live while a BLF replays
+  (or a remote server streams) — with pan / zoom, a readout cursor, and a
+  follow-live toggle — alongside an open trace panel, with no regressions
+  vs. Phase 3.
+- A historical range can be inspected on a paused or finished capture.
+- Plot panels save and restore through the project file.
+- README documents how to add a plot panel and pick signals; rustdoc
+  covers the signal-sampler surface; `plans/technology-inventory.md`
+  records the chosen plotting library and the rejected alternatives.
+
+## Phase 5 — Vector, Kvaser, and PEAK CAN Driver Support
 
 Replace the BLF-only server with real hardware sources.
 
@@ -250,7 +345,7 @@ Exit criteria:
 - README lists each vendor's prerequisites (drivers, SDK, OS support
   matrix) and the command to launch its server.
 
-## Phase 5 — Performance Profiling Baseline
+## Phase 6 — Performance Profiling Baseline
 
 Make performance measurable before we keep piling features on.
 
@@ -263,7 +358,7 @@ Scope:
   dropped-frame counts).
 - Pick instrumentation: in-process counters/timers, sampling profiler hooks,
   and a reproducible workload (likely a standard BLF replay at a known rate).
-- Capture an initial baseline against the Phase 4 build for each supported
+- Capture an initial baseline against the Phase 5 build for each supported
   source (BLF replay + at least one hardware vendor) and check it in so future
   changes can be compared against it.
 
