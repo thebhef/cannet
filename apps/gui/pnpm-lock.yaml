@@ -14,6 +14,9 @@ importers:
       '@tauri-apps/plugin-dialog':
         specifier: ^2.0.1
         version: 2.7.1
+      dockview:
+        specifier: ^6.0.7
+        version: 6.0.7(react@18.3.1)
       react:
         specifier: ^18.3.1
         version: 18.3.1
@@ -613,6 +616,14 @@ packages:
   deep-eql@5.0.2:
     resolution: {integrity: sha512-h5k/5U50IJJFpzfL6nO9jaaumfjO/f2NjK/oYB2Djzm4p9L+3T9qWpZqZ2hAbLPuuYq9wrU08WQyBTL5GbPk5Q==}
     engines: {node: '>=6'}
+
+  dockview-core@6.0.7:
+    resolution: {integrity: sha512-qeFB5KoASubjRhQOLh0WKg70+HxQjTjX/MAzPbfH2ZDifPqI5xACKzrtDbdRUHtf4v3IReGBZConl0z9KdOMAQ==}
+
+  dockview@6.0.7:
+    resolution: {integrity: sha512-1px/GSW1zOFl59vbPA/AU/s6FbbGNlQ8UE66xTG2wbfGQfsq0x9Wsvp6GflenNbii1hUyOkKBGnDLbGljp6jjg==}
+    peerDependencies:
+      react: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
 
   electron-to-chromium@1.5.353:
     resolution: {integrity: sha512-kOrWphBi8TOZyiJZqsgqIle0lw+tzmnQK83pV9dZUd01Nm2POECSyFQMAuarzZdYqQW7FH9RaYOuaRo3h+bQ3w==}
@@ -1285,6 +1296,13 @@ snapshots:
       ms: 2.1.3
 
   deep-eql@5.0.2: {}
+
+  dockview-core@6.0.7: {}
+
+  dockview@6.0.7(react@18.3.1):
+    dependencies:
+      dockview-core: 6.0.7
+      react: 18.3.1
 
   electron-to-chromium@1.5.353: {}
 
