@@ -64,7 +64,7 @@ async fn spawn_server() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let stream = TcpListenerStream::new(listener);
-    let svc = CannetServerImpl::new(replay).into_service();
+    let svc = CannetServerImpl::new(replay, 0.0).into_service();
     let handle = tokio::spawn(async move {
         Server::builder()
             .add_service(svc)
