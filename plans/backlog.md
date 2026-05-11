@@ -34,6 +34,14 @@ work or admit it isn't going to happen and delete it.
   per arbitration-id with the latest payload, instead of chronological.
 - `[ui]` trace view: list decoded signals on their own lines under the
   message row instead of expand-to-show.
+- `[feat]` real in-process writable CAN source — a local virtual bus
+  (Linux `vcan` via socketcan) and/or an in-memory loopback-bus type in
+  `cannet-core` (a `CanFrameSink` paired with a `CanFrameSource`). Phase
+  3's transmit path ships a host-side tx-confirm row plus a
+  `cannet-server --loopback` mode instead, which covers demo and test;
+  this is the honest version for actually exercising a writable bus
+  without hardware. Reconsider when hardware work (Phase 5) is staged or
+  if local TX testing needs more than the loopback server.
 - `[feat]` `cannet-server` (Phase 2+): multi-client support. Phase 2 is
   single-client per server; a second connection is rejected with
   `Error::BUSY`. Lift this when there's a real use case (e.g. a second
