@@ -26,19 +26,33 @@ and the license / platform constraints we need to be aware of.
 - **React 18 + Vite + TypeScript** — `adopted` in Phase 1 as the frontend
   stack inside the Tauri WebView. Mainstream ecosystem, strong virtualized
   grid options. MIT-licensed.
-- **React docking-layout library** — `proposed` (Phase 3). Phase 3's
-  "arbitrary layouts of panels in one window" (trace / transmit / project
-  panels, with the Phase 4 plot panel slotting in later) needs a
-  split/tab/drag/resize dock manager rather than a hand-rolled one — this
-  is exactly the "lean on a vetted library for the failure-mode-rich
-  parts" guidance in `CLAUDE.md`. Candidate shortlist to evaluate when
-  Phase 3 starts: `dockview` (MIT, TS-native, serialisable layout JSON,
-  no jQuery/legacy baggage), `rc-dock` (MIT, mature), `react-mosaic`
-  (BSD-2, tiling-only — no tabs, may be too limited), `flexlayout-react`
-  (ISC, serialisable model), `golden-layout` (MIT, but historically
-  heavier integration). The pick must expose a serialisable layout model
-  so the project file can store it. Final choice + rejected alternatives
-  get written up in this file when the phase lands.
+- **`dockview`** (v6, MIT) — `adopted` in Phase 3 for the multi-panel
+  shell: arbitrary split / tab / drag / resize layouts of trace,
+  transmit, and (Phase 4) plot panels inside the single app window. A
+  dock manager is exactly the "lean on a vetted library for the
+  failure-mode-rich parts" call from `CLAUDE.md` — hand-rolling
+  drag-and-drop docking is a lot of fiddly UI state to get right.
+  Chosen for: TypeScript-native with a first-class React package
+  (`dockview`), a serialisable layout model (`api.toJSON()` /
+  `fromJSON()`) that drops straight into the project file, no jQuery /
+  legacy baggage, and good docs. Panel content stays plain React
+  components behind a thin adapter (`TracePanel.tsx`, the `TraceData`
+  context) so the blast radius of swapping it later is small. Risk:
+  small bus factor (≈one primary maintainer) — mitigated by that
+  adapter boundary. Cost note: ships one ≈100 KB CSS bundle covering
+  all built-in themes (≈9 KB gzipped); fine for a desktop app.
+  Alternatives considered (all permissive, all cover the must-haves):
+  - **`flexlayout-react`** (Apache-2.0) — `rejected`. Strong runner-up;
+    mature, persistent JSON model, built-in popout windows. Edged out
+    by dockview's cleaner TS/React story; the popout feature is
+    deferred Phase-3 scope anyway.
+  - **`rc-dock`** (MIT) — `rejected`. Works, but an older-feeling API
+    next to dockview with no offsetting advantage.
+  - **`react-mosaic`** (Apache-2.0) — `rejected`. Tiling only — no
+    tabs — which doesn't fit a panel-heavy analyzer UI.
+  - **`golden-layout`** v2 (MIT) — `rejected`. Capable and mature, but
+    framework-agnostic with no React bindings, so adopting it means
+    writing and maintaining the React glue ourselves.
 - **`serde_json`** (Rust) / native JSON (frontend) — `proposed` (Phase 3)
   for the project file (`features.md`: window layouts + bus configs + DBC
   references, JSON, reloadable from disk). `serde` / `serde_json` are

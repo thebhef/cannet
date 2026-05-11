@@ -134,6 +134,13 @@ pnpm --dir apps/gui tauri build    # release bundle
 cannet window. Use **Open BLF…** to pick a log; **Attach DBC…** before
 opening attaches a database for live decoding.
 
+The window below the toolbar is a dockable panel area. **Add trace
+panel** opens another trace view; panels can be dragged, split, and
+tabbed into whatever layout you like, and each trace panel keeps its
+own scroll position and auto-scroll toggle. The layout is remembered
+between runs (stored locally for now — project files, in a later
+Phase 3 step, will own it along with bus configs and DBC references).
+
 > **Note:** plain `cargo run -p cannet-gui` will build the Rust host on
 > its own but won't bring up a usable window — the host expects either
 > a Vite dev server (which `tauri dev` starts for you) or a built

@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import { DockviewReact, themeAbyss } from "dockview";
+import type { DockviewApi, DockviewReadyEvent } from "dockview";
 
 import type {
   DbcInfo,
@@ -12,7 +14,13 @@ import type {
   TraceGrew,
 } from "./types";
 import { TitleBar } from "./TitleBar";
-import { TraceView } from "./TraceView";
+import { TracePanel } from "./TracePanel";
+import { TraceDataContext, type TraceData } from "./traceData";
+import {
+  LAYOUT_STORAGE_KEY,
+  TRACE_PANEL_COMPONENT,
+  parseSavedLayout,
+} from "./dockLayout";
 
 type LogState =
   | { kind: "idle" }
@@ -35,16 +43,17 @@ const CHUNK_SIZE = 500;
 /// even at high scroll velocities.
 const CACHE_CHUNKS = 120;
 
+/// Trace-panel component registry, defined at module scope so dockview
+/// never sees a fresh object and re-registers.
+const DOCK_COMPONENTS = { [TRACE_PANEL_COMPONENT]: TracePanel };
+
 export function App() {
   const [count, setCount] = useState(0);
   const [framesPerSecond, setFramesPerSecond] = useState(0);
 
-  // While `autoScroll` is true the trace view pins to the live tail;
-  // while false it stays where the user scrolled to. A user scroll in
-  // the trace flips this off (via onAutoScrollDisabled below).
-  const [autoScroll, setAutoScroll] = useState(true);
-
-  // Chunked cache of fetched trace rows, keyed by chunk index.
+  // Chunked cache of fetched trace rows, keyed by chunk index. Shared by
+  // every trace panel — they all view the one host-side capture; only
+  // their scroll position and auto-scroll toggle are per panel.
   const chunkCacheRef = useRef<Map<number, TraceFrameRecord[]>>(new Map());
   const cacheOrderRef = useRef<number[]>([]);
   const inflightChunksRef = useRef<Set<number>>(new Set());
@@ -67,6 +76,11 @@ export function App() {
     null,
   );
 
+  // The dockview layout API, populated once `onReady` fires.
+  const dockApiRef = useRef<DockviewApi | null>(null);
+  // Monotonic counter for "Trace N" panel titles within a session.
+  const panelCounterRef = useRef(0);
+
   const invalidateCache = useCallback(() => {
     chunkCacheRef.current.clear();
     cacheOrderRef.current = [];
@@ -74,11 +88,6 @@ export function App() {
     tailFramesRef.current = [];
     tailStartRef.current = 0;
     setVersion((v) => v + 1);
-  }, []);
-
-  const resetView = useCallback(() => {
-    setAutoScroll(true);
-    setBaseTimestampSeconds(null);
   }, []);
 
   const refreshChunk = useCallback(async (chunkIdx: number) => {
@@ -201,7 +210,7 @@ export function App() {
     try {
       await invoke("clear_trace_store");
       invalidateCache();
-      resetView();
+      setBaseTimestampSeconds(null);
       const result = await invoke<OpenLogResult>("open_log", {
         blfPath: selected,
       });
@@ -209,7 +218,7 @@ export function App() {
     } catch (err) {
       setState({ kind: "error", message: String(err) });
     }
-  }, [invalidateCache, resetView]);
+  }, [invalidateCache]);
 
   const handleAttachDbc = useCallback(async () => {
     const selected = await open({
@@ -235,9 +244,9 @@ export function App() {
       setState({ kind: "error", message: String(err) });
     }
     invalidateCache();
-    resetView();
+    setBaseTimestampSeconds(null);
     setCount(0);
-  }, [invalidateCache, resetView]);
+  }, [invalidateCache]);
 
   const handleConnect = useCallback(async () => {
     const address = remoteAddress.trim();
@@ -246,7 +255,7 @@ export function App() {
     try {
       await invoke("clear_trace_store");
       invalidateCache();
-      resetView();
+      setBaseTimestampSeconds(null);
       setState({ kind: "remote-connecting", address });
       const result = await invoke<RemoteSessionResult>("connect_remote_server", {
         address,
@@ -255,7 +264,7 @@ export function App() {
     } catch (err) {
       setState({ kind: "error", message: String(err) });
     }
-  }, [remoteAddress, invalidateCache, resetView]);
+  }, [remoteAddress, invalidateCache]);
 
   const handleDisconnect = useCallback(async () => {
     try {
@@ -263,17 +272,6 @@ export function App() {
     } catch (err) {
       setState({ kind: "error", message: String(err) });
     }
-  }, []);
-
-  // The trace view calls this when the user scrolls the trace
-  // themselves while live-tailing was on — flip it off so the view
-  // stays where they put it.
-  const handleAutoScrollDisabled = useCallback(() => {
-    setAutoScroll(false);
-  }, []);
-
-  const handleToggleAutoScroll = useCallback((next: boolean) => {
-    setAutoScroll(next);
   }, []);
 
   const getFrame = useCallback((index: number): TraceFrameRecord | null => {
@@ -310,9 +308,65 @@ export function App() {
     [count, fetchChunk],
   );
 
+  const addTracePanel = useCallback(() => {
+    const api = dockApiRef.current;
+    if (!api) return;
+    panelCounterRef.current += 1;
+    api.addPanel({
+      id: `trace-${crypto.randomUUID()}`,
+      component: TRACE_PANEL_COMPONENT,
+      title: `Trace ${panelCounterRef.current}`,
+    });
+  }, []);
+
+  const handleDockReady = useCallback((event: DockviewReadyEvent) => {
+    const api = event.api;
+    dockApiRef.current = api;
+
+    let restored = false;
+    const saved = parseSavedLayout(localStorage.getItem(LAYOUT_STORAGE_KEY));
+    if (saved) {
+      try {
+        api.fromJSON(saved);
+        restored = api.panels.length > 0;
+      } catch {
+        restored = false;
+      }
+    }
+    if (restored) {
+      // Keep numbering past whatever the restored layout already shows.
+      panelCounterRef.current = api.panels.length;
+    } else {
+      api.clear();
+      panelCounterRef.current = 1;
+      api.addPanel({
+        id: `trace-${crypto.randomUUID()}`,
+        component: TRACE_PANEL_COMPONENT,
+        title: "Trace 1",
+      });
+    }
+
+    // Persist only after the initial restore/seed so we never write an
+    // empty or half-built layout. Best-effort: localStorage can be
+    // unavailable or full, and this is a placeholder until project
+    // files own the layout.
+    api.onDidLayoutChange(() => {
+      try {
+        localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(api.toJSON()));
+      } catch {
+        /* layout persistence is best-effort */
+      }
+    });
+  }, []);
+
   const status = useMemo(
     () => renderStatus(state, dbcPath, count, framesPerSecond),
     [state, dbcPath, count, framesPerSecond],
+  );
+
+  const traceData: TraceData = useMemo(
+    () => ({ count, version, baseTimestampSeconds, getFrame, ensureVisible }),
+    [count, version, baseTimestampSeconds, getFrame, ensureVisible],
   );
 
   const remoteConnected =
@@ -348,26 +402,19 @@ export function App() {
           <button onClick={handleClear} disabled={count === 0}>
             Clear
           </button>
-          <label className="checkbox">
-            <input
-              type="checkbox"
-              checked={autoScroll}
-              onChange={(e) => handleToggleAutoScroll(e.target.checked)}
-            />
-            auto-scroll
-          </label>
+          <span className="toolbar-separator" aria-hidden="true" />
+          <button onClick={addTracePanel}>Add trace panel</button>
         </div>
         <div className="status">{status}</div>
       </header>
-      <TraceView
-        count={count}
-        version={version}
-        autoScroll={autoScroll}
-        baseTimestampSeconds={baseTimestampSeconds}
-        getFrame={getFrame}
-        ensureVisible={ensureVisible}
-        onAutoScrollDisabled={handleAutoScrollDisabled}
-      />
+      <TraceDataContext.Provider value={traceData}>
+        <DockviewReact
+          className="dock-area"
+          theme={themeAbyss}
+          components={DOCK_COMPONENTS}
+          onReady={handleDockReady}
+        />
+      </TraceDataContext.Provider>
     </main>
   );
 }
