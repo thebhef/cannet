@@ -18,8 +18,10 @@ export const EXPANDED_ROW_HEIGHT = ROW_HEIGHT + 18 * 6;
 /// dimensions around 17M (Firefox) – 33M (WebKit/Chromium) px; 16M is
 /// safely under both. Past ~730k rows the scrollbar represents the
 /// trace at a compressed scale (each scrollbar pixel covers several
-/// rows); the mouse wheel still resolves finely because it moves
-/// scrollTop by a fixed pixel count regardless of the scale.
+/// rows), so the thumb is a coarse seek; row-precise navigation comes
+/// from the mouse wheel, which `TraceView` handles in row units (see
+/// [`wheelDeltaRows`] / [`maxWheelRows`]) rather than letting the
+/// browser translate a fixed-pixel notch through the compressed scale.
 export const MAX_SCROLL_HEIGHT_PX = 16_000_000;
 
 /// Rows the viewport can show, plus a 2-row pad for the partial rows
@@ -79,6 +81,32 @@ export function scrollForRow(
   if (anchorMax === 0) return 0;
   const clamped = Math.min(anchorMax, Math.max(0, row));
   return (clamped / anchorMax) * maxScrollTop(count, viewportHeight);
+}
+
+/// Largest number of rows a single wheel event may move the view. A
+/// normal mouse notch maps to a handful of rows; this caps pathological
+/// inputs — a "scroll one screen at a time" mouse, or a `deltaMode` of
+/// pages, or the compressed scaled-scrollbar regime at huge `count` —
+/// so one notch can never blow past a screenful of rows. Scales with
+/// the viewport so a small panel takes small steps.
+export function maxWheelRows(viewportHeight: number): number {
+  return Math.max(1, Math.ceil(visibleRowCount(viewportHeight) / 3));
+}
+
+/// A wheel event's `deltaY` as a (possibly fractional) row count,
+/// honouring the three `deltaMode`s: pixels (the common case — divide
+/// by the row height), lines (already ~one row each), pages (a
+/// viewport's worth of rows). The caller carries the fractional
+/// remainder between events so a trackpad's stream of small deltas
+/// scrolls smoothly.
+export function wheelDeltaRows(
+  deltaY: number,
+  deltaMode: number,
+  viewportHeight: number,
+): number {
+  if (deltaMode === 1) return deltaY;
+  if (deltaMode === 2) return deltaY * visibleRowCount(viewportHeight);
+  return deltaY / ROW_HEIGHT;
 }
 
 export interface RowPlacement {
