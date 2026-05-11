@@ -4,14 +4,27 @@
 //!
 //! - One [`CannetServerImpl`] is shared across all incoming gRPC calls.
 //! - `list_interfaces` is fully synchronous over the in-memory replay.
-//! - `session` is bidirectional. Each accepted session spawns one task
-//!   that drains the client's incoming envelopes; that task spawns one
-//!   *further* task per active subscription, each of which loops the
-//!   replay for its own interface and pushes [`FrameBatch`] envelopes to
-//!   the response sink. Unsubscribe aborts the per-interface task; end of
-//!   the incoming stream aborts all of them.
-//! - The single-client gate is an [`AtomicBool`]. A drop-guard releases
-//!   it when the session task ends, including on panic.
+//! - `session` is bidirectional. Each accepted session spawns one
+//!   *single* paced pump task that walks the replay's frames in their
+//!   recorded order and emits each subscribed frame at the appropriate
+//!   wall-clock time. The session task itself drains the client's
+//!   incoming envelopes and updates the shared subscription set the
+//!   pump consults; `Subscribe` adds an interface, `Unsubscribe`
+//!   removes it. End-of-incoming aborts the pump.
+//! - The single-client gate is an [`AtomicBool`]. A drop-guard
+//!   releases it when the session task ends, including on panic.
+//!
+//! ### Pacing
+//!
+//! Frames are walked in original BLF timestamp order. The pump sleeps
+//! `(t[i] - loop_start_ts) / rate` of wall time before emitting the
+//! frame at index `i`, giving real-time playback at `rate = 1.0`,
+//! `100×` real-time at `rate = 100.0`, etc. `rate = 0.0` (the default,
+//! and the test setting) skips the sleep entirely — the pump runs as
+//! fast as the consumer drains, matching the pre-pacing behavior.
+//! Looping: each new lap rebases the wall-clock origin to "now", so
+//! recorded timestamps don't have to be monotonic across lap
+//! boundaries — only within one lap.
 //!
 //! ### What the server rejects
 //!
@@ -22,12 +35,13 @@
 //! - Any client-sent [`FrameBatch`]: in-band [`Code::TxRejected`] (BLF
 //!   sources are read-only).
 
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 
 use cannet_wire::{
-    batch_frames,
+    batch_to_proto,
     proto::{
         cannet_server_server::{CannetServer as CannetServerTrait, CannetServerServer},
         envelope::Body,
@@ -35,19 +49,17 @@ use cannet_wire::{
         Envelope, Error as ErrorMsg, Interface as ProtoInterface, InterfaceList,
         ListInterfacesRequest, Subscribe, Unsubscribe,
     },
-    BatchPolicy,
 };
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::replay::LoopingBlfReplay;
 
 /// Channel depth for the per-session outgoing envelope queue. Provides
 /// the natural HTTP/2 flow-control backpressure point: when the queue
-/// fills, per-interface pump tasks block on `send`, which propagates to
-/// the BLF source and then to the network.
+/// fills, the pump task blocks on `send`, which propagates to HTTP/2
+/// flow control and stops the bus from outrunning the client.
 const OUTGOING_CHANNEL_DEPTH: usize = 64;
 
 /// gRPC service implementation. Construct via [`CannetServerImpl::new`]
@@ -55,15 +67,19 @@ const OUTGOING_CHANNEL_DEPTH: usize = 64;
 pub struct CannetServerImpl {
     replay: Arc<LoopingBlfReplay>,
     busy: Arc<AtomicBool>,
+    /// Replay rate multiplier: `1.0` = recorded cadence, `100.0` = 100×
+    /// faster, `0.0` = no pacing (emit as fast as the consumer drains).
+    rate: f64,
 }
 
 impl CannetServerImpl {
     /// Build a server impl over the given in-memory replay.
     #[must_use]
-    pub fn new(replay: Arc<LoopingBlfReplay>) -> Self {
+    pub fn new(replay: Arc<LoopingBlfReplay>, rate: f64) -> Self {
         Self {
             replay,
             busy: Arc::new(AtomicBool::new(false)),
+            rate,
         }
     }
 
@@ -130,9 +146,10 @@ impl CannetServerTrait for CannetServerImpl {
 
         let busy_guard = BusyGuard(self.busy.clone());
         let replay = self.replay.clone();
+        let rate = self.rate;
         tokio::spawn(async move {
             let _busy_guard = busy_guard;
-            run_session(incoming, tx, replay).await;
+            run_session(incoming, tx, replay, rate).await;
         });
 
         Ok(Response::new(ReceiverStream::new(rx)))
@@ -143,17 +160,23 @@ async fn run_session(
     mut incoming: Streaming<Envelope>,
     outgoing: mpsc::Sender<Result<Envelope, Status>>,
     replay: Arc<LoopingBlfReplay>,
+    rate: f64,
 ) {
-    let mut tasks: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
+    let subscriptions: Arc<RwLock<HashSet<String>>> =
+        Arc::new(RwLock::new(HashSet::new()));
+
+    let pump_handle = tokio::spawn(pump_paced(
+        replay.clone(),
+        subscriptions.clone(),
+        rate,
+        outgoing.clone(),
+    ));
 
     while let Ok(Some(envelope)) = incoming.message().await {
         let Some(body) = envelope.body else { continue };
         match body {
             Body::Subscribe(Subscribe { interface_id }) => {
-                if tasks.contains_key(&interface_id) {
-                    continue;
-                }
-                let Some(iface) = replay.interface_by_id(&interface_id) else {
+                if replay.interface_by_id(&interface_id).is_none() {
                     let _ = outgoing
                         .send(Ok(error_envelope(
                             Code::UnknownInterface,
@@ -161,21 +184,17 @@ async fn run_session(
                         )))
                         .await;
                     continue;
-                };
-                let channel = iface.channel;
-                let outgoing_clone = outgoing.clone();
-                let replay_clone = replay.clone();
-                let interface_id_for_task = interface_id.clone();
-                let handle = tokio::spawn(async move {
-                    pump_interface(replay_clone, channel, interface_id_for_task, outgoing_clone)
-                        .await;
-                });
-                tasks.insert(interface_id, handle);
+                }
+                subscriptions
+                    .write()
+                    .expect("subscriptions poisoned")
+                    .insert(interface_id);
             }
             Body::Unsubscribe(Unsubscribe { interface_id }) => {
-                if let Some(h) = tasks.remove(&interface_id) {
-                    h.abort();
-                }
+                subscriptions
+                    .write()
+                    .expect("subscriptions poisoned")
+                    .remove(&interface_id);
             }
             Body::FrameBatch(_) => {
                 let _ = outgoing
@@ -191,35 +210,90 @@ async fn run_session(
         }
     }
 
-    // Incoming stream closed: cancel all per-interface pumps. Dropping
-    // `outgoing` then closes the response side.
-    for (_, handle) in tasks {
-        handle.abort();
+    pump_handle.abort();
+}
+
+/// How long the pump idles when the client hasn't subscribed to any
+/// interfaces. Long enough to avoid CPU churn, short enough that the
+/// first frame after a subscribe arrives without noticeable latency.
+const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+async fn pump_paced(
+    replay: Arc<LoopingBlfReplay>,
+    subscriptions: Arc<RwLock<HashSet<String>>>,
+    rate: f64,
+    outgoing: mpsc::Sender<Result<Envelope, Status>>,
+) {
+    let frames = replay.frames();
+    if frames.is_empty() {
+        return;
+    }
+
+    loop {
+        // Skip the whole loop body if the client hasn't subscribed to
+        // anything yet — otherwise rate=0 + no-subs walks the BLF in a
+        // tight loop with no yield points, starving the session task
+        // (current-thread tokio in tests) and burning CPU (production).
+        if subscriptions
+            .read()
+            .expect("subscriptions poisoned")
+            .is_empty()
+        {
+            tokio::time::sleep(IDLE_POLL_INTERVAL).await;
+            continue;
+        }
+
+        let loop_start_wall = Instant::now();
+        let loop_start_ts = frames[0].timestamp_ns;
+
+        for frame in frames {
+            if rate > 0.0 {
+                let rel_ns = frame.timestamp_ns.saturating_sub(loop_start_ts);
+                let scaled_ns = scale_ns(rel_ns, rate);
+                let target = loop_start_wall + Duration::from_nanos(scaled_ns);
+                let now = Instant::now();
+                if target > now {
+                    tokio::time::sleep(target - now).await;
+                }
+            }
+
+            let Some(interface_id) = replay.interface_id_for_channel(frame.channel) else {
+                // Cooperatively yield so other tasks can run between
+                // skipped frames at rate=0.
+                tokio::task::yield_now().await;
+                continue;
+            };
+            let subscribed = subscriptions
+                .read()
+                .expect("subscriptions poisoned")
+                .contains(interface_id);
+            if !subscribed {
+                tokio::task::yield_now().await;
+                continue;
+            }
+
+            let batch = batch_to_proto(interface_id.to_string(), std::slice::from_ref(frame));
+            let envelope = Envelope {
+                body: Some(Body::FrameBatch(batch)),
+            };
+            if outgoing.send(Ok(envelope)).await.is_err() {
+                return;
+            }
+        }
     }
 }
 
-async fn pump_interface(
-    replay: Arc<LoopingBlfReplay>,
-    channel: u8,
-    interface_id: String,
-    outgoing: mpsc::Sender<Result<Envelope, Status>>,
-) {
-    let frames = async_stream::stream! {
-        let Some(frames) = replay.frames_for_channel(channel) else { return; };
-        if frames.is_empty() { return; }
-        loop {
-            for frame in frames {
-                yield frame.clone();
-            }
-        }
-    };
-    let batches = batch_frames(interface_id, frames, BatchPolicy::default());
-    tokio::pin!(batches);
-    while let Some(batch) = batches.next().await {
-        let envelope = Envelope { body: Some(Body::FrameBatch(batch)) };
-        if outgoing.send(Ok(envelope)).await.is_err() {
-            return; // Receiver dropped; session ended.
-        }
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+fn scale_ns(rel_ns: u64, rate: f64) -> u64 {
+    let scaled = rel_ns as f64 / rate;
+    if scaled.is_finite() && scaled >= 0.0 {
+        scaled as u64
+    } else {
+        0
     }
 }
 
