@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   COLUMN_DEFS,
   MIN_COLUMN_WIDTH,
+  columnsFromParams,
   defaultColumns,
   gridTemplateColumns,
   resizeColumn,
@@ -65,6 +66,25 @@ describe("resizeColumn", () => {
     const before = defaultColumns();
     // @ts-expect-error -- exercising the runtime guard with a bad key
     expect(resizeColumn(before, "nope", 9)).toEqual(before);
+  });
+});
+
+describe("columnsFromParams", () => {
+  it("accepts a well-formed (resized / toggled) column array", () => {
+    const saved = toggleColumn(resizeColumn(defaultColumns(), "id", 180), "kind");
+    expect(columnsFromParams(saved)).toEqual(saved);
+    expect(columnsFromParams(saved)).not.toBe(saved); // a copy
+  });
+
+  it("falls back to defaults for anything malformed", () => {
+    expect(columnsFromParams(undefined)).toEqual(defaultColumns());
+    expect(columnsFromParams(null)).toEqual(defaultColumns());
+    expect(columnsFromParams("nope")).toEqual(defaultColumns());
+    expect(columnsFromParams([])).toEqual(defaultColumns());
+    expect(columnsFromParams(defaultColumns().slice(0, 3))).toEqual(defaultColumns());
+    expect(columnsFromParams([{ key: "idx", width: "x", visible: true }])).toEqual(defaultColumns());
+    // Right length, wrong order:
+    expect(columnsFromParams(defaultColumns().slice().reverse())).toEqual(defaultColumns());
   });
 });
 

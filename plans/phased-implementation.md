@@ -334,24 +334,33 @@ Implementation notes (in progress):
   currently discards its trace.
 - **Project file + panel landed.** `apps/gui/src-tauri/src/project.rs`
   is the `Project` model (schema-versioned): the `dockview` layout blob
-  (opaque to the host), the attached DBC path, the remote-server
-  address — with `open_project` / `save_project` commands (the host owns
-  the model; the layout is the one frontend-owned bit it just
-  round-trips). `apps/gui/src/ProjectPanel.tsx` is the project panel
-  (a dockview panel, in the seed layout): New / Open / Save / Save As,
-  lists the bus(es) with Connect / Disconnect, shows the attached DBC
-  with reload-from-disk — state + actions via a `ProjectContext` that
-  `App` provides (the toolbar shares the callbacks). Open restores the
-  layout, sets the remote-address field, and re-attaches the DBC by
-  path; it doesn't auto-connect, and "New" is layout-only (it doesn't
-  detach the DBC or disconnect). Still to do this step:
-  reopen-last-project-on-launch (which retires the `localStorage`
-  layout placeholder below); per-panel config in the project (column
-  layouts, the panels' trace windows); the bus subscription set;
-  multiple DBCs.
-- **Layout persistence is a placeholder.** On launch the dockview
-  layout is still restored from `localStorage` (the "no project open"
-  default); reopen-last-project will supersede this.
+  (opaque to the host — and it carries each trace panel's per-panel
+  config in dockview's panel `params`: column layout, auto-scroll),
+  the attached DBC path, the remote-server address — with `open_project`
+  / `save_project` commands (the host owns the model; the layout is the
+  one frontend-owned bit it just round-trips). `apps/gui/src/ProjectPanel.tsx`
+  is the project panel (a dockview panel, in the seed layout): New /
+  Open / Save / Save As, lists the bus(es) with Connect / Disconnect,
+  shows the attached DBC with reload-from-disk — state + actions via a
+  `ProjectContext` that `App` provides (the toolbar shares the
+  callbacks). Open restores the layout (and the per-panel config), sets
+  the remote-address field, and re-attaches the DBC by path; it doesn't
+  auto-connect, and "New" is layout-only (it doesn't detach the DBC or
+  disconnect). The last opened/saved project's path is kept in
+  `localStorage` (`LAST_PROJECT_KEY`) and reopened on launch.
+  - Not carried in the project: a panel's trace window (it re-anchors
+    to the session buffer — empty on a fresh launch — anyway), the BLF
+    replay path, the per-interface subscription set (the only mode is
+    "subscribe to all"), and multiple DBCs. The first three are small
+    follow-ups; multi-DBC and interface-selection are *features* the
+    project would carry once they exist, not project plumbing.
+  - Lifting the trace model host-side (so the frontend `useTrace`
+    becomes a thin view over a host-side `Trace` registry) is still on
+    the table — deferred since the project file only persists column
+    layout / auto-scroll, not the trace window, so it isn't forced.
+- **Layout fallback when no project is open.** With no last project,
+  the dockview layout is restored from `localStorage`
+  (`LAYOUT_STORAGE_KEY`) — the implicit "default workspace".
 
 Exit criteria:
 
