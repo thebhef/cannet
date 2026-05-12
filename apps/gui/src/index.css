@@ -409,32 +409,42 @@ header {
   color: #94a3b8;
 }
 
-/* "columns ▾" dropdown in a trace panel's toolbar. */
-.columns-menu {
-  position: relative;
+/* Chronological / by-ID mode toggle in a trace panel's toolbar. */
+.mode-toggle {
   display: inline-flex;
+  border: 1px solid #1f2630;
+  border-radius: 3px;
+  overflow: hidden;
 }
 
-.columns-menu-button {
+.mode-toggle button {
   font: inherit;
   font-size: 0.85rem;
   background: transparent;
-  border: 1px solid #1f2630;
+  border: 0;
   color: #94a3b8;
-  padding: 0.05rem 0.4rem;
-  border-radius: 3px;
+  padding: 0.05rem 0.5rem;
   cursor: pointer;
 }
 
-.columns-menu-button:hover {
+.mode-toggle button + button {
+  border-left: 1px solid #1f2630;
+}
+
+.mode-toggle button:hover {
   background: #1a212b;
 }
 
-.columns-menu-popover {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  z-index: 20;
+.mode-toggle button.active {
+  background: #2a3340;
+  color: #e2e8f0;
+}
+
+/* Right-click-the-header column show/hide menu (positioned at the
+   cursor). */
+.column-context-menu {
+  position: fixed;
+  z-index: 50;
   display: flex;
   flex-direction: column;
   gap: 0.15rem;
@@ -497,6 +507,20 @@ header {
 
 .col-resize-handle:hover {
   background: rgb(148 163 184 / 0.25);
+}
+
+/* Header cells are click-to-sort in per-id mode. */
+.trace-header > span.col-sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.trace-header > span.col-sortable:hover {
+  color: #cbd5e1;
+}
+
+.sort-marker {
+  color: #93c5fd;
 }
 
 .trace-rows {

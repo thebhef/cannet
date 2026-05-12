@@ -45,23 +45,24 @@ crates/
 
 apps/
   gui/           Tauri 2 + React 18 + Vite trace viewer.
-    src/             React frontend. `TraceView.tsx` is the hand-rolled
-                     scaled virtualizer — the scroll container caps at
-                     16M px and maps scrollTop to an absolute row
-                     index, so the scrollbar represents the whole trace
-                     regardless of size; the mouse wheel scrolls
-                     natively but falls back to row-stepped scrolling
-                     when a notch would otherwise skip a screenful (huge
-                     traces, where that mapping is compressed). Rows
-                     expand to show decoded signals; columns can be
-                     drag-resized and shown / hidden per panel
-                     (`traceColumns.ts`). `ByIdPanel.tsx` is the
-                     per-message-ID view (latest frame per arbitration
-                     id); `ProjectPanel.tsx` the project / elements /
-                     bus / DBC panel. Each trace-style panel shows one
-                     *trace element* — a window over the host-side
-                     session buffer with pause / stop / clear; the
-                     elements live in an in-memory registry
+    src/             React frontend. `TracePanel.tsx` is a trace-style
+                     panel with a chronological / by-ID mode toggle:
+                     chronological is `TraceView.tsx`, a hand-rolled
+                     scaled virtualizer (the scroll container caps at
+                     16M px and maps scrollTop to an absolute row index,
+                     so the scrollbar represents the whole trace
+                     regardless of size; the wheel scrolls natively but
+                     falls back to row-stepped scrolling when a notch
+                     would skip a screenful in the compressed regime);
+                     by-ID is `ByIdTable.tsx`. Shared table bits — the
+                     header (drag-resize, right-click show/hide,
+                     click-to-sort) and the cell renderer — are in
+                     `traceTable.tsx`; the column model + sort in
+                     `traceColumns.ts`. `ProjectPanel.tsx` is the
+                     project / elements / bus / DBC panel. Each panel
+                     shows one *trace element* — a window over the
+                     host-side session buffer with pause / stop / clear;
+                     the elements live in an in-memory registry
                      (`projectElements.ts`), persisted in the project,
                      so closing a panel doesn't destroy its element
                      (`trace.ts`, `TraceControls.tsx`). The
@@ -156,29 +157,31 @@ cannet window. Use **Open BLF…** to pick a log; **Attach DBC…** before
 opening attaches a database for live decoding.
 
 The window below the toolbar is a dockable panel area. The default
-layout has a **trace panel** (chronological — one row per frame) and a
-**project panel** (the project's *elements*, the configured bus(es),
-the attached DBC). **Add trace panel** opens a chronological view;
-**Add by-ID panel** opens a per-message-ID view (one row per
-arbitration id, holding that id's latest frame, updating live); each
-creates a new element and a panel for it. The project panel lists the
-elements — closing a panel doesn't destroy its element; reopen it (or
-remove it from the project) from there. **Project panel** toggles the
-project panel itself (it's a show/hide singleton). New panels arrive as a tab in the
-active group — drag a panel by its tab and drop it against an edge of
-the area to split it side-by-side, or onto another panel to tab them
-together. Each trace panel keeps its own scroll position, auto-scroll
-toggle, column layout — drag the divider at a column header's right
-edge to resize, and use the panel's **columns ▾** menu to show / hide
-columns. Every trace-style panel (chronological or by-ID) carries the
-same trace controls: the data lives in a session buffer that fills
-while connected (lost when you disconnect / reconnect or quit), and a
-*trace* is each panel's own window over it — **Pause** freezes the
-view (**Resume** continues, including frames received while paused),
-**Stop** freezes it (**Start** then begins a fresh, growing trace),
-and **Clear** empties the window keeping whatever state it's in (Clear
-doesn't imply Stop or Pause — a running trace stays running). The
-session buffer keeps filling underneath regardless.
+layout has a **trace panel** and a **project panel** (the project's
+*elements*, the configured bus(es), the attached DBC). A trace panel
+has a **trace / by ID** mode toggle: *trace* is the chronological view
+(one row per frame, follows the live edge); *by ID* shows one row per
+arbitration id with its latest frame, and you can click a column header
+to sort by it (click again to reverse, again to clear — ▲ / ▼ marks
+the sorted column). **Add trace panel** / **Add by-ID panel** each
+create a new trace element and a panel for it (starting in that mode —
+toggle it anytime); the project panel lists the elements — closing a
+panel doesn't destroy its element, reopen or remove it from there.
+**Project panel** toggles the project panel itself (it's a show/hide
+singleton). New panels arrive as a tab in the active group — drag a
+panel by its tab and drop it against an edge of the area to split it
+side-by-side, or onto another panel to tab them together. Each trace
+panel keeps its own scroll position, auto-scroll toggle (trace mode),
+and column layout — drag the divider at a column header's right edge to
+resize, and **right-click the header** to show / hide columns. Trace
+panels carry the trace controls: the data lives in a session buffer
+that fills while connected (lost when you disconnect / reconnect or
+quit), and a *trace* is each panel's own window over it — **Pause**
+freezes the view (**Resume** continues, including frames received while
+paused), **Stop** freezes it (**Start** then begins a fresh, growing
+trace), and **Clear** empties the window keeping whatever state it's in
+(Clear doesn't imply Stop or Pause — a running trace stays running).
+The session buffer keeps filling underneath regardless.
 (Tearing a panel out into a separate OS window isn't supported yet —
 docking is within the one window; the tear-out item is in
 `plans/backlog.md`.)

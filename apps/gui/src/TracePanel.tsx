@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
+import { invoke } from "@tauri-apps/api/core";
 
 import { TraceView } from "./TraceView";
+import { ByIdTable } from "./ByIdTable";
 import { TraceControls } from "./TraceControls";
 import { useTraceData } from "./traceData";
 import { useTrace } from "./trace";
@@ -9,11 +11,15 @@ import { useElementRegistry } from "./projectElements";
 import {
   type ColumnKey,
   type ColumnState,
-  columnDef,
+  type SortState,
   columnsFromParams,
+  nextSort,
   resizeColumn,
   toggleColumn,
 } from "./traceColumns";
+import type { TraceFrameRecord } from "./types";
+
+type TraceMode = "chronological" | "by-id";
 
 /// The element id from a panel's params, or a fresh one if absent (a
 /// layout saved before elements existed, or a corrupt blob).
@@ -23,40 +29,48 @@ function elementIdFromParams(params: unknown): string {
 }
 
 /**
- * A trace panel inside the dockview layout: a chronological trace-style
- * view of one trace *element* (`useTrace`), with the common
- * Start/Stop/Pause/Resume/Clear controls and the per-panel state —
- * auto-scroll, column layout. Scroll position and expanded rows live
- * inside `TraceView`.
- *
- * The element it shows is `params.elementId`; the trace window lives in
- * the element registry, so closing the panel doesn't destroy it. The
- * auto-scroll toggle and the column layout are this *panel*'s — they
- * persist in the dockview panel `params` (and thus the layout / the
- * project). (The trace window isn't persisted: it re-anchors to the
- * session buffer, empty on a fresh launch, regardless.)
+ * One trace-style panel: a view of one trace *element* (`useTrace`),
+ * switchable between **chronological** (one row per frame, virtualized,
+ * follows the live edge) and **by ID** (one row per arbitration id with
+ * its latest frame; click a column to sort). Both modes share the
+ * column layout (resize a divider; right-click a header to show / hide
+ * columns), the trace controls, and the element — so closing the panel
+ * doesn't destroy the element, and the mode is the element's `view`.
+ * Auto-scroll (chronological mode) and the column layout are this
+ * *panel*'s, persisted in the dockview panel `params`.
  */
 export function TracePanel(props: IDockviewPanelProps) {
   const data = useTraceData();
-  const { ensureTrace } = useElementRegistry();
+  const reg = useElementRegistry();
+  const { api } = props;
 
   const params = props.params as
-    | { elementId?: unknown; autoScroll?: unknown; columns?: unknown }
+    | { elementId?: unknown; view?: unknown; autoScroll?: unknown; columns?: unknown }
     | undefined;
   const [elementId] = useState(() => elementIdFromParams(params));
+  const initialView: TraceMode = params?.view === "by-id" ? "by-id" : "chronological";
+
+  const { ensureTrace } = reg;
   useEffect(() => {
-    ensureTrace(elementId, "chronological");
-  }, [ensureTrace, elementId]);
+    ensureTrace(elementId, initialView);
+  }, [ensureTrace, elementId, initialView]);
+
+  // The element's `view` is the source of truth for the mode (so the
+  // project panel can show it); fall back to the params' until the
+  // registry entry exists.
+  const mode: TraceMode = reg.get(elementId)?.element.view ?? initialView;
+  const switchMode = useCallback(
+    (m: TraceMode) => reg.setElementView(elementId, m),
+    [reg, elementId],
+  );
 
   const trace = useTrace(data, elementId);
 
-  // While true the view pins to the live tail of the trace; a user
-  // scroll flips it off (TraceView calls onAutoScrollDisabled).
+  // Per-panel: auto-scroll (chronological) and the column layout.
   const [autoScroll, setAutoScroll] = useState(() =>
     typeof params?.autoScroll === "boolean" ? params.autoScroll : true,
   );
   const handleAutoScrollDisabled = useCallback(() => setAutoScroll(false), []);
-
   const [columns, setColumns] = useState<ColumnState[]>(() => columnsFromParams(params?.columns));
   const handleColumnResize = useCallback(
     (key: ColumnKey, width: number) => setColumns((cs) => resizeColumn(cs, key, width)),
@@ -69,10 +83,37 @@ export function TracePanel(props: IDockviewPanelProps) {
 
   // Mirror this panel's persistable state into its dockview params so
   // it's in `toJSON()` (the project file / the localStorage layout).
-  const { api } = props;
   useEffect(() => {
-    api.updateParameters({ elementId, autoScroll, columns });
-  }, [api, elementId, autoScroll, columns]);
+    api.updateParameters({ elementId, view: mode, autoScroll, columns });
+  }, [api, elementId, mode, autoScroll, columns]);
+
+  // By-id mode state.
+  const [rows, setRows] = useState<TraceFrameRecord[]>([]);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [sort, setSort] = useState<SortState>(null);
+  const onSortColumn = useCallback((key: ColumnKey) => setSort((s) => nextSort(s, key)), []);
+  const onToggleExpand = useCallback((rowKey: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(rowKey)) next.delete(rowKey);
+      else next.add(rowKey);
+      return next;
+    });
+  }, []);
+
+  // While in by-id mode: refresh the latest-by-id snapshot on mount, on
+  // window change (clear / start moves `offset`), on every tick while
+  // running, and once on a status change (which captures the snapshot
+  // when the trace is paused / stopped).
+  const refreshTrigger = trace.status === "running" ? trace.frameCount : -1;
+  useEffect(() => {
+    if (mode !== "by-id") return;
+    void invoke<TraceFrameRecord[]>("fetch_latest_by_id", { since: trace.offset })
+      .then(setRows)
+      .catch(() => {
+        /* a failed snapshot just leaves the last one up */
+      });
+  }, [mode, trace.offset, trace.status, refreshTrigger]);
 
   return (
     <div className="trace-panel">
@@ -85,82 +126,58 @@ export function TracePanel(props: IDockviewPanelProps) {
           onResume={trace.resume}
           onClear={trace.clear}
         />
-        <label className="checkbox">
-          <input
-            type="checkbox"
-            checked={autoScroll}
-            onChange={(e) => setAutoScroll(e.target.checked)}
-          />
-          auto-scroll
-        </label>
-        <ColumnsMenu columns={columns} onToggle={handleColumnToggle} />
+        <span className="mode-toggle">
+          <button
+            type="button"
+            className={mode === "chronological" ? "active" : undefined}
+            onClick={() => switchMode("chronological")}
+          >
+            trace
+          </button>
+          <button
+            type="button"
+            className={mode === "by-id" ? "active" : undefined}
+            onClick={() => switchMode("by-id")}
+          >
+            by&nbsp;ID
+          </button>
+        </span>
+        {mode === "chronological" && (
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={autoScroll}
+              onChange={(e) => setAutoScroll(e.target.checked)}
+            />
+            auto-scroll
+          </label>
+        )}
       </div>
-      <TraceView
-        count={trace.frameCount}
-        version={trace.version}
-        // "Auto-scroll to the live edge" only applies while the trace
-        // is running — a paused/stopped trace is a frozen window, so
-        // the view scrolls freely and fetches its rows on demand (the
-        // live-tail overlay only covers a running trace's edge).
-        autoScroll={autoScroll && trace.status === "running"}
-        baseTimestampSeconds={trace.baseTimestampSeconds}
-        columns={columns}
-        onColumnResize={handleColumnResize}
-        getFrame={trace.getFrame}
-        ensureVisible={trace.ensureVisible}
-        onAutoScrollDisabled={handleAutoScrollDisabled}
-      />
-    </div>
-  );
-}
-
-/** Toolbar dropdown for showing / hiding individual trace columns. */
-function ColumnsMenu({
-  columns,
-  onToggle,
-}: {
-  columns: readonly ColumnState[];
-  onToggle: (key: ColumnKey) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  return (
-    <div className="columns-menu" ref={wrapRef}>
-      <button
-        type="button"
-        className="columns-menu-button"
-        aria-haspopup="true"
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-      >
-        columns ▾
-      </button>
-      {open && (
-        <div className="columns-menu-popover" role="menu">
-          {columns.map((c) => (
-            <label key={c.key} className="checkbox">
-              <input type="checkbox" checked={c.visible} onChange={() => onToggle(c.key)} />
-              {columnDef(c.key).label}
-            </label>
-          ))}
-        </div>
+      {mode === "chronological" ? (
+        <TraceView
+          count={trace.frameCount}
+          version={trace.version}
+          autoScroll={autoScroll && trace.status === "running"}
+          baseTimestampSeconds={trace.baseTimestampSeconds}
+          columns={columns}
+          onColumnResize={handleColumnResize}
+          onColumnToggle={handleColumnToggle}
+          getFrame={trace.getFrame}
+          ensureVisible={trace.ensureVisible}
+          onAutoScrollDisabled={handleAutoScrollDisabled}
+        />
+      ) : (
+        <ByIdTable
+          rows={rows}
+          columns={columns}
+          onColumnResize={handleColumnResize}
+          onColumnToggle={handleColumnToggle}
+          sort={sort}
+          onSortColumn={onSortColumn}
+          baseTimestamp={trace.baseTimestampSeconds}
+          expanded={expanded}
+          onToggleExpand={onToggleExpand}
+        />
       )}
     </div>
   );
