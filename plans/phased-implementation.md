@@ -478,48 +478,101 @@ Exit criteria:
 
 ## Phase 4 — Signal Plotting
 
-A plotting view in the spirit of vSignalyzer / TSMaster: pick decoded
-signals and watch them over time — live and historical — in one or more
-plot panels docked alongside the trace panels in the Phase 3 layout.
+A plotting view in the spirit of vSignalyzer / CANape — and, more
+loosely, a software oscilloscope: pick decoded signals and watch them
+over time, live and historical, in one or more plot panels docked
+alongside the trace panels in the Phase 3 layout. The "oscilloscope"
+framing is deliberate: there's effectively no ceiling on features here
+(time-base controls, multiple y-axes, cursors and delta measurement,
+triggers, math channels, export, …), so the scope below is split into a
+**Phase 4 MVP** that has to land and a **later passes** list the MVP
+must not paint into a corner.
 
-Scope:
+Land it in small, independently demoable steps. The realised order so
+far: the host-side data path (signal sampler + `list_signals` /
+`sample_signal` commands) first, then the plot panel itself (uPlot in a
+dockview panel), then the interaction polish, then project-file
+persistence (which is gated on the rest of Phase 3 — see below).
 
-- **Plot panel.** A new panel type in the Phase 3 layout system. A plot
-  panel hosts one or more signal traces on a shared time axis; the user
-  adds a trace by picking a (message, signal) pair from the attached DBC.
-  Multiple plot panels can be open, each with its own signal set and axis
-  configuration.
-- **Signal sampling over the trace store.** The data-path work: a sampler
-  that walks the trace store for frames matching a signal's message id,
-  decodes the signal, and yields a `(timestamp, value)` series for a
-  requested time range — the plotting analogue of the trace view's
-  decode-on-fetch slice. Live plots extend as the trace grows (driven by
-  the same `trace-grew` tick); a paused or finished capture is queried
-  over a fixed range.
-- **Plot interaction.** Pan / zoom on the time axis, per-trace or shared
-  y-axis with auto and manual scaling, a movable cursor that reads out
-  each trace's value at that instant, and a "follow live edge" toggle
-  mirroring the trace view's auto-scroll. Enum-valued signals (DBC value
-  tables) render as a stepped state plot.
-- **Plot panels in the project file.** A plot panel's signal set and axis
-  config round-trip through the Phase 3 project file like any other
-  panel's config.
-- **Plotting library.** Selected here (see `technology-inventory.md`): it
-  has to handle high-rate streaming time-series (tens of thousands of
-  points, growing live) without choking the WebView, support multiple
-  independent plots, and carry a permissive license. A candidate
-  shortlist is recorded in the inventory now; the pick and the rejected
-  alternatives get written up when this phase starts.
+### Phase 4 MVP scope
 
-Out of scope (deferred to later phases / backlog):
+- **Plot panel.** A new panel type in the Phase 3 dockview layout. A
+  plot panel hosts one or more signal traces on a shared time axis; the
+  user adds a trace by picking a `(message, signal)` pair from the
+  attached DBC. Multiple plot panels can be open, each with its own
+  signal set. Realised as `apps/gui/src/PlotPanel.tsx` (registered under
+  `PLOT_PANEL_COMPONENT` in `dockLayout.ts`), with an "Add plot panel"
+  toolbar action in `App.tsx`.
+- **Signal sampling over the trace store.** The data-path work: a
+  sampler that, given a `(message id, signal)` pair and a time window,
+  pulls the matching frames out of the trace store, decodes the signal,
+  and yields a `(timestamp, value)` series — the plotting analogue of
+  the trace view's decode-on-fetch slice. Live plots re-sample as the
+  trace grows (driven by the same `trace-grew` tick); a paused or
+  finished capture is queried over a fixed range. Realised as
+  `apps/gui/src-tauri/src/signal_sampler.rs` plus
+  `TraceStore::slice_time_range` / `first_timestamp_ns` /
+  `last_timestamp_ns`; surfaced to the frontend as the `list_signals`
+  (DBC → pickable signals) and `sample_signal` (`(t, v)` series + the
+  capture's current time bounds) Tauri commands. Independently-sampled
+  series are stitched onto one timeline (sorted-union x-axis,
+  sample-and-hold per series) by `apps/gui/src/plotData.ts` before being
+  handed to the renderer.
+- **Plot interaction (MVP).** Pan / zoom on the time axis (uPlot's
+  built-in drag-zoom), a readout cursor / legend showing each trace's
+  value at the hovered instant (uPlot's built-in cursor + live legend),
+  and a "follow live edge" toggle that re-fits the x-range to the
+  capture's edge on every `trace-grew` tick — a user pan / zoom switches
+  it off, the plot analogue of the trace view's auto-scroll.
+- **Plotting library.** uPlot — chosen and written up in
+  `technology-inventory.md` (with the rejected alternatives). The data
+  feeding it comes from the signal sampler; the library only renders.
 
-- **XY / scatter plots, gauges, and bitfield / flag panels** —
-  `features.md` lists "bitfield views, with flag indicators per signal"
-  and arbitrary plotting; Phase 4's MVP is time-series line / step plots.
-  The bitfield view and non-time-series plot types are a later GUI pass.
-- **Math channels** — derived signals computed from other signals.
+### Later passes (leave room, don't build yet)
 
-Exit criteria:
+- **Y-axis controls.** Per-trace vs. shared y-axis; auto-scale vs.
+  manual min/max; log scale; per-trace offset/gain so unrelated signals
+  can share one pane without one swamping the others. The MVP autoscales
+  a single shared y; the panel config shape should anticipate per-trace
+  axis settings.
+- **Enum / state signals.** Signals backed by DBC value tables render as
+  a stepped state plot with the symbolic labels on the axis, not as bare
+  numbers. (Needs value-table data threaded out of `cannet-dbc` — it
+  isn't today.)
+- **Cursors & measurement.** One or more vertical cursors with a
+  readout table; ΔX / Δt between two cursors; per-trace Δy, min / max /
+  mean over the cursor span — the oscilloscope "measure" panel.
+- **Time-base / sweep controls.** A "seconds per division" style window
+  width control, snap-to-now, jump-to-time, and a horizontal-position
+  control independent of zoom.
+- **Triggers.** Edge / level / value-match triggers on a chosen signal
+  that freeze the view (and, later, mark the frame in the trace) — the
+  oscilloscope trigger.
+- **Math channels.** Derived signals computed from other signals
+  (sum, diff, scale, filter, …) — also useful to the transmit panel and
+  to a future scripting surface, so it may grow beyond plotting.
+- **Export.** Copy / save the visible window as CSV or an image.
+- **Non-time-series views.** XY / scatter plots, gauges, and the
+  bitfield / flag panel `features.md` calls for. Phase 4's MVP is
+  time-series line / step plots; these are a later GUI pass and likely
+  separate panel types.
+
+### Dependency on the rest of Phase 3
+
+Phase 3 still has open scope downstack — resizable / hideable trace
+columns and the project panel + project file. **Plot panels in the
+project file** (a plot panel's signal set and axis config round-tripping
+through the project file like any other panel's config) lands as part of
+that work, not before it: until the project file exists, plot panels
+persist only via the placeholder `localStorage` dockview layout, same as
+trace panels. Phase 4's MVP can otherwise proceed against the current
+Phase 3 docking shell.
+
+(Separately: the trace panel's interaction model — the scaled-scrollbar
+virtualizer — is up for a rework; tracked in `plans/backlog.md`. It
+doesn't block Phase 4.)
+
+### Exit criteria
 
 - A plot panel can be added to the layout, populated with several signals
   from the attached DBC, and shows them updating live while a BLF replays
@@ -527,7 +580,8 @@ Exit criteria:
   follow-live toggle — alongside an open trace panel, with no regressions
   vs. Phase 3.
 - A historical range can be inspected on a paused or finished capture.
-- Plot panels save and restore through the project file.
+- Plot panels save and restore through the project file (lands with the
+  Phase 3 project-file work).
 - README documents how to add a plot panel and pick signals; rustdoc
   covers the signal-sampler surface; `plans/technology-inventory.md`
   records the chosen plotting library and the rejected alternatives.

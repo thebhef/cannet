@@ -583,3 +583,83 @@ header {
 .signal-value {
   color: #fde68a;
 }
+
+/* Plot panel ------------------------------------------------------------*/
+.plot-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.plot-panel-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.6rem;
+  flex: 0 0 auto;
+  border-bottom: 1px solid #1f2630;
+  flex-wrap: wrap;
+}
+
+.plot-panel-toolbar select,
+.plot-panel-toolbar button {
+  background: #0f141d;
+  color: #e2e8f0;
+  border: 1px solid #2c3444;
+  border-radius: 4px;
+  padding: 0.15rem 0.4rem;
+  font: inherit;
+  font-size: 0.82rem;
+}
+
+.plot-panel-toolbar label.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  user-select: none;
+  font-size: 0.85rem;
+}
+
+.plot-panel-chips {
+  display: flex;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+}
+
+.plot-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.75rem;
+  padding: 0.05rem 0.3rem;
+  border: 1px solid #2c3444;
+  border-left-width: 3px;
+  border-radius: 3px;
+  color: #cbd5e1;
+}
+
+.plot-chip button {
+  background: none;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  font-size: 0.9rem;
+  line-height: 1;
+  padding: 0;
+}
+
+.plot-chip button:hover {
+  color: #e2e8f0;
+}
+
+.plot-panel-canvas {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* uPlot renders on a dark ground; nudge its chrome to match the app. */
+.plot-panel-canvas .u-legend {
+  font-size: 0.78rem;
+  color: #94a3b8;
+}

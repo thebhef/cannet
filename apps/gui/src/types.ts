@@ -107,3 +107,22 @@ export interface Project {
 }
 
 export const PROJECT_SCHEMA_VERSION = 2;
+
+/// One `(message, signal)` pair the attached DBC defines, returned by
+/// the `list_signals` command for a plot panel's signal picker.
+export interface SignalDescriptorRecord {
+  message_id: number;
+  extended: boolean;
+  message_name: string;
+  signal_name: string;
+  unit: string;
+}
+
+/// Returned by `sample_signal`: parallel `(t, v)` arrays (`t` in
+/// seconds) plus the trace store's current first/last frame timestamps.
+export interface SignalSeries {
+  t: number[];
+  v: number[];
+  capture_start_seconds: number | null;
+  capture_end_seconds: number | null;
+}
