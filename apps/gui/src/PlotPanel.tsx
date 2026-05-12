@@ -8,6 +8,8 @@ import type { SignalDescriptorRecord, SignalSeries } from "./types";
 import { useTraceData } from "./traceData";
 import { useProjectContext } from "./projectContext";
 import { mergeSeries, signalKey } from "./plotData";
+import { TraceControls } from "./TraceControls";
+import type { TraceStatus } from "./trace";
 import {
   DEFAULT_MEASUREMENTS,
   MEASUREMENT_QUANTITIES,
@@ -24,46 +26,53 @@ import {
  * `plans/phased-implementation.md` Phase 4 and
  * `plans/plot-panel-reference.html` for the target design.
  *
+ * Like the trace panels it has a Start / Stop / Pause / Clear control
+ * bar — it has trace behaviour, just focused on signal *values* over
+ * time rather than message rows. While "running" it follows the live
+ * capture; pause/stop freeze the view; clear re-anchors to "now".
+ *
  * A plot panel owns a **stack of plot areas** (starts with one; "add
  * plot area" appends more), all sharing one x (time) axis. Each plot
- * area is a uPlot canvas plus a **side signal panel** listing the area's
- * signals (colour swatch, name, present value / value-at-cursor) and the
- * controls to remove a signal, move it to another area, or set the
- * area's y-range. Picking a `(message, signal)` pair from the toolbar
- * drops it into the *focused* area (click an area's body to focus it).
+ * area is a uPlot canvas plus a **side signal panel** listing the
+ * area's signals (colour swatch, name, value — at cursor A, else at the
+ * mouse crosshair, else the latest sample), an "y: auto / min…max"
+ * control, and the H1/H2 Y-cursor read-out when those are placed.
+ * Picking a `(message, signal)` pair from the toolbar drops it into the
+ * *focused* area (click an area to focus it); the **→** menu on a
+ * signal row moves it to another area.
  *
  * Time axis & data:
- * - the host's `sample_signal` command walks the trace store, decodes
- *   the signal, min/max-decimates it to ~the plot's pixel width, and
- *   returns the `(t, v)` series; {@link mergeSeries} stitches an area's
- *   series onto one timeline for uPlot;
+ * - `sample_signal` walks the trace store, decodes the signal, and
+ *   min/max-decimates it to ≈the plot's pixel width; {@link mergeSeries}
+ *   stitches an area's series onto one timeline. The span shown is the
+ *   whole capture (the longest-running trace) up to `capture_end`.
  * - **drag-select** / **⌘/ctrl + wheel** on any area zooms x on every
- *   area (and leaves follow-live); **shift + wheel** y-zooms the hovered
- *   area; **⌘/ctrl + shift + wheel** does both; **reset zoom** refits;
- * - **follow live** re-fits x to the capture's edge each `trace-grew`
- *   tick — narrowed to the **window width** if one is set;
- * - axis times are relative to the capture's first frame.
+ *   area (and leaves "follow live"); **shift + wheel** pans x;
+ *   **⌘/ctrl + shift + wheel** zooms y on the hovered area;
+ *   **fit data** refits x to the full capture span and y to the data.
+ * - **follow live** keeps every area pinned to the capture's growing
+ *   edge, preserving the current visible x-width; a manual x pan/zoom
+ *   turns it off. Pause/Stop also stop the live re-sampling.
  *
- * Cursors & measurements are **off by default**, turned on from the
- * panel toolbar (the reference prototype ships them on; cannet doesn't):
- * - cursor mode "X" → left-click places cursor A, right-click cursor B,
- *   drawn through every area; mode "Y" → places this area's H1 / H2;
- *   mode "+ note" → left-click drops an event note at that time;
- * - the **measurement strip** (toggle) shows a configurable set of
- *   quantities — A, B, Δt, 1/Δt, and per-trace value@A / value@B / Δ /
- *   min / max / mean over [A, B];
- * - **event markers** (the capture-start "T0" plus user notes) draw as
- *   vertical lines across the areas.
+ * Cursors & measurements are **off by default**. The toolbar's
+ * **cursors** selector turns on **X** cursors (left-click = A,
+ * right-click = B, drawn through every area), **Y** cursors (per-area
+ * H1/H2), or **+ note** (left-click drops an event note). **clear
+ * cursors** removes them. The **measurements** toggle reveals a strip
+ * whose cell set is configurable: A, B, Δt, 1/Δt, and per-trace value@A
+ * / value@B / Δ / min / max / mean over [A, B]. Event markers — the
+ * capture-start "T0" plus your notes — draw as vertical lines; the
+ * event log lists, renames, and removes notes.
  *
- * All of the above except the transient cursor *positions* are mirrored
- * into the dockview panel's `params`, so they round-trip through the
- * project file / layout. (Cursor positions are kept too but cleared when
- * the capture resets, since they wouldn't mean anything against a
- * different capture.)
+ * Persistable state (areas + signal→area assignment, y-ranges, cursor
+ * mode, measurement toggle/selection, follow-live, notes; cursor
+ * positions best-effort) is mirrored into the dockview panel's
+ * `params`, so it round-trips through the project file / layout. The
+ * play state and the post-clear time anchor are session-only.
  *
- * Not built yet (tracked in `plans/backlog.md`): per-trace y offset /
- * gain and log scale; enum / state signals (needs DBC value-tables);
- * triggers; CSV / image export.
+ * Not built yet (`plans/backlog.md`): per-*trace* y offset/gain & log
+ * scale; enum/state signals; triggers; CSV/image export; native
+ * drag-and-drop signal moves; incremental sampling.
  */
 
 const TRACE_COLORS = [
@@ -80,8 +89,7 @@ const CURSOR_A_COLOR = "#ffd93d";
 const CURSOR_B_COLOR = "#ff5577";
 const EVENT_COLOR = "#4ecbff";
 const ZOOM_STEP = 1.15;
-/** Lower bound for `sample_signal`'s decimation pixel hint, so a
- * not-yet-laid-out canvas still asks for a sane number of points. */
+/** Lower bound for `sample_signal`'s decimation pixel hint. */
 const MIN_DECIMATION_POINTS = 200;
 
 type CursorMode = "off" | "x" | "y" | "note";
@@ -120,15 +128,16 @@ interface PlotPanelParams {
   cursorMode?: unknown;
   measEnabled?: unknown;
   measKeys?: unknown;
-  windowSeconds?: unknown;
   cursorX?: unknown;
   cursorYByArea?: unknown;
   notes?: unknown;
 }
 
+/** Shared, mutable plumbing for the per-area uPlot instances: `suppress`
+ * gates the per-area `setScale` hook so our own programmatic scale
+ * changes don't bounce back as "user zoomed". */
 interface XSync {
   suppress: boolean;
-  range: { min: number; max: number } | null;
 }
 
 function signalRefKey(s: SignalRef): string {
@@ -224,11 +233,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
   const [followLive, setFollowLive] = useState(() =>
     typeof params?.followLive === "boolean" ? params.followLive : true,
   );
-  const [windowSeconds, setWindowSeconds] = useState<number | null>(() =>
-    typeof params?.windowSeconds === "number" && params.windowSeconds > 0
-      ? params.windowSeconds
-      : null,
-  );
   const [cursorMode, setCursorMode] = useState<CursorMode>(() => cursorModeFromRaw(params?.cursorMode));
   const [measEnabled, setMeasEnabled] = useState(() =>
     typeof params?.measEnabled === "boolean" ? params.measEnabled : false,
@@ -237,13 +241,18 @@ export function PlotPanel(props: IDockviewPanelProps) {
   const [focusedAreaId, setFocusedAreaId] = useState<string>(() => areas[0]?.id ?? "");
   const [catalog, setCatalog] = useState<SignalDescriptorRecord[]>([]);
 
-  // Cursors. X is global; Y is per area. Kept in display-relative seconds.
+  // Play state (session-only) + the post-Clear time anchor. While
+  // "running" the plot follows the live capture; pause/stop hold it;
+  // Clear moves the start of what's plotted to the current capture edge.
+  const [playState, setPlayState] = useState<TraceStatus>("running");
+  const [clearAtSeconds, setClearAtSeconds] = useState(0);
+  // Last capture-end timestamp (absolute seconds) seen from a sample —
+  // used by Clear and "fit data" without an extra round-trip.
+  const captureEndRef = useRef<number | null>(null);
+
   const [cursorX, setCursorX] = useState<XCursors>(() => {
     const o = params?.cursorX as { a?: unknown; b?: unknown } | undefined;
-    return {
-      a: typeof o?.a === "number" ? o.a : null,
-      b: typeof o?.b === "number" ? o.b : null,
-    };
+    return { a: typeof o?.a === "number" ? o.a : null, b: typeof o?.b === "number" ? o.b : null };
   });
   const [cursorYByArea, setCursorYByArea] = useState<Record<string, { h1: number | null; h2: number | null }>>(
     () => {
@@ -253,10 +262,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
         for (const [k, v] of Object.entries(o as Record<string, unknown>)) {
           if (typeof v === "object" && v !== null) {
             const vv = v as Record<string, unknown>;
-            out[k] = {
-              h1: typeof vv.h1 === "number" ? vv.h1 : null,
-              h2: typeof vv.h2 === "number" ? vv.h2 : null,
-            };
+            out[k] = { h1: typeof vv.h1 === "number" ? vv.h1 : null, h2: typeof vv.h2 === "number" ? vv.h2 : null };
           }
         }
       }
@@ -265,79 +271,85 @@ export function PlotPanel(props: IDockviewPanelProps) {
   );
   const [notes, setNotes] = useState<NoteEvent[]>(() => notesFromRaw(params?.notes));
 
-  // Per-area last-sampled series (for the measurement strip) and perf.
   const [seriesByArea, setSeriesByArea] = useState<Map<string, Map<string, Series>>>(new Map());
   const [perfMs, setPerfMs] = useState(0);
   const dpr = typeof devicePixelRatio === "number" ? devicePixelRatio : 1;
 
-  // x-axis sync plumbing + the live registry of each area's uPlot.
-  const xSyncRef = useRef<XSync>({ suppress: false, range: null });
+  const xSyncRef = useRef<XSync>({ suppress: false });
   const instancesRef = useRef<Map<string, uPlot>>(new Map());
+  // The x-window width to maintain while following live; `null` = "from
+  // the start" (show everything). Updated on a manual x change / fit.
+  const followWidthRef = useRef<number | null>(null);
 
   const registerInstance = useCallback((id: string, u: uPlot | null) => {
     if (u) instancesRef.current.set(id, u);
     else instancesRef.current.delete(id);
   }, []);
 
-  const applyXToOthers = useCallback((min: number, max: number, exceptId: string) => {
+  const withSuppressedGlobal = (fn: () => void) => {
     const sync = xSyncRef.current;
-    const wasSuppressed = sync.suppress;
+    const prev = sync.suppress;
     sync.suppress = true;
-    for (const [id, u] of instancesRef.current) {
-      if (id === exceptId) continue;
-      const xs = u.scales.x;
-      if (xs.min === min && xs.max === max) continue;
-      u.setScale("x", { min, max });
+    try {
+      fn();
+    } finally {
+      sync.suppress = prev;
     }
-    sync.suppress = wasSuppressed;
+  };
+
+  const applyXToOthers = useCallback((min: number, max: number, exceptId: string) => {
+    withSuppressedGlobal(() => {
+      for (const [id, u] of instancesRef.current) {
+        if (id === exceptId) continue;
+        const xs = u.scales.x;
+        if (xs.min === min && xs.max === max) continue;
+        u.setScale("x", { min, max });
+      }
+    });
   }, []);
 
+  // A user changed an area's x window (drag-select / ⌘+wheel / shift-pan):
+  // remember the width, propagate to the others, drop out of follow-live.
   const onUserXChange = useCallback(
     (min: number, max: number, fromId: string) => {
-      xSyncRef.current.range = { min, max };
+      const w = max - min;
+      if (w > 0) followWidthRef.current = w;
       applyXToOthers(min, max, fromId);
       setFollowLive(false);
     },
     [applyXToOthers],
   );
 
-  const resetZoom = useCallback(() => {
-    const sync = xSyncRef.current;
-    sync.range = null;
-    sync.suppress = true;
-    for (const u of instancesRef.current.values()) u.setData(u.data, true);
-    sync.suppress = false;
-  }, []);
+  const fitData = useCallback(() => {
+    followWidthRef.current = null;
+    const end = captureEndRef.current;
+    const baseS = baseTimestampSeconds ?? 0;
+    withSuppressedGlobal(() => {
+      for (const u of instancesRef.current.values()) {
+        u.setData(u.data, true); // refit y (and x to data)
+        if (end != null) u.setScale("x", { min: 0, max: Math.max(0, end - baseS) });
+      }
+    });
+  }, [baseTimestampSeconds]);
 
-  // Keep a valid focused area even after the focused one is removed.
   useEffect(() => {
     if (!areas.some((a) => a.id === focusedAreaId)) setFocusedAreaId(areas[0]?.id ?? "");
   }, [areas, focusedAreaId]);
 
-  // Mirror persistable state into dockview params (→ project file / layout).
   const { api } = props;
   useEffect(() => {
-    api.updateParameters({
-      areas,
-      followLive,
-      windowSeconds,
-      cursorMode,
-      measEnabled,
-      measKeys,
-      cursorX,
-      cursorYByArea,
-      notes,
-    });
-  }, [api, areas, followLive, windowSeconds, cursorMode, measEnabled, measKeys, cursorX, cursorYByArea, notes]);
+    api.updateParameters({ areas, followLive, cursorMode, measEnabled, measKeys, cursorX, cursorYByArea, notes });
+  }, [api, areas, followLive, cursorMode, measEnabled, measKeys, cursorX, cursorYByArea, notes]);
 
-  // Clear cursors / notes when the capture resets (count goes >0 → 0):
-  // they wouldn't mean anything against a fresh / different capture.
+  // Clear cursors / notes when the capture resets (count >0 → 0).
   const prevCountRef = useRef(count);
   useEffect(() => {
     if (prevCountRef.current > 0 && count === 0) {
       setCursorX({ a: null, b: null });
       setCursorYByArea({});
       setNotes([]);
+      setClearAtSeconds(0);
+      captureEndRef.current = null;
     }
     prevCountRef.current = count;
   }, [count]);
@@ -349,6 +361,17 @@ export function PlotPanel(props: IDockviewPanelProps) {
 
   const base = baseTimestampSeconds ?? 0;
 
+  // --- play controls ---
+  const onStart = useCallback(() => setPlayState("running"), []);
+  const onStop = useCallback(() => setPlayState("stopped"), []);
+  const onPause = useCallback(() => setPlayState((s) => (s === "running" ? "paused" : s)), []);
+  const onResume = useCallback(() => setPlayState((s) => (s === "paused" ? "running" : s)), []);
+  const onClear = useCallback(() => {
+    setClearAtSeconds(captureEndRef.current ?? base);
+    setSeriesByArea(new Map());
+  }, [base]);
+
+  // --- area ops ---
   const addArea = useCallback(() => {
     setAreas((prev) => {
       const next: PlotAreaConfig = { id: crypto.randomUUID(), signals: [], yMode: "auto" };
@@ -356,7 +379,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
       return [...prev, next];
     });
   }, []);
-
   const removeArea = useCallback((id: string) => {
     setAreas((prev) => (prev.length <= 1 ? prev : prev.filter((a) => a.id !== id)));
     setCursorYByArea((prev) => {
@@ -371,7 +393,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
       return next;
     });
   }, []);
-
   const setAreaYMode = useCallback((id: string, yMode: YMode) => {
     setAreas((prev) => prev.map((a) => (a.id === id ? { ...a, yMode } : a)));
   }, []);
@@ -394,15 +415,11 @@ export function PlotPanel(props: IDockviewPanelProps) {
     },
     [focusedAreaId],
   );
-
   const removeSignal = useCallback((areaId: string, key: string) => {
     setAreas((prev) =>
-      prev.map((a) =>
-        a.id === areaId ? { ...a, signals: a.signals.filter((s) => signalRefKey(s) !== key) } : a,
-      ),
+      prev.map((a) => (a.id === areaId ? { ...a, signals: a.signals.filter((s) => signalRefKey(s) !== key) } : a)),
     );
   }, []);
-
   const moveSignal = useCallback((fromAreaId: string, toAreaId: string, key: string) => {
     if (fromAreaId === toAreaId) return;
     setAreas((prev) => {
@@ -418,32 +435,36 @@ export function PlotPanel(props: IDockviewPanelProps) {
     });
   }, []);
 
-  // Cursor placement callbacks (called from inside a PlotArea).
-  const placeCursorX = useCallback((which: "a" | "b", t: number) => {
-    setCursorX((prev) => ({ ...prev, [which]: t }));
-  }, []);
+  // --- cursors / notes ---
+  const placeCursorX = useCallback((which: "a" | "b", t: number) => setCursorX((p) => ({ ...p, [which]: t })), []);
   const placeCursorY = useCallback((areaId: string, which: "h1" | "h2", v: number) => {
-    setCursorYByArea((prev) => ({
-      ...prev,
-      [areaId]: { h1: prev[areaId]?.h1 ?? null, h2: prev[areaId]?.h2 ?? null, [which]: v },
+    setCursorYByArea((p) => ({
+      ...p,
+      [areaId]: { h1: p[areaId]?.h1 ?? null, h2: p[areaId]?.h2 ?? null, [which]: v },
     }));
   }, []);
+  const clearCursors = useCallback(() => {
+    setCursorX({ a: null, b: null });
+    setCursorYByArea({});
+  }, []);
   const addNote = useCallback((t: number) => {
-    setNotes((prev) => [...prev, { id: crypto.randomUUID(), t, label: `note ${prev.length + 1}` }]);
+    setNotes((p) => [...p, { id: crypto.randomUUID(), t, label: `note ${p.length + 1}` }]);
   }, []);
-  const removeNote = useCallback((id: string) => {
-    setNotes((prev) => prev.filter((n) => n.id !== id));
+  const renameNote = useCallback((id: string, label: string) => {
+    setNotes((p) => p.map((n) => (n.id === id ? { ...n, label } : n)));
   }, []);
+  const removeNote = useCallback((id: string) => setNotes((p) => p.filter((n) => n.id !== id)), []);
 
   const reportSeries = useCallback((areaId: string, series: Map<string, Series>) => {
-    setSeriesByArea((prev) => {
-      const next = new Map(prev);
+    setSeriesByArea((p) => {
+      const next = new Map(p);
       next.set(areaId, series);
       return next;
     });
   }, []);
-  const reportPerf = useCallback((_areaId: string, ms: number) => {
-    setPerfMs((prev) => Math.max(prev * 0.6, ms)); // light decay so it tracks the worst recent
+  const reportPerf = useCallback((_areaId: string, ms: number) => setPerfMs((p) => Math.max(p * 0.6, ms)), []);
+  const reportCaptureEnd = useCallback((endSeconds: number | null) => {
+    if (endSeconds != null) captureEndRef.current = endSeconds;
   }, []);
 
   const catalogOptions = useMemo(
@@ -457,8 +478,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
   );
   const areaLabels = useMemo(() => new Map(areas.map((a, i) => [a.id, `Area ${i + 1}`])), [areas]);
 
-  // Flatten all plotted signals (across areas), preserving area order
-  // then in-area order, with a colour matching what its area draws.
   const plottedSignals = useMemo(() => {
     const out: Array<{ key: string; ref: SignalRef; color: string; areaId: string }> = [];
     for (const a of areas) {
@@ -468,25 +487,25 @@ export function PlotPanel(props: IDockviewPanelProps) {
     }
     return out;
   }, [areas]);
-
   const seriesFor = useCallback(
     (areaId: string, key: string): Series | undefined => seriesByArea.get(areaId)?.get(key),
     [seriesByArea],
   );
-
-  // Events drawn across the areas: an implicit capture-start "T0" plus
-  // the user notes. Memoised so PlotArea's overlay ref changes minimally.
-  const events = useMemo(
-    () => [{ id: "__t0", t: 0, label: "T0" }, ...notes],
-    [notes],
-  );
-
-  const dt =
-    cursorX.a != null && cursorX.b != null ? cursorX.b - cursorX.a : null;
+  const events = useMemo(() => [{ id: "__t0", t: 0, label: "T0" }, ...notes], [notes]);
+  const dt = cursorX.a != null && cursorX.b != null ? cursorX.b - cursorX.a : null;
 
   return (
     <div className="plot-panel">
       <div className="plot-panel-toolbar">
+        <TraceControls
+          status={playState}
+          onStart={onStart}
+          onStop={onStop}
+          onPause={onPause}
+          onResume={onResume}
+          onClear={onClear}
+        />
+        <span className="plot-toolbar-sep" />
         <select
           value=""
           onChange={(e) => {
@@ -507,31 +526,11 @@ export function PlotPanel(props: IDockviewPanelProps) {
           ↻
         </button>
         <button onClick={addArea}>add plot area</button>
-        <button onClick={resetZoom}>reset zoom</button>
-        <span className="plot-toolbar-sep" />
+        <button onClick={fitData}>fit data</button>
         <label className="checkbox">
           <input type="checkbox" checked={followLive} onChange={(e) => setFollowLive(e.target.checked)} />
           follow live
         </label>
-        <label className="plot-window-ctl">
-          window
-          <input
-            type="number"
-            min="0"
-            step="0.1"
-            value={windowSeconds ?? ""}
-            placeholder="full"
-            title="visible time window when following live (seconds); blank = full capture"
-            onChange={(e) => {
-              const v = parseFloat(e.target.value);
-              setWindowSeconds(Number.isFinite(v) && v > 0 ? v : null);
-            }}
-          />
-          s
-        </label>
-        <button onClick={() => setFollowLive(true)} title="jump to the live edge and follow">
-          snap to now
-        </button>
         <span className="plot-toolbar-sep" />
         <label className="plot-cursor-ctl">
           cursors
@@ -542,59 +541,63 @@ export function PlotPanel(props: IDockviewPanelProps) {
             <option value="note">+ note</option>
           </select>
         </label>
+        <button onClick={clearCursors} title="remove all placed cursors">
+          clear cursors
+        </button>
         <label className="checkbox">
           <input type="checkbox" checked={measEnabled} onChange={(e) => setMeasEnabled(e.target.checked)} />
           measurements
         </label>
-        {measEnabled && (
-          <MeasurementMenu measKeys={measKeys} onChange={setMeasKeys} />
-        )}
+        {measEnabled && <MeasurementMenu measKeys={measKeys} onChange={setMeasKeys} />}
         <span className="plot-perf" title="worst recent plot-area resample time · device pixel ratio">
           {perfMs > 0 ? `${perfMs.toFixed(1)} ms` : "—"} · dpr {dpr.toFixed(2)}
         </span>
       </div>
 
       <div className="plot-panel-areas">
-        {areas.map((area, idx) => (
-          <PlotArea
-            key={area.id}
-            area={area}
-            label={areaLabels.get(area.id) ?? "Area"}
-            isFirst={idx === 0}
-            isLast={idx === areas.length - 1}
-            otherAreas={areas
-              .filter((a) => a.id !== area.id)
-              .map((a) => ({ id: a.id, label: areaLabels.get(a.id) ?? "Area" }))}
-            focused={area.id === focusedAreaId}
-            removable={areas.length > 1}
-            base={base}
-            count={count}
-            followLive={followLive}
-            windowSeconds={windowSeconds}
-            cursorMode={cursorMode}
-            cursorXa={cursorX.a}
-            cursorXb={cursorX.b}
-            cursorYh1={cursorYByArea[area.id]?.h1 ?? null}
-            cursorYh2={cursorYByArea[area.id]?.h2 ?? null}
-            events={events}
-            xSyncRef={xSyncRef}
-            registerInstance={registerInstance}
-            onUserXChange={onUserXChange}
-            onPlaceCursorX={placeCursorX}
-            onPlaceCursorY={(which, v) => placeCursorY(area.id, which, v)}
-            onAddNote={addNote}
-            onReportSeries={reportSeries}
-            onReportPerf={reportPerf}
-            onSetYMode={(m) => setAreaYMode(area.id, m)}
-            onFocus={() => setFocusedAreaId(area.id)}
-            onRemoveArea={() => removeArea(area.id)}
-            onRemoveSignal={(key) => removeSignal(area.id, key)}
-            onMoveSignal={(key, toId) => moveSignal(area.id, toId, key)}
-            cursorValueFor={(key) =>
-              cursorX.a != null ? valueAt(seriesFor(area.id, key) ?? { t: [], v: [] }, cursorX.a) : null
-            }
-          />
-        ))}
+        {areas.map((area, idx) => {
+          const yc = cursorYByArea[area.id];
+          return (
+            <PlotArea
+              key={area.id}
+              area={area}
+              label={areaLabels.get(area.id) ?? "Area"}
+              isFirst={idx === 0}
+              isLast={idx === areas.length - 1}
+              otherAreas={areas
+                .filter((a) => a.id !== area.id)
+                .map((a) => ({ id: a.id, label: areaLabels.get(a.id) ?? "Area" }))}
+              focused={area.id === focusedAreaId}
+              removable={areas.length > 1}
+              base={base}
+              count={count}
+              live={playState === "running"}
+              followLive={followLive}
+              followWidthRef={followWidthRef}
+              clearAtSeconds={clearAtSeconds}
+              cursorMode={cursorMode}
+              cursorXa={cursorX.a}
+              cursorXb={cursorX.b}
+              cursorYh1={yc?.h1 ?? null}
+              cursorYh2={yc?.h2 ?? null}
+              events={events}
+              xSyncRef={xSyncRef}
+              registerInstance={registerInstance}
+              onUserXChange={onUserXChange}
+              onPlaceCursorX={placeCursorX}
+              onPlaceCursorY={(which, v) => placeCursorY(area.id, which, v)}
+              onAddNote={addNote}
+              onReportSeries={reportSeries}
+              onReportPerf={reportPerf}
+              onReportCaptureEnd={reportCaptureEnd}
+              onSetYMode={(m) => setAreaYMode(area.id, m)}
+              onFocus={() => setFocusedAreaId(area.id)}
+              onRemoveArea={() => removeArea(area.id)}
+              onRemoveSignal={(key) => removeSignal(area.id, key)}
+              onMoveSignal={(key, toId) => moveSignal(area.id, toId, key)}
+            />
+          );
+        })}
       </div>
 
       {measEnabled && (
@@ -611,12 +614,8 @@ export function PlotPanel(props: IDockviewPanelProps) {
             const name = `${ref.messageName}.${ref.signalName}`;
             return (
               <span key={key} style={{ display: "contents" }}>
-                {measKeys.includes("valA") && (
-                  <MeasCell k={`${name} @A`} v={fmtVal(va)} swatch={color} />
-                )}
-                {measKeys.includes("valB") && (
-                  <MeasCell k={`${name} @B`} v={fmtVal(vb)} swatch={color} />
-                )}
+                {measKeys.includes("valA") && <MeasCell k={`${name} @A`} v={fmtVal(va)} swatch={color} />}
+                {measKeys.includes("valB") && <MeasCell k={`${name} @B`} v={fmtVal(vb)} swatch={color} />}
                 {measKeys.includes("delta") && (
                   <MeasCell k={`${name} Δ`} v={va != null && vb != null ? fmtVal(vb - va) : "—"} swatch={color} />
                 )}
@@ -635,13 +634,13 @@ export function PlotPanel(props: IDockviewPanelProps) {
             .slice()
             .sort((a, b) => a.t - b.t)
             .map((n) => (
-              <div className="plot-event-row" key={n.id}>
-                <span className="plot-event-t">{fmtTime(n.t)}</span>
-                <span className="plot-event-label">{n.label}</span>
-                <button onClick={() => removeNote(n.id)} title="remove note">
-                  ×
-                </button>
-              </div>
+              <EventLogRow
+                key={n.id}
+                t={fmtTime(n.t)}
+                label={n.label}
+                onRename={(l) => renameNote(n.id, l)}
+                onRemove={() => removeNote(n.id)}
+              />
             ))}
         </div>
       )}
@@ -657,6 +656,60 @@ function MeasCell({ k, v, cls, swatch }: { k: string; v: string; cls?: string; s
         {k}
       </div>
       <div className={`plot-meas-v${cls ? ` ${cls}` : ""}`}>{v}</div>
+    </div>
+  );
+}
+
+function EventLogRow({
+  t,
+  label,
+  onRename,
+  onRemove,
+}: {
+  t: string;
+  label: string;
+  onRename: (l: string) => void;
+  onRemove: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(label);
+  const commit = () => {
+    if (draft.trim()) onRename(draft.trim());
+    setEditing(false);
+  };
+  return (
+    <div className="plot-event-row">
+      <span className="plot-event-t">{t}</span>
+      {editing ? (
+        <input
+          className="plot-event-edit"
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") commit();
+            else if (e.key === "Escape") {
+              setDraft(label);
+              setEditing(false);
+            }
+          }}
+        />
+      ) : (
+        <span
+          className="plot-event-label"
+          title="click to rename"
+          onClick={() => {
+            setDraft(label);
+            setEditing(true);
+          }}
+        >
+          {label}
+        </span>
+      )}
+      <button onClick={onRemove} title="remove note">
+        ×
+      </button>
     </div>
   );
 }
@@ -683,8 +736,7 @@ function MeasurementMenu({
       document.removeEventListener("keydown", onKey);
     };
   }, [open]);
-  const toggle = (k: MeasurementKey) =>
-    onChange(measKeys.includes(k) ? measKeys.filter((x) => x !== k) : [...measKeys, k]);
+  const toggle = (k: MeasurementKey) => onChange(measKeys.includes(k) ? measKeys.filter((x) => x !== k) : [...measKeys, k]);
   return (
     <div className="plot-meas-menu" ref={wrapRef}>
       <button onClick={() => setOpen((v) => !v)} aria-expanded={open}>
@@ -715,8 +767,10 @@ interface PlotAreaProps {
   removable: boolean;
   base: number;
   count: number;
+  live: boolean;
   followLive: boolean;
-  windowSeconds: number | null;
+  followWidthRef: React.MutableRefObject<number | null>;
+  clearAtSeconds: number;
   cursorMode: CursorMode;
   cursorXa: number | null;
   cursorXb: number | null;
@@ -731,12 +785,12 @@ interface PlotAreaProps {
   onAddNote: (t: number) => void;
   onReportSeries: (areaId: string, series: Map<string, Series>) => void;
   onReportPerf: (areaId: string, ms: number) => void;
+  onReportCaptureEnd: (endSeconds: number | null) => void;
   onSetYMode: (m: YMode) => void;
   onFocus: () => void;
   onRemoveArea: () => void;
   onRemoveSignal: (key: string) => void;
   onMoveSignal: (key: string, toAreaId: string) => void;
-  cursorValueFor: (key: string) => number | null;
 }
 
 function PlotArea(p: PlotAreaProps) {
@@ -750,8 +804,10 @@ function PlotArea(p: PlotAreaProps) {
     removable,
     base,
     count,
+    live,
     followLive,
-    windowSeconds,
+    followWidthRef,
+    clearAtSeconds,
     cursorMode,
     cursorXa,
     cursorXb,
@@ -766,17 +822,23 @@ function PlotArea(p: PlotAreaProps) {
     onAddNote,
     onReportSeries,
     onReportPerf,
+    onReportCaptureEnd,
     onSetYMode,
     onFocus,
     onRemoveArea,
     onRemoveSignal,
     onMoveSignal,
-    cursorValueFor,
   } = p;
 
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const uplotRef = useRef<uPlot | null>(null);
-  const [presentValues, setPresentValues] = useState<Map<string, number | null>>(new Map());
+  const seriesRef = useRef<Map<string, Series>>(new Map());
+  const presentRef = useRef<Map<string, number | null>>(new Map());
+  const resampleBusyRef = useRef(false);
+  const hoverRafRef = useRef(0);
+  const [hoverX, setHoverX] = useState<number | null>(null);
+  // Bump to force a re-render of the side panel when sampled values change.
+  const [valueTick, setValueTick] = useState(0);
   const [yEditOpen, setYEditOpen] = useState(false);
 
   const areaId = area.id;
@@ -799,10 +861,9 @@ function PlotArea(p: PlotAreaProps) {
     [xSyncRef],
   );
 
-  // Latest values the uPlot hooks need (they capture once at create time).
   const liveRef = useRef({
+    live,
     followLive,
-    windowSeconds,
     yMode,
     cursorMode,
     cursorXa,
@@ -810,6 +871,7 @@ function PlotArea(p: PlotAreaProps) {
     cursorYh1,
     cursorYh2,
     events,
+    clearAtSeconds,
     onUserXChange,
     onPlaceCursorX,
     onPlaceCursorY,
@@ -817,8 +879,8 @@ function PlotArea(p: PlotAreaProps) {
   });
   useEffect(() => {
     liveRef.current = {
+      live,
       followLive,
-      windowSeconds,
       yMode,
       cursorMode,
       cursorXa,
@@ -826,6 +888,7 @@ function PlotArea(p: PlotAreaProps) {
       cursorYh1,
       cursorYh2,
       events,
+      clearAtSeconds,
       onUserXChange,
       onPlaceCursorX,
       onPlaceCursorY,
@@ -833,85 +896,94 @@ function PlotArea(p: PlotAreaProps) {
     };
   });
 
-  const decimationHint = useCallback(
-    () => Math.max(MIN_DECIMATION_POINTS, Math.round(canvasRef.current?.clientWidth ?? 0)),
-    [],
-  );
+  const decimationHint = () => Math.max(MIN_DECIMATION_POINTS, Math.round(canvasRef.current?.clientWidth ?? 0));
 
   const resample = useCallback(async () => {
     const u = uplotRef.current;
     if (!u) return;
+    if (resampleBusyRef.current) return; // don't pile up under a fast stream
+    resampleBusyRef.current = true;
     const t0 = performance.now();
-    if (signals.length === 0) {
-      withSuppressed(() => u.setData([[]]));
-      setPresentValues(new Map());
-      onReportSeries(areaId, new Map());
-      return;
-    }
-    const maxPoints = decimationHint();
-    const results = await Promise.all(
-      signals.map((s) =>
-        invoke<SignalSeries>("sample_signal", {
-          messageId: s.messageId,
-          extended: s.extended,
-          signalName: s.signalName,
-          startSeconds: 0,
-          endSeconds: Number.MAX_SAFE_INTEGER,
-          maxPoints,
-        }),
-      ),
-    );
-    if (uplotRef.current !== u) return; // area re-created mid-flight
-    const seriesRel: Series[] = results.map((r) => ({ t: r.t.map((x) => x - base), v: r.v }));
-    const merged = mergeSeries(seriesRel) as uPlot.AlignedData;
-    const live = liveRef.current;
-
-    withSuppressed(() => {
-      if (live.followLive) {
-        u.setData(merged, true);
-        const captureEnd = results.find((r) => r.capture_end_seconds != null)?.capture_end_seconds;
-        if (captureEnd != null) {
-          const max = captureEnd - base;
-          const min = live.windowSeconds != null ? Math.max(0, max - live.windowSeconds) : 0;
-          u.setScale("x", { min, max });
-        }
-      } else {
-        const range = xSyncRef.current.range;
-        if (range) {
-          u.setData(merged, false);
-          u.setScale("x", { min: range.min, max: range.max });
-        } else {
-          u.setData(merged, true);
-        }
+    try {
+      if (signals.length === 0) {
+        withSuppressed(() => u.setData([[]]));
+        seriesRef.current = new Map();
+        presentRef.current = new Map();
+        onReportSeries(areaId, new Map());
+        return;
       }
-      if (live.yMode !== "auto") u.setScale("y", { min: live.yMode.min, max: live.yMode.max });
-    });
+      const maxPoints = decimationHint();
+      const live = liveRef.current;
+      const results = await Promise.all(
+        signals.map((s) =>
+          invoke<SignalSeries>("sample_signal", {
+            messageId: s.messageId,
+            extended: s.extended,
+            signalName: s.signalName,
+            startSeconds: live.clearAtSeconds,
+            endSeconds: Number.MAX_SAFE_INTEGER,
+            maxPoints,
+          }),
+        ),
+      );
+      if (uplotRef.current !== u) return;
+      const captureEnd = results.find((r) => r.capture_end_seconds != null)?.capture_end_seconds ?? null;
+      onReportCaptureEnd(captureEnd);
+      const seriesRel: Series[] = results.map((r) => ({ t: r.t.map((x) => x - base), v: r.v }));
+      const merged = mergeSeries(seriesRel) as uPlot.AlignedData;
+      const endDisp = captureEnd != null ? captureEnd - base : null;
 
-    const pv = new Map<string, number | null>();
-    const seriesMap = new Map<string, Series>();
-    signals.forEach((s, i) => {
-      const key = signalRefKey(s);
-      const ser = seriesRel[i];
-      pv.set(key, ser.v.length > 0 ? ser.v[ser.v.length - 1] : null);
-      seriesMap.set(key, ser);
-    });
-    setPresentValues(pv);
-    onReportSeries(areaId, seriesMap);
-    onReportPerf(areaId, performance.now() - t0);
-  }, [signals, base, areaId, withSuppressed, xSyncRef, decimationHint, onReportSeries, onReportPerf]);
+      withSuppressed(() => {
+        if (live.followLive && endDisp != null) {
+          u.setData(merged, true); // refit y to the live data
+          const w = followWidthRef.current;
+          const min = w == null || w <= 0 ? 0 : Math.max(0, endDisp - w);
+          u.setScale("x", { min, max: endDisp });
+        } else {
+          // Keep whatever window the user has (drag-zoom set it); just
+          // re-feed the data. On the very first data, fit it.
+          const xs = u.scales.x;
+          const first = xs.min == null || xs.max == null;
+          u.setData(merged, first);
+          if (first && endDisp != null) u.setScale("x", { min: 0, max: endDisp });
+        }
+        if (live.yMode !== "auto") u.setScale("y", { min: live.yMode.min, max: live.yMode.max });
+      });
+
+      const sm = new Map<string, Series>();
+      const pv = new Map<string, number | null>();
+      signals.forEach((s, i) => {
+        const key = signalRefKey(s);
+        const ser = seriesRel[i];
+        sm.set(key, ser);
+        pv.set(key, ser.v.length > 0 ? ser.v[ser.v.length - 1] : null);
+      });
+      seriesRef.current = sm;
+      presentRef.current = pv;
+      onReportSeries(areaId, sm);
+      onReportPerf(areaId, performance.now() - t0);
+      setValueTick((v) => v + 1);
+    } finally {
+      resampleBusyRef.current = false;
+    }
+  }, [signals, base, areaId, withSuppressed, followWidthRef, onReportSeries, onReportPerf, onReportCaptureEnd]);
 
   const resampleRef = useRef(resample);
   useEffect(() => {
     resampleRef.current = resample;
   });
+  const onUserXChangeRef = useRef(onUserXChange);
+  useEffect(() => {
+    onUserXChangeRef.current = onUserXChange;
+  });
 
-  // (Re)create the uPlot instance whenever the signal *set* changes.
+  // (Re)create the uPlot instance when the signal *set* changes.
   useEffect(() => {
     const el = canvasRef.current;
     if (!el) return;
     const opts: uPlot.Options = {
       width: el.clientWidth || 600,
-      height: Math.max(120, el.clientHeight - 2),
+      height: Math.max(80, el.clientHeight - 2),
       scales: { x: { time: false } },
       legend: { show: false },
       cursor: { drag: { x: true, y: false } },
@@ -932,7 +1004,21 @@ function PlotArea(p: PlotAreaProps) {
             if (xSyncRef.current.suppress) return;
             const { min, max } = u.scales.x;
             if (min == null || max == null) return;
-            liveRef.current.onUserXChange(min, max, areaId);
+            onUserXChangeRef.current(min, max, areaId);
+          },
+        ],
+        setCursor: [
+          (u: uPlot) => {
+            if (hoverRafRef.current) return; // throttle to one read-out per frame
+            hoverRafRef.current = requestAnimationFrame(() => {
+              hoverRafRef.current = 0;
+              const left = u.cursor.left;
+              if (left == null || left < 0) {
+                setHoverX((prev) => (prev == null ? prev : null));
+                return;
+              }
+              setHoverX(u.posToVal(left, "x"));
+            });
           },
         ],
         draw: [
@@ -947,8 +1033,7 @@ function PlotArea(p: PlotAreaProps) {
             ctx.clip();
             ctx.font = `600 ${9.5 * ratio}px ui-monospace, monospace`;
             ctx.lineWidth = 1 * ratio;
-
-            const vline = (xVal: number, color: string, dash: number[], label: string | null, atTop: boolean) => {
+            const vline = (xVal: number, color: string, dash: number[], lbl: string | null, atTop: boolean) => {
               const xp = u.valToPos(xVal, "x", true);
               if (xp < left - 4 || xp > left + width + 4) return;
               ctx.strokeStyle = color;
@@ -958,8 +1043,8 @@ function PlotArea(p: PlotAreaProps) {
               ctx.lineTo(xp, top + height);
               ctx.stroke();
               ctx.setLineDash([]);
-              if (label != null) {
-                const tw = ctx.measureText(label).width;
+              if (lbl != null) {
+                const tw = ctx.measureText(lbl).width;
                 const padX = 4 * ratio;
                 const h = 13 * ratio;
                 const ty = atTop ? top + 2 * ratio : top + height - h - 2 * ratio;
@@ -970,18 +1055,15 @@ function PlotArea(p: PlotAreaProps) {
                 ctx.fillStyle = color;
                 ctx.textAlign = "center";
                 ctx.textBaseline = "middle";
-                ctx.fillText(label, xp, ty + h / 2);
+                ctx.fillText(lbl, xp, ty + h / 2);
               }
             };
-            // Event markers — label only on the first area.
             for (const ev of live.events) {
               vline(ev.t, EVENT_COLOR, ev.id === "__t0" ? [] : [2, 3], isFirst ? ev.label : null, true);
             }
-            // X cursors — label only on the last area.
             if (live.cursorXa != null) vline(live.cursorXa, CURSOR_A_COLOR, [4, 3], isLast ? "A" : null, false);
             if (live.cursorXb != null) vline(live.cursorXb, CURSOR_B_COLOR, [4, 3], isLast ? "B" : null, false);
-            // Y cursors — this area only, labelled at the left.
-            const hline = (yVal: number, color: string, label: string) => {
+            const hline = (yVal: number, color: string, lbl: string) => {
               const yp = u.valToPos(yVal, "y", true);
               if (yp < top - 4 || yp > top + height + 4) return;
               ctx.strokeStyle = color;
@@ -991,7 +1073,7 @@ function PlotArea(p: PlotAreaProps) {
               ctx.lineTo(left + width, yp);
               ctx.stroke();
               ctx.setLineDash([]);
-              const tw = ctx.measureText(label).width;
+              const tw = ctx.measureText(lbl).width;
               const padX = 4 * ratio;
               const h = 13 * ratio;
               const lx = left + 3 * ratio;
@@ -1002,7 +1084,7 @@ function PlotArea(p: PlotAreaProps) {
               ctx.fillStyle = color;
               ctx.textAlign = "left";
               ctx.textBaseline = "middle";
-              ctx.fillText(label, lx + padX, yp);
+              ctx.fillText(lbl, lx + padX, yp);
             };
             if (live.cursorYh1 != null) hline(live.cursorYh1, CURSOR_A_COLOR, "H1");
             if (live.cursorYh2 != null) hline(live.cursorYh2, CURSOR_B_COLOR, "H2");
@@ -1017,53 +1099,57 @@ function PlotArea(p: PlotAreaProps) {
               (e: WheelEvent) => {
                 const cmd = e.ctrlKey || e.metaKey;
                 const shift = e.shiftKey;
-                if (!cmd && !shift) return;
+                if (!cmd && !shift) return; // plain wheel → page scroll
                 e.preventDefault();
                 const rect = over.getBoundingClientRect();
-                const factor = e.deltaY > 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
-                if (cmd) {
-                  const xc = u.posToVal(e.clientX - rect.left, "x");
-                  const xs = u.scales.x;
-                  if (xs.min == null || xs.max == null) return;
-                  const min = xc - (xc - xs.min) * factor;
-                  const max = xc + (xs.max - xc) * factor;
-                  withSuppressed(() => u.setScale("x", { min, max }));
-                  liveRef.current.onUserXChange(min, max, areaId);
-                }
-                if (shift) {
+                const xs = u.scales.x;
+                if (xs.min == null || xs.max == null) return;
+                if (cmd && shift) {
+                  // ctrl+shift → zoom y (this area only).
                   const yc = u.posToVal(e.clientY - rect.top, "y");
                   const ys = u.scales.y;
                   if (ys.min == null || ys.max == null) return;
-                  u.setScale("y", {
-                    min: yc - (yc - ys.min) * factor,
-                    max: yc + (ys.max - yc) * factor,
-                  });
+                  const f = e.deltaY > 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
+                  u.setScale("y", { min: yc - (yc - ys.min) * f, max: yc + (ys.max - yc) * f });
+                } else if (cmd) {
+                  // ctrl → zoom x around the cursor (synced).
+                  const xc = u.posToVal(e.clientX - rect.left, "x");
+                  const f = e.deltaY > 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
+                  const min = xc - (xc - xs.min) * f;
+                  const max = xc + (xs.max - xc) * f;
+                  withSuppressed(() => u.setScale("x", { min, max }));
+                  onUserXChangeRef.current(min, max, areaId);
+                } else {
+                  // shift → pan x (synced); ~10% of the window per notch.
+                  const span = xs.max - xs.min;
+                  const step = (e.deltaY > 0 ? 1 : -1) * span * 0.1;
+                  const min = xs.min + step;
+                  const max = xs.max + step;
+                  withSuppressed(() => u.setScale("x", { min, max }));
+                  onUserXChangeRef.current(min, max, areaId);
                 }
               },
               { passive: false },
             );
             const valAt = (e: MouseEvent) => {
               const rect = over.getBoundingClientRect();
-              return {
-                x: u.posToVal(e.clientX - rect.left, "x"),
-                y: u.posToVal(e.clientY - rect.top, "y"),
-              };
+              return { x: u.posToVal(e.clientX - rect.left, "x"), y: u.posToVal(e.clientY - rect.top, "y") };
             };
             over.addEventListener("click", (e: MouseEvent) => {
-              const live = liveRef.current;
-              if (live.cursorMode === "off") return;
+              const lr = liveRef.current;
+              if (lr.cursorMode === "off") return;
               const { x, y } = valAt(e);
-              if (live.cursorMode === "x") live.onPlaceCursorX("a", x);
-              else if (live.cursorMode === "y") live.onPlaceCursorY("h1", y);
-              else if (live.cursorMode === "note") live.onAddNote(x);
+              if (lr.cursorMode === "x") lr.onPlaceCursorX("a", x);
+              else if (lr.cursorMode === "y") lr.onPlaceCursorY("h1", y);
+              else if (lr.cursorMode === "note") lr.onAddNote(x);
             });
             over.addEventListener("contextmenu", (e: MouseEvent) => {
-              const live = liveRef.current;
-              if (live.cursorMode === "off") return;
+              const lr = liveRef.current;
+              if (lr.cursorMode === "off") return;
               e.preventDefault();
               const { x, y } = valAt(e);
-              if (live.cursorMode === "x") live.onPlaceCursorX("b", x);
-              else if (live.cursorMode === "y") live.onPlaceCursorY("h2", y);
+              if (lr.cursorMode === "x") lr.onPlaceCursorX("b", x);
+              else if (lr.cursorMode === "y") lr.onPlaceCursorY("h2", y);
             });
           },
         ],
@@ -1075,14 +1161,14 @@ function PlotArea(p: PlotAreaProps) {
     void resampleRef.current();
 
     const ro = new ResizeObserver(() => {
-      withSuppressed(() =>
-        u.setSize({ width: el.clientWidth || 600, height: Math.max(120, el.clientHeight - 2) }),
-      );
+      withSuppressed(() => u.setSize({ width: el.clientWidth || 600, height: Math.max(80, el.clientHeight - 2) }));
     });
     ro.observe(el);
 
     return () => {
       ro.disconnect();
+      if (hoverRafRef.current) cancelAnimationFrame(hoverRafRef.current);
+      hoverRafRef.current = 0;
       registerInstance(areaId, null);
       u.destroy();
       if (uplotRef.current === u) uplotRef.current = null;
@@ -1090,18 +1176,32 @@ function PlotArea(p: PlotAreaProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [signalSetKey, areaId]);
 
-  // Re-sample on capture growth and when the controls that change what's
-  // drawn shift (follow-live, window width, time origin, y-range mode).
+  // Re-sample on capture growth (only while live), and whenever the
+  // controls that change what's drawn shift.
   useEffect(() => {
+    if (!live && count > 0) return; // frozen view
     void resampleRef.current();
-  }, [count, followLive, windowSeconds, base, yMode]);
+  }, [count, live, followLive, base, yMode, clearAtSeconds]);
 
-  // Redraw the overlay when cursors / events change (no resample needed).
+  // Redraw the overlay when cursors / events change (no resample).
   useEffect(() => {
     uplotRef.current?.redraw(false, false);
   }, [cursorXa, cursorXb, cursorYh1, cursorYh2, events, isFirst, isLast]);
 
   const yLabel = yMode === "auto" ? "y: auto" : `y: ${yMode.min}…${yMode.max}`;
+  const dh = cursorYh1 != null && cursorYh2 != null ? cursorYh2 - cursorYh1 : null;
+
+  // Value to show next to a signal: cursor A → crosshair hover → latest.
+  const displayValueFor = (key: string): number | null => {
+    void valueTick; // re-evaluate when the sampled series changes
+    const s = seriesRef.current.get(key);
+    if (s) {
+      if (cursorXa != null) return valueAt(s, cursorXa);
+      if (hoverX != null) return valueAt(s, hoverX);
+    }
+    return presentRef.current.get(key) ?? null;
+  };
+  const valueTitle = cursorXa != null ? "value at cursor A" : hoverX != null ? "value at crosshair" : "latest value";
 
   return (
     <div className={`plot-area${focused ? " focused" : ""}`} onMouseDown={onFocus}>
@@ -1142,21 +1242,27 @@ function PlotArea(p: PlotAreaProps) {
             onCancel={() => setYEditOpen(false)}
           />
         )}
+        {(cursorYh1 != null || cursorYh2 != null) && (
+          <div className="plot-area-ycursors">
+            <span className="gold">H1 {fmtVal(cursorYh1)}</span>
+            <span className="pink">H2 {fmtVal(cursorYh2)}</span>
+            <span>ΔH {fmtVal(dh)}</span>
+          </div>
+        )}
         {signals.length === 0 ? (
           <div className="plot-area-empty">{focused ? "pick a signal above" : "click here, then pick a signal"}</div>
         ) : (
           signals.map((s, i) => {
             const key = signalRefKey(s);
-            const cv = cursorValueFor(key);
-            const v = cv != null ? cv : presentValues.get(key);
+            const v = displayValueFor(key);
             return (
               <div className="plot-signal-row" key={key}>
                 <span className="plot-signal-swatch" style={{ background: colorFor(i) }} />
                 <span className="plot-signal-name" title={`${s.messageName}.${s.signalName}`}>
                   {s.messageName}.{s.signalName}
                 </span>
-                <span className="plot-signal-value" title={cv != null ? "value at cursor A" : "latest value"}>
-                  {v == null || v === undefined ? "—" : (v as number).toPrecision(6)}
+                <span className="plot-signal-value" title={valueTitle}>
+                  {fmtVal(v)}
                   {s.unit ? ` ${s.unit}` : ""}
                 </span>
                 {otherAreas.length > 0 && (
@@ -1197,15 +1303,7 @@ function PlotArea(p: PlotAreaProps) {
   );
 }
 
-function YRangeEditor({
-  yMode,
-  onApply,
-  onCancel,
-}: {
-  yMode: YMode;
-  onApply: (m: YMode) => void;
-  onCancel: () => void;
-}) {
+function YRangeEditor({ yMode, onApply, onCancel }: { yMode: YMode; onApply: (m: YMode) => void; onCancel: () => void }) {
   const [min, setMin] = useState(yMode === "auto" ? "" : String(yMode.min));
   const [max, setMax] = useState(yMode === "auto" ? "" : String(yMode.max));
   return (
