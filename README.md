@@ -219,26 +219,49 @@ the BLF replay path, the per-interface subscription set, and per-bus
 DBC association (every loaded DBC applies to the one interface for now).
 
 **Add plot panel** opens a signal plot (Phase 4): a uPlot-based
-oscilloscope-style view, docked like any other panel. A plot panel is a
-**stack of plot areas** — it starts with one; **add plot area** appends
-more, all sharing one time axis. Each plot area has a uPlot canvas plus
-a **signal panel** beside it listing that area's signals (colour
-swatch, name, present value). With a DBC attached, the toolbar's **add
-signal…** dropdown lists every `(message, signal)` pair the database
-defines; picking one drops it into the *focused* plot area (click an
-area to focus it). Move a signal between areas with the **→** menu on
-its row; remove it with **×**. All plot areas share one time axis:
-drag-select on any area zooms x on every area; **⌘/ctrl + wheel** zooms
-x (synced), **shift + wheel** zooms y on the hovered area only, and
-**⌘/ctrl + shift + wheel** does both; **reset zoom** (toolbar) refits
-everything. **Follow live** keeps every area pinned to the capture's
-growing edge; a manual x zoom turns it off, the same way a manual
-scroll leaves auto-scroll in a trace panel. Multiple
-plot panels can be open, each with its own areas and signals; the
-plot-area layout and the signal assignments round-trip through the
-project file. (Still to come — see `plans/phased-implementation.md`
-Phase 4: opt-in cursors + a measurement strip, synced x-zoom across
-areas, event markers, per-trace y controls, enum/state plots.)
+oscilloscope-style view, docked like any other panel.
+
+- **Plot areas.** A plot panel is a **stack of plot areas** — it starts
+  with one; **add plot area** appends more, all sharing one time axis.
+  Each plot area has a uPlot canvas plus a **signal panel** beside it
+  listing that area's signals (colour swatch, name, present value — or
+  value-at-cursor while a cursor is up), and an **y: auto / min…max**
+  control to pin that area's y-range. With a DBC attached, the toolbar's
+  **add signal…** dropdown lists every `(message, signal)` pair the
+  database defines; picking one drops it into the *focused* plot area
+  (click an area to focus it). Move a signal between areas with the
+  **→** menu on its row; remove it with **×**.
+- **Zoom & follow.** Drag-select on any area zooms x on every area;
+  **⌘/ctrl + wheel** zooms x (synced), **shift + wheel** zooms y on the
+  hovered area only, **⌘/ctrl + shift + wheel** does both; **reset
+  zoom** refits everything. **Follow live** keeps every area pinned to
+  the capture's growing edge — narrowed to the **window (s)** width if
+  one is set; **snap to now** re-enters follow-live. A manual x zoom
+  turns follow-live off, the same way a manual scroll leaves auto-scroll
+  in a trace panel.
+- **Cursors & measurements** (both **off by default**). The toolbar's
+  **cursors** selector turns on **X** cursors (left-click places A,
+  right-click places B, drawn through every area), **Y** cursors
+  (per-area H1 / H2), or **+ note** (left-click drops an event note at
+  that time). The **measurements** toggle reveals a readout strip whose
+  cells are configurable (the **measurements ▾** checklist): A, B, Δt,
+  1/Δt, and per-trace value@A / value@B / Δ / min / max / mean over
+  [A, B]. Event markers — the capture-start "T0" plus your notes — draw
+  as vertical lines across the areas; the event log under the panel
+  lists and removes notes.
+- **Performance.** Series are min/max-decimated host-side to ≈the plot's
+  pixel width before they reach uPlot, so a window holding hundreds of
+  thousands to millions of frames stays responsive (spikes survive the
+  decimation). The toolbar shows the worst recent resample time and the
+  device-pixel ratio.
+
+Multiple plot panels can be open, each independent; everything above
+(areas, signal assignments, y-ranges, follow-live, window width, cursor
+mode, measurement selection, notes) round-trips through the project
+file. (Still pending — see `plans/phased-implementation.md` Phase 4 and
+`plans/backlog.md`: per-trace y offset/gain and log scale, triggers,
+math channels, CSV/image export, enum/state plots, incremental
+sampling.)
 
 > **Note:** plain `cargo run -p cannet-gui` will build the Rust host on
 > its own but won't bring up a usable window — the host expects either

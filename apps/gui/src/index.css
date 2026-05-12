@@ -739,3 +739,179 @@ header {
   font-size: 0.78rem;
   color: #94a3b8;
 }
+
+/* Plot panel — toolbar extras */
+.plot-toolbar-sep {
+  display: inline-block;
+  width: 1px;
+  align-self: stretch;
+  background: #2c3444;
+  margin: 0 0.15rem;
+}
+.plot-window-ctl,
+.plot-cursor-ctl {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  color: #94a3b8;
+}
+.plot-window-ctl input {
+  width: 4.5rem;
+  background: #0f141d;
+  color: #e2e8f0;
+  border: 1px solid #2c3444;
+  border-radius: 4px;
+  padding: 0.1rem 0.3rem;
+  font: inherit;
+  font-size: 0.8rem;
+}
+.plot-perf {
+  margin-left: auto;
+  font-size: 0.72rem;
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Plot panel — measurement-quantity menu */
+.plot-meas-menu {
+  position: relative;
+}
+.plot-meas-menu-pop {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 20;
+  margin-top: 2px;
+  background: #0d1114;
+  border: 1px solid #2c3444;
+  border-radius: 4px;
+  padding: 0.3rem 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  white-space: nowrap;
+}
+.plot-meas-menu-pop .checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.78rem;
+}
+
+/* Plot panel — measurement strip */
+.plot-meas-strip {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  border-top: 1px solid #1f2630;
+  background: #0d1114;
+}
+.plot-meas-cell {
+  padding: 0.25rem 0.5rem;
+  border-right: 1px solid #1f2630;
+  font-size: 0.72rem;
+}
+.plot-meas-k {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.62rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plot-meas-v {
+  color: #cbd5e1;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8rem;
+  margin-top: 0.1rem;
+}
+.plot-meas-v.gold {
+  color: #ffd93d;
+}
+.plot-meas-v.pink {
+  color: #ff5577;
+}
+
+/* Plot panel — event log (user notes) */
+.plot-events-log {
+  flex: 0 0 auto;
+  max-height: 5.5rem;
+  overflow-y: auto;
+  border-top: 1px solid #1f2630;
+  background: #0e1316;
+  font-size: 0.74rem;
+}
+.plot-event-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.1rem 0.5rem;
+  border-bottom: 1px dotted #1c252b;
+}
+.plot-event-t {
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 6rem;
+}
+.plot-event-label {
+  color: #cbd5e1;
+  flex: 1 1 auto;
+}
+.plot-event-row button {
+  background: none;
+  border: none;
+  color: #64748b;
+  cursor: pointer;
+  font-size: 0.9rem;
+  line-height: 1;
+}
+.plot-event-row button:hover {
+  color: #ff5577;
+}
+
+/* Plot panel — per-area y-range control */
+.plot-area-y {
+  background: #0f141d;
+  color: #94a3b8;
+  border: 1px solid #2c3444;
+  border-radius: 3px;
+  font: inherit;
+  font-size: 0.62rem;
+  padding: 0 0.2rem;
+  cursor: pointer;
+}
+.plot-area-y:hover {
+  color: #e2e8f0;
+}
+.plot-y-editor {
+  display: flex;
+  gap: 0.2rem;
+  padding: 0.2rem 0.4rem;
+  border-bottom: 1px solid #1f2630;
+  background: #11161a;
+}
+.plot-y-editor input {
+  width: 3.5rem;
+  background: #0f141d;
+  color: #e2e8f0;
+  border: 1px solid #2c3444;
+  border-radius: 3px;
+  font: inherit;
+  font-size: 0.72rem;
+  padding: 0 0.2rem;
+}
+.plot-y-editor button {
+  background: #0f141d;
+  color: #94a3b8;
+  border: 1px solid #2c3444;
+  border-radius: 3px;
+  font: inherit;
+  font-size: 0.72rem;
+  padding: 0 0.25rem;
+  cursor: pointer;
+}
