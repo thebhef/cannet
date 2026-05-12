@@ -33,9 +33,10 @@ High-performance CAN traffic analyzer.
   exit). On top of it a *trace* is a capture window — a start point and
   a running / paused / stopped state — with controls start / stop
   (stop→start clears the view), pause / resume (resume continues,
-  including frames received while paused), clear (empties and stops the
-  trace). Each trace-style window
-  (chronological trace, by-id view, plot window) has its own trace; the
+  including frames received while paused), clear (empties the window,
+  keeping the run state — clear doesn't imply stop or pause). Each
+  trace-style window (a chronological trace and a per-id view, switched
+  with a mode toggle; plus plot windows) has its own trace; the
   controls are a common toolbar component, the state is per-window.
   Traces live in the project (closing a window doesn't destroy its
   trace; reopen it from the project panel). The views stay *views* over

@@ -195,7 +195,12 @@ export function TraceView({
       programmaticScrollRef.current = false;
       return;
     }
-    if (autoScroll) onAutoScrollDisabled();
+    // A geometry change (window resize) can nudge `scrollTop` and fire
+    // a scroll event that isn't a user scroll. While auto-scrolling,
+    // only treat it as one if it actually moved us off the live edge —
+    // otherwise the re-pin effect snaps us back next render anyway.
+    const offBottom = el.scrollHeight - el.clientHeight - el.scrollTop;
+    if (autoScroll && offBottom > REPIN_THRESHOLD_PX) onAutoScrollDisabled();
     setAnchoredRow(rowFromScroll(el.scrollTop, count, viewportHeight));
   }, [autoScroll, onAutoScrollDisabled, count, viewportHeight]);
 

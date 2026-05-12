@@ -163,8 +163,8 @@ the attached DBC). **Add trace panel** opens a chronological view;
 arbitration id, holding that id's latest frame, updating live); each
 creates a new element and a panel for it. The project panel lists the
 elements — closing a panel doesn't destroy its element; reopen it (or
-remove it from the project) from there. **Add project panel** re-opens
-the project panel if you closed it. New panels arrive as a tab in the
+remove it from the project) from there. **Project panel** toggles the
+project panel itself (it's a show/hide singleton). New panels arrive as a tab in the
 active group — drag a panel by its tab and drop it against an edge of
 the area to split it side-by-side, or onto another panel to tab them
 together. Each trace panel keeps its own scroll position, auto-scroll
@@ -175,9 +175,10 @@ same trace controls: the data lives in a session buffer that fills
 while connected (lost when you disconnect / reconnect or quit), and a
 *trace* is each panel's own window over it — **Pause** freezes the
 view (**Resume** continues, including frames received while paused),
-**Stop** freezes it, **Clear** empties it (Stop and Clear both leave
-the trace stopped — hit **Start** to begin a fresh, growing trace),
-and the session buffer keeps filling underneath regardless.
+**Stop** freezes it (**Start** then begins a fresh, growing trace),
+and **Clear** empties the window keeping whatever state it's in (Clear
+doesn't imply Stop or Pause — a running trace stays running). The
+session buffer keeps filling underneath regardless.
 (Tearing a panel out into a separate OS window isn't supported yet —
 docking is within the one window; the tear-out item is in
 `plans/backlog.md`.)
@@ -196,7 +197,7 @@ panel also lists the configured bus(es) with **Connect** /
 last opened/saved project is reopened on launch (with no project, the
 layout is restored from local storage). Unsaved changes show a `●` in
 the project panel, and closing the window with unsaved changes prompts
-you to save first. Not carried in the project: a trace's window
+you (Save & close / Discard & close / Cancel). Not carried in the project: a trace's window
 position (it re-anchors to the session buffer on each launch anyway),
 the BLF replay path, the per-interface subscription set, and multiple
 DBCs.

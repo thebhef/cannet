@@ -197,6 +197,51 @@ header {
   height: 100%;
 }
 
+/* Modal dialog (currently just the unsaved-changes-on-close prompt). */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgb(0 0 0 / 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.modal {
+  background: #131923;
+  border: 1px solid #1f2630;
+  border-radius: 6px;
+  padding: 1rem 1.2rem;
+  max-width: 28rem;
+  box-shadow: 0 8px 28px rgb(0 0 0 / 0.5);
+}
+
+.modal-message {
+  margin: 0 0 0.9rem;
+  color: #e2e8f0;
+}
+
+.modal-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.modal-buttons button {
+  font: inherit;
+  background: transparent;
+  border: 1px solid #2c3444;
+  color: #cbd5e1;
+  padding: 0.2rem 0.7rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.modal-buttons button:hover {
+  background: #1a212b;
+}
+
 /* Project panel: a few stacked sections (the project file, the
    configured bus(es), the attached DBC) with their actions. */
 .project-panel {
