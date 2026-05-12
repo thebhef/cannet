@@ -350,11 +350,19 @@ fn list_signals(state: State<'_, AppState>) -> Vec<SignalDescriptorRecord> {
     }
 }
 
-/// Sample one DBC signal over `[start_seconds, end_seconds)` of the
-/// capture, returning the parallel `(t, v)` arrays plus the store's
-/// current time bounds (so a live plot can place its viewport without a
-/// second round-trip). Empty `(t, v)` if no DBC is attached, the id /
-/// signal is unknown, or nothing in the window matches.
+/// Sample one DBC signal over a window of the capture, returning the
+/// parallel `(t, v)` arrays plus the window's time bounds (so a live
+/// plot can place its viewport without a second round-trip). Empty
+/// `(t, v)` if no DBC is attached, the id / signal is unknown, or
+/// nothing in the window matches.
+///
+/// The window is either a **frame-index range** `[start_index,
+/// end_index)` — what a plot panel backed by a trace element passes, so
+/// the work is `O(window)` regardless of how large the capture is — or,
+/// when those are `None`, the time range `[start_seconds, end_seconds)`.
+/// `capture_start_seconds` / `capture_end_seconds` then report the
+/// window's first / last frame timestamps (the index-range case) or the
+/// store's first / last (the time-range case).
 ///
 /// `max_points` (`None` or `0` ⇒ no limit): the caller passes roughly
 /// the pixel width of the plot, and the series is min/max-decimated to
@@ -363,11 +371,10 @@ fn list_signals(state: State<'_, AppState>) -> Vec<SignalDescriptorRecord> {
 /// point per frame. Decimation preserves per-bucket extrema, so spikes
 /// survive.
 ///
-/// `async` for the same reason as `fetch_trace_range`: the timestamp
-/// scan + decode can briefly contend with a fast pump thread, so it runs
-/// off the UI thread. The trace-store slice is taken before the DBC lock
-/// to keep the lock order (DBC ⊃ nothing) consistent with the other
-/// commands.
+/// `async` for the same reason as `fetch_trace_range`: the slice + decode
+/// can briefly contend with a fast pump thread, so it runs off the UI
+/// thread. The trace-store slice is taken before the DBC lock to keep the
+/// lock order (DBC ⊃ nothing) consistent with the other commands.
 #[tauri::command]
 #[allow(clippy::unused_async, clippy::too_many_arguments)]
 async fn sample_signal(
@@ -377,24 +384,33 @@ async fn sample_signal(
     signal_name: String,
     start_seconds: f64,
     end_seconds: f64,
+    start_index: Option<u32>,
+    end_index: Option<u32>,
     max_points: Option<u32>,
 ) -> SignalSeries {
     let state: State<'_, AppState> = app.state();
     let store = &state.trace_store;
 
-    #[allow(
-        clippy::cast_precision_loss,
-        clippy::cast_sign_loss,
-        clippy::cast_possible_truncation
-    )]
-    let to_ns = |s: f64| -> u64 {
-        if s <= 0.0 {
-            0
-        } else {
-            (s * 1e9) as u64
-        }
+    #[allow(clippy::cast_precision_loss)]
+    let ns_to_seconds = |ns: u64| (ns as f64) / 1e9;
+
+    let (frames, win_start_ts, win_end_ts) = if let (Some(s), Some(e)) = (start_index, end_index) {
+        let frames = store.slice(s as usize, e as usize);
+        let start = frames.first().map(|f| f.timestamp_ns);
+        let end = frames.last().map(|f| f.timestamp_ns);
+        (frames, start, end)
+    } else {
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        let to_ns = |x: f64| -> u64 {
+            if x <= 0.0 {
+                0
+            } else {
+                (x * 1e9) as u64
+            }
+        };
+        let frames = store.slice_time_range(to_ns(start_seconds), to_ns(end_seconds));
+        (frames, store.first_timestamp_ns(), store.last_timestamp_ns())
     };
-    let frames = store.slice_time_range(to_ns(start_seconds), to_ns(end_seconds));
 
     let points = {
         let guard = state.database.lock().expect("database mutex poisoned");
@@ -417,13 +433,11 @@ async fn sample_signal(
         v.push(p.value);
     }
 
-    #[allow(clippy::cast_precision_loss)]
-    let ns_to_seconds = |ns: u64| (ns as f64) / 1e9;
     SignalSeries {
         t,
         v,
-        capture_start_seconds: store.first_timestamp_ns().map(ns_to_seconds),
-        capture_end_seconds: store.last_timestamp_ns().map(ns_to_seconds),
+        capture_start_seconds: win_start_ts.map(ns_to_seconds),
+        capture_end_seconds: win_end_ts.map(ns_to_seconds),
     }
 }
 

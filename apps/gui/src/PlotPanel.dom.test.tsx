@@ -57,11 +57,43 @@ vi.mock("@tauri-apps/api/core", () => ({
 import { PlotPanel } from "./PlotPanel";
 import { TraceDataContext, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
+import { ElementRegistryContext, type ElementRegistry } from "./projectElements";
+import { freshTrace } from "./trace";
 
 class FakeResizeObserver {
   observe() {}
   unobserve() {}
   disconnect() {}
+}
+
+// A throwaway element registry: PlotPanel only uses `ensureTrace` (to
+// register its element) and, via `useTrace`, `get` / `updateTrace`.
+type TS = ReturnType<typeof freshTrace>;
+type Entry = { element: { kind: "trace"; id: string; view: "plot" }; trace: TS };
+function makeRegistry(): ElementRegistry {
+  const map = new Map<string, Entry>();
+  const entry = (id: string): Entry => ({ element: { kind: "trace", id, view: "plot" }, trace: freshTrace(0) });
+  return {
+    get entries() {
+      return [...map.values()];
+    },
+    get: (id: string) => map.get(id),
+    createTrace: () => {
+      const id = Math.random().toString(36).slice(2);
+      map.set(id, entry(id));
+      return id;
+    },
+    ensureTrace: (id: string) => {
+      if (!map.has(id)) map.set(id, entry(id));
+    },
+    updateTrace: (id: string, updater: (s: TS) => TS) => {
+      const e = map.get(id);
+      if (e) map.set(id, { ...e, trace: updater(e.trace) });
+    },
+    remove: (id: string) => {
+      map.delete(id);
+    },
+  } as unknown as ElementRegistry;
 }
 
 const traceData: TraceData = {
@@ -93,7 +125,9 @@ function renderPanel() {
   render(
     <TraceDataContext.Provider value={traceData}>
       <ProjectContext.Provider value={projectCtx}>
-        <PlotPanel {...props} />
+        <ElementRegistryContext.Provider value={makeRegistry()}>
+          <PlotPanel {...props} />
+        </ElementRegistryContext.Provider>
       </ProjectContext.Provider>
     </TraceDataContext.Provider>,
   );

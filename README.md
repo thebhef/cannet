@@ -219,11 +219,12 @@ the BLF replay path, the per-interface subscription set, and per-bus
 DBC association (every loaded DBC applies to the one interface for now).
 
 **Add plot panel** opens a signal plot (Phase 4): a uPlot-based
-oscilloscope-style view, docked like any other panel. It has the same
-**Start / Stop / Pause / Clear** controls as a trace panel — it has
-trace behaviour, just focused on signal *values* over time: while
-running it follows the live capture, Pause/Stop freeze the view, and
-Clear re-anchors what's plotted to "now".
+oscilloscope-style view, docked like any other panel. It's backed by a
+**trace element**, like the trace panels — same windowed view over the
+session buffer with **Start / Stop / Pause / Clear** — it just renders
+signal *values* over time instead of message rows: while running it
+follows the live capture, Pause/Stop freeze the window (which also stops
+the re-sampling), Clear re-anchors what's plotted to "now".
 
 - **Plot areas.** A plot panel is a **stack of plot areas** — it starts
   with one; **add plot area** appends more, all sharing one time axis,
@@ -238,16 +239,17 @@ Clear re-anchors what's plotted to "now".
   `(message, signal)` pair the database defines; picking one drops it
   into the *focused* plot area (click an area to focus it). Move a
   signal between areas with the **→** menu on its row; remove it with
-  **×**. A plot's time span is the whole capture (the longest-running
-  trace), so a signal added late still shows over the existing span.
+  **×**. The shared x-axis spans 0 to the longest plotted signal across
+  the panel's areas, so a signal added late still shows over the
+  existing span.
 - **Zoom, pan & follow.** Drag-select on any area zooms x on every area;
   **⌘/ctrl + wheel** zooms x (synced), **shift + wheel** pans x
   (synced), **⌘/ctrl + shift + wheel** zooms y on the hovered area;
-  **fit data** refits x to the full capture span and y to the data.
-  **Follow live** keeps every area pinned to the capture's growing edge
-  while keeping the current visible x-width (it just slides right); a
-  manual x pan/zoom turns it off, the same way a manual scroll leaves
-  auto-scroll in a trace panel.
+  **fit data** refits x to the full signal extent. **Follow live** keeps
+  every area pinned to the capture's growing edge while keeping the
+  current visible x-width (it just slides right); a manual x pan/zoom
+  turns it off, the same way a manual scroll leaves auto-scroll in a
+  trace panel.
 - **Cursors & measurements** (both **off by default**). The toolbar's
   **cursors** selector turns on **X** cursors (left-click places A,
   right-click places B, drawn through every area), **Y** cursors
@@ -259,11 +261,14 @@ Clear re-anchors what's plotted to "now".
   capture-start "T0" plus your notes — draw as vertical lines across the
   areas; the event log under the panel renames (click the label) and
   removes notes.
-- **Performance.** Series are min/max-decimated host-side to ≈the plot's
-  pixel width before they reach uPlot, so a window holding hundreds of
-  thousands to millions of frames stays responsive (spikes survive the
-  decimation); Pause stops the live re-sampling. The toolbar shows the
-  worst recent resample time and the device-pixel ratio.
+- **Performance.** Each re-sample slices only the trace element's
+  window out of the store by frame index (so the work is bounded by the
+  window, not the whole capture), and the result is min/max-decimated
+  host-side to ≈the plot's pixel width before it reaches uPlot (spikes
+  survive the decimation). The live re-sample is throttled, and Pause
+  stops it entirely. The toolbar shows the worst recent re-sample time
+  and the device-pixel ratio. (Decoding only newly-appended frames each
+  tick — true incremental sampling — is still a backlog item.)
 
 Multiple plot panels can be open, each independent; the areas, signal
 assignments, y-ranges, follow-live, cursor mode, measurement selection,
