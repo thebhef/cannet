@@ -11,6 +11,7 @@ import type {
   LogFinished,
   OpenLogResult,
   Project,
+  ProjectElement,
   RemoteSessionResult,
   TraceFrameRecord,
   TraceGrew,
@@ -22,6 +23,13 @@ import { ByIdPanel } from "./ByIdPanel";
 import { ProjectPanel } from "./ProjectPanel";
 import { TraceDataContext, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
+import {
+  ElementRegistryContext,
+  type ElementRegistry,
+  type RegistryEntry,
+  isProjectElement,
+} from "./projectElements";
+import { type TraceState, freshTrace, reanchorToSession } from "./trace";
 import {
   BY_ID_PANEL_COMPONENT,
   LAST_PROJECT_KEY,
@@ -87,6 +95,11 @@ export function App() {
   const [projectPath, setProjectPath] = useState<string | null>(null);
   // True when the workspace has changed since it was last saved/opened.
   const [dirty, setDirty] = useState(false);
+  // The project's elements + their runtime state (the element registry,
+  // handed down via ElementRegistryContext). Restored from
+  // `project.elements`, seeded on first launch / New, serialized back
+  // on Save. Starts empty; `seedDefaultLayout` (called below) fills it.
+  const [registry, setRegistry] = useState<RegistryEntry[]>([]);
 
   // Captured once: timestamp of absolute row 0. Survives the user
   // scrolling anywhere in the trace; reset on Clear / new source.
@@ -103,6 +116,41 @@ export function App() {
   // close-on-quit handler. Updated on every render below.
   const dirtyRef = useRef(false);
   const handleSaveProjectRef = useRef<() => Promise<boolean>>(() => Promise.resolve(false));
+
+  // --- element registry ops ---
+  const createTrace = useCallback((view: ProjectElement["view"]): string => {
+    const id = crypto.randomUUID();
+    setRegistry((prev) => [...prev, { element: { kind: "trace", id, view }, trace: freshTrace(0) }]);
+    return id;
+  }, []);
+  const ensureTrace = useCallback((id: string, view: ProjectElement["view"]) => {
+    setRegistry((prev) =>
+      prev.some((e) => e.element.id === id)
+        ? prev
+        : [...prev, { element: { kind: "trace", id, view }, trace: freshTrace(0) }],
+    );
+  }, []);
+  const updateTrace = useCallback((id: string, updater: (s: TraceState) => TraceState) => {
+    setRegistry((prev) => {
+      let changed = false;
+      const next = prev.map((e) => {
+        if (e.element.id !== id) return e;
+        const t = updater(e.trace);
+        if (t === e.trace) return e;
+        changed = true;
+        return { ...e, trace: t };
+      });
+      return changed ? next : prev;
+    });
+  }, []);
+  const removeElement = useCallback((id: string) => {
+    setRegistry((prev) => prev.filter((e) => e.element.id !== id));
+    const api = dockApiRef.current;
+    const panel = api?.panels.find(
+      (p) => (p.params as { elementId?: unknown } | undefined)?.elementId === id,
+    );
+    if (api && panel) api.removePanel(panel);
+  }, []);
 
   const invalidateCache = useCallback(() => {
     chunkCacheRef.current.clear();
@@ -208,6 +256,21 @@ export function App() {
     };
   }, [invalidateCache, refreshStalePartialChunks]);
 
+  // Re-anchor every trace window when the session buffer shrinks (a new
+  // connection cleared it) — a no-op on every other tick.
+  useEffect(() => {
+    setRegistry((prev) => {
+      let changed = false;
+      const next = prev.map((e) => {
+        const t = reanchorToSession(e.trace, count);
+        if (t === e.trace) return e;
+        changed = true;
+        return { ...e, trace: t };
+      });
+      return changed ? next : prev;
+    });
+  }, [count]);
+
   // Once row 0 is available, capture its timestamp as the zero-point
   // for the time column.
   useEffect(() => {
@@ -298,18 +361,21 @@ export function App() {
     }
   }, []);
 
-  // Reset the dockview area to the seed layout: one trace panel plus
+  // Reset to the seed workspace: one trace element + its panel, plus
   // the project panel. Shared by first launch (no saved layout) and
   // "New project". Reads `dockApiRef.current`, so call it after
   // `onReady` has populated it.
   const seedDefaultLayout = useCallback(() => {
     const api = dockApiRef.current;
     if (!api) return;
+    setRegistry([]);
+    const elementId = createTrace("chronological");
     api.clear();
     api.addPanel({
-      id: `trace-${crypto.randomUUID()}`,
+      id: `trace-${elementId}`,
       component: TRACE_PANEL_COMPONENT,
       title: "Trace 1",
+      params: { elementId },
     });
     api.addPanel({
       id: `project-${crypto.randomUUID()}`,
@@ -319,17 +385,19 @@ export function App() {
     });
     panelCounterRef.current = 1;
     byIdCounterRef.current = 0;
-  }, []);
+  }, [createTrace]);
 
-  /// Snapshot the current workspace into a `Project`.
+  /// Snapshot the current workspace into a `Project` (the elements, not
+  /// their runtime state — that re-anchors on reload).
   const gatherProject = useCallback(
     (): Project => ({
       schema_version: PROJECT_SCHEMA_VERSION,
       layout: dockApiRef.current?.toJSON() ?? { grid: {}, panels: {} },
+      elements: registry.map((e) => e.element),
       dbc_path: dbcPath,
       remote_address: remoteAddress.trim() || null,
     }),
-    [dbcPath, remoteAddress],
+    [registry, dbcPath, remoteAddress],
   );
 
   // Record which project is "open" — both the React state and the
@@ -352,6 +420,14 @@ export function App() {
   // into the fields; hit Connect to switch.
   const applyProject = useCallback(
     (project: Project) => {
+      // Restore the element registry first so the panels `fromJSON`
+      // creates (which reference elements by `params.elementId`) find
+      // their entries. (A panel that doesn't still self-heals.)
+      setRegistry(
+        (Array.isArray(project.elements) ? project.elements : [])
+          .filter(isProjectElement)
+          .map((el) => ({ element: el, trace: freshTrace(0) })),
+      );
       const api = dockApiRef.current;
       const layout = validateLayout(project.layout);
       if (api && layout) {
@@ -517,24 +593,28 @@ export function App() {
   const addTracePanel = useCallback(() => {
     const api = dockApiRef.current;
     if (!api) return;
+    const elementId = createTrace("chronological");
     panelCounterRef.current += 1;
     api.addPanel({
-      id: `trace-${crypto.randomUUID()}`,
+      id: `trace-${elementId}`,
       component: TRACE_PANEL_COMPONENT,
       title: `Trace ${panelCounterRef.current}`,
+      params: { elementId },
     });
-  }, []);
+  }, [createTrace]);
 
   const addByIdPanel = useCallback(() => {
     const api = dockApiRef.current;
     if (!api) return;
+    const elementId = createTrace("by-id");
     byIdCounterRef.current += 1;
     api.addPanel({
-      id: `by-id-${crypto.randomUUID()}`,
+      id: `by-id-${elementId}`,
       component: BY_ID_PANEL_COMPONENT,
       title: `By ID ${byIdCounterRef.current}`,
+      params: { elementId },
     });
-  }, []);
+  }, [createTrace]);
 
   const addProjectPanel = useCallback(() => {
     const api = dockApiRef.current;
@@ -609,6 +689,18 @@ export function App() {
   const traceData: TraceData = useMemo(
     () => ({ count, version, baseTimestampSeconds, getFrame, ensureVisible }),
     [count, version, baseTimestampSeconds, getFrame, ensureVisible],
+  );
+
+  const elementRegistryValue: ElementRegistry = useMemo(
+    () => ({
+      entries: registry,
+      get: (id) => registry.find((e) => e.element.id === id),
+      createTrace,
+      ensureTrace,
+      updateTrace,
+      remove: removeElement,
+    }),
+    [registry, createTrace, ensureTrace, updateTrace, removeElement],
   );
 
   const remoteConnected =
@@ -696,18 +788,20 @@ export function App() {
         <div className="status">{status}</div>
       </header>
       <ProjectContext.Provider value={projectContextValue}>
-        <TraceDataContext.Provider value={traceData}>
-          {/* dockview drags tabs with the HTML5 drag-and-drop API, which
-              Tauri's OS-level drag-drop handler breaks on WebView2 — hence
-              `dragDropEnabled: false` in tauri.conf.json. The GUI takes
-              files via the dialog plugin, not by drop, so nothing is lost. */}
-          <DockviewReact
-            className="dock-area"
-            theme={themeAbyss}
-            components={DOCK_COMPONENTS}
-            onReady={handleDockReady}
-          />
-        </TraceDataContext.Provider>
+        <ElementRegistryContext.Provider value={elementRegistryValue}>
+          <TraceDataContext.Provider value={traceData}>
+            {/* dockview drags tabs with the HTML5 drag-and-drop API, which
+                Tauri's OS-level drag-drop handler breaks on WebView2 — hence
+                `dragDropEnabled: false` in tauri.conf.json. The GUI takes
+                files via the dialog plugin, not by drop, so nothing is lost. */}
+            <DockviewReact
+              className="dock-area"
+              theme={themeAbyss}
+              components={DOCK_COMPONENTS}
+              onReady={handleDockReady}
+            />
+          </TraceDataContext.Provider>
+        </ElementRegistryContext.Provider>
       </ProjectContext.Provider>
     </main>
   );

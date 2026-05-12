@@ -1,15 +1,17 @@
 //! Project files: the saved workspace, as a JSON document, read and
 //! written by the [`open_project`] / [`save_project`] commands.
 //!
-//! The host owns the project model. The one field it *doesn't*
-//! interpret is `layout` — that's `dockview`'s serialized layout blob,
-//! the frontend's format; the host just round-trips it.
+//! The host owns the project model. The two fields it *doesn't*
+//! interpret are `layout` (`dockview`'s serialized layout blob) and
+//! `elements` (the project's elements — traces now, plots / transmit
+//! messages later — each an opaque `{kind, id, …}` record the frontend
+//! defines); the host just round-trips both.
 //!
-//! Phase 3 first cut carries: the panel layout, the attached DBC path,
-//! and the remote-server address. Later steps add per-panel config
-//! (column layouts, the panels' trace windows), the bus subscription
-//! set, multiple DBCs, and EDS references — bumping
-//! [`PROJECT_SCHEMA_VERSION`] if a change is incompatible.
+//! Carries today: the panel layout, the project elements, the attached
+//! DBC path, and the remote-server address. Later steps add the bus
+//! subscription set, multiple DBCs, and EDS references — bumping
+//! [`PROJECT_SCHEMA_VERSION`] only if a change is *incompatible*
+//! (adding optional fields isn't).
 
 use serde::{Deserialize, Serialize};
 
@@ -25,6 +27,11 @@ pub struct Project {
     /// The `dockview` panel layout, verbatim. The host doesn't read
     /// this; it's the frontend's serialized layout.
     pub layout: serde_json::Value,
+    /// The project's elements — traces (and later plots, transmit
+    /// messages, …), each an opaque `{kind, id, …}` record. The host
+    /// doesn't read these either; the frontend owns the shape.
+    #[serde(default)]
+    pub elements: Vec<serde_json::Value>,
     /// Path to the attached DBC, if any — a reference, not an embedded
     /// copy, re-read from disk on open (or via the panel's "reload"
     /// action).
@@ -79,6 +86,7 @@ mod tests {
         Project {
             schema_version: PROJECT_SCHEMA_VERSION,
             layout: serde_json::json!({ "grid": { "root": {} }, "panels": {} }),
+            elements: vec![serde_json::json!({ "kind": "trace", "id": "abc", "view": "chronological" })],
             dbc_path: Some("/some/where/bus.dbc".into()),
             remote_address: Some("127.0.0.1:50051".into()),
         }
@@ -94,6 +102,7 @@ mod tests {
     fn parse_defaults_the_optional_fields() {
         let p = parse_project(r#"{"schema_version": 1, "layout": {"grid": {}, "panels": {}}}"#)
             .unwrap();
+        assert!(p.elements.is_empty());
         assert_eq!(p.dbc_path, None);
         assert_eq!(p.remote_address, None);
     }
