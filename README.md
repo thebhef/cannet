@@ -227,10 +227,13 @@ swatch, name, present value). With a DBC attached, the toolbar's **add
 signal…** dropdown lists every `(message, signal)` pair the database
 defines; picking one drops it into the *focused* plot area (click an
 area to focus it). Move a signal between areas with the **→** menu on
-its row; remove it with **×**. Drag on a plot to zoom the time axis
-(double-click to reset). **Follow live** keeps every area pinned to the
-capture's growing edge; panning or zooming a plot turns it off, the
-same way a manual scroll leaves auto-scroll in a trace panel. Multiple
+its row; remove it with **×**. All plot areas share one time axis:
+drag-select on any area zooms x on every area; **⌘/ctrl + wheel** zooms
+x (synced), **shift + wheel** zooms y on the hovered area only, and
+**⌘/ctrl + shift + wheel** does both; **reset zoom** (toolbar) refits
+everything. **Follow live** keeps every area pinned to the capture's
+growing edge; a manual x zoom turns it off, the same way a manual
+scroll leaves auto-scroll in a trace panel. Multiple
 plot panels can be open, each with its own areas and signals; the
 plot-area layout and the signal assignments round-trip through the
 project file. (Still to come — see `plans/phased-implementation.md`
