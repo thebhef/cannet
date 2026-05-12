@@ -622,9 +622,12 @@ In rough order, each step leaving the panel runnable:
   focused area; a signal is moved between areas via a per-row menu
   (drag-and-drop is a follow-up polish). The plot-area list and the
   signal→area assignment persist via the panel's dockview `params`.
-- **Synced x / per-area y zoom.** Drag-select or modifier-wheel on any
-  area zooms x on all areas; `shift`-wheel y-zooms the hovered area
-  only; reset restores full extent (cross-instance `setScale`).
+- **Synced x / per-area y zoom.** ✅ Done — drag-select or `⌘/ctrl`+wheel
+  on any area zooms x on all areas (and leaves follow-live); `shift`+wheel
+  y-zooms the hovered area only; `⌘/ctrl`+`shift`+wheel does both; the
+  toolbar's "reset zoom" refits every area. Implemented with a shared
+  x-sync ref + a per-area `setScale` hook in `PlotPanel.tsx`
+  (cross-instance `setScale`, guarded so programmatic changes don't echo).
 - **Cursors & measurement strip.** Both off by default, toggled from
   the panel toolbar (the prototype ships them on; cannet doesn't). When
   on: global X cursors (A/B) via a uPlot `draw`-hook overlay across
