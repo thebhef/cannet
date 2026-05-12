@@ -18,10 +18,13 @@ import { PROJECT_SCHEMA_VERSION } from "./types";
 import { TitleBar } from "./TitleBar";
 import { TracePanel } from "./TracePanel";
 import { ByIdPanel } from "./ByIdPanel";
+import { ProjectPanel } from "./ProjectPanel";
 import { TraceDataContext, type TraceData } from "./traceData";
+import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import {
   BY_ID_PANEL_COMPONENT,
   LAYOUT_STORAGE_KEY,
+  PROJECT_PANEL_COMPONENT,
   TRACE_PANEL_COMPONENT,
   parseSavedLayout,
   validateLayout,
@@ -53,6 +56,7 @@ const CACHE_CHUNKS = 120;
 const DOCK_COMPONENTS = {
   [TRACE_PANEL_COMPONENT]: TracePanel,
   [BY_ID_PANEL_COMPONENT]: ByIdPanel,
+  [PROJECT_PANEL_COMPONENT]: ProjectPanel,
 };
 
 export function App() {
@@ -77,6 +81,8 @@ export function App() {
   const [state, setState] = useState<LogState>({ kind: "idle" });
   const [dbcPath, setDbcPath] = useState<string | null>(null);
   const [remoteAddress, setRemoteAddress] = useState(DEFAULT_REMOTE_ADDRESS);
+  // Path of the open project file, or null for an unsaved workspace.
+  const [projectPath, setProjectPath] = useState<string | null>(null);
 
   // Captured once: timestamp of absolute row 0. Survives the user
   // scrolling anywhere in the trace; reset on Clear / new source.
@@ -283,6 +289,40 @@ export function App() {
     }
   }, []);
 
+  // Reset the dockview area to the seed layout: one trace panel plus
+  // the project panel. Shared by first launch (no saved layout) and
+  // "New project". Reads `dockApiRef.current`, so call it after
+  // `onReady` has populated it.
+  const seedDefaultLayout = useCallback(() => {
+    const api = dockApiRef.current;
+    if (!api) return;
+    api.clear();
+    api.addPanel({
+      id: `trace-${crypto.randomUUID()}`,
+      component: TRACE_PANEL_COMPONENT,
+      title: "Trace 1",
+    });
+    api.addPanel({
+      id: `project-${crypto.randomUUID()}`,
+      component: PROJECT_PANEL_COMPONENT,
+      title: "Project",
+      position: { direction: "left" },
+    });
+    panelCounterRef.current = 1;
+    byIdCounterRef.current = 0;
+  }, []);
+
+  /// Snapshot the current workspace into a `Project`.
+  const gatherProject = useCallback(
+    (): Project => ({
+      schema_version: PROJECT_SCHEMA_VERSION,
+      layout: dockApiRef.current?.toJSON() ?? { grid: {}, panels: {} },
+      dbc_path: dbcPath,
+      remote_address: remoteAddress.trim() || null,
+    }),
+    [dbcPath, remoteAddress],
+  );
+
   // Apply an opened project: restore the panel layout, the remote
   // address field, and (re-)attach the referenced DBC. Doesn't touch a
   // live connection — the project's bus is configured into the fields;
@@ -318,6 +358,14 @@ export function App() {
     [invalidateCache],
   );
 
+  const handleNewProject = useCallback(() => {
+    // Layout-only for now: a fresh seed layout and "no open project".
+    // The DBC, the connection, and the session buffer are left alone —
+    // detach / disconnect / Clear those yourself if you want.
+    seedDefaultLayout();
+    setProjectPath(null);
+  }, [seedDefaultLayout]);
+
   const handleOpenProject = useCallback(async () => {
     const selected = await open({
       multiple: false,
@@ -327,29 +375,48 @@ export function App() {
     try {
       const project = await invoke<Project>("open_project", { path: selected });
       applyProject(project);
+      setProjectPath(selected);
     } catch (err) {
       setState({ kind: "error", message: String(err) });
     }
   }, [applyProject]);
 
+  const saveProjectTo = useCallback(
+    async (path: string) => {
+      try {
+        await invoke("save_project", { path, project: gatherProject() });
+        setProjectPath(path);
+      } catch (err) {
+        setState({ kind: "error", message: String(err) });
+      }
+    },
+    [gatherProject],
+  );
+
   const handleSaveProjectAs = useCallback(async () => {
     const path = await save({
       filters: [{ name: "cannet project", extensions: ["json"] }],
-      defaultPath: "cannet-project.json",
+      defaultPath: projectPath ?? "cannet-project.json",
     });
     if (!path) return;
-    const project: Project = {
-      schema_version: PROJECT_SCHEMA_VERSION,
-      layout: dockApiRef.current?.toJSON() ?? { grid: {}, panels: {} },
-      dbc_path: dbcPath,
-      remote_address: remoteAddress.trim() || null,
-    };
-    try {
-      await invoke("save_project", { path, project });
-    } catch (err) {
-      setState({ kind: "error", message: String(err) });
-    }
-  }, [dbcPath, remoteAddress]);
+    await saveProjectTo(path);
+  }, [projectPath, saveProjectTo]);
+
+  const handleSaveProject = useCallback(() => {
+    if (projectPath) void saveProjectTo(projectPath);
+    else void handleSaveProjectAs();
+  }, [projectPath, saveProjectTo, handleSaveProjectAs]);
+
+  const handleReloadDbc = useCallback(() => {
+    if (!dbcPath) return;
+    const path = dbcPath;
+    void invoke<DbcInfo>("attach_dbc", { path })
+      .then((info) => {
+        setDbcPath(info.dbc_path);
+        invalidateCache();
+      })
+      .catch((err) => setState({ kind: "error", message: `reload DBC (${path}): ${String(err)}` }));
+  }, [dbcPath, invalidateCache]);
 
   const getFrame = useCallback((index: number): TraceFrameRecord | null => {
     const chunkIdx = Math.floor(index / CHUNK_SIZE);
@@ -407,45 +474,53 @@ export function App() {
     });
   }, []);
 
-  const handleDockReady = useCallback((event: DockviewReadyEvent) => {
-    const api = event.api;
-    dockApiRef.current = api;
-
-    let restored = false;
-    const saved = parseSavedLayout(localStorage.getItem(LAYOUT_STORAGE_KEY));
-    if (saved) {
-      try {
-        api.fromJSON(saved);
-        restored = api.panels.length > 0;
-      } catch {
-        restored = false;
-      }
-    }
-    if (restored) {
-      // Keep numbering past whatever the restored layout already shows.
-      panelCounterRef.current = api.panels.length;
-    } else {
-      api.clear();
-      panelCounterRef.current = 1;
-      api.addPanel({
-        id: `trace-${crypto.randomUUID()}`,
-        component: TRACE_PANEL_COMPONENT,
-        title: "Trace 1",
-      });
-    }
-
-    // Persist only after the initial restore/seed so we never write an
-    // empty or half-built layout. Best-effort: localStorage can be
-    // unavailable or full, and this is a placeholder until project
-    // files own the layout.
-    api.onDidLayoutChange(() => {
-      try {
-        localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(api.toJSON()));
-      } catch {
-        /* layout persistence is best-effort */
-      }
+  const addProjectPanel = useCallback(() => {
+    const api = dockApiRef.current;
+    if (!api) return;
+    api.addPanel({
+      id: `project-${crypto.randomUUID()}`,
+      component: PROJECT_PANEL_COMPONENT,
+      title: "Project",
     });
   }, []);
+
+  const handleDockReady = useCallback(
+    (event: DockviewReadyEvent) => {
+      const api = event.api;
+      dockApiRef.current = api;
+
+      let restored = false;
+      const saved = parseSavedLayout(localStorage.getItem(LAYOUT_STORAGE_KEY));
+      if (saved) {
+        try {
+          api.fromJSON(saved);
+          restored = api.panels.length > 0;
+        } catch {
+          restored = false;
+        }
+      }
+      if (restored) {
+        // Keep numbering past whatever the restored layout already shows.
+        panelCounterRef.current = api.panels.length;
+        byIdCounterRef.current = api.panels.length;
+      } else {
+        seedDefaultLayout();
+      }
+
+      // Persist only after the initial restore/seed so we never write an
+      // empty or half-built layout. Best-effort: localStorage can be
+      // unavailable or full, and this is a placeholder until project
+      // files own the layout (reopen-last-on-launch).
+      api.onDidLayoutChange(() => {
+        try {
+          localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(api.toJSON()));
+        } catch {
+          /* layout persistence is best-effort */
+        }
+      });
+    },
+    [seedDefaultLayout],
+  );
 
   const status = useMemo(
     () => renderStatus(state, dbcPath, count, framesPerSecond),
@@ -460,13 +535,49 @@ export function App() {
   const remoteConnected =
     state.kind === "remote-connecting" || state.kind === "remote-running";
 
+  const blfPath =
+    state.kind === "loading" || state.kind === "running" || state.kind === "done"
+      ? state.result.blf_path
+      : null;
+
+  const projectContextValue: ProjectContextValue = useMemo(
+    () => ({
+      projectPath,
+      dbcPath,
+      remoteAddress,
+      remoteConnected,
+      blfPath,
+      onNewProject: handleNewProject,
+      onOpenProject: handleOpenProject,
+      onSaveProject: handleSaveProject,
+      onSaveProjectAs: handleSaveProjectAs,
+      onReloadDbc: handleReloadDbc,
+      onConnect: handleConnect,
+      onDisconnect: handleDisconnect,
+    }),
+    [
+      projectPath,
+      dbcPath,
+      remoteAddress,
+      remoteConnected,
+      blfPath,
+      handleNewProject,
+      handleOpenProject,
+      handleSaveProject,
+      handleSaveProjectAs,
+      handleReloadDbc,
+      handleConnect,
+      handleDisconnect,
+    ],
+  );
+
   return (
     <main className="app">
       <TitleBar />
       <header>
         <div className="toolbar">
           <button onClick={handleOpenProject}>Open project…</button>
-          <button onClick={handleSaveProjectAs}>Save project as…</button>
+          <button onClick={handleSaveProject}>Save project</button>
           <span className="toolbar-separator" aria-hidden="true" />
           <button onClick={handleOpenLog}>Open BLF…</button>
           <button onClick={handleAttachDbc}>
@@ -496,21 +607,24 @@ export function App() {
           <span className="toolbar-separator" aria-hidden="true" />
           <button onClick={addTracePanel}>Add trace panel</button>
           <button onClick={addByIdPanel}>Add by-ID panel</button>
+          <button onClick={addProjectPanel}>Add project panel</button>
         </div>
         <div className="status">{status}</div>
       </header>
-      <TraceDataContext.Provider value={traceData}>
-        {/* dockview drags tabs with the HTML5 drag-and-drop API, which
-            Tauri's OS-level drag-drop handler breaks on WebView2 — hence
-            `dragDropEnabled: false` in tauri.conf.json. The GUI takes
-            files via the dialog plugin, not by drop, so nothing is lost. */}
-        <DockviewReact
-          className="dock-area"
-          theme={themeAbyss}
-          components={DOCK_COMPONENTS}
-          onReady={handleDockReady}
-        />
-      </TraceDataContext.Provider>
+      <ProjectContext.Provider value={projectContextValue}>
+        <TraceDataContext.Provider value={traceData}>
+          {/* dockview drags tabs with the HTML5 drag-and-drop API, which
+              Tauri's OS-level drag-drop handler breaks on WebView2 — hence
+              `dragDropEnabled: false` in tauri.conf.json. The GUI takes
+              files via the dialog plugin, not by drop, so nothing is lost. */}
+          <DockviewReact
+            className="dock-area"
+            theme={themeAbyss}
+            components={DOCK_COMPONENTS}
+            onReady={handleDockReady}
+          />
+        </TraceDataContext.Provider>
+      </ProjectContext.Provider>
     </main>
   );
 }

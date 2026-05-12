@@ -9,12 +9,13 @@ import type { SerializedDockview } from "dockview";
 export const LAYOUT_STORAGE_KEY = "cannet.layout.v1";
 
 /**
- * Names the trace-style panel React components are registered under in
- * the dockview `components` map. Stored verbatim inside the serialized
- * layout, so changing them would orphan saved layouts — treat as stable.
+ * Names the panel React components are registered under in the dockview
+ * `components` map. Stored verbatim inside the serialized layout, so
+ * changing them would orphan saved layouts — treat as stable.
  */
 export const TRACE_PANEL_COMPONENT = "trace";
 export const BY_ID_PANEL_COMPONENT = "by-id";
+export const PROJECT_PANEL_COMPONENT = "project";
 
 /**
  * Sanity-check an already-parsed value as a dockview layout. Returns
