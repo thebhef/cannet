@@ -106,6 +106,38 @@ impl Database {
         self.messages.len()
     }
 
+    /// Every signal defined in the database, as `(message, signal)`
+    /// descriptors suitable for a "pick a signal to plot" UI.
+    ///
+    /// The result is sorted by message name, then signal name, so the
+    /// list is stable across calls regardless of `HashMap` iteration
+    /// order. Multiplexed signals are listed unconditionally — whether a
+    /// given frame actually carries one depends on its multiplexor value,
+    /// which the sampler resolves per frame.
+    #[must_use]
+    pub fn signals(&self) -> Vec<SignalDescriptor> {
+        let mut out: Vec<SignalDescriptor> = self
+            .messages
+            .iter()
+            .flat_map(|(id, entry)| {
+                let (message_id, extended) = message_id_parts(*id);
+                entry.signals.iter().map(move |sig| SignalDescriptor {
+                    message_id,
+                    extended,
+                    message_name: entry.name.clone(),
+                    signal_name: sig.signal.name.clone(),
+                    unit: sig.signal.unit.clone(),
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            a.message_name
+                .cmp(&b.message_name)
+                .then_with(|| a.signal_name.cmp(&b.signal_name))
+        });
+        out
+    }
+
     /// Decode `frame` against this database. Returns `None` if no message
     /// in the database matches the frame's id (and addressing mode).
     pub fn decode<'a>(&'a self, frame: &CanFrame) -> Option<DecodedMessage<'a>> {
@@ -132,6 +164,17 @@ fn string_value(value: &AttributeValue) -> Option<String> {
     match value {
         AttributeValue::String(s) => Some(s.clone()),
         AttributeValue::Uint(_) | AttributeValue::Int(_) | AttributeValue::Double(_) => None,
+    }
+}
+
+/// Split a `can-dbc` [`MessageId`] back into the `(raw id, extended?)`
+/// pair the rest of the codebase uses. The extended variant carries the
+/// 31-bit-flagged form on the wire in some DBCs; mask it to the 29-bit
+/// id so it round-trips with [`cannet_core::CanId::extended`].
+fn message_id_parts(id: MessageId) -> (u32, bool) {
+    match id {
+        MessageId::Standard(s) => (u32::from(s), false),
+        MessageId::Extended(e) => (e & 0x1FFF_FFFF, true),
     }
 }
 
@@ -242,6 +285,18 @@ pub struct DecodedSignal<'a> {
     pub value: f64,
 }
 
+/// A `(message, signal)` pair available for plotting / picking.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignalDescriptor {
+    /// Raw CAN id of the owning message (29-bit if `extended`).
+    pub message_id: u32,
+    /// Whether `message_id` is a 29-bit extended id.
+    pub extended: bool,
+    pub message_name: String,
+    pub signal_name: String,
+    pub unit: String,
+}
+
 #[derive(Debug)]
 pub enum DbcError {
     Parse(String),
@@ -320,6 +375,35 @@ SIG_VALTYPE_ 513 Lat : 1;
     fn parses_sample_dbc() {
         let db = Database::parse(SAMPLE_DBC).unwrap();
         assert_eq!(db.message_count(), 6);
+    }
+
+    #[test]
+    fn signals_lists_every_signal_sorted() {
+        let db = Database::parse(SAMPLE_DBC).unwrap();
+        let sigs = db.signals();
+        // 3 + 2 + 1 + 1 + 4 + 2 = 13 signals across the six messages.
+        assert_eq!(sigs.len(), 13);
+        // Sorted by (message_name, signal_name).
+        let mut sorted = sigs.clone();
+        sorted.sort_by(|a, b| {
+            a.message_name
+                .cmp(&b.message_name)
+                .then_with(|| a.signal_name.cmp(&b.signal_name))
+        });
+        assert_eq!(sigs, sorted);
+
+        let speed = sigs
+            .iter()
+            .find(|s| s.signal_name == "EngineSpeed")
+            .unwrap();
+        assert_eq!(speed.message_name, "EngineData");
+        assert_eq!(speed.message_id, 256);
+        assert!(!speed.extended);
+        assert_eq!(speed.unit, "rpm");
+
+        let ext = sigs.iter().find(|s| s.signal_name == "ExtSig").unwrap();
+        assert!(ext.extended);
+        assert_eq!(ext.message_id, 0x98FF_0502 & 0x1FFF_FFFF);
     }
 
     #[test]

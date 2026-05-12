@@ -36,6 +36,7 @@
 
 mod ipc;
 mod project;
+mod signal_sampler;
 mod trace_store;
 
 use std::fmt;
@@ -52,7 +53,8 @@ use cannet_dbc::{Database, DecodedSignal};
 
 use ipc::{
     ByIdSnapshot, DbcInfo, DecodedRecord, InterfaceRecord, LogFinished, OpenLogResult,
-    RemoteSessionResult, SignalRecord, TraceFrameRecord, TraceGrew,
+    RemoteSessionResult, SignalDescriptorRecord, SignalRecord, SignalSeries, TraceFrameRecord,
+    TraceGrew,
 };
 use trace_store::{RawTraceFrame, TraceStore};
 
@@ -123,6 +125,8 @@ pub fn run() {
             disconnect_remote_server,
             project::open_project,
             project::save_project,
+            list_signals,
+            sample_signal,
         ])
         .setup(|app| {
             // Make sure the main window has the id our capabilities expect.
@@ -328,6 +332,87 @@ async fn fetch_latest_by_id(app: AppHandle, since: u64) -> Vec<ByIdSnapshot> {
 #[allow(clippy::needless_pass_by_value)]
 fn clear_trace_store(state: State<'_, AppState>) {
     state.trace_store.clear();
+}
+
+/// Every `(message, signal)` pair defined by the currently-attached
+/// DBC, for a plot panel's signal picker. Empty when no DBC is attached.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn list_signals(state: State<'_, AppState>) -> Vec<SignalDescriptorRecord> {
+    let guard = state.database.lock().expect("database mutex poisoned");
+    match guard.as_ref() {
+        Some(db) => db
+            .signals()
+            .into_iter()
+            .map(SignalDescriptorRecord::from)
+            .collect(),
+        None => Vec::new(),
+    }
+}
+
+/// Sample one DBC signal over `[start_seconds, end_seconds)` of the
+/// capture, returning the parallel `(t, v)` arrays plus the store's
+/// current time bounds (so a live plot can place its viewport without a
+/// second round-trip). Empty `(t, v)` if no DBC is attached, the id /
+/// signal is unknown, or nothing in the window matches.
+///
+/// `async` for the same reason as `fetch_trace_range`: the timestamp
+/// scan + decode can briefly contend with a fast pump thread, so it runs
+/// off the UI thread. The trace-store slice is taken before the DBC lock
+/// to keep the lock order (DBC ⊃ nothing) consistent with the other
+/// commands.
+#[tauri::command]
+#[allow(clippy::unused_async)]
+async fn sample_signal(
+    app: AppHandle,
+    message_id: u32,
+    extended: bool,
+    signal_name: String,
+    start_seconds: f64,
+    end_seconds: f64,
+) -> SignalSeries {
+    let state: State<'_, AppState> = app.state();
+    let store = &state.trace_store;
+
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation
+    )]
+    let to_ns = |s: f64| -> u64 {
+        if s <= 0.0 {
+            0
+        } else {
+            (s * 1e9) as u64
+        }
+    };
+    let frames = store.slice_time_range(to_ns(start_seconds), to_ns(end_seconds));
+
+    let points = {
+        let guard = state.database.lock().expect("database mutex poisoned");
+        match guard.as_ref() {
+            Some(db) => {
+                signal_sampler::sample_signal(&frames, db, message_id, extended, &signal_name)
+            }
+            None => Vec::new(),
+        }
+    };
+
+    let mut t = Vec::with_capacity(points.len());
+    let mut v = Vec::with_capacity(points.len());
+    for p in points {
+        t.push(p.t_seconds);
+        v.push(p.value);
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    let to_s = |ns: u64| (ns as f64) / 1e9;
+    SignalSeries {
+        t,
+        v,
+        capture_start_seconds: store.first_timestamp_ns().map(to_s),
+        capture_end_seconds: store.last_timestamp_ns().map(to_s),
+    }
 }
 
 fn decode_raw_frame(db: &Database, frame: &RawTraceFrame) -> Option<DecodedRecord> {

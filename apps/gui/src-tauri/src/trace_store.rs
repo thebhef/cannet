@@ -218,6 +218,48 @@ impl TraceStore {
         inner.frames[start..end].to_vec()
     }
 
+    /// Cloned list of every frame whose source timestamp falls in
+    /// `[start_ns, end_ns)`, in store (append) order. Used by the signal
+    /// sampler to pull the frames covering a plot's visible time window.
+    ///
+    /// This is a linear scan: the store isn't indexed by timestamp, and
+    /// for a live capture timestamps are (near-)monotonic anyway, so the
+    /// scan is cheap relative to decoding the result. Cloning out of the
+    /// lock keeps the decode off the critical section, matching
+    /// [`Self::slice`].
+    #[must_use]
+    pub fn slice_time_range(&self, start_ns: u64, end_ns: u64) -> Vec<RawTraceFrame> {
+        let inner = self.inner.lock().expect("trace store mutex poisoned");
+        inner
+            .frames
+            .iter()
+            .filter(|f| f.timestamp_ns >= start_ns && f.timestamp_ns < end_ns)
+            .cloned()
+            .collect()
+    }
+
+    /// Source timestamp of the first stored frame, or `None` if empty.
+    #[must_use]
+    pub fn first_timestamp_ns(&self) -> Option<u64> {
+        self.inner
+            .lock()
+            .expect("trace store mutex poisoned")
+            .frames
+            .first()
+            .map(|f| f.timestamp_ns)
+    }
+
+    /// Source timestamp of the last stored frame, or `None` if empty.
+    #[must_use]
+    pub fn last_timestamp_ns(&self) -> Option<u64> {
+        self.inner
+            .lock()
+            .expect("trace store mutex poisoned")
+            .frames
+            .last()
+            .map(|f| f.timestamp_ns)
+    }
+
     /// Drop every stored frame and release the backing allocations.
     ///
     /// `Vec::clear` / `VecDeque::clear` only reset the length — the
@@ -341,6 +383,29 @@ mod tests {
         }
         let slice = store.slice(1, 100);
         assert_eq!(slice.len(), 2);
+    }
+
+    #[test]
+    fn slice_time_range_filters_by_timestamp() {
+        let store = TraceStore::new();
+        for i in 0u32..10 {
+            store.append(dummy(u64::from(i) * 1_000, i));
+        }
+        let got: Vec<u32> = store
+            .slice_time_range(3_000, 7_000)
+            .iter()
+            .map(|f| f.id)
+            .collect();
+        assert_eq!(got, vec![3, 4, 5, 6]);
+        assert_eq!(store.first_timestamp_ns(), Some(0));
+        assert_eq!(store.last_timestamp_ns(), Some(9_000));
+    }
+
+    #[test]
+    fn timestamps_are_none_when_empty() {
+        let store = TraceStore::new();
+        assert_eq!(store.first_timestamp_ns(), None);
+        assert_eq!(store.last_timestamp_ns(), None);
     }
 
     #[test]

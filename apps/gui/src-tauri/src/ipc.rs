@@ -134,6 +134,43 @@ pub enum LogFinished {
     Error { message: String },
 }
 
+/// One `(message, signal)` pair the attached DBC defines, returned by
+/// `list_signals` to populate a plot panel's signal picker.
+#[derive(serde::Serialize, Clone)]
+pub struct SignalDescriptorRecord {
+    pub message_id: u32,
+    pub extended: bool,
+    pub message_name: String,
+    pub signal_name: String,
+    pub unit: String,
+}
+
+impl From<cannet_dbc::SignalDescriptor> for SignalDescriptorRecord {
+    fn from(d: cannet_dbc::SignalDescriptor) -> Self {
+        Self {
+            message_id: d.message_id,
+            extended: d.extended,
+            message_name: d.message_name,
+            signal_name: d.signal_name,
+            unit: d.unit,
+        }
+    }
+}
+
+/// A sampled signal series, returned by `sample_signal`. The two arrays
+/// are parallel (`t[i]` is the source time in seconds of value `v[i]`),
+/// shaped for a uPlot `[xs, ys]` data set. `capture_*_seconds` carry the
+/// store's current first/last frame timestamps so a live plot can place
+/// its viewport and "follow live" edge without a second round-trip;
+/// they're `null` while the store is empty.
+#[derive(serde::Serialize, Clone)]
+pub struct SignalSeries {
+    pub t: Vec<f64>,
+    pub v: Vec<f64>,
+    pub capture_start_seconds: Option<f64>,
+    pub capture_end_seconds: Option<f64>,
+}
+
 /// One CAN interface as exposed by a remote `cannet-server`. Mirrors
 /// `cannet_client::Interface`, kept here so the React side has a stable
 /// `snake_case` payload to deserialize against.

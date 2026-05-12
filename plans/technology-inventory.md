@@ -198,21 +198,33 @@ and/or community wrappers (e.g. `python-can`) depending on the client._
 
 ### Plotting / Visualization
 
-- **Streaming time-series plot library** — `proposed` (Phase 4). The
-  Phase 4 plot panel (vSignalyzer / TSMaster-style signal-over-time view)
-  needs a charting library that can hold tens of thousands of points per
-  trace, append to them live without re-laying-out the world, draw
-  several independent plots at once, and ship under a permissive license.
-  Candidate shortlist to evaluate when Phase 4 starts: `uPlot` (MIT, tiny,
-  canvas, built for exactly this — large fast-updating time-series),
-  `dygraphs` (MIT, canvas, mature, good live-append story), `Chart.js`
-  with the streaming/zoom plugins (MIT, but DOM/canvas perf at our point
-  counts needs checking), `lightweight-charts` (Apache-2.0, very fast,
-  but finance-chart-shaped — adapting it to arbitrary signals may fight
-  the API), and WebGL options (`regl-plot`-style) if canvas can't keep
-  up. Whichever wins, the data feeding it comes from the trace store's
-  signal sampler, not the library — the library only renders. Final pick
-  + rejected alternatives get written up here when the phase lands.
+- **uPlot** — `adopted` (Phase 4). MIT, ~50 KB, canvas-based, built for
+  exactly our case: large fast-updating time-series, multiple series on a
+  shared axis, built-in pan / zoom and a readout cursor, and a tiny
+  imperative API (`new uPlot(opts, data, el)` + `setData` / `setScale` /
+  `setSize`) that drops cleanly into a React panel without a wrapper
+  library. The data feeding it comes from the host-side signal sampler
+  (`apps/gui/src-tauri/src/signal_sampler.rs`) merged onto one timeline
+  by `apps/gui/src/plotData.ts` — uPlot only renders. Used by
+  `apps/gui/src/PlotPanel.tsx`.
+  - **dygraphs** — `rejected`. MIT, canvas, mature, with a good
+    live-append story, but it owns more of the layout/interaction model
+    than uPlot and its bundle is several times larger for features
+    (annotations, range selector, CSV ingest) we don't need.
+  - **Chart.js + streaming/zoom plugins** — `rejected`. MIT and familiar,
+    but it's a general charting library, not a time-series engine; at our
+    point counts (tens of thousands, growing live) the per-frame update
+    cost and GC pressure are a poor fit, and we'd be carrying plugins to
+    bolt on behaviour uPlot has natively.
+  - **lightweight-charts** — `rejected`. Apache-2.0 and very fast, but
+    finance-chart-shaped (candles, a single price/time pane, a fixed
+    interaction grammar); mapping arbitrary CAN signals with their own
+    units and y-scales onto it fights the API.
+  - **WebGL renderers (`regl-plot`-style)** — `rejected for now`. Would
+    only matter if canvas can't keep up; uPlot's canvas path comfortably
+    handles our target point counts, so the extra complexity (shaders,
+    context-loss handling) isn't justified yet. Revisit if a profiling
+    baseline (Phase 7) shows the plot is a bottleneck.
 
 ### Build / Packaging / CI
 
