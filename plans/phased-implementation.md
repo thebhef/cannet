@@ -308,6 +308,19 @@ Implementation notes (in progress):
   The state is per-panel React state in `TracePanel` for now — like the
   auto-scroll toggle, it resets when the layout is restored; persisting
   it is part of the project-file step below.
+- **Trace controls + per-window trace landed (chronological panel).**
+  `apps/gui/src/trace.ts` is the per-view trace: a window
+  `[start, end | now]` over the host-side session buffer (`TraceStore`),
+  in a `running` / `paused` / `stopped` state — pure transitions
+  (unit-tested) plus a `useTrace` hook that wraps the shared `TraceData`
+  context into a windowed `getFrame` / `count` and exposes the actions.
+  `TraceControls.tsx` is the common Start / Stop / Pause / Resume /
+  Clear toolbar (stateless — the panel owns the trace). The session
+  buffer is still cleared on (re)connect (`clear_trace_store`); a panel
+  whose window the buffer shrank under re-anchors to a fresh running
+  trace. Still to do this phase: the per-message-ID panel (another
+  `useTrace` consumer), and wiring traces into the project panel
+  (closing a panel currently discards its trace).
 - **Layout persistence is a placeholder.** Until the project file lands
   (later in this phase), the dockview layout is saved to `localStorage`
   and restored on launch — i.e. the "default project". Project files

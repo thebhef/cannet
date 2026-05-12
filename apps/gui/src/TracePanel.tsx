@@ -2,7 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 
 import { TraceView } from "./TraceView";
+import { TraceControls } from "./TraceControls";
 import { useTraceData } from "./traceData";
+import { useTrace } from "./trace";
 import {
   type ColumnKey,
   type ColumnState,
@@ -13,21 +15,21 @@ import {
 } from "./traceColumns";
 
 /**
- * A trace panel inside the dockview layout. Renders the shared capture
- * (via {@link useTraceData}) through a {@link TraceView}, plus the bits
- * of state that are *per panel*: the auto-scroll toggle and the column
- * layout (which columns show, in what order, how wide). Scroll position
- * and expanded rows live inside `TraceView` itself, so they're already
- * per-instance. (Persisting this per-panel state — into the project
- * file — is a later Phase 3 step; for now it resets when the layout is
- * restored, same as the auto-scroll toggle.)
+ * A trace panel inside the dockview layout: a chronological trace-style
+ * view backed by its own {@link useTrace | trace} (a window over the
+ * shared session buffer), with the common Start/Stop/Pause/Resume/Clear
+ * controls and the per-panel state — auto-scroll, column layout. Scroll
+ * position and expanded rows live inside `TraceView`. (Persisting the
+ * per-panel state, and managing the trace through the project panel —
+ * close-without-destroying, reopen — is the project-file step; for now
+ * closing the panel discards its trace.)
  */
 export function TracePanel(_props: IDockviewPanelProps) {
-  const { count, version, baseTimestampSeconds, getFrame, ensureVisible } =
-    useTraceData();
+  const data = useTraceData();
+  const trace = useTrace(data);
 
-  // While true the view pins to the live tail; a user scroll in the
-  // trace flips it off (TraceView calls onAutoScrollDisabled).
+  // While true the view pins to the live tail of the trace; a user
+  // scroll flips it off (TraceView calls onAutoScrollDisabled).
   const [autoScroll, setAutoScroll] = useState(true);
   const handleAutoScrollDisabled = useCallback(() => setAutoScroll(false), []);
 
@@ -44,6 +46,14 @@ export function TracePanel(_props: IDockviewPanelProps) {
   return (
     <div className="trace-panel">
       <div className="trace-panel-toolbar">
+        <TraceControls
+          status={trace.status}
+          onStart={trace.start}
+          onStop={trace.stop}
+          onPause={trace.pause}
+          onResume={trace.resume}
+          onClear={trace.clear}
+        />
         <label className="checkbox">
           <input
             type="checkbox"
@@ -55,14 +65,14 @@ export function TracePanel(_props: IDockviewPanelProps) {
         <ColumnsMenu columns={columns} onToggle={handleColumnToggle} />
       </div>
       <TraceView
-        count={count}
-        version={version}
+        count={trace.frameCount}
+        version={trace.version}
         autoScroll={autoScroll}
-        baseTimestampSeconds={baseTimestampSeconds}
+        baseTimestampSeconds={trace.baseTimestampSeconds}
         columns={columns}
         onColumnResize={handleColumnResize}
-        getFrame={getFrame}
-        ensureVisible={ensureVisible}
+        getFrame={trace.getFrame}
+        ensureVisible={trace.ensureVisible}
         onAutoScrollDisabled={handleAutoScrollDisabled}
       />
     </div>
