@@ -3,15 +3,17 @@
 /// It has a start point (an index into the session buffer) and is
 /// either *running* (no end — grows with the buffer), *paused* (frozen
 /// at an end, will resume from there), or *stopped* (frozen at an end).
-/// Each trace-style view (chronological, per-message-id, …) owns one of
-/// these; the controls are a common component but the state is
-/// per-view. The arithmetic lives here so it's unit-tested without
-/// React; `useTrace` is the React glue.
+/// Each trace-style view (chronological, per-message-id, …) shows one
+/// trace *element*; the window state lives in the element registry
+/// (`projectElements.ts`), not in the panel, so it survives the panel
+/// closing. The arithmetic lives here so it's unit-tested without
+/// React; `useTrace` is the React glue between a panel and its element.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback } from "react";
 
 import type { TraceData } from "./traceData";
 import type { TraceFrameRecord } from "./types";
+import { useElementRegistry } from "./projectElements";
 
 export type TraceStatus = "running" | "paused" | "stopped";
 
@@ -46,7 +48,8 @@ export function traceStatus(s: TraceState): TraceStatus {
 /// Number of frames the trace currently spans, given the session
 /// buffer's frame count. Clamped to `[0, …]` and to the buffer's
 /// bounds (a buffer that shrank under the trace — a new connection — is
-/// re-anchored by [`clampToSession`]; this stays defensive regardless).
+/// re-anchored by [`reanchorToSession`]; this stays defensive
+/// regardless).
 export function traceFrameCount(s: TraceState, sessionCount: number): number {
   const start = Math.min(s.start, sessionCount);
   const end = Math.min(s.end ?? sessionCount, sessionCount);
@@ -56,7 +59,7 @@ export function traceFrameCount(s: TraceState, sessionCount: number): number {
 /// Re-anchor a trace if the session buffer shrank out from under it
 /// (e.g. a new connection cleared it). No-op otherwise — returns the
 /// same object so a `setState` with it bails out.
-export function clampToSession(s: TraceState, sessionCount: number): TraceState {
+export function reanchorToSession(s: TraceState, sessionCount: number): TraceState {
   if (s.start > sessionCount) return freshTrace(sessionCount);
   if (s.end !== null && s.end > sessionCount) return { ...s, end: sessionCount };
   return s;
@@ -106,16 +109,15 @@ export interface TraceHandle {
   clear: () => void;
 }
 
-/// Wrap the shared capture (`useTraceData()`) in a per-view trace
-/// window with start / stop / pause / resume / clear.
-export function useTrace(data: TraceData): TraceHandle {
+/// Bind a panel to the trace `elementId`: a window over the shared
+/// capture (`data`, from `useTraceData()`), with start / stop / pause /
+/// resume / clear. The window state lives in the element registry — the
+/// panel must have ensured the entry exists (`reg.ensureTrace`); until
+/// then this falls back to a fresh window.
+export function useTrace(data: TraceData, elementId: string): TraceHandle {
+  const reg = useElementRegistry();
   const sessionCount = data.count;
-  const [state, setState] = useState<TraceState>(() => freshTrace(0));
-
-  // Re-anchor if a new connection replaced the session buffer underneath.
-  useEffect(() => {
-    setState((s) => clampToSession(s, sessionCount));
-  }, [sessionCount]);
+  const state = reg.get(elementId)?.trace ?? freshTrace(0);
 
   const offset = Math.min(state.start, sessionCount);
   const frameCount = traceFrameCount(state, sessionCount);
@@ -126,11 +128,24 @@ export function useTrace(data: TraceData): TraceHandle {
     [data, offset],
   );
 
-  const start = useCallback(() => setState(freshTrace(data.count)), [data]);
-  const stop = useCallback(() => setState((s) => stopTrace(s, data.count)), [data]);
-  const pause = useCallback(() => setState((s) => pauseTrace(s, data.count)), [data]);
-  const resume = useCallback(() => setState(resumeTrace), []);
-  const clear = useCallback(() => setState(clearedTrace(data.count)), [data]);
+  const { updateTrace } = reg;
+  const start = useCallback(
+    () => updateTrace(elementId, () => freshTrace(data.count)),
+    [updateTrace, elementId, data],
+  );
+  const stop = useCallback(
+    () => updateTrace(elementId, (s) => stopTrace(s, data.count)),
+    [updateTrace, elementId, data],
+  );
+  const pause = useCallback(
+    () => updateTrace(elementId, (s) => pauseTrace(s, data.count)),
+    [updateTrace, elementId, data],
+  );
+  const resume = useCallback(() => updateTrace(elementId, resumeTrace), [updateTrace, elementId]);
+  const clear = useCallback(
+    () => updateTrace(elementId, () => clearedTrace(data.count)),
+    [updateTrace, elementId, data],
+  );
 
   return {
     status: traceStatus(state),
