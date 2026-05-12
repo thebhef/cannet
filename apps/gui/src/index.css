@@ -205,6 +205,48 @@ header {
   border-bottom: 1px solid #1f2630;
 }
 
+/* Start / Stop / Pause / Resume / Clear controls in a trace panel's
+   toolbar (the shared `TraceControls` component). */
+.trace-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.trace-controls button {
+  font: inherit;
+  font-size: 0.85rem;
+  background: transparent;
+  border: 1px solid #1f2630;
+  color: #cbd5e1;
+  padding: 0.05rem 0.45rem;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.trace-controls button:hover {
+  background: #1a212b;
+}
+
+.trace-status {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #64748b;
+}
+
+.trace-status-running {
+  color: #4ade80;
+}
+
+.trace-status-paused {
+  color: #fbbf24;
+}
+
+.trace-status-stopped {
+  color: #94a3b8;
+}
+
 /* "columns ▾" dropdown in a trace panel's toolbar. */
 .columns-menu {
   position: relative;
