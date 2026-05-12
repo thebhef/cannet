@@ -32,6 +32,23 @@ work or admit it isn't going to happen and delete it.
   stays here — Phase 3 docking is within the single main window.)
 - `[ui]` trace view: list decoded signals on their own lines under the
   message row instead of expand-to-show.
+- `[ui]` `cannet-gui` (`ByIdPanel`): tighten the by-ID snapshot for a
+  paused/stopped trace. Today it reads the host's *global*
+  latest-frame-per-id index (`fetch_latest_by_id(since)`), so for a
+  trace whose `end` is below the buffer's tip a row can show an id's
+  occurrence *after* the trace stopped, and the freeze snapshot can
+  include a frame or two received between the pause/stop click and the
+  final refresh. Fix: pass the window's `end` too and have the host
+  return the latest of each id within `[since, end)` — walking
+  `frames[since..end]` backwards rather than reading the latest index.
+  (Surfaced reviewing the trace-controls / by-ID work; harmless for the
+  common "running" case.)
+- `[feat]` `cannet-gui`: a "recent BLF files" list — the few
+  most-recently-opened BLF paths, persisted (localStorage), offered in
+  the Open BLF flow / the project panel. BLF replay is usually from a
+  captured trace and the streaming-client path is a stopgap, so a
+  recent-items list fits better than persisting "the project's BLF" in
+  the project file.
 - `[feat]` real in-process writable CAN source — a local virtual bus
   (Linux `vcan` via socketcan) and/or an in-memory loopback-bus type in
   `cannet-core` (a `CanFrameSink` paired with a `CanFrameSource`). Phase

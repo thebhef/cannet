@@ -14,6 +14,10 @@ export interface ProjectContextValue {
   /// Path of the open project file, or `null` if none has been saved /
   /// opened yet (an "unsaved" workspace).
   projectPath: string | null;
+  /// True when the workspace has changed since it was last saved /
+  /// opened (an unsaved-changes indicator; also drives the
+  /// save-before-quit prompt).
+  dirty: boolean;
   /// Path of the attached DBC, or `null`.
   dbcPath: string | null;
   /// The configured remote-server address (`host:port`).

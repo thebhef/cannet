@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { open, save } from "@tauri-apps/plugin-dialog";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { ask, open, save } from "@tauri-apps/plugin-dialog";
 import { DockviewReact, themeAbyss } from "dockview";
 import type { DockviewApi, DockviewReadyEvent } from "dockview";
 
@@ -84,6 +85,8 @@ export function App() {
   const [remoteAddress, setRemoteAddress] = useState(DEFAULT_REMOTE_ADDRESS);
   // Path of the open project file, or null for an unsaved workspace.
   const [projectPath, setProjectPath] = useState<string | null>(null);
+  // True when the workspace has changed since it was last saved/opened.
+  const [dirty, setDirty] = useState(false);
 
   // Captured once: timestamp of absolute row 0. Survives the user
   // scrolling anywhere in the trace; reset on Clear / new source.
@@ -96,6 +99,10 @@ export function App() {
   // Monotonic counters for "Trace N" / "By ID N" panel titles.
   const panelCounterRef = useRef(0);
   const byIdCounterRef = useRef(0);
+  // Current `dirty` / `handleSaveProject`, read by the (once-registered)
+  // close-on-quit handler. Updated on every render below.
+  const dirtyRef = useRef(false);
+  const handleSaveProjectRef = useRef<() => Promise<boolean>>(() => Promise.resolve(false));
 
   const invalidateCache = useCallback(() => {
     chunkCacheRef.current.clear();
@@ -246,6 +253,7 @@ export function App() {
     try {
       const info = await invoke<DbcInfo>("attach_dbc", { path: selected });
       setDbcPath(info.dbc_path);
+      setDirty(true);
     } catch (err) {
       setState({ kind: "error", message: String(err) });
       return;
@@ -337,12 +345,11 @@ export function App() {
     }
   }, []);
 
-  // Apply an opened project: restore the panel layout, the remote
-  // address field, and (re-)attach the referenced DBC. Doesn't touch a
-  // live connection — the project's bus is configured into the fields;
-  // hit Connect to switch. (Per-panel config — column layouts, the
-  // panels' trace windows — isn't carried yet, so panels come back at
-  // their defaults; that's a later project-file step.)
+  // Apply an opened project: restore the panel layout (incl. per-panel
+  // config in the panel params), the remote-address field, and the
+  // referenced DBC — attach the project's, or detach if it names none.
+  // Doesn't touch a live connection: the project's bus is configured
+  // into the fields; hit Connect to switch.
   const applyProject = useCallback(
     (project: Project) => {
       const api = dockApiRef.current;
@@ -367,18 +374,29 @@ export function App() {
           .catch((err) =>
             setState({ kind: "error", message: `project DBC (${path}): ${String(err)}` }),
           );
+      } else if (dbcPath) {
+        void invoke("detach_dbc").catch(() => {});
+        setDbcPath(null);
+        invalidateCache();
       }
     },
-    [invalidateCache],
+    [dbcPath, invalidateCache],
   );
 
   const handleNewProject = useCallback(() => {
-    // Layout-only for now: a fresh seed layout and "no open project".
-    // The DBC, the connection, and the session buffer are left alone —
-    // detach / disconnect / Clear those yourself if you want.
+    // Fresh workspace: seed layout, no open project, no DBC, no
+    // session — disconnect and clear the buffer too.
     seedDefaultLayout();
     rememberProject(null);
-  }, [seedDefaultLayout, rememberProject]);
+    void invoke("detach_dbc").catch(() => {});
+    setDbcPath(null);
+    void invoke("disconnect_remote_server").catch(() => {});
+    void invoke("clear_trace_store").catch(() => {});
+    invalidateCache();
+    setBaseTimestampSeconds(null);
+    setCount(0);
+    setDirty(false);
+  }, [seedDefaultLayout, rememberProject, invalidateCache]);
 
   const handleOpenProject = useCallback(async () => {
     const selected = await open({
@@ -390,36 +408,66 @@ export function App() {
       const project = await invoke<Project>("open_project", { path: selected });
       applyProject(project);
       rememberProject(selected);
+      setDirty(false);
     } catch (err) {
       setState({ kind: "error", message: String(err) });
     }
   }, [applyProject, rememberProject]);
 
+  // Returns true if the project was written, false if it wasn't (e.g.
+  // the user cancelled the file picker, or the write failed).
   const saveProjectTo = useCallback(
-    async (path: string) => {
+    async (path: string): Promise<boolean> => {
       try {
         await invoke("save_project", { path, project: gatherProject() });
         rememberProject(path);
+        setDirty(false);
+        return true;
       } catch (err) {
         setState({ kind: "error", message: String(err) });
+        return false;
       }
     },
     [gatherProject, rememberProject],
   );
 
-  const handleSaveProjectAs = useCallback(async () => {
+  const handleSaveProjectAs = useCallback(async (): Promise<boolean> => {
     const path = await save({
       filters: [{ name: "cannet project", extensions: ["json"] }],
       defaultPath: projectPath ?? "cannet-project.json",
     });
-    if (!path) return;
-    await saveProjectTo(path);
+    if (!path) return false;
+    return saveProjectTo(path);
   }, [projectPath, saveProjectTo]);
 
-  const handleSaveProject = useCallback(() => {
-    if (projectPath) void saveProjectTo(projectPath);
-    else void handleSaveProjectAs();
-  }, [projectPath, saveProjectTo, handleSaveProjectAs]);
+  const handleSaveProject = useCallback(
+    (): Promise<boolean> => (projectPath ? saveProjectTo(projectPath) : handleSaveProjectAs()),
+    [projectPath, saveProjectTo, handleSaveProjectAs],
+  );
+
+  // The close-on-quit handler is registered once; give it refs to the
+  // current values rather than re-registering on every change.
+  dirtyRef.current = dirty;
+  handleSaveProjectRef.current = handleSaveProject;
+  useEffect(() => {
+    const win = getCurrentWindow();
+    let unlisten: (() => void) | undefined;
+    void win
+      .onCloseRequested(async (event) => {
+        if (!dirtyRef.current) return; // no unsaved changes — let it close
+        event.preventDefault();
+        const save = await ask(
+          "You have unsaved changes. Save the project before closing?",
+          { title: "cannet", kind: "warning", okLabel: "Save & close", cancelLabel: "Discard & close" },
+        );
+        if (save && !(await handleSaveProjectRef.current())) return; // picker cancelled — stay open
+        void win.destroy();
+      })
+      .then((u) => {
+        unlisten = u;
+      });
+    return () => unlisten?.();
+  }, []);
 
   const handleReloadDbc = useCallback(() => {
     if (!dbcPath) return;
@@ -524,13 +572,16 @@ export function App() {
       // Persist after the initial restore/seed so we never write an
       // empty or half-built layout. Best-effort: localStorage can be
       // unavailable or full. This is the "no project open" layout — a
-      // reopened named project (below) overwrites it.
+      // reopened named project (below) overwrites it. Any layout change
+      // (panels added / dragged / closed, columns resized) also marks
+      // the workspace dirty.
       api.onDidLayoutChange(() => {
         try {
           localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(api.toJSON()));
         } catch {
           /* layout persistence is best-effort */
         }
+        setDirty(true);
       });
 
       // Reopen the last named project, if any — it replaces the layout
@@ -542,6 +593,7 @@ export function App() {
           .then((p) => {
             applyProject(p);
             rememberProject(lastProject);
+            setDirty(false);
           })
           .catch(() => rememberProject(null));
       }
@@ -570,6 +622,7 @@ export function App() {
   const projectContextValue: ProjectContextValue = useMemo(
     () => ({
       projectPath,
+      dirty,
       dbcPath,
       remoteAddress,
       remoteConnected,
@@ -584,6 +637,7 @@ export function App() {
     }),
     [
       projectPath,
+      dirty,
       dbcPath,
       remoteAddress,
       remoteConnected,
@@ -615,7 +669,10 @@ export function App() {
             className="remote-address"
             type="text"
             value={remoteAddress}
-            onChange={(e) => setRemoteAddress(e.target.value)}
+            onChange={(e) => {
+              setRemoteAddress(e.target.value);
+              setDirty(true);
+            }}
             placeholder="host:port"
             disabled={remoteConnected}
             aria-label="remote server address"
