@@ -332,19 +332,23 @@ Implementation notes (in progress):
   hundred ids); resize / hide columns there is a follow-up. Still to do
   this phase: wiring traces into the project panel — closing a panel
   currently discards its trace.
-- **Project file — first cut landed.** `apps/gui/src-tauri/src/project.rs`
+- **Project file + panel landed.** `apps/gui/src-tauri/src/project.rs`
   is the `Project` model (schema-versioned): the `dockview` layout blob
   (opaque to the host), the attached DBC path, the remote-server
   address — with `open_project` / `save_project` commands (the host owns
   the model; the layout is the one frontend-owned bit it just
-  round-trips). Toolbar buttons drive it for now; Open restores the
+  round-trips). `apps/gui/src/ProjectPanel.tsx` is the project panel
+  (a dockview panel, in the seed layout): New / Open / Save / Save As,
+  lists the bus(es) with Connect / Disconnect, shows the attached DBC
+  with reload-from-disk — state + actions via a `ProjectContext` that
+  `App` provides (the toolbar shares the callbacks). Open restores the
   layout, sets the remote-address field, and re-attaches the DBC by
-  path (it doesn't auto-connect). Still to do this step: the project
-  *panel* UI (New / Save / Save As, lists the bus(es), shows the DBC(s)
-  with reload-from-disk); reopen-last-project-on-launch (which retires
-  the `localStorage` layout placeholder below); per-panel config in the
-  project (column layouts, the panels' trace windows); the bus
-  subscription set; multiple DBCs.
+  path; it doesn't auto-connect, and "New" is layout-only (it doesn't
+  detach the DBC or disconnect). Still to do this step:
+  reopen-last-project-on-launch (which retires the `localStorage`
+  layout placeholder below); per-panel config in the project (column
+  layouts, the panels' trace windows); the bus subscription set;
+  multiple DBCs.
 - **Layout persistence is a placeholder.** On launch the dockview
   layout is still restored from `localStorage` (the "no project open"
   default); reopen-last-project will supersede this.
