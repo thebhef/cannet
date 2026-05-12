@@ -15,8 +15,10 @@ import type {
 } from "./types";
 import { TitleBar } from "./TitleBar";
 import { TracePanel } from "./TracePanel";
+import { ByIdPanel } from "./ByIdPanel";
 import { TraceDataContext, type TraceData } from "./traceData";
 import {
+  BY_ID_PANEL_COMPONENT,
   LAYOUT_STORAGE_KEY,
   TRACE_PANEL_COMPONENT,
   parseSavedLayout,
@@ -43,9 +45,12 @@ const CHUNK_SIZE = 500;
 /// even at high scroll velocities.
 const CACHE_CHUNKS = 120;
 
-/// Trace-panel component registry, defined at module scope so dockview
-/// never sees a fresh object and re-registers.
-const DOCK_COMPONENTS = { [TRACE_PANEL_COMPONENT]: TracePanel };
+/// Dockview panel-component registry, defined at module scope so
+/// dockview never sees a fresh object and re-registers.
+const DOCK_COMPONENTS = {
+  [TRACE_PANEL_COMPONENT]: TracePanel,
+  [BY_ID_PANEL_COMPONENT]: ByIdPanel,
+};
 
 export function App() {
   const [count, setCount] = useState(0);
@@ -78,8 +83,9 @@ export function App() {
 
   // The dockview layout API, populated once `onReady` fires.
   const dockApiRef = useRef<DockviewApi | null>(null);
-  // Monotonic counter for "Trace N" panel titles within a session.
+  // Monotonic counters for "Trace N" / "By ID N" panel titles.
   const panelCounterRef = useRef(0);
+  const byIdCounterRef = useRef(0);
 
   const invalidateCache = useCallback(() => {
     chunkCacheRef.current.clear();
@@ -319,6 +325,17 @@ export function App() {
     });
   }, []);
 
+  const addByIdPanel = useCallback(() => {
+    const api = dockApiRef.current;
+    if (!api) return;
+    byIdCounterRef.current += 1;
+    api.addPanel({
+      id: `by-id-${crypto.randomUUID()}`,
+      component: BY_ID_PANEL_COMPONENT,
+      title: `By ID ${byIdCounterRef.current}`,
+    });
+  }, []);
+
   const handleDockReady = useCallback((event: DockviewReadyEvent) => {
     const api = event.api;
     dockApiRef.current = api;
@@ -404,6 +421,7 @@ export function App() {
           </button>
           <span className="toolbar-separator" aria-hidden="true" />
           <button onClick={addTracePanel}>Add trace panel</button>
+          <button onClick={addByIdPanel}>Add by-ID panel</button>
         </div>
         <div className="status">{status}</div>
       </header>
