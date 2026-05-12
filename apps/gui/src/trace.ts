@@ -25,9 +25,17 @@ export interface TraceState {
   isPaused: boolean;
 }
 
-/// A fresh, empty, running trace anchored at session count `n`.
+/// A fresh, empty, *running* trace anchored at session count `n` — the
+/// Start action (and the initial state).
 export function freshTrace(n: number): TraceState {
   return { start: n, end: null, isPaused: false };
+}
+
+/// An empty, *stopped* trace anchored at session count `n` — the Clear
+/// action: it wipes the window and sets the stop time, so nothing
+/// accumulates until the user hits Start (which gives a `freshTrace`).
+export function clearedTrace(n: number): TraceState {
+  return { start: n, end: n, isPaused: false };
 }
 
 export function traceStatus(s: TraceState): TraceStatus {
@@ -122,6 +130,7 @@ export function useTrace(data: TraceData): TraceHandle {
   const stop = useCallback(() => setState((s) => stopTrace(s, data.count)), [data]);
   const pause = useCallback(() => setState((s) => pauseTrace(s, data.count)), [data]);
   const resume = useCallback(() => setState(resumeTrace), []);
+  const clear = useCallback(() => setState(clearedTrace(data.count)), [data]);
 
   return {
     status: traceStatus(state),
@@ -135,6 +144,6 @@ export function useTrace(data: TraceData): TraceHandle {
     stop,
     pause,
     resume,
-    clear: start, // Clear is just "fresh trace from now", same as stop→start.
+    clear,
   };
 }

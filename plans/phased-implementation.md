@@ -230,12 +230,15 @@ Scope:
     either *running*, *paused*, or *stopped* (with an end point). A
     trace-style view renders the slice `[start, end | now]`.
     - **Stop** freezes the trace (sets the end). **Start** from stopped
-      begins a fresh window from now — so stop→start clears the view.
+      begins a fresh running window from now — so stop→start clears the
+      view.
     - **Pause** freezes the trace (sets the end, marked paused).
       **Resume** removes the end and the trace continues — frames that
       arrived during the pause are included (they were in the session
       buffer).
-    - **Clear** resets the trace to an empty running window from now.
+    - **Clear** empties the trace *and stops it* (start == end == now);
+      it doesn't keep accumulating — Start begins a fresh running
+      window when you want one.
   - Each trace is **its own**: there's no global "the trace". A trace
     backs one trace-style window (chronological, per-message-ID, or — in
     Phase 4 — a plot), roughly one-to-one for now. The controls are a

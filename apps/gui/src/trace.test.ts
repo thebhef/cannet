@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   clampToSession,
+  clearedTrace,
   freshTrace,
   pauseTrace,
   resumeTrace,
@@ -10,7 +11,7 @@ import {
   traceStatus,
 } from "./trace";
 
-describe("freshTrace / traceStatus / traceFrameCount", () => {
+describe("freshTrace / clearedTrace / traceStatus / traceFrameCount", () => {
   it("a fresh trace is running, anchored, and spans the buffer past its start", () => {
     const t = freshTrace(5);
     expect(t).toEqual({ start: 5, end: null, isPaused: false });
@@ -19,6 +20,14 @@ describe("freshTrace / traceStatus / traceFrameCount", () => {
     expect(traceFrameCount(t, 5)).toBe(0);
     // Session shrank under the trace — defensive clamp to 0.
     expect(traceFrameCount(t, 2)).toBe(0);
+  });
+
+  it("a cleared trace is empty and stopped — it stays put as the buffer grows", () => {
+    const t = clearedTrace(7);
+    expect(t).toEqual({ start: 7, end: 7, isPaused: false });
+    expect(traceStatus(t)).toBe("stopped");
+    expect(traceFrameCount(t, 7)).toBe(0);
+    expect(traceFrameCount(t, 10_000)).toBe(0);
   });
 });
 
