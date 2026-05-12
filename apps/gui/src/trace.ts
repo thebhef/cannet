@@ -78,6 +78,11 @@ export interface TraceHandle {
   status: TraceStatus;
   /// Frames in the trace's window — the view renders `[0, frameCount)`.
   frameCount: number;
+  /// Where the window starts in the session buffer (a count). Views
+  /// that query the buffer by absolute index — e.g. the per-message-ID
+  /// panel's "latest since" — need this; chronological views use the
+  /// windowed `getFrame` / `ensureVisible` and never see it.
+  offset: number;
   /// Bumped when the chunk cache changes — pass through to the view.
   version: number;
   /// Timestamp of session row 0 (the time column's zero point). Trace
@@ -121,6 +126,7 @@ export function useTrace(data: TraceData): TraceHandle {
   return {
     status: traceStatus(state),
     frameCount,
+    offset,
     version: data.version,
     baseTimestampSeconds: data.baseTimestampSeconds,
     getFrame,

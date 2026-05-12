@@ -103,6 +103,7 @@ pub fn run() {
             attach_dbc,
             detach_dbc,
             fetch_trace_range,
+            fetch_latest_by_id,
             clear_trace_store,
             list_remote_interfaces,
             connect_remote_server,
@@ -228,6 +229,30 @@ fn collect_trace_records(state: &AppState, start: u64, end: u64) -> Vec<TraceFra
 async fn fetch_trace_range(app: AppHandle, start: u64, end: u64) -> Vec<TraceFrameRecord> {
     let state: State<'_, AppState> = app.state();
     collect_trace_records(state.inner(), start, end)
+}
+
+/// Latest frame seen for each distinct (channel, id, extended-flag)
+/// whose most recent occurrence is at or after session count `since` —
+/// one per id, sorted by channel then id, decoded against the current
+/// DBC. `since` is a trace window's start, so for a *running* trace
+/// this is "the latest value of every id in the window". Backs the
+/// per-message-ID panel; `async` so it runs off the main thread, like
+/// [`fetch_trace_range`].
+#[tauri::command]
+#[allow(clippy::unused_async)] // `async` is what makes Tauri run it off the main thread
+async fn fetch_latest_by_id(app: AppHandle, since: u64) -> Vec<TraceFrameRecord> {
+    let state: State<'_, AppState> = app.state();
+    let since = usize::try_from(since).unwrap_or(usize::MAX);
+    let pairs = state.trace_store.latest_since(since);
+    let guard = state.database.lock().expect("database mutex poisoned");
+    let db = guard.as_ref();
+    pairs
+        .into_iter()
+        .map(|(idx, raw)| {
+            let decoded = db.and_then(|db| decode_raw_frame(db, &raw));
+            TraceFrameRecord::from_raw(u64::try_from(idx).unwrap_or(u64::MAX), &raw, decoded)
+        })
+        .collect()
 }
 
 /// Drop every stored frame. The frontend's Clear button is the typical
