@@ -23,6 +23,7 @@ import { TraceDataContext, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import {
   BY_ID_PANEL_COMPONENT,
+  LAST_PROJECT_KEY,
   LAYOUT_STORAGE_KEY,
   PROJECT_PANEL_COMPONENT,
   TRACE_PANEL_COMPONENT,
@@ -323,6 +324,19 @@ export function App() {
     [dbcPath, remoteAddress],
   );
 
+  // Record which project is "open" — both the React state and the
+  // `localStorage` pointer that reopens it on the next launch. `null`
+  // means an unsaved workspace.
+  const rememberProject = useCallback((path: string | null) => {
+    setProjectPath(path);
+    try {
+      if (path) localStorage.setItem(LAST_PROJECT_KEY, path);
+      else localStorage.removeItem(LAST_PROJECT_KEY);
+    } catch {
+      /* best effort */
+    }
+  }, []);
+
   // Apply an opened project: restore the panel layout, the remote
   // address field, and (re-)attach the referenced DBC. Doesn't touch a
   // live connection — the project's bus is configured into the fields;
@@ -363,8 +377,8 @@ export function App() {
     // The DBC, the connection, and the session buffer are left alone —
     // detach / disconnect / Clear those yourself if you want.
     seedDefaultLayout();
-    setProjectPath(null);
-  }, [seedDefaultLayout]);
+    rememberProject(null);
+  }, [seedDefaultLayout, rememberProject]);
 
   const handleOpenProject = useCallback(async () => {
     const selected = await open({
@@ -375,22 +389,22 @@ export function App() {
     try {
       const project = await invoke<Project>("open_project", { path: selected });
       applyProject(project);
-      setProjectPath(selected);
+      rememberProject(selected);
     } catch (err) {
       setState({ kind: "error", message: String(err) });
     }
-  }, [applyProject]);
+  }, [applyProject, rememberProject]);
 
   const saveProjectTo = useCallback(
     async (path: string) => {
       try {
         await invoke("save_project", { path, project: gatherProject() });
-        setProjectPath(path);
+        rememberProject(path);
       } catch (err) {
         setState({ kind: "error", message: String(err) });
       }
     },
-    [gatherProject],
+    [gatherProject, rememberProject],
   );
 
   const handleSaveProjectAs = useCallback(async () => {
@@ -507,10 +521,10 @@ export function App() {
         seedDefaultLayout();
       }
 
-      // Persist only after the initial restore/seed so we never write an
+      // Persist after the initial restore/seed so we never write an
       // empty or half-built layout. Best-effort: localStorage can be
-      // unavailable or full, and this is a placeholder until project
-      // files own the layout (reopen-last-on-launch).
+      // unavailable or full. This is the "no project open" layout — a
+      // reopened named project (below) overwrites it.
       api.onDidLayoutChange(() => {
         try {
           localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(api.toJSON()));
@@ -518,8 +532,21 @@ export function App() {
           /* layout persistence is best-effort */
         }
       });
+
+      // Reopen the last named project, if any — it replaces the layout
+      // restored above (and re-applies the bus/DBC config). A stale
+      // pointer (file moved/deleted) is cleared so it stops failing.
+      const lastProject = localStorage.getItem(LAST_PROJECT_KEY);
+      if (lastProject) {
+        void invoke<Project>("open_project", { path: lastProject })
+          .then((p) => {
+            applyProject(p);
+            rememberProject(lastProject);
+          })
+          .catch(() => rememberProject(null));
+      }
     },
-    [seedDefaultLayout],
+    [seedDefaultLayout, applyProject, rememberProject],
   );
 
   const status = useMemo(
