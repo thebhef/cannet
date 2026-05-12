@@ -2,6 +2,30 @@
 
 Working agreement for contributors (human and AI) on this repository.
 
+## Building and testing locally
+
+`README.md` § Prerequisites is the canonical list of build tooling
+(Rust stable, Node 20+, pnpm 9+, and the Tauri WebView host libraries
+per OS). Read it before assuming something is unavailable.
+
+The Tauri host (`apps/gui/src-tauri`, crate `cannet-gui`) **is
+buildable in a fresh Linux sandbox** — it just needs the system
+libraries from README § Prerequisites → Linux, e.g. on Ubuntu/Debian:
+
+```sh
+sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev libssl-dev \
+    libsoup-3.0-dev libjavascriptcoregtk-4.1-dev build-essential
+```
+
+After that, `cargo build -p cannet-gui`, `cargo test -p cannet-gui`,
+and `cargo clippy -p cannet-gui --all-targets` all work. A `gdk-3.0` /
+`webkit2gtk-4.1` pkg-config failure means those libs aren't installed
+yet — install them; it is **not** a blocker, so don't report it as one.
+
+Frontend-only checks need no system libraries: `pnpm --dir apps/gui
+install` once, then `pnpm --dir apps/gui test` and `pnpm --dir apps/gui
+build`.
+
 ## Planning
 
 The `plans/` directory is the source of truth for what we're building and in
