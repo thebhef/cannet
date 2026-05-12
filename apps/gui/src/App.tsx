@@ -19,7 +19,6 @@ import type {
 import { PROJECT_SCHEMA_VERSION } from "./types";
 import { TitleBar } from "./TitleBar";
 import { TracePanel } from "./TracePanel";
-import { ByIdPanel } from "./ByIdPanel";
 import { ProjectPanel } from "./ProjectPanel";
 import { TraceDataContext, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
@@ -63,10 +62,13 @@ const CHUNK_SIZE = 500;
 const CACHE_CHUNKS = 120;
 
 /// Dockview panel-component registry, defined at module scope so
-/// dockview never sees a fresh object and re-registers.
+/// dockview never sees a fresh object and re-registers. The
+/// chronological and per-id views are one component now (`TracePanel`,
+/// mode is the trace element's `view`); the old `"by-id"` name maps to
+/// it too so layouts saved before the merge still restore.
 const DOCK_COMPONENTS = {
   [TRACE_PANEL_COMPONENT]: TracePanel,
-  [BY_ID_PANEL_COMPONENT]: ByIdPanel,
+  [BY_ID_PANEL_COMPONENT]: TracePanel,
   [PROJECT_PANEL_COMPONENT]: ProjectPanel,
 };
 
@@ -149,6 +151,17 @@ export function App() {
         if (t === e.trace) return e;
         changed = true;
         return { ...e, trace: t };
+      });
+      return changed ? next : prev;
+    });
+  }, []);
+  const setElementView = useCallback((id: string, view: ProjectElement["view"]) => {
+    setRegistry((prev) => {
+      let changed = false;
+      const next = prev.map((e) => {
+        if (e.element.id !== id || e.element.view === view) return e;
+        changed = true;
+        return { ...e, element: { ...e.element, view } };
       });
       return changed ? next : prev;
     });
@@ -385,7 +398,7 @@ export function App() {
       id: `trace-${elementId}`,
       component: TRACE_PANEL_COMPONENT,
       title: "Trace 1",
-      params: { elementId },
+      params: { elementId, view: "chronological" },
     });
     api.addPanel({
       // Fixed id — there's only ever one project panel; the toolbar's
@@ -612,7 +625,7 @@ export function App() {
       id: `trace-${elementId}`,
       component: TRACE_PANEL_COMPONENT,
       title: `Trace ${panelCounterRef.current}`,
-      params: { elementId },
+      params: { elementId, view: "chronological" },
     });
   }, [createTrace]);
 
@@ -622,10 +635,10 @@ export function App() {
     const elementId = createTrace("by-id");
     byIdCounterRef.current += 1;
     api.addPanel({
-      id: `by-id-${elementId}`,
-      component: BY_ID_PANEL_COMPONENT,
+      id: `trace-${elementId}`,
+      component: TRACE_PANEL_COMPONENT,
       title: `By ID ${byIdCounterRef.current}`,
-      params: { elementId },
+      params: { elementId, view: "by-id" },
     });
   }, [createTrace]);
 
@@ -717,9 +730,10 @@ export function App() {
       createTrace,
       ensureTrace,
       updateTrace,
+      setElementView,
       remove: removeElement,
     }),
-    [registry, createTrace, ensureTrace, updateTrace, removeElement],
+    [registry, createTrace, ensureTrace, updateTrace, setElementView, removeElement],
   );
 
   const remoteConnected =

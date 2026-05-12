@@ -1,9 +1,12 @@
 /// Per-panel trace-table column model: which columns are shown and how
-/// wide each is. Split out of `TraceView.tsx` so the width / visibility
-/// arithmetic is unit-tested without a DOM. Column *order* is fixed —
-/// it matches the canonical trace layout; only width and visibility are
-/// user-adjustable (drag a header divider; toggle in the panel's
-/// "columns" menu).
+/// wide each is, plus the per-id-view sort. Split out of the panel
+/// components so the arithmetic is unit-tested without a DOM. Column
+/// *order* is fixed — it matches the canonical trace layout; width and
+/// visibility are user-adjustable (drag a header divider; toggle via the
+/// header's right-click menu), and in per-id mode you can click a
+/// header to sort by it.
+
+import type { TraceFrameRecord } from "./types";
 
 /// A trace column's stable identity.
 export type ColumnKey =
@@ -133,4 +136,72 @@ export function toggleColumn(columns: readonly ColumnState[], key: ColumnKey): C
     return columns.slice();
   }
   return columns.map((c) => (c.key === key ? { ...c, visible: !c.visible } : c));
+}
+
+// --- per-id-view column sort ---
+
+/// The per-id-view sort: a column + direction, or `null` for the
+/// default order (whatever the host returned — by channel/id).
+export type SortState = { key: ColumnKey; dir: "asc" | "desc" } | null;
+
+/// Clicking a column header cycles: not-sorted-by-it → ascending →
+/// descending → not sorted (back to the default order).
+export function nextSort(current: SortState, key: ColumnKey): SortState {
+  if (current?.key !== key) return { key, dir: "asc" };
+  return current.dir === "asc" ? { key, dir: "desc" } : null;
+}
+
+/// The value a row sorts by for a given column — raw fields, so no
+/// dependency on the formatters.
+function sortValue(row: TraceFrameRecord, key: ColumnKey): number | string | number[] {
+  switch (key) {
+    case "idx":
+      return row.index;
+    case "time":
+      return row.timestamp_seconds;
+    case "ch":
+      return row.channel;
+    case "dir":
+      return row.direction;
+    case "id":
+      return row.id;
+    case "kind":
+      return row.kind.kind;
+    case "len":
+      return row.data.length;
+    case "data":
+      return row.data;
+    case "msg":
+      return row.decoded?.name ?? "";
+  }
+}
+
+function compareValues(a: number | string | number[], b: number | string | number[]): number {
+  if (typeof a === "number" && typeof b === "number") return a - b;
+  if (typeof a === "string" && typeof b === "string") return a < b ? -1 : a > b ? 1 : 0;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    const n = Math.min(a.length, b.length);
+    for (let i = 0; i < n; i++) {
+      if (a[i] !== b[i]) return a[i] - b[i];
+    }
+    return a.length - b.length;
+  }
+  return 0;
+}
+
+/// A new array of `rows` sorted by `sort` (a stable sort — equal keys
+/// keep the host's order). `null` returns `rows` unchanged.
+export function sortRows(
+  rows: readonly TraceFrameRecord[],
+  sort: SortState,
+): TraceFrameRecord[] {
+  if (!sort) return rows.slice();
+  const factor = sort.dir === "asc" ? 1 : -1;
+  return rows
+    .map((row, i) => ({ row, i }))
+    .sort((x, y) => {
+      const c = compareValues(sortValue(x.row, sort.key), sortValue(y.row, sort.key));
+      return c !== 0 ? c * factor : x.i - y.i;
+    })
+    .map(({ row }) => row);
 }

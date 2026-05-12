@@ -4,7 +4,7 @@ import type { IDockviewPanel, IDockviewPanelProps } from "dockview";
 import { useProjectContext } from "./projectContext";
 import { useElementRegistry } from "./projectElements";
 import type { ProjectElement } from "./types";
-import { BY_ID_PANEL_COMPONENT, TRACE_PANEL_COMPONENT } from "./dockLayout";
+import { TRACE_PANEL_COMPONENT } from "./dockLayout";
 
 /**
  * The project panel: New / Open / Save / Save As for the project file;
@@ -33,12 +33,11 @@ export function ProjectPanel(props: IDockviewPanelProps) {
     );
 
   const openElement = (el: ProjectElement) => {
-    const byId = el.view === "by-id";
     containerApi.addPanel({
-      id: `${byId ? "by-id" : "trace"}-${el.id}`,
-      component: byId ? BY_ID_PANEL_COMPONENT : TRACE_PANEL_COMPONENT,
-      title: byId ? "By ID" : "Trace",
-      params: { elementId: el.id },
+      id: `trace-${el.id}`,
+      component: TRACE_PANEL_COMPONENT,
+      title: el.view === "by-id" ? "By ID" : "Trace",
+      params: { elementId: el.id, view: el.view },
     });
   };
 

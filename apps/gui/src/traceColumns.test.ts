@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 
+import type { TraceFrameRecord } from "./types";
 import {
   COLUMN_DEFS,
   MIN_COLUMN_WIDTH,
   columnsFromParams,
   defaultColumns,
   gridTemplateColumns,
+  nextSort,
   resizeColumn,
+  sortRows,
   toggleColumn,
   visibleColumns,
 } from "./traceColumns";
@@ -101,5 +104,43 @@ describe("toggleColumn", () => {
     expect(visibleColumns(cols).length).toBe(1);
     const last = COLUMN_DEFS[COLUMN_DEFS.length - 1].key;
     expect(visibleColumns(toggleColumn(cols, last)).length).toBe(1);
+  });
+});
+
+describe("nextSort / sortRows", () => {
+  it("cycles a column: unsorted → asc → desc → unsorted", () => {
+    expect(nextSort(null, "id")).toEqual({ key: "id", dir: "asc" });
+    expect(nextSort({ key: "id", dir: "asc" }, "id")).toEqual({ key: "id", dir: "desc" });
+    expect(nextSort({ key: "id", dir: "desc" }, "id")).toBeNull();
+    // Clicking a different column starts that one ascending.
+    expect(nextSort({ key: "id", dir: "desc" }, "ch")).toEqual({ key: "ch", dir: "asc" });
+  });
+
+  function row(id: number, channel: number): TraceFrameRecord {
+    return {
+      index: 0,
+      timestamp_seconds: 0,
+      channel,
+      id,
+      extended: false,
+      direction: "Rx",
+      kind: { kind: "classic" },
+      data: [],
+      decoded: null,
+    };
+  }
+
+  it("sorts by a column, stable, and is a no-op for null", () => {
+    const rows = [row(0x200, 1), row(0x100, 0), row(0x100, 2)];
+    expect(sortRows(rows, null)).toEqual(rows);
+    expect(sortRows(rows, null)).not.toBe(rows); // a copy
+    expect(sortRows(rows, { key: "id", dir: "asc" }).map((r) => [r.id, r.channel])).toEqual([
+      [0x100, 0],
+      [0x100, 2],
+      [0x200, 1],
+    ]);
+    expect(sortRows(rows, { key: "id", dir: "desc" }).map((r) => r.id)).toEqual([
+      0x200, 0x100, 0x100,
+    ]);
   });
 });
