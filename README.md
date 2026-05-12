@@ -219,49 +219,60 @@ the BLF replay path, the per-interface subscription set, and per-bus
 DBC association (every loaded DBC applies to the one interface for now).
 
 **Add plot panel** opens a signal plot (Phase 4): a uPlot-based
-oscilloscope-style view, docked like any other panel.
+oscilloscope-style view, docked like any other panel. It has the same
+**Start / Stop / Pause / Clear** controls as a trace panel — it has
+trace behaviour, just focused on signal *values* over time: while
+running it follows the live capture, Pause/Stop freeze the view, and
+Clear re-anchors what's plotted to "now".
 
 - **Plot areas.** A plot panel is a **stack of plot areas** — it starts
-  with one; **add plot area** appends more, all sharing one time axis.
-  Each plot area has a uPlot canvas plus a **signal panel** beside it
-  listing that area's signals (colour swatch, name, present value — or
-  value-at-cursor while a cursor is up), and an **y: auto / min…max**
-  control to pin that area's y-range. With a DBC attached, the toolbar's
-  **add signal…** dropdown lists every `(message, signal)` pair the
-  database defines; picking one drops it into the *focused* plot area
-  (click an area to focus it). Move a signal between areas with the
-  **→** menu on its row; remove it with **×**.
-- **Zoom & follow.** Drag-select on any area zooms x on every area;
-  **⌘/ctrl + wheel** zooms x (synced), **shift + wheel** zooms y on the
-  hovered area only, **⌘/ctrl + shift + wheel** does both; **reset
-  zoom** refits everything. **Follow live** keeps every area pinned to
-  the capture's growing edge — narrowed to the **window (s)** width if
-  one is set; **snap to now** re-enters follow-live. A manual x zoom
-  turns follow-live off, the same way a manual scroll leaves auto-scroll
-  in a trace panel.
+  with one; **add plot area** appends more, all sharing one time axis,
+  and they flex to fill the panel (one fills it; several split it). Each
+  plot area has a uPlot canvas (time axis at the bottom) plus a **signal
+  panel** beside it listing that area's signals: colour swatch, name,
+  and value — at cursor A when one is placed, else at the mouse
+  crosshair, else the latest sample. The signal-panel head has an
+  **y: auto / min…max** control to pin that area's y-range, and shows
+  the H1/H2 Y-cursor values + ΔH when those are placed. With a DBC
+  attached, the toolbar's **add signal…** dropdown lists every
+  `(message, signal)` pair the database defines; picking one drops it
+  into the *focused* plot area (click an area to focus it). Move a
+  signal between areas with the **→** menu on its row; remove it with
+  **×**. A plot's time span is the whole capture (the longest-running
+  trace), so a signal added late still shows over the existing span.
+- **Zoom, pan & follow.** Drag-select on any area zooms x on every area;
+  **⌘/ctrl + wheel** zooms x (synced), **shift + wheel** pans x
+  (synced), **⌘/ctrl + shift + wheel** zooms y on the hovered area;
+  **fit data** refits x to the full capture span and y to the data.
+  **Follow live** keeps every area pinned to the capture's growing edge
+  while keeping the current visible x-width (it just slides right); a
+  manual x pan/zoom turns it off, the same way a manual scroll leaves
+  auto-scroll in a trace panel.
 - **Cursors & measurements** (both **off by default**). The toolbar's
   **cursors** selector turns on **X** cursors (left-click places A,
   right-click places B, drawn through every area), **Y** cursors
   (per-area H1 / H2), or **+ note** (left-click drops an event note at
-  that time). The **measurements** toggle reveals a readout strip whose
-  cells are configurable (the **measurements ▾** checklist): A, B, Δt,
-  1/Δt, and per-trace value@A / value@B / Δ / min / max / mean over
-  [A, B]. Event markers — the capture-start "T0" plus your notes — draw
-  as vertical lines across the areas; the event log under the panel
-  lists and removes notes.
+  that time); **clear cursors** removes them all. The **measurements**
+  toggle reveals a readout strip whose cells are configurable (the
+  **measurements ▾** checklist): A, B, Δt, 1/Δt, and per-trace value@A /
+  value@B / Δ / min / max / mean over [A, B]. Event markers — the
+  capture-start "T0" plus your notes — draw as vertical lines across the
+  areas; the event log under the panel renames (click the label) and
+  removes notes.
 - **Performance.** Series are min/max-decimated host-side to ≈the plot's
   pixel width before they reach uPlot, so a window holding hundreds of
   thousands to millions of frames stays responsive (spikes survive the
-  decimation). The toolbar shows the worst recent resample time and the
-  device-pixel ratio.
+  decimation); Pause stops the live re-sampling. The toolbar shows the
+  worst recent resample time and the device-pixel ratio.
 
-Multiple plot panels can be open, each independent; everything above
-(areas, signal assignments, y-ranges, follow-live, window width, cursor
-mode, measurement selection, notes) round-trips through the project
-file. (Still pending — see `plans/phased-implementation.md` Phase 4 and
-`plans/backlog.md`: per-trace y offset/gain and log scale, triggers,
-math channels, CSV/image export, enum/state plots, incremental
-sampling.)
+Multiple plot panels can be open, each independent; the areas, signal
+assignments, y-ranges, follow-live, cursor mode, measurement selection,
+and notes round-trip through the project file (the play state, like a
+trace panel's window, is session-only). (Still pending — see
+`plans/phased-implementation.md` Phase 4 and `plans/backlog.md`:
+per-trace y offset/gain and log scale, triggers, math channels,
+CSV/image export, BLF annotation round-trip, enum/state plots,
+incremental sampling, native drag-and-drop signal moves.)
 
 > **Note:** plain `cargo run -p cannet-gui` will build the Rust host on
 > its own but won't bring up a usable window — the host expects either
