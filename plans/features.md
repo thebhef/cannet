@@ -29,11 +29,14 @@ High-performance CAN traffic analyzer.
 - virtual CAN bus layer: allow mapping CAN channels to logical project channels
 - reading from .blf logs (should just stream messages through our CAN abstraction)
 - trace capture: a session-wide buffer holds every frame received since
-  the current connection (lost on app exit / new connection); on top of
-  it a *trace* is a capture window with common controls — start / stop
+  the current connection (replaced on a new connection; lost on app
+  exit). On top of it a *trace* is a capture window — a start point and
+  a running / paused / stopped state — with controls start / stop
   (stop→start clears), pause / resume (resume continues, including
-  frames received while paused), clear. The same controls drive every
-  trace-style view (chronological trace, by-id view, plot windows). The
-  views stay *views* over the trace, not the source of truth for the
-  data — that lives in the session buffer. A finished trace's frames
-  are persistable to .blf.
+  frames received while paused), clear. Each trace-style window
+  (chronological trace, by-id view, plot window) has its own trace; the
+  controls are a common toolbar component, the state is per-window.
+  Traces live in the project (closing a window doesn't destroy its
+  trace; reopen it from the project panel). The views stay *views* over
+  the trace, not the source of truth for the data — that lives in the
+  session buffer. A finished trace's frames are persistable to .blf.
