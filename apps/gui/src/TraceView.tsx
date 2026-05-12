@@ -1,14 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 
 import type { TraceFrameRecord } from "./types";
-import {
-  formatData,
-  formatId,
-  formatKind,
-  formatSignalValue,
-  formatTimestamp,
-} from "./format";
+import { formatSignalValue } from "./format";
 import {
   EXPANDED_ROW_HEIGHT,
   ROW_HEIGHT,
@@ -28,6 +21,7 @@ import {
   gridTemplateColumns,
   visibleColumns,
 } from "./traceColumns";
+import { TraceHeader, cellContent } from "./traceTable";
 
 interface TraceViewProps {
   count: number;
@@ -40,10 +34,11 @@ interface TraceViewProps {
   autoScroll: boolean;
   baseTimestampSeconds: number | null;
   /// Per-panel column state (which columns show, in what order, how
-  /// wide). Owned by the panel; this view renders the table from it
-  /// and reports drag-resizes back via `onColumnResize`.
+  /// wide). Owned by the panel; this view renders the table from it and
+  /// reports drag-resizes / show-hides back.
   columns: readonly ColumnState[];
   onColumnResize: (key: ColumnKey, width: number) => void;
+  onColumnToggle: (key: ColumnKey) => void;
   getFrame: (absoluteIndex: number) => TraceFrameRecord | null;
   ensureVisible: (start: number, end: number) => void;
   /// Called when the user scrolls the view themselves while
@@ -63,6 +58,7 @@ export function TraceView({
   baseTimestampSeconds,
   columns,
   onColumnResize,
+  onColumnToggle,
   getFrame,
   ensureVisible,
   onAutoScrollDisabled,
@@ -219,54 +215,11 @@ export function TraceView({
   const visible = useMemo(() => visibleColumns(columns), [columns]);
   const gridTemplate = useMemo(() => gridTemplateColumns(columns), [columns]);
 
-  // Column-resize drag: the column being dragged, the pointer X at the
-  // start of the drag, and that column's width then. The handle takes
-  // pointer capture so the drag tracks even outside the header.
-  const resizeRef = useRef<{ key: ColumnKey; startX: number; startWidth: number } | null>(null);
-  const onResizeDown = useCallback(
-    (key: ColumnKey, e: ReactPointerEvent<HTMLSpanElement>) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const startWidth = columns.find((c) => c.key === key)?.width ?? columnDef(key).defaultWidth;
-      resizeRef.current = { key, startX: e.clientX, startWidth };
-      e.currentTarget.setPointerCapture(e.pointerId);
-    },
-    [columns],
-  );
-  const onResizeMove = useCallback(
-    (e: ReactPointerEvent<HTMLSpanElement>) => {
-      const drag = resizeRef.current;
-      if (drag) onColumnResize(drag.key, drag.startWidth + (e.clientX - drag.startX));
-    },
-    [onColumnResize],
-  );
-  const onResizeUp = useCallback((e: ReactPointerEvent<HTMLSpanElement>) => {
-    if (resizeRef.current) {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-      resizeRef.current = null;
-    }
-  }, []);
-
   const placements = buildPlacements(firstVisibleRow, count, rows, expanded);
 
   return (
     <div className="trace">
-      <div className="trace-header" style={{ gridTemplateColumns: gridTemplate }}>
-        {visible.map((c) => {
-          const def = columnDef(c.key);
-          return (
-            <span key={c.key} className={def.className}>
-              {def.label}
-              <span
-                className="col-resize-handle"
-                onPointerDown={(e) => onResizeDown(c.key, e)}
-                onPointerMove={onResizeMove}
-                onPointerUp={onResizeUp}
-              />
-            </span>
-          );
-        })}
-      </div>
+      <TraceHeader columns={columns} onColumnResize={onColumnResize} onColumnToggle={onColumnToggle} />
       <div ref={containerRef} className="trace-rows" onScroll={handleScroll}>
         {/* Spacer: gives the scrollbar the trace's full (scaled) extent. */}
         <div style={{ height: spacerHeight, position: "relative" }}>
@@ -354,40 +307,3 @@ const Row = memo(function Row({
     </div>
   );
 });
-
-/// The content for one trace cell. The `#` column is the row's
-/// 1-based index and is shown even for a not-yet-loaded row; every
-/// other column is blank until the frame arrives.
-function cellContent(
-  key: ColumnKey,
-  frame: TraceFrameRecord | null,
-  absoluteIndex: number,
-  baseTimestamp: number | null,
-  isExpanded: boolean,
-): ReactNode {
-  if (key === "idx") return (absoluteIndex + 1).toLocaleString();
-  if (!frame) return null;
-  switch (key) {
-    case "time":
-      return formatTimestamp(frame.timestamp_seconds, baseTimestamp);
-    case "ch":
-      return frame.channel;
-    case "dir":
-      return frame.direction;
-    case "id":
-      return formatId(frame);
-    case "kind":
-      return formatKind(frame);
-    case "len":
-      return frame.data.length;
-    case "data":
-      return formatData(frame);
-    case "msg":
-      return (
-        <>
-          {frame.decoded ? frame.decoded.name : ""}
-          {frame.decoded ? <span className="hint">{isExpanded ? " ▾" : " ▸"}</span> : null}
-        </>
-      );
-  }
-}

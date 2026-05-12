@@ -414,11 +414,18 @@ Implementation notes (in progress):
   it as one (and drops the live-edge pin) if it actually moved more than
   a row off the bottom.
 
-Still wanted (small, recorded so they're not lost): merge the
-chronological and per-message-ID trace views into one view with a
-mode toggle; move column show/hide from the toolbar dropdown to a
-right-click context menu on the header; click-to-sort columns in
-per-message-ID mode (asc → desc → off, with a marker).
+- **One trace-style panel with a mode toggle.** The chronological and
+  per-message-ID views merged into one `TracePanel` with a *trace /
+  by ID* toggle; the mode is the trace element's `view`. Chronological
+  is `TraceView.tsx` (the scaled virtualizer), by-ID is
+  `ByIdTable.tsx`; the shared header (drag-resize, right-click
+  show/hide menu, click-to-sort with ▲/▼) and the cell renderer live
+  in `traceTable.tsx`, the column model + `sortRows` / `nextSort` in
+  `traceColumns.ts`. Column show/hide moved from a toolbar dropdown to
+  a right-click context menu on the header. Per-id mode sorts on a
+  column click (asc → desc → off — the host's channel/id order). The
+  old `"by-id"` dockview component name aliases to `TracePanel` so
+  layouts saved before the merge still restore.
 
 Exit criteria:
 
