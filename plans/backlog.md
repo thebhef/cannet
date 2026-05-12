@@ -78,17 +78,28 @@ work or admit it isn't going to happen and delete it.
   synthetic-height spacer vs. the current scaled approach, and settle the
   scroll/auto-scroll ownership story, before piling more on it. (Flagged
   while planning Phase 4; doesn't block plotting.)
-- `[perf]` `cannet-gui` plot panel: `sample_signal` returns the raw
-  series and re-scans / re-decodes the whole requested window on every
-  `trace-grew` tick. With the trace store holding hundreds of thousands
-  to millions of frames this is doubly wrong: (a) decimation — min/max
-  bucket the series to ~the pixel width of the visible window before it
-  reaches uPlot, keeping spikes; the un-decimated data stays in the store
-  for cursor read-outs and export; (b) incremental sampling — only decode
-  frames appended since the last call rather than re-walking. Treat (a)
-  as a required Phase 4 data-path step, not an optimisation (see
-  `plans/phased-implementation.md` Phase 4). Folds in with the TraceStore
+- `[perf]` `cannet-gui` plot panel: incremental sampling. `sample_signal`
+  min/max-decimates the series (done), but still re-scans and re-decodes
+  the *whole* requested window on every `trace-grew` tick — wasteful for
+  very long captures. Decode only the frames appended since the last call
+  and append to the cached series. Folds in with the TraceStore
   disk-spill / chunking rework if that lands first.
+- `[feat]` `cannet-gui` plot panel: per-*trace* y controls — offset /
+  gain (so unrelated signals can share a plot area without one swamping
+  the others) and log scaling. Per-*area* manual y-range shipped in
+  Phase 4; this is the refinement.
+- `[feat]` `cannet-gui` plot panel: triggers — edge / level /
+  value-match on a chosen signal that freeze the view and emit an event
+  marker (into the plot's event list, and later the trace). The
+  event-line rendering already exists; the trigger engine doesn't.
+- `[feat]` `cannet-gui` plot panel: CSV / image export of the visible
+  window or the cursor span.
+- `[feat]` `cannet-gui` plot panel: native drag-and-drop to move a
+  signal between plot areas (today it's a per-row "→" menu).
+- `[feat]` `cannet-gui` math channels — derived signals computed from
+  other signals (sum, diff, scale, filter, …). Useful to the plot panel,
+  the transmit panel, and a future scripting surface, so it may outgrow
+  plotting; scope it on its own when picked up.
 - `[ui]` GUI-wide visual restyle: adopt the dark "scope" visual
   language from `plans/plot-panel-reference.html` (the prototype's colour
   variables, monospace type scale, panel chrome, control styling) across
