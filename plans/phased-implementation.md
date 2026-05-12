@@ -573,12 +573,25 @@ A plot panel is a vertical stack of **plot areas**:
 - **Synced x-zoom** — `⌘/ctrl`+wheel or drag-select on any plot area
   zooms the time axis on *all* areas together; `shift`+wheel y-zooms
   only the hovered area; reset-zoom restores full extent.
-- **Cursors** — global vertical X cursors (A / B) that run through every
-  plot area; per-area horizontal Y cursors (H1 / H2); left-click places
-  A/H1, right-click places B/H2.
-- **A measurement strip** — A, B, Δt, 1/Δt, per-trace value-at-A,
-  value-at-B, Δ, min / max / mean over the cursor span, and the
-  visible-window extent + sample count.
+- **Cursors (off by default, toggled from the panel toolbar).** When
+  enabled: global vertical X cursors (A / B) that run through every plot
+  area; per-area horizontal Y cursors (H1 / H2); left-click places A/H1,
+  right-click places B/H2. The cursor set is **configurable** — how many
+  cursors, which axis each is, and which traces it reads out — and the
+  config round-trips through the project file. With cursors off the plot
+  is just the traces; nothing is drawn and clicks do nothing special.
+- **A measurement strip (off by default, toggled from the panel
+  toolbar).** When enabled it shows a **configurable** set of quantities
+  — choose from A, B, Δt, 1/Δt, per-trace value-at-A, value-at-B, Δ,
+  min / max / mean over the cursor span, visible-window extent, sample
+  count, etc. — and which subset is shown is part of the panel config.
+  (Most cursor-derived quantities only have a value once cursors are
+  enabled and placed; the strip shows "—" until then.)
+- **Per-panel toolbar.** A slim toolbar on the plot panel carries the
+  cross-cutting toggles — "follow live", "cursors", "measurements", "add
+  plot area", reset-zoom — plus the cursor / measurement configuration
+  affordances. Both "cursors" and "measurements" start **off**; nothing
+  cursor- or measurement-related renders until the user turns it on.
 - **Event markers + notes** — vertical lines drawn from a shared event
   list (in cannet: trigger / fault / warn / info markers derived from
   the trace and, later, from triggers and other panels, plus
@@ -609,10 +622,13 @@ In rough order, each step leaving the panel runnable:
 - **Synced x / per-area y zoom.** Drag-select or modifier-wheel on any
   area zooms x on all areas; `shift`-wheel y-zooms the hovered area
   only; reset restores full extent (cross-instance `setScale`).
-- **Cursors & measurement strip.** Global X cursors (A/B) via a uPlot
-  `draw`-hook overlay across every area; per-area Y cursors (H1/H2); the
-  readout strip; the side signal panels show value-at-cursor when a
-  cursor is up.
+- **Cursors & measurement strip.** Both off by default, toggled from
+  the panel toolbar (the prototype ships them on; cannet doesn't). When
+  on: global X cursors (A/B) via a uPlot `draw`-hook overlay across
+  every area; per-area Y cursors (H1/H2); a configurable readout strip;
+  the side signal panels show value-at-cursor when a cursor is up. The
+  cursor set and the strip's quantity list are configurable and persist
+  in the project file.
 - **Event markers + notes.** The shared event list and its vertical
   lines; user notes placed by click; an event-log list view.
 - **Time-base / sweep controls.** A "seconds per division" window-width
