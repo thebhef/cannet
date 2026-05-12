@@ -57,11 +57,15 @@ apps/
                      drag-resized and shown / hidden per panel
                      (`traceColumns.ts`). `ByIdPanel.tsx` is the
                      per-message-ID view (latest frame per arbitration
-                     id); `ProjectPanel.tsx` the project / bus / DBC
-                     panel. Each trace-style panel owns a *trace* — its
-                     own window over the host-side session buffer with
-                     pause / stop / clear (`trace.ts`, `TraceControls.tsx`).
-                     The scroll/stacking, column, and trace-window
+                     id); `ProjectPanel.tsx` the project / elements /
+                     bus / DBC panel. Each trace-style panel shows one
+                     *trace element* — a window over the host-side
+                     session buffer with pause / stop / clear; the
+                     elements live in an in-memory registry
+                     (`projectElements.ts`), persisted in the project,
+                     so closing a panel doesn't destroy its element
+                     (`trace.ts`, `TraceControls.tsx`). The
+                     scroll/stacking, column, and trace-window
                      arithmetic live in `traceViewport.ts` /
                      `traceColumns.ts` / `trace.ts` (unit-tested
                      alongside).
@@ -153,14 +157,17 @@ opening attaches a database for live decoding.
 
 The window below the toolbar is a dockable panel area. The default
 layout has a **trace panel** (chronological — one row per frame) and a
-**project panel** (the project file, the configured bus(es), the
-attached DBC). **Add trace panel** opens another chronological view;
+**project panel** (the project's *elements*, the configured bus(es),
+the attached DBC). **Add trace panel** opens a chronological view;
 **Add by-ID panel** opens a per-message-ID view (one row per
-arbitration id, holding that id's latest frame, updating live); **Add
-project panel** re-opens the project panel if you closed it. New panels
-arrive as a tab in the active group — drag a panel by its tab and drop
-it against an edge of the area to split it side-by-side, or onto
-another panel to tab them together. Each trace panel keeps its own scroll position, auto-scroll
+arbitration id, holding that id's latest frame, updating live); each
+creates a new element and a panel for it. The project panel lists the
+elements — closing a panel doesn't destroy its element; reopen it (or
+remove it from the project) from there. **Add project panel** re-opens
+the project panel if you closed it. New panels arrive as a tab in the
+active group — drag a panel by its tab and drop it against an edge of
+the area to split it side-by-side, or onto another panel to tab them
+together. Each trace panel keeps its own scroll position, auto-scroll
 toggle, column layout — drag the divider at a column header's right
 edge to resize, and use the panel's **columns ▾** menu to show / hide
 columns. Every trace-style panel (chronological or by-ID) carries the
@@ -176,21 +183,23 @@ docking is within the one window; the tear-out item is in
 `plans/backlog.md`.)
 
 A `.json` *project* file holds the panel layout (including each trace
-panel's column layout and auto-scroll toggle), the attached DBC path,
-and the remote-server address. The **project panel** (or the toolbar's
-**Open project…** / **Save project**) drives it: **Save** / **Save
-As…** write one, **Open…** restores it (configures the remote address
-and re-attaches the DBC by path — hit **Connect** to switch — and
-detaches the DBC if the project names none), **New** starts a fresh
+panel's column layout and auto-scroll toggle), the project's elements
+(traces — and later plots, transmit messages, …), the attached DBC
+path, and the remote-server address. The **project panel** (or the
+toolbar's **Open project…** / **Save project**) drives it: **Save** /
+**Save As…** write one, **Open…** restores it (configures the remote
+address and re-attaches the DBC by path — hit **Connect** to switch —
+and detaches the DBC if the project names none), **New** starts a fresh
 workspace (default layout, no DBC, disconnected, buffer cleared). The
 panel also lists the configured bus(es) with **Connect** /
 **Disconnect** and the attached DBC with **Reload from disk**. The
 last opened/saved project is reopened on launch (with no project, the
 layout is restored from local storage). Unsaved changes show a `●` in
 the project panel, and closing the window with unsaved changes prompts
-you to save first. Not yet carried in the project: a panel's trace
-window (it re-anchors to the session buffer on each launch anyway), the
-BLF replay path, the per-interface subscription set, and multiple DBCs.
+you to save first. Not carried in the project: a trace's window
+position (it re-anchors to the session buffer on each launch anyway),
+the BLF replay path, the per-interface subscription set, and multiple
+DBCs.
 
 > **Note:** plain `cargo run -p cannet-gui` will build the Rust host on
 > its own but won't bring up a usable window — the host expects either

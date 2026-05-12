@@ -73,13 +73,26 @@ export interface RemoteSessionResult {
   subscriptions: SubscriptionRecord[];
 }
 
+/// One element of a project: a discriminated-union record with a stable
+/// `id`. Now only traces; plots, transmit messages, etc. become new
+/// `kind`s. Per-view display config — a trace panel's column layout,
+/// auto-scroll — lives in the dockview panel `params`, not here.
+export type ProjectElement = {
+  kind: "trace";
+  id: string;
+  /// Which presentation a panel for this trace defaults to.
+  view: "chronological" | "by-id";
+};
+
 /// Mirrors `src-tauri/src/project.rs::Project` — the saved workspace.
-/// `layout` is dockview's `SerializedDockview` blob; the host stores it
-/// without interpreting it, so it's typed `unknown` here and validated
-/// (`dockLayout.ts::validateLayout`) before use.
+/// `layout` (dockview's `SerializedDockview`) and `elements` are stored
+/// by the host without interpretation, so they're typed loosely here
+/// and validated before use (`dockLayout.ts::validateLayout`,
+/// `projectElements.ts::isProjectElement`).
 export interface Project {
   schema_version: number;
   layout: unknown;
+  elements: unknown[];
   dbc_path: string | null;
   remote_address: string | null;
 }
