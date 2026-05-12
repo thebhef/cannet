@@ -197,6 +197,95 @@ header {
   height: 100%;
 }
 
+/* Project panel: a few stacked sections (the project file, the
+   configured bus(es), the attached DBC) with their actions. */
+.project-panel {
+  padding: 0.6rem 0.8rem;
+  overflow: auto;
+  font-size: 0.85rem;
+  color: #cbd5e1;
+}
+
+.project-section {
+  margin-bottom: 1rem;
+}
+
+.project-section h3 {
+  margin: 0 0 0.35rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #64748b;
+}
+
+.project-path,
+.project-bus,
+.project-dbc {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.3rem;
+}
+
+.project-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-bus-name,
+.project-dbc-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.project-bus-state {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #94a3b8;
+}
+
+.project-bus-state.connected {
+  color: #4ade80;
+}
+
+.project-empty {
+  color: #64748b;
+  font-style: italic;
+}
+
+.project-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.project-panel button {
+  font: inherit;
+  font-size: 0.8rem;
+  background: transparent;
+  border: 1px solid #1f2630;
+  color: #cbd5e1;
+  padding: 0.05rem 0.45rem;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.project-panel button:hover:not(:disabled) {
+  background: #1a212b;
+}
+
+.project-panel button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* Per-message-ID panel: like a trace table, but the rows are one per
    arbitration id (latest frame), not virtualized. */
 .by-id-rows {
