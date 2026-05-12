@@ -21,7 +21,8 @@ crates/
   cannet-blf/    `BlfCanFrameSource`: Vector BLF files as a CanFrameSource.
                  Wraps `blf-asc` and translates each object into a
                  `cannet_core::CanFrame` (classic / FD / remote / error).
-  cannet-dbc/    `Database::parse(text)` + `decode(frame)`.
+  cannet-dbc/    `Database::parse(text)` + `decode(frame)` + `signals()`
+                 (the message/signal list a plot panel picks from).
                  Hand-rolled bit extraction (LE / Motorola sequential
                  BE), sign extension, multiplexed-signal filtering.
   cannet-wire/   Phase-2 wire protocol: tonic / gRPC service definition
@@ -59,17 +60,19 @@ apps/
                      click-to-sort) and the cell renderer — are in
                      `traceTable.tsx`; the column model + sort in
                      `traceColumns.ts`. `ProjectPanel.tsx` is the
-                     project / elements / bus / DBC panel. Each panel
-                     shows one *trace element* — a window over the
-                     host-side session buffer with pause / stop / clear;
-                     the elements live in an in-memory registry
-                     (`projectElements.ts`), persisted in the project,
-                     so closing a panel doesn't destroy its element
-                     (`trace.ts`, `TraceControls.tsx`). The
-                     scroll/stacking, column, and trace-window
-                     arithmetic live in `traceViewport.ts` /
-                     `traceColumns.ts` / `trace.ts` (unit-tested
-                     alongside).
+                     project / elements / bus / DBC panel; `PlotPanel.tsx`
+                     the Phase-4 signal plot (uPlot), with `plotData.ts`
+                     merging independently-sampled series onto one
+                     timeline. Each trace-style panel shows one *trace
+                     element* — a window over the host-side session
+                     buffer with pause / stop / clear; the elements live
+                     in an in-memory registry (`projectElements.ts`),
+                     persisted in the project, so closing a panel doesn't
+                     destroy its element (`trace.ts`, `TraceControls.tsx`).
+                     The scroll/stacking, column, trace-window, and
+                     plot-data arithmetic live in `traceViewport.ts` /
+                     `traceColumns.ts` / `trace.ts` / `plotData.ts`
+                     (unit-tested alongside).
     src-tauri/       Rust host (`cannet-gui` crate). Owns the trace
                      model (`trace_store.rs` — the session buffer, plus
                      an O(1)-maintained latest-frame-per-id index and a
@@ -81,9 +84,13 @@ apps/
                      loaded DBCs — first match wins — at fetch time, both
                      off the main thread), plus a `trace-grew` IPC tick (~10 Hz:
                      count, rate, and a decoded tail of the newest rows
-                     for flicker-free auto-scroll). `src/ipc.rs` holds
-                     the IPC payload shapes; `src/project.rs` the
-                     project-file model + `open_project` / `save_project`.
+                     for flicker-free auto-scroll). `signal_sampler.rs`
+                     walks the trace store for a chosen DBC signal and
+                     yields a `(t, v)` series for the plot panel
+                     (`list_signals` / `sample_signal` commands).
+                     `src/ipc.rs` holds the IPC payload shapes;
+                     `src/project.rs` the project-file model +
+                     `open_project` / `save_project`.
 
 plans/           Living planning docs (see CLAUDE.md).
 ```
@@ -210,6 +217,22 @@ you (Save & close / Discard & close / Cancel). Not carried in the project: a tra
 position (it re-anchors to the session buffer on each launch anyway),
 the BLF replay path, the per-interface subscription set, and per-bus
 DBC association (every loaded DBC applies to the one interface for now).
+
+**Add plot panel** opens a signal plot (Phase 4): a uPlot time-series
+view docked like any other panel. With a DBC attached, the panel's
+**add signal…** dropdown lists every `(message, signal)` pair the
+database defines — pick one or more and they're sampled out of the live
+capture and drawn on a shared time axis. Drag on the plot to zoom the
+time axis (double-click to reset); the legend reads out each trace's
+value at the hovered point. **Follow live** keeps the view pinned to the
+capture's growing edge; panning or zooming turns it off, the same way a
+manual scroll leaves auto-scroll in a trace panel. Multiple plot panels
+can be open, each with its own signal set. (Saving a plot panel's signal
+set into a project file lands with the Phase 3 project-file work; for
+now it persists via the same local layout blob as the trace panels. The
+deeper oscilloscope feature set — multiple y-axes, cursors and Δ
+measurement, triggers, math channels, enum/state plots — is sketched in
+`plans/phased-implementation.md` under Phase 4 as later passes.)
 
 > **Note:** plain `cargo run -p cannet-gui` will build the Rust host on
 > its own but won't bring up a usable window — the host expects either

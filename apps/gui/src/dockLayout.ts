@@ -24,6 +24,7 @@ export const LAST_PROJECT_KEY = "cannet.lastProject.v1";
 export const TRACE_PANEL_COMPONENT = "trace";
 export const BY_ID_PANEL_COMPONENT = "by-id";
 export const PROJECT_PANEL_COMPONENT = "project";
+export const PLOT_PANEL_COMPONENT = "plot";
 
 /**
  * Sanity-check an already-parsed value as a dockview layout. Returns

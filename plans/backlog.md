@@ -63,6 +63,29 @@ work or admit it isn't going to happen and delete it.
   captured trace and the streaming-client path is a stopgap, so a
   recent-items list fits better than persisting "the project's BLF" in
   the project file.
+- `[ui]` trace view (`TraceView.tsx`): under a fast (unlimited-rate)
+  stream, scrolling up doesn't reliably leave auto-scroll and a parked
+  panel can be yanked back to the live tail — the auto-scroll re-pin
+  effect races the async `onAutoScrollDisabled`. Fix: a synchronous
+  "user took control" ref that gates the re-pin / pin-to-tail effects
+  until the parent's `autoScroll` flips. (Surfaced during Windows
+  stress testing; macOS at moderate rates is fine.)
+- `[ui]` trace panel (`TracePanel.tsx` / `TraceView.tsx`): the
+  scaled-scrollbar virtualizer's interaction model needs a rework — the
+  per-pixel resolution gets coarse on huge traces, the wheel-notch
+  handling is fiddly, and the auto-scroll re-pin race (separate entry
+  above) is a symptom. Decide between a real windowed virtualizer with a
+  synthetic-height spacer vs. the current scaled approach, and settle the
+  scroll/auto-scroll ownership story, before piling more on it. (Flagged
+  while planning Phase 4; doesn't block plotting.)
+- `[perf]` `cannet-gui` plot panel: `sample_signal` re-scans and
+  re-decodes the whole requested window on every `trace-grew` tick while
+  "follow live" is on — fine for short captures, wasteful for long ones.
+  Options: incremental sampling (only decode frames appended since the
+  last call and append to the series), a windowed live view (last N
+  seconds rather than the whole capture), or a downsample/decimation
+  step before the data reaches uPlot. Folds in with the TraceStore
+  disk-spill / chunking rework if that lands first.
 - `[feat]` real in-process writable CAN source — a local virtual bus
   (Linux `vcan` via socketcan) and/or an in-memory loopback-bus type in
   `cannet-core` (a `CanFrameSink` paired with a `CanFrameSource`). Phase
