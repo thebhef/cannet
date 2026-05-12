@@ -356,13 +356,20 @@ fn list_signals(state: State<'_, AppState>) -> Vec<SignalDescriptorRecord> {
 /// second round-trip). Empty `(t, v)` if no DBC is attached, the id /
 /// signal is unknown, or nothing in the window matches.
 ///
+/// `max_points` (`None` or `0` ⇒ no limit): the caller passes roughly
+/// the pixel width of the plot, and the series is min/max-decimated to
+/// at most `2 * max_points` points so a window holding hundreds of
+/// thousands to millions of frames doesn't ship (or ask uPlot to draw) a
+/// point per frame. Decimation preserves per-bucket extrema, so spikes
+/// survive.
+///
 /// `async` for the same reason as `fetch_trace_range`: the timestamp
 /// scan + decode can briefly contend with a fast pump thread, so it runs
 /// off the UI thread. The trace-store slice is taken before the DBC lock
 /// to keep the lock order (DBC ⊃ nothing) consistent with the other
 /// commands.
 #[tauri::command]
-#[allow(clippy::unused_async)]
+#[allow(clippy::unused_async, clippy::too_many_arguments)]
 async fn sample_signal(
     app: AppHandle,
     message_id: u32,
@@ -370,6 +377,7 @@ async fn sample_signal(
     signal_name: String,
     start_seconds: f64,
     end_seconds: f64,
+    max_points: Option<u32>,
 ) -> SignalSeries {
     let state: State<'_, AppState> = app.state();
     let store = &state.trace_store;
@@ -397,6 +405,10 @@ async fn sample_signal(
             None => Vec::new(),
         }
     };
+    let points = match max_points {
+        Some(n) if n > 0 => signal_sampler::decimate_min_max(&points, n as usize),
+        _ => points,
+    };
 
     let mut t = Vec::with_capacity(points.len());
     let mut v = Vec::with_capacity(points.len());
@@ -406,12 +418,12 @@ async fn sample_signal(
     }
 
     #[allow(clippy::cast_precision_loss)]
-    let to_s = |ns: u64| (ns as f64) / 1e9;
+    let ns_to_seconds = |ns: u64| (ns as f64) / 1e9;
     SignalSeries {
         t,
         v,
-        capture_start_seconds: store.first_timestamp_ns().map(to_s),
-        capture_end_seconds: store.last_timestamp_ns().map(to_s),
+        capture_start_seconds: store.first_timestamp_ns().map(ns_to_seconds),
+        capture_end_seconds: store.last_timestamp_ns().map(ns_to_seconds),
     }
 }
 
