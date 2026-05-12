@@ -30,17 +30,8 @@ work or admit it isn't going to happen and delete it.
 - `[ui]` trace view: dock / undock as a separate window. (Resizable and
   hideable columns folded into Phase 3; tear-out into a separate OS window
   stays here — Phase 3 docking is within the single main window.)
-- `[ui]` trace view: alternate "by ID" mode that collapses to one row
-  per arbitration-id with the latest payload, instead of chronological.
 - `[ui]` trace view: list decoded signals on their own lines under the
   message row instead of expand-to-show.
-- `[ui]` trace view (`TraceView.tsx`): under a fast (unlimited-rate)
-  stream, scrolling up doesn't reliably leave auto-scroll and a parked
-  panel can be yanked back to the live tail — the auto-scroll re-pin
-  effect races the async `onAutoScrollDisabled`. Fix: a synchronous
-  "user took control" ref that gates the re-pin / pin-to-tail effects
-  until the parent's `autoScroll` flips. (Surfaced during Windows
-  stress testing; macOS at moderate rates is fine.)
 - `[feat]` real in-process writable CAN source — a local virtual bus
   (Linux `vcan` via socketcan) and/or an in-memory loopback-bus type in
   `cannet-core` (a `CanFrameSink` paired with a `CanFrameSource`). Phase
@@ -62,20 +53,9 @@ work or admit it isn't going to happen and delete it.
   on-disk file (compact binary frame records — explicit `.blf`
   captures are a separate "Save Capture" feature, not the cache
   format). The `TraceStore::append` / `len` / `slice` surface stays;
-  trait-ify when there's a second implementation.
-- `[perf]` `cannet-gui::TraceStore::append`: at very high replay rates
-  the `Vec<RawTraceFrame>` doubling does a multi-MB copy *while holding
-  the store lock*, briefly stalling `fetch_trace_range` and the
-  `trace-grew` emitter. Pre-reserve a generous capacity, or move to a
-  chunked buffer, so growth doesn't pause the lock. Folds into the
-  disk-spill rework above.
-- `[bug]` `cannet-gui`: the frontend's connection `LogState` can drift
-  from the host's actual `remote_session` (e.g. it shows "Connect"
-  while the host still has a session) — connection state is maintained
-  client-side and only resynced via the `log-finished` event. Harden:
-  derive it from the host (a `connection-state` event or a query
-  command) and surface "connection lost" distinctly from a deliberate
-  disconnect. (Surfaced during Windows stress testing.)
+  trait-ify when there's a second implementation. (A chunked / windowed
+  store also retires the realloc-stall a growing `Vec` causes at very
+  high replay rates — no whole-buffer copy while holding the lock.)
 - `[feat]` `cannet-gui`: explicit "Save Capture…" toolbar action that
   exports the current `TraceStore` contents to a `.blf` file via
   `blf_asc::BlfWriter`. The features-doc entry "trace capture:
