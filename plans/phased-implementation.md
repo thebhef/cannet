@@ -362,12 +362,48 @@ Implementation notes (in progress):
     all"), and multiple DBCs. Interface selection and multi-DBC are
     *features* the project would carry once they exist, not project
     plumbing.
-  - Lifting the trace model host-side (so the frontend `useTrace`
-    becomes a thin view over a host-side `Trace` registry) — and with
-    it the project-managed trace lifecycle (close-a-panel ≠ destroy its
-    trace; reopen / remove from the project panel) — is the remaining
-    bigger Phase-3 item; the per-message-ID panel and the project file
-    work without it.
+  - Lifting the trace model into a registry — and with it the
+    project-managed lifecycle (close-a-panel ≠ destroy its element;
+    reopen / remove from the project panel) — is the remaining bigger
+    Phase-3 item; the per-message-ID panel and the project file work
+    without it.
+
+Project elements (planned, the remaining Phase-3 item above):
+
+- The project carries a list of **elements** alongside the layout:
+  `Project.elements` — a `serde_json::Value` to the host (it
+  round-trips it like `layout`; the frontend defines the shape). An
+  element is a discriminated-union record with a stable `id` and a
+  `kind`. *Now:* the only kind is `"trace"` — `{ kind: "trace"; id;
+  view: "chronological" | "by-id" }`. *Later:* `"plot"` (signal set +
+  axis config), `"transmit"` (frame definition), etc. — new variants;
+  the registry / project-file plumbing stays kind-agnostic.
+- A *view*'s display config that isn't the element's identity (a trace
+  panel's column layout, auto-scroll) stays in the dockview panel
+  `params`, not in the element — keeps the element small and the
+  existing per-panel-config persistence intact. (A *filter*, when
+  filters land, would belong to the trace element — it defines what
+  data the trace includes.)
+- Runtime-only state — a trace's `[start, end, isPaused]` window,
+  anchored to the session buffer (which resets on a new connection /
+  app exit) — is *not* in the saved element; it lives only in an
+  in-memory **element registry** (`Record<id, { element; trace? }>`,
+  App state via an `ElementRegistryContext`). The registry is restored
+  from `project.elements` on Open (with fresh trace windows), seeded
+  with one trace element on first launch / New, and serialized back on
+  Save.
+- A trace-style panel (`trace` / `by-id`) carries `params.elementId`.
+  `useTrace(data, elementId)` reads/writes that element's window in the
+  registry instead of holding its own state. Closing the panel doesn't
+  remove the element; a panel referencing a missing element self-heals
+  by creating one. `clampToSession` moves from per-panel to the
+  registry (App clamps every trace entry when the session count drops).
+- The project panel lists the registry's elements (by kind): Open (no
+  panel → create one with that `elementId`) / Focus (a panel exists →
+  focus it) / Remove (drop the element + close its panel). "Add trace
+  panel" / "Add by-ID panel" create a new trace element + a panel.
+- 1:1 element↔panel for now; the model allows many views on one element
+  but nothing builds that yet.
 - **Layout fallback when no project is open.** With no last project,
   the dockview layout is restored from `localStorage`
   (`LAYOUT_STORAGE_KEY`) — the implicit "default workspace".
