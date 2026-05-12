@@ -265,11 +265,18 @@ Implementation notes (in progress):
 - **Auto-scroll is per panel now.** It moved out of the global toolbar
   into each trace panel's slim toolbar; Phase 1/2's single global
   auto-scroll checkbox is gone.
+- **Resizable / hideable columns landed.** Per-panel column state
+  (which columns, in what order, how wide) lives in `traceColumns.ts`
+  (a pure module, unit-tested): drag the divider at a header cell's
+  right edge to resize; the panel's "columns" menu toggles visibility.
+  The state is per-panel React state in `TracePanel` for now — like the
+  auto-scroll toggle, it resets when the layout is restored; persisting
+  it is part of the project-file step below.
 - **Layout persistence is a placeholder.** Until the project file lands
   (later in this phase), the dockview layout is saved to `localStorage`
   and restored on launch — i.e. the "default project". Project files
-  will own the layout (plus bus configs and DBC refs) and supersede
-  this.
+  will own the layout *and* per-panel config (column layout, filters,
+  …) plus bus configs and DBC refs, and supersede this.
 
 Exit criteria:
 
