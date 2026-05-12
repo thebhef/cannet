@@ -15,6 +15,12 @@
 //! Taking an already-extracted slice (rather than the store itself)
 //! keeps this function lock-free, so the caller controls when the
 //! trace-store and DBC locks are held and in what order.
+//!
+//! [`decimate_min_max`] reduces a (possibly enormous) series to roughly
+//! a requested number of time buckets, keeping each bucket's min- and
+//! max-value point so spikes survive — what the plot panel applies
+//! before handing the data to uPlot, since a window can hold far more
+//! frames than the canvas has pixels.
 
 use cannet_core::CanId;
 use cannet_dbc::Database;
@@ -72,6 +78,58 @@ fn make_id(raw: u32, extended: bool) -> Option<CanId> {
     } else {
         CanId::standard(raw).ok()
     }
+}
+
+/// Reduce `points` to roughly `max_buckets` time buckets, keeping the
+/// min- and max-value point in each bucket (in timestamp order) so peaks
+/// and troughs survive — the standard "min/max decimation" a plot uses
+/// when there are far more samples than pixels.
+///
+/// Bucketing is by point index, not by time: the trace store's samples
+/// are roughly time-ordered and roughly uniformly spaced, so index
+/// buckets approximate time buckets closely enough, and an index walk is
+/// O(n) with no search. Returns at most `2 * max_buckets` points; a
+/// `max_buckets` of 0 is treated as "no decimation". If the series
+/// already fits in `max_buckets` points it's returned unchanged.
+#[must_use]
+pub fn decimate_min_max(points: &[SamplePoint], max_buckets: usize) -> Vec<SamplePoint> {
+    let n = points.len();
+    if max_buckets == 0 || n <= max_buckets {
+        return points.to_vec();
+    }
+    let bucket = n.div_ceil(max_buckets);
+    let mut out = Vec::with_capacity(2 * max_buckets);
+    let mut start = 0;
+    while start < n {
+        let end = (start + bucket).min(n);
+        let slice = &points[start..end];
+        // argmin / argmax by value (first occurrence wins on ties).
+        let mut lo = 0;
+        let mut hi = 0;
+        for (i, p) in slice.iter().enumerate() {
+            if p.value < slice[lo].value {
+                lo = i;
+            }
+            if p.value > slice[hi].value {
+                hi = i;
+            }
+        }
+        // Emit the two extrema in timestamp order (which here is index
+        // order); collapse to one when they coincide.
+        match lo.cmp(&hi) {
+            std::cmp::Ordering::Equal => out.push(slice[lo]),
+            std::cmp::Ordering::Less => {
+                out.push(slice[lo]);
+                out.push(slice[hi]);
+            }
+            std::cmp::Ordering::Greater => {
+                out.push(slice[hi]);
+                out.push(slice[lo]);
+            }
+        }
+        start = end;
+    }
+    out
 }
 
 #[cfg(test)]
@@ -138,5 +196,58 @@ BO_ 256 EngineData: 2 ECU
         ];
         let pts = sample_signal(&frames, &db, 256, false, "EngineSpeed");
         assert_eq!(pts, vec![SamplePoint { t_seconds: 1.0, value: 2.0 }]);
+    }
+
+    fn pt(t: f64, v: f64) -> SamplePoint {
+        SamplePoint { t_seconds: t, value: v }
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn decimate_passthrough_when_small_or_disabled() {
+        let pts = vec![pt(0.0, 1.0), pt(1.0, 2.0), pt(2.0, 3.0)];
+        assert_eq!(decimate_min_max(&pts, 10), pts);
+        assert_eq!(decimate_min_max(&pts, 3), pts);
+        assert_eq!(decimate_min_max(&pts, 0), pts);
+        assert_eq!(decimate_min_max(&[], 5), Vec::<SamplePoint>::new());
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn decimate_keeps_bucket_extrema_in_time_order() {
+        // 6 points, 2 buckets of 3. Bucket 0 = [10, 1, 5] → min=1@t1, max=10@t0
+        // → time order [10@t0, 1@t1]. Bucket 1 = [3, 9, 4] → min=3@t3, max=9@t4
+        // → [3@t3, 9@t4].
+        let pts = vec![
+            pt(0.0, 10.0),
+            pt(1.0, 1.0),
+            pt(2.0, 5.0),
+            pt(3.0, 3.0),
+            pt(4.0, 9.0),
+            pt(5.0, 4.0),
+        ];
+        let out = decimate_min_max(&pts, 2);
+        assert_eq!(out, vec![pt(0.0, 10.0), pt(1.0, 1.0), pt(3.0, 3.0), pt(4.0, 9.0)]);
+        // Spikes preserved: global min (1.0) and max (10.0) are still present.
+        assert!(out.iter().any(|p| p.value == 1.0));
+        assert!(out.iter().any(|p| p.value == 10.0));
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn decimate_collapses_flat_bucket_to_one_point() {
+        let pts = vec![pt(0.0, 7.0), pt(1.0, 7.0), pt(2.0, 7.0), pt(3.0, 7.0)];
+        // 4 flat points into 2 buckets → one point per bucket.
+        assert_eq!(decimate_min_max(&pts, 2), vec![pt(0.0, 7.0), pt(2.0, 7.0)]);
+    }
+
+    #[test]
+    fn decimate_bounds_output_size() {
+        let pts: Vec<SamplePoint> = (0..1000)
+            .map(|i| pt(f64::from(i), f64::from((i * 7) % 13)))
+            .collect();
+        let out = decimate_min_max(&pts, 50);
+        assert!(out.len() <= 100, "got {}", out.len());
+        assert!(out.len() >= 50);
     }
 }
