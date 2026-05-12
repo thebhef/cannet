@@ -163,8 +163,9 @@ same trace controls: the data lives in a session buffer that fills
 while connected (lost when you disconnect / reconnect or quit), and a
 *trace* is each panel's own window over it — **Pause** freezes the
 view (**Resume** continues, including frames received while paused),
-**Stop** freezes it (**Start** then begins a fresh trace), and
-**Clear** empties it.
+**Stop** freezes it, **Clear** empties it (Stop and Clear both leave
+the trace stopped — hit **Start** to begin a fresh, growing trace),
+and the session buffer keeps filling underneath regardless.
 (Tearing a panel out into a separate OS window isn't supported yet —
 docking is within the one window; the tear-out item is in
 `plans/backlog.md`.) The layout is remembered between runs (stored
