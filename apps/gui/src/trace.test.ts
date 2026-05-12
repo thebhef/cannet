@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  clearKeepingState,
   clearedTrace,
   freshTrace,
   pauseTrace,
@@ -28,6 +29,14 @@ describe("freshTrace / clearedTrace / traceStatus / traceFrameCount", () => {
     expect(traceStatus(t)).toBe("stopped");
     expect(traceFrameCount(t, 7)).toBe(0);
     expect(traceFrameCount(t, 10_000)).toBe(0);
+  });
+
+  it("clear keeps the run state — running stays running, stopped stopped, paused paused", () => {
+    expect(clearKeepingState(freshTrace(2), 9)).toEqual(freshTrace(9)); // running → empty running
+    expect(traceStatus(clearKeepingState(stopTrace(freshTrace(2), 5), 9))).toBe("stopped");
+    expect(clearKeepingState(stopTrace(freshTrace(2), 5), 9)).toEqual({ start: 9, end: 9, isPaused: false });
+    expect(traceStatus(clearKeepingState(pauseTrace(freshTrace(2), 5), 9))).toBe("paused");
+    expect(clearKeepingState(pauseTrace(freshTrace(2), 5), 9)).toEqual({ start: 9, end: 9, isPaused: true });
   });
 });
 

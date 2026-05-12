@@ -236,9 +236,10 @@ Scope:
       **Resume** removes the end and the trace continues — frames that
       arrived during the pause are included (they were in the session
       buffer).
-    - **Clear** empties the trace *and stops it* (start == end == now);
-      it doesn't keep accumulating — Start begins a fresh running
-      window when you want one.
+    - **Clear** wipes the window to empty at the current count but
+      keeps the trace's run state — Clear deliberately does *not* imply
+      Stop or Pause. So a running trace stays running (it keeps growing
+      from now); a stopped/paused trace stays stopped/paused (now empty).
   - Each trace is **its own**: there's no global "the trace". A trace
     backs one trace-style window (chronological, per-message-ID, or — in
     Phase 4 — a plot), roughly one-to-one for now. The controls are a
@@ -352,25 +353,31 @@ Implementation notes (in progress):
   workspace tracks a `dirty` flag (any layout / DBC / remote-address
   change sets it; Save / Open / New clear it) — shown as a `●` in the
   project panel, and the window-close handler prompts to Save before
-  quitting when it's set (a 2-way prompt: Save & close / Discard &
-  close — a 3-way Save/Discard/Cancel needs a custom modal, deferred).
+  quitting when it's set (Save & close / Discard & close / Cancel — a
+  small in-app modal).
   - Not carried in the project: a trace's window position (it
     re-anchors to the session buffer — empty on a fresh launch —
     anyway), the BLF replay path (a recent-BLF-files list is in
     `plans/backlog.md` instead — BLF replay is a one-shot from a
     captured trace), the per-interface subscription set (the only mode
-    is "subscribe to all"), and multiple DBCs. Interface selection and
-    multi-DBC are *features* the project would carry once they exist,
-    not project plumbing.
+    is "subscribe to all"), and multiple DBCs. **Interface selection is
+    deferred** to when the physical drivers land — and the first step
+    there is likely *not* literal hardware-interface picking but:
+    teach `cannet-server` to publish a BLF as several streams (by
+    channel), teach the client to configure those streams, and add a
+    **filter element** (`kind: "filter"`) that can sit upstream of a
+    trace window. Multi-DBC is likewise a *feature* the project would
+    carry once it exists, not project plumbing.
 - **Project elements + the element registry landed.** The project
   carries a list of **elements** alongside the layout (`Project.elements`
   — a `Vec<serde_json::Value>` to the host; it round-trips it like
   `layout`, the frontend owns the shape). An element is a
   discriminated-union record with a stable `id` and a `kind` — *now*
   just `{ kind: "trace"; id; view: "chronological" | "by-id" }`;
-  `"plot"` (signal set + axis config), `"transmit"` (frame definition),
-  etc. become new variants without touching the registry / project-file
-  plumbing. The frontend keeps an in-memory **element registry**
+  `"plot"` (signal set + axis config), `"transmit"` (frame
+  definition), `"filter"` (a predicate placed upstream of a trace
+  window), etc. become new variants without touching the registry /
+  project-file plumbing. The frontend keeps an in-memory **element registry**
   (`apps/gui/src/projectElements.ts` — `RegistryEntry = { element,
   trace }`; App state, `ElementRegistryContext`): restored from
   `project.elements` on Open (with fresh trace windows — they
@@ -393,11 +400,25 @@ Implementation notes (in progress):
     create one with that `elementId`) / Focus (a panel exists → focus
     it) / Remove (drop the element + close its panel). "Add trace
     panel" / "Add by-ID panel" create a new element + a panel for it.
+  - The project panel itself is a **show/hide singleton** — a fixed
+    dockview id, and the toolbar's "Project panel" button toggles it
+    (remove if present, add if not). We only ever have one project
+    open.
   - 1:1 element↔panel for now; the structure allows many views on one
     element but nothing builds that yet.
 - **Layout fallback when no project is open.** With no last project,
   the dockview layout is restored from `localStorage`
   (`LAYOUT_STORAGE_KEY`) — the implicit "default workspace".
+- **Auto-scroll survives a window resize.** A geometry change can fire
+  a `scroll` event that isn't a user scroll; the trace view only treats
+  it as one (and drops the live-edge pin) if it actually moved more than
+  a row off the bottom.
+
+Still wanted (small, recorded so they're not lost): merge the
+chronological and per-message-ID trace views into one view with a
+mode toggle; move column show/hide from the toolbar dropdown to a
+right-click context menu on the header; click-to-sort columns in
+per-message-ID mode (asc → desc → off, with a marker).
 
 Exit criteria:
 
