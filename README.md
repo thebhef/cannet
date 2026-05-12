@@ -55,11 +55,16 @@ apps/
                      traces, where that mapping is compressed). Rows
                      expand to show decoded signals; columns can be
                      drag-resized and shown / hidden per panel
-                     (`traceColumns.ts`). The scroll/stacking and column
+                     (`traceColumns.ts`). Each panel owns a *trace* — a
+                     window over the host-side session buffer with
+                     pause / stop / clear (`trace.ts`, `TraceControls.tsx`).
+                     The scroll/stacking, column, and trace-window
                      arithmetic live in `traceViewport.ts` /
-                     `traceColumns.ts` (unit-tested alongside).
+                     `traceColumns.ts` / `trace.ts` (unit-tested
+                     alongside).
     src-tauri/       Rust host (`cannet-gui` crate). Owns the trace
-                     model (`trace_store.rs`); the BLF and remote pumps
+                     model (`trace_store.rs` — the session buffer); the
+                     BLF and remote pumps
                      append frames, and the frontend pulls slices via
                      the `fetch_trace_range` command (decoded against
                      the current DBC at fetch time) plus a `trace-grew`
@@ -144,9 +149,15 @@ panel** opens another trace view (as a new tab in the active group).
 Drag a panel by its tab and drop it against an edge of the area to
 split it side-by-side, or onto another panel to tab them together.
 Each trace panel keeps its own scroll position, auto-scroll toggle,
-and column layout — drag the divider at a column header's right edge
-to resize it, and use the panel's **columns ▾** menu to show / hide
-individual columns.
+column layout — drag the divider at a column header's right edge to
+resize, and use the panel's **columns ▾** menu to show / hide columns
+— and trace state: the toolbar's **Pause / Resume / Stop / Start /
+Clear** bound that panel's window over the data. The data itself lives
+in a session buffer that fills while connected (lost when you
+disconnect / reconnect or quit); a *trace* is a window over it —
+**Pause** freezes the view (**Resume** continues, including frames
+received while paused), **Stop** freezes it (**Start** then begins a
+fresh trace), and **Clear** empties it.
 (Tearing a panel out into a separate OS window isn't supported yet —
 docking is within the one window; the tear-out item is in
 `plans/backlog.md`.) The layout is remembered between runs (stored
