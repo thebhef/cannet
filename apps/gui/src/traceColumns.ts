@@ -61,6 +61,28 @@ export function defaultColumns(): ColumnState[] {
   return COLUMN_DEFS.map((d) => ({ key: d.key, width: d.defaultWidth, visible: true }));
 }
 
+/// Validate a value persisted in a dockview panel's params (or a
+/// project file) as column state — it must be the canonical columns,
+/// in order, with sane width / visible fields. Anything else (a stale
+/// or corrupt blob) falls back to [`defaultColumns`].
+export function columnsFromParams(value: unknown): ColumnState[] {
+  if (
+    Array.isArray(value) &&
+    value.length === COLUMN_DEFS.length &&
+    value.every(
+      (c, i) =>
+        c != null &&
+        typeof c === "object" &&
+        (c as { key?: unknown }).key === COLUMN_DEFS[i].key &&
+        typeof (c as { width?: unknown }).width === "number" &&
+        typeof (c as { visible?: unknown }).visible === "boolean",
+    )
+  ) {
+    return (value as ColumnState[]).map((c) => ({ ...c }));
+  }
+  return defaultColumns();
+}
+
 /// The definition for `key` (label, css class, flex flag).
 export function columnDef(key: ColumnKey): ColumnDef {
   const def = COLUMN_DEFS.find((d) => d.key === key);

@@ -9,7 +9,7 @@ import {
   type ColumnKey,
   type ColumnState,
   columnDef,
-  defaultColumns,
+  columnsFromParams,
   resizeColumn,
   toggleColumn,
 } from "./traceColumns";
@@ -19,21 +19,28 @@ import {
  * view backed by its own {@link useTrace | trace} (a window over the
  * shared session buffer), with the common Start/Stop/Pause/Resume/Clear
  * controls and the per-panel state — auto-scroll, column layout. Scroll
- * position and expanded rows live inside `TraceView`. (Persisting the
- * per-panel state, and managing the trace through the project panel —
- * close-without-destroying, reopen — is the project-file step; for now
- * closing the panel discards its trace.)
+ * position and expanded rows live inside `TraceView`.
+ *
+ * The auto-scroll toggle and the column layout are persisted in the
+ * dockview panel's `params`, so they survive a layout restore / a
+ * reopened project. (The trace window itself isn't — it's anchored to
+ * the session buffer, which is empty on a fresh launch, so it always
+ * re-anchors anyway.)
  */
-export function TracePanel(_props: IDockviewPanelProps) {
+export function TracePanel(props: IDockviewPanelProps) {
   const data = useTraceData();
   const trace = useTrace(data);
 
+  const params = props.params as { autoScroll?: unknown; columns?: unknown } | undefined;
+
   // While true the view pins to the live tail of the trace; a user
   // scroll flips it off (TraceView calls onAutoScrollDisabled).
-  const [autoScroll, setAutoScroll] = useState(true);
+  const [autoScroll, setAutoScroll] = useState(() =>
+    typeof params?.autoScroll === "boolean" ? params.autoScroll : true,
+  );
   const handleAutoScrollDisabled = useCallback(() => setAutoScroll(false), []);
 
-  const [columns, setColumns] = useState<ColumnState[]>(defaultColumns);
+  const [columns, setColumns] = useState<ColumnState[]>(() => columnsFromParams(params?.columns));
   const handleColumnResize = useCallback(
     (key: ColumnKey, width: number) => setColumns((cs) => resizeColumn(cs, key, width)),
     [],
@@ -42,6 +49,14 @@ export function TracePanel(_props: IDockviewPanelProps) {
     (key: ColumnKey) => setColumns((cs) => toggleColumn(cs, key)),
     [],
   );
+
+  // Mirror this panel's persistable state into its dockview params so
+  // it's in `toJSON()` (and thus the project file / the localStorage
+  // layout).
+  const { api } = props;
+  useEffect(() => {
+    api.updateParameters({ autoScroll, columns });
+  }, [api, autoScroll, columns]);
 
   return (
     <div className="trace-panel">
