@@ -1,4 +1,5 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 
 import type { TraceFrameRecord } from "./types";
 import {
@@ -20,6 +21,13 @@ import {
   visibleRowCount,
   wheelDeltaPx,
 } from "./traceViewport";
+import {
+  type ColumnKey,
+  type ColumnState,
+  columnDef,
+  gridTemplateColumns,
+  visibleColumns,
+} from "./traceColumns";
 
 interface TraceViewProps {
   count: number;
@@ -31,6 +39,11 @@ interface TraceViewProps {
   /// on the row the user scrolled to, even as `count` grows.
   autoScroll: boolean;
   baseTimestampSeconds: number | null;
+  /// Per-panel column state (which columns show, in what order, how
+  /// wide). Owned by the panel; this view renders the table from it
+  /// and reports drag-resizes back via `onColumnResize`.
+  columns: readonly ColumnState[];
+  onColumnResize: (key: ColumnKey, width: number) => void;
   getFrame: (absoluteIndex: number) => TraceFrameRecord | null;
   ensureVisible: (start: number, end: number) => void;
   /// Called when the user scrolls the view themselves while
@@ -48,6 +61,8 @@ export function TraceView({
   count,
   autoScroll,
   baseTimestampSeconds,
+  columns,
+  onColumnResize,
   getFrame,
   ensureVisible,
   onAutoScrollDisabled,
@@ -193,20 +208,59 @@ export function TraceView({
     });
   }, []);
 
+  // Memoised so a `trace-grew` re-render (which leaves `columns`
+  // untouched) doesn't hand every `Row` a fresh array and force the
+  // whole window to re-render; they only change on a resize / toggle.
+  const visible = useMemo(() => visibleColumns(columns), [columns]);
+  const gridTemplate = useMemo(() => gridTemplateColumns(columns), [columns]);
+
+  // Column-resize drag: the column being dragged, the pointer X at the
+  // start of the drag, and that column's width then. The handle takes
+  // pointer capture so the drag tracks even outside the header.
+  const resizeRef = useRef<{ key: ColumnKey; startX: number; startWidth: number } | null>(null);
+  const onResizeDown = useCallback(
+    (key: ColumnKey, e: ReactPointerEvent<HTMLSpanElement>) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const startWidth = columns.find((c) => c.key === key)?.width ?? columnDef(key).defaultWidth;
+      resizeRef.current = { key, startX: e.clientX, startWidth };
+      e.currentTarget.setPointerCapture(e.pointerId);
+    },
+    [columns],
+  );
+  const onResizeMove = useCallback(
+    (e: ReactPointerEvent<HTMLSpanElement>) => {
+      const drag = resizeRef.current;
+      if (drag) onColumnResize(drag.key, drag.startWidth + (e.clientX - drag.startX));
+    },
+    [onColumnResize],
+  );
+  const onResizeUp = useCallback((e: ReactPointerEvent<HTMLSpanElement>) => {
+    if (resizeRef.current) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+      resizeRef.current = null;
+    }
+  }, []);
+
   const placements = buildPlacements(firstVisibleRow, count, rows, expanded);
 
   return (
     <div className="trace">
-      <div className="trace-header">
-        <span className="col-idx">#</span>
-        <span className="col-time">time (s)</span>
-        <span className="col-ch">ch</span>
-        <span className="col-dir">dir</span>
-        <span className="col-id">id</span>
-        <span className="col-kind">type</span>
-        <span className="col-len">len</span>
-        <span className="col-data">data</span>
-        <span className="col-msg">message</span>
+      <div className="trace-header" style={{ gridTemplateColumns: gridTemplate }}>
+        {visible.map((c) => {
+          const def = columnDef(c.key);
+          return (
+            <span key={c.key} className={def.className}>
+              {def.label}
+              <span
+                className="col-resize-handle"
+                onPointerDown={(e) => onResizeDown(c.key, e)}
+                onPointerMove={onResizeMove}
+                onPointerUp={onResizeUp}
+              />
+            </span>
+          );
+        })}
       </div>
       <div ref={containerRef} className="trace-rows" onScroll={handleScroll}>
         {/* Spacer: gives the scrollbar the trace's full (scaled) extent. */}
@@ -230,6 +284,8 @@ export function TraceView({
                 isExpanded={isExpanded}
                 frame={getFrame(absIdx)}
                 baseTimestamp={baseTimestampSeconds}
+                columns={visible}
+                gridTemplate={gridTemplate}
                 onToggle={toggleExpanded}
               />
             ))}
@@ -246,6 +302,8 @@ interface RowProps {
   isExpanded: boolean;
   frame: TraceFrameRecord | null;
   baseTimestamp: number | null;
+  columns: readonly ColumnState[];
+  gridTemplate: string;
   onToggle: (absoluteIndex: number) => void;
 }
 
@@ -255,47 +313,76 @@ const Row = memo(function Row({
   isExpanded,
   frame,
   baseTimestamp,
+  columns,
+  gridTemplate,
   onToggle,
 }: RowProps) {
   const height = isExpanded ? EXPANDED_ROW_HEIGHT : ROW_HEIGHT;
   return (
     <div
       className={`trace-row ${isExpanded ? "expanded" : ""} ${frame ? "" : "loading"}`}
-      style={{ position: "absolute", top, left: 0, right: 0, height }}
+      style={{
+        position: "absolute",
+        top,
+        left: 0,
+        right: 0,
+        height,
+        gridTemplateColumns: gridTemplate,
+      }}
       onClick={() => frame?.decoded && onToggle(absoluteIndex)}
     >
-      <span className="col-idx">{(absoluteIndex + 1).toLocaleString()}</span>
-      {frame && (
-        <>
-          <span className="col-time">
-            {formatTimestamp(frame.timestamp_seconds, baseTimestamp)}
-          </span>
-          <span className="col-ch">{frame.channel}</span>
-          <span className="col-dir">{frame.direction}</span>
-          <span className="col-id">{formatId(frame)}</span>
-          <span className="col-kind">{formatKind(frame)}</span>
-          <span className="col-len">{frame.data.length}</span>
-          <span className="col-data">{formatData(frame)}</span>
-          <span className="col-msg">
-            {frame.decoded ? frame.decoded.name : ""}
-            {frame.decoded ? (
-              <span className="hint">{isExpanded ? " ▾" : " ▸"}</span>
-            ) : null}
-          </span>
-          {isExpanded && frame.decoded && (
-            <div className="signals">
-              {frame.decoded.signals.map((sig) => (
-                <div className="signal" key={sig.name}>
-                  <span className="signal-name">{sig.name}</span>
-                  <span className="signal-value">
-                    {formatSignalValue(sig.value, sig.unit)}
-                  </span>
-                </div>
-              ))}
+      {columns.map((c) => (
+        <span key={c.key} className={columnDef(c.key).className}>
+          {cellContent(c.key, frame, absoluteIndex, baseTimestamp, isExpanded)}
+        </span>
+      ))}
+      {isExpanded && frame?.decoded && (
+        <div className="signals">
+          {frame.decoded.signals.map((sig) => (
+            <div className="signal" key={sig.name}>
+              <span className="signal-name">{sig.name}</span>
+              <span className="signal-value">{formatSignalValue(sig.value, sig.unit)}</span>
             </div>
-          )}
-        </>
+          ))}
+        </div>
       )}
     </div>
   );
 });
+
+/// The content for one trace cell. The `#` column is the row's
+/// 1-based index and is shown even for a not-yet-loaded row; every
+/// other column is blank until the frame arrives.
+function cellContent(
+  key: ColumnKey,
+  frame: TraceFrameRecord | null,
+  absoluteIndex: number,
+  baseTimestamp: number | null,
+  isExpanded: boolean,
+): ReactNode {
+  if (key === "idx") return (absoluteIndex + 1).toLocaleString();
+  if (!frame) return null;
+  switch (key) {
+    case "time":
+      return formatTimestamp(frame.timestamp_seconds, baseTimestamp);
+    case "ch":
+      return frame.channel;
+    case "dir":
+      return frame.direction;
+    case "id":
+      return formatId(frame);
+    case "kind":
+      return formatKind(frame);
+    case "len":
+      return frame.data.length;
+    case "data":
+      return formatData(frame);
+    case "msg":
+      return (
+        <>
+          {frame.decoded ? frame.decoded.name : ""}
+          {frame.decoded ? <span className="hint">{isExpanded ? " ▾" : " ▸"}</span> : null}
+        </>
+      );
+  }
+}
