@@ -96,6 +96,13 @@ work or admit it isn't going to happen and delete it.
   window or the cursor span.
 - `[feat]` `cannet-gui` plot panel: native drag-and-drop to move a
   signal between plot areas (today it's a per-row "→" menu).
+- `[feat]` `cannet-gui`: BLF annotation round-trip — open a BLF, place
+  notes (the plot panel's "+ note" cursor mode), and save the BLF back
+  out with the annotations embedded. Needs a place to persist notes
+  against a capture (BLF has no native annotation record — likely a
+  sidecar or a custom object kind), plus the "Save Capture…" path
+  (separate backlog entry) to write it. Today notes live only in the
+  plot panel's params (per project), not against the BLF.
 - `[feat]` `cannet-gui` math channels — derived signals computed from
   other signals (sum, diff, scale, filter, …). Useful to the plot panel,
   the transmit panel, and a future scripting surface, so it may outgrow

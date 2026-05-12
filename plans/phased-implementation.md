@@ -618,41 +618,59 @@ In rough order, each step leaving the panel runnable:
 
 - **Plot-area stack + side signal panels.** ✅ Done — `PlotPanel.tsx`
   owns a list of plot areas (starts with one) with "add plot area" /
-  per-area remove; each area is a uPlot instance plus a side signal
-  panel (swatch, name, present value); picking a signal adds it to the
-  focused area; a signal is moved between areas via a per-row menu
-  (drag-and-drop is a follow-up polish). The plot-area list and the
-  signal→area assignment persist via the panel's dockview `params`.
-- **Synced x / per-area y zoom.** ✅ Done — drag-select or `⌘/ctrl`+wheel
-  on any area zooms x on all areas (and leaves follow-live); `shift`+wheel
-  y-zooms the hovered area only; `⌘/ctrl`+`shift`+wheel does both; the
-  toolbar's "reset zoom" refits every area. Implemented with a shared
-  x-sync ref + a per-area `setScale` hook in `PlotPanel.tsx`
-  (cross-instance `setScale`, guarded so programmatic changes don't echo).
+  per-area remove; the areas flex to fill the panel (one area = full
+  height; N split it; a tall stack scrolls), each a uPlot instance with
+  its time axis at the bottom plus a side signal panel (swatch, name,
+  value). Picking a signal adds it to the focused area; a signal moves
+  between areas via a per-row menu (native drag-and-drop is a follow-up
+  polish, `plans/backlog.md`). The plot-area list and the signal→area
+  assignment persist via the panel's dockview `params`.
+- **Trace-style controls.** ✅ Done — the panel has Start / Stop / Pause
+  / Clear (the shared `TraceControls`): it has trace behaviour, just
+  focused on signal *values* over time. While "running" it follows the
+  live capture; pause/stop freeze the view (the resample loop stops,
+  which also keeps a fast/unlimited-rate stream from piling up
+  `sample_signal` calls); Clear re-anchors what's plotted to the current
+  capture edge. The play state is session-only.
+- **Synced x zoom + pan; per-area y zoom; fit data.** ✅ Done —
+  drag-select or `⌘/ctrl`+wheel on any area zooms x on all areas (and
+  leaves follow-live); `shift`+wheel pans x (synced); `⌘/ctrl`+`shift`+
+  wheel zooms y on the hovered area only; "fit data" refits x to the
+  full capture span and y to the data. (`⌘/ctrl`+`shift` is the
+  buried, rarely-used one — y is usually set with the per-area range
+  control.) Implemented with a shared x-sync ref + a per-area `setScale`
+  hook (cross-instance `setScale`, guarded so programmatic changes
+  don't echo), and a per-area re-entrancy guard on the resample.
+- **Follow live.** ✅ Done — a toggle that keeps every area pinned to
+  the capture's growing edge while preserving the *current* visible
+  x-width (so it just slides right); a manual x pan/zoom turns it off.
+  The span shown is the whole capture (the longest-running trace) up to
+  `capture_end`, not auto-fit to the picked signal — so adding a signal
+  late shows it over the existing span. (There's no separate "window
+  seconds" setting — the visible width *is* the window.)
 - **Cursors & measurement strip.** ✅ Done — both **off by default**,
   turned on from the panel toolbar (the prototype ships them on; cannet
   doesn't). A cursor-mode selector: "X" (left-click places cursor A,
   right-click cursor B, drawn through every area), "Y" (places this
-  area's H1 / H2), "+ note" (drops an event note). Cursors are a uPlot
-  `draw`-hook overlay. A "measurements" toggle reveals a strip whose
-  quantity set is **configurable** from a checklist — A, B, Δt, 1/Δt,
-  and per-trace value@A / value@B / Δ / min / max / mean over [A, B];
-  the side signal panels show value-at-cursor-A while a cursor is up.
-  Cursor mode, the measurement-quantity selection, the measurement
-  toggle, and (best-effort) the cursor positions persist via the
-  panel's dockview `params`. The pure cursor/measurement maths
-  (`indexAtOrBefore` / `valueAt` / `statsOver`) live in
+  area's H1 / H2), "+ note" (drops an event note); a "clear cursors"
+  button removes them all. Cursors are a uPlot `draw`-hook overlay. The
+  side signal panel shows the value at cursor A when placed, else the
+  value at the mouse crosshair (throttled), else the latest sample; the
+  H1/H2 Y-cursor values and ΔH show in the area's signal-panel head. A
+  "measurements" toggle reveals a strip whose quantity set is
+  **configurable** from a checklist — A, B, Δt, 1/Δt, and per-trace
+  value@A / value@B / Δ / min / max / mean over [A, B]. Cursor mode, the
+  measurement toggle/selection, and (best-effort) the cursor positions
+  persist via the panel's dockview `params`. The pure cursor/measurement
+  maths (`indexAtOrBefore` / `valueAt` / `statsOver`) live in
   `apps/gui/src/plotCursors.ts` with unit tests.
 - **Event markers + notes.** ✅ Done — a shared event list (the implicit
   capture-start "T0" plus user notes) drawn as vertical lines across the
   areas (labelled on the first area only); "+ note" cursor mode places a
-  note at the clicked time; an event-log list under the panel lists and
-  removes them. Notes persist in `params`.
-- **Time-base / window control.** ✅ Done — a "window (s)" input that, in
-  follow-live, narrows the visible span to the last N seconds (blank =
-  full capture), plus a "snap to now" button that re-enters follow-live.
-  (A free horizontal-position control independent of zoom is left as a
-  refinement.)
+  note at the clicked time; an event-log list under the panel renames
+  (click the label) and removes notes. Notes persist in `params`.
+  (Persisting notes *against a BLF* — annotate-and-save-back — is a
+  separate backlog item.)
 - **Per-area y range.** ✅ Done — each plot area has an "y: auto" /
   "y: min…max" control; manual mode pins the area's y-scale and persists
   in the area config. (Per-*trace* offset / gain and log scale are
@@ -702,9 +720,10 @@ In rough order, each step leaving the panel runnable:
   (zoom in / out of follow-live; the series is re-sampled and decimated
   over the visible window.)
 - Plot panels save and restore through the project file. ✅ (the
-  plot-area list, signal→area assignment, y-ranges, follow-live, window
-  width, cursor mode, measurement selection, and notes all round-trip
-  via the dockview `params` the project file carries.)
+  plot-area list, signal→area assignment, y-ranges, follow-live, cursor
+  mode, measurement selection, and notes all round-trip via the dockview
+  `params` the project file carries; the play state and the post-Clear
+  anchor are session-only, like a trace panel's window.)
 - README documents how to add a plot panel, pick signals, and use the
   cursors / measurements / notes; rustdoc covers the signal-sampler +
   decimation surface; `plans/technology-inventory.md` records the chosen
