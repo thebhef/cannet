@@ -589,6 +589,7 @@ header {
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
 }
 
 .plot-panel-toolbar {
@@ -620,10 +621,10 @@ header {
   font-size: 0.85rem;
 }
 
-/* The stack of plot areas fills the rest of the panel and scrolls if
-   there are more areas than fit. */
+/* The stack of plot areas fills the rest of the panel; if there are
+   more areas than fit at their minimum height it scrolls. */
 .plot-panel-areas {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-height: 0;
   overflow-y: auto;
   display: flex;
@@ -631,14 +632,17 @@ header {
 }
 
 /* One plot area: a uPlot canvas on the left, a side signal panel on
-   the right. One area fills the panel; N areas split it evenly, each
-   clamped to a usable minimum (a tall stack scrolls). The canvas's
-   ResizeObserver follows whatever height it gets. */
+   the right. One area fills the stack; N areas split it evenly, each
+   clamped to a usable minimum. The canvas's ResizeObserver follows
+   whatever height it gets. */
 .plot-area {
   display: flex;
   flex: 1 1 0;
-  min-height: 110px;
+  min-height: 90px;
   border-bottom: 1px solid #1f2630;
+}
+.plot-area:last-child {
+  border-bottom: none;
 }
 
 .plot-area-ycursors {
@@ -675,6 +679,7 @@ header {
 .plot-area-canvas {
   flex: 1 1 auto;
   min-width: 0;
+  min-height: 0;
   overflow: hidden;
 }
 

@@ -525,18 +525,22 @@ persistence (which is gated on the rest of Phase 3 — see below).
   series are stitched onto one timeline (sorted-union x-axis,
   sample-and-hold per series) by `apps/gui/src/plotData.ts` before being
   handed to the renderer.
-- **Decimation is part of the data path, not an optimisation.** ✅ Done
+- **Window-bounded sampling + decimation, not an optimisation.** ✅ Done
   — the trace store can hold **hundreds of thousands to millions** of
-  frames, so a single signal series can be far larger than what uPlot
-  (or any canvas renderer) should redraw. `sample_signal` takes a
-  `max_points` hint (the plot passes ≈its pixel width) and
-  min/max-decimates the decoded series to at most `2 * max_points`
-  points — per-bucket extrema, so spikes survive
-  (`signal_sampler::decimate_min_max`, unit-tested). The un-decimated
-  frames stay in the trace store; a cursor / measurement query just asks
-  for that signal again over the (narrower) cursor span. Still pending:
-  decoding only the newly-appended frames each tick rather than
-  re-scanning the whole window (`plans/backlog.md`).
+  frames, so the plot must not pay `O(capture)` per re-sample, nor ship
+  (or ask uPlot to draw) a point per frame. `sample_signal` slices the
+  plot's trace-element window out of the store **by frame index** (the
+  plot passes the element's `[offset, offset + frameCount)`), so the
+  work is `O(window)`; the decoded series is then min/max-decimated to
+  at most `2 * max_points` points — per-bucket extrema, so spikes
+  survive (`signal_sampler::decimate_min_max`, unit-tested). The
+  un-decimated frames stay in the store; a cursor / measurement query
+  just re-samples that signal over the (narrower) cursor span. The plot
+  also throttles the live re-sample and an in-flight guard prevents
+  pile-up under a fast stream; Pause/Stop freeze the window so
+  re-sampling stops entirely. Still pending: decoding only the
+  newly-appended frames each tick — true incremental sampling
+  (`plans/backlog.md`).
 - **Plot interaction (MVP).** Pan / zoom on the time axis (uPlot's
   built-in drag-zoom), a readout cursor / legend showing each trace's
   value at the hovered instant (uPlot's built-in cursor + live legend),
@@ -625,13 +629,17 @@ In rough order, each step leaving the panel runnable:
   between areas via a per-row menu (native drag-and-drop is a follow-up
   polish, `plans/backlog.md`). The plot-area list and the signal→area
   assignment persist via the panel's dockview `params`.
-- **Trace-style controls.** ✅ Done — the panel has Start / Stop / Pause
-  / Clear (the shared `TraceControls`): it has trace behaviour, just
-  focused on signal *values* over time. While "running" it follows the
-  live capture; pause/stop freeze the view (the resample loop stops,
-  which also keeps a fast/unlimited-rate stream from piling up
-  `sample_signal` calls); Clear re-anchors what's plotted to the current
-  capture edge. The play state is session-only.
+- **It's a trace element.** ✅ Done — the plot panel is backed by a
+  `useTrace` element (`view: "plot"`), exactly like the trace panels: a
+  window over the session buffer with Start / Stop / Pause / Clear (the
+  shared `TraceControls`), persisted in the project's element list,
+  surviving a panel close. It renders signal *values* over time instead
+  of message rows. While "running" it follows the live capture; pause /
+  stop freeze the window (the re-sample loop stops, which also keeps a
+  fast / unlimited-rate stream from piling up `sample_signal` calls);
+  Clear re-anchors the window to "now". The element's window indices are
+  what `sample_signal` is given (see the window-bounded-sampling bullet
+  above).
 - **Synced x zoom + pan; per-area y zoom; fit data.** ✅ Done —
   drag-select or `⌘/ctrl`+wheel on any area zooms x on all areas (and
   leaves follow-live); `shift`+wheel pans x (synced); `⌘/ctrl`+`shift`+
