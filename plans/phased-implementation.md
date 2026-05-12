@@ -496,17 +496,20 @@ persistence (which is gated on the rest of Phase 3 — see below).
 
 ### Phase 4 MVP scope
 
-- **Plot panel.** A new panel type in the Phase 3 dockview layout. A
-  plot panel hosts one or more signal traces on a shared time axis; the
-  user adds a trace by picking a `(message, signal)` pair from the
-  attached DBC. Multiple plot panels can be open, each with its own
-  signal set. Realised (first cut) as `apps/gui/src/PlotPanel.tsx`
-  (registered under `PLOT_PANEL_COMPONENT` in `dockLayout.ts`), with an
-  "Add plot panel" toolbar action in `App.tsx` — currently a single
-  plot area with a header dropdown + signal chips; the target shape (a
-  stack of plot areas, each with a side signal panel showing name /
-  swatch / present value, signals movable between areas) is the
-  "Reference design" section below.
+- **Plot panel.** A new panel type in the Phase 3 dockview layout —
+  `apps/gui/src/PlotPanel.tsx`, registered under `PLOT_PANEL_COMPONENT`
+  in `dockLayout.ts`, with an "Add plot panel" toolbar action in
+  `App.tsx`. A plot panel is a **stack of plot areas** (starts with one;
+  "add plot area" appends more), all sharing one time axis; each area is
+  a uPlot canvas plus a side signal panel (colour swatch / name /
+  present value), and a signal can be moved between areas. Picking a
+  `(message, signal)` pair from the toolbar drops it into the focused
+  area. The plot-area list and the signal→area assignment round-trip
+  through the project file via the panel's dockview `params` (same
+  mechanism trace panels use for their columns). Multiple plot panels
+  can be open, each independent. (This is the "Reference design" shape
+  below, minus the cursor / measurement / sync / event layers, which
+  are the later steps.)
 - **Signal sampling over the trace store.** The data-path work: a
   sampler that, given a `(message id, signal)` pair and a time window,
   pulls the matching frames out of the trace store, decodes the signal,
@@ -612,13 +615,13 @@ cross-area sync, the measurement strip).
 
 In rough order, each step leaving the panel runnable:
 
-- **Plot-area stack + side signal panels.** Restructure `PlotPanel.tsx`
-  so a panel owns a list of plot areas (starting with one), with "add
-  plot area" / "remove empty plot area"; each area renders a uPlot
-  instance plus its side signal panel (name, swatch, present value);
-  picking a signal adds it to the focused area; a signal can be dragged
-  between areas. Panel config gains the plot-area list and the
-  signal→area assignment.
+- **Plot-area stack + side signal panels.** ✅ Done — `PlotPanel.tsx`
+  owns a list of plot areas (starts with one) with "add plot area" /
+  per-area remove; each area is a uPlot instance plus a side signal
+  panel (swatch, name, present value); picking a signal adds it to the
+  focused area; a signal is moved between areas via a per-row menu
+  (drag-and-drop is a follow-up polish). The plot-area list and the
+  signal→area assignment persist via the panel's dockview `params`.
 - **Synced x / per-area y zoom.** Drag-select or modifier-wheel on any
   area zooms x on all areas; `shift`-wheel y-zooms the hovered area
   only; reset restores full extent (cross-instance `setScale`).

@@ -620,46 +620,122 @@ header {
   font-size: 0.85rem;
 }
 
-.plot-panel-chips {
-  display: flex;
-  gap: 0.3rem;
-  flex-wrap: wrap;
-}
-
-.plot-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  font-size: 0.75rem;
-  padding: 0.05rem 0.3rem;
-  border: 1px solid #2c3444;
-  border-left-width: 3px;
-  border-radius: 3px;
-  color: #cbd5e1;
-}
-
-.plot-chip button {
-  background: none;
-  border: none;
-  color: #94a3b8;
-  cursor: pointer;
-  font-size: 0.9rem;
-  line-height: 1;
-  padding: 0;
-}
-
-.plot-chip button:hover {
-  color: #e2e8f0;
-}
-
-.plot-panel-canvas {
+/* The stack of plot areas fills the rest of the panel and scrolls if
+   there are more areas than fit. */
+.plot-panel-areas {
   flex: 1 1 auto;
   min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+/* One plot area: a uPlot canvas on the left, a side signal panel on
+   the right. Each area has a fixed-ish height so a stack of them is
+   readable; the canvas's ResizeObserver follows whatever it gets. */
+.plot-area {
+  display: flex;
+  flex: 0 0 auto;
+  height: 200px;
+  min-height: 120px;
+  border-bottom: 1px solid #1f2630;
+}
+
+.plot-area.focused {
+  box-shadow: inset 2px 0 0 #4ecbff;
+}
+
+.plot-area-canvas {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
 }
 
+.plot-area-signals {
+  flex: 0 0 13rem;
+  border-left: 1px solid #1f2630;
+  background: #0d1114;
+  overflow-y: auto;
+  font-size: 0.78rem;
+}
+
+.plot-area-signals-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.2rem 0.4rem;
+  border-bottom: 1px solid #1f2630;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.66rem;
+}
+
+.plot-area-remove,
+.plot-signal-remove {
+  background: none;
+  border: none;
+  color: #64748b;
+  cursor: pointer;
+  font-size: 0.9rem;
+  line-height: 1;
+  padding: 0 0.1rem;
+}
+
+.plot-area-remove:hover,
+.plot-signal-remove:hover {
+  color: #ff5577;
+}
+
+.plot-area-empty {
+  padding: 0.4rem;
+  color: #64748b;
+  font-style: italic;
+}
+
+.plot-signal-row {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.15rem 0.4rem;
+  border-bottom: 1px dotted #1c252b;
+}
+
+.plot-signal-swatch {
+  flex: 0 0 auto;
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 2px;
+}
+
+.plot-signal-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #cbd5e1;
+}
+
+.plot-signal-value {
+  flex: 0 0 auto;
+  color: #fde68a;
+  font-variant-numeric: tabular-nums;
+}
+
+.plot-signal-move {
+  flex: 0 0 auto;
+  background: #0f141d;
+  color: #94a3b8;
+  border: 1px solid #2c3444;
+  border-radius: 3px;
+  font: inherit;
+  font-size: 0.7rem;
+  padding: 0 0.1rem;
+}
+
 /* uPlot renders on a dark ground; nudge its chrome to match the app. */
-.plot-panel-canvas .u-legend {
+.plot-area-canvas .u-legend {
   font-size: 0.78rem;
   color: #94a3b8;
 }
