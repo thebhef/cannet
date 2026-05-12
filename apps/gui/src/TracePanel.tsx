@@ -67,7 +67,11 @@ export function TracePanel(_props: IDockviewPanelProps) {
       <TraceView
         count={trace.frameCount}
         version={trace.version}
-        autoScroll={autoScroll}
+        // "Auto-scroll to the live edge" only applies while the trace
+        // is running — a paused/stopped trace is a frozen window, so
+        // the view scrolls freely and fetches its rows on demand (the
+        // live-tail overlay only covers a running trace's edge).
+        autoScroll={autoScroll && trace.status === "running"}
         baseTimestampSeconds={trace.baseTimestampSeconds}
         columns={columns}
         onColumnResize={handleColumnResize}
