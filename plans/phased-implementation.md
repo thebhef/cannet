@@ -223,32 +223,37 @@ Scope:
 - **Trace lifecycle & common trace-view controls.** Make "a trace" a
   first-class thing rather than "whatever's currently in the buffer":
   - The **session buffer** is the host-side capture (`TraceStore`) —
-    every frame received since the current connection began. It outlives
-    pause / stop within a session; it's emptied only on a new connection
-    (or app exit).
-  - **A trace** is a capture window over that buffer: a `started_at`
-    and either *running* or an `ended_at`. The trace-style views render
-    the slice `[started_at, ended_at | now]`.
-  - Controls (a shared toolbar component, used by every trace-style
-    view — the chronological trace panel, the per-message-ID panel, and
-    the Phase 4 plot panels): **Start / Stop**, **Pause / Resume**,
-    **Clear**. Stop sets `ended_at`; Start after Stop begins a fresh
-    trace (so stop→start clears the view). Pause sets `ended_at` and
-    marks the trace paused; Resume removes `ended_at` and the trace
-    continues — frames that arrived during the pause are included (they
-    were in the session buffer). Clear resets the trace to an empty,
-    running window starting now.
-  - The lifecycle is **global** for the session — one trace, many
-    views — matching the "session buffer" being shared. (Per-view
-    capture windows, if ever wanted, are a later add.)
-- **Per-message-ID panel.** A dockview panel that shows one row per
-  arbitration ID — the *latest* frame seen for that ID within the
-  current trace — sorted by ID, updating live, expandable to its
-  decoded signals like a trace row. It's a view over the same session
-  buffer / trace as the chronological panel, just folded by ID. (Folds
-  in the `[ui]` "by ID mode" item from `plans/backlog.md`; the
-  rest-of-bus *transmit* gridview from `features.md` is the TX
-  counterpart and stays Phase 5+.)
+    every frame received since the current connection began. It's tied
+    to the connection: a new connection starts a fresh buffer; it
+    outlives pause / stop of individual traces, and is lost on app exit.
+  - **A trace** is a capture window over that buffer: a start point and
+    either *running*, *paused*, or *stopped* (with an end point). A
+    trace-style view renders the slice `[start, end | now]`.
+    - **Stop** freezes the trace (sets the end). **Start** from stopped
+      begins a fresh window from now — so stop→start clears the view.
+    - **Pause** freezes the trace (sets the end, marked paused).
+      **Resume** removes the end and the trace continues — frames that
+      arrived during the pause are included (they were in the session
+      buffer).
+    - **Clear** resets the trace to an empty running window from now.
+  - Each trace is **its own**: there's no global "the trace". A trace
+    backs one trace-style window (chronological, per-message-ID, or — in
+    Phase 4 — a plot), roughly one-to-one for now. The controls are a
+    **common toolbar component** reused by all of them, but the
+    running / paused / stopped / cleared state is per-window, not shared.
+  - A trace's *lifecycle* is project-managed: a trace exists as part of
+    the project; closing its view doesn't destroy it (reopen from the
+    project panel), and removing a trace means removing it from the
+    project. *On this branch*, until the project panel lands, closing a
+    trace-style panel simply closes it; the controls + per-window trace
+    window land first, the project wiring with the project-file step.
+- **Per-message-ID panel.** A trace-style window (so it carries the same
+  controls) that shows one row per arbitration ID — the *latest* frame
+  seen for that ID within the window — sorted by ID, updating live,
+  expandable to its decoded signals like a trace row. Backed by its own
+  trace, same as a chronological panel. (Folds in the `[ui]` "by ID
+  mode" item from `plans/backlog.md`; the rest-of-bus *transmit*
+  gridview from `features.md` is the TX counterpart and stays Phase 5+.)
 - **Project panel + project file.** A project is a JSON file
   (`features.md`: "projects — includes window layouts, bus configs,
   references DBCs … DBC should be reloadable from disk at any time").
@@ -317,11 +322,12 @@ Exit criteria:
   Phase 2 throughput.
 - Trace-panel columns can be drag-resized and individually shown / hidden,
   and that state persists with the panel.
-- The trace-style views share Start / Stop / Pause / Resume / Clear
-  controls over one session-wide trace: stop→start clears the view;
-  pause→resume continues it (including frames received during the pause);
-  the session buffer survives all of these and is emptied only on a new
-  connection.
+- Each trace-style window (chronological and per-message-ID) carries
+  its own trace with Start / Stop / Pause / Resume / Clear (a common
+  toolbar component, independent per-window state): stop→start clears
+  that window's view; pause→resume continues it (including frames
+  received during the pause); the session buffer survives all of these
+  and is replaced only on a new connection.
 - The per-message-ID panel shows one row per arbitration ID with its
   latest payload, updating live, expandable to decoded signals.
 - Opening a saved project restores the panel layout, the per-panel config,
