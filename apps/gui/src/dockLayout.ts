@@ -9,6 +9,14 @@ import type { SerializedDockview } from "dockview";
 export const LAYOUT_STORAGE_KEY = "cannet.layout.v1";
 
 /**
+ * `localStorage` key holding the path of the last project that was
+ * opened or saved-as, so it's reopened on launch. Absent / cleared
+ * means "no named project" — fall back to the [`LAYOUT_STORAGE_KEY`]
+ * layout.
+ */
+export const LAST_PROJECT_KEY = "cannet.lastProject.v1";
+
+/**
  * Names the panel React components are registered under in the dockview
  * `components` map. Stored verbatim inside the serialized layout, so
  * changing them would orphan saved layouts — treat as stable.
