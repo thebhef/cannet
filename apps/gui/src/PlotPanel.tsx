@@ -15,29 +15,32 @@ import { mergeSeries, signalKey } from "./plotData";
  * signals. See `plans/phased-implementation.md` Phase 4 and
  * `plans/plot-panel-reference.html` for the target design.
  *
- * Structure (this is step one of that design): a plot panel owns a
- * **stack of plot areas**, starting with one; "add plot area" appends
- * another. Each plot area is a uPlot canvas plus a **side signal
- * panel** listing the area's signals — colour swatch, name, present
- * value — and the controls to remove a signal or move it to another
- * area. Picking a signal from the toolbar drops it into the *focused*
- * area (click an area's body to focus it).
+ * Structure: a plot panel owns a **stack of plot areas**, starting with
+ * one; "add plot area" appends another. Each plot area is a uPlot canvas
+ * plus a **side signal panel** listing the area's signals (colour
+ * swatch, name, present value) and the controls to remove a signal or
+ * move it to another area. Picking a signal from the toolbar drops it
+ * into the *focused* area (click an area's body to focus it).
  *
- * Data path: the host's `sample_signal` command walks the trace store
- * for each signal and returns a `(t, v)` series; {@link mergeSeries}
- * stitches an area's series onto one time axis for uPlot. uPlot itself
- * provides drag-zoom on the time axis; "follow live" re-fits the
- * x-range to the capture's edge on every `trace-grew` tick (via
- * {@link useTraceData}'s `count`). Axis times are relative to the
- * capture's first frame (`baseTimestampSeconds`).
+ * Time axis: all plot areas share one x (time) axis.
+ * - **Drag-select** on any area zooms x on *all* areas (and turns off
+ *   follow-live).
+ * - **⌘/ctrl + wheel** zooms x on all areas; **shift + wheel** zooms y
+ *   on the hovered area only; **⌘/ctrl + shift + wheel** zooms both.
+ * - **Reset zoom** (toolbar) restores full x extent on all areas and y
+ *   auto-fit.
+ * - **Follow live** re-fits the x-range to the capture's edge on every
+ *   `trace-grew` tick (via {@link useTraceData}'s `count`); a user x
+ *   zoom switches it off — the plot analogue of the trace view's
+ *   auto-scroll.
  *
- * The plot-area list, the signal→area assignment, and "follow live"
- * are mirrored into the dockview panel's `params` so they round-trip
- * through the project file / the localStorage layout.
+ * Axis times are relative to the capture's first frame
+ * (`baseTimestampSeconds`). The plot-area list, the signal→area
+ * assignment, and "follow live" are mirrored into the dockview panel's
+ * `params` so they round-trip through the project file / layout.
  *
  * Not yet (later Phase-4 steps): cursors + measurement strip (off by
- * default, toolbar-toggled), synced x-zoom across areas, event markers,
- * per-trace y controls.
+ * default, toolbar-toggled), event markers, per-trace y controls.
  */
 
 const TRACE_COLORS = [
@@ -50,6 +53,8 @@ const TRACE_COLORS = [
   "#5ddb7c",
   "#e15dcf",
 ];
+
+const ZOOM_STEP = 1.15;
 
 interface SignalRef {
   messageId: number;
@@ -67,6 +72,16 @@ interface PlotAreaConfig {
 interface PlotPanelParams {
   areas?: unknown;
   followLive?: unknown;
+}
+
+/** Shared, mutable plumbing the plot areas use to keep their x-axes in
+ * step without re-rendering each other. `suppress` gates the per-area
+ * `setScale` hook so our own programmatic scale changes don't bounce
+ * back as "user zoomed"; `range` is the last user-set x window so a
+ * freshly-added area can adopt it. */
+interface XSync {
+  suppress: boolean;
+  range: { min: number; max: number } | null;
 }
 
 function signalRefKey(s: SignalRef): string {
@@ -112,6 +127,50 @@ export function PlotPanel(props: IDockviewPanelProps) {
   );
   const [focusedAreaId, setFocusedAreaId] = useState<string>(() => areas[0]?.id ?? "");
   const [catalog, setCatalog] = useState<SignalDescriptorRecord[]>([]);
+
+  // x-axis sync plumbing + the live registry of each area's uPlot.
+  const xSyncRef = useRef<XSync>({ suppress: false, range: null });
+  const instancesRef = useRef<Map<string, uPlot>>(new Map());
+
+  const registerInstance = useCallback((id: string, u: uPlot | null) => {
+    if (u) instancesRef.current.set(id, u);
+    else instancesRef.current.delete(id);
+  }, []);
+
+  // Apply an x window to every area but `exceptId`, under the suppress
+  // guard so their setScale hooks don't treat it as a user action.
+  const applyXToOthers = useCallback((min: number, max: number, exceptId: string) => {
+    const sync = xSyncRef.current;
+    const wasSuppressed = sync.suppress;
+    sync.suppress = true;
+    for (const [id, u] of instancesRef.current) {
+      if (id === exceptId) continue;
+      const xs = u.scales.x;
+      if (xs.min === min && xs.max === max) continue;
+      u.setScale("x", { min, max });
+    }
+    sync.suppress = wasSuppressed;
+  }, []);
+
+  // A user changed an area's x window (drag-select, ⌘+wheel): record it,
+  // propagate to the others, and drop out of follow-live.
+  const onUserXChange = useCallback(
+    (min: number, max: number, fromId: string) => {
+      xSyncRef.current.range = { min, max };
+      applyXToOthers(min, max, fromId);
+      setFollowLive(false);
+    },
+    [applyXToOthers],
+  );
+
+  const resetZoom = useCallback(() => {
+    const sync = xSyncRef.current;
+    sync.range = null;
+    sync.suppress = true;
+    // resetScales=true refits both axes to each area's current data.
+    for (const u of instancesRef.current.values()) u.setData(u.data, true);
+    sync.suppress = false;
+  }, []);
 
   // Keep a valid focused area even after the focused one is removed.
   useEffect(() => {
@@ -235,6 +294,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
           ↻
         </button>
         <button onClick={addArea}>add plot area</button>
+        <button onClick={resetZoom}>reset zoom</button>
         <label className="checkbox">
           <input
             type="checkbox"
@@ -258,6 +318,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
             base={base}
             count={count}
             followLive={followLive}
+            xSyncRef={xSyncRef}
+            registerInstance={registerInstance}
+            onUserXChange={onUserXChange}
             onFocus={() => setFocusedAreaId(area.id)}
             onRemoveArea={() => removeArea(area.id)}
             onRemoveSignal={(key) => removeSignal(area.id, key)}
@@ -278,6 +341,9 @@ interface PlotAreaProps {
   base: number;
   count: number;
   followLive: boolean;
+  xSyncRef: React.MutableRefObject<XSync>;
+  registerInstance: (id: string, u: uPlot | null) => void;
+  onUserXChange: (min: number, max: number, fromId: string) => void;
   onFocus: () => void;
   onRemoveArea: () => void;
   onRemoveSignal: (key: string) => void;
@@ -293,6 +359,9 @@ function PlotArea({
   base,
   count,
   followLive,
+  xSyncRef,
+  registerInstance,
+  onUserXChange,
   onFocus,
   onRemoveArea,
   onRemoveSignal,
@@ -300,22 +369,41 @@ function PlotArea({
 }: PlotAreaProps) {
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const uplotRef = useRef<uPlot | null>(null);
-  const programmaticRef = useRef(false);
   // Latest value per signal (last sample), keyed by signalRefKey.
   const [presentValues, setPresentValues] = useState<Map<string, number | null>>(new Map());
 
+  const areaId = area.id;
   const signals = area.signals;
   const signalSetKey = signals.map(signalRefKey).join("|");
 
   const colorFor = useCallback((i: number) => TRACE_COLORS[i % TRACE_COLORS.length], []);
 
+  // Run `fn` with the x-sync suppress guard raised, so any setScale it
+  // triggers is treated as programmatic.
+  const withSuppressed = useCallback(
+    (fn: () => void) => {
+      const sync = xSyncRef.current;
+      const prev = sync.suppress;
+      sync.suppress = true;
+      try {
+        fn();
+      } finally {
+        sync.suppress = prev;
+      }
+    },
+    [xSyncRef],
+  );
+
+  const followLiveRef = useRef(followLive);
+  useEffect(() => {
+    followLiveRef.current = followLive;
+  });
+
   const resample = useCallback(async () => {
     const u = uplotRef.current;
     if (!u) return;
     if (signals.length === 0) {
-      programmaticRef.current = true;
-      u.setData([[]]);
-      programmaticRef.current = false;
+      withSuppressed(() => u.setData([[]]));
       setPresentValues(new Map());
       return;
     }
@@ -334,20 +422,45 @@ function PlotArea({
     const merged = mergeSeries(
       results.map((r) => ({ t: r.t.map((x) => x - base), v: r.v })),
     ) as uPlot.AlignedData;
-    programmaticRef.current = true;
-    u.setData(merged, followLive);
-    programmaticRef.current = false;
+
+    withSuppressed(() => {
+      if (followLiveRef.current) {
+        // Refit both axes to the live data, then pin x to the capture
+        // window so every area shows the same span.
+        u.setData(merged, true);
+        const captureEnd = results.find((r) => r.capture_end_seconds != null)
+          ?.capture_end_seconds;
+        if (captureEnd != null) u.setScale("x", { min: 0, max: captureEnd - base });
+      } else {
+        const range = xSyncRef.current.range;
+        if (range) {
+          // Keep the user's window; don't let y jump as data extends.
+          u.setData(merged, false);
+          u.setScale("x", { min: range.min, max: range.max });
+        } else {
+          // No synced window yet — fit to this area's data.
+          u.setData(merged, true);
+        }
+      }
+    });
+
     const pv = new Map<string, number | null>();
     signals.forEach((s, i) => {
       const v = results[i].v;
       pv.set(signalRefKey(s), v.length > 0 ? v[v.length - 1] : null);
     });
     setPresentValues(pv);
-  }, [signals, base, followLive]);
+  }, [signals, base, withSuppressed, xSyncRef]);
 
   const resampleRef = useRef(resample);
   useEffect(() => {
     resampleRef.current = resample;
+  });
+
+  // Stable accessors for the uPlot hooks (which capture once at create).
+  const onUserXChangeRef = useRef(onUserXChange);
+  useEffect(() => {
+    onUserXChangeRef.current = onUserXChange;
   });
 
   // (Re)create the uPlot instance whenever the signal *set* changes.
@@ -370,26 +483,80 @@ function PlotArea({
           points: { show: false },
         })),
       ],
+      hooks: {
+        // Any x-scale change that isn't one of ours (suppress=false) is
+        // a user drag-select zoom: sync it and leave follow-live.
+        setScale: [
+          (u: uPlot, key: string) => {
+            if (key !== "x") return;
+            if (xSyncRef.current.suppress) return;
+            const { min, max } = u.scales.x;
+            if (min == null || max == null) return;
+            onUserXChangeRef.current(min, max, areaId);
+          },
+        ],
+        ready: [
+          (u: uPlot) => {
+            const over = u.over;
+            over.addEventListener(
+              "wheel",
+              (e: WheelEvent) => {
+                const cmd = e.ctrlKey || e.metaKey;
+                const shift = e.shiftKey;
+                if (!cmd && !shift) return; // plain wheel → page/area scroll
+                e.preventDefault();
+                const rect = over.getBoundingClientRect();
+                const factor = e.deltaY > 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
+                if (cmd) {
+                  // x zoom around the cursor — synced across areas.
+                  const xc = u.posToVal(e.clientX - rect.left, "x");
+                  const xs = u.scales.x;
+                  if (xs.min == null || xs.max == null) return;
+                  const min = xc - (xc - xs.min) * factor;
+                  const max = xc + (xs.max - xc) * factor;
+                  withSuppressed(() => u.setScale("x", { min, max }));
+                  onUserXChangeRef.current(min, max, areaId);
+                }
+                if (shift) {
+                  // y zoom around the cursor — this area only.
+                  const yc = u.posToVal(e.clientY - rect.top, "y");
+                  const ys = u.scales.y;
+                  if (ys.min == null || ys.max == null) return;
+                  u.setScale("y", {
+                    min: yc - (yc - ys.min) * factor,
+                    max: yc + (ys.max - yc) * factor,
+                  });
+                }
+              },
+              { passive: false },
+            );
+          },
+        ],
+      },
     };
     const u = new uPlot(opts, [[]], el);
     uplotRef.current = u;
+    registerInstance(areaId, u);
     void resampleRef.current();
 
     const ro = new ResizeObserver(() => {
-      u.setSize({
-        width: el.clientWidth || 600,
-        height: Math.max(120, el.clientHeight - 2),
-      });
+      withSuppressed(() =>
+        u.setSize({
+          width: el.clientWidth || 600,
+          height: Math.max(120, el.clientHeight - 2),
+        }),
+      );
     });
     ro.observe(el);
 
     return () => {
       ro.disconnect();
+      registerInstance(areaId, null);
       u.destroy();
       if (uplotRef.current === u) uplotRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [signalSetKey]);
+  }, [signalSetKey, areaId]);
 
   // Re-sample on capture growth, when "follow live" toggles, and when
   // the time origin shifts (new source).
