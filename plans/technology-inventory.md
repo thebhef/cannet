@@ -222,11 +222,12 @@ and/or community wrappers (e.g. `python-can`) depending on the client._
   Scale note: the trace store can hold **hundreds of thousands to
   millions** of frames, so a signal series can be far larger than uPlot's
   comfortable redraw size. The renderer is not where that's solved — the
-  sampler (and/or `plotData.ts`) must decimate / min-max-bucket the
-  series down to the pixel width of the visible window before it reaches
-  uPlot. This is a hard requirement of the Phase 4 implementation, not an
-  optimisation; see `plans/phased-implementation.md` Phase 4 and the
-  `[perf]` item in `plans/backlog.md`.
+  host (`signal_sampler::decimate_min_max`, driven by `sample_signal`'s
+  `max_points` hint) min/max-decimates the decoded series down to ≈the
+  pixel width of the visible window before it reaches uPlot; spikes
+  survive (per-bucket extrema). Decoding only newly-appended frames each
+  tick (rather than re-scanning the window) is the remaining win —
+  tracked in `plans/backlog.md`.
 
   Reference design: `plans/plot-panel-reference.html` — a standalone
   prototype (5 stacked panes × 4 signals, synced x-zoom across panes,
@@ -279,9 +280,20 @@ _TBD — populated as we set up cross-platform builds._
   `cannet-blf` tests to round-trip BLF fixtures through a real file. MIT /
   Apache-2.0.
 - **Vitest** (v2, dev-dependency in `apps/gui`) — `adopted` in Phase 2 for
-  frontend unit tests. Runs `apps/gui/src/traceViewport.ts` (the trace
-  view's pure scroll/stacking arithmetic) without a DOM. Pinned to v2
-  because v3+ requires Vite 6+ while the app is on Vite 5. MIT. Run via
+  frontend unit tests. Most suites are the pure logic modules
+  (`traceViewport.ts`, `traceColumns.ts`, `trace.ts`, `plotData.ts`,
+  `plotCursors.ts`) running without a DOM. Pinned to v2 because v3+
+  requires Vite 6+ while the app is on Vite 5. MIT. Run via
   `pnpm --dir apps/gui test`.
+- **`@testing-library/react` + `@testing-library/jest-dom` + `jsdom`**
+  (dev-dependencies in `apps/gui`) — `adopted` in Phase 4 for the
+  occasional React component test where the state machine is worth
+  exercising directly (`PlotPanel.dom.test.tsx`: plot-area add/remove,
+  picking/moving signals, toggling measurements). uPlot and the Tauri
+  `invoke` bridge are `vi.mock`-ed, so these don't need a real canvas or
+  backend; the file opts into the `jsdom` environment via a
+  `// @vitest-environment jsdom` docblock. MIT. Kept lightweight — the
+  pixel-level overlay drawing and canvas event wiring stay untested at
+  this layer; their maths live in tested pure modules.
 
 _Profiling instrumentation TBD — populated in Phase 7._
