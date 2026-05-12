@@ -73,6 +73,7 @@ const traceData: TraceData = {
 };
 const projectCtx: ProjectContextValue = {
   projectPath: null,
+  dirty: false,
   dbcPath: "/tmp/x.dbc",
   remoteAddress: "127.0.0.1:50051",
   remoteConnected: false,
