@@ -33,11 +33,18 @@ export function freshTrace(n: number): TraceState {
   return { start: n, end: null, isPaused: false };
 }
 
-/// An empty, *stopped* trace anchored at session count `n` — the Clear
-/// action: it wipes the window and sets the stop time, so nothing
-/// accumulates until the user hits Start (which gives a `freshTrace`).
+/// An empty, *stopped* trace anchored at session count `n` — the
+/// "empty stopped" state.
 export function clearedTrace(n: number): TraceState {
   return { start: n, end: n, isPaused: false };
+}
+
+/// Clear the trace (wipe its window to empty at `n`) while keeping
+/// whatever run state it was in — running stays running (it just keeps
+/// growing from `n`), stopped stays stopped, paused stays paused.
+/// Clear, deliberately, does *not* imply Stop or Pause.
+export function clearKeepingState(s: TraceState, n: number): TraceState {
+  return s.end === null ? freshTrace(n) : { ...clearedTrace(n), isPaused: s.isPaused };
 }
 
 export function traceStatus(s: TraceState): TraceStatus {
@@ -143,7 +150,7 @@ export function useTrace(data: TraceData, elementId: string): TraceHandle {
   );
   const resume = useCallback(() => updateTrace(elementId, resumeTrace), [updateTrace, elementId]);
   const clear = useCallback(
-    () => updateTrace(elementId, () => clearedTrace(data.count)),
+    () => updateTrace(elementId, (s) => clearKeepingState(s, data.count)),
     [updateTrace, elementId, data],
   );
 
