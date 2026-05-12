@@ -55,22 +55,27 @@ apps/
                      traces, where that mapping is compressed). Rows
                      expand to show decoded signals; columns can be
                      drag-resized and shown / hidden per panel
-                     (`traceColumns.ts`). Each panel owns a *trace* — a
-                     window over the host-side session buffer with
+                     (`traceColumns.ts`). `ByIdPanel.tsx` is the
+                     per-message-ID view (latest frame per arbitration
+                     id). Each trace-style panel owns a *trace* — its
+                     own window over the host-side session buffer with
                      pause / stop / clear (`trace.ts`, `TraceControls.tsx`).
                      The scroll/stacking, column, and trace-window
                      arithmetic live in `traceViewport.ts` /
                      `traceColumns.ts` / `trace.ts` (unit-tested
                      alongside).
     src-tauri/       Rust host (`cannet-gui` crate). Owns the trace
-                     model (`trace_store.rs` — the session buffer); the
-                     BLF and remote pumps
-                     append frames, and the frontend pulls slices via
-                     the `fetch_trace_range` command (decoded against
-                     the current DBC at fetch time) plus a `trace-grew`
-                     IPC tick (~10 Hz: count, rate, and a decoded tail
-                     of the newest rows for flicker-free auto-scroll).
-                     `src/ipc.rs` holds the IPC payload shapes.
+                     model (`trace_store.rs` — the session buffer, plus
+                     an O(1)-maintained latest-frame-per-id index); the
+                     BLF and remote pumps append frames, and the
+                     frontend pulls slices via the `fetch_trace_range`
+                     command and the latest-by-id snapshot via
+                     `fetch_latest_by_id` (both decoded against the
+                     current DBC at fetch time, both off the main
+                     thread), plus a `trace-grew` IPC tick (~10 Hz:
+                     count, rate, and a decoded tail of the newest rows
+                     for flicker-free auto-scroll). `src/ipc.rs` holds
+                     the IPC payload shapes.
 
 plans/           Living planning docs (see CLAUDE.md).
 ```
@@ -145,19 +150,21 @@ cannet window. Use **Open BLF…** to pick a log; **Attach DBC…** before
 opening attaches a database for live decoding.
 
 The window below the toolbar is a dockable panel area. **Add trace
-panel** opens another trace view (as a new tab in the active group).
-Drag a panel by its tab and drop it against an edge of the area to
-split it side-by-side, or onto another panel to tab them together.
-Each trace panel keeps its own scroll position, auto-scroll toggle,
-column layout — drag the divider at a column header's right edge to
-resize, and use the panel's **columns ▾** menu to show / hide columns
-— and trace state: the toolbar's **Pause / Resume / Stop / Start /
-Clear** bound that panel's window over the data. The data itself lives
-in a session buffer that fills while connected (lost when you
-disconnect / reconnect or quit); a *trace* is a window over it —
-**Pause** freezes the view (**Resume** continues, including frames
-received while paused), **Stop** freezes it (**Start** then begins a
-fresh trace), and **Clear** empties it.
+panel** opens a chronological trace view; **Add by-ID panel** opens a
+per-message-ID view (one row per arbitration id, holding that id's
+latest frame, updating live). Both arrive as a new tab in the active
+group — drag a panel by its tab and drop it against an edge of the
+area to split it side-by-side, or onto another panel to tab them
+together. Each trace panel keeps its own scroll position, auto-scroll
+toggle, column layout — drag the divider at a column header's right
+edge to resize, and use the panel's **columns ▾** menu to show / hide
+columns. Every trace-style panel (chronological or by-ID) carries the
+same trace controls: the data lives in a session buffer that fills
+while connected (lost when you disconnect / reconnect or quit), and a
+*trace* is each panel's own window over it — **Pause** freezes the
+view (**Resume** continues, including frames received while paused),
+**Stop** freezes it (**Start** then begins a fresh trace), and
+**Clear** empties it.
 (Tearing a panel out into a separate OS window isn't supported yet —
 docking is within the one window; the tear-out item is in
 `plans/backlog.md`.) The layout is remembered between runs (stored

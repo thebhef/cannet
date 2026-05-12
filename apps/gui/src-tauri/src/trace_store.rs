@@ -37,7 +37,7 @@
 //! wall time the surviving samples span, or `0.0` if there isn't yet
 //! enough signal to estimate.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -55,6 +55,12 @@ const RATE_WINDOW: Duration = Duration::from_secs(1);
 /// `RATE_WINDOW / RATE_SAMPLE_INTERVAL` entries while still tracking
 /// the rate closely enough for a status line.
 const RATE_SAMPLE_INTERVAL: Duration = Duration::from_millis(20);
+
+/// Identifies a "kind of frame" for the latest-by-id view: the
+/// channel, the arbitration id, and whether it's an extended id (a
+/// standard and an extended id with the same numeric value are
+/// distinct frames).
+type FrameKey = (u8, u32, bool);
 
 /// One row in the trace store. Owned, undecoded.
 #[derive(Debug, Clone)]
@@ -89,6 +95,10 @@ pub struct TraceStore {
 struct Inner {
     frames: Vec<RawTraceFrame>,
     rate_samples: VecDeque<(Instant, usize)>,
+    /// Index into `frames` of the most recent frame seen for each
+    /// [`FrameKey`] — `O(1)` to maintain on append, and what the
+    /// per-message-ID view reads instead of walking the whole buffer.
+    latest: HashMap<FrameKey, usize>,
 }
 
 impl TraceStore {
@@ -97,18 +107,21 @@ impl TraceStore {
             inner: Mutex::new(Inner {
                 frames: Vec::new(),
                 rate_samples: VecDeque::new(),
+                latest: HashMap::new(),
             }),
         }
     }
 
-    /// Append a frame to the tail of the trace. Records a rate sample
-    /// if at least [`RATE_SAMPLE_INTERVAL`] has passed since the last
-    /// one.
+    /// Append a frame to the tail of the trace. Updates the
+    /// latest-by-key index and records a rate sample if at least
+    /// [`RATE_SAMPLE_INTERVAL`] has passed since the last one.
     pub fn append(&self, frame: RawTraceFrame) {
         let now = Instant::now();
+        let key = (frame.channel, frame.id, frame.extended);
         let mut inner = self.inner.lock().expect("trace store mutex poisoned");
         inner.frames.push(frame);
         let count = inner.frames.len();
+        inner.latest.insert(key, count - 1);
         let due = match inner.rate_samples.back() {
             Some(&(last, _)) => now.duration_since(last) >= RATE_SAMPLE_INTERVAL,
             None => true,
@@ -155,6 +168,29 @@ impl TraceStore {
         let mut inner = self.inner.lock().expect("trace store mutex poisoned");
         inner.frames = Vec::new();
         inner.rate_samples = VecDeque::new();
+        inner.latest = HashMap::new();
+    }
+
+    /// For each distinct [`FrameKey`] whose most recent occurrence is at
+    /// index `>= since`, that index and a clone of the frame — sorted by
+    /// key (channel, then id, then standard-before-extended). `since` is
+    /// a trace window's start: for a *running* trace this is exactly
+    /// "the latest frame of each id within the window"; for a
+    /// paused/stopped trace whose end is below the buffer's tip it can
+    /// include an id's later occurrence (fine for a live-values view).
+    #[must_use]
+    pub fn latest_since(&self, since: usize) -> Vec<(usize, RawTraceFrame)> {
+        let inner = self.inner.lock().expect("trace store mutex poisoned");
+        let mut keyed: Vec<(FrameKey, usize)> = inner
+            .latest
+            .iter()
+            .filter_map(|(&key, &idx)| (idx >= since).then_some((key, idx)))
+            .collect();
+        keyed.sort_unstable();
+        keyed
+            .into_iter()
+            .map(|(_, idx)| (idx, inner.frames[idx].clone()))
+            .collect()
     }
 
     /// Estimated current append rate in frames per second.
@@ -244,6 +280,34 @@ mod tests {
         let store = TraceStore::new();
         store.append(dummy(0, 1));
         assert!(store.slice(10, 20).is_empty());
+    }
+
+    #[test]
+    fn latest_since_keeps_one_frame_per_id_above_the_cutoff() {
+        let store = TraceStore::new();
+        for id in [1u32, 2, 1, 3, 2] {
+            store.append(dummy(0, id)); // indices 0..5
+        }
+        // From the start, sorted by id: 1@2, 2@4, 3@3.
+        assert_eq!(
+            store
+                .latest_since(0)
+                .iter()
+                .map(|(idx, f)| (*idx, f.id))
+                .collect::<Vec<_>>(),
+            vec![(2, 1), (4, 2), (3, 3)],
+        );
+        // Cutoff at index 3 drops id 1 (its latest is at index 2).
+        assert_eq!(
+            store
+                .latest_since(3)
+                .iter()
+                .map(|(idx, f)| (*idx, f.id))
+                .collect::<Vec<_>>(),
+            vec![(4, 2), (3, 3)],
+        );
+        store.clear();
+        assert!(store.latest_since(0).is_empty());
     }
 
     #[test]
