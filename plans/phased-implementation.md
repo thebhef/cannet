@@ -344,20 +344,30 @@ Implementation notes (in progress):
   shows the attached DBC with reload-from-disk — state + actions via a
   `ProjectContext` that `App` provides (the toolbar shares the
   callbacks). Open restores the layout (and the per-panel config), sets
-  the remote-address field, and re-attaches the DBC by path; it doesn't
-  auto-connect, and "New" is layout-only (it doesn't detach the DBC or
-  disconnect). The last opened/saved project's path is kept in
-  `localStorage` (`LAST_PROJECT_KEY`) and reopened on launch.
+  the remote-address field, and re-attaches the DBC by path (or detaches
+  if the project names none); it doesn't auto-connect. "New" starts a
+  fresh workspace: seed layout, no DBC, disconnected, session buffer
+  cleared. The last opened/saved project's path is kept in
+  `localStorage` (`LAST_PROJECT_KEY`) and reopened on launch. The
+  workspace tracks a `dirty` flag (any layout / DBC / remote-address
+  change sets it; Save / Open / New clear it) — shown as a `●` in the
+  project panel, and the window-close handler prompts to Save before
+  quitting when it's set (a 2-way prompt: Save & close / Discard &
+  close — a 3-way Save/Discard/Cancel needs a custom modal, deferred).
   - Not carried in the project: a panel's trace window (it re-anchors
     to the session buffer — empty on a fresh launch — anyway), the BLF
-    replay path, the per-interface subscription set (the only mode is
-    "subscribe to all"), and multiple DBCs. The first three are small
-    follow-ups; multi-DBC and interface-selection are *features* the
-    project would carry once they exist, not project plumbing.
+    replay path (a recent-BLF-files list is in `plans/backlog.md`
+    instead — BLF replay is a one-shot from a captured trace), the
+    per-interface subscription set (the only mode is "subscribe to
+    all"), and multiple DBCs. Interface selection and multi-DBC are
+    *features* the project would carry once they exist, not project
+    plumbing.
   - Lifting the trace model host-side (so the frontend `useTrace`
-    becomes a thin view over a host-side `Trace` registry) is still on
-    the table — deferred since the project file only persists column
-    layout / auto-scroll, not the trace window, so it isn't forced.
+    becomes a thin view over a host-side `Trace` registry) — and with
+    it the project-managed trace lifecycle (close-a-panel ≠ destroy its
+    trace; reopen / remove from the project panel) — is the remaining
+    bigger Phase-3 item; the per-message-ID panel and the project file
+    work without it.
 - **Layout fallback when no project is open.** With no last project,
   the dockview layout is restored from `localStorage`
   (`LAYOUT_STORAGE_KEY`) — the implicit "default workspace".

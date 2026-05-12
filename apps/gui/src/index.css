@@ -235,6 +235,12 @@ header {
   white-space: nowrap;
 }
 
+.project-dirty {
+  color: #fbbf24;
+  margin-right: 0.3rem;
+  font-size: 0.7rem;
+}
+
 .project-bus-name,
 .project-dbc-name {
   flex: 1 1 auto;

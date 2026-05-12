@@ -180,14 +180,17 @@ panel's column layout and auto-scroll toggle), the attached DBC path,
 and the remote-server address. The **project panel** (or the toolbar's
 **Open project…** / **Save project**) drives it: **Save** / **Save
 As…** write one, **Open…** restores it (configures the remote address
-and re-attaches the DBC by path — hit **Connect** to switch), **New**
-resets to the default layout. The panel also lists the configured
-bus(es) with **Connect** / **Disconnect** and the attached DBC with
-**Reload from disk**. The last opened/saved project is reopened on
-launch (with no project, the layout is restored from local storage).
-Not yet carried in the project: a panel's trace window (it re-anchors
-to the session buffer on each launch anyway), the BLF replay path, the
-per-interface subscription set, and multiple DBCs.
+and re-attaches the DBC by path — hit **Connect** to switch — and
+detaches the DBC if the project names none), **New** starts a fresh
+workspace (default layout, no DBC, disconnected, buffer cleared). The
+panel also lists the configured bus(es) with **Connect** /
+**Disconnect** and the attached DBC with **Reload from disk**. The
+last opened/saved project is reopened on launch (with no project, the
+layout is restored from local storage). Unsaved changes show a `●` in
+the project panel, and closing the window with unsaved changes prompts
+you to save first. Not yet carried in the project: a panel's trace
+window (it re-anchors to the session buffer on each launch anyway), the
+BLF replay path, the per-interface subscription set, and multiple DBCs.
 
 > **Note:** plain `cargo run -p cannet-gui` will build the Rust host on
 > its own but won't bring up a usable window — the host expects either

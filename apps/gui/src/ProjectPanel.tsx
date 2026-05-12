@@ -16,6 +16,7 @@ export function ProjectPanel(_props: IDockviewPanelProps) {
       <section className="project-section">
         <h3>Project</h3>
         <div className="project-path" title={p.projectPath ?? undefined}>
+          {p.dirty && <span className="project-dirty" title="unsaved changes">●</span>}
           {p.projectPath ? basename(p.projectPath) : "(unsaved)"}
         </div>
         <div className="project-buttons">
