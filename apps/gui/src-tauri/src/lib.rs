@@ -32,6 +32,7 @@
 //! mid-stream just changes what subsequent fetches return.
 
 mod ipc;
+mod project;
 mod trace_store;
 
 use std::fmt;
@@ -108,6 +109,8 @@ pub fn run() {
             list_remote_interfaces,
             connect_remote_server,
             disconnect_remote_server,
+            project::open_project,
+            project::save_project,
         ])
         .setup(|app| {
             // Make sure the main window has the id our capabilities expect.

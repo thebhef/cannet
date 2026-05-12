@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { DockviewReact, themeAbyss } from "dockview";
 import type { DockviewApi, DockviewReadyEvent } from "dockview";
 
@@ -9,10 +9,12 @@ import type {
   DbcInfo,
   LogFinished,
   OpenLogResult,
+  Project,
   RemoteSessionResult,
   TraceFrameRecord,
   TraceGrew,
 } from "./types";
+import { PROJECT_SCHEMA_VERSION } from "./types";
 import { TitleBar } from "./TitleBar";
 import { TracePanel } from "./TracePanel";
 import { ByIdPanel } from "./ByIdPanel";
@@ -22,6 +24,7 @@ import {
   LAYOUT_STORAGE_KEY,
   TRACE_PANEL_COMPONENT,
   parseSavedLayout,
+  validateLayout,
 } from "./dockLayout";
 
 type LogState =
@@ -280,6 +283,74 @@ export function App() {
     }
   }, []);
 
+  // Apply an opened project: restore the panel layout, the remote
+  // address field, and (re-)attach the referenced DBC. Doesn't touch a
+  // live connection — the project's bus is configured into the fields;
+  // hit Connect to switch. (Per-panel config — column layouts, the
+  // panels' trace windows — isn't carried yet, so panels come back at
+  // their defaults; that's a later project-file step.)
+  const applyProject = useCallback(
+    (project: Project) => {
+      const api = dockApiRef.current;
+      const layout = validateLayout(project.layout);
+      if (api && layout) {
+        try {
+          api.fromJSON(layout);
+          panelCounterRef.current = api.panels.length;
+          byIdCounterRef.current = api.panels.length;
+        } catch {
+          /* keep the current layout if the saved one won't load */
+        }
+      }
+      setRemoteAddress(project.remote_address ?? DEFAULT_REMOTE_ADDRESS);
+      if (project.dbc_path) {
+        const path = project.dbc_path;
+        void invoke<DbcInfo>("attach_dbc", { path })
+          .then((info) => {
+            setDbcPath(info.dbc_path);
+            invalidateCache();
+          })
+          .catch((err) =>
+            setState({ kind: "error", message: `project DBC (${path}): ${String(err)}` }),
+          );
+      }
+    },
+    [invalidateCache],
+  );
+
+  const handleOpenProject = useCallback(async () => {
+    const selected = await open({
+      multiple: false,
+      filters: [{ name: "cannet project", extensions: ["json"] }],
+    });
+    if (typeof selected !== "string") return;
+    try {
+      const project = await invoke<Project>("open_project", { path: selected });
+      applyProject(project);
+    } catch (err) {
+      setState({ kind: "error", message: String(err) });
+    }
+  }, [applyProject]);
+
+  const handleSaveProjectAs = useCallback(async () => {
+    const path = await save({
+      filters: [{ name: "cannet project", extensions: ["json"] }],
+      defaultPath: "cannet-project.json",
+    });
+    if (!path) return;
+    const project: Project = {
+      schema_version: PROJECT_SCHEMA_VERSION,
+      layout: dockApiRef.current?.toJSON() ?? { grid: {}, panels: {} },
+      dbc_path: dbcPath,
+      remote_address: remoteAddress.trim() || null,
+    };
+    try {
+      await invoke("save_project", { path, project });
+    } catch (err) {
+      setState({ kind: "error", message: String(err) });
+    }
+  }, [dbcPath, remoteAddress]);
+
   const getFrame = useCallback((index: number): TraceFrameRecord | null => {
     const chunkIdx = Math.floor(index / CHUNK_SIZE);
     const chunk = chunkCacheRef.current.get(chunkIdx);
@@ -394,6 +465,9 @@ export function App() {
       <TitleBar />
       <header>
         <div className="toolbar">
+          <button onClick={handleOpenProject}>Open project…</button>
+          <button onClick={handleSaveProjectAs}>Save project as…</button>
+          <span className="toolbar-separator" aria-hidden="true" />
           <button onClick={handleOpenLog}>Open BLF…</button>
           <button onClick={handleAttachDbc}>
             {dbcPath ? "Replace DBC…" : "Attach DBC…"}

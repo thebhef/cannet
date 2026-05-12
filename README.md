@@ -75,7 +75,8 @@ apps/
                      thread), plus a `trace-grew` IPC tick (~10 Hz:
                      count, rate, and a decoded tail of the newest rows
                      for flicker-free auto-scroll). `src/ipc.rs` holds
-                     the IPC payload shapes.
+                     the IPC payload shapes; `src/project.rs` the
+                     project-file model + `open_project` / `save_project`.
 
 plans/           Living planning docs (see CLAUDE.md).
 ```
@@ -168,9 +169,16 @@ the trace stopped — hit **Start** to begin a fresh, growing trace),
 and the session buffer keeps filling underneath regardless.
 (Tearing a panel out into a separate OS window isn't supported yet —
 docking is within the one window; the tear-out item is in
-`plans/backlog.md`.) The layout is remembered between runs (stored
-locally for now — project files, in a later Phase 3 step, will own it
-along with bus configs and DBC references).
+`plans/backlog.md`.)
+
+**Save project as…** writes a `.json` project file holding the panel
+layout, the attached DBC path, and the remote-server address;
+**Open project…** restores them (it configures the remote address and
+re-attaches the DBC by path — hit Connect to switch). Between runs the
+layout is still remembered via local storage; a full project panel
+(New / Save / lists buses, reload-DBC-from-disk), reopen-last-on-launch,
+and persisting each panel's column layout / trace window are the
+remaining Phase 3 project steps.
 
 > **Note:** plain `cargo run -p cannet-gui` will build the Rust host on
 > its own but won't bring up a usable window — the host expects either
