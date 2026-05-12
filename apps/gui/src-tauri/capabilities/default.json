@@ -10,7 +10,9 @@
     "core:window:allow-close",
     "core:window:allow-start-dragging",
     "core:window:allow-is-maximized",
+    "core:window:allow-destroy",
     "dialog:allow-open",
-    "dialog:allow-save"
+    "dialog:allow-save",
+    "dialog:allow-ask"
   ]
 }
