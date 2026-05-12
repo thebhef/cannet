@@ -72,3 +72,16 @@ export interface RemoteSessionResult {
   interfaces: InterfaceRecord[];
   subscriptions: SubscriptionRecord[];
 }
+
+/// Mirrors `src-tauri/src/project.rs::Project` — the saved workspace.
+/// `layout` is dockview's `SerializedDockview` blob; the host stores it
+/// without interpreting it, so it's typed `unknown` here and validated
+/// (`dockLayout.ts::validateLayout`) before use.
+export interface Project {
+  schema_version: number;
+  layout: unknown;
+  dbc_path: string | null;
+  remote_address: string | null;
+}
+
+export const PROJECT_SCHEMA_VERSION = 1;
