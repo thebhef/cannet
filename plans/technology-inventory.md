@@ -54,13 +54,15 @@ and the license / platform constraints we need to be aware of.
   - **`golden-layout`** v2 (MIT) — `rejected`. Capable and mature, but
     framework-agnostic with no React bindings, so adopting it means
     writing and maintaining the React glue ourselves.
-- **`serde_json`** (Rust) / native JSON (frontend) — `proposed` (Phase 3)
+- **`serde_json`** (Rust) / native JSON (frontend) — `adopted` (Phase 3)
   for the project file (`features.md`: window layouts + bus configs + DBC
-  references, JSON, reloadable from disk). `serde` / `serde_json` are
+  references, JSON, reloadable from disk). `serde` / `serde_json` were
   already in the dependency graph via Tauri's IPC; the project format adds
-  no new crate, just new schema types in the GUI host (and matching TS
-  types). No external project-file format is adopted — it's our own
-  versioned JSON schema.
+  no new crate, just schema types in the GUI host (`src-tauri/src/project.rs`:
+  the `Project` struct, `open_project` / `save_project`) and matching TS
+  types. The schema is our own, versioned (`PROJECT_SCHEMA_VERSION`) — no
+  external project-file format is adopted. The `dockview` layout blob is
+  stored verbatim as a `serde_json::Value` (the host doesn't interpret it).
 - **`@tanstack/react-virtual`** — `adopted` in Phase 1, `removed` in
   Phase 2. The library's count-based virtualizer doesn't handle the
   browser's CSS dimension cap (≈17M-33M px depending on the engine):

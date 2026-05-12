@@ -17,24 +17,13 @@ export const TRACE_PANEL_COMPONENT = "trace";
 export const BY_ID_PANEL_COMPONENT = "by-id";
 
 /**
- * Parse a previously-persisted dockview layout string.
- *
- * Returns `null` for missing, unparseable, or structurally
- * unrecognised input so a corrupt blob falls back to the default
- * layout instead of bricking startup. The shape check is deliberately
- * shallow — dockview's own deserializer validates the rest, and a
- * mismatched-but-plausible blob fails loudly there rather than here.
+ * Sanity-check an already-parsed value as a dockview layout. Returns
+ * `null` for anything structurally unrecognised so a corrupt blob
+ * falls back to the default layout instead of bricking startup. The
+ * check is deliberately shallow — dockview's own deserializer validates
+ * the rest, and a mismatched-but-plausible blob fails loudly there.
  */
-export function parseSavedLayout(
-  raw: string | null | undefined,
-): SerializedDockview | null {
-  if (!raw) return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
+export function validateLayout(parsed: unknown): SerializedDockview | null {
   if (
     typeof parsed !== "object" ||
     parsed === null ||
@@ -44,4 +33,17 @@ export function parseSavedLayout(
     return null;
   }
   return parsed as SerializedDockview;
+}
+
+/** Parse a previously-persisted dockview layout *string* (e.g. from
+ * `localStorage`); see {@link validateLayout}. */
+export function parseSavedLayout(
+  raw: string | null | undefined,
+): SerializedDockview | null {
+  if (!raw) return null;
+  try {
+    return validateLayout(JSON.parse(raw));
+  } catch {
+    return null;
+  }
 }
