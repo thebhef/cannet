@@ -205,6 +205,42 @@ header {
   border-bottom: 1px solid #1f2630;
 }
 
+/* "columns ▾" dropdown in a trace panel's toolbar. */
+.columns-menu {
+  position: relative;
+  display: inline-flex;
+}
+
+.columns-menu-button {
+  font: inherit;
+  font-size: 0.85rem;
+  background: transparent;
+  border: 1px solid #1f2630;
+  color: #94a3b8;
+  padding: 0.05rem 0.4rem;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.columns-menu-button:hover {
+  background: #1a212b;
+}
+
+.columns-menu-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  background: #131923;
+  border: 1px solid #1f2630;
+  border-radius: 4px;
+  padding: 0.35rem 0.5rem;
+  box-shadow: 0 4px 12px rgb(0 0 0 / 0.4);
+}
+
 /* Trace table -----------------------------------------------------------*/
 .trace {
   display: flex;
@@ -220,9 +256,8 @@ header {
 .trace-header,
 .trace-row {
   display: grid;
-  grid-template-columns:
-    [idx] 60px [time] 110px [ch] 36px [dir] 36px [id] 96px
-    [kind] 110px [len] 40px [data] 1fr [msg] 220px;
+  /* `grid-template-columns` is set inline from the panel's column
+     state (see `traceColumns.ts`). */
   align-items: start;
   padding: 0 0.6rem;
   white-space: nowrap;
@@ -235,6 +270,29 @@ header {
   position: sticky;
   top: 0;
   z-index: 1;
+}
+
+.trace-header > span {
+  position: relative;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Draggable strip at the right edge of each header cell — resizes that
+   column. Takes pointer capture; `touch-action: none` so a pen / touch
+   drag isn't hijacked as a scroll. */
+.col-resize-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 7px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.col-resize-handle:hover {
+  background: rgb(148 163 184 / 0.25);
 }
 
 .trace-rows {
@@ -273,7 +331,7 @@ header {
 
 .signals {
   grid-column: 1 / -1;
-  padding: 0.25rem 0 0.4rem 60px;
+  padding: 0.25rem 0 0.4rem 1rem;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 2px 18px;
