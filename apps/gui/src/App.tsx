@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { ask, open, save } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { DockviewReact, themeAbyss } from "dockview";
 import type { DockviewApi, DockviewReadyEvent } from "dockview";
 
@@ -23,6 +23,7 @@ import { ByIdPanel } from "./ByIdPanel";
 import { ProjectPanel } from "./ProjectPanel";
 import { TraceDataContext, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
+import { CloseConfirmModal, type CloseChoice } from "./CloseConfirmModal";
 import {
   ElementRegistryContext,
   type ElementRegistry,
@@ -69,6 +70,10 @@ const DOCK_COMPONENTS = {
   [PROJECT_PANEL_COMPONENT]: ProjectPanel,
 };
 
+/// The project panel is a show/hide singleton — a fixed dockview id so
+/// there's structurally only one.
+const PROJECT_PANEL_ID = "project";
+
 export function App() {
   const [count, setCount] = useState(0);
   const [framesPerSecond, setFramesPerSecond] = useState(0);
@@ -95,6 +100,11 @@ export function App() {
   const [projectPath, setProjectPath] = useState<string | null>(null);
   // True when the workspace has changed since it was last saved/opened.
   const [dirty, setDirty] = useState(false);
+  // Set while the "unsaved changes — Save / Discard / Cancel?" modal is
+  // up (the window-close handler awaits the choice via `resolve`).
+  const [pendingClose, setPendingClose] = useState<{
+    resolve: (choice: CloseChoice) => void;
+  } | null>(null);
   // The project's elements + their runtime state (the element registry,
   // handed down via ElementRegistryContext). Restored from
   // `project.elements`, seeded on first launch / New, serialized back
@@ -378,7 +388,9 @@ export function App() {
       params: { elementId },
     });
     api.addPanel({
-      id: `project-${crypto.randomUUID()}`,
+      // Fixed id — there's only ever one project panel; the toolbar's
+      // "Project panel" button toggles it (show/hide).
+      id: PROJECT_PANEL_ID,
       component: PROJECT_PANEL_COMPONENT,
       title: "Project",
       position: { direction: "left" },
@@ -532,11 +544,12 @@ export function App() {
       .onCloseRequested(async (event) => {
         if (!dirtyRef.current) return; // no unsaved changes — let it close
         event.preventDefault();
-        const save = await ask(
-          "You have unsaved changes. Save the project before closing?",
-          { title: "cannet", kind: "warning", okLabel: "Save & close", cancelLabel: "Discard & close" },
+        const choice = await new Promise<CloseChoice>((resolve) =>
+          setPendingClose({ resolve }),
         );
-        if (save && !(await handleSaveProjectRef.current())) return; // picker cancelled — stay open
+        setPendingClose(null);
+        if (choice === "cancel") return;
+        if (choice === "save" && !(await handleSaveProjectRef.current())) return; // picker cancelled
         void win.destroy();
       })
       .then((u) => {
@@ -616,14 +629,20 @@ export function App() {
     });
   }, [createTrace]);
 
-  const addProjectPanel = useCallback(() => {
+  const toggleProjectPanel = useCallback(() => {
     const api = dockApiRef.current;
     if (!api) return;
-    api.addPanel({
-      id: `project-${crypto.randomUUID()}`,
-      component: PROJECT_PANEL_COMPONENT,
-      title: "Project",
-    });
+    const existing = api.panels.find((p) => p.id === PROJECT_PANEL_ID);
+    if (existing) {
+      api.removePanel(existing);
+    } else {
+      api.addPanel({
+        id: PROJECT_PANEL_ID,
+        component: PROJECT_PANEL_COMPONENT,
+        title: "Project",
+        position: { direction: "left" },
+      });
+    }
   }, []);
 
   const handleDockReady = useCallback(
@@ -783,7 +802,7 @@ export function App() {
           <span className="toolbar-separator" aria-hidden="true" />
           <button onClick={addTracePanel}>Add trace panel</button>
           <button onClick={addByIdPanel}>Add by-ID panel</button>
-          <button onClick={addProjectPanel}>Add project panel</button>
+          <button onClick={toggleProjectPanel}>Project panel</button>
         </div>
         <div className="status">{status}</div>
       </header>
@@ -803,6 +822,7 @@ export function App() {
           </TraceDataContext.Provider>
         </ElementRegistryContext.Provider>
       </ProjectContext.Provider>
+      {pendingClose && <CloseConfirmModal onChoice={pendingClose.resolve} />}
     </main>
   );
 }
