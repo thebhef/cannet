@@ -195,29 +195,60 @@ section.)
 Land it in small, independently demoable steps, each leaving the app
 runnable. The realised order: the multi-panel docking shell first
 (trace view ported into it), then resizable / hideable trace columns,
-then the project panel and project file.
+then the trace-lifecycle controls and the per-message-ID panel, then
+the project panel and project file.
 
 Scope:
 
 - **Multi-panel main window with arbitrary layouts.** The GUI hosts
-  multiple panels inside one OS window: more than one trace panel, a
-  project panel (below), and — once Phase 4 / Phase 5 land — plot and
-  transmit panels. Panels can be split, tabbed, dragged, and resized
-  into arbitrary layouts within the window — the layout shell is a
-  docking-layout library (see `technology-inventory.md`), not
-  hand-rolled. Each panel is independently configurable: trace panels
-  carry their own filter set and column set. Trace panels are
-  independent views over the one host-side capture — each with its own
-  scroll position, auto-scroll toggle, and expanded-row set — replacing
-  Phase 1's single global frontend ref (see the implementation note
-  below). The layout system is designed up front so the Phase 4 plot
-  panel and Phase 5 transmit panel slot in as just another panel type.
+  multiple panels inside one OS window: more than one trace panel, the
+  per-message-ID panel (below), a project panel (below), and — once
+  Phase 4 / Phase 5 land — plot and transmit panels. Panels can be
+  split, tabbed, dragged, and resized into arbitrary layouts within the
+  window — the layout shell is a docking-layout library (see
+  `technology-inventory.md`), not hand-rolled. Each panel is
+  independently configurable: trace panels carry their own filter set
+  and column set. Trace panels are independent views over the one
+  host-side capture — each with its own scroll position, auto-scroll
+  toggle, and expanded-row set — replacing Phase 1's single global
+  frontend ref (see the implementation note below). The layout system
+  is designed up front so the Phase 4 plot panel and Phase 5 transmit
+  panel slot in as just another panel type.
 - **Resizable and hideable trace columns.** Trace panels support
   drag-resizing column widths and toggling individual columns on/off
   (#, timestamp, channel, direction, ID, type, length, data, decoded
   name). Column widths and visibility are part of a trace panel's
   per-panel config, so they round-trip through the project file. (Folds
   in the two `[ui]` trace-column items from `plans/backlog.md`.)
+- **Trace lifecycle & common trace-view controls.** Make "a trace" a
+  first-class thing rather than "whatever's currently in the buffer":
+  - The **session buffer** is the host-side capture (`TraceStore`) —
+    every frame received since the current connection began. It outlives
+    pause / stop within a session; it's emptied only on a new connection
+    (or app exit).
+  - **A trace** is a capture window over that buffer: a `started_at`
+    and either *running* or an `ended_at`. The trace-style views render
+    the slice `[started_at, ended_at | now]`.
+  - Controls (a shared toolbar component, used by every trace-style
+    view — the chronological trace panel, the per-message-ID panel, and
+    the Phase 4 plot panels): **Start / Stop**, **Pause / Resume**,
+    **Clear**. Stop sets `ended_at`; Start after Stop begins a fresh
+    trace (so stop→start clears the view). Pause sets `ended_at` and
+    marks the trace paused; Resume removes `ended_at` and the trace
+    continues — frames that arrived during the pause are included (they
+    were in the session buffer). Clear resets the trace to an empty,
+    running window starting now.
+  - The lifecycle is **global** for the session — one trace, many
+    views — matching the "session buffer" being shared. (Per-view
+    capture windows, if ever wanted, are a later add.)
+- **Per-message-ID panel.** A dockview panel that shows one row per
+  arbitration ID — the *latest* frame seen for that ID within the
+  current trace — sorted by ID, updating live, expandable to its
+  decoded signals like a trace row. It's a view over the same session
+  buffer / trace as the chronological panel, just folded by ID. (Folds
+  in the `[ui]` "by ID mode" item from `plans/backlog.md`; the
+  rest-of-bus *transmit* gridview from `features.md` is the TX
+  counterpart and stays Phase 5+.)
 - **Project panel + project file.** A project is a JSON file
   (`features.md`: "projects — includes window layouts, bus configs,
   references DBCs … DBC should be reloadable from disk at any time").
@@ -280,19 +311,27 @@ Implementation notes (in progress):
 
 Exit criteria:
 
-- Two trace panels and the project panel can be open simultaneously
-  inside one window, split / tabbed into a custom layout, each with its
-  own per-panel state, with no regressions vs. Phase 2 throughput.
+- Two trace panels, the per-message-ID panel, and the project panel can
+  be open simultaneously inside one window, split / tabbed into a custom
+  layout, each with its own per-panel state, with no regressions vs.
+  Phase 2 throughput.
 - Trace-panel columns can be drag-resized and individually shown / hidden,
   and that state persists with the panel.
+- The trace-style views share Start / Stop / Pause / Resume / Clear
+  controls over one session-wide trace: stop→start clears the view;
+  pause→resume continues it (including frames received during the pause);
+  the session buffer survives all of these and is emptied only on a new
+  connection.
+- The per-message-ID panel shows one row per arbitration ID with its
+  latest payload, updating live, expandable to decoded signals.
 - Opening a saved project restores the panel layout, the per-panel config,
   the bus / connection config, and the DBC reference(s); "reload DBC"
   picks up edits made to the file on disk; launching the app with no
   arguments reopens the last project.
 - README documents the panel / layout UI (how to split, tab, and reset a
-  layout) and the project-file workflow (create / open / save, where it
-  lives, what it contains); rustdoc covers the new public surface on the
-  project-file types.
+  layout), the trace controls and what each does, and the project-file
+  workflow (create / open / save, where it lives, what it contains);
+  rustdoc covers the new public surface on the trace / project-file types.
 
 ## Phase 4 — Signal Plotting
 
