@@ -78,14 +78,24 @@ work or admit it isn't going to happen and delete it.
   synthetic-height spacer vs. the current scaled approach, and settle the
   scroll/auto-scroll ownership story, before piling more on it. (Flagged
   while planning Phase 4; doesn't block plotting.)
-- `[perf]` `cannet-gui` plot panel: `sample_signal` re-scans and
-  re-decodes the whole requested window on every `trace-grew` tick while
-  "follow live" is on — fine for short captures, wasteful for long ones.
-  Options: incremental sampling (only decode frames appended since the
-  last call and append to the series), a windowed live view (last N
-  seconds rather than the whole capture), or a downsample/decimation
-  step before the data reaches uPlot. Folds in with the TraceStore
+- `[perf]` `cannet-gui` plot panel: `sample_signal` returns the raw
+  series and re-scans / re-decodes the whole requested window on every
+  `trace-grew` tick. With the trace store holding hundreds of thousands
+  to millions of frames this is doubly wrong: (a) decimation — min/max
+  bucket the series to ~the pixel width of the visible window before it
+  reaches uPlot, keeping spikes; the un-decimated data stays in the store
+  for cursor read-outs and export; (b) incremental sampling — only decode
+  frames appended since the last call rather than re-walking. Treat (a)
+  as a required Phase 4 data-path step, not an optimisation (see
+  `plans/phased-implementation.md` Phase 4). Folds in with the TraceStore
   disk-spill / chunking rework if that lands first.
+- `[ui]` GUI-wide visual restyle: adopt the dark "scope" visual
+  language from `plans/plot-panel-reference.html` (the prototype's colour
+  variables, monospace type scale, panel chrome, control styling) across
+  the toolbar, trace panels, project panel, etc. — currently each panel
+  has its own ad-hoc styling in `apps/gui/src/index.css`. Approved in
+  principle; do it as one deliberate pass once the plot panel's own
+  styling has settled, not piecemeal.
 - `[feat]` real in-process writable CAN source — a local virtual bus
   (Linux `vcan` via socketcan) and/or an in-memory loopback-bus type in
   `cannet-core` (a `CanFrameSink` paired with a `CanFrameSource`). Phase
