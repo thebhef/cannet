@@ -53,9 +53,11 @@ apps/
                      natively but falls back to row-stepped scrolling
                      when a notch would otherwise skip a screenful (huge
                      traces, where that mapping is compressed). Rows
-                     expand to show decoded signals. The scroll/stacking
-                     arithmetic lives in `traceViewport.ts` (unit-tested
-                     in `traceViewport.test.ts`).
+                     expand to show decoded signals; columns can be
+                     drag-resized and shown / hidden per panel
+                     (`traceColumns.ts`). The scroll/stacking and column
+                     arithmetic live in `traceViewport.ts` /
+                     `traceColumns.ts` (unit-tested alongside).
     src-tauri/       Rust host (`cannet-gui` crate). Owns the trace
                      model (`trace_store.rs`); the BLF and remote pumps
                      append frames, and the frontend pulls slices via
@@ -140,8 +142,11 @@ opening attaches a database for live decoding.
 The window below the toolbar is a dockable panel area. **Add trace
 panel** opens another trace view (as a new tab in the active group).
 Drag a panel by its tab and drop it against an edge of the area to
-split it side-by-side, or onto another panel to tab them together;
-each trace panel keeps its own scroll position and auto-scroll toggle.
+split it side-by-side, or onto another panel to tab them together.
+Each trace panel keeps its own scroll position, auto-scroll toggle,
+and column layout — drag the divider at a column header's right edge
+to resize it, and use the panel's **columns ▾** menu to show / hide
+individual columns.
 (Tearing a panel out into a separate OS window isn't supported yet —
 docking is within the one window; the tear-out item is in
 `plans/backlog.md`.) The layout is remembered between runs (stored
