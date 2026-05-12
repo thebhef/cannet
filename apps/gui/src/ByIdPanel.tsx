@@ -5,6 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { TraceControls } from "./TraceControls";
 import { useTraceData } from "./traceData";
 import { useTrace } from "./trace";
+import { useElementRegistry } from "./projectElements";
 import {
   formatData,
   formatId,
@@ -34,9 +35,21 @@ function rowKey(f: TraceFrameRecord): string {
  * latest-by-id index — see `fetch_latest_by_id` — not by walking the
  * buffer.)
  */
-export function ByIdPanel(_props: IDockviewPanelProps) {
+export function ByIdPanel(props: IDockviewPanelProps) {
   const data = useTraceData();
-  const trace = useTrace(data);
+  const { ensureTrace } = useElementRegistry();
+
+  const [elementId] = useState(() => {
+    const p = props.params as { elementId?: unknown } | undefined;
+    return typeof p?.elementId === "string" ? p.elementId : crypto.randomUUID();
+  });
+  const { api } = props;
+  useEffect(() => {
+    ensureTrace(elementId, "by-id");
+    api.updateParameters({ elementId });
+  }, [api, ensureTrace, elementId]);
+
+  const trace = useTrace(data, elementId);
 
   const [rows, setRows] = useState<TraceFrameRecord[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());

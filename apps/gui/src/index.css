@@ -221,11 +221,19 @@ header {
 
 .project-path,
 .project-bus,
-.project-dbc {
+.project-dbc,
+.project-element {
   display: flex;
   align-items: center;
   gap: 0.4rem;
   margin-bottom: 0.3rem;
+}
+
+.project-element-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .project-path {

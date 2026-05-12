@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  clampToSession,
   clearedTrace,
   freshTrace,
   pauseTrace,
+  reanchorToSession,
   resumeTrace,
   stopTrace,
   traceFrameCount,
@@ -64,13 +64,13 @@ describe("stopTrace / pauseTrace / resumeTrace", () => {
   });
 });
 
-describe("clampToSession", () => {
+describe("reanchorToSession", () => {
   it("re-anchors when the buffer shrank below the start", () => {
-    expect(clampToSession({ start: 1000, end: 2000, isPaused: false }, 0)).toEqual(freshTrace(0));
+    expect(reanchorToSession({ start: 1000, end: 2000, isPaused: false }, 0)).toEqual(freshTrace(0));
   });
 
   it("trims a stale end", () => {
-    expect(clampToSession({ start: 5, end: 100, isPaused: true }, 50)).toEqual({
+    expect(reanchorToSession({ start: 5, end: 100, isPaused: true }, 50)).toEqual({
       start: 5,
       end: 50,
       isPaused: true,
@@ -79,6 +79,6 @@ describe("clampToSession", () => {
 
   it("is the same object when nothing needs clamping", () => {
     const s = { start: 5, end: 10, isPaused: false };
-    expect(clampToSession(s, 100)).toBe(s);
+    expect(reanchorToSession(s, 100)).toBe(s);
   });
 });
