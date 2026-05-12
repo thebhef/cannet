@@ -218,21 +218,24 @@ position (it re-anchors to the session buffer on each launch anyway),
 the BLF replay path, the per-interface subscription set, and per-bus
 DBC association (every loaded DBC applies to the one interface for now).
 
-**Add plot panel** opens a signal plot (Phase 4): a uPlot time-series
-view docked like any other panel. With a DBC attached, the panel's
-**add signal…** dropdown lists every `(message, signal)` pair the
-database defines — pick one or more and they're sampled out of the live
-capture and drawn on a shared time axis. Drag on the plot to zoom the
-time axis (double-click to reset); the legend reads out each trace's
-value at the hovered point. **Follow live** keeps the view pinned to the
-capture's growing edge; panning or zooming turns it off, the same way a
-manual scroll leaves auto-scroll in a trace panel. Multiple plot panels
-can be open, each with its own signal set. (Saving a plot panel's signal
-set into a project file lands with the Phase 3 project-file work; for
-now it persists via the same local layout blob as the trace panels. The
-deeper oscilloscope feature set — multiple y-axes, cursors and Δ
-measurement, triggers, math channels, enum/state plots — is sketched in
-`plans/phased-implementation.md` under Phase 4 as later passes.)
+**Add plot panel** opens a signal plot (Phase 4): a uPlot-based
+oscilloscope-style view, docked like any other panel. A plot panel is a
+**stack of plot areas** — it starts with one; **add plot area** appends
+more, all sharing one time axis. Each plot area has a uPlot canvas plus
+a **signal panel** beside it listing that area's signals (colour
+swatch, name, present value). With a DBC attached, the toolbar's **add
+signal…** dropdown lists every `(message, signal)` pair the database
+defines; picking one drops it into the *focused* plot area (click an
+area to focus it). Move a signal between areas with the **→** menu on
+its row; remove it with **×**. Drag on a plot to zoom the time axis
+(double-click to reset). **Follow live** keeps every area pinned to the
+capture's growing edge; panning or zooming a plot turns it off, the
+same way a manual scroll leaves auto-scroll in a trace panel. Multiple
+plot panels can be open, each with its own areas and signals; the
+plot-area layout and the signal assignments round-trip through the
+project file. (Still to come — see `plans/phased-implementation.md`
+Phase 4: opt-in cursors + a measurement strip, synced x-zoom across
+areas, event markers, per-trace y controls, enum/state plots.)
 
 > **Note:** plain `cargo run -p cannet-gui` will build the Rust host on
 > its own but won't bring up a usable window — the host expects either
