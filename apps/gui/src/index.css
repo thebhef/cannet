@@ -631,14 +631,41 @@ header {
 }
 
 /* One plot area: a uPlot canvas on the left, a side signal panel on
-   the right. Each area has a fixed-ish height so a stack of them is
-   readable; the canvas's ResizeObserver follows whatever it gets. */
+   the right. One area fills the panel; N areas split it evenly, each
+   clamped to a usable minimum (a tall stack scrolls). The canvas's
+   ResizeObserver follows whatever height it gets. */
 .plot-area {
   display: flex;
-  flex: 0 0 auto;
-  height: 200px;
-  min-height: 120px;
+  flex: 1 1 0;
+  min-height: 110px;
   border-bottom: 1px solid #1f2630;
+}
+
+.plot-area-ycursors {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.1rem 0.4rem;
+  border-bottom: 1px dotted #1c252b;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  color: #94a3b8;
+}
+.plot-area-ycursors .gold {
+  color: #ffd93d;
+}
+.plot-area-ycursors .pink {
+  color: #ff5577;
+}
+
+.plot-event-edit {
+  flex: 1 1 auto;
+  background: #0f141d;
+  color: #e2e8f0;
+  border: 1px solid #2c3444;
+  border-radius: 3px;
+  font: inherit;
+  font-size: 0.74rem;
+  padding: 0 0.2rem;
 }
 
 .plot-area.focused {

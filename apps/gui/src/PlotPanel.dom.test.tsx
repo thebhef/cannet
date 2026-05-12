@@ -115,7 +115,7 @@ describe("PlotPanel", () => {
     expect(screen.getByText("Area 1")).toBeInTheDocument();
     expect(screen.queryByText("Area 2")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "add plot area" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "reset zoom" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "fit data" })).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: /measurements/i })).not.toBeChecked();
     expect(screen.getByRole("checkbox", { name: /follow live/i })).toBeChecked();
     expect(document.querySelector(".plot-meas-strip")).toBeNull();
