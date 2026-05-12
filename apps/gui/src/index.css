@@ -190,10 +190,24 @@ header {
 
 /* One trace panel inside the dock layout: a slim per-panel toolbar on
    top, the trace table filling the rest. */
-.trace-panel {
+.trace-panel,
+.by-id-panel {
   display: flex;
   flex-direction: column;
   height: 100%;
+}
+
+/* Per-message-ID panel: like a trace table, but the rows are one per
+   arbitration id (latest frame), not virtualized. */
+.by-id-rows {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.by-id-count {
+  font-size: 0.75rem;
+  color: #64748b;
 }
 
 .trace-panel-toolbar {
