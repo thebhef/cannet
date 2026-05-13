@@ -52,14 +52,18 @@ export function ByIdTable({
 
   return (
     <div className="trace">
-      <TraceHeader
-        columns={columns}
-        onColumnResize={onColumnResize}
-        onColumnToggle={onColumnToggle}
-        sort={sort}
-        onSortColumn={onSortColumn}
-      />
+      {/* Header lives inside the scroll container so it tracks the rows
+          horizontally when the columns are wider than the panel; its
+          `position: sticky; top: 0` keeps it pinned while scrolling
+          down. */}
       <div className="by-id-rows">
+        <TraceHeader
+          columns={columns}
+          onColumnResize={onColumnResize}
+          onColumnToggle={onColumnToggle}
+          sort={sort}
+          onSortColumn={onSortColumn}
+        />
         {sorted.map((s) => {
           const key = byIdRowKey(s.frame);
           return (
