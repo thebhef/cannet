@@ -1,17 +1,16 @@
 import { createContext, useContext } from "react";
 
-import type { ProjectElement } from "./types";
+import type { ProjectElement, ProjectElementKind } from "./types";
 import type { TraceState } from "./trace";
 
 /// A registry entry: the persisted project element plus its runtime
-/// state. For a trace element, `trace` is the live `[start, end,
-/// isPaused]` window — *not* persisted in the project (it re-anchors to
-/// the session buffer, which resets on a new connection / app exit).
+/// state. `trace` is the live `[start, end, isPaused]` session window —
+/// *not* persisted in the project (it re-anchors to the session buffer,
+/// which resets on a new connection / app exit). Both element kinds use
+/// it: a `plot` element is a trace-style window too, it just renders
+/// signal values instead of message rows.
 export interface RegistryEntry {
   element: ProjectElement;
-  /// The live trace window. (Only trace elements exist for now; when
-  /// other kinds arrive this becomes a kind-tagged union of runtime
-  /// state.)
   trace: TraceState;
 }
 
@@ -24,13 +23,15 @@ export interface ElementRegistry {
   /// All entries, in insertion order.
   entries: readonly RegistryEntry[];
   get(id: string): RegistryEntry | undefined;
-  /// Create a new trace element + entry; returns its id.
-  createTrace(): string;
-  /// Ensure an entry with `id` exists (a panel found its element
-  /// missing — heal it). No-op if it's already there.
-  ensureTrace(id: string): void;
-  /// Replace a trace element's window. The updater may return the same
-  /// object to signal "no change".
+  /// Create a new element of `kind` + its entry; returns the new id.
+  create(kind: ProjectElementKind): string;
+  /// Ensure an entry with `id` exists and has the given `kind` (a panel
+  /// found its element missing — heal it; or an old project saved a plot
+  /// element as `trace` — correct it). No-op if already present with
+  /// that kind.
+  ensure(id: string, kind: ProjectElementKind): void;
+  /// Replace an element's session window. The updater may return the
+  /// same object to signal "no change".
   updateTrace(id: string, updater: (s: TraceState) => TraceState): void;
   /// Remove an element and close its panel, if any.
   remove(id: string): void;
@@ -52,5 +53,5 @@ export function useElementRegistry(): ElementRegistry {
 export function isProjectElement(v: unknown): v is ProjectElement {
   if (v == null || typeof v !== "object") return false;
   const o = v as { kind?: unknown; id?: unknown };
-  return o.kind === "trace" && typeof o.id === "string";
+  return (o.kind === "trace" || o.kind === "plot") && typeof o.id === "string";
 }

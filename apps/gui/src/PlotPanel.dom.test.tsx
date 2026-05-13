@@ -72,24 +72,24 @@ class FakeResizeObserver {
   disconnect() {}
 }
 
-// A throwaway element registry: PlotPanel only uses `ensureTrace` (to
+// A throwaway element registry: PlotPanel only uses `ensure` (to
 // register its element) and, via `useTrace`, `get` / `updateTrace`.
 type TS = ReturnType<typeof freshTrace>;
-type Entry = { element: { kind: "trace"; id: string; view: "plot" }; trace: TS };
+type Entry = { element: { kind: "plot"; id: string }; trace: TS };
 function makeRegistry(): ElementRegistry {
   const map = new Map<string, Entry>();
-  const entry = (id: string): Entry => ({ element: { kind: "trace", id, view: "plot" }, trace: freshTrace(0) });
+  const entry = (id: string): Entry => ({ element: { kind: "plot", id }, trace: freshTrace(0) });
   return {
     get entries() {
       return [...map.values()];
     },
     get: (id: string) => map.get(id),
-    createTrace: () => {
+    create: () => {
       const id = Math.random().toString(36).slice(2);
       map.set(id, entry(id));
       return id;
     },
-    ensureTrace: (id: string) => {
+    ensure: (id: string) => {
       if (!map.has(id)) map.set(id, entry(id));
     },
     updateTrace: (id: string, updater: (s: TS) => TS) => {

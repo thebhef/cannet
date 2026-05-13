@@ -4,7 +4,7 @@ import type { IDockviewPanel, IDockviewPanelProps } from "dockview";
 import { useProjectContext } from "./projectContext";
 import { useElementRegistry } from "./projectElements";
 import type { ProjectElement } from "./types";
-import { TRACE_PANEL_COMPONENT } from "./dockLayout";
+import { PLOT_PANEL_COMPONENT, TRACE_PANEL_COMPONENT } from "./dockLayout";
 
 /**
  * The project panel: New / Open / Save / Save As for the project file;
@@ -34,6 +34,15 @@ export function ProjectPanel(props: IDockviewPanelProps) {
     );
 
   const openElement = (el: ProjectElement) => {
+    if (el.kind === "plot") {
+      containerApi.addPanel({
+        id: `plot-${el.id}`,
+        component: PLOT_PANEL_COMPONENT,
+        title: "Plot",
+        params: { elementId: el.id },
+      });
+      return;
+    }
     containerApi.addPanel({
       id: `trace-${el.id}`,
       component: TRACE_PANEL_COMPONENT,
@@ -75,7 +84,8 @@ export function ProjectPanel(props: IDockviewPanelProps) {
           return (
             <div className="project-element" key={el.id}>
               <span className="project-element-name">
-                trace{panel ? ` — ${panel.title}` : " (closed)"}
+                {el.kind}
+                {panel ? ` — ${panel.title}` : " (closed)"}
               </span>
               {panel ? (
                 <button type="button" onClick={() => panel.api.setActive()}>

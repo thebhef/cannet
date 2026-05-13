@@ -11,6 +11,7 @@ import type {
   LogFinished,
   OpenLogResult,
   Project,
+  ProjectElementKind,
   RemoteSessionResult,
   TraceFrameRecord,
   TraceGrew,
@@ -131,27 +132,30 @@ export function App() {
   // close-on-quit handler. Updated on every render below.
   const dirtyRef = useRef(false);
   const handleSaveProjectRef = useRef<() => Promise<boolean>>(() => Promise.resolve(false));
-  // Current session frame count, mirrored into a ref so `createTrace` /
-  // `ensureTrace` can anchor a new (empty, stopped) trace at *now*
+  // Current session frame count, mirrored into a ref so `create` /
+  // `ensure` can anchor a new (empty, stopped) trace at *now*
   // without taking `count` as a dependency (it changes every tick).
   const countRef = useRef(0);
   countRef.current = count;
 
   // --- element registry ops ---
-  const createTrace = useCallback((): string => {
+  const create = useCallback((kind: ProjectElementKind): string => {
     const id = crypto.randomUUID();
     setRegistry((prev) => [
       ...prev,
-      { element: { kind: "trace", id }, trace: clearedTrace(countRef.current) },
+      { element: { kind, id }, trace: clearedTrace(countRef.current) },
     ]);
     return id;
   }, []);
-  const ensureTrace = useCallback((id: string) => {
-    setRegistry((prev) =>
-      prev.some((e) => e.element.id === id)
-        ? prev
-        : [...prev, { element: { kind: "trace", id }, trace: clearedTrace(countRef.current) }],
-    );
+  const ensure = useCallback((id: string, kind: ProjectElementKind) => {
+    setRegistry((prev) => {
+      const i = prev.findIndex((e) => e.element.id === id);
+      if (i < 0) return [...prev, { element: { kind, id }, trace: clearedTrace(countRef.current) }];
+      if (prev[i].element.kind === kind) return prev;
+      const next = prev.slice();
+      next[i] = { ...next[i], element: { kind, id } };
+      return next;
+    });
   }, []);
   const updateTrace = useCallback((id: string, updater: (s: TraceState) => TraceState) => {
     setRegistry((prev) => {
@@ -441,7 +445,7 @@ export function App() {
     const api = dockApiRef.current;
     if (!api) return;
     setRegistry([]);
-    const elementId = createTrace();
+    const elementId = create("trace");
     api.clear();
     api.addPanel({
       id: `trace-${elementId}`,
@@ -458,7 +462,7 @@ export function App() {
       position: { direction: "left" },
     });
     panelCounterRef.current = 1;
-  }, [createTrace]);
+  }, [create]);
 
   /// Snapshot the current workspace into a `Project` (the elements, not
   /// their runtime state — that re-anchors on reload).
@@ -646,7 +650,7 @@ export function App() {
   const addTracePanel = useCallback(() => {
     const api = dockApiRef.current;
     if (!api) return;
-    const elementId = createTrace();
+    const elementId = create("trace");
     panelCounterRef.current += 1;
     // A new trace starts in by-id mode (toggle it in the panel toolbar).
     api.addPanel({
@@ -655,18 +659,20 @@ export function App() {
       title: `Trace ${panelCounterRef.current}`,
       params: { elementId, mode: "by-id" },
     });
-  }, [createTrace]);
+  }, [create]);
 
   const addPlotPanel = useCallback(() => {
     const api = dockApiRef.current;
     if (!api) return;
+    const elementId = create("plot");
     plotCounterRef.current += 1;
     api.addPanel({
-      id: `plot-${crypto.randomUUID()}`,
+      id: `plot-${elementId}`,
       component: PLOT_PANEL_COMPONENT,
       title: `Plot ${plotCounterRef.current}`,
+      params: { elementId },
     });
-  }, []);
+  }, [create]);
 
   const toggleProjectPanel = useCallback(() => {
     const api = dockApiRef.current;
@@ -752,12 +758,12 @@ export function App() {
     () => ({
       entries: registry,
       get: (id) => registry.find((e) => e.element.id === id),
-      createTrace,
-      ensureTrace,
+      create,
+      ensure,
       updateTrace,
       remove: removeElement,
     }),
-    [registry, createTrace, ensureTrace, updateTrace, removeElement],
+    [registry, create, ensure, updateTrace, removeElement],
   );
 
   const remoteConnected =
