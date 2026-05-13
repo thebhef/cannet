@@ -36,6 +36,7 @@
 
 mod ipc;
 mod project;
+mod signal_cache;
 mod signal_sampler;
 mod trace_store;
 
@@ -56,6 +57,7 @@ use ipc::{
     RemoteSessionResult, SampledPoints, SignalDescriptorRecord, SignalQuery, SignalRecord,
     SignalsSample, TraceFrameRecord, TraceGrew,
 };
+use signal_cache::SignalCacheStore;
 use trace_store::{RawTraceFrame, TraceStore};
 
 /// A loaded DBC: its source path and the parsed database. Decoders walk
@@ -95,6 +97,12 @@ struct AppState {
     /// stream. Pump threads append; `fetch_trace_range` reads slices
     /// out for the trace view to render.
     trace_store: TraceStore,
+    /// Per-`(message, signal)` decoded-sample caches, extended
+    /// incrementally by `sample_signals` so a plot doesn't re-decode
+    /// the same matching frames every tick. Cleared on
+    /// `clear_trace_store` (the frame indices it holds wouldn't
+    /// otherwise survive).
+    signal_caches: SignalCacheStore,
 }
 
 /// Boot the Tauri runtime.
@@ -111,6 +119,7 @@ pub fn run() {
             databases: Mutex::new(Vec::new()),
             remote_session: Mutex::new(None),
             trace_store: TraceStore::new(),
+            signal_caches: SignalCacheStore::new(),
         })
         .invoke_handler(tauri::generate_handler![
             open_log,
@@ -332,6 +341,10 @@ async fn fetch_latest_by_id(app: AppHandle, since: u64) -> Vec<ByIdSnapshot> {
 #[allow(clippy::needless_pass_by_value)]
 fn clear_trace_store(state: State<'_, AppState>) {
     state.trace_store.clear();
+    // The decoded-sample caches hold frame indices into the store —
+    // wipe them too, otherwise the next `sample_signals` would slice
+    // against a buffer that no longer exists.
+    state.signal_caches.clear();
 }
 
 /// Every `(message, signal)` pair defined by any loaded DBC, for a plot
@@ -404,53 +417,52 @@ async fn sample_signals(
     #[allow(clippy::cast_precision_loss)]
     let ns_to_seconds = |ns: u64| (ns as f64) / 1e9;
 
-    let ids: Vec<(u32, bool)> = signals.iter().map(|q| (q.message_id, q.extended)).collect();
     let t_slice = std::time::Instant::now();
-    let (frame_lists, from_ts, last_ts) =
-        state
-            .trace_store
-            .slice_matching_many(&ids, from_index as usize, window_end as usize);
+    let (from_ts, last_ts) = state
+        .trace_store
+        .frame_timestamps(from_index as usize, window_end as usize);
+    // Catch the per-signal decoded-sample caches up to the trace
+    // store's current tip and pull the slice each plot wants. Catch-up
+    // is `O(new matches)` rather than `O(matches in window)`, which is
+    // the win at long captures + high rate: per-tick host work no
+    // longer scales with capture length.
+    let dbs_guard = state.databases.lock().expect("databases mutex poisoned");
+    let db_refs: Vec<&Database> = dbs_guard.iter().map(|l| &l.db).collect();
+    let sliced: Vec<Vec<signal_sampler::SamplePoint>> = signals
+        .iter()
+        .map(|q| {
+            state.signal_caches.slice(
+                q.message_id,
+                q.extended,
+                &q.signal_name,
+                from_index as usize,
+                window_end as usize,
+                &state.trace_store,
+                &db_refs,
+            )
+        })
+        .collect();
+    drop(dbs_guard);
     let slice_ms = t_slice.elapsed().as_secs_f64() * 1000.0;
 
     let t_decode = std::time::Instant::now();
-    let series: Vec<SampledPoints> = {
-        let dbs = state.databases.lock().expect("databases mutex poisoned");
-        signals
-            .iter()
-            .zip(frame_lists.iter())
-            .map(|(q, frames)| {
-                // Use the first loaded DBC that actually decodes this
-                // signal (an empty result ⇒ either it isn't defined
-                // there, or there are no matching frames — fine either
-                // way; the next DBC, or nothing, takes over).
-                let points = dbs
-                    .iter()
-                    .map(|l| {
-                        signal_sampler::sample_signal(
-                            frames,
-                            &l.db,
-                            q.message_id,
-                            q.extended,
-                            &q.signal_name,
-                        )
-                    })
-                    .find(|p| !p.is_empty())
-                    .unwrap_or_default();
-                let points = if max_points > 0 {
-                    signal_sampler::decimate_min_max(&points, max_points as usize)
-                } else {
-                    points
-                };
-                let mut t = Vec::with_capacity(points.len());
-                let mut v = Vec::with_capacity(points.len());
-                for p in points {
-                    t.push(p.t_seconds);
-                    v.push(p.value);
-                }
-                SampledPoints { t, v }
-            })
-            .collect()
-    };
+    let series: Vec<SampledPoints> = sliced
+        .into_iter()
+        .map(|points| {
+            let points = if max_points > 0 {
+                signal_sampler::decimate_min_max(&points, max_points as usize)
+            } else {
+                points
+            };
+            let mut t = Vec::with_capacity(points.len());
+            let mut v = Vec::with_capacity(points.len());
+            for p in points {
+                t.push(p.t_seconds);
+                v.push(p.value);
+            }
+            SampledPoints { t, v }
+        })
+        .collect();
     let decode_ms = t_decode.elapsed().as_secs_f64() * 1000.0;
 
     SignalsSample {
@@ -672,6 +684,7 @@ mod tests {
             databases: Mutex::new(Vec::new()),
             remote_session: Mutex::new(None),
             trace_store: TraceStore::new(),
+            signal_caches: SignalCacheStore::new(),
         }
     }
 
