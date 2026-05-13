@@ -49,3 +49,39 @@ export function mergeSeries(series: RawSeries[]): (number | null)[][] {
 export function signalKey(messageId: number, extended: boolean, signalName: string): string {
   return `${extended ? "x" : "s"}:${messageId}:${signalName}`;
 }
+
+/**
+ * Min/max-decimate a `(t, v)` series to roughly `maxBuckets` time
+ * buckets — keep the min- and max-value point of each bucket (in time
+ * order) so peaks/troughs survive. Bucketing is by index (the trace
+ * store's samples are roughly time-uniform), so it's a single O(n)
+ * walk; returns at most `2 * maxBuckets` points. `maxBuckets <= 0`, or a
+ * series that already fits, is returned as-is (a copy). Mirrors the
+ * host's `signal_sampler::decimate_min_max` — used to keep a plot
+ * area's accumulated cache bounded without a round-trip.
+ */
+export function decimatePoints(t: number[], v: number[], maxBuckets: number): { t: number[]; v: number[] } {
+  const n = Math.min(t.length, v.length);
+  if (maxBuckets <= 0 || n <= maxBuckets) return { t: t.slice(0, n), v: v.slice(0, n) };
+  const bucket = Math.ceil(n / maxBuckets);
+  const outT: number[] = [];
+  const outV: number[] = [];
+  for (let start = 0; start < n; start += bucket) {
+    const end = Math.min(start + bucket, n);
+    let lo = start;
+    let hi = start;
+    for (let i = start; i < end; i++) {
+      if (v[i] < v[lo]) lo = i;
+      if (v[i] > v[hi]) hi = i;
+    }
+    const a = Math.min(lo, hi);
+    const b = Math.max(lo, hi);
+    outT.push(t[a]);
+    outV.push(v[a]);
+    if (b !== a) {
+      outT.push(t[b]);
+      outV.push(v[b]);
+    }
+  }
+  return { t: outT, v: outV };
+}

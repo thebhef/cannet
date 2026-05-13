@@ -537,10 +537,10 @@ persistence (which is gated on the rest of Phase 3 — see below).
   `sample_signals` fetch only when raw increments overflow it). So a
   tick's host cost is `O(increment)`, not `O(window)`, and the trace
   store lock is held only to clone the increment — even at thousands of
-  frames/s the pump isn't starved. The loop is self-paced (~30 Hz, the
-  next tick scheduled after the previous finishes — decoupled from React
-  re-renders, which lurch at high rates); the toolbar shows the
-  resulting update rate. Pause/Stop freeze the window so the loop
+  frames/s the pump isn't starved. The loop is self-paced (the next tick
+  scheduled after the previous finishes — decoupled from React
+  re-renders, which lurch at high rates) at a toolbar-configurable rate
+  (default 15 Hz); the toolbar also shows the actual update rate. Pause/Stop freeze the window so the loop
   stops; a cursor / measurement query re-samples that signal over the
   (narrower) cursor span. (`signal_sampler::decimate_min_max` —
   per-bucket extrema so spikes survive — unit-tested.)
