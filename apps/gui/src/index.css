@@ -731,13 +731,24 @@ header {
   gap: 0.3rem;
   padding: 0.15rem 0.4rem;
   border-bottom: 1px dotted #1c252b;
+  cursor: grab;
+}
+.plot-signal-row:active {
+  cursor: grabbing;
 }
 
+/* The swatch doubles as the show/hide toggle. */
 .plot-signal-swatch {
   flex: 0 0 auto;
   width: 0.7rem;
   height: 0.7rem;
   border-radius: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  padding: 0;
+  cursor: pointer;
+}
+.plot-signal-swatch.hidden {
+  opacity: 0.25;
 }
 
 .plot-signal-name {
@@ -748,22 +759,15 @@ header {
   white-space: nowrap;
   color: #cbd5e1;
 }
+.plot-signal-row.hidden .plot-signal-name {
+  opacity: 0.45;
+  font-style: italic;
+}
 
 .plot-signal-value {
   flex: 0 0 auto;
   color: #fde68a;
   font-variant-numeric: tabular-nums;
-}
-
-.plot-signal-move {
-  flex: 0 0 auto;
-  background: #0f141d;
-  color: #94a3b8;
-  border: 1px solid #2c3444;
-  border-radius: 3px;
-  font: inherit;
-  font-size: 0.7rem;
-  padding: 0 0.1rem;
 }
 
 /* uPlot renders on a dark ground; nudge its chrome to match the app. */
