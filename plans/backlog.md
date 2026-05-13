@@ -90,18 +90,32 @@ work or admit it isn't going to happen and delete it.
   "expose those numbers"; uPlot also supports multiple stacked y-axes
   if that turns out to be the better UX for "I want to read absolute
   values off the axis" instead of normalised positions.
-- `[feat]` `cannet-gui` plot panel: zoom-aware host-side decimation.
-  Today the cache slides — older points are dropped as new ones come
-  in — and a freshly-built cache decimates the *full* current trace
-  window to `CACHE_TARGET_POINTS` points just once. So (a) zooming
-  back to see capture history older than the slide window shows a
-  gap, and (b) zooming in shows the same coarse decimation no matter
-  how narrow the visible range. The fix: when the visible x-range is
-  significantly different from what's cached, fire a `sample_signals`
-  query scoped to that visible range with `max_points` matched to
-  canvas width — full detail at narrow zooms, full history when
-  zoomed out, all by leaning on the host's `slice_matching_many` +
-  `decimate_min_max` against the raw frames.
+- `[perf]` `cannet-gui` plot panel: time-to-frame mapping for the
+  visible-range fetch. The zoom-aware refetch converts the shared x
+  range (relative seconds) to frame indices via a uniform-fps estimate
+  carried in the cache. That's accurate for uniform streams but
+  imprecise for bursty traffic — the fetched range can land slightly
+  off the visible one. A precise mapping wants either a small
+  per-second timestamp→index index in `TraceStore` (and a `time_range`
+  variant of `slice_matching_many`), or a binary-search lookup
+  exposed as a Tauri command. Until then, the fps approximation is
+  close enough to draw correctly.
+- `[perf]` `cannet-gui`: binary IPC for `sample_signals`. Today the
+  command returns JSON-encoded `Vec<f64>` arrays — at high rate the
+  serialise / parse cost is one of the visible terms in the
+  per-resample wall clock. Tauri v2 supports `tauri::ipc::Response`
+  with raw bytes; encode the response as `[u32 lens..., f64 ts..., f64
+  vs...]` and decode in JS via a `DataView`. Probably 5-10× cheaper
+  IPC under load; the plot toolbar already shows `host` vs total ms
+  so the win is measurable.
+- `[perf]` `cannet-gui`: host-side decoded-sample cache. Today every
+  `sample_signals` call re-decodes the matching raw frames in its
+  range. With a per-`(message, signal)` append-only decoded-sample
+  buffer extended as the pump runs, the command is mostly "slice and
+  decimate an already-decoded array" — the actual decode CPU at high
+  rate is the dominant cost. Needs subscription tracking (so the host
+  only decodes signals someone's plotting) and a lifecycle tied to
+  the buffer clear.
 - `[feat]` `cannet-gui` plot panel: triggers — edge / level /
   value-match on a chosen signal that freeze the view and emit an event
   marker (into the plot's event list, and later the trace). The

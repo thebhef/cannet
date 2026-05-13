@@ -190,6 +190,13 @@ pub struct SignalsSample {
     pub from_seconds: Option<f64>,
     pub last_seconds: Option<f64>,
     pub series: Vec<SampledPoints>,
+    /// Wall-clock time the host spent in the lock-held slice
+    /// (`slice_matching_many`), milliseconds — how much of the per-call
+    /// cost is store-lock contention with the pump.
+    pub slice_ms: f64,
+    /// Wall-clock time the host spent decoding + decimating off the
+    /// store lock, milliseconds.
+    pub decode_ms: f64,
 }
 
 /// One CAN interface as exposed by a remote `cannet-server`. Mirrors
