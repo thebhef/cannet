@@ -1302,6 +1302,22 @@ function PlotArea(p: PlotAreaProps) {
   useEffect(() => {
     const el = canvasRef.current;
     if (!el) return;
+    // Don't construct uPlot until the canvas has real dimensions. A
+    // panel restored from a project file mounts before dockview has
+    // laid out the layout — so the canvas is 0×0 at mount, uPlot's
+    // axis-layout state initialises against the fallback size and never
+    // recovers (data is set, but no axes / gridlines draw). Wait for
+    // the first non-zero size, then re-run the effect.
+    if (!el.clientWidth || !el.clientHeight) {
+      const probe = new ResizeObserver(() => {
+        if (el.clientWidth && el.clientHeight) {
+          probe.disconnect();
+          setResizeTick((n) => n + 1);
+        }
+      });
+      probe.observe(el);
+      return () => probe.disconnect();
+    }
     const axisCommon = {
       stroke: AXIS_STROKE,
       grid: { stroke: AXIS_GRID, width: 1 },
@@ -1598,31 +1614,10 @@ function PlotArea(p: PlotAreaProps) {
     // the next live tick — but a stopped trace has no tick).
     const raf = requestAnimationFrame(() => void resampleRef.current());
 
-    // The first time the canvas gets real dimensions (dockview hadn't
-    // laid it out yet at construction), rebuild the uPlot from scratch
-    // at the right size. A `setSize` on a 0×0-constructed uPlot doesn't
-    // recompute the axis layout fully, leaving us with data but no
-    // axes / gridlines — that's the original "drag/drop is needed to
-    // render" symptom. Subsequent resizes just `setSize`.
-    let firstRO = true;
-    const constructedAt = { w: el.clientWidth || 600, h: Math.max(60, el.clientHeight - 2) };
+    // The canvas had real dimensions at construction (we guarded for it
+    // above), so subsequent resizes just `setSize`.
     const ro = new ResizeObserver(() => {
-      const w = el.clientWidth || 600;
-      const h = Math.max(60, el.clientHeight - 2);
-      if (firstRO) {
-        firstRO = false;
-        if (Math.abs(w - constructedAt.w) > 16 || Math.abs(h - constructedAt.h) > 16) {
-          // Real size differs from what we constructed at — recreate.
-          // The effect's `signalSetKey` deps haven't changed, so this
-          // is a controlled rebuild inside the same effect-lifetime.
-          // Bumping the resize-trigger state forces the effect to
-          // re-run, which destroys + rebuilds via the normal cleanup
-          // path (avoiding any half-state.) See `resizeTick` below.
-          setResizeTick((n) => n + 1);
-          return;
-        }
-      }
-      withSuppressed(() => u.setSize({ width: w, height: h }));
+      withSuppressed(() => u.setSize({ width: el.clientWidth || 600, height: Math.max(60, el.clientHeight - 2) }));
     });
     ro.observe(el);
 
