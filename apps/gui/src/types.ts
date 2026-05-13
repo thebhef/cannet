@@ -82,14 +82,19 @@ export interface ByIdSnapshotRecord {
 }
 
 /// One element of a project: a discriminated-union record with a stable
-/// `id`. Now only traces; plots, transmit messages, filters etc. become
-/// new `kind`s. A trace element carries no extra config — the panel
-/// showing it owns its mode (chronological / by-id) and column layout
-/// in the dockview panel `params`.
-export type ProjectElement = {
-  kind: "trace";
-  id: string;
-};
+/// `id`. `trace` = a trace panel; `plot` = a signal-plot panel (also
+/// backed by a trace-style session window, but a distinct kind so the
+/// project view and panel-reopen treat it as a plot, not a trace).
+/// Transmit messages, filters etc. become further `kind`s. Neither kind
+/// carries extra config — the panel showing it owns its layout (a
+/// trace's mode + columns, a plot's areas / cursors / …) in the
+/// dockview panel `params`.
+export type ProjectElement =
+  | { kind: "trace"; id: string }
+  | { kind: "plot"; id: string };
+
+/// The discriminant of a {@link ProjectElement}.
+export type ProjectElementKind = ProjectElement["kind"];
 
 /// Mirrors `src-tauri/src/project.rs::Project` — the saved workspace.
 /// `layout` (dockview's `SerializedDockview`) and `elements` are stored
