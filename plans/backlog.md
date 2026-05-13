@@ -78,16 +78,11 @@ work or admit it isn't going to happen and delete it.
   synthetic-height spacer vs. the current scaled approach, and settle the
   scroll/auto-scroll ownership story, before piling more on it. (Flagged
   while planning Phase 4; doesn't block plotting.)
-- `[perf]` `cannet-gui` plot panel: *fully* incremental sampling.
-  `slice_matching` now jumps straight to a signal's frames via a per-id
-  index (`O(matches + log n)`, not `O(window)`), and the plot re-samples
-  on a steady 250 ms timer rather than off React re-renders — but it
-  still re-decodes *every* matching frame in the window each tick and
-  re-decimates from scratch. The remaining win: a per-(area, signal)
-  bounded cached series the plot only *appends* to (decode just the
-  frames appended since the last call, re-decimate when the cache grows
-  past a bound). Folds in with the TraceStore disk-spill / chunking
-  rework if that lands first.
+- `[ui]` `cannet-gui`: a global UI frame-rate / responsiveness readout
+  (rAF-based FPS, maybe long-task / dropped-frame counts) — the plot
+  panel shows its own re-sample rate now; generalise that to a small
+  always-available indicator so other panels' costs are visible too.
+  Useful while tuning the trace virtualizer and any future heavy view.
 - `[feat]` `cannet-gui` plot panel: per-*trace* y controls — offset /
   gain (so unrelated signals can share a plot area without one swamping
   the others) and log scaling. Per-*area* manual y-range shipped in

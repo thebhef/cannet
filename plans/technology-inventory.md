@@ -222,12 +222,13 @@ and/or community wrappers (e.g. `python-can`) depending on the client._
   Scale note: the trace store can hold **hundreds of thousands to
   millions** of frames, so a signal series can be far larger than uPlot's
   comfortable redraw size. The renderer is not where that's solved — the
-  host (`signal_sampler::decimate_min_max`, driven by `sample_signal`'s
-  `max_points` hint) min/max-decimates the decoded series down to ≈the
-  pixel width of the visible window before it reaches uPlot; spikes
-  survive (per-bucket extrema). Decoding only newly-appended frames each
-  tick (rather than re-scanning the window) is the remaining win —
-  tracked in `plans/backlog.md`.
+  host (`signal_sampler::decimate_min_max`, driven by the `sample_signals`
+  command's `max_points` hint) min/max-decimates the decoded series down
+  to ≈the pixel width of the visible window before it reaches uPlot;
+  spikes survive (per-bucket extrema). The live plot also samples
+  incrementally — only the frames appended since the previous tick are
+  decoded, appended to a bounded per-signal cache (re-decimated full
+  re-fetch on overflow) — so a long capture isn't re-decoded every tick.
 
   Reference design: `plans/plot-panel-reference.html` — a standalone
   prototype (5 stacked panes × 4 signals, synced x-zoom across panes,
