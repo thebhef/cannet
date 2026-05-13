@@ -1203,6 +1203,8 @@ function PlotArea(p: PlotAreaProps) {
       recordRate();
       lr.onReportRate(areaId, rateEmaRef.current);
       setValueTick((v) => v + 1);
+    } catch {
+      /* a failed sample just leaves the last one on screen */
     } finally {
       resampleBusyRef.current = false;
     }
@@ -1534,7 +1536,11 @@ function PlotArea(p: PlotAreaProps) {
     let timer = 0;
     const tick = async () => {
       if (stopped) return;
-      await resampleRef.current();
+      try {
+        await resampleRef.current();
+      } catch {
+        /* a transient sample failure must not kill the loop */
+      }
       if (stopped) return;
       timer = window.setTimeout(() => void tick(), LIVE_RESAMPLE_INTERVAL_MS);
     };
