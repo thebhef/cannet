@@ -242,10 +242,11 @@ the re-sampling), Clear re-anchors what's plotted to "now".
   **×**. The shared x-axis spans 0 to the longest plotted signal across
   the panel's areas, so a signal added late still shows over the
   existing span.
-- **Zoom, pan & follow.** Drag-select on any area zooms x on every area;
-  **⌘/ctrl + wheel** zooms x (synced), **shift + wheel** pans x
-  (synced), **⌘/ctrl + shift + wheel** zooms y on the hovered area;
-  **fit data** refits x to the full signal extent. **Follow live** keeps
+- **Zoom, pan & follow.** Drag-select or **wheel** on any area zooms x
+  on every area; **shift + wheel** pans x (synced); **⌘/ctrl + wheel**
+  zooms y on the hovered area (buried — y is usually set with the
+  per-area range control); **fit data** refits x to the full signal
+  extent. **Follow live** keeps
   every area pinned to the capture's growing edge while keeping the
   current visible x-width (it just slides right); a manual x pan/zoom
   turns it off, the same way a manual scroll leaves auto-scroll in a
