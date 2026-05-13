@@ -78,17 +78,16 @@ work or admit it isn't going to happen and delete it.
   synthetic-height spacer vs. the current scaled approach, and settle the
   scroll/auto-scroll ownership story, before piling more on it. (Flagged
   while planning Phase 4; doesn't block plotting.)
-- `[perf]` `cannet-gui` plot panel: incremental sampling. `sample_signal`
-  min/max-decimates the result and (with index-range params) clones only
-  the matching frames out of the store (`slice_matching`) and decodes
-  them off the store lock — but it still *scans* the whole requested
-  window for matches on every `trace-grew` tick, so for a multi-million-
-  frame live capture the per-tick lock hold (and the decode of every
-  matching frame) is `O(window)`. Two fixes: (a) a per-id index of frame
-  indices in `TraceStore` so the scan skips non-matching frames; (b)
-  truly incremental sampling — decode only frames appended since the
-  last call, append to a (bounded) cached series, re-decimate. Folds in
-  with the TraceStore disk-spill / chunking rework if that lands first.
+- `[perf]` `cannet-gui` plot panel: *fully* incremental sampling.
+  `slice_matching` now jumps straight to a signal's frames via a per-id
+  index (`O(matches + log n)`, not `O(window)`), and the plot re-samples
+  on a steady 250 ms timer rather than off React re-renders — but it
+  still re-decodes *every* matching frame in the window each tick and
+  re-decimates from scratch. The remaining win: a per-(area, signal)
+  bounded cached series the plot only *appends* to (decode just the
+  frames appended since the last call, re-decimate when the cache grows
+  past a bound). Folds in with the TraceStore disk-spill / chunking
+  rework if that lands first.
 - `[feat]` `cannet-gui` plot panel: per-*trace* y controls — offset /
   gain (so unrelated signals can share a plot area without one swamping
   the others) and log scaling. Per-*area* manual y-range shipped in
@@ -123,6 +122,19 @@ work or admit it isn't going to happen and delete it.
   other signals (sum, diff, scale, filter, …). Useful to the plot panel,
   the transmit panel, and a future scripting surface, so it may outgrow
   plotting; scope it on its own when picked up.
+- `[ui]` `cannet-gui` plot panel: pick a trace's plot colour from a
+  colour dialog on right-click of its swatch (today the swatch toggles
+  hidden on left-click and colours are assigned round-robin from a fixed
+  palette on add). Right-click → a small swatch-grid / `<input
+  type="color">` popover; the chosen colour is sticky like the
+  auto-assigned one.
+- `[ui]` `cannet-gui` trace panels: inline state labels — for a signal
+  whose DBC entry carries value descriptions (`VAL_` / value tables),
+  show the named state (e.g. `2 "Reverse"`) instead of the bare number
+  in the decoded-signal grid (and the by-ID expansion). Needs the DBC
+  layer to surface value tables (`cannet-dbc` currently exposes
+  name/unit/scaling only); also feeds the plot panel's enum/state-signal
+  rendering.
 - `[ui]` GUI-wide visual restyle: adopt the dark "scope" visual
   language from `plans/plot-panel-reference.html` (the prototype's colour
   variables, monospace type scale, panel chrome, control styling) across
