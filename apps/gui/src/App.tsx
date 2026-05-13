@@ -95,7 +95,9 @@ export function App() {
   const [version, setVersion] = useState(0);
 
   const [state, setState] = useState<LogState>({ kind: "idle" });
-  const [dbcPath, setDbcPath] = useState<string | null>(null);
+  // Paths of the loaded DBCs, in priority order (mirrors the host's set
+  // — it owns the parsed databases; this is just what the UI shows).
+  const [dbcPaths, setDbcPaths] = useState<string[]>([]);
   const [remoteAddress, setRemoteAddress] = useState(DEFAULT_REMOTE_ADDRESS);
   // Path of the open project file, or null for an unsaved workspace.
   const [projectPath, setProjectPath] = useState<string | null>(null);
@@ -324,23 +326,71 @@ export function App() {
     }
   }, [invalidateCache]);
 
-  const handleAttachDbc = useCallback(async () => {
+  // Add one or more DBCs to the loaded set (each goes through the host's
+  // `add_dbc`, which appends — or reloads in place if the path is
+  // already loaded — and hands back the authoritative list).
+  const handleAddDbc = useCallback(async () => {
     const selected = await open({
-      multiple: false,
+      multiple: true,
       filters: [{ name: "DBC", extensions: ["dbc"] }],
     });
-    if (typeof selected !== "string") return;
+    const paths = Array.isArray(selected) ? selected : typeof selected === "string" ? [selected] : [];
+    if (paths.length === 0) return;
 
-    try {
-      const info = await invoke<DbcInfo>("attach_dbc", { path: selected });
-      setDbcPath(info.dbc_path);
-      setDirty(true);
-    } catch (err) {
-      setState({ kind: "error", message: String(err) });
-      return;
+    let list = dbcPaths;
+    const errors: string[] = [];
+    for (const path of paths) {
+      try {
+        list = (await invoke<DbcInfo[]>("add_dbc", { path })).map((d) => d.dbc_path);
+      } catch (err) {
+        errors.push(`${path}: ${String(err)}`);
+      }
     }
+    setDbcPaths(list);
+    setDirty(true);
     invalidateCache();
-  }, [invalidateCache]);
+    if (errors.length > 0) setState({ kind: "error", message: `DBC: ${errors.join("; ")}` });
+  }, [dbcPaths, invalidateCache]);
+
+  const handleRemoveDbc = useCallback(
+    (path: string) => {
+      void invoke<DbcInfo[]>("remove_dbc", { path })
+        .then((list) => {
+          setDbcPaths(list.map((d) => d.dbc_path));
+          setDirty(true);
+          invalidateCache();
+        })
+        .catch((err) => setState({ kind: "error", message: String(err) }));
+    },
+    [invalidateCache],
+  );
+
+  // Replace the loaded-DBC set with exactly `paths` (clear, then re-add
+  // each in order). Used by "open project", "new project" (empty list),
+  // and "reload all from disk". Paths that fail to read / parse are
+  // dropped and reported together.
+  const loadDbcSet = useCallback(
+    async (paths: readonly string[]) => {
+      try {
+        await invoke("clear_dbcs");
+      } catch {
+        /* unreachable in practice; the next add_dbc would surface real trouble */
+      }
+      let list: string[] = [];
+      const errors: string[] = [];
+      for (const path of paths) {
+        try {
+          list = (await invoke<DbcInfo[]>("add_dbc", { path })).map((d) => d.dbc_path);
+        } catch (err) {
+          errors.push(`${path}: ${String(err)}`);
+        }
+      }
+      setDbcPaths(list);
+      invalidateCache();
+      if (errors.length > 0) setState({ kind: "error", message: `DBC: ${errors.join("; ")}` });
+    },
+    [invalidateCache],
+  );
 
   const handleClear = useCallback(async () => {
     try {
@@ -413,10 +463,10 @@ export function App() {
       schema_version: PROJECT_SCHEMA_VERSION,
       layout: dockApiRef.current?.toJSON() ?? { grid: {}, panels: {} },
       elements: registry.map((e) => e.element),
-      dbc_path: dbcPath,
+      dbc_paths: dbcPaths,
       remote_address: remoteAddress.trim() || null,
     }),
-    [registry, dbcPath, remoteAddress],
+    [registry, dbcPaths, remoteAddress],
   );
 
   // Record which project is "open" — both the React state and the
@@ -434,7 +484,7 @@ export function App() {
 
   // Apply an opened project: restore the panel layout (incl. per-panel
   // config in the panel params), the remote-address field, and the
-  // referenced DBC — attach the project's, or detach if it names none.
+  // loaded DBC set (replaces whatever's loaded with the project's list).
   // Doesn't touch a live connection: the project's bus is configured
   // into the fields; hit Connect to switch.
   const applyProject = useCallback(
@@ -458,39 +508,24 @@ export function App() {
         }
       }
       setRemoteAddress(project.remote_address ?? DEFAULT_REMOTE_ADDRESS);
-      if (project.dbc_path) {
-        const path = project.dbc_path;
-        void invoke<DbcInfo>("attach_dbc", { path })
-          .then((info) => {
-            setDbcPath(info.dbc_path);
-            invalidateCache();
-          })
-          .catch((err) =>
-            setState({ kind: "error", message: `project DBC (${path}): ${String(err)}` }),
-          );
-      } else if (dbcPath) {
-        void invoke("detach_dbc").catch(() => {});
-        setDbcPath(null);
-        invalidateCache();
-      }
+      void loadDbcSet(Array.isArray(project.dbc_paths) ? project.dbc_paths : []);
     },
-    [dbcPath, invalidateCache],
+    [loadDbcSet],
   );
 
   const handleNewProject = useCallback(() => {
-    // Fresh workspace: seed layout, no open project, no DBC, no
+    // Fresh workspace: seed layout, no open project, no DBCs, no
     // session — disconnect and clear the buffer too.
     seedDefaultLayout();
     rememberProject(null);
-    void invoke("detach_dbc").catch(() => {});
-    setDbcPath(null);
+    void loadDbcSet([]);
     void invoke("disconnect_remote_server").catch(() => {});
     void invoke("clear_trace_store").catch(() => {});
     invalidateCache();
     setBaseTimestampSeconds(null);
     setCount(0);
     setDirty(false);
-  }, [seedDefaultLayout, rememberProject, invalidateCache]);
+  }, [seedDefaultLayout, rememberProject, loadDbcSet, invalidateCache]);
 
   const handleOpenProject = useCallback(async () => {
     const selected = await open({
@@ -564,16 +599,11 @@ export function App() {
     return () => unlisten?.();
   }, []);
 
+  // Re-read every loaded DBC from disk (a file that's gone or no longer
+  // parses drops out, with an error). No-op when none are loaded.
   const handleReloadDbc = useCallback(() => {
-    if (!dbcPath) return;
-    const path = dbcPath;
-    void invoke<DbcInfo>("attach_dbc", { path })
-      .then((info) => {
-        setDbcPath(info.dbc_path);
-        invalidateCache();
-      })
-      .catch((err) => setState({ kind: "error", message: `reload DBC (${path}): ${String(err)}` }));
-  }, [dbcPath, invalidateCache]);
+    if (dbcPaths.length > 0) void loadDbcSet(dbcPaths);
+  }, [dbcPaths, loadDbcSet]);
 
   const getFrame = useCallback((index: number): TraceFrameRecord | null => {
     const chunkIdx = Math.floor(index / CHUNK_SIZE);
@@ -694,8 +724,8 @@ export function App() {
   );
 
   const status = useMemo(
-    () => renderStatus(state, dbcPath, count, framesPerSecond),
-    [state, dbcPath, count, framesPerSecond],
+    () => renderStatus(state, dbcPaths, count, framesPerSecond),
+    [state, dbcPaths, count, framesPerSecond],
   );
 
   const traceData: TraceData = useMemo(
@@ -727,7 +757,7 @@ export function App() {
     () => ({
       projectPath,
       dirty,
-      dbcPath,
+      dbcPaths,
       remoteAddress,
       remoteConnected,
       blfPath,
@@ -735,6 +765,8 @@ export function App() {
       onOpenProject: handleOpenProject,
       onSaveProject: handleSaveProject,
       onSaveProjectAs: handleSaveProjectAs,
+      onAddDbc: handleAddDbc,
+      onRemoveDbc: handleRemoveDbc,
       onReloadDbc: handleReloadDbc,
       onConnect: handleConnect,
       onDisconnect: handleDisconnect,
@@ -742,7 +774,7 @@ export function App() {
     [
       projectPath,
       dirty,
-      dbcPath,
+      dbcPaths,
       remoteAddress,
       remoteConnected,
       blfPath,
@@ -750,6 +782,8 @@ export function App() {
       handleOpenProject,
       handleSaveProject,
       handleSaveProjectAs,
+      handleAddDbc,
+      handleRemoveDbc,
       handleReloadDbc,
       handleConnect,
       handleDisconnect,
@@ -765,9 +799,7 @@ export function App() {
           <button onClick={handleSaveProject}>Save project</button>
           <span className="toolbar-separator" aria-hidden="true" />
           <button onClick={handleOpenLog}>Open BLF…</button>
-          <button onClick={handleAttachDbc}>
-            {dbcPath ? "Replace DBC…" : "Attach DBC…"}
-          </button>
+          <button onClick={handleAddDbc}>Add DBC…</button>
           <span className="toolbar-separator" aria-hidden="true" />
           <input
             className="remote-address"
@@ -821,11 +853,16 @@ export function App() {
 
 function renderStatus(
   state: LogState,
-  dbcPath: string | null,
+  dbcPaths: readonly string[],
   frameCount: number,
   framesPerSecond: number,
 ): string {
-  const dbc = dbcPath ? `DBC: ${shortenPath(dbcPath)}` : "no DBC attached";
+  const dbc =
+    dbcPaths.length === 0
+      ? "no DBC attached"
+      : dbcPaths.length === 1
+        ? `DBC: ${shortenPath(dbcPaths[0])}`
+        : `${dbcPaths.length} DBCs`;
   const fps = framesPerSecond > 0 ? ` · ${formatRate(framesPerSecond)}` : "";
   switch (state.kind) {
     case "idle":
