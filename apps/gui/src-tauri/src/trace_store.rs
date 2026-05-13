@@ -233,45 +233,53 @@ impl TraceStore {
         inner.frames[start..end].to_vec()
     }
 
-    /// For each `(id, extended)` in `ids`, within `[start, end)`
-    /// (clamped): a clone of just that signal's frames in the window —
-    /// plus the timestamps of the window's first frame (index `start`)
-    /// and last frame (index `end - 1`), the same for all queries since
-    /// they share the window. One lock acquisition for the whole batch;
-    /// the per-id index ([`Inner::by_id`]) jumps straight to each
-    /// signal's matching frames, so the work is `O(Σ matches + |ids|·log
-    /// n)` rather than `O(|ids|·window)` — a live plot calls this every
-    /// re-sample and must not walk (or lock the pump out of) the whole
-    /// capture. The returned `Vec` is parallel to `ids`; an empty
-    /// `[start, end)` (or `start` past the end) yields all-empty lists
-    /// and `None` timestamps.
+    /// First-and-last frame timestamps for the (clamped) range
+    /// `[start, end)`, without cloning any frames. Used by
+    /// `sample_signals` to anchor the x-axis at the window's first frame
+    /// time and report the window's right edge — both independent of the
+    /// per-signal decoded-sample slice the cache produces.
     #[must_use]
-    pub fn slice_matching_many(
-        &self,
-        ids: &[(u32, bool)],
-        start: usize,
-        end: usize,
-    ) -> (Vec<Vec<RawTraceFrame>>, Option<u64>, Option<u64>) {
+    pub fn frame_timestamps(&self, start: usize, end: usize) -> (Option<u64>, Option<u64>) {
         let inner = self.inner.lock().expect("trace store mutex poisoned");
         let len = inner.frames.len();
         if start >= len {
-            return (vec![Vec::new(); ids.len()], None, None);
+            return (None, None);
         }
         let end = end.min(len);
-        let first_ts = inner.frames.get(start).map(|f| f.timestamp_ns);
-        let last_ts = end.checked_sub(1).and_then(|i| inner.frames.get(i)).map(|f| f.timestamp_ns);
-        let lists = ids
-            .iter()
-            .map(|key| match inner.by_id.get(key) {
-                Some(frame_idxs) => {
-                    let lo = frame_idxs.partition_point(|&i| i < start);
-                    let hi = frame_idxs.partition_point(|&i| i < end);
-                    frame_idxs[lo..hi].iter().map(|&i| inner.frames[i].clone()).collect()
-                }
-                None => Vec::new(),
-            })
-            .collect();
-        (lists, first_ts, last_ts)
+        let first = inner.frames.get(start).map(|f| f.timestamp_ns);
+        let last = end.checked_sub(1).and_then(|i| inner.frames.get(i)).map(|f| f.timestamp_ns);
+        (first, last)
+    }
+
+    /// For one `(id, extended)` arbitration key: clone the matching
+    /// frames in `[start, end)` **paired with their frame index in the
+    /// store**. The per-id index ([`Inner::by_id`]) jumps straight to
+    /// the matching frames, so the work is `O(matches + log n)` —
+    /// what the host-side decoded-sample cache uses to map between
+    /// frame indices and sample indices (a `[from_frame, to_frame)`
+    /// query can then binary-search the cache).
+    #[must_use]
+    pub fn matching_frames_indexed(
+        &self,
+        id_raw: u32,
+        extended: bool,
+        start: usize,
+        end: usize,
+    ) -> Vec<(usize, RawTraceFrame)> {
+        let inner = self.inner.lock().expect("trace store mutex poisoned");
+        let len = inner.frames.len();
+        if start >= len {
+            return Vec::new();
+        }
+        let end = end.min(len);
+        match inner.by_id.get(&(id_raw, extended)) {
+            Some(frame_idxs) => {
+                let lo = frame_idxs.partition_point(|&i| i < start);
+                let hi = frame_idxs.partition_point(|&i| i < end);
+                frame_idxs[lo..hi].iter().map(|&i| (i, inner.frames[i].clone())).collect()
+            }
+            None => Vec::new(),
+        }
     }
 
     /// Drop every stored frame and release the backing allocations.
@@ -402,29 +410,34 @@ mod tests {
 
 
     #[test]
-    fn slice_matching_many_returns_each_ids_frames_in_the_window() {
+    fn matching_frames_indexed_returns_index_paired_clones() {
         let store = TraceStore::new();
         // ids:        7  3  7  3  7  9   (indices 0..6)
         for (i, id) in [7u32, 3, 7, 3, 7, 9].into_iter().enumerate() {
             store.append(dummy(u64::try_from(i).unwrap() * 1_000, id));
         }
-        let ts = |frames: &[RawTraceFrame]| frames.iter().map(|f| f.timestamp_ns).collect::<Vec<_>>();
-        // window [1,5): frame indices {1,2,3,4}, ts {1_000..4_000}. id 7 -> ts
-        // {2_000, 4_000}; id 3 -> ts {1_000, 3_000}; id 9 -> {} (extended-7
-        // distinct -> {}).
-        let (lists, first, last) =
-            store.slice_matching_many(&[(7, false), (3, false), (9, false), (7, true)], 1, 5);
-        assert_eq!(ts(&lists[0]), vec![2_000, 4_000]);
-        assert_eq!(ts(&lists[1]), vec![1_000, 3_000]);
-        assert!(lists[2].is_empty() && lists[3].is_empty());
-        assert_eq!((first, last), (Some(1_000), Some(4_000)));
-        // Out-of-range start: all-empty (one per query), no window.
-        let (lists, first, last) = store.slice_matching_many(&[(7, false), (3, false)], 99, 200);
-        assert_eq!(lists.len(), 2);
-        assert!(lists.iter().all(Vec::is_empty) && first.is_none() && last.is_none());
+        let pairs = store.matching_frames_indexed(7, false, 1, 5);
+        assert_eq!(
+            pairs.iter().map(|(i, f)| (*i, f.timestamp_ns)).collect::<Vec<_>>(),
+            vec![(2, 2_000), (4, 4_000)],
+        );
+        // Out-of-range start: empty.
+        assert!(store.matching_frames_indexed(7, false, 99, 200).is_empty());
+        // Extended vs standard are distinct keys.
+        assert!(store.matching_frames_indexed(7, true, 0, 6).is_empty());
         store.clear();
-        let (lists, ..) = store.slice_matching_many(&[(7, false)], 0, 6);
-        assert!(lists[0].is_empty());
+        assert!(store.matching_frames_indexed(7, false, 0, 6).is_empty());
+    }
+
+    #[test]
+    fn frame_timestamps_returns_first_last_in_clamped_range() {
+        let store = TraceStore::new();
+        for i in 0u32..6 {
+            store.append(dummy(u64::from(i) * 1_000, i));
+        }
+        assert_eq!(store.frame_timestamps(1, 4), (Some(1_000), Some(3_000)));
+        assert_eq!(store.frame_timestamps(1, 100), (Some(1_000), Some(5_000)));
+        assert_eq!(store.frame_timestamps(99, 200), (None, None));
     }
 
     #[test]
