@@ -25,16 +25,13 @@ export interface ElementRegistry {
   entries: readonly RegistryEntry[];
   get(id: string): RegistryEntry | undefined;
   /// Create a new trace element + entry; returns its id.
-  createTrace(view: ProjectElement["view"]): string;
+  createTrace(): string;
   /// Ensure an entry with `id` exists (a panel found its element
   /// missing — heal it). No-op if it's already there.
-  ensureTrace(id: string, view: ProjectElement["view"]): void;
+  ensureTrace(id: string): void;
   /// Replace a trace element's window. The updater may return the same
   /// object to signal "no change".
   updateTrace(id: string, updater: (s: TraceState) => TraceState): void;
-  /// Set a trace element's `view` — the panel's mode toggle. No-op if
-  /// the element doesn't exist or already has that view.
-  setElementView(id: string, view: ProjectElement["view"]): void;
   /// Remove an element and close its panel, if any.
   remove(id: string): void;
 }
@@ -54,10 +51,6 @@ export function useElementRegistry(): ElementRegistry {
 /// crashing).
 export function isProjectElement(v: unknown): v is ProjectElement {
   if (v == null || typeof v !== "object") return false;
-  const o = v as { kind?: unknown; id?: unknown; view?: unknown };
-  return (
-    o.kind === "trace" &&
-    typeof o.id === "string" &&
-    (o.view === "chronological" || o.view === "by-id")
-  );
+  const o = v as { kind?: unknown; id?: unknown };
+  return o.kind === "trace" && typeof o.id === "string";
 }
