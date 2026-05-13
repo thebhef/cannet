@@ -83,10 +83,21 @@ work or admit it isn't going to happen and delete it.
   panel shows its own re-sample rate now; generalise that to a small
   always-available indicator so other panels' costs are visible too.
   Useful while tuning the trace virtualizer and any future heavy view.
-- `[feat]` `cannet-gui` plot panel: per-*trace* y controls — offset /
-  gain (so unrelated signals can share a plot area without one swamping
-  the others) and log scaling. Per-*area* manual y-range shipped in
-  Phase 4; this is the refinement.
+- `[feat]` `cannet-gui` plot panel: **manual** per-*trace* y controls —
+  offset / gain (so the user can override the per-trace auto-normalise
+  that ships today) and log scaling. The auto-norm is implemented as a
+  per-trace gain/offset applied just before draw, so the UI plumbing is
+  "expose those numbers"; uPlot also supports multiple stacked y-axes
+  if that turns out to be the better UX for "I want to read absolute
+  values off the axis" instead of normalised positions.
+- `[feat]` `cannet-gui` plot panel: zoom-aware host-side decimation.
+  Today a freshly-built cache asks the host to decimate the *full*
+  trace window to `CACHE_TARGET_POINTS` points; zooming in shows that
+  same decimated subset, losing detail when only a small slice is
+  visible. The "right" answer is a separate `sample_signals` query
+  scoped to the visible x-range when the user zooms in, with
+  `max_points` matched to canvas width — full detail at narrow zooms,
+  the existing overview cache at wide zooms.
 - `[feat]` `cannet-gui` plot panel: triggers — edge / level /
   value-match on a chosen signal that freeze the view and emit an event
   marker (into the plot's event list, and later the trace). The
