@@ -43,8 +43,11 @@ import {
  * cursor A when one is placed, else at the mouse crosshair, else the
  * latest sample); an "y: auto / min…max" control; and the H1/H2 Y-cursor
  * read-out when those are placed. Picking a `(message, signal)` from the
- * toolbar drops it into the focused area; **drag a signal row** onto
- * another plot area to move it there.
+ * toolbar drops it into the focused area; **drag a signal row** to
+ * re-order it within an area, onto another plot area, or onto another
+ * plot panel (cross-panel = a copy; the source keeps it). A signal's
+ * colour is assigned on add and travels with it (re-ordering / moving
+ * doesn't recolour).
  *
  * Data: `sample_signal` slices the trace element's window out of the
  * store by frame index (`O(window)`, not `O(capture)`), decodes the
@@ -99,7 +102,7 @@ const ZOOM_STEP = 1.15;
 /** Lower bound for `sample_signal`'s decimation pixel hint. */
 const MIN_DECIMATION_POINTS = 200;
 /** Min spacing between live re-samples of a plot area (ms). */
-const LIVE_RESAMPLE_INTERVAL_MS = 500;
+const LIVE_RESAMPLE_INTERVAL_MS = 1000;
 
 type CursorMode = "off" | "x" | "y" | "note";
 
@@ -109,6 +112,9 @@ interface SignalRef {
   signalName: string;
   messageName: string;
   unit: string;
+  /** Plot colour — assigned when the signal is added and carried with
+   * it (so re-ordering / moving between areas doesn't recolour it). */
+  color: string;
   /** Hidden = line not drawn on the plot (swatch dimmed); the
    * side-panel value still updates. Absent ⇒ visible. */
   hidden?: boolean;
@@ -160,7 +166,7 @@ function signalRefKey(s: SignalRef): string {
   return signalKey(s.messageId, s.extended, s.signalName);
 }
 
-function isSignalRef(v: unknown): v is SignalRef {
+function isSignalRefCore(v: unknown): v is Omit<SignalRef, "color"> {
   if (typeof v !== "object" || v === null) return false;
   const o = v as Record<string, unknown>;
   return (
@@ -170,6 +176,23 @@ function isSignalRef(v: unknown): v is SignalRef {
     typeof o.messageName === "string" &&
     typeof o.unit === "string"
   );
+}
+function withColor(s: Omit<SignalRef, "color"> & { color?: unknown }, fallbackIdx: number): SignalRef {
+  return { ...s, color: typeof s.color === "string" ? s.color : TRACE_COLORS[fallbackIdx % TRACE_COLORS.length] };
+}
+
+/** Drag-and-drop MIME for a `SignalRef` (within or across plot panels —
+ * the payload is the full ref so the receiving panel can add it even if
+ * it's not one of its own signals). */
+const SIGNAL_DND_MIME = "application/x-cannet-plot-signal";
+function parseDroppedSignal(s: string): SignalRef | null {
+  if (!s) return null;
+  try {
+    const o = JSON.parse(s);
+    return isSignalRefCore(o) ? withColor(o, 0) : null;
+  } catch {
+    return null;
+  }
 }
 
 function yModeFromRaw(raw: unknown): YMode {
@@ -189,7 +212,7 @@ function areasFromParams(raw: unknown): PlotAreaConfig[] {
       if (typeof a !== "object" || a === null) continue;
       const o = a as Record<string, unknown>;
       const id = typeof o.id === "string" ? o.id : crypto.randomUUID();
-      const signals = Array.isArray(o.signals) ? o.signals.filter(isSignalRef) : [];
+      const signals = (Array.isArray(o.signals) ? o.signals.filter(isSignalRefCore) : []).map((s, i) => withColor(s, i));
       out.push({ id, signals, yMode: yModeFromRaw(o.yMode) });
     }
     if (out.length > 0) return out;
@@ -462,12 +485,14 @@ export function PlotPanel(props: IDockviewPanelProps) {
     (desc: SignalDescriptorRecord) => {
       setAreas((prev) => {
         const targetId = prev.some((a) => a.id === focusedAreaId) ? focusedAreaId : prev[0]?.id;
+        const total = prev.reduce((n, a) => n + a.signals.length, 0);
         const ref: SignalRef = {
           messageId: desc.message_id,
           extended: desc.extended,
           signalName: desc.signal_name,
           messageName: desc.message_name,
           unit: desc.unit,
+          color: TRACE_COLORS[total % TRACE_COLORS.length],
         };
         const key = signalRefKey(ref);
         if (prev.some((a) => a.signals.some((s) => signalRefKey(s) === key))) return prev;
@@ -481,18 +506,25 @@ export function PlotPanel(props: IDockviewPanelProps) {
       prev.map((a) => (a.id === areaId ? { ...a, signals: a.signals.filter((s) => signalRefKey(s) !== key) } : a)),
     );
   }, []);
-  // Move signal `key` into `toAreaId` from wherever it currently lives
-  // (the drop target only knows where it's going). No-op if it's already
-  // there.
-  const moveSignalToArea = useCallback((key: string, toAreaId: string) => {
+  // A signal was dropped into `toAreaId`. If it already lives in this
+  // panel it's moved (and removed from its old area — keeping its
+  // colour); if not (drag from another panel) a copy is added. Inserted
+  // before `beforeKey`'s row, or appended when `beforeKey` is null.
+  const placeSignal = useCallback((ref: SignalRef, toAreaId: string, beforeKey: string | null) => {
+    const key = signalRefKey(ref);
+    if (beforeKey === key) return; // dropped a row on itself — no-op
     setAreas((prev) => {
-      const fromArea = prev.find((a) => a.signals.some((s) => signalRefKey(s) === key));
-      if (!fromArea || fromArea.id === toAreaId) return prev;
-      const moved = fromArea.signals.find((s) => signalRefKey(s) === key)!;
-      return prev.map((a) => {
-        if (a.id === fromArea.id) return { ...a, signals: a.signals.filter((s) => signalRefKey(s) !== key) };
-        if (a.id === toAreaId) return { ...a, signals: [...a.signals, moved] };
-        return a;
+      // What to insert: the existing ref (preserves its colour) if we
+      // have it, else the dropped one.
+      const existing = prev.flatMap((a) => a.signals).find((s) => signalRefKey(s) === key);
+      const moved = existing ?? ref;
+      const stripped = prev.map((a) => ({ ...a, signals: a.signals.filter((s) => signalRefKey(s) !== key) }));
+      return stripped.map((a) => {
+        if (a.id !== toAreaId) return a;
+        if (beforeKey == null || beforeKey === key) return { ...a, signals: [...a.signals, moved] };
+        const idx = a.signals.findIndex((s) => signalRefKey(s) === beforeKey);
+        if (idx < 0) return { ...a, signals: [...a.signals, moved] };
+        return { ...a, signals: [...a.signals.slice(0, idx), moved, ...a.signals.slice(idx)] };
       });
     });
   }, []);
@@ -553,9 +585,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
   const plottedSignals = useMemo(() => {
     const out: Array<{ key: string; ref: SignalRef; color: string; areaId: string }> = [];
     for (const a of areas) {
-      a.signals.forEach((s, i) => {
-        out.push({ key: signalRefKey(s), ref: s, color: TRACE_COLORS[i % TRACE_COLORS.length], areaId: a.id });
-      });
+      for (const s of a.signals) out.push({ key: signalRefKey(s), ref: s, color: s.color, areaId: a.id });
     }
     return out;
   }, [areas]);
@@ -661,7 +691,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
               onFocus={() => setFocusedAreaId(area.id)}
               onRemoveArea={() => removeArea(area.id)}
               onRemoveSignal={(key) => removeSignal(area.id, key)}
-              onDropSignal={(key) => moveSignalToArea(key, area.id)}
+              onDropSignal={(ref, beforeKey) => placeSignal(ref, area.id, beforeKey)}
               onToggleHidden={(key) => toggleSignalHidden(area.id, key)}
             />
           );
@@ -855,8 +885,10 @@ interface PlotAreaProps {
   onFocus: () => void;
   onRemoveArea: () => void;
   onRemoveSignal: (key: string) => void;
-  /** A signal row was dropped onto this area — move it here. */
-  onDropSignal: (key: string) => void;
+  /** A signal was dropped here. `beforeKey` null ⇒ append to this area;
+   * otherwise insert before that row (re-order / move). The ref may be
+   * one this panel doesn't have yet (drag from another panel). */
+  onDropSignal: (ref: SignalRef, beforeKey: string | null) => void;
   onToggleHidden: (key: string) => void;
 }
 
@@ -910,7 +942,6 @@ function PlotArea(p: PlotAreaProps) {
   const signals = area.signals;
   const signalSetKey = signals.map(signalRefKey).join("|");
   const yMode = area.yMode;
-  const colorFor = useCallback((i: number) => TRACE_COLORS[i % TRACE_COLORS.length], []);
 
   const withSuppressed = useCallback(
     (fn: () => void) => {
@@ -1073,9 +1104,9 @@ function PlotArea(p: PlotAreaProps) {
       ],
       series: [
         {},
-        ...signals.map((s, i) => ({
+        ...signals.map((s) => ({
           label: `${s.messageName}.${s.signalName}`,
-          stroke: colorFor(i),
+          stroke: s.color,
           width: 1,
           points: { show: false },
           show: !s.hidden,
@@ -1353,10 +1384,15 @@ function PlotArea(p: PlotAreaProps) {
     void resampleRef.current();
   }, [followLive]);
 
-  // Apply the y-axis range *immediately* when it changes — no need to
-  // wait for the next re-sample. Auto → re-fit y to the current data
-  // (and restore the shared x window, which resetScales would clobber).
+  // Apply the y-axis range *immediately* when it *changes* — no need to
+  // wait for the next re-sample. (Not on the initial mount: the resample
+  // does the first fit, and uPlot hasn't got real data yet then.)
+  const prevYModeKeyRef = useRef<string | null>(null);
+  const yModeKey = yMode === "auto" ? "auto" : `${yMode.min}:${yMode.max}`;
   useEffect(() => {
+    const first = prevYModeKeyRef.current == null;
+    prevYModeKeyRef.current = yModeKey;
+    if (first) return;
     const u = uplotRef.current;
     if (!u) return;
     withSuppressed(() => {
@@ -1368,7 +1404,8 @@ function PlotArea(p: PlotAreaProps) {
         u.setScale("y", { min: yMode.min, max: yMode.max });
       }
     });
-  }, [yMode, withSuppressed]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [yModeKey]);
 
   // Show / hide series in place when the per-signal `hidden` flags
   // change — no uPlot re-create needed (`signalSetKey` excludes it).
@@ -1404,16 +1441,16 @@ function PlotArea(p: PlotAreaProps) {
       className={`plot-area${focused ? " focused" : ""}`}
       onMouseDown={onFocus}
       onDragOver={(e) => {
-        if (e.dataTransfer.types.includes("application/x-cannet-plot-signal")) {
+        if (e.dataTransfer.types.includes(SIGNAL_DND_MIME)) {
           e.preventDefault();
           e.dataTransfer.dropEffect = "move";
         }
       }}
       onDrop={(e) => {
-        const key = e.dataTransfer.getData("application/x-cannet-plot-signal");
-        if (key) {
+        const ref = parseDroppedSignal(e.dataTransfer.getData(SIGNAL_DND_MIME));
+        if (ref) {
           e.preventDefault();
-          onDropSignal(key);
+          onDropSignal(ref, null); // append to this area
         }
       }}
     >
@@ -1464,7 +1501,7 @@ function PlotArea(p: PlotAreaProps) {
         {signals.length === 0 ? (
           <div className="plot-area-empty">{focused ? "pick a signal above" : "click here, then pick a signal"}</div>
         ) : (
-          signals.map((s, i) => {
+          signals.map((s) => {
             const key = signalRefKey(s);
             const v = displayValueFor(key);
             return (
@@ -1473,13 +1510,28 @@ function PlotArea(p: PlotAreaProps) {
                 key={key}
                 draggable
                 onDragStart={(e) => {
-                  e.dataTransfer.setData("application/x-cannet-plot-signal", key);
+                  e.dataTransfer.setData(SIGNAL_DND_MIME, JSON.stringify(s));
                   e.dataTransfer.effectAllowed = "move";
+                }}
+                onDragOver={(e) => {
+                  if (e.dataTransfer.types.includes(SIGNAL_DND_MIME)) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.dataTransfer.dropEffect = "move";
+                  }
+                }}
+                onDrop={(e) => {
+                  const ref = parseDroppedSignal(e.dataTransfer.getData(SIGNAL_DND_MIME));
+                  if (ref) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onDropSignal(ref, key); // insert before this row
+                  }
                 }}
               >
                 <button
                   className={`plot-signal-swatch${s.hidden ? " hidden" : ""}`}
-                  style={{ background: colorFor(i) }}
+                  style={{ background: s.color }}
                   title={s.hidden ? "show this signal" : "hide this signal"}
                   onClick={(e) => {
                     e.stopPropagation();

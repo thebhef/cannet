@@ -239,10 +239,12 @@ the re-sampling), Clear re-anchors what's plotted to "now".
   attached, the toolbar's **add signal…** dropdown lists every
   `(message, signal)` pair the database defines; picking one drops it
   into the *focused* plot area (click an area to focus it). **Drag a
-  signal row** onto another plot area to move it there; **×** removes it.
-  The shared x-axis spans 0 to the longest plotted signal across the
-  panel's areas, so a signal added late still shows over the existing
-  span.
+  signal row** to re-order it, onto another plot area, or onto another
+  plot panel (cross-panel drops in a copy); **×** removes it. A signal
+  keeps the colour it was given when added — re-ordering / moving
+  doesn't recolour it. The shared x-axis spans 0 to the longest plotted
+  signal across the panel's areas, so a signal added late still shows
+  over the existing span.
 - **Zoom, pan & follow.** **Wheel** zooms x on every area; **shift +
   wheel** pans x (synced); **right-drag** box-zooms x; **⌘/ctrl +
   wheel** zooms y on the hovered area (buried — y is usually set with

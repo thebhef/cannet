@@ -99,6 +99,19 @@ work or admit it isn't going to happen and delete it.
   event-line rendering already exists; the trigger engine doesn't.
 - `[feat]` `cannet-gui` plot panel: CSV / image export of the visible
   window or the cursor span.
+- `[feat]` `cannet-gui`: drag a decoded signal *into* a plot from
+  elsewhere — a trace panel's expanded-row signal grid, the by-ID
+  table. Make those rows `draggable` carrying the same
+  `application/x-cannet-plot-signal` payload (a `SignalRef`) the plot
+  panel's signal rows use; a plot area is already a drop target. (Today
+  you add signals only via the plot's "add signal…" dropdown or by
+  dragging between plot panels.)
+- `[ui]` `cannet-gui`: dragging the divider to resize a plot panel vs.
+  an adjacent trace panel — confirm dockview's split-resize works for
+  the plot panel (it's a normal dockview panel, so it should once they
+  sit in separate groups rather than tabbed together); if a plot-panel
+  CSS rule (`min-height` chains, the flex-filled areas) is fighting it,
+  fix that. (Reported as not working; not yet reproduced here.)
 - `[feat]` `cannet-gui`: BLF annotation round-trip — open a BLF, place
   notes (the plot panel's "+ note" cursor mode), and save the BLF back
   out with the annotations embedded. Needs a place to persist notes
