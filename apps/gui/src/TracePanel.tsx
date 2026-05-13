@@ -34,35 +34,28 @@ function elementIdFromParams(params: unknown): string {
  * follows the live edge) and **by ID** (one row per arbitration id with
  * its latest frame; click a column to sort). Both modes share the
  * column layout (resize a divider; right-click a header to show / hide
- * columns), the trace controls, and the element — so closing the panel
- * doesn't destroy the element, and the mode is the element's `view`.
- * Auto-scroll (chronological mode) and the column layout are this
- * *panel*'s, persisted in the dockview panel `params`.
+ * columns) and the trace controls; the element lives in the registry,
+ * so closing the panel doesn't destroy it. The mode (default by ID),
+ * auto-scroll (chronological), and the column layout are this *panel*'s
+ * state, persisted in the dockview panel `params`.
  */
 export function TracePanel(props: IDockviewPanelProps) {
   const data = useTraceData();
-  const reg = useElementRegistry();
+  const { ensureTrace } = useElementRegistry();
   const { api } = props;
 
   const params = props.params as
-    | { elementId?: unknown; view?: unknown; autoScroll?: unknown; columns?: unknown }
+    | { elementId?: unknown; mode?: unknown; autoScroll?: unknown; columns?: unknown }
     | undefined;
   const [elementId] = useState(() => elementIdFromParams(params));
-  const initialView: TraceMode = params?.view === "by-id" ? "by-id" : "chronological";
-
-  const { ensureTrace } = reg;
   useEffect(() => {
-    ensureTrace(elementId, initialView);
-  }, [ensureTrace, elementId, initialView]);
+    ensureTrace(elementId);
+  }, [ensureTrace, elementId]);
 
-  // The element's `view` is the source of truth for the mode (so the
-  // project panel can show it); fall back to the params' until the
-  // registry entry exists.
-  const mode: TraceMode = reg.get(elementId)?.element.view ?? initialView;
-  const switchMode = useCallback(
-    (m: TraceMode) => reg.setElementView(elementId, m),
-    [reg, elementId],
+  const [mode, setMode] = useState<TraceMode>(() =>
+    params?.mode === "chronological" ? "chronological" : "by-id",
   );
+  const switchMode = useCallback((m: TraceMode) => setMode(m), []);
 
   const trace = useTrace(data, elementId);
 
@@ -84,7 +77,7 @@ export function TracePanel(props: IDockviewPanelProps) {
   // Mirror this panel's persistable state into its dockview params so
   // it's in `toJSON()` (the project file / the localStorage layout).
   useEffect(() => {
-    api.updateParameters({ elementId, view: mode, autoScroll, columns });
+    api.updateParameters({ elementId, mode, autoScroll, columns });
   }, [api, elementId, mode, autoScroll, columns]);
 
   // By-id mode state.
