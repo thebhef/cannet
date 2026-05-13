@@ -1297,7 +1297,16 @@ function PlotArea(p: PlotAreaProps) {
             if (key !== "x") return;
             if (xSyncRef.current.suppress) return;
             const { min, max } = u.scales.x;
-            if (min == null || max == null) return;
+            if (min == null || max == null || !Number.isFinite(min) || !Number.isFinite(max) || max <= min) return;
+            // Ignore a programmatic change echoing back at us — a missed
+            // suppress window (uPlot re-fitting on (re)create / resize /
+            // a `setData`), or it landing exactly where `applyXAll` put
+            // it. Only a real user pan/zoom moves x off the shared
+            // window; that drops out of follow-live.
+            const { xMin, xMax } = xSyncRef.current;
+            if (xMin != null && xMax != null && Math.abs(min - xMin) < 1e-9 && Math.abs(max - xMax) < 1e-9) {
+              return;
+            }
             liveRef.current.onUserXChange(min, max, areaId);
           },
         ],
