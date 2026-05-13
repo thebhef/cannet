@@ -416,8 +416,11 @@ Implementation notes (in progress):
 
 - **One trace-style panel with a mode toggle.** The chronological and
   per-message-ID views merged into one `TracePanel` with a *trace /
-  by ID* toggle; the mode is the trace element's `view`. Chronological
-  is `TraceView.tsx` (the scaled virtualizer), by-ID is
+  by ID* toggle; **by ID is the default** mode for a new panel. The
+  mode is per-panel state in the dockview `params.mode` (a trace
+  *element* is just `{ kind: "trace", id }` now — nothing else). One
+  **"Add trace"** toolbar button (no separate trace / by-id buttons).
+  Chronological is `TraceView.tsx` (the scaled virtualizer), by-ID is
   `ByIdTable.tsx`; the shared header (drag-resize, right-click
   show/hide menu, click-to-sort with ▲/▼) and the cell renderer live
   in `traceTable.tsx`, the column model + `sortRows` / `nextSort` in
@@ -426,6 +429,9 @@ Implementation notes (in progress):
   column click (asc → desc → off — the host's channel/id order). The
   old `"by-id"` dockview component name aliases to `TracePanel` so
   layouts saved before the merge still restore.
+  - Still wanted: a "msgs/s" (per-id message rate) column in by-id mode
+    — needs the host to track a per-id rate in `TraceStore` and
+    `fetch_latest_by_id` to return it alongside each frame.
 
 Exit criteria:
 
