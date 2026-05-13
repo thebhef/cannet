@@ -91,13 +91,17 @@ work or admit it isn't going to happen and delete it.
   if that turns out to be the better UX for "I want to read absolute
   values off the axis" instead of normalised positions.
 - `[feat]` `cannet-gui` plot panel: zoom-aware host-side decimation.
-  Today a freshly-built cache asks the host to decimate the *full*
-  trace window to `CACHE_TARGET_POINTS` points; zooming in shows that
-  same decimated subset, losing detail when only a small slice is
-  visible. The "right" answer is a separate `sample_signals` query
-  scoped to the visible x-range when the user zooms in, with
-  `max_points` matched to canvas width — full detail at narrow zooms,
-  the existing overview cache at wide zooms.
+  Today the cache slides — older points are dropped as new ones come
+  in — and a freshly-built cache decimates the *full* current trace
+  window to `CACHE_TARGET_POINTS` points just once. So (a) zooming
+  back to see capture history older than the slide window shows a
+  gap, and (b) zooming in shows the same coarse decimation no matter
+  how narrow the visible range. The fix: when the visible x-range is
+  significantly different from what's cached, fire a `sample_signals`
+  query scoped to that visible range with `max_points` matched to
+  canvas width — full detail at narrow zooms, full history when
+  zoomed out, all by leaning on the host's `slice_matching_many` +
+  `decimate_min_max` against the raw frames.
 - `[feat]` `cannet-gui` plot panel: triggers — edge / level /
   value-match on a chosen signal that freeze the view and emit an event
   marker (into the plot's event list, and later the trace). The
