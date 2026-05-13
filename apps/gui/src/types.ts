@@ -118,11 +118,20 @@ export interface SignalDescriptorRecord {
   unit: string;
 }
 
-/// Returned by `sample_signal`: parallel `(t, v)` arrays (`t` in
-/// seconds) plus the trace store's current first/last frame timestamps.
-export interface SignalSeries {
+/// One signal's freshly-decoded points from `sample_signals`: parallel
+/// `(t, v)` arrays, `t` in absolute seconds.
+export interface SampledPoints {
   t: number[];
   v: number[];
-  capture_start_seconds: number | null;
-  capture_end_seconds: number | null;
+}
+
+/// Returned by `sample_signals`: one `SampledPoints` per requested
+/// signal (same order), plus the sampled slice's first/last frame
+/// timestamps (seconds) — `from_seconds` is the x-origin when
+/// `from_index` is the trace window's start; both `null` when the
+/// window is empty.
+export interface SignalsSample {
+  from_seconds: number | null;
+  last_seconds: number | null;
+  series: SampledPoints[];
 }

@@ -53,8 +53,8 @@ use cannet_dbc::{Database, DecodedSignal};
 
 use ipc::{
     ByIdSnapshot, DbcInfo, DecodedRecord, InterfaceRecord, LogFinished, OpenLogResult,
-    RemoteSessionResult, SignalDescriptorRecord, SignalRecord, SignalSeries, TraceFrameRecord,
-    TraceGrew,
+    RemoteSessionResult, SampledPoints, SignalDescriptorRecord, SignalQuery, SignalRecord,
+    SignalsSample, TraceFrameRecord, TraceGrew,
 };
 use trace_store::{RawTraceFrame, TraceStore};
 
@@ -126,7 +126,7 @@ pub fn run() {
             project::open_project,
             project::save_project,
             list_signals,
-            sample_signal,
+            sample_signals,
         ])
         .setup(|app| {
             // Make sure the main window has the id our capabilities expect.
@@ -350,94 +350,94 @@ fn list_signals(state: State<'_, AppState>) -> Vec<SignalDescriptorRecord> {
     }
 }
 
-/// Sample one DBC signal over a window of the capture, returning the
-/// parallel `(t, v)` arrays plus the window's time bounds (so a live
-/// plot can place its viewport without a second round-trip). Empty
-/// `(t, v)` if no DBC is attached, the id / signal is unknown, or
-/// nothing in the window matches.
+/// Sample a batch of DBC signals over a slice `[from_index, window_end)`
+/// of the capture (frame-index range — a plot panel backed by a trace
+/// element passes it), returning one [`SampledPoints`] per query (same
+/// order) plus the slice's first/last frame timestamps so a live plot
+/// can place its x-origin and "follow live" edge without a second
+/// round-trip. A signal's points are empty if no DBC is attached or the
+/// id / signal is unknown / unseen in the slice.
 ///
-/// The window is either a **frame-index range** `[start_index,
-/// end_index)` — what a plot panel backed by a trace element passes, so
-/// the work is `O(window)` regardless of how large the capture is — or,
-/// when those are `None`, the time range `[start_seconds, end_seconds)`.
-/// `capture_start_seconds` / `capture_end_seconds` then report the
-/// window's first / last frame timestamps (the index-range case) or the
-/// store's first / last (the time-range case).
+/// One trace-store lock acquisition cleans out *all* the queried
+/// signals' frames at once (via [`TraceStore::slice_matching_many`], so
+/// the per-tick lock hold is `O(Σ matches)`, not `O(|signals| ·
+/// window)`); the DBC lock is then taken once for the whole batch's
+/// decode. A live plot re-samples this frequently and **incrementally**
+/// — each tick `from_index` is just past the last frame it already has,
+/// so `[from_index, window_end)` is one tick's worth of new frames, not
+/// the whole capture. (The first call after the plot opens / its window
+/// re-anchors passes `from_index` = the window start, decoding the
+/// backlog once.)
 ///
-/// `max_points` (`None` or `0` ⇒ no limit): the caller passes roughly
-/// the pixel width of the plot, and the series is min/max-decimated to
-/// at most `2 * max_points` points so a window holding hundreds of
-/// thousands to millions of frames doesn't ship (or ask uPlot to draw) a
-/// point per frame. Decimation preserves per-bucket extrema, so spikes
-/// survive.
+/// `max_points` (`0` ⇒ no limit): the caller passes roughly the pixel
+/// width of the plot (times a small factor) on a full / backlog fetch so
+/// that fetch is min/max-decimated rather than shipping a point per
+/// frame; on an incremental tick it passes `0` (the slice is already
+/// small, and the caller re-decimates its own accumulated series).
+/// Min/max decimation preserves per-bucket extrema, so spikes survive.
 ///
-/// `async` for the same reason as `fetch_trace_range`: the slice + decode
-/// can briefly contend with a fast pump thread, so it runs off the UI
-/// thread. The trace-store slice is taken before the DBC lock to keep the
-/// lock order (DBC ⊃ nothing) consistent with the other commands.
+/// `async` for the same reason as `fetch_trace_range`: the slice +
+/// decode can briefly contend with a fast pump thread, so it runs off
+/// the UI thread. The trace-store slice is taken before the DBC lock to
+/// keep the lock order (DBC ⊃ nothing) consistent with the other
+/// commands.
 #[tauri::command]
-#[allow(clippy::unused_async, clippy::too_many_arguments)]
-async fn sample_signal(
+#[allow(clippy::unused_async)]
+async fn sample_signals(
     app: AppHandle,
-    message_id: u32,
-    extended: bool,
-    signal_name: String,
-    start_seconds: f64,
-    end_seconds: f64,
-    start_index: Option<u32>,
-    end_index: Option<u32>,
-    max_points: Option<u32>,
-) -> SignalSeries {
+    from_index: u32,
+    window_end: u32,
+    signals: Vec<SignalQuery>,
+    max_points: u32,
+) -> SignalsSample {
     let state: State<'_, AppState> = app.state();
-    let store = &state.trace_store;
 
     #[allow(clippy::cast_precision_loss)]
     let ns_to_seconds = |ns: u64| (ns as f64) / 1e9;
 
-    let (frames, win_start_ts, win_end_ts) = if let (Some(s), Some(e)) = (start_index, end_index) {
-        // Index-range: clone only the frames matching this signal — a
-        // live plot calls this every tick, so cloning (and decoding) the
-        // whole capture would stall the pump thread.
-        store.slice_matching(message_id, extended, s as usize, e as usize)
-    } else {
-        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-        let to_ns = |x: f64| -> u64 {
-            if x <= 0.0 {
-                0
-            } else {
-                (x * 1e9) as u64
-            }
-        };
-        let frames = store.slice_time_range(to_ns(start_seconds), to_ns(end_seconds));
-        (frames, store.first_timestamp_ns(), store.last_timestamp_ns())
-    };
+    let ids: Vec<(u32, bool)> = signals.iter().map(|q| (q.message_id, q.extended)).collect();
+    let (frame_lists, from_ts, last_ts) =
+        state
+            .trace_store
+            .slice_matching_many(&ids, from_index as usize, window_end as usize);
 
-    let points = {
+    let series = {
         let guard = state.database.lock().expect("database mutex poisoned");
-        match guard.as_ref() {
-            Some(db) => {
-                signal_sampler::sample_signal(&frames, db, message_id, extended, &signal_name)
-            }
-            None => Vec::new(),
-        }
-    };
-    let points = match max_points {
-        Some(n) if n > 0 => signal_sampler::decimate_min_max(&points, n as usize),
-        _ => points,
+        let db = guard.as_ref();
+        signals
+            .iter()
+            .zip(frame_lists.iter())
+            .map(|(q, frames)| {
+                let points = match db {
+                    Some(db) => signal_sampler::sample_signal(
+                        frames,
+                        db,
+                        q.message_id,
+                        q.extended,
+                        &q.signal_name,
+                    ),
+                    None => Vec::new(),
+                };
+                let points = if max_points > 0 {
+                    signal_sampler::decimate_min_max(&points, max_points as usize)
+                } else {
+                    points
+                };
+                let mut t = Vec::with_capacity(points.len());
+                let mut v = Vec::with_capacity(points.len());
+                for p in points {
+                    t.push(p.t_seconds);
+                    v.push(p.value);
+                }
+                SampledPoints { t, v }
+            })
+            .collect()
     };
 
-    let mut t = Vec::with_capacity(points.len());
-    let mut v = Vec::with_capacity(points.len());
-    for p in points {
-        t.push(p.t_seconds);
-        v.push(p.value);
-    }
-
-    SignalSeries {
-        t,
-        v,
-        capture_start_seconds: win_start_ts.map(ns_to_seconds),
-        capture_end_seconds: win_end_ts.map(ns_to_seconds),
+    SignalsSample {
+        from_seconds: from_ts.map(ns_to_seconds),
+        last_seconds: last_ts.map(ns_to_seconds),
+        series,
     }
 }
 
