@@ -108,14 +108,16 @@ work or admit it isn't going to happen and delete it.
   vs...]` and decode in JS via a `DataView`. Probably 5-10× cheaper
   IPC under load; the plot toolbar already shows `host` vs total ms
   so the win is measurable.
-- `[perf]` `cannet-gui`: host-side decoded-sample cache. Today every
-  `sample_signals` call re-decodes the matching raw frames in its
-  range. With a per-`(message, signal)` append-only decoded-sample
-  buffer extended as the pump runs, the command is mostly "slice and
-  decimate an already-decoded array" — the actual decode CPU at high
-  rate is the dominant cost. Needs subscription tracking (so the host
-  only decodes signals someone's plotting) and a lifecycle tied to
-  the buffer clear.
+- `[perf]` `cannet-gui`: bound the host-side decoded-sample cache.
+  `signal_cache::SignalCacheStore` is append-only — `O(matches per
+  signal)` memory, fine for typical real-world rates but unbounded for
+  a 60 kHz-stream-of-one-signal-style torture test (gigabytes). The
+  right shape is a two-tier per-signal buffer: raw recent (last N
+  samples) plus a min/max-decimated tier behind it that's extended in
+  chunks as the raw tier overflows. The cache layout (samples +
+  parallel frame indices) is already what a tier would need; just
+  add the demotion step and an "older-tier slice" path in
+  `SignalCacheStore::slice`.
 - `[feat]` `cannet-gui` plot panel: triggers — edge / level /
   value-match on a chosen signal that freeze the view and emit an event
   marker (into the plot's event list, and later the trace). The
