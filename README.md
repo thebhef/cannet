@@ -72,11 +72,12 @@ apps/
                      alongside).
     src-tauri/       Rust host (`cannet-gui` crate). Owns the trace
                      model (`trace_store.rs` — the session buffer, plus
-                     an O(1)-maintained latest-frame-per-id index); the
-                     BLF and remote pumps append frames, and the
-                     frontend pulls slices via the `fetch_trace_range`
-                     command and the latest-by-id snapshot via
-                     `fetch_latest_by_id` (both decoded against the
+                     an O(1)-maintained latest-frame-per-id index and a
+                     per-id message-rate estimate); the BLF and remote
+                     pumps append frames, and the frontend pulls slices
+                     via the `fetch_trace_range` command and the
+                     latest-by-id snapshot (each id's latest frame + its
+                     rate) via `fetch_latest_by_id` (both decoded against the
                      current DBC at fetch time, both off the main
                      thread), plus a `trace-grew` IPC tick (~10 Hz:
                      count, rate, and a decoded tail of the newest rows
@@ -160,7 +161,8 @@ The window below the toolbar is a dockable panel area. The default
 layout has a **trace panel** and a **project panel** (the project's
 *elements*, the configured bus(es), the attached DBC). A trace panel
 has a **trace / by ID** mode toggle: *by ID* (the default) shows one
-row per arbitration id with its latest frame — click a column header to
+row per arbitration id with its latest frame and its current message
+rate (the **msg/s** column, by-id only) — click a column header to
 sort by it (click again to reverse, again to clear — ▲ / ▼ marks the
 sorted column); *trace* is the chronological view (one row per frame,
 follows the live edge). **Add trace** creates a new trace element and a

@@ -17,7 +17,7 @@ import {
   resizeColumn,
   toggleColumn,
 } from "./traceColumns";
-import type { TraceFrameRecord } from "./types";
+import type { ByIdSnapshotRecord } from "./types";
 
 type TraceMode = "chronological" | "by-id";
 
@@ -81,7 +81,7 @@ export function TracePanel(props: IDockviewPanelProps) {
   }, [api, elementId, mode, autoScroll, columns]);
 
   // By-id mode state.
-  const [rows, setRows] = useState<TraceFrameRecord[]>([]);
+  const [rows, setRows] = useState<ByIdSnapshotRecord[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [sort, setSort] = useState<SortState>(null);
   const onSortColumn = useCallback((key: ColumnKey) => setSort((s) => nextSort(s, key)), []);
@@ -101,7 +101,7 @@ export function TracePanel(props: IDockviewPanelProps) {
   const refreshTrigger = trace.status === "running" ? trace.frameCount : -1;
   useEffect(() => {
     if (mode !== "by-id") return;
-    void invoke<TraceFrameRecord[]>("fetch_latest_by_id", { since: trace.offset })
+    void invoke<ByIdSnapshotRecord[]>("fetch_latest_by_id", { since: trace.offset })
       .then(setRows)
       .catch(() => {
         /* a failed snapshot just leaves the last one up */

@@ -429,9 +429,13 @@ Implementation notes (in progress):
   column click (asc → desc → off — the host's channel/id order). The
   old `"by-id"` dockview component name aliases to `TracePanel` so
   layouts saved before the merge still restore.
-  - Still wanted: a "msgs/s" (per-id message rate) column in by-id mode
-    — needs the host to track a per-id rate in `TraceStore` and
-    `fetch_latest_by_id` to return it alongside each frame.
+  - **"msgs/s" column (by-id only).** `TraceStore` keeps a per-id
+    EMA-of-inter-arrival rate estimate (`RateEstimate`, updated on
+    append, cleared on `clear`); `latest_since` returns it alongside
+    each id's latest frame, and `fetch_latest_by_id` surfaces it as
+    `ByIdSnapshot { frame, rate }`. The "msg/s" column is `byIdOnly`
+    in `COLUMN_DEFS`, so the chronological view drops it; the by-id
+    view shows and can sort by it.
 
 Exit criteria:
 

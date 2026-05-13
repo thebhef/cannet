@@ -1,6 +1,6 @@
 import { memo } from "react";
 
-import type { TraceFrameRecord } from "./types";
+import type { ByIdSnapshotRecord, TraceFrameRecord } from "./types";
 import { formatSignalValue } from "./format";
 import {
   type ColumnKey,
@@ -19,9 +19,10 @@ export function byIdRowKey(f: TraceFrameRecord): string {
 }
 
 interface ByIdTableProps {
-  /// One row per arbitration id (the host's latest-by-id snapshot), in
-  /// the host's order; this table re-sorts a copy when `sort` is set.
-  rows: readonly TraceFrameRecord[];
+  /// One row per arbitration id (the host's latest-by-id snapshot, each
+  /// with its current message rate), in the host's order; this table
+  /// re-sorts a copy when `sort` is set.
+  rows: readonly ByIdSnapshotRecord[];
   columns: readonly ColumnState[];
   onColumnResize: (key: ColumnKey, width: number) => void;
   onColumnToggle: (key: ColumnKey) => void;
@@ -59,13 +60,14 @@ export function ByIdTable({
         onSortColumn={onSortColumn}
       />
       <div className="by-id-rows">
-        {sorted.map((r) => {
-          const key = byIdRowKey(r);
+        {sorted.map((s) => {
+          const key = byIdRowKey(s.frame);
           return (
             <ByIdRow
               key={key}
               rowKeyId={key}
-              frame={r}
+              frame={s.frame}
+              rate={s.rate}
               columns={visible}
               gridTemplate={gridTemplate}
               baseTimestamp={baseTimestamp}
@@ -82,6 +84,7 @@ export function ByIdTable({
 interface ByIdRowProps {
   rowKeyId: string;
   frame: TraceFrameRecord;
+  rate: number;
   columns: readonly ColumnState[];
   gridTemplate: string;
   baseTimestamp: number | null;
@@ -92,6 +95,7 @@ interface ByIdRowProps {
 const ByIdRow = memo(function ByIdRow({
   rowKeyId,
   frame,
+  rate,
   columns,
   gridTemplate,
   baseTimestamp,
@@ -106,7 +110,7 @@ const ByIdRow = memo(function ByIdRow({
     >
       {columns.map((c) => (
         <span key={c.key} className={columnDef(c.key).className}>
-          {cellContent(c.key, frame, frame.index, baseTimestamp, isExpanded)}
+          {cellContent(c.key, frame, frame.index, baseTimestamp, isExpanded, rate)}
         </span>
       ))}
       {isExpanded && frame.decoded && (
