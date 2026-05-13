@@ -190,13 +190,16 @@ describe("PlotPanel", () => {
     });
     await waitFor(() => expect(screen.getByText("EngineData.EngineSpeed")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "add plot area" }));
-    // Drop the signal onto Area 2.
-    const KEY = "s:256:EngineSpeed";
-    const dt = {
-      types: ["application/x-cannet-plot-signal"],
-      getData: (t: string) => (t === "application/x-cannet-plot-signal" ? KEY : ""),
-      dropEffect: "",
-    };
+    // Drop the signal onto Area 2. The drag payload is the full SignalRef.
+    const MIME = "application/x-cannet-plot-signal";
+    const payload = JSON.stringify({
+      messageId: 256,
+      extended: false,
+      signalName: "EngineSpeed",
+      messageName: "EngineData",
+      unit: "rpm",
+    });
+    const dt = { types: [MIME], getData: (t: string) => (t === MIME ? payload : ""), dropEffect: "" };
     const area2 = screen.getByText("Area 2").closest(".plot-area")!;
     fireEvent.dragOver(area2, { dataTransfer: dt });
     fireEvent.drop(area2, { dataTransfer: dt });
