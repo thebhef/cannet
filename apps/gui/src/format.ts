@@ -35,6 +35,14 @@ export function formatTimestamp(seconds: number, base: number | null): string {
   return t.toFixed(6);
 }
 
+/// A per-id message rate (frames/second) for the by-id "msg/s" column.
+/// Zero — an id seen only once, so no inter-arrival yet — shows blank;
+/// otherwise one decimal below 100/s, whole numbers above.
+export function formatMsgRate(rate: number): string {
+  if (rate <= 0) return "";
+  return rate < 100 ? rate.toFixed(1) : Math.round(rate).toString();
+}
+
 export function formatSignalValue(value: number, unit: string): string {
   // Trim insignificant trailing zeros and avoid noise like "60.000000".
   const formatted = Math.abs(value) >= 1e6 || Math.abs(value) < 1e-3 && value !== 0

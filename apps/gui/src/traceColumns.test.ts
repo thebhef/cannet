@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { TraceFrameRecord } from "./types";
+import type { ByIdSnapshotRecord, TraceFrameRecord } from "./types";
 import {
   COLUMN_DEFS,
   MIN_COLUMN_WIDTH,
@@ -116,8 +116,8 @@ describe("nextSort / sortRows", () => {
     expect(nextSort({ key: "id", dir: "desc" }, "ch")).toEqual({ key: "ch", dir: "asc" });
   });
 
-  function row(id: number, channel: number): TraceFrameRecord {
-    return {
+  function row(id: number, channel: number, rate = 0): ByIdSnapshotRecord {
+    const frame: TraceFrameRecord = {
       index: 0,
       timestamp_seconds: 0,
       channel,
@@ -128,19 +128,28 @@ describe("nextSort / sortRows", () => {
       data: [],
       decoded: null,
     };
+    return { frame, rate };
   }
 
   it("sorts by a column, stable, and is a no-op for null", () => {
     const rows = [row(0x200, 1), row(0x100, 0), row(0x100, 2)];
     expect(sortRows(rows, null)).toEqual(rows);
     expect(sortRows(rows, null)).not.toBe(rows); // a copy
-    expect(sortRows(rows, { key: "id", dir: "asc" }).map((r) => [r.id, r.channel])).toEqual([
+    expect(
+      sortRows(rows, { key: "id", dir: "asc" }).map((r) => [r.frame.id, r.frame.channel]),
+    ).toEqual([
       [0x100, 0],
       [0x100, 2],
       [0x200, 1],
     ]);
-    expect(sortRows(rows, { key: "id", dir: "desc" }).map((r) => r.id)).toEqual([
+    expect(sortRows(rows, { key: "id", dir: "desc" }).map((r) => r.frame.id)).toEqual([
       0x200, 0x100, 0x100,
     ]);
+  });
+
+  it("sorts by the per-id message rate", () => {
+    const rows = [row(0x100, 0, 5), row(0x200, 0, 50), row(0x300, 0, 0.5)];
+    expect(sortRows(rows, { key: "rate", dir: "asc" }).map((r) => r.rate)).toEqual([0.5, 5, 50]);
+    expect(sortRows(rows, { key: "rate", dir: "desc" }).map((r) => r.rate)).toEqual([50, 5, 0.5]);
   });
 });

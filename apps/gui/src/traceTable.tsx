@@ -10,20 +10,24 @@ import {
   gridTemplateColumns,
   visibleColumns,
 } from "./traceColumns";
-import { formatData, formatId, formatKind, formatTimestamp } from "./format";
+import { formatData, formatId, formatKind, formatMsgRate, formatTimestamp } from "./format";
 
 /// The content for one trace cell, given the column. The `#` column is
 /// the row's 1-based index and is shown even for a not-yet-loaded row;
-/// every other column is blank until the frame arrives. Shared by the
-/// chronological rows (`TraceView`) and the by-id rows (`ByIdTable`).
+/// every other column is blank until the frame arrives. `rate` is only
+/// meaningful in by-id mode (the "msg/s" column); elsewhere it's
+/// omitted. Shared by the chronological rows (`TraceView`) and the
+/// by-id rows (`ByIdTable`).
 export function cellContent(
   key: ColumnKey,
   frame: TraceFrameRecord | null,
   absoluteIndex: number,
   baseTimestamp: number | null,
   isExpanded: boolean,
+  rate?: number,
 ): ReactNode {
   if (key === "idx") return (absoluteIndex + 1).toLocaleString();
+  if (key === "rate") return rate != null ? formatMsgRate(rate) : null;
   if (!frame) return null;
   switch (key) {
     case "time":
