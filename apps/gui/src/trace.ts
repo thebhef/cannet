@@ -64,11 +64,17 @@ export function traceFrameCount(s: TraceState, sessionCount: number): number {
 }
 
 /// Re-anchor a trace if the session buffer shrank out from under it
-/// (e.g. a new connection cleared it). No-op otherwise — returns the
-/// same object so a `setState` with it bails out.
+/// (e.g. a new connection or "New project" cleared it). A *running*
+/// trace whose start dangled past the new end restarts empty (still
+/// running); a *frozen* (stopped / paused) one whose window is now out
+/// of range collapses to an empty window at the new end, keeping its
+/// paused-ness — so it stays stopped/paused rather than coming back to
+/// life. No-op otherwise — returns the same object so a `setState` with
+/// it bails out.
 export function reanchorToSession(s: TraceState, sessionCount: number): TraceState {
-  if (s.start > sessionCount) return freshTrace(sessionCount);
-  if (s.end !== null && s.end > sessionCount) return { ...s, end: sessionCount };
+  if (s.end === null) return s.start > sessionCount ? freshTrace(sessionCount) : s;
+  if (s.start > sessionCount) return { ...clearedTrace(sessionCount), isPaused: s.isPaused };
+  if (s.end > sessionCount) return { ...s, end: sessionCount };
   return s;
 }
 
@@ -124,7 +130,7 @@ export interface TraceHandle {
 export function useTrace(data: TraceData, elementId: string): TraceHandle {
   const reg = useElementRegistry();
   const sessionCount = data.count;
-  const state = reg.get(elementId)?.trace ?? freshTrace(0);
+  const state = reg.get(elementId)?.trace ?? clearedTrace(0);
 
   const offset = Math.min(state.start, sessionCount);
   const frameCount = traceFrameCount(state, sessionCount);

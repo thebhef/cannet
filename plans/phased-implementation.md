@@ -380,9 +380,12 @@ Implementation notes (in progress):
   project-file plumbing. The frontend keeps an in-memory **element registry**
   (`apps/gui/src/projectElements.ts` — `RegistryEntry = { element,
   trace }`; App state, `ElementRegistryContext`): restored from
-  `project.elements` on Open (with fresh trace windows — they
-  re-anchor anyway), seeded with one trace element on first launch /
-  New, serialized back (the `element`s only) on Save.
+  `project.elements` on Open, seeded with one trace element on first
+  launch / New, serialized back (the `element`s only) on Save. A newly
+  created trace window (Add trace, a self-heal, a project reload) is
+  **empty and stopped, anchored at the current session count** — it
+  never starts out spanning whatever was already in the buffer; hit
+  Start to begin capturing.
   - A trace-style panel (`trace` / `by-id`) carries `params.elementId`.
     `useTrace(data, elementId)` reads/writes that element's window in
     the registry rather than holding its own state — so closing the
