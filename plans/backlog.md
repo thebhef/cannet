@@ -100,6 +100,11 @@ work or admit it isn't going to happen and delete it.
   panel's signal rows use; a plot area is already a drop target. (Today
   you add signals only via the plot's "add signal…" dropdown or by
   dragging between plot panels.)
+- `[feat]` `cannet-gui` plot panel: drag a *plot area* (not just a
+  signal) between plot panels — re-order areas within a panel and move /
+  copy a whole area (its signals + y-range) to another plot panel.
+  Today only individual signal rows are draggable; the area's
+  drag-handle would carry the area config the same way.
 - `[ui]` `cannet-gui`: dragging the divider to resize a plot panel vs.
   an adjacent trace panel — confirm dockview's split-resize works for
   the plot panel (it's a normal dockview panel, so it should once they

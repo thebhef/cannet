@@ -158,8 +158,10 @@ impl From<cannet_dbc::SignalDescriptor> for SignalDescriptorRecord {
 }
 
 /// One `(message, signal)` a plot panel wants sampled — the query side
-/// of [`sample_signals`](crate::sample_signals).
+/// of [`sample_signals`](crate::sample_signals). `camelCase` on the wire
+/// (Tauri only renames *top-level* command args, not nested fields).
 #[derive(serde::Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct SignalQuery {
     pub message_id: u32,
     pub extended: bool,
