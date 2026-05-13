@@ -275,7 +275,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
   const params = props.params as PlotPanelParams | undefined;
   const [elementId] = useState(() => elementIdFromParams(params));
   useEffect(() => {
-    ensureTrace(elementId, "plot");
+    ensureTrace(elementId);
   }, [ensureTrace, elementId]);
   const trace = useTrace(data, elementId);
   const live = trace.status === "running";
