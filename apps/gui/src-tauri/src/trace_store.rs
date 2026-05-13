@@ -66,6 +66,11 @@ const PER_ID_RATE_ALPHA: f64 = 0.2;
 /// distinct frames).
 type FrameKey = (u8, u32, bool);
 
+/// Identifies a frame by arbitration id alone (id value + addressing
+/// mode, channel-independent) — what signal sampling keys on, since a
+/// DBC message id isn't channel-scoped.
+type IdKey = (u32, bool);
+
 /// Per-id message-rate estimate: the time of the last frame for this
 /// key and an exponential moving average of the inter-arrival time
 /// (`<= 0` until a second frame has been seen).
@@ -154,6 +159,13 @@ struct Inner {
     latest: HashMap<FrameKey, usize>,
     /// Per-id message-rate estimate, also maintained `O(1)` on append.
     rates: HashMap<FrameKey, RateEstimate>,
+    /// For each arbitration id ([`IdKey`]): the indices into `frames` of
+    /// every frame with that id, in append (hence index-ascending)
+    /// order. `O(1)` push on append; lets [`Self::slice_matching`] jump
+    /// straight to a signal's frames in a window instead of scanning all
+    /// of it — so a live plot of a sparse signal doesn't walk the whole
+    /// capture each re-sample.
+    by_id: HashMap<IdKey, Vec<usize>>,
 }
 
 impl TraceStore {
@@ -164,6 +176,7 @@ impl TraceStore {
                 rate_samples: VecDeque::new(),
                 latest: HashMap::new(),
                 rates: HashMap::new(),
+                by_id: HashMap::new(),
             }),
         }
     }
@@ -175,9 +188,11 @@ impl TraceStore {
         let now = Instant::now();
         let key = (frame.channel, frame.id, frame.extended);
         let mut inner = self.inner.lock().expect("trace store mutex poisoned");
+        let id_key = (frame.id, frame.extended);
         inner.frames.push(frame);
         let count = inner.frames.len();
         inner.latest.insert(key, count - 1);
+        inner.by_id.entry(id_key).or_default().push(count - 1);
         inner
             .rates
             .entry(key)
@@ -220,11 +235,10 @@ impl TraceStore {
 
     /// Within `[start, end)` (clamped), clone only the frames whose id /
     /// addressing mode match — plus the timestamps of the window's first
-    /// and last frame. The scan over the range happens under the lock but
-    /// clones (and the alloc they carry) are paid only for matches, so a
-    /// sparse signal barely touches the lock even over a huge window —
-    /// the signal sampler uses this so a live plot doesn't stall the pump
-    /// thread cloning the whole capture every tick.
+    /// and last frame. Uses the per-id index ([`Inner::by_id`]) to jump
+    /// straight to the matching frames, so the work is `O(matches + log n)`
+    /// rather than `O(window)`: a live plot of one signal doesn't walk
+    /// (and lock against the pump for) the whole capture every re-sample.
     #[must_use]
     pub fn slice_matching(
         &self,
@@ -239,14 +253,16 @@ impl TraceStore {
             return (Vec::new(), None, None);
         }
         let end = end.min(len);
-        let window = &inner.frames[start..end];
-        let first_ts = window.first().map(|f| f.timestamp_ns);
-        let last_ts = window.last().map(|f| f.timestamp_ns);
-        let matching = window
-            .iter()
-            .filter(|f| f.id == id_raw && f.extended == extended)
-            .cloned()
-            .collect();
+        let first_ts = inner.frames.get(start).map(|f| f.timestamp_ns);
+        let last_ts = end.checked_sub(1).and_then(|i| inner.frames.get(i)).map(|f| f.timestamp_ns);
+        let matching = match inner.by_id.get(&(id_raw, extended)) {
+            Some(idxs) => {
+                let lo = idxs.partition_point(|&i| i < start);
+                let hi = idxs.partition_point(|&i| i < end);
+                idxs[lo..hi].iter().map(|&i| inner.frames[i].clone()).collect()
+            }
+            None => Vec::new(),
+        };
         (matching, first_ts, last_ts)
     }
 
@@ -305,6 +321,7 @@ impl TraceStore {
         inner.rate_samples = VecDeque::new();
         inner.latest = HashMap::new();
         inner.rates = HashMap::new();
+        inner.by_id = HashMap::new();
     }
 
     /// For each distinct [`FrameKey`] whose most recent occurrence is at
@@ -438,6 +455,31 @@ mod tests {
         let store = TraceStore::new();
         assert_eq!(store.first_timestamp_ns(), None);
         assert_eq!(store.last_timestamp_ns(), None);
+    }
+
+    #[test]
+    fn slice_matching_returns_only_the_ids_frames_in_the_window() {
+        let store = TraceStore::new();
+        // ids:        7  3  7  3  7  9   (indices 0..6)
+        for (i, id) in [7u32, 3, 7, 3, 7, 9].into_iter().enumerate() {
+            store.append(dummy(u64::try_from(i).unwrap() * 1_000, id));
+        }
+        let (frames, first, last) = store.slice_matching(7, false, 1, 5);
+        // window [1,5): indices 1..5, ts 1_000..4_000; id-7 frames at 2 and 4.
+        assert_eq!(frames.iter().map(|f| f.timestamp_ns).collect::<Vec<_>>(), vec![2_000, 4_000]);
+        assert_eq!(first, Some(1_000));
+        assert_eq!(last, Some(4_000));
+        // An id with no frames in the window: empty, window ts still reported.
+        let (frames, first, last) = store.slice_matching(9, false, 0, 3);
+        assert!(frames.is_empty());
+        assert_eq!((first, last), (Some(0), Some(2_000)));
+        // Extended vs standard are distinct keys.
+        assert!(store.slice_matching(7, true, 0, 6).0.is_empty());
+        // Out-of-range start: empty, no window.
+        let (frames, first, last) = store.slice_matching(7, false, 99, 200);
+        assert!(frames.is_empty() && first.is_none() && last.is_none());
+        store.clear();
+        assert!(store.slice_matching(7, false, 0, 6).0.is_empty());
     }
 
     #[test]
