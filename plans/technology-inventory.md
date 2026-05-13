@@ -175,7 +175,10 @@ and/or community wrappers (e.g. `python-can`) depending on the client._
   - **`can-dbc`** crate (v9, MIT/Apache) — `adopted` in Phase 1 for parsing
     DBC files into an AST. Decoding signals from raw frames is implemented
     in our own thin runtime on top of the AST (the crate intentionally
-    stops at parsing).
+    stops at parsing). The runtime also resolves the long-name extension
+    (`BA_ "System{Message,Signal}LongSymbol" …`) from the AST's
+    attribute-value lists, so names truncated to the classic 32-char
+    limit on the `BO_` / `SG_` lines come back full.
 - **EDS** — CANopen Electronic Data Sheet, used for SDO/PDO decoding. Library
   TBD; not in scope until CANopen work begins.
 - **BLF** — Vector binary log format, source for replay in early phases.
