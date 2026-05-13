@@ -230,33 +230,35 @@ the re-sampling), Clear re-anchors what's plotted to "now".
   with one; **add plot area** appends more, all sharing one time axis,
   and they flex to fill the panel (one fills it; several split it). Each
   plot area has a uPlot canvas (time axis at the bottom) plus a **signal
-  panel** beside it listing that area's signals: colour swatch, name,
-  and value — at cursor A when one is placed, else at the mouse
-  crosshair, else the latest sample. The signal-panel head has an
+  panel** beside it listing that area's signals: a colour swatch (click
+  to hide / show the line — the value keeps updating, the swatch dims),
+  the name, and the value — at cursor A when one is placed, else at the
+  mouse crosshair, else the latest sample. The signal-panel head has an
   **y: auto / min…max** control to pin that area's y-range, and shows
   the H1/H2 Y-cursor values + ΔH when those are placed. With a DBC
   attached, the toolbar's **add signal…** dropdown lists every
   `(message, signal)` pair the database defines; picking one drops it
-  into the *focused* plot area (click an area to focus it). Move a
-  signal between areas with the **→** menu on its row; remove it with
-  **×**. The shared x-axis spans 0 to the longest plotted signal across
-  the panel's areas, so a signal added late still shows over the
-  existing span.
-- **Zoom, pan & follow.** Drag-select or **wheel** on any area zooms x
-  on every area; **shift + wheel** pans x (synced); **⌘/ctrl + wheel**
-  zooms y on the hovered area (buried — y is usually set with the
-  per-area range control); **fit data** refits x to the full signal
-  extent. **Follow live** keeps
-  every area pinned to the capture's growing edge while keeping the
-  current visible x-width (it just slides right); a manual x pan/zoom
-  turns it off, the same way a manual scroll leaves auto-scroll in a
-  trace panel.
+  into the *focused* plot area (click an area to focus it). **Drag a
+  signal row** onto another plot area to move it there; **×** removes it.
+  The shared x-axis spans 0 to the longest plotted signal across the
+  panel's areas, so a signal added late still shows over the existing
+  span.
+- **Zoom, pan & follow.** **Wheel** zooms x on every area; **shift +
+  wheel** pans x (synced); **right-drag** box-zooms x; **⌘/ctrl +
+  wheel** zooms y on the hovered area (buried — y is usually set with
+  the per-area range control); **fit data** refits x to the full signal
+  extent. **Follow live** keeps every area pinned to the capture's
+  growing edge while keeping the current visible x-width (it just slides
+  right); a manual x pan/zoom turns it off, the same way a manual scroll
+  leaves auto-scroll in a trace panel.
 - **Cursors & measurements** (both **off by default**). The toolbar's
   **cursors** selector turns on **X** cursors (left-click places A,
-  right-click places B, drawn through every area), **Y** cursors
-  (per-area H1 / H2), or **+ note** (left-click drops an event note at
-  that time); **clear cursors** removes them all. The **measurements**
-  toggle reveals a readout strip whose cells are configurable (the
+  right-click places B, drawn through every area — a small **Δt** chip
+  shows on the plot between them), **Y** cursors (per-area H1 / H2 —
+  values and **ΔH** show in the area's signal-panel head, plus a chip on
+  the plot), or **+ note** (left-click drops an event note at that
+  time); **clear cursors** removes them all. The **measurements** toggle
+  reveals a readout strip whose cells are configurable (the
   **measurements ▾** checklist): A, B, Δt, 1/Δt, and per-trace value@A /
   value@B / Δ / min / max / mean over [A, B]. Event markers — the
   capture-start "T0" plus your notes — draw as vertical lines across the
@@ -278,7 +280,7 @@ trace panel's window, is session-only). (Still pending — see
 `plans/phased-implementation.md` Phase 4 and `plans/backlog.md`:
 per-trace y offset/gain and log scale, triggers, math channels,
 CSV/image export, BLF annotation round-trip, enum/state plots,
-incremental sampling, native drag-and-drop signal moves.)
+incremental sampling.)
 
 > **Note:** plain `cargo run -p cannet-gui` will build the Rust host on
 > its own but won't bring up a usable window — the host expects either

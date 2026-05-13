@@ -38,12 +38,13 @@ import {
  * plot area" appends more) that flex to fill the panel and share one x
  * (time) axis — its extent is the longest plotted signal across all
  * areas. Each plot area is a uPlot canvas (time axis at the bottom)
- * plus a **side signal panel**: per signal a colour swatch, name, and
- * value (at cursor A when one is placed, else at the mouse crosshair,
- * else the latest sample); an "y: auto / min…max" control; and the
- * H1/H2 Y-cursor read-out when those are placed. Picking a `(message,
- * signal)` from the toolbar drops it into the focused area; the **→**
- * row menu moves it to another area.
+ * plus a **side signal panel**: per signal a colour swatch (click to
+ * hide / show the line — the value keeps updating), name, and value (at
+ * cursor A when one is placed, else at the mouse crosshair, else the
+ * latest sample); an "y: auto / min…max" control; and the H1/H2 Y-cursor
+ * read-out when those are placed. Picking a `(message, signal)` from the
+ * toolbar drops it into the focused area; **drag a signal row** onto
+ * another plot area to move it there.
  *
  * Data: `sample_signal` slices the trace element's window out of the
  * store by frame index (`O(window)`, not `O(capture)`), decodes the
@@ -74,8 +75,8 @@ import {
  * (`plotCursors.ts`) and the decimation (`signal_sampler`) are.
  *
  * Not built yet (`plans/backlog.md`): per-*trace* y offset/gain & log
- * scale; enum/state signals; triggers; CSV/image export; native
- * drag-and-drop signal moves; incremental sampling.
+ * scale; enum/state signals; triggers; CSV/image export; incremental
+ * sampling.
  */
 
 const TRACE_COLORS = [
@@ -108,6 +109,9 @@ interface SignalRef {
   signalName: string;
   messageName: string;
   unit: string;
+  /** Hidden = line not drawn on the plot (swatch dimmed); the
+   * side-panel value still updates. Absent ⇒ visible. */
+  hidden?: boolean;
 }
 
 type YMode = "auto" | { min: number; max: number };
@@ -477,19 +481,29 @@ export function PlotPanel(props: IDockviewPanelProps) {
       prev.map((a) => (a.id === areaId ? { ...a, signals: a.signals.filter((s) => signalRefKey(s) !== key) } : a)),
     );
   }, []);
-  const moveSignal = useCallback((fromAreaId: string, toAreaId: string, key: string) => {
-    if (fromAreaId === toAreaId) return;
+  // Move signal `key` into `toAreaId` from wherever it currently lives
+  // (the drop target only knows where it's going). No-op if it's already
+  // there.
+  const moveSignalToArea = useCallback((key: string, toAreaId: string) => {
     setAreas((prev) => {
-      const moved = prev.find((a) => a.id === fromAreaId)?.signals.find((s) => signalRefKey(s) === key);
-      if (!moved) return prev;
+      const fromArea = prev.find((a) => a.signals.some((s) => signalRefKey(s) === key));
+      if (!fromArea || fromArea.id === toAreaId) return prev;
+      const moved = fromArea.signals.find((s) => signalRefKey(s) === key)!;
       return prev.map((a) => {
-        if (a.id === fromAreaId) return { ...a, signals: a.signals.filter((s) => signalRefKey(s) !== key) };
-        if (a.id === toAreaId) {
-          return a.signals.some((s) => signalRefKey(s) === key) ? a : { ...a, signals: [...a.signals, moved] };
-        }
+        if (a.id === fromArea.id) return { ...a, signals: a.signals.filter((s) => signalRefKey(s) !== key) };
+        if (a.id === toAreaId) return { ...a, signals: [...a.signals, moved] };
         return a;
       });
     });
+  }, []);
+  const toggleSignalHidden = useCallback((areaId: string, key: string) => {
+    setAreas((prev) =>
+      prev.map((a) =>
+        a.id === areaId
+          ? { ...a, signals: a.signals.map((s) => (signalRefKey(s) === key ? { ...s, hidden: !s.hidden } : s)) }
+          : a,
+      ),
+    );
   }, []);
 
   // --- cursors / notes ---
@@ -622,9 +636,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
               label={areaLabels.get(area.id) ?? "Area"}
               isFirst={idx === 0}
               isLast={idx === areas.length - 1}
-              otherAreas={areas
-                .filter((a) => a.id !== area.id)
-                .map((a) => ({ id: a.id, label: areaLabels.get(a.id) ?? "Area" }))}
               focused={area.id === focusedAreaId}
               removable={areas.length > 1}
               winStart={winStart}
@@ -650,7 +661,8 @@ export function PlotPanel(props: IDockviewPanelProps) {
               onFocus={() => setFocusedAreaId(area.id)}
               onRemoveArea={() => removeArea(area.id)}
               onRemoveSignal={(key) => removeSignal(area.id, key)}
-              onMoveSignal={(key, toId) => moveSignal(area.id, toId, key)}
+              onDropSignal={(key) => moveSignalToArea(key, area.id)}
+              onToggleHidden={(key) => toggleSignalHidden(area.id, key)}
             />
           );
         })}
@@ -818,7 +830,6 @@ interface PlotAreaProps {
   label: string;
   isFirst: boolean;
   isLast: boolean;
-  otherAreas: Array<{ id: string; label: string }>;
   focused: boolean;
   removable: boolean;
   winStart: number;
@@ -844,7 +855,9 @@ interface PlotAreaProps {
   onFocus: () => void;
   onRemoveArea: () => void;
   onRemoveSignal: (key: string) => void;
-  onMoveSignal: (key: string, toAreaId: string) => void;
+  /** A signal row was dropped onto this area — move it here. */
+  onDropSignal: (key: string) => void;
+  onToggleHidden: (key: string) => void;
 }
 
 function PlotArea(p: PlotAreaProps) {
@@ -853,7 +866,6 @@ function PlotArea(p: PlotAreaProps) {
     label,
     isFirst,
     isLast,
-    otherAreas,
     focused,
     removable,
     winStart,
@@ -879,7 +891,8 @@ function PlotArea(p: PlotAreaProps) {
     onFocus,
     onRemoveArea,
     onRemoveSignal,
-    onMoveSignal,
+    onDropSignal,
+    onToggleHidden,
   } = p;
 
   const canvasRef = useRef<HTMLDivElement | null>(null);
@@ -996,9 +1009,13 @@ function PlotArea(p: PlotAreaProps) {
       const lastT = xs.length > 0 ? xs[xs.length - 1] : null;
 
       withSuppressed(() => {
-        // Re-feed the data without touching x (the panel owns the shared
-        // window). resetScales=true would also refit x — keep it false.
-        u.setData(merged, false);
+        // resetScales=true re-fits y to the new data (auto mode) — then
+        // we restore x to the panel's shared window (which it would
+        // otherwise re-fit to the data) and, in manual y mode, override
+        // y back to the configured range.
+        u.setData(merged, true);
+        const { xMin, xMax } = xSyncRef.current;
+        if (xMin != null && xMax != null) u.setScale("x", { min: xMin, max: xMax });
         if (lr.yMode !== "auto") u.setScale("y", { min: lr.yMode.min, max: lr.yMode.max });
       });
 
@@ -1046,7 +1063,10 @@ function PlotArea(p: PlotAreaProps) {
       height: Math.max(60, el.clientHeight - 2),
       scales: { x: { time: false } },
       legend: { show: false },
-      cursor: { drag: { x: true, y: false } },
+      // uPlot's built-in drag-select (left-button) is off — we do
+      // box-zoom on right-drag instead (see the `ready` hook), so
+      // left-clicks are free for placing cursors / notes.
+      cursor: { drag: { x: false, y: false } },
       axes: [
         { ...axisCommon, label: "time (s)", labelSize: 16, size: 34 },
         { ...axisCommon, size: 52 },
@@ -1058,6 +1078,7 @@ function PlotArea(p: PlotAreaProps) {
           stroke: colorFor(i),
           width: 1,
           points: { show: false },
+          show: !s.hidden,
         })),
       ],
       hooks: {
@@ -1151,6 +1172,33 @@ function PlotArea(p: PlotAreaProps) {
             };
             if (lr.cursorYh1 != null) hline(lr.cursorYh1, CURSOR_A_COLOR, "H1");
             if (lr.cursorYh2 != null) hline(lr.cursorYh2, CURSOR_B_COLOR, "H2");
+            // A small Δ chip so the cursor delta is visible without
+            // turning on the measurement strip.
+            const chip = (cx: number, cy: number, text: string, color: string) => {
+              const tw = ctx.measureText(text).width;
+              const padX = 4 * ratio;
+              const h = 13 * ratio;
+              ctx.fillStyle = "#0a0d0f";
+              ctx.fillRect(cx - tw / 2 - padX, cy - h / 2, tw + padX * 2, h);
+              ctx.strokeStyle = color;
+              ctx.strokeRect(cx - tw / 2 - padX, cy - h / 2, tw + padX * 2, h);
+              ctx.fillStyle = color;
+              ctx.textAlign = "center";
+              ctx.textBaseline = "middle";
+              ctx.fillText(text, cx, cy);
+            };
+            if (lr.cursorXa != null && lr.cursorXb != null && isLast) {
+              const xp = u.valToPos((lr.cursorXa + lr.cursorXb) / 2, "x", true);
+              if (xp > left && xp < left + width) {
+                chip(xp, top + height - 18 * ratio, `Δt ${fmtTime(Math.abs(lr.cursorXb - lr.cursorXa))}`, "#cbd5e1");
+              }
+            }
+            if (lr.cursorYh1 != null && lr.cursorYh2 != null) {
+              const yp = u.valToPos((lr.cursorYh1 + lr.cursorYh2) / 2, "y", true);
+              if (yp > top && yp < top + height) {
+                chip(left + 40 * ratio, yp, `ΔH ${fmtVal(Math.abs(lr.cursorYh2 - lr.cursorYh1))}`, "#cbd5e1");
+              }
+            }
             ctx.restore();
           },
         ],
@@ -1196,26 +1244,76 @@ function PlotArea(p: PlotAreaProps) {
               },
               { passive: false },
             );
-            const valAt = (e: MouseEvent) => {
-              const rect = over.getBoundingClientRect();
-              return { x: u.posToVal(e.clientX - rect.left, "x"), y: u.posToVal(e.clientY - rect.top, "y") };
+            // Mouse on the plot:
+            //   left-click   → place cursor A / H1 / note (cursor mode)
+            //   left-drag    → pan x (synced)
+            //   right-click  → place cursor B / H2
+            //   right-drag   → box-zoom x (synced)
+            // Click vs drag is a small movement threshold; uPlot's own
+            // left-drag zoom is disabled (see the `cursor` opt).
+            const DRAG_PX = 4;
+            let drag: { btn: number; sx: number; sy: number; moved: boolean; minX: number; maxX: number } | null = null;
+            const onMove = (e: MouseEvent) => {
+              if (!drag) return;
+              if (!drag.moved && (Math.abs(e.clientX - drag.sx) > DRAG_PX || Math.abs(e.clientY - drag.sy) > DRAG_PX))
+                drag.moved = true;
+              if (!drag.moved) return;
+              if (drag.btn === 0) {
+                // pan x: shift the *start* window by the pixel delta.
+                const w = over.clientWidth || 1;
+                const dxData = ((e.clientX - drag.sx) / w) * (drag.maxX - drag.minX);
+                const min = drag.minX - dxData;
+                const max = drag.maxX - dxData;
+                withSuppressed(() => u.setScale("x", { min, max }));
+                liveRef.current.onUserXChange(min, max, areaId);
+              } else {
+                // right-drag: draw the box-zoom selection.
+                const r = over.getBoundingClientRect();
+                const x0 = Math.max(0, Math.min(drag.sx, e.clientX) - r.left);
+                const x1 = Math.min(r.width, Math.max(drag.sx, e.clientX) - r.left);
+                u.setSelect({ left: x0, top: 0, width: Math.max(0, x1 - x0), height: over.clientHeight }, false);
+              }
             };
-            over.addEventListener("click", (e: MouseEvent) => {
+            const onUp = (e: MouseEvent) => {
+              window.removeEventListener("mousemove", onMove);
+              window.removeEventListener("mouseup", onUp);
+              const d = drag;
+              drag = null;
+              if (!d) return;
+              const r = over.getBoundingClientRect();
               const lr = liveRef.current;
+              if (d.btn === 2 && d.moved) {
+                u.setSelect({ left: 0, top: 0, width: 0, height: 0 }, false);
+                const a = u.posToVal(Math.min(d.sx, e.clientX) - r.left, "x");
+                const b = u.posToVal(Math.max(d.sx, e.clientX) - r.left, "x");
+                if (b - a > 0) {
+                  withSuppressed(() => u.setScale("x", { min: a, max: b }));
+                  lr.onUserXChange(a, b, areaId);
+                }
+                return;
+              }
+              if (d.moved) return; // left-drag pan already applied
               if (lr.cursorMode === "off") return;
-              const { x, y } = valAt(e);
-              if (lr.cursorMode === "x") lr.onPlaceCursorX("a", x);
-              else if (lr.cursorMode === "y") lr.onPlaceCursorY("h1", y);
-              else if (lr.cursorMode === "note") lr.onAddNote(x);
+              const x = u.posToVal(e.clientX - r.left, "x");
+              const y = u.posToVal(e.clientY - r.top, "y");
+              if (d.btn === 0) {
+                if (lr.cursorMode === "x") lr.onPlaceCursorX("a", x);
+                else if (lr.cursorMode === "y") lr.onPlaceCursorY("h1", y);
+                else if (lr.cursorMode === "note") lr.onAddNote(x);
+              } else {
+                if (lr.cursorMode === "x") lr.onPlaceCursorX("b", x);
+                else if (lr.cursorMode === "y") lr.onPlaceCursorY("h2", y);
+              }
+            };
+            over.addEventListener("mousedown", (e: MouseEvent) => {
+              if (e.button !== 0 && e.button !== 2) return;
+              if (e.button === 2) e.preventDefault();
+              const xs = u.scales.x;
+              drag = { btn: e.button, sx: e.clientX, sy: e.clientY, moved: false, minX: xs.min ?? 0, maxX: xs.max ?? 1 };
+              window.addEventListener("mousemove", onMove);
+              window.addEventListener("mouseup", onUp);
             });
-            over.addEventListener("contextmenu", (e: MouseEvent) => {
-              const lr = liveRef.current;
-              if (lr.cursorMode === "off") return;
-              e.preventDefault();
-              const { x, y } = valAt(e);
-              if (lr.cursorMode === "x") lr.onPlaceCursorX("b", x);
-              else if (lr.cursorMode === "y") lr.onPlaceCursorY("h2", y);
-            });
+            over.addEventListener("contextmenu", (e: MouseEvent) => e.preventDefault());
           },
         ],
       },
@@ -1249,10 +1347,38 @@ function PlotArea(p: PlotAreaProps) {
     void resampleRef.current();
   }, [winEnd, winStart, live]);
 
-  // Forced re-sample when "follow live" or the y-mode toggles.
+  // Forced re-sample when "follow live" toggles (so it snaps to / off
+  // the live edge immediately).
   useEffect(() => {
     void resampleRef.current();
-  }, [followLive, yMode]);
+  }, [followLive]);
+
+  // Apply the y-axis range *immediately* when it changes — no need to
+  // wait for the next re-sample. Auto → re-fit y to the current data
+  // (and restore the shared x window, which resetScales would clobber).
+  useEffect(() => {
+    const u = uplotRef.current;
+    if (!u) return;
+    withSuppressed(() => {
+      if (yMode === "auto") {
+        u.setData(u.data, true);
+        const { xMin, xMax } = xSyncRef.current;
+        if (xMin != null && xMax != null) u.setScale("x", { min: xMin, max: xMax });
+      } else {
+        u.setScale("y", { min: yMode.min, max: yMode.max });
+      }
+    });
+  }, [yMode, withSuppressed]);
+
+  // Show / hide series in place when the per-signal `hidden` flags
+  // change — no uPlot re-create needed (`signalSetKey` excludes it).
+  const hiddenKey = signals.map((s) => (s.hidden ? "1" : "0")).join("");
+  useEffect(() => {
+    const u = uplotRef.current;
+    if (!u) return;
+    signals.forEach((s, i) => u.setSeries(i + 1, { show: !s.hidden }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hiddenKey]);
 
   // Redraw the overlay when cursors / events change (no resample).
   useEffect(() => {
@@ -1274,7 +1400,23 @@ function PlotArea(p: PlotAreaProps) {
   const valueTitle = cursorXa != null ? "value at cursor A" : hoverX != null ? "value at crosshair" : "latest value";
 
   return (
-    <div className={`plot-area${focused ? " focused" : ""}`} onMouseDown={onFocus}>
+    <div
+      className={`plot-area${focused ? " focused" : ""}`}
+      onMouseDown={onFocus}
+      onDragOver={(e) => {
+        if (e.dataTransfer.types.includes("application/x-cannet-plot-signal")) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+        }
+      }}
+      onDrop={(e) => {
+        const key = e.dataTransfer.getData("application/x-cannet-plot-signal");
+        if (key) {
+          e.preventDefault();
+          onDropSignal(key);
+        }
+      }}
+    >
       <div className="plot-area-canvas" ref={canvasRef} />
       <div className="plot-area-signals">
         <div className="plot-area-signals-head">
@@ -1326,34 +1468,31 @@ function PlotArea(p: PlotAreaProps) {
             const key = signalRefKey(s);
             const v = displayValueFor(key);
             return (
-              <div className="plot-signal-row" key={key}>
-                <span className="plot-signal-swatch" style={{ background: colorFor(i) }} />
-                <span className="plot-signal-name" title={`${s.messageName}.${s.signalName}`}>
+              <div
+                className={`plot-signal-row${s.hidden ? " hidden" : ""}`}
+                key={key}
+                draggable
+                onDragStart={(e) => {
+                  e.dataTransfer.setData("application/x-cannet-plot-signal", key);
+                  e.dataTransfer.effectAllowed = "move";
+                }}
+              >
+                <button
+                  className={`plot-signal-swatch${s.hidden ? " hidden" : ""}`}
+                  style={{ background: colorFor(i) }}
+                  title={s.hidden ? "show this signal" : "hide this signal"}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onToggleHidden(key);
+                  }}
+                />
+                <span className="plot-signal-name" title={`${s.messageName}.${s.signalName} — drag to another plot area`}>
                   {s.messageName}.{s.signalName}
                 </span>
                 <span className="plot-signal-value" title={valueTitle}>
                   {fmtVal(v)}
                   {s.unit ? ` ${s.unit}` : ""}
                 </span>
-                {otherAreas.length > 0 && (
-                  <select
-                    className="plot-signal-move"
-                    value=""
-                    title="move this signal to another plot area"
-                    onClick={(e) => e.stopPropagation()}
-                    onChange={(e) => {
-                      if (e.target.value) onMoveSignal(key, e.target.value);
-                      e.currentTarget.selectedIndex = 0;
-                    }}
-                  >
-                    <option value="">→</option>
-                    {otherAreas.map((a) => (
-                      <option key={a.id} value={a.id}>
-                        → {a.label}
-                      </option>
-                    ))}
-                  </select>
-                )}
                 <button
                   className="plot-signal-remove"
                   title="remove this signal"

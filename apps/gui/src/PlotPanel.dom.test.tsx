@@ -27,6 +27,8 @@ vi.mock("uplot", () => {
       this.data = d;
     }
     setScale() {}
+    setSeries() {}
+    setSelect() {}
     setSize() {}
     redraw() {}
     destroy() {}
@@ -178,7 +180,7 @@ describe("PlotPanel", () => {
     expect(screen.getAllByText("EngineData.EngineSpeed").length).toBe(1);
   });
 
-  it("a picked signal can be moved to another area", async () => {
+  it("a picked signal can be dragged to another area", async () => {
     renderPanel();
     await waitFor(() =>
       expect(screen.getByRole("option", { name: /EngineData\.EngineSpeed/ })).toBeInTheDocument(),
@@ -188,13 +190,34 @@ describe("PlotPanel", () => {
     });
     await waitFor(() => expect(screen.getByText("EngineData.EngineSpeed")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "add plot area" }));
-    // The signal row now has a "→" move dropdown; move it to Area 2.
-    const moveSelect = screen.getByTitle("move this signal to another plot area") as HTMLSelectElement;
-    const area2Opt = Array.from(moveSelect.options).find((o) => /Area 2/.test(o.textContent ?? ""));
-    expect(area2Opt).toBeTruthy();
-    fireEvent.change(moveSelect, { target: { value: area2Opt!.value } });
+    // Drop the signal onto Area 2.
+    const KEY = "s:256:EngineSpeed";
+    const dt = {
+      types: ["application/x-cannet-plot-signal"],
+      getData: (t: string) => (t === "application/x-cannet-plot-signal" ? KEY : ""),
+      dropEffect: "",
+    };
+    const area2 = screen.getByText("Area 2").closest(".plot-area")!;
+    fireEvent.dragOver(area2, { dataTransfer: dt });
+    fireEvent.drop(area2, { dataTransfer: dt });
     // Still exactly one occurrence of the signal — it just lives in Area 2 now.
     expect(screen.getAllByText("EngineData.EngineSpeed").length).toBe(1);
+  });
+
+  it("clicking a signal's swatch toggles it hidden", async () => {
+    renderPanel();
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: /EngineData\.EngineSpeed/ })).toBeInTheDocument(),
+    );
+    fireEvent.change(screen.getByLabelText("add signal to focused plot area"), {
+      target: { value: "s:256:EngineSpeed" },
+    });
+    await waitFor(() => expect(screen.getByText("EngineData.EngineSpeed")).toBeInTheDocument());
+    const swatch = screen.getByTitle("hide this signal");
+    fireEvent.click(swatch);
+    expect(screen.getByTitle("show this signal")).toBeInTheDocument();
+    // The signal's value still renders (it just isn't drawn on the plot).
+    expect(screen.getByText("EngineData.EngineSpeed")).toBeInTheDocument();
   });
 
   it("toggling measurements shows the readout strip with the default cells", () => {

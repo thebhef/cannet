@@ -624,11 +624,13 @@ In rough order, each step leaving the panel runnable:
   owns a list of plot areas (starts with one) with "add plot area" /
   per-area remove; the areas flex to fill the panel (one area = full
   height; N split it; a tall stack scrolls), each a uPlot instance with
-  its time axis at the bottom plus a side signal panel (swatch, name,
-  value). Picking a signal adds it to the focused area; a signal moves
-  between areas via a per-row menu (native drag-and-drop is a follow-up
-  polish, `plans/backlog.md`). The plot-area list and the signal→area
-  assignment persist via the panel's dockview `params`.
+  its time axis at the bottom plus a side signal panel: per row a
+  clickable colour swatch (toggles the line's visibility — hidden = not
+  drawn, swatch dimmed, value still updates), the name, and the value.
+  Picking a signal adds it to the focused area; **dragging a signal row**
+  onto another plot area moves it there. The plot-area list, the
+  signal→area assignment, and the per-signal `hidden` flag persist via
+  the panel's dockview `params`.
 - **It's a trace element.** ✅ Done — the plot panel is backed by a
   `useTrace` element (`view: "plot"`), exactly like the trace panels: a
   window over the session buffer with Start / Stop / Pause / Clear (the
@@ -640,15 +642,17 @@ In rough order, each step leaving the panel runnable:
   Clear re-anchors the window to "now". The element's window indices are
   what `sample_signal` is given (see the window-bounded-sampling bullet
   above).
-- **Synced x zoom + pan; per-area y zoom; fit data.** ✅ Done —
-  plain **wheel** or drag-select on any area zooms x on all areas (and
-  leaves follow-live); `shift`+wheel pans x (synced); `⌘/ctrl`+wheel
-  zooms y on the hovered area only (buried under a modifier — y is
-  usually set with the per-area range control); "fit data" refits x to
-  the full signal extent and y to the data. Implemented with a shared
-  x-sync ref + a per-area `setScale` hook (cross-instance `setScale`,
-  guarded so programmatic changes don't echo), and a per-area
-  re-entrancy guard on the resample.
+- **Synced x zoom + pan; per-area y zoom; fit data.** ✅ Done — plain
+  **wheel** on any area zooms x on all areas (and leaves follow-live);
+  **right-drag** box-zooms x; `shift`+wheel pans x (synced);
+  `⌘/ctrl`+wheel zooms y on the hovered area only (buried under a
+  modifier — y is usually set with the per-area range control); "fit
+  data" refits x to the full signal extent and y to the data.
+  (uPlot's built-in left-drag zoom is disabled so left-clicks are free
+  for placing cursors / notes.) Implemented with a shared x-sync ref +
+  a per-area `setScale` hook (cross-instance `setScale`, guarded so
+  programmatic changes don't echo), and a per-area re-entrancy guard on
+  the resample.
 - **Follow live.** ✅ Done — a toggle that keeps every area pinned to
   the capture's growing edge while preserving the *current* visible
   x-width (so it just slides right); a manual x pan/zoom turns it off.
@@ -664,7 +668,9 @@ In rough order, each step leaving the panel runnable:
   button removes them all. Cursors are a uPlot `draw`-hook overlay. The
   side signal panel shows the value at cursor A when placed, else the
   value at the mouse crosshair (throttled), else the latest sample; the
-  H1/H2 Y-cursor values and ΔH show in the area's signal-panel head. A
+  H1/H2 Y-cursor values and ΔH show in the area's signal-panel head, and
+  small Δt / ΔH chips draw on the plot between the cursor pair so the
+  delta is visible without turning the measurement strip on. A
   "measurements" toggle reveals a strip whose quantity set is
   **configurable** from a checklist — A, B, Δt, 1/Δt, and per-trace
   value@A / value@B / Δ / min / max / mean over [A, B]. Cursor mode, the
@@ -711,8 +717,6 @@ In rough order, each step leaving the panel runnable:
 - **Incremental sampling.** The decimating `sample_signal` re-scans the
   whole window each tick; decoding only the newly-appended frames is the
   bigger win for very long captures (`plans/backlog.md`).
-- **Drag-and-drop signal moves.** Signals move between areas via a
-  per-row menu; native DnD is a polish item.
 - **Non-time-series views.** XY / scatter plots, gauges, and the
   bitfield / flag panel `features.md` calls for — likely separate panel
   types, a later GUI pass.
