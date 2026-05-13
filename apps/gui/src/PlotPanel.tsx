@@ -61,8 +61,9 @@ import {
  * leaves "follow live"); `shift`+wheel pans x; `⌘/ctrl`+wheel zooms y
  * on the hovered area (buried — y is usually set with the per-area
  * range control); "fit data" refits x to the full signal extent;
- * **follow live** keeps the right edge at the extent while preserving
- * the current visible x-width.
+ * **follow live** slides a fixed-width window so the right edge tracks
+ * the live edge — the width is whatever you last zoomed/panned to (a
+ * default until the capture is that long, then it slides).
  *
  * Cursors & measurements are off by default (toolbar). "X" cursors:
  * left-click = A, right-click = B (through every area); "Y": per-area
@@ -108,6 +109,11 @@ const MIN_DECIMATION_POINTS = 200;
  * capture rates); overlapping ticks are dropped by a busy-guard, so a
  * slow re-sample just self-throttles. */
 const LIVE_RESAMPLE_INTERVAL_MS = 250;
+/** Width (seconds) of the follow-live x-window before the user has set
+ * one by zooming/panning. The window grows from t=0 up to this and then
+ * slides; once the user picks a width, that width is what follow-live
+ * keeps. */
+const DEFAULT_FOLLOW_WIDTH_SECONDS = 10;
 
 type CursorMode = "off" | "x" | "y" | "note";
 
@@ -393,10 +399,15 @@ export function PlotPanel(props: IDockviewPanelProps) {
       if (ext == null) return;
       const sync = xSyncRef.current;
       if (followLiveRef.current) {
-        const haveWindow = sync.xMin != null && sync.xMax != null;
-        const showAll = !haveWindow || (sync.xMin as number) <= 0;
-        const min = showAll ? 0 : ext - ((sync.xMax as number) - (sync.xMin as number));
-        applyXAll(Math.max(0, min), ext, null);
+        // Slide a fixed-width window so the right edge tracks the live
+        // edge. Width = whatever the user last zoomed/panned to (else a
+        // default); until the capture is that long the left edge stays
+        // pinned at 0 and the window just grows.
+        const width =
+          sync.xMin != null && sync.xMax != null && sync.xMax > sync.xMin
+            ? sync.xMax - sync.xMin
+            : DEFAULT_FOLLOW_WIDTH_SECONDS;
+        applyXAll(Math.max(0, ext - width), ext, null);
       } else if (sync.xMax == null) {
         applyXAll(0, ext, null);
       }
@@ -1352,9 +1363,18 @@ function PlotArea(p: PlotAreaProps) {
         ],
       },
     };
-    const u = new uPlot(opts, [[]], el);
+    // uPlot needs `data.length === series.length`; start with an
+    // empty column per series (the resample below fills them).
+    const initialData = [[] as number[], ...signals.map(() => [] as number[])] as uPlot.AlignedData;
+    const u = new uPlot(opts, initialData, el);
     uplotRef.current = u;
     registerInstance(areaId, u);
+    // A re-sample for the *previous* uPlot may still be in flight (it'll
+    // no-op once it sees `uplotRef.current` moved on) and would otherwise
+    // block this fresh one via the busy-guard — clear it so the new
+    // instance gets its data even when the trace isn't running (no timer
+    // to retry).
+    resampleBusyRef.current = false;
     void resampleRef.current();
 
     const ro = new ResizeObserver(() => {

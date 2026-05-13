@@ -128,13 +128,12 @@ work or admit it isn't going to happen and delete it.
   palette on add). Right-click → a small swatch-grid / `<input
   type="color">` popover; the chosen colour is sticky like the
   auto-assigned one.
-- `[ui]` `cannet-gui` trace panels: inline state labels — for a signal
-  whose DBC entry carries value descriptions (`VAL_` / value tables),
-  show the named state (e.g. `2 "Reverse"`) instead of the bare number
-  in the decoded-signal grid (and the by-ID expansion). Needs the DBC
-  layer to surface value tables (`cannet-dbc` currently exposes
-  name/unit/scaling only); also feeds the plot panel's enum/state-signal
-  rendering.
+- `[ui]` `cannet-gui` trace panels: enum values — for a signal whose DBC
+  entry carries value descriptions (`VAL_` / value tables), show the
+  named value (e.g. `2 "Reverse"`) instead of the bare number in the
+  decoded-signal grid (and the by-ID expansion). Needs the DBC layer to
+  surface value tables (`cannet-dbc` currently exposes name/unit/scaling
+  only); also feeds the plot panel's enum/state-signal rendering.
 - `[ui]` GUI-wide visual restyle: adopt the dark "scope" visual
   language from `plans/plot-panel-reference.html` (the prototype's colour
   variables, monospace type scale, panel chrome, control styling) across
