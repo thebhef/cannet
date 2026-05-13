@@ -1406,11 +1406,13 @@ function PlotArea(p: PlotAreaProps) {
           : (cache.lastT ?? (xs.length > 0 ? xs[xs.length - 1] : null));
 
       withSuppressed(() => {
-        // resetScales=true re-fits y to the new data — then we pin y to
-        // [0, 1] (normalised) and restore x to the panel's shared
-        // window. In manual y mode, override y back to the configured
-        // range (skipping the auto-normalisation effect).
-        u.setData(merged, true);
+        // `setData(data, false)` keeps the current scales — we set
+        // them ourselves a couple of lines down. Passing `true` here
+        // (auto-fit to data extent first) produced a transient re-fit
+        // every tick that visibly nudged the axis tick layout / the
+        // canvas bbox by a pixel or two — the "wiggle" the user
+        // reported in the gridlines/labels.
+        u.setData(merged, false);
         const { xMin, xMax } = xSyncRef.current;
         if (xMin != null && xMax != null) u.setScale("x", { min: xMin, max: xMax });
         if (lr.yMode === "auto") u.setScale("y", { min: 0, max: 1 });
