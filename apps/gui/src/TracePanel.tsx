@@ -52,22 +52,8 @@ export function TracePanel(props: IDockviewPanelProps) {
     ensureTrace(elementId);
   }, [ensureTrace, elementId]);
 
-<<<<<<< HEAD
   const [mode, setMode] = useState<TraceMode>(() =>
     params?.mode === "chronological" ? "chronological" : "by-id",
-=======
-  // The element's `view` is the source of truth for the mode (so the
-  // project panel can show it); fall back to the params' until the
-  // registry entry exists. (A trace panel only ever hosts a
-  // chronological / by-ID element — the `view` union also includes
-  // `"plot"`, which the plot panel uses — so anything other than
-  // `"by-id"` is treated as chronological.)
-  const mode: TraceMode =
-    reg.get(elementId)?.element.view === "by-id" ? "by-id" : initialView;
-  const switchMode = useCallback(
-    (m: TraceMode) => reg.setElementView(elementId, m),
-    [reg, elementId],
->>>>>>> 2501ac7 (gui: plot panel — back it with a trace element; window-bounded sampling; layout/axis/follow fixes)
   );
   const switchMode = useCallback((m: TraceMode) => setMode(m), []);
 
