@@ -47,15 +47,45 @@ const SIGNALS = [
   { message_id: 256, extended: false, message_name: "EngineData", signal_name: "EngineSpeed", unit: "rpm" },
   { message_id: 256, extended: false, message_name: "EngineData", signal_name: "EngineTemp", unit: "degC" },
 ];
+/** Inline encoder mirroring `lib.rs::encode_signals_sample` — keeps the
+ * fixture self-contained so the test doesn't depend on Rust. Layout
+ * matches what `decodeSignalsSample` parses. */
+function encodeSample(series: { t: number[]; v: number[] }[]): ArrayBuffer {
+  const totalPts = series.reduce((s, p) => s + p.t.length, 0);
+  const buf = new ArrayBuffer(8 + 32 + 4 + series.length * 4 + totalPts * 16);
+  const view = new DataView(buf);
+  const magic = [0x53, 0x49, 0x47, 0x53, 0x41, 0x4d, 0x50, 0x01];
+  for (let i = 0; i < 8; i++) view.setUint8(i, magic[i]);
+  let off = 8;
+  view.setFloat64(off, 0, true);
+  off += 8;
+  view.setFloat64(off, 2, true);
+  off += 8;
+  view.setFloat64(off, 0, true);
+  off += 8;
+  view.setFloat64(off, 0, true);
+  off += 8;
+  view.setUint32(off, series.length, true);
+  off += 4;
+  for (const p of series) {
+    view.setUint32(off, p.t.length, true);
+    off += 4;
+    for (const t of p.t) {
+      view.setFloat64(off, t, true);
+      off += 8;
+    }
+    for (const v of p.v) {
+      view.setFloat64(off, v, true);
+      off += 8;
+    }
+  }
+  return buf;
+}
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: { signals?: unknown[] }) => {
     if (cmd === "list_signals") return SIGNALS;
     if (cmd === "sample_signals")
-      return {
-        from_seconds: 0,
-        last_seconds: 2,
-        series: (args?.signals ?? []).map(() => ({ t: [0, 1, 2], v: [10, 20, 15] })),
-      };
+      return encodeSample((args?.signals ?? []).map(() => ({ t: [0, 1, 2], v: [10, 20, 15] })));
     return undefined;
   }),
 }));
