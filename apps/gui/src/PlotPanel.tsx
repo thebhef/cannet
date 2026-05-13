@@ -1610,6 +1610,18 @@ function PlotArea(p: PlotAreaProps) {
     };
   }, [live, winStart, resampleIntervalMs]);
 
+  // Safety net: re-sample whenever the trace window grows. Catches the
+  // first render after mount (where `winEnd` may still be `0` because
+  // `useTrace` hasn't resolved the registry entry yet — its one-shot
+  // resample would then see an empty window, and the renderedThrough
+  // skip would suppress later ticks of the loop too) and keeps a
+  // stopped / paused plot (whose loop is off) re-sampled when its
+  // window otherwise changes. Cheap: deduped by the busy-guard and the
+  // renderedThrough skip.
+  useEffect(() => {
+    void resampleRef.current();
+  }, [winEnd]);
+
   // Forced re-sample when "follow live" toggles (so it snaps to / off
   // the live edge immediately).
   useEffect(() => {
