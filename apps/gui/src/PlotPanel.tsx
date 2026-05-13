@@ -56,14 +56,15 @@ import {
  * *incrementally* — `sample_signals` (one batched, one-store-lock call
  * per tick) returns only the frames appended since last tick, decoded;
  * the area appends them to a bounded per-signal cache ({@link AreaCache}).
- * When the cache outgrows {@link CACHE_DECIMATE_THRESHOLD} it's thrown
- * away and the next tick refetches the full window from the host, which
- * min/max-decimates against the *raw* frames — so peaks survive even
- * after a long run. {@link mergeSeries} stitches the cached series onto
- * one timeline. Per-trace **auto-normalisation** (each trace's values
- * re-mapped to [0, 1] from its own min/max) lets signals with very
- * different natural ranges share the canvas; the side panel shows the
- * raw value. The toolbar shows the resulting update rate.
+ * When the cache outgrows {@link CACHE_DECIMATE_THRESHOLD} it *slides*
+ * (drops the oldest points) — no re-decimation drift, no O(window)
+ * host work; the trade-off is older capture history isn't visible
+ * until we add a zoom-aware re-fetch. {@link mergeSeries} stitches the
+ * cached series onto one timeline. Per-trace **auto-normalisation**
+ * (each trace's values re-mapped to [0, 1] from its own min/max) lets
+ * signals with very different natural ranges share the canvas; the
+ * side panel shows the raw value. The toolbar shows the resulting
+ * update rate.
  *
  * Interaction: drag-select or **wheel** zooms x on every area (and
  * leaves "follow live"); `shift`+wheel pans x; `⌘/ctrl`+wheel zooms y
@@ -114,11 +115,14 @@ const ZOOM_STEP = 1.15;
  * to. Comfortably above any sane canvas pixel width, so uPlot draws the
  * cached series directly. */
 const CACHE_TARGET_POINTS = 4_000;
-/** When an accumulated cache series outgrows this, the whole cache is
- * thrown away and rebuilt by a fresh full fetch (decimated host-side
- * against the *raw* frames). Doing it that way — rather than collapsing
- * the cache in JS — preserves extrema indefinitely; the JS-side
- * in-place decimation we used previously drifts after a few passes. */
+/** When an accumulated cache series outgrows this, the oldest points
+ * are dropped to bring it back down to {@link CACHE_TARGET_POINTS} (a
+ * sliding window of decimated history). The surviving points are
+ * unchanged — neither re-decimated (drifts) nor refetched (O(window)
+ * host work, which hammers the trace-store lock at high rate). The
+ * trade-off: zooming out to show capture history older than the cache
+ * holds shows a gap; the fix for that is a zoom-aware host-side
+ * re-fetch (see `plans/backlog.md`). */
 const CACHE_DECIMATE_THRESHOLD = CACHE_TARGET_POINTS * 2;
 /** Plot update-rate options (Hz) offered in the toolbar, and the
  * default. Lower = less CPU under a fast capture; the re-sample loop is
@@ -993,10 +997,14 @@ interface PlotAreaProps {
  * window start + signal set; thrown away and rebuilt when either
  * changes. Times are stored already relative to {@link base} (the
  * x-origin), so the display data is the cache arrays as-is. A series
- * that grows past {@link CACHE_DECIMATE_THRESHOLD} drops the whole
- * cache and the next tick refetches the full window from the host —
- * the host decimates against the raw frames, preserving extrema; doing
- * that in JS (collapsing already-decimated buckets) drifts. */
+ * that grows past {@link CACHE_DECIMATE_THRESHOLD} *slides* — its
+ * oldest points are dropped to bring it back down to
+ * {@link CACHE_TARGET_POINTS}. The survivors are kept exactly as they
+ * were (already host-decimated for the initial backlog or raw recent
+ * samples), so neither aliasing-drift (re-decimating in place does)
+ * nor O(window) host load (re-fetching the full window does) shows
+ * up. Zooming back to show older capture history needs a separate
+ * fetch (`plans/backlog.md`). */
 interface AreaCache {
   anchorStart: number;
   signalSetKey: string;
@@ -1244,22 +1252,24 @@ function PlotArea(p: PlotAreaProps) {
         return;
       }
 
-      // Bound the cache: when a series outgrows the threshold, throw
-      // the whole cache away and let the next tick refetch the full
-      // window from the host (min/max-decimated by `signal_sampler`
-      // against the raw frames). In-place JS decimation of an
-      // already-decimated cache drifts over time — repeated bucket
-      // collapses lose extrema — and the user reported that drift as
-      // "aliasing the longer it runs"; refetching against the raw
-      // frames preserves them. Skip the render this tick: next tick
-      // sees `cacheRef.current === null` and rebuilds clean.
+      // Bound the cache: when a series outgrows the threshold, *slide*
+      // (drop the oldest points, bringing the series back down to
+      // CACHE_TARGET_POINTS). The dropped points were already decimated
+      // host-side or are raw recent samples; the surviving points are
+      // unchanged, so this introduces no drift / aliasing. Cheap (one
+      // array slice per signal), and unlike a "throw the cache away and
+      // refetch the whole window" strategy it doesn't hammer the host
+      // with O(window) work every few ticks under a fast stream — which
+      // at high rate was bad enough to starve the pump and stall the
+      // by-ID panel. The downside: zooming all the way out to show the
+      // *full* capture history doesn't have those older points
+      // anymore — that needs a zoom-aware re-fetch from the host (see
+      // `plans/backlog.md`).
       for (const c of cache.byKey.values()) {
         if (c.t.length > CACHE_DECIMATE_THRESHOLD) {
-          cacheRef.current = null;
-          lr.onReportCache(areaId, 0);
-          recordRate();
-          lr.onReportRate(areaId, rateEmaRef.current);
-          return;
+          const drop = c.t.length - CACHE_TARGET_POINTS;
+          c.t = c.t.slice(drop);
+          c.v = c.v.slice(drop);
         }
       }
 
