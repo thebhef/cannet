@@ -47,7 +47,10 @@ Scope (all delivered):
   database. Float / double signals declared via `SIG_VALTYPE_` decode
   as IEEE 754, not as scaled integers (added once the demo fixture
   exposed the gap). Realised as `crates/cannet-dbc` (uses `can-dbc` for
-  parsing; runtime decoder lives in the crate root).
+  parsing; runtime decoder lives in the crate root) — which also
+  resolves the long-name extension (`BA_ "System…LongSymbol"`), so
+  names truncated to the classic 32-char limit on the `BO_` / `SG_`
+  lines come back full.
 
 Architecture refinements that landed during implementation:
 
