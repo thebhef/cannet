@@ -49,11 +49,12 @@ import {
  * colour is assigned on add and travels with it (re-ordering / moving
  * doesn't recolour).
  *
- * Data: `sample_signal` slices the trace element's window out of the
- * store by frame index (`O(window)`, not `O(capture)`), decodes the
- * signal, and min/max-decimates it to ≈the plot's pixel width;
- * {@link mergeSeries} stitches an area's series onto one timeline. The
- * live re-sample is throttled, and Pause stops it entirely.
+ * Data: `sample_signal` pulls just this signal's frames out of the
+ * trace element's window via the store's per-id index (`O(matches)`,
+ * not `O(window)`), decodes them, and min/max-decimates to ≈the plot's
+ * pixel width; {@link mergeSeries} stitches an area's series onto one
+ * timeline. While the trace is running each area re-samples on a steady
+ * timer (decoupled from React re-renders); Pause/Stop ends it.
  *
  * Interaction: drag-select or **wheel** zooms x on every area (and
  * leaves "follow live"); `shift`+wheel pans x; `⌘/ctrl`+wheel zooms y
@@ -78,8 +79,8 @@ import {
  * (`plotCursors.ts`) and the decimation (`signal_sampler`) are.
  *
  * Not built yet (`plans/backlog.md`): per-*trace* y offset/gain & log
- * scale; enum/state signals; triggers; CSV/image export; incremental
- * sampling.
+ * scale; enum/state signals; triggers; CSV/image export; fully
+ * incremental (append-only cached) sampling.
  */
 
 const TRACE_COLORS = [
@@ -101,8 +102,11 @@ const AXIS_TICKS = "#3a4654";
 const ZOOM_STEP = 1.15;
 /** Lower bound for `sample_signal`'s decimation pixel hint. */
 const MIN_DECIMATION_POINTS = 200;
-/** Min spacing between live re-samples of a plot area (ms). */
-const LIVE_RESAMPLE_INTERVAL_MS = 1000;
+/** Re-sample cadence for a plot area while its trace is running (ms).
+ * A steady timer, decoupled from React re-renders (which starve at high
+ * capture rates); overlapping ticks are dropped by a busy-guard, so a
+ * slow re-sample just self-throttles. */
+const LIVE_RESAMPLE_INTERVAL_MS = 250;
 
 type CursorMode = "off" | "x" | "y" | "note";
 
@@ -932,7 +936,6 @@ function PlotArea(p: PlotAreaProps) {
   const seriesRef = useRef<Map<string, Series>>(new Map());
   const presentRef = useRef<Map<string, number | null>>(new Map());
   const resampleBusyRef = useRef(false);
-  const lastResampleAtRef = useRef(0);
   const hoverRafRef = useRef(0);
   const [hoverX, setHoverX] = useState<number | null>(null);
   const [valueTick, setValueTick] = useState(0); // bump → re-render side panel
@@ -1066,7 +1069,6 @@ function PlotArea(p: PlotAreaProps) {
       setValueTick((v) => v + 1);
     } finally {
       resampleBusyRef.current = false;
-      lastResampleAtRef.current = performance.now();
     }
   }, [signals, areaId, withSuppressed]);
 
@@ -1370,13 +1372,19 @@ function PlotArea(p: PlotAreaProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [signalSetKey, areaId]);
 
-  // Re-sample on capture growth / window re-anchor — but only while
-  // running, and throttled. (Pause/Stop freeze `winEnd`, so the resample
-  // loop simply stops.)
+  // While the trace is running, re-sample on a steady timer rather than
+  // off React re-renders (`winEnd` changes lurchily — and stops
+  // entirely — when renders starve at a high capture rate). Overlapping
+  // ticks are dropped by the busy-guard in `resample`. Pause/Stop ends
+  // the timer (freezing the window); the leading re-sample on the
+  // running→paused edge captures the frozen state. Also re-sample once
+  // when the window re-anchors (Clear / Start gives a new `winStart`).
   useEffect(() => {
-    if (live && performance.now() - lastResampleAtRef.current < LIVE_RESAMPLE_INTERVAL_MS) return;
     void resampleRef.current();
-  }, [winEnd, winStart, live]);
+    if (!live) return;
+    const h = window.setInterval(() => void resampleRef.current(), LIVE_RESAMPLE_INTERVAL_MS);
+    return () => window.clearInterval(h);
+  }, [live, winStart]);
 
   // Forced re-sample when "follow live" toggles (so it snaps to / off
   // the live edge immediately).
