@@ -1257,6 +1257,12 @@ function PlotArea(p: PlotAreaProps) {
         const { xMin, xMax } = xSyncRef.current;
         if (xMin != null && xMax != null) u.setScale("x", { min: xMin, max: xMax });
         if (lr.yMode !== "auto") u.setScale("y", { min: lr.yMode.min, max: lr.yMode.max });
+        // Force a full redraw (paths + axis recalc). `setData` does
+        // redraw on its own but doesn't always recompute axis ticks /
+        // gridlines if the layout state is stale from construction; this
+        // belt-and-braces call kicks them — cheap, since uPlot's redraw
+        // is just a canvas pass.
+        u.redraw(true, true);
       });
       cache.renderedThrough = cache.nextIndex;
 
