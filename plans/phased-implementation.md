@@ -490,7 +490,7 @@ must not paint into a corner.
 
 Land it in small, independently demoable steps. The realised order so
 far: the host-side data path (signal sampler + `list_signals` /
-`sample_signal` commands) first, then the plot panel itself (uPlot in a
+`sample_signals` commands) first, then the plot panel itself (uPlot in a
 dockview panel), then the interaction polish, then project-file
 persistence (which is gated on the rest of Phase 3 — see below).
 
@@ -517,30 +517,33 @@ persistence (which is gated on the rest of Phase 3 — see below).
   the trace view's decode-on-fetch slice. Live plots re-sample as the
   trace grows (driven by the same `trace-grew` tick); a paused or
   finished capture is queried over a fixed range. Realised as
-  `apps/gui/src-tauri/src/signal_sampler.rs` plus
-  `TraceStore::slice_time_range` / `first_timestamp_ns` /
-  `last_timestamp_ns`; surfaced to the frontend as the `list_signals`
-  (DBC → pickable signals) and `sample_signal` (`(t, v)` series + the
-  capture's current time bounds) Tauri commands. Independently-sampled
+  `apps/gui/src-tauri/src/signal_sampler.rs` plus a per-id frame
+  index in `TraceStore` (`slice_matching_many` — one lock, one signal's
+  frames each, `O(Σ matches)`); surfaced to the frontend as the
+  `list_signals` (DBC → pickable signals) and `sample_signals` (batched
+  `(t, v)` series for a `[from_index, window_end)` slice + that slice's
+  time bounds) Tauri commands. Independently-sampled
   series are stitched onto one timeline (sorted-union x-axis,
   sample-and-hold per series) by `apps/gui/src/plotData.ts` before being
   handed to the renderer.
 - **Window-bounded sampling + decimation, not an optimisation.** ✅ Done
   — the trace store can hold **hundreds of thousands to millions** of
   frames, so the plot must not pay `O(capture)` per re-sample, nor ship
-  (or ask uPlot to draw) a point per frame. `sample_signal` slices the
-  plot's trace-element window out of the store **by frame index** (the
-  plot passes the element's `[offset, offset + frameCount)`), so the
-  work is `O(window)`; the decoded series is then min/max-decimated to
-  at most `2 * max_points` points — per-bucket extrema, so spikes
-  survive (`signal_sampler::decimate_min_max`, unit-tested). The
-  un-decimated frames stay in the store; a cursor / measurement query
-  just re-samples that signal over the (narrower) cursor span. The plot
-  also throttles the live re-sample and an in-flight guard prevents
-  pile-up under a fast stream; Pause/Stop freeze the window so
-  re-sampling stops entirely. Still pending: decoding only the
-  newly-appended frames each tick — true incremental sampling
-  (`plans/backlog.md`).
+  (or ask uPlot to draw) a point per frame. The live plot re-samples
+  **incrementally**: each tick `sample_signals` is asked only for the
+  frames appended since the previous tick (decoded against the DBC, no
+  decimation), and the plot appends them to a bounded per-signal cache
+  (`PlotPanel.tsx::AreaCache` — re-built from one min/max-decimated full
+  `sample_signals` fetch only when raw increments overflow it). So a
+  tick's host cost is `O(increment)`, not `O(window)`, and the trace
+  store lock is held only to clone the increment — even at thousands of
+  frames/s the pump isn't starved. The loop is self-paced (~30 Hz, the
+  next tick scheduled after the previous finishes — decoupled from React
+  re-renders, which lurch at high rates); the toolbar shows the
+  resulting update rate. Pause/Stop freeze the window so the loop
+  stops; a cursor / measurement query re-samples that signal over the
+  (narrower) cursor span. (`signal_sampler::decimate_min_max` —
+  per-bucket extrema so spikes survive — unit-tested.)
 - **Plot interaction (MVP).** Pan / zoom on the time axis (uPlot's
   built-in drag-zoom), a readout cursor / legend showing each trace's
   value at the hovered instant (uPlot's built-in cursor + live legend),
@@ -638,9 +641,9 @@ In rough order, each step leaving the panel runnable:
   surviving a panel close. It renders signal *values* over time instead
   of message rows. While "running" it follows the live capture; pause /
   stop freeze the window (the re-sample loop stops, which also keeps a
-  fast / unlimited-rate stream from piling up `sample_signal` calls);
+  fast / unlimited-rate stream from piling up `sample_signals` calls);
   Clear re-anchors the window to "now". The element's window indices are
-  what `sample_signal` is given (see the window-bounded-sampling bullet
+  what `sample_signals` is given (see the window-bounded-sampling bullet
   above).
 - **Synced x zoom + pan; per-area y zoom; fit data.** ✅ Done — plain
   **wheel** on any area zooms x on all areas (and leaves follow-live);
@@ -714,9 +717,6 @@ In rough order, each step leaving the panel runnable:
   separately (`plans/backlog.md`).
 - **Export.** Copy / save the visible window (or the cursor span) as CSV
   or an image (`plans/backlog.md`).
-- **Incremental sampling.** The decimating `sample_signal` re-scans the
-  whole window each tick; decoding only the newly-appended frames is the
-  bigger win for very long captures (`plans/backlog.md`).
 - **Non-time-series views.** XY / scatter plots, gauges, and the
   bitfield / flag panel `features.md` calls for — likely separate panel
   types, a later GUI pass.

@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 
-import type { SignalDescriptorRecord, SignalSeries } from "./types";
+import type { SignalDescriptorRecord, SignalsSample } from "./types";
 import { useTraceData } from "./traceData";
 import { useProjectContext } from "./projectContext";
 import { useElementRegistry } from "./projectElements";
@@ -50,12 +50,15 @@ import {
  * colour is assigned on add and travels with it (re-ordering / moving
  * doesn't recolour).
  *
- * Data: `sample_signal` pulls just this signal's frames out of the
- * trace element's window via the store's per-id index (`O(matches)`,
- * not `O(window)`), decodes them, and min/max-decimates to ≈the plot's
- * pixel width; {@link mergeSeries} stitches an area's series onto one
- * timeline. While the trace is running each area re-samples on a steady
- * timer (decoupled from React re-renders); Pause/Stop ends it.
+ * Data: while running, each area re-samples on a self-paced ~30 Hz loop
+ * (decoupled from React re-renders; Pause/Stop ends it) and does so
+ * *incrementally* — `sample_signals` (one batched, one-store-lock call
+ * per tick) returns only the frames appended since last tick, decoded;
+ * the area appends them to a bounded per-signal cache ({@link AreaCache}
+ * — full re-decimated re-fetch only when it overflows), so a long
+ * capture is never re-decoded every tick. {@link mergeSeries} stitches
+ * the cached series onto one timeline for uPlot. The toolbar shows the
+ * resulting update rate.
  *
  * Interaction: drag-select or **wheel** zooms x on every area (and
  * leaves "follow live"); `shift`+wheel pans x; `⌘/ctrl`+wheel zooms y
@@ -81,8 +84,7 @@ import {
  * (`plotCursors.ts`) and the decimation (`signal_sampler`) are.
  *
  * Not built yet (`plans/backlog.md`): per-*trace* y offset/gain & log
- * scale; enum/state signals; triggers; CSV/image export; fully
- * incremental (append-only cached) sampling.
+ * scale; enum/state signals; triggers; CSV/image export.
  */
 
 const TRACE_COLORS = [
@@ -102,13 +104,18 @@ const AXIS_STROKE = "#cbd5e1";
 const AXIS_GRID = "#222b35";
 const AXIS_TICKS = "#3a4654";
 const ZOOM_STEP = 1.15;
-/** Lower bound for `sample_signal`'s decimation pixel hint. */
-const MIN_DECIMATION_POINTS = 200;
+/** Target size (points) for a plot area's cached per-signal series — the
+ * `max_points` a full/backlog `sample_signals` fetch is min/max-decimated
+ * to, and (×4) the size past which the cache is refetched-and-redecimated
+ * rather than letting raw increments grow it without bound. Comfortably
+ * above any sane canvas pixel width, so uPlot draws the cached series
+ * directly without a further decimation pass. */
+const CACHE_TARGET_POINTS = 12_000;
 /** Re-sample cadence for a plot area while its trace is running (ms).
- * A steady timer, decoupled from React re-renders (which starve at high
- * capture rates); overlapping ticks are dropped by a busy-guard, so a
- * slow re-sample just self-throttles. */
-const LIVE_RESAMPLE_INTERVAL_MS = 250;
+ * Self-paced: the next tick is scheduled after the previous one
+ * finishes, so a slow tick just lowers the effective rate instead of
+ * piling up. ~30 Hz target. */
+const LIVE_RESAMPLE_INTERVAL_MS = 33;
 /** Width (seconds) of the follow-live x-window before the user has set
  * one by zooming/panning. The window grows from t=0 up to this and then
  * slides; once the user picks a width, that width is what follow-live
@@ -331,6 +338,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
   // area's own ref) and a perf read-out.
   const [seriesByArea, setSeriesByArea] = useState<Map<string, Map<string, Series>>>(new Map());
   const [perfMs, setPerfMs] = useState(0);
+  const [rateHz, setRateHz] = useState(0);
   const dpr = typeof devicePixelRatio === "number" ? devicePixelRatio : 1;
 
   // Shared x-window + the per-area uPlot registry + the per-area data
@@ -586,6 +594,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     [measEnabled],
   );
   const reportPerf = useCallback((_areaId: string, ms: number) => setPerfMs((p) => Math.max(p * 0.6, ms)), []);
+  const reportRate = useCallback((_areaId: string, hz: number) => setRateHz((p) => Math.max(p * 0.7, hz)), []);
 
   const catalogOptions = useMemo(
     () =>
@@ -667,8 +676,12 @@ export function PlotPanel(props: IDockviewPanelProps) {
           measurements
         </label>
         {measEnabled && <MeasurementMenu measKeys={measKeys} onChange={setMeasKeys} />}
-        <span className="plot-perf" title="worst recent plot-area resample time · device pixel ratio">
-          {perfMs > 0 ? `${perfMs.toFixed(1)} ms` : "—"} · dpr {dpr.toFixed(2)}
+        <span
+          className="plot-perf"
+          title="plot update rate · worst recent plot-area resample time · device pixel ratio"
+        >
+          {live && rateHz > 0 ? `${Math.round(rateHz)} Hz` : "—"} · {perfMs > 0 ? `${perfMs.toFixed(1)} ms` : "—"} ·
+          dpr {dpr.toFixed(2)}
         </span>
       </div>
 
@@ -703,6 +716,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
               onAddNote={addNote}
               onReportSeries={reportSeries}
               onReportPerf={reportPerf}
+              onReportRate={reportRate}
               onSetYMode={(m) => setAreaYMode(area.id, m)}
               onFocus={() => setFocusedAreaId(area.id)}
               onRemoveArea={() => removeArea(area.id)}
@@ -897,6 +911,8 @@ interface PlotAreaProps {
   onAddNote: (t: number) => void;
   onReportSeries: (areaId: string, series: Map<string, Series>) => void;
   onReportPerf: (areaId: string, ms: number) => void;
+  /** Effective re-sample rate (Hz, smoothed) — `0` when not running. */
+  onReportRate: (areaId: string, hz: number) => void;
   onSetYMode: (m: YMode) => void;
   onFocus: () => void;
   onRemoveArea: () => void;
@@ -906,6 +922,34 @@ interface PlotAreaProps {
    * one this panel doesn't have yet (drag from another panel). */
   onDropSignal: (ref: SignalRef, beforeKey: string | null) => void;
   onToggleHidden: (key: string) => void;
+}
+
+/** A plot area's accumulated sample cache: the live trace re-samples
+ * *incrementally* — each tick it asks the host only for frames appended
+ * since {@link nextIndex}, decodes just those, and appends them here, so
+ * a long capture isn't re-decoded every tick. Anchored to a particular
+ * window start + signal set; thrown away and rebuilt when either
+ * changes. Times are stored already relative to {@link base} (the
+ * x-origin), so the display data is the cache arrays as-is. When raw
+ * increments push a series past {@link CACHE_TARGET_POINTS}×4 the cache
+ * is rebuilt from a fresh min/max-decimated full fetch ({@link refetch}). */
+interface AreaCache {
+  anchorStart: number;
+  signalSetKey: string;
+  /** x-origin in absolute seconds (timestamp of the frame at
+   * `anchorStart`); `null` until the first non-empty fetch. */
+  base: number | null;
+  /** Next frame index to fetch from (`anchorStart` initially / after a
+   * refetch; then the previous tick's window end). */
+  nextIndex: number;
+  /** Relative-time of the window's last frame, for the follow-live edge;
+   * `null` until known. */
+  lastT: number | null;
+  /** Frame index reflected in the last data we pushed to uPlot — lets a
+   * tick with no new frames skip the rebuild. `-1` ⇒ nothing rendered. */
+  renderedThrough: number;
+  byKey: Map<string, { t: number[]; v: number[] }>;
+  refetch: boolean;
 }
 
 function PlotArea(p: PlotAreaProps) {
@@ -935,6 +979,7 @@ function PlotArea(p: PlotAreaProps) {
     onAddNote,
     onReportSeries,
     onReportPerf,
+    onReportRate,
     onSetYMode,
     onFocus,
     onRemoveArea,
@@ -948,6 +993,9 @@ function PlotArea(p: PlotAreaProps) {
   const seriesRef = useRef<Map<string, Series>>(new Map());
   const presentRef = useRef<Map<string, number | null>>(new Map());
   const resampleBusyRef = useRef(false);
+  const cacheRef = useRef<AreaCache | null>(null);
+  const lastResampleTsRef = useRef(0);
+  const rateEmaRef = useRef(0);
   const hoverRafRef = useRef(0);
   const [hoverX, setHoverX] = useState<number | null>(null);
   const [valueTick, setValueTick] = useState(0); // bump → re-render side panel
@@ -989,6 +1037,7 @@ function PlotArea(p: PlotAreaProps) {
     onAddNote,
     onReportSeries,
     onReportPerf,
+    onReportRate,
   });
   useEffect(() => {
     liveRef.current = {
@@ -1008,10 +1057,18 @@ function PlotArea(p: PlotAreaProps) {
       onAddNote,
       onReportSeries,
       onReportPerf,
+      onReportRate,
     };
   });
 
-  const decimationHint = () => Math.max(MIN_DECIMATION_POINTS, Math.round(canvasRef.current?.clientWidth ?? 0));
+  const recordRate = useCallback(() => {
+    const now = performance.now();
+    const dt = (now - lastResampleTsRef.current) / 1000;
+    lastResampleTsRef.current = now;
+    if (dt > 0 && dt < 5) {
+      rateEmaRef.current = rateEmaRef.current === 0 ? 1 / dt : 0.2 * (1 / dt) + 0.8 * rateEmaRef.current;
+    }
+  }, []);
 
   const resample = useCallback(async () => {
     const u = uplotRef.current;
@@ -1022,37 +1079,101 @@ function PlotArea(p: PlotAreaProps) {
     try {
       const lr = liveRef.current;
       if (signals.length === 0) {
+        cacheRef.current = null;
         withSuppressed(() => u.setData([[]]));
         seriesRef.current = new Map();
         presentRef.current = new Map();
         lr.onReportSeries(areaId, new Map());
         lr.onAreaResampled(areaId, null);
+        recordRate();
+        lr.onReportRate(areaId, rateEmaRef.current);
+        setValueTick((v) => v + 1);
         return;
       }
-      const maxPoints = decimationHint();
-      const results = await Promise.all(
-        signals.map((s) =>
-          invoke<SignalSeries>("sample_signal", {
+
+      // (Re)anchor the incremental cache to the current window + signal set.
+      const sk = signals.map(signalRefKey).join("|");
+      let cache = cacheRef.current;
+      if (!cache || cache.anchorStart !== lr.winStart || cache.signalSetKey !== sk) {
+        cache = {
+          anchorStart: lr.winStart,
+          signalSetKey: sk,
+          base: null,
+          nextIndex: lr.winStart,
+          lastT: null,
+          renderedThrough: -1,
+          byKey: new Map(),
+          refetch: false,
+        };
+        cacheRef.current = cache;
+      }
+      if (cache.refetch) {
+        cache.base = null;
+        cache.nextIndex = lr.winStart;
+        cache.byKey = new Map();
+        cache.renderedThrough = -1;
+        cache.refetch = false;
+      }
+
+      // Fetch only what's new: [from, to). `from <= winStart` ⇒ this is the
+      // backlog / refetch slice — ask the host to min/max-decimate it;
+      // otherwise it's one tick's worth of frames — take them raw.
+      const from = cache.nextIndex;
+      const to = lr.winEnd;
+      const isFull = from <= lr.winStart;
+      if (to > from) {
+        const res = await invoke<SignalsSample>("sample_signals", {
+          fromIndex: from,
+          windowEnd: to,
+          signals: signals.map((s) => ({
             messageId: s.messageId,
             extended: s.extended,
             signalName: s.signalName,
-            startSeconds: 0,
-            endSeconds: Number.MAX_SAFE_INTEGER,
-            startIndex: lr.winStart,
-            endIndex: lr.winEnd,
-            maxPoints,
-          }),
-        ),
-      );
-      if (uplotRef.current !== u) return;
-      // x-axis = elapsed seconds since the window's first frame (every
-      // signal in the panel shares this window, so they align). Robust:
-      // it comes straight back from `sample_signal`, no async base fetch.
-      const b = results.find((r) => r.capture_start_seconds != null)?.capture_start_seconds ?? 0;
-      const seriesRel: Series[] = results.map((r) => ({ t: r.t.map((x) => x - b), v: r.v }));
+          })),
+          maxPoints: isFull ? CACHE_TARGET_POINTS : 0,
+        });
+        if (uplotRef.current !== u || cacheRef.current !== cache) return;
+        if (cache.base == null) {
+          if (res.from_seconds == null) return; // nothing real yet — try again next tick
+          cache.base = res.from_seconds;
+        }
+        const base = cache.base;
+        signals.forEach((s, i) => {
+          const key = signalRefKey(s);
+          const got = res.series[i] ?? { t: [], v: [] };
+          const acc = cache!.byKey.get(key);
+          if (isFull || !acc) {
+            cache!.byKey.set(key, { t: got.t.map((x) => x - base), v: got.v.slice() });
+          } else {
+            for (let j = 0; j < got.t.length; j++) {
+              acc.t.push(got.t[j] - base);
+              acc.v.push(got.v[j]);
+            }
+          }
+        });
+        if (res.last_seconds != null) cache.lastT = res.last_seconds - cache.base;
+        cache.nextIndex = to;
+      }
+
+      // Nothing new to draw since last render → skip the rebuild, but keep
+      // the follow-live edge fed and report the heartbeat.
+      if (cache.renderedThrough === cache.nextIndex) {
+        lr.onAreaResampled(areaId, cache.lastT);
+        recordRate();
+        lr.onReportRate(areaId, rateEmaRef.current);
+        return;
+      }
+
+      // Bound the cache: if raw increments have grown a series well past
+      // the target, rebuild from a fresh decimated full fetch next tick.
+      let biggest = 0;
+      for (const c of cache.byKey.values()) if (c.t.length > biggest) biggest = c.t.length;
+      if (biggest > CACHE_TARGET_POINTS * 4) cache.refetch = true;
+
+      const seriesRel: Series[] = signals.map((s) => cache!.byKey.get(signalRefKey(s)) ?? { t: [], v: [] });
       const merged = mergeSeries(seriesRel) as uPlot.AlignedData;
       const xs = merged[0] as number[];
-      const lastT = xs.length > 0 ? xs[xs.length - 1] : null;
+      const lastT = cache.lastT ?? (xs.length > 0 ? xs[xs.length - 1] : null);
 
       withSuppressed(() => {
         // resetScales=true re-fits y to the new data (auto mode) — then
@@ -1064,6 +1185,7 @@ function PlotArea(p: PlotAreaProps) {
         if (xMin != null && xMax != null) u.setScale("x", { min: xMin, max: xMax });
         if (lr.yMode !== "auto") u.setScale("y", { min: lr.yMode.min, max: lr.yMode.max });
       });
+      cache.renderedThrough = cache.nextIndex;
 
       const sm = new Map<string, Series>();
       const pv = new Map<string, number | null>();
@@ -1078,11 +1200,13 @@ function PlotArea(p: PlotAreaProps) {
       lr.onReportSeries(areaId, sm);
       lr.onAreaResampled(areaId, lastT);
       lr.onReportPerf(areaId, performance.now() - t0);
+      recordRate();
+      lr.onReportRate(areaId, rateEmaRef.current);
       setValueTick((v) => v + 1);
     } finally {
       resampleBusyRef.current = false;
     }
-  }, [signals, areaId, withSuppressed]);
+  }, [signals, areaId, withSuppressed, recordRate]);
 
   const resampleRef = useRef(resample);
   useEffect(() => {
@@ -1393,18 +1517,34 @@ function PlotArea(p: PlotAreaProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [signalSetKey, areaId]);
 
-  // While the trace is running, re-sample on a steady timer rather than
-  // off React re-renders (`winEnd` changes lurchily — and stops
-  // entirely — when renders starve at a high capture rate). Overlapping
-  // ticks are dropped by the busy-guard in `resample`. Pause/Stop ends
-  // the timer (freezing the window); the leading re-sample on the
-  // running→paused edge captures the frozen state. Also re-sample once
-  // when the window re-anchors (Clear / Start gives a new `winStart`).
+  // While the trace is running, re-sample on a self-paced ~30 Hz loop
+  // (each tick scheduled after the previous one finishes — decoupled
+  // from React re-renders, which lurch / stall at high capture rates,
+  // and never piling up). Pause/Stop ends the loop, freezing the
+  // window; the leading re-sample on the running→paused edge captures
+  // the frozen state. Also re-sample once when the window re-anchors
+  // (Clear / Start gives a new `winStart`).
   useEffect(() => {
     void resampleRef.current();
-    if (!live) return;
-    const h = window.setInterval(() => void resampleRef.current(), LIVE_RESAMPLE_INTERVAL_MS);
-    return () => window.clearInterval(h);
+    if (!live) {
+      rateEmaRef.current = 0;
+      return;
+    }
+    let stopped = false;
+    let timer = 0;
+    const tick = async () => {
+      if (stopped) return;
+      await resampleRef.current();
+      if (stopped) return;
+      timer = window.setTimeout(() => void tick(), LIVE_RESAMPLE_INTERVAL_MS);
+    };
+    timer = window.setTimeout(() => void tick(), LIVE_RESAMPLE_INTERVAL_MS);
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+      rateEmaRef.current = 0;
+      lastResampleTsRef.current = 0;
+    };
   }, [live, winStart]);
 
   // Forced re-sample when "follow live" toggles (so it snaps to / off
