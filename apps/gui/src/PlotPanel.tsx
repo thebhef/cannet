@@ -1053,6 +1053,10 @@ function PlotArea(p: PlotAreaProps) {
   const presentRef = useRef<Map<string, number | null>>(new Map());
   const resampleBusyRef = useRef(false);
   const cacheRef = useRef<AreaCache | null>(null);
+  /** One-shot: have we already done the post-mount rebuild that
+   * compensates for restored-from-project panels where the canvas
+   * isn't laid out yet at uPlot's first construction? */
+  const postMountRebuildDoneRef = useRef(false);
   const lastResampleTsRef = useRef(0);
   const rateEmaRef = useRef(0);
   const hoverRafRef = useRef(0);
@@ -1621,8 +1625,23 @@ function PlotArea(p: PlotAreaProps) {
     });
     ro.observe(el);
 
+    // Belt-and-braces against the restored-from-project case: even when
+    // the canvas had non-zero dimensions at construction, uPlot can
+    // still end up with a stuck axis layout (whatever the exact cause —
+    // jsdom can't reproduce, so I'm flying blind). The manual fix is
+    // drag/drop, which causes uPlot to be re-created. Do that
+    // programmatically once, ~250 ms after first mount, by which time
+    // the layout has settled. Guarded so we only ever do it once per
+    // panel lifetime.
+    let postMountRebuildTimer = 0;
+    if (!postMountRebuildDoneRef.current) {
+      postMountRebuildDoneRef.current = true;
+      postMountRebuildTimer = window.setTimeout(() => setResizeTick((n) => n + 1), 250);
+    }
+
     return () => {
       cancelAnimationFrame(raf);
+      if (postMountRebuildTimer) window.clearTimeout(postMountRebuildTimer);
       ro.disconnect();
       if (hoverRafRef.current) cancelAnimationFrame(hoverRafRef.current);
       hoverRafRef.current = 0;
