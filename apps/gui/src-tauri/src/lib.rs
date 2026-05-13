@@ -411,6 +411,61 @@ async fn sample_signals(
     window_end: u32,
     signals: Vec<SignalQuery>,
     max_points: u32,
+) -> tauri::ipc::Response {
+    let sample = sample_signals_inner(&app, from_index, window_end, &signals, max_points);
+    tauri::ipc::Response::new(encode_signals_sample(&sample))
+}
+
+/// Pack a [`SignalsSample`] into the compact binary layout the frontend
+/// decodes via `DataView` / `Float64Array`. Replaces the JSON encode of
+/// the same data — at 10 panels × a few signals × thousands of points
+/// the JSON path was 100-200 ms of every per-tick wall clock, and
+/// almost all of that was spent encoding f64 arrays to base-10 text
+/// just for the JS side to parse them straight back to floats.
+///
+/// Layout (little-endian throughout):
+/// ```text
+/// magic   8 bytes  "SIGSAMP\x01"
+/// from_s  f64      capture-window first timestamp, NaN ⇒ null
+/// last_s  f64      capture-window last timestamp, NaN ⇒ null
+/// slice   f64      diagnostic: lock-held slice ms
+/// decode  f64      diagnostic: decode + decimate ms
+/// nsig    u32      number of signals
+/// for each signal:
+///   n     u32      sample count
+///   t[n]  f64×n    timestamps (absolute seconds)
+///   v[n]  f64×n    values
+/// ```
+fn encode_signals_sample(s: &SignalsSample) -> Vec<u8> {
+    let total_points: usize = s.series.iter().map(|p| p.t.len()).sum();
+    let mut buf = Vec::with_capacity(8 + 32 + 4 + s.series.len() * 4 + total_points * 16);
+    buf.extend_from_slice(b"SIGSAMP\x01");
+    buf.extend_from_slice(&s.from_seconds.unwrap_or(f64::NAN).to_le_bytes());
+    buf.extend_from_slice(&s.last_seconds.unwrap_or(f64::NAN).to_le_bytes());
+    buf.extend_from_slice(&s.slice_ms.to_le_bytes());
+    buf.extend_from_slice(&s.decode_ms.to_le_bytes());
+    #[allow(clippy::cast_possible_truncation)]
+    buf.extend_from_slice(&(s.series.len() as u32).to_le_bytes());
+    for p in &s.series {
+        debug_assert_eq!(p.t.len(), p.v.len());
+        #[allow(clippy::cast_possible_truncation)]
+        buf.extend_from_slice(&(p.t.len() as u32).to_le_bytes());
+        for &t in &p.t {
+            buf.extend_from_slice(&t.to_le_bytes());
+        }
+        for &v in &p.v {
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+    buf
+}
+
+fn sample_signals_inner(
+    app: &AppHandle,
+    from_index: u32,
+    window_end: u32,
+    signals: &[SignalQuery],
+    max_points: u32,
 ) -> SignalsSample {
     let state: State<'_, AppState> = app.state();
 
