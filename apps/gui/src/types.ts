@@ -139,4 +139,8 @@ export interface SignalsSample {
   from_seconds: number | null;
   last_seconds: number | null;
   series: SampledPoints[];
+  /** Host wall-clock spent in the lock-held trace-store slice (ms). */
+  slice_ms: number;
+  /** Host wall-clock spent decoding + decimating off the lock (ms). */
+  decode_ms: number;
 }
