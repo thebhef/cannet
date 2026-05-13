@@ -298,7 +298,7 @@ function elementIdFromParams(raw: unknown): string {
 
 export function PlotPanel(props: IDockviewPanelProps) {
   const data = useTraceData();
-  const { dbcPath } = useProjectContext();
+  const { dbcPaths } = useProjectContext();
   const { ensure } = useElementRegistry();
 
   const params = props.params as PlotPanelParams | undefined;
@@ -503,7 +503,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
   const refreshCatalog = useCallback(() => {
     void invoke<SignalDescriptorRecord[]>("list_signals").then(setCatalog);
   }, []);
-  useEffect(refreshCatalog, [refreshCatalog, dbcPath]);
+  useEffect(refreshCatalog, [refreshCatalog, dbcPaths]);
 
   // --- area ops ---
   const addArea = useCallback(() => {

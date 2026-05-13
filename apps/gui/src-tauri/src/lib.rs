@@ -334,20 +334,29 @@ fn clear_trace_store(state: State<'_, AppState>) {
     state.trace_store.clear();
 }
 
-/// Every `(message, signal)` pair defined by the currently-attached
-/// DBC, for a plot panel's signal picker. Empty when no DBC is attached.
+/// Every `(message, signal)` pair defined by any loaded DBC, for a plot
+/// panel's signal picker — the union across all loaded DBCs, sorted and
+/// deduplicated. Empty when no DBC is loaded.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 fn list_signals(state: State<'_, AppState>) -> Vec<SignalDescriptorRecord> {
-    let guard = state.database.lock().expect("database mutex poisoned");
-    match guard.as_ref() {
-        Some(db) => db
-            .signals()
-            .into_iter()
-            .map(SignalDescriptorRecord::from)
-            .collect(),
-        None => Vec::new(),
-    }
+    let dbs = state.databases.lock().expect("databases mutex poisoned");
+    let mut out: Vec<SignalDescriptorRecord> = dbs
+        .iter()
+        .flat_map(|l| l.db.signals())
+        .map(SignalDescriptorRecord::from)
+        .collect();
+    out.sort_by(|a, b| {
+        (a.message_id, a.extended, a.signal_name.as_str()).cmp(&(
+            b.message_id,
+            b.extended,
+            b.signal_name.as_str(),
+        ))
+    });
+    out.dedup_by(|a, b| {
+        a.message_id == b.message_id && a.extended == b.extended && a.signal_name == b.signal_name
+    });
+    out
 }
 
 /// Sample a batch of DBC signals over a slice `[from_index, window_end)`
@@ -401,23 +410,29 @@ async fn sample_signals(
             .trace_store
             .slice_matching_many(&ids, from_index as usize, window_end as usize);
 
-    let series = {
-        let guard = state.database.lock().expect("database mutex poisoned");
-        let db = guard.as_ref();
+    let series: Vec<SampledPoints> = {
+        let dbs = state.databases.lock().expect("databases mutex poisoned");
         signals
             .iter()
             .zip(frame_lists.iter())
             .map(|(q, frames)| {
-                let points = match db {
-                    Some(db) => signal_sampler::sample_signal(
-                        frames,
-                        db,
-                        q.message_id,
-                        q.extended,
-                        &q.signal_name,
-                    ),
-                    None => Vec::new(),
-                };
+                // Use the first loaded DBC that actually decodes this
+                // signal (an empty result ⇒ either it isn't defined
+                // there, or there are no matching frames — fine either
+                // way; the next DBC, or nothing, takes over).
+                let points = dbs
+                    .iter()
+                    .map(|l| {
+                        signal_sampler::sample_signal(
+                            frames,
+                            &l.db,
+                            q.message_id,
+                            q.extended,
+                            &q.signal_name,
+                        )
+                    })
+                    .find(|p| !p.is_empty())
+                    .unwrap_or_default();
                 let points = if max_points > 0 {
                     signal_sampler::decimate_min_max(&points, max_points as usize)
                 } else {

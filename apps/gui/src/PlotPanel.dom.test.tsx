@@ -112,7 +112,7 @@ const traceData: TraceData = {
 const projectCtx: ProjectContextValue = {
   projectPath: null,
   dirty: false,
-  dbcPath: "/tmp/x.dbc",
+  dbcPaths: ["/tmp/x.dbc"],
   remoteAddress: "127.0.0.1:50051",
   remoteConnected: false,
   blfPath: null,
@@ -120,6 +120,8 @@ const projectCtx: ProjectContextValue = {
   onOpenProject: () => {},
   onSaveProject: () => {},
   onSaveProjectAs: () => {},
+  onAddDbc: () => {},
+  onRemoveDbc: () => {},
   onReloadDbc: () => {},
   onConnect: () => {},
   onDisconnect: () => {},
