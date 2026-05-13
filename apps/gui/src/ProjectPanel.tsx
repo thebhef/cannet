@@ -10,8 +10,9 @@ import { TRACE_PANEL_COMPONENT } from "./dockLayout";
  * The project panel: New / Open / Save / Save As for the project file;
  * the project's elements (traces — and later plots, transmit messages
  * …) with Open / Focus / Remove; the configured bus(es) with Connect /
- * Disconnect; and the referenced DBC with "reload from disk". State and
- * actions come from {@link useProjectContext} / {@link useElementRegistry}.
+ * Disconnect; and the loaded DBCs with add / remove / "reload all from
+ * disk". State and actions come from {@link useProjectContext} /
+ * {@link useElementRegistry}.
  */
 export function ProjectPanel(props: IDockviewPanelProps) {
   const p = useProjectContext();
@@ -124,18 +125,27 @@ export function ProjectPanel(props: IDockviewPanelProps) {
 
       <section className="project-section">
         <h3>DBC</h3>
-        {p.dbcPath ? (
-          <div className="project-dbc">
-            <span className="project-dbc-name" title={p.dbcPath}>
-              {basename(p.dbcPath)}
+        {p.dbcPaths.length === 0 && <div className="project-empty">No DBCs loaded.</div>}
+        {p.dbcPaths.map((path) => (
+          <div className="project-dbc" key={path}>
+            <span className="project-dbc-name" title={path}>
+              {basename(path)}
             </span>
-            <button type="button" onClick={p.onReloadDbc}>
-              Reload from disk
+            <button type="button" onClick={() => p.onRemoveDbc(path)}>
+              Remove
             </button>
           </div>
-        ) : (
-          <div className="project-empty">No DBC attached.</div>
-        )}
+        ))}
+        <div className="project-buttons">
+          <button type="button" onClick={p.onAddDbc}>
+            Add…
+          </button>
+          {p.dbcPaths.length > 0 && (
+            <button type="button" onClick={p.onReloadDbc}>
+              Reload all from disk
+            </button>
+          )}
+        </div>
       </section>
     </div>
   );

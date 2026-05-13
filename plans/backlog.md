@@ -19,6 +19,20 @@ work or admit it isn't going to happen and delete it.
 
 ## Items
 
+- `[feat]` `cannet-gui`: associate a DBC with a particular *logical
+  bus* rather than the global decode set. Multiple DBCs already load
+  (`AppState::databases`, `Project.dbc_paths`), but every one applies
+  to the one interface; once there's more than one logical bus, a DBC
+  should be scoped to the bus(es) it describes (decode a frame only
+  against its bus's DBCs). Depends on the "logical buses" notion below.
+- `[feat]` `cannet-gui` / `cannet-server`: a notion of *logical buses*
+  and a mapping from physical CAN interfaces (driver + channel) onto
+  them — so one server can expose several interfaces, the GUI groups
+  traffic by logical bus, and per-bus config (DBCs, filters, transmit
+  defaults) hangs off the bus rather than a single global "interface".
+  Pairs with the deferred "interface selection" work (see
+  `plans/phased-implementation.md` Phase 3 notes) and the physical
+  drivers (Phase 6).
 - `[feat]` `cannet-dbc`: surface DBC value-tables (`VAL_`) in
   `DecodedSignal` so the trace view can show enum labels.
 - `[perf]` `cannet-core`: revisit `CanFramePayload::Classic`/`Fd` to share
@@ -79,7 +93,7 @@ work or admit it isn't going to happen and delete it.
   persistable to .blf" lives here.
 - `[feat]` `cannet-gui`: VS Code-style command palette (Cmd/Ctrl+
   Shift+P) for keyboard-driven access to toolbar actions
-  (Open BLF…, Attach DBC…, Connect / Disconnect, Clear, Go to row,
+  (Open BLF…, Add DBC…, Connect / Disconnect, Clear, Go to row,
   Save Capture…). Useful once the toolbar grows past a single line
   in Phase 3.
 - `[feat]` `cannet-gui`: "Go to row…" navigation
