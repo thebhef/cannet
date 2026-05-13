@@ -687,6 +687,11 @@ header {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  /* Isolate layout: uPlot's setSize on every redraw changes the
+   * inner canvas's CSS dimensions; without containment the browser
+   * can re-flow the flex parents on each tick and the plot area
+   * twitches by a pixel or two. */
+  contain: layout;
 }
 
 .plot-area-signals {
