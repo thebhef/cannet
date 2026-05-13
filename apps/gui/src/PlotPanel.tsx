@@ -290,6 +290,11 @@ function fmtFreq(hz: number | null | undefined): string {
 function fmtVal(v: number | null | undefined): string {
   return v == null || !Number.isFinite(v) ? "—" : v.toPrecision(6);
 }
+function fmtCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return `${n}`;
+}
 
 function elementIdFromParams(raw: unknown): string {
   const o = raw as { elementId?: unknown } | undefined;
@@ -352,6 +357,14 @@ export function PlotPanel(props: IDockviewPanelProps) {
   const [seriesByArea, setSeriesByArea] = useState<Map<string, Map<string, Series>>>(new Map());
   const [perfMs, setPerfMs] = useState(0);
   const [rateHz, setRateHz] = useState(0);
+  /** Per-area count of frames in the trace's current window, max
+   * across areas — a quick read of "is the trace actually windowing
+   * frames?" (`0` ⇒ stopped / zero-width). */
+  const winFrames = winEnd - winStart;
+  /** Per-area total of cached signal points (max across areas / signals),
+   * fed by `reportCache`. `0` after a fresh signal-set / re-anchor;
+   * grows as the resample fills the cache. */
+  const [cachePts, setCachePts] = useState(0);
   const dpr = typeof devicePixelRatio === "number" ? devicePixelRatio : 1;
 
   // Shared x-window + the per-area uPlot registry + the per-area data
@@ -621,6 +634,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
   );
   const reportPerf = useCallback((_areaId: string, ms: number) => setPerfMs((p) => Math.max(p * 0.6, ms)), []);
   const reportRate = useCallback((_areaId: string, hz: number) => setRateHz((p) => Math.max(p * 0.7, hz)), []);
+  const reportCache = useCallback((_areaId: string, n: number) => setCachePts(n), []);
 
   const catalogOptions = useMemo(
     () =>
@@ -715,10 +729,10 @@ export function PlotPanel(props: IDockviewPanelProps) {
         </label>
         <span
           className="plot-perf"
-          title="actual plot update rate · worst recent plot-area resample time · device pixel ratio"
+          title="update rate · worst recent resample · device pixel ratio · frames in trace window · cached plot points (biggest area)"
         >
           {live && rateHz > 0 ? `${Math.round(rateHz)} Hz` : "—"} · {perfMs > 0 ? `${perfMs.toFixed(1)} ms` : "—"} ·
-          dpr {dpr.toFixed(2)}
+          dpr {dpr.toFixed(2)} · win {fmtCount(winFrames)} · cache {fmtCount(cachePts)}
         </span>
       </div>
 
@@ -755,6 +769,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
               onReportSeries={reportSeries}
               onReportPerf={reportPerf}
               onReportRate={reportRate}
+              onReportCache={reportCache}
               onSetYMode={(m) => setAreaYMode(area.id, m)}
               onFocus={() => setFocusedAreaId(area.id)}
               onRemoveArea={() => removeArea(area.id)}
@@ -953,6 +968,8 @@ interface PlotAreaProps {
   onReportPerf: (areaId: string, ms: number) => void;
   /** Effective re-sample rate (Hz, smoothed) — `0` when not running. */
   onReportRate: (areaId: string, hz: number) => void;
+  /** Largest per-signal cache size (display + diagnostic). */
+  onReportCache: (areaId: string, points: number) => void;
   onSetYMode: (m: YMode) => void;
   onFocus: () => void;
   onRemoveArea: () => void;
@@ -1021,6 +1038,7 @@ function PlotArea(p: PlotAreaProps) {
     onReportSeries,
     onReportPerf,
     onReportRate,
+    onReportCache,
     onSetYMode,
     onFocus,
     onRemoveArea,
@@ -1079,6 +1097,7 @@ function PlotArea(p: PlotAreaProps) {
     onReportSeries,
     onReportPerf,
     onReportRate,
+    onReportCache,
   });
   useEffect(() => {
     liveRef.current = {
@@ -1099,6 +1118,7 @@ function PlotArea(p: PlotAreaProps) {
       onReportSeries,
       onReportPerf,
       onReportRate,
+      onReportCache,
     };
   });
 
@@ -1126,6 +1146,7 @@ function PlotArea(p: PlotAreaProps) {
         presentRef.current = new Map();
         lr.onReportSeries(areaId, new Map());
         lr.onAreaResampled(areaId, null);
+        lr.onReportCache(areaId, 0);
         recordRate();
         lr.onReportRate(areaId, rateEmaRef.current);
         setValueTick((v) => v + 1);
@@ -1188,6 +1209,13 @@ function PlotArea(p: PlotAreaProps) {
         if (res.last_seconds != null) cache.lastT = res.last_seconds - cache.base;
         cache.nextIndex = to;
       }
+
+      // Always report the current cache size for the toolbar diag —
+      // even on a skip tick, so "cache 0" lights up immediately when a
+      // fetch hasn't filled anything.
+      let biggestCache = 0;
+      for (const c of cache.byKey.values()) if (c.t.length > biggestCache) biggestCache = c.t.length;
+      lr.onReportCache(areaId, biggestCache);
 
       // Nothing new to draw since last render → skip the rebuild, but keep
       // the follow-live edge fed and report the heartbeat.
