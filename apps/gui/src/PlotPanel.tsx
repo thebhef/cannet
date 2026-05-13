@@ -1119,6 +1119,7 @@ function PlotArea(p: PlotAreaProps) {
     winStart,
     winEnd,
     yMode,
+    followLive,
     cursorMode,
     cursorXa,
     cursorXb,
@@ -1141,6 +1142,7 @@ function PlotArea(p: PlotAreaProps) {
       winStart,
       winEnd,
       yMode,
+      followLive,
       cursorMode,
       cursorXa,
       cursorXb,
@@ -1346,11 +1348,18 @@ function PlotArea(p: PlotAreaProps) {
       // numbers per trace will arrive with the per-trace gain/offset
       // controls (`plans/backlog.md`).
       //
-      // The range is *persistent* across fetches (only widens, never
-      // shrinks) so a fresh decimation with a slightly different
-      // sample set doesn't recompute a slightly different range and
-      // visibly slide the rendered line vertically every tick. Reset
-      // implicitly when the cache anchor changes.
+      // The range persists across fetches *only when follow-live is
+      // on*: under follow-live the line should stay vertically stable
+      // as new data slides in (so the range only widens, never
+      // shrinks). On a user pan / zoom (follow-live off) the line
+      // *should* fill the canvas at the visible range's actual
+      // min/max — otherwise zooming into a narrow region where values
+      // are small relative to a past spike shows a flat line near
+      // zero. Reset when not following live so the range tracks the
+      // visible data.
+      if (!lr.followLive) {
+        cache.traceRanges = new Map();
+      }
       signals.forEach((s, i) => {
         const key = signalRefKey(s);
         const ser = seriesRel[i];
@@ -1786,10 +1795,22 @@ function PlotArea(p: PlotAreaProps) {
     // the next live tick — but a stopped trace has no tick).
     const raf = requestAnimationFrame(() => void resampleRef.current());
 
-    // The canvas had real dimensions at construction (we guarded for it
-    // above), so subsequent resizes just `setSize`.
+    // The canvas had real dimensions at construction (we guarded for
+    // it above), so subsequent resizes just `setSize`. Guard against
+    // a feedback loop: uPlot's `setSize` writes the canvas's CSS
+    // width/height, which fires the ResizeObserver again — if the
+    // delta is zero the redraw is wasted work *and* the side-effects
+    // of setting the canvas size can subtly shift its bbox by a
+    // sub-pixel, which the user perceives as the plot area "wiggling".
+    let lastW = el.clientWidth || 600;
+    let lastH = Math.max(60, el.clientHeight - 2);
     const ro = new ResizeObserver(() => {
-      withSuppressed(() => u.setSize({ width: el.clientWidth || 600, height: Math.max(60, el.clientHeight - 2) }));
+      const w = el.clientWidth || 600;
+      const h = Math.max(60, el.clientHeight - 2);
+      if (w === lastW && h === lastH) return;
+      lastW = w;
+      lastH = h;
+      withSuppressed(() => u.setSize({ width: w, height: h }));
     });
     ro.observe(el);
 
