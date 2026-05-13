@@ -218,6 +218,38 @@ impl TraceStore {
         inner.frames[start..end].to_vec()
     }
 
+    /// Within `[start, end)` (clamped), clone only the frames whose id /
+    /// addressing mode match — plus the timestamps of the window's first
+    /// and last frame. The scan over the range happens under the lock but
+    /// clones (and the alloc they carry) are paid only for matches, so a
+    /// sparse signal barely touches the lock even over a huge window —
+    /// the signal sampler uses this so a live plot doesn't stall the pump
+    /// thread cloning the whole capture every tick.
+    #[must_use]
+    pub fn slice_matching(
+        &self,
+        id_raw: u32,
+        extended: bool,
+        start: usize,
+        end: usize,
+    ) -> (Vec<RawTraceFrame>, Option<u64>, Option<u64>) {
+        let inner = self.inner.lock().expect("trace store mutex poisoned");
+        let len = inner.frames.len();
+        if start >= len {
+            return (Vec::new(), None, None);
+        }
+        let end = end.min(len);
+        let window = &inner.frames[start..end];
+        let first_ts = window.first().map(|f| f.timestamp_ns);
+        let last_ts = window.last().map(|f| f.timestamp_ns);
+        let matching = window
+            .iter()
+            .filter(|f| f.id == id_raw && f.extended == extended)
+            .cloned()
+            .collect();
+        (matching, first_ts, last_ts)
+    }
+
     /// Cloned list of every frame whose source timestamp falls in
     /// `[start_ns, end_ns)`, in store (append) order. Used by the signal
     /// sampler to pull the frames covering a plot's visible time window.

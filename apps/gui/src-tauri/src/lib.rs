@@ -395,10 +395,10 @@ async fn sample_signal(
     let ns_to_seconds = |ns: u64| (ns as f64) / 1e9;
 
     let (frames, win_start_ts, win_end_ts) = if let (Some(s), Some(e)) = (start_index, end_index) {
-        let frames = store.slice(s as usize, e as usize);
-        let start = frames.first().map(|f| f.timestamp_ns);
-        let end = frames.last().map(|f| f.timestamp_ns);
-        (frames, start, end)
+        // Index-range: clone only the frames matching this signal — a
+        // live plot calls this every tick, so cloning (and decoding) the
+        // whole capture would stall the pump thread.
+        store.slice_matching(message_id, extended, s as usize, e as usize)
     } else {
         #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
         let to_ns = |x: f64| -> u64 {

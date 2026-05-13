@@ -79,11 +79,16 @@ work or admit it isn't going to happen and delete it.
   scroll/auto-scroll ownership story, before piling more on it. (Flagged
   while planning Phase 4; doesn't block plotting.)
 - `[perf]` `cannet-gui` plot panel: incremental sampling. `sample_signal`
-  min/max-decimates the series (done), but still re-scans and re-decodes
-  the *whole* requested window on every `trace-grew` tick — wasteful for
-  very long captures. Decode only the frames appended since the last call
-  and append to the cached series. Folds in with the TraceStore
-  disk-spill / chunking rework if that lands first.
+  min/max-decimates the result and (with index-range params) clones only
+  the matching frames out of the store (`slice_matching`) and decodes
+  them off the store lock — but it still *scans* the whole requested
+  window for matches on every `trace-grew` tick, so for a multi-million-
+  frame live capture the per-tick lock hold (and the decode of every
+  matching frame) is `O(window)`. Two fixes: (a) a per-id index of frame
+  indices in `TraceStore` so the scan skips non-matching frames; (b)
+  truly incremental sampling — decode only frames appended since the
+  last call, append to a (bounded) cached series, re-decimate. Folds in
+  with the TraceStore disk-spill / chunking rework if that lands first.
 - `[feat]` `cannet-gui` plot panel: per-*trace* y controls — offset /
   gain (so unrelated signals can share a plot area without one swamping
   the others) and log scaling. Per-*area* manual y-range shipped in
