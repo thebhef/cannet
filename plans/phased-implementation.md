@@ -59,13 +59,16 @@ Architecture refinements that landed during implementation:
   wake the virtualizer); Phase 2 moved it host-side into
   `apps/gui/src-tauri/src/trace_store.rs` so the BLF and remote pumps
   share one model — see Phase 2's refinements.
-- **DBC in shared backend state.** `AppState::database` is a
-  `Mutex<Option<Database>>`. `attach_dbc` / `detach_dbc` swap it; the
-  IPC slice path reads it when serving rows (Phase 1: the `decode_frames`
-  retro-decode command; Phase 2: `fetch_trace_range` and the
-  `trace-grew` tail, decode-on-fetch). Separating "which DBC are we
-  using right now" from "which source are we streaming right now" is
-  what lets the user attach/swap a DBC without reopening the log.
+- **DBCs in shared backend state.** `AppState::databases` is a
+  `Mutex<Vec<LoadedDbc>>` (each = path + parsed `Database`), in priority
+  order. `add_dbc` / `remove_dbc` / `clear_dbcs` mutate it; the IPC
+  slice path walks the list when serving rows and takes the first match
+  (Phase 1: the `decode_frames` retro-decode command; Phase 2:
+  `fetch_trace_range` and the `trace-grew` tail, decode-on-fetch).
+  Separating "which DBCs are we using right now" from "which source are
+  we streaming right now" is what lets the user load/swap DBCs without
+  reopening the log. (One interface for now, so every loaded DBC applies
+  to it; per-bus DBC association is in `plans/backlog.md`.)
 
 Demo fixture:
 
@@ -140,7 +143,7 @@ Refinements that landed during implementation:
   (`TraceStore` / `RawTraceFrame`) is the model layer, replacing
   Phase 1's frontend-resident store. The BLF and remote pumps both
   append; the frontend pulls `[start, end)` slices via the
-  `fetch_trace_range` Tauri command, decoded against the current DBC
+  `fetch_trace_range` Tauri command, decoded against the loaded DBCs
   at fetch time. This retires Phase 1's per-frame `can-frame-batch`
   push and the `decode_frames` retro-decode command — no stored
   decoded state, no retro-decode walk. `clear()` releases the backing
@@ -334,21 +337,24 @@ Implementation notes (in progress):
   this phase: wiring traces into the project panel — closing a panel
   currently discards its trace.
 - **Project file + panel landed.** `apps/gui/src-tauri/src/project.rs`
-  is the `Project` model (schema-versioned): the `dockview` layout blob
-  (opaque to the host — and it carries each trace panel's per-panel
-  config in dockview's panel `params`: column layout, auto-scroll),
-  the attached DBC path, the remote-server address — with `open_project`
-  / `save_project` commands (the host owns the model; the layout is the
-  one frontend-owned bit it just round-trips). `apps/gui/src/ProjectPanel.tsx`
-  is the project panel (a dockview panel, in the seed layout): New /
-  Open / Save / Save As, lists the bus(es) with Connect / Disconnect,
-  shows the attached DBC with reload-from-disk — state + actions via a
-  `ProjectContext` that `App` provides (the toolbar shares the
-  callbacks). Open restores the layout (and the per-panel config), sets
-  the remote-address field, and re-attaches the DBC by path (or detaches
-  if the project names none); it doesn't auto-connect. "New" starts a
-  fresh workspace: seed layout, no DBC, disconnected, session buffer
-  cleared. The last opened/saved project's path is kept in
+  is the `Project` model (schema-versioned — at v2 since multi-DBC
+  replaced the single `dbc_path` with a `dbc_paths` list): the
+  `dockview` layout blob (opaque to the host — and it carries each trace
+  panel's per-panel config in dockview's panel `params`: column layout,
+  auto-scroll), the loaded DBC paths, the remote-server address — with
+  `open_project` / `save_project` commands (the host owns the model; the
+  layout is the one frontend-owned bit it just round-trips).
+  `apps/gui/src/ProjectPanel.tsx` is the project panel (a dockview
+  panel, in the seed layout): New / Open / Save / Save As, lists the
+  bus(es) with Connect / Disconnect, lists the loaded DBCs with add /
+  remove / reload-all-from-disk — state + actions via a `ProjectContext`
+  that `App` provides (the toolbar shares the callbacks). Open restores
+  the layout (and the per-panel config), sets the remote-address field,
+  and replaces the loaded DBC set with the project's list (clear, then
+  re-add each by path; paths that fail are dropped and reported); it
+  doesn't auto-connect. "New" starts a fresh workspace: seed layout, no
+  DBCs, disconnected, session buffer cleared. The last opened/saved
+  project's path is kept in
   `localStorage` (`LAST_PROJECT_KEY`) and reopened on launch. The
   workspace tracks a `dirty` flag (any layout / DBC / remote-address
   change sets it; Save / Open / New clear it) — shown as a `●` in the
@@ -359,15 +365,17 @@ Implementation notes (in progress):
     re-anchors to the session buffer — empty on a fresh launch —
     anyway), the BLF replay path (a recent-BLF-files list is in
     `plans/backlog.md` instead — BLF replay is a one-shot from a
-    captured trace), the per-interface subscription set (the only mode
-    is "subscribe to all"), and multiple DBCs. **Interface selection is
-    deferred** to when the physical drivers land — and the first step
-    there is likely *not* literal hardware-interface picking but:
-    teach `cannet-server` to publish a BLF as several streams (by
-    channel), teach the client to configure those streams, and add a
-    **filter element** (`kind: "filter"`) that can sit upstream of a
-    trace window. Multi-DBC is likewise a *feature* the project would
-    carry once it exists, not project plumbing.
+    captured trace), and the per-interface subscription set (the only
+    mode is "subscribe to all"). **Interface selection is deferred** to
+    when the physical drivers land — and the first step there is likely
+    *not* literal hardware-interface picking but: teach `cannet-server`
+    to publish a BLF as several streams (by channel), teach the client
+    to configure those streams, and add a **filter element**
+    (`kind: "filter"`) that can sit upstream of a trace window.
+    Multiple DBCs *are* carried now (a `dbc_paths` list); what's still
+    deferred is associating a DBC with a particular logical bus — for
+    now every loaded DBC applies to the one interface (see
+    `plans/backlog.md`).
 - **Project elements + the element registry landed.** The project
   carries a list of **elements** alongside the layout (`Project.elements`
   — a `Vec<serde_json::Value>` to the host; it round-trips it like
