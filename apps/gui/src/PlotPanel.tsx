@@ -41,7 +41,8 @@ import {
  * plus a **side signal panel**: per signal a colour swatch (click to
  * hide / show the line — the value keeps updating), name, and value (at
  * cursor A when one is placed, else at the mouse crosshair, else the
- * latest sample); an "y: auto / min…max" control; and the H1/H2 Y-cursor
+ * latest sample) with a Δ(A − B) line under it once both X cursors are
+ * placed; an "y: auto / min…max" control; and the H1/H2 Y-cursor
  * read-out when those are placed. Picking a `(message, signal)` from the
  * toolbar drops it into the focused area; **drag a signal row** to
  * re-order it within an area, onto another plot area, or onto another
@@ -1443,6 +1444,18 @@ function PlotArea(p: PlotAreaProps) {
     return presentRef.current.get(key) ?? null;
   };
   const valueTitle = cursorXa != null ? "value at cursor A" : hoverX != null ? "value at crosshair" : "latest value";
+  // With both X cursors placed: Δ value (A − B), shown as a second line
+  // under the per-signal value.
+  const showAbDelta = cursorXa != null && cursorXb != null;
+  const deltaAbFor = (key: string): number | null => {
+    void valueTick;
+    if (cursorXa == null || cursorXb == null) return null;
+    const s = seriesRef.current.get(key);
+    if (!s) return null;
+    const a = valueAt(s, cursorXa);
+    const b = valueAt(s, cursorXb);
+    return a != null && b != null ? a - b : null;
+  };
 
   return (
     <div
@@ -1549,9 +1562,17 @@ function PlotArea(p: PlotAreaProps) {
                 <span className="plot-signal-name" title={`${s.messageName}.${s.signalName} — drag to another plot area`}>
                   {s.messageName}.{s.signalName}
                 </span>
-                <span className="plot-signal-value" title={valueTitle}>
-                  {fmtVal(v)}
-                  {s.unit ? ` ${s.unit}` : ""}
+                <span className="plot-signal-value">
+                  <span title={valueTitle}>
+                    {fmtVal(v)}
+                    {s.unit ? ` ${s.unit}` : ""}
+                  </span>
+                  {showAbDelta && (
+                    <small className="plot-signal-delta" title="Δ value (cursor A − cursor B)">
+                      Δ {fmtVal(deltaAbFor(key))}
+                      {s.unit ? ` ${s.unit}` : ""}
+                    </small>
+                  )}
                 </span>
                 <button
                   className="plot-signal-remove"
