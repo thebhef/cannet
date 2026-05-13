@@ -4,13 +4,13 @@ import { invoke } from "@tauri-apps/api/core";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 
-import type { SignalDescriptorRecord, SignalsSample } from "./types";
+import type { SignalDescriptorRecord } from "./types";
 import { useTraceData } from "./traceData";
 import { useProjectContext } from "./projectContext";
 import { useElementRegistry } from "./projectElements";
 import { useTrace } from "./trace";
 import { TraceControls } from "./TraceControls";
-import { mergeSeries, signalKey } from "./plotData";
+import { decodeSignalsSample, mergeSeries, signalKey } from "./plotData";
 import {
   DEFAULT_MEASUREMENTS,
   MEASUREMENT_QUANTITIES,
@@ -1276,7 +1276,7 @@ function PlotArea(p: PlotAreaProps) {
         return;
       }
 
-      const res = await invoke<SignalsSample>("sample_signals", {
+      const buf = await invoke<ArrayBuffer>("sample_signals", {
         fromIndex: visStart,
         windowEnd: visEnd,
         signals: signals.map((s) => ({
@@ -1286,6 +1286,7 @@ function PlotArea(p: PlotAreaProps) {
         })),
         maxPoints: maxPts,
       });
+      const res = decodeSignalsSample(buf);
       if (uplotRef.current !== u || cacheRef.current !== cache) return;
       lr.onReportHostMs(areaId, res.slice_ms + res.decode_ms);
 

@@ -8,6 +8,82 @@
 // recent value forward (sample-and-hold) — `null` before the series'
 // first sample so uPlot leaves a gap rather than drawing from zero.
 
+import type { SignalsSample } from "./types";
+
+/** Magic bytes at the start of a `sample_signals` binary response —
+ * `"SIGSAMP\x01"` little-endian. The trailing version byte lets us
+ * tweak the layout without breaking older builds outright. */
+const SIGSAMP_MAGIC = [0x53, 0x49, 0x47, 0x53, 0x41, 0x4d, 0x50, 0x01];
+
+/**
+ * Decode the compact binary `SignalsSample` produced by the Rust host's
+ * `sample_signals` command (see `encode_signals_sample`). Returns the
+ * same shape as the previous JSON representation; the win is in *not*
+ * paying for JSON-encoding `Vec<f64>` arrays into base-10 text on the
+ * host and `JSON.parse`-ing them back on the JS side — at 10 panels ×
+ * several signals × thousands of points the JSON path was 100-200 ms of
+ * every plot-tick wall clock.
+ *
+ * Layout — little-endian throughout:
+ * ```
+ *   magic   "SIGSAMP\x01"   8 bytes
+ *   from_s  f64             window first ts (NaN ⇒ null)
+ *   last_s  f64             window last ts  (NaN ⇒ null)
+ *   slice   f64             host diagnostic: lock-held slice ms
+ *   decode  f64             host diagnostic: decode + decimate ms
+ *   nsig    u32             number of signals
+ *   per signal:
+ *     n     u32             sample count
+ *     t[n]  f64×n           timestamps (absolute seconds)
+ *     v[n]  f64×n           values
+ * ```
+ */
+export function decodeSignalsSample(buf: ArrayBuffer): SignalsSample {
+  const view = new DataView(buf);
+  const magicView = new Uint8Array(buf, 0, 8);
+  for (let i = 0; i < 8; i++) {
+    if (magicView[i] !== SIGSAMP_MAGIC[i]) {
+      throw new Error("sample_signals: bad magic in binary response");
+    }
+  }
+  let off = 8;
+  const fromS = view.getFloat64(off, true);
+  off += 8;
+  const lastS = view.getFloat64(off, true);
+  off += 8;
+  const sliceMs = view.getFloat64(off, true);
+  off += 8;
+  const decodeMs = view.getFloat64(off, true);
+  off += 8;
+  const nsig = view.getUint32(off, true);
+  off += 4;
+  const series: { t: number[]; v: number[] }[] = new Array(nsig);
+  for (let s = 0; s < nsig; s++) {
+    const n = view.getUint32(off, true);
+    off += 4;
+    // The f64 arrays may sit at offsets that aren't 8-aligned within
+    // `buf` (the `u32` lens are 4-aligned), so `new Float64Array(buf,
+    // off, n)` can throw. Slice to a fresh aligned buffer first; the
+    // copy is bulk-memcpy and still much cheaper than JSON parse.
+    const tBuf = buf.slice(off, off + n * 8);
+    const vBuf = buf.slice(off + n * 8, off + n * 16);
+    off += n * 16;
+    // Convert to plain `number[]` so the rest of the pipeline (merge,
+    // normalise, mergeSeries) keeps its existing types unchanged.
+    series[s] = {
+      t: Array.from(new Float64Array(tBuf)),
+      v: Array.from(new Float64Array(vBuf)),
+    };
+  }
+  return {
+    from_seconds: Number.isNaN(fromS) ? null : fromS,
+    last_seconds: Number.isNaN(lastS) ? null : lastS,
+    series,
+    slice_ms: sliceMs,
+    decode_ms: decodeMs,
+  };
+}
+
 export interface RawSeries {
   /** Strictly-increasing sample times (seconds). */
   t: number[];
