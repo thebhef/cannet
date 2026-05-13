@@ -209,17 +209,20 @@ export function TraceView({
     });
   }, []);
 
-  // Memoised so a `trace-grew` re-render (which leaves `columns`
-  // untouched) doesn't hand every `Row` a fresh array and force the
-  // whole window to re-render; they only change on a resize / toggle.
-  const visible = useMemo(() => visibleColumns(columns), [columns]);
-  const gridTemplate = useMemo(() => gridTemplateColumns(columns), [columns]);
+  // The chronological view drops by-id-only columns (e.g. "msg/s" — a
+  // single frame has no rate). Memoised so a `trace-grew` re-render
+  // (which leaves `columns` untouched) doesn't hand every `Row` a fresh
+  // array and force the whole window to re-render; they only change on
+  // a resize / toggle.
+  const shown = useMemo(() => columns.filter((c) => !columnDef(c.key).byIdOnly), [columns]);
+  const visible = useMemo(() => visibleColumns(shown), [shown]);
+  const gridTemplate = useMemo(() => gridTemplateColumns(shown), [shown]);
 
   const placements = buildPlacements(firstVisibleRow, count, rows, expanded);
 
   return (
     <div className="trace">
-      <TraceHeader columns={columns} onColumnResize={onColumnResize} onColumnToggle={onColumnToggle} />
+      <TraceHeader columns={shown} onColumnResize={onColumnResize} onColumnToggle={onColumnToggle} />
       <div ref={containerRef} className="trace-rows" onScroll={handleScroll}>
         {/* Spacer: gives the scrollbar the trace's full (scaled) extent. */}
         <div style={{ height: spacerHeight, position: "relative" }}>

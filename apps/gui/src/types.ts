@@ -73,6 +73,14 @@ export interface RemoteSessionResult {
   subscriptions: SubscriptionRecord[];
 }
 
+/// One row of the per-message-ID view (mirrors `ipc.rs::ByIdSnapshot`):
+/// an arbitration id's latest frame plus its current message rate
+/// (frames/second).
+export interface ByIdSnapshotRecord {
+  frame: TraceFrameRecord;
+  rate: number;
+}
+
 /// One element of a project: a discriminated-union record with a stable
 /// `id`. Now only traces; plots, transmit messages, filters etc. become
 /// new `kind`s. A trace element carries no extra config — the panel
