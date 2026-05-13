@@ -634,11 +634,12 @@ In rough order, each step leaving the panel runnable:
   onto another plot area moves it there. The plot-area list, the
   signal→area assignment, and the per-signal `hidden` flag persist via
   the panel's dockview `params`.
-- **It's a trace element.** ✅ Done — the plot panel is backed by a
-  `useTrace` element (`view: "plot"`), exactly like the trace panels: a
-  window over the session buffer with Start / Stop / Pause / Clear (the
-  shared `TraceControls`), persisted in the project's element list,
-  surviving a panel close. It renders signal *values* over time instead
+- **It's a trace-style element.** ✅ Done — the plot panel is backed by
+  a `useTrace` window, exactly like the trace panels: Start / Stop /
+  Pause / Clear (the shared `TraceControls`) over the session buffer.
+  It's a distinct project-element `kind` (`plot`, alongside `trace`), so
+  the project view and panel-reopen treat it as a plot, not a trace; it
+  persists in the project's element list and survives a panel close. It renders signal *values* over time instead
   of message rows. While "running" it follows the live capture; pause /
   stop freeze the window (the re-sample loop stops, which also keeps a
   fast / unlimited-rate stream from piling up `sample_signals` calls);

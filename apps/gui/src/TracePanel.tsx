@@ -41,7 +41,7 @@ function elementIdFromParams(params: unknown): string {
  */
 export function TracePanel(props: IDockviewPanelProps) {
   const data = useTraceData();
-  const { ensureTrace } = useElementRegistry();
+  const { ensure } = useElementRegistry();
   const { api } = props;
 
   const params = props.params as
@@ -49,8 +49,8 @@ export function TracePanel(props: IDockviewPanelProps) {
     | undefined;
   const [elementId] = useState(() => elementIdFromParams(params));
   useEffect(() => {
-    ensureTrace(elementId);
-  }, [ensureTrace, elementId]);
+    ensure(elementId, "trace");
+  }, [ensure, elementId]);
 
   const [mode, setMode] = useState<TraceMode>(() =>
     params?.mode === "chronological" ? "chronological" : "by-id",

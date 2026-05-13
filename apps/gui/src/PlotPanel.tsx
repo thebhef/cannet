@@ -288,13 +288,13 @@ function elementIdFromParams(raw: unknown): string {
 export function PlotPanel(props: IDockviewPanelProps) {
   const data = useTraceData();
   const { dbcPath } = useProjectContext();
-  const { ensureTrace } = useElementRegistry();
+  const { ensure } = useElementRegistry();
 
   const params = props.params as PlotPanelParams | undefined;
   const [elementId] = useState(() => elementIdFromParams(params));
   useEffect(() => {
-    ensureTrace(elementId);
-  }, [ensureTrace, elementId]);
+    ensure(elementId, "plot");
+  }, [ensure, elementId]);
   const trace = useTrace(data, elementId);
   const live = trace.status === "running";
   const winStart = trace.offset;
