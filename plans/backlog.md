@@ -99,8 +99,6 @@ work or admit it isn't going to happen and delete it.
   event-line rendering already exists; the trigger engine doesn't.
 - `[feat]` `cannet-gui` plot panel: CSV / image export of the visible
   window or the cursor span.
-- `[feat]` `cannet-gui` plot panel: native drag-and-drop to move a
-  signal between plot areas (today it's a per-row "→" menu).
 - `[feat]` `cannet-gui`: BLF annotation round-trip — open a BLF, place
   notes (the plot panel's "+ note" cursor mode), and save the BLF back
   out with the annotations embedded. Needs a place to persist notes
