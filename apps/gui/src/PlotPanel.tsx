@@ -1059,6 +1059,12 @@ function PlotArea(p: PlotAreaProps) {
   const [hoverX, setHoverX] = useState<number | null>(null);
   const [valueTick, setValueTick] = useState(0); // bump → re-render side panel
   const [yEditOpen, setYEditOpen] = useState(false);
+  // Bumped from the first ResizeObserver tick when the canvas turns
+  // out to be a different size than what uPlot was constructed at
+  // (typical on initial mount — dockview hasn't laid the panel out
+  // yet). The construction effect depends on this, so bumping it
+  // destroys + rebuilds uPlot at the now-correct size.
+  const [resizeTick, setResizeTick] = useState(0);
 
   const areaId = area.id;
   const signals = area.signals;
@@ -1586,8 +1592,31 @@ function PlotArea(p: PlotAreaProps) {
     // the next live tick — but a stopped trace has no tick).
     const raf = requestAnimationFrame(() => void resampleRef.current());
 
+    // The first time the canvas gets real dimensions (dockview hadn't
+    // laid it out yet at construction), rebuild the uPlot from scratch
+    // at the right size. A `setSize` on a 0×0-constructed uPlot doesn't
+    // recompute the axis layout fully, leaving us with data but no
+    // axes / gridlines — that's the original "drag/drop is needed to
+    // render" symptom. Subsequent resizes just `setSize`.
+    let firstRO = true;
+    const constructedAt = { w: el.clientWidth || 600, h: Math.max(60, el.clientHeight - 2) };
     const ro = new ResizeObserver(() => {
-      withSuppressed(() => u.setSize({ width: el.clientWidth || 600, height: Math.max(60, el.clientHeight - 2) }));
+      const w = el.clientWidth || 600;
+      const h = Math.max(60, el.clientHeight - 2);
+      if (firstRO) {
+        firstRO = false;
+        if (Math.abs(w - constructedAt.w) > 16 || Math.abs(h - constructedAt.h) > 16) {
+          // Real size differs from what we constructed at — recreate.
+          // The effect's `signalSetKey` deps haven't changed, so this
+          // is a controlled rebuild inside the same effect-lifetime.
+          // Bumping the resize-trigger state forces the effect to
+          // re-run, which destroys + rebuilds via the normal cleanup
+          // path (avoiding any half-state.) See `resizeTick` below.
+          setResizeTick((n) => n + 1);
+          return;
+        }
+      }
+      withSuppressed(() => u.setSize({ width: w, height: h }));
     });
     ro.observe(el);
 
@@ -1601,7 +1630,7 @@ function PlotArea(p: PlotAreaProps) {
       if (uplotRef.current === u) uplotRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [signalSetKey, areaId]);
+  }, [signalSetKey, areaId, resizeTick]);
 
   // While the trace is running, re-sample on a self-paced loop at the
   // configured rate (each tick scheduled after the previous one
