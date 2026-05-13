@@ -788,6 +788,12 @@ header {
   color: #94a3b8;
   font-size: 0.78em;
 }
+/* Auto-normalisation range readout under the value (diagnostic). */
+.plot-signal-range {
+  color: #64748b;
+  font-size: 0.7em;
+  font-variant-numeric: tabular-nums;
+}
 
 /* uPlot renders on a dark ground; nudge its chrome to match the app. */
 .plot-area-canvas .u-legend {

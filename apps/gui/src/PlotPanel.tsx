@@ -1348,20 +1348,26 @@ function PlotArea(p: PlotAreaProps) {
       // numbers per trace will arrive with the per-trace gain/offset
       // controls (`plans/backlog.md`).
       //
-      // The range persists across fetches *only when follow-live is
-      // on*: under follow-live the line should stay vertically stable
-      // as new data slides in (so the range only widens, never
-      // shrinks). On a user pan / zoom (follow-live off) the line
-      // *should* fill the canvas at the visible range's actual
-      // min/max — otherwise zooming into a narrow region where values
-      // are small relative to a past spike shows a flat line near
-      // zero. Reset when not following live so the range tracks the
-      // visible data.
+      // Per-trace range for the auto-normalisation. Behaviour depends
+      // on follow-live:
+      // * follow-live ON: **latched** — set once from the first
+      //   non-empty fetch and never updated. Latching matters because
+      //   widening the range on a new extreme arithmetically moves
+      //   *every* previously-rendered point's normalised position —
+      //   `(v - lo) / (hi - lo)` returns a different value for the
+      //   same raw `v` once `lo`/`hi` change — visible as the high
+      //   / low lines wobbling vertically every tick. The trade-off:
+      //   genuine new extremes clip off the canvas top/bottom until
+      //   the user manually re-establishes the range (closing /
+      //   re-adding the signal, or toggling follow-live off and on).
+      // * follow-live OFF (user has zoomed/panned): recomputed from
+      //   the visible data so zoomed-in detail fills the canvas.
       if (!lr.followLive) {
         cache.traceRanges = new Map();
       }
       signals.forEach((s, i) => {
         const key = signalRefKey(s);
+        if (cache!.traceRanges.has(key)) return;
         const ser = seriesRel[i];
         if (ser.v.length === 0) return;
         let lo = Infinity;
@@ -1371,13 +1377,7 @@ function PlotArea(p: PlotAreaProps) {
           if (v > hi) hi = v;
         }
         if (!Number.isFinite(lo) || !Number.isFinite(hi)) return;
-        const existing = cache!.traceRanges.get(key);
-        if (existing) {
-          if (lo < existing.lo) existing.lo = lo;
-          if (hi > existing.hi) existing.hi = hi;
-        } else {
-          cache!.traceRanges.set(key, { lo, hi });
-        }
+        cache!.traceRanges.set(key, { lo, hi });
       });
       const displaySeries: Series[] = seriesRel.map((s, i) => {
         if (s.v.length === 0) return s;
@@ -1937,6 +1937,14 @@ function PlotArea(p: PlotAreaProps) {
     }
     return presentRef.current.get(key) ?? null;
   };
+  /** The y-range the auto-normalisation is using for `key` right now —
+   * surfaced in the side-panel rows so it's possible to *see*
+   * whether the range is stable (latched under follow-live) or
+   * changing tick-to-tick. */
+  const rangeFor = (key: string): { lo: number; hi: number } | null => {
+    void valueTick;
+    return cacheRef.current?.traceRanges.get(key) ?? null;
+  };
   const valueTitle = cursorXa != null ? "value at cursor A" : hoverX != null ? "value at crosshair" : "latest value";
   // With both X cursors placed: Δ value (A − B), shown as a second line
   // under the per-signal value.
@@ -2061,6 +2069,18 @@ function PlotArea(p: PlotAreaProps) {
                     {fmtVal(v)}
                     {s.unit ? ` ${s.unit}` : ""}
                   </span>
+                  {(() => {
+                    const r = rangeFor(key);
+                    if (r == null) return null;
+                    return (
+                      <small
+                        className="plot-signal-range"
+                        title="auto-normalisation range (lo … hi). Latched while follow-live is on so the line doesn't shift vertically when new extremes arrive."
+                      >
+                        [{fmtVal(r.lo)} … {fmtVal(r.hi)}]
+                      </small>
+                    );
+                  })()}
                   {showAbDelta && (
                     <small className="plot-signal-delta" title="Δ value (cursor A − cursor B)">
                       Δ {fmtVal(deltaAbFor(key))}
