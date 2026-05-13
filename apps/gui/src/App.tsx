@@ -28,7 +28,7 @@ import {
   type RegistryEntry,
   isProjectElement,
 } from "./projectElements";
-import { type TraceState, freshTrace, reanchorToSession } from "./trace";
+import { type TraceState, clearedTrace, reanchorToSession } from "./trace";
 import {
   BY_ID_PANEL_COMPONENT,
   LAST_PROJECT_KEY,
@@ -126,18 +126,26 @@ export function App() {
   // close-on-quit handler. Updated on every render below.
   const dirtyRef = useRef(false);
   const handleSaveProjectRef = useRef<() => Promise<boolean>>(() => Promise.resolve(false));
+  // Current session frame count, mirrored into a ref so `createTrace` /
+  // `ensureTrace` can anchor a new (empty, stopped) trace at *now*
+  // without taking `count` as a dependency (it changes every tick).
+  const countRef = useRef(0);
+  countRef.current = count;
 
   // --- element registry ops ---
   const createTrace = useCallback((): string => {
     const id = crypto.randomUUID();
-    setRegistry((prev) => [...prev, { element: { kind: "trace", id }, trace: freshTrace(0) }]);
+    setRegistry((prev) => [
+      ...prev,
+      { element: { kind: "trace", id }, trace: clearedTrace(countRef.current) },
+    ]);
     return id;
   }, []);
   const ensureTrace = useCallback((id: string) => {
     setRegistry((prev) =>
       prev.some((e) => e.element.id === id)
         ? prev
-        : [...prev, { element: { kind: "trace", id }, trace: freshTrace(0) }],
+        : [...prev, { element: { kind: "trace", id }, trace: clearedTrace(countRef.current) }],
     );
   }, []);
   const updateTrace = useCallback((id: string, updater: (s: TraceState) => TraceState) => {
@@ -437,7 +445,7 @@ export function App() {
       setRegistry(
         (Array.isArray(project.elements) ? project.elements : [])
           .filter(isProjectElement)
-          .map((el) => ({ element: el, trace: freshTrace(0) })),
+          .map((el) => ({ element: el, trace: clearedTrace(countRef.current) })),
       );
       const api = dockApiRef.current;
       const layout = validateLayout(project.layout);

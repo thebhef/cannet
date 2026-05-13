@@ -74,8 +74,17 @@ describe("stopTrace / pauseTrace / resumeTrace", () => {
 });
 
 describe("reanchorToSession", () => {
-  it("re-anchors when the buffer shrank below the start", () => {
-    expect(reanchorToSession({ start: 1000, end: 2000, isPaused: false }, 0)).toEqual(freshTrace(0));
+  it("re-anchors a running trace whose start dangled past the new end — still running", () => {
+    expect(reanchorToSession({ start: 1000, end: null, isPaused: false }, 0)).toEqual(freshTrace(0));
+  });
+
+  it("collapses an out-of-range frozen trace to empty at the new end, keeping paused-ness", () => {
+    expect(reanchorToSession({ start: 1000, end: 2000, isPaused: false }, 0)).toEqual(clearedTrace(0));
+    expect(reanchorToSession({ start: 1000, end: 2000, isPaused: true }, 0)).toEqual({
+      start: 0,
+      end: 0,
+      isPaused: true,
+    });
   });
 
   it("trims a stale end", () => {
