@@ -599,7 +599,13 @@ header {
   padding: 0.25rem 0.6rem;
   flex: 0 0 auto;
   border-bottom: 1px solid #1f2630;
-  flex-wrap: wrap;
+  /* The readout on the right changes width as numbers fluctuate; if
+   * the toolbar were allowed to wrap, the wrap toggle would resize the
+   * plot area underneath every tick — visible as a vertical "wiggle"
+   * on the plot. Keep one row; if it doesn't fit horizontally, let the
+   * readout clip rather than push controls to a second row. */
+  flex-wrap: nowrap;
+  overflow-x: hidden;
 }
 
 .plot-panel-toolbar select,
@@ -815,6 +821,12 @@ header {
   font-size: 0.72rem;
   color: #64748b;
   font-variant-numeric: tabular-nums;
+  /* Absorb width changes so adjacent controls don't shift. */
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Plot panel — measurement-quantity menu */
