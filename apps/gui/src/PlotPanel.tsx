@@ -52,15 +52,16 @@ import {
  *
  * Data: while running, each area re-samples on a self-paced loop at a
  * configurable rate (toolbar; decoupled from React re-renders; Pause/Stop
- * ends it) and does so
- * *incrementally* — `sample_signals` (one batched, one-store-lock call
- * per tick) returns only the frames appended since last tick, decoded;
- * the area appends them to a bounded per-signal cache ({@link AreaCache}).
- * When the cache outgrows {@link CACHE_DECIMATE_THRESHOLD} it *slides*
- * (drops the oldest points) — no re-decimation drift, no O(window)
- * host work; the trade-off is older capture history isn't visible
- * until we add a zoom-aware re-fetch. {@link mergeSeries} stitches the
- * cached series onto one timeline. Per-trace **auto-normalisation**
+ * ends it). Each tick computes the *visible* frame range (from the
+ * shared x window plus an fps estimate carried in the cache), asks
+ * `sample_signals` for just that range with `max_points` matched to
+ * canvas width, and replaces the area's cache with the response
+ * (memoised by fetch-key so paused / un-zoomed ticks skip the
+ * round-trip). So a zoomed-in panel gets full-detail decimation over
+ * the narrow slice it shows, a show-all panel gets the whole capture
+ * window decimated host-side, and both stay bounded by canvas pixel
+ * width. {@link mergeSeries} stitches the cached series onto one
+ * timeline. Per-trace **auto-normalisation**
  * (each trace's values re-mapped to [0, 1] from its own min/max) lets
  * signals with very different natural ranges share the canvas; the
  * side panel shows the raw value. The toolbar shows the resulting
@@ -110,20 +111,11 @@ const AXIS_STROKE = "#cbd5e1";
 const AXIS_GRID = "#222b35";
 const AXIS_TICKS = "#3a4654";
 const ZOOM_STEP = 1.15;
-/** Target size (points) for a plot area's cached per-signal series — the
- * `max_points` a full/backlog `sample_signals` fetch is min/max-decimated
- * to. Comfortably above any sane canvas pixel width, so uPlot draws the
- * cached series directly. */
-const CACHE_TARGET_POINTS = 4_000;
-/** When an accumulated cache series outgrows this, the oldest points
- * are dropped to bring it back down to {@link CACHE_TARGET_POINTS} (a
- * sliding window of decimated history). The surviving points are
- * unchanged — neither re-decimated (drifts) nor refetched (O(window)
- * host work, which hammers the trace-store lock at high rate). The
- * trade-off: zooming out to show capture history older than the cache
- * holds shows a gap; the fix for that is a zoom-aware host-side
- * re-fetch (see `plans/backlog.md`). */
-const CACHE_DECIMATE_THRESHOLD = CACHE_TARGET_POINTS * 2;
+/** Floor for `sample_signals`' `max_points` (the host min/max-decimates
+ * to at most `2 * max_points`). 2× the canvas width is what we ask for
+ * in practice; the floor catches early-mount cases where `clientWidth`
+ * is still small. */
+const MIN_DECIMATION_POINTS = 200;
 /** Plot update-rate options (Hz) offered in the toolbar, and the
  * default. Lower = less CPU under a fast capture; the re-sample loop is
  * self-paced (next tick scheduled after the previous finishes), so a
@@ -365,6 +357,11 @@ export function PlotPanel(props: IDockviewPanelProps) {
   // area's own ref) and a perf read-out.
   const [seriesByArea, setSeriesByArea] = useState<Map<string, Map<string, Series>>>(new Map());
   const [perfMs, setPerfMs] = useState(0);
+  /** Server-side wall-clock of the worst recent `sample_signals` call
+   * — `slice_matching_many` (lock-held clone) + decode + decimate.
+   * Compare with `perfMs` to see how much of the total resample cost
+   * is host work vs JS / IPC. */
+  const [hostMs, setHostMs] = useState(0);
   const [rateHz, setRateHz] = useState(0);
   /** Per-area count of frames in the trace's current window, max
    * across areas — a quick read of "is the trace actually windowing
@@ -642,6 +639,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     [measEnabled],
   );
   const reportPerf = useCallback((_areaId: string, ms: number) => setPerfMs((p) => Math.max(p * 0.6, ms)), []);
+  const reportHostMs = useCallback((_areaId: string, ms: number) => setHostMs((p) => Math.max(p * 0.6, ms)), []);
   const reportRate = useCallback((_areaId: string, hz: number) => setRateHz((p) => Math.max(p * 0.7, hz)), []);
   const reportCache = useCallback((_areaId: string, n: number) => setCachePts(n), []);
 
@@ -738,10 +736,12 @@ export function PlotPanel(props: IDockviewPanelProps) {
         </label>
         <span
           className="plot-perf"
-          title="update rate · worst recent resample · device pixel ratio · frames in trace window · cached plot points (biggest area)"
+          title="update rate · worst recent resample (host slice + decode in parens) · device pixel ratio · frames in trace window · cached plot points (biggest area)"
         >
-          {live && rateHz > 0 ? `${Math.round(rateHz)} Hz` : "—"} · {perfMs > 0 ? `${perfMs.toFixed(1)} ms` : "—"} ·
-          dpr {dpr.toFixed(2)} · win {fmtCount(winFrames)} · cache {fmtCount(cachePts)}
+          {live && rateHz > 0 ? `${Math.round(rateHz)} Hz` : "—"} ·{" "}
+          {perfMs > 0 ? `${perfMs.toFixed(0)} ms` : "—"}
+          {hostMs > 0 ? ` (${hostMs.toFixed(0)} host)` : ""} · dpr {dpr.toFixed(2)} · win{" "}
+          {fmtCount(winFrames)} · cache {fmtCount(cachePts)}
         </span>
       </div>
 
@@ -777,6 +777,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
               onAddNote={addNote}
               onReportSeries={reportSeries}
               onReportPerf={reportPerf}
+              onReportHostMs={reportHostMs}
               onReportRate={reportRate}
               onReportCache={reportCache}
               onSetYMode={(m) => setAreaYMode(area.id, m)}
@@ -975,6 +976,8 @@ interface PlotAreaProps {
   onAddNote: (t: number) => void;
   onReportSeries: (areaId: string, series: Map<string, Series>) => void;
   onReportPerf: (areaId: string, ms: number) => void;
+  /** Host-side ms reported by `sample_signals` (slice + decode + decimate). */
+  onReportHostMs: (areaId: string, ms: number) => void;
   /** Effective re-sample rate (Hz, smoothed) — `0` when not running. */
   onReportRate: (areaId: string, hz: number) => void;
   /** Largest per-signal cache size (display + diagnostic). */
@@ -990,37 +993,38 @@ interface PlotAreaProps {
   onToggleHidden: (key: string) => void;
 }
 
-/** A plot area's accumulated sample cache: the live trace re-samples
- * *incrementally* — each tick it asks the host only for frames appended
- * since {@link nextIndex}, decodes just those, and appends them here, so
- * a long capture isn't re-decoded every tick. Anchored to a particular
- * window start + signal set; thrown away and rebuilt when either
- * changes. Times are stored already relative to {@link base} (the
- * x-origin), so the display data is the cache arrays as-is. A series
- * that grows past {@link CACHE_DECIMATE_THRESHOLD} *slides* — its
- * oldest points are dropped to bring it back down to
- * {@link CACHE_TARGET_POINTS}. The survivors are kept exactly as they
- * were (already host-decimated for the initial backlog or raw recent
- * samples), so neither aliasing-drift (re-decimating in place does)
- * nor O(window) host load (re-fetching the full window does) shows
- * up. Zooming back to show older capture history needs a separate
- * fetch (`plans/backlog.md`). */
+/** A plot area's sample cache: the data currently shown on the plot,
+ * as a snapshot of the *visible* x-range from the host. Each resample
+ * computes the visible frame range (from the shared x window plus an
+ * fps estimate carried in this cache), asks `sample_signals` for that
+ * range with `max_points` matched to canvas width, and replaces
+ * {@link byKey} with the response. Memoised by {@link fetchKey} so
+ * follow-live ticks where nothing changed (window paused, no zoom)
+ * skip the host round-trip. Times in {@link byKey} are relative to
+ * {@link base}, the timestamp of the trace window's first frame; this
+ * stays stable even when the fetched range starts past it (zoomed-in
+ * panels), so the x-axis origin is consistent across fetches. */
 interface AreaCache {
-  anchorStart: number;
   signalSetKey: string;
-  /** x-origin in absolute seconds (timestamp of the frame at
-   * `anchorStart`); `null` until the first non-empty fetch. */
+  anchorStart: number;
+  /** ts(frame at `anchorStart`), set on the first fetch (which always
+   * starts at `anchorStart` so the origin is unambiguous). */
   base: number | null;
-  /** Next frame index to fetch from (`anchorStart` initially; then the
-   * previous tick's window end). */
-  nextIndex: number;
-  /** Relative-time of the window's last frame, for the follow-live edge;
-   * `null` until known. */
+  /** Relative time (seconds since `base`) of the last fetch's last
+   * frame — the right edge for follow-live. */
   lastT: number | null;
-  /** Frame index reflected in the last data we pushed to uPlot — lets a
-   * tick with no new frames skip the rebuild. `-1` ⇒ nothing rendered. */
-  renderedThrough: number;
+  /** Estimated frames-per-second of the trace, carried from the last
+   * fetch's response (`(visEnd - visStart) / (res.last - res.from)`).
+   * Used to convert the visible x range to frame indices for the next
+   * fetch; `null` until the first non-empty fetch completes. */
+  fps: number | null;
   byKey: Map<string, { t: number[]; v: number[] }>;
+  /** `${visStart}:${visEnd}:${maxPoints}` — skip the fetch if it
+   * matches what we last asked for. */
+  fetchKey: string;
+  /** Latest `winEnd` we've seen, to detect a buffer clear shrinking
+   * the window under us. */
+  lastWinEnd: number;
 }
 
 function PlotArea(p: PlotAreaProps) {
@@ -1051,6 +1055,7 @@ function PlotArea(p: PlotAreaProps) {
     onAddNote,
     onReportSeries,
     onReportPerf,
+    onReportHostMs,
     onReportRate,
     onReportCache,
     onSetYMode,
@@ -1120,6 +1125,7 @@ function PlotArea(p: PlotAreaProps) {
     onAddNote,
     onReportSeries,
     onReportPerf,
+    onReportHostMs,
     onReportRate,
     onReportCache,
   });
@@ -1141,6 +1147,7 @@ function PlotArea(p: PlotAreaProps) {
       onAddNote,
       onReportSeries,
       onReportPerf,
+      onReportHostMs,
       onReportRate,
       onReportCache,
     };
@@ -1177,101 +1184,138 @@ function PlotArea(p: PlotAreaProps) {
         return;
       }
 
-      // (Re)anchor the incremental cache to the current window + signal set.
+      // (Re)anchor the cache. Reset whenever the signal set or the
+      // trace window changes anchor, or `winEnd` shrinks under us (the
+      // session buffer was cleared).
       const sk = signals.map(signalRefKey).join("|");
       let cache = cacheRef.current;
-      if (!cache || cache.anchorStart !== lr.winStart || cache.signalSetKey !== sk) {
+      if (
+        !cache ||
+        cache.anchorStart !== lr.winStart ||
+        cache.signalSetKey !== sk ||
+        lr.winEnd < cache.lastWinEnd
+      ) {
         cache = {
-          anchorStart: lr.winStart,
           signalSetKey: sk,
+          anchorStart: lr.winStart,
           base: null,
-          nextIndex: lr.winStart,
           lastT: null,
-          renderedThrough: -1,
+          fps: null,
           byKey: new Map(),
+          fetchKey: "",
+          lastWinEnd: lr.winEnd,
         };
         cacheRef.current = cache;
       }
 
-      // Fetch only what's new: [from, to). `from <= winStart` ⇒ the
-      // backlog slice (decode the whole window once) — ask the host to
-      // min/max-decimate it. Otherwise it's one tick's worth of frames,
-      // take them raw; when the cache outgrows
-      // CACHE_DECIMATE_THRESHOLD the whole cache is thrown away and
-      // rebuilt from a fresh host-side decimation (see below).
-      const from = cache.nextIndex;
-      const to = lr.winEnd;
-      const isFull = from <= lr.winStart;
-      if (to > from) {
-        const res = await invoke<SignalsSample>("sample_signals", {
-          fromIndex: from,
-          windowEnd: to,
-          signals: signals.map((s) => ({
-            messageId: s.messageId,
-            extended: s.extended,
-            signalName: s.signalName,
-          })),
-          maxPoints: isFull ? CACHE_TARGET_POINTS : 0,
-        });
-        if (uplotRef.current !== u || cacheRef.current !== cache) return;
-        if (cache.base == null) {
-          if (res.from_seconds == null) return; // nothing real yet — try again next tick
-          cache.base = res.from_seconds;
-        }
-        const base = cache.base;
-        signals.forEach((s, i) => {
-          const key = signalRefKey(s);
-          const got = res.series[i] ?? { t: [], v: [] };
-          const acc = cache!.byKey.get(key);
-          if (isFull || !acc) {
-            cache!.byKey.set(key, { t: got.t.map((x) => x - base), v: got.v.slice() });
-          } else {
-            for (let j = 0; j < got.t.length; j++) {
-              acc.t.push(got.t[j] - base);
-              acc.v.push(got.v[j]);
-            }
-          }
-        });
-        if (res.last_seconds != null) cache.lastT = res.last_seconds - cache.base;
-        cache.nextIndex = to;
+      // Compute the visible frame range. Without an fps estimate yet
+      // (first tick), fetch the full window — that also establishes
+      // `cache.base = ts(winStart)`. With an fps estimate, scope to the
+      // visible x range so a zoomed-in panel asks for just that slice
+      // (full detail) and a long-running show-all panel still gets the
+      // whole window decimated host-side.
+      const xMinReq = xSyncRef.current.xMin;
+      const xMaxReq = xSyncRef.current.xMax;
+      let visStart = lr.winStart;
+      let visEnd = lr.winEnd;
+      if (
+        cache.fps != null &&
+        cache.fps > 0 &&
+        cache.base != null &&
+        xMinReq != null &&
+        xMaxReq != null &&
+        xMaxReq > xMinReq
+      ) {
+        const winFrames = lr.winEnd - lr.winStart;
+        const sStart = Math.max(0, Math.floor(xMinReq * cache.fps));
+        const sEnd = Math.min(winFrames, Math.ceil(xMaxReq * cache.fps));
+        visStart = lr.winStart + sStart;
+        visEnd = lr.winStart + sEnd;
       }
 
-      // Always report the current cache size for the toolbar diag —
-      // even on a skip tick, so "cache 0" lights up immediately when a
-      // fetch hasn't filled anything.
+      const canvasW = canvasRef.current?.clientWidth || 600;
+      const maxPts = Math.max(MIN_DECIMATION_POINTS, Math.round(canvasW * 2));
+      const fetchKey = `${visStart}:${visEnd}:${maxPts}`;
+
+      // Same request as last successful fetch — nothing to do, just
+      // keep the follow-live edge fed and the rate readout ticking.
       let biggestCache = 0;
       for (const c of cache.byKey.values()) if (c.t.length > biggestCache) biggestCache = c.t.length;
       lr.onReportCache(areaId, biggestCache);
-
-      // Nothing new to draw since last render → skip the rebuild, but keep
-      // the follow-live edge fed and report the heartbeat.
-      if (cache.renderedThrough === cache.nextIndex) {
-        lr.onAreaResampled(areaId, cache.lastT);
+      if (cache.fetchKey === fetchKey && cache.byKey.size > 0) {
+        const wf = lr.winEnd - lr.winStart;
+        const liveT = cache.fps != null && cache.fps > 0 ? wf / cache.fps : cache.lastT;
+        lr.onAreaResampled(areaId, liveT);
         recordRate();
         lr.onReportRate(areaId, rateEmaRef.current);
         return;
       }
 
-      // Bound the cache: when a series outgrows the threshold, *slide*
-      // (drop the oldest points, bringing the series back down to
-      // CACHE_TARGET_POINTS). The dropped points were already decimated
-      // host-side or are raw recent samples; the surviving points are
-      // unchanged, so this introduces no drift / aliasing. Cheap (one
-      // array slice per signal), and unlike a "throw the cache away and
-      // refetch the whole window" strategy it doesn't hammer the host
-      // with O(window) work every few ticks under a fast stream — which
-      // at high rate was bad enough to starve the pump and stall the
-      // by-ID panel. The downside: zooming all the way out to show the
-      // *full* capture history doesn't have those older points
-      // anymore — that needs a zoom-aware re-fetch from the host (see
-      // `plans/backlog.md`).
-      for (const c of cache.byKey.values()) {
-        if (c.t.length > CACHE_DECIMATE_THRESHOLD) {
-          const drop = c.t.length - CACHE_TARGET_POINTS;
-          c.t = c.t.slice(drop);
-          c.v = c.v.slice(drop);
-        }
+      if (visEnd <= visStart) {
+        // Empty window (e.g. trace just started, no frames yet, or
+        // visible x range collapsed). Clear the plot and keep ticking.
+        withSuppressed(() => u.setData([[] as number[], ...signals.map(() => [] as number[])] as uPlot.AlignedData));
+        cache.byKey = new Map();
+        cache.fetchKey = fetchKey;
+        cache.lastWinEnd = lr.winEnd;
+        seriesRef.current = new Map();
+        presentRef.current = new Map();
+        lr.onReportSeries(areaId, new Map());
+        lr.onAreaResampled(areaId, null);
+        lr.onReportCache(areaId, 0);
+        recordRate();
+        lr.onReportRate(areaId, rateEmaRef.current);
+        return;
       }
+
+      const res = await invoke<SignalsSample>("sample_signals", {
+        fromIndex: visStart,
+        windowEnd: visEnd,
+        signals: signals.map((s) => ({
+          messageId: s.messageId,
+          extended: s.extended,
+          signalName: s.signalName,
+        })),
+        maxPoints: maxPts,
+      });
+      if (uplotRef.current !== u || cacheRef.current !== cache) return;
+      lr.onReportHostMs(areaId, res.slice_ms + res.decode_ms);
+
+      if (cache.base == null) {
+        // The first fetch on a fresh cache is always anchored at
+        // `lr.winStart` (no fps yet), so `res.from_seconds` is exactly
+        // ts(winStart) — the x-axis origin.
+        if (res.from_seconds == null) return; // nothing real yet — try again next tick
+        cache.base = res.from_seconds;
+      }
+      const base = cache.base;
+
+      // Replace cache contents with the visible-range fetch.
+      const newByKey = new Map<string, { t: number[]; v: number[] }>();
+      signals.forEach((s, i) => {
+        const key = signalRefKey(s);
+        const got = res.series[i] ?? { t: [], v: [] };
+        const t = new Array<number>(got.t.length);
+        for (let j = 0; j < got.t.length; j++) t[j] = got.t[j] - base;
+        newByKey.set(key, { t, v: got.v.slice() });
+      });
+      cache.byKey = newByKey;
+
+      // Right edge of the fetched range, relative to base (for
+      // follow-live). When the fetch was scoped to a zoomed-in slice,
+      // this is the slice's right edge — but follow-live's "extent"
+      // logic uses it just to slide the shared window, so that's
+      // correct: we still see new data on the right.
+      if (res.last_seconds != null) cache.lastT = res.last_seconds - base;
+
+      // Update the fps estimate from this fetch (frames-per-second over
+      // the slice we just decoded). Stable enough across slices that
+      // the next tick's visible-range math is accurate.
+      if (res.from_seconds != null && res.last_seconds != null && res.last_seconds > res.from_seconds) {
+        cache.fps = (visEnd - visStart) / (res.last_seconds - res.from_seconds);
+      }
+      cache.fetchKey = fetchKey;
+      cache.lastWinEnd = lr.winEnd;
 
       const seriesRel: Series[] = signals.map((s) => cache!.byKey.get(signalRefKey(s)) ?? { t: [], v: [] });
       // Per-trace auto-normalisation: each trace's values are re-mapped
@@ -1298,7 +1342,15 @@ function PlotArea(p: PlotAreaProps) {
       });
       const merged = mergeSeries(displaySeries) as uPlot.AlignedData;
       const xs = merged[0] as number[];
-      const lastT = cache.lastT ?? (xs.length > 0 ? xs[xs.length - 1] : null);
+      // Live-edge time for follow-live: when the fetch was scoped to a
+      // zoomed-in slice, `cache.lastT` is the slice's right edge, *not*
+      // the live edge — extrapolate from the window's frame count and
+      // the fps estimate so follow-live keeps sliding to the real edge.
+      const winFrames = lr.winEnd - lr.winStart;
+      const liveEdgeT =
+        cache.fps != null && cache.fps > 0
+          ? winFrames / cache.fps
+          : (cache.lastT ?? (xs.length > 0 ? xs[xs.length - 1] : null));
 
       withSuppressed(() => {
         // resetScales=true re-fits y to the new data — then we pin y to
@@ -1317,7 +1369,6 @@ function PlotArea(p: PlotAreaProps) {
         // is just a canvas pass.
         u.redraw(true, true);
       });
-      cache.renderedThrough = cache.nextIndex;
 
       const sm = new Map<string, Series>();
       const pv = new Map<string, number | null>();
@@ -1330,7 +1381,7 @@ function PlotArea(p: PlotAreaProps) {
       seriesRef.current = sm;
       presentRef.current = pv;
       lr.onReportSeries(areaId, sm);
-      lr.onAreaResampled(areaId, lastT);
+      lr.onAreaResampled(areaId, liveEdgeT);
       lr.onReportPerf(areaId, performance.now() - t0);
       recordRate();
       lr.onReportRate(areaId, rateEmaRef.current);

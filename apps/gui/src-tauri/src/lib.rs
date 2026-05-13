@@ -405,11 +405,14 @@ async fn sample_signals(
     let ns_to_seconds = |ns: u64| (ns as f64) / 1e9;
 
     let ids: Vec<(u32, bool)> = signals.iter().map(|q| (q.message_id, q.extended)).collect();
+    let t_slice = std::time::Instant::now();
     let (frame_lists, from_ts, last_ts) =
         state
             .trace_store
             .slice_matching_many(&ids, from_index as usize, window_end as usize);
+    let slice_ms = t_slice.elapsed().as_secs_f64() * 1000.0;
 
+    let t_decode = std::time::Instant::now();
     let series: Vec<SampledPoints> = {
         let dbs = state.databases.lock().expect("databases mutex poisoned");
         signals
@@ -448,11 +451,14 @@ async fn sample_signals(
             })
             .collect()
     };
+    let decode_ms = t_decode.elapsed().as_secs_f64() * 1000.0;
 
     SignalsSample {
         from_seconds: from_ts.map(ns_to_seconds),
         last_seconds: last_ts.map(ns_to_seconds),
         series,
+        slice_ms,
+        decode_ms,
     }
 }
 
