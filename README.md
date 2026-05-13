@@ -166,7 +166,9 @@ rate (the **msg/s** column, by-id only) — click a column header to
 sort by it (click again to reverse, again to clear — ▲ / ▼ marks the
 sorted column); *trace* is the chronological view (one row per frame,
 follows the live edge). **Add trace** creates a new trace element and a
-panel for it (in by-ID mode — toggle it anytime); the project panel
+panel for it (in by-ID mode — toggle it anytime); the new trace starts
+**empty and stopped** (hit **Start** to begin capturing), regardless of
+what's already in the session buffer. The project panel
 lists the elements — closing a panel doesn't destroy its element,
 reopen or remove it from there. **Project panel** toggles the project
 panel itself (it's a show/hide singleton). New panels arrive as a tab
