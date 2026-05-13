@@ -88,9 +88,18 @@ fn make_id(raw: u32, extended: bool) -> Option<CanId> {
 /// Bucketing is by point index, not by time: the trace store's samples
 /// are roughly time-ordered and roughly uniformly spaced, so index
 /// buckets approximate time buckets closely enough, and an index walk is
-/// O(n) with no search. Returns at most `2 * max_buckets` points; a
-/// `max_buckets` of 0 is treated as "no decimation". If the series
-/// already fits in `max_buckets` points it's returned unchanged.
+/// O(n) with no search. Returns at most `2 * max_buckets + 2` points (the
+/// "+ 2" comes from forcing the very first and very last input points
+/// into the output — see below); a `max_buckets` of 0 is treated as "no
+/// decimation". If the series already fits in `max_buckets` points it's
+/// returned unchanged.
+///
+/// The first/last forcing matters for plots: a plot panel passes a slice
+/// `[from, to)` plus one boundary sample on each side so the rendered
+/// line spans the full visible x range. Without the forcing, the
+/// boundary sample can lose the bucket's argmin/argmax race and get
+/// dropped — visible as the line "ending one bin early" inside the
+/// canvas.
 #[must_use]
 pub fn decimate_min_max(points: &[SamplePoint], max_buckets: usize) -> Vec<SamplePoint> {
     let n = points.len();
@@ -98,7 +107,7 @@ pub fn decimate_min_max(points: &[SamplePoint], max_buckets: usize) -> Vec<Sampl
         return points.to_vec();
     }
     let bucket = n.div_ceil(max_buckets);
-    let mut out = Vec::with_capacity(2 * max_buckets);
+    let mut out = Vec::with_capacity(2 * max_buckets + 2);
     let mut start = 0;
     while start < n {
         let end = (start + bucket).min(n);
@@ -114,17 +123,34 @@ pub fn decimate_min_max(points: &[SamplePoint], max_buckets: usize) -> Vec<Sampl
                 hi = i;
             }
         }
-        // Emit the two extrema in timestamp order (which here is index
-        // order); collapse to one when they coincide.
-        match lo.cmp(&hi) {
-            std::cmp::Ordering::Equal => out.push(slice[lo]),
-            std::cmp::Ordering::Less => {
-                out.push(slice[lo]);
-                out.push(slice[hi]);
-            }
-            std::cmp::Ordering::Greater => {
-                out.push(slice[hi]);
-                out.push(slice[lo]);
+        // Force the first sample of the first bucket and the last sample
+        // of the last bucket into the bucket's "kept" set, so the
+        // rendered line touches both ends of the input series. (See
+        // function-level rustdoc.) Otherwise emit min/max in index order
+        // (collapsing to one when they coincide).
+        let is_first_bucket = start == 0;
+        let is_last_bucket = end == n;
+        let first_idx = 0;
+        let last_idx = slice.len() - 1;
+        let mut keep: [Option<usize>; 4] = [None; 4];
+        if is_first_bucket {
+            keep[0] = Some(first_idx);
+        }
+        keep[1] = Some(lo.min(hi));
+        if lo != hi {
+            keep[2] = Some(lo.max(hi));
+        }
+        if is_last_bucket {
+            keep[3] = Some(last_idx);
+        }
+        // Emit in index order, deduplicating.
+        let mut prev: Option<usize> = None;
+        let mut sorted: Vec<usize> = keep.iter().filter_map(|&i| i).collect();
+        sorted.sort_unstable();
+        for i in sorted {
+            if Some(i) != prev {
+                out.push(slice[i]);
+                prev = Some(i);
             }
         }
         start = end;
@@ -214,10 +240,11 @@ BO_ 256 EngineData: 2 ECU
 
     #[test]
     #[allow(clippy::float_cmp)]
-    fn decimate_keeps_bucket_extrema_in_time_order() {
-        // 6 points, 2 buckets of 3. Bucket 0 = [10, 1, 5] → min=1@t1, max=10@t0
-        // → time order [10@t0, 1@t1]. Bucket 1 = [3, 9, 4] → min=3@t3, max=9@t4
-        // → [3@t3, 9@t4].
+    fn decimate_keeps_bucket_extrema_in_time_order_with_endpoints_forced() {
+        // 6 points, 2 buckets of 3. Bucket 0 = [10, 1, 5] → first
+        // (forced) = 10@t0, min=1@t1, max=10@t0 → emit [10@t0, 1@t1].
+        // Bucket 1 = [3, 9, 4] → min=3@t3, max=9@t4, last (forced) =
+        // 4@t5 → emit [3@t3, 9@t4, 4@t5].
         let pts = vec![
             pt(0.0, 10.0),
             pt(1.0, 1.0),
@@ -227,18 +254,35 @@ BO_ 256 EngineData: 2 ECU
             pt(5.0, 4.0),
         ];
         let out = decimate_min_max(&pts, 2);
-        assert_eq!(out, vec![pt(0.0, 10.0), pt(1.0, 1.0), pt(3.0, 3.0), pt(4.0, 9.0)]);
-        // Spikes preserved: global min (1.0) and max (10.0) are still present.
+        assert_eq!(
+            out,
+            vec![
+                pt(0.0, 10.0),
+                pt(1.0, 1.0),
+                pt(3.0, 3.0),
+                pt(4.0, 9.0),
+                pt(5.0, 4.0),
+            ],
+        );
+        // Spikes preserved: global min (1.0) and max (10.0) still present.
         assert!(out.iter().any(|p| p.value == 1.0));
         assert!(out.iter().any(|p| p.value == 10.0));
+        // Endpoints preserved: first and last input points still present.
+        assert_eq!(out.first(), Some(&pt(0.0, 10.0)));
+        assert_eq!(out.last(), Some(&pt(5.0, 4.0)));
     }
 
     #[test]
     #[allow(clippy::float_cmp)]
-    fn decimate_collapses_flat_bucket_to_one_point() {
+    fn decimate_collapses_flat_bucket_to_one_point_keeping_endpoints() {
         let pts = vec![pt(0.0, 7.0), pt(1.0, 7.0), pt(2.0, 7.0), pt(3.0, 7.0)];
-        // 4 flat points into 2 buckets → one point per bucket.
-        assert_eq!(decimate_min_max(&pts, 2), vec![pt(0.0, 7.0), pt(2.0, 7.0)]);
+        // Bucket 0 (first): forced first (0) + min/max (both 0 since
+        // values flat) → just [0]. Bucket 1 (last): min/max (both 2)
+        // + forced last (3) → [2, 3]. Endpoints come through.
+        assert_eq!(
+            decimate_min_max(&pts, 2),
+            vec![pt(0.0, 7.0), pt(2.0, 7.0), pt(3.0, 7.0)],
+        );
     }
 
     #[test]
@@ -247,7 +291,12 @@ BO_ 256 EngineData: 2 ECU
             .map(|i| pt(f64::from(i), f64::from((i * 7) % 13)))
             .collect();
         let out = decimate_min_max(&pts, 50);
-        assert!(out.len() <= 100, "got {}", out.len());
+        // Bound is `2 * max_buckets + 2` after the endpoint-forcing
+        // rule (the +2 covers the forced first / last input points).
+        assert!(out.len() <= 102, "got {}", out.len());
         assert!(out.len() >= 50);
+        // Endpoints make it through.
+        assert_eq!(out.first().map(|p| p.t_seconds), Some(0.0));
+        assert_eq!(out.last().map(|p| p.t_seconds), Some(999.0));
     }
 }
