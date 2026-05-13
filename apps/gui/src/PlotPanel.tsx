@@ -10,7 +10,7 @@ import { useProjectContext } from "./projectContext";
 import { useElementRegistry } from "./projectElements";
 import { useTrace } from "./trace";
 import { TraceControls } from "./TraceControls";
-import { decimatePoints, mergeSeries, signalKey } from "./plotData";
+import { mergeSeries, signalKey } from "./plotData";
 import {
   DEFAULT_MEASUREMENTS,
   MEASUREMENT_QUANTITIES,
@@ -55,11 +55,15 @@ import {
  * ends it) and does so
  * *incrementally* — `sample_signals` (one batched, one-store-lock call
  * per tick) returns only the frames appended since last tick, decoded;
- * the area appends them to a bounded per-signal cache ({@link AreaCache}
- * — full re-decimated re-fetch only when it overflows), so a long
- * capture is never re-decoded every tick. {@link mergeSeries} stitches
- * the cached series onto one timeline for uPlot. The toolbar shows the
- * resulting update rate.
+ * the area appends them to a bounded per-signal cache ({@link AreaCache}).
+ * When the cache outgrows {@link CACHE_DECIMATE_THRESHOLD} it's thrown
+ * away and the next tick refetches the full window from the host, which
+ * min/max-decimates against the *raw* frames — so peaks survive even
+ * after a long run. {@link mergeSeries} stitches the cached series onto
+ * one timeline. Per-trace **auto-normalisation** (each trace's values
+ * re-mapped to [0, 1] from its own min/max) lets signals with very
+ * different natural ranges share the canvas; the side panel shows the
+ * raw value. The toolbar shows the resulting update rate.
  *
  * Interaction: drag-select or **wheel** zooms x on every area (and
  * leaves "follow live"); `shift`+wheel pans x; `⌘/ctrl`+wheel zooms y
@@ -107,13 +111,14 @@ const AXIS_TICKS = "#3a4654";
 const ZOOM_STEP = 1.15;
 /** Target size (points) for a plot area's cached per-signal series — the
  * `max_points` a full/backlog `sample_signals` fetch is min/max-decimated
- * to, and what an over-grown cache is decimated back down to (see
- * {@link CACHE_DECIMATE_THRESHOLD}). Comfortably above any sane canvas
- * pixel width, so uPlot draws the cached series directly. */
+ * to. Comfortably above any sane canvas pixel width, so uPlot draws the
+ * cached series directly. */
 const CACHE_TARGET_POINTS = 4_000;
-/** When an accumulated cache series exceeds this, it's min/max-decimated
- * back down to {@link CACHE_TARGET_POINTS} in place — no round-trip,
- * keeps merge / draw bounded under a fast stream. */
+/** When an accumulated cache series outgrows this, the whole cache is
+ * thrown away and rebuilt by a fresh full fetch (decimated host-side
+ * against the *raw* frames). Doing it that way — rather than collapsing
+ * the cache in JS — preserves extrema indefinitely; the JS-side
+ * in-place decimation we used previously drifts after a few passes. */
 const CACHE_DECIMATE_THRESHOLD = CACHE_TARGET_POINTS * 2;
 /** Plot update-rate options (Hz) offered in the toolbar, and the
  * default. Lower = less CPU under a fast capture; the re-sample loop is
@@ -988,9 +993,10 @@ interface PlotAreaProps {
  * window start + signal set; thrown away and rebuilt when either
  * changes. Times are stored already relative to {@link base} (the
  * x-origin), so the display data is the cache arrays as-is. A series
- * that grows past {@link CACHE_DECIMATE_THRESHOLD} is min/max-decimated
- * back to {@link CACHE_TARGET_POINTS} in place (no round-trip), keeping
- * merge / draw bounded under a fast stream. */
+ * that grows past {@link CACHE_DECIMATE_THRESHOLD} drops the whole
+ * cache and the next tick refetches the full window from the host —
+ * the host decimates against the raw frames, preserving extrema; doing
+ * that in JS (collapsing already-decimated buckets) drifts. */
 interface AreaCache {
   anchorStart: number;
   signalSetKey: string;
@@ -1181,8 +1187,10 @@ function PlotArea(p: PlotAreaProps) {
 
       // Fetch only what's new: [from, to). `from <= winStart` ⇒ the
       // backlog slice (decode the whole window once) — ask the host to
-      // min/max-decimate it; otherwise it's one tick's worth of frames,
-      // take them raw and let the in-place cache decimation bound it.
+      // min/max-decimate it. Otherwise it's one tick's worth of frames,
+      // take them raw; when the cache outgrows
+      // CACHE_DECIMATE_THRESHOLD the whole cache is thrown away and
+      // rebuilt from a fresh host-side decimation (see below).
       const from = cache.nextIndex;
       const to = lr.winEnd;
       const isFull = from <= lr.winStart;
@@ -1236,31 +1244,62 @@ function PlotArea(p: PlotAreaProps) {
         return;
       }
 
-      // Bound the cache: a series that's outgrown the threshold gets
-      // min/max-decimated back to the target in place (cheap, no
-      // round-trip) so merge / draw stay bounded under a fast stream.
+      // Bound the cache: when a series outgrows the threshold, throw
+      // the whole cache away and let the next tick refetch the full
+      // window from the host (min/max-decimated by `signal_sampler`
+      // against the raw frames). In-place JS decimation of an
+      // already-decimated cache drifts over time — repeated bucket
+      // collapses lose extrema — and the user reported that drift as
+      // "aliasing the longer it runs"; refetching against the raw
+      // frames preserves them. Skip the render this tick: next tick
+      // sees `cacheRef.current === null` and rebuilds clean.
       for (const c of cache.byKey.values()) {
         if (c.t.length > CACHE_DECIMATE_THRESHOLD) {
-          const d = decimatePoints(c.t, c.v, CACHE_TARGET_POINTS);
-          c.t = d.t;
-          c.v = d.v;
+          cacheRef.current = null;
+          lr.onReportCache(areaId, 0);
+          recordRate();
+          lr.onReportRate(areaId, rateEmaRef.current);
+          return;
         }
       }
 
       const seriesRel: Series[] = signals.map((s) => cache!.byKey.get(signalRefKey(s)) ?? { t: [], v: [] });
-      const merged = mergeSeries(seriesRel) as uPlot.AlignedData;
+      // Per-trace auto-normalisation: each trace's values are re-mapped
+      // to [0, 1] from its own min/max, so signals with very different
+      // natural ranges (SOC 0–1 vs current ±300) both fill the canvas
+      // height. The side-panel value column still shows the raw value
+      // (`seriesRef` keeps the un-normalised series for that). The
+      // y-axis labels become normalised positions [0, 1] — meaningful
+      // numbers per trace will arrive with the per-trace gain/offset
+      // controls (`plans/backlog.md`).
+      const displaySeries: Series[] = seriesRel.map((s) => {
+        if (s.v.length === 0) return s;
+        let lo = Infinity;
+        let hi = -Infinity;
+        for (const v of s.v) {
+          if (v < lo) lo = v;
+          if (v > hi) hi = v;
+        }
+        if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) return s;
+        const range = hi - lo;
+        const out = new Array<number>(s.v.length);
+        for (let i = 0; i < s.v.length; i++) out[i] = (s.v[i] - lo) / range;
+        return { t: s.t, v: out };
+      });
+      const merged = mergeSeries(displaySeries) as uPlot.AlignedData;
       const xs = merged[0] as number[];
       const lastT = cache.lastT ?? (xs.length > 0 ? xs[xs.length - 1] : null);
 
       withSuppressed(() => {
-        // resetScales=true re-fits y to the new data (auto mode) — then
-        // we restore x to the panel's shared window (which it would
-        // otherwise re-fit to the data) and, in manual y mode, override
-        // y back to the configured range.
+        // resetScales=true re-fits y to the new data — then we pin y to
+        // [0, 1] (normalised) and restore x to the panel's shared
+        // window. In manual y mode, override y back to the configured
+        // range (skipping the auto-normalisation effect).
         u.setData(merged, true);
         const { xMin, xMax } = xSyncRef.current;
         if (xMin != null && xMax != null) u.setScale("x", { min: xMin, max: xMax });
-        if (lr.yMode !== "auto") u.setScale("y", { min: lr.yMode.min, max: lr.yMode.max });
+        if (lr.yMode === "auto") u.setScale("y", { min: 0, max: 1 });
+        else u.setScale("y", { min: lr.yMode.min, max: lr.yMode.max });
         // Force a full redraw (paths + axis recalc). `setData` does
         // redraw on its own but doesn't always recompute axis ticks /
         // gridlines if the layout state is stale from construction; this
@@ -1635,8 +1674,15 @@ function PlotArea(p: PlotAreaProps) {
     // panel lifetime.
     let postMountRebuildTimer = 0;
     if (!postMountRebuildDoneRef.current) {
-      postMountRebuildDoneRef.current = true;
-      postMountRebuildTimer = window.setTimeout(() => setResizeTick((n) => n + 1), 250);
+      // Set `done` when the timer *fires*, not when we schedule it —
+      // StrictMode runs the effect twice (run → cleanup → re-run) in
+      // dev; flipping the flag at scheduling time leaves it `true`
+      // after the cleanup clears the timer, so the second run skips
+      // scheduling and the rebuild never happens.
+      postMountRebuildTimer = window.setTimeout(() => {
+        postMountRebuildDoneRef.current = true;
+        setResizeTick((n) => n + 1);
+      }, 250);
     }
 
     return () => {
