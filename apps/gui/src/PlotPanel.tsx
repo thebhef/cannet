@@ -1591,6 +1591,25 @@ function PlotArea(p: PlotAreaProps) {
                 const shift = e.shiftKey;
                 e.preventDefault();
                 const rect = over.getBoundingClientRect();
+                // Horizontal scroll (trackpad two-finger sideways, or
+                // a mouse tilt-wheel) → pan x. The vertical wheel is
+                // for zoom; an explicit "pan with the vertical wheel"
+                // is still available via shift.
+                const hScroll = Math.abs(e.deltaX) > Math.abs(e.deltaY);
+                if (hScroll) {
+                  const xs = u.scales.x;
+                  if (xs.min == null || xs.max == null) return;
+                  const span = xs.max - xs.min;
+                  // Trackpad deltaX is roughly pixels per notch on
+                  // most platforms; scale by the visible span so the
+                  // pan feels the same at any zoom level.
+                  const step = (e.deltaX / Math.max(1, rect.width)) * span;
+                  const min = xs.min + step;
+                  const max = xs.max + step;
+                  withSuppressed(() => u.setScale("x", { min, max }));
+                  liveRef.current.onUserXChange(min, max, areaId);
+                  return;
+                }
                 const f = e.deltaY > 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
                 if (cmd) {
                   // ⌘/ctrl + wheel → zoom y around the cursor (this area
