@@ -271,7 +271,8 @@ the re-sampling), Clear re-anchors what's plotted to "now".
   window, not the whole capture), and the result is min/max-decimated
   host-side to ≈the plot's pixel width before it reaches uPlot (spikes
   survive the decimation), and the live plot re-samples **incrementally**
-  on a self-paced ~30 Hz loop — each tick only the frames appended since
+  on a self-paced loop at a configurable rate (default 15 Hz; pick it in the
+  plot toolbar) — each tick only the frames appended since
   the previous one are decoded and appended to a bounded per-signal
   cache, so a long capture isn't re-decoded every tick. Pause stops the
   loop. The toolbar shows the update rate, the worst recent re-sample
