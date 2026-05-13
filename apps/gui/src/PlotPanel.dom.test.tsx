@@ -48,10 +48,14 @@ const SIGNALS = [
   { message_id: 256, extended: false, message_name: "EngineData", signal_name: "EngineTemp", unit: "degC" },
 ];
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(async (cmd: string) => {
+  invoke: vi.fn(async (cmd: string, args?: { signals?: unknown[] }) => {
     if (cmd === "list_signals") return SIGNALS;
-    if (cmd === "sample_signal")
-      return { t: [0, 1, 2], v: [10, 20, 15], capture_start_seconds: 0, capture_end_seconds: 2 };
+    if (cmd === "sample_signals")
+      return {
+        from_seconds: 0,
+        last_seconds: 2,
+        series: (args?.signals ?? []).map(() => ({ t: [0, 1, 2], v: [10, 20, 15] })),
+      };
     return undefined;
   }),
 }));

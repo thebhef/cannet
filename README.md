@@ -87,7 +87,7 @@ apps/
                      for flicker-free auto-scroll). `signal_sampler.rs`
                      walks the trace store for a chosen DBC signal and
                      yields a `(t, v)` series for the plot panel
-                     (`list_signals` / `sample_signal` commands).
+                     (`list_signals` / `sample_signals` commands).
                      `src/ipc.rs` holds the IPC payload shapes;
                      `src/project.rs` the project-file model +
                      `open_project` / `save_project`.
@@ -270,10 +270,12 @@ the re-sampling), Clear re-anchors what's plotted to "now".
   window out of the store by frame index (so the work is bounded by the
   window, not the whole capture), and the result is min/max-decimated
   host-side to ≈the plot's pixel width before it reaches uPlot (spikes
-  survive the decimation). The live re-sample is throttled, and Pause
-  stops it entirely. The toolbar shows the worst recent re-sample time
-  and the device-pixel ratio. (Decoding only newly-appended frames each
-  tick — true incremental sampling — is still a backlog item.)
+  survive the decimation), and the live plot re-samples **incrementally**
+  on a self-paced ~30 Hz loop — each tick only the frames appended since
+  the previous one are decoded and appended to a bounded per-signal
+  cache, so a long capture isn't re-decoded every tick. Pause stops the
+  loop. The toolbar shows the update rate, the worst recent re-sample
+  time, and the device-pixel ratio.
 
 Multiple plot panels can be open, each independent; the areas, signal
 assignments, y-ranges, follow-live, cursor mode, measurement selection,
@@ -281,8 +283,7 @@ and notes round-trip through the project file (the play state, like a
 trace panel's window, is session-only). (Still pending — see
 `plans/phased-implementation.md` Phase 4 and `plans/backlog.md`:
 per-trace y offset/gain and log scale, triggers, math channels,
-CSV/image export, BLF annotation round-trip, enum/state plots,
-incremental sampling.)
+CSV/image export, BLF annotation round-trip, enum/state plots.)
 
 > **Note:** plain `cargo run -p cannet-gui` will build the Rust host on
 > its own but won't bring up a usable window — the host expects either
