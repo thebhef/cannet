@@ -6,7 +6,7 @@
 /// header's right-click menu), and in per-id mode you can click a
 /// header to sort by it.
 
-import type { TraceFrameRecord } from "./types";
+import type { ByIdSnapshotRecord } from "./types";
 
 /// A trace column's stable identity.
 export type ColumnKey =
@@ -18,7 +18,8 @@ export type ColumnKey =
   | "kind"
   | "len"
   | "data"
-  | "msg";
+  | "msg"
+  | "rate";
 
 export interface ColumnDef {
   key: ColumnKey;
@@ -33,6 +34,9 @@ export interface ColumnDef {
   /// flex column keeps the table filling the panel without a horizontal
   /// scrollbar in the common case.
   flex?: boolean;
+  /// If true the column only makes sense in the per-id view (a single
+  /// chronological frame has no "rate") — the chronological view drops it.
+  byIdOnly?: boolean;
 }
 
 /// The columns, in their fixed display order.
@@ -46,6 +50,7 @@ export const COLUMN_DEFS: readonly ColumnDef[] = [
   { key: "len", label: "len", className: "col-len", defaultWidth: 44 },
   { key: "data", label: "data", className: "col-data", defaultWidth: 360, flex: true },
   { key: "msg", label: "message", className: "col-msg", defaultWidth: 220 },
+  { key: "rate", label: "msg/s", className: "col-rate", defaultWidth: 64, byIdOnly: true },
 ];
 
 /// Smallest a column can be dragged to.
@@ -151,28 +156,30 @@ export function nextSort(current: SortState, key: ColumnKey): SortState {
   return current.dir === "asc" ? { key, dir: "desc" } : null;
 }
 
-/// The value a row sorts by for a given column — raw fields, so no
-/// dependency on the formatters.
-function sortValue(row: TraceFrameRecord, key: ColumnKey): number | string | number[] {
+/// The value a by-id row sorts by for a given column — raw fields, so
+/// no dependency on the formatters.
+function sortValue(row: ByIdSnapshotRecord, key: ColumnKey): number | string | number[] {
+  if (key === "rate") return row.rate;
+  const frame = row.frame;
   switch (key) {
     case "idx":
-      return row.index;
+      return frame.index;
     case "time":
-      return row.timestamp_seconds;
+      return frame.timestamp_seconds;
     case "ch":
-      return row.channel;
+      return frame.channel;
     case "dir":
-      return row.direction;
+      return frame.direction;
     case "id":
-      return row.id;
+      return frame.id;
     case "kind":
-      return row.kind.kind;
+      return frame.kind.kind;
     case "len":
-      return row.data.length;
+      return frame.data.length;
     case "data":
-      return row.data;
+      return frame.data;
     case "msg":
-      return row.decoded?.name ?? "";
+      return frame.decoded?.name ?? "";
   }
 }
 
@@ -192,9 +199,9 @@ function compareValues(a: number | string | number[], b: number | string | numbe
 /// A new array of `rows` sorted by `sort` (a stable sort — equal keys
 /// keep the host's order). `null` returns `rows` unchanged.
 export function sortRows(
-  rows: readonly TraceFrameRecord[],
+  rows: readonly ByIdSnapshotRecord[],
   sort: SortState,
-): TraceFrameRecord[] {
+): ByIdSnapshotRecord[] {
   if (!sort) return rows.slice();
   const factor = sort.dir === "asc" ? 1 : -1;
   return rows

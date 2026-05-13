@@ -118,6 +118,14 @@ pub struct TraceGrew {
     pub tail: Vec<TraceFrameRecord>,
 }
 
+/// One row of the per-message-ID view: the id's latest frame plus its
+/// current message rate (frames/second).
+#[derive(serde::Serialize, Clone)]
+pub struct ByIdSnapshot {
+    pub frame: TraceFrameRecord,
+    pub rate: f64,
+}
+
 /// Emitted when the log finishes (cleanly or with an error).
 #[derive(serde::Serialize, Clone)]
 #[serde(tag = "status", rename_all = "snake_case")]
