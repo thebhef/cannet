@@ -159,16 +159,16 @@ opening attaches a database for live decoding.
 The window below the toolbar is a dockable panel area. The default
 layout has a **trace panel** and a **project panel** (the project's
 *elements*, the configured bus(es), the attached DBC). A trace panel
-has a **trace / by ID** mode toggle: *trace* is the chronological view
-(one row per frame, follows the live edge); *by ID* shows one row per
-arbitration id with its latest frame, and you can click a column header
-to sort by it (click again to reverse, again to clear — ▲ / ▼ marks
-the sorted column). **Add trace panel** / **Add by-ID panel** each
-create a new trace element and a panel for it (starting in that mode —
-toggle it anytime); the project panel lists the elements — closing a
-panel doesn't destroy its element, reopen or remove it from there.
-**Project panel** toggles the project panel itself (it's a show/hide
-singleton). New panels arrive as a tab in the active group — drag a
+has a **trace / by ID** mode toggle: *by ID* (the default) shows one
+row per arbitration id with its latest frame — click a column header to
+sort by it (click again to reverse, again to clear — ▲ / ▼ marks the
+sorted column); *trace* is the chronological view (one row per frame,
+follows the live edge). **Add trace** creates a new trace element and a
+panel for it (in by-ID mode — toggle it anytime); the project panel
+lists the elements — closing a panel doesn't destroy its element,
+reopen or remove it from there. **Project panel** toggles the project
+panel itself (it's a show/hide singleton). New panels arrive as a tab
+in the active group — drag a
 panel by its tab and drop it against an edge of the area to split it
 side-by-side, or onto another panel to tab them together. Each trace
 panel keeps its own scroll position, auto-scroll toggle (trace mode),

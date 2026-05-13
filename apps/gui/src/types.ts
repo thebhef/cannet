@@ -74,14 +74,13 @@ export interface RemoteSessionResult {
 }
 
 /// One element of a project: a discriminated-union record with a stable
-/// `id`. Now only traces; plots, transmit messages, etc. become new
-/// `kind`s. Per-view display config — a trace panel's column layout,
-/// auto-scroll — lives in the dockview panel `params`, not here.
+/// `id`. Now only traces; plots, transmit messages, filters etc. become
+/// new `kind`s. A trace element carries no extra config — the panel
+/// showing it owns its mode (chronological / by-id) and column layout
+/// in the dockview panel `params`.
 export type ProjectElement = {
   kind: "trace";
   id: string;
-  /// Which presentation a panel for this trace defaults to.
-  view: "chronological" | "by-id";
 };
 
 /// Mirrors `src-tauri/src/project.rs::Project` — the saved workspace.

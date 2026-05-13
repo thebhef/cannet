@@ -11,7 +11,6 @@ import type {
   LogFinished,
   OpenLogResult,
   Project,
-  ProjectElement,
   RemoteSessionResult,
   TraceFrameRecord,
   TraceGrew,
@@ -121,25 +120,24 @@ export function App() {
 
   // The dockview layout API, populated once `onReady` fires.
   const dockApiRef = useRef<DockviewApi | null>(null);
-  // Monotonic counters for "Trace N" / "By ID N" panel titles.
+  // Monotonic counter for "Trace N" panel titles.
   const panelCounterRef = useRef(0);
-  const byIdCounterRef = useRef(0);
   // Current `dirty` / `handleSaveProject`, read by the (once-registered)
   // close-on-quit handler. Updated on every render below.
   const dirtyRef = useRef(false);
   const handleSaveProjectRef = useRef<() => Promise<boolean>>(() => Promise.resolve(false));
 
   // --- element registry ops ---
-  const createTrace = useCallback((view: ProjectElement["view"]): string => {
+  const createTrace = useCallback((): string => {
     const id = crypto.randomUUID();
-    setRegistry((prev) => [...prev, { element: { kind: "trace", id, view }, trace: freshTrace(0) }]);
+    setRegistry((prev) => [...prev, { element: { kind: "trace", id }, trace: freshTrace(0) }]);
     return id;
   }, []);
-  const ensureTrace = useCallback((id: string, view: ProjectElement["view"]) => {
+  const ensureTrace = useCallback((id: string) => {
     setRegistry((prev) =>
       prev.some((e) => e.element.id === id)
         ? prev
-        : [...prev, { element: { kind: "trace", id, view }, trace: freshTrace(0) }],
+        : [...prev, { element: { kind: "trace", id }, trace: freshTrace(0) }],
     );
   }, []);
   const updateTrace = useCallback((id: string, updater: (s: TraceState) => TraceState) => {
@@ -151,17 +149,6 @@ export function App() {
         if (t === e.trace) return e;
         changed = true;
         return { ...e, trace: t };
-      });
-      return changed ? next : prev;
-    });
-  }, []);
-  const setElementView = useCallback((id: string, view: ProjectElement["view"]) => {
-    setRegistry((prev) => {
-      let changed = false;
-      const next = prev.map((e) => {
-        if (e.element.id !== id || e.element.view === view) return e;
-        changed = true;
-        return { ...e, element: { ...e.element, view } };
       });
       return changed ? next : prev;
     });
@@ -392,13 +379,13 @@ export function App() {
     const api = dockApiRef.current;
     if (!api) return;
     setRegistry([]);
-    const elementId = createTrace("chronological");
+    const elementId = createTrace();
     api.clear();
     api.addPanel({
       id: `trace-${elementId}`,
       component: TRACE_PANEL_COMPONENT,
       title: "Trace 1",
-      params: { elementId, view: "chronological" },
+      params: { elementId, mode: "by-id" },
     });
     api.addPanel({
       // Fixed id — there's only ever one project panel; the toolbar's
@@ -409,7 +396,6 @@ export function App() {
       position: { direction: "left" },
     });
     panelCounterRef.current = 1;
-    byIdCounterRef.current = 0;
   }, [createTrace]);
 
   /// Snapshot the current workspace into a `Project` (the elements, not
@@ -459,7 +445,6 @@ export function App() {
         try {
           api.fromJSON(layout);
           panelCounterRef.current = api.panels.length;
-          byIdCounterRef.current = api.panels.length;
         } catch {
           /* keep the current layout if the saved one won't load */
         }
@@ -619,26 +604,14 @@ export function App() {
   const addTracePanel = useCallback(() => {
     const api = dockApiRef.current;
     if (!api) return;
-    const elementId = createTrace("chronological");
+    const elementId = createTrace();
     panelCounterRef.current += 1;
+    // A new trace starts in by-id mode (toggle it in the panel toolbar).
     api.addPanel({
       id: `trace-${elementId}`,
       component: TRACE_PANEL_COMPONENT,
       title: `Trace ${panelCounterRef.current}`,
-      params: { elementId, view: "chronological" },
-    });
-  }, [createTrace]);
-
-  const addByIdPanel = useCallback(() => {
-    const api = dockApiRef.current;
-    if (!api) return;
-    const elementId = createTrace("by-id");
-    byIdCounterRef.current += 1;
-    api.addPanel({
-      id: `trace-${elementId}`,
-      component: TRACE_PANEL_COMPONENT,
-      title: `By ID ${byIdCounterRef.current}`,
-      params: { elementId, view: "by-id" },
+      params: { elementId, mode: "by-id" },
     });
   }, [createTrace]);
 
@@ -676,7 +649,6 @@ export function App() {
       if (restored) {
         // Keep numbering past whatever the restored layout already shows.
         panelCounterRef.current = api.panels.length;
-        byIdCounterRef.current = api.panels.length;
       } else {
         seedDefaultLayout();
       }
@@ -730,10 +702,9 @@ export function App() {
       createTrace,
       ensureTrace,
       updateTrace,
-      setElementView,
       remove: removeElement,
     }),
-    [registry, createTrace, ensureTrace, updateTrace, setElementView, removeElement],
+    [registry, createTrace, ensureTrace, updateTrace, removeElement],
   );
 
   const remoteConnected =
@@ -814,8 +785,7 @@ export function App() {
             Clear
           </button>
           <span className="toolbar-separator" aria-hidden="true" />
-          <button onClick={addTracePanel}>Add trace panel</button>
-          <button onClick={addByIdPanel}>Add by-ID panel</button>
+          <button onClick={addTracePanel}>Add trace</button>
           <button onClick={toggleProjectPanel}>Project panel</button>
         </div>
         <div className="status">{status}</div>

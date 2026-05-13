@@ -36,8 +36,8 @@ export function ProjectPanel(props: IDockviewPanelProps) {
     containerApi.addPanel({
       id: `trace-${el.id}`,
       component: TRACE_PANEL_COMPONENT,
-      title: el.view === "by-id" ? "By ID" : "Trace",
-      params: { elementId: el.id, view: el.view },
+      title: "Trace",
+      params: { elementId: el.id, mode: "by-id" },
     });
   };
 
@@ -74,8 +74,7 @@ export function ProjectPanel(props: IDockviewPanelProps) {
           return (
             <div className="project-element" key={el.id}>
               <span className="project-element-name">
-                {el.view === "by-id" ? "by-ID view" : "trace"}
-                {panel ? ` — ${panel.title}` : " (closed)"}
+                trace{panel ? ` — ${panel.title}` : " (closed)"}
               </span>
               {panel ? (
                 <button type="button" onClick={() => panel.api.setActive()}>
