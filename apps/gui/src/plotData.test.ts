@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { mergeSeries, signalKey } from "./plotData";
+import { decimatePoints, mergeSeries, signalKey } from "./plotData";
 
 describe("mergeSeries", () => {
   it("returns an empty data set with no series", () => {
@@ -43,5 +43,31 @@ describe("signalKey", () => {
   it("distinguishes standard and extended ids", () => {
     expect(signalKey(256, false, "Speed")).not.toBe(signalKey(256, true, "Speed"));
     expect(signalKey(256, false, "Speed")).toBe(signalKey(256, false, "Speed"));
+  });
+});
+
+describe("decimatePoints", () => {
+  it("returns a copy unchanged when it already fits (or decimation off)", () => {
+    expect(decimatePoints([1, 2, 3], [4, 5, 6], 10)).toEqual({ t: [1, 2, 3], v: [4, 5, 6] });
+    expect(decimatePoints([1, 2, 3], [4, 5, 6], 0)).toEqual({ t: [1, 2, 3], v: [4, 5, 6] });
+  });
+
+  it("keeps each bucket's min and max value in time order", () => {
+    // 6 points, 3 buckets of 2: [4,1] -> max@0,min@1 -> emit 1 then 4? no: time
+    // order = index order, so emit index 0 (4) then index 1 (1). bucket [9,2] ->
+    // emit 9 then 2. bucket [5,5] -> single point.
+    const { t, v } = decimatePoints([0, 1, 2, 3, 4, 5], [4, 1, 9, 2, 5, 5], 3);
+    expect(t).toEqual([0, 1, 2, 3, 4]);
+    expect(v).toEqual([4, 1, 9, 2, 5]);
+  });
+
+  it("bounds the output to at most 2*maxBuckets points", () => {
+    const n = 1000;
+    const t = Array.from({ length: n }, (_, i) => i);
+    const v = Array.from({ length: n }, (_, i) => Math.sin(i));
+    const out = decimatePoints(t, v, 50);
+    expect(out.t.length).toBeLessThanOrEqual(100);
+    expect(out.t.length).toBeGreaterThan(0);
+    expect(out.t).toEqual([...out.t].sort((a, b) => a - b));
   });
 });
