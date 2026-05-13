@@ -1379,27 +1379,13 @@ function PlotArea(p: PlotAreaProps) {
           cache!.traceRanges.set(key, { lo, hi });
         }
       });
-      // Sample-and-hold the last value to the visible right edge so a
-      // sparse signal (e.g. 1 Hz on a 100 ms zoom) doesn't visually
-      // "end early" between its last sample and the right edge —
-      // uPlot has no next point to draw to without an explicit
-      // synthetic one. The host's `slice` already includes the
-      // *previous* sample for the left edge, so left-side gaps are
-      // covered by the data; this is the symmetric right-edge case.
-      const xMaxForExtend = xSyncRef.current.xMax;
       const displaySeries: Series[] = seriesRel.map((s, i) => {
         if (s.v.length === 0) return s;
         const range = cache!.traceRanges.get(signalRefKey(signals[i]));
         const span = range != null && range.hi > range.lo ? range.hi - range.lo : 0;
+        if (span <= 0 || range == null) return s;
         const out = new Array<number>(s.v.length);
-        if (span > 0 && range != null) {
-          for (let j = 0; j < s.v.length; j++) out[j] = (s.v[j] - range.lo) / span;
-        } else {
-          for (let j = 0; j < s.v.length; j++) out[j] = s.v[j];
-        }
-        if (xMaxForExtend != null && s.t.length > 0 && s.t[s.t.length - 1] < xMaxForExtend) {
-          return { t: [...s.t, xMaxForExtend], v: [...out, out[out.length - 1]] };
-        }
+        for (let j = 0; j < s.v.length; j++) out[j] = (s.v[j] - range.lo) / span;
         return { t: s.t, v: out };
       });
       const merged = mergeSeries(displaySeries) as uPlot.AlignedData;
