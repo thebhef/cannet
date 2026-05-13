@@ -100,8 +100,10 @@ export interface Project {
   schema_version: number;
   layout: unknown;
   elements: unknown[];
-  dbc_path: string | null;
+  /// Paths of the loaded DBCs, in priority order (first match wins when
+  /// decoding) — references re-read from disk on open.
+  dbc_paths: string[];
   remote_address: string | null;
 }
 
-export const PROJECT_SCHEMA_VERSION = 1;
+export const PROJECT_SCHEMA_VERSION = 2;

@@ -7,17 +7,18 @@
 //! messages later — each an opaque `{kind, id, …}` record the frontend
 //! defines); the host just round-trips both.
 //!
-//! Carries today: the panel layout, the project elements, the attached
-//! DBC path, and the remote-server address. Later steps add the bus
-//! subscription set, multiple DBCs, and EDS references — bumping
-//! [`PROJECT_SCHEMA_VERSION`] only if a change is *incompatible*
-//! (adding optional fields isn't).
+//! Carries today: the panel layout, the project elements, the loaded
+//! DBC paths, and the remote-server address. Later steps add the bus
+//! subscription set, per-bus DBC association, and EDS references —
+//! bumping [`PROJECT_SCHEMA_VERSION`] only if a change is *incompatible*
+//! (adding optional fields isn't; the v1→v2 bump replaced the single
+//! `dbc_path` with a `dbc_paths` list, which is).
 
 use serde::{Deserialize, Serialize};
 
 /// Current project-file schema version. Bumped if the shape changes
 /// incompatibly so a stale file is rejected rather than misread.
-pub const PROJECT_SCHEMA_VERSION: u32 = 1;
+pub const PROJECT_SCHEMA_VERSION: u32 = 2;
 
 /// A saved workspace.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,11 +33,11 @@ pub struct Project {
     /// doesn't read these either; the frontend owns the shape.
     #[serde(default)]
     pub elements: Vec<serde_json::Value>,
-    /// Path to the attached DBC, if any — a reference, not an embedded
-    /// copy, re-read from disk on open (or via the panel's "reload"
-    /// action).
+    /// Paths to the loaded DBCs, in priority order (first match wins
+    /// when decoding) — references, not embedded copies, re-read from
+    /// disk on open (or via the panel's "reload" action).
     #[serde(default)]
-    pub dbc_path: Option<String>,
+    pub dbc_paths: Vec<String>,
     /// Remote `cannet-server` address (`host:port`), if the project
     /// connects to one.
     #[serde(default)]
@@ -86,8 +87,8 @@ mod tests {
         Project {
             schema_version: PROJECT_SCHEMA_VERSION,
             layout: serde_json::json!({ "grid": { "root": {} }, "panels": {} }),
-            elements: vec![serde_json::json!({ "kind": "trace", "id": "abc", "view": "chronological" })],
-            dbc_path: Some("/some/where/bus.dbc".into()),
+            elements: vec![serde_json::json!({ "kind": "trace", "id": "abc" })],
+            dbc_paths: vec!["/some/where/bus.dbc".into(), "/some/where/extra.dbc".into()],
             remote_address: Some("127.0.0.1:50051".into()),
         }
     }
@@ -100,16 +101,18 @@ mod tests {
 
     #[test]
     fn parse_defaults_the_optional_fields() {
-        let p = parse_project(r#"{"schema_version": 1, "layout": {"grid": {}, "panels": {}}}"#)
+        let p = parse_project(r#"{"schema_version": 2, "layout": {"grid": {}, "panels": {}}}"#)
             .unwrap();
         assert!(p.elements.is_empty());
-        assert_eq!(p.dbc_path, None);
+        assert!(p.dbc_paths.is_empty());
         assert_eq!(p.remote_address, None);
     }
 
     #[test]
     fn parse_rejects_an_unsupported_schema_version() {
+        // A future version, and the now-superseded v1 (single `dbc_path`).
         assert!(parse_project(r#"{"schema_version": 999, "layout": {}}"#).is_err());
+        assert!(parse_project(r#"{"schema_version": 1, "layout": {}}"#).is_err());
         assert!(parse_project("not json").is_err());
     }
 

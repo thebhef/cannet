@@ -78,8 +78,8 @@ apps/
                      via the `fetch_trace_range` command and the
                      latest-by-id snapshot (each id's latest frame + its
                      rate) via `fetch_latest_by_id` (both decoded against the
-                     current DBC at fetch time, both off the main
-                     thread), plus a `trace-grew` IPC tick (~10 Hz:
+                     loaded DBCs — first match wins — at fetch time, both
+                     off the main thread), plus a `trace-grew` IPC tick (~10 Hz:
                      count, rate, and a decoded tail of the newest rows
                      for flicker-free auto-scroll). `src/ipc.rs` holds
                      the IPC payload shapes; `src/project.rs` the
@@ -154,12 +154,14 @@ pnpm --dir apps/gui tauri build    # release bundle
 ```
 
 `pnpm tauri dev` boots Vite, compiles the Rust host, and launches the
-cannet window. Use **Open BLF…** to pick a log; **Attach DBC…** before
-opening attaches a database for live decoding.
+cannet window. Use **Open BLF…** to pick a log; **Add DBC…** loads a
+database for live decoding — load more than one and frames decode
+against each in order, first match wins (every loaded DBC applies to
+the one interface for now).
 
 The window below the toolbar is a dockable panel area. The default
 layout has a **trace panel** and a **project panel** (the project's
-*elements*, the configured bus(es), the attached DBC). A trace panel
+*elements*, the configured bus(es), the loaded DBCs). A trace panel
 has a **trace / by ID** mode toggle: *by ID* (the default) shows one
 row per arbitration id with its latest frame and its current message
 rate (the **msg/s** column, by-id only) — click a column header to
@@ -192,22 +194,22 @@ docking is within the one window; the tear-out item is in
 
 A `.json` *project* file holds the panel layout (including each trace
 panel's column layout and auto-scroll toggle), the project's elements
-(traces — and later plots, transmit messages, …), the attached DBC
-path, and the remote-server address. The **project panel** (or the
+(traces — and later plots, transmit messages, …), the loaded DBC
+paths, and the remote-server address. The **project panel** (or the
 toolbar's **Open project…** / **Save project**) drives it: **Save** /
 **Save As…** write one, **Open…** restores it (configures the remote
-address and re-attaches the DBC by path — hit **Connect** to switch —
-and detaches the DBC if the project names none), **New** starts a fresh
-workspace (default layout, no DBC, disconnected, buffer cleared). The
-panel also lists the configured bus(es) with **Connect** /
-**Disconnect** and the attached DBC with **Reload from disk**. The
+address and re-loads the DBCs by path — hit **Connect** to switch),
+**New** starts a fresh workspace (default layout, no DBCs, disconnected,
+buffer cleared). The panel also lists the configured bus(es) with
+**Connect** / **Disconnect** and the loaded DBCs with **Add…** /
+**Remove** / **Reload all from disk**. The
 last opened/saved project is reopened on launch (with no project, the
 layout is restored from local storage). Unsaved changes show a `●` in
 the project panel, and closing the window with unsaved changes prompts
 you (Save & close / Discard & close / Cancel). Not carried in the project: a trace's window
 position (it re-anchors to the session buffer on each launch anyway),
-the BLF replay path, the per-interface subscription set, and multiple
-DBCs.
+the BLF replay path, the per-interface subscription set, and per-bus
+DBC association (every loaded DBC applies to the one interface for now).
 
 > **Note:** plain `cargo run -p cannet-gui` will build the Rust host on
 > its own but won't bring up a usable window — the host expects either

@@ -7,8 +7,9 @@ import { createContext, useContext } from "react";
  *
  * "Bus" here is whatever single source is configured — a remote
  * `cannet-server` (the usual case) and/or a loaded BLF replay. Plural
- * buses, the per-interface subscription set, and multiple DBCs are
- * later project-file steps.
+ * buses, the per-interface subscription set, and per-bus DBC
+ * association are later project-file steps; for now every loaded DBC
+ * applies to the one interface.
  */
 export interface ProjectContextValue {
   /// Path of the open project file, or `null` if none has been saved /
@@ -18,8 +19,8 @@ export interface ProjectContextValue {
   /// opened (an unsaved-changes indicator; also drives the
   /// save-before-quit prompt).
   dirty: boolean;
-  /// Path of the attached DBC, or `null`.
-  dbcPath: string | null;
+  /// Paths of the loaded DBCs, in priority order (first match wins).
+  dbcPaths: string[];
   /// The configured remote-server address (`host:port`).
   remoteAddress: string;
   /// True while a remote session is connecting or running.
@@ -32,7 +33,11 @@ export interface ProjectContextValue {
   /// Write to the open project's path, or prompt if there isn't one.
   onSaveProject: () => void;
   onSaveProjectAs: () => void;
-  /// Re-read the attached DBC from disk (no-op if none attached).
+  /// Pick one or more DBC files and add them to the loaded set.
+  onAddDbc: () => void;
+  /// Unload the DBC with this path.
+  onRemoveDbc: (path: string) => void;
+  /// Re-read every loaded DBC from disk (no-op if none are loaded).
   onReloadDbc: () => void;
   onConnect: () => void;
   onDisconnect: () => void;
