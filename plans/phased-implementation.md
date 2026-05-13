@@ -641,14 +641,14 @@ In rough order, each step leaving the panel runnable:
   what `sample_signal` is given (see the window-bounded-sampling bullet
   above).
 - **Synced x zoom + pan; per-area y zoom; fit data.** ✅ Done —
-  drag-select or `⌘/ctrl`+wheel on any area zooms x on all areas (and
-  leaves follow-live); `shift`+wheel pans x (synced); `⌘/ctrl`+`shift`+
-  wheel zooms y on the hovered area only; "fit data" refits x to the
-  full capture span and y to the data. (`⌘/ctrl`+`shift` is the
-  buried, rarely-used one — y is usually set with the per-area range
-  control.) Implemented with a shared x-sync ref + a per-area `setScale`
-  hook (cross-instance `setScale`, guarded so programmatic changes
-  don't echo), and a per-area re-entrancy guard on the resample.
+  plain **wheel** or drag-select on any area zooms x on all areas (and
+  leaves follow-live); `shift`+wheel pans x (synced); `⌘/ctrl`+wheel
+  zooms y on the hovered area only (buried under a modifier — y is
+  usually set with the per-area range control); "fit data" refits x to
+  the full signal extent and y to the data. Implemented with a shared
+  x-sync ref + a per-area `setScale` hook (cross-instance `setScale`,
+  guarded so programmatic changes don't echo), and a per-area
+  re-entrancy guard on the resample.
 - **Follow live.** ✅ Done — a toggle that keeps every area pinned to
   the capture's growing edge while preserving the *current* visible
   x-width (so it just slides right); a manual x pan/zoom turns it off.
