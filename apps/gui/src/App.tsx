@@ -30,7 +30,7 @@ import {
   type RegistryEntry,
   isProjectElement,
 } from "./projectElements";
-import { type TraceState, clearedTrace, reanchorToSession } from "./trace";
+import { type TraceState, clearedTrace, freshTrace, reanchorToSession } from "./trace";
 import {
   BY_ID_PANEL_COMPONENT,
   LAST_PROJECT_KEY,
@@ -189,6 +189,16 @@ export function App() {
     setVersion((v) => v + 1);
   }, []);
 
+  // (Re)starting the session buffer — opening a BLF, connecting to a
+  // server, or Clear — also (re)starts every trace / plot element:
+  // they all anchor at 0 and run, following the new capture from its
+  // start. (A trace/plot *created* mid-session still starts stopped —
+  // see `create` — so it doesn't retroactively span the buffer; this is
+  // about the session-start event itself.)
+  const startAllElements = useCallback(() => {
+    setRegistry((prev) => prev.map((e) => ({ ...e, trace: freshTrace(0) })));
+  }, []);
+
   const refreshChunk = useCallback(async (chunkIdx: number) => {
     if (inflightChunksRef.current.has(chunkIdx)) return;
     inflightChunksRef.current.add(chunkIdx);
@@ -325,6 +335,8 @@ export function App() {
       await invoke("clear_trace_store");
       invalidateCache();
       setBaseTimestampSeconds(null);
+      setCount(0);
+      startAllElements();
       const result = await invoke<OpenLogResult>("open_log", {
         blfPath: selected,
       });
@@ -332,7 +344,7 @@ export function App() {
     } catch (err) {
       setState({ kind: "error", message: String(err) });
     }
-  }, [invalidateCache]);
+  }, [invalidateCache, startAllElements]);
 
   // Add one or more DBCs to the loaded set (each goes through the host's
   // `add_dbc`, which appends — or reloads in place if the path is
@@ -409,7 +421,8 @@ export function App() {
     invalidateCache();
     setBaseTimestampSeconds(null);
     setCount(0);
-  }, [invalidateCache]);
+    startAllElements();
+  }, [invalidateCache, startAllElements]);
 
   const handleConnect = useCallback(async () => {
     const address = remoteAddress.trim();
@@ -419,6 +432,8 @@ export function App() {
       await invoke("clear_trace_store");
       invalidateCache();
       setBaseTimestampSeconds(null);
+      setCount(0);
+      startAllElements();
       setState({ kind: "remote-connecting", address });
       const result = await invoke<RemoteSessionResult>("connect_remote_server", {
         address,
@@ -427,7 +442,7 @@ export function App() {
     } catch (err) {
       setState({ kind: "error", message: String(err) });
     }
-  }, [remoteAddress, invalidateCache]);
+  }, [remoteAddress, invalidateCache, startAllElements]);
 
   const handleDisconnect = useCallback(async () => {
     try {
