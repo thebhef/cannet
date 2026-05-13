@@ -1019,6 +1019,13 @@ interface AreaCache {
    * fetch; `null` until the first non-empty fetch completes. */
   fps: number | null;
   byKey: Map<string, { t: number[]; v: number[] }>;
+  /** Per-signal observed `{lo, hi}` value range across every fetch
+   * into this cache anchor — used by the auto-normalisation. Only
+   * *widens*, never shrinks, so the rendered line doesn't slide
+   * vertically every tick as new (slightly different) min/max values
+   * arrive from a fresh decimation. Reset when the cache anchor
+   * changes (signal set, buffer clear). */
+  traceRanges: Map<string, { lo: number; hi: number }>;
   /** `${visStart}:${visEnd}:${maxPoints}` — skip the fetch if it
    * matches what we last asked for. */
   fetchKey: string;
@@ -1202,6 +1209,7 @@ function PlotArea(p: PlotAreaProps) {
           lastT: null,
           fps: null,
           byKey: new Map(),
+          traceRanges: new Map(),
           fetchKey: "",
           lastWinEnd: lr.winEnd,
         };
@@ -1308,10 +1316,20 @@ function PlotArea(p: PlotAreaProps) {
       // correct: we still see new data on the right.
       if (res.last_seconds != null) cache.lastT = res.last_seconds - base;
 
-      // Update the fps estimate from this fetch (frames-per-second over
-      // the slice we just decoded). Stable enough across slices that
-      // the next tick's visible-range math is accurate.
-      if (res.from_seconds != null && res.last_seconds != null && res.last_seconds > res.from_seconds) {
+      // Update the fps estimate once — `(visEnd - visStart) /
+      // (res.last_seconds - res.from_seconds)` jitters by tiny amounts
+      // every fetch, which jitters `visStart` / `visEnd` in the next
+      // call, which jitters the host's decimation bucket boundaries,
+      // which the user sees as points popping in / out near the
+      // edges. Latch fps to the first non-empty fetch's value (which
+      // came from a full-window scan, so it reflects the whole trace's
+      // rate); resets on cache anchor change.
+      if (
+        cache.fps == null &&
+        res.from_seconds != null &&
+        res.last_seconds != null &&
+        res.last_seconds > res.from_seconds
+      ) {
         cache.fps = (visEnd - visStart) / (res.last_seconds - res.from_seconds);
       }
       cache.fetchKey = fetchKey;
@@ -1326,18 +1344,38 @@ function PlotArea(p: PlotAreaProps) {
       // y-axis labels become normalised positions [0, 1] — meaningful
       // numbers per trace will arrive with the per-trace gain/offset
       // controls (`plans/backlog.md`).
-      const displaySeries: Series[] = seriesRel.map((s) => {
-        if (s.v.length === 0) return s;
+      //
+      // The range is *persistent* across fetches (only widens, never
+      // shrinks) so a fresh decimation with a slightly different
+      // sample set doesn't recompute a slightly different range and
+      // visibly slide the rendered line vertically every tick. Reset
+      // implicitly when the cache anchor changes.
+      signals.forEach((s, i) => {
+        const key = signalRefKey(s);
+        const ser = seriesRel[i];
+        if (ser.v.length === 0) return;
         let lo = Infinity;
         let hi = -Infinity;
-        for (const v of s.v) {
+        for (const v of ser.v) {
           if (v < lo) lo = v;
           if (v > hi) hi = v;
         }
-        if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) return s;
-        const range = hi - lo;
+        if (!Number.isFinite(lo) || !Number.isFinite(hi)) return;
+        const existing = cache!.traceRanges.get(key);
+        if (existing) {
+          if (lo < existing.lo) existing.lo = lo;
+          if (hi > existing.hi) existing.hi = hi;
+        } else {
+          cache!.traceRanges.set(key, { lo, hi });
+        }
+      });
+      const displaySeries: Series[] = seriesRel.map((s, i) => {
+        if (s.v.length === 0) return s;
+        const range = cache!.traceRanges.get(signalRefKey(signals[i]));
+        if (range == null || range.hi <= range.lo) return s;
+        const span = range.hi - range.lo;
         const out = new Array<number>(s.v.length);
-        for (let i = 0; i < s.v.length; i++) out[i] = (s.v[i] - lo) / range;
+        for (let j = 0; j < s.v.length; j++) out[j] = (s.v[j] - range.lo) / span;
         return { t: s.t, v: out };
       });
       const merged = mergeSeries(displaySeries) as uPlot.AlignedData;
