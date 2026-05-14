@@ -19,28 +19,9 @@ work or admit it isn't going to happen and delete it.
 
 ## Items
 
-- `[feat]` `cannet-gui`: associate a DBC with a particular *logical
-  bus* rather than the global decode set. Multiple DBCs already load
-  (`AppState::databases`, `Project.dbc_paths`), but every one applies
-  to the one interface; once there's more than one logical bus, a DBC
-  should be scoped to the bus(es) it describes (decode a frame only
-  against its bus's DBCs). Depends on the "logical buses" notion below.
-- `[feat]` `cannet-gui` / `cannet-server`: a notion of *logical buses*
-  and a mapping from physical CAN interfaces (driver + channel) onto
-  them — so one server can expose several interfaces, the GUI groups
-  traffic by logical bus, and per-bus config (DBCs, filters, transmit
-  defaults) hangs off the bus rather than a single global "interface".
-  Pairs with the deferred "interface selection" work (see
-  `plans/phased-implementation.md` Phase 3 notes) and the physical
-  drivers (Phase 6).
-- `[feat]` `cannet-dbc`: surface DBC value-tables (`VAL_`) in
-  `DecodedSignal` so the trace view can show enum labels.
 - `[perf]` `cannet-core`: revisit `CanFramePayload::Classic`/`Fd` to share
   a fixed-size inline buffer instead of `Vec<u8>` once the trace store /
-  benchmark in Phase 7 shows allocator pressure.
-- `[docs]` `cannet-blf`: f64 BLF timestamps lose sub-µs precision at
-  modern absolute times; document this in the user-facing GUI when
-  surfaced timestamps look quantised.
+  benchmark in Phase 10 shows allocator pressure.
 - `[ui]` trace view: dock / undock as a separate window. (Resizable and
   hideable columns folded into Phase 3; tear-out into a separate OS window
   stays here — Phase 3 docking is within the single main window.)
@@ -57,12 +38,6 @@ work or admit it isn't going to happen and delete it.
   `frames[since..end]` backwards rather than reading the latest index.
   (Surfaced reviewing the trace-controls / by-ID work; harmless for the
   common "running" case.)
-- `[feat]` `cannet-gui`: a "recent BLF files" list — the few
-  most-recently-opened BLF paths, persisted (localStorage), offered in
-  the Open BLF flow / the project panel. BLF replay is usually from a
-  captured trace and the streaming-client path is a stopgap, so a
-  recent-items list fits better than persisting "the project's BLF" in
-  the project file.
 - `[ui]` trace view (`TraceView.tsx`): under a fast (unlimited-rate)
   stream, scrolling up doesn't reliably leave auto-scroll and a parked
   panel can be yanked back to the live tail — the auto-scroll re-pin
@@ -100,14 +75,6 @@ work or admit it isn't going to happen and delete it.
   variant of `slice_matching_many`), or a binary-search lookup
   exposed as a Tauri command. Until then, the fps approximation is
   close enough to draw correctly.
-- `[perf]` `cannet-gui`: binary IPC for `sample_signals`. Today the
-  command returns JSON-encoded `Vec<f64>` arrays — at high rate the
-  serialise / parse cost is one of the visible terms in the
-  per-resample wall clock. Tauri v2 supports `tauri::ipc::Response`
-  with raw bytes; encode the response as `[u32 lens..., f64 ts..., f64
-  vs...]` and decode in JS via a `DataView`. Probably 5-10× cheaper
-  IPC under load; the plot toolbar already shows `host` vs total ms
-  so the win is measurable.
 - `[perf]` `cannet-gui`: bound the host-side decoded-sample cache.
   `signal_cache::SignalCacheStore` is append-only — `O(matches per
   signal)` memory, fine for typical real-world rates but unbounded for
@@ -142,13 +109,6 @@ work or admit it isn't going to happen and delete it.
   sit in separate groups rather than tabbed together); if a plot-panel
   CSS rule (`min-height` chains, the flex-filled areas) is fighting it,
   fix that. (Reported as not working; not yet reproduced here.)
-- `[feat]` `cannet-gui`: BLF annotation round-trip — open a BLF, place
-  notes (the plot panel's "+ note" cursor mode), and save the BLF back
-  out with the annotations embedded. Needs a place to persist notes
-  against a capture (BLF has no native annotation record — likely a
-  sidecar or a custom object kind), plus the "Save Capture…" path
-  (separate backlog entry) to write it. Today notes live only in the
-  plot panel's params (per project), not against the BLF.
 - `[feat]` `cannet-gui` math channels — derived signals computed from
   other signals (sum, diff, scale, filter, …). Useful to the plot panel,
   the transmit panel, and a future scripting surface, so it may outgrow
@@ -159,12 +119,6 @@ work or admit it isn't going to happen and delete it.
   palette on add). Right-click → a small swatch-grid / `<input
   type="color">` popover; the chosen colour is sticky like the
   auto-assigned one.
-- `[ui]` `cannet-gui` trace panels: enum values — for a signal whose DBC
-  entry carries value descriptions (`VAL_` / value tables), show the
-  named value (e.g. `2 "Reverse"`) instead of the bare number in the
-  decoded-signal grid (and the by-ID expansion). Needs the DBC layer to
-  surface value tables (`cannet-dbc` currently exposes name/unit/scaling
-  only); also feeds the plot panel's enum/state-signal rendering.
 - `[ui]` GUI-wide visual restyle: adopt the dark "scope" visual
   language from `plans/plot-panel-reference.html` (the prototype's colour
   variables, monospace type scale, panel chrome, control styling) across
@@ -172,14 +126,12 @@ work or admit it isn't going to happen and delete it.
   has its own ad-hoc styling in `apps/gui/src/index.css`. Approved in
   principle; do it as one deliberate pass once the plot panel's own
   styling has settled, not piecemeal.
-- `[feat]` real in-process writable CAN source — a local virtual bus
-  (Linux `vcan` via socketcan) and/or an in-memory loopback-bus type in
-  `cannet-core` (a `CanFrameSink` paired with a `CanFrameSource`). Phase
-  5's transmit path ships a host-side tx-confirm row plus a
-  `cannet-server --loopback` mode instead, which covers demo and test;
-  this is the honest version for actually exercising a writable bus
-  without hardware. Reconsider when hardware work (Phase 6) is staged or
-  if local TX testing needs more than the loopback server.
+- `[feat]` Linux `vcan` via socketcan as a writable CAN source. Phase 5
+  ships an in-memory loopback bus in `cannet-core` and a
+  `cannet-server --loopback` mode that covers demo and test; an actual
+  local virtual-bus device on Linux is the honest follow-up. Reconsider
+  alongside or after Phase 8 hardware work — PEAK's Linux kernel driver
+  path could go via socketcan too.
 - `[feat]` `cannet-server` (Phase 2+): multi-client support. Phase 2 is
   single-client per server; a second connection is rejected with
   `Error::BUSY`. Lift this when there's a real use case (e.g. a second
@@ -196,10 +148,6 @@ work or admit it isn't going to happen and delete it.
   trait-ify when there's a second implementation. (A chunked / windowed
   store also retires the realloc-stall a growing `Vec` causes at very
   high replay rates — no whole-buffer copy while holding the lock.)
-- `[feat]` `cannet-gui`: explicit "Save Capture…" toolbar action that
-  exports the current `TraceStore` contents to a `.blf` file via
-  `blf_asc::BlfWriter`. The features-doc entry "trace capture:
-  persistable to .blf" lives here.
 - `[feat]` `cannet-gui`: VS Code-style command palette (Cmd/Ctrl+
   Shift+P) for keyboard-driven access to toolbar actions
   (Open BLF…, Add DBC…, Connect / Disconnect, Clear, Go to row,
@@ -209,3 +157,12 @@ work or admit it isn't going to happen and delete it.
   (Cmd/Ctrl+G) — type an absolute index, the trace view scrolls
   there. Especially valuable past ~730k rows where the scaled
   scrollbar's per-pixel resolution gets coarse.
+- `[ui]` `cannet-gui`: **bitfield message visualizer**. Render a CAN
+  message as its raw bits laid out as a grid (8×N cells, one per bit),
+  coloured / lit by current value, with DBC-derived signal overlays
+  showing which bits belong to which signal and named flag labels for
+  single-bit booleans. Most natural as a row-expansion mode in the
+  trace view (toggle between the decoded-signal grid and a bit grid),
+  or as a small standalone panel for watching one ID's status flags.
+  Useful for messages that pack many flags into a byte where the bare
+  decoded-signal list is harder to read at a glance.
