@@ -2,13 +2,13 @@
 //! as the trace store grows so `sample_signals` doesn't re-decode the
 //! same matching frames on every call.
 //!
-//! Each plotted signal gets its own [`SignalCache`]: a parallel pair of
-//! `(frame_index, SamplePoint)` vectors, plus the next trace-store
-//! frame index to scan from. A call to [`SignalCacheStore::slice`]
-//! catches the cache up to the store's current tip (decoding any new
-//! matching frames against the loaded DBCs) and then returns just the
-//! sample slice corresponding to a requested frame-index range via
-//! binary search on the parallel index vector.
+//! Each plotted signal gets its own [`SignalCache`]: a vector of
+//! decoded samples in capture order, plus the next trace-store frame
+//! index to scan from. A call to [`SignalCacheStore::slice`] catches
+//! the cache up to the store's current tip (decoding any new matching
+//! frames against the loaded DBCs) and then returns just the sample
+//! slice within a requested `[from_seconds, to_seconds)` window via
+//! binary search on the samples' `t_seconds`.
 //!
 //! Coupled with the existing per-id index in [`TraceStore::by_id`],
 //! catch-up is `O(Σ new matches)`: at high rate the per-tick work
@@ -32,15 +32,12 @@ use cannet_dbc::Database;
 use crate::signal_sampler::{self, SamplePoint};
 use crate::trace_store::TraceStore;
 
-/// One signal's decoded samples + parallel frame indices, plus the
-/// next trace-store frame index to scan from on the next catch-up.
+/// One signal's decoded samples in capture (frame-index) order, plus
+/// the next trace-store frame index to scan from on the next catch-up.
 struct SignalCache {
-    /// Decoded samples in capture (frame-index) order.
+    /// Decoded samples in capture (frame-index) order. The slice path
+    /// binary-searches on `samples[i].t_seconds`.
     samples: Vec<SamplePoint>,
-    /// `frame_indices[i]` is the trace-store frame index that produced
-    /// `samples[i]`. Used to binary-search a frame-index range into a
-    /// sample-index range.
-    frame_indices: Vec<usize>,
     /// Next trace-store frame index to start the next catch-up scan
     /// from. Advances to `TraceStore::len()` after each catch-up.
     next_index: usize,
@@ -48,11 +45,7 @@ struct SignalCache {
 
 impl SignalCache {
     fn new() -> Self {
-        Self {
-            samples: Vec::new(),
-            frame_indices: Vec::new(),
-            next_index: 0,
-        }
+        Self { samples: Vec::new(), next_index: 0 }
     }
 }
 
@@ -73,9 +66,18 @@ impl SignalCacheStore {
     }
 
     /// Catch the signal's cache up to the trace store's current tip,
-    /// then return the cached samples whose frame index lies in
-    /// `[from_frame, to_frame)`. Empty if no DBC decodes the signal or
-    /// no matching frames have been seen yet.
+    /// then return the cached samples whose `t_seconds` lies in
+    /// `[from_seconds, to_seconds)`. Empty if no DBC decodes the signal
+    /// or no matching frames have been seen yet.
+    ///
+    /// Slicing by time rather than by trace-store frame index matters
+    /// when the caller derives a range from "visible x-axis seconds"
+    /// via an average-rate (`fps`) estimate: under non-uniform per-id
+    /// rates the index drift is tens of seconds, and the user sees the
+    /// returned samples starting well inside the requested left edge
+    /// (the "fencepost" effect on zoomed-in panels). The cache stores
+    /// `t_seconds` per sample anyway, so partitioning by it directly
+    /// removes the conversion entirely.
     ///
     /// The catch-up is `O(new matches since last call)` — fast in
     /// steady state; only the first call on a fresh cache pays for the
@@ -87,8 +89,8 @@ impl SignalCacheStore {
         message_id: u32,
         extended: bool,
         signal_name: &str,
-        from_frame: usize,
-        to_frame: usize,
+        from_seconds: f64,
+        to_seconds: f64,
         store: &TraceStore,
         dbs: &[&Database],
     ) -> Vec<SamplePoint> {
@@ -101,7 +103,7 @@ impl SignalCacheStore {
         if cache.next_index < store_len {
             let new_matches =
                 store.matching_frames_indexed(message_id, extended, cache.next_index, store_len);
-            for (idx, frame) in new_matches {
+            for (_idx, frame) in new_matches {
                 // Try each loaded DBC in priority order, first decode
                 // wins (matches `sample_signals`' existing semantics).
                 for db in dbs {
@@ -114,7 +116,6 @@ impl SignalCacheStore {
                     );
                     if let Some(point) = decoded.into_iter().next() {
                         cache.samples.push(point);
-                        cache.frame_indices.push(idx);
                         break;
                     }
                 }
@@ -125,8 +126,8 @@ impl SignalCacheStore {
         if cache.samples.is_empty() {
             return Vec::new();
         }
-        let lo = cache.frame_indices.partition_point(|&i| i < from_frame);
-        let hi = cache.frame_indices.partition_point(|&i| i < to_frame);
+        let lo = cache.samples.partition_point(|p| p.t_seconds < from_seconds);
+        let hi = cache.samples.partition_point(|p| p.t_seconds < to_seconds);
         // Include two boundary samples on each side of the requested
         // range. One was enough in principle (uPlot will draw the line
         // segment from the off-canvas point to the first in-canvas one
@@ -163,49 +164,54 @@ mod tests {
         Database::parse(TEST_DBC).unwrap()
     }
 
+    /// One second in nanoseconds — keeps the test data using
+    /// whole-second timestamps so the seconds-based slice bounds read
+    /// naturally.
+    const S: u64 = 1_000_000_000;
+
     #[test]
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     fn slice_decodes_lazily_and_returns_only_the_requested_range() {
         let store = TraceStore::new();
         // Mix of id 256 (decodes via the DBC) and id 999 (doesn't).
-        // Frames at store indices 0..6.
+        // Id-256 samples land at t = 0, 2, 3, 5 seconds.
         store.append(dummy(0, 256, vec![1, 0, 0, 0, 0, 0, 0, 0]));
-        store.append(dummy(1_000, 999, vec![0, 0, 0, 0, 0, 0, 0, 0]));
-        store.append(dummy(2_000, 256, vec![2, 0, 0, 0, 0, 0, 0, 0]));
-        store.append(dummy(3_000, 256, vec![3, 0, 0, 0, 0, 0, 0, 0]));
-        store.append(dummy(4_000, 999, vec![0, 0, 0, 0, 0, 0, 0, 0]));
-        store.append(dummy(5_000, 256, vec![4, 0, 0, 0, 0, 0, 0, 0]));
+        store.append(dummy(S, 999, vec![0, 0, 0, 0, 0, 0, 0, 0]));
+        store.append(dummy(2 * S, 256, vec![2, 0, 0, 0, 0, 0, 0, 0]));
+        store.append(dummy(3 * S, 256, vec![3, 0, 0, 0, 0, 0, 0, 0]));
+        store.append(dummy(4 * S, 999, vec![0, 0, 0, 0, 0, 0, 0, 0]));
+        store.append(dummy(5 * S, 256, vec![4, 0, 0, 0, 0, 0, 0, 0]));
         let db = load_dbc();
         let dbs: &[&Database] = &[&db];
         let cache = SignalCacheStore::new();
 
-        // Full window — all four id-256 samples.
-        let all = cache.slice(256, false, "X", 0, 6, &store, dbs);
+        // Full time range — all four id-256 samples.
+        let all = cache.slice(256, false, "X", 0.0, 10.0, &store, dbs);
         assert_eq!(all.iter().map(|p| p.value as u32).collect::<Vec<_>>(), vec![1, 2, 3, 4]);
 
-        // Narrower frame range [2, 5) — id-256 frames at idx 2 and 3
-        // are *in* the range; the boundary-sample widening also
-        // includes the id-256 frames at idx 0 (just before) and idx 5
-        // (just after), giving uPlot the last-known-coming-in value
-        // and the next-going-out value to draw a line across.
-        let mid = cache.slice(256, false, "X", 2, 5, &store, dbs);
+        // Time range [2.5, 4.5): only the id-256 sample at t = 3 is in
+        // range. The ±2 boundary widening also pulls in the samples at
+        // t = 0 / 2 (just before) and t = 5 (just after), giving uPlot
+        // the last-known-coming-in value and the next-going-out value
+        // to draw a line across.
+        let mid = cache.slice(256, false, "X", 2.5, 4.5, &store, dbs);
         assert_eq!(mid.iter().map(|p| p.value as u32).collect::<Vec<_>>(), vec![1, 2, 3, 4]);
 
         // Very narrow zoom that contains zero matches: the slice still
         // returns the boundary samples on each side, so the plot draws
         // a line across the canvas instead of going blank.
-        let narrow = cache.slice(256, false, "X", 1, 2, &store, dbs);
+        let narrow = cache.slice(256, false, "X", 0.5, 1.5, &store, dbs);
         assert_eq!(narrow.iter().map(|p| p.value as u32).collect::<Vec<_>>(), vec![1, 2, 3]);
 
         // Append more — catch-up extends the cache, doesn't redecode
         // what's already there.
-        store.append(dummy(6_000, 256, vec![5, 0, 0, 0, 0, 0, 0, 0]));
-        let all2 = cache.slice(256, false, "X", 0, 7, &store, dbs);
+        store.append(dummy(6 * S, 256, vec![5, 0, 0, 0, 0, 0, 0, 0]));
+        let all2 = cache.slice(256, false, "X", 0.0, 10.0, &store, dbs);
         assert_eq!(all2.iter().map(|p| p.value as u32).collect::<Vec<_>>(), vec![1, 2, 3, 4, 5]);
 
         // Clear drops the cache; the next slice rebuilds it.
         cache.clear();
-        let after = cache.slice(256, false, "X", 0, 7, &store, dbs);
+        let after = cache.slice(256, false, "X", 0.0, 10.0, &store, dbs);
         assert_eq!(after.len(), 5);
     }
 
@@ -216,7 +222,7 @@ mod tests {
         let db = load_dbc();
         let dbs: &[&Database] = &[&db];
         let cache = SignalCacheStore::new();
-        assert!(cache.slice(256, false, "Nope", 0, 1, &store, dbs).is_empty());
-        assert!(cache.slice(42, false, "X", 0, 1, &store, dbs).is_empty());
+        assert!(cache.slice(256, false, "Nope", 0.0, 1.0, &store, dbs).is_empty());
+        assert!(cache.slice(42, false, "X", 0.0, 1.0, &store, dbs).is_empty());
     }
 }
