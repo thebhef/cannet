@@ -175,6 +175,18 @@ interface PlotPanelParams {
   cursorYByArea?: unknown;
   notes?: unknown;
   maxRateHz?: unknown;
+  signalsWidthPx?: unknown;
+}
+
+/** Per-area side-panel width range (pixels). Default and clamps for
+ * the user-resizable column. */
+const SIGNALS_WIDTH_DEFAULT = 220;
+const SIGNALS_WIDTH_MIN = 120;
+const SIGNALS_WIDTH_MAX = 600;
+
+function signalsWidthFromRaw(v: unknown): number {
+  if (typeof v !== "number" || !Number.isFinite(v)) return SIGNALS_WIDTH_DEFAULT;
+  return Math.max(SIGNALS_WIDTH_MIN, Math.min(SIGNALS_WIDTH_MAX, Math.round(v)));
 }
 
 /** A persisted max-rate value, clamped to one of {@link RATE_OPTIONS}. */
@@ -328,6 +340,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
   const [measKeys, setMeasKeys] = useState<MeasurementKey[]>(() => measKeysFromRaw(params?.measKeys));
   const [maxRateHz, setMaxRateHz] = useState(() => maxRateFromRaw(params?.maxRateHz));
   const resampleIntervalMs = Math.max(1, Math.round(1000 / maxRateHz));
+  /** Pixel width of every area's side panel — user-resizable via a
+   * drag handle, persisted in panel params. */
+  const [signalsWidth, setSignalsWidth] = useState(() => signalsWidthFromRaw(params?.signalsWidthPx));
   const [focusedAreaId, setFocusedAreaId] = useState<string>(() => areas[0]?.id ?? "");
   const [catalog, setCatalog] = useState<SignalDescriptorRecord[]>([]);
 
@@ -522,6 +537,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
       cursorYByArea,
       notes,
       maxRateHz,
+      signalsWidthPx: signalsWidth,
     });
   }, [
     api,
@@ -535,6 +551,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     cursorYByArea,
     notes,
     maxRateHz,
+    signalsWidth,
   ]);
 
   const refreshCatalog = useCallback(() => {
@@ -780,6 +797,10 @@ export function PlotPanel(props: IDockviewPanelProps) {
               live={live}
               followLive={followLive}
               resampleIntervalMs={resampleIntervalMs}
+              signalsWidth={signalsWidth}
+              onResizeSignalsWidth={(w) =>
+                setSignalsWidth(Math.max(SIGNALS_WIDTH_MIN, Math.min(SIGNALS_WIDTH_MAX, w)))
+              }
               cursorMode={cursorMode}
               cursorXa={cursorX.a}
               cursorXb={cursorX.b}
@@ -980,6 +1001,12 @@ interface PlotAreaProps {
   followLive: boolean;
   /** Min spacing between live re-samples (ms) — `1000 / maxRateHz`. */
   resampleIntervalMs: number;
+  /** Pixel width of this area's right-hand side panel (signal rows
+   * + headings). Set from a drag handle between the canvas and the
+   * side panel. */
+  signalsWidth: number;
+  /** Called as the user drags the canvas/side-panel divider. */
+  onResizeSignalsWidth: (px: number) => void;
   cursorMode: CursorMode;
   cursorXa: number | null;
   cursorXb: number | null;
@@ -1069,6 +1096,8 @@ function PlotArea(p: PlotAreaProps) {
     live,
     followLive,
     resampleIntervalMs,
+    signalsWidth,
+    onResizeSignalsWidth,
     cursorMode,
     cursorXa,
     cursorXb,
@@ -2042,7 +2071,30 @@ function PlotArea(p: PlotAreaProps) {
       }}
     >
       <div className="plot-area-canvas" ref={canvasRef} />
-      <div className="plot-area-signals">
+      <div
+        className="plot-area-resizer"
+        role="separator"
+        aria-orientation="vertical"
+        title="drag to resize the side panel"
+        onMouseDown={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const startX = e.clientX;
+          const startWidth = signalsWidth;
+          const onMove = (ev: MouseEvent) => {
+            // Side panel is right of the canvas, so dragging left
+            // *widens* the side panel: width = startWidth - delta.
+            onResizeSignalsWidth(startWidth - (ev.clientX - startX));
+          };
+          const onUp = () => {
+            window.removeEventListener("mousemove", onMove);
+            window.removeEventListener("mouseup", onUp);
+          };
+          window.addEventListener("mousemove", onMove);
+          window.addEventListener("mouseup", onUp);
+        }}
+      />
+      <div className="plot-area-signals" style={{ flexBasis: `${signalsWidth}px` }}>
         <div className="plot-area-signals-head">
           <span
             className="plot-area-label"
