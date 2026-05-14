@@ -9,7 +9,6 @@ High-performance CAN traffic analyzer.
   and a by-id view (one row per arbitration id holding just its latest
   frame); both are *views* over a trace (see "trace capture" below)
 - filtering, which can be inserted into trace views
-- bitfield views, with flag indicators per signal
 - ability to dock and consistently size/resize
 - transmit control panels
 
