@@ -404,15 +404,25 @@ fn list_signals(state: State<'_, AppState>) -> Vec<SignalDescriptorRecord> {
 /// keep the lock order (DBC ⊃ nothing) consistent with the other
 /// commands.
 #[tauri::command]
-#[allow(clippy::unused_async)]
+#[allow(clippy::unused_async, clippy::too_many_arguments)]
 async fn sample_signals(
     app: AppHandle,
     from_index: u32,
     window_end: u32,
+    from_seconds: Option<f64>,
+    to_seconds: Option<f64>,
     signals: Vec<SignalQuery>,
     max_points: u32,
 ) -> tauri::ipc::Response {
-    let sample = sample_signals_inner(&app, from_index, window_end, &signals, max_points);
+    let sample = sample_signals_inner(
+        &app,
+        from_index,
+        window_end,
+        from_seconds,
+        to_seconds,
+        &signals,
+        max_points,
+    );
     tauri::ipc::Response::new(encode_signals_sample(&sample))
 }
 
@@ -464,6 +474,8 @@ fn sample_signals_inner(
     app: &AppHandle,
     from_index: u32,
     window_end: u32,
+    from_seconds: Option<f64>,
+    to_seconds: Option<f64>,
     signals: &[SignalQuery],
     max_points: u32,
 ) -> SignalsSample {
@@ -476,6 +488,25 @@ fn sample_signals_inner(
     let (from_ts, last_ts) = state
         .trace_store
         .frame_timestamps(from_index as usize, window_end as usize);
+    // Time bounds for the per-signal slice. When the caller didn't
+    // supply them (first fetch on a fresh panel — it doesn't have a
+    // base / fps yet), fall back to the window's actual timestamps so
+    // the slice still covers the full window. Sending the times
+    // directly (rather than reusing `from_index` / `window_end` to
+    // partition the cache by frame index) is what fixes the "fencepost"
+    // offset on zoomed-in panels: the frontend's `frame_index =
+    // floor(t * fps)` is biased by the average-rate approximation, and
+    // the returned samples ended up tens of seconds inside the
+    // requested left edge whenever the per-id rate wasn't uniform.
+    let slice_from = from_seconds.unwrap_or_else(|| from_ts.map_or(f64::MIN, ns_to_seconds));
+    let slice_to = to_seconds.unwrap_or_else(|| {
+        // `last_ts` is the timestamp of the *last* frame in the window
+        // — the cache slice's right edge is exclusive, so widen by one
+        // second so that last sample isn't lost. (One tick of float
+        // precision would be cleaner but at 1 e9 ns scale the next
+        // representable float is multiple ns away.)
+        last_ts.map_or(f64::MAX, |ns| ns_to_seconds(ns) + 1.0)
+    });
     // Catch the per-signal decoded-sample caches up to the trace
     // store's current tip and pull the slice each plot wants. Catch-up
     // is `O(new matches)` rather than `O(matches in window)`, which is
@@ -490,8 +521,8 @@ fn sample_signals_inner(
                 q.message_id,
                 q.extended,
                 &q.signal_name,
-                from_index as usize,
-                window_end as usize,
+                slice_from,
+                slice_to,
                 &state.trace_store,
                 &db_refs,
             )

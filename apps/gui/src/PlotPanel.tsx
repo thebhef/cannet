@@ -1068,13 +1068,6 @@ interface AreaCache {
    * fetch; `null` until the first non-empty fetch completes. */
   fps: number | null;
   byKey: Map<string, { t: number[]; v: number[] }>;
-  /** Per-signal observed `{lo, hi}` value range across every fetch
-   * into this cache anchor — used by the auto-normalisation. Only
-   * *widens*, never shrinks, so the rendered line doesn't slide
-   * vertically every tick as new (slightly different) min/max values
-   * arrive from a fresh decimation. Reset when the cache anchor
-   * changes (signal set, buffer clear). */
-  traceRanges: Map<string, { lo: number; hi: number }>;
   /** `${visStart}:${visEnd}:${maxPoints}` — skip the fetch if it
    * matches what we last asked for. */
   fetchKey: string;
@@ -1131,6 +1124,16 @@ function PlotArea(p: PlotAreaProps) {
   const presentRef = useRef<Map<string, number | null>>(new Map());
   const resampleBusyRef = useRef(false);
   const cacheRef = useRef<AreaCache | null>(null);
+  /** Per-trace auto-normalisation latch (signal key → [lo, hi] of raw
+   * values seen). Lives outside `cacheRef` because the cache gets re-
+   * anchored every time `lr.winStart` slides under a bounded history
+   * buffer — which on a live capture is every tick. Keeping the latch
+   * in the cache caused it to be recomputed from the current visible
+   * window each tick (signal "moves around" because the [lo, hi]
+   * keeps shrinking as old peaks scroll off-screen). Survives anchor
+   * resets; reset only on `resetYEpoch` (Fit Data) and pruned to the
+   * currently-displayed signal set on signal changes. */
+  const traceRangesRef = useRef<Map<string, { lo: number; hi: number }>>(new Map());
   /** One-shot: have we already done the post-mount rebuild that
    * compensates for restored-from-project panels where the canvas
    * isn't laid out yet at uPlot's first construction? */
@@ -1250,6 +1253,20 @@ function PlotArea(p: PlotAreaProps) {
       // session buffer was cleared).
       const sk = signals.map(signalRefKey).join("|");
       let cache = cacheRef.current;
+      // Drop latch entries for signals that are no longer in this area
+      // (cleanup on the same pass so removed-then-readded signals get
+      // a fresh latch from current data).
+      if (cache && cache.signalSetKey !== sk) {
+        const stillPresent = new Set(signals.map(signalRefKey));
+        for (const k of Array.from(traceRangesRef.current.keys())) {
+          if (!stillPresent.has(k)) traceRangesRef.current.delete(k);
+        }
+      }
+      // The session buffer was just cleared — the value-range latch
+      // built up from the previous capture is stale; drop it.
+      if (cache && lr.winEnd < cache.lastWinEnd) {
+        traceRangesRef.current.clear();
+      }
       if (
         !cache ||
         cache.anchorStart !== lr.winStart ||
@@ -1263,41 +1280,34 @@ function PlotArea(p: PlotAreaProps) {
           lastT: null,
           fps: null,
           byKey: new Map(),
-          traceRanges: new Map(),
           fetchKey: "",
           lastWinEnd: lr.winEnd,
         };
         cacheRef.current = cache;
       }
 
-      // Compute the visible frame range. Without an fps estimate yet
-      // (first tick), fetch the full window — that also establishes
-      // `cache.base = ts(winStart)`. With an fps estimate, scope to the
-      // visible x range so a zoomed-in panel asks for just that slice
-      // (full detail) and a long-running show-all panel still gets the
-      // whole window decimated host-side.
+      // The fetch's window anchor is always the trace window itself
+      // (`[winStart, winEnd)`); the visible-x slice is expressed as
+      // absolute-seconds bounds and applied host-side against the
+      // cached samples' own timestamps. Sending time bounds (rather
+      // than frame indices computed via `floor(xMin * fps)`) avoids
+      // the average-rate approximation error that visibly trims the
+      // left edge of zoomed-in panels by tens of seconds when the
+      // per-id rate isn't uniform.
       const xMinReq = xSyncRef.current.xMin;
       const xMaxReq = xSyncRef.current.xMax;
-      let visStart = lr.winStart;
-      let visEnd = lr.winEnd;
-      if (
-        cache.fps != null &&
-        cache.fps > 0 &&
-        cache.base != null &&
-        xMinReq != null &&
-        xMaxReq != null &&
-        xMaxReq > xMinReq
-      ) {
-        const winFrames = lr.winEnd - lr.winStart;
-        const sStart = Math.max(0, Math.floor(xMinReq * cache.fps));
-        const sEnd = Math.min(winFrames, Math.ceil(xMaxReq * cache.fps));
-        visStart = lr.winStart + sStart;
-        visEnd = lr.winStart + sEnd;
+      const visStart = lr.winStart;
+      const visEnd = lr.winEnd;
+      let fromSeconds: number | null = null;
+      let toSeconds: number | null = null;
+      if (cache.base != null && xMinReq != null && xMaxReq != null && xMaxReq > xMinReq) {
+        fromSeconds = xMinReq + cache.base;
+        toSeconds = xMaxReq + cache.base;
       }
 
       const canvasW = canvasRef.current?.clientWidth || 600;
       const maxPts = Math.max(MIN_DECIMATION_POINTS, Math.round(canvasW * 2));
-      const fetchKey = `${visStart}:${visEnd}:${maxPts}`;
+      const fetchKey = `${visStart}:${visEnd}:${fromSeconds}:${toSeconds}:${maxPts}`;
 
       // Same request as last successful fetch — nothing to do, just
       // keep the follow-live edge fed and the rate readout ticking.
@@ -1333,6 +1343,8 @@ function PlotArea(p: PlotAreaProps) {
       const buf = await invoke<ArrayBuffer>("sample_signals", {
         fromIndex: visStart,
         windowEnd: visEnd,
+        fromSeconds,
+        toSeconds,
         signals: signals.map((s) => ({
           messageId: s.messageId,
           extended: s.extended,
@@ -1402,20 +1414,18 @@ function PlotArea(p: PlotAreaProps) {
       //
       // Per-trace range for the auto-normalisation. Behaviour depends
       // on follow-live:
-      // * follow-live ON: **latched** — set once from the first
-      //   non-empty fetch and never updated. Latching matters because
-      //   widening the range on a new extreme arithmetically moves
-      //   *every* previously-rendered point's normalised position —
-      //   `(v - lo) / (hi - lo)` returns a different value for the
-      //   same raw `v` once `lo`/`hi` change — visible as the high
-      //   / low lines wobbling vertically every tick. The trade-off:
-      //   genuine new extremes clip off the canvas top/bottom until
-      //   the user manually re-establishes the range (closing /
-      //   re-adding the signal, or toggling follow-live off and on).
+      // * follow-live ON: **widen-only latch** — new extremes push
+      //   `lo` down or `hi` up, but values within the existing range
+      //   leave it alone. Lives in `traceRangesRef`, which survives
+      //   cache re-anchors (the cache resets every tick under a
+      //   sliding history buffer; the latch must not).
       // * follow-live OFF (user has zoomed/panned): recomputed from
       //   the visible data so zoomed-in detail fills the canvas.
+      // The latch is reset on Fit Data (`resetYEpoch`) and pruned to
+      // the currently-displayed signal set on signal-set changes.
+      const ranges = traceRangesRef.current;
       if (!lr.followLive) {
-        cache.traceRanges = new Map();
+        ranges.clear();
       }
       signals.forEach((s, i) => {
         const key = signalRefKey(s);
@@ -1428,20 +1438,28 @@ function PlotArea(p: PlotAreaProps) {
           if (v > hi) hi = v;
         }
         if (!Number.isFinite(lo) || !Number.isFinite(hi)) return;
-        const existing = cache!.traceRanges.get(key);
-        // Only treat the latch as final once it's non-degenerate. A
-        // first fetch with just one or two same-value samples (common
-        // right after a Clear) would otherwise lock in `lo === hi`,
-        // making the normalisation divide by zero and nothing render
-        // until the cache anchor next resets. Replace a degenerate
-        // existing latch with whatever we have now; if the new value
-        // is also degenerate it gets replaced on the next tick.
-        if (existing && existing.hi > existing.lo) return;
-        cache!.traceRanges.set(key, { lo, hi });
+        const existing = ranges.get(key);
+        // Widen-only when the latch already covers a non-degenerate
+        // range: the rendered position of every previously-drawn
+        // point only changes when `lo`/`hi` change, so leaving them
+        // alone when no new extreme arrives keeps the line still.
+        // A degenerate (`lo === hi`) latch — common right after a
+        // Clear when only one or two same-valued samples have
+        // arrived — is replaced wholesale, otherwise the divide-by-
+        // zero in the normaliser leaves nothing on screen.
+        if (existing && existing.hi > existing.lo) {
+          const newLo = Math.min(existing.lo, lo);
+          const newHi = Math.max(existing.hi, hi);
+          if (newLo !== existing.lo || newHi !== existing.hi) {
+            ranges.set(key, { lo: newLo, hi: newHi });
+          }
+          return;
+        }
+        ranges.set(key, { lo, hi });
       });
       const displaySeries: Series[] = seriesRel.map((s, i) => {
         if (s.v.length === 0) return s;
-        const range = cache!.traceRanges.get(signalRefKey(signals[i]));
+        const range = ranges.get(signalRefKey(signals[i]));
         const out = new Array<number>(s.v.length);
         if (range != null && range.hi > range.lo) {
           const span = range.hi - range.lo;
@@ -1983,7 +2001,7 @@ function PlotArea(p: PlotAreaProps) {
   // Panel asked us to refit y — drop the per-trace normalisation range
   // so the next tick latches it fresh from current data.
   useEffect(() => {
-    if (cacheRef.current) cacheRef.current.traceRanges = new Map();
+    traceRangesRef.current.clear();
   }, [resetYEpoch]);
 
   // Show / hide series in place when the per-signal `hidden` flags
@@ -2019,7 +2037,7 @@ function PlotArea(p: PlotAreaProps) {
    * changing tick-to-tick. */
   const rangeFor = (key: string): { lo: number; hi: number } | null => {
     void valueTick;
-    return cacheRef.current?.traceRanges.get(key) ?? null;
+    return traceRangesRef.current.get(key) ?? null;
   };
   /** Cache x-origin (`ts(winStart)` in absolute seconds) — diagnostic.
    * If this stays the same across a Clear, the cache anchor didn't
