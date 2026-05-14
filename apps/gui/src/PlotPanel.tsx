@@ -1553,34 +1553,7 @@ function PlotArea(p: PlotAreaProps) {
       cursor: { drag: { x: false, y: false } },
       axes: [
         { ...axisCommon, label: "time (s)", labelSize: 16, size: 34 },
-        {
-          ...axisCommon,
-          size: 52,
-          // Hard-pin the y-axis tick positions to a fixed count. uPlot's
-          // default tick incrementer picks an increment whose pixel
-          // spacing is >= `space` (default 30 px); for a y range of
-          // [0, 1] that means 5 ticks at ~30 px spacing flips to 3 ticks
-          // at ~50 px the moment the canvas's usable height crosses
-          // ~120 px in either direction. Live streaming nudges the
-          // canvas height by a sub-pixel as the toolbar's text-width
-          // shifts (rate / perf / cache-size readouts), and the user
-          // sees the y-axis tick layout wobbling between "0 / 0.5 / 1"
-          // and "0 / 0.25 / 0.5 / 0.75 / 1" on every update. Returning a
-          // fixed 5-split layout makes the choice scale-independent and
-          // pinning the tick count.
-          splits: (_u, _axisIdx, scaleMin, scaleMax) => {
-            if (
-              !Number.isFinite(scaleMin) ||
-              !Number.isFinite(scaleMax) ||
-              scaleMax <= scaleMin
-            ) {
-              return [scaleMin, scaleMax];
-            }
-            const n = 5;
-            const step = (scaleMax - scaleMin) / (n - 1);
-            return Array.from({ length: n }, (_, i) => scaleMin + i * step);
-          },
-        },
+        { ...axisCommon, size: 52 },
       ],
       series: [
         {},
