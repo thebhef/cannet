@@ -127,17 +127,15 @@ impl SignalCacheStore {
         }
         let lo = cache.frame_indices.partition_point(|&i| i < from_frame);
         let hi = cache.frame_indices.partition_point(|&i| i < to_frame);
-        // Include one boundary sample on each side of the range. With
-        // a narrow zoom (visible-range frame count smaller than the
-        // signal's inter-sample period), the strict `[lo..hi)` slice
-        // can be empty even though there's data either side — uPlot
-        // would have nothing to draw across the canvas. The boundary
-        // samples give it the last-known value coming in from the
-        // left and the next sample heading out on the right; uPlot's
-        // x-scale is pinned to the visible range so they just get
-        // clipped to the canvas edge, with the line drawn across.
-        let lo_inclusive = lo.saturating_sub(1);
-        let hi_inclusive = std::cmp::min(cache.samples.len(), hi.saturating_add(1));
+        // Include two boundary samples on each side of the requested
+        // range. One was enough in principle (uPlot will draw the line
+        // segment from the off-canvas point to the first in-canvas one
+        // and clip at the edge), but in practice users have reported
+        // gaps near the left/right edges at zoom-in — widening to 2
+        // is essentially free and gives the renderer more line to
+        // anchor against.
+        let lo_inclusive = lo.saturating_sub(2);
+        let hi_inclusive = std::cmp::min(cache.samples.len(), hi.saturating_add(2));
         cache.samples[lo_inclusive..hi_inclusive].to_vec()
     }
 }
@@ -194,10 +192,10 @@ mod tests {
         assert_eq!(mid.iter().map(|p| p.value as u32).collect::<Vec<_>>(), vec![1, 2, 3, 4]);
 
         // Very narrow zoom that contains zero matches: the slice still
-        // returns one boundary sample on each side, so the plot draws
+        // returns the boundary samples on each side, so the plot draws
         // a line across the canvas instead of going blank.
         let narrow = cache.slice(256, false, "X", 1, 2, &store, dbs);
-        assert_eq!(narrow.iter().map(|p| p.value as u32).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(narrow.iter().map(|p| p.value as u32).collect::<Vec<_>>(), vec![1, 2, 3]);
 
         // Append more — catch-up extends the cache, doesn't redecode
         // what's already there.

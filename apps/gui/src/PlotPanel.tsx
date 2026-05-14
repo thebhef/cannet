@@ -1999,6 +1999,16 @@ function PlotArea(p: PlotAreaProps) {
     void valueTick;
     return cacheRef.current?.base ?? null;
   };
+  /** Leftmost and rightmost relative-t values cached for `key` —
+   * diagnostic for whether the cache covers the visible x range. If
+   * the line stops short of an edge, the cache's range here will
+   * show why. */
+  const cacheTRangeFor = (key: string): { first: number; last: number } | null => {
+    void valueTick;
+    const s = cacheRef.current?.byKey.get(key);
+    if (!s || s.t.length === 0) return null;
+    return { first: s.t[0], last: s.t[s.t.length - 1] };
+  };
   const valueTitle = cursorXa != null ? "value at cursor A" : hoverX != null ? "value at crosshair" : "latest value";
   // With both X cursors placed: Δ value (A − B), shown as a second line
   // under the per-signal value.
@@ -2135,13 +2145,24 @@ function PlotArea(p: PlotAreaProps) {
                   </span>
                   {(() => {
                     const r = rangeFor(key);
-                    if (r == null) return null;
+                    const t = cacheTRangeFor(key);
+                    if (r == null && t == null) return null;
                     return (
                       <small
                         className="plot-signal-range"
-                        title="auto-normalisation range (lo … hi). Latched while follow-live is on so the line doesn't shift vertically when new extremes arrive."
+                        title="y-range: auto-normalisation latch (lo … hi). t-range: leftmost / rightmost cached sample's relative time (seconds). Useful for diagnosing a line that doesn't reach the canvas edges — if t doesn't span the visible x range, the cache is missing data there."
                       >
-                        [{fmtVal(r.lo)} … {fmtVal(r.hi)}]
+                        {r != null ? (
+                          <>
+                            y[{fmtVal(r.lo)} … {fmtVal(r.hi)}]
+                          </>
+                        ) : null}
+                        {t != null ? (
+                          <>
+                            {" "}
+                            t[{t.first.toFixed(2)} … {t.last.toFixed(2)}]
+                          </>
+                        ) : null}
                       </small>
                     );
                   })()}
