@@ -695,11 +695,29 @@ header {
 }
 
 .plot-area-signals {
-  flex: 0 0 13rem;
+  /* `flex-basis` is set inline from the user-resized pixel width. */
+  flex: 0 0 220px;
   border-left: 1px solid #1f2630;
   background: #0d1114;
   overflow-y: auto;
   font-size: 0.78rem;
+}
+
+/* Drag handle between the canvas and the side panel — narrow column
+ * the user grabs to widen the side panel (useful when the per-signal
+ * diagnostic readouts overflow). */
+.plot-area-resizer {
+  flex: 0 0 4px;
+  cursor: col-resize;
+  background: transparent;
+  /* Catch hovers a few pixels either side of the actual handle so it's
+   * easier to grab without precise aiming. */
+  margin: 0 -2px;
+  z-index: 1;
+}
+.plot-area-resizer:hover,
+.plot-area-resizer:active {
+  background: #2c3444;
 }
 
 .plot-area-signals-head {
