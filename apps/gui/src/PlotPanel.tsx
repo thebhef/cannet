@@ -1390,7 +1390,6 @@ function PlotArea(p: PlotAreaProps) {
       }
       signals.forEach((s, i) => {
         const key = signalRefKey(s);
-        if (cache!.traceRanges.has(key)) return;
         const ser = seriesRel[i];
         if (ser.v.length === 0) return;
         let lo = Infinity;
@@ -1400,15 +1399,34 @@ function PlotArea(p: PlotAreaProps) {
           if (v > hi) hi = v;
         }
         if (!Number.isFinite(lo) || !Number.isFinite(hi)) return;
+        const existing = cache!.traceRanges.get(key);
+        // Only treat the latch as final once it's non-degenerate. A
+        // first fetch with just one or two same-value samples (common
+        // right after a Clear) would otherwise lock in `lo === hi`,
+        // making the normalisation divide by zero and nothing render
+        // until the cache anchor next resets. Replace a degenerate
+        // existing latch with whatever we have now; if the new value
+        // is also degenerate it gets replaced on the next tick.
+        if (existing && existing.hi > existing.lo) return;
         cache!.traceRanges.set(key, { lo, hi });
       });
       const displaySeries: Series[] = seriesRel.map((s, i) => {
         if (s.v.length === 0) return s;
         const range = cache!.traceRanges.get(signalRefKey(signals[i]));
-        const span = range != null && range.hi > range.lo ? range.hi - range.lo : 0;
-        if (span <= 0 || range == null) return s;
         const out = new Array<number>(s.v.length);
-        for (let j = 0; j < s.v.length; j++) out[j] = (s.v[j] - range.lo) / span;
+        if (range != null && range.hi > range.lo) {
+          const span = range.hi - range.lo;
+          for (let j = 0; j < s.v.length; j++) out[j] = (s.v[j] - range.lo) / span;
+        } else {
+          // Range not established yet (no fetch with data yet) or
+          // degenerate (all values equal so far). Render the line as
+          // a centreline at y = 0.5 so the signal is *visible* — the
+          // normalisation will switch to data-driven once a real
+          // range is available. Without this fallback the raw values
+          // get drawn against the y = [0, 1] pin and clipped to
+          // nothing.
+          for (let j = 0; j < s.v.length; j++) out[j] = 0.5;
+        }
         return { t: s.t, v: out };
       });
       const merged = mergeSeries(displaySeries) as uPlot.AlignedData;
