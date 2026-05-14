@@ -1125,25 +1125,90 @@ Exit criteria:
   `plans/technology-inventory.md` records any `blf_asc` upstream
   contribution needed for marker write support.
 
-## Phases 10 and beyond
+## Phase 10 — Command Palette + Goto Framework
 
-Scoped at outline level only; each is detailed when it becomes the
-current phase. In rough order:
+A generalised command model plus a VS Code-style command palette
+(Cmd/Ctrl+Shift+P) that surfaces it. Commands carry an id, a label, an
+optional category, and an optional context-requirement (e.g. "focused
+panel is a plot"); built-in commands include go-to-panel-instance, go
+to a specific time in a trace, set a plot's visible time range, import
+a DBC, connect / disconnect, Save Capture, and so on. Part of the
+phase is the explicit decision on what belongs in the palette (broad,
+project-wide, keyboard-accessible) vs. what stays local-only
+(right-click menus, panel toolbars) — the model has to be deliberate
+about that boundary. The "Go to row…" backlog item folds in as a
+single `goto.traceRow` command.
 
-- **Phase 10 — Perf Baseline.** Profiling procedure, baseline numbers
-  for the Phase 8 build, plus the underlying perf work the baseline
-  motivates (two-tier sample cache, `CanFramePayload` inline buffer,
-  time-to-frame mapping, `TraceStore` disk-spill).
-- **Phase 11 — CANopen.** EDS ingestion + SDO / PDO decoding.
-- **Phase 12 — Plot Panel Refinements.** Triggers, math channels,
-  per-trace y offset / gain / log scale, CSV / image export,
-  drag-signal-in, drag-area-between-panels, colour picker.
-- **Phase 13 — Trace View Rework.** Virtualizer rework, auto-scroll
-  race fix, decoded-signals-as-lines, by-ID paused-snapshot tighten,
-  Go-to-row, command palette.
-- **Phase 14 — Rest-of-Bus Simulation + CRC / Sequence.** Live-values
-  gridview that transmits rest-of-bus, CRC + sequence-count
-  calculation in arbitrary fields.
-- **Phase 15 — Cross-Cutting Polish.** GUI-wide dark "scope" restyle,
-  dock / undock as separate OS window, FPS readout, multi-client
-  server, plot/trace divider fix, the remaining small UX items.
+## Phase 11 — Signals, Drag/Drop & Trace Signal Display
+
+Make individual signals first-class objects you can grab and move
+around. A new **signal view** panel hosts a user-chosen set of signals
+with their latest values. **Drag / drop** of signals is enabled across
+the GUI: trace ↔ plot, trace ↔ trace, plot ↔ signal view, DBC panel →
+anywhere. A new **DBC panel** replaces today's project-panel DBC list
+(which doesn't scale past a few large databases) and is where signals
+are discovered and dragged from. The plot panel grows a **per-trace
+colour picker** (right-click swatch → colour dialog). The trace view's
+expanded-row decoded signals render as **inline lines under the
+message row** rather than the expand-to-show grid — the trace-side
+counterpart to "signals are first-class".
+
+## Phase 12 — Performance Profiling Baseline
+
+Profiling procedure that covers all three tiers — client (GUI),
+server, and the wire between them. Metrics (frame throughput,
+end-to-end latency from server ingest to GUI render, per-frame CPU
+cost on each side, memory growth under sustained replay,
+dropped-frame counts), instrumentation (in-process counters / timers,
+sampling profiler hooks), and a reproducible workload (likely a
+standard BLF replay at a known rate). Baseline numbers checked in
+against the Phase 8 build for each supported source (BLF replay + at
+least one hardware vendor). Pulls in the perf backlog items the
+baseline tends to motivate: `CanFramePayload` inline buffer, two-tier
+per-signal sample cache, precise time → frame-index mapping for the
+plot visible-range fetch, `TraceStore` disk-spill for long sessions.
+
+## Phase 13 — CANopen
+
+EDS ingestion (CANopen Electronic Data Sheet — library TBD when this
+phase becomes current) and SDO / PDO decoding on top of the Phase 5
+value-table machinery.
+
+## Phase 14 — Rest-of-Bus Simulation + CRC / Sequence
+
+**Rest-of-bus simulation**: a gridview that holds a configurable set
+of ids with live signal values and transmits them on a cadence — the
+client side of "simulate the rest of the network", the TX counterpart
+of the by-ID panel. **CRC + sequence-count calculation in arbitrary
+fields** of a CAN message — transmit-side helper for messages that
+carry their own integrity fields (and decode-side verification
+where useful).
+
+## Phase 15 — Plot Panel Refinements
+
+The plot-panel feature tail that didn't need the bigger architectural
+lifts of Phase 11. **Triggers** (edge / level / value-match on a
+chosen signal that freeze the view and emit an event marker —
+oscilloscope trigger proper; the event-line rendering already exists,
+the trigger engine doesn't). **Math channels** (derived signals
+computed from other signals — also useful to the transmit panel and a
+future scripting surface, so it may outgrow plotting). **Manual
+per-trace y** (offset / gain / log scale, overriding the auto-norm
+that ships today). **CSV / image export** of the visible window or
+cursor span. **Drag a whole plot area** (not just a signal) between
+plot panels.
+
+## Phase 16 — Cross-Cutting Polish
+
+The remaining small UX and infrastructure items that don't deserve
+their own phase: the **trace virtualizer rework** (real windowed
+virtualizer with a synthetic-height spacer vs. the current scaled
+approach), the **auto-scroll re-pin race** under fast streams, the
+**by-ID paused-snapshot tighten** (return latest of each id within
+`[since, end)` rather than reading the global latest index), a
+**GUI-wide dark "scope" restyle**, **dock / undock** a panel as a
+separate OS window, a **global UI FPS / responsiveness readout**,
+**`cannet-server` multi-client** support, the **plot vs trace divider
+drag** fix, and the **BLF f64-timestamp precision** documentation note
+(if it hasn't already been folded into a user-facing surface message
+by then).
