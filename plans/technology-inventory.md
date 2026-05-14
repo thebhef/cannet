@@ -71,6 +71,31 @@ and the license / platform constraints we need to be aware of.
   virtualizer (`apps/gui/src/TraceView.tsx`) that caps the scroll
   container at 16M px and maps scrollTop fractionally to absolute
   row index. ~120 lines, no external dep.
+- **`@xyflow/react`** (formerly `react-flow`, MIT) — `proposed` for
+  Phase 6's project graph view. Node / edge model with drag-to-create-
+  edge, custom node renderers, controllable state, and a serialisable
+  layout — fits the "lean on a vetted library for failure-mode-rich
+  UI" call from `CLAUDE.md` (graph interaction is the kind of work
+  that compounds badly when hand-rolled). The logical model lives in
+  the project schema; the view only stores viewport + node positions
+  in dockview `params`, so the library boundary is thin.
+  Alternatives considered (all permissive):
+  - **`cytoscape.js`** + React wrapper — `rejected`. Graph-algorithms-
+    first; weak React integration story (glue rather than first-class).
+  - **`d3-force`** / `d3-zoom` + SVG hand-roll — `rejected`. Viable
+    for very small graphs, but rebuilds what `@xyflow/react` already
+    gives us once the project gains multiple buses / DBCs / filters /
+    consumers.
+  - **`reaflow`, `reagraph`, `nivo/network`** — `rejected`. Smaller
+    bus factor and missing the editing affordances (drag-to-create-
+    edge, custom node UIs) we need.
+- **Filter predicate expression DSL** — `rejected` (Phase 6
+  evaluation). Filter predicates stay structured JSON, edited by the
+  graph view's filter-node UI; `serde_json::Value` already round-trips
+  in the project file (no new dep). A small text DSL parsed by
+  `nom`/`chumsky`/`pest` would be friendlier for power users but adds
+  a parser dep plus an autocomplete / error-reporting problem. Revisit
+  if the structured editor turns out to be clunky in practice.
 - **Electron** — `proposed (fallback)`. Documented fallback if Tauri's
   per-OS WebView fragmentation blocks us. Same JS frontend, swap the host
   shell. Trade-off: ~150 MB bundle, heavier RAM, Node backend instead of
@@ -163,11 +188,75 @@ without reshaping callers.
   `cannet-server` CLI (positional BLF path, `--bind` address). The
   Rust ecosystem standard for derive-macro CLI parsing; small
   enough not to be controversial.
+- **`tracing`** + **`tracing-subscriber`** (Rust, MIT) — `proposed`
+  (Phase 7). The de-facto Rust structured-logging crates; likely
+  already in the dependency graph transitively (tonic, tokio). Phase 7
+  uses them directly: a `system_log` module exposes `info!` / `warn!`
+  / `error!` macros that fan out events into both a bounded in-process
+  ring (consumed by the System Messages panel via Tauri IPC) and
+  `tracing-subscriber`'s normal `fmt` layer (so dev stderr logs still
+  work). No new dependency in net terms once the transitive pull is
+  promoted; recorded here because the use is now direct.
 
 ### Hardware Drivers
 
-_Populated when Vector / Kvaser / PEAK support lands. May include vendor SDKs
-and/or community wrappers (e.g. `python-can`) depending on the client._
+- **`python-can`** (Apache-2.0; depends on LGPL-3.0 vendor wrappers
+  internally for some backends) — `proposed` (Phase 8). Used inside
+  the auto-launched `cannet-python-can` sidecar process to enumerate
+  and drive Vector, Kvaser, and PEAK channels through one library.
+  The single sidecar is the canonical Phase-8 shape; the wire protocol
+  is the universal driver contract, so adding a second sidecar later
+  (Rust-native, different driver, etc.) needs no protocol change.
+  LGPL diligence: the sidecar is its own process with its own
+  user-replaceable venv (see `uv` below) and a small internal driver
+  interface, so a user can swap `python-can` out without touching
+  `cannet-*` code. `servers/LICENSING.md` records the analysis.
+- **`uv`** (Rust, Apache-2.0 / MIT) — `proposed` (Phase 8). Astral's
+  Python package & project manager, distributed as a single
+  self-contained binary; manages venvs, installs Python itself if
+  needed. Bundled with the GUI per supported OS; `uv sync`
+  materialises the sidecar's venv lazily on first launch, `uv run`
+  starts the sidecar. Lets users replace the default driver library
+  in-place (`uv pip install …`) without rebuilding the app. Fallback
+  if Astral disappears is `python -m venv` + `pip`, a recoverable
+  swap.
+- **`grpcio`** + **`grpcio-tools`** (Python, Apache-2.0) — `proposed`
+  (Phase 8). Python implementation of gRPC; generates stubs from
+  `cannet-wire`'s existing `.proto` so the sidecar speaks the same
+  protocol as `cannet-server` and `cannet-client`. Mainstream, no
+  realistic alternative if we want gRPC clients in Python.
+- **Vector XL Driver Library** — `proposed` (Phase 8) as a
+  *runtime, user-installed* dependency. Vector's proprietary,
+  freely redistributable for use with Vector hardware. Windows is the
+  first-class target; Linux is partial. Not bundled with the GUI;
+  installed by the user per Vector's own instructions. Wrapped via
+  `python-can`'s `vector` backend.
+- **Kvaser CANlib** — `proposed` (Phase 8) as a *runtime, user-
+  installed* dependency. Kvaser's proprietary, freely redistributable.
+  Cross-platform (Windows, Linux; macOS partial). Wrapped via
+  `python-can`'s `kvaser` backend.
+- **PEAK PCAN-Basic** — `proposed` (Phase 8) as a *runtime, user-
+  installed* dependency. PEAK's proprietary, freely redistributable.
+  Cross-platform. Wrapped via `python-can`'s `pcan` backend. (PEAK on
+  Linux can alternatively go through the in-kernel `peak_usb` driver
+  via socketcan; that's a future option, see the socketcan backlog
+  entry.)
+- **Native Rust FFI per vendor** (e.g. `vector-xl-sys`,
+  `kvaser-canlib-sys`, `pcan-basic-sys`) — `rejected for Phase 8`.
+  Writing three FFI shims plus their packaging is ≈3× the work of
+  wrapping one `python-can` library, for a performance win we have no
+  evidence we need. Revisit only if Phase 10 profiling shows a
+  specific sidecar is the bottleneck for a specific workload; the
+  wire protocol lets us swap one vendor over to a native adapter
+  without touching the rest.
+- **socketcan-only Linux path** — `rejected for Phase 8`. Not
+  cross-platform; covers neither Windows nor macOS. PEAK's Linux
+  kernel driver path is a future option, tracked in
+  `plans/backlog.md`.
+- **Multiple vendor sidecars in Phase 8** — `rejected for Phase 8`,
+  deliberately preserved as a future possibility on the same wire.
+  One `python-can` process covers all three vendors today; we can
+  fan out later if needed.
 
 ### File Formats
 
@@ -189,6 +278,13 @@ and/or community wrappers (e.g. `python-can`) depending on the client._
   - **`ablf`** — `rejected` (Phase 1 evaluation). Cleanly scoped pure-Rust
     BLF reader, but only decodes classic CAN messages — no CAN FD support,
     which our Phase 1 scope requires.
+  - **`blf_asc` writer + `GLOBAL_MARKER`** — `proposed-with-caveat`
+    (Phase 9). The Phase-9 capture writer needs `blf_asc` to expose
+    sequential frame append (classic CAN, CAN FD, error frames) and
+    read+write for `GLOBAL_MARKER` records (Vector's native annotation
+    object type). If any of that surface is missing, contribute it
+    upstream rather than vendoring — the crate is small and
+    MIT/Apache. Confirm before committing to the phase budget.
 
 ### Protocols
 
