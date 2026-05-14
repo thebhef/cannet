@@ -455,10 +455,28 @@ export function PlotPanel(props: IDockviewPanelProps) {
     [sharedExtent, applyXAll],
   );
 
+  /** Bumped to ask every PlotArea to invalidate its per-trace
+   * normalisation range — used by Fit Data and the wrapped trace
+   * Clear so y rescales fresh. */
+  const [resetYEpoch, setResetYEpoch] = useState(0);
+
   const fitData = useCallback(() => {
     const ext = sharedExtent();
     applyXAll(0, ext != null && ext > 0 ? ext : 1, null);
+    setResetYEpoch((n) => n + 1);
   }, [sharedExtent, applyXAll]);
+
+  /** Wrap the trace's Clear so it also wipes the panel-level overlays
+   * (cursors, notes) and the per-area normalisation range — the trace
+   * state alone re-anchors the window, but everything visually layered
+   * on top would otherwise keep its old positions. */
+  const handlePlotClear = useCallback(() => {
+    trace.clear();
+    setCursorX({ a: null, b: null });
+    setCursorYByArea({});
+    setNotes([]);
+    setResetYEpoch((n) => n + 1);
+  }, [trace]);
 
   // Reset the shared window + extent when the trace window re-anchors
   // (Clear / Start gives the element a new `offset`); cursors, which are
@@ -677,7 +695,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
           onStop={trace.stop}
           onPause={trace.pause}
           onResume={trace.resume}
-          onClear={trace.clear}
+          onClear={handlePlotClear}
         />
         <span className="plot-toolbar-sep" />
         <select
@@ -780,6 +798,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
               onReportHostMs={reportHostMs}
               onReportRate={reportRate}
               onReportCache={reportCache}
+              resetYEpoch={resetYEpoch}
               onSetYMode={(m) => setAreaYMode(area.id, m)}
               onFocus={() => setFocusedAreaId(area.id)}
               onRemoveArea={() => removeArea(area.id)}
@@ -982,6 +1001,9 @@ interface PlotAreaProps {
   onReportRate: (areaId: string, hz: number) => void;
   /** Largest per-signal cache size (display + diagnostic). */
   onReportCache: (areaId: string, points: number) => void;
+  /** Panel-level bump → invalidate the per-trace auto-normalise range
+   * (Fit Data / Clear use this so y rescales fresh on the next tick). */
+  resetYEpoch: number;
   onSetYMode: (m: YMode) => void;
   onFocus: () => void;
   onRemoveArea: () => void;
@@ -1065,6 +1087,7 @@ function PlotArea(p: PlotAreaProps) {
     onReportHostMs,
     onReportRate,
     onReportCache,
+    resetYEpoch,
     onSetYMode,
     onFocus,
     onRemoveArea,
@@ -1910,6 +1933,12 @@ function PlotArea(p: PlotAreaProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [yModeKey]);
 
+  // Panel asked us to refit y — drop the per-trace normalisation range
+  // so the next tick latches it fresh from current data.
+  useEffect(() => {
+    if (cacheRef.current) cacheRef.current.traceRanges = new Map();
+  }, [resetYEpoch]);
+
   // Show / hide series in place when the per-signal `hidden` flags
   // change — no uPlot re-create needed (`signalSetKey` excludes it).
   const hiddenKey = signals.map((s) => (s.hidden ? "1" : "0")).join("");
@@ -1944,6 +1973,13 @@ function PlotArea(p: PlotAreaProps) {
   const rangeFor = (key: string): { lo: number; hi: number } | null => {
     void valueTick;
     return cacheRef.current?.traceRanges.get(key) ?? null;
+  };
+  /** Cache x-origin (`ts(winStart)` in absolute seconds) — diagnostic.
+   * If this stays the same across a Clear, the cache anchor didn't
+   * re-establish and the visible x-axis will be in the *old* timescale. */
+  const cacheBaseValue = (): number | null => {
+    void valueTick;
+    return cacheRef.current?.base ?? null;
   };
   const valueTitle = cursorXa != null ? "value at cursor A" : hoverX != null ? "value at crosshair" : "latest value";
   // With both X cursors placed: Δ value (A − B), shown as a second line
@@ -1980,7 +2016,17 @@ function PlotArea(p: PlotAreaProps) {
       <div className="plot-area-canvas" ref={canvasRef} />
       <div className="plot-area-signals">
         <div className="plot-area-signals-head">
-          <span className="plot-area-label">{label}</span>
+          <span
+            className="plot-area-label"
+            title={(() => {
+              const b = cacheBaseValue();
+              return b == null
+                ? "no cache yet"
+                : `cache x-origin (ts of winStart): ${b.toFixed(3)} s — diagnostic for whether the cache re-anchored after a Clear`;
+            })()}
+          >
+            {label}
+          </span>
           <button
             className="plot-area-y"
             title="set this area's y-axis range"
