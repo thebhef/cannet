@@ -1414,11 +1414,17 @@ function PlotArea(p: PlotAreaProps) {
       //
       // Per-trace range for the auto-normalisation. Behaviour depends
       // on follow-live:
-      // * follow-live ON: **widen-only latch** — new extremes push
-      //   `lo` down or `hi` up, but values within the existing range
-      //   leave it alone. Lives in `traceRangesRef`, which survives
-      //   cache re-anchors (the cache resets every tick under a
-      //   sliding history buffer; the latch must not).
+      // * follow-live ON: **set once and frozen** — latched on the
+      //   first non-empty fetch and never updated. Lives in
+      //   `traceRangesRef`, which survives cache re-anchors (the
+      //   cache resets every tick under a sliding history buffer; the
+      //   latch must not). Freezing matters because *any* change to
+      //   `lo`/`hi` arithmetically moves every previously-rendered
+      //   point's normalised position — `(v - lo) / (hi - lo)` is a
+      //   different number for the same raw `v` once `lo`/`hi` shift,
+      //   so the user sees the whole trace slide vertically. The
+      //   trade-off: a value past the latched range clips off the
+      //   top/bottom until the user manually re-fits (Fit Data).
       // * follow-live OFF (user has zoomed/panned): recomputed from
       //   the visible data so zoomed-in detail fills the canvas.
       // The latch is reset on Fit Data (`resetYEpoch`) and pruned to
@@ -1439,22 +1445,13 @@ function PlotArea(p: PlotAreaProps) {
         }
         if (!Number.isFinite(lo) || !Number.isFinite(hi)) return;
         const existing = ranges.get(key);
-        // Widen-only when the latch already covers a non-degenerate
-        // range: the rendered position of every previously-drawn
-        // point only changes when `lo`/`hi` change, so leaving them
-        // alone when no new extreme arrives keeps the line still.
-        // A degenerate (`lo === hi`) latch — common right after a
-        // Clear when only one or two same-valued samples have
-        // arrived — is replaced wholesale, otherwise the divide-by-
-        // zero in the normaliser leaves nothing on screen.
-        if (existing && existing.hi > existing.lo) {
-          const newLo = Math.min(existing.lo, lo);
-          const newHi = Math.max(existing.hi, hi);
-          if (newLo !== existing.lo || newHi !== existing.hi) {
-            ranges.set(key, { lo: newLo, hi: newHi });
-          }
-          return;
-        }
+        // Once the latch is non-degenerate it's frozen — see the
+        // function-level comment above. A degenerate (`lo === hi`)
+        // existing latch — common right after a Clear when only one
+        // or two same-valued samples have arrived — is replaced
+        // wholesale, otherwise the divide-by-zero in the normaliser
+        // leaves nothing on screen.
+        if (existing && existing.hi > existing.lo) return;
         ranges.set(key, { lo, hi });
       });
       const displaySeries: Series[] = seriesRel.map((s, i) => {
