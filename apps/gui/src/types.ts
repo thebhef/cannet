@@ -12,6 +12,9 @@ export interface SignalRecord {
   name: string;
   value: number;
   unit: string;
+  /// `VAL_` label matching this decoded value, if the DBC defines one.
+  /// Trace rows render `<value> "<label>"` when present.
+  label?: string | null;
 }
 
 export interface DecodedRecord {
@@ -121,6 +124,17 @@ export interface SignalDescriptorRecord {
   message_name: string;
   signal_name: string;
   unit: string;
+  /// True if the DBC defines a `VAL_` table for this signal. The plot
+  /// panel uses it to switch to stepped + symbolic rendering; the
+  /// transmit panel uses it to offer a value-label dropdown.
+  has_value_table?: boolean;
+}
+
+/// One `(raw_value, label)` row of a signal's `VAL_` table — mirrors
+/// `cannet_dbc::ValueTableEntry`. Returned by `list_value_tables`.
+export interface ValueTableEntryRecord {
+  raw: number;
+  label: string;
 }
 
 /// One signal's freshly-decoded points from `sample_signals`: parallel

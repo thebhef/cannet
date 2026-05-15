@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { TraceFrameRecord } from "./types";
-import { formatSignalValue } from "./format";
+import { formatSignalValueWithLabel } from "./format";
 import {
   EXPANDED_ROW_HEIGHT,
   ROW_HEIGHT,
@@ -302,7 +302,9 @@ const Row = memo(function Row({
           {frame.decoded.signals.map((sig) => (
             <div className="signal" key={sig.name}>
               <span className="signal-name">{sig.name}</span>
-              <span className="signal-value">{formatSignalValue(sig.value, sig.unit)}</span>
+              <span className="signal-value">
+                {formatSignalValueWithLabel(sig.value, sig.unit, sig.label)}
+              </span>
             </div>
           ))}
         </div>
