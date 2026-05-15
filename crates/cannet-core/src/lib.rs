@@ -48,7 +48,9 @@
 //!   `CanFrame` does not change; only adapters are added.
 //! - **Phase 5** (transmit): the abstraction grows a transmit direction
 //!   so a GUI transmit panel can send through a remote server (or a
-//!   `cannet-server --loopback`); `CanFrameSink` is the seam.
+//!   `cannet-server --loopback`); `CanFrameSink` is the seam, and
+//!   [`loopback_bus`] is the in-process building block (paired sink +
+//!   source over an MPSC queue) that the `--loopback` server wraps.
 //! - **Phase 6** (hardware): per-vendor server processes implement
 //!   `CanFrameSource` against vendor SDKs / `python-can`. The GUI sees
 //!   only the network transport.
@@ -58,9 +60,11 @@
 
 mod frame;
 mod io;
+mod loopback;
 
 pub use frame::{
     CanId, Direction, EXTENDED_ID_MAX, FD_DATA_MAX, CanFdFlags, CanFrame, CanFrameError, CanFramePayload,
     IdError, CLASSIC_DATA_MAX, STANDARD_ID_MAX,
 };
 pub use io::{pump, CanFrameSink, CanFrameSource, PumpError};
+pub use loopback::{loopback_bus, LoopbackBusClosed, LoopbackSink, LoopbackSource};
