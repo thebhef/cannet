@@ -39,6 +39,7 @@ mod ipc;
 mod project;
 mod signal_cache;
 mod signal_sampler;
+mod system_log;
 mod trace_store;
 
 use std::collections::HashMap;
@@ -61,6 +62,7 @@ use ipc::{
     SignalsSample, TraceFrameRecord, TraceGrew,
 };
 use signal_cache::SignalCacheStore;
+use system_log::{SystemLog, SystemMessage};
 use trace_store::{RawTraceFrame, TraceStore};
 
 /// A loaded DBC: its source path, the parsed database, and the set of
@@ -135,6 +137,13 @@ struct AppState {
     /// `clear_trace_store` (the frame indices it holds wouldn't
     /// otherwise survive).
     signal_caches: SignalCacheStore,
+    /// Phase 7 host-side log bus. Append-side: the `sys_info!` /
+    /// `sys_warn!` / `sys_error!` macros that wrap call sites in
+    /// project / DBC / connection / BLF-import flows. Read-side: the
+    /// `fetch_system_log` / `clear_system_log` IPC commands and the
+    /// `system-log-appended` event the host emits on every successful
+    /// push.
+    system_log: SystemLog,
 }
 
 /// Boot the Tauri runtime.
@@ -145,6 +154,10 @@ struct AppState {
 /// loudly rather than silently exiting.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Set up `tracing`'s `fmt` layer for stderr so dev logs still show
+    // up alongside the in-process ring the System Messages panel
+    // renders. Idempotent — safe to call again from tests.
+    system_log::init_tracing_subscriber();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
@@ -152,6 +165,7 @@ pub fn run() {
             remote_sessions: Mutex::new(HashMap::new()),
             trace_store: TraceStore::new(),
             signal_caches: SignalCacheStore::new(),
+            system_log: SystemLog::new(),
         })
         .invoke_handler(tauri::generate_handler![
             open_log,
@@ -172,6 +186,8 @@ pub fn run() {
             sample_signals,
             transmit_frame,
             list_value_tables,
+            fetch_system_log,
+            clear_system_log,
         ])
         .setup(|app| {
             // Make sure the main window has the id our capabilities expect.
@@ -246,7 +262,15 @@ fn open_log(
 ) -> Result<OpenLogResult, String> {
     // Open the BLF synchronously so the user gets immediate feedback if
     // the path is wrong.
-    let source = BlfCanFrameSource::open(&blf_path).map_err(|e| e.to_string())?;
+    let source = match BlfCanFrameSource::open(&blf_path) {
+        Ok(s) => s,
+        Err(e) => {
+            let msg = e.to_string();
+            sys_error!(&app, "blf-import", "failed to open BLF {blf_path}: {msg}");
+            return Err(msg);
+        }
+    };
+    sys_info!(&app, "blf-import", "opened BLF {blf_path}");
 
     let result = OpenLogResult {
         blf_path: blf_path.clone(),
@@ -288,7 +312,7 @@ fn open_log(
 /// window of frames.
 #[tauri::command]
 #[allow(clippy::unused_async)]
-async fn scan_blf_channels(blf_path: String) -> Result<Vec<u8>, String> {
+async fn scan_blf_channels(app: AppHandle, blf_path: String) -> Result<Vec<u8>, String> {
     use std::collections::BTreeSet;
     // Cap the scan: most BLFs have <16 channels, all visible in their
     // first few thousand frames. The cap keeps a huge BLF from blocking
@@ -296,7 +320,14 @@ async fn scan_blf_channels(blf_path: String) -> Result<Vec<u8>, String> {
     // that doesn't appear until frame 100k, the channel just streams
     // through unassigned and the user can edit the mapping afterwards.
     const MAX_SCAN_FRAMES: usize = 200_000;
-    let mut source = BlfCanFrameSource::open(&blf_path).map_err(|e| e.to_string())?;
+    let mut source = match BlfCanFrameSource::open(&blf_path) {
+        Ok(s) => s,
+        Err(e) => {
+            let msg = e.to_string();
+            sys_error!(&app, "blf-import", "failed to open BLF {blf_path}: {msg}");
+            return Err(msg);
+        }
+    };
     let mut seen: BTreeSet<u8> = BTreeSet::new();
     for _ in 0..MAX_SCAN_FRAMES {
         match source.next_frame() {
@@ -304,7 +335,11 @@ async fn scan_blf_channels(blf_path: String) -> Result<Vec<u8>, String> {
                 seen.insert(frame.channel);
             }
             Ok(None) => break,
-            Err(e) => return Err(e.to_string()),
+            Err(e) => {
+                let msg = e.to_string();
+                sys_error!(&app, "blf-import", "BLF scan failed: {msg}");
+                return Err(msg);
+            }
         }
     }
     Ok(seen.into_iter().collect())
@@ -332,18 +367,47 @@ fn dbc_list(state: &AppState) -> Vec<DbcInfo> {
 /// path is already loaded, reload it in place — same effect as a
 /// "reload from disk"). Returns the full loaded list on success; on a
 /// read / parse error the set is left unchanged.
+///
+/// Phase 7: emits `dbc`-tagged messages on the system log — `info` on
+/// success (loaded or reloaded), `error` if the file can't be read or
+/// the DBC can't be parsed.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-fn add_dbc(state: State<'_, AppState>, path: String) -> Result<Vec<DbcInfo>, String> {
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| format!("failed to read DBC at {path}: {e}"))?;
-    let db = Database::parse(&text).map_err(|e| format!("failed to parse DBC at {path}: {e}"))?;
-    {
-        let mut list = state.databases.lock().expect("databases mutex poisoned");
-        match list.iter_mut().find(|d| d.path == path) {
-            Some(slot) => slot.db = db,
-            None => list.push(LoadedDbc { path, db, buses: Vec::new() }),
+fn add_dbc(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<Vec<DbcInfo>, String> {
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => {
+            let msg = format!("failed to read DBC at {path}: {e}");
+            sys_error!(&app, "dbc", "{msg}");
+            return Err(msg);
         }
+    };
+    let db = match Database::parse(&text) {
+        Ok(db) => db,
+        Err(e) => {
+            let msg = format!("failed to parse DBC at {path}: {e}");
+            sys_error!(&app, "dbc", "{msg}");
+            return Err(msg);
+        }
+    };
+    let reloaded = {
+        let mut list = state.databases.lock().expect("databases mutex poisoned");
+        if let Some(slot) = list.iter_mut().find(|d| d.path == path) {
+            slot.db = db;
+            true
+        } else {
+            list.push(LoadedDbc { path: path.clone(), db, buses: Vec::new() });
+            false
+        }
+    };
+    if reloaded {
+        sys_info!(&app, "dbc", "reloaded DBC {path}");
+    } else {
+        sys_info!(&app, "dbc", "loaded DBC {path}");
     }
     Ok(dbc_list(state.inner()))
 }
@@ -373,12 +437,16 @@ fn set_dbc_buses(
 /// Returns the remaining loaded list.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-fn remove_dbc(state: State<'_, AppState>, path: String) -> Vec<DbcInfo> {
-    state
-        .databases
-        .lock()
-        .expect("databases mutex poisoned")
-        .retain(|d| d.path != path);
+fn remove_dbc(app: AppHandle, state: State<'_, AppState>, path: String) -> Vec<DbcInfo> {
+    let removed = {
+        let mut list = state.databases.lock().expect("databases mutex poisoned");
+        let before = list.len();
+        list.retain(|d| d.path != path);
+        before != list.len()
+    };
+    if removed {
+        sys_info!(&app, "dbc", "removed DBC {path}");
+    }
     dbc_list(state.inner())
 }
 
@@ -386,12 +454,16 @@ fn remove_dbc(state: State<'_, AppState>, path: String) -> Vec<DbcInfo> {
 /// "open project" — the project's DBCs are then re-added one by one).
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-fn clear_dbcs(state: State<'_, AppState>) {
-    state
-        .databases
-        .lock()
-        .expect("databases mutex poisoned")
-        .clear();
+fn clear_dbcs(app: AppHandle, state: State<'_, AppState>) {
+    let count = {
+        let mut list = state.databases.lock().expect("databases mutex poisoned");
+        let n = list.len();
+        list.clear();
+        n
+    };
+    if count > 0 {
+        sys_info!(&app, "dbc", "cleared {count} loaded DBC(s)");
+    }
 }
 
 /// Pull a `[start, end)` slice out of the trace store and decode each
@@ -554,6 +626,46 @@ fn clear_trace_store(state: State<'_, AppState>) {
     // wipe them too, otherwise the next `sample_signals` would slice
     // against a buffer that no longer exists.
     state.signal_caches.clear();
+}
+
+/// Snapshot the host-side system log (Phase 7). Returns every message
+/// currently in the ring in chronological order. The frontend keeps
+/// its own copy and merges incremental `system-log-appended` events
+/// into it; this command is the bootstrap (panel opens / page reloads)
+/// and a fallback if an event is missed.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn fetch_system_log(state: State<'_, AppState>) -> Vec<SystemMessage> {
+    state.system_log.snapshot()
+}
+
+/// Drop every message from the host-side system log (Phase 7). The
+/// `seq` counter is deliberately *not* reset; the frontend uses `seq`
+/// to deduplicate against in-flight `system-log-appended` events, so
+/// resetting would risk delivering a stale `seq = 0` after a clear.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn clear_system_log(state: State<'_, AppState>) {
+    state.system_log.clear();
+}
+
+/// Append a message to the host's log bus and broadcast it as a
+/// `system-log-appended` event. The rate limiter may drop the push
+/// silently — the call site doesn't need to distinguish.
+///
+/// Internal to this crate, but `pub(crate)` so the [`sys_info!`] /
+/// [`sys_warn!`] / [`sys_error!`] macros expand to a free function call
+/// rather than carrying their own `&AppHandle`-bound state plumbing.
+pub(crate) fn emit_system_log(
+    app: &AppHandle,
+    source: &str,
+    level: system_log::LogLevel,
+    message: impl Into<String>,
+) {
+    let state: State<'_, AppState> = app.state();
+    if let Some(entry) = state.system_log.push(source, level, message) {
+        let _ = app.emit("system-log-appended", entry);
+    }
 }
 
 /// Every `(message, signal)` pair defined by any loaded DBC, for a plot
@@ -806,6 +918,11 @@ async fn list_remote_interfaces(address: String) -> Result<Vec<InterfaceRecord>,
 /// translates each into a per-channel mapping the pump uses to stamp
 /// each frame's `bus_id`. An empty `bindings` is an error — there's
 /// nothing to subscribe to.
+// Phase 7 sprinkled structured-log emit sites across this command;
+// it's now slightly over clippy's default function-length cap, but the
+// shape is "linear sequence of named failure points" — splitting would
+// just inline-extract a helper that has zero independent meaning.
+#[allow(clippy::too_many_lines)]
 #[tauri::command]
 async fn connect_remote_server(
     app: AppHandle,
@@ -814,17 +931,27 @@ async fn connect_remote_server(
 ) -> Result<RemoteSessionResult, String> {
     let binding_lookup = bindings.unwrap_or_default();
     if binding_lookup.is_empty() {
-        return Err(format!(
+        let msg = format!(
             "no interface bindings configured for {address}; add bindings in the project panel first"
-        ));
+        );
+        sys_warn!(&app, "connection", "{msg}");
+        return Err(msg);
     }
 
-    let interfaces = cannet_client::list_interfaces(&address)
-        .await
-        .map_err(|e| e.to_string())?;
+    sys_info!(&app, "connection", "connecting to {address}");
+    let interfaces = match cannet_client::list_interfaces(&address).await {
+        Ok(v) => v,
+        Err(e) => {
+            let msg = e.to_string();
+            sys_error!(&app, "connection", "failed to connect to {address}: {msg}");
+            return Err(msg);
+        }
+    };
 
     if interfaces.is_empty() {
-        return Err(format!("server at {address} exposes no interfaces"));
+        let msg = format!("server at {address} exposes no interfaces");
+        sys_warn!(&app, "connection", "{msg}");
+        return Err(msg);
     }
 
     // Subscribe only to interfaces named in the project's bindings for
@@ -853,12 +980,23 @@ async fn connect_remote_server(
 
     let address_for_thread = address.clone();
     let subs_for_thread = subscriptions.clone();
-    let source = tokio::task::spawn_blocking(move || {
+    let source = match tokio::task::spawn_blocking(move || {
         cannet_client::connect_and_subscribe(&address_for_thread, subs_for_thread)
     })
     .await
-    .map_err(|e| format!("subscribe task panicked: {e}"))?
-    .map_err(|e| e.to_string())?;
+    {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
+            let msg = e.to_string();
+            sys_error!(&app, "connection", "subscribe to {address} failed: {msg}");
+            return Err(msg);
+        }
+        Err(e) => {
+            let msg = format!("subscribe task panicked: {e}");
+            sys_error!(&app, "connection", "{msg}");
+            return Err(msg);
+        }
+    };
 
     let (handle, receiver, transmitter) = source.into_parts();
     let stop = Arc::new(AtomicBool::new(false));
@@ -872,7 +1010,9 @@ async fn connect_remote_server(
         if guard.contains_key(&address) {
             // Drop `handle` here, which sends shutdown to the worker we
             // just spawned. The existing entry stays untouched.
-            return Err(format!("already connected to {address}"));
+            let msg = format!("already connected to {address}");
+            sys_warn!(&app, "connection", "{msg}");
+            return Err(msg);
         }
         guard.insert(
             address.clone(),
@@ -918,6 +1058,13 @@ async fn connect_remote_server(
         })
         .map_err(|e| format!("failed to spawn remote pump thread: {e}"))?;
 
+    sys_info!(
+        &app,
+        "connection",
+        "connected to {address} ({n} interface(s))",
+        n = subscriptions.len(),
+    );
+
     Ok(RemoteSessionResult {
         address,
         subscriptions: subscriptions
@@ -941,23 +1088,28 @@ async fn connect_remote_server(
 /// disconnects only that one.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-fn disconnect_remote_server(state: State<'_, AppState>, address: Option<String>) {
-    let sessions: Vec<RemoteSession> = {
+fn disconnect_remote_server(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    address: Option<String>,
+) {
+    let sessions: Vec<(String, RemoteSession)> = {
         let mut guard = state
             .remote_sessions
             .lock()
             .expect("remote_sessions mutex poisoned");
         match address {
-            Some(addr) => guard.remove(&addr).into_iter().collect(),
-            None => guard.drain().map(|(_, s)| s).collect(),
+            Some(addr) => guard.remove(&addr).map(|s| (addr, s)).into_iter().collect(),
+            None => guard.drain().collect(),
         }
     };
-    for session in sessions {
+    for (addr, session) in sessions {
         session.stop.store(true, Ordering::Relaxed);
         // Dropping the handle signals the worker to disconnect; the
         // transmitter goes with it, so subsequent transmit_frame calls
         // see SessionClosed.
         drop(session);
+        sys_info!(&app, "connection", "disconnected from {addr}");
     }
 }
 
@@ -1012,17 +1164,18 @@ fn run_pump<S>(
             }
             Ok(None) => break,
             Err(e) => {
+                let msg = e.to_string();
+                sys_error!(app, "connection", "frame source ended with error: {msg}");
                 let _ = app.emit(
                     "log-finished",
-                    LogFinished::Error {
-                        message: e.to_string(),
-                    },
+                    LogFinished::Error { message: msg },
                 );
                 return;
             }
         }
     }
 
+    sys_info!(app, "connection", "frame source ended cleanly ({total} frames)");
     let _ = app.emit("log-finished", LogFinished::Ok { total });
 }
 
@@ -1221,6 +1374,7 @@ mod tests {
             remote_sessions: Mutex::new(HashMap::new()),
             trace_store: TraceStore::new(),
             signal_caches: SignalCacheStore::new(),
+            system_log: SystemLog::new(),
         }
     }
 
