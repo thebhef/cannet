@@ -169,7 +169,7 @@ async fn into_parts_lets_handle_and_receiver_live_in_different_threads() {
     // Open a session and immediately split it. The handle goes to one
     // task; the receiver to another. Frames flow until the handle is
     // dropped; the receiver then observes end-of-stream.
-    let (handle, mut receiver): (SessionHandle, FrameReceiver) =
+    let (handle, mut receiver, _transmitter): (SessionHandle, FrameReceiver, _) =
         tokio::task::spawn_blocking(move || {
             let source = connect_and_subscribe(
                 &address,
@@ -216,6 +216,81 @@ async fn into_parts_lets_handle_and_receiver_live_in_different_threads() {
         "FrameReceiver did not observe end-of-stream after SessionHandle drop",
     );
 
+    server.abort();
+}
+
+async fn spawn_loopback_server() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    use cannet_server::LoopbackServerImpl;
+    use tokio::net::TcpListener;
+    use tokio_stream::wrappers::TcpListenerStream;
+    use tonic::transport::Server;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let stream = TcpListenerStream::new(listener);
+    let svc = LoopbackServerImpl::new().into_service();
+    let handle = tokio::spawn(async move {
+        Server::builder()
+            .add_service(svc)
+            .serve_with_incoming(stream)
+            .await
+            .unwrap();
+    });
+    (addr, handle)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[allow(clippy::similar_names)] // receiver / received in this test
+async fn transmit_through_session_round_trips_via_loopback() {
+    use cannet_core::{CanFrame, CanId, Direction};
+
+    let (addr, server) = spawn_loopback_server().await;
+    let address = addr.to_string();
+
+    let (handle, mut receiver, transmitter) = tokio::task::spawn_blocking(move || {
+        let source = connect_and_subscribe(
+            &address,
+            vec![Subscription {
+                interface_id: "loopback:0".into(),
+                channel: 0,
+            }],
+        )
+        .unwrap();
+        source.into_parts()
+    })
+    .await
+    .unwrap();
+
+    // Build a frame with `Direction::Tx` and shove it through the
+    // transmitter — the loopback server should echo it back as Rx.
+    let frame = CanFrame::classic(
+        0,
+        0,
+        CanId::standard(0x321).unwrap(),
+        Direction::Tx,
+        vec![0xAB, 0xCD],
+    )
+    .unwrap();
+    let transmit_addr = "loopback:0".to_string();
+    let frame_for_tx = frame.clone();
+    tokio::task::spawn_blocking(move || {
+        transmitter.transmit(&transmit_addr, &frame_for_tx).unwrap();
+    })
+    .await
+    .unwrap();
+
+    // Receive it back.
+    let received = tokio::task::spawn_blocking(move || {
+        use cannet_core::CanFrameSource;
+        receiver.next_frame()
+    })
+    .await
+    .unwrap();
+    let echoed = received.unwrap().expect("expected mirrored frame");
+    assert_eq!(echoed.id, frame.id);
+    assert_eq!(echoed.payload, frame.payload);
+    assert_eq!(echoed.direction, Direction::Rx);
+
+    drop(handle);
     server.abort();
 }
 
