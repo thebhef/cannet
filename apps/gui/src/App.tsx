@@ -23,6 +23,7 @@ import { PROJECT_SCHEMA_VERSION } from "./types";
 import { TitleBar } from "./TitleBar";
 import { TracePanel } from "./TracePanel";
 import { ProjectPanel } from "./ProjectPanel";
+import { ProjectGraphPanel } from "./ProjectGraphPanel";
 import { PlotPanel } from "./PlotPanel";
 import { TransmitPanel } from "./TransmitPanel";
 import { TraceDataContext, type TraceData } from "./traceData";
@@ -41,6 +42,7 @@ import {
   LAST_PROJECT_KEY,
   LAYOUT_STORAGE_KEY,
   PLOT_PANEL_COMPONENT,
+  PROJECT_GRAPH_PANEL_COMPONENT,
   PROJECT_PANEL_COMPONENT,
   TRACE_PANEL_COMPONENT,
   TRANSMIT_PANEL_COMPONENT,
@@ -80,6 +82,7 @@ const DOCK_COMPONENTS = {
   [PROJECT_PANEL_COMPONENT]: ProjectPanel,
   [PLOT_PANEL_COMPONENT]: PlotPanel,
   [TRANSMIT_PANEL_COMPONENT]: TransmitPanel,
+  [PROJECT_GRAPH_PANEL_COMPONENT]: ProjectGraphPanel,
 };
 
 /// The project panel is a show/hide singleton — a fixed dockview id so
@@ -849,6 +852,19 @@ export function App() {
     });
   }, [create]);
 
+  // Phase 6: add a project graph panel. Multiple are allowed; ids are
+  // suffixed with the panel counter to keep them distinct.
+  const addProjectGraphPanel = useCallback(() => {
+    const api = dockApiRef.current;
+    if (!api) return;
+    panelCounterRef.current += 1;
+    api.addPanel({
+      id: `project-graph-${panelCounterRef.current}`,
+      component: PROJECT_GRAPH_PANEL_COMPONENT,
+      title: "Graph",
+    });
+  }, []);
+
   const toggleProjectPanel = useCallback(() => {
     const api = dockApiRef.current;
     if (!api) return;
@@ -1042,6 +1058,7 @@ export function App() {
           <button onClick={addTracePanel}>Add trace</button>
           <button onClick={addPlotPanel}>Add plot panel</button>
           <button onClick={addTransmitPanel}>Add transmit panel</button>
+          <button onClick={addProjectGraphPanel}>Add graph panel</button>
           <button onClick={toggleProjectPanel}>Project panel</button>
         </div>
         <div className="status">{status}</div>

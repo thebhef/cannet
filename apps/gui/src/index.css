@@ -286,6 +286,23 @@ header {
   color: #cbd5e1;
 }
 
+.graph-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #94a3b8;
+  text-align: center;
+  padding: 1rem;
+  gap: 0.5rem;
+}
+
+/* Tweak xyflow's defaults to fit the abyss theme. */
+.react-flow {
+  background: #0b1220;
+}
+
 /* Project panel: a few stacked sections (the project file, the
    configured bus(es), the attached DBC) with their actions. */
 .project-panel {
