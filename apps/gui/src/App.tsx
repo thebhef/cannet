@@ -21,6 +21,7 @@ import { TitleBar } from "./TitleBar";
 import { TracePanel } from "./TracePanel";
 import { ProjectPanel } from "./ProjectPanel";
 import { PlotPanel } from "./PlotPanel";
+import { TransmitPanel } from "./TransmitPanel";
 import { TraceDataContext, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { CloseConfirmModal, type CloseChoice } from "./CloseConfirmModal";
@@ -38,6 +39,7 @@ import {
   PLOT_PANEL_COMPONENT,
   PROJECT_PANEL_COMPONENT,
   TRACE_PANEL_COMPONENT,
+  TRANSMIT_PANEL_COMPONENT,
   parseSavedLayout,
   validateLayout,
 } from "./dockLayout";
@@ -73,6 +75,7 @@ const DOCK_COMPONENTS = {
   [BY_ID_PANEL_COMPONENT]: TracePanel,
   [PROJECT_PANEL_COMPONENT]: ProjectPanel,
   [PLOT_PANEL_COMPONENT]: PlotPanel,
+  [TRANSMIT_PANEL_COMPONENT]: TransmitPanel,
 };
 
 /// The project panel is a show/hide singleton — a fixed dockview id so
@@ -689,6 +692,20 @@ export function App() {
     });
   }, [create]);
 
+  const transmitCounterRef = useRef(0);
+  const addTransmitPanel = useCallback(() => {
+    const api = dockApiRef.current;
+    if (!api) return;
+    const elementId = create("transmit");
+    transmitCounterRef.current += 1;
+    api.addPanel({
+      id: `transmit-${elementId}`,
+      component: TRANSMIT_PANEL_COMPONENT,
+      title: `Transmit ${transmitCounterRef.current}`,
+      params: { elementId, frames: [] },
+    });
+  }, [create]);
+
   const toggleProjectPanel = useCallback(() => {
     const api = dockApiRef.current;
     if (!api) return;
@@ -863,6 +880,7 @@ export function App() {
           <span className="toolbar-separator" aria-hidden="true" />
           <button onClick={addTracePanel}>Add trace</button>
           <button onClick={addPlotPanel}>Add plot panel</button>
+          <button onClick={addTransmitPanel}>Add transmit panel</button>
           <button onClick={toggleProjectPanel}>Project panel</button>
         </div>
         <div className="status">{status}</div>
