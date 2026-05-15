@@ -960,7 +960,8 @@ header {
 }
 
 /* Plot panel — per-area y-range control */
-.plot-area-y {
+.plot-area-y,
+.plot-area-fit-y {
   background: #0f141d;
   color: #94a3b8;
   border: 1px solid #2c3444;
@@ -970,7 +971,8 @@ header {
   padding: 0 0.2rem;
   cursor: pointer;
 }
-.plot-area-y:hover {
+.plot-area-y:hover,
+.plot-area-fit-y:hover {
   color: #e2e8f0;
 }
 .plot-y-editor {

@@ -435,21 +435,23 @@ async fn sample_signals(
 ///
 /// Layout (little-endian throughout):
 /// ```text
-/// magic   8 bytes  "SIGSAMP\x01"
+/// magic   8 bytes  "SIGSAMP\x02"
 /// from_s  f64      capture-window first timestamp, NaN ⇒ null
 /// last_s  f64      capture-window last timestamp, NaN ⇒ null
 /// slice   f64      diagnostic: lock-held slice ms
 /// decode  f64      diagnostic: decode + decimate ms
 /// nsig    u32      number of signals
 /// for each signal:
+///   lo    f64      running min of every decoded value, NaN ⇒ null
+///   hi    f64      running max of every decoded value, NaN ⇒ null
 ///   n     u32      sample count
 ///   t[n]  f64×n    timestamps (absolute seconds)
 ///   v[n]  f64×n    values
 /// ```
 fn encode_signals_sample(s: &SignalsSample) -> Vec<u8> {
     let total_points: usize = s.series.iter().map(|p| p.t.len()).sum();
-    let mut buf = Vec::with_capacity(8 + 32 + 4 + s.series.len() * 4 + total_points * 16);
-    buf.extend_from_slice(b"SIGSAMP\x01");
+    let mut buf = Vec::with_capacity(8 + 32 + 4 + s.series.len() * 20 + total_points * 16);
+    buf.extend_from_slice(b"SIGSAMP\x02");
     buf.extend_from_slice(&s.from_seconds.unwrap_or(f64::NAN).to_le_bytes());
     buf.extend_from_slice(&s.last_seconds.unwrap_or(f64::NAN).to_le_bytes());
     buf.extend_from_slice(&s.slice_ms.to_le_bytes());
@@ -458,6 +460,8 @@ fn encode_signals_sample(s: &SignalsSample) -> Vec<u8> {
     buf.extend_from_slice(&(s.series.len() as u32).to_le_bytes());
     for p in &s.series {
         debug_assert_eq!(p.t.len(), p.v.len());
+        buf.extend_from_slice(&p.value_lo.unwrap_or(f64::NAN).to_le_bytes());
+        buf.extend_from_slice(&p.value_hi.unwrap_or(f64::NAN).to_le_bytes());
         #[allow(clippy::cast_possible_truncation)]
         buf.extend_from_slice(&(p.t.len() as u32).to_le_bytes());
         for &t in &p.t {
@@ -514,7 +518,7 @@ fn sample_signals_inner(
     // longer scales with capture length.
     let dbs_guard = state.databases.lock().expect("databases mutex poisoned");
     let db_refs: Vec<&Database> = dbs_guard.iter().map(|l| &l.db).collect();
-    let sliced: Vec<Vec<signal_sampler::SamplePoint>> = signals
+    let sliced: Vec<signal_cache::SignalSlice> = signals
         .iter()
         .map(|q| {
             state.signal_caches.slice(
@@ -534,11 +538,11 @@ fn sample_signals_inner(
     let t_decode = std::time::Instant::now();
     let series: Vec<SampledPoints> = sliced
         .into_iter()
-        .map(|points| {
+        .map(|slice| {
             let points = if max_points > 0 {
-                signal_sampler::decimate_min_max(&points, max_points as usize)
+                signal_sampler::decimate_min_max(&slice.samples, max_points as usize)
             } else {
-                points
+                slice.samples
             };
             let mut t = Vec::with_capacity(points.len());
             let mut v = Vec::with_capacity(points.len());
@@ -546,7 +550,7 @@ fn sample_signals_inner(
                 t.push(p.t_seconds);
                 v.push(p.value);
             }
-            SampledPoints { t, v }
+            SampledPoints { t, v, value_lo: slice.value_lo, value_hi: slice.value_hi }
         })
         .collect();
     let decode_ms = t_decode.elapsed().as_secs_f64() * 1000.0;

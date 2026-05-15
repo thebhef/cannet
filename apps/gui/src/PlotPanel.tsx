@@ -1134,6 +1134,18 @@ function PlotArea(p: PlotAreaProps) {
    * resets; reset only on `resetYEpoch` (Fit Data) and pruned to the
    * currently-displayed signal set on signal changes. */
   const traceRangesRef = useRef<Map<string, { lo: number; hi: number }>>(new Map());
+  /** True while a manual Fit Y override is active — keeps
+   * `traceRangesRef` from being cleared by the follow-live transition
+   * code in `resample`. Cleared when the user re-fits via Fit Data, or
+   * implicitly when they pan/zoom (the !follow-live path takes over,
+   * which refits visibly each tick — what the user wants when
+   * navigating). */
+  const manualFitYRef = useRef(false);
+  /** The y-range actually used to normalise each signal on the most
+   * recent resample — host extrema, manual Fit Y, or !follow-live
+   * visible-fit. Surfaced in the side-panel rows so users can see what
+   * range the auto-norm is operating against. */
+  const effectiveRangesRef = useRef<Map<string, { lo: number; hi: number }>>(new Map());
   /** One-shot: have we already done the post-mount rebuild that
    * compensates for restored-from-project panels where the canvas
    * isn't laid out yet at uPlot's first construction? */
@@ -1412,73 +1424,81 @@ function PlotArea(p: PlotAreaProps) {
       // numbers per trace will arrive with the per-trace gain/offset
       // controls (`plans/backlog.md`).
       //
-      // Per-trace range for the auto-normalisation. Behaviour depends
-      // on follow-live:
-      // * follow-live ON: **widen-only** — grow to fit a new extreme,
-      //   never shrink. Lives in `traceRangesRef`, which survives
-      //   cache re-anchors (the cache resets every tick under a
-      //   sliding history buffer; the latch must not). Widening still
-      //   moves every previously-rendered point's normalised
-      //   position arithmetically — `(v - lo) / (hi - lo)` is a
-      //   different number for the same raw `v` once `lo`/`hi` shift
-      //   — but the alternatives are worse: set-once locks at
-      //   whatever narrow range happened to be visible on the first
-      //   fetch and amplifies tiny later variations across the full
-      //   canvas height; recomputing every tick lets the range
-      //   shrink back when a peak scrolls off-screen, which the user
-      //   sees as the trace zooming in and out.
-      // * follow-live OFF (user has zoomed/panned): recomputed from
-      //   the visible data so zoomed-in detail fills the canvas.
-      // The latch is reset on Fit Data (`resetYEpoch`) and pruned to
-      // the currently-displayed signal set on signal-set changes.
+      // Pick a per-signal `(lo, hi)` for normalising each trace to
+      // [0, 1]. Priorities (first match wins):
+      //
+      //  1. **Manual override** (Fit Y button, or a !follow-live
+      //     fit) — sticky, lives in `traceRangesRef`. Cleared when
+      //     follow-live is re-engaged so the host-driven path takes
+      //     back over.
+      //  2. **Follow-live OFF** — recompute each tick from the
+      //     visible slice, so zoomed-in detail fills the canvas.
+      //     Stored in `traceRangesRef` while in this mode but
+      //     refreshed every tick (we're tracking the user's
+      //     pan/zoom).
+      //  3. **Host-managed running extrema** (`series[i].value_lo /
+      //     value_hi`) — the host maintains the running min/max of
+      //     *every* decoded sample since the trace was cleared, so
+      //     the range only ever grows when the actual capture's
+      //     peak-to-peak grows. This is the steady-state path during
+      //     a normal follow-live capture and is what stopped the y-
+      //     axis from "shrinking back" when a peak scrolled off-
+      //     screen — the JS side simply doesn't compute the latch
+      //     itself any more.
+      //  4. **Fallback**: render at canvas midline (0.5). Used only
+      //     when no extrema have arrived yet (e.g. signal has never
+      //     decoded).
       const ranges = traceRangesRef.current;
-      if (!lr.followLive) {
+      if (lr.followLive && !manualFitYRef.current) {
+        // Re-entering follow-live drops any auto-fit override; host
+        // extrema take over from here. (Manual Fit Y survives because
+        // the user just asked for it.)
         ranges.clear();
       }
-      signals.forEach((s, i) => {
-        const key = signalRefKey(s);
-        const ser = seriesRel[i];
-        if (ser.v.length === 0) return;
-        let lo = Infinity;
-        let hi = -Infinity;
-        for (const v of ser.v) {
-          if (v < lo) lo = v;
-          if (v > hi) hi = v;
-        }
-        if (!Number.isFinite(lo) || !Number.isFinite(hi)) return;
-        const existing = ranges.get(key);
-        if (existing && existing.hi > existing.lo) {
-          // Widen-only: new extremes push `lo` down or `hi` up;
-          // values inside the existing range leave the latch alone
-          // (so the trace doesn't slide when no new extreme arrives).
-          const newLo = Math.min(existing.lo, lo);
-          const newHi = Math.max(existing.hi, hi);
-          if (newLo !== existing.lo || newHi !== existing.hi) {
-            ranges.set(key, { lo: newLo, hi: newHi });
+      if (!lr.followLive && !manualFitYRef.current) {
+        // Track the user's pan/zoom: refit from the current visible
+        // slice every tick.
+        signals.forEach((s, i) => {
+          const key = signalRefKey(s);
+          const ser = seriesRel[i];
+          if (ser.v.length === 0) return;
+          let lo = Infinity;
+          let hi = -Infinity;
+          for (const v of ser.v) {
+            if (v < lo) lo = v;
+            if (v > hi) hi = v;
           }
-          return;
-        }
-        // No latch yet, or the existing one is degenerate (`lo === hi`,
-        // common right after a Clear when only one or two same-valued
-        // samples have arrived — would divide-by-zero in the
-        // normaliser and leave nothing on screen). Replace wholesale.
-        ranges.set(key, { lo, hi });
-      });
+          if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) return;
+          ranges.set(key, { lo, hi });
+        });
+      }
+      const effective = new Map<string, { lo: number; hi: number }>();
       const displaySeries: Series[] = seriesRel.map((s, i) => {
         if (s.v.length === 0) return s;
-        const range = ranges.get(signalRefKey(signals[i]));
+        const key = signalRefKey(signals[i]);
+        const override = ranges.get(key);
+        const hostLo = res.series[i]?.value_lo ?? null;
+        const hostHi = res.series[i]?.value_hi ?? null;
+        let lo: number | null = null;
+        let hi: number | null = null;
+        if (override && override.hi > override.lo) {
+          lo = override.lo;
+          hi = override.hi;
+        } else if (hostLo != null && hostHi != null && hostHi > hostLo) {
+          lo = hostLo;
+          hi = hostHi;
+        }
+        if (lo != null && hi != null) effective.set(key, { lo, hi });
         const out = new Array<number>(s.v.length);
-        if (range != null && range.hi > range.lo) {
-          const span = range.hi - range.lo;
-          for (let j = 0; j < s.v.length; j++) out[j] = (s.v[j] - range.lo) / span;
+        if (lo != null && hi != null) {
+          const span = hi - lo;
+          for (let j = 0; j < s.v.length; j++) out[j] = (s.v[j] - lo) / span;
         } else {
-          // Range not established yet (no fetch with data yet) or
-          // degenerate (all values equal so far). Render the line as
-          // a centreline at y = 0.5 so the signal is *visible* — the
-          // normalisation will switch to data-driven once a real
-          // range is available. Without this fallback the raw values
-          // get drawn against the y = [0, 1] pin and clipped to
-          // nothing.
+          // No range available yet (signal hasn't decoded, or all
+          // observed values are equal so far). Render at the canvas
+          // midline so the line is *visible* — without this fallback
+          // the raw values get drawn against the y = [0, 1] pin and
+          // clipped to nothing.
           for (let j = 0; j < s.v.length; j++) out[j] = 0.5;
         }
         return { t: s.t, v: out };
@@ -1519,6 +1539,7 @@ function PlotArea(p: PlotAreaProps) {
       });
       seriesRef.current = sm;
       presentRef.current = pv;
+      effectiveRangesRef.current = effective;
       lr.onReportSeries(areaId, sm);
       lr.onAreaResampled(areaId, liveEdgeT);
       lr.onReportPerf(areaId, performance.now() - t0);
@@ -2006,10 +2027,35 @@ function PlotArea(p: PlotAreaProps) {
   }, [yModeKey]);
 
   // Panel asked us to refit y — drop the per-trace normalisation range
-  // so the next tick latches it fresh from current data.
+  // (and any manual Fit Y override) so the next tick uses the host
+  // extrema fresh.
   useEffect(() => {
     traceRangesRef.current.clear();
+    manualFitYRef.current = false;
   }, [resetYEpoch]);
+
+  /** Manual Fit Y: snapshot the *currently rendered* extent of each
+   * series and pin it as the auto-norm range until Fit Data is hit.
+   * Useful when the live capture has wide outliers but the user wants
+   * the visible region's detail to fill the canvas. */
+  const fitY = useCallback(() => {
+    const sm = seriesRef.current;
+    const next = new Map<string, { lo: number; hi: number }>();
+    for (const [key, ser] of sm) {
+      if (ser.v.length === 0) continue;
+      let lo = Infinity;
+      let hi = -Infinity;
+      for (const v of ser.v) {
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
+      }
+      if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) continue;
+      next.set(key, { lo, hi });
+    }
+    traceRangesRef.current = next;
+    manualFitYRef.current = true;
+    void resampleRef.current();
+  }, []);
 
   // Show / hide series in place when the per-signal `hidden` flags
   // change — no uPlot re-create needed (`signalSetKey` excludes it).
@@ -2044,7 +2090,7 @@ function PlotArea(p: PlotAreaProps) {
    * changing tick-to-tick. */
   const rangeFor = (key: string): { lo: number; hi: number } | null => {
     void valueTick;
-    return traceRangesRef.current.get(key) ?? null;
+    return effectiveRangesRef.current.get(key) ?? null;
   };
   /** Cache x-origin (`ts(winStart)` in absolute seconds) — diagnostic.
    * If this stays the same across a Clear, the cache anchor didn't
@@ -2141,6 +2187,16 @@ function PlotArea(p: PlotAreaProps) {
             }}
           >
             {yLabel}
+          </button>
+          <button
+            className="plot-area-fit-y"
+            title="fit y to the currently visible data — useful when zoomed in and you want the visible region to fill the canvas height"
+            onClick={(e) => {
+              e.stopPropagation();
+              fitY();
+            }}
+          >
+            fit y
           </button>
           {removable && (
             <button
