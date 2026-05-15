@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 
-import type { SignalDescriptorRecord } from "./types";
+import type { SignalDescriptorRecord, ValueTableEntryRecord } from "./types";
 import { useTraceData } from "./traceData";
 import { useProjectContext } from "./projectContext";
 import { useElementRegistry } from "./projectElements";
@@ -1153,6 +1153,46 @@ function PlotArea(p: PlotAreaProps) {
   const signalSetKey = signals.map(signalRefKey).join("|");
   const yMode = area.yMode;
 
+  // Phase-5: value-table support for enum / state signals. When the
+  // area shows *exactly one* signal *and* that signal has a `VAL_`
+  // table, the area switches to "enum mode": auto-normalisation is
+  // bypassed (the values are discrete enum codes, no rescaling),
+  // the series is rendered stepped (not linearly interpolated
+  // between codes), and the y-axis ticks become symbolic labels
+  // from the table. Multi-signal areas keep current behaviour —
+  // their value-table follow-up (per-signal stepped overlays,
+  // multiple symbolic axes) is in plans/backlog.md.
+  const [valueTable, setValueTable] = useState<ValueTableEntryRecord[] | null>(null);
+  useEffect(() => {
+    setValueTable(null);
+    if (signals.length !== 1) return;
+    const s = signals[0];
+    let cancelled = false;
+    void invoke<ValueTableEntryRecord[]>("list_value_tables", {
+      messageId: s.messageId,
+      extended: s.extended,
+      signalName: s.signalName,
+    })
+      .then((rows) => {
+        if (cancelled) return;
+        setValueTable(rows.length > 0 ? rows : null);
+      })
+      .catch(() => {
+        /* leave numeric mode on failure */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [signals]);
+  const enumMode = valueTable != null && valueTable.length > 0 && signals.length === 1;
+  // Ref mirrors so the resample callback (closure over the initial
+  // signal set) sees the up-to-date enum-mode state without being
+  // recreated on every value-table tick.
+  const enumModeRef = useRef(enumMode);
+  enumModeRef.current = enumMode;
+  const valueTableRef = useRef(valueTable);
+  valueTableRef.current = valueTable;
+
   const withSuppressed = useCallback(
     (fn: () => void) => {
       const sync = xSyncRef.current;
@@ -1439,25 +1479,33 @@ function PlotArea(p: PlotAreaProps) {
         if (existing && existing.hi > existing.lo) return;
         cache!.traceRanges.set(key, { lo, hi });
       });
-      const displaySeries: Series[] = seriesRel.map((s, i) => {
-        if (s.v.length === 0) return s;
-        const range = cache!.traceRanges.get(signalRefKey(signals[i]));
-        const out = new Array<number>(s.v.length);
-        if (range != null && range.hi > range.lo) {
-          const span = range.hi - range.lo;
-          for (let j = 0; j < s.v.length; j++) out[j] = (s.v[j] - range.lo) / span;
-        } else {
-          // Range not established yet (no fetch with data yet) or
-          // degenerate (all values equal so far). Render the line as
-          // a centreline at y = 0.5 so the signal is *visible* — the
-          // normalisation will switch to data-driven once a real
-          // range is available. Without this fallback the raw values
-          // get drawn against the y = [0, 1] pin and clipped to
-          // nothing.
-          for (let j = 0; j < s.v.length; j++) out[j] = 0.5;
-        }
-        return { t: s.t, v: out };
-      });
+      // Enum-mode: skip auto-normalisation and pass raw enum codes
+      // through. The y scale is pinned to the table's raw-value
+      // range below so the trace's discrete codes plot at their
+      // natural positions and the axis tick labels (set in `opts`)
+      // are symbolic.
+      const enumActive = enumModeRef.current && valueTableRef.current != null;
+      const displaySeries: Series[] = enumActive
+        ? seriesRel
+        : seriesRel.map((s, i) => {
+            if (s.v.length === 0) return s;
+            const range = cache!.traceRanges.get(signalRefKey(signals[i]));
+            const out = new Array<number>(s.v.length);
+            if (range != null && range.hi > range.lo) {
+              const span = range.hi - range.lo;
+              for (let j = 0; j < s.v.length; j++) out[j] = (s.v[j] - range.lo) / span;
+            } else {
+              // Range not established yet (no fetch with data yet) or
+              // degenerate (all values equal so far). Render the line as
+              // a centreline at y = 0.5 so the signal is *visible* — the
+              // normalisation will switch to data-driven once a real
+              // range is available. Without this fallback the raw values
+              // get drawn against the y = [0, 1] pin and clipped to
+              // nothing.
+              for (let j = 0; j < s.v.length; j++) out[j] = 0.5;
+            }
+            return { t: s.t, v: out };
+          });
       const merged = mergeSeries(displaySeries) as uPlot.AlignedData;
       const xs = merged[0] as number[];
       // Live-edge time for follow-live: when the fetch was scoped to a
@@ -1480,8 +1528,16 @@ function PlotArea(p: PlotAreaProps) {
         u.setData(merged, false);
         const { xMin, xMax } = xSyncRef.current;
         if (xMin != null && xMax != null) u.setScale("x", { min: xMin, max: xMax });
-        if (lr.yMode === "auto") u.setScale("y", { min: 0, max: 1 });
-        else u.setScale("y", { min: lr.yMode.min, max: lr.yMode.max });
+        if (enumActive && valueTableRef.current != null) {
+          const rows = valueTableRef.current;
+          const lo = Math.min(...rows.map((r) => r.raw));
+          const hi = Math.max(...rows.map((r) => r.raw));
+          u.setScale("y", { min: lo - 0.5, max: hi + 0.5 });
+        } else if (lr.yMode === "auto") {
+          u.setScale("y", { min: 0, max: 1 });
+        } else {
+          u.setScale("y", { min: lr.yMode.min, max: lr.yMode.max });
+        }
       });
 
       const sm = new Map<string, Series>();
@@ -1542,6 +1598,26 @@ function PlotArea(p: PlotAreaProps) {
       ticks: { stroke: AXIS_TICKS, width: 1 },
       font: "10px ui-monospace, SFMono-Regular, Menlo, monospace",
     };
+    // Phase-5 enum-mode hook-up: stepped paths + symbolic y-axis
+    // ticks. The construction effect closes over `valueTable` so a
+    // table-fetch resolution (which re-renders + triggers rebuild
+    // through the `signalSetKey` dep on this effect) installs the
+    // enum-mode opts on the next uPlot instance.
+    const enumActiveAtConstruct = enumMode && valueTable != null;
+    const enumRaws = enumActiveAtConstruct ? valueTable.map((r) => r.raw) : [];
+    const enumLabelFor = (raw: number): string => {
+      const found = valueTable?.find((r) => r.raw === raw);
+      return found ? found.label : String(raw);
+    };
+    const yAxis: uPlot.Axis = enumActiveAtConstruct
+      ? {
+          ...axisCommon,
+          size: 80,
+          splits: () => enumRaws,
+          values: (_u, splits) =>
+            splits.map((v) => `${v} "${enumLabelFor(Math.round(v))}"`),
+        }
+      : { ...axisCommon, size: 52 };
     const opts: uPlot.Options = {
       width: el.clientWidth || 600,
       height: Math.max(60, el.clientHeight - 2),
@@ -1553,7 +1629,7 @@ function PlotArea(p: PlotAreaProps) {
       cursor: { drag: { x: false, y: false } },
       axes: [
         { ...axisCommon, label: "time (s)", labelSize: 16, size: 34 },
-        { ...axisCommon, size: 52 },
+        yAxis,
       ],
       series: [
         {},
@@ -1563,6 +1639,9 @@ function PlotArea(p: PlotAreaProps) {
           width: 1,
           points: { show: false },
           show: !s.hidden,
+          ...(enumActiveAtConstruct && uPlot.paths.stepped
+            ? { paths: uPlot.paths.stepped({ align: 1 }) }
+            : {}),
         })),
       ],
       hooks: {
@@ -1902,7 +1981,7 @@ function PlotArea(p: PlotAreaProps) {
       if (uplotRef.current === u) uplotRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [signalSetKey, areaId, resizeTick]);
+  }, [signalSetKey, areaId, resizeTick, valueTable]);
 
   // While the trace is running, re-sample on a self-paced loop at the
   // configured rate (each tick scheduled after the previous one
