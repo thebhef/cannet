@@ -242,6 +242,50 @@ header {
   background: #1a212b;
 }
 
+/* Phase-6 modal overlay variant (BLF channel-map). Same look as
+   `.modal-backdrop` but the modal is wider and the rows scroll. */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgb(0 0 0 / 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.modal-subtitle {
+  color: #94a3b8;
+  font-size: 0.85rem;
+  margin: 0.1rem 0 0.6rem;
+}
+
+.modal-empty {
+  color: #fbbf24;
+  font-size: 0.85rem;
+  margin: 0 0 0.6rem;
+}
+
+.blf-map-rows {
+  max-height: 18rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-bottom: 0.8rem;
+}
+
+.blf-map-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.blf-map-channel {
+  flex: 0 0 7rem;
+  color: #cbd5e1;
+}
+
 /* Project panel: a few stacked sections (the project file, the
    configured bus(es), the attached DBC) with their actions. */
 .project-panel {
