@@ -296,3 +296,54 @@ async fn batch_then_unbatch_preserves_frames_in_order() {
 
     assert_eq!(recovered, originals);
 }
+
+// ---------- Phase 7: LogMessage envelope ----------
+
+#[test]
+fn log_message_round_trips_through_protobuf() {
+    use prost::Message;
+    let log = proto::LogMessage {
+        timestamp_ns: 1_234_567,
+        level: proto::LogLevel::Warn as i32,
+        source: "sidecar:peak".into(),
+        message: "USB device unplugged".into(),
+    };
+    let envelope = proto::Envelope {
+        body: Some(proto::envelope::Body::Log(log.clone())),
+    };
+
+    let bytes = envelope.encode_to_vec();
+    let decoded = proto::Envelope::decode(bytes.as_slice()).unwrap();
+
+    match decoded.body.expect("body present") {
+        proto::envelope::Body::Log(decoded_log) => {
+            assert_eq!(decoded_log.timestamp_ns, log.timestamp_ns);
+            assert_eq!(decoded_log.level, log.level);
+            assert_eq!(decoded_log.source, log.source);
+            assert_eq!(decoded_log.message, log.message);
+        }
+        other => panic!("expected Log envelope, got {other:?}"),
+    }
+}
+
+#[test]
+fn log_message_is_distinct_from_error_envelope() {
+    // An Error variant uses its own tag (4) and the Log variant uses
+    // tag 5. Neither maps into the other.
+    let err = proto::Envelope {
+        body: Some(proto::envelope::Body::Error(proto::Error {
+            code: proto::error::Code::Busy as i32,
+            message: "already connected".into(),
+        })),
+    };
+    let log = proto::Envelope {
+        body: Some(proto::envelope::Body::Log(proto::LogMessage {
+            timestamp_ns: 0,
+            level: proto::LogLevel::Info as i32,
+            source: "server".into(),
+            message: "starting up".into(),
+        })),
+    };
+    assert!(matches!(err.body, Some(proto::envelope::Body::Error(_))));
+    assert!(matches!(log.body, Some(proto::envelope::Body::Log(_))));
+}
