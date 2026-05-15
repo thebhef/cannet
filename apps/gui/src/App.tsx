@@ -26,6 +26,14 @@ import { ProjectPanel } from "./ProjectPanel";
 import { ProjectGraphPanel } from "./ProjectGraphPanel";
 import { PlotPanel } from "./PlotPanel";
 import { TransmitPanel } from "./TransmitPanel";
+import { SystemMessagesPanel } from "./SystemMessagesPanel";
+import { SystemLogContext, type SystemLogContextValue } from "./systemLogContext";
+import {
+  mergeSystemMessage,
+  reconcileSnapshot,
+  unreadWarnOrError,
+} from "./systemLog";
+import type { SystemMessage } from "./types";
 import { TraceDataContext, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { CloseConfirmModal, type CloseChoice } from "./CloseConfirmModal";
@@ -44,6 +52,7 @@ import {
   PLOT_PANEL_COMPONENT,
   PROJECT_GRAPH_PANEL_COMPONENT,
   PROJECT_PANEL_COMPONENT,
+  SYSTEM_MESSAGES_PANEL_COMPONENT,
   TRACE_PANEL_COMPONENT,
   TRANSMIT_PANEL_COMPONENT,
   parseSavedLayout,
@@ -85,6 +94,7 @@ const DOCK_COMPONENTS = {
   [PLOT_PANEL_COMPONENT]: PlotPanel,
   [TRANSMIT_PANEL_COMPONENT]: TransmitPanel,
   [PROJECT_GRAPH_PANEL_COMPONENT]: ProjectGraphPanel,
+  [SYSTEM_MESSAGES_PANEL_COMPONENT]: SystemMessagesPanel,
 };
 
 /// The project panel is a show/hide singleton — a fixed dockview id so
@@ -142,6 +152,15 @@ export function App() {
   // `project.elements`, seeded on first launch / New, serialized back
   // on Save. Starts empty; `seedDefaultLayout` (called below) fills it.
   const [registry, setRegistry] = useState<RegistryEntry[]>([]);
+
+  // Phase 7 host-side log bus mirror. Bootstrapped by
+  // `fetch_system_log` and kept current by `system-log-appended`
+  // events. Session-scoped, not persisted.
+  const [systemMessages, setSystemMessages] = useState<SystemMessage[]>([]);
+  /// High-water seq the user has acknowledged. The unread badge counts
+  /// warn/error entries with `seq > readHighWater`. Starts at -1 so
+  /// every initial warn/error counts as unread.
+  const [readHighWater, setReadHighWater] = useState<number>(-1);
 
   // Captured once: timestamp of absolute row 0. Survives the user
   // scrolling anywhere in the trace; reset on Clear / new source.
@@ -271,6 +290,25 @@ export function App() {
     },
     [refreshChunk],
   );
+
+  // Phase 7: bootstrap + live-update the system-log mirror. The
+  // snapshot is the source of truth on mount; thereafter the host's
+  // `system-log-appended` event delivers each new entry. The merge
+  // helpers dedupe by `seq` so a snapshot/event race is harmless.
+  useEffect(() => {
+    let cancelled = false;
+    void invoke<SystemMessage[]>("fetch_system_log").then((snap) => {
+      if (cancelled) return;
+      setSystemMessages((current) => reconcileSnapshot(current, snap));
+    });
+    const unlisten = listen<SystemMessage>("system-log-appended", (event) => {
+      setSystemMessages((current) => mergeSystemMessage(current, event.payload));
+    });
+    return () => {
+      cancelled = true;
+      void unlisten.then((fn) => fn());
+    };
+  }, []);
 
   useEffect(() => {
     const unlistens: Array<Promise<() => void>> = [];
@@ -910,6 +948,56 @@ export function App() {
     });
   }, []);
 
+  // Phase 7: add a System Messages panel. If one already exists,
+  // focus it instead of stacking another.
+  const addSystemMessagesPanel = useCallback(() => {
+    const api = dockApiRef.current;
+    if (!api) return;
+    const existing = api.panels.find(
+      (p) => p.id.startsWith("system-messages-"),
+    );
+    if (existing) {
+      existing.api.setActive();
+      return;
+    }
+    panelCounterRef.current += 1;
+    api.addPanel({
+      id: `system-messages-${panelCounterRef.current}`,
+      component: SYSTEM_MESSAGES_PANEL_COMPONENT,
+      title: "System messages",
+    });
+  }, []);
+
+  // Phase 7 system-log context: mirror + clear + markRead. `clear`
+  // empties both the host's ring and the frontend's mirror; the host
+  // does *not* reset its seq counter (callers rely on monotonicity),
+  // so we don't reset `readHighWater` either.
+  const clearSystemLog = useCallback(() => {
+    void invoke("clear_system_log").catch(() => { /* best effort */ });
+    setSystemMessages([]);
+  }, []);
+  const markSystemLogRead = useCallback(() => {
+    setSystemMessages((current) => {
+      if (current.length === 0) return current;
+      const lastSeq = current[current.length - 1].seq;
+      setReadHighWater((prev) => (lastSeq > prev ? lastSeq : prev));
+      return current;
+    });
+  }, []);
+  const unread = useMemo(
+    () => unreadWarnOrError(systemMessages, readHighWater),
+    [systemMessages, readHighWater],
+  );
+  const systemLogValue: SystemLogContextValue = useMemo(
+    () => ({
+      messages: systemMessages,
+      unread,
+      clear: clearSystemLog,
+      markRead: markSystemLogRead,
+    }),
+    [systemMessages, unread, clearSystemLog, markSystemLogRead],
+  );
+
   const toggleProjectPanel = useCallback(() => {
     const api = dockApiRef.current;
     if (!api) return;
@@ -1109,23 +1197,41 @@ export function App() {
           <button onClick={addTransmitPanel}>Add transmit panel</button>
           <button onClick={addProjectGraphPanel}>Add graph panel</button>
           <button onClick={toggleProjectPanel}>Project panel</button>
+          <button
+            onClick={addSystemMessagesPanel}
+            className="system-messages-button"
+            aria-label={
+              unread > 0
+                ? `System messages (${unread} unread)`
+                : "System messages"
+            }
+          >
+            System messages
+            {unread > 0 && (
+              <span className="system-messages-badge" aria-hidden="true">
+                {unread > 99 ? "99+" : unread}
+              </span>
+            )}
+          </button>
         </div>
         <div className="status">{status}</div>
       </header>
       <ProjectContext.Provider value={projectContextValue}>
         <ElementRegistryContext.Provider value={elementRegistryValue}>
-          <TraceDataContext.Provider value={traceData}>
-            {/* dockview drags tabs with the HTML5 drag-and-drop API, which
-                Tauri's OS-level drag-drop handler breaks on WebView2 — hence
-                `dragDropEnabled: false` in tauri.conf.json. The GUI takes
-                files via the dialog plugin, not by drop, so nothing is lost. */}
-            <DockviewReact
-              className="dock-area"
-              theme={themeAbyss}
-              components={DOCK_COMPONENTS}
-              onReady={handleDockReady}
-            />
-          </TraceDataContext.Provider>
+          <SystemLogContext.Provider value={systemLogValue}>
+            <TraceDataContext.Provider value={traceData}>
+              {/* dockview drags tabs with the HTML5 drag-and-drop API, which
+                  Tauri's OS-level drag-drop handler breaks on WebView2 — hence
+                  `dragDropEnabled: false` in tauri.conf.json. The GUI takes
+                  files via the dialog plugin, not by drop, so nothing is lost. */}
+              <DockviewReact
+                className="dock-area"
+                theme={themeAbyss}
+                components={DOCK_COMPONENTS}
+                onReady={handleDockReady}
+              />
+            </TraceDataContext.Provider>
+          </SystemLogContext.Provider>
         </ElementRegistryContext.Provider>
       </ProjectContext.Provider>
       {pendingClose && <CloseConfirmModal onChoice={pendingClose.resolve} />}

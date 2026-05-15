@@ -29,6 +29,9 @@ export const TRANSMIT_PANEL_COMPONENT = "transmit";
 /// Phase 6: spatial / wiring view onto the project state. Distinct
 /// from the list-oriented `PROJECT_PANEL_COMPONENT`.
 export const PROJECT_GRAPH_PANEL_COMPONENT = "project-graph";
+/// Phase 7: host-side log bus surface. Multiple are allowed (each
+/// carries its own source / min-level filter in `params`).
+export const SYSTEM_MESSAGES_PANEL_COMPONENT = "system-messages";
 
 /**
  * Sanity-check an already-parsed value as a dockview layout. Returns
