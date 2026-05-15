@@ -71,14 +71,18 @@ and the license / platform constraints we need to be aware of.
   virtualizer (`apps/gui/src/TraceView.tsx`) that caps the scroll
   container at 16M px and maps scrollTop fractionally to absolute
   row index. ~120 lines, no external dep.
-- **`@xyflow/react`** (formerly `react-flow`, MIT) — `proposed` for
-  Phase 6's project graph view. Node / edge model with drag-to-create-
-  edge, custom node renderers, controllable state, and a serialisable
-  layout — fits the "lean on a vetted library for failure-mode-rich
-  UI" call from `CLAUDE.md` (graph interaction is the kind of work
-  that compounds badly when hand-rolled). The logical model lives in
-  the project schema; the view only stores viewport + node positions
-  in dockview `params`, so the library boundary is thin.
+- **`@xyflow/react`** (formerly `react-flow`, MIT) — `adopted` in
+  Phase 6 for the project graph view (`apps/gui/src/ProjectGraphPanel.tsx`).
+  Node / edge model with drag-to-create-edge, custom node renderers,
+  controllable state, and a serialisable layout — fits the "lean on a
+  vetted library for failure-mode-rich UI" call from `CLAUDE.md` (graph
+  interaction is the kind of work that compounds badly when
+  hand-rolled). The logical model lives in the project schema
+  (`buses`, `interface_bindings`, `elements` with `filter` /
+  `trace` / `plot` / `transmit` kinds); the view only stores viewport
+  + per-node positions in the panel's dockview `params`, so the
+  library boundary stays thin (swap-out cost is one file). Cost note:
+  ≈100 KB JS gzipped + a small CSS bundle; fine for a desktop app.
   Alternatives considered (all permissive):
   - **`cytoscape.js`** + React wrapper — `rejected`. Graph-algorithms-
     first; weak React integration story (glue rather than first-class).
