@@ -7,7 +7,10 @@ import { DockviewReact, themeAbyss } from "dockview";
 import type { DockviewApi, DockviewReadyEvent } from "dockview";
 
 import type {
+  Bus,
   DbcInfo,
+  DbcRef,
+  InterfaceBinding,
   LogFinished,
   OpenLogResult,
   Project,
@@ -105,6 +108,13 @@ export function App() {
   // Paths of the loaded DBCs, in priority order (mirrors the host's set
   // — it owns the parsed databases; this is just what the UI shows).
   const [dbcPaths, setDbcPaths] = useState<string[]>([]);
+  // Phase 6: per-DBC bus scoping (path → bus ids). Empty list = unscoped.
+  // Mirrors the host's `LoadedDbc.buses`; the project file carries the
+  // canonical `dbcs: DbcRef[]` shape.
+  const [dbcBuses, setDbcBuses] = useState<Record<string, string[]>>({});
+  // Phase 6: logical buses + interface bindings. Project-owned state.
+  const [buses, setBuses] = useState<Bus[]>([]);
+  const [interfaceBindings, setInterfaceBindings] = useState<InterfaceBinding[]>([]);
   const [remoteAddress, setRemoteAddress] = useState(DEFAULT_REMOTE_ADDRESS);
   // Path of the open project file, or null for an unsaved workspace.
   const [projectPath, setProjectPath] = useState<string | null>(null);
@@ -391,9 +401,11 @@ export function App() {
   // Replace the loaded-DBC set with exactly `paths` (clear, then re-add
   // each in order). Used by "open project", "new project" (empty list),
   // and "reload all from disk". Paths that fail to read / parse are
-  // dropped and reported together.
+  // dropped and reported together. Phase 6: `scoping` (path → bus_id[])
+  // is committed to the host after each add so per-bus DBC scoping
+  // survives an open-project round-trip.
   const loadDbcSet = useCallback(
-    async (paths: readonly string[]) => {
+    async (paths: readonly string[], scoping: Record<string, string[]> = {}) => {
       try {
         await invoke("clear_dbcs");
       } catch {
@@ -404,6 +416,10 @@ export function App() {
       for (const path of paths) {
         try {
           list = (await invoke<DbcInfo[]>("add_dbc", { path })).map((d) => d.dbc_path);
+          const buses = scoping[path];
+          if (buses && buses.length > 0) {
+            await invoke<DbcInfo[]>("set_dbc_buses", { path, buses });
+          }
         } catch (err) {
           errors.push(`${path}: ${String(err)}`);
         }
@@ -483,16 +499,25 @@ export function App() {
   }, [create]);
 
   /// Snapshot the current workspace into a `Project` (the elements, not
-  /// their runtime state — that re-anchors on reload).
+  /// their runtime state — that re-anchors on reload). Phase 6 emits
+  /// `buses`, `interface_bindings`, and `dbcs` (per-DBC bus scoping).
   const gatherProject = useCallback(
-    (): Project => ({
-      schema_version: PROJECT_SCHEMA_VERSION,
-      layout: dockApiRef.current?.toJSON() ?? { grid: {}, panels: {} },
-      elements: registry.map((e) => e.element),
-      dbc_paths: dbcPaths,
-      remote_address: remoteAddress.trim() || null,
-    }),
-    [registry, dbcPaths, remoteAddress],
+    (): Project => {
+      const dbcs: DbcRef[] = dbcPaths.map((path) => ({
+        path,
+        buses: dbcBuses[path] ?? [],
+      }));
+      return {
+        schema_version: PROJECT_SCHEMA_VERSION,
+        layout: dockApiRef.current?.toJSON() ?? { grid: {}, panels: {} },
+        elements: registry.map((e) => e.element),
+        buses,
+        interface_bindings: interfaceBindings,
+        dbcs,
+        remote_address: remoteAddress.trim() || null,
+      };
+    },
+    [registry, dbcPaths, dbcBuses, buses, interfaceBindings, remoteAddress],
   );
 
   // Record which project is "open" — both the React state and the
@@ -534,7 +559,23 @@ export function App() {
         }
       }
       setRemoteAddress(project.remote_address ?? DEFAULT_REMOTE_ADDRESS);
-      void loadDbcSet(Array.isArray(project.dbc_paths) ? project.dbc_paths : []);
+      // Phase 6: pull bus / binding state, then load DBCs with their
+      // bus scoping. `loadDbcSet` takes the scoping map so each DBC
+      // is committed to the host with the right `buses`.
+      const incomingBuses = Array.isArray(project.buses) ? project.buses : [];
+      const incomingBindings = Array.isArray(project.interface_bindings)
+        ? project.interface_bindings
+        : [];
+      const incomingDbcs: DbcRef[] = Array.isArray(project.dbcs) ? project.dbcs : [];
+      setBuses(incomingBuses);
+      setInterfaceBindings(incomingBindings);
+      const scoping: Record<string, string[]> = {};
+      for (const d of incomingDbcs) scoping[d.path] = d.buses ?? [];
+      setDbcBuses(scoping);
+      void loadDbcSet(
+        incomingDbcs.map((d) => d.path),
+        scoping,
+      );
     },
     [loadDbcSet],
   );
@@ -544,7 +585,10 @@ export function App() {
     // session — disconnect and clear the buffer too.
     seedDefaultLayout();
     rememberProject(null);
-    void loadDbcSet([]);
+    void loadDbcSet([], {});
+    setDbcBuses({});
+    setBuses([]);
+    setInterfaceBindings([]);
     void invoke("disconnect_remote_server").catch(() => {});
     void invoke("clear_trace_store").catch(() => {});
     invalidateCache();
@@ -627,9 +671,66 @@ export function App() {
 
   // Re-read every loaded DBC from disk (a file that's gone or no longer
   // parses drops out, with an error). No-op when none are loaded.
+  // Phase 6: preserve per-DBC bus scoping across the reload.
   const handleReloadDbc = useCallback(() => {
-    if (dbcPaths.length > 0) void loadDbcSet(dbcPaths);
-  }, [dbcPaths, loadDbcSet]);
+    if (dbcPaths.length > 0) void loadDbcSet(dbcPaths, dbcBuses);
+  }, [dbcPaths, dbcBuses, loadDbcSet]);
+
+  // Phase 6: update a single DBC's bus scoping and push it to the host.
+  const handleSetDbcBuses = useCallback(
+    (path: string, scopedBuses: string[]) => {
+      setDbcBuses((prev) => ({ ...prev, [path]: scopedBuses }));
+      setDirty(true);
+      invalidateCache(); // decoded view changes
+      void invoke<DbcInfo[]>("set_dbc_buses", { path, buses: scopedBuses }).catch((err) =>
+        setState({ kind: "error", message: String(err) }),
+      );
+    },
+    [invalidateCache],
+  );
+
+  // Phase 6: bus list mutations (add / rename / remove). Pure project
+  // state; the host doesn't need a separate command (the buses ride
+  // through the project file, and the per-DBC scoping refresh below
+  // re-publishes the canonical set when a rename / remove changes ids).
+  const handleAddBus = useCallback((bus: Bus) => {
+    setBuses((prev) => (prev.some((b) => b.id === bus.id) ? prev : [...prev, bus]));
+    setDirty(true);
+  }, []);
+  const handleRemoveBus = useCallback((id: string) => {
+    setBuses((prev) => prev.filter((b) => b.id !== id));
+    setInterfaceBindings((prev) => prev.filter((b) => b.bus_id !== id));
+    setDbcBuses((prev) => {
+      const next: Record<string, string[]> = {};
+      for (const [path, scoped] of Object.entries(prev)) {
+        next[path] = scoped.filter((b) => b !== id);
+      }
+      return next;
+    });
+    setDirty(true);
+    invalidateCache();
+  }, [invalidateCache]);
+  const handleRenameBus = useCallback((id: string, name: string) => {
+    setBuses((prev) => prev.map((b) => (b.id === id ? { ...b, name } : b)));
+    setDirty(true);
+  }, []);
+  // Phase 6: interface-binding mutations.
+  const handleAddBinding = useCallback((binding: InterfaceBinding) => {
+    setInterfaceBindings((prev) => {
+      // Last-write-wins on (server, interface).
+      const filtered = prev.filter(
+        (b) => !(b.server === binding.server && b.interface === binding.interface),
+      );
+      return [...filtered, binding];
+    });
+    setDirty(true);
+  }, []);
+  const handleRemoveBinding = useCallback((server: string, iface: string) => {
+    setInterfaceBindings((prev) =>
+      prev.filter((b) => !(b.server === server && b.interface === iface)),
+    );
+    setDirty(true);
+  }, []);
 
   const getFrame = useCallback((index: number): TraceFrameRecord | null => {
     const chunkIdx = Math.floor(index / CHUNK_SIZE);
@@ -811,6 +912,9 @@ export function App() {
       projectPath,
       dirty,
       dbcPaths,
+      dbcBuses,
+      buses,
+      interfaceBindings,
       remoteAddress,
       remoteConnected,
       blfPath,
@@ -821,6 +925,12 @@ export function App() {
       onAddDbc: handleAddDbc,
       onRemoveDbc: handleRemoveDbc,
       onReloadDbc: handleReloadDbc,
+      onSetDbcBuses: handleSetDbcBuses,
+      onAddBus: handleAddBus,
+      onRemoveBus: handleRemoveBus,
+      onRenameBus: handleRenameBus,
+      onAddBinding: handleAddBinding,
+      onRemoveBinding: handleRemoveBinding,
       onConnect: handleConnect,
       onDisconnect: handleDisconnect,
     }),
@@ -828,6 +938,9 @@ export function App() {
       projectPath,
       dirty,
       dbcPaths,
+      dbcBuses,
+      buses,
+      interfaceBindings,
       remoteAddress,
       remoteConnected,
       blfPath,
@@ -838,6 +951,12 @@ export function App() {
       handleAddDbc,
       handleRemoveDbc,
       handleReloadDbc,
+      handleSetDbcBuses,
+      handleAddBus,
+      handleRemoveBus,
+      handleRenameBus,
+      handleAddBinding,
+      handleRemoveBinding,
       handleConnect,
       handleDisconnect,
     ],

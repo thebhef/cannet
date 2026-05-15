@@ -319,6 +319,41 @@ header {
   font-style: italic;
 }
 
+.project-bus-name-input {
+  flex: 1 1 auto;
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: #0f172a;
+  color: #e2e8f0;
+  border: 1px solid #1e293b;
+  border-radius: 0.2rem;
+  padding: 0.15rem 0.35rem;
+}
+
+.project-dbc {
+  flex-wrap: wrap;
+}
+
+.project-dbc-scoping {
+  flex: 1 0 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  margin-top: 0.2rem;
+  color: #94a3b8;
+}
+
+.project-dbc-scoping-label {
+  color: #64748b;
+}
+
+.project-dbc-scoping-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+
 .project-buttons {
   display: flex;
   flex-wrap: wrap;

@@ -105,7 +105,7 @@ export function ProjectPanel(props: IDockviewPanelProps) {
       </section>
 
       <section className="project-section">
-        <h3>Buses</h3>
+        <h3>Connection</h3>
         {p.blfPath && (
           <div className="project-bus">
             <span className="project-bus-name" title={p.blfPath}>
@@ -129,23 +129,117 @@ export function ProjectPanel(props: IDockviewPanelProps) {
           )}
         </div>
         {!p.blfPath && !p.remoteAddress.trim() && (
-          <div className="project-empty">No bus configured.</div>
+          <div className="project-empty">No connection configured.</div>
         )}
+      </section>
+
+      <section className="project-section">
+        <h3>Logical buses</h3>
+        {p.buses.length === 0 && <div className="project-empty">No buses.</div>}
+        {p.buses.map((bus) => (
+          <div className="project-bus" key={bus.id}>
+            <input
+              type="text"
+              className="project-bus-name-input"
+              value={bus.name}
+              onChange={(e) => p.onRenameBus(bus.id, e.target.value)}
+              aria-label={`bus ${bus.id} name`}
+            />
+            <span className="project-bus-state" title={bus.id}>
+              id: {bus.id}
+            </span>
+            <button type="button" onClick={() => p.onRemoveBus(bus.id)}>
+              Remove
+            </button>
+          </div>
+        ))}
+        <div className="project-buttons">
+          <button
+            type="button"
+            onClick={() => {
+              const id = newBusId(p.buses.map((b) => b.id));
+              p.onAddBus({ id, name: `Bus ${p.buses.length + 1}` });
+            }}
+          >
+            Add bus
+          </button>
+        </div>
+      </section>
+
+      <section className="project-section">
+        <h3>Interface bindings</h3>
+        {p.interfaceBindings.length === 0 && (
+          <div className="project-empty">No bindings.</div>
+        )}
+        {p.interfaceBindings.map((b) => (
+          <div className="project-bus" key={`${b.server}::${b.interface}`}>
+            <span className="project-bus-name" title={`${b.server} / ${b.interface}`}>
+              {b.interface} ({basename(b.server)})
+            </span>
+            <select
+              value={b.bus_id}
+              onChange={(e) =>
+                p.onAddBinding({ ...b, bus_id: e.target.value })
+              }
+              aria-label="binding bus"
+            >
+              {p.buses.map((bus) => (
+                <option value={bus.id} key={bus.id}>
+                  {bus.name}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => p.onRemoveBinding(b.server, b.interface)}
+            >
+              Remove
+            </button>
+          </div>
+        ))}
       </section>
 
       <section className="project-section">
         <h3>DBC</h3>
         {p.dbcPaths.length === 0 && <div className="project-empty">No DBCs loaded.</div>}
-        {p.dbcPaths.map((path) => (
-          <div className="project-dbc" key={path}>
-            <span className="project-dbc-name" title={path}>
-              {basename(path)}
-            </span>
-            <button type="button" onClick={() => p.onRemoveDbc(path)}>
-              Remove
-            </button>
-          </div>
-        ))}
+        {p.dbcPaths.map((path) => {
+          const scoped = p.dbcBuses[path] ?? [];
+          return (
+            <div className="project-dbc" key={path}>
+              <span className="project-dbc-name" title={path}>
+                {basename(path)}
+              </span>
+              <button type="button" onClick={() => p.onRemoveDbc(path)}>
+                Remove
+              </button>
+              {p.buses.length > 0 && (
+                <div className="project-dbc-scoping">
+                  <span className="project-dbc-scoping-label">
+                    {scoped.length === 0 ? "all buses" : "scoped:"}
+                  </span>
+                  {p.buses.map((bus) => {
+                    const on = scoped.includes(bus.id);
+                    return (
+                      <label key={bus.id} className="project-dbc-scoping-checkbox">
+                        <input
+                          type="checkbox"
+                          checked={on}
+                          onChange={() => {
+                            const next = on
+                              ? scoped.filter((b) => b !== bus.id)
+                              : [...scoped, bus.id];
+                            p.onSetDbcBuses(path, next);
+                          }}
+                        />
+                        {bus.name}
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
         <div className="project-buttons">
           <button type="button" onClick={p.onAddDbc}>
             Add…
@@ -159,6 +253,17 @@ export function ProjectPanel(props: IDockviewPanelProps) {
       </section>
     </div>
   );
+}
+
+/// Pick a short stable id for a freshly-created bus (`b1`, `b2`, …).
+/// Stable in the sense that two buses on the same project never share
+/// an id; not stable across renames (since renaming doesn't change the
+/// id).
+function newBusId(existing: readonly string[]): string {
+  for (let i = 1; ; i++) {
+    const candidate = `b${i}`;
+    if (!existing.includes(candidate)) return candidate;
+  }
 }
 
 function basename(path: string): string {

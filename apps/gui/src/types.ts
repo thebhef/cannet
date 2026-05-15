@@ -35,6 +35,10 @@ export interface TraceFrameRecord {
   kind: CanFrameKind;
   data: number[];
   decoded: DecodedRecord | null;
+  /// Logical bus id this frame was routed onto (Phase 6), if any.
+  /// `undefined` / `null` means "unassigned" — the per-bus DBC scoping
+  /// and the filter `{bus}` predicate both reject those.
+  bus_id?: string | null;
 }
 
 /// Periodic IPC event carrying the trace store's current size + rate,
@@ -57,6 +61,36 @@ export interface OpenLogResult {
 export interface DbcInfo {
   dbc_path: string;
   message_count: number;
+  /// Logical bus ids this DBC is scoped to (Phase 6). Empty / absent =
+  /// unscoped (applies to all buses).
+  buses?: string[];
+}
+
+/// One logical bus the project owns (Phase 6). `id` is stable across
+/// renames and what the graph view / per-DBC scoping / filter
+/// predicates reference. Mirrors `src-tauri/src/project.rs::Bus`.
+export interface Bus {
+  id: string;
+  name: string;
+  speed_bps?: number | null;
+  fd?: boolean | null;
+}
+
+/// An interface → bus binding (Phase 6). `server` is the remote
+/// address (or a sidecar prefix later); `interface` matches the
+/// wire-level `Interface.id`.
+export interface InterfaceBinding {
+  server: string;
+  interface: string;
+  bus_id: string;
+}
+
+/// A loaded DBC reference + its bus scoping (Phase 6). Replaces the v2
+/// `dbc_paths` entry on `Project`; an empty `buses` is the "all buses"
+/// default.
+export interface DbcRef {
+  path: string;
+  buses: string[];
 }
 
 export interface InterfaceRecord {
@@ -88,14 +122,35 @@ export interface ByIdSnapshotRecord {
 /// `id`. `trace` = a trace panel; `plot` = a signal-plot panel (also
 /// backed by a trace-style session window, but a distinct kind so the
 /// project view and panel-reopen treat it as a plot, not a trace);
-/// `transmit` = a Phase-5 transmit panel composing CAN frames. The
-/// element itself carries no extra config — the panel showing it owns
-/// its config (a trace's mode + columns, a plot's areas / cursors,
-/// a transmit panel's frame list) in the dockview panel `params`.
+/// `transmit` = a Phase-5 transmit panel composing CAN frames;
+/// `filter` = a Phase-6 filter element (structured predicate +
+/// upstream source). The element itself carries no extra config beyond
+/// what's listed below — the panel showing it owns its config (a
+/// trace's mode + columns, a plot's areas / cursors, a transmit
+/// panel's frame list) in the dockview panel `params`.
 export type ProjectElement =
-  | { kind: "trace"; id: string }
-  | { kind: "plot"; id: string }
-  | { kind: "transmit"; id: string };
+  | { kind: "trace"; id: string; source?: string | null }
+  | { kind: "plot"; id: string; source?: string | null }
+  | { kind: "transmit"; id: string }
+  | {
+      kind: "filter";
+      id: string;
+      name?: string;
+      source?: string | null;
+      predicate?: FilterPredicate | null;
+    };
+
+/// Structured filter predicate (Phase 6). Mirrors
+/// `src-tauri/src/filter.rs::FilterPredicate`. The frontend's filter-
+/// node UI builds this directly; the host evaluates it.
+export type FilterPredicate =
+  | { all: FilterPredicate[] }
+  | { any: FilterPredicate[] }
+  | { bus: string }
+  | { id_range: [number, number] }
+  | { id_list: number[] }
+  | { name_regex: string }
+  | { signal_equals: { name: string; value: number } };
 
 /// The discriminant of a {@link ProjectElement}.
 export type ProjectElementKind = ProjectElement["kind"];
@@ -104,18 +159,25 @@ export type ProjectElementKind = ProjectElement["kind"];
 /// `layout` (dockview's `SerializedDockview`) and `elements` are stored
 /// by the host without interpretation, so they're typed loosely here
 /// and validated before use (`dockLayout.ts::validateLayout`,
-/// `projectElements.ts::isProjectElement`).
+/// `projectElements.ts::isProjectElement`). Phase 6 grew the schema
+/// with `buses`, `interface_bindings`, and per-DBC `dbcs` scoping
+/// (the v2 `dbc_paths` list is migrated host-side on parse — see
+/// `project.rs::migrate_v2`).
 export interface Project {
   schema_version: number;
   layout: unknown;
   elements: unknown[];
-  /// Paths of the loaded DBCs, in priority order (first match wins when
-  /// decoding) — references re-read from disk on open.
-  dbc_paths: string[];
+  /// Phase 6: logical buses. Empty for a freshly-created or migrated v2 project.
+  buses: Bus[];
+  /// Phase 6: interface → bus bindings (per remote server / sidecar).
+  interface_bindings: InterfaceBinding[];
+  /// Phase 6: loaded DBCs in priority order, each with its bus
+  /// scoping. Replaces the v2 `dbc_paths` list.
+  dbcs: DbcRef[];
   remote_address: string | null;
 }
 
-export const PROJECT_SCHEMA_VERSION = 2;
+export const PROJECT_SCHEMA_VERSION = 3;
 
 /// One `(message, signal)` pair the attached DBC defines, returned by
 /// the `list_signals` command for a plot panel's signal picker.
