@@ -47,6 +47,11 @@ pub struct SignalRecord {
     /// Physical value (raw * factor + offset).
     pub value: f64,
     pub unit: String,
+    /// `VAL_` label matching this decoded value, if any. The trace
+    /// view's decoded-signal grid renders `<value> "<label>"` when
+    /// this is present; otherwise just `<value>`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 impl TraceFrameRecord {
@@ -118,6 +123,66 @@ pub struct TraceGrew {
     pub tail: Vec<TraceFrameRecord>,
 }
 
+/// One frame the GUI's transmit panel wants sent. `camelCase` on the
+/// wire (Tauri only renames *top-level* command args, not nested
+/// fields). `data` is the raw payload (empty for `remote` / `error`).
+/// `brs` / `esi` are only meaningful for `fd` kinds; `dlc` only for
+/// `remote`.
+#[derive(serde::Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct TransmitRequest {
+    pub channel: u8,
+    pub id: u32,
+    pub extended: bool,
+    pub kind: TransmitKind,
+    #[serde(default)]
+    pub data: Vec<u8>,
+    #[serde(default)]
+    pub brs: bool,
+    #[serde(default)]
+    pub esi: bool,
+    #[serde(default)]
+    pub dlc: u8,
+}
+
+/// Frame kind the transmit panel picks. Lower-case on the wire so the
+/// frontend's discriminated union matches.
+#[derive(serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TransmitKind {
+    Classic,
+    Fd,
+    Remote,
+    Error,
+}
+
+/// Returned from `transmit_frame`. The frame *always* lands in the
+/// trace as a Tx-direction row at `tx_confirm_index` (the tx-confirm a
+/// real analyzer shows for its own transmits). `wire_status` reports
+/// what happened with the wire forward:
+///
+/// - `not_connected` — no remote session is open; only the local
+///   tx-confirm fired.
+/// - `sent` — handed off to the gRPC session; the server's
+///   acknowledgement (e.g. `Error::TX_REJECTED`) surfaces inline on
+///   the next frame the receive pump observes.
+/// - `failed { message }` — the session was open but the transmit
+///   could not be enqueued (session closed mid-call, or the channel
+///   has no mapped interface).
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct TransmitResult {
+    pub tx_confirm_index: u64,
+    pub wire_status: TransmitWireStatus,
+}
+
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TransmitWireStatus {
+    NotConnected,
+    Sent { interface_id: String },
+    Failed { message: String },
+}
+
 /// One row of the per-message-ID view: the id's latest frame plus its
 /// current message rate (frames/second).
 #[derive(serde::Serialize, Clone)]
@@ -143,6 +208,11 @@ pub struct SignalDescriptorRecord {
     pub message_name: String,
     pub signal_name: String,
     pub unit: String,
+    /// True if the DBC defines a `VAL_` table for this signal. Lets
+    /// the plot panel pick stepped/symbolic rendering and the
+    /// transmit panel offer a dropdown without a separate
+    /// `value_table` round-trip.
+    pub has_value_table: bool,
 }
 
 impl From<cannet_dbc::SignalDescriptor> for SignalDescriptorRecord {
@@ -153,8 +223,17 @@ impl From<cannet_dbc::SignalDescriptor> for SignalDescriptorRecord {
             message_name: d.message_name,
             signal_name: d.signal_name,
             unit: d.unit,
+            has_value_table: d.has_value_table,
         }
     }
+}
+
+/// One row of a signal's `VAL_` table — mirrors
+/// [`cannet_dbc::ValueTableEntry`] for the wire.
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct ValueTableEntryRecord {
+    pub raw: i64,
+    pub label: String,
 }
 
 /// One `(message, signal)` a plot panel wants sampled — the query side
