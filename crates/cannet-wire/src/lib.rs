@@ -13,8 +13,17 @@
 //!   a server exposes.
 //! - `Session`: a single bidirectional stream of [`proto::Envelope`]
 //!   messages for the lifetime of the client session. The envelope
-//!   variants — `Subscribe`, `Unsubscribe`, `FrameBatch`, `Error` — flow
-//!   symmetrically in either direction.
+//!   variants — `Subscribe`, `Unsubscribe`, `FrameBatch`, `Error`,
+//!   `LogMessage` — flow symmetrically in either direction.
+//!
+//! [`proto::LogMessage`] is the Phase-7 out-of-band log channel: a
+//! sender (vendor sidecar, server, peer client) emits structured
+//! advisory messages on the same stream. Unlike [`proto::Error`] it
+//! does **not** end the session — receivers route it into their local
+//! log surface (the host's System Messages panel in this project).
+//! The variant is defined here; the host-side bridge that consumes it
+//! ships separately so application code can be exercised without a
+//! live wire.
 //!
 //! [`proto::FrameBatch`] is the only frame-carrying envelope variant.
 //! Application code never deals with batches directly; the [`batch`]

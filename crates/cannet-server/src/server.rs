@@ -204,9 +204,11 @@ async fn run_session(
                     )))
                     .await;
             }
-            Body::Error(_) => {
-                // Client-side errors are informational only on this server.
-            }
+            // Client-side `Error` is informational on this server (the
+            // BLF replay surface has nothing to do about it); Phase 7
+            // wire `Log` messages likewise have no log destination on
+            // this server, so both arms drop.
+            Body::Error(_) | Body::Log(_) => {}
         }
     }
 
