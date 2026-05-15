@@ -192,15 +192,16 @@ without reshaping callers.
   `cannet-server` CLI (positional BLF path, `--bind` address). The
   Rust ecosystem standard for derive-macro CLI parsing; small
   enough not to be controversial.
-- **`tracing`** + **`tracing-subscriber`** (Rust, MIT) — `proposed`
-  (Phase 7). The de-facto Rust structured-logging crates; likely
-  already in the dependency graph transitively (tonic, tokio). Phase 7
-  uses them directly: a `system_log` module exposes `info!` / `warn!`
-  / `error!` macros that fan out events into both a bounded in-process
+- **`tracing`** + **`tracing-subscriber`** (Rust, MIT) — `adopted`
+  (Phase 7). The de-facto Rust structured-logging crates. `tracing`
+  was already in the dependency graph transitively (tonic, tokio);
+  `tracing-subscriber` is newly direct. Phase 7 uses them directly in
+  `cannet-gui`: the `system_log` module exposes `info!` / `warn!` /
+  `error!` macros that fan out events into both a bounded in-process
   ring (consumed by the System Messages panel via Tauri IPC) and
-  `tracing-subscriber`'s normal `fmt` layer (so dev stderr logs still
-  work). No new dependency in net terms once the transitive pull is
-  promoted; recorded here because the use is now direct.
+  `tracing-subscriber`'s `fmt` layer (so dev stderr logs still work).
+  A per-`(source, template)` rate limiter inside the ring layer
+  caps floods at a few entries per second per source.
 
 ### Hardware Drivers
 
