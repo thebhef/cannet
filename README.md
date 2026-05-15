@@ -6,14 +6,18 @@ result into a virtualized trace view. Phase 2 splits the data source
 out behind a network protocol; Phase 3 fills in a multi-panel docking
 layout (dockable trace and project panels in arbitrary arrangements)
 and JSON project files; Phase 4 adds a signal-plotting view; Phase 5
-adds transmit; Phase 6 adds per-vendor hardware adapters. See
+adds transmit, the `--loopback` server, and DBC value-table rendering
+across views; Phase 6 adds per-vendor hardware adapters. See
 [`plans/`](plans/) for the detailed roadmap.
 
 ## Repository layout
 
 ```
 crates/
-  cannet-core/   CanFrame model + CanFrameSource / CanFrameSink traits.
+  cannet-core/   CanFrame model + CanFrameSource / CanFrameSink traits,
+                 plus the Phase-5 in-memory `loopback_bus` (paired
+                 sink + source — the building block the `--loopback`
+                 server and unit-tested transmit fixtures wrap).
                  Every other crate either produces or consumes through
                  these — the seam where future network transports and
                  hardware adapters slot in. See its rustdoc for the
@@ -30,19 +34,27 @@ crates/
                  stubs, conversion helpers between `cannet_core`
                  frames and the wire types, and a batching adapter
                  layer so application code stays in `Stream<CanFrame>`.
-  cannet-server/ Phase-2 BLF replay server. Loads a BLF into memory at
-                 startup, exposes its channels as gRPC interfaces, and
-                 streams them on a loop while a client is subscribed.
-                 Single-client per server (multi-client deferred to
-                 backlog); transmit envelopes are rejected. Ships a
-                 `cannet-server` binary; lib is reusable.
+  cannet-server/ Phase-2 BLF replay server + Phase-5 `--loopback`
+                 server. The replay mode loads a BLF into memory and
+                 streams its channels on a loop while a client is
+                 subscribed (transmits rejected, read-only). The
+                 `--loopback` mode exposes one `loopback:0` interface
+                 and mirrors every client-transmitted frame back as an
+                 `Rx` frame on the same interface — the demo target
+                 for the Phase-5 transmit pipeline. Both modes are
+                 single-client per server (multi-client deferred to
+                 backlog). Ships a `cannet-server` binary; lib is
+                 reusable.
   cannet-client/ Phase-2 gRPC client. `list_interfaces` is a one-shot
                  async RPC for the connection panel. `connect_and_
                  subscribe` returns a `RemoteCanFrameSource` (sync
                  `cannet_core::CanFrameSource`) backed by a worker
                  thread that owns its own tokio runtime, opens a
                  `Session`, and pumps incoming frames into a sync
-                 mpsc queue. Drops cleanly on `Drop`.
+                 mpsc queue. `into_parts()` exposes the receive +
+                 shutdown halves alongside a Phase-5
+                 `SessionTransmitter` for client TX. Drops cleanly on
+                 `Drop`.
 
 apps/
   gui/           Tauri 2 + React 18 + Vite trace viewer.
@@ -284,7 +296,81 @@ and notes round-trip through the project file (the play state, like a
 trace panel's window, is session-only). (Still pending — see
 `plans/phased-implementation.md` Phase 4 and `plans/backlog.md`:
 per-trace y offset/gain and log scale, triggers, math channels,
-CSV/image export, BLF annotation round-trip, enum/state plots.)
+CSV/image export, BLF annotation round-trip.)
+
+### Phase-5 transmit + enum signals
+
+**Add transmit panel** opens a Phase-5 transmit panel: compose CAN /
+CAN FD frames, send them on demand, and optionally schedule a cyclic
+resend. Each frame in a panel carries an id (hex), addressing mode
+(standard / extended), channel, kind (classic / FD / remote / error),
+payload, BRS / ESI / DLC where applicable, and a cycle-time. The
+configured frames persist as the panel's params and round-trip
+through the project file (as a project element with `kind:
+"transmit"`).
+
+Two entry modes per frame: **raw bytes** (always; space-separated hex
+digits, validated against the kind's max length) and **signals**
+(enabled when a DBC message matches the chosen id). In signals
+mode, enum signals — those with a `VAL_` table in the DBC — show as a
+dropdown of `<value> "<label>"` options; picking a label copies the
+raw value into the payload (proper per-signal-to-bytes encoding is
+follow-up work).
+
+Where a sent frame goes:
+
+- **Always** into the trace as a `Tx`-direction tx-confirm row, just
+  like a real analyzer shows for its own transmits. The transmit
+  pipeline is observable end-to-end even with no remote source open.
+- **If a remote session is open**, also onto the wire as a one-frame
+  `FrameBatch` envelope on the channel's bound interface. The BLF
+  replay server is read-only and rejects the transmit with
+  `Error::TX_REJECTED`, which surfaces inline on the transmit panel.
+  Start the new `cannet-server --loopback` mode (see below) to demo
+  the wire transmit path end-to-end — it echoes every transmit back
+  as an `Rx` frame on the same interface.
+- A **cyclic send** is a client-side `setInterval` on the frame's
+  cycle-time entry; not a wire feature. Stopping the toggle, removing
+  the frame, or closing the panel cancels the loop.
+
+**Enum / state signals** render symbolically wherever they appear:
+
+- A trace row's expanded signal grid shows `<value> "<label>"` for
+  signals with a matching `VAL_` row; numeric signals are unchanged.
+- The transmit panel's signals mode offers a dropdown of the labelled
+  values (above).
+- A plot area that contains *exactly one* signal with a value table
+  switches to **enum mode**: the line is rendered stepped (no
+  interpolation between codes) and the y-axis ticks become symbolic
+  (`<raw> "<label>"`, one per value-table row), with auto-norm
+  disabled. Multi-signal areas / mixed enum + numeric areas keep
+  the numeric rendering.
+
+#### Loopback server demo
+
+`cannet-server --loopback` exposes one fixed interface, `loopback:0`,
+and echoes every client-transmitted frame back as an `Rx` frame on
+the same interface. The GUI's transmit panel sends, the loopback
+server returns, the trace sees the round-trip. No BLF, no hardware,
+no Linux `vcan`.
+
+```sh
+cargo run -p cannet-server -- --loopback
+# → loopback mode: every transmit is echoed back on loopback:0
+# → listening on 127.0.0.1:50051
+```
+
+Then in the GUI:
+
+1. Connect to `127.0.0.1:50051` (the default).
+2. Open **Add transmit panel**.
+3. Click **+ frame**, type an id (hex), enter a payload, hit
+   **send once** — the trace gets the `Tx` confirm and (a moment
+   later, off the network) the `Rx` mirror from the loopback.
+
+The in-process building block is the new `cannet_core::loopback_bus`
+(paired `LoopbackSink` / `LoopbackSource`); the `--loopback` server
+just wraps it.
 
 > **Note:** plain `cargo run -p cannet-gui` will build the Rust host on
 > its own but won't bring up a usable window — the host expects either
@@ -321,8 +407,9 @@ CLI flags:
   and tests; for a realistic emulation, use `--rate 1`.
 
 The server is single-client per process and rejects client
-transmits with `Error::TX_REJECTED` (BLF is read-only). Stop
-with Ctrl-C.
+transmits with `Error::TX_REJECTED` (BLF is read-only — the
+rejection surfaces inline on the GUI's transmit panel). Stop with
+Ctrl-C.
 
 In another terminal, start the GUI as usual (`pnpm --dir
 apps/gui tauri dev`). The toolbar's `host:port` input defaults
