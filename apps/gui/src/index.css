@@ -1357,3 +1357,95 @@ header {
   font-style: italic;
   font-size: 0.78rem;
 }
+
+/* Phase 7 — System Messages panel + unread badge */
+.system-messages-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-size: 0.85rem;
+}
+.system-messages-toolbar {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.3rem 0.5rem;
+  border-bottom: 1px solid #1e293b;
+  background: #111827;
+}
+.system-messages-toolbar select {
+  background: #1e293b;
+  color: #e2e8f0;
+  border: 1px solid #334155;
+  padding: 0.15rem 0.35rem;
+  border-radius: 3px;
+}
+.system-messages-toolbar button {
+  background: #1e293b;
+  color: #e2e8f0;
+  border: 1px solid #334155;
+  padding: 0.15rem 0.6rem;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.system-messages-toolbar button:hover:not(:disabled) {
+  background: #334155;
+}
+.system-messages-toolbar button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.system-messages-count {
+  color: #94a3b8;
+  font-size: 0.78rem;
+  margin-left: auto;
+}
+.system-messages-list {
+  flex: 1 1 0;
+  overflow-y: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+  position: relative;
+}
+.system-messages-row {
+  display: grid;
+  grid-template-columns: 7rem 8rem 4rem 1fr;
+  gap: 0.5rem;
+  padding: 0 0.5rem;
+  align-items: center;
+  white-space: nowrap;
+  overflow: hidden;
+  border-bottom: 1px solid rgba(30, 41, 59, 0.5);
+}
+.system-messages-row-info { color: #cbd5e1; }
+.system-messages-row-warn { color: #fbbf24; }
+.system-messages-row-error { color: #f87171; }
+.system-messages-ts { color: #64748b; }
+.system-messages-source { color: #a5b4fc; }
+.system-messages-level { text-transform: uppercase; font-weight: 600; }
+.system-messages-msg { overflow: hidden; text-overflow: ellipsis; }
+.system-messages-empty {
+  padding: 1rem;
+  color: #64748b;
+  text-align: center;
+}
+
+/* Toolbar unread-error badge */
+.system-messages-button {
+  position: relative;
+}
+.system-messages-badge {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0 0.35rem;
+  background: #dc2626;
+  color: #fff;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  line-height: 1.2;
+  vertical-align: middle;
+  min-width: 1.1rem;
+  text-align: center;
+}
