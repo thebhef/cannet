@@ -1,7 +1,7 @@
 import { memo } from "react";
 
 import type { ByIdSnapshotRecord, TraceFrameRecord } from "./types";
-import { formatSignalValue } from "./format";
+import { formatSignalValueWithLabel } from "./format";
 import {
   type ColumnKey,
   type ColumnState,
@@ -122,7 +122,9 @@ const ByIdRow = memo(function ByIdRow({
           {frame.decoded.signals.map((sig) => (
             <div className="signal" key={sig.name}>
               <span className="signal-name">{sig.name}</span>
-              <span className="signal-value">{formatSignalValue(sig.value, sig.unit)}</span>
+              <span className="signal-value">
+                {formatSignalValueWithLabel(sig.value, sig.unit, sig.label)}
+              </span>
             </div>
           ))}
         </div>
