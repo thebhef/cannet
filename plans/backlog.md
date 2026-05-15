@@ -173,6 +173,33 @@ work or admit it isn't going to happen and delete it.
   the same axis, both want a different layout (multiple y-axes /
   per-signal step overlays). Pick this up alongside the per-trace
   y offset / gain work, which already needs the same plumbing.
+- `[ui]` `cannet-gui` project panel: there's no UI to **create**
+  filter elements yet. The graph view now renders 1-input / N-output
+  filter nodes correctly when they exist (predicate via JSON in
+  `project.elements`), but a user can't add one through the project
+  panel. Add a "New filter" affordance + a filter-config side panel
+  that builds the structured predicate
+  (`{all | any | bus | id_range | id_list | name_regex |
+  signal_equals}`).
+- `[ui]` `cannet-gui` graph panel: **drag-to-wire**. Today the
+  `source` pointer on a trace / plot / filter element is set
+  indirectly via the consuming panel; surface it as a drag from a
+  bus / filter handle to a sink in the graph.
+- `[ui]` `cannet-gui` graph panel: **transmit → bus edge**.
+  `transmit` elements render as source nodes but draw no edge to a
+  bus today — frames inside a transmit panel each pick a `channel`
+  number that the active session maps to an interface, so there's no
+  per-element bus pointer to read. Either grow a `bus_id` on the
+  transmit element (and have the host route via bindings instead of
+  channel index) or surface an inferred edge per frame target.
+- `[feat]` `cannet-gui` transmit panel: route by `bus_id` rather
+  than session channel. Today `transmit_frame` picks the wire
+  interface from whichever session has the requested channel — with
+  multi-server connect, channel 0 exists on every session. Carry a
+  `bus_id` on `TransmitFrameConfig`, translate to `(server,
+  interface)` via the project's bindings, and forward through the
+  matching session. Resolves the ambiguity called out in the
+  `transmit_frame` host code.
 - `[ui]` `cannet-gui`: **bitfield message visualizer**. Render a CAN
   message as its raw bits laid out as a grid (8×N cells, one per bit),
   coloured / lit by current value, with DBC-derived signal overlays

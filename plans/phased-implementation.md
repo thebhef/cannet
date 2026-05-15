@@ -1008,6 +1008,36 @@ Realised scope notes:
   backlog entries were not standalone bullets in `backlog.md` at Phase 6
   start (they were referenced inline in this plan); the in-plan
   references are now satisfied.
+- **Late additions to Phase 6's surface** (backfilled after the initial
+  Phase-6 commits shipped, then restacked through Phases 7–9):
+  - **Add-binding UI** in the project panel. The initial Phase-6 panel
+    only allowed re-targeting an existing binding's bus via a dropdown
+    — there was no flow to *create* a binding from the UI, so users
+    had to hand-edit project JSON. Added an inline form: server input,
+    *Discover* button that calls `list_remote_interfaces`, interface
+    picker, and bus picker. The bus picker enforces "each bus has at
+    most one interface" by hiding buses that already have a binding.
+  - **Toolbar address input removed; Connect iterates bindings.** The
+    initial Phase-6 toolbar still carried a `host:port` text field
+    (legacy quick-connect) and Connect targeted a single server.
+    Removed: server addresses now live per-binding. Connect groups
+    `interface_bindings` by `server`, opens one gRPC session per
+    server, and subscribes only to the bound interfaces. The host's
+    `remote_session: Mutex<Option<…>>` became
+    `remote_sessions: Mutex<HashMap<String, RemoteSession>>`;
+    `disconnect_remote_server(address: Option<String>)` either
+    disconnects one or drains all. `transmit_frame` currently picks
+    the first session whose channel set matches the requested
+    channel — see backlog for routing transmit by `bus_id`.
+  - **Graph view reshape.** The initial Phase-6 panel rendered every
+    element as a uniform "default" xyflow node. Reshaped with custom
+    `nodeTypes`: buses render as a wide horizontal rail (the logical
+    aggregator), gateways / transmits / traces / plots / filters each
+    have a distinct shape and inline-SVG glyph. Edge derivation was
+    pulled into a pure `projectGraph::deriveGraph` module with unit
+    tests covering bus-only, gateway↔bus, bus→sink, bus→filter, the
+    1-in/N-out filter case, transmit-as-source (no auto-edge yet),
+    and dangling-source elements.
 
 ## Phase 7 — System Messages
 
