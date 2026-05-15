@@ -433,6 +433,7 @@ dependencies = [
  "cannet-client",
  "cannet-core",
  "cannet-dbc",
+ "cannet-wire",
  "regex",
  "serde",
  "serde_json",

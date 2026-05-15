@@ -226,6 +226,39 @@ fn current_unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Bridge a wire-level [`cannet_wire::proto::LogMessage`] into the
+/// local host log bus (Phase 7). `Unspecified` levels default to
+/// `Info`. The wire timestamp is recorded by `push`'s own wall-clock
+/// stamping — the wire `timestamp_ns` is intentionally **not** trusted
+/// as a host clock value; if a future revision wants to preserve the
+/// remote clock, extend [`SystemMessage`] with a `remote_ts_ns` field
+/// rather than overloading `ts_ms`.
+///
+/// Returns the pushed entry — or `None` if the rate-limiter dropped
+/// it. The bridge does not emit a Tauri event by itself; the call site
+/// (a future wire-receive loop in Phase 8) is the right place for
+/// that, where the `AppHandle` is in hand.
+//
+// The bridge is exercised by unit tests in this module but not yet
+// called from the binary — Phase 8 wires it into the session-receive
+// loop. Until then, allow the dead-code lint rather than removing the
+// definition.
+#[allow(dead_code)]
+pub fn bridge_wire_log(
+    bus: &SystemLog,
+    msg: &cannet_wire::proto::LogMessage,
+) -> Option<SystemMessage> {
+    let level = match cannet_wire::proto::LogLevel::try_from(msg.level) {
+        Ok(cannet_wire::proto::LogLevel::Warn) => LogLevel::Warn,
+        Ok(cannet_wire::proto::LogLevel::Error) => LogLevel::Error,
+        // Unspecified / Info / unknown all degrade to Info — the wire
+        // protocol's enum-evolution rule is that receivers tolerate
+        // variants they don't know.
+        _ => LogLevel::Info,
+    };
+    bus.push(&msg.source, level, msg.message.clone())
+}
+
 /// Initialise the global `tracing` subscriber once at process start.
 /// The fan-out from the [`info!`] / [`warn!`] / [`error!`] macros emits
 /// a `tracing::event!` *and* pushes into the ring; this subscriber is
@@ -350,6 +383,45 @@ mod tests {
     fn level_rank_orders_info_warn_error() {
         assert!(LogLevel::Info.rank() < LogLevel::Warn.rank());
         assert!(LogLevel::Warn.rank() < LogLevel::Error.rank());
+    }
+
+    #[test]
+    fn bridge_wire_log_pushes_with_mapped_level() {
+        use cannet_wire::proto;
+        let bus = SystemLog::new();
+        let pushed = bridge_wire_log(
+            &bus,
+            &proto::LogMessage {
+                timestamp_ns: 1_234,
+                level: proto::LogLevel::Warn as i32,
+                source: "sidecar:peak".into(),
+                message: "USB device unplugged".into(),
+            },
+        )
+        .expect("bridge pushed an entry");
+        assert_eq!(pushed.level, LogLevel::Warn);
+        assert_eq!(pushed.source, "sidecar:peak");
+        assert_eq!(pushed.message, "USB device unplugged");
+        assert_eq!(bus.len(), 1);
+    }
+
+    #[test]
+    fn bridge_wire_log_unspecified_degrades_to_info() {
+        use cannet_wire::proto;
+        let bus = SystemLog::new();
+        let pushed = bridge_wire_log(
+            &bus,
+            &proto::LogMessage {
+                timestamp_ns: 0,
+                // LOG_LEVEL_UNSPECIFIED = 0, and any future-unknown
+                // variant arriving from a newer peer also lands here.
+                level: 0,
+                source: "server".into(),
+                message: "starting".into(),
+            },
+        )
+        .expect("bridge pushed an entry");
+        assert_eq!(pushed.level, LogLevel::Info);
     }
 
     #[test]

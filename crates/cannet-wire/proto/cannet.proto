@@ -44,6 +44,10 @@ message Envelope {
     Unsubscribe unsubscribe = 2;
     FrameBatch frame_batch = 3;
     Error error = 4;
+    // Phase 7: out-of-band structured log message — distinct from
+    // Error (Error still ends the session). The host bridges these
+    // into its local log bus; consumed by vendor sidecars in Phase 8.
+    LogMessage log = 5;
   }
 }
 
@@ -100,6 +104,31 @@ enum FrameKind {
   FRAME_KIND_FD = 2;
   FRAME_KIND_REMOTE = 3;
   FRAME_KIND_ERROR = 4;
+}
+
+// Phase 7: out-of-band structured log message reported by either peer
+// on the Session stream. Distinct from Error — Error still ends the
+// session; a LogMessage is informational / advisory and the session
+// continues normally. The host bridges incoming wire log messages
+// into its local System Messages bus.
+message LogMessage {
+  // Sender's monotonic timestamp in nanoseconds. The receiver maps
+  // this to its own clock for display.
+  uint64 timestamp_ns = 1;
+  LogLevel level = 2;
+  // Short stable source tag. Wire convention: vendor sidecars send
+  // their tag prefixed with "sidecar:" (e.g. "sidecar:peak"); a server
+  // can pick any short identifier.
+  string source = 3;
+  // Human-readable message body.
+  string message = 4;
+}
+
+enum LogLevel {
+  LOG_LEVEL_UNSPECIFIED = 0;
+  LOG_LEVEL_INFO = 1;
+  LOG_LEVEL_WARN = 2;
+  LOG_LEVEL_ERROR = 3;
 }
 
 // Out-of-band error reported by either peer on the Session stream.

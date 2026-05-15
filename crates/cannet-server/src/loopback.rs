@@ -260,9 +260,10 @@ async fn run_session(
                     }
                 }
             }
-            Body::Error(_) => {
-                // Client errors are informational.
-            }
+            // Client-side `Error` is informational on the loopback
+            // server, and Phase 7 wire `Log` messages similarly have
+            // no destination here — both arms drop.
+            Body::Error(_) | Body::Log(_) => {}
         }
     }
 
