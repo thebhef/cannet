@@ -26,6 +26,9 @@ export const BY_ID_PANEL_COMPONENT = "by-id";
 export const PROJECT_PANEL_COMPONENT = "project";
 export const PLOT_PANEL_COMPONENT = "plot";
 export const TRANSMIT_PANEL_COMPONENT = "transmit";
+/// Phase 6: spatial / wiring view onto the project state. Distinct
+/// from the list-oriented `PROJECT_PANEL_COMPONENT`.
+export const PROJECT_GRAPH_PANEL_COMPONENT = "project-graph";
 
 /**
  * Sanity-check an already-parsed value as a dockview layout. Returns
