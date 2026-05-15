@@ -155,6 +155,7 @@ mod tests {
             extended: false,
             direction: Direction::Rx,
             payload: CanFramePayload::Classic(payload),
+            bus_id: None,
         }
     }
 

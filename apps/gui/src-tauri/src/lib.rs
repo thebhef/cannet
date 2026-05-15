@@ -34,6 +34,12 @@
 //! or removing a DBC mid-stream just changes what subsequent fetches
 //! return.
 
+// Filter predicate types + evaluator. The IPC + frontend plumbing that
+// consumes the predicate lands in subsequent commits; `allow(dead_code)`
+// scopes the dead-code warnings to this module so the rest of the crate
+// stays `-D warnings` clean.
+#[allow(dead_code)]
+mod filter;
 mod ipc;
 mod project;
 mod signal_cache;
@@ -60,11 +66,16 @@ use ipc::{
 use signal_cache::SignalCacheStore;
 use trace_store::{RawTraceFrame, TraceStore};
 
-/// A loaded DBC: its source path and the parsed database. Decoders walk
-/// the loaded list in order — the first that decodes a given frame wins.
+/// A loaded DBC: its source path, the parsed database, and the set of
+/// logical bus ids this DBC is scoped to (Phase 6). Decoders walk the
+/// loaded list in order — the first that decodes a given frame wins —
+/// and skip any DBC whose `buses` set is non-empty and doesn't contain
+/// the frame's `bus_id`. An empty set is "applies to every bus".
 struct LoadedDbc {
     path: String,
     db: Database,
+    /// Scoped bus ids; empty = unscoped (applies to all buses).
+    buses: Vec<String>,
 }
 
 /// State for an active remote session — see
@@ -149,6 +160,7 @@ pub fn run() {
             add_dbc,
             remove_dbc,
             clear_dbcs,
+            set_dbc_buses,
             fetch_trace_range,
             fetch_latest_by_id,
             clear_trace_store,
@@ -226,9 +238,10 @@ fn open_log(app: AppHandle, blf_path: String) -> Result<OpenLogResult, String> {
     Ok(result)
 }
 
-/// The loaded-DBC list as IPC records (each one's path + message count),
-/// in priority order. Returned from `add_dbc` / `remove_dbc` so the
-/// frontend always gets the authoritative set after a change.
+/// The loaded-DBC list as IPC records (each one's path + message
+/// count + bus scoping), in priority order. Returned from `add_dbc` /
+/// `remove_dbc` / `set_dbc_buses` so the frontend always gets the
+/// authoritative set after a change.
 fn dbc_list(state: &AppState) -> Vec<DbcInfo> {
     state
         .databases
@@ -238,6 +251,7 @@ fn dbc_list(state: &AppState) -> Vec<DbcInfo> {
         .map(|d| DbcInfo {
             dbc_path: d.path.clone(),
             message_count: d.db.message_count(),
+            buses: d.buses.clone(),
         })
         .collect()
 }
@@ -256,10 +270,31 @@ fn add_dbc(state: State<'_, AppState>, path: String) -> Result<Vec<DbcInfo>, Str
         let mut list = state.databases.lock().expect("databases mutex poisoned");
         match list.iter_mut().find(|d| d.path == path) {
             Some(slot) => slot.db = db,
-            None => list.push(LoadedDbc { path, db }),
+            None => list.push(LoadedDbc { path, db, buses: Vec::new() }),
         }
     }
     Ok(dbc_list(state.inner()))
+}
+
+/// Replace the bus-scoping set for a loaded DBC. An empty `buses` is
+/// the "applies to all buses" default. Unknown path is a no-op (returns
+/// the unchanged list); the frontend's project state can drift if a DBC
+/// is removed between the user clicking a checkbox and this command
+/// firing.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn set_dbc_buses(
+    state: State<'_, AppState>,
+    path: String,
+    buses: Vec<String>,
+) -> Vec<DbcInfo> {
+    {
+        let mut list = state.databases.lock().expect("databases mutex poisoned");
+        if let Some(slot) = list.iter_mut().find(|d| d.path == path) {
+            slot.buses = buses;
+        }
+    }
+    dbc_list(state.inner())
 }
 
 /// Remove the loaded DBC with this path (no-op if it isn't loaded).
@@ -308,10 +343,25 @@ fn collect_trace_records(state: &AppState, start: u64, end: u64) -> Vec<TraceFra
         .collect()
 }
 
-/// Decode a raw frame against the loaded DBCs, in order — the first one
-/// that recognises the arbitration id wins. `None` if no DBC does.
+/// Decode a raw frame against the loaded DBCs, in order — the first
+/// one that recognises the arbitration id wins. Skips any DBC whose
+/// `buses` set is non-empty and doesn't contain the frame's `bus_id`
+/// (Phase 6 per-bus scoping); an empty set is "all buses". `None` if
+/// no DBC decodes.
 fn decode_against(dbs: &[LoadedDbc], frame: &RawTraceFrame) -> Option<DecodedRecord> {
-    dbs.iter().find_map(|d| decode_raw_frame(&d.db, frame))
+    dbs.iter()
+        .filter(|d| dbc_applies_to_frame(d, frame))
+        .find_map(|d| decode_raw_frame(&d.db, frame))
+}
+
+fn dbc_applies_to_frame(dbc: &LoadedDbc, frame: &RawTraceFrame) -> bool {
+    if dbc.buses.is_empty() {
+        return true; // unscoped: every frame
+    }
+    match &frame.bus_id {
+        Some(bid) => dbc.buses.iter().any(|b| b == bid),
+        None => false, // scoped DBCs ignore unassigned frames
+    }
 }
 
 /// Pull a `[start, end)` slice out of the trace store and decode each
@@ -915,6 +965,7 @@ mod tests {
             extended: false,
             direction: Direction::Rx,
             payload: CanFramePayload::Classic(vec![]),
+            bus_id: None,
         }
     }
 
@@ -950,6 +1001,15 @@ mod tests {
         LoadedDbc {
             path: path.into(),
             db: Database::parse(dbc_text).expect("test DBC parses"),
+            buses: Vec::new(),
+        }
+    }
+
+    fn loaded_scoped(path: &str, dbc_text: &str, buses: &[&str]) -> LoadedDbc {
+        LoadedDbc {
+            path: path.into(),
+            db: Database::parse(dbc_text).expect("test DBC parses"),
+            buses: buses.iter().map(|s| (*s).into()).collect(),
         }
     }
 
@@ -995,6 +1055,58 @@ mod tests {
             Some("FromA"),
         );
         assert!(r[3].decoded.is_none()); // no DBC knows id 999
+    }
+
+    #[test]
+    fn per_bus_dbc_scoping_filters_decode() {
+        let state = test_state();
+        // DBC A scoped to bus "p" (powertrain), DBC B scoped to bus "c"
+        // (chassis). Same arbitration id 256, different message names so
+        // we can tell which DBC decoded each frame.
+        let dbc_a = tiny_dbc(256, "FromBusP", "Sa");
+        let dbc_b = tiny_dbc(256, "FromBusC", "Sb");
+        *state.databases.lock().unwrap() = vec![
+            loaded_scoped("a.dbc", &dbc_a, &["p"]),
+            loaded_scoped("b.dbc", &dbc_b, &["c"]),
+        ];
+        // Three frames, same id, different routing.
+        let mut on_p = frame_with_data(256);
+        on_p.bus_id = Some("p".into());
+        let mut on_c = frame_with_data(256);
+        on_c.bus_id = Some("c".into());
+        let unassigned = frame_with_data(256); // bus_id: None
+        state.trace_store.append(on_p);
+        state.trace_store.append(on_c);
+        state.trace_store.append(unassigned);
+
+        let r = collect_trace_records(&state, 0, 3);
+        let name = |i: usize| r[i].decoded.as_ref().map(|d| d.name.clone());
+        assert_eq!(name(0).as_deref(), Some("FromBusP"));
+        assert_eq!(name(1).as_deref(), Some("FromBusC"));
+        // An unassigned frame doesn't match any scoped DBC.
+        assert_eq!(name(2), None);
+    }
+
+    #[test]
+    fn unscoped_dbc_decodes_every_bus() {
+        let state = test_state();
+        let dbc = tiny_dbc(256, "Anywhere", "Sig");
+        *state.databases.lock().unwrap() = vec![loaded("any.dbc", &dbc)];
+        let mut on_p = frame_with_data(256);
+        on_p.bus_id = Some("p".into());
+        let unassigned = frame_with_data(256);
+        state.trace_store.append(on_p);
+        state.trace_store.append(unassigned);
+        let r = collect_trace_records(&state, 0, 2);
+        // Both decode against the unscoped DBC.
+        assert_eq!(
+            r[0].decoded.as_ref().map(|d| d.name.clone()).as_deref(),
+            Some("Anywhere"),
+        );
+        assert_eq!(
+            r[1].decoded.as_ref().map(|d| d.name.clone()).as_deref(),
+            Some("Anywhere"),
+        );
     }
 
     #[test]
