@@ -28,6 +28,7 @@ import { TransmitPanel } from "./TransmitPanel";
 import { TraceDataContext, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { CloseConfirmModal, type CloseChoice } from "./CloseConfirmModal";
+import { BlfChannelMapModal } from "./BlfChannelMapModal";
 import {
   ElementRegistryContext,
   type ElementRegistry,
@@ -337,6 +338,15 @@ export function App() {
     });
   }, [count, baseTimestampSeconds]);
 
+  // Phase 6: BLF import gained a channel → bus mapping step. The
+  // outer pending state holds the picked BLF path + its distinct
+  // channel list while the modal is open; clicking "Open" in the
+  // modal commits and the host pump starts.
+  const [pendingBlf, setPendingBlf] = useState<{
+    blfPath: string;
+    channels: number[];
+  } | null>(null);
+
   const handleOpenLog = useCallback(async () => {
     const selected = await open({
       multiple: false,
@@ -345,19 +355,43 @@ export function App() {
     if (typeof selected !== "string") return;
 
     try {
-      await invoke("clear_trace_store");
-      invalidateCache();
-      setBaseTimestampSeconds(null);
-      setCount(0);
-      startAllElements();
-      const result = await invoke<OpenLogResult>("open_log", {
+      const channels = await invoke<number[]>("scan_blf_channels", {
         blfPath: selected,
       });
-      setState({ kind: "loading", result });
+      setPendingBlf({ blfPath: selected, channels });
     } catch (err) {
       setState({ kind: "error", message: String(err) });
     }
-  }, [invalidateCache, startAllElements]);
+  }, []);
+
+  // Confirm the BLF channel mapping and actually start the pump.
+  // `choices[ch] === ""` means "skip this channel".
+  const handleBlfMapConfirm = useCallback(
+    async (choices: Record<number, string>) => {
+      if (!pendingBlf) return;
+      const { blfPath, channels } = pendingBlf;
+      setPendingBlf(null);
+      try {
+        await invoke("clear_trace_store");
+        invalidateCache();
+        setBaseTimestampSeconds(null);
+        setCount(0);
+        startAllElements();
+        const channelBusMapping = channels.map((ch) => ({
+          channel: ch,
+          busId: choices[ch] ? choices[ch] : null,
+        }));
+        const result = await invoke<OpenLogResult>("open_log", {
+          blfPath,
+          channelBusMapping,
+        });
+        setState({ kind: "loading", result });
+      } catch (err) {
+        setState({ kind: "error", message: String(err) });
+      }
+    },
+    [pendingBlf, invalidateCache, startAllElements],
+  );
 
   // Add one or more DBCs to the loaded set (each goes through the host's
   // `add_dbc`, which appends — or reloads in place if the path is
@@ -454,14 +488,22 @@ export function App() {
       setCount(0);
       startAllElements();
       setState({ kind: "remote-connecting", address });
+      // Phase 6: send the project's interface bindings for this
+      // server so the pump can tag each subscribed frame with its
+      // logical bus_id. Interfaces without a binding stream through
+      // unassigned.
+      const bindings = interfaceBindings
+        .filter((b) => b.server === address)
+        .map((b) => ({ interface: b.interface, busId: b.bus_id }));
       const result = await invoke<RemoteSessionResult>("connect_remote_server", {
         address,
+        bindings,
       });
       setState({ kind: "remote-running", result });
     } catch (err) {
       setState({ kind: "error", message: String(err) });
     }
-  }, [remoteAddress, invalidateCache, startAllElements]);
+  }, [remoteAddress, invalidateCache, startAllElements, interfaceBindings]);
 
   const handleDisconnect = useCallback(async () => {
     try {
@@ -1021,6 +1063,15 @@ export function App() {
         </ElementRegistryContext.Provider>
       </ProjectContext.Provider>
       {pendingClose && <CloseConfirmModal onChoice={pendingClose.resolve} />}
+      {pendingBlf && (
+        <BlfChannelMapModal
+          blfPath={pendingBlf.blfPath}
+          channels={pendingBlf.channels}
+          buses={buses}
+          onConfirm={handleBlfMapConfirm}
+          onCancel={() => setPendingBlf(null)}
+        />
+      )}
     </main>
   );
 }
