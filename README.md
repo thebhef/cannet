@@ -7,7 +7,9 @@ out behind a network protocol; Phase 3 fills in a multi-panel docking
 layout (dockable trace and project panels in arbitrary arrangements)
 and JSON project files; Phase 4 adds a signal-plotting view; Phase 5
 adds transmit, the `--loopback` server, and DBC value-table rendering
-across views; Phase 6 adds per-vendor hardware adapters. See
+across views; Phase 6 introduces logical buses, per-bus DBC scoping,
+a structured filter element, and a project graph panel showing the
+project's wiring; Phase 8 adds per-vendor hardware adapters. See
 [`plans/`](plans/) for the detailed roadmap.
 
 ## Repository layout
@@ -376,6 +378,64 @@ just wraps it.
 > its own but won't bring up a usable window — the host expects either
 > a Vite dev server (which `tauri dev` starts for you) or a built
 > frontend at `apps/gui/dist`. Use the `pnpm tauri` commands above.
+
+### Phase-6 logical buses, filters & project graph
+
+Phase 6 makes "logical bus" the abstraction frames belong to and
+introduces filter elements + a visual project graph.
+
+**Logical buses**. The project panel grows a *Logical buses* section
+where you can add / rename / remove project-owned buses (each carries
+a stable id, display name, and optional speed / FD hints). Buses are
+project state — they round-trip through the project file alongside
+the panel layout.
+
+**Interface bindings**. The project panel also lists *Interface
+bindings*: each binding maps a `(server, interface_id)` pair onto a
+logical bus. When you Connect to a remote server, the bindings for
+that server's address are sent along on the `connect_remote_server`
+call, and the host's pump thread stamps every received frame with the
+chosen `bus_id`. Interfaces without a binding stream through
+unassigned.
+
+**BLF channel mapping**. Opening a BLF now pre-scans the file for its
+distinct channels (capped at 200k frames for huge BLFs) and shows a
+modal where each channel is mapped to a logical bus or marked as
+"skip". Skipped channels are dropped before they reach the trace
+store; mapped channels stream in tagged with their bus.
+
+**Per-bus DBC scoping**. Each DBC entry in the project panel grows a
+row of checkboxes — one per defined logical bus — that control which
+buses the DBC decodes for. A DBC with no boxes checked is *unscoped*
+("all buses", the migration default for v2 projects). A DBC scoped to
+bus A doesn't decode bus-B frames; an unassigned frame matches only
+unscoped DBCs.
+
+**Filter elements**. A new project element `{kind: "filter"}` carries
+a structured predicate (`{all | any | bus | id_range | id_list |
+name_regex | signal_equals}`) and a `source` pointer (another bus or
+filter). The fetch path (`fetch_trace_range`, `fetch_latest_by_id`)
+accepts an optional predicate that drops records that don't pass;
+the trace store stays one filter-agnostic session buffer, and each
+consumer scopes what it renders. There's no expression DSL — the
+predicate is plain JSON, edited through the filter node in the graph
+view (see below) or by hand in the project file.
+
+**Project graph panel**. Add one from the toolbar's *Add graph
+panel* button (or restore a saved one from the project file).
+Renders interface bindings, logical buses, filter elements, and
+consumer panels as nodes; edges show `binding → bus` and `source →
+consumer` data flow. Node positions and the viewport persist in the
+panel's dockview `params`. The graph is the spatial view onto the
+same project state the project panel shows as lists — see
+[`plans/project-panel-design.md`](plans/project-panel-design.md) for
+the split of responsibilities.
+
+**Project schema version**. `PROJECT_SCHEMA_VERSION` bumped 2 → 3. A
+v2 project opens by way of an in-memory migration that lifts
+`dbc_paths` into `dbcs` (each unscoped) and defaults `buses` and
+`interface_bindings` to empty; the on-disk version is rewritten the
+next time you save.
 
 ### Phase-2 client / server demo
 
