@@ -157,6 +157,22 @@ work or admit it isn't going to happen and delete it.
   (Cmd/Ctrl+G) — type an absolute index, the trace view scrolls
   there. Especially valuable past ~730k rows where the scaled
   scrollbar's per-pixel resolution gets coarse.
+- `[feat]` `cannet-gui` transmit panel: proper signal-to-bytes
+  encoding. Phase 5 surfaces enum dropdowns and lets the user copy a
+  picked raw value into the payload as a single byte, but per-signal
+  bit-pack encoding (factor / offset / endianness, multi-byte signals,
+  multiplexed messages) lives in `cannet-dbc` and isn't exposed
+  yet. Cleanly the inverse of `cannet_dbc::Database::decode` and
+  belongs there; the GUI host gains an `encode_frame` command that
+  the panel calls instead of building hex by hand.
+- `[feat]` `cannet-gui` plot panel: enum rendering for multi-signal /
+  mixed areas. Phase 5 only switches to stepped + symbolic when an
+  area shows exactly one signal with a `VAL_` table — that's the
+  realistic single-state-channel case. Multiple enum signals on one
+  area (each on its own symbolic strip), or one enum + numeric on
+  the same axis, both want a different layout (multiple y-axes /
+  per-signal step overlays). Pick this up alongside the per-trace
+  y offset / gain work, which already needs the same plumbing.
 - `[ui]` `cannet-gui`: **bitfield message visualizer**. Render a CAN
   message as its raw bits laid out as a grid (8×N cells, one per bit),
   coloured / lit by current value, with DBC-derived signal overlays
