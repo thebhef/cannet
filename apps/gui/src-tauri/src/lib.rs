@@ -34,11 +34,6 @@
 //! or removing a DBC mid-stream just changes what subsequent fetches
 //! return.
 
-// Filter predicate types + evaluator. The IPC + frontend plumbing that
-// consumes the predicate lands in subsequent commits; `allow(dead_code)`
-// scopes the dead-code warnings to this module so the rest of the crate
-// stays `-D warnings` clean.
-#[allow(dead_code)]
 mod filter;
 mod ipc;
 mod project;
@@ -57,6 +52,7 @@ use cannet_blf::BlfCanFrameSource;
 use cannet_client::{SessionHandle, SessionTransmitter, Subscription};
 use cannet_core::{CanFrameSource, CanId};
 use cannet_dbc::{Database, DecodedSignal};
+use filter::FilterPredicate;
 
 use ipc::{
     ByIdSnapshot, DbcInfo, DecodedRecord, InterfaceRecord, LogFinished, OpenLogResult,
@@ -443,15 +439,65 @@ fn dbc_applies_to_frame(dbc: &LoadedDbc, frame: &RawTraceFrame) -> bool {
 /// be the trace view, sizing `end - start` to the visible window plus a
 /// small prefetch pad.
 ///
+/// Phase 6: `filter` is the consumer's optional [`FilterPredicate`]
+/// (a filter element's predicate, evaluated post-decode). Frames that
+/// don't pass are dropped from the returned vec — the consumer sees a
+/// pre-filtered slice. The frontend already keys its row cache on the
+/// raw absolute index, so a filtered slice is just a denser stream of
+/// rows over the same window.
+///
 /// `async` so Tauri runs it off the main thread: under a fast replay
 /// the pump thread takes the trace-store lock thousands of times a
 /// second, so the clone-and-decode here can stall briefly — keeping it
 /// off the UI thread keeps the window (and `disconnect`) responsive.
 #[tauri::command]
 #[allow(clippy::unused_async)] // `async` is what makes Tauri run it off the main thread
-async fn fetch_trace_range(app: AppHandle, start: u64, end: u64) -> Vec<TraceFrameRecord> {
+async fn fetch_trace_range(
+    app: AppHandle,
+    start: u64,
+    end: u64,
+    filter: Option<FilterPredicate>,
+) -> Vec<TraceFrameRecord> {
     let state: State<'_, AppState> = app.state();
-    collect_trace_records(state.inner(), start, end)
+    let records = collect_trace_records(state.inner(), start, end);
+    apply_filter_records(records, filter.as_ref())
+}
+
+/// Drop the records that don't pass `predicate`. The `Option` shape is
+/// the "no filter wired" path; this just returns the vec unchanged.
+fn apply_filter_records(
+    records: Vec<TraceFrameRecord>,
+    predicate: Option<&FilterPredicate>,
+) -> Vec<TraceFrameRecord> {
+    let Some(p) = predicate else { return records };
+    // The fetch-path's decoded `TraceFrameRecord` doesn't carry a raw
+    // `RawTraceFrame`; build a thin facade so the predicate's `matches`
+    // can read the fields it needs (id / bus_id / decoded).
+    records
+        .into_iter()
+        .filter(|r| record_matches(p, r))
+        .collect()
+}
+
+/// Evaluate a predicate against an already-decoded record. Mirrors
+/// [`FilterPredicate::matches`] but reads off `TraceFrameRecord`
+/// rather than re-creating a `RawTraceFrame`.
+fn record_matches(predicate: &FilterPredicate, record: &TraceFrameRecord) -> bool {
+    use crate::trace_store::RawTraceFrame;
+    use cannet_core::CanFramePayload;
+    // Synthesise just enough of a `RawTraceFrame` for the evaluator;
+    // the predicate only touches `id`, `bus_id`, and the decoded
+    // record's name + signals.
+    let raw = RawTraceFrame {
+        timestamp_ns: 0,
+        channel: record.channel,
+        id: record.id,
+        extended: record.extended,
+        direction: cannet_core::Direction::Rx,
+        payload: CanFramePayload::Classic(Vec::new()),
+        bus_id: record.bus_id.clone(),
+    };
+    predicate.matches(&raw, record.decoded.as_ref())
 }
 
 /// Latest frame seen for each distinct (channel, id, extended-flag)
@@ -461,24 +507,36 @@ async fn fetch_trace_range(app: AppHandle, start: u64, end: u64) -> Vec<TraceFra
 /// trace window's start, so for a *running* trace this is "the latest
 /// value of every id in the window". Backs the per-message-ID panel;
 /// `async` so it runs off the main thread, like [`fetch_trace_range`].
+///
+/// Phase 6: `filter` drops rows whose latest frame doesn't pass the
+/// predicate. (Note: this filters the *latest* observation; a row a
+/// signal-value filter excludes can re-appear once the id emits a
+/// passing value.)
 #[tauri::command]
 #[allow(clippy::unused_async)] // `async` is what makes Tauri run it off the main thread
-async fn fetch_latest_by_id(app: AppHandle, since: u64) -> Vec<ByIdSnapshot> {
+async fn fetch_latest_by_id(
+    app: AppHandle,
+    since: u64,
+    filter: Option<FilterPredicate>,
+) -> Vec<ByIdSnapshot> {
     let state: State<'_, AppState> = app.state();
     let since = usize::try_from(since).unwrap_or(usize::MAX);
     let rows = state.trace_store.latest_since(since);
     let dbs = state.databases.lock().expect("databases mutex poisoned");
     rows.into_iter()
-        .map(|row| {
+        .filter_map(|row| {
             let decoded = decode_against(&dbs, &row.frame);
-            ByIdSnapshot {
-                frame: TraceFrameRecord::from_raw(
-                    u64::try_from(row.index).unwrap_or(u64::MAX),
-                    &row.frame,
-                    decoded,
-                ),
-                rate: row.rate,
+            let record = TraceFrameRecord::from_raw(
+                u64::try_from(row.index).unwrap_or(u64::MAX),
+                &row.frame,
+                decoded,
+            );
+            if let Some(p) = filter.as_ref() {
+                if !record_matches(p, &record) {
+                    return None;
+                }
             }
+            Some(ByIdSnapshot { frame: record, rate: row.rate })
         })
         .collect()
 }
@@ -1212,6 +1270,29 @@ mod tests {
         assert_eq!(name(1).as_deref(), Some("FromBusC"));
         // An unassigned frame doesn't match any scoped DBC.
         assert_eq!(name(2), None);
+    }
+
+    #[test]
+    fn apply_filter_drops_records_that_dont_pass() {
+        // Two records, same id, different buses. A `{bus: "p"}` filter
+        // keeps the first only.
+        let mut r1 = TraceFrameRecord::from_raw(0, &frame_with_data(256), None);
+        r1.bus_id = Some("p".into());
+        let mut r2 = TraceFrameRecord::from_raw(1, &frame_with_data(256), None);
+        r2.bus_id = Some("c".into());
+        let predicate: FilterPredicate =
+            serde_json::from_str(r#"{"bus": "p"}"#).unwrap();
+        let filtered = apply_filter_records(vec![r1.clone(), r2], Some(&predicate));
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].bus_id.as_deref(), Some("p"));
+    }
+
+    #[test]
+    fn apply_filter_none_returns_input_unchanged() {
+        let r1 = TraceFrameRecord::from_raw(0, &frame_with_data(1), None);
+        let r2 = TraceFrameRecord::from_raw(1, &frame_with_data(2), None);
+        let v = apply_filter_records(vec![r1, r2], None);
+        assert_eq!(v.len(), 2);
     }
 
     #[test]
