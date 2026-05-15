@@ -28,6 +28,8 @@ cannet-core = { path = "../../../crates/cannet-core" }
 cannet-blf = { path = "../../../crates/cannet-blf" }
 cannet-client = { path = "../../../crates/cannet-client" }
 cannet-dbc = { path = "../../../crates/cannet-dbc" }
+# Phase 7: bridge wire-level LogMessage envelopes into the local bus.
+cannet-wire = { path = "../../../crates/cannet-wire" }
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 # Phase 7 structured logging: `tracing` macros at every call site,
 # `tracing-subscriber` to fan to dev stderr in parallel with the

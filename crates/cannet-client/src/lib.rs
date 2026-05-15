@@ -425,7 +425,15 @@ async fn run_session(
                         }));
                         return;
                     }
-                    Some(Body::Subscribe(_) | Body::Unsubscribe(_)) | None => {}
+                    // Subscribe / Unsubscribe round-trips (a peer
+                    // echoing the request) are ignored; Phase 7's
+                    // wire `Log` envelopes have no consumer in this
+                    // crate yet (Phase 8 bridges them at the GUI
+                    // host); `None` is the no-body case. All drop.
+                    Some(
+                        Body::Log(_) | Body::Subscribe(_) | Body::Unsubscribe(_),
+                    )
+                    | None => {}
                 },
                 Some(Err(status)) => {
                     let _ = frame_tx.send(Err(ConnectionError::Status(status.message().into())));
