@@ -157,6 +157,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             open_log,
+            scan_blf_channels,
             add_dbc,
             remove_dbc,
             clear_dbcs,
@@ -214,9 +215,37 @@ fn spawn_trace_grew_emitter(app: AppHandle) {
     });
 }
 
+/// Per-channel BLF bus mapping (Phase 6). One entry per channel the
+/// caller wants to route: `Some(bus_id)` to route it onto that logical
+/// bus, `None` to drop frames on that channel. Channels not listed
+/// stream through unassigned (`bus_id = None` on the raw frame). Camel
+/// case at the wire because Tauri only renames top-level command args.
+#[derive(serde::Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelBusMapping {
+    pub channel: u8,
+    /// `None` here means "skip this channel"; the frontend sends a
+    /// JSON `null` for skipped entries.
+    pub bus_id: Option<String>,
+}
+
+/// One entry of the remote-server interface → bus map the GUI sends
+/// to `connect_remote_server` (Phase 6). `interface` is the wire
+/// `Interface.id`; `bus_id` is the project's logical bus.
+#[derive(serde::Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct InterfaceBusBinding {
+    pub interface: String,
+    pub bus_id: String,
+}
+
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-fn open_log(app: AppHandle, blf_path: String) -> Result<OpenLogResult, String> {
+fn open_log(
+    app: AppHandle,
+    blf_path: String,
+    #[allow(non_snake_case)] channel_bus_mapping: Option<Vec<ChannelBusMapping>>,
+) -> Result<OpenLogResult, String> {
     // Open the BLF synchronously so the user gets immediate feedback if
     // the path is wrong.
     let source = BlfCanFrameSource::open(&blf_path).map_err(|e| e.to_string())?;
@@ -225,17 +254,62 @@ fn open_log(app: AppHandle, blf_path: String) -> Result<OpenLogResult, String> {
         blf_path: blf_path.clone(),
     };
 
+    let channel_to_bus: Vec<(u8, Option<String>)> = channel_bus_mapping
+        .unwrap_or_default()
+        .into_iter()
+        .map(|m| (m.channel, m.bus_id))
+        .collect();
+
     let app_for_thread = app.clone();
     std::thread::Builder::new()
         .name("cannet-blf-pump".into())
         .spawn(move || {
             // The BLF pump ends at end-of-file; nothing signals it to
             // stop early, so the flag is just a never-set placeholder.
-            run_pump(&app_for_thread, source, Arc::new(AtomicBool::new(false)));
+            run_pump(
+                &app_for_thread,
+                source,
+                Arc::new(AtomicBool::new(false)),
+                channel_to_bus,
+            );
         })
         .map_err(|e| format!("failed to spawn pump thread: {e}"))?;
 
     Ok(result)
+}
+
+/// Pre-scan a BLF file and return its distinct channel numbers, in
+/// ascending order. Used by the GUI's BLF import flow (Phase 6) to
+/// build the channel → bus mapping step before frames start flowing.
+///
+/// `async` so Tauri runs it off the main thread — scanning a multi-
+/// gigabyte BLF can take a few seconds and we don't want to freeze the
+/// UI. The implementation pulls every frame's `channel` from the BLF
+/// (we don't have a "list channels" shortcut in `cannet-blf` today)
+/// but stops early once the set stops changing for a comfortable
+/// window of frames.
+#[tauri::command]
+#[allow(clippy::unused_async)]
+async fn scan_blf_channels(blf_path: String) -> Result<Vec<u8>, String> {
+    use std::collections::BTreeSet;
+    // Cap the scan: most BLFs have <16 channels, all visible in their
+    // first few thousand frames. The cap keeps a huge BLF from blocking
+    // import for a minute; if a project legitimately has a 17th channel
+    // that doesn't appear until frame 100k, the channel just streams
+    // through unassigned and the user can edit the mapping afterwards.
+    const MAX_SCAN_FRAMES: usize = 200_000;
+    let mut source = BlfCanFrameSource::open(&blf_path).map_err(|e| e.to_string())?;
+    let mut seen: BTreeSet<u8> = BTreeSet::new();
+    for _ in 0..MAX_SCAN_FRAMES {
+        match source.next_frame() {
+            Ok(Some(frame)) => {
+                seen.insert(frame.channel);
+            }
+            Ok(None) => break,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Ok(seen.into_iter().collect())
 }
 
 /// The loaded-DBC list as IPC records (each one's path + message
@@ -664,10 +738,17 @@ async fn list_remote_interfaces(address: String) -> Result<Vec<InterfaceRecord>,
 ///
 /// At most one remote session may be active at a time — second call
 /// while one is open returns an error.
+///
+/// Phase 6: `bindings` is the project's interface → bus mapping for
+/// this server (a list of `{interface, bus_id}` pairs). The host
+/// translates that into a per-channel mapping the pump uses to stamp
+/// each frame's `bus_id`. Interfaces without a binding stream through
+/// unassigned.
 #[tauri::command]
 async fn connect_remote_server(
     app: AppHandle,
     address: String,
+    bindings: Option<Vec<InterfaceBusBinding>>,
 ) -> Result<RemoteSessionResult, String> {
     let interfaces = cannet_client::list_interfaces(&address)
         .await
@@ -720,11 +801,28 @@ async fn connect_remote_server(
         });
     }
 
+    // Build the channel-to-bus mapping from the per-server bindings:
+    // pick out only the bindings whose `interface` matches one of this
+    // server's subscribed interfaces, then translate via the
+    // subscription's channel. An interface without a matching binding
+    // contributes no entry (the pump leaves that channel's bus_id
+    // unassigned).
+    let binding_lookup = bindings.unwrap_or_default();
+    let channel_to_bus: Vec<(u8, Option<String>)> = subscriptions
+        .iter()
+        .filter_map(|sub| {
+            binding_lookup
+                .iter()
+                .find(|b| b.interface == sub.interface_id)
+                .map(|b| (sub.channel, Some(b.bus_id.clone())))
+        })
+        .collect();
+
     let app_for_thread = app.clone();
     std::thread::Builder::new()
         .name("cannet-remote-pump".into())
         .spawn(move || {
-            run_pump(&app_for_thread, receiver, stop);
+            run_pump(&app_for_thread, receiver, stop, channel_to_bus);
             // The pump exited (server hung up or user disconnected).
             // Clear the stashed session so a fresh connect can start.
             let state: State<'_, AppState> = app_for_thread.state();
@@ -772,11 +870,35 @@ fn disconnect_remote_server(state: State<'_, AppState>) {
     }
 }
 
+/// Decide how to route an incoming frame given the per-channel bus
+/// mapping. Returns `Some(bus_id)` to stamp the frame with that bus,
+/// `None` to leave it unassigned, or `Err(())` to drop the frame
+/// (the "skip this channel" path from the BLF mapping step).
+///
+/// Pure helper so the pump's routing decision is unit-testable without
+/// spinning up a Tauri runtime.
+fn route_channel(channel: u8, mapping: &[(u8, Option<String>)]) -> Result<Option<String>, ()> {
+    match mapping.iter().find(|(ch, _)| *ch == channel) {
+        Some((_, Some(bid))) => Ok(Some(bid.clone())),
+        Some((_, None)) => Err(()),
+        None => Ok(None),
+    }
+}
+
 // `source` is owned by this thread for its lifetime; clippy's
 // "pass by reference" suggestion doesn't fit the thread-spawn site.
+//
+// `channel_to_bus` is the source's per-channel logical-bus mapping
+// (Phase 6). On each frame the pump tags it with the bus_id matching
+// its `channel`; a channel with no entry stays `bus_id: None`; a
+// channel mapped to `None` is dropped (the BLF-import "skip" path).
 #[allow(clippy::needless_pass_by_value)]
-fn run_pump<S>(app: &AppHandle, mut source: S, stop: Arc<AtomicBool>)
-where
+fn run_pump<S>(
+    app: &AppHandle,
+    mut source: S,
+    stop: Arc<AtomicBool>,
+    channel_to_bus: Vec<(u8, Option<String>)>,
+) where
     S: CanFrameSource,
     S::Error: fmt::Display,
 {
@@ -789,7 +911,12 @@ where
         }
         match source.next_frame() {
             Ok(Some(frame)) => {
-                state.trace_store.append(RawTraceFrame::from(frame));
+                let mut raw = RawTraceFrame::from(frame);
+                match route_channel(raw.channel, &channel_to_bus) {
+                    Ok(bid) => raw.bus_id = bid,
+                    Err(()) => continue, // skip this channel
+                }
+                state.trace_store.append(raw);
                 total = total.saturating_add(1);
             }
             Ok(None) => break,
@@ -1085,6 +1212,20 @@ mod tests {
         assert_eq!(name(1).as_deref(), Some("FromBusC"));
         // An unassigned frame doesn't match any scoped DBC.
         assert_eq!(name(2), None);
+    }
+
+    #[test]
+    fn route_channel_translates_via_mapping() {
+        let m = vec![
+            (0u8, Some("p".to_string())),
+            (1, None), // explicit skip
+            (2, Some("c".into())),
+        ];
+        assert_eq!(route_channel(0, &m), Ok(Some("p".into())));
+        assert_eq!(route_channel(2, &m), Ok(Some("c".into())));
+        assert_eq!(route_channel(1, &m), Err(()));
+        // Channel without an entry: unassigned.
+        assert_eq!(route_channel(7, &m), Ok(None));
     }
 
     #[test]
