@@ -41,6 +41,7 @@ mod signal_cache;
 mod signal_sampler;
 mod trace_store;
 
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -112,17 +113,18 @@ struct AppState {
     /// by `add_dbc` / `remove_dbc` / `clear_dbcs`. (Only one interface
     /// exists for now, so every loaded DBC applies to it.)
     databases: Mutex<Vec<LoadedDbc>>,
-    /// Active remote session, if any: the gRPC [`SessionHandle`] (drop
-    /// to disconnect), a [`SessionTransmitter`] the transmit panel
-    /// uses to push frames over the wire, the interfaces the session
-    /// is subscribed to (so the transmit-panel command can pick the
-    /// right `interface_id` for a chosen channel), and a stop flag the
-    /// pump thread watches. `disconnect_remote_server` takes everything
-    /// out, sets the flag, and drops the handle — the flag makes the
-    /// pump exit promptly instead of first draining whatever frames the
-    /// gRPC task already buffered, and dropping the handle closes the
-    /// stream. The pump thread clears this slot on exit.
-    remote_session: Mutex<Option<RemoteSession>>,
+    /// Active remote sessions, keyed by server address. Each value is
+    /// the gRPC [`SessionHandle`] (drop to disconnect), a
+    /// [`SessionTransmitter`] the transmit panel uses to push frames
+    /// over the wire, the interfaces the session is subscribed to (so
+    /// the transmit-panel command can pick the right `interface_id` for
+    /// a chosen channel), and a stop flag the pump thread watches.
+    /// `disconnect_remote_server` takes one or all entries out, sets
+    /// the flag, and drops the handle — the flag makes the pump exit
+    /// promptly instead of first draining whatever frames the gRPC
+    /// task already buffered, and dropping the handle closes the
+    /// stream. The pump thread removes its own entry on exit.
+    remote_sessions: Mutex<HashMap<String, RemoteSession>>,
     /// The trace model — the single source of truth for the captured
     /// stream. Pump threads append; `fetch_trace_range` reads slices
     /// out for the trace view to render.
@@ -147,7 +149,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             databases: Mutex::new(Vec::new()),
-            remote_session: Mutex::new(None),
+            remote_sessions: Mutex::new(HashMap::new()),
             trace_store: TraceStore::new(),
             signal_caches: SignalCacheStore::new(),
         })
@@ -790,24 +792,33 @@ async fn list_remote_interfaces(address: String) -> Result<Vec<InterfaceRecord>,
     Ok(interfaces.into_iter().map(InterfaceRecord::from).collect())
 }
 
-/// Connect to a `cannet-server`, list its interfaces, subscribe to all
-/// of them (each gets `channel = its index in the list`), and spawn a
-/// pump thread to push frames at the frontend.
+/// Connect to a `cannet-server`, list its interfaces, subscribe only
+/// to the interfaces named by `bindings`, and spawn a pump thread to
+/// push frames at the frontend.
 ///
-/// At most one remote session may be active at a time — second call
-/// while one is open returns an error.
+/// Multiple remote sessions may be active at a time — one per server
+/// address. A second connect to the same address while one is open
+/// returns an error.
 ///
 /// Phase 6: `bindings` is the project's interface → bus mapping for
 /// this server (a list of `{interface, bus_id}` pairs). The host
-/// translates that into a per-channel mapping the pump uses to stamp
-/// each frame's `bus_id`. Interfaces without a binding stream through
-/// unassigned.
+/// subscribes to exactly those interfaces (in binding order) and
+/// translates each into a per-channel mapping the pump uses to stamp
+/// each frame's `bus_id`. An empty `bindings` is an error — there's
+/// nothing to subscribe to.
 #[tauri::command]
 async fn connect_remote_server(
     app: AppHandle,
     address: String,
     bindings: Option<Vec<InterfaceBusBinding>>,
 ) -> Result<RemoteSessionResult, String> {
+    let binding_lookup = bindings.unwrap_or_default();
+    if binding_lookup.is_empty() {
+        return Err(format!(
+            "no interface bindings configured for {address}; add bindings in the project panel first"
+        ));
+    }
+
     let interfaces = cannet_client::list_interfaces(&address)
         .await
         .map_err(|e| e.to_string())?;
@@ -816,14 +827,29 @@ async fn connect_remote_server(
         return Err(format!("server at {address} exposes no interfaces"));
     }
 
-    let subscriptions: Vec<Subscription> = interfaces
+    // Subscribe only to interfaces named in the project's bindings for
+    // this server. Channels are 0..N over the binding list — distinct
+    // per session, not globally unique.
+    let subscriptions: Vec<Subscription> = binding_lookup
         .iter()
         .enumerate()
-        .map(|(i, iface)| Subscription {
-            interface_id: iface.id.clone(),
-            channel: u8::try_from(i).unwrap_or(u8::MAX),
+        .filter_map(|(i, b)| {
+            if interfaces.iter().any(|iface| iface.id == b.interface) {
+                Some(Subscription {
+                    interface_id: b.interface.clone(),
+                    channel: u8::try_from(i).unwrap_or(u8::MAX),
+                })
+            } else {
+                None
+            }
         })
         .collect();
+
+    if subscriptions.is_empty() {
+        return Err(format!(
+            "no bound interface matches what {address} exposes"
+        ));
+    }
 
     let address_for_thread = address.clone();
     let subs_for_thread = subscriptions.clone();
@@ -840,32 +866,31 @@ async fn connect_remote_server(
     {
         let state: State<'_, AppState> = app.state();
         let mut guard = state
-            .remote_session
+            .remote_sessions
             .lock()
-            .expect("remote_session mutex poisoned");
-        if guard.is_some() {
+            .expect("remote_sessions mutex poisoned");
+        if guard.contains_key(&address) {
             // Drop `handle` here, which sends shutdown to the worker we
-            // just spawned. Subsequent pump-thread spawn is skipped.
-            return Err("already connected to a remote server".into());
+            // just spawned. The existing entry stays untouched.
+            return Err(format!("already connected to {address}"));
         }
-        *guard = Some(RemoteSession {
-            handle,
-            transmitter,
-            channel_to_interface: subscriptions
-                .iter()
-                .map(|s| (s.channel, s.interface_id.clone()))
-                .collect(),
-            stop: Arc::clone(&stop),
-        });
+        guard.insert(
+            address.clone(),
+            RemoteSession {
+                handle,
+                transmitter,
+                channel_to_interface: subscriptions
+                    .iter()
+                    .map(|s| (s.channel, s.interface_id.clone()))
+                    .collect(),
+                stop: Arc::clone(&stop),
+            },
+        );
     }
 
-    // Build the channel-to-bus mapping from the per-server bindings:
-    // pick out only the bindings whose `interface` matches one of this
-    // server's subscribed interfaces, then translate via the
-    // subscription's channel. An interface without a matching binding
-    // contributes no entry (the pump leaves that channel's bus_id
-    // unassigned).
-    let binding_lookup = bindings.unwrap_or_default();
+    // Build the channel-to-bus mapping from the per-server bindings.
+    // We subscribed to exactly the bindings' interfaces above, so each
+    // subscription has a matching binding by interface id.
     let channel_to_bus: Vec<(u8, Option<String>)> = subscriptions
         .iter()
         .filter_map(|sub| {
@@ -877,18 +902,19 @@ async fn connect_remote_server(
         .collect();
 
     let app_for_thread = app.clone();
+    let address_for_cleanup = address.clone();
     std::thread::Builder::new()
-        .name("cannet-remote-pump".into())
+        .name(format!("cannet-remote-pump:{address}"))
         .spawn(move || {
             run_pump(&app_for_thread, receiver, stop, channel_to_bus);
-            // The pump exited (server hung up or user disconnected).
-            // Clear the stashed session so a fresh connect can start.
+            // Pump exited (server hung up or user disconnected). Drop
+            // our entry so the address is free for a fresh connect.
             let state: State<'_, AppState> = app_for_thread.state();
-            let _ = state
-                .remote_session
+            state
+                .remote_sessions
                 .lock()
-                .expect("remote_session mutex poisoned")
-                .take();
+                .expect("remote_sessions mutex poisoned")
+                .remove(&address_for_cleanup);
         })
         .map_err(|e| format!("failed to spawn remote pump thread: {e}"))?;
 
@@ -905,21 +931,28 @@ async fn connect_remote_server(
     })
 }
 
-/// End the active remote session: set the pump's stop flag and drop the
-/// [`SessionHandle`]. The flag makes the pump break out of its loop on
-/// the next iteration — without first replaying whatever frames the
-/// gRPC task already buffered, which under a fast replay can be a large
-/// backlog — and dropping the handle closes the stream. The pump then
-/// emits `log-finished` and clears the session slot.
+/// End remote sessions: set their pumps' stop flags and drop their
+/// [`SessionHandle`]s. The flags make pumps break out of their loops
+/// on the next iteration — without first replaying whatever frames the
+/// gRPC tasks already buffered — and dropping the handles closes the
+/// streams. Each pump removes its own entry on exit.
+///
+/// `address = None` disconnects every active session; `Some(addr)`
+/// disconnects only that one.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-fn disconnect_remote_server(state: State<'_, AppState>) {
-    let session = state
-        .remote_session
-        .lock()
-        .expect("remote_session mutex poisoned")
-        .take();
-    if let Some(session) = session {
+fn disconnect_remote_server(state: State<'_, AppState>, address: Option<String>) {
+    let sessions: Vec<RemoteSession> = {
+        let mut guard = state
+            .remote_sessions
+            .lock()
+            .expect("remote_sessions mutex poisoned");
+        match address {
+            Some(addr) => guard.remove(&addr).into_iter().collect(),
+            None => guard.drain().map(|(_, s)| s).collect(),
+        }
+    };
+    for session in sessions {
         session.stop.store(true, Ordering::Relaxed);
         // Dropping the handle signals the worker to disconnect; the
         // transmitter goes with it, so subsequent transmit_frame calls
@@ -1063,35 +1096,44 @@ fn transmit_frame_inner(
     state.trace_store.append(RawTraceFrame::from(frame.clone()));
     let tx_confirm_index = u64::try_from(state.trace_store.len()).unwrap_or(u64::MAX) - 1;
 
-    // Forward to the remote session, if any.
-    let session_guard = state
-        .remote_session
+    // Forward to a remote session that knows this channel. Multi-
+    // server sessions all start counting channels at 0; the first
+    // session with a matching channel wins. This is a known limitation
+    // of the channel-based transmit model — see backlog: routing
+    // transmit by `bus_id` would let the host pick the session
+    // unambiguously.
+    let sessions_guard = state
+        .remote_sessions
         .lock()
-        .expect("remote_session mutex poisoned");
-    let wire_status = match session_guard.as_ref() {
-        None => ipc::TransmitWireStatus::NotConnected,
-        Some(session) => 'wire: {
-            let Some((_, interface_id)) = session
+        .expect("remote_sessions mutex poisoned");
+    let wire_status = if sessions_guard.is_empty() {
+        ipc::TransmitWireStatus::NotConnected
+    } else {
+        let found = sessions_guard.values().find_map(|session| {
+            session
                 .channel_to_interface
                 .iter()
                 .find(|(ch, _)| *ch == request.channel)
-            else {
-                break 'wire ipc::TransmitWireStatus::Failed {
-                    message: format!(
-                        "channel {} is not bound to any wire interface",
-                        request.channel
-                    ),
-                };
-            };
-            let interface_id = interface_id.clone();
-            match session.transmitter.transmit(&interface_id, &frame) {
-                Ok(()) => ipc::TransmitWireStatus::Sent { interface_id },
-                Err(e) => ipc::TransmitWireStatus::Failed {
-                    message: e.to_string(),
-                },
+                .map(|(_, iid)| (iid.clone(), session))
+        });
+        match found {
+            None => ipc::TransmitWireStatus::Failed {
+                message: format!(
+                    "channel {} is not bound on any active server",
+                    request.channel
+                ),
+            },
+            Some((interface_id, session)) => {
+                match session.transmitter.transmit(&interface_id, &frame) {
+                    Ok(()) => ipc::TransmitWireStatus::Sent { interface_id },
+                    Err(e) => ipc::TransmitWireStatus::Failed {
+                        message: e.to_string(),
+                    },
+                }
             }
         }
     };
+    drop(sessions_guard);
 
     Ok(ipc::TransmitResult {
         tx_confirm_index,
@@ -1176,7 +1218,7 @@ mod tests {
     fn test_state() -> AppState {
         AppState {
             databases: Mutex::new(Vec::new()),
-            remote_session: Mutex::new(None),
+            remote_sessions: Mutex::new(HashMap::new()),
             trace_store: TraceStore::new(),
             signal_caches: SignalCacheStore::new(),
         }
