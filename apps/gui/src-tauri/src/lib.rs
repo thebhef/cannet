@@ -48,7 +48,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use cannet_blf::BlfCanFrameSource;
-use cannet_client::{SessionHandle, Subscription};
+use cannet_client::{SessionHandle, SessionTransmitter, Subscription};
 use cannet_core::{CanFrameSource, CanId};
 use cannet_dbc::{Database, DecodedSignal};
 
@@ -65,6 +65,25 @@ use trace_store::{RawTraceFrame, TraceStore};
 struct LoadedDbc {
     path: String,
     db: Database,
+}
+
+/// State for an active remote session — see
+/// [`AppState::remote_session`] for the full role.
+#[allow(dead_code)]
+struct RemoteSession {
+    /// Drop-to-disconnect handle. Read by `disconnect_remote_server`
+    /// only; the rest of the file just keeps it alive in the slot.
+    handle: SessionHandle,
+    /// Submitting end of the session — what the `transmit_frame`
+    /// command pushes onto. Populated in this commit; consumed in
+    /// the next.
+    transmitter: SessionTransmitter,
+    /// `channel -> wire interface_id` for every subscription opened
+    /// when the session was established. The transmit-panel command
+    /// uses this to translate a frame's `channel` to the wire id the
+    /// `FrameBatch` envelope must carry.
+    channel_to_interface: Vec<(u8, String)>,
+    stop: Arc<AtomicBool>,
 }
 
 /// How often the host pushes a `trace-grew` IPC event with the latest
@@ -86,13 +105,17 @@ struct AppState {
     /// by `add_dbc` / `remove_dbc` / `clear_dbcs`. (Only one interface
     /// exists for now, so every loaded DBC applies to it.)
     databases: Mutex<Vec<LoadedDbc>>,
-    /// Active remote session, if any: the gRPC [`SessionHandle`] plus a
-    /// stop flag the pump thread watches. `disconnect_remote_server`
-    /// takes both out, sets the flag, and drops the handle — the flag
-    /// makes the pump exit promptly instead of first draining whatever
-    /// frames the gRPC task already buffered, and dropping the handle
-    /// closes the stream. The pump thread clears this slot on exit.
-    remote_session: Mutex<Option<(SessionHandle, Arc<AtomicBool>)>>,
+    /// Active remote session, if any: the gRPC [`SessionHandle`] (drop
+    /// to disconnect), a [`SessionTransmitter`] the transmit panel
+    /// uses to push frames over the wire, the interfaces the session
+    /// is subscribed to (so the transmit-panel command can pick the
+    /// right `interface_id` for a chosen channel), and a stop flag the
+    /// pump thread watches. `disconnect_remote_server` takes everything
+    /// out, sets the flag, and drops the handle — the flag makes the
+    /// pump exit promptly instead of first draining whatever frames the
+    /// gRPC task already buffered, and dropping the handle closes the
+    /// stream. The pump thread clears this slot on exit.
+    remote_session: Mutex<Option<RemoteSession>>,
     /// The trace model — the single source of truth for the captured
     /// stream. Pump threads append; `fetch_trace_range` reads slices
     /// out for the trace view to render.
@@ -589,7 +612,7 @@ async fn connect_remote_server(
     .map_err(|e| format!("subscribe task panicked: {e}"))?
     .map_err(|e| e.to_string())?;
 
-    let (handle, receiver) = source.into_parts();
+    let (handle, receiver, transmitter) = source.into_parts();
     let stop = Arc::new(AtomicBool::new(false));
 
     {
@@ -603,7 +626,15 @@ async fn connect_remote_server(
             // just spawned. Subsequent pump-thread spawn is skipped.
             return Err("already connected to a remote server".into());
         }
-        *guard = Some((handle, Arc::clone(&stop)));
+        *guard = Some(RemoteSession {
+            handle,
+            transmitter,
+            channel_to_interface: subscriptions
+                .iter()
+                .map(|s| (s.channel, s.interface_id.clone()))
+                .collect(),
+            stop: Arc::clone(&stop),
+        });
     }
 
     let app_for_thread = app.clone();
@@ -649,9 +680,12 @@ fn disconnect_remote_server(state: State<'_, AppState>) {
         .lock()
         .expect("remote_session mutex poisoned")
         .take();
-    if let Some((handle, stop)) = session {
-        stop.store(true, Ordering::Relaxed);
-        drop(handle);
+    if let Some(session) = session {
+        session.stop.store(true, Ordering::Relaxed);
+        // Dropping the handle signals the worker to disconnect; the
+        // transmitter goes with it, so subsequent transmit_frame calls
+        // see SessionClosed.
+        drop(session);
     }
 }
 
