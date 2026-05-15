@@ -44,9 +44,9 @@ use cannet_core::{CanFrame, CanFrameSource};
 use cannet_wire::proto::{
     cannet_server_client::CannetServerClient,
     envelope::Body,
-    Envelope, ListInterfacesRequest, Subscribe,
+    Envelope, FrameBatch, ListInterfacesRequest, Subscribe,
 };
-use cannet_wire::{proto_to_frame, ProtoConversionError};
+use cannet_wire::{frame_to_proto, proto_to_frame, ProtoConversionError};
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::sync::oneshot;
 use tokio_stream::wrappers::ReceiverStream;
@@ -124,7 +124,9 @@ pub fn connect_and_subscribe(
     let address = address.to_string();
     let subs_for_thread = subscriptions.clone();
     let (frame_tx, frame_rx) = mpsc::channel::<Result<CanFrame, ConnectionError>>();
-    let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<(), ConnectionError>>(1);
+    let (ready_tx, ready_rx) = mpsc::sync_channel::<
+        Result<tokio_mpsc::Sender<Envelope>, ConnectionError>,
+    >(1);
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
     let thread = thread::Builder::new()
@@ -133,7 +135,7 @@ pub fn connect_and_subscribe(
         .map_err(|e| ConnectionError::Thread(e.to_string()))?;
 
     match ready_rx.recv() {
-        Ok(Ok(())) => Ok(RemoteCanFrameSource {
+        Ok(Ok(req_tx)) => Ok(RemoteCanFrameSource {
             receiver: FrameReceiver {
                 rx: frame_rx,
                 subscriptions,
@@ -142,6 +144,7 @@ pub fn connect_and_subscribe(
                 shutdown_tx: Some(shutdown_tx),
                 _thread: thread,
             },
+            transmitter: SessionTransmitter { req_tx },
         }),
         Ok(Err(e)) => Err(e),
         Err(_) => Err(ConnectionError::Thread(
@@ -164,6 +167,7 @@ pub fn connect_and_subscribe(
 pub struct RemoteCanFrameSource {
     receiver: FrameReceiver,
     handle: SessionHandle,
+    transmitter: SessionTransmitter,
 }
 
 impl RemoteCanFrameSource {
@@ -174,14 +178,19 @@ impl RemoteCanFrameSource {
         self.receiver.subscriptions()
     }
 
-    /// Split into the receive half and the shutdown handle. Drop the
-    /// [`SessionHandle`] to disconnect; the [`FrameReceiver`] will
-    /// observe end-of-stream on its next
-    /// [`CanFrameSource::next_frame`] call.
+    /// Split into the shutdown handle, the receive half, and the
+    /// transmit half. Drop the [`SessionHandle`] to disconnect; the
+    /// [`FrameReceiver`] will observe end-of-stream on its next
+    /// [`CanFrameSource::next_frame`] call. The [`SessionTransmitter`]
+    /// is what a transmit panel uses to push frames onto the wire.
     #[must_use]
-    pub fn into_parts(self) -> (SessionHandle, FrameReceiver) {
-        let Self { receiver, handle } = self;
-        (handle, receiver)
+    pub fn into_parts(self) -> (SessionHandle, FrameReceiver, SessionTransmitter) {
+        let Self {
+            receiver,
+            handle,
+            transmitter,
+        } = self;
+        (handle, receiver, transmitter)
     }
 }
 
@@ -223,6 +232,58 @@ impl CanFrameSource for FrameReceiver {
     }
 }
 
+/// Transmit half of a remote session. Cloneable so a cyclic scheduler
+/// and an interactive panel can both push frames through the same
+/// session without coordinating ownership.
+///
+/// `transmit` enqueues a single-frame `FrameBatch` envelope on the
+/// session's outgoing channel. The wire's batching is sender-side
+/// only — the server unbatches — so one frame per call is fine.
+///
+/// Returns `Err(SessionClosed)` once the worker thread has shut down
+/// (the user dropped the [`SessionHandle`], the server hung up, or a
+/// transport failure tore the session down). A pending in-band server
+/// error like `Error::TX_REJECTED` does *not* close the session — the
+/// client sees the rejection through [`FrameReceiver::next_frame`]'s
+/// `ConnectionError::Server` variant.
+#[derive(Clone)]
+pub struct SessionTransmitter {
+    req_tx: tokio_mpsc::Sender<Envelope>,
+}
+
+impl SessionTransmitter {
+    /// Send `frame` over the session, addressed to `interface_id`.
+    pub fn transmit(&self, interface_id: &str, frame: &CanFrame) -> Result<(), SessionClosed> {
+        let envelope = Envelope {
+            body: Some(Body::FrameBatch(FrameBatch {
+                interface_id: interface_id.to_string(),
+                frames: vec![frame_to_proto(frame)],
+            })),
+        };
+        // `blocking_send` waits if the queue is full but errors if the
+        // receive side has been dropped — which is exactly what
+        // "session closed" means here. Called from a synchronous Tauri
+        // command, never from inside the runtime, so blocking is fine.
+        self.req_tx
+            .blocking_send(envelope)
+            .map_err(|_| SessionClosed)
+    }
+}
+
+/// Returned by [`SessionTransmitter::transmit`] when the session is
+/// no longer alive — typically because the user disconnected, the
+/// server hung up, or a transport-level failure tore the session down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionClosed;
+
+impl std::fmt::Display for SessionClosed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("remote session is closed")
+    }
+}
+
+impl std::error::Error for SessionClosed {}
+
 /// Shutdown handle for a remote session. Drop it (or call
 /// [`Self::shutdown`]) to disconnect; the worker thread exits and any
 /// [`FrameReceiver`] sharing the same session sees `Ok(None)` from its
@@ -254,7 +315,7 @@ fn run_worker(
     address: String,
     subscriptions: Vec<Subscription>,
     frame_tx: mpsc::Sender<Result<CanFrame, ConnectionError>>,
-    ready_tx: mpsc::SyncSender<Result<(), ConnectionError>>,
+    ready_tx: mpsc::SyncSender<Result<tokio_mpsc::Sender<Envelope>, ConnectionError>>,
     shutdown_rx: oneshot::Receiver<()>,
 ) {
     let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -276,7 +337,7 @@ async fn run_session(
     address: String,
     subscriptions: Vec<Subscription>,
     frame_tx: mpsc::Sender<Result<CanFrame, ConnectionError>>,
-    ready_tx: mpsc::SyncSender<Result<(), ConnectionError>>,
+    ready_tx: mpsc::SyncSender<Result<tokio_mpsc::Sender<Envelope>, ConnectionError>>,
     mut shutdown_rx: oneshot::Receiver<()>,
 ) {
     let endpoint = format!("http://{address}");
@@ -311,7 +372,14 @@ async fn run_session(
         }
     };
 
-    let _ = ready_tx.send(Ok(()));
+    // Hand a clone of the request sender back to the caller through
+    // the ready channel — this is what a `SessionTransmitter` wraps.
+    // Keep our own clone alive locally so the bidi request half stays
+    // open for the session's lifetime even after every external
+    // [`SessionTransmitter`] is dropped (a tx-only session is still
+    // valid; the server just won't see anything from us, but the
+    // receive half keeps streaming).
+    let _ = ready_tx.send(Ok(req_tx.clone()));
 
     let mut id_to_channel = std::collections::HashMap::with_capacity(subscriptions.len());
     for sub in &subscriptions {
