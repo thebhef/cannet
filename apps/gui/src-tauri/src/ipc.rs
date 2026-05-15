@@ -170,11 +170,17 @@ pub struct SignalQuery {
 
 /// One signal's freshly-decoded points, parallel arrays (`t[i]` is the
 /// source time in seconds of `v[i]`), shaped for a uPlot `[xs, ys]`
-/// column.
+/// column. `value_lo` / `value_hi` are the running min / max of every
+/// decoded sample for this signal since the cache was last cleared —
+/// what the frontend's auto-normalisation uses for the y-axis range
+/// (it must not be recomputed from the returned slice, or the y-axis
+/// would shrink back whenever a peak scrolls off-screen).
 #[derive(serde::Serialize, Clone, Debug)]
 pub struct SampledPoints {
     pub t: Vec<f64>,
     pub v: Vec<f64>,
+    pub value_lo: Option<f64>,
+    pub value_hi: Option<f64>,
 }
 
 /// Return of [`sample_signals`](crate::sample_signals): one
