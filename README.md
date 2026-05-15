@@ -104,7 +104,12 @@ apps/
                      (`list_signals` / `sample_signals` commands).
                      `src/ipc.rs` holds the IPC payload shapes;
                      `src/project.rs` the project-file model +
-                     `open_project` / `save_project`.
+                     `open_project` / `save_project`. `src/system_log.rs`
+                     (Phase 7) is the host-side structured log bus —
+                     a bounded ring + rate limiter that the
+                     `sys_info!` / `sys_warn!` / `sys_error!` macros
+                     fan into alongside `tracing-subscriber`; the
+                     System Messages panel renders it.
 
 plans/           Living planning docs (see CLAUDE.md).
 ```
@@ -454,6 +459,41 @@ v2 project opens by way of an in-memory migration that lifts
 `dbc_paths` into `dbcs` (each unscoped) and defaults `buses` and
 `interface_bindings` to empty; the on-disk version is rewritten the
 next time you save.
+
+### Phase-7 system messages
+
+Phase 7 adds a structured log bus and a panel that surfaces it.
+
+**Host-side log bus**. The Tauri host owns a bounded in-process ring
+of `{ ts, source, level, message }` entries (`apps/gui/src-tauri/src/
+system_log.rs`). `sys_info!` / `sys_warn!` / `sys_error!` macros fan
+each event into both the ring and `tracing-subscriber`'s `fmt` layer
+so dev stderr keeps working. A per-`(source, template)` rate
+limiter caps any one emitter at five entries per second; the first
+drop in a window records a single suppression note so the panel
+doesn't go silent under a flood. Sources currently in use:
+`project`, `dbc`, `connection`, `blf-import` (vendor sidecars will
+use `sidecar:<vendor>` in Phase 8).
+
+**System Messages panel**. Add it from the toolbar's *System
+messages* button. The panel renders a virtualised list filterable by
+source and by minimum level (default `warn` — informational entries
+are visible only if you opt in). Copy-all and double-click-to-copy
+put entries on the clipboard; Clear empties the ring. Per-panel
+filter state lives in dockview `params`; the bus itself is
+session-scoped (it isn't written into the project file).
+
+**Unread-error indicator**. The toolbar button doubles as a badge:
+the red pill shows the number of warn+error entries that arrived
+since the panel last gained focus. Clicking the button focuses
+the panel (or opens one) and clears the badge.
+
+**Wire-level surface**. `cannet-wire`'s `Envelope` grew a fifth
+variant — `LogMessage { ts, level, source, message }` — alongside
+`Error`. The two are distinct: `Error` still ends the session, a
+`Log` is informational and the session continues. The host's
+`system_log::bridge_wire_log` translates an incoming wire log into
+the local bus; Phase 8's vendor sidecar is the first real producer.
 
 ### Phase-2 client / server demo
 
