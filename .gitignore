@@ -9,3 +9,6 @@ apps/gui/tsconfig.tsbuildinfo
 # Editor / OS
 .DS_Store
 *.swp
+
+# Claude Code worktrees
+.claude/worktrees/
