@@ -744,6 +744,11 @@ In rough order, each step leaving the panel runnable:
 
 ## Phase 5 — Transmit + DBC Value Tables
 
+Status: **shipped** in the realised-scope form documented below. The
+deferrals from the original scope are folded into
+[`backlog.md`](backlog.md) (proper signal-to-bytes encoding, plot
+enum rendering for multi-signal / mixed areas).
+
 Compose and send CAN / CAN FD frames from the GUI, and complete the DBC
 value-table story so enum-valued signals render symbolically across the
 trace and plot views. Sits before vendor drivers: needs the Phase 3
@@ -822,6 +827,29 @@ Exit criteria:
   rendering behaviour; rustdoc covers the new public surface on
   `cannet-core` (transmit direction + loopback bus), `cannet-dbc` (value
   tables), `cannet-wire` / `cannet-client` (client TX).
+
+Realised scope notes:
+
+- The transmit panel's **signals** mode currently surfaces enum
+  dropdowns and copies the picked raw value into the payload as a
+  single byte (a coarse but informative way to populate the hex
+  field). Proper per-signal bit-pack encoding (factor / offset /
+  endianness / multi-byte / multiplexor) is the inverse of
+  `cannet_dbc::Database::decode` and belongs there; surfaced through
+  a future `encode_frame` host command. Tracked in
+  [`backlog.md`](backlog.md).
+- The plot panel switches into **stepped + symbolic** rendering when
+  a plot area shows *exactly one* signal with a `VAL_` table — the
+  realistic single-state-channel case. Multi-signal / mixed enum +
+  numeric areas keep the existing numeric (auto-normalised) rendering;
+  their layout (multiple symbolic axes, per-signal step overlays)
+  wants the per-trace y offset / gain plumbing that
+  [`backlog.md`](backlog.md) tracks, so it's folded into that
+  follow-up.
+- The loopback wire round-trip and the BLF replay server's
+  `Error::TX_REJECTED` path are both covered by integration tests
+  (`cannet-server/tests/loopback.rs`,
+  `cannet-client/tests/end_to_end.rs::transmit_through_session_round_trips_via_loopback`).
 
 ## Phase 6 — Logical Buses, Filtering & Project Graph
 
