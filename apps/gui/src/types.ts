@@ -87,14 +87,15 @@ export interface ByIdSnapshotRecord {
 /// One element of a project: a discriminated-union record with a stable
 /// `id`. `trace` = a trace panel; `plot` = a signal-plot panel (also
 /// backed by a trace-style session window, but a distinct kind so the
-/// project view and panel-reopen treat it as a plot, not a trace).
-/// Transmit messages, filters etc. become further `kind`s. Neither kind
-/// carries extra config — the panel showing it owns its layout (a
-/// trace's mode + columns, a plot's areas / cursors / …) in the
-/// dockview panel `params`.
+/// project view and panel-reopen treat it as a plot, not a trace);
+/// `transmit` = a Phase-5 transmit panel composing CAN frames. The
+/// element itself carries no extra config — the panel showing it owns
+/// its config (a trace's mode + columns, a plot's areas / cursors,
+/// a transmit panel's frame list) in the dockview panel `params`.
 export type ProjectElement =
   | { kind: "trace"; id: string }
-  | { kind: "plot"; id: string };
+  | { kind: "plot"; id: string }
+  | { kind: "transmit"; id: string };
 
 /// The discriminant of a {@link ProjectElement}.
 export type ProjectElementKind = ProjectElement["kind"];
