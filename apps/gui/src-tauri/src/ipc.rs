@@ -24,6 +24,11 @@ pub struct TraceFrameRecord {
     pub kind: CanFrameKind,
     pub data: Vec<u8>,
     pub decoded: Option<DecodedRecord>,
+    /// Logical bus id this frame was routed onto, or `None` if no
+    /// binding/mapping assigned one (Phase 6). `None` for an unassigned
+    /// frame, which a filter `{bus: ...}` predicate never matches.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bus_id: Option<String>,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -88,6 +93,7 @@ impl TraceFrameRecord {
             kind,
             data,
             decoded,
+            bus_id: frame.bus_id.clone(),
         }
     }
 }
@@ -103,6 +109,10 @@ pub struct OpenLogResult {
 pub struct DbcInfo {
     pub dbc_path: String,
     pub message_count: usize,
+    /// Logical bus ids this DBC is scoped to (Phase 6). An empty vec
+    /// is the conventional "all buses" default.
+    #[serde(default)]
+    pub buses: Vec<String>,
 }
 
 /// Periodic IPC event carrying the trace store's current size and rate.

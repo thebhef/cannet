@@ -121,6 +121,13 @@ pub struct LatestById {
 }
 
 /// One row in the trace store. Owned, undecoded.
+///
+/// `bus_id` is the project's logical bus this frame was routed onto
+/// (Phase 6) — `None` if no binding/mapping assigned one. Pump threads
+/// stamp it before appending; per-bus DBC scoping and the filter
+/// predicate both read it. `channel` keeps its meaning (the source's
+/// 0-based channel number) and is what the user maps onto a `bus_id`
+/// at import / connect time.
 #[derive(Debug, Clone)]
 pub struct RawTraceFrame {
     pub timestamp_ns: u64,
@@ -129,6 +136,7 @@ pub struct RawTraceFrame {
     pub extended: bool,
     pub direction: Direction,
     pub payload: CanFramePayload,
+    pub bus_id: Option<String>,
 }
 
 impl From<CanFrame> for RawTraceFrame {
@@ -140,6 +148,7 @@ impl From<CanFrame> for RawTraceFrame {
             extended: frame.id.is_extended(),
             direction: frame.direction,
             payload: frame.payload,
+            bus_id: None,
         }
     }
 }
@@ -372,6 +381,7 @@ mod tests {
             extended: false,
             direction: Direction::Rx,
             payload: CanFramePayload::Classic(vec![]),
+            bus_id: None,
         }
     }
 
