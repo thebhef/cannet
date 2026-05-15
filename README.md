@@ -7,7 +7,9 @@ out behind a network protocol; Phase 3 fills in a multi-panel docking
 layout (dockable trace and project panels in arbitrary arrangements)
 and JSON project files; Phase 4 adds a signal-plotting view; Phase 5
 adds transmit, the `--loopback` server, and DBC value-table rendering
-across views; Phase 6 adds per-vendor hardware adapters. See
+across views; Phase 6 introduces logical buses, per-bus DBC scoping,
+a structured filter element, and a project graph panel showing the
+project's wiring; Phase 8 adds per-vendor hardware adapters. See
 [`plans/`](plans/) for the detailed roadmap.
 
 ## Repository layout
@@ -214,21 +216,21 @@ docking is within the one window; the tear-out item is in
 A `.json` *project* file holds the panel layout (including each trace
 panel's column layout and auto-scroll toggle), the project's elements
 (traces — and later plots, transmit messages, …), the loaded DBC
-paths, and the remote-server address. The **project panel** (or the
+paths, the project's logical buses, and the interface bindings (each
+of which names its own server address). The **project panel** (or the
 toolbar's **Open project…** / **Save project**) drives it: **Save** /
-**Save As…** write one, **Open…** restores it (configures the remote
-address and re-loads the DBCs by path — hit **Connect** to switch),
+**Save As…** write one, **Open…** restores it (re-loads the DBCs and
+restores the bus / binding configuration — hit **Connect** to switch),
 **New** starts a fresh workspace (default layout, no DBCs, disconnected,
-buffer cleared). The panel also lists the configured bus(es) with
-**Connect** / **Disconnect** and the loaded DBCs with **Add…** /
-**Remove** / **Reload all from disk**. The
+buffer cleared). The panel also lists the configured server(s) with
+**Connect all** / **Disconnect all** and the loaded DBCs with **Add…**
+/ **Remove** / **Reload all from disk**. The
 last opened/saved project is reopened on launch (with no project, the
 layout is restored from local storage). Unsaved changes show a `●` in
 the project panel, and closing the window with unsaved changes prompts
 you (Save & close / Discard & close / Cancel). Not carried in the project: a trace's window
 position (it re-anchors to the session buffer on each launch anyway),
-the BLF replay path, the per-interface subscription set, and per-bus
-DBC association (every loaded DBC applies to the one interface for now).
+and the BLF replay path.
 
 **Add plot panel** opens a signal plot (Phase 4): a uPlot-based
 oscilloscope-style view, docked like any other panel. It's backed by a
@@ -362,7 +364,9 @@ cargo run -p cannet-server -- --loopback
 
 Then in the GUI:
 
-1. Connect to `127.0.0.1:50051` (the default).
+1. Add a bus and an interface binding for `127.0.0.1:50051` in the
+   project panel (Discover → pick → Add binding), then click
+   **Connect** in the toolbar.
 2. Open **Add transmit panel**.
 3. Click **+ frame**, type an id (hex), enter a payload, hit
    **send once** — the trace gets the `Tx` confirm and (a moment
@@ -376,6 +380,80 @@ just wraps it.
 > its own but won't bring up a usable window — the host expects either
 > a Vite dev server (which `tauri dev` starts for you) or a built
 > frontend at `apps/gui/dist`. Use the `pnpm tauri` commands above.
+
+### Phase-6 logical buses, filters & project graph
+
+Phase 6 makes "logical bus" the abstraction frames belong to and
+introduces filter elements + a visual project graph.
+
+**Logical buses**. The project panel grows a *Logical buses* section
+where you can add / rename / remove project-owned buses (each carries
+a stable id, display name, and optional speed / FD hints). Buses are
+project state — they round-trip through the project file alongside
+the panel layout.
+
+**Interface bindings**. The project panel also lists *Interface
+bindings*: each binding maps a `(server, interface_id)` pair onto a
+logical bus. The section's **Add binding** form takes a server address,
+optionally **Discover**s its interfaces, and pairs a chosen interface
+with one of the project's buses. Each bus is allowed at most one
+binding (one interface per bus); a bus that already has a binding is
+hidden from the picker.
+
+The toolbar's **Connect** button (or **Connect all** in the project
+panel) iterates every unique server in `interface_bindings`, opens one
+gRPC session per server, and subscribes only to the bound interfaces.
+The host's pump thread stamps every received frame with the chosen
+`bus_id`. **Disconnect** ends every session. Server addresses no
+longer live in the toolbar — they're per-binding configuration.
+
+**BLF channel mapping**. Opening a BLF now pre-scans the file for its
+distinct channels (capped at 200k frames for huge BLFs) and shows a
+modal where each channel is mapped to a logical bus or marked as
+"skip". Skipped channels are dropped before they reach the trace
+store; mapped channels stream in tagged with their bus.
+
+**Per-bus DBC scoping**. Each DBC entry in the project panel grows a
+row of checkboxes — one per defined logical bus — that control which
+buses the DBC decodes for. A DBC with no boxes checked is *unscoped*
+("all buses", the migration default for v2 projects). A DBC scoped to
+bus A doesn't decode bus-B frames; an unassigned frame matches only
+unscoped DBCs.
+
+**Filter elements**. A new project element `{kind: "filter"}` carries
+a structured predicate (`{all | any | bus | id_range | id_list |
+name_regex | signal_equals}`) and a `source` pointer (another bus or
+filter). The fetch path (`fetch_trace_range`, `fetch_latest_by_id`)
+accepts an optional predicate that drops records that don't pass;
+the trace store stays one filter-agnostic session buffer, and each
+consumer scopes what it renders. There's no expression DSL — the
+predicate is plain JSON, edited through the filter node in the graph
+view (see below) or by hand in the project file.
+
+**Project graph panel**. Add one from the toolbar's *Add graph
+panel* button (or restore a saved one from the project file). Each
+project element gets a shape that matches what it is:
+
+- **Bus** — a wide horizontal rail (the logical aggregator);
+- **Gateway** — an interface binding linking a wire-level interface to
+  a bus (bidirectional);
+- **Source** — `transmit` panels inject frames;
+- **Sink** — `trace` and `plot` panels consume from a bus;
+- **Filter** — 1-input / N-output, sits between a bus and downstream
+  sinks (or another filter).
+
+Edges encode the wiring: gateway ↔ bus (bidirectional), bus → sink,
+bus → filter, filter → downstream. Node positions and the viewport
+persist in the panel's dockview `params`. The graph is the spatial
+view onto the same project state the project panel shows as lists —
+see [`plans/project-panel-design.md`](plans/project-panel-design.md)
+for the split of responsibilities.
+
+**Project schema version**. `PROJECT_SCHEMA_VERSION` bumped 2 → 3. A
+v2 project opens by way of an in-memory migration that lifts
+`dbc_paths` into `dbcs` (each unscoped) and defaults `buses` and
+`interface_bindings` to empty; the on-disk version is rewritten the
+next time you save.
 
 ### Phase-2 client / server demo
 
@@ -412,12 +490,15 @@ rejection surfaces inline on the GUI's transmit panel). Stop with
 Ctrl-C.
 
 In another terminal, start the GUI as usual (`pnpm --dir
-apps/gui tauri dev`). The toolbar's `host:port` input defaults
-to `127.0.0.1:50051`; clicking **Connect** subscribes to every
-interface the server lists and starts streaming frames into the
-trace view. **Disconnect** ends the session. The GUI can
-attach a DBC the same way it does for a local BLF — decoding
-runs against whichever frames are currently flowing.
+apps/gui tauri dev`). In the project panel's *Interface bindings*
+section, type the server address (the Add-binding form defaults to
+`127.0.0.1:50051`), hit **Discover** to list its interfaces, pick one,
+pair it with a bus, and **Add binding**. Clicking the toolbar's
+**Connect** subscribes to every bound interface across every server
+in the project and starts streaming frames into the trace view.
+**Disconnect** ends every session. The GUI can attach a DBC the same
+way it does for a local BLF — decoding runs against whichever frames
+are currently flowing.
 
 The `Open BLF…` and `Connect` flows share the same trace store,
 so frames from either source render through the same view.

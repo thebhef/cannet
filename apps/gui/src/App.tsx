@@ -50,17 +50,19 @@ import {
   validateLayout,
 } from "./dockLayout";
 
+// BLF + global error state. Remote sessions are tracked separately
+// (multi-server: one entry per address in `remoteSessions`).
 type LogState =
   | { kind: "idle" }
   | { kind: "loading"; result: OpenLogResult }
   | { kind: "running"; result: OpenLogResult }
   | { kind: "done"; result: OpenLogResult; total: number }
-  | { kind: "remote-connecting"; address: string }
-  | { kind: "remote-running"; result: RemoteSessionResult }
-  | { kind: "remote-done"; result: RemoteSessionResult; total: number }
   | { kind: "error"; message: string };
 
-const DEFAULT_REMOTE_ADDRESS = "127.0.0.1:50051";
+type RemoteStatus =
+  | { kind: "connecting" }
+  | { kind: "running"; result: RemoteSessionResult }
+  | { kind: "error"; message: string };
 
 /// Number of frames per cache chunk. Each chunk is fetched in one
 /// IPC round-trip; smaller = more fetches but cheaper each, larger =
@@ -119,7 +121,13 @@ export function App() {
   // Phase 6: logical buses + interface bindings. Project-owned state.
   const [buses, setBuses] = useState<Bus[]>([]);
   const [interfaceBindings, setInterfaceBindings] = useState<InterfaceBinding[]>([]);
-  const [remoteAddress, setRemoteAddress] = useState(DEFAULT_REMOTE_ADDRESS);
+  // Multi-server remote-session tracking, keyed by address. Connect/
+  // Disconnect drives this; entries clear on a server-side hang up via
+  // `log-finished` (which doesn't carry an address — we treat it as
+  // "something ended" and re-derive from interaction).
+  const [remoteSessions, setRemoteSessions] = useState<Map<string, RemoteStatus>>(
+    () => new Map(),
+  );
   // Path of the open project file, or null for an unsaved workspace.
   const [projectPath, setProjectPath] = useState<string | null>(null);
   // True when the workspace has changed since it was last saved/opened.
@@ -292,14 +300,13 @@ export function App() {
             if (s.kind === "loading" || s.kind === "running") {
               return { kind: "done", result: s.result, total };
             }
-            if (s.kind === "remote-connecting") {
-              return { kind: "idle" };
-            }
-            if (s.kind === "remote-running") {
-              return { kind: "remote-done", result: s.result, total };
-            }
             return s;
           });
+          // A remote pump exited cleanly. The host removed its session
+          // entry, but the event doesn't carry an address, so we can't
+          // know which one — leave the map alone; the user can hit
+          // Disconnect (clear-all) or look at the per-server status in
+          // the project panel.
         } else {
           setState({ kind: "error", message: event.payload.message });
         }
@@ -480,9 +487,21 @@ export function App() {
     startAllElements();
   }, [invalidateCache, startAllElements]);
 
+  // Connect to every server that has at least one binding in the
+  // project. Each unique `server` in `interfaceBindings` becomes its
+  // own `connect_remote_server` call; the host subscribes only to the
+  // bound interfaces on that server.
   const handleConnect = useCallback(async () => {
-    const address = remoteAddress.trim();
-    if (!address) return;
+    const servers = Array.from(
+      new Set(interfaceBindings.map((b) => b.server)),
+    ).filter((s) => s.length > 0);
+    if (servers.length === 0) {
+      setState({
+        kind: "error",
+        message: "No interface bindings — add at least one in the project panel.",
+      });
+      return;
+    }
 
     try {
       await invoke("clear_trace_store");
@@ -490,30 +509,50 @@ export function App() {
       setBaseTimestampSeconds(null);
       setCount(0);
       startAllElements();
-      setState({ kind: "remote-connecting", address });
-      // Phase 6: send the project's interface bindings for this
-      // server so the pump can tag each subscribed frame with its
-      // logical bus_id. Interfaces without a binding stream through
-      // unassigned.
+    } catch (err) {
+      setState({ kind: "error", message: String(err) });
+      return;
+    }
+
+    // Mark each target server as "connecting" so the UI shows progress.
+    setRemoteSessions(() => {
+      const next = new Map<string, RemoteStatus>();
+      for (const s of servers) next.set(s, { kind: "connecting" });
+      return next;
+    });
+
+    for (const address of servers) {
       const bindings = interfaceBindings
         .filter((b) => b.server === address)
         .map((b) => ({ interface: b.interface, busId: b.bus_id }));
-      const result = await invoke<RemoteSessionResult>("connect_remote_server", {
-        address,
-        bindings,
-      });
-      setState({ kind: "remote-running", result });
-    } catch (err) {
-      setState({ kind: "error", message: String(err) });
+      try {
+        const result = await invoke<RemoteSessionResult>(
+          "connect_remote_server",
+          { address, bindings },
+        );
+        setRemoteSessions((prev) => {
+          const next = new Map(prev);
+          next.set(address, { kind: "running", result });
+          return next;
+        });
+      } catch (err) {
+        setRemoteSessions((prev) => {
+          const next = new Map(prev);
+          next.set(address, { kind: "error", message: String(err) });
+          return next;
+        });
+      }
     }
-  }, [remoteAddress, invalidateCache, startAllElements, interfaceBindings]);
+  }, [interfaceBindings, invalidateCache, startAllElements]);
 
+  // Tear down every active session. The host drains its session map.
   const handleDisconnect = useCallback(async () => {
     try {
-      await invoke("disconnect_remote_server");
+      await invoke("disconnect_remote_server", { address: null });
     } catch (err) {
       setState({ kind: "error", message: String(err) });
     }
+    setRemoteSessions(new Map());
   }, []);
 
   // Reset to the seed workspace: one trace element + its panel, plus
@@ -559,10 +598,13 @@ export function App() {
         buses,
         interface_bindings: interfaceBindings,
         dbcs,
-        remote_address: remoteAddress.trim() || null,
+        // remote_address is no longer a project-level field — server
+        // addresses now live per-binding on `interface_bindings`. Kept
+        // null for v3 schema compatibility.
+        remote_address: null,
       };
     },
-    [registry, dbcPaths, dbcBuses, buses, interfaceBindings, remoteAddress],
+    [registry, dbcPaths, dbcBuses, buses, interfaceBindings],
   );
 
   // Record which project is "open" — both the React state and the
@@ -603,7 +645,9 @@ export function App() {
           /* keep the current layout if the saved one won't load */
         }
       }
-      setRemoteAddress(project.remote_address ?? DEFAULT_REMOTE_ADDRESS);
+      // `project.remote_address` is ignored — addresses now live per-
+      // binding (see `gatherProject`); reading a v3 file's value would
+      // re-introduce the toolbar-level address we removed.
       // Phase 6: pull bus / binding state, then load DBCs with their
       // bus scoping. `loadDbcSet` takes the scoping map so each DBC
       // is committed to the host with the right `buses`.
@@ -634,7 +678,8 @@ export function App() {
     setDbcBuses({});
     setBuses([]);
     setInterfaceBindings([]);
-    void invoke("disconnect_remote_server").catch(() => {});
+    void invoke("disconnect_remote_server", { address: null }).catch(() => {});
+    setRemoteSessions(new Map());
     void invoke("clear_trace_store").catch(() => {});
     invalidateCache();
     setBaseTimestampSeconds(null);
@@ -936,8 +981,8 @@ export function App() {
   );
 
   const status = useMemo(
-    () => renderStatus(state, dbcPaths, count, framesPerSecond),
-    [state, dbcPaths, count, framesPerSecond],
+    () => renderStatus(state, remoteSessions, dbcPaths, count, framesPerSecond),
+    [state, remoteSessions, dbcPaths, count, framesPerSecond],
   );
 
   const traceData: TraceData = useMemo(
@@ -957,8 +1002,16 @@ export function App() {
     [registry, create, ensure, updateTrace, removeElement],
   );
 
-  const remoteConnected =
-    state.kind === "remote-connecting" || state.kind === "remote-running";
+  const remoteConnected = Array.from(remoteSessions.values()).some(
+    (s) => s.kind === "running" || s.kind === "connecting",
+  );
+  const connectedAddresses = useMemo(
+    () =>
+      Array.from(remoteSessions.entries())
+        .filter(([, s]) => s.kind === "running")
+        .map(([addr]) => addr),
+    [remoteSessions],
+  );
 
   const blfPath =
     state.kind === "loading" || state.kind === "running" || state.kind === "done"
@@ -973,7 +1026,7 @@ export function App() {
       dbcBuses,
       buses,
       interfaceBindings,
-      remoteAddress,
+      connectedAddresses,
       remoteConnected,
       blfPath,
       onNewProject: handleNewProject,
@@ -999,7 +1052,7 @@ export function App() {
       dbcBuses,
       buses,
       interfaceBindings,
-      remoteAddress,
+      connectedAddresses,
       remoteConnected,
       blfPath,
       handleNewProject,
@@ -1031,22 +1084,18 @@ export function App() {
           <button onClick={handleOpenLog}>Open BLF…</button>
           <button onClick={handleAddDbc}>Add DBC…</button>
           <span className="toolbar-separator" aria-hidden="true" />
-          <input
-            className="remote-address"
-            type="text"
-            value={remoteAddress}
-            onChange={(e) => {
-              setRemoteAddress(e.target.value);
-              setDirty(true);
-            }}
-            placeholder="host:port"
-            disabled={remoteConnected}
-            aria-label="remote server address"
-          />
           {remoteConnected ? (
             <button onClick={handleDisconnect}>Disconnect</button>
           ) : (
-            <button onClick={handleConnect} disabled={!remoteAddress.trim()}>
+            <button
+              onClick={handleConnect}
+              disabled={interfaceBindings.length === 0}
+              title={
+                interfaceBindings.length === 0
+                  ? "Add interface bindings in the project panel first"
+                  : undefined
+              }
+            >
               Connect
             </button>
           )}
@@ -1095,6 +1144,7 @@ export function App() {
 
 function renderStatus(
   state: LogState,
+  remoteSessions: ReadonlyMap<string, RemoteStatus>,
   dbcPaths: readonly string[],
   frameCount: number,
   framesPerSecond: number,
@@ -1106,6 +1156,42 @@ function renderStatus(
         ? `DBC: ${shortenPath(dbcPaths[0])}`
         : `${dbcPaths.length} DBCs`;
   const fps = framesPerSecond > 0 ? ` · ${formatRate(framesPerSecond)}` : "";
+
+  // Remote sessions take priority over the BLF idle/done line — the
+  // user is actively streaming. (BLF in-progress states render their
+  // own line; remote and BLF rarely overlap because Connect clears
+  // the trace store.)
+  if (remoteSessions.size > 0) {
+    const running = Array.from(remoteSessions.entries()).filter(
+      ([, s]) => s.kind === "running",
+    );
+    const connecting = Array.from(remoteSessions.values()).filter(
+      (s) => s.kind === "connecting",
+    ).length;
+    const errored = Array.from(remoteSessions.entries()).filter(
+      ([, s]) => s.kind === "error",
+    );
+    const totalInterfaces = running.reduce((acc, [, s]) => {
+      return s.kind === "running" ? acc + s.result.interfaces.length : acc;
+    }, 0);
+    const parts: string[] = [];
+    if (running.length > 0) {
+      parts.push(
+        `Streaming from ${running.length} server${running.length === 1 ? "" : "s"} (${totalInterfaces} interface${totalInterfaces === 1 ? "" : "s"}, ${formatNumber(frameCount)} frames${fps})`,
+      );
+    }
+    if (connecting > 0) parts.push(`${connecting} connecting`);
+    if (errored.length > 0) {
+      const first = errored[0];
+      parts.push(
+        errored[0][1].kind === "error"
+          ? `${errored.length} error${errored.length === 1 ? "" : "s"} (${first[0]}: ${errored[0][1].message})`
+          : `${errored.length} error${errored.length === 1 ? "" : "s"}`,
+      );
+    }
+    return `${parts.join(" · ")}. ${dbc}.`;
+  }
+
   switch (state.kind) {
     case "idle":
       return `Open a BLF log or connect to a server to begin. ${dbc}.`;
@@ -1115,14 +1201,6 @@ function renderStatus(
       return `Streaming ${shortenPath(state.result.blf_path)} (${formatNumber(frameCount)} frames${fps}). ${dbc}.`;
     case "done":
       return `Done: ${formatNumber(state.total)} frames from ${shortenPath(state.result.blf_path)}. ${dbc}.`;
-    case "remote-connecting":
-      return `Connecting to ${state.address} … ${dbc}.`;
-    case "remote-running": {
-      const ifaces = state.result.interfaces.length;
-      return `Streaming from ${state.result.address} (${ifaces} interface${ifaces === 1 ? "" : "s"}, ${formatNumber(frameCount)} frames${fps}). ${dbc}.`;
-    }
-    case "remote-done":
-      return `Disconnected from ${state.result.address}: ${formatNumber(state.total)} frames received. ${dbc}.`;
     case "error":
       return `Error: ${state.message}`;
   }

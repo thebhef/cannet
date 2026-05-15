@@ -146,7 +146,7 @@ const projectCtx: ProjectContextValue = {
   dbcBuses: {},
   buses: [],
   interfaceBindings: [],
-  remoteAddress: "127.0.0.1:50051",
+  connectedAddresses: [],
   remoteConnected: false,
   blfPath: null,
   onNewProject: () => {},

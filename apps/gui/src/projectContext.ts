@@ -11,9 +11,10 @@ import type { Bus, InterfaceBinding } from "./types";
  * Phase 6: a project owns a list of logical {@link Bus}es and a list
  * of {@link InterfaceBinding}s mapping `(server, interface)` pairs to
  * buses. DBCs gain per-bus scoping (`dbcBuses[path]` is the bus ids a
- * DBC decodes for; empty = "all buses"). The pre-Phase-6 `remoteAddress`
- * / `remoteConnected` / `blfPath` state stays as-is for the toolbar's
- * legacy quick-connect UI.
+ * DBC decodes for; empty = "all buses"). Server addresses live on
+ * bindings; Connect iterates the unique servers in
+ * {@link interfaceBindings} and opens one session per server, surfacing
+ * per-server status via {@link connectedAddresses}.
  */
 export interface ProjectContextValue {
   /// Path of the open project file, or `null` if none has been saved /
@@ -33,9 +34,9 @@ export interface ProjectContextValue {
   buses: Bus[];
   /// Phase 6: interface → bus bindings.
   interfaceBindings: InterfaceBinding[];
-  /// The configured remote-server address (`host:port`).
-  remoteAddress: string;
-  /// True while a remote session is connecting or running.
+  /// Addresses with a currently-running remote session.
+  connectedAddresses: string[];
+  /// True if any remote session is currently connecting or running.
   remoteConnected: boolean;
   /// Path of a loaded BLF replay, if one is the active source.
   blfPath: string | null;
