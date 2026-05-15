@@ -1414,17 +1414,19 @@ function PlotArea(p: PlotAreaProps) {
       //
       // Per-trace range for the auto-normalisation. Behaviour depends
       // on follow-live:
-      // * follow-live ON: **set once and frozen** — latched on the
-      //   first non-empty fetch and never updated. Lives in
-      //   `traceRangesRef`, which survives cache re-anchors (the
-      //   cache resets every tick under a sliding history buffer; the
-      //   latch must not). Freezing matters because *any* change to
-      //   `lo`/`hi` arithmetically moves every previously-rendered
-      //   point's normalised position — `(v - lo) / (hi - lo)` is a
-      //   different number for the same raw `v` once `lo`/`hi` shift,
-      //   so the user sees the whole trace slide vertically. The
-      //   trade-off: a value past the latched range clips off the
-      //   top/bottom until the user manually re-fits (Fit Data).
+      // * follow-live ON: **widen-only** — grow to fit a new extreme,
+      //   never shrink. Lives in `traceRangesRef`, which survives
+      //   cache re-anchors (the cache resets every tick under a
+      //   sliding history buffer; the latch must not). Widening still
+      //   moves every previously-rendered point's normalised
+      //   position arithmetically — `(v - lo) / (hi - lo)` is a
+      //   different number for the same raw `v` once `lo`/`hi` shift
+      //   — but the alternatives are worse: set-once locks at
+      //   whatever narrow range happened to be visible on the first
+      //   fetch and amplifies tiny later variations across the full
+      //   canvas height; recomputing every tick lets the range
+      //   shrink back when a peak scrolls off-screen, which the user
+      //   sees as the trace zooming in and out.
       // * follow-live OFF (user has zoomed/panned): recomputed from
       //   the visible data so zoomed-in detail fills the canvas.
       // The latch is reset on Fit Data (`resetYEpoch`) and pruned to
@@ -1445,13 +1447,21 @@ function PlotArea(p: PlotAreaProps) {
         }
         if (!Number.isFinite(lo) || !Number.isFinite(hi)) return;
         const existing = ranges.get(key);
-        // Once the latch is non-degenerate it's frozen — see the
-        // function-level comment above. A degenerate (`lo === hi`)
-        // existing latch — common right after a Clear when only one
-        // or two same-valued samples have arrived — is replaced
-        // wholesale, otherwise the divide-by-zero in the normaliser
-        // leaves nothing on screen.
-        if (existing && existing.hi > existing.lo) return;
+        if (existing && existing.hi > existing.lo) {
+          // Widen-only: new extremes push `lo` down or `hi` up;
+          // values inside the existing range leave the latch alone
+          // (so the trace doesn't slide when no new extreme arrives).
+          const newLo = Math.min(existing.lo, lo);
+          const newHi = Math.max(existing.hi, hi);
+          if (newLo !== existing.lo || newHi !== existing.hi) {
+            ranges.set(key, { lo: newLo, hi: newHi });
+          }
+          return;
+        }
+        // No latch yet, or the existing one is degenerate (`lo === hi`,
+        // common right after a Clear when only one or two same-valued
+        // samples have arrived — would divide-by-zero in the
+        // normaliser and leave nothing on screen). Replace wholesale.
         ranges.set(key, { lo, hi });
       });
       const displaySeries: Series[] = seriesRel.map((s, i) => {
