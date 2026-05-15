@@ -1591,7 +1591,15 @@ function PlotArea(p: PlotAreaProps) {
     const opts: uPlot.Options = {
       width: el.clientWidth || 600,
       height: Math.max(60, el.clientHeight - 2),
-      scales: { x: { time: false } },
+      // Both axes are `auto: false` — we own the range entirely, and
+      // every code path that wants to move it does so via an explicit
+      // `setScale`. Leaving `auto: true` (uPlot's default) means
+      // uPlot's internal range tracker keeps re-fitting the scale to
+      // the latest data on each draw, which fights with the normalised
+      // [0, 1] / custom-fixed range the panel is trying to hold — the
+      // user-visible symptom is the y-axis "jumping" between updates
+      // even though our data is already in a fixed range.
+      scales: { x: { time: false, auto: false }, y: { auto: false } },
       legend: { show: false },
       // uPlot's built-in drag-select (left-button) is off — we do
       // box-zoom on right-drag instead (see the `ready` hook), so
@@ -2016,7 +2024,9 @@ function PlotArea(p: PlotAreaProps) {
     if (!u) return;
     withSuppressed(() => {
       if (yMode === "auto") {
-        u.setData(u.data, true);
+        // With `scales.y.auto = false` a `setData(_, true)` no longer
+        // re-fits y; pin explicitly to the normalised [0, 1] range.
+        u.setScale("y", { min: 0, max: 1 });
         const { xMin, xMax } = xSyncRef.current;
         if (xMin != null && xMax != null) u.setScale("x", { min: xMin, max: xMax });
       } else {
