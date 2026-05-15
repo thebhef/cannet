@@ -54,7 +54,10 @@ export function isProjectElement(v: unknown): v is ProjectElement {
   if (v == null || typeof v !== "object") return false;
   const o = v as { kind?: unknown; id?: unknown };
   return (
-    (o.kind === "trace" || o.kind === "plot" || o.kind === "transmit") &&
+    (o.kind === "trace" ||
+      o.kind === "plot" ||
+      o.kind === "transmit" ||
+      o.kind === "filter") &&
     typeof o.id === "string"
   );
 }
