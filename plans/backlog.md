@@ -209,3 +209,28 @@ work or admit it isn't going to happen and delete it.
   or as a small standalone panel for watching one ID's status flags.
   Useful for messages that pack many flags into a byte where the bare
   decoded-signal list is harder to read at a glance.
+- `[feat]` `cannet-gui` host: bridge wire-level `LogMessage` envelopes
+  from an active sidecar Session stream into the System Messages bus.
+  Phase 8 delivers the process-level sidecar lifecycle bridge (stdout
+  / stderr / exit-code → System Messages tagged `sidecar:python-can`);
+  once the GUI opens a Session against the sidecar it should also
+  forward in-band `LogMessage` envelopes through the same tag so a
+  vendor SDK warning surfaced mid-session reaches the user without
+  the sidecar having to also `print` it.
+- `[wire]` `cannet-wire` `Subscribe`: per-interface bus speed / FD
+  config (`bitrate_bps`, `data_bitrate_bps`, `fd`, `listen_only`)
+  travelling with the subscription. Phase 8 ships the sidecar adapter
+  with a typed `open(bitrate, fd)` slot but the wire `Subscribe`
+  envelope still carries only `interface_id` — the host applies a
+  per-interface configuration locally before subscribing. Promote
+  these to the wire so a transmit on a listen-only interface can
+  surface `TX_REJECTED` from the sidecar without a round-trip
+  config call, and so the BLF replay server can advertise the
+  bitrate the BLF was captured at. Additive proto change.
+- `[packaging]` `uv` bundling: commit per-OS `uv` binaries into the
+  Tauri bundle proper (replacing the developer-machine `PATH` lookup
+  and the `scripts/fetch-uv.sh` build-time fetch). Pick up alongside
+  the Phase-16 packaging tail; today the GUI's sidecar launcher
+  resolves `uv` via `tools/uv/` → `PATH` → "install uv" warning, all
+  three of which work for development but only the first will work
+  for end users.
