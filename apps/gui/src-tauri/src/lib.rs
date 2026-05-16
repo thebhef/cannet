@@ -38,6 +38,7 @@ mod filter;
 mod ipc;
 mod project;
 mod signal_cache;
+mod sidecar;
 mod signal_sampler;
 mod system_log;
 mod trace_store;
@@ -167,6 +168,7 @@ pub fn run() {
             signal_caches: SignalCacheStore::new(),
             system_log: SystemLog::new(),
         })
+        .manage(sidecar::SidecarState::default())
         .invoke_handler(tauri::generate_handler![
             open_log,
             scan_blf_channels,
@@ -188,6 +190,7 @@ pub fn run() {
             list_value_tables,
             fetch_system_log,
             clear_system_log,
+            sidecar::restart_sidecar,
         ])
         .setup(|app| {
             // Make sure the main window has the id our capabilities expect.
@@ -195,6 +198,7 @@ pub fn run() {
             // config; we rely on that here.
             debug_assert!(app.get_webview_window("main").is_some());
             spawn_trace_grew_emitter(app.handle().clone());
+            sidecar::spawn_sidecar(app.handle());
             Ok(())
         })
         .run(tauri::generate_context!())
