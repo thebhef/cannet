@@ -1381,6 +1381,55 @@ Exit criteria:
   `plans/technology-inventory.md` records any `blf_asc` upstream
   contribution needed for marker write support.
 
+Realised scope notes:
+
+- **Frame round-trip via the wrapper crate**. A new
+  `cannet_blf::BlfCaptureWriter` wraps `blf_asc::BlfWriter` so the
+  host can emit classic CAN, CAN FD, error, and remote frames from
+  the session buffer's `RawTraceFrame`s. The writer streams to a
+  `<dest>.part` temp file and renames into place on `finish()` so
+  a mid-write crash leaves no half-file behind. Round-tripped in
+  `cannet-blf` unit tests against `BlfCanFrameSource`.
+- **Markers ride beside the BLF, not inside it (deferred upstream
+  contribution).** Upstream `blf_asc` (0.2) doesn't expose the
+  `GLOBAL_MARKER` object surface — its `BlfWriter` carries a private
+  `add_object` and no marker types. Re-implementing the BLF container
+  + compression layer in `cannet-blf` to emit one marker type is
+  phase-sized on its own, so Phase 9 ships marker round-trip via a
+  sidecar `<file>.blf.notes.json` written and renamed atomically
+  alongside the BLF. Open Capture loads both. The third-party-reader
+  visibility of markers is **deferred** to a follow-up that
+  contributes `GLOBAL_MARKER` write + read upstream; tracked in
+  `plans/backlog.md` and recorded in `plans/technology-inventory.md`
+  alongside the existing `blf_asc` entry.
+- **Notes on the host, not in plot params**. A new
+  `crate::trace_store` neighbour module owns a session-scoped notes
+  list (`{id, timestamp_ns, label}`); Tauri commands let the
+  frontend add / rename / remove / list / clear / restore notes and
+  receive `notes-changed` events. Plot panels read this through a
+  small TypeScript hook and write through the same IPC; a note placed
+  in panel A is visible in panel B over the same timeline. The
+  previous `params.notes` field on `PlotPanel`'s dockview state is
+  retired.
+- **Project schema v3 → v4**. `PROJECT_SCHEMA_VERSION` bumps to `4`.
+  v4 stores no notes itself (notes are session-scoped); a v3
+  migration parses the dockview layout, strips any
+  `notes` field from plot-panel `params` (they were per-panel and
+  session-scoped in effect anyway), and rewrites the version. The
+  migration covers the Phase-4-vintage project case from the exit
+  criteria.
+- **Recent BLFs**. A small `localStorage` helper (`recentBlfs.ts`)
+  tracks the last N opened BLF paths (default `N=8`), offered in
+  the Open BLF flow and the project panel's BLF import affordance.
+  Pure-TS, unit-tested.
+- **System Messages integration**. `save_capture` emits info-level
+  (`frame_count`, `byte_size`, `marker_count`) and warn-level
+  (`precision degraded` when the f64-second round-trip loses
+  measurable ns precision vs. the in-memory timestamps) messages
+  tagged `capture`. `open_capture` emits info (`frame_count`,
+  `marker_count`) and error / warn on decode anomalies tagged
+  `blf-import`. Recent BLFs replay through the same path.
+
 ## Phase 10 — Command Palette + Goto Framework
 
 A generalised command model plus a VS Code-style command palette
