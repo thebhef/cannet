@@ -176,6 +176,7 @@ interface PlotPanelParams {
   cursorMode?: unknown;
   measEnabled?: unknown;
   measKeys?: unknown;
+  showDiag?: unknown;
   cursorX?: unknown;
   cursorYByArea?: unknown;
   notes?: unknown;
@@ -385,6 +386,13 @@ export function PlotPanel(props: IDockviewPanelProps) {
     typeof params?.measEnabled === "boolean" ? params.measEnabled : false,
   );
   const [measKeys, setMeasKeys] = useState<MeasurementKey[]>(() => measKeysFromRaw(params?.measKeys));
+  /** Show the per-row y / t-range diagnostic readout under each
+   * signal's value. Off by default — useful for development and for
+   * users debugging cache / auto-norm issues, but visually noisy in
+   * normal use. Persisted in panel params. */
+  const [showDiag, setShowDiag] = useState(() =>
+    typeof params?.showDiag === "boolean" ? params.showDiag : false,
+  );
   const [maxRateHz, setMaxRateHz] = useState(() => maxRateFromRaw(params?.maxRateHz));
   const resampleIntervalMs = Math.max(1, Math.round(1000 / maxRateHz));
   /** Pixel width of every area's side panel — user-resizable via a
@@ -585,6 +593,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
       cursorMode,
       measEnabled,
       measKeys,
+      showDiag,
       cursorX,
       cursorYByArea,
       notes,
@@ -599,6 +608,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     cursorMode,
     measEnabled,
     measKeys,
+    showDiag,
     cursorX,
     cursorYByArea,
     notes,
@@ -799,6 +809,10 @@ export function PlotPanel(props: IDockviewPanelProps) {
           <input type="checkbox" checked={followLive} onChange={(e) => setFollowLive(e.target.checked)} />
           follow live
         </label>
+        <label className="checkbox" title="show the per-signal y-range / cached-t-range diagnostic line in each row">
+          <input type="checkbox" checked={showDiag} onChange={(e) => setShowDiag(e.target.checked)} />
+          diag
+        </label>
         <span className="plot-toolbar-sep" />
         <label className="plot-cursor-ctl">
           cursors
@@ -880,6 +894,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
               onReportCache={reportCache}
               resetYEpoch={resetYEpoch}
               fitYEpoch={fitYEpoch}
+              showDiag={showDiag}
               onSetYMode={(m) => setAreaYMode(area.id, m)}
               onSetPrimarySignal={(k) => setAreaPrimarySignal(area.id, k)}
               onFocus={() => setFocusedAreaId(area.id)}
@@ -1095,6 +1110,9 @@ interface PlotAreaProps {
   /** Toolbar's "fit y" — incremented to ask every area to refit y
    * from its currently rendered data. */
   fitYEpoch: number;
+  /** Reveal the per-row y-range / cached-t-range diagnostic readout
+   * (panel-level "diag" toggle). */
+  showDiag: boolean;
   onSetYMode: (m: YMode) => void;
   /** Set this area's primary signal (drives y-axis labels/units).
    * `null` reverts to the first-non-hidden default. */
@@ -1178,6 +1196,7 @@ function PlotArea(p: PlotAreaProps) {
     onReportCache,
     resetYEpoch,
     fitYEpoch,
+    showDiag,
     onSetYMode,
     onSetPrimarySignal,
     onFocus,
@@ -2441,15 +2460,26 @@ function PlotArea(p: PlotAreaProps) {
                     onToggleHidden(key);
                   }}
                 />
-                <span className="plot-signal-name" title={`${s.messageName}.${s.signalName} — drag to another plot area`}>
-                  {s.messageName}.{s.signalName}
-                </span>
-                <span className="plot-signal-value">
-                  <span title={valueTitle}>
+                <div className="plot-signal-text">
+                  <span className="plot-signal-name" title={`${s.messageName}.${s.signalName} — drag to another plot area`}>
+                    {s.signalName}
+                  </span>
+                  <span className="plot-signal-message" title={s.messageName}>
+                    {s.messageName}
+                  </span>
+                </div>
+                <div className="plot-signal-readout">
+                  <span className="plot-signal-value" title={valueTitle}>
                     {fmtVal(v)}
                     {s.unit ? ` ${s.unit}` : ""}
                   </span>
-                  {(() => {
+                  {showAbDelta && (
+                    <small className="plot-signal-delta" title="Δ value (cursor A − cursor B)">
+                      Δ {fmtVal(deltaAbFor(key))}
+                      {s.unit ? ` ${s.unit}` : ""}
+                    </small>
+                  )}
+                  {showDiag && (() => {
                     const r = rangeFor(key);
                     const t = cacheTRangeFor(key);
                     if (r == null && t == null) return null;
@@ -2472,13 +2502,7 @@ function PlotArea(p: PlotAreaProps) {
                       </small>
                     );
                   })()}
-                  {showAbDelta && (
-                    <small className="plot-signal-delta" title="Δ value (cursor A − cursor B)">
-                      Δ {fmtVal(deltaAbFor(key))}
-                      {s.unit ? ` ${s.unit}` : ""}
-                    </small>
-                  )}
-                </span>
+                </div>
                 <button
                   className="plot-signal-remove"
                   title="remove this signal"
