@@ -1252,6 +1252,16 @@ function PlotArea(p: PlotAreaProps) {
     return signals.find((s) => !s.hidden) ?? signals[0] ?? null;
   })();
   const primaryKey = primarySignal ? signalRefKey(primarySignal) : null;
+  // resample() is a stable useCallback — without a ref it would close
+  // over a stale `primaryKey` and clobber `primaryAxisRef` back to the
+  // old primary every tick (very visible while autoscrolling: the
+  // labels flicker to the new primary then revert).
+  const primaryKeyRef = useRef(primaryKey);
+  primaryKeyRef.current = primaryKey;
+  // Same problem for the primary's color, which the y-axis stroke /
+  // ticks / labels read each draw to match the trace.
+  const primaryColorRef = useRef<string | null>(primarySignal?.color ?? null);
+  primaryColorRef.current = primarySignal?.color ?? null;
 
   const withSuppressed = useCallback(
     (fn: () => void) => {
@@ -1627,11 +1637,14 @@ function PlotArea(p: PlotAreaProps) {
       effectiveRangesRef.current = effective;
       // Refresh the primary signal's range/unit so the y-axis value
       // formatter can convert normalised tick positions back to raw
-      // signal units on the next draw.
-      if (primaryKey) {
-        const r = effective.get(primaryKey);
+      // signal units on the next draw. Read through the ref — this
+      // callback's closure has a stale `primaryKey` once the user
+      // promotes a new signal.
+      const pk = primaryKeyRef.current;
+      if (pk) {
+        const r = effective.get(pk);
         if (r) {
-          const sig = signals.find((s) => signalRefKey(s) === primaryKey);
+          const sig = signals.find((s) => signalRefKey(s) === pk);
           primaryAxisRef.current = { lo: r.lo, hi: r.hi, unit: sig?.unit ?? null };
         } else {
           primaryAxisRef.current = null;
@@ -1729,6 +1742,13 @@ function PlotArea(p: PlotAreaProps) {
           // current tick set with a canvas 2d context (cheap; reuses a
           // module-level scratch context).
           size: (_u, values) => measureAxisSize(values),
+          // Tint the y-axis to match the primary signal's trace so
+          // it's obvious which series the labels correspond to. Falls
+          // back to the neutral axis colour when there's no primary
+          // (empty area). uPlot calls these per draw, so the ref read
+          // picks up promotions immediately.
+          stroke: () => primaryColorRef.current ?? AXIS_STROKE,
+          ticks: { stroke: () => primaryColorRef.current ?? AXIS_TICKS, width: 1 },
         },
       ],
       series: [
