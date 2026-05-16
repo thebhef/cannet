@@ -52,9 +52,9 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use cannet_blf::BlfCanFrameSource;
+use cannet_blf::{BlfCanFrameSource, BlfCaptureWriter};
 use cannet_client::{SessionHandle, SessionTransmitter, Subscription};
-use cannet_core::{CanFrameSource, CanId};
+use cannet_core::{CanFrame as CoreCanFrame, CanFrameSource, CanId};
 use cannet_dbc::{Database, DecodedSignal};
 use filter::FilterPredicate;
 
@@ -204,6 +204,7 @@ pub fn run() {
             rename_note,
             remove_note,
             clear_notes,
+            save_capture,
             sidecar::restart_sidecar,
         ])
         .setup(|app| {
@@ -290,6 +291,39 @@ fn open_log(
     };
     sys_info!(&app, "blf-import", "opened BLF {blf_path}");
 
+    // Phase 9: load the sidecar notes (`<blf>.notes.json`) if it
+    // exists. The session-buffer notes are session-scoped, so any
+    // notes already in the store are replaced — Open BLF is a
+    // fresh-capture action that wipes the trace store via the
+    // surrounding GUI flow.
+    let sidecar = notes_sidecar_path(&blf_path);
+    let marker_count = match load_notes_sidecar(&sidecar) {
+        Ok(Some(notes)) => {
+            let n = notes.len();
+            let _ = app.state::<AppState>().notes.replace(notes.clone());
+            let _ = app.emit("notes-changed", notes);
+            n
+        }
+        Ok(None) => 0,
+        Err(e) => {
+            sys_warn!(
+                &app,
+                "blf-import",
+                "ignoring malformed notes sidecar at {p}: {e}",
+                p = sidecar.display(),
+            );
+            0
+        }
+    };
+    if marker_count > 0 {
+        sys_info!(
+            &app,
+            "blf-import",
+            "loaded {marker_count} note(s) from {p}",
+            p = sidecar.display(),
+        );
+    }
+
     let result = OpenLogResult {
         blf_path: blf_path.clone(),
     };
@@ -316,6 +350,201 @@ fn open_log(
         .map_err(|e| format!("failed to spawn pump thread: {e}"))?;
 
     Ok(result)
+}
+
+/// Phase 9: write the entire session buffer to `blf_path` as a
+/// Vector BLF, with notes alongside in
+/// `<blf_path>.notes.json`. Every frame on every bus, no per-trace
+/// slicing — the project file's bus bindings handle re-routing on
+/// import. The write is atomic at the BLF level (temp file +
+/// rename in `cannet-blf`); the sidecar gets the same treatment.
+///
+/// Emits `capture`-tagged System Messages: `info` with the frame
+/// count + byte size + marker count on success, `warn` if the
+/// f64-second round-trip drops measurable precision vs. the
+/// in-memory ns timestamps, `error` on failure.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn save_capture(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    blf_path: String,
+) -> Result<SaveCaptureResult, String> {
+    // Snapshot the trace store. `slice(0, len)` clones each
+    // RawTraceFrame out under the trace-store lock — that's the
+    // simplest correct read; for very long captures it's a single
+    // big allocation rather than streaming chunked reads, which
+    // we'll revisit when disk-spill (Phase 10) lands.
+    let frames = state.trace_store.slice(0, state.trace_store.len());
+    let notes = state.notes.snapshot();
+
+    let outcome = match write_capture(&blf_path, &frames, &notes) {
+        Ok(o) => o,
+        Err(e) => {
+            sys_error!(&app, "capture", "save to {blf_path} failed: {e}");
+            return Err(e);
+        }
+    };
+
+    sys_info!(
+        &app,
+        "capture",
+        "saved capture to {blf_path}: {n} frame(s), {b} bytes, {m} note(s)",
+        n = outcome.frame_count,
+        b = outcome.byte_size,
+        m = outcome.marker_count,
+    );
+    // 1 µs is the documented precision floor of the f64-seconds
+    // BLF timestamp storage; anything above that is a real loss
+    // worth telling the user about.
+    if outcome.max_timestamp_drift_ns >= 1_000 {
+        sys_warn!(
+            &app,
+            "capture",
+            "precision degraded on save: timestamps drifted up to {d} ns vs. the in-memory timeline",
+            d = outcome.max_timestamp_drift_ns,
+        );
+    }
+
+    Ok(outcome)
+}
+
+/// Result of [`save_capture`]; mirrors the `cannet-blf` writer's
+/// outcome plus the note count, so the frontend can surface
+/// "saved 12,345 frames + 3 notes".
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveCaptureResult {
+    pub blf_path: String,
+    pub frame_count: u64,
+    pub byte_size: u64,
+    pub marker_count: u64,
+    pub max_timestamp_drift_ns: u64,
+}
+
+/// Path of the notes sidecar next to `blf_path`. Stable so
+/// frontend logic can show it in the file-saved confirmation.
+fn notes_sidecar_path(blf_path: &str) -> std::path::PathBuf {
+    let p = std::path::Path::new(blf_path);
+    let mut name = p
+        .file_name()
+        .map(std::ffi::OsString::from)
+        .unwrap_or_default();
+    name.push(".notes.json");
+    p.with_file_name(name)
+}
+
+/// Read `<path>` as a `Vec<Note>`. `Ok(None)` if the file
+/// doesn't exist; `Err` only for malformed content. Missing
+/// sidecar is the normal case for a BLF saved by some other
+/// tool, so it isn't an error.
+fn load_notes_sidecar(path: &std::path::Path) -> Result<Option<Vec<Note>>, String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    };
+    let notes: Vec<Note> =
+        serde_json::from_str(&text).map_err(|e| format!("invalid sidecar JSON: {e}"))?;
+    Ok(Some(notes))
+}
+
+/// Perform the actual BLF + sidecar write. Split from the
+/// command so unit tests can drive it without a `tauri::AppHandle`.
+fn write_capture(
+    blf_path: &str,
+    frames: &[trace_store::RawTraceFrame],
+    notes: &[Note],
+) -> Result<SaveCaptureResult, String> {
+    let mut writer = BlfCaptureWriter::create(blf_path)
+        .map_err(|e| format!("failed to open {blf_path} for writing: {e}"))?;
+    for frame in frames {
+        let core = raw_to_core_frame(frame)
+            .map_err(|e| format!("invalid frame in session buffer: {e}"))?;
+        writer
+            .append(&core)
+            .map_err(|e| format!("failed to write frame: {e}"))?;
+    }
+    let outcome = writer
+        .finish()
+        .map_err(|e| format!("failed to finalise capture: {e}"))?;
+
+    // Sidecar JSON, atomic via `<path>.part` rename. Empty list
+    // produces an empty `[]` file rather than no file at all —
+    // that way "BLF present, sidecar absent" unambiguously means
+    // "no notes were ever attached" rather than "save was
+    // interrupted".
+    let sidecar = notes_sidecar_path(blf_path);
+    let sidecar_tmp = {
+        let mut t = sidecar.clone();
+        let mut name = t
+            .file_name()
+            .map(std::ffi::OsString::from)
+            .unwrap_or_default();
+        name.push(".part");
+        t.set_file_name(name);
+        t
+    };
+    let payload = serde_json::to_vec_pretty(notes)
+        .map_err(|e| format!("failed to serialise notes: {e}"))?;
+    std::fs::write(&sidecar_tmp, payload)
+        .map_err(|e| format!("failed to write notes sidecar: {e}"))?;
+    std::fs::rename(&sidecar_tmp, &sidecar)
+        .map_err(|e| format!("failed to finalise notes sidecar: {e}"))?;
+
+    Ok(SaveCaptureResult {
+        blf_path: blf_path.to_string(),
+        frame_count: outcome.frame_count,
+        byte_size: outcome.byte_size,
+        marker_count: u64::try_from(notes.len()).unwrap_or(u64::MAX),
+        max_timestamp_drift_ns: outcome.max_timestamp_drift_ns,
+    })
+}
+
+/// Convert a `RawTraceFrame` back into a `CanFrame` for the
+/// BLF writer. Errors only if the id mode disagrees with the
+/// raw id value (which shouldn't happen — `RawTraceFrame`s
+/// originate from `CanFrame`s — but the validating
+/// constructors are the only way to spell the conversion).
+fn raw_to_core_frame(frame: &trace_store::RawTraceFrame) -> Result<CoreCanFrame, String> {
+    use cannet_core::CanFramePayload as P;
+    let id = if frame.extended {
+        CanId::extended(frame.id).map_err(|e| e.to_string())?
+    } else {
+        CanId::standard(frame.id).map_err(|e| e.to_string())?
+    };
+    match &frame.payload {
+        P::Classic(data) => CoreCanFrame::classic(
+            frame.timestamp_ns,
+            frame.channel,
+            id,
+            frame.direction,
+            data.clone(),
+        )
+        .map_err(|e| e.to_string()),
+        P::Fd { data, flags } => CoreCanFrame::fd(
+            frame.timestamp_ns,
+            frame.channel,
+            id,
+            frame.direction,
+            data.clone(),
+            *flags,
+        )
+        .map_err(|e| e.to_string()),
+        P::Remote { dlc } => Ok(CoreCanFrame::remote(
+            frame.timestamp_ns,
+            frame.channel,
+            id,
+            frame.direction,
+            *dlc,
+        )),
+        P::Error => Ok(CoreCanFrame::error(
+            frame.timestamp_ns,
+            frame.channel,
+            id,
+            frame.direction,
+        )),
+    }
 }
 
 /// Pre-scan a BLF file and return its distinct channel numbers, in
@@ -1646,6 +1875,145 @@ mod tests {
         assert_eq!(only.direction, Direction::Tx);
         assert_eq!(only.id, 0x123);
         assert!(matches!(&only.payload, CanFramePayload::Classic(d) if d == &[1, 2, 3, 4]));
+    }
+
+    /// Round-trip: write the trace-store contents + notes via
+    /// `write_capture`, then read back via `BlfCanFrameSource`
+    /// and the sidecar JSON. The frame ids and the marker count
+    /// must match the input.
+    #[test]
+    fn write_capture_round_trips_frames_and_notes() {
+        use cannet_blf::BlfCanFrameSource;
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("cap.blf");
+
+        // Build a small mixed payload: classic + FD + error
+        // frames. Modern absolute timestamps so the f64-second
+        // round-trip drift behaves the way the writer's docs
+        // describe.
+        let ts_base = 1_700_000_000_000_000_000u64;
+        let f_classic = trace_store::RawTraceFrame {
+            timestamp_ns: ts_base,
+            channel: 0,
+            id: 0x100,
+            extended: false,
+            direction: Direction::Rx,
+            payload: CanFramePayload::Classic(vec![1, 2, 3]),
+            bus_id: Some("p".into()),
+        };
+        let f_fd = trace_store::RawTraceFrame {
+            timestamp_ns: ts_base + 1_000,
+            channel: 1,
+            id: 0x01AB_CDEF,
+            extended: true,
+            direction: Direction::Tx,
+            payload: CanFramePayload::Fd {
+                data: vec![0xAA; 12],
+                flags: cannet_core::CanFdFlags {
+                    bitrate_switch: true,
+                    error_state_indicator: false,
+                },
+            },
+            bus_id: None,
+        };
+        let f_err = trace_store::RawTraceFrame {
+            timestamp_ns: ts_base + 2_000,
+            channel: 0,
+            id: 0x10,
+            extended: false,
+            direction: Direction::Rx,
+            payload: CanFramePayload::Error,
+            bus_id: None,
+        };
+
+        let notes_in = vec![
+            notes::Note {
+                id: "a".into(),
+                timestamp_ns: ts_base + 500,
+                label: "first".into(),
+            },
+            notes::Note {
+                id: "b".into(),
+                timestamp_ns: ts_base + 1_500,
+                label: "second".into(),
+            },
+        ];
+
+        let outcome = write_capture(
+            dest.to_str().unwrap(),
+            &[f_classic, f_fd, f_err],
+            &notes_in,
+        )
+        .unwrap();
+        assert_eq!(outcome.frame_count, 3);
+        assert_eq!(outcome.marker_count, 2);
+        assert!(outcome.byte_size > 0);
+
+        // Frames re-read via the existing reader.
+        let mut src = BlfCanFrameSource::open(&dest).unwrap();
+        let f1 = src.next_frame().unwrap().unwrap();
+        let f2 = src.next_frame().unwrap().unwrap();
+        let f3 = src.next_frame().unwrap().unwrap();
+        assert!(src.next_frame().unwrap().is_none());
+        assert_eq!(f1.id.raw(), 0x100);
+        assert_eq!(f1.payload.data(), &[1, 2, 3]);
+        assert!(f2.id.is_extended());
+        assert_eq!(f2.id.raw(), 0x01AB_CDEF);
+        assert!(matches!(
+            f2.payload,
+            cannet_core::CanFramePayload::Fd { .. }
+        ));
+        assert!(matches!(f3.payload, cannet_core::CanFramePayload::Error));
+
+        // Notes recovered from the sidecar JSON in chronological
+        // order, ids + labels intact.
+        let sidecar = notes_sidecar_path(dest.to_str().unwrap());
+        let recovered: Vec<notes::Note> =
+            serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
+        assert_eq!(recovered.len(), 2);
+        assert_eq!(recovered[0].id, "a");
+        assert_eq!(recovered[1].id, "b");
+        assert_eq!(recovered[1].label, "second");
+    }
+
+    /// An empty notes list still writes the sidecar (as `[]`) so
+    /// "BLF present, sidecar absent" unambiguously means "this
+    /// BLF came from some other tool".
+    #[test]
+    fn write_capture_emits_empty_sidecar_for_empty_notes() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("empty.blf");
+        let outcome = write_capture(dest.to_str().unwrap(), &[], &[]).unwrap();
+        assert_eq!(outcome.frame_count, 0);
+        assert_eq!(outcome.marker_count, 0);
+        let sidecar = notes_sidecar_path(dest.to_str().unwrap());
+        assert!(sidecar.exists());
+        let text = std::fs::read_to_string(&sidecar).unwrap();
+        // `serde_json::to_vec_pretty(&Vec::<Note>::new())` emits `[]`.
+        assert_eq!(text.trim(), "[]");
+    }
+
+    #[test]
+    fn notes_sidecar_path_appends_notes_json() {
+        assert_eq!(
+            notes_sidecar_path("/tmp/x.blf"),
+            std::path::PathBuf::from("/tmp/x.blf.notes.json"),
+        );
+    }
+
+    #[test]
+    fn load_notes_sidecar_missing_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let absent = dir.path().join("no.blf.notes.json");
+        assert!(load_notes_sidecar(&absent).unwrap().is_none());
+    }
+
+    #[test]
+    fn load_notes_sidecar_malformed_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("bad.blf.notes.json");
+        std::fs::write(&p, b"not json").unwrap();
+        assert!(load_notes_sidecar(&p).is_err());
     }
 
     #[test]
