@@ -138,6 +138,17 @@ work or admit it isn't going to happen and delete it.
   GUI session or a CI watcher tailing alongside a developer): server
   fans out received frames to all connected clients, and arbitrates /
   interleaves transmits on the same interface from multiple clients.
+- `[feat]` upstream `blf_asc`: contribute `GLOBAL_MARKER` object
+  write and read (Vector's native annotation type, object type 96).
+  Phase 9 needed this for in-BLF note round-trip readable by third-
+  party tools, but the upstream crate has no marker types and no
+  public hook on `BlfWriter` for arbitrary object emission. Phase 9
+  routed notes through a sidecar `<file>.blf.notes.json` instead;
+  once upstream gains marker support (the crate is small, 1.6 kloc
+  MIT / Apache, contribution-friendly), `cannet-blf`'s
+  `BlfCaptureWriter` can fold markers into the BLF and the sidecar
+  file path retires. Until then third-party tools see frames but
+  not notes.
 - `[feat]` `cannet-gui::TraceStore`: disk-spill for long-running
   sessions. Phase 2 keeps the trace in `Vec<RawTraceFrame>`; that's
   fine for hours but not for days. Future implementation keeps a
