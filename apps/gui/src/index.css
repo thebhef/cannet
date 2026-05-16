@@ -923,6 +923,28 @@ header {
   gap: 0.15rem;
   white-space: nowrap;
 }
+/* Plot panel — right-click context menu on the toolbar. Positioned in
+ * viewport coords by the `style` attr, so `position: fixed`. */
+.plot-toolbar-menu {
+  position: fixed;
+  z-index: 30;
+  background: #0d1114;
+  border: 1px solid #2c3444;
+  border-radius: 4px;
+  padding: 0.3rem 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  white-space: nowrap;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+.plot-toolbar-menu .checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.78rem;
+}
+
 .plot-meas-menu-pop .checkbox {
   display: flex;
   align-items: center;
