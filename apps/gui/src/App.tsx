@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { DockviewReact, themeAbyss } from "dockview";
-import type { DockviewApi, DockviewReadyEvent } from "dockview";
+import type { AddPanelOptions, DockviewApi, DockviewReadyEvent } from "dockview";
 
 import type {
   Bus,
@@ -97,9 +97,12 @@ const DOCK_COMPONENTS = {
   [SYSTEM_MESSAGES_PANEL_COMPONENT]: SystemMessagesPanel,
 };
 
-/// The project panel is a show/hide singleton — a fixed dockview id so
-/// there's structurally only one.
+/// The project / graph / system-messages panels are singletons — each
+/// uses a fixed dockview id so the toolbar button can find the one
+/// instance, focus it, or add it on first click.
 const PROJECT_PANEL_ID = "project";
+const PROJECT_GRAPH_PANEL_ID = "project-graph";
+const SYSTEM_MESSAGES_PANEL_ID = "system-messages";
 
 export function App() {
   const [count, setCount] = useState(0);
@@ -935,38 +938,39 @@ export function App() {
     });
   }, [create]);
 
-  // Phase 6: add a project graph panel. Multiple are allowed; ids are
-  // suffixed with the panel counter to keep them distinct.
-  const addProjectGraphPanel = useCallback(() => {
+  // Show-or-focus a singleton panel keyed by its fixed id. Used by the
+  // toolbar buttons for Project, Graph, and System messages — clicking
+  // brings the panel forward if it's already open, otherwise adds it.
+  const showSingletonPanel = useCallback((options: AddPanelOptions) => {
     const api = dockApiRef.current;
     if (!api) return;
-    panelCounterRef.current += 1;
-    api.addPanel({
-      id: `project-graph-${panelCounterRef.current}`,
-      component: PROJECT_GRAPH_PANEL_COMPONENT,
-      title: "Graph",
-    });
-  }, []);
-
-  // Phase 7: add a System Messages panel. If one already exists,
-  // focus it instead of stacking another.
-  const addSystemMessagesPanel = useCallback(() => {
-    const api = dockApiRef.current;
-    if (!api) return;
-    const existing = api.panels.find(
-      (p) => p.id.startsWith("system-messages-"),
-    );
+    const existing = api.panels.find((p) => p.id === options.id);
     if (existing) {
       existing.api.setActive();
       return;
     }
-    panelCounterRef.current += 1;
-    api.addPanel({
-      id: `system-messages-${panelCounterRef.current}`,
-      component: SYSTEM_MESSAGES_PANEL_COMPONENT,
-      title: "System messages",
-    });
+    api.addPanel(options);
   }, []);
+
+  const showProjectGraphPanel = useCallback(
+    () =>
+      showSingletonPanel({
+        id: PROJECT_GRAPH_PANEL_ID,
+        component: PROJECT_GRAPH_PANEL_COMPONENT,
+        title: "Graph",
+      }),
+    [showSingletonPanel],
+  );
+
+  const showSystemMessagesPanel = useCallback(
+    () =>
+      showSingletonPanel({
+        id: SYSTEM_MESSAGES_PANEL_ID,
+        component: SYSTEM_MESSAGES_PANEL_COMPONENT,
+        title: "System messages",
+      }),
+    [showSingletonPanel],
+  );
 
   // Phase 7 system-log context: mirror + clear + markRead. `clear`
   // empties both the host's ring and the frontend's mirror; the host
@@ -998,21 +1002,16 @@ export function App() {
     [systemMessages, unread, clearSystemLog, markSystemLogRead],
   );
 
-  const toggleProjectPanel = useCallback(() => {
-    const api = dockApiRef.current;
-    if (!api) return;
-    const existing = api.panels.find((p) => p.id === PROJECT_PANEL_ID);
-    if (existing) {
-      api.removePanel(existing);
-    } else {
-      api.addPanel({
+  const showProjectPanel = useCallback(
+    () =>
+      showSingletonPanel({
         id: PROJECT_PANEL_ID,
         component: PROJECT_PANEL_COMPONENT,
         title: "Project",
         position: { direction: "left" },
-      });
-    }
-  }, []);
+      }),
+    [showSingletonPanel],
+  );
 
   const handleDockReady = useCallback(
     (event: DockviewReadyEvent) => {
@@ -1195,10 +1194,10 @@ export function App() {
           <button onClick={addTracePanel}>Add trace</button>
           <button onClick={addPlotPanel}>Add plot panel</button>
           <button onClick={addTransmitPanel}>Add transmit panel</button>
-          <button onClick={addProjectGraphPanel}>Add graph panel</button>
-          <button onClick={toggleProjectPanel}>Project panel</button>
+          <button onClick={showProjectGraphPanel}>Graph panel</button>
+          <button onClick={showProjectPanel}>Project panel</button>
           <button
-            onClick={addSystemMessagesPanel}
+            onClick={showSystemMessagesPanel}
             className="system-messages-button"
             aria-label={
               unread > 0
