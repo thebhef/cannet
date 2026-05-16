@@ -1296,6 +1296,11 @@ header {
 .plot-event-row button:hover {
   color: #ff5577;
 }
+/* The "goto" button isn't destructive — use a neutral hover accent
+ * so it doesn't read like the × remove next to it. */
+.plot-event-row button.plot-event-goto:hover {
+  color: #cbd5e1;
+}
 
 /* Plot panel — per-area y-range control */
 .plot-area-y,

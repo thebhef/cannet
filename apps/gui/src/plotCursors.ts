@@ -100,3 +100,24 @@ export const DEFAULT_MEASUREMENTS: MeasurementKey[] = ["a", "b", "dt", "freq", "
 export function isMeasurementKey(k: unknown): k is MeasurementKey {
   return typeof k === "string" && MEASUREMENT_QUANTITIES.some((q) => q.key === k);
 }
+
+/**
+ * The new `[min, max]` x-window for a "goto" jump centred on `t`.
+ * Preserves the current window's width when it's set and positive
+ * (so a goto keeps the user's current zoom); falls back to
+ * `defaultWidth` otherwise. The left edge is clamped to `>= 0` —
+ * the trace timeline starts at 0 and a negative `min` would render
+ * empty space before T0.
+ */
+export function centerWindowOn(
+  t: number,
+  current: { min: number | null; max: number | null },
+  defaultWidth: number,
+): [number, number] {
+  const width =
+    current.min != null && current.max != null && current.max > current.min
+      ? current.max - current.min
+      : defaultWidth;
+  const min = Math.max(0, t - width / 2);
+  return [min, min + width];
+}

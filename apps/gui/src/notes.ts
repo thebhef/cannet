@@ -10,8 +10,8 @@
 /// the trace's window start.
 export interface Note {
   id: string;
-  /** Absolute ns on the trace timeline. Camel-cased on the wire
-   *  per Tauri's default rename. */
+  /** Absolute ns on the trace timeline. The host's `Note` struct
+   *  opts in to camelCase serde so this is the on-wire shape. */
   timestampNs: number;
   label: string;
 }
