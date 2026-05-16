@@ -1513,8 +1513,7 @@ fn transmit_frame_inner(
     // tx-confirm the analyzer's wall-time stamp is what we want.
     let timestamp_ns = std::time::SystemTime::now()
         .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .map(|d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
-        .unwrap_or(0);
+        .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
     let frame = match request.kind {
         ipc::TransmitKind::Classic => cannet_core::CanFrame::classic(
             timestamp_ns,

@@ -17,6 +17,7 @@ import {
   MEASUREMENT_QUANTITIES,
   type MeasurementKey,
   type Series,
+  centerWindowOn,
   isMeasurementKey,
   statsOver,
   valueAt,
@@ -754,6 +755,23 @@ export function PlotPanel(props: IDockviewPanelProps) {
     (id: string) => dispatchRemoveNote(id),
     [dispatchRemoveNote],
   );
+  // Jump the panel's x-window so the note at display-relative time
+  // `t` is centred. Preserves the current zoom width; drops out of
+  // follow-live (otherwise the next resample would slide the view
+  // straight back to the live edge).
+  const gotoNote = useCallback(
+    (t: number) => {
+      const sync = xSyncRef.current;
+      const [min, max] = centerWindowOn(
+        t,
+        { min: sync.xMin, max: sync.xMax },
+        DEFAULT_FOLLOW_WIDTH_SECONDS,
+      );
+      applyXAll(min, max, null);
+      setFollowLive(false);
+    },
+    [applyXAll],
+  );
 
   const reportSeries = useCallback(
     (areaId: string, series: Map<string, Series>) => {
@@ -1044,6 +1062,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
                 key={n.id}
                 t={fmtTime(n.t)}
                 label={n.label}
+                onGoto={() => gotoNote(n.t)}
                 onRename={(l) => renameNote(n.id, l)}
                 onRemove={() => removeNote(n.id)}
               />
@@ -1069,11 +1088,13 @@ function MeasCell({ k, v, cls, swatch }: { k: string; v: string; cls?: string; s
 function EventLogRow({
   t,
   label,
+  onGoto,
   onRename,
   onRemove,
 }: {
   t: string;
   label: string;
+  onGoto: () => void;
   onRename: (l: string) => void;
   onRemove: () => void;
 }) {
@@ -1085,6 +1106,9 @@ function EventLogRow({
   };
   return (
     <div className="plot-event-row">
+      <button className="plot-event-goto" onClick={onGoto} title="jump x-axis to this note">
+        ⇥
+      </button>
       <span className="plot-event-t">{t}</span>
       {editing ? (
         <input

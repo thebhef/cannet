@@ -9,7 +9,9 @@ and JSON project files; Phase 4 adds a signal-plotting view; Phase 5
 adds transmit, the `--loopback` server, and DBC value-table rendering
 across views; Phase 6 introduces logical buses, per-bus DBC scoping,
 a structured filter element, and a project graph panel showing the
-project's wiring; Phase 8 adds per-vendor hardware adapters. See
+project's wiring; Phase 8 adds per-vendor hardware adapters; Phase 9
+makes captures persistable through Save Capture (a BLF writer plus a
+notes sidecar), and offers a Recent BLFs list in the toolbar. See
 [`plans/`](plans/) for the detailed roadmap.
 
 ## Repository layout
@@ -27,6 +29,8 @@ crates/
   cannet-blf/    `BlfCanFrameSource`: Vector BLF files as a CanFrameSource.
                  Wraps `blf-asc` and translates each object into a
                  `cannet_core::CanFrame` (classic / FD / remote / error).
+                 Phase 9 added `BlfCaptureWriter` — the inverse direction
+                 for Save Capture, with an atomic temp-file + rename.
   cannet-dbc/    `Database::parse(text)` + `decode(frame)` + `signals()`
                  (the message/signal list a plot panel picks from).
                  Hand-rolled bit extraction (LE / Motorola sequential
@@ -312,12 +316,15 @@ the re-sampling), Clear re-anchors what's plotted to "now".
   time, and the device-pixel ratio.
 
 Multiple plot panels can be open, each independent; the areas, signal
-assignments, y-ranges, follow-live, cursor mode, measurement selection,
-and notes round-trip through the project file (the play state, like a
-trace panel's window, is session-only). (Still pending — see
-`plans/phased-implementation.md` Phase 4 and `plans/backlog.md`:
-per-trace y offset/gain and log scale, triggers, math channels,
-CSV/image export, BLF annotation round-trip.)
+assignments, y-ranges, follow-live, cursor mode, and measurement
+selection round-trip through the project file (the play state, like a
+trace panel's window, is session-only). Notes are session-scoped (the
+plot panels read and write a shared host store) and persist to disk
+via Save Capture's sidecar JSON — see the Phase-9 section below.
+(Still pending — see `plans/phased-implementation.md` Phase 4 and
+`plans/backlog.md`: per-trace y offset/gain and log scale, triggers,
+math channels, CSV/image export, native BLF `GLOBAL_MARKER`
+round-trip.)
 
 ### Phase-5 transmit + enum signals
 
@@ -574,6 +581,72 @@ defines a small adapter protocol (`list_channels`, `open`, `recv`,
 The wire-level code does not change. See
 [`servers/cannet-python-can/LICENSING.md`](servers/cannet-python-can/LICENSING.md)
 for the LGPL analysis that motivates this layout.
+
+### Phase-9 Save Capture, notes & Recent BLFs
+
+Phase 9 makes captures persistable and re-loadable, with user-placed
+notes round-tripping alongside.
+
+**Save Capture**. The toolbar grows a **Save capture…** action
+(disabled when the session buffer is empty). It writes the *entire*
+session buffer — every frame on every bus, classic / FD / error /
+remote — to a single `.blf` file via the new
+[`BlfCaptureWriter`](crates/cannet-blf/src/lib.rs) wrapper. Writes
+stream to `<file>.blf.part` and rename into place on completion
+(atomic — a mid-write crash leaves no half-file behind at the
+destination). Save confirmation, frame count, and byte size all
+surface in the **System Messages** panel tagged `capture`. The BLF's
+underlying f64-seconds timestamp storage drops sub-microsecond
+precision for modern absolute timestamps; the host warns at save
+time when that drift measurably exceeds 1 µs (the documented
+precision floor).
+
+**Notes**. Notes are placed by the plot panel's `+ note` cursor
+mode (left-click on the canvas drops a labelled marker at that
+time). They now live in a single, session-scoped store on the
+host (`apps/gui/src-tauri/src/notes.rs`) — a note placed in plot
+panel A is visible in plot panel B over the same timeline. Edits
+flow through `add_note` / `rename_note` / `remove_note` Tauri
+commands; the host broadcasts the updated chronological list via
+the `notes-changed` event. Clearing the trace store wipes the
+notes with it.
+
+Save Capture writes notes as a sibling JSON sidecar
+`<file>.blf.notes.json` (atomic via the same `.part` + rename
+pattern). Open BLF loads the sidecar when it's present, restoring
+notes into the session-scoped store; a missing sidecar is the
+normal case for a BLF saved by some other tool, and a malformed
+sidecar logs a warn-level System Message and proceeds without
+notes.
+
+**Why a sidecar and not BLF `GLOBAL_MARKER` records?** Vector's
+native annotation type is BLF's `GLOBAL_MARKER` object, which would
+let third-party BLF tools see the notes too. The upstream
+[`blf_asc`](https://crates.io/crates/blf_asc) crate (0.2)
+covers frame object types only — it has no `GLOBAL_MARKER` types
+and exposes no public hook on `BlfWriter` for arbitrary object
+emission. Re-implementing the BLF container + compression layer
+to support one marker type is its own phase-sized job, so Phase 9
+ships note round-trip through the sidecar and tracks the
+upstream `GLOBAL_MARKER` contribution as a backlog item in
+[`plans/backlog.md`](plans/backlog.md). Once that lands,
+`BlfCaptureWriter` will fold markers into the BLF itself and the
+sidecar path retires — the host-side notes API doesn't change.
+
+**Recent BLFs**. The toolbar grows a **Recent** dropdown next to
+**Open BLF…** that lists the last 8 opened BLF paths, persisted
+in `localStorage`. Picking one fast-paths through the standard
+Open BLF flow (the channel-mapping modal still runs because each
+BLF can route differently onto the current project's buses); a
+successful Save Capture promotes the saved path too, so
+"what did I just save?" is a one-click re-open.
+
+**Project schema v3 → v4**. `PROJECT_SCHEMA_VERSION` bumps to 4.
+Notes used to live in each plot panel's dockview `params`; the v4
+migration strips them out (the host's session-scoped store owns
+them now). Phase-4-vintage projects open cleanly with the
+migration running on parse; the on-disk version is rewritten the
+next time you save.
 
 ### Phase-2 client / server demo
 
