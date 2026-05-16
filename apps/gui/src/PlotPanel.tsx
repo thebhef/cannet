@@ -2479,29 +2479,6 @@ function PlotArea(p: PlotAreaProps) {
                       {s.unit ? ` ${s.unit}` : ""}
                     </small>
                   )}
-                  {showDiag && (() => {
-                    const r = rangeFor(key);
-                    const t = cacheTRangeFor(key);
-                    if (r == null && t == null) return null;
-                    return (
-                      <small
-                        className="plot-signal-range"
-                        title="y-range: auto-normalisation latch (lo … hi). t-range: leftmost / rightmost cached sample's relative time (seconds). Useful for diagnosing a line that doesn't reach the canvas edges — if t doesn't span the visible x range, the cache is missing data there."
-                      >
-                        {r != null ? (
-                          <>
-                            y[{fmtVal(r.lo)} … {fmtVal(r.hi)}]
-                          </>
-                        ) : null}
-                        {t != null ? (
-                          <>
-                            {" "}
-                            t[{t.first.toFixed(2)} … {t.last.toFixed(2)}]
-                          </>
-                        ) : null}
-                      </small>
-                    );
-                  })()}
                 </div>
                 <button
                   className="plot-signal-remove"
@@ -2513,6 +2490,29 @@ function PlotArea(p: PlotAreaProps) {
                 >
                   ×
                 </button>
+                {showDiag && (() => {
+                  const r = rangeFor(key);
+                  const t = cacheTRangeFor(key);
+                  if (r == null && t == null) return null;
+                  return (
+                    <small
+                      className="plot-signal-range"
+                      title="y-range: auto-normalisation latch (lo … hi). t-range: leftmost / rightmost cached sample's relative time (seconds). Useful for diagnosing a line that doesn't reach the canvas edges — if t doesn't span the visible x range, the cache is missing data there."
+                    >
+                      {r != null ? (
+                        <>
+                          y[{fmtVal(r.lo)} … {fmtVal(r.hi)}]
+                        </>
+                      ) : null}
+                      {t != null ? (
+                        <>
+                          {" "}
+                          t[{t.first.toFixed(2)} … {t.last.toFixed(2)}]
+                        </>
+                      ) : null}
+                    </small>
+                  );
+                })()}
               </div>
             );
           })
