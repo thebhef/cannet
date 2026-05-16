@@ -839,6 +839,29 @@ export function App() {
     [projectPath, saveProjectTo, handleSaveProjectAs],
   );
 
+  // Phase 9 Save Capture: write the session buffer to a BLF (with
+  // notes as a sidecar JSON). System Messages handle the
+  // user-visible success / failure feedback; this just routes
+  // through the host command.
+  const handleSaveCapture = useCallback(async () => {
+    if (count === 0) return;
+    const path = await save({
+      defaultPath: "capture.blf",
+      filters: [{ name: "Vector BLF", extensions: ["blf"] }],
+    });
+    if (typeof path !== "string" || path.length === 0) return;
+    try {
+      await invoke("save_capture", { blfPath: path });
+      // Newly-saved captures are reasonable Recent BLF candidates
+      // (the user just produced this file; re-opening it is the
+      // archetypal "what did I just save?" gesture).
+      rememberRecentBlf(path);
+    } catch {
+      // Failure surfaces in the System Messages panel via the
+      // host's `capture`-tagged error log; nothing more to do here.
+    }
+  }, [count, rememberRecentBlf]);
+
   // The close-on-quit handler is registered once; give it refs to the
   // current values rather than re-registering on every change.
   dirtyRef.current = dirty;
@@ -1311,6 +1334,9 @@ export function App() {
           <span className="toolbar-separator" aria-hidden="true" />
           <button onClick={handleClear} disabled={count === 0}>
             Clear
+          </button>
+          <button onClick={handleSaveCapture} disabled={count === 0}>
+            Save capture…
           </button>
           <span className="toolbar-separator" aria-hidden="true" />
           <button onClick={addTracePanel}>Add trace</button>
