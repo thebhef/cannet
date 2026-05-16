@@ -329,24 +329,26 @@ function fmtTickValue(v: number): string {
  * primary signal produces wide labels (e.g. `1.23e+5 degC`). Reuses a
  * single offscreen 2d context — cheap to call per layout pass. */
 let axisMeasureCtx: CanvasRenderingContext2D | null = null;
+/** Must match the axis `font` in `axisCommon` below — measurement is
+ * meaningless if the font differs from what uPlot actually paints. */
+const AXIS_FONT = "10px ui-monospace, SFMono-Regular, Menlo, monospace";
 function measureAxisSize(values: string[] | null | undefined): number {
   if (!values || values.length === 0) return 52;
   if (axisMeasureCtx == null) {
     const c = document.createElement("canvas").getContext("2d");
     if (!c) return 80;
-    // Matches uPlot's default axis font (`12px system-ui`) plus the
-    // panel's default sans stack — close enough for sizing.
-    c.font = "12px system-ui, -apple-system, sans-serif";
     axisMeasureCtx = c;
   }
+  axisMeasureCtx.font = AXIS_FONT;
   let widest = 0;
   for (const s of values) {
     const w = axisMeasureCtx.measureText(s).width;
     if (w > widest) widest = w;
   }
-  // Tick line (~6 px) + label gap (~6 px) + a couple of px of breathing
-  // room. Floor at 52 so a bare `0`-only axis doesn't collapse.
-  return Math.max(52, Math.ceil(widest) + 14);
+  // Tick mark + label gap + a few px of breathing room so the longest
+  // label doesn't kiss the canvas edge. Floor at 52 so a bare `0`-only
+  // axis doesn't collapse.
+  return Math.max(52, Math.ceil(widest) + 18);
 }
 function fmtCount(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
