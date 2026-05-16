@@ -11,9 +11,12 @@
 //! DBCs + per-DBC bus scoping, the logical-bus list, the interface →
 //! bus bindings, and the remote-server address. Phase 6 grew the
 //! schema with the buses + bindings + per-DBC scoping fields, so
-//! [`PROJECT_SCHEMA_VERSION`] bumped 2 → 3. v2 files migrate on parse:
-//! the new lists default empty and `dbc_paths` is lifted into
-//! `dbcs[].path` with no scoping (= unscoped = "all buses").
+//! [`PROJECT_SCHEMA_VERSION`] bumped 2 → 3. Phase 9 bumped it 3 → 4
+//! to lift per-plot-panel `params.notes` out of the dockview layout
+//! into the session-scoped host store. v2 and v3 files migrate on
+//! parse: the new lists default empty, `dbc_paths` is lifted into
+//! `dbcs[].path` with no scoping (= unscoped = "all buses"), and any
+//! `notes` field on a plot panel's `params` is stripped.
 
 use serde::{Deserialize, Serialize};
 
@@ -27,7 +30,15 @@ use serde::{Deserialize, Serialize};
 ///   scoping; replaces the bare `dbc_paths` list). The on-disk
 ///   `schema_version` is rewritten to 3 the next time a migrated v2
 ///   project is saved.
-pub const PROJECT_SCHEMA_VERSION: u32 = 3;
+/// - v4 (Phase 9): notes lifted out of per-plot-panel dockview
+///   `params` into the session-scoped host store. The project file
+///   no longer stores notes (they're session-scoped — saved to a
+///   BLF sidecar when the user runs Save Capture). The migration
+///   strips any `notes` field from plot-panel `params` blocks in
+///   the dockview layout so a Phase-4-vintage project opens
+///   cleanly. The on-disk `schema_version` is rewritten to 4 the
+///   next time a migrated project is saved.
+pub const PROJECT_SCHEMA_VERSION: u32 = 4;
 
 /// A logical bus. `id` is a stable, project-local identifier (graph
 /// edges reference it; per-DBC scoping and the filter `bus` predicate
@@ -94,12 +105,13 @@ pub struct Project {
     pub remote_address: Option<String>,
 }
 
-/// Parse project JSON. Accepts a v3 file verbatim and migrates a v2
-/// file in-memory by lifting `dbc_paths` into `dbcs` (each unscoped)
-/// and defaulting the Phase-6 buses / bindings lists to empty. v1 and
-/// anything else are rejected with a user-facing message. Split from
-/// [`open_project`] so the parse + migration is testable without
-/// touching the filesystem.
+/// Parse project JSON. Accepts a v4 file verbatim; migrates v3
+/// (Phase 9: lifts plot-panel `params.notes` out of the dockview
+/// layout — they're session-scoped now) and v2 (Phase 6:
+/// `dbc_paths` → `dbcs`, plus default Phase-6 fields) in memory.
+/// v1 and anything else are rejected with a user-facing message.
+/// Split from [`open_project`] so the parse + migration is
+/// testable without touching the filesystem.
 fn parse_project(text: &str) -> Result<Project, String> {
     let raw: serde_json::Value =
         serde_json::from_str(text).map_err(|e| format!("invalid project JSON: {e}"))?;
@@ -108,12 +120,32 @@ fn parse_project(text: &str) -> Result<Project, String> {
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| "missing schema_version".to_string())?;
     match version {
-        3 => serde_json::from_value(raw).map_err(|e| format!("invalid project JSON: {e}")),
-        2 => migrate_v2(raw),
+        4 => serde_json::from_value(raw).map_err(|e| format!("invalid project JSON: {e}")),
+        3 => migrate_v3(raw),
+        2 => migrate_v2(raw).map(|mut p| {
+            strip_plot_notes_from_layout(&mut p.layout);
+            p
+        }),
         v => Err(format!(
             "schema version {v}; this build expects {PROJECT_SCHEMA_VERSION}",
         )),
     }
+}
+
+/// v3 → v4. Walks the `dockview` layout and removes the per-plot-
+/// panel `params.notes` field; Phase 9 stores notes in the
+/// session-scoped host store rather than the project file.
+fn migrate_v3(mut raw: serde_json::Value) -> Result<Project, String> {
+    if let Some(obj) = raw.as_object_mut() {
+        if let Some(layout) = obj.get_mut("layout") {
+            strip_plot_notes_from_layout(layout);
+        }
+        obj.insert(
+            "schema_version".into(),
+            serde_json::Value::from(PROJECT_SCHEMA_VERSION),
+        );
+    }
+    serde_json::from_value(raw).map_err(|e| format!("v3 migration failed: {e}"))
 }
 
 fn migrate_v2(mut raw: serde_json::Value) -> Result<Project, String> {
@@ -141,6 +173,23 @@ fn migrate_v2(mut raw: serde_json::Value) -> Result<Project, String> {
         );
     }
     serde_json::from_value(raw).map_err(|e| format!("v2 migration failed: {e}"))
+}
+
+/// Walk a `dockview` layout JSON blob and strip `notes` from any
+/// plot panel's `params`. The shape `dockview` serialises is
+/// `{ panels: { <id>: { params: { … }, … }, … }, … }`; we don't
+/// hard-code anything else about it. Anything that isn't a JSON
+/// object at the expected key just gets left alone.
+fn strip_plot_notes_from_layout(layout: &mut serde_json::Value) {
+    let Some(panels) = layout.get_mut("panels").and_then(|v| v.as_object_mut()) else {
+        return;
+    };
+    for panel in panels.values_mut() {
+        let Some(params) = panel.get_mut("params").and_then(|v| v.as_object_mut()) else {
+            continue;
+        };
+        params.remove("notes");
+    }
 }
 
 /// Read and parse a project file. Errors (with a user-facing message)
@@ -242,7 +291,7 @@ mod tests {
 
     #[test]
     fn parse_defaults_the_optional_fields() {
-        let p = parse_project(r#"{"schema_version": 3, "layout": {"grid": {}, "panels": {}}}"#)
+        let p = parse_project(r#"{"schema_version": 4, "layout": {"grid": {}, "panels": {}}}"#)
             .unwrap();
         assert!(p.elements.is_empty());
         assert!(p.dbcs.is_empty());
@@ -257,6 +306,108 @@ mod tests {
         assert!(parse_project(r#"{"schema_version": 999, "layout": {}}"#).is_err());
         assert!(parse_project(r#"{"schema_version": 1, "layout": {}}"#).is_err());
         assert!(parse_project("not json").is_err());
+    }
+
+    /// Phase-4-vintage project: notes lived in a plot panel's
+    /// dockview `params`. Phase 9 strips them from the layout
+    /// (notes are session-scoped now) and bumps the version.
+    #[test]
+    fn parse_migrates_a_v3_project_stripping_plot_notes_from_layout() {
+        let v3 = r#"{
+            "schema_version": 3,
+            "layout": {
+                "grid": {},
+                "panels": {
+                    "p1": {
+                        "params": {
+                            "elementId": "abc",
+                            "notes": [
+                                {"id": "n1", "t": 1.5, "label": "look here"},
+                                {"id": "n2", "t": 2.0, "label": "and here"}
+                            ],
+                            "areas": []
+                        }
+                    },
+                    "p2": {
+                        "params": {
+                            "elementId": "other"
+                        }
+                    }
+                }
+            },
+            "elements": [{"kind": "plot", "id": "abc"}]
+        }"#;
+        let p = parse_project(v3).expect("v3 migrates");
+        assert_eq!(p.schema_version, PROJECT_SCHEMA_VERSION);
+
+        // The plot panel's `notes` field is gone, but the rest of
+        // `params` survives.
+        let panels = p
+            .layout
+            .get("panels")
+            .and_then(serde_json::Value::as_object)
+            .unwrap();
+        let p1 = panels
+            .get("p1")
+            .unwrap()
+            .get("params")
+            .and_then(serde_json::Value::as_object)
+            .unwrap();
+        assert!(!p1.contains_key("notes"), "notes should be stripped");
+        assert_eq!(p1.get("elementId").and_then(|v| v.as_str()), Some("abc"));
+        assert!(p1.contains_key("areas"));
+
+        // A panel without notes is left untouched.
+        let p2 = panels
+            .get("p2")
+            .unwrap()
+            .get("params")
+            .and_then(serde_json::Value::as_object)
+            .unwrap();
+        assert_eq!(p2.get("elementId").and_then(|v| v.as_str()), Some("other"));
+    }
+
+    /// A v2 migration also strips Phase-4 notes if they happen to
+    /// be present (they would be in any project that opened in
+    /// Phase 4–8). The migration cascades v2 → v3 → v4 logic in
+    /// one step.
+    #[test]
+    fn parse_migrates_v2_strips_phase4_notes_too() {
+        let v2 = r#"{
+            "schema_version": 2,
+            "layout": {
+                "panels": {
+                    "p1": {"params": {"notes": [{"id":"n","t":1.0,"label":"x"}]}}
+                }
+            },
+            "elements": [],
+            "dbc_paths": []
+        }"#;
+        let p = parse_project(v2).expect("v2 migrates");
+        assert_eq!(p.schema_version, PROJECT_SCHEMA_VERSION);
+        let p1 = p
+            .layout
+            .get("panels")
+            .and_then(|v| v.get("p1"))
+            .and_then(|v| v.get("params"))
+            .and_then(serde_json::Value::as_object)
+            .unwrap();
+        assert!(!p1.contains_key("notes"));
+    }
+
+    /// `strip_plot_notes_from_layout` is safe to call on layouts
+    /// without `panels` or with non-object panels — it's a pure
+    /// best-effort scrub and shouldn't panic if a future schema
+    /// reshapes the dockview blob.
+    #[test]
+    fn strip_plot_notes_tolerates_unexpected_shapes() {
+        let mut v1: serde_json::Value = serde_json::json!({});
+        strip_plot_notes_from_layout(&mut v1);
+        let mut v2: serde_json::Value = serde_json::json!({ "panels": "not-an-object" });
+        strip_plot_notes_from_layout(&mut v2);
+        let mut v3: serde_json::Value =
+            serde_json::json!({ "panels": { "p": { "params": "not-an-object" } } });
+        strip_plot_notes_from_layout(&mut v3);
     }
 
     #[test]
