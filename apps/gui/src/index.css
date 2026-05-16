@@ -841,10 +841,17 @@ header {
   font-size: 0.78em;
   font-variant-numeric: tabular-nums;
 }
+/* Third row of the row grid: the diagnostic readout spans the text +
+ * readout columns so it has the full width to itself (the value
+ * column is too narrow to show `y[…] t[…]` comfortably). */
 .plot-signal-range {
+  grid-column: 2 / 4;
   color: #64748b;
   font-size: 0.7em;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Remove × spans both rows, vertically centred. */
