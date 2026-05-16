@@ -150,6 +150,11 @@ interface PlotAreaConfig {
   id: string;
   signals: SignalRef[];
   yMode: YMode;
+  /** Which signal's raw range / unit drives the y-axis labels for this
+   * area. `null` falls back to the first non-hidden signal — that's
+   * what `primarySignalForArea` resolves it to. Click a signal row in
+   * the side panel to promote that signal to primary. */
+  primarySignalKey?: string | null;
 }
 
 interface NoteEvent {
@@ -255,11 +260,16 @@ function areasFromParams(raw: unknown): PlotAreaConfig[] {
       const o = a as Record<string, unknown>;
       const id = typeof o.id === "string" ? o.id : crypto.randomUUID();
       const signals = (Array.isArray(o.signals) ? o.signals.filter(isSignalRefCore) : []).map((s, i) => withColor(s, i));
-      out.push({ id, signals, yMode: yModeFromRaw(o.yMode) });
+      out.push({
+        id,
+        signals,
+        yMode: yModeFromRaw(o.yMode),
+        primarySignalKey: typeof o.primarySignalKey === "string" ? o.primarySignalKey : null,
+      });
     }
     if (out.length > 0) return out;
   }
-  return [{ id: crypto.randomUUID(), signals: [], yMode: "auto" }];
+  return [{ id: crypto.randomUUID(), signals: [], yMode: "auto", primarySignalKey: null }];
 }
 
 function cursorModeFromRaw(raw: unknown): CursorMode {
@@ -302,6 +312,16 @@ function fmtFreq(hz: number | null | undefined): string {
 }
 function fmtVal(v: number | null | undefined): string {
   return v == null || !Number.isFinite(v) ? "—" : v.toPrecision(6);
+}
+/** Compact tick formatter for the y-axis: 3 significant figures
+ * normally, scientific for very small / very large, trims trailing
+ * zeros so "1.00" → "1". Distinct from `fmtVal` (6 sig figs) because
+ * tick labels have to fit in the axis's fixed 52 px column. */
+function fmtTickValue(v: number): string {
+  if (!Number.isFinite(v)) return "—";
+  const abs = Math.abs(v);
+  if (abs !== 0 && (abs < 1e-3 || abs >= 1e6)) return v.toExponential(1);
+  return parseFloat(v.toPrecision(3)).toString();
 }
 function fmtCount(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -474,6 +494,11 @@ export function PlotPanel(props: IDockviewPanelProps) {
    * normalisation range — used by Fit Data and the wrapped trace
    * Clear so y rescales fresh. */
   const [resetYEpoch, setResetYEpoch] = useState(0);
+  /** Increment to ask every area to Fit Y from its currently rendered
+   * data — toolbar's "fit y" hits all areas at once. (Per-area Fit Y
+   * lives on the side-panel header.) */
+  const [fitYEpoch, setFitYEpoch] = useState(0);
+  const fitYAll = useCallback(() => setFitYEpoch((n) => n + 1), []);
 
   const fitData = useCallback(() => {
     const ext = sharedExtent();
@@ -562,7 +587,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
   // --- area ops ---
   const addArea = useCallback(() => {
     setAreas((prev) => {
-      const next: PlotAreaConfig = { id: crypto.randomUUID(), signals: [], yMode: "auto" };
+      const next: PlotAreaConfig = { id: crypto.randomUUID(), signals: [], yMode: "auto", primarySignalKey: null };
       setFocusedAreaId(next.id);
       return [...prev, next];
     });
@@ -583,6 +608,10 @@ export function PlotPanel(props: IDockviewPanelProps) {
   }, []);
   const setAreaYMode = useCallback((id: string, yMode: YMode) => {
     setAreas((prev) => prev.map((a) => (a.id === id ? { ...a, yMode } : a)));
+  }, []);
+
+  const setAreaPrimarySignal = useCallback((id: string, key: string | null) => {
+    setAreas((prev) => prev.map((a) => (a.id === id ? { ...a, primarySignalKey: key } : a)));
   }, []);
 
   const addSignalToFocused = useCallback(
@@ -736,6 +765,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
         </button>
         <button onClick={addArea}>add plot area</button>
         <button onClick={fitData}>fit data</button>
+        <button onClick={fitYAll} title="fit each area's y-axis to its currently visible data — useful after zooming in">
+          fit y
+        </button>
         <label className="checkbox">
           <input type="checkbox" checked={followLive} onChange={(e) => setFollowLive(e.target.checked)} />
           follow live
@@ -820,7 +852,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
               onReportRate={reportRate}
               onReportCache={reportCache}
               resetYEpoch={resetYEpoch}
+              fitYEpoch={fitYEpoch}
               onSetYMode={(m) => setAreaYMode(area.id, m)}
+              onSetPrimarySignal={(k) => setAreaPrimarySignal(area.id, k)}
               onFocus={() => setFocusedAreaId(area.id)}
               onRemoveArea={() => removeArea(area.id)}
               onRemoveSignal={(key) => removeSignal(area.id, key)}
@@ -1031,7 +1065,13 @@ interface PlotAreaProps {
   /** Panel-level bump → invalidate the per-trace auto-normalise range
    * (Fit Data / Clear use this so y rescales fresh on the next tick). */
   resetYEpoch: number;
+  /** Toolbar's "fit y" — incremented to ask every area to refit y
+   * from its currently rendered data. */
+  fitYEpoch: number;
   onSetYMode: (m: YMode) => void;
+  /** Set this area's primary signal (drives y-axis labels/units).
+   * `null` reverts to the first-non-hidden default. */
+  onSetPrimarySignal: (key: string | null) => void;
   onFocus: () => void;
   onRemoveArea: () => void;
   onRemoveSignal: (key: string) => void;
@@ -1110,7 +1150,9 @@ function PlotArea(p: PlotAreaProps) {
     onReportRate,
     onReportCache,
     resetYEpoch,
+    fitYEpoch,
     onSetYMode,
+    onSetPrimarySignal,
     onFocus,
     onRemoveArea,
     onRemoveSignal,
@@ -1146,6 +1188,13 @@ function PlotArea(p: PlotAreaProps) {
    * visible-fit. Surfaced in the side-panel rows so users can see what
    * range the auto-norm is operating against. */
   const effectiveRangesRef = useRef<Map<string, { lo: number; hi: number }>>(new Map());
+  /** The primary signal's `{lo, hi, unit}` as of the most recent
+   * resample, read by the y-axis value formatter to render real units
+   * on the y-tick labels (the underlying data is normalised to
+   * [0, 1]). Lives in a ref because the formatter is captured at
+   * uPlot construction time and we don't want to recreate the chart
+   * every time the primary changes. */
+  const primaryAxisRef = useRef<{ lo: number; hi: number; unit: string | null } | null>(null);
   /** One-shot: have we already done the post-mount rebuild that
    * compensates for restored-from-project panels where the canvas
    * isn't laid out yet at uPlot's first construction? */
@@ -1167,6 +1216,17 @@ function PlotArea(p: PlotAreaProps) {
   const signals = area.signals;
   const signalSetKey = signals.map(signalRefKey).join("|");
   const yMode = area.yMode;
+  /** Which signal's raw range / unit drives the y-axis labels. Falls
+   * back to the first non-hidden signal if the configured key is no
+   * longer present (signal removed). `null` when the area is empty. */
+  const primarySignal: SignalRef | null = (() => {
+    const configured = area.primarySignalKey
+      ? signals.find((s) => signalRefKey(s) === area.primarySignalKey)
+      : null;
+    if (configured) return configured;
+    return signals.find((s) => !s.hidden) ?? signals[0] ?? null;
+  })();
+  const primaryKey = primarySignal ? signalRefKey(primarySignal) : null;
 
   const withSuppressed = useCallback(
     (fn: () => void) => {
@@ -1540,6 +1600,20 @@ function PlotArea(p: PlotAreaProps) {
       seriesRef.current = sm;
       presentRef.current = pv;
       effectiveRangesRef.current = effective;
+      // Refresh the primary signal's range/unit so the y-axis value
+      // formatter can convert normalised tick positions back to raw
+      // signal units on the next draw.
+      if (primaryKey) {
+        const r = effective.get(primaryKey);
+        if (r) {
+          const sig = signals.find((s) => signalRefKey(s) === primaryKey);
+          primaryAxisRef.current = { lo: r.lo, hi: r.hi, unit: sig?.unit ?? null };
+        } else {
+          primaryAxisRef.current = null;
+        }
+      } else {
+        primaryAxisRef.current = null;
+      }
       lr.onReportSeries(areaId, sm);
       lr.onAreaResampled(areaId, liveEdgeT);
       lr.onReportPerf(areaId, performance.now() - t0);
@@ -1607,7 +1681,24 @@ function PlotArea(p: PlotAreaProps) {
       cursor: { drag: { x: false, y: false } },
       axes: [
         { ...axisCommon, label: "time (s)", labelSize: 16, size: 34 },
-        { ...axisCommon, size: 52 },
+        {
+          ...axisCommon,
+          size: 52,
+          // Tick *positions* stay on the underlying [0, 1] (or custom
+          // yMode) scale — what changes is how we format each split's
+          // value for display. In auto-mode the plot data is normalised
+          // to [0, 1], so each split is mapped through the primary
+          // signal's current `(lo, hi)` to recover a raw signal value
+          // for the label (and the signal's unit is suffixed when the
+          // DBC supplied one). In custom-mode the scale already *is*
+          // the raw range, so the split value is taken as-is.
+          values: (_u, splits) => splits.map((v) => {
+            const p = primaryAxisRef.current;
+            if (p == null) return fmtTickValue(v);
+            const raw = p.lo + v * (p.hi - p.lo);
+            return `${fmtTickValue(raw)}${p.unit ? ` ${p.unit}` : ""}`;
+          }),
+        },
       ],
       series: [
         {},
@@ -2066,6 +2157,14 @@ function PlotArea(p: PlotAreaProps) {
     manualFitYRef.current = true;
     void resampleRef.current();
   }, []);
+  // Wire the toolbar's "fit y" button to this area's `fitY`. Skip the
+  // first run so we don't fire one on initial mount.
+  const fitYEpochPrevRef = useRef(fitYEpoch);
+  useEffect(() => {
+    if (fitYEpochPrevRef.current === fitYEpoch) return;
+    fitYEpochPrevRef.current = fitYEpoch;
+    fitY();
+  }, [fitYEpoch, fitY]);
 
   // Show / hide series in place when the per-signal `hidden` flags
   // change — no uPlot re-create needed (`signalSetKey` excludes it).
@@ -2244,10 +2343,19 @@ function PlotArea(p: PlotAreaProps) {
           signals.map((s) => {
             const key = signalRefKey(s);
             const v = displayValueFor(key);
+            const isPrimary = key === primaryKey;
             return (
               <div
-                className={`plot-signal-row${s.hidden ? " hidden" : ""}`}
+                className={`plot-signal-row${s.hidden ? " hidden" : ""}${isPrimary ? " primary" : ""}`}
                 key={key}
+                title={isPrimary ? "primary signal (drives the y-axis units)" : "click to make this the primary signal for this area"}
+                onClick={(e) => {
+                  // Don't promote on a click that originated on the
+                  // swatch / value / remove button — those have their
+                  // own handlers (`stopPropagation`).
+                  if (e.defaultPrevented) return;
+                  onSetPrimarySignal(key);
+                }}
                 draggable
                 onDragStart={(e) => {
                   e.dataTransfer.setData(SIGNAL_DND_MIME, JSON.stringify(s));

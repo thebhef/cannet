@@ -765,6 +765,12 @@ header {
 .plot-signal-row:active {
   cursor: grabbing;
 }
+/* Highlights the signal whose raw range / unit drives the y-axis
+ * labels for this plot area. Click a non-primary row to promote it. */
+.plot-signal-row.primary {
+  background: #131e29;
+  box-shadow: inset 2px 0 0 #4ecbff;
+}
 
 /* The swatch doubles as the show/hide toggle. */
 .plot-signal-swatch {
