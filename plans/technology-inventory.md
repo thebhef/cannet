@@ -206,7 +206,7 @@ without reshaping callers.
 ### Hardware Drivers
 
 - **`python-can`** (Apache-2.0; depends on LGPL-3.0 vendor wrappers
-  internally for some backends) — `proposed` (Phase 8). Used inside
+  internally for some backends) — `adopted` (Phase 8). Used inside
   the auto-launched `cannet-python-can` sidecar process to enumerate
   and drive Vector, Kvaser, and PEAK channels through one library.
   The single sidecar is the canonical Phase-8 shape; the wire protocol
@@ -216,7 +216,7 @@ without reshaping callers.
   user-replaceable venv (see `uv` below) and a small internal driver
   interface, so a user can swap `python-can` out without touching
   `cannet-*` code. `servers/LICENSING.md` records the analysis.
-- **`uv`** (Rust, Apache-2.0 / MIT) — `proposed` (Phase 8). Astral's
+- **`uv`** (Rust, Apache-2.0 / MIT) — `adopted` (Phase 8). Astral's
   Python package & project manager, distributed as a single
   self-contained binary; manages venvs, installs Python itself if
   needed. Bundled with the GUI per supported OS; `uv sync`
@@ -225,22 +225,22 @@ without reshaping callers.
   in-place (`uv pip install …`) without rebuilding the app. Fallback
   if Astral disappears is `python -m venv` + `pip`, a recoverable
   swap.
-- **`grpcio`** + **`grpcio-tools`** (Python, Apache-2.0) — `proposed`
+- **`grpcio`** + **`grpcio-tools`** (Python, Apache-2.0) — `adopted`
   (Phase 8). Python implementation of gRPC; generates stubs from
   `cannet-wire`'s existing `.proto` so the sidecar speaks the same
   protocol as `cannet-server` and `cannet-client`. Mainstream, no
   realistic alternative if we want gRPC clients in Python.
-- **Vector XL Driver Library** — `proposed` (Phase 8) as a
+- **Vector XL Driver Library** — `adopted` (Phase 8) as a
   *runtime, user-installed* dependency. Vector's proprietary,
   freely redistributable for use with Vector hardware. Windows is the
   first-class target; Linux is partial. Not bundled with the GUI;
   installed by the user per Vector's own instructions. Wrapped via
   `python-can`'s `vector` backend.
-- **Kvaser CANlib** — `proposed` (Phase 8) as a *runtime, user-
+- **Kvaser CANlib** — `adopted` (Phase 8) as a *runtime, user-
   installed* dependency. Kvaser's proprietary, freely redistributable.
   Cross-platform (Windows, Linux; macOS partial). Wrapped via
   `python-can`'s `kvaser` backend.
-- **PEAK PCAN-Basic** — `proposed` (Phase 8) as a *runtime, user-
+- **PEAK PCAN-Basic** — `adopted` (Phase 8) as a *runtime, user-
   installed* dependency. PEAK's proprietary, freely redistributable.
   Cross-platform. Wrapped via `python-can`'s `pcan` backend. (PEAK on
   Linux can alternatively go through the in-kernel `peak_usb` driver
