@@ -36,6 +36,7 @@
 
 mod filter;
 mod ipc;
+mod notes;
 mod project;
 mod signal_cache;
 mod sidecar;
@@ -62,6 +63,7 @@ use ipc::{
     RemoteSessionResult, SampledPoints, SignalDescriptorRecord, SignalQuery, SignalRecord,
     SignalsSample, TraceFrameRecord, TraceGrew,
 };
+use notes::{Note, NotesStore};
 use signal_cache::SignalCacheStore;
 use system_log::{SystemLog, SystemMessage};
 use trace_store::{RawTraceFrame, TraceStore};
@@ -145,6 +147,12 @@ struct AppState {
     /// `system-log-appended` event the host emits on every successful
     /// push.
     system_log: SystemLog,
+    /// Phase 9 session-scoped notes. Edited by `add_note` /
+    /// `rename_note` / `remove_note` / `clear_notes` (each emits
+    /// `notes-changed` on success); snapshotted by `fetch_notes`.
+    /// Save Capture writes it as a sidecar JSON; Open Capture and
+    /// project-open migration restore through it.
+    notes: NotesStore,
 }
 
 /// Boot the Tauri runtime.
@@ -167,6 +175,7 @@ pub fn run() {
             trace_store: TraceStore::new(),
             signal_caches: SignalCacheStore::new(),
             system_log: SystemLog::new(),
+            notes: NotesStore::new(),
         })
         .manage(sidecar::SidecarState::default())
         .invoke_handler(tauri::generate_handler![
@@ -190,6 +199,11 @@ pub fn run() {
             list_value_tables,
             fetch_system_log,
             clear_system_log,
+            fetch_notes,
+            add_note,
+            rename_note,
+            remove_note,
+            clear_notes,
             sidecar::restart_sidecar,
         ])
         .setup(|app| {
@@ -621,15 +635,20 @@ async fn fetch_latest_by_id(
 
 /// Drop every stored frame. The frontend's Clear button is the typical
 /// caller. The next `trace-grew` tick will fire with the new count
-/// (zero), prompting the trace view to drop its row cache.
+/// (zero), prompting the trace view to drop its row cache. Phase 9:
+/// any session-scoped notes go with the buffer (they reference
+/// timestamps on the now-discarded timeline).
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-fn clear_trace_store(state: State<'_, AppState>) {
+fn clear_trace_store(app: AppHandle, state: State<'_, AppState>) {
     state.trace_store.clear();
     // The decoded-sample caches hold frame indices into the store —
     // wipe them too, otherwise the next `sample_signals` would slice
     // against a buffer that no longer exists.
     state.signal_caches.clear();
+    if let Some(applied) = state.notes.clear() {
+        let _ = app.emit("notes-changed", applied.notes);
+    }
 }
 
 /// Snapshot the host-side system log (Phase 7). Returns every message
@@ -651,6 +670,58 @@ fn fetch_system_log(state: State<'_, AppState>) -> Vec<SystemMessage> {
 #[allow(clippy::needless_pass_by_value)]
 fn clear_system_log(state: State<'_, AppState>) {
     state.system_log.clear();
+}
+
+/// Phase 9: snapshot of the session-scoped notes, chronological.
+/// Plot panels call this on mount to seed their event list and
+/// reconcile against `notes-changed` events.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn fetch_notes(state: State<'_, AppState>) -> Vec<Note> {
+    state.notes.snapshot()
+}
+
+/// Phase 9: add a note to the session buffer. Emits `notes-changed`
+/// with the new chronological snapshot on success. A duplicate `id`
+/// is a no-op (idempotent against an event arriving twice).
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn add_note(app: AppHandle, note: Note) {
+    let state: State<'_, AppState> = app.state();
+    if let Some(applied) = state.notes.add(note) {
+        let _ = app.emit("notes-changed", applied.notes);
+    }
+}
+
+/// Phase 9: rename an existing note.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn rename_note(app: AppHandle, id: String, label: String) {
+    let state: State<'_, AppState> = app.state();
+    if let Some(applied) = state.notes.rename(&id, label) {
+        let _ = app.emit("notes-changed", applied.notes);
+    }
+}
+
+/// Phase 9: remove a note from the session buffer.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn remove_note(app: AppHandle, id: String) {
+    let state: State<'_, AppState> = app.state();
+    if let Some(applied) = state.notes.remove(&id) {
+        let _ = app.emit("notes-changed", applied.notes);
+    }
+}
+
+/// Phase 9: drop every note from the session buffer. Called by the
+/// trace-store clear path so cleared captures lose their notes too.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn clear_notes(app: AppHandle) {
+    let state: State<'_, AppState> = app.state();
+    if let Some(applied) = state.notes.clear() {
+        let _ = app.emit("notes-changed", applied.notes);
+    }
 }
 
 /// Append a message to the host's log bus and broadcast it as a
@@ -1379,6 +1450,7 @@ mod tests {
             trace_store: TraceStore::new(),
             signal_caches: SignalCacheStore::new(),
             system_log: SystemLog::new(),
+            notes: NotesStore::new(),
         }
     }
 
