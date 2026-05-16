@@ -33,14 +33,7 @@ use crate::signal_sampler::{self, SamplePoint};
 use crate::trace_store::TraceStore;
 
 /// One signal's decoded samples in capture (frame-index) order, plus
-/// the next trace-store frame index to scan from on the next catch-up,
-/// plus the running min/max of every decoded value seen since the cache
-/// was created. The frontend uses the running extrema to drive its y-
-/// axis auto-normalisation, which under a sliding history buffer needs
-/// to reflect the full capture's peak-to-peak rather than what happens
-/// to still be in the visible window — letting the JS side recompute
-/// extrema from the slice it just received made the y-axis "shrink
-/// back" whenever a peak scrolled off-screen.
+/// the next trace-store frame index to scan from on the next catch-up.
 struct SignalCache {
     /// Decoded samples in capture (frame-index) order. The slice path
     /// binary-searches on `samples[i].t_seconds`.
@@ -48,42 +41,12 @@ struct SignalCache {
     /// Next trace-store frame index to start the next catch-up scan
     /// from. Advances to `TraceStore::len()` after each catch-up.
     next_index: usize,
-    /// Running min of every decoded value. `None` until the first
-    /// matching frame decodes successfully.
-    value_lo: Option<f64>,
-    /// Running max — same lifecycle as `value_lo`.
-    value_hi: Option<f64>,
 }
 
 impl SignalCache {
     fn new() -> Self {
-        Self { samples: Vec::new(), next_index: 0, value_lo: None, value_hi: None }
+        Self { samples: Vec::new(), next_index: 0 }
     }
-
-    /// Fold a freshly-decoded sample into the running extrema.
-    fn observe(&mut self, value: f64) {
-        if !value.is_finite() {
-            return;
-        }
-        self.value_lo = Some(match self.value_lo {
-            Some(lo) if lo <= value => lo,
-            _ => value,
-        });
-        self.value_hi = Some(match self.value_hi {
-            Some(hi) if hi >= value => hi,
-            _ => value,
-        });
-    }
-}
-
-/// One signal's slice plus the running extrema across the full capture
-/// (not just the slice). Frontend uses the extrema for auto-norm so the
-/// y-axis only widens when the *whole capture's* min/max grows, never
-/// shrinks when a peak scrolls off-screen.
-pub struct SignalSlice {
-    pub samples: Vec<SamplePoint>,
-    pub value_lo: Option<f64>,
-    pub value_hi: Option<f64>,
 }
 
 /// Process-wide collection of per-signal caches.
@@ -130,7 +93,7 @@ impl SignalCacheStore {
         to_seconds: f64,
         store: &TraceStore,
         dbs: &[&Database],
-    ) -> SignalSlice {
+    ) -> Vec<SamplePoint> {
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
         let key = (message_id, extended, signal_name.to_string());
         let cache = caches.entry(key).or_insert_with(SignalCache::new);
@@ -152,7 +115,6 @@ impl SignalCacheStore {
                         signal_name,
                     );
                     if let Some(point) = decoded.into_iter().next() {
-                        cache.observe(point.value);
                         cache.samples.push(point);
                         break;
                     }
@@ -161,10 +123,8 @@ impl SignalCacheStore {
             cache.next_index = store_len;
         }
 
-        let value_lo = cache.value_lo;
-        let value_hi = cache.value_hi;
         if cache.samples.is_empty() {
-            return SignalSlice { samples: Vec::new(), value_lo, value_hi };
+            return Vec::new();
         }
         let lo = cache.samples.partition_point(|p| p.t_seconds < from_seconds);
         let hi = cache.samples.partition_point(|p| p.t_seconds < to_seconds);
@@ -177,11 +137,7 @@ impl SignalCacheStore {
         // anchor against.
         let lo_inclusive = lo.saturating_sub(2);
         let hi_inclusive = std::cmp::min(cache.samples.len(), hi.saturating_add(2));
-        SignalSlice {
-            samples: cache.samples[lo_inclusive..hi_inclusive].to_vec(),
-            value_lo,
-            value_hi,
-        }
+        cache.samples[lo_inclusive..hi_inclusive].to_vec()
     }
 }
 
@@ -229,44 +185,33 @@ mod tests {
         let dbs: &[&Database] = &[&db];
         let cache = SignalCacheStore::new();
 
-        // Full time range — all four id-256 samples. Extrema span the
-        // full set of decoded values (1..4).
+        // Full time range — all four id-256 samples.
         let all = cache.slice(256, false, "X", 0.0, 10.0, &store, dbs);
-        assert_eq!(all.samples.iter().map(|p| p.value as u32).collect::<Vec<_>>(), vec![1, 2, 3, 4]);
-        assert_eq!(all.value_lo, Some(1.0));
-        assert_eq!(all.value_hi, Some(4.0));
+        assert_eq!(all.iter().map(|p| p.value as u32).collect::<Vec<_>>(), vec![1, 2, 3, 4]);
 
-        // Time range [2.5, 4.5): only the id-256 sample at t = 3 is in
-        // range. The ±2 boundary widening also pulls in the samples at
-        // t = 0 / 2 (just before) and t = 5 (just after), giving uPlot
-        // the last-known-coming-in value and the next-going-out value
-        // to draw a line across. Extrema are *full-capture*, so they
-        // still report the whole observed range — that's the point:
-        // they don't shrink when the user zooms into a quiet section.
+        // Narrow time range [2.5, 4.5): only the id-256 sample at t = 3
+        // is in range. The ±2 boundary widening also pulls in samples
+        // at t = 0 / 2 (just before) and t = 5 (just after), giving
+        // uPlot the last-known-coming-in value and the next-going-out
+        // value to draw a line across.
         let mid = cache.slice(256, false, "X", 2.5, 4.5, &store, dbs);
-        assert_eq!(mid.samples.iter().map(|p| p.value as u32).collect::<Vec<_>>(), vec![1, 2, 3, 4]);
-        assert_eq!(mid.value_lo, Some(1.0));
-        assert_eq!(mid.value_hi, Some(4.0));
+        assert_eq!(mid.iter().map(|p| p.value as u32).collect::<Vec<_>>(), vec![1, 2, 3, 4]);
 
         // Very narrow zoom that contains zero matches: the slice still
         // returns the boundary samples on each side, so the plot draws
         // a line across the canvas instead of going blank.
         let narrow = cache.slice(256, false, "X", 0.5, 1.5, &store, dbs);
-        assert_eq!(narrow.samples.iter().map(|p| p.value as u32).collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert_eq!(narrow.iter().map(|p| p.value as u32).collect::<Vec<_>>(), vec![1, 2, 3]);
 
-        // Append a new extreme — catch-up extends both the sample
-        // vector and the running extrema in one pass.
+        // Append a new sample — catch-up extends the cached vector.
         store.append(dummy(6 * S, 256, vec![5, 0, 0, 0, 0, 0, 0, 0]));
         let all2 = cache.slice(256, false, "X", 0.0, 10.0, &store, dbs);
-        assert_eq!(all2.samples.iter().map(|p| p.value as u32).collect::<Vec<_>>(), vec![1, 2, 3, 4, 5]);
-        assert_eq!(all2.value_hi, Some(5.0));
+        assert_eq!(all2.iter().map(|p| p.value as u32).collect::<Vec<_>>(), vec![1, 2, 3, 4, 5]);
 
         // Clear drops the cache; the next slice rebuilds it.
         cache.clear();
         let after = cache.slice(256, false, "X", 0.0, 10.0, &store, dbs);
-        assert_eq!(after.samples.len(), 5);
-        assert_eq!(after.value_lo, Some(1.0));
-        assert_eq!(after.value_hi, Some(5.0));
+        assert_eq!(after.len(), 5);
     }
 
     #[test]
@@ -277,10 +222,8 @@ mod tests {
         let dbs: &[&Database] = &[&db];
         let cache = SignalCacheStore::new();
         let nope = cache.slice(256, false, "Nope", 0.0, 1.0, &store, dbs);
-        assert!(nope.samples.is_empty());
-        assert_eq!(nope.value_lo, None);
+        assert!(nope.is_empty());
         let no_id = cache.slice(42, false, "X", 0.0, 1.0, &store, dbs);
-        assert!(no_id.samples.is_empty());
-        assert_eq!(no_id.value_lo, None);
+        assert!(no_id.is_empty());
     }
 }

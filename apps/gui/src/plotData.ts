@@ -11,10 +11,9 @@
 import type { SignalsSample } from "./types";
 
 /** Magic bytes at the start of a `sample_signals` binary response —
- * `"SIGSAMP\x02"` little-endian. The trailing version byte lets us
- * tweak the layout without breaking older builds outright; v2 adds the
- * per-signal `value_lo` / `value_hi` running extrema. */
-const SIGSAMP_MAGIC = [0x53, 0x49, 0x47, 0x53, 0x41, 0x4d, 0x50, 0x02];
+ * `"SIGSAMP\x01"` little-endian. The trailing version byte lets us
+ * tweak the layout without breaking older builds outright. */
+const SIGSAMP_MAGIC = [0x53, 0x49, 0x47, 0x53, 0x41, 0x4d, 0x50, 0x01];
 
 /**
  * Decode the compact binary `SignalsSample` produced by the Rust host's
@@ -27,15 +26,13 @@ const SIGSAMP_MAGIC = [0x53, 0x49, 0x47, 0x53, 0x41, 0x4d, 0x50, 0x02];
  *
  * Layout — little-endian throughout:
  * ```
- *   magic   "SIGSAMP\x02"   8 bytes
+ *   magic   "SIGSAMP\x01"   8 bytes
  *   from_s  f64             window first ts (NaN ⇒ null)
  *   last_s  f64             window last ts  (NaN ⇒ null)
  *   slice   f64             host diagnostic: lock-held slice ms
  *   decode  f64             host diagnostic: decode + decimate ms
  *   nsig    u32             number of signals
  *   per signal:
- *     lo    f64             running min across all samples (NaN ⇒ null)
- *     hi    f64             running max across all samples (NaN ⇒ null)
  *     n     u32             sample count
  *     t[n]  f64×n           timestamps (absolute seconds)
  *     v[n]  f64×n           values
@@ -60,12 +57,8 @@ export function decodeSignalsSample(buf: ArrayBuffer): SignalsSample {
   off += 8;
   const nsig = view.getUint32(off, true);
   off += 4;
-  const series: { t: number[]; v: number[]; value_lo: number | null; value_hi: number | null }[] = new Array(nsig);
+  const series: { t: number[]; v: number[] }[] = new Array(nsig);
   for (let s = 0; s < nsig; s++) {
-    const lo = view.getFloat64(off, true);
-    off += 8;
-    const hi = view.getFloat64(off, true);
-    off += 8;
     const n = view.getUint32(off, true);
     off += 4;
     // The f64 arrays may sit at offsets that aren't 8-aligned within
@@ -80,8 +73,6 @@ export function decodeSignalsSample(buf: ArrayBuffer): SignalsSample {
     series[s] = {
       t: Array.from(new Float64Array(tBuf)),
       v: Array.from(new Float64Array(vBuf)),
-      value_lo: Number.isNaN(lo) ? null : lo,
-      value_hi: Number.isNaN(hi) ? null : hi,
     };
   }
   return {

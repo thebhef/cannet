@@ -80,12 +80,12 @@ describe("decodeSignalsSample", () => {
     lastS: number | null,
     sliceMs: number,
     decodeMs: number,
-    series: { t: number[]; v: number[]; value_lo?: number | null; value_hi?: number | null }[],
+    series: { t: number[]; v: number[] }[],
   ): ArrayBuffer {
     const totalPts = series.reduce((s, p) => s + p.t.length, 0);
-    const buf = new ArrayBuffer(8 + 32 + 4 + series.length * 20 + totalPts * 16);
+    const buf = new ArrayBuffer(8 + 32 + 4 + series.length * 4 + totalPts * 16);
     const view = new DataView(buf);
-    const magic = [0x53, 0x49, 0x47, 0x53, 0x41, 0x4d, 0x50, 0x02];
+    const magic = [0x53, 0x49, 0x47, 0x53, 0x41, 0x4d, 0x50, 0x01];
     for (let i = 0; i < 8; i++) view.setUint8(i, magic[i]);
     let off = 8;
     view.setFloat64(off, fromS ?? NaN, true);
@@ -99,10 +99,6 @@ describe("decodeSignalsSample", () => {
     view.setUint32(off, series.length, true);
     off += 4;
     for (const p of series) {
-      view.setFloat64(off, p.value_lo ?? NaN, true);
-      off += 8;
-      view.setFloat64(off, p.value_hi ?? NaN, true);
-      off += 8;
       view.setUint32(off, p.t.length, true);
       off += 4;
       for (const t of p.t) {
@@ -117,11 +113,11 @@ describe("decodeSignalsSample", () => {
     return buf;
   }
 
-  it("round-trips a multi-signal sample with running extrema", () => {
+  it("round-trips a multi-signal sample", () => {
     const buf = encode(10.5, 20.5, 1.2, 3.4, [
-      { t: [10, 11, 12], v: [100, 200, 300], value_lo: 50, value_hi: 350 },
-      { t: [10.5, 11.5], v: [-1.5, -2.5], value_lo: -3, value_hi: 0.5 },
-      { t: [], v: [], value_lo: null, value_hi: null },
+      { t: [10, 11, 12], v: [100, 200, 300] },
+      { t: [10.5, 11.5], v: [-1.5, -2.5] },
+      { t: [], v: [] },
     ]);
     const out = decodeSignalsSample(buf);
     expect(out.from_seconds).toBe(10.5);
@@ -131,13 +127,8 @@ describe("decodeSignalsSample", () => {
     expect(out.series).toHaveLength(3);
     expect(out.series[0].t).toEqual([10, 11, 12]);
     expect(out.series[0].v).toEqual([100, 200, 300]);
-    expect(out.series[0].value_lo).toBe(50);
-    expect(out.series[0].value_hi).toBe(350);
-    expect(out.series[1].value_lo).toBe(-3);
-    expect(out.series[1].value_hi).toBe(0.5);
+    expect(out.series[1].v).toEqual([-1.5, -2.5]);
     expect(out.series[2].t).toEqual([]);
-    expect(out.series[2].value_lo).toBeNull();
-    expect(out.series[2].value_hi).toBeNull();
   });
 
   it("translates NaN sentinels back to null for the optional anchors", () => {
