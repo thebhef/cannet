@@ -33,6 +33,9 @@ import {
   reconcileSnapshot,
   unreadWarnOrError,
 } from "./systemLog";
+import { NotesContext, type NotesContextValue } from "./notesContext";
+import type { Note } from "./notes";
+import { sortNotesChronologically } from "./notes";
 import type { SystemMessage } from "./types";
 import { TraceDataContext, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
@@ -160,6 +163,10 @@ export function App() {
   // `fetch_system_log` and kept current by `system-log-appended`
   // events. Session-scoped, not persisted.
   const [systemMessages, setSystemMessages] = useState<SystemMessage[]>([]);
+  // Phase 9 session-scoped notes mirror (host owns the canonical
+  // list at `src-tauri/src/notes.rs`). Bootstrapped by
+  // `fetch_notes` and kept current by `notes-changed` events.
+  const [notes, setNotes] = useState<Note[]>([]);
   /// High-water seq the user has acknowledged. The unread badge counts
   /// warn/error entries with `seq > readHighWater`. Starts at -1 so
   /// every initial warn/error counts as unread.
@@ -306,6 +313,24 @@ export function App() {
     });
     const unlisten = listen<SystemMessage>("system-log-appended", (event) => {
       setSystemMessages((current) => mergeSystemMessage(current, event.payload));
+    });
+    return () => {
+      cancelled = true;
+      void unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  // Phase 9: bootstrap + live-update the notes mirror. The host's
+  // `notes-changed` event payload is the full, chronologically
+  // sorted list — there's no merge step to do.
+  useEffect(() => {
+    let cancelled = false;
+    void invoke<Note[]>("fetch_notes").then((snap) => {
+      if (cancelled) return;
+      setNotes(sortNotesChronologically(snap));
+    });
+    const unlisten = listen<Note[]>("notes-changed", (event) => {
+      setNotes(sortNotesChronologically(event.payload));
     });
     return () => {
       cancelled = true;
@@ -1002,6 +1027,34 @@ export function App() {
     [systemMessages, unread, clearSystemLog, markSystemLogRead],
   );
 
+  // Phase 9 notes context: dispatchers forward to the host; the
+  // mirror updates from the `notes-changed` event, not from
+  // optimistic local state, so a panel-A add shows up on panel B
+  // through the same code path.
+  const addNoteRemote = useCallback(
+    (id: string, timestampNs: number, label: string) => {
+      void invoke("add_note", { note: { id, timestampNs, label } }).catch(() => {
+        /* best effort — error surfaces in System Messages */
+      });
+    },
+    [],
+  );
+  const renameNoteRemote = useCallback((id: string, label: string) => {
+    void invoke("rename_note", { id, label }).catch(() => { /* best effort */ });
+  }, []);
+  const removeNoteRemote = useCallback((id: string) => {
+    void invoke("remove_note", { id }).catch(() => { /* best effort */ });
+  }, []);
+  const notesValue: NotesContextValue = useMemo(
+    () => ({
+      notes,
+      addNote: addNoteRemote,
+      renameNote: renameNoteRemote,
+      removeNote: removeNoteRemote,
+    }),
+    [notes, addNoteRemote, renameNoteRemote, removeNoteRemote],
+  );
+
   const showProjectPanel = useCallback(
     () =>
       showSingletonPanel({
@@ -1218,18 +1271,20 @@ export function App() {
       <ProjectContext.Provider value={projectContextValue}>
         <ElementRegistryContext.Provider value={elementRegistryValue}>
           <SystemLogContext.Provider value={systemLogValue}>
-            <TraceDataContext.Provider value={traceData}>
-              {/* dockview drags tabs with the HTML5 drag-and-drop API, which
-                  Tauri's OS-level drag-drop handler breaks on WebView2 — hence
-                  `dragDropEnabled: false` in tauri.conf.json. The GUI takes
-                  files via the dialog plugin, not by drop, so nothing is lost. */}
-              <DockviewReact
-                className="dock-area"
-                theme={themeAbyss}
-                components={DOCK_COMPONENTS}
-                onReady={handleDockReady}
-              />
-            </TraceDataContext.Provider>
+            <NotesContext.Provider value={notesValue}>
+              <TraceDataContext.Provider value={traceData}>
+                {/* dockview drags tabs with the HTML5 drag-and-drop API, which
+                    Tauri's OS-level drag-drop handler breaks on WebView2 — hence
+                    `dragDropEnabled: false` in tauri.conf.json. The GUI takes
+                    files via the dialog plugin, not by drop, so nothing is lost. */}
+                <DockviewReact
+                  className="dock-area"
+                  theme={themeAbyss}
+                  components={DOCK_COMPONENTS}
+                  onReady={handleDockReady}
+                />
+              </TraceDataContext.Provider>
+            </NotesContext.Provider>
           </SystemLogContext.Provider>
         </ElementRegistryContext.Provider>
       </ProjectContext.Provider>
