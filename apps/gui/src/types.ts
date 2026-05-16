@@ -124,17 +124,10 @@ export interface SignalDescriptorRecord {
 }
 
 /// One signal's freshly-decoded points from `sample_signals`: parallel
-/// `(t, v)` arrays, `t` in absolute seconds, plus the running
-/// `value_lo` / `value_hi` over every decoded sample since the
-/// trace-store was last cleared (used by the plot panel's auto-y range
-/// — the host owns these so they don't shrink when a peak scrolls
-/// off-screen, which is what the frontend can't reliably compute from
-/// the slice alone).
+/// `(t, v)` arrays, `t` in absolute seconds.
 export interface SampledPoints {
   t: number[];
   v: number[];
-  value_lo: number | null;
-  value_hi: number | null;
 }
 
 /// Returned by `sample_signals`: one `SampledPoints` per requested
