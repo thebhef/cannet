@@ -323,6 +323,31 @@ function fmtTickValue(v: number): string {
   if (abs !== 0 && (abs < 1e-3 || abs >= 1e6)) return v.toExponential(1);
   return parseFloat(v.toPrecision(3)).toString();
 }
+
+/** Width (px) the y-axis needs to fit `values` plus tick mark and
+ * padding. Used by uPlot's `axis.size` to grow the gutter when a
+ * primary signal produces wide labels (e.g. `1.23e+5 degC`). Reuses a
+ * single offscreen 2d context — cheap to call per layout pass. */
+let axisMeasureCtx: CanvasRenderingContext2D | null = null;
+function measureAxisSize(values: string[] | null | undefined): number {
+  if (!values || values.length === 0) return 52;
+  if (axisMeasureCtx == null) {
+    const c = document.createElement("canvas").getContext("2d");
+    if (!c) return 80;
+    // Matches uPlot's default axis font (`12px system-ui`) plus the
+    // panel's default sans stack — close enough for sizing.
+    c.font = "12px system-ui, -apple-system, sans-serif";
+    axisMeasureCtx = c;
+  }
+  let widest = 0;
+  for (const s of values) {
+    const w = axisMeasureCtx.measureText(s).width;
+    if (w > widest) widest = w;
+  }
+  // Tick line (~6 px) + label gap (~6 px) + a couple of px of breathing
+  // room. Floor at 52 so a bare `0`-only axis doesn't collapse.
+  return Math.max(52, Math.ceil(widest) + 14);
+}
 function fmtCount(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
@@ -1683,7 +1708,6 @@ function PlotArea(p: PlotAreaProps) {
         { ...axisCommon, label: "time (s)", labelSize: 16, size: 34 },
         {
           ...axisCommon,
-          size: 52,
           // Tick *positions* stay on the underlying [0, 1] (or custom
           // yMode) scale — what changes is how we format each split's
           // value for display. In auto-mode the plot data is normalised
@@ -1698,6 +1722,13 @@ function PlotArea(p: PlotAreaProps) {
             const raw = p.lo + v * (p.hi - p.lo);
             return `${fmtTickValue(raw)}${p.unit ? ` ${p.unit}` : ""}`;
           }),
+          // Sized from the formatted tick strings each layout pass: a
+          // signal with units like `degC` and 5-digit raw values needs
+          // far more than 52 px of gutter, otherwise labels run off the
+          // canvas edge. We measure the widest formatted label in the
+          // current tick set with a canvas 2d context (cheap; reuses a
+          // module-level scratch context).
+          size: (_u, values) => measureAxisSize(values),
         },
       ],
       series: [
@@ -2165,6 +2196,29 @@ function PlotArea(p: PlotAreaProps) {
     fitYEpochPrevRef.current = fitYEpoch;
     fitY();
   }, [fitYEpoch, fitY]);
+
+  // Promoting a signal to primary needs to update the y-axis labels
+  // *now* — the next resample is potentially seconds away (e.g. when
+  // not following live). We refresh `primaryAxisRef` from the latest
+  // effective range and ask uPlot to redraw axes only (the data
+  // hasn't changed).
+  useEffect(() => {
+    if (primaryKey) {
+      const r = effectiveRangesRef.current.get(primaryKey);
+      if (r) {
+        const sig = signals.find((s) => signalRefKey(s) === primaryKey);
+        primaryAxisRef.current = { lo: r.lo, hi: r.hi, unit: sig?.unit ?? null };
+      } else {
+        primaryAxisRef.current = null;
+      }
+    } else {
+      primaryAxisRef.current = null;
+    }
+    const u = uplotRef.current;
+    // `redraw(rebuildPaths=false, recalcAxes=true)` — keep the cached
+    // series geometry, just re-measure / re-label the axes.
+    u?.redraw(false, true);
+  }, [primaryKey, signals]);
 
   // Show / hide series in place when the per-signal `hidden` flags
   // change — no uPlot re-create needed (`signalSetKey` excludes it).
