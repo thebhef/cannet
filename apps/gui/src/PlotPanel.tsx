@@ -769,9 +769,44 @@ export function PlotPanel(props: IDockviewPanelProps) {
   const events = useMemo(() => [{ id: "__t0", t: 0, label: "T0" }, ...notes], [notes]);
   const dt = cursorX.a != null && cursorX.b != null ? cursorX.b - cursorX.a : null;
 
+  /** Right-click anywhere on the panel toolbar opens this menu —
+   * currently just the diagnostic-readout toggle, but the shape is
+   * here so future seldom-used options (perf badge visibility, debug
+   * overlays) have somewhere to land without crowding the main row of
+   * buttons. `null` = closed; otherwise the viewport coords to anchor
+   * the popup at. */
+  const [toolbarMenuAt, setToolbarMenuAt] = useState<{ x: number; y: number } | null>(null);
+  useEffect(() => {
+    if (toolbarMenuAt == null) return;
+    const onDown = (e: MouseEvent) => {
+      // Outside-click dismiss. The menu element stops its own
+      // `mousedown` from bubbling, so any down that reaches the
+      // document is by definition outside.
+      if ((e.target as Element | null)?.closest(".plot-toolbar-menu") == null) {
+        setToolbarMenuAt(null);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setToolbarMenuAt(null);
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [toolbarMenuAt]);
+
   return (
     <div className="plot-panel">
-      <div className="plot-panel-toolbar">
+      <div
+        className="plot-panel-toolbar"
+        onContextMenu={(e) => {
+          // Native context menus would obscure (and override) ours, so
+          // suppress them on toolbar right-click and show the in-app
+          // menu at the cursor instead.
+          e.preventDefault();
+          setToolbarMenuAt({ x: e.clientX, y: e.clientY });
+        }}
+      >
         <TraceControls
           status={trace.status}
           onStart={trace.start}
@@ -808,10 +843,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
         <label className="checkbox">
           <input type="checkbox" checked={followLive} onChange={(e) => setFollowLive(e.target.checked)} />
           follow live
-        </label>
-        <label className="checkbox" title="show the per-signal y-range / cached-t-range diagnostic line in each row">
-          <input type="checkbox" checked={showDiag} onChange={(e) => setShowDiag(e.target.checked)} />
-          diag
         </label>
         <span className="plot-toolbar-sep" />
         <label className="plot-cursor-ctl">
@@ -852,6 +883,26 @@ export function PlotPanel(props: IDockviewPanelProps) {
           {fmtCount(winFrames)} · cache {fmtCount(cachePts)}
         </span>
       </div>
+      {toolbarMenuAt && (
+        <div
+          className="plot-toolbar-menu"
+          role="menu"
+          style={{ left: toolbarMenuAt.x, top: toolbarMenuAt.y }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <label className="checkbox" title="show the per-signal y-range / cached-t-range diagnostic line in each row">
+            <input
+              type="checkbox"
+              checked={showDiag}
+              onChange={(e) => {
+                setShowDiag(e.target.checked);
+                setToolbarMenuAt(null);
+              }}
+            />
+            show diagnostics
+          </label>
+        </div>
+      )}
 
       <div className="plot-panel-areas">
         {areas.map((area, idx) => {
