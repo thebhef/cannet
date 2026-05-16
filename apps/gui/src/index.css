@@ -754,11 +754,19 @@ header {
   font-style: italic;
 }
 
+/* Two-row layout per signal: signal name (large) + value on top, message
+ * name (small) + delta/diagnostic on the second row. Grid columns: the
+ * swatch (auto), the name / message column (flexes), the readout
+ * column (auto, right-aligned), and the remove × (auto). The swatch
+ * and × span both rows so the text and readout columns can stack
+ * independently. */
 .plot-signal-row {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-  padding: 0.15rem 0.4rem;
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: start;
+  column-gap: 0.4rem;
+  row-gap: 0.05rem;
+  padding: 0.25rem 0.4rem;
   border-bottom: 1px dotted #1c252b;
   cursor: grab;
 }
@@ -772,51 +780,76 @@ header {
   box-shadow: inset 2px 0 0 #4ecbff;
 }
 
-/* The swatch doubles as the show/hide toggle. */
+/* The swatch doubles as the show/hide toggle. Pinned to the top row
+ * (aligns with the signal name) so it doesn't drift down on rows that
+ * grow a diagnostic line. */
 .plot-signal-swatch {
-  flex: 0 0 auto;
   width: 0.7rem;
   height: 0.7rem;
   border-radius: 2px;
   border: 1px solid rgba(255, 255, 255, 0.15);
   padding: 0;
   cursor: pointer;
+  margin-top: 0.25rem;
 }
 .plot-signal-swatch.hidden {
   opacity: 0.25;
 }
 
-.plot-signal-name {
-  flex: 1 1 auto;
+/* Left text column: signal name on top (large), message name below
+ * (small, dimmed). Both ellipsis on overflow so a long signal name
+ * doesn't push the value off the side. */
+.plot-signal-text {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
+}
+.plot-signal-name {
+  font-size: 0.92rem;
+  color: #e2e8f0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #cbd5e1;
 }
-.plot-signal-row.hidden .plot-signal-name {
+.plot-signal-message {
+  font-size: 0.7rem;
+  color: #64748b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plot-signal-row.hidden .plot-signal-name,
+.plot-signal-row.hidden .plot-signal-message {
   opacity: 0.45;
   font-style: italic;
 }
 
-.plot-signal-value {
-  flex: 0 0 auto;
+/* Right readout column: value on top, optional Δ and diagnostic
+ * stacked underneath, all right-aligned. */
+.plot-signal-readout {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
+  min-width: 0;
+}
+.plot-signal-value {
   color: #fde68a;
   font-variant-numeric: tabular-nums;
 }
-/* Δ(A − B) line under the value when both X cursors are placed. */
 .plot-signal-delta {
   color: #94a3b8;
   font-size: 0.78em;
+  font-variant-numeric: tabular-nums;
 }
-/* Auto-normalisation range readout under the value (diagnostic). */
 .plot-signal-range {
   color: #64748b;
   font-size: 0.7em;
   font-variant-numeric: tabular-nums;
+}
+
+/* Remove × spans both rows, vertically centred. */
+.plot-signal-remove {
+  align-self: center;
 }
 
 /* uPlot renders on a dark ground; nudge its chrome to match the app. */
