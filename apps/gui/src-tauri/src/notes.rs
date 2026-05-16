@@ -26,7 +26,14 @@ use serde::{Deserialize, Serialize};
 /// One note: a stable id, the absolute timestamp on the trace
 /// timeline (nanoseconds — the same `RawTraceFrame::timestamp_ns`
 /// the rest of the trace store uses), and the user-visible label.
+///
+/// `rename_all = "camelCase"` because this struct crosses the
+/// Tauri wire: `add_note` deserialises it from JS, and
+/// `fetch_notes` / the `notes-changed` event serialise it back.
+/// Tauri only auto-camelCases top-level command arg names, not
+/// nested struct fields — those have to opt in here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Note {
     /// Frontend-stable id (the `+ note` cursor mints a UUID before
     /// dispatching `add_note`). Used by the plot panel's event
@@ -208,6 +215,27 @@ mod tests {
         s.add(note("a", 1_000, "one")).unwrap();
         assert!(s.clear().is_some());
         assert!(s.snapshot().is_empty());
+    }
+
+    /// Tauri only camelCases top-level command arg names — nested
+    /// struct fields obey the struct's own serde config. The TS
+    /// side (`apps/gui/src/notes.ts`) and the `add_note` invoke in
+    /// `App.tsx` both speak `timestampNs`, so the struct must
+    /// serialise/deserialise with that key. Regression guard for
+    /// the silent-deserialise-failure that broke `add_note` end to
+    /// end.
+    #[test]
+    fn note_uses_camel_case_on_the_wire() {
+        let n = note("a", 1_700_000_000_000_000_000, "first");
+        let v = serde_json::to_value(&n).unwrap();
+        assert_eq!(v["timestampNs"], 1_700_000_000_000_000_000_u64);
+        assert!(v.get("timestamp_ns").is_none(), "snake_case must not leak: {v}");
+
+        let parsed: Note = serde_json::from_str(
+            r#"{"id":"a","timestampNs":1700000000000000000,"label":"first"}"#,
+        )
+        .unwrap();
+        assert_eq!(parsed, n);
     }
 
     #[test]
