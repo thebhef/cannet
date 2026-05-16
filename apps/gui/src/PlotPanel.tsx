@@ -890,17 +890,21 @@ export function PlotPanel(props: IDockviewPanelProps) {
           style={{ left: toolbarMenuAt.x, top: toolbarMenuAt.y }}
           onMouseDown={(e) => e.stopPropagation()}
         >
-          <label className="checkbox" title="show the per-signal y-range / cached-t-range diagnostic line in each row">
-            <input
-              type="checkbox"
-              checked={showDiag}
-              onChange={(e) => {
-                setShowDiag(e.target.checked);
-                setToolbarMenuAt(null);
-              }}
-            />
+          <button
+            type="button"
+            role="menuitemcheckbox"
+            aria-checked={showDiag}
+            title="show the per-signal y-range / cached-t-range diagnostic line in each row"
+            onClick={() => {
+              setShowDiag((v) => !v);
+              setToolbarMenuAt(null);
+            }}
+          >
+            <span className="plot-toolbar-menu-mark" aria-hidden="true">
+              {showDiag ? "✓" : ""}
+            </span>
             show diagnostics
-          </label>
+          </button>
         </div>
       )}
 
