@@ -36,6 +36,12 @@ import {
 import { NotesContext, type NotesContextValue } from "./notesContext";
 import type { Note } from "./notes";
 import { sortNotesChronologically } from "./notes";
+import {
+  loadRecentBlfs,
+  recordRecentBlf,
+  forgetRecentBlf,
+  saveRecentBlfs,
+} from "./recentBlfs";
 import type { SystemMessage } from "./types";
 import { TraceDataContext, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
@@ -167,6 +173,24 @@ export function App() {
   // list at `src-tauri/src/notes.rs`). Bootstrapped by
   // `fetch_notes` and kept current by `notes-changed` events.
   const [notes, setNotes] = useState<Note[]>([]);
+  // Phase 9 Recent BLFs (the N most-recent opened BLF paths,
+  // persisted in localStorage). Offered in the Open BLF flow and
+  // the project panel's BLF import affordance.
+  const [recentBlfs, setRecentBlfs] = useState<string[]>(() => loadRecentBlfs(localStorage));
+  const rememberRecentBlf = useCallback((path: string) => {
+    setRecentBlfs((current) => {
+      const next = recordRecentBlf(current, path);
+      saveRecentBlfs(localStorage, next);
+      return next;
+    });
+  }, []);
+  const dropRecentBlf = useCallback((path: string) => {
+    setRecentBlfs((current) => {
+      const next = forgetRecentBlf(current, path);
+      saveRecentBlfs(localStorage, next);
+      return next;
+    });
+  }, []);
   /// High-water seq the user has acknowledged. The unread badge counts
   /// warn/error entries with `seq > readHighWater`. Starts at -1 so
   /// every initial warn/error counts as unread.
@@ -423,22 +447,32 @@ export function App() {
     channels: number[];
   } | null>(null);
 
-  const handleOpenLog = useCallback(async () => {
-    const selected = await open({
-      multiple: false,
-      filters: [{ name: "Vector BLF", extensions: ["blf"] }],
-    });
-    if (typeof selected !== "string") return;
+  const handleOpenLog = useCallback(
+    async (presetPath?: string) => {
+      const selected =
+        typeof presetPath === "string" && presetPath.length > 0
+          ? presetPath
+          : await open({
+              multiple: false,
+              filters: [{ name: "Vector BLF", extensions: ["blf"] }],
+            });
+      if (typeof selected !== "string") return;
 
-    try {
-      const channels = await invoke<number[]>("scan_blf_channels", {
-        blfPath: selected,
-      });
-      setPendingBlf({ blfPath: selected, channels });
-    } catch (err) {
-      setState({ kind: "error", message: String(err) });
-    }
-  }, []);
+      try {
+        const channels = await invoke<number[]>("scan_blf_channels", {
+          blfPath: selected,
+        });
+        setPendingBlf({ blfPath: selected, channels });
+      } catch (err) {
+        setState({ kind: "error", message: String(err) });
+        // If we tried to open a recent file and it failed (path
+        // moved, file deleted), drop it from the recents list so
+        // it doesn't keep being offered.
+        if (presetPath) dropRecentBlf(presetPath);
+      }
+    },
+    [dropRecentBlf],
+  );
 
   // Confirm the BLF channel mapping and actually start the pump.
   // `choices[ch] === ""` means "skip this channel".
@@ -462,11 +496,16 @@ export function App() {
           channelBusMapping,
         });
         setState({ kind: "loading", result });
+        // Phase 9: record on a successful open. Failures don't
+        // promote a path — `handleOpenLog` drops it on the
+        // recents-launch path.
+        rememberRecentBlf(blfPath);
       } catch (err) {
         setState({ kind: "error", message: String(err) });
+        dropRecentBlf(blfPath);
       }
     },
-    [pendingBlf, invalidateCache, startAllElements],
+    [pendingBlf, invalidateCache, startAllElements, rememberRecentBlf, dropRecentBlf],
   );
 
   // Add one or more DBCs to the loaded set (each goes through the host's
@@ -1221,7 +1260,37 @@ export function App() {
           <button onClick={handleOpenProject}>Open project…</button>
           <button onClick={handleSaveProject}>Save project</button>
           <span className="toolbar-separator" aria-hidden="true" />
-          <button onClick={handleOpenLog}>Open BLF…</button>
+          <button onClick={() => void handleOpenLog()}>Open BLF…</button>
+          {recentBlfs.length > 0 && (
+            <details className="recent-blfs">
+              <summary
+                role="button"
+                aria-label={`Recent BLFs (${recentBlfs.length})`}
+                title="Recent BLFs"
+              >
+                Recent
+              </summary>
+              <ul role="menu" className="recent-blfs-menu">
+                {recentBlfs.map((p) => (
+                  <li key={p} role="menuitem">
+                    <button
+                      onClick={(e) => {
+                        // Close the <details> panel; React state
+                        // drives the rest of the click.
+                        const el = (e.currentTarget as HTMLElement)
+                          .closest("details");
+                        if (el instanceof HTMLDetailsElement) el.open = false;
+                        void handleOpenLog(p);
+                      }}
+                      title={p}
+                    >
+                      {p}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
           <button onClick={handleAddDbc}>Add DBC…</button>
           <span className="toolbar-separator" aria-hidden="true" />
           {remoteConnected ? (
