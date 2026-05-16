@@ -1157,6 +1157,10 @@ Realised scope notes:
 
 ## Phase 8 — Vendor Drivers (Vector, Kvaser, PEAK)
 
+Status: **in progress** — see "Realised scope notes" at the end of the
+section for what has and has not been delivered against the original
+scope.
+
 Replace the BLF-only data path with real hardware sources by way of a
 single `python-can`-backed sidecar process, auto-launched and managed
 by the GUI. The wire protocol is the universal driver contract; the
@@ -1244,6 +1248,68 @@ Exit criteria:
   `python-can`, `grpcio` / `grpcio-tools`, the per-vendor SDKs (as
   runtime, user-installed), and the rejected alternatives (native FFI
   per vendor, socketcan-only, multiple sidecars for Phase 8).
+
+
+Realised scope notes:
+
+- **The sidecar lives at `servers/cannet-python-can/`** with its own
+  `pyproject.toml`. It is a standalone Python package
+  (`cannet_python_can`) that, when run, speaks the same tonic-defined
+  gRPC `.proto` as `cannet-server` / `cannet-client`. The sidecar
+  starts cleanly with **zero hardware present** and with **`python-can`
+  absent** — both cases just yield zero interfaces and an info-level
+  `LogMessage` on the session stream. This matches the
+  "vendor with no hardware = zero interfaces" exit criterion.
+- **gRPC stubs are checked into the tree** (generated with
+  `grpc_tools.protoc` from `crates/cannet-wire/proto/cannet.proto`) so
+  the sidecar runs without a `protoc` install step. Regeneration is
+  scripted (`servers/cannet-python-can/scripts/regen_proto.sh`) and
+  documented; the regenerated files are deterministic apart from the
+  protoc version header.
+- **GUI host lifecycle.** The Tauri host spawns the sidecar at startup
+  via `apps/gui/src-tauri/src/sidecar.rs`. The spawn is eager-but-
+  deferred (Tauri's async runtime, not the UI thread), captures
+  stdout / stderr lines as `sidecar:python-can` System Messages, and
+  emits an error-level message on unexpected exit. A one-click
+  "Restart sidecar" host command is exposed; retries are capped per
+  session (default 3). Bridging the gRPC-level `LogMessage` envelope
+  from the sidecar's session stream into the System Messages bus is
+  deferred until the host actually opens a session against the
+  sidecar — today the panel sees the process-level lifecycle messages
+  (start / interfaces-discovered / exit), which covers the "sidecar
+  events appear tagged `sidecar:python-can`" exit criterion. The
+  wire-level `LogMessage` bridge has a unit test on the sidecar side;
+  the GUI host consumer is tracked in `backlog.md`.
+- **`uv` bundling is documented + scaffolded, not committed.** This
+  worktree cannot fetch or store binaries; instead `scripts/fetch-uv.sh`
+  produces a per-OS `uv` binary under `tools/uv/` at build time, with
+  the path discovered at runtime. The GUI falls back to a `uv` already
+  on `PATH` and, failing that, logs a warn-level System Message with
+  the install instructions. Packaging the binary into the Tauri bundle
+  artefact proper is part of the Phase-16 packaging tail; the README
+  documents both the bundled path and the developer-machine path.
+- **Hardware-specific paths are documented procedures, not executable
+  tests.** Per-vendor smoke procedures live in
+  `servers/cannet-python-can/SMOKE.md` with clearly marked
+  "requires hardware" steps. CI runs only the Python import smoke
+  (the sidecar boots, reports zero interfaces, exits cleanly) and the
+  Rust-side host-spawn test. Vendor SDK install steps reference each
+  vendor's documentation rather than mirroring it.
+- **`grpcio` / `grpcio-tools` was confirmed, not reconsidered.** The
+  wire protocol is already tonic / HTTP-2 gRPC, so a Python sidecar
+  that speaks the same `.proto` realistically needs `grpcio`. A raw-
+  TCP envelope-framing fork of the protocol was considered and
+  rejected: it would fragment the wire into two flavours, and `grpcio`
+  is mainstream and Apache-2.0. Inventory updated accordingly.
+- **Listen-only `TX_REJECTED` and bus speed / FD `Subscribe`
+  extension** are scoped against the driver-adapter interface; the
+  `.proto` extension is **deferred** with a tracking entry in
+  `backlog.md` — today's `Subscribe` envelope carries only an
+  `interface_id`, and per-bus speed / FD config flows in a second
+  pass once at least one hardware path has been smoke-tested end-to-
+  end. The adapter trait exposes the `open(bitrate, fd)` slot so the
+  wire bump is purely additive when it happens.
+
 
 ## Phase 9 — Trace Capture Persistence
 
