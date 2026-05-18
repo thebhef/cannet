@@ -1240,10 +1240,13 @@ Exit criteria:
 - Vendor-specific code is contained to the sidecar; `cannet-gui`,
   `cannet-core`, `cannet-wire`, `cannet-client`, and `cannet-server`
   carry no vendor symbols.
-- `uv` is bundled per supported OS; bundling is documented per-OS in
-  the README.
+- `uv` is fetched per supported OS — not committed to the repo, not
+  packed into the installer artefact. The dev-side fetch
+  (`scripts/fetch-uv.sh`) and the planned end-user fetch are
+  documented per-OS in the README. See Phase 16 "third-party runtime
+  tool fetching strategy" for the rationale.
 - README documents per-vendor prerequisites (vendor SDK / driver
-  install, OS support matrix), the bundled `uv` flow, and how to swap
+  install, OS support matrix), the `uv` fetch flow, and how to swap
   the driver library; `plans/technology-inventory.md` records `uv`,
   `python-can`, `grpcio` / `grpcio-tools`, the per-vendor SDKs (as
   runtime, user-installed), and the rejected alternatives (native FFI
@@ -1280,14 +1283,18 @@ Realised scope notes:
   events appear tagged `sidecar:python-can`" exit criterion. The
   wire-level `LogMessage` bridge has a unit test on the sidecar side;
   the GUI host consumer is tracked in `backlog.md`.
-- **`uv` bundling is documented + scaffolded, not committed.** This
-  worktree cannot fetch or store binaries; instead `scripts/fetch-uv.sh`
-  produces a per-OS `uv` binary under `tools/uv/` at build time, with
-  the path discovered at runtime. The GUI falls back to a `uv` already
-  on `PATH` and, failing that, logs a warn-level System Message with
-  the install instructions. Packaging the binary into the Tauri bundle
-  artefact proper is part of the Phase-16 packaging tail; the README
-  documents both the bundled path and the developer-machine path.
+- **`uv` is fetched, not bundled.** `scripts/fetch-uv.sh` produces a
+  per-OS `uv` binary under `tools/uv/` at build time; the host
+  discovers it at runtime alongside its executable, falls back to a
+  `uv` already on `PATH`, and failing that logs a warn-level System
+  Message with the install instructions. The dev-side fetch ships
+  today; the end-user-side fetch (installer post-step vs. first-run
+  host downloader) is a Phase-16 deliverable. We deliberately do
+  **not** commit `uv` binaries into the repo or bake them into the
+  Tauri bundle artefact — see the Phase-16 "third-party runtime tool
+  fetching strategy" note for the rationale. The README documents
+  the dev-side path today and will document the end-user path when
+  the Phase-16 mechanism lands.
 - **Hardware-specific paths are documented procedures, not executable
   tests.** Per-vendor smoke procedures live in
   `servers/cannet-python-can/SMOKE.md` with clearly marked
@@ -1517,3 +1524,32 @@ separate OS window, a **global UI FPS / responsiveness readout**,
 drag** fix, and the **BLF f64-timestamp precision** documentation note
 (if it hasn't already been folded into a user-facing surface message
 by then).
+
+**Third-party runtime tool fetching strategy.** External runtime
+binaries we depend on (today: `uv`; potentially others later) are
+**fetched, not committed to the repo and not packed into the
+installer artefact**. First-party code we maintain (the sidecar
+package, the GUI, the Rust crates) is bundled; tools we do *not*
+maintain are pulled from their upstream release channel at the
+pinned version. This keeps the distributable small, keeps the
+supply chain auditable against upstream releases instead of a
+snapshot we'd have to re-cut on every upstream version bump, and
+gives us one place to revisit the pin.
+
+The dev-side fetch already exists ([`scripts/fetch-uv.sh`](../scripts/fetch-uv.sh)
+drops `uv` into `tools/uv/` next to the GUI binary, which the host
+discovers at runtime). The Phase-16 deliverable is the **end-user**
+fetch — choose between:
+
+1. **Installer post-step** — the installer (Tauri's per-OS bundler
+   target, or a thin wrapper around it) downloads `uv` at install
+   time into the app's install dir.
+2. **First-run host downloader** — the GUI fetches `uv` on first
+   launch into the user's app-data dir and points the launcher at
+   that path; offline first-run shows a clear error with the manual
+   `uv` install link.
+
+Both keep the runtime lookup chain in `sidecar.rs` unchanged
+(`tools/uv/uv` → `PATH` `uv` → `python3` fallback). The pin
+(`UV_VERSION` in `scripts/fetch-uv.sh`) is the single source of
+truth in either flow.
