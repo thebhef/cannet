@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
+import { invoke } from "@tauri-apps/api/core";
 
 import {
   DEFAULT_MIN_LEVEL,
@@ -24,7 +25,8 @@ interface PanelParams {
 /**
  * System Messages panel (Phase 7). Renders the host's structured log
  * bus as a virtualised list with timestamp, source, level, and message
- * columns. Filterable by source and by minimum level (default `warn`).
+ * columns. Filterable by source and by minimum level (default `warn`;
+ * drop to `info` in the toolbar to see breadcrumb context).
  * Per-panel filter state lives in dockview `params`; the bus itself
  * lives in the host (`src-tauri/src/system_log.rs`) and is delivered
  * to the frontend by `fetch_system_log` plus incremental
@@ -111,6 +113,11 @@ export function SystemMessagesPanel(props: IDockviewPanelProps) {
     const text = filtered.map(formatLogLine).join("\n");
     void navigator.clipboard?.writeText(text);
   }, [filtered]);
+  const restartSidecar = useCallback(() => {
+    void invoke("restart_sidecar").catch(() => {
+      /* best-effort — the command emits its own System Messages */
+    });
+  }, []);
 
   return (
     <div className="system-messages-panel">
@@ -145,6 +152,13 @@ export function SystemMessagesPanel(props: IDockviewPanelProps) {
         </button>
         <button type="button" onClick={clear} disabled={messages.length === 0}>
           Clear
+        </button>
+        <button
+          type="button"
+          onClick={restartSidecar}
+          title="Stop the python-can sidecar (if running) and start it again. Clears the per-session crash-budget counter."
+        >
+          Restart sidecar
         </button>
         <span className="system-messages-count">
           {filtered.length} / {messages.length}

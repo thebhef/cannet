@@ -1,9 +1,23 @@
 """``uv run cannet-python-can`` entry point.
 
-Boots the gRPC service, prints discovered interfaces (one per line on
-stdout so the host's spawn bridge can pick them up as info-level
-System Messages), and blocks until either Ctrl-C or the host closes
-the process group.
+Boots the gRPC service, emits the discovered interfaces as
+structured banner lines, and blocks until either Ctrl-C or the host
+closes the process group.
+
+All process output is routed through :mod:`logging`. Two logger
+trees coexist:
+
+- The default tree (root + per-module ``_log = logging.getLogger(__name__)``)
+  writes free-form messages and tracebacks to **stderr** via
+  :func:`logging.basicConfig`. The host's spawn bridge turns each
+  line into a ``warn``-level System Message tagged
+  ``sidecar:python-can``.
+- The ``cannet_python_can.banner`` logger writes machine-parseable,
+  tab-separated lines to **stdout** with its own handler and
+  ``propagate=False``, so the banner channel does not double-emit on
+  stderr. The host's classifier in ``sidecar.rs`` reads these and
+  turns each into a typed System Message
+  (``sidecar version …``, ``sidecar listening …``, etc.).
 """
 
 from __future__ import annotations
@@ -12,10 +26,21 @@ import argparse
 import logging
 import signal
 import sys
-import time
+import traceback
 
 from . import __version__
-from . import server as srv
+
+
+# Banner logger — see module docstring. Configured once at import time
+# so even pre-`main` failures (rare, but possible if a side-effect
+# import in `srv` raises) still get a usable channel.
+BANNER = logging.getLogger("cannet_python_can.banner")
+BANNER.setLevel(logging.INFO)
+BANNER.propagate = False
+if not BANNER.handlers:
+    _banner_handler = logging.StreamHandler(sys.stdout)
+    _banner_handler.setFormatter(logging.Formatter("%(message)s"))
+    BANNER.addHandler(_banner_handler)
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -42,33 +67,30 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _print_startup_banner(driver) -> None:
-    """One stdout line per channel; the GUI host parses these.
+def _emit_startup_banner(driver) -> None:
+    """One banner line per channel; the GUI host parses these.
 
     Format is deliberately stable: ``interface\t<id>\t<display_name>\t<fd?>``.
-    Other lines (anything not starting with ``interface\t``) are info-
-    level System Messages.
     """
     channels = list(driver.list_channels())
-    print(f"sidecar\tversion\t{__version__}", flush=True)
-    print(f"sidecar\tinterfaces\t{len(channels)}", flush=True)
+    BANNER.info("sidecar\tversion\t%s", __version__)
+    BANNER.info("sidecar\tinterfaces\t%d", len(channels))
     for c in channels:
         fd = "fd" if c.fd_capable else "classic"
-        print(f"interface\t{c.id}\t{c.display_name}\t{fd}", flush=True)
+        BANNER.info("interface\t%s\t%s\t%s", c.id, c.display_name, fd)
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = _parse_args(argv if argv is not None else sys.argv[1:])
-    logging.basicConfig(
-        level=args.log_level.upper(),
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+def _run(args: argparse.Namespace) -> int:
+    # Imported lazily so the top-level handler in `main` catches
+    # import-time failures (missing grpc, protobuf gencode/runtime
+    # mismatch, etc.) instead of crashing during module load.
+    from . import server as srv
 
     driver = srv.load_driver()
-    _print_startup_banner(driver)
+    _emit_startup_banner(driver)
 
     server = srv.serve(args.bind, driver=driver)
-    print(f"sidecar\tlistening\t{args.bind}", flush=True)
+    BANNER.info("sidecar\tlistening\t%s", args.bind)
 
     stop_requested = False
 
@@ -77,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
         if stop_requested:
             return
         stop_requested = True
-        print(f"sidecar\tshutdown\tsignal={signum}", flush=True)
+        BANNER.info("sidecar\tshutdown\tsignal=%d", signum)
         server.stop(grace=2.0)
 
     signal.signal(signal.SIGINT, _on_signal)
@@ -89,8 +111,31 @@ def main(argv: list[str] | None = None) -> int:
         server.wait_for_termination()
     except KeyboardInterrupt:
         _on_signal(signal.SIGINT, None)
-    print("sidecar\texit\t0", flush=True)
+    BANNER.info("sidecar\texit\t0")
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv if argv is not None else sys.argv[1:])
+    logging.basicConfig(
+        level=args.log_level.upper(),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    try:
+        return _run(args)
+    except Exception as e:  # noqa: BLE001 — top-level last-chance handler
+        # Two records: a single-line structured error banner so the
+        # host's classifier promotes it to Error level, and a
+        # full multi-line traceback through the default logging tree
+        # (stderr → Warn-level System Messages, but adjacent on screen).
+        BANNER.info(
+            "sidecar\terror\t%s",
+            f"{type(e).__name__}: {e}".replace("\n", " "),
+        )
+        logging.getLogger("cannet_python_can").error(
+            "sidecar fatal error\n%s", traceback.format_exc()
+        )
+        return 1
 
 
 if __name__ == "__main__":

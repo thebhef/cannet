@@ -238,10 +238,17 @@ work or admit it isn't going to happen and delete it.
   surface `TX_REJECTED` from the sidecar without a round-trip
   config call, and so the BLF replay server can advertise the
   bitrate the BLF was captured at. Additive proto change.
-- `[packaging]` `uv` bundling: commit per-OS `uv` binaries into the
-  Tauri bundle proper (replacing the developer-machine `PATH` lookup
-  and the `scripts/fetch-uv.sh` build-time fetch). Pick up alongside
-  the Phase-16 packaging tail; today the GUI's sidecar launcher
-  resolves `uv` via `tools/uv/` → `PATH` → "install uv" warning, all
-  three of which work for development but only the first will work
-  for end users.
+- `[packaging]` end-user `uv` fetch mechanism: pick between an
+  installer post-step and a first-run host downloader, and implement.
+  We have decided **not** to commit per-OS `uv` binaries into the
+  repo or pack them into the Tauri bundle artefact (see Phase 16
+  "third-party runtime tool fetching strategy"); the runtime lookup
+  chain (`tools/uv/uv` → `PATH` `uv` → `python3` fallback) stays
+  unchanged, only how `tools/uv/uv` gets populated on an end-user
+  machine. Today `scripts/fetch-uv.sh` is the dev-side fetch; the
+  end-user-side fetch is the open work.
+- `[naming]` `sidecar.rs` internal identifiers `LaunchPath::BundledUv`
+  and `bundled_uv_path()` predate the "fetched, not bundled" decision
+  and should be renamed (e.g. `LocalUv` / `local_uv_path`) for
+  consistency. User-facing strings and module docs are already
+  updated; this is a code-only follow-up.

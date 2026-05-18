@@ -137,11 +137,14 @@ All platforms need:
 
 - [`uv`](https://docs.astral.sh/uv/) — manages the
   [`cannet-python-can`](servers/cannet-python-can/) sidecar's Python
-  environment and installs Python on the fly. The packaged GUI ships
-  a bundled copy under `tools/uv/`; for local development install it
-  per the upstream instructions or run
-  [`scripts/fetch-uv.sh`](scripts/fetch-uv.sh) to drop the binary
-  into `tools/uv/` for the host to find.
+  environment and installs Python on the fly. We do **not** commit
+  `uv` binaries or pack them into the installer artefact; the host
+  expects a `uv` to be available, either next to the GUI binary at
+  `tools/uv/uv[.exe]` or on `PATH`. For local development, run
+  [`scripts/fetch-uv.sh`](scripts/fetch-uv.sh) to drop the pinned
+  binary into `tools/uv/`, or install `uv` per the upstream
+  instructions. The end-user fetch mechanism (installer post-step
+  vs. first-run host downloader) is a Phase-16 deliverable.
 - A vendor SDK (only if you have the matching hardware): Vector XL
   Driver Library, Kvaser CANlib, or PEAK PCAN-Basic. None of these
   are bundled; see the Phase-8 section below for links.
@@ -535,12 +538,17 @@ and exit code feed the **System Messages** panel tagged
 attempts per session; once the budget is exhausted, the **Restart
 sidecar** Tauri command clears it.
 
-**`uv` bundling**. The host launcher resolves `uv` in this order:
+**`uv` resolution**. `uv` is fetched, not bundled — we don't commit
+binaries to the repo and don't pack them into the installer artefact
+(see [`plans/phased-implementation.md`](plans/phased-implementation.md)
+Phase 16, "third-party runtime tool fetching strategy"). The host
+launcher resolves `uv` in this order:
 
-1. **Bundled** `tools/uv/uv[.exe]` next to the GUI executable — the
-   target the Phase-16 packaging tail will fill. Today,
-   [`scripts/fetch-uv.sh`](scripts/fetch-uv.sh) downloads the right
+1. **Local fetch** — `tools/uv/uv[.exe]` next to the GUI executable.
+   [`scripts/fetch-uv.sh`](scripts/fetch-uv.sh) downloads the pinned
    binary for the current OS / arch into `tools/uv/` for local dev.
+   The end-user fetch mechanism that populates this same path on an
+   installed copy is a Phase-16 deliverable.
 2. **`uv` on `PATH`** — install via
    [`https://docs.astral.sh/uv/`](https://docs.astral.sh/uv/).
 3. **`python3 -m cannet_python_can`** — last-resort fallback when
