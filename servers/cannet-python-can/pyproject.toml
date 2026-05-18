@@ -3,7 +3,7 @@ name = "cannet-python-can"
 version = "0.1.0"
 description = "Auto-launched python-can sidecar exposing Vector, Kvaser, and PEAK hardware over the cannet wire protocol."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.13"
 license = { text = "MIT OR Apache-2.0" }
 
 # Hard runtime deps. `python-can` covers the three Phase-8 vendors
@@ -15,10 +15,19 @@ license = { text = "MIT OR Apache-2.0" }
 # `driver_python_can.py` (the sidecar must boot and report "0
 # interfaces" even when it's missing); declaring it here lets `uv sync`
 # install it as part of the default flow.
+#
+# protobuf 6.x and grpcio 1.80+ are the floor — earlier protobuf can't
+# load gencode emitted by current `grpc_tools.protoc`, and the gencode
+# is checked into `cannet_python_can/_proto/` so the runtime must keep
+# up. `uptime` is python-can's optional dep for Epoch-UTC timestamps
+# on PEAK (and elsewhere); without it python-can falls back to
+# boot-relative timestamps and warns. No upper bounds: we want
+# `uv lock --upgrade` to pull current wheels and re-run smoke on bump.
 dependencies = [
-    "grpcio>=1.60",
-    "protobuf>=4.25,<6",
-    "python-can>=4.3",
+    "grpcio>=1.80",
+    "protobuf>=6",
+    "python-can>=4.6",
+    "uptime>=3",
 ]
 
 [project.optional-dependencies]
@@ -26,8 +35,8 @@ dependencies = [
 # running tests. Kept out of the default install so the runtime venv
 # stays small.
 dev = [
-    "grpcio-tools>=1.60",
-    "pytest>=8",
+    "grpcio-tools>=1.80",
+    "pytest>=9",
 ]
 
 [project.scripts]
