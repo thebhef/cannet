@@ -74,6 +74,11 @@ export interface Bus {
   name: string;
   speed_bps?: number | null;
   fd?: boolean | null;
+  /// User-chosen colour (CSS hex, `#rrggbb`) for the bus across the
+  /// graph view — its node tint and every wire that carries it.
+  /// Optional: a bus saved before the colour field, or never edited,
+  /// falls back to a palette colour derived from its list position.
+  color?: string | null;
 }
 
 /// An interface → bus binding (Phase 6). `server` is the remote
@@ -124,21 +129,36 @@ export interface ByIdSnapshotRecord {
 /// project view and panel-reopen treat it as a plot, not a trace);
 /// `transmit` = a Phase-5 transmit panel composing CAN frames;
 /// `filter` = a Phase-6 filter element (structured predicate +
-/// upstream source). The element itself carries no extra config beyond
+/// upstream sources). The element itself carries no extra config beyond
 /// what's listed below — the panel showing it owns its config (a
 /// trace's mode + columns, a plot's areas / cursors, a transmit
 /// panel's frame list) in the dockview panel `params`.
+///
+/// `sources` is every consumer's producer-selection list — bus ids or
+/// upstream filter ids — with [`ALL_BUSES_WILDCARD`] (`"*"`) as the
+/// wildcard meaning "every bus in the project, including buses added
+/// later." The default for any freshly created consumer is
+/// `["*"]`; an explicit list (e.g. `["b1","filter-3"]`) consumes
+/// exactly those producers and future buses don't auto-flow. Older
+/// projects saved a single `source?: string` field instead; the
+/// loader normalises those to `sources: ["*"]` (`normalizeElement`).
 export type ProjectElement =
-  | { kind: "trace"; id: string; source?: string | null }
-  | { kind: "plot"; id: string; source?: string | null }
-  | { kind: "transmit"; id: string }
+  | { kind: "trace"; id: string; sources: string[] }
+  | { kind: "plot"; id: string; sources: string[] }
+  | { kind: "transmit"; id: string; sinks: string[] }
   | {
       kind: "filter";
       id: string;
       name?: string;
-      source?: string | null;
+      sources: string[];
       predicate?: FilterPredicate | null;
     };
+
+/// Wildcard entry in {@link ProjectElement.sources} / {@link
+/// ProjectElement.sinks}: matches every bus in the project, current
+/// and future. `["*"]` is the default for a freshly created consumer
+/// (`sources`) and for a freshly created transmit (`sinks`).
+export const ALL_BUSES_WILDCARD = "*";
 
 /// Structured filter predicate (Phase 6). Mirrors
 /// `src-tauri/src/filter.rs::FilterPredicate`. The frontend's filter-
@@ -179,9 +199,15 @@ export interface Project {
 
 export const PROJECT_SCHEMA_VERSION = 3;
 
-/// One `(message, signal)` pair the attached DBC defines, returned by
-/// the `list_signals` command for a plot panel's signal picker.
+/// One `(bus, message, signal)` triple the attached DBCs define,
+/// returned by the `list_signals` command for a plot panel's signal
+/// picker. The same signal on two different buses is two separate
+/// records — `bus_id` disambiguates them so the picker can offer one
+/// per bus and the host samples the right per-bus slice. `bus_id` is
+/// `null` only when no project bus is configured *and* the DBC is
+/// unscoped (degenerate "any bus" path).
 export interface SignalDescriptorRecord {
+  bus_id: string | null;
   message_id: number;
   extended: boolean;
   message_name: string;

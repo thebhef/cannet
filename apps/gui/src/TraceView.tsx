@@ -15,6 +15,7 @@ import {
   wheelDeltaPx,
 } from "./traceViewport";
 import {
+  type BusLookup,
   type ColumnKey,
   type ColumnState,
   columnDef,
@@ -39,6 +40,9 @@ interface TraceViewProps {
   columns: readonly ColumnState[];
   onColumnResize: (key: ColumnKey, width: number) => void;
   onColumnToggle: (key: ColumnKey) => void;
+  /// Bus-id → bus-name lookup for the "bus" column, built once per
+  /// render from the project's bus list.
+  busLookup: BusLookup;
   getFrame: (absoluteIndex: number) => TraceFrameRecord | null;
   ensureVisible: (start: number, end: number) => void;
   /// Called when the user scrolls the view themselves while
@@ -59,6 +63,7 @@ export function TraceView({
   columns,
   onColumnResize,
   onColumnToggle,
+  busLookup,
   getFrame,
   ensureVisible,
   onAutoScrollDisabled,
@@ -247,6 +252,7 @@ export function TraceView({
                 baseTimestamp={baseTimestampSeconds}
                 columns={visible}
                 gridTemplate={gridTemplate}
+                busLookup={busLookup}
                 onToggle={toggleExpanded}
               />
             ))}
@@ -265,6 +271,7 @@ interface RowProps {
   baseTimestamp: number | null;
   columns: readonly ColumnState[];
   gridTemplate: string;
+  busLookup: BusLookup;
   onToggle: (absoluteIndex: number) => void;
 }
 
@@ -276,6 +283,7 @@ const Row = memo(function Row({
   baseTimestamp,
   columns,
   gridTemplate,
+  busLookup,
   onToggle,
 }: RowProps) {
   const height = isExpanded ? EXPANDED_ROW_HEIGHT : ROW_HEIGHT;
@@ -294,7 +302,7 @@ const Row = memo(function Row({
     >
       {columns.map((c) => (
         <span key={c.key} className={columnDef(c.key).className}>
-          {cellContent(c.key, frame, absoluteIndex, baseTimestamp, isExpanded)}
+          {cellContent(c.key, frame, absoluteIndex, baseTimestamp, isExpanded, busLookup)}
         </span>
       ))}
       {isExpanded && frame?.decoded && (

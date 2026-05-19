@@ -121,9 +121,17 @@ export function mergeSeries(series: RawSeries[]): (number | null)[][] {
   return out;
 }
 
-/** Stable key for a `(message, signal)` pair. */
-export function signalKey(messageId: number, extended: boolean, signalName: string): string {
-  return `${extended ? "x" : "s"}:${messageId}:${signalName}`;
+/** Stable key for a `(bus, message, signal)` triple — what the plot
+ * panel uses to dedupe a signal in its own state. `busId` may be
+ * `null` for legacy plots that pre-date per-bus signal binding (the
+ * "any bus" path). */
+export function signalKey(
+  busId: string | null,
+  messageId: number,
+  extended: boolean,
+  signalName: string,
+): string {
+  return `${busId ?? "*"}|${extended ? "x" : "s"}:${messageId}:${signalName}`;
 }
 
 /**

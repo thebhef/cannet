@@ -89,6 +89,18 @@ impl FilterPredicate {
             FilterPredicate::Tagged(p) => p.matches(frame, decoded),
         }
     }
+
+    /// Does evaluating this predicate need the frame's *decoded*
+    /// signals / message name? `false` for id / bus predicates, which
+    /// read raw frame fields only — letting a bulk scan skip decoding
+    /// the frames that don't match (decoding is the costly part).
+    #[must_use]
+    pub fn needs_decode(&self) -> bool {
+        match self {
+            FilterPredicate::Invalid(_) => false,
+            FilterPredicate::Tagged(p) => p.needs_decode(),
+        }
+    }
 }
 
 impl TaggedPredicate {
@@ -110,6 +122,16 @@ impl TaggedPredicate {
                     .any(|s| s.name == m.name && (s.value - m.value).abs() < 1e-9),
                 None => false,
             },
+        }
+    }
+
+    fn needs_decode(&self) -> bool {
+        match self {
+            Self::All(children) | Self::Any(children) => {
+                children.iter().any(FilterPredicate::needs_decode)
+            }
+            Self::Bus(_) | Self::IdRange(_) | Self::IdList(_) => false,
+            Self::NameRegex(_) | Self::SignalEquals(_) => true,
         }
     }
 }
@@ -221,6 +243,21 @@ mod tests {
         assert!(p.matches(&frame_with(1, None), Some(&d2)));
         let d3 = decoded("Eng", &[("Rpm", 801.0)]);
         assert!(!p.matches(&frame_with(1, None), Some(&d3)));
+    }
+
+    #[test]
+    fn needs_decode_only_for_decoded_field_predicates() {
+        // id / bus predicates read raw frame fields — a bulk scan can
+        // skip decoding non-matches.
+        assert!(!parse(r#"{"id_range": [1, 10]}"#).needs_decode());
+        assert!(!parse(r#"{"id_list": [1]}"#).needs_decode());
+        assert!(!parse(r#"{"bus": "p"}"#).needs_decode());
+        // name / signal predicates need the decoded record.
+        assert!(parse(r#"{"name_regex": "^Eng"}"#).needs_decode());
+        assert!(parse(r#"{"signal_equals": {"name": "Rpm", "value": 1}}"#).needs_decode());
+        // Composition needs decode iff any child does.
+        assert!(!parse(r#"{"all": [{"bus": "p"}, {"id_list": [1]}]}"#).needs_decode());
+        assert!(parse(r#"{"any": [{"id_list": [1]}, {"name_regex": "x"}]}"#).needs_decode());
     }
 
     #[test]

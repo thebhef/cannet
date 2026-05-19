@@ -59,9 +59,9 @@ use cannet_dbc::{Database, DecodedSignal};
 use filter::FilterPredicate;
 
 use ipc::{
-    ByIdSnapshot, DbcInfo, DecodedRecord, InterfaceRecord, LogFinished, OpenLogResult,
-    RemoteSessionResult, SampledPoints, SignalDescriptorRecord, SignalQuery, SignalRecord,
-    SignalsSample, TraceFrameRecord, TraceGrew,
+    ByIdSnapshot, DbcInfo, DecodedRecord, FilteredTracePage, InterfaceRecord, LogFinished,
+    OpenLogResult, RemoteSessionResult, SampledPoints, SignalDescriptorRecord, SignalQuery,
+    SignalRecord, SignalsSample, TraceFrameRecord, TraceGrew,
 };
 use notes::{Note, NotesStore};
 use signal_cache::SignalCacheStore;
@@ -96,6 +96,14 @@ struct RemoteSession {
     /// uses this to translate a frame's `channel` to the wire id the
     /// `FrameBatch` envelope must carry.
     channel_to_interface: Vec<(u8, String)>,
+    /// `channel -> logical bus id` derived from the project's
+    /// interface bindings. The pump uses it to stamp incoming frames'
+    /// `bus_id`; `transmit_frame` uses the reverse direction (bus id
+    /// → channel) to route an outgoing frame to the right session.
+    /// Entries with `None` mean "channel unmapped" — those frames
+    /// pump through unassigned and are unreachable as transmit
+    /// destinations.
+    channel_to_bus: Vec<(u8, Option<String>)>,
     stop: Arc<AtomicBool>,
 }
 
@@ -187,6 +195,7 @@ pub fn run() {
             set_dbc_buses,
             fetch_trace_range,
             fetch_latest_by_id,
+            fetch_filtered_trace,
             clear_trace_store,
             list_remote_interfaces,
             connect_remote_server,
@@ -369,6 +378,7 @@ fn save_capture(
     app: AppHandle,
     state: State<'_, AppState>,
     blf_path: String,
+    buses: Vec<String>,
 ) -> Result<SaveCaptureResult, String> {
     // Snapshot the trace store. `slice(0, len)` clones each
     // RawTraceFrame out under the trace-store lock — that's the
@@ -378,7 +388,7 @@ fn save_capture(
     let frames = state.trace_store.slice(0, state.trace_store.len());
     let notes = state.notes.snapshot();
 
-    let outcome = match write_capture(&blf_path, &frames, &notes) {
+    let outcome = match write_capture(&blf_path, &frames, &notes, &buses) {
         Ok(o) => o,
         Err(e) => {
             sys_error!(&app, "capture", "save to {blf_path} failed: {e}");
@@ -451,15 +461,24 @@ fn load_notes_sidecar(path: &std::path::Path) -> Result<Option<Vec<Note>>, Strin
 
 /// Perform the actual BLF + sidecar write. Split from the
 /// command so unit tests can drive it without a `tauri::AppHandle`.
+///
+/// `buses` is the project's ordered bus-id list. Each frame's
+/// `bus_id` is resolved to its position in this list and that
+/// position becomes the BLF channel — so the logical bus assignment
+/// round-trips through the channel number alone (no sidecar). A
+/// frame whose `bus_id` is `None` or isn't in `buses` keeps its
+/// original wire channel as a fallback, so a partial mapping never
+/// loses data.
 fn write_capture(
     blf_path: &str,
     frames: &[trace_store::RawTraceFrame],
     notes: &[Note],
+    buses: &[String],
 ) -> Result<SaveCaptureResult, String> {
     let mut writer = BlfCaptureWriter::create(blf_path)
         .map_err(|e| format!("failed to open {blf_path} for writing: {e}"))?;
     for frame in frames {
-        let core = raw_to_core_frame(frame)
+        let core = raw_to_core_frame(frame, buses)
             .map_err(|e| format!("invalid frame in session buffer: {e}"))?;
         writer
             .append(&core)
@@ -506,8 +525,17 @@ fn write_capture(
 /// raw id value (which shouldn't happen — `RawTraceFrame`s
 /// originate from `CanFrame`s — but the validating
 /// constructors are the only way to spell the conversion).
-fn raw_to_core_frame(frame: &trace_store::RawTraceFrame) -> Result<CoreCanFrame, String> {
+///
+/// `buses` is the project's ordered bus-id list; the output
+/// channel is the index of `frame.bus_id` in that list, or the
+/// frame's wire-level channel if the bus isn't listed (or the
+/// frame is unassigned).
+fn raw_to_core_frame(
+    frame: &trace_store::RawTraceFrame,
+    buses: &[String],
+) -> Result<CoreCanFrame, String> {
     use cannet_core::CanFramePayload as P;
+    let channel = channel_for_save(frame, buses);
     let id = if frame.extended {
         CanId::extended(frame.id).map_err(|e| e.to_string())?
     } else {
@@ -516,7 +544,7 @@ fn raw_to_core_frame(frame: &trace_store::RawTraceFrame) -> Result<CoreCanFrame,
     match &frame.payload {
         P::Classic(data) => CoreCanFrame::classic(
             frame.timestamp_ns,
-            frame.channel,
+            channel,
             id,
             frame.direction,
             data.clone(),
@@ -524,7 +552,7 @@ fn raw_to_core_frame(frame: &trace_store::RawTraceFrame) -> Result<CoreCanFrame,
         .map_err(|e| e.to_string()),
         P::Fd { data, flags } => CoreCanFrame::fd(
             frame.timestamp_ns,
-            frame.channel,
+            channel,
             id,
             frame.direction,
             data.clone(),
@@ -533,18 +561,36 @@ fn raw_to_core_frame(frame: &trace_store::RawTraceFrame) -> Result<CoreCanFrame,
         .map_err(|e| e.to_string()),
         P::Remote { dlc } => Ok(CoreCanFrame::remote(
             frame.timestamp_ns,
-            frame.channel,
+            channel,
             id,
             frame.direction,
             *dlc,
         )),
         P::Error => Ok(CoreCanFrame::error(
             frame.timestamp_ns,
-            frame.channel,
+            channel,
             id,
             frame.direction,
         )),
     }
+}
+
+/// The BLF channel to write a frame on: index of the frame's
+/// `bus_id` in the project's ordered bus list, or the wire-level
+/// `frame.channel` as a fallback when the bus isn't listed (or the
+/// frame is unassigned). Lifted to its own function so it has one
+/// unambiguous home and the round-trip behaviour is unit-testable.
+fn channel_for_save(frame: &trace_store::RawTraceFrame, buses: &[String]) -> u8 {
+    if let Some(bid) = frame.bus_id.as_deref() {
+        if let Some(i) = buses.iter().position(|b| b == bid) {
+            // The bus index is bounded by `buses.len()` (a project
+            // configured by the GUI never exceeds a handful), so the
+            // truncation cast is safe; saturate at u8::MAX just in
+            // case some future caller hands in a giant list.
+            return u8::try_from(i).unwrap_or(u8::MAX);
+        }
+    }
+    frame.channel
 }
 
 /// Pre-scan a BLF file and return its distinct channel numbers, in
@@ -862,6 +908,69 @@ async fn fetch_latest_by_id(
         .collect()
 }
 
+/// Phase 6.5: a *paged* window into the filtered chronological trace.
+/// Scans `[scan_start, scan_end)` of the trace store, applies `filter`,
+/// and returns the total match count plus the decoded matches at
+/// match-indices `[offset, offset + limit)` — or, when `from_end` is
+/// set, the *last* `limit` matches, so the live-tail view gets its
+/// page and the running total in one call. The frontend pages this; it
+/// never holds the whole filtered set in memory.
+///
+/// The scan runs by reference inside the trace store
+/// ([`TraceStore::scan_window_filtered`]) — only the returned page's
+/// frames are cloned, never the whole window. Decoding is per-frame
+/// only when the predicate needs decoded fields
+/// ([`FilterPredicate::needs_decode`]); the page is always decoded for
+/// display.
+///
+/// `async` so Tauri runs it off the main thread, like `fetch_trace_range`.
+#[tauri::command]
+#[allow(clippy::unused_async)] // `async` is what makes Tauri run it off the main thread
+async fn fetch_filtered_trace(
+    app: AppHandle,
+    filter: FilterPredicate,
+    scan_start: u64,
+    scan_end: u64,
+    offset: u64,
+    limit: u64,
+    from_end: bool,
+) -> FilteredTracePage {
+    let state: State<'_, AppState> = app.state();
+    let start_us = usize::try_from(scan_start).unwrap_or(usize::MAX);
+    let end_us = usize::try_from(scan_end).unwrap_or(usize::MAX);
+    let needs_decode = filter.needs_decode();
+    let dbs = state.databases.lock().expect("databases mutex poisoned");
+    let (count, pairs) = state.trace_store.scan_window_filtered(
+        start_us,
+        end_us,
+        offset,
+        limit,
+        from_end,
+        |frame| {
+            let decoded = if needs_decode {
+                decode_against(&dbs, frame)
+            } else {
+                None
+            };
+            filter.matches(frame, decoded.as_ref())
+        },
+    );
+    let win_len = u64::try_from(pairs.len()).unwrap_or(u64::MAX);
+    let start = if from_end {
+        count.saturating_sub(win_len)
+    } else {
+        offset.min(count)
+    };
+    let rows = pairs
+        .into_iter()
+        .map(|(i, frame)| {
+            let index = u64::try_from(i).unwrap_or(u64::MAX);
+            TraceFrameRecord::from_raw(index, &frame, decode_against(&dbs, &frame))
+        })
+        .collect();
+    FilteredTracePage { count, start, rows }
+}
+
 /// Drop every stored frame. The frontend's Clear button is the typical
 /// caller. The next `trace-grew` tick will fire with the new count
 /// (zero), prompting the trace view to drop its row cache. Phase 9:
@@ -972,27 +1081,66 @@ pub(crate) fn emit_system_log(
     }
 }
 
-/// Every `(message, signal)` pair defined by any loaded DBC, for a plot
-/// panel's signal picker — the union across all loaded DBCs, sorted and
-/// deduplicated. Empty when no DBC is loaded.
+/// Every `(bus, message, signal)` triple the loaded DBCs define, for
+/// a plot panel's signal picker. One record per matching project bus
+/// per DBC signal — so a scoped DBC produces one record per bus in
+/// its scope, an unscoped DBC produces one record per project bus,
+/// and a project with no buses falls back to one `bus_id: None`
+/// record per signal (the legacy "any bus" path). Sorted by
+/// `(bus_id, message_id, signal_name)` and deduplicated on that key.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-fn list_signals(state: State<'_, AppState>) -> Vec<SignalDescriptorRecord> {
+fn list_signals(
+    state: State<'_, AppState>,
+    project_buses: Vec<String>,
+) -> Vec<SignalDescriptorRecord> {
     let dbs = state.databases.lock().expect("databases mutex poisoned");
-    let mut out: Vec<SignalDescriptorRecord> = dbs
-        .iter()
-        .flat_map(|l| l.db.signals())
-        .map(SignalDescriptorRecord::from)
-        .collect();
+    let mut out: Vec<SignalDescriptorRecord> = Vec::new();
+    for loaded in dbs.iter() {
+        // A DBC's effective scope: explicit `buses` if set, else
+        // every project bus. With no project buses at all, fall back
+        // to a single `bus_id: None` so an early-bring-up plot still
+        // sees something.
+        let scope: Vec<Option<String>> = if !loaded.buses.is_empty() {
+            loaded.buses.iter().map(|b| Some(b.clone())).collect()
+        } else if !project_buses.is_empty() {
+            project_buses.iter().map(|b| Some(b.clone())).collect()
+        } else {
+            vec![None]
+        };
+        for d in loaded.db.signals() {
+            for bus_id in &scope {
+                out.push(SignalDescriptorRecord {
+                    bus_id: bus_id.clone(),
+                    message_id: d.message_id,
+                    extended: d.extended,
+                    message_name: d.message_name.clone(),
+                    signal_name: d.signal_name.clone(),
+                    unit: d.unit.clone(),
+                    has_value_table: d.has_value_table,
+                });
+            }
+        }
+    }
     out.sort_by(|a, b| {
-        (a.message_id, a.extended, a.signal_name.as_str()).cmp(&(
-            b.message_id,
-            b.extended,
-            b.signal_name.as_str(),
-        ))
+        (
+            a.bus_id.as_deref(),
+            a.message_id,
+            a.extended,
+            a.signal_name.as_str(),
+        )
+            .cmp(&(
+                b.bus_id.as_deref(),
+                b.message_id,
+                b.extended,
+                b.signal_name.as_str(),
+            ))
     });
     out.dedup_by(|a, b| {
-        a.message_id == b.message_id && a.extended == b.extended && a.signal_name == b.signal_name
+        a.bus_id == b.bus_id
+            && a.message_id == b.message_id
+            && a.extended == b.extended
+            && a.signal_name == b.signal_name
     });
     out
 }
@@ -1143,6 +1291,7 @@ fn sample_signals_inner(
         .iter()
         .map(|q| {
             state.signal_caches.slice(
+                q.bus_id.as_deref(),
                 q.message_id,
                 q.extended,
                 &q.signal_name,
@@ -1318,6 +1467,21 @@ async fn connect_remote_server(
             sys_warn!(&app, "connection", "{msg}");
             return Err(msg);
         }
+        // Build the channel-to-bus mapping from the per-server
+        // bindings. We subscribed to exactly the bindings' interfaces
+        // above, so each subscription has a matching binding by
+        // interface id. Stored on the session so `transmit_frame` can
+        // use it for outgoing routing; the pump gets its own clone.
+        let channel_to_bus: Vec<(u8, Option<String>)> = subscriptions
+            .iter()
+            .filter_map(|sub| {
+                binding_lookup
+                    .iter()
+                    .find(|b| b.interface == sub.interface_id)
+                    .map(|b| (sub.channel, Some(b.bus_id.clone())))
+            })
+            .collect();
+
         guard.insert(
             address.clone(),
             RemoteSession {
@@ -1327,23 +1491,26 @@ async fn connect_remote_server(
                     .iter()
                     .map(|s| (s.channel, s.interface_id.clone()))
                     .collect(),
+                channel_to_bus,
                 stop: Arc::clone(&stop),
             },
         );
     }
 
-    // Build the channel-to-bus mapping from the per-server bindings.
-    // We subscribed to exactly the bindings' interfaces above, so each
-    // subscription has a matching binding by interface id.
-    let channel_to_bus: Vec<(u8, Option<String>)> = subscriptions
-        .iter()
-        .filter_map(|sub| {
-            binding_lookup
-                .iter()
-                .find(|b| b.interface == sub.interface_id)
-                .map(|b| (sub.channel, Some(b.bus_id.clone())))
-        })
-        .collect();
+    // Pump's own copy of the same channel→bus list — pulled from the
+    // session under a fresh lock so we know it matches what the
+    // transmit path will see.
+    let channel_to_bus: Vec<(u8, Option<String>)> = {
+        let state: State<'_, AppState> = app.state();
+        let guard = state
+            .remote_sessions
+            .lock()
+            .expect("remote_sessions mutex poisoned");
+        guard
+            .get(&address)
+            .map(|s| s.channel_to_bus.clone())
+            .unwrap_or_default()
+    };
 
     let app_for_thread = app.clone();
     let address_for_cleanup = address.clone();
@@ -1514,10 +1681,23 @@ fn transmit_frame_inner(
     let timestamp_ns = std::time::SystemTime::now()
         .duration_since(std::time::SystemTime::UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
+
+    // Resolve `bus_id` → `(session, channel, interface_id)`. With no
+    // active session for the target bus, we still want a local Tx-
+    // confirm to land (the user sees what they tried to send); use
+    // wire channel 0 in that case — the trace view shows the *bus*
+    // column, not the wire channel, so it stays unambiguous.
+    let sessions_guard = state
+        .remote_sessions
+        .lock()
+        .expect("remote_sessions mutex poisoned");
+    let routing = resolve_bus_route(&sessions_guard, &request.bus_id);
+    let wire_channel = routing.as_ref().map_or(0u8, |r| r.channel);
+
     let frame = match request.kind {
         ipc::TransmitKind::Classic => cannet_core::CanFrame::classic(
             timestamp_ns,
-            request.channel,
+            wire_channel,
             id,
             cannet_core::Direction::Tx,
             request.data.clone(),
@@ -1525,7 +1705,7 @@ fn transmit_frame_inner(
         .map_err(|e| format!("invalid classic frame: {e}"))?,
         ipc::TransmitKind::Fd => cannet_core::CanFrame::fd(
             timestamp_ns,
-            request.channel,
+            wire_channel,
             id,
             cannet_core::Direction::Tx,
             request.data.clone(),
@@ -1537,55 +1717,46 @@ fn transmit_frame_inner(
         .map_err(|e| format!("invalid FD frame: {e}"))?,
         ipc::TransmitKind::Remote => cannet_core::CanFrame::remote(
             timestamp_ns,
-            request.channel,
+            wire_channel,
             id,
             cannet_core::Direction::Tx,
             request.dlc,
         ),
-        ipc::TransmitKind::Error => {
-            cannet_core::CanFrame::error(timestamp_ns, request.channel, id, cannet_core::Direction::Tx)
-        }
+        ipc::TransmitKind::Error => cannet_core::CanFrame::error(
+            timestamp_ns,
+            wire_channel,
+            id,
+            cannet_core::Direction::Tx,
+        ),
     };
 
-    // Append the tx-confirm. The next `trace-grew` tick carries the
-    // updated count and (a tail including) this row to the frontend.
-    state.trace_store.append(RawTraceFrame::from(frame.clone()));
+    // Append the tx-confirm — stamp it with the target `bus_id` so
+    // the local trace view shows it on the right bus, even when no
+    // remote session is actually carrying it.
+    let mut raw = RawTraceFrame::from(frame.clone());
+    raw.bus_id = Some(request.bus_id.clone());
+    state.trace_store.append(raw);
     let tx_confirm_index = u64::try_from(state.trace_store.len()).unwrap_or(u64::MAX) - 1;
 
-    // Forward to a remote session that knows this channel. Multi-
-    // server sessions all start counting channels at 0; the first
-    // session with a matching channel wins. This is a known limitation
-    // of the channel-based transmit model — see backlog: routing
-    // transmit by `bus_id` would let the host pick the session
-    // unambiguously.
-    let sessions_guard = state
-        .remote_sessions
-        .lock()
-        .expect("remote_sessions mutex poisoned");
-    let wire_status = if sessions_guard.is_empty() {
-        ipc::TransmitWireStatus::NotConnected
-    } else {
-        let found = sessions_guard.values().find_map(|session| {
-            session
-                .channel_to_interface
-                .iter()
-                .find(|(ch, _)| *ch == request.channel)
-                .map(|(_, iid)| (iid.clone(), session))
-        });
-        match found {
-            None => ipc::TransmitWireStatus::Failed {
-                message: format!(
-                    "channel {} is not bound on any active server",
-                    request.channel
-                ),
-            },
-            Some((interface_id, session)) => {
-                match session.transmitter.transmit(&interface_id, &frame) {
-                    Ok(()) => ipc::TransmitWireStatus::Sent { interface_id },
-                    Err(e) => ipc::TransmitWireStatus::Failed {
-                        message: e.to_string(),
-                    },
-                }
+    let wire_status = match routing {
+        None if sessions_guard.is_empty() => ipc::TransmitWireStatus::NotConnected,
+        None => ipc::TransmitWireStatus::Failed {
+            message: format!(
+                "bus {} is not bound on any active server",
+                request.bus_id
+            ),
+        },
+        Some(BusRoute { address, interface_id, .. }) => {
+            // Re-borrow the session for the actual transmit; `routing`
+            // dropped its borrow when it returned.
+            let session = sessions_guard
+                .get(&address)
+                .expect("session for resolved route disappeared mid-transmit");
+            match session.transmitter.transmit(&interface_id, &frame) {
+                Ok(()) => ipc::TransmitWireStatus::Sent { interface_id },
+                Err(e) => ipc::TransmitWireStatus::Failed {
+                    message: e.to_string(),
+                },
             }
         }
     };
@@ -1595,6 +1766,45 @@ fn transmit_frame_inner(
         tx_confirm_index,
         wire_status,
     })
+}
+
+/// One resolved bus → wire route. Returned from
+/// [`resolve_bus_route`]; carries the server address (so the caller
+/// can re-borrow the session under the same lock), the wire channel
+/// the bus maps to, and the wire interface id the transmit must be
+/// addressed to.
+struct BusRoute {
+    address: String,
+    channel: u8,
+    interface_id: String,
+}
+
+/// Walk the active sessions, find the first one whose
+/// `channel_to_bus` lists this bus id, and return the resolved
+/// route. The first-match-wins semantics matches the current
+/// project-side rule of "one interface binding per bus".
+fn resolve_bus_route(
+    sessions: &std::collections::HashMap<String, RemoteSession>,
+    bus_id: &str,
+) -> Option<BusRoute> {
+    for (address, session) in sessions {
+        for (ch, b) in &session.channel_to_bus {
+            if b.as_deref() == Some(bus_id) {
+                if let Some((_, iid)) = session
+                    .channel_to_interface
+                    .iter()
+                    .find(|(c, _)| c == ch)
+                {
+                    return Some(BusRoute {
+                        address: address.clone(),
+                        channel: *ch,
+                        interface_id: iid.clone(),
+                    });
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Look up the full `VAL_` table for one DBC signal across every
@@ -1851,7 +2061,7 @@ mod tests {
     fn transmit_frame_inner_appends_tx_confirm_when_not_connected() {
         let state = test_state();
         let req = ipc::TransmitRequest {
-            channel: 0,
+            bus_id: "p".into(),
             id: 0x123,
             extended: false,
             kind: ipc::TransmitKind::Classic,
@@ -1942,6 +2152,7 @@ mod tests {
             dest.to_str().unwrap(),
             &[f_classic, f_fd, f_err],
             &notes_in,
+            &[],
         )
         .unwrap();
         assert_eq!(outcome.frame_count, 3);
@@ -1975,6 +2186,92 @@ mod tests {
         assert_eq!(recovered[1].label, "second");
     }
 
+    /// `write_capture` re-channels each frame by its `bus_id`'s
+    /// position in the project's ordered bus list. This is how the
+    /// logical bus assignment round-trips through BLF — the channel
+    /// number IS the bus index. A frame whose `bus_id` is missing or
+    /// not in the project's bus list keeps its original wire channel
+    /// (so we never silently lose data from a partly-mapped capture).
+    #[test]
+    fn write_capture_re_channels_frames_by_project_bus_order() {
+        use cannet_blf::BlfCanFrameSource;
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("multi-bus.blf");
+
+        let ts = 1_700_000_000_000_000_000u64;
+        let mk = |bus: Option<&str>, ch: u8, id: u32| trace_store::RawTraceFrame {
+            timestamp_ns: ts,
+            channel: ch,
+            id,
+            extended: false,
+            direction: Direction::Rx,
+            payload: CanFramePayload::Classic(vec![]),
+            bus_id: bus.map(str::to_owned),
+        };
+        // All three frames share wire channel 0 but live on different
+        // logical buses. After re-channeling they must come out on
+        // distinct BLF channels matching the project's bus order.
+        let frames = vec![
+            mk(Some("p"), 0, 0x100),
+            mk(Some("c"), 0, 0x200),
+            mk(Some("p"), 0, 0x300),
+        ];
+        let buses = vec!["p".to_string(), "c".to_string()];
+
+        let outcome = write_capture(
+            dest.to_str().unwrap(),
+            &frames,
+            &[],
+            &buses,
+        )
+        .unwrap();
+        assert_eq!(outcome.frame_count, 3);
+
+        let mut src = BlfCanFrameSource::open(&dest).unwrap();
+        let read: Vec<u8> = std::iter::from_fn(|| src.next_frame().unwrap())
+            .map(|f| f.channel)
+            .collect();
+        assert_eq!(read, vec![0, 1, 0]);
+    }
+
+    /// Frames whose `bus_id` isn't in the project's bus list — either
+    /// `None` (unassigned, common when a wire-channel binding was
+    /// missing) or `Some(unknown)` (stale id) — keep their wire-level
+    /// channel rather than getting silently re-channeled. The user
+    /// can decide what to do with them on reload via the BLF
+    /// channel-map modal.
+    #[test]
+    fn write_capture_keeps_wire_channel_when_bus_is_unmapped() {
+        use cannet_blf::BlfCanFrameSource;
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("partial-bus.blf");
+
+        let ts = 1_700_000_000_000_000_000u64;
+        let mk = |bus: Option<&str>, ch: u8, id: u32| trace_store::RawTraceFrame {
+            timestamp_ns: ts,
+            channel: ch,
+            id,
+            extended: false,
+            direction: Direction::Rx,
+            payload: CanFramePayload::Classic(vec![]),
+            bus_id: bus.map(str::to_owned),
+        };
+        let frames = vec![
+            mk(None, 3, 0x10),
+            mk(Some("x"), 4, 0x20), // "x" not in `buses`
+            mk(Some("p"), 9, 0x30), // remapped to channel 0
+        ];
+        let buses = vec!["p".to_string(), "c".to_string()];
+
+        write_capture(dest.to_str().unwrap(), &frames, &[], &buses).unwrap();
+
+        let mut src = BlfCanFrameSource::open(&dest).unwrap();
+        let read: Vec<u8> = std::iter::from_fn(|| src.next_frame().unwrap())
+            .map(|f| f.channel)
+            .collect();
+        assert_eq!(read, vec![3, 4, 0]);
+    }
+
     /// An empty notes list still writes the sidecar (as `[]`) so
     /// "BLF present, sidecar absent" unambiguously means "this
     /// BLF came from some other tool".
@@ -1982,7 +2279,7 @@ mod tests {
     fn write_capture_emits_empty_sidecar_for_empty_notes() {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("empty.blf");
-        let outcome = write_capture(dest.to_str().unwrap(), &[], &[]).unwrap();
+        let outcome = write_capture(dest.to_str().unwrap(), &[], &[], &[]).unwrap();
         assert_eq!(outcome.frame_count, 0);
         assert_eq!(outcome.marker_count, 0);
         let sidecar = notes_sidecar_path(dest.to_str().unwrap());
@@ -2019,7 +2316,7 @@ mod tests {
     fn transmit_frame_inner_rejects_invalid_id() {
         let state = test_state();
         let req = ipc::TransmitRequest {
-            channel: 0,
+            bus_id: "p".into(),
             id: 0xFFFF,
             extended: false,
             kind: ipc::TransmitKind::Classic,

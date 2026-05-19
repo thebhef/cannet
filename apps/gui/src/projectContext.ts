@@ -58,6 +58,8 @@ export interface ProjectContextValue {
   onAddBus: (bus: Bus) => void;
   onRemoveBus: (id: string) => void;
   onRenameBus: (id: string, name: string) => void;
+  /// Set a bus's graph colour (`#rrggbb`).
+  onSetBusColor: (id: string, color: string) => void;
   /// Phase 6: interface-binding ops.
   onAddBinding: (binding: InterfaceBinding) => void;
   onRemoveBinding: (server: string, iface: string) => void;
