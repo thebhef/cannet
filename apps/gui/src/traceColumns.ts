@@ -6,13 +6,13 @@
 /// header's right-click menu), and in per-id mode you can click a
 /// header to sort by it.
 
-import type { ByIdSnapshotRecord } from "./types";
+import type { Bus, ByIdSnapshotRecord } from "./types";
 
 /// A trace column's stable identity.
 export type ColumnKey =
   | "idx"
   | "time"
-  | "ch"
+  | "bus"
   | "dir"
   | "id"
   | "kind"
@@ -43,7 +43,7 @@ export interface ColumnDef {
 export const COLUMN_DEFS: readonly ColumnDef[] = [
   { key: "idx", label: "#", className: "col-idx", defaultWidth: 64 },
   { key: "time", label: "time (s)", className: "col-time", defaultWidth: 110 },
-  { key: "ch", label: "ch", className: "col-ch", defaultWidth: 40 },
+  { key: "bus", label: "bus", className: "col-bus", defaultWidth: 100 },
   { key: "dir", label: "dir", className: "col-dir", defaultWidth: 40 },
   { key: "id", label: "id", className: "col-id", defaultWidth: 96 },
   { key: "kind", label: "type", className: "col-kind", defaultWidth: 110 },
@@ -72,21 +72,31 @@ export function defaultColumns(): ColumnState[] {
 /// Validate a value persisted in a dockview panel's params (or a
 /// project file) as column state — it must be the canonical columns,
 /// in order, with sane width / visible fields. Anything else (a stale
-/// or corrupt blob) falls back to [`defaultColumns`].
+/// or corrupt blob) falls back to [`defaultColumns`]. A legacy `"ch"`
+/// key at the bus column's slot is treated as `"bus"` (the column was
+/// renamed when wire-level channel display was replaced with the
+/// project's bus name); width / visibility carry over.
 export function columnsFromParams(value: unknown): ColumnState[] {
   if (
     Array.isArray(value) &&
     value.length === COLUMN_DEFS.length &&
-    value.every(
-      (c, i) =>
-        c != null &&
-        typeof c === "object" &&
-        (c as { key?: unknown }).key === COLUMN_DEFS[i].key &&
-        typeof (c as { width?: unknown }).width === "number" &&
-        typeof (c as { visible?: unknown }).visible === "boolean",
-    )
+    value.every((c, i) => {
+      if (c == null || typeof c !== "object") return false;
+      const o = c as { key?: unknown; width?: unknown; visible?: unknown };
+      const wantKey = COLUMN_DEFS[i].key;
+      const keyOk = o.key === wantKey || (wantKey === "bus" && o.key === "ch");
+      return (
+        keyOk && typeof o.width === "number" && typeof o.visible === "boolean"
+      );
+    })
   ) {
-    return (value as ColumnState[]).map((c) => ({ ...c }));
+    return (value as readonly { key: string; width: number; visible: boolean }[]).map(
+      (c, i) => ({
+        key: COLUMN_DEFS[i].key, // canonicalise (handles "ch" → "bus")
+        width: c.width,
+        visible: c.visible,
+      }),
+    );
   }
   return defaultColumns();
 }
@@ -143,10 +153,36 @@ export function toggleColumn(columns: readonly ColumnState[], key: ColumnKey): C
   return columns.map((c) => (c.key === key ? { ...c, visible: !c.visible } : c));
 }
 
+// --- bus name lookup ---
+
+/// Bus-id → bus-name lookup. Built once per render from `project.buses`
+/// and passed into the row renderers + the sort path so neither has to
+/// re-scan the bus list per row.
+export type BusLookup = ReadonlyMap<string, string>;
+
+export function busLookup(buses: readonly Bus[]): BusLookup {
+  const m = new Map<string, string>();
+  for (const b of buses) m.set(b.id, b.name);
+  return m;
+}
+
+/// Render `bus_id` for a row's "bus" column: the project's bus *name*
+/// when known, "unassigned" when null/undefined, or the raw id as a
+/// fallback when the id refers to a bus that's been removed from the
+/// project (defensive — keeps the trace from going blank on stale data).
+export function busDisplayName(
+  busId: string | null | undefined,
+  lookup: BusLookup,
+): string {
+  if (busId == null) return "unassigned";
+  return lookup.get(busId) ?? busId;
+}
+
 // --- per-id-view column sort ---
 
 /// The per-id-view sort: a column + direction, or `null` for the
-/// default order (whatever the host returned — by channel/id).
+/// default order (whatever the host returned — by `(bus_id, channel,
+/// id)`).
 export type SortState = { key: ColumnKey; dir: "asc" | "desc" } | null;
 
 /// Clicking a column header cycles: not-sorted-by-it → ascending →
@@ -157,8 +193,16 @@ export function nextSort(current: SortState, key: ColumnKey): SortState {
 }
 
 /// The value a by-id row sorts by for a given column — raw fields, so
-/// no dependency on the formatters.
-function sortValue(row: ByIdSnapshotRecord, key: ColumnKey): number | string | number[] {
+/// no dependency on the formatters. The `bus` column sorts by the
+/// resolved bus *name* (so the order on screen matches what the user
+/// reads); unassigned rows sort last in ascending order — they share
+/// the empty-string key only with each other, the stable secondary
+/// sort then preserves their host-returned order.
+function sortValue(
+  row: ByIdSnapshotRecord,
+  key: ColumnKey,
+  lookup: BusLookup,
+): number | string | number[] {
   if (key === "rate") return row.rate;
   const frame = row.frame;
   switch (key) {
@@ -166,8 +210,10 @@ function sortValue(row: ByIdSnapshotRecord, key: ColumnKey): number | string | n
       return frame.index;
     case "time":
       return frame.timestamp_seconds;
-    case "ch":
-      return frame.channel;
+    case "bus":
+      // Unassigned (bus_id=null) → "~" so it sorts after any real bus
+      // name in ascending order (and before them in descending).
+      return frame.bus_id == null ? "~" : lookup.get(frame.bus_id) ?? frame.bus_id;
     case "dir":
       return frame.direction;
     case "id":
@@ -197,17 +243,23 @@ function compareValues(a: number | string | number[], b: number | string | numbe
 }
 
 /// A new array of `rows` sorted by `sort` (a stable sort — equal keys
-/// keep the host's order). `null` returns `rows` unchanged.
+/// keep the host's order). `null` returns `rows` unchanged. `lookup`
+/// supplies bus-id → name resolution for the "bus" column; other
+/// columns ignore it (an empty map is fine for non-bus sorts).
 export function sortRows(
   rows: readonly ByIdSnapshotRecord[],
   sort: SortState,
+  lookup: BusLookup = new Map(),
 ): ByIdSnapshotRecord[] {
   if (!sort) return rows.slice();
   const factor = sort.dir === "asc" ? 1 : -1;
   return rows
     .map((row, i) => ({ row, i }))
     .sort((x, y) => {
-      const c = compareValues(sortValue(x.row, sort.key), sortValue(y.row, sort.key));
+      const c = compareValues(
+        sortValue(x.row, sort.key, lookup),
+        sortValue(y.row, sort.key, lookup),
+      );
       return c !== 0 ? c * factor : x.i - y.i;
     })
     .map(({ row }) => row);

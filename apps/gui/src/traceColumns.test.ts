@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import type { ByIdSnapshotRecord, TraceFrameRecord } from "./types";
+import type { Bus, ByIdSnapshotRecord, TraceFrameRecord } from "./types";
 import {
   COLUMN_DEFS,
   MIN_COLUMN_WIDTH,
+  busDisplayName,
+  busLookup,
   columnsFromParams,
   defaultColumns,
   gridTemplateColumns,
@@ -34,9 +36,10 @@ describe("gridTemplateColumns", () => {
   });
 
   it("only includes visible columns", () => {
-    const hidden = toggleColumn(toggleColumn(defaultColumns(), "ch"), "dir");
+    const hidden = toggleColumn(toggleColumn(defaultColumns(), "bus"), "dir");
     const t = gridTemplateColumns(hidden);
-    expect(t).not.toContain("40px"); // ch / dir default width
+    expect(t).not.toContain("100px"); // bus default width
+    expect(t).not.toContain("40px"); // dir default width
     expect(minmaxCount(t)).toBe(1); // data still visible
     expect(t.length).toBeLessThan(gridTemplateColumns(defaultColumns()).length);
   });
@@ -113,10 +116,15 @@ describe("nextSort / sortRows", () => {
     expect(nextSort({ key: "id", dir: "asc" }, "id")).toEqual({ key: "id", dir: "desc" });
     expect(nextSort({ key: "id", dir: "desc" }, "id")).toBeNull();
     // Clicking a different column starts that one ascending.
-    expect(nextSort({ key: "id", dir: "desc" }, "ch")).toEqual({ key: "ch", dir: "asc" });
+    expect(nextSort({ key: "id", dir: "desc" }, "bus")).toEqual({ key: "bus", dir: "asc" });
   });
 
-  function row(id: number, channel: number, rate = 0): ByIdSnapshotRecord {
+  function row(
+    id: number,
+    channel: number,
+    rate = 0,
+    bus_id: string | null = null,
+  ): ByIdSnapshotRecord {
     const frame: TraceFrameRecord = {
       index: 0,
       timestamp_seconds: 0,
@@ -127,6 +135,7 @@ describe("nextSort / sortRows", () => {
       kind: { kind: "classic" },
       data: [],
       decoded: null,
+      bus_id,
     };
     return { frame, rate };
   }
@@ -151,5 +160,63 @@ describe("nextSort / sortRows", () => {
     const rows = [row(0x100, 0, 5), row(0x200, 0, 50), row(0x300, 0, 0.5)];
     expect(sortRows(rows, { key: "rate", dir: "asc" }).map((r) => r.rate)).toEqual([0.5, 5, 50]);
     expect(sortRows(rows, { key: "rate", dir: "desc" }).map((r) => r.rate)).toEqual([50, 5, 0.5]);
+  });
+
+  it("sorts by bus name (alphabetical), with unassigned last", () => {
+    const buses: Bus[] = [
+      { id: "p", name: "Powertrain" },
+      { id: "c", name: "Chassis" },
+    ];
+    const lookup = busLookup(buses);
+    const rows = [
+      row(0x100, 0, 0, "p"), // Powertrain
+      row(0x200, 0, 0, null), // unassigned
+      row(0x300, 0, 0, "c"), // Chassis
+    ];
+    expect(
+      sortRows(rows, { key: "bus", dir: "asc" }, lookup).map((r) => r.frame.bus_id),
+    ).toEqual(["c", "p", null]);
+    expect(
+      sortRows(rows, { key: "bus", dir: "desc" }, lookup).map((r) => r.frame.bus_id),
+    ).toEqual([null, "p", "c"]);
+  });
+});
+
+describe("busLookup / busDisplayName", () => {
+  const buses: Bus[] = [
+    { id: "p", name: "Powertrain" },
+    { id: "c", name: "Chassis" },
+  ];
+  const lookup = busLookup(buses);
+
+  it("returns the bus name for a known id", () => {
+    expect(busDisplayName("p", lookup)).toBe("Powertrain");
+    expect(busDisplayName("c", lookup)).toBe("Chassis");
+  });
+
+  it("returns 'unassigned' for null or undefined", () => {
+    expect(busDisplayName(null, lookup)).toBe("unassigned");
+    expect(busDisplayName(undefined, lookup)).toBe("unassigned");
+  });
+
+  it("falls back to the raw id when no bus has that id", () => {
+    expect(busDisplayName("x9", lookup)).toBe("x9");
+  });
+});
+
+describe("columnsFromParams — 'ch' → 'bus' rename", () => {
+  it("migrates a legacy 'ch' key in saved params to 'bus', preserving width / visibility", () => {
+    // Simulate the persisted pre-rename shape: same array shape, but
+    // the bus slot's key is the old "ch" literal.
+    const saved = defaultColumns().map((c) =>
+      c.key === "bus" ? { ...c, key: "ch", width: 120, visible: false } : c,
+    );
+    const migrated = columnsFromParams(saved);
+    const busCol = migrated.find((c) => c.key === "bus");
+    expect(busCol).toBeDefined();
+    expect(busCol?.width).toBe(120);
+    expect(busCol?.visible).toBe(false);
+    // The rest stays at default.
+    expect(migrated.find((c) => c.key === "id")?.width).toBe(96);
   });
 });

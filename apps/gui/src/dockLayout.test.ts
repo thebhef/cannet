@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseSavedLayout } from "./dockLayout";
+import { elementPanelComponent, parseSavedLayout } from "./dockLayout";
 
 describe("parseSavedLayout", () => {
   it("returns null for missing input", () => {
@@ -26,5 +26,20 @@ describe("parseSavedLayout", () => {
   it("returns the parsed object when it has the dockview layout shape", () => {
     const layout = { grid: { root: {}, width: 800, height: 600 }, panels: {} };
     expect(parseSavedLayout(JSON.stringify(layout))).toEqual(layout);
+  });
+});
+
+describe("elementPanelComponent", () => {
+  it("maps trace / plot / transmit to their own panel components", () => {
+    expect(elementPanelComponent("trace")).toBe("trace");
+    expect(elementPanelComponent("plot")).toBe("plot");
+    expect(elementPanelComponent("transmit")).toBe("transmit");
+  });
+
+  it("returns null for a filter — it has no panel of its own", () => {
+    // Regression guard: a filter must never resolve to a trace/plot
+    // panel. Opening a filter in a trace panel let that panel's
+    // `ensure(id, "trace")` retype — and destroy — the filter element.
+    expect(elementPanelComponent("filter")).toBeNull();
   });
 });

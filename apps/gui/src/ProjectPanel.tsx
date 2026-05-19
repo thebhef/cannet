@@ -9,8 +9,24 @@ import type {
   InterfaceBinding,
   InterfaceRecord,
   ProjectElement,
+  ProjectElementKind,
 } from "./types";
-import { PLOT_PANEL_COMPONENT, TRACE_PANEL_COMPONENT } from "./dockLayout";
+import {
+  PROJECT_GRAPH_PANEL_COMPONENT,
+  PROJECT_GRAPH_PANEL_ID,
+  elementPanelComponent,
+} from "./dockLayout";
+import { defaultBusColor } from "./busColor";
+
+/// Window title for an element's panel, by kind. `filter` has no panel
+/// of its own (see `elementPanelComponent`); the entry is present only
+/// to keep this a total map over `ProjectElementKind`.
+const PANEL_TITLE: Record<ProjectElementKind, string> = {
+  trace: "Trace",
+  plot: "Plot",
+  transmit: "Transmit",
+  filter: "Filter",
+};
 
 /**
  * The project panel: New / Open / Save / Save As for the project file;
@@ -40,20 +56,34 @@ export function ProjectPanel(props: IDockviewPanelProps) {
     );
 
   const openElement = (el: ProjectElement) => {
-    if (el.kind === "plot") {
-      containerApi.addPanel({
-        id: `plot-${el.id}`,
-        component: PLOT_PANEL_COMPONENT,
-        title: "Plot",
-        params: { elementId: el.id },
-      });
+    const component = elementPanelComponent(el.kind);
+    if (component === null) {
+      // A `filter` has no panel of its own — it's edited inline on its
+      // node in the project graph. Surface (or focus) the graph view
+      // instead of mounting a trace panel, which would retype the
+      // filter into a trace.
+      const existing = containerApi.panels.find(
+        (p) => p.id === PROJECT_GRAPH_PANEL_ID,
+      );
+      if (existing) existing.api.setActive();
+      else
+        containerApi.addPanel({
+          id: PROJECT_GRAPH_PANEL_ID,
+          component: PROJECT_GRAPH_PANEL_COMPONENT,
+          title: "Graph",
+        });
       return;
     }
     containerApi.addPanel({
-      id: `trace-${el.id}`,
-      component: TRACE_PANEL_COMPONENT,
-      title: "Trace",
-      params: { elementId: el.id, mode: "by-id" },
+      id: `${component}-${el.id}`,
+      component,
+      title: PANEL_TITLE[el.kind],
+      params:
+        el.kind === "trace"
+          ? { elementId: el.id, mode: "by-id" }
+          : el.kind === "transmit"
+            ? { elementId: el.id, frames: [] }
+            : { elementId: el.id },
     });
   };
 
@@ -158,8 +188,16 @@ export function ProjectPanel(props: IDockviewPanelProps) {
       <section className="project-section">
         <h3>Logical buses</h3>
         {p.buses.length === 0 && <div className="project-empty">No buses.</div>}
-        {p.buses.map((bus) => (
+        {p.buses.map((bus, i) => (
           <div className="project-bus" key={bus.id}>
+            <input
+              type="color"
+              className="project-bus-color"
+              value={bus.color ?? defaultBusColor(i)}
+              onChange={(e) => p.onSetBusColor(bus.id, e.target.value)}
+              aria-label={`bus ${bus.id} colour`}
+              title="Graph colour for this bus"
+            />
             <input
               type="text"
               className="project-bus-name-input"
