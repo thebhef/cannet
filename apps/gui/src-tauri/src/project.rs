@@ -53,6 +53,11 @@ pub struct Bus {
     pub speed_bps: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub fd: Option<bool>,
+    /// User-chosen graph colour (`#rrggbb`). The host round-trips it
+    /// without interpretation; the GUI falls back to a palette colour
+    /// when it's absent.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub color: Option<String>,
 }
 
 /// An interface binding: a `(server, interface)` pair routed onto a
@@ -269,6 +274,7 @@ mod tests {
                 name: "Powertrain".into(),
                 speed_bps: Some(500_000),
                 fd: Some(false),
+                color: Some("#60a5fa".into()),
             }],
             interface_bindings: vec![InterfaceBinding {
                 server: "127.0.0.1:50051".into(),

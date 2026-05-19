@@ -25,9 +25,15 @@ export function BlfChannelMapModal(props: {
 }) {
   const { blfPath, channels, buses, initial, onConfirm, onCancel } = props;
   const [choices, setChoices] = useState<Record<number, ChannelChoice>>(() => {
+    // Default seed: channel N → project bus at position N. The host
+    // writes captures by re-channeling frames in the project's bus
+    // order (see CLAUDE.md § File formats), so this matches "open a
+    // capture we wrote ourselves" without any manual remap. Channels
+    // past the bus list default to "skip" ("") — the user can pick a
+    // bus per channel from the dropdown.
     const seeded: Record<number, ChannelChoice> = {};
     for (const ch of channels) {
-      seeded[ch] = initial?.[ch] ?? (buses[0]?.id ?? "");
+      seeded[ch] = initial?.[ch] ?? (buses[ch]?.id ?? "");
     }
     return seeded;
   });

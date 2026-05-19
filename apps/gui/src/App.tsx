@@ -14,6 +14,7 @@ import type {
   LogFinished,
   OpenLogResult,
   Project,
+  ProjectElement,
   ProjectElementKind,
   RemoteSessionResult,
   TraceFrameRecord,
@@ -51,15 +52,19 @@ import {
   ElementRegistryContext,
   type ElementRegistry,
   type RegistryEntry,
+  applyElementPatch,
   isProjectElement,
+  normalizeElement,
 } from "./projectElements";
 import { type TraceState, clearedTrace, freshTrace, reanchorToSession } from "./trace";
+import { defaultBusColor } from "./busColor";
 import {
   BY_ID_PANEL_COMPONENT,
   LAST_PROJECT_KEY,
   LAYOUT_STORAGE_KEY,
   PLOT_PANEL_COMPONENT,
   PROJECT_GRAPH_PANEL_COMPONENT,
+  PROJECT_GRAPH_PANEL_ID,
   PROJECT_PANEL_COMPONENT,
   SYSTEM_MESSAGES_PANEL_COMPONENT,
   TRACE_PANEL_COMPONENT,
@@ -110,7 +115,6 @@ const DOCK_COMPONENTS = {
 /// uses a fixed dockview id so the toolbar button can find the one
 /// instance, focus it, or add it on first click.
 const PROJECT_PANEL_ID = "project";
-const PROJECT_GRAPH_PANEL_ID = "project-graph";
 const SYSTEM_MESSAGES_PANEL_ID = "system-messages";
 
 export function App() {
@@ -217,21 +221,53 @@ export function App() {
   countRef.current = count;
 
   // --- element registry ops ---
+  // Latest bus list, mirrored into a ref so element creation can
+  // pre-fill a transmit's `sinks` without taking `buses` as a
+  // dependency of every `create` / `ensure` call site (those refs
+  // change on every bus add/rename, which would invalidate panel
+  // memoisation).
+  const busesRef = useRef<readonly Bus[]>([]);
+  busesRef.current = buses;
+
+  // A freshly created element of a given kind:
+  // - `trace` / `plot` / `filter` default `sources` to `["*"]` (the
+  //   wildcard meaning "every bus in the project, including ones
+  //   added later"). Future bus additions auto-flow in.
+  // - `transmit` defaults `sinks` to an *explicit* snapshot of the
+  //   current bus list — no wildcard. A future bus added to the
+  //   project is a deliberate decision the user makes via the
+  //   transmit panel; it does not silently start receiving the
+  //   panel's frames.
+  const buildFreshElement = (kind: ProjectElementKind, id: string): ProjectElement => {
+    switch (kind) {
+      case "transmit":
+        return { kind, id, sinks: busesRef.current.map((b) => b.id) };
+      case "filter":
+        return { kind, id, sources: ["*"] };
+      default:
+        return { kind, id, sources: ["*"] };
+    }
+  };
   const create = useCallback((kind: ProjectElementKind): string => {
     const id = crypto.randomUUID();
     setRegistry((prev) => [
       ...prev,
-      { element: { kind, id }, trace: clearedTrace(countRef.current) },
+      { element: buildFreshElement(kind, id), trace: clearedTrace(countRef.current) },
     ]);
     return id;
   }, []);
   const ensure = useCallback((id: string, kind: ProjectElementKind) => {
     setRegistry((prev) => {
       const i = prev.findIndex((e) => e.element.id === id);
-      if (i < 0) return [...prev, { element: { kind, id }, trace: clearedTrace(countRef.current) }];
+      if (i < 0) {
+        return [
+          ...prev,
+          { element: buildFreshElement(kind, id), trace: clearedTrace(countRef.current) },
+        ];
+      }
       if (prev[i].element.kind === kind) return prev;
       const next = prev.slice();
-      next[i] = { ...next[i], element: { kind, id } };
+      next[i] = { ...next[i], element: buildFreshElement(kind, id) };
       return next;
     });
   }, []);
@@ -248,6 +284,19 @@ export function App() {
       return changed ? next : prev;
     });
   }, []);
+  // Shallow patch of an element's persisted fields. Used by the
+  // per-sink Sources picker (sets `sources`), the filter predicate
+  // editor (sets `predicate`), the transmit panel's sinks picker
+  // (sets `sinks`), and the "Insert filter upstream" flow (sets
+  // multiple at once). Guards are in the pure helper: kind / id
+  // mismatch and filter cycles are silently refused. See
+  // `applyElementPatch`.
+  const updateElement = useCallback(
+    (id: string, patch: Partial<ProjectElement>) => {
+      setRegistry((prev) => applyElementPatch(prev, id, patch) as RegistryEntry[]);
+    },
+    [],
+  );
   const removeElement = useCallback((id: string) => {
     setRegistry((prev) => prev.filter((e) => e.element.id !== id));
     const api = dockApiRef.current;
@@ -738,6 +787,7 @@ export function App() {
       setRegistry(
         (Array.isArray(project.elements) ? project.elements : [])
           .filter(isProjectElement)
+          .map(normalizeElement)
           .map((el) => ({ element: el, trace: clearedTrace(countRef.current) })),
       );
       const api = dockApiRef.current;
@@ -843,6 +893,11 @@ export function App() {
   // notes as a sidecar JSON). System Messages handle the
   // user-visible success / failure feedback; this just routes
   // through the host command.
+  //
+  // The project's ordered `buses` list IS the BLF channel order
+  // (see CLAUDE.md § File formats). Frames get re-channeled by the
+  // host so that bus index N → BLF channel N; on reload the channel
+  // map modal seeds matching pairs.
   const handleSaveCapture = useCallback(async () => {
     if (count === 0) return;
     const path = await save({
@@ -851,7 +906,10 @@ export function App() {
     });
     if (typeof path !== "string" || path.length === 0) return;
     try {
-      await invoke("save_capture", { blfPath: path });
+      await invoke("save_capture", {
+        blfPath: path,
+        buses: buses.map((b) => b.id),
+      });
       // Newly-saved captures are reasonable Recent BLF candidates
       // (the user just produced this file; re-opening it is the
       // archetypal "what did I just save?" gesture).
@@ -860,7 +918,7 @@ export function App() {
       // Failure surfaces in the System Messages panel via the
       // host's `capture`-tagged error log; nothing more to do here.
     }
-  }, [count, rememberRecentBlf]);
+  }, [buses, count, rememberRecentBlf]);
 
   // The close-on-quit handler is registered once; give it refs to the
   // current values rather than re-registering on every change.
@@ -912,7 +970,16 @@ export function App() {
   // through the project file, and the per-DBC scoping refresh below
   // re-publishes the canonical set when a rename / remove changes ids).
   const handleAddBus = useCallback((bus: Bus) => {
-    setBuses((prev) => (prev.some((b) => b.id === bus.id) ? prev : [...prev, bus]));
+    setBuses((prev) => {
+      if (prev.some((b) => b.id === bus.id)) return prev;
+      // Seed a graph colour if the caller didn't supply one — the
+      // default palette indexed by the new bus's list position.
+      const seeded: Bus =
+        bus.color != null
+          ? bus
+          : { ...bus, color: defaultBusColor(prev.length) };
+      return [...prev, seeded];
+    });
     setDirty(true);
   }, []);
   const handleRemoveBus = useCallback((id: string) => {
@@ -930,6 +997,10 @@ export function App() {
   }, [invalidateCache]);
   const handleRenameBus = useCallback((id: string, name: string) => {
     setBuses((prev) => prev.map((b) => (b.id === id ? { ...b, name } : b)));
+    setDirty(true);
+  }, []);
+  const handleSetBusColor = useCallback((id: string, color: string) => {
+    setBuses((prev) => prev.map((b) => (b.id === id ? { ...b, color } : b)));
     setDirty(true);
   }, []);
   // Phase 6: interface-binding mutations.
@@ -1199,9 +1270,10 @@ export function App() {
       create,
       ensure,
       updateTrace,
+      update: updateElement,
       remove: removeElement,
     }),
-    [registry, create, ensure, updateTrace, removeElement],
+    [registry, create, ensure, updateTrace, updateElement, removeElement],
   );
 
   const remoteConnected = Array.from(remoteSessions.values()).some(
@@ -1242,6 +1314,7 @@ export function App() {
       onAddBus: handleAddBus,
       onRemoveBus: handleRemoveBus,
       onRenameBus: handleRenameBus,
+      onSetBusColor: handleSetBusColor,
       onAddBinding: handleAddBinding,
       onRemoveBinding: handleRemoveBinding,
       onConnect: handleConnect,
@@ -1268,6 +1341,7 @@ export function App() {
       handleAddBus,
       handleRemoveBus,
       handleRenameBus,
+      handleSetBusColor,
       handleAddBinding,
       handleRemoveBinding,
       handleConnect,

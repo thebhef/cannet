@@ -91,6 +91,54 @@ Write the test first, watch it fail, then make it pass.
 - Tests should be fast and deterministic. If a test needs hardware, network,
   or large fixtures, isolate it so the default suite stays quick.
 
+## GUI architecture: thin views over a paged model
+
+**The GUI provides _views_ into a host-side data model. It does not
+own the data.** The Rust host (`apps/gui/src-tauri`) holds the
+capture, the decoded-signal caches, the system log — the model. The
+React frontend renders windows onto it.
+
+This is not a stylistic preference; it is what keeps the tool usable
+at the data volumes it targets. The rules that follow are binding for
+every new feature:
+
+- **Any view over timeseries data must page.** Fetch only the slice
+  the viewport shows (plus a bounded prefetch margin) through a paged
+  Tauri command. Never hold the whole dataset — or an array that grows
+  with capture length / session time — in frontend state. The
+  chronological trace (LRU chunk cache in `App.tsx`), the filtered
+  trace (`useFilteredTrace`), and the plot panel (`PlotPanel`'s
+  visible-window resample) are the reference implementations.
+- **Domain computation belongs in the model.** Decoding, aggregation,
+  rate estimation, time↔index mapping, min/max and other statistics
+  are the host's job. The frontend may shape already-paged data for
+  the specific renderer it feeds (e.g. merging series for uPlot), but
+  it must not re-derive model facts in JS.
+- **Frontend state is view-local.** Scroll position, column layout,
+  expanded rows, toggles — yes. Capture data, derived model state —
+  no.
+
+**Be on the lookout for drift.** When you touch GUI code, check it
+against these rules. If you find a view that holds too much, computes
+what the model should, or accumulates unboundedly, fix it as part of
+your change if it is in scope — otherwise add it to
+`plans/ui-architecture-backlog.md` (the running list of known and
+suspected deviations). Treat a code-vs-principle mismatch the same way
+this document treats a doc-vs-code mismatch: don't leave it silently
+inconsistent.
+
+## File formats
+
+**The BLF is the serialization.** Do not introduce companion sidecar
+files alongside `.blf` to carry data the BLF format can already
+represent. Logical bus assignment is conveyed by the ordered project
+bus list mapping 1:1 to BLF channel numbers — channel index `N`
+corresponds to `project.buses[N]`. The existing notes sidecar
+(`<blf>.notes.json`) predates this rule and is on the list to migrate
+into BLF markers — see `plans/backlog.md`. Don't add new sidecars or
+new fields to the notes sidecar; if it isn't expressible in BLF, raise
+it as a separate decision.
+
 ## Documentation
 
 Docs are a deliverable, not an afterthought. The repository carries three

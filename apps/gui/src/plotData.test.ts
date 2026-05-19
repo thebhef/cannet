@@ -41,8 +41,21 @@ describe("mergeSeries", () => {
 
 describe("signalKey", () => {
   it("distinguishes standard and extended ids", () => {
-    expect(signalKey(256, false, "Speed")).not.toBe(signalKey(256, true, "Speed"));
-    expect(signalKey(256, false, "Speed")).toBe(signalKey(256, false, "Speed"));
+    expect(signalKey(null, 256, false, "Speed")).not.toBe(
+      signalKey(null, 256, true, "Speed"),
+    );
+    expect(signalKey(null, 256, false, "Speed")).toBe(
+      signalKey(null, 256, false, "Speed"),
+    );
+  });
+  it("distinguishes the same signal on different buses", () => {
+    expect(signalKey("p", 256, false, "Speed")).not.toBe(
+      signalKey("c", 256, false, "Speed"),
+    );
+    // The legacy "any bus" path is distinct from any specific bus.
+    expect(signalKey(null, 256, false, "Speed")).not.toBe(
+      signalKey("p", 256, false, "Speed"),
+    );
   });
 });
 

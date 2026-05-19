@@ -61,10 +61,13 @@ const RATE_SAMPLE_INTERVAL: Duration = Duration::from_millis(20);
 const PER_ID_RATE_ALPHA: f64 = 0.2;
 
 /// Identifies a "kind of frame" for the latest-by-id view: the
-/// channel, the arbitration id, and whether it's an extended id (a
-/// standard and an extended id with the same numeric value are
-/// distinct frames).
-type FrameKey = (u8, u32, bool);
+/// logical bus (`None` = unassigned, a distinct bucket from any named
+/// bus), the wire channel, the arbitration id, and whether it's an
+/// extended id (a standard and an extended id with the same numeric
+/// value are distinct frames). Keying on `bus_id` matters when two
+/// servers report frames on the same wire channel — without it, the
+/// per-id snapshot would collapse them into one row.
+type FrameKey = (Option<String>, u8, u32, bool);
 
 /// Identifies a frame by arbitration id alone (id value + addressing
 /// mode, channel-independent) — what signal sampling keys on, since a
@@ -195,12 +198,17 @@ impl TraceStore {
     /// rate sample if at least [`RATE_SAMPLE_INTERVAL`] has passed.
     pub fn append(&self, frame: RawTraceFrame) {
         let now = Instant::now();
-        let key = (frame.channel, frame.id, frame.extended);
+        let key: FrameKey = (
+            frame.bus_id.clone(),
+            frame.channel,
+            frame.id,
+            frame.extended,
+        );
         let mut inner = self.inner.lock().expect("trace store mutex poisoned");
         let id_key = (frame.id, frame.extended);
         inner.frames.push(frame);
         let count = inner.frames.len();
-        inner.latest.insert(key, count - 1);
+        inner.latest.insert(key.clone(), count - 1);
         inner.by_id.entry(id_key).or_default().push(count - 1);
         inner
             .rates
@@ -291,6 +299,53 @@ impl TraceStore {
         }
     }
 
+    /// Scan `[scan_start, scan_end)` (clamped), test each frame with
+    /// `keep`, and return the total number of matches plus a windowed
+    /// page of `(absolute index, cloned frame)` pairs — the matches at
+    /// match-indices `[offset, offset + limit)`, or the last `limit`
+    /// matches when `from_end`. Only the page's frames are cloned; the
+    /// scan itself is by reference, so a filtered fetch never copies
+    /// the whole window (which, on a multi-million-frame trace, dwarfed
+    /// the predicate test). `limit == 0` returns the count alone.
+    /// Backs `fetch_filtered_trace`.
+    #[must_use]
+    pub fn scan_window_filtered(
+        &self,
+        scan_start: usize,
+        scan_end: usize,
+        offset: u64,
+        limit: u64,
+        from_end: bool,
+        keep: impl Fn(&RawTraceFrame) -> bool,
+    ) -> (u64, Vec<(usize, RawTraceFrame)>) {
+        let inner = self.inner.lock().expect("trace store mutex poisoned");
+        let len = inner.frames.len();
+        if scan_start >= len {
+            return (0, Vec::new());
+        }
+        let end = scan_end.min(len);
+        let cap = usize::try_from(limit).unwrap_or(usize::MAX);
+        let hi = offset.saturating_add(limit);
+        let mut count: u64 = 0;
+        let mut window: VecDeque<(usize, RawTraceFrame)> = VecDeque::new();
+        for (i, frame) in inner.frames[scan_start..end].iter().enumerate() {
+            if !keep(frame) {
+                continue;
+            }
+            let match_idx = count;
+            count += 1;
+            if from_end {
+                window.push_back((scan_start + i, frame.clone()));
+                if window.len() > cap {
+                    window.pop_front();
+                }
+            } else if match_idx >= offset && match_idx < hi {
+                window.push_back((scan_start + i, frame.clone()));
+            }
+        }
+        (count, window.into())
+    }
+
     /// Drop every stored frame and release the backing allocations.
     ///
     /// `Vec::clear` / `VecDeque::clear` only reset the length — the
@@ -322,7 +377,8 @@ impl TraceStore {
         let mut keyed: Vec<(FrameKey, usize)> = inner
             .latest
             .iter()
-            .filter_map(|(&key, &idx)| (idx >= since).then_some((key, idx)))
+            .filter(|(_, &idx)| idx >= since)
+            .map(|(key, &idx)| (key.clone(), idx))
             .collect();
         keyed.sort_unstable();
         keyed
@@ -385,6 +441,12 @@ mod tests {
         }
     }
 
+    fn dummy_on_bus(ts_ns: u64, id: u32, bus: &str) -> RawTraceFrame {
+        let mut f = dummy(ts_ns, id);
+        f.bus_id = Some(bus.into());
+        f
+    }
+
     fn dummy_canframe(ts_ns: u64, id: u32) -> CanFrame {
         CanFrame::classic(
             ts_ns,
@@ -440,6 +502,28 @@ mod tests {
     }
 
     #[test]
+    fn scan_window_filtered_pages_matches_without_cloning_the_window() {
+        let store = TraceStore::new();
+        // id 256 on the even raw indices → 5 matches (raw 0, 2, 4, 6, 8).
+        for i in 0u32..10 {
+            store.append(dummy(0, if i % 2 == 0 { 256 } else { 999 }));
+        }
+        let keep = |f: &RawTraceFrame| f.id == 256;
+        // Forward page [1, 3): match-indices 1, 2 → raw 2 and 4.
+        let (count, page) = store.scan_window_filtered(0, 10, 1, 2, false, keep);
+        assert_eq!(count, 5);
+        assert_eq!(page.iter().map(|(i, _)| *i).collect::<Vec<_>>(), vec![2, 4]);
+        // from_end, last 2 matches → raw 6 and 8.
+        let (count, page) = store.scan_window_filtered(0, 10, 0, 2, true, keep);
+        assert_eq!(count, 5);
+        assert_eq!(page.iter().map(|(i, _)| *i).collect::<Vec<_>>(), vec![6, 8]);
+        // Count-only (limit 0): the total, no rows cloned.
+        let (count, page) = store.scan_window_filtered(0, 10, 0, 0, false, keep);
+        assert_eq!(count, 5);
+        assert!(page.is_empty());
+    }
+
+    #[test]
     fn frame_timestamps_returns_first_last_in_clamped_range() {
         let store = TraceStore::new();
         for i in 0u32..6 {
@@ -483,6 +567,43 @@ mod tests {
         );
         store.clear();
         assert!(store.latest_since(0).is_empty());
+    }
+
+    #[test]
+    fn latest_since_keeps_one_row_per_bus_for_the_same_wire_channel_and_id() {
+        // Multi-server regression: two servers both reporting wire
+        // channel 0 with arbitration id 0x100, each bound to a
+        // different logical bus. The per-id snapshot must surface
+        // both — historically `FrameKey = (channel, id, extended)`
+        // collapsed them into one entry.
+        let store = TraceStore::new();
+        store.append(dummy_on_bus(0, 0x100, "p"));
+        store.append(dummy_on_bus(1_000, 0x100, "c"));
+        store.append(dummy_on_bus(2_000, 0x100, "p")); // newer "p" frame
+        let rows = store.latest_since(0);
+        let by_bus: Vec<(Option<&str>, u64)> = rows
+            .iter()
+            .map(|r| (r.frame.bus_id.as_deref(), r.frame.timestamp_ns))
+            .collect();
+        // One row per (bus, channel, id) with each bus's latest frame.
+        assert_eq!(
+            by_bus,
+            vec![(Some("c"), 1_000), (Some("p"), 2_000)],
+        );
+    }
+
+    #[test]
+    fn latest_since_keeps_unassigned_distinct_from_a_named_bus() {
+        // Edge case: an unassigned (`bus_id = None`) frame with the
+        // same wire channel + id as a bus-tagged frame must not be
+        // overwritten by it.
+        let store = TraceStore::new();
+        store.append(dummy(0, 0x200));
+        store.append(dummy_on_bus(1_000, 0x200, "a"));
+        let rows = store.latest_since(0);
+        let buses: Vec<Option<&str>> =
+            rows.iter().map(|r| r.frame.bus_id.as_deref()).collect();
+        assert_eq!(buses, vec![None, Some("a")]);
     }
 
     #[test]

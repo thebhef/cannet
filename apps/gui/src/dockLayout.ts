@@ -1,5 +1,7 @@
 import type { SerializedDockview } from "dockview";
 
+import type { ProjectElementKind } from "./types";
+
 /**
  * `localStorage` key for the persisted panel layout. The `.v1` suffix
  * is bumped if the serialized shape changes incompatibly. This is a
@@ -32,6 +34,30 @@ export const PROJECT_GRAPH_PANEL_COMPONENT = "project-graph";
 /// Phase 7: host-side log bus surface. Multiple are allowed (each
 /// carries its own source / min-level filter in `params`).
 export const SYSTEM_MESSAGES_PANEL_COMPONENT = "system-messages";
+
+/// The project graph is a singleton panel — one per workspace — so it
+/// gets a fixed id rather than one keyed on an element.
+export const PROJECT_GRAPH_PANEL_ID = "project-graph";
+
+/// The dockview component a project element opens into as its own
+/// panel, or `null` for a kind that has no panel of its own.
+///
+/// A `filter` is edited inline on its node in the project graph; it
+/// must return `null` here. Returning a trace/plot component would let
+/// "Open" mount a panel whose `ensure(id, kind)` then retypes — and
+/// destroys — the filter element.
+export function elementPanelComponent(kind: ProjectElementKind): string | null {
+  switch (kind) {
+    case "trace":
+      return TRACE_PANEL_COMPONENT;
+    case "plot":
+      return PLOT_PANEL_COMPONENT;
+    case "transmit":
+      return TRANSMIT_PANEL_COMPONENT;
+    case "filter":
+      return null;
+  }
+}
 
 /**
  * Sanity-check an already-parsed value as a dockview layout. Returns

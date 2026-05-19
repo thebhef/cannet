@@ -449,15 +449,35 @@ buses the DBC decodes for. A DBC with no boxes checked is *unscoped*
 bus A doesn't decode bus-B frames; an unassigned frame matches only
 unscoped DBCs.
 
+**Default fan-out**. Each consumer (trace, plot, filter) carries a
+`sources: string[]` list of upstream producer ids — bus ids or filter
+ids — with the literal `"*"` as a wildcard meaning "every bus in the
+project, including ones added later." Freshly created consumers
+default to `["*"]`, so a new trace or plot starts wired to every
+bus without any explicit configuration. Transmit elements mirror
+this on the producer side via `sinks: string[]`, but without the
+wildcard — a fresh transmit pre-fills with every currently-known bus
+and a future bus added later is a deliberate choice (firing onto an
+unintended bus is more surprising than missing one).
+
+**Configuring a consumer's sources**. **Right-click anywhere in a
+trace or plot panel** to open a context menu with checkboxes for
+each project bus (and an "All" toggle that re-collapses to the
+wildcard) plus any defined filter elements. Unchecking a bus
+narrows the consumer; re-checking everything snaps back to
+`["*"]`. The transmit panel has the same right-click affordance
+for its `sinks` list.
+
 **Filter elements**. A new project element `{kind: "filter"}` carries
 a structured predicate (`{all | any | bus | id_range | id_list |
-name_regex | signal_equals}`) and a `source` pointer (another bus or
-filter). The fetch path (`fetch_trace_range`, `fetch_latest_by_id`)
-accepts an optional predicate that drops records that don't pass;
-the trace store stays one filter-agnostic session buffer, and each
-consumer scopes what it renders. There's no expression DSL — the
-predicate is plain JSON, edited through the filter node in the graph
-view (see below) or by hand in the project file.
+name_regex | signal_equals}`) and its own `sources` list so it can
+chain after other filters or buses. The fetch path
+(`fetch_trace_range`, `fetch_latest_by_id`) accepts an optional
+predicate that drops records that don't pass; the trace store stays
+one filter-agnostic session buffer, and each consumer scopes what
+it renders. There's no expression DSL — the predicate is built in
+the filter node's inline editor (see below) or by hand in the
+project file.
 
 **Project graph panel**. Add one from the toolbar's *Add graph
 panel* button (or restore a saved one from the project file). Each
@@ -466,17 +486,42 @@ project element gets a shape that matches what it is:
 - **Bus** — a wide horizontal rail (the logical aggregator);
 - **Gateway** — an interface binding linking a wire-level interface to
   a bus (bidirectional);
-- **Source** — `transmit` panels inject frames;
-- **Sink** — `trace` and `plot` panels consume from a bus;
-- **Filter** — 1-input / N-output, sits between a bus and downstream
-  sinks (or another filter).
+- **Transmit** — frames composed and sent onto each bus in `sinks`;
+- **Sink** — `trace` and `plot` panels consume the buses + filters
+  listed in `sources`;
+- **Filter** — same consumer shape as sink, plus a predicate that
+  drops non-matching frames; downstream consumers reference it via
+  their own `sources`.
 
-Edges encode the wiring: gateway ↔ bus (bidirectional), bus → sink,
-bus → filter, filter → downstream. Node positions and the viewport
-persist in the panel's dockview `params`. The graph is the spatial
-view onto the same project state the project panel shows as lists —
-see [`plans/project-panel-design.md`](plans/project-panel-design.md)
+The panel's toolbar exposes a **+ filter** button that creates a
+filter element fanning in from every bus. Each consumer node carries
+a **+ filter** affordance that does the same thing *but* inherits
+the consumer's current `sources` and inserts the filter between the
+consumer and its previous inputs ("Insert filter upstream"). Each
+filter node has an inline predicate editor (caret to expand) that
+builds the structured predicate without touching JSON.
+
+Edges encode the wiring: gateway ↔ bus (bidirectional), bus →
+consumer, filter → consumer, transmit → bus. **Right-click an edge**
+to delete it (the wildcard `"*"` source expands into the explicit
+"all buses except this one" list on first removal). Node positions
+and the viewport persist in the panel's dockview `params`. The
+graph is the spatial view onto the same project state the project
+panel shows as lists — see
+[`plans/project-panel-design.md`](plans/project-panel-design.md)
 for the split of responsibilities.
+
+**Transmit by bus**. The transmit panel composes a frame per
+project bus listed in the transmit element's `sinks`; the host
+resolves each `bus_id` to the matching session's wire channel via
+the project's interface bindings. There's no per-frame "channel"
+control anymore — that was the leaky Tauri-host detail.
+
+**BLF round-trip preserves bus assignment**. Save Capture writes
+each frame on the BLF channel matching its bus's position in the
+project's bus list, so a multi-bus capture can be reloaded into the
+same project with the channel-map modal pre-seeded to the right
+bus per channel — no manual remap.
 
 **Project schema version**. `PROJECT_SCHEMA_VERSION` bumped 2 → 3. A
 v2 project opens by way of an in-memory migration that lifts

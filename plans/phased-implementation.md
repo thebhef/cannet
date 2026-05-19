@@ -1039,6 +1039,73 @@ Realised scope notes:
     1-in/N-out filter case, transmit-as-source (no auto-edge yet),
     and dangling-source elements.
 
+### Phase 6.5 — fan-out by default, edge edits, transmit by bus
+
+A follow-up pass after Phase 6 shipped, addressing the consumer-side
+wiring gaps the original Phase-6 plan deferred. The headline shift is
+that the original explicit `source?: string` model was replaced by a
+default-fan-out shape — every consumer wires to every bus unless the
+user prunes it. Realised:
+
+- **`sources: string[]` on every consumer** (trace / plot / filter)
+  with the wildcard `"*"` meaning "every bus, current and future."
+  Default for a freshly created consumer is `["*"]`, so a brand-new
+  trace/plot already reads from every bus. The old `source?: string`
+  is gone; legacy projects normalise it into `sources: ["*"]` on load.
+- **`sinks: string[]` on transmit elements** (no wildcard — `sinks`
+  is an explicit list to avoid silently picking up a newly-added
+  bus). The transmit panel composes one frame per bus in `sinks` and
+  the host resolves each `bus_id → (server, interface)` via the
+  project's interface bindings. The per-frame `channel: u8` field is
+  gone end-to-end (`TransmitRequest.bus_id` is the wire form).
+- **By-id collision fix**: `TraceStore::FrameKey` now includes the
+  frame's `bus_id`, so two servers sharing wire channel 0 no longer
+  collapse their per-id snapshots.
+- **Trace column "bus"** instead of "ch": looks up `bus_id` against
+  the project's buses and renders the bus *name* (or "unassigned").
+- **BLF save/load round-trips bus assignment** via the project's
+  ordered bus list (channel `N` ↔ `project.buses[N]`). No sidecar —
+  the BLF is the serialization (CLAUDE.md § File formats). The
+  open-BLF modal pre-seeds bus matches from this ordering.
+- **Filter UI**: a "+ filter" button on the project graph panel's
+  toolbar creates a free-standing filter (fans in from every bus,
+  no downstream until wired). Each filter node has an inline
+  predicate editor (caret-expand) for the structured leaf variants
+  (`bus | id_range | id_list | name_regex | signal_equals`).
+  Composition variants (`all | any`) stay JSON-only.
+- **Sources / sinks picker** lives in right-click context menus on
+  the trace, plot, and transmit panels — checkboxes for every project
+  bus + filter, with an "All" toggle that re-collapses to `["*"]`.
+  Plot panel embeds it in the existing toolbar context menu shell.
+- **Insert filter upstream** lives on each consumer node in the
+  graph (a `+ filter` button on the trace/plot node). Creates a
+  fresh filter, transfers the consumer's `sources` to it, then
+  re-routes the consumer through the filter.
+- **Edge deletion**: right-click an edge in the graph view to drop
+  the matching bus / filter id from the consumer's `sources` (or
+  from the transmit's `sinks`). The wildcard `"*"` expands into the
+  explicit "every bus except this one" list on first deletion. The
+  gateway↔bus edges are not user-deletable here — they're project-
+  panel bindings.
+- **Filter cycle prevention** at the registry layer: patching a
+  filter's `sources` to a value that would close a filter→filter
+  cycle is silently refused by `applyElementPatch`.
+- **Schema is purely additive** — no migration step. Old projects
+  load with `sources` defaulted to `["*"]`. The `PROJECT_SCHEMA_VERSION`
+  stayed at 4.
+
+Out of scope (tracked in `plans/backlog.md`):
+
+- Per-panel **chronological** trace filtering and per-panel **plot
+  sampling** filtering — Step 6 only wired the predicate into the
+  per-panel by-id fetch. The chronological view's global chunk cache
+  and `sample_signals` don't take a filter argument yet.
+- **Drag-to-wire** in the graph (literal drag from a producer
+  handle onto a consumer); the right-click picker handles wiring
+  for now.
+- **Bus-like graph topology** (gateway at one end, bus running
+  long, consumers branching off) — current layout is lane-based.
+
 ## Phase 7 — System Messages
 
 Plumb a structured log bus and a panel that surfaces it, before later
