@@ -251,6 +251,52 @@ next pass on this surface can address them as one piece.
   surface `TX_REJECTED` from the sidecar without a round-trip
   config call, and so the BLF replay server can advertise the
   bitrate the BLF was captured at. Additive proto change.
+- `[robustness]` sidecar should bind an OS-chosen free port and report
+  it back, instead of the hard-coded `DEFAULT_BIND =
+  "127.0.0.1:50061"` ([sidecar.rs:86](apps/gui/src-tauri/src/sidecar.rs#L86)).
+  The fixed port is fragile: an orphaned sidecar from a previous
+  session (the `uv → uv → cannet-python-can → python → python` tree
+  is not killed when the GUI exits on Windows — `Child` is dropped,
+  not killed, and there is no process-group teardown) keeps 50061
+  bound, so the next launch's `server.add_insecure_port` fails with
+  gRPC `No address added out of total 1 resolved` and the sidecar
+  exits fatal. Fix: host passes `--bind 127.0.0.1:0`; `grpc`'s
+  `add_insecure_port` returns the actually-bound port (currently
+  discarded in [server.py:324](servers/cannet-python-can/cannet_python_can/server.py#L324)) —
+  thread it back out of `serve()` and emit it on the existing
+  `sidecar\tlistening\t<addr>` banner line. The host already
+  recognises that banner shape in `classify_stdout_line`
+  ([sidecar.rs:455](apps/gui/src-tauri/src/sidecar.rs#L455)) but only
+  logs it; it must instead parse the address and drive
+  `connect_remote_server` from it rather than assuming `DEFAULT_BIND`.
+  Removes the port-collision failure mode entirely and also lets two
+  GUI instances coexist. (The orphaned-process teardown is a separate,
+  still-worth-doing fix, but an ephemeral port makes a leftover
+  sidecar harmless rather than fatal.)
+- `[robustness]` host must track the sidecar process and command it to
+  shut down nominally on GUI exit and on restart — today it does
+  neither cleanly. `spawn_sidecar` is launched once from `setup`
+  ([lib.rs:225](apps/gui/src-tauri/src/lib.rs#L225)) and `.run()`
+  ([lib.rs:228](apps/gui/src-tauri/src/lib.rs#L228)) has no `RunEvent`
+  handler, so on GUI exit the `Child` is simply dropped — Rust's
+  `Child::drop` does not kill — and the `uv → uv → cannet-python-can
+  → python → python` tree is orphaned. `restart_sidecar` does call
+  `child.kill()` ([sidecar.rs:512-513](apps/gui/src-tauri/src/sidecar.rs#L512-L513)),
+  but `kill()` is `TerminateProcess` on the single PID the host holds
+  — the *top* `uv.exe` — so the descendant `python.exe` actually
+  bound to the gRPC port survives anyway; the doc comment's claim
+  that killing-first frees the port is false on Windows. The sidecar
+  already supports a *nominal* exit: `__main__.py`'s `_on_signal`
+  handles SIGINT/SIGTERM → `server.stop(grace=2.0)` → clean
+  `sidecar\texit\t0`
+  ([__main__.py:97-105](servers/cannet-python-can/cannet_python_can/__main__.py#L97-L105)).
+  Fix: wire a Tauri `RunEvent::Exit` / `ExitRequested` handler that
+  triggers teardown, and make teardown reach the real sidecar — either
+  an in-band gRPC shutdown over the open Session, or hold a handle to
+  the actual leaf process rather than the `uv` wrapper. A job object
+  with kill-on-close is a sound *backstop* for a host crash, but it is
+  a hard kill, not the nominal `server.stop` shutdown the user wants
+  for the normal-exit path.
 - `[packaging]` end-user `uv` fetch mechanism: pick between an
   installer post-step and a first-run host downloader, and implement.
   We have decided **not** to commit per-OS `uv` binaries into the
