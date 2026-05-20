@@ -55,12 +55,12 @@ before picking up the lower-priority follow-ups below.
 - `[ui-arch]` **Triage and address the UI architecture backlog.** The
   items in [ui-architecture-backlog.md](ui-architecture-backlog.md) —
   PlotPanel `resample` holding capture-lifetime model state, the dead
-  `decimatePoints`, the unpaged by-ID snapshot, and the frontend
-  frame-rate / time→index extrapolation — are flagged but unscheduled.
-  Decide each `[review]` either way, do the `[cleanup]` and `[fix]`,
+  `decimatePoints`, and the unpaged by-ID snapshot — are flagged but
+  unscheduled. Decide each `[review]` either way, do the `[cleanup]`,
   and fold the rest into a phase; the coordinated, sliced plan is
   already written up in
-  [windowed-model-convergence.md](windowed-model-convergence.md).
+  [windowed-model-convergence.md](windowed-model-convergence.md)
+  (Slice 0, the frame-rate fix, has already shipped).
 
 ### Graph-and-bus integration fixes
 

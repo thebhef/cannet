@@ -1,7 +1,7 @@
 # Windowed-model convergence
 
-Status: proposed. Not yet scheduled into `plans/phased-implementation.md`
-— see "Priority and sequencing" below.
+Status: Slice 0 shipped; Slices 1-4 proposed, not yet scheduled into
+`plans/phased-implementation.md` — see "Priority and sequencing" below.
 
 This is the canonical statement of the GUI's **thin views over a
 windowed model** principle and the coordinated plan to converge on it.
@@ -97,39 +97,22 @@ already-bounded data, not a model fact.
 Each slice ships independently and leaves the app working and tested
 (`pnpm --dir apps/gui test`, `cargo test -p cannet-gui`).
 
-### Slice 0 — Plot extent: stop extrapolating
+### Slice 0 — Plot extent: stop extrapolating ✅ shipped
 
-The live bug behind this doc. `PlotArea.resample`
-([apps/gui/src/PlotPanel.tsx](apps/gui/src/PlotPanel.tsx)) computes
-the live-edge time as `winFrames / cache.fps`, where `cache.fps` is
-latched once on the first non-empty fetch. With a non-uniform
-aggregate frame rate — e.g. two servers streaming staggered onto
-different buses — the latched rate no longer matches steady state, so
-"fit data" and follow-live snap the x-axis to a wrong extent (~700 s
-observed for ~403 s of data). The error depends on latch timing, so
-it presents as flake.
+Shipped in `ad76899`. `PlotArea.resample`
+([apps/gui/src/PlotPanel.tsx](apps/gui/src/PlotPanel.tsx)) used to
+compute the live-edge time as `winFrames / cache.fps`, where
+`cache.fps` was latched once on the first non-empty fetch. Under a
+non-uniform aggregate frame rate — e.g. two servers streaming
+staggered onto different buses — the latched rate drifted from steady
+state, so "fit data" and follow-live snapped the x-axis to a wrong
+extent.
 
-The host **already returns the right value**: `SignalsSample.last_seconds`
-is `frame_timestamps(from_index, window_end)` over the full trace
-window — the visible-x slice travels separately in
-`from_seconds`/`to_seconds` and does not affect it. `resample` already
-stores it as `cache.lastT`. The bug is only that `resample` prefers
-the `winFrames / cache.fps` extrapolation over `cache.lastT`.
-
-Fix: report `cache.lastT` as the extent (both the real-fetch and the
-memo-hit paths); delete the `cache.fps` latch and the `winFrames / fps`
-branch; correct the now-false comments that claim `cache.lastT` is the
-zoomed-slice edge; correct the `resample` docstring's "full signal
-extent" to "full window extent" — the panel's areas share one x-axis,
-so fit-data fits the capture window, not a per-signal extent.
-
-Acceptance:
-- "fit data" sets x to the trace window's true extent for a capture
-  whose plotted signal ends before the window does;
-- repeated runs under a staggered multi-server rate are stable;
-- a regression test covers the extent value;
-- the `[fix]` item in `ui-architecture-backlog.md` and the matching
-  `[bug]` in `plans/backlog.md` are removed.
+The `cache.fps` latch is gone. The plot extent now comes straight from
+the host's `SignalsSample.last_seconds` (stored as `cache.lastT`); the
+visible-x slice still travels separately in `from_seconds` /
+`to_seconds`. `decodeSignalsSample`'s `last_seconds` handling is
+covered by `plotData.test.ts`.
 
 Independently shippable — no dependency on Slices 1-4.
 
@@ -209,10 +192,10 @@ Acceptance:
 
 ## Priority and sequencing
 
-High priority: the duplication actively generates bugs and Slice 0
-fixes a shipped one. Slice 0 is independent and should land first.
-Slices 1→4 are ordered: 1 establishes the contract, 2 and 3 deliver
-real view wins on it, 4 retires the most complex hand-rolled cache.
+High priority: the duplication actively generates bugs — Slice 0
+(shipped) fixed one. Slices 1→4 remain and are ordered: 1 establishes
+the contract, 2 and 3 deliver real view wins on it, 4 retires the
+most complex hand-rolled cache.
 
 If this should become a numbered phase in
 `plans/phased-implementation.md`, slot it after the current phase
