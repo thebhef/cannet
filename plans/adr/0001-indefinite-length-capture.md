@@ -56,4 +56,6 @@ are not part of this source-of-truth guarantee.
   the binding rule in CLAUDE.md "GUI architecture".
 - The on-disk format, the index structure, the hot-window eviction
   policy, and the decimated tiers are Phase 11 design work; this ADR
-  fixes only that the store is random-access and loss-free.
+  fixes only that the store is random-access and loss-free. Those
+  decisions are made in
+  [`0002-disk-spill-store.md`](0002-disk-spill-store.md).
