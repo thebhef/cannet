@@ -250,7 +250,7 @@ without reshaping callers.
   `kvaser-canlib-sys`, `pcan-basic-sys`) — `rejected for Phase 8`.
   Writing three FFI shims plus their packaging is ≈3× the work of
   wrapping one `python-can` library, for a performance win we have no
-  evidence we need. Revisit only if Phase 10 profiling shows a
+  evidence we need. Revisit only if Phase 14 profiling shows a
   specific sidecar is the bottleneck for a specific workload; the
   wire protocol lets us swap one vendor over to a native adapter
   without touching the rest.

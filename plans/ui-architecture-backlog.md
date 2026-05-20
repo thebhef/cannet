@@ -23,22 +23,6 @@ deviation is noticed, add it here instead of doing drive-by work.
 
 ## Items
 
-### `[review]` PlotPanel `resample` — signal-processing and model state in a view
-
-`PlotPanel.tsx`'s `resample` (~330 lines) does substantial domain
-computation in JS: per-trace auto-normalisation, series merging, and
-an fps estimate. Most of it operates on already-paged, bounded data
-(≤ `canvasW × 2` points per signal) and is defensible as
-renderer-shaping — but `traceRangesRef` (the "widen-only" per-signal
-min/max latch) is **capture-lifetime model state held in a React
-ref**: it deliberately survives cache anchor resets so it is not
-recomputed from the visible window. A per-signal running extent is a
-fact the model owns. Decide: expose a `min_max`-style host query
-against `SignalCacheStore` and let the view read it, or document why
-the latch stays view-side. Series merging for uPlot can reasonably
-remain in the view. → [windowed-model-convergence.md](windowed-model-convergence.md)
-**Slice 4.**
-
 ### `[cleanup]` `decimatePoints` is dead code with a misleading comment
 
 `plotData.ts`'s `decimatePoints` is referenced only by its own test.
@@ -48,28 +32,20 @@ accumulated; each resample replaces it wholesale. Leftover from when
 the frontend hoarded plot data. Remove the function, its test, and the
 stale comment.
 
-### `[review]` By-ID view fetches an unpaged snapshot and sorts client-side
+## Scheduled into phases
 
-`TracePanel.tsx` calls `fetch_latest_by_id`, which returns **every**
-row (one per arbitration id) — not paged, not virtualized
-(`ByIdTable.tsx`) — and re-sorts a copy in JS on every render. It is
-refetched and recomputed host-side every grow tick while running. Row
-count is bounded by id-space (not capture length), so this is the most
-defensible borderline case — but it is still a timeseries-derived view
-that neither pages nor virtualizes, with sort logic in the view.
-Decide: accept it (and note the bound), or page/virtualize and move
-the sort host-side. Related correctness item already in
-`plans/backlog.md` (tighten the by-ID snapshot for a paused/stopped
-trace). → [windowed-model-convergence.md](windowed-model-convergence.md)
-**Slice 3.**
+The view/model deviations this file tracked are now scheduled — see
+`plans/phased-implementation.md` Phases 10-11 and
+[windowed-model-convergence.md](windowed-model-convergence.md):
 
-## Related items already in `plans/backlog.md`
-
-These are model-side (host) data-volume concerns, not GUI-too-thick,
-but they sit on the same boundary — keep them in mind when addressing
-the items above:
-
-- `[perf]` Index the filtered trace scan (`fetch_filtered_trace` is
-  O(window) per call).
-- `[perf]` Bound the host-side decoded-sample cache
-  (`signal_cache::SignalCacheStore` is append-only / unbounded).
+- **PlotPanel `resample` — model state in a view.** `traceRangesRef`,
+  the capture-lifetime per-signal min/max latch held in a React ref,
+  is model state. Resolved by **Phase 10 Slice 4** — the latch moves
+  host-side as a `min_max` query.
+- **By-ID view — unpaged snapshot, client-side sort.** Resolved by
+  **Phase 10 Slice 3** — by-ID pages through the shared `RowPage`
+  primitive and sorts host-side.
+- **Filtered-trace scan O(window)** and **unbounded decoded-sample
+  cache** — the model-side data-volume deviations — are scheduled into
+  **Phase 11** (indefinite-length capture) as the filter index and the
+  decimated decoded-sample tier.
