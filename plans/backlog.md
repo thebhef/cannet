@@ -19,6 +19,49 @@ work or admit it isn't going to happen and delete it.
 
 ## Items
 
+### High priority
+
+Usability issues flagged for near-term work — fold these into a phase
+before picking up the lower-priority follow-ups below.
+
+- `[ui]` **Element display names need one model-owned source of truth
+  and a shared resolver, used by every view.** Today each view derives
+  an element's label independently and they disagree — basically every
+  view has this problem, so fix it structurally rather than per-view.
+  `trace` / `plot` / `transmit` `ProjectElement`s
+  ([types.ts:146-148](apps/gui/src/types.ts#L146-L148)) carry no `name`
+  field at all — only `filter` does
+  ([types.ts:152](apps/gui/src/types.ts#L152)) — so the dockview title
+  bar fabricates one from a monotonic counter held in a React ref
+  (`Trace ${panelCounterRef.current}` —
+  [App.tsx:1067](apps/gui/src/App.tsx#L1067),
+  [App.tsx:1080](apps/gui/src/App.tsx#L1080)) that is not persisted on
+  the element or visible to any other view, while the graph view
+  labels the same node `${capitalise(el.kind)} ${shortId(el.id)}`
+  ([projectGraph.ts:134](apps/gui/src/projectGraph.ts#L134)) and the
+  project panel uses a static per-kind string `PANEL_TITLE[el.kind]`
+  ([ProjectPanel.tsx:24](apps/gui/src/ProjectPanel.tsx#L24)). One
+  element reads "Trace 1" in the title bar, "Trace a3f2b1" in the
+  graph, and a bare "Trace" in the project panel, and none of them is
+  editable. Fix once, structurally: every element kind carries a
+  model-owned `name` (filter / bus already do — make it uniform),
+  defaulted on creation and editable in one place (the project panel
+  already inline-renames buses —
+  [ProjectPanel.tsx:203](apps/gui/src/ProjectPanel.tsx#L203)); add a
+  single shared resolver (e.g. `elementLabel(el)`) that every view —
+  title bar, project panel, graph, and any view added later — calls
+  instead of rolling its own. A new view then gets correct,
+  consistent, renameable labels for free.
+- `[ui-arch]` **Triage and address the UI architecture backlog.** The
+  items in [ui-architecture-backlog.md](ui-architecture-backlog.md) —
+  PlotPanel `resample` holding capture-lifetime model state, the dead
+  `decimatePoints`, the unpaged by-ID snapshot, and the frontend
+  frame-rate / time→index extrapolation — are flagged but unscheduled.
+  Decide each `[review]` either way, do the `[cleanup]` and `[fix]`,
+  and fold the rest into a phase; the coordinated, sliced plan is
+  already written up in
+  [windowed-model-convergence.md](windowed-model-convergence.md).
+
 ### Graph-and-bus integration fixes
 
 Items surfaced during the Phase-6.5 bus fan-out / graph-view follow-up
