@@ -299,6 +299,27 @@ without reshaping callers.
     for native markers without changing the session-buffer notes
     API. Tracked in `plans/backlog.md`.
 
+### Storage
+
+- **`memmap2`** crate (Rust, MIT / Apache-2.0) — `proposed`
+  (Phase 11). Cross-platform memory-mapped file access for the
+  disk-spill raw store and its index files — POSIX `mmap` on
+  Linux / macOS, `CreateFileMapping` / `MapViewOfFile` on Windows,
+  behind one Rust API. Phase 11's store is write-through and reads
+  through the kernel page cache (see
+  [`adr/0002-disk-spill-store.md`](adr/0002-disk-spill-store.md),
+  DS-2); `memmap2` is the syscall abstraction for that — the one
+  failure-mode-rich part of the design worth a vetted library, while
+  the on-disk format itself (fixed-size append-only records) stays
+  hand-rolled and small. It is the maintained successor to the
+  unmaintained `memmap` crate and the de-facto Rust standard.
+  Windows constraints are handled in-design: a mapping has a fixed
+  maximum size and a mapped file cannot be resized, so segments are
+  pre-allocated fixed-size and mapped whole (ADR 0002, DS-4). The raw
+  `libc` / `windows-sys` FFI alternative is `rejected` — re-creating
+  this abstraction is exactly the hand-written failure-mode-rich
+  surface `CLAUDE.md` says to avoid.
+
 ### Protocols
 
 - CAN 2.0 A/B
