@@ -63,18 +63,6 @@ the sort host-side. Related correctness item already in
 trace). → [windowed-model-convergence.md](windowed-model-convergence.md)
 **Slice 3.**
 
-### `[fix]` Frontend extrapolates frame-rate and time→index mapping
-
-`PlotPanel.tsx`'s resample derives an `fps` estimate and uses it to
-convert seconds↔frame-indices and to extrapolate the live edge —
-arithmetic the model knows precisely. Already tracked in
-`plans/backlog.md` as a `[bug]` (latched-fps `liveEdgeT` drift) and a
-`[perf]` (time-to-frame mapping) item. Fixed by
-[windowed-model-convergence.md](windowed-model-convergence.md)
-**Slice 0**: the host already returns the precise value
-(`SignalsSample.last_seconds`); the view only has to stop preferring
-the `winFrames / fps` extrapolation over it.
-
 ## Related items already in `plans/backlog.md`
 
 These are model-side (host) data-volume concerns, not GUI-too-thick,
