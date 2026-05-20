@@ -52,16 +52,6 @@ before picking up the lower-priority follow-ups below.
   title bar, project panel, graph, and any view added later — calls
   instead of rolling its own. A new view then gets correct,
   consistent, renameable labels for free.
-- `[ui-arch]` **Triage and address the UI architecture backlog.** The
-  items in [ui-architecture-backlog.md](ui-architecture-backlog.md) —
-  PlotPanel `resample` holding capture-lifetime model state, the dead
-  `decimatePoints`, and the unpaged by-ID snapshot — are flagged but
-  unscheduled. Decide each `[review]` either way, do the `[cleanup]`,
-  and fold the rest into a phase; the coordinated, sliced plan is
-  already written up in
-  [windowed-model-convergence.md](windowed-model-convergence.md)
-  (Slice 0, the frame-rate fix, has already shipped).
-
 ### Graph-and-bus integration fixes
 
 Items surfaced during the Phase-6.5 bus fan-out / graph-view follow-up
@@ -76,19 +66,6 @@ next pass on this surface can address them as one piece.
   hand-rolled "rail per bus" pass; today's `LANE_X`/`LANE_Y_OFFSET`
   in [graphNodeLayout.ts](apps/gui/src/graphNodeLayout.ts)
   is a workable pipeline layout but doesn't read as a bus topology.
-- `[perf]` **Index the filtered trace scan.** `fetch_filtered_trace`
-  scans the trace window by reference (`TraceStore::scan_window_filtered`
-  — only the page's frames are cloned, never the whole window) and the
-  refresh is throttled, so the UI no longer stalls. Two host costs
-  remain: (1) every call still walks the whole `[scan_start, scan_end)`
-  window O(window) — off the UI thread, but real host CPU, and it
-  holds the trace-store lock for the scan; a per-`filter` index of
-  matching raw indices, extended on append and dropped on filter
-  change, would make it O(page); (2) a `name_regex` / `signal_equals`
-  filter decodes every scanned frame under that lock — the index would
-  let it decode only the page. The `from_end` tail still walks the
-  whole window; a backward scan would cut it. (`fetch_trace_range`
-  also carries an unused `filter` arg now — remove in the same pass.)
 - `[ui]` **Plot panel signal catalog scoped by `sources`.** The
   per-bus signal model and the message picker work end-to-end, but
   the catalog dropdown still shows every signal from every loaded
@@ -114,7 +91,7 @@ next pass on this surface can address them as one piece.
   sidecar load path can be removed entirely.
 - `[perf]` `cannet-core`: revisit `CanFramePayload::Classic`/`Fd` to share
   a fixed-size inline buffer instead of `Vec<u8>` once the trace store /
-  benchmark in Phase 10 shows allocator pressure.
+  benchmark in Phase 14 shows allocator pressure.
 - `[ui]` trace view: dock / undock as a separate window. (Resizable and
   hideable columns folded into Phase 3; tear-out into a separate OS window
   stays here — Phase 3 docking is within the single main window.)
@@ -158,16 +135,6 @@ next pass on this surface can address them as one piece.
   "expose those numbers"; uPlot also supports multiple stacked y-axes
   if that turns out to be the better UX for "I want to read absolute
   values off the axis" instead of normalised positions.
-- `[perf]` `cannet-gui`: bound the host-side decoded-sample cache.
-  `signal_cache::SignalCacheStore` is append-only — `O(matches per
-  signal)` memory, fine for typical real-world rates but unbounded for
-  a 60 kHz-stream-of-one-signal-style torture test (gigabytes). The
-  right shape is a two-tier per-signal buffer: raw recent (last N
-  samples) plus a min/max-decimated tier behind it that's extended in
-  chunks as the raw tier overflows. The cache layout (samples +
-  parallel frame indices) is already what a tier would need; just
-  add the demotion step and an "older-tier slice" path in
-  `SignalCacheStore::slice`.
 - `[feat]` `cannet-gui` plot panel: triggers — edge / level /
   value-match on a chosen signal that freeze the view and emit an event
   marker (into the plot's event list, and later the trace). The
@@ -232,16 +199,6 @@ next pass on this surface can address them as one piece.
   `BlfCaptureWriter` can fold markers into the BLF and the sidecar
   file path retires. Until then third-party tools see frames but
   not notes.
-- `[feat]` `cannet-gui::TraceStore`: disk-spill for long-running
-  sessions. Phase 2 keeps the trace in `Vec<RawTraceFrame>`; that's
-  fine for hours but not for days. Future implementation keeps a
-  hot-tail window in memory and spills older frames to an append-only
-  on-disk file (compact binary frame records — explicit `.blf`
-  captures are a separate "Save Capture" feature, not the cache
-  format). The `TraceStore::append` / `len` / `slice` surface stays;
-  trait-ify when there's a second implementation. (A chunked / windowed
-  store also retires the realloc-stall a growing `Vec` causes at very
-  high replay rates — no whole-buffer copy while holding the lock.)
 - `[feat]` `cannet-gui`: VS Code-style command palette (Cmd/Ctrl+
   Shift+P) for keyboard-driven access to toolbar actions
   (Open BLF…, Add DBC…, Connect / Disconnect, Clear, Go to row,
@@ -297,7 +254,7 @@ next pass on this surface can address them as one piece.
 - `[packaging]` end-user `uv` fetch mechanism: pick between an
   installer post-step and a first-run host downloader, and implement.
   We have decided **not** to commit per-OS `uv` binaries into the
-  repo or pack them into the Tauri bundle artefact (see Phase 16
+  repo or pack them into the Tauri bundle artefact (see Phase 18
   "third-party runtime tool fetching strategy"); the runtime lookup
   chain (`tools/uv/uv` → `PATH` `uv` → `python3` fallback) stays
   unchanged, only how `tools/uv/uv` gets populated on an end-user

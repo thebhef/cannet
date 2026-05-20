@@ -1280,7 +1280,7 @@ Out of scope (deferred / backlog):
 - **Multiple vendor sidecars.** Phase 8 ships one. Adding a second
   sidecar (e.g. a Rust-native Vector adapter, or splitting one vendor
   out for a different driver) is a wire-protocol-compatible follow-up
-  if Phase 10 profiling shows the python-can path is the bottleneck.
+  if Phase 14 profiling shows the python-can path is the bottleneck.
 - **socketcan / vcan.** PEAK's Linux kernel driver path could go via
   socketcan; not adopted in this phase.
 - **Native Rust FFI per vendor.** Rejected for Phase 8; revisit only
@@ -1310,7 +1310,7 @@ Exit criteria:
 - `uv` is fetched per supported OS — not committed to the repo, not
   packed into the installer artefact. The dev-side fetch
   (`scripts/fetch-uv.sh`) and the planned end-user fetch are
-  documented per-OS in the README. See Phase 16 "third-party runtime
+  documented per-OS in the README. See Phase 18 "third-party runtime
   tool fetching strategy" for the rationale.
 - README documents per-vendor prerequisites (vendor SDK / driver
   install, OS support matrix), the `uv` fetch flow, and how to swap
@@ -1356,12 +1356,12 @@ Realised scope notes:
   `uv` already on `PATH`, and failing that logs a warn-level System
   Message with the install instructions. The dev-side fetch ships
   today; the end-user-side fetch (installer post-step vs. first-run
-  host downloader) is a Phase-16 deliverable. We deliberately do
+  host downloader) is a Phase-18 deliverable. We deliberately do
   **not** commit `uv` binaries into the repo or bake them into the
-  Tauri bundle artefact — see the Phase-16 "third-party runtime tool
+  Tauri bundle artefact — see the Phase-18 "third-party runtime tool
   fetching strategy" note for the rationale. The README documents
   the dev-side path today and will document the end-user path when
-  the Phase-16 mechanism lands.
+  the Phase-18 mechanism lands.
 - **Hardware-specific paths are documented procedures, not executable
   tests.** Per-vendor smoke procedures live in
   `servers/cannet-python-can/SMOKE.md` with clearly marked
@@ -1420,7 +1420,7 @@ Scope:
 Out of scope (deferred / backlog):
 
 - **Disk-spill for long sessions** — the session buffer staying in RAM
-  and overflowing to an append-only file is Phase 10, not the
+  and overflowing to an append-only file is Phase 11, not the
   save-the-capture feature this phase delivers.
 - **Capture import filtering** beyond the channel → bus mapping — no
   time-range or content selection at import; the user gets the whole
@@ -1504,7 +1504,103 @@ Realised scope notes:
   `marker_count`) and error / warn on decode anomalies tagged
   `blf-import`. Recent BLFs replay through the same path.
 
-## Phase 10 — Command Palette + Goto Framework
+## Phase 10 — Windowed-Model Convergence
+
+Converge the GUI's four hand-rolled view caches — chrono trace,
+filtered trace, by-ID, plot — onto one windowed-source contract with
+two accessors. [`windowed-model-convergence.md`](windowed-model-convergence.md)
+is **normative for this phase**: it carries the principle, the Layer-A
+contract, the two accessors, and the four slices (Slice 0 already
+shipped). Domain terms are defined in [`../CONTEXT.md`](../CONTEXT.md).
+
+This is a **view-side** refactor — it lands against the current in-RAM
+`TraceStore` `Vec`. Slice 1 freezes the host accessor signatures
+disk-spill-ready so Phase 11 is a second implementation behind them,
+not a redesign.
+
+Scope: Slices 1-4 of `windowed-model-convergence.md`.
+
+- **Slice 1** — extract the shared `useWindowedQuery` lifecycle
+  primitive (raw chrono as first consumer); freeze `RowPage` and
+  `DecimatedRange` as disk-spill-ready host signatures.
+- **Slice 2** — filtered chrono onto the contract; `fetch_trace_range`
+  gains a `FilterPredicate`; `FILTERED_CAP` removed.
+- **Slice 3** — by-ID onto the contract; `fetch_by_id_page` pages and
+  sorts host-side and is filterable; client-side re-sort removed.
+- **Slice 4** — plot onto the shared primitive via `DecimatedRange`;
+  `traceRangesRef` moves host-side.
+
+Exit criteria:
+
+- all four data views render through the shared primitive; the bespoke
+  per-view caches (`chunkCache`/`refreshChunk`, `chronoFiltered` +
+  `FILTERED_CAP`, the client-side by-ID re-sort, `PlotArea`'s
+  `cacheRef`/`traceRangesRef`) are gone;
+- `RowPage` and `DecimatedRange` exist as frozen, disk-spill-ready
+  host signatures, implemented over the in-RAM `Vec`;
+- filtered chrono pages the full match history; by-ID pages, sorts
+  host-side, and is filterable; the plot's per-signal extent is a host
+  query;
+- each slice's acceptance list in `windowed-model-convergence.md` is
+  met; `pnpm --dir apps/gui test` and `cargo test -p cannet-gui` green;
+- `plans/ui-architecture-backlog.md`'s deviations are resolved and the
+  filtered-trace / by-ID items in `plans/backlog.md` removed;
+- README and rustdoc reflect the windowed-source contract.
+
+## Phase 11 — Indefinite-Length Capture (Disk-Spill)
+
+Make a capture indefinite-length — 10^7 to 10^9 frames, multi-hour to
+multi-day — by spilling the raw frame store to disk while keeping
+every historical row addressable. See
+[`adr/0001-indefinite-length-capture.md`](adr/0001-indefinite-length-capture.md).
+
+This is the **model-side** counterpart to Phase 10: it provides a
+second implementation of the `RowPage` / `DecimatedRange` accessor
+signatures Phase 10 Slice 1 froze — no contract change, no view
+change.
+
+Scope:
+
+- **Random-access disk-spilled raw store.** `TraceStore` becomes a
+  trait; the disk-backed implementation keeps a bounded hot window in
+  RAM and spills older frames to a random-access on-disk store (frame
+  index → file offset, so any row N is O(1)). Not a ring buffer, not
+  bounded scrollback — no row is evicted. (Explicit `.blf` "Save
+  Capture" stays a separate feature; this is the live store, not an
+  export format.)
+- **Filter index.** A per-`filter` index of matching raw indices,
+  extended on append and dropped on predicate change, makes
+  `fetch_trace_range(predicate)` and `fetch_by_id_page(predicate)`
+  O(page) instead of O(window) — mandatory at 10^9 frames. Folds in
+  the `[perf]` "index the filtered trace scan" backlog item.
+- **Decimated decoded-sample tier.** `signal_cache::SignalCacheStore`
+  gains a two-tier shape — raw recent samples plus a min/max-decimated
+  tier extended in chunks as the raw tier overflows — so a plot's "fit
+  data" over the whole capture does not re-decode 10^9 frames. Folds
+  in the `[perf]` "bound the host-side decoded-sample cache" item.
+- **Bounded by-id projection.** The latest-by-id snapshot stays
+  bounded by id-space; per-id occurrence lists are not kept whole in
+  RAM.
+
+Exit criteria:
+
+- a capture runs past available RAM with no row becoming unreachable;
+  scroll / filter / plot of deep history all work;
+- the `RowPage` / `DecimatedRange` signatures from Phase 10 are
+  unchanged — only their host implementation is swapped;
+- `fetch_trace_range` / `fetch_by_id_page` with a predicate are
+  O(page) via the filter index; a plot "fit data" over a 10^9-frame
+  capture does not re-decode the whole capture;
+- a documented benchmark shows GUI interactions stay < 100 ms / 60 fps
+  with a 10^8+-frame capture open;
+- backlog items removed: `TraceStore` disk-spill, index the filtered
+  trace scan, bound the host-side decoded-sample cache;
+- README documents indefinite-length capture and its limits; rustdoc
+  covers the `TraceStore` trait and the disk-backed implementation;
+  `plans/technology-inventory.md` records any storage / indexing
+  dependency adopted for the disk format.
+
+## Phase 12 — Command Palette + Goto Framework
 
 A generalised command model plus a VS Code-style command palette
 (Cmd/Ctrl+Shift+P) that surfaces it. Commands carry an id, a label, an
@@ -1518,7 +1614,7 @@ project-wide, keyboard-accessible) vs. what stays local-only
 about that boundary. The "Go to row…" backlog item folds in as a
 single `goto.traceRow` command.
 
-## Phase 11 — Signals, Drag/Drop & Trace Signal Display
+## Phase 13 — Signals, Drag/Drop & Trace Signal Display
 
 Make individual signals first-class objects you can grab and move
 around. A new **signal view** panel hosts a user-chosen set of signals
@@ -1532,7 +1628,7 @@ expanded-row decoded signals render as **inline lines under the
 message row** rather than the expand-to-show grid — the trace-side
 counterpart to "signals are first-class".
 
-## Phase 12 — Performance Profiling Baseline
+## Phase 14 — Performance Profiling Baseline
 
 Profiling procedure that covers all three tiers — client (GUI),
 server, and the wire between them. Metrics (frame throughput,
@@ -1543,17 +1639,19 @@ sampling profiler hooks), and a reproducible workload (likely a
 standard BLF replay at a known rate). Baseline numbers checked in
 against the Phase 8 build for each supported source (BLF replay + at
 least one hardware vendor). Pulls in the perf backlog items the
-baseline tends to motivate: `CanFramePayload` inline buffer, two-tier
-per-signal sample cache, precise time → frame-index mapping for the
-plot visible-range fetch, `TraceStore` disk-spill for long sessions.
+baseline tends to motivate: `CanFramePayload` inline buffer and
+precise time → frame-index mapping for the plot visible-range fetch.
+(The two-tier per-signal sample cache and `TraceStore` disk-spill are
+Phase 11, not pulled in here — Phase 11 owns the indefinite-length
+model.)
 
-## Phase 13 — CANopen
+## Phase 15 — CANopen
 
 EDS ingestion (CANopen Electronic Data Sheet — library TBD when this
 phase becomes current) and SDO / PDO decoding on top of the Phase 5
 value-table machinery.
 
-## Phase 14 — Rest-of-Bus Simulation + CRC / Sequence
+## Phase 16 — Rest-of-Bus Simulation + CRC / Sequence
 
 **Rest-of-bus simulation**: a gridview that holds a configurable set
 of ids with live signal values and transmits them on a cadence — the
@@ -1563,10 +1661,10 @@ fields** of a CAN message — transmit-side helper for messages that
 carry their own integrity fields (and decode-side verification
 where useful).
 
-## Phase 15 — Plot Panel Refinements
+## Phase 17 — Plot Panel Refinements
 
 The plot-panel feature tail that didn't need the bigger architectural
-lifts of Phase 11. **Triggers** (edge / level / value-match on a
+lifts of Phase 13. **Triggers** (edge / level / value-match on a
 chosen signal that freeze the view and emit an event marker —
 oscilloscope trigger proper; the event-line rendering already exists,
 the trigger engine doesn't). **Math channels** (derived signals
@@ -1577,7 +1675,7 @@ that ships today). **CSV / image export** of the visible window or
 cursor span. **Drag a whole plot area** (not just a signal) between
 plot panels.
 
-## Phase 16 — Cross-Cutting Polish
+## Phase 18 — Cross-Cutting Polish
 
 The remaining small UX and infrastructure items that don't deserve
 their own phase: the **trace virtualizer rework** (real windowed
@@ -1605,7 +1703,7 @@ gives us one place to revisit the pin.
 
 The dev-side fetch already exists ([`scripts/fetch-uv.sh`](../scripts/fetch-uv.sh)
 drops `uv` into `tools/uv/` next to the GUI binary, which the host
-discovers at runtime). The Phase-16 deliverable is the **end-user**
+discovers at runtime). The Phase-18 deliverable is the **end-user**
 fetch — choose between:
 
 1. **Installer post-step** — the installer (Tauri's per-OS bundler
