@@ -307,7 +307,7 @@ without reshaping callers.
   Linux / macOS, `CreateFileMapping` / `MapViewOfFile` on Windows,
   behind one Rust API. Phase 11's store is write-through and reads
   through the kernel page cache (see
-  [`adr/0002-disk-spill-store.md`](adr/0002-disk-spill-store.md),
+  [`../docs/adr/0002-disk-spill-store.md`](../docs/adr/0002-disk-spill-store.md),
   DS-2); `memmap2` is the syscall abstraction for that — the one
   failure-mode-rich part of the design worth a vetted library, while
   the on-disk format itself (fixed-size append-only records) stays

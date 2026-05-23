@@ -9,7 +9,7 @@ windowed model** principle and the coordinated plan to converge on it.
 `plans/ui-architecture-backlog.md` tracked the individual deviations;
 they are now scheduled into Phases 10 and 11. Domain terms — capture,
 capture model, derived projection, view, trace, by-ID view, series,
-filter predicate — are defined in [`../CONTEXT.md`](../CONTEXT.md).
+filter predicate — are defined in [`../docs/CONTEXT.md`](../docs/CONTEXT.md).
 
 ## Principle
 
@@ -43,7 +43,7 @@ Two consequences shape everything below:
   offset), so any row is O(1) to fetch. It is *not* a ring buffer and
   *not* bounded scrollback — no historical row is ever evicted or made
   unreachable. This is Phase 11; see
-  [`adr/0001-indefinite-length-capture.md`](adr/0001-indefinite-length-capture.md).
+  [`../docs/adr/0001-indefinite-length-capture.md`](../docs/adr/0001-indefinite-length-capture.md).
 - Any projection that holds per-frame data is also unbounded and must
   not stay RAM-resident: the decoded-signal cache needs a decimated
   persistent tier, the by-id occurrence lists must not be kept whole.
@@ -316,4 +316,4 @@ disk-spill work is a **model-side** change (**Phase 11**). They meet
 only at the host accessor signatures, which Slice 1 freezes. So Slices
 1-4 land first, against the in-RAM `Vec`; Phase 11 then provides a
 second implementation of the same frozen contract. See
-[`adr/0001-indefinite-length-capture.md`](adr/0001-indefinite-length-capture.md).
+[`../docs/adr/0001-indefinite-length-capture.md`](../docs/adr/0001-indefinite-length-capture.md).

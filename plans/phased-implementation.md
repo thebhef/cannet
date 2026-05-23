@@ -1511,7 +1511,7 @@ filtered trace, by-ID, plot — onto one windowed-source contract with
 two accessors. [`windowed-model-convergence.md`](windowed-model-convergence.md)
 is **normative for this phase**: it carries the principle, the Layer-A
 contract, the two accessors, and the four slices (Slice 0 already
-shipped). Domain terms are defined in [`../CONTEXT.md`](../CONTEXT.md).
+shipped). Domain terms are defined in [`../docs/CONTEXT.md`](../docs/CONTEXT.md).
 
 This is a **view-side** refactor — it lands against the current in-RAM
 `TraceStore` `Vec`. Slice 1 freezes the host accessor signatures
@@ -1551,9 +1551,9 @@ Exit criteria:
 
 Make a capture indefinite-length — 10^7 to 10^9 frames, multi-hour to
 multi-day — by spilling the raw frame store to disk while keeping
-every historical row addressable. [`adr/0001-indefinite-length-capture.md`](adr/0001-indefinite-length-capture.md)
+every historical row addressable. [`../docs/adr/0001-indefinite-length-capture.md`](../docs/adr/0001-indefinite-length-capture.md)
 fixes the requirement (random-access, loss-free);
-[`adr/0002-disk-spill-store.md`](adr/0002-disk-spill-store.md) fixes
+[`../docs/adr/0002-disk-spill-store.md`](../docs/adr/0002-disk-spill-store.md) fixes
 the on-disk format and I/O architecture and is **normative for this
 phase**.
 
