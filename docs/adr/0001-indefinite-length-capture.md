@@ -45,7 +45,7 @@ are not part of this source-of-truth guarantee.
 ## Consequences
 
 - The host accessor contract — `RowPage` and `DecimatedRange`, see
-  [`../windowed-model-convergence.md`](../windowed-model-convergence.md)
+  [`../../plans/windowed-model-convergence.md`](../../plans/windowed-model-convergence.md)
   — must be async and paged, and must never assume the capture fits in
   RAM. It is frozen disk-spill-ready in Phase 10 Slice 1, before the
   disk-spilled store exists.
