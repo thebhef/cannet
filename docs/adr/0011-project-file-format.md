@@ -62,6 +62,7 @@ file is in a different category.
 - TypeScript and Rust both define `PROJECT_SCHEMA_VERSION`; they must
   stay in lockstep. They currently do not — see `plans/backlog.md`.
 - When dockview is one day swapped (it sits behind a thin adapter —
-  see ADR 0005 once it lands), the on-disk `layout` field can either
-  migrate forward or be re-derived from project state. Both paths are
-  bounded because nothing else in the system reads the blob.
+  see [ADR 0005](0005-dockview-panel-layout.md)), the on-disk
+  `layout` field can either migrate forward or be re-derived from
+  project state. Both paths are bounded because nothing else in the
+  system reads the blob.
