@@ -84,6 +84,7 @@ ADR until explicitly revised.
 | 0015 | [`adr/0015-fetched-runtime-binaries.md`](adr/0015-fetched-runtime-binaries.md) | Phase 18 + backlog uv-fetch item | External runtime binaries fetched at a pinned version, not committed or bundled; `uv` is today's instance |
 | 0003 | [`adr/0003-tauri-shell-react-frontend.md`](adr/0003-tauri-shell-react-frontend.md) | inventory § GUI / Application Framework | Single-window Tauri 2 shell; React 18 + TypeScript + Vite inside the WebView; Electron documented as fallback; Qt/ImGui/wxWidgets rejected |
 | 0004 | [`adr/0004-grpc-wire-protocol.md`](adr/0004-grpc-wire-protocol.md) | inventory § CAN/CANFD Abstraction + Phase 2 in `plans/phased-implementation.md` | gRPC over HTTP/2 (tonic/prost) as the universal driver contract; envelope variants (Subscribe/Unsubscribe/FrameBatch/Error/Log) live here; ADR 0014 § Open question 2 resolved (wire `Log` envelope is owned by 0004; host bus semantics stay in 0014) |
+| 0005 | [`adr/0005-dockview-panel-layout.md`](adr/0005-dockview-panel-layout.md) | inventory § GUI / Application Framework | dockview for the multi-panel shell; layout serialised via dockview's JSON and stored verbatim in the project file (ADR 0011); flexlayout-react / rc-dock / react-mosaic / golden-layout rejected. Closed forward references in 0003 and 0011. |
 
 ## ADRs outstanding
 
@@ -93,7 +94,6 @@ complete.
 
 | # | Title | Source material |
 |---|---|---|
-| 0005 | Multi-panel UI uses `dockview` | dockview entry; flexlayout / rc-dock / react-mosaic / golden-layout rejections. Forward-referenced by 0011 ("ADR 0005 once it lands") and 0003. |
 | 0006 | Project graph uses `@xyflow/react`; filter predicates stay structured JSON (no DSL) | `@xyflow/react` entry; cytoscape / d3-force / reaflow rejections; the explicit filter-DSL rejection. |
 | 0007 | Plot renderer is uPlot | uPlot entry; dygraphs / Chart.js / lightweight-charts / ECharts / Plotly / Highcharts / hand-rolled rejections. |
 | 0008 | Hardware drivers via one `python-can` sidecar | python-can, uv, grpcio entries; Vector XL / Kvaser / PEAK vendor blobs; native-FFI rejection; socketcan-only rejection; multi-sidecar deferral. Forward-referenced by 0009 and 0015. |
@@ -145,9 +145,6 @@ complete.
   contains forward references that should be revisited (and the
   "once it lands" hedge dropped) when the target ADR lands. Sweep
   per-target when writing the new ADR:
-  - **When 0005 (dockview) lands**: 0003 § Why ("dock layout
-    (ADR 0005 once it lands)"); 0011 § Consequences ("see ADR 0005
-    once it lands").
   - **When 0006 (xyflow) lands**: 0003 § Why ("graph editing
     (ADR 0006)") — no "once it lands" hedge but still a forward
     pointer.

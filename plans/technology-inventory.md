@@ -21,34 +21,10 @@ and the license / platform constraints we need to be aware of.
 - **Tauri 2** / **React 18 + Vite + TypeScript** — `adopted` in
   Phase 1. Tauri Rust host + system WebView; React/TS/Vite frontend
   inside the WebView. See [`../docs/adr/0003-tauri-shell-react-frontend.md`](../docs/adr/0003-tauri-shell-react-frontend.md).
-- **`dockview`** (v6, MIT) — `adopted` in Phase 3 for the multi-panel
-  shell: arbitrary split / tab / drag / resize layouts of trace and
-  project panels (and the plot / transmit panels that arrive in
-  Phases 4–5) inside the single app window. A dock manager is exactly
-  the "lean on a vetted library for the failure-mode-rich parts" call
-  from `CLAUDE.md` — hand-rolling
-  drag-and-drop docking is a lot of fiddly UI state to get right.
-  Chosen for: TypeScript-native with a first-class React package
-  (`dockview`), a serialisable layout model (`api.toJSON()` /
-  `fromJSON()`) that drops straight into the project file, no jQuery /
-  legacy baggage, and good docs. Panel content stays plain React
-  components behind a thin adapter (`TracePanel.tsx`, the `TraceData`
-  context) so the blast radius of swapping it later is small. Risk:
-  small bus factor (≈one primary maintainer) — mitigated by that
-  adapter boundary. Cost note: ships one ≈100 KB CSS bundle covering
-  all built-in themes (≈9 KB gzipped); fine for a desktop app.
-  Alternatives considered (all permissive, all cover the must-haves):
-  - **`flexlayout-react`** (Apache-2.0) — `rejected`. Strong runner-up;
-    mature, persistent JSON model, built-in popout windows. Edged out
-    by dockview's cleaner TS/React story; the popout feature is
-    deferred Phase-3 scope anyway.
-  - **`rc-dock`** (MIT) — `rejected`. Works, but an older-feeling API
-    next to dockview with no offsetting advantage.
-  - **`react-mosaic`** (Apache-2.0) — `rejected`. Tiling only — no
-    tabs — which doesn't fit a panel-heavy analyzer UI.
-  - **`golden-layout`** v2 (MIT) — `rejected`. Capable and mature, but
-    framework-agnostic with no React bindings, so adopting it means
-    writing and maintaining the React glue ourselves.
+- **`dockview`** (v6, MIT) — `adopted` in Phase 3 for the
+  multi-panel shell. See [`../docs/adr/0005-dockview-panel-layout.md`](../docs/adr/0005-dockview-panel-layout.md).
+  Alternatives considered (`flexlayout-react`, `rc-dock`,
+  `react-mosaic`, `golden-layout`) all `rejected` — see ADR 0005.
 - **`serde_json`** (Rust) / native JSON (frontend) — adopted Phase 3
   for the project file. Already in the dep graph via Tauri IPC; no
   new crate. See [`../docs/adr/0011-project-file-format.md`](../docs/adr/0011-project-file-format.md).

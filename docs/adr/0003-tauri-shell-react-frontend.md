@@ -24,11 +24,12 @@ WebKitGTK on Linux). The bundle stays small (single-digit MB) and the
 WebView gets OS security updates.
 
 **React + TypeScript.** The panels cannet needs — dock layout
-(ADR 0005 once it lands), graph editing (ADR 0006), high-rate
-plotting (ADR 0007) — are failure-mode-rich UI worth leaning on
-vetted libraries for rather than hand-rolling. React has first-class
-TypeScript packages for each. TypeScript surfaces shape mismatches
-at the IPC boundary before they hit runtime.
+([ADR 0005](0005-dockview-panel-layout.md)), graph editing
+(ADR 0006), high-rate plotting (ADR 0007) — are failure-mode-rich
+UI worth leaning on vetted libraries for rather than hand-rolling.
+React has first-class TypeScript packages for each. TypeScript
+surfaces shape mismatches at the IPC boundary before they hit
+runtime.
 
 **Vite.** The de-facto React/TS dev-loop tool — fast HMR, no
 configuration mass. Mentioned by name because the project version
