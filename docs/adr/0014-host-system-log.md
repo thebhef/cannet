@@ -33,10 +33,11 @@ Messages carry `{ ts, source, level, message, optional_payload }`.
 Sources are tagged (`project`, `dbc`, `connection`, `blf-import`,
 `sidecar:<vendor>`, …). Levels are `info` / `warn` / `error`.
 
-Sidecars contribute log entries via a wire-protocol `Log` envelope
-on the `Session` stream — **distinct from the wire `Error`
-envelope**, which terminates the session. The host bridges incoming
-`Log` envelopes into the local bus with the appropriate source tag.
+Sidecars contribute log entries via the wire-protocol `Log`
+envelope ([ADR 0004](0004-grpc-wire-protocol.md) — distinct from
+the wire `Error` envelope, which terminates the session). The host
+bridges incoming `Log` envelopes into the local bus with the
+appropriate source tag.
 
 ## Why
 
@@ -60,12 +61,12 @@ copies). `tracing`'s subscriber is the wrong shape for that —
 events go out to formatters, not into a queue you can read back.
 Tee'ing means one emit site, both consumers.
 
-**Why a wire `Log` envelope separate from `Error`.** Wire-level
-errors *end* the session — they're the connection's last word. Log
-entries are *continuous* — many over the life of a session.
-Conflating them would mean either every log entry kills the
-session, or sidecar errors stop being session-terminal. Neither is
-what we want.
+**Why bridge from the wire.** Sidecars are out-of-process; they
+need a channel for user-visible status that is *not* the
+session-terminal `Error` envelope. The wire `Log` envelope's
+existence and shape are decided in ADR 0004; what this ADR adds is
+the host-side rule that incoming `Log` envelopes feed the same bus
+as in-process emitters.
 
 ## Consequences
 
@@ -76,11 +77,9 @@ what we want.
   user reports a problem from a session that's already exited, the
   bus is gone. `tracing`'s stderr or file output is the only
   persistent record.
-- **The wire `Log` envelope ships before its live consumer.** It's
-  defined on the `Session` stream and round-trip-tested as part of
-  this ADR's scope; the GUI host bridge that maps wire `Log` → local
-  bus is in place but has no live producer until the first sidecar
-  uses it.
+- **The wire→bus bridge ships before its live producer.** The host
+  side that maps wire `Log` → local bus is in place but has no live
+  producer until the first sidecar uses it (ADR 0008 once it lands).
 
 ## Open questions (framing under review)
 
@@ -91,17 +90,12 @@ to revisit before promoting to a settled `accepted`:
    Per-source-only would be coarser; per-(source, template,
    payload-hash) would be finer. Hasn't been stress-tested under
    real load yet.
-2. **Scope of the wire `Log` envelope in this ADR.** This ADR
-   currently covers both the host-side bus and the wire envelope
-   variant. The wire envelope is arguably a separate wire-protocol
-   decision belonging with the gRPC ADR (0004 when it lands).
-   Consider splitting if that wire-protocol ADR ends up substantial.
-3. **Tee-to-`tracing` as architectural commitment vs convenience.**
+2. **Tee-to-`tracing` as architectural commitment vs convenience.**
    Whether the tee is permanent design or "we tee for now because
    the alternative is more code." If the bus could provide all
    consumers `tracing` does today (dev stderr, log files), would we
    drop the tee?
-4. **Cross-session persistence.** Bounded + session-scoped means no
+3. **Cross-session persistence.** Bounded + session-scoped means no
    postmortem. For a long-running daemon-style use, is that right?
    Today cannet is GUI-only and per-session; this becomes a real
    question if cannet ever grows a headless mode.

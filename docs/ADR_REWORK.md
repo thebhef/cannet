@@ -60,6 +60,11 @@ ADR until explicitly revised.
   inside the ADR — the ADR is the durable record, working-agreement
   docs are advisory and movable. (Caught on ADR 0003 after the
   initial draft.)
+- **ADRs don't refer to phases.** No "Phase 2 baseline / Phase 6
+  adds X / re-validated under Phase 7." Phases are a plan-doc
+  ordering artefact; ADRs describe the decision in present tense
+  ("the service is two RPCs"), not the schedule on which it
+  landed. (Caught on ADR 0004 after the initial draft.)
 
 ## ADRs done
 
@@ -75,6 +80,7 @@ ADR until explicitly revised.
 | 0014 | [`adr/0014-host-system-log.md`](adr/0014-host-system-log.md) | Phase 7 in `plans/phased-implementation.md` | Bounded, session-scoped, flood-protected in-process bus tee'd to `tracing`; sidecars contribute via wire `Log` envelope. **Framing under review** — see Open questions. |
 | 0015 | [`adr/0015-fetched-runtime-binaries.md`](adr/0015-fetched-runtime-binaries.md) | Phase 18 + backlog uv-fetch item | External runtime binaries fetched at a pinned version, not committed or bundled; `uv` is today's instance |
 | 0003 | [`adr/0003-tauri-shell-react-frontend.md`](adr/0003-tauri-shell-react-frontend.md) | inventory § GUI / Application Framework | Single-window Tauri 2 shell; React 18 + TypeScript + Vite inside the WebView; Electron documented as fallback; Qt/ImGui/wxWidgets rejected |
+| 0004 | [`adr/0004-grpc-wire-protocol.md`](adr/0004-grpc-wire-protocol.md) | inventory § CAN/CANFD Abstraction + Phase 2 in `plans/phased-implementation.md` | gRPC over HTTP/2 (tonic/prost) as the universal driver contract; envelope variants (Subscribe/Unsubscribe/FrameBatch/Error/Log) live here; ADR 0014 § Open question 2 resolved (wire `Log` envelope is owned by 0004; host bus semantics stay in 0014) |
 
 ## ADRs outstanding
 
@@ -84,8 +90,7 @@ complete.
 
 | # | Title | Source material |
 |---|---|---|
-| 0004 | Wire protocol is gRPC over HTTP/2; wire is the universal driver contract | tonic, prost, tonic-build, async-stream, clap; raw-TCP / ZMQ / WebSockets rejections; `bus-config` and `LogMessage` envelope shape. Several existing ADRs forward-reference this (0009, 0014, 0015). |
-| 0005 | Multi-panel UI uses `dockview` | dockview entry; flexlayout / rc-dock / react-mosaic / golden-layout rejections. Forward-referenced by 0011 ("ADR 0005 once it lands"). |
+| 0005 | Multi-panel UI uses `dockview` | dockview entry; flexlayout / rc-dock / react-mosaic / golden-layout rejections. Forward-referenced by 0011 ("ADR 0005 once it lands") and 0003. |
 | 0006 | Project graph uses `@xyflow/react`; filter predicates stay structured JSON (no DSL) | `@xyflow/react` entry; cytoscape / d3-force / reaflow rejections; the explicit filter-DSL rejection. |
 | 0007 | Plot renderer is uPlot | uPlot entry; dygraphs / Chart.js / lightweight-charts / ECharts / Plotly / Highcharts / hand-rolled rejections. |
 | 0008 | Hardware drivers via one `python-can` sidecar | python-can, uv, grpcio entries; Vector XL / Kvaser / PEAK vendor blobs; native-FFI rejection; socketcan-only rejection; multi-sidecar deferral. Forward-referenced by 0009 and 0015. |
@@ -128,19 +133,15 @@ complete.
   removal above lands — listed in the sidecar-removal backlog
   item's task body.
 - **ADR 0014 framing revisit.** Status is `accepted (framing under
-  review)`. Open questions documented inline in the ADR: rate-limit
-  key shape, scope of the wire `Log` envelope in this ADR vs in a
-  future wire-protocol ADR, tee-to-`tracing` as commitment vs
-  convenience, cross-session persistence if cannet ever grows a
-  headless mode. Promote to plain `accepted` (or amend) once
-  exercised under real load and once 0004 lands.
+  review)`. Open questions documented inline in the ADR (now down
+  to three after 0004 landed): rate-limit key shape,
+  tee-to-`tracing` as commitment vs convenience, cross-session
+  persistence if cannet ever grows a headless mode. Promote to
+  plain `accepted` (or amend) once exercised under real load.
 - **Forward references in the done set.** Each landed ADR below
   contains forward references that should be revisited (and the
   "once it lands" hedge dropped) when the target ADR lands. Sweep
   per-target when writing the new ADR:
-  - **When 0004 (gRPC wire) lands**: 0014 § Open questions
-    references `ADR 0004 when it lands` for the wire `Log` envelope
-    scope.
   - **When 0005 (dockview) lands**: 0003 § Why ("dock layout
     (ADR 0005 once it lands)"); 0011 § Consequences ("see ADR 0005
     once it lands").
