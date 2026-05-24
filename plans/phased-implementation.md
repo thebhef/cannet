@@ -1032,60 +1032,38 @@ Realised scope notes:
     1-in/N-out filter case, transmit-as-source (no auto-edge yet),
     and dangling-source elements.
 
-### Phase 6.5 — fan-out by default, edge edits, transmit by bus
+### Phase 6.5 — default-receive-all consumers, edge edits, transmit by bus
 
 A follow-up pass after Phase 6 shipped, addressing the consumer-side
-wiring gaps the original Phase-6 plan deferred. The headline shift is
-that the original explicit `source?: string` model was replaced by a
-default-fan-out shape — every consumer wires to every bus unless the
-user prunes it. Realised:
+wiring gaps the original Phase-6 plan deferred. The three coordinated
+decisions — consumers receive from every bus by default
+(`sources: string[]` with `"*"` wildcard), user-editable graph edges,
+transmit binding to project `bus_id`s instead of raw wire channels —
+are recorded in
+[ADR 0013](../docs/adr/0013-default-receive-all-edge-edits-transmit-by-bus.md).
+Schema change was purely additive; `PROJECT_SCHEMA_VERSION` stayed at 4.
 
-- **`sources: string[]` on every consumer** (trace / plot / filter)
-  with the wildcard `"*"` meaning "every bus, current and future."
-  Default for a freshly created consumer is `["*"]`, so a brand-new
-  trace/plot already reads from every bus. The old `source?: string`
-  is gone; legacy projects normalise it into `sources: ["*"]` on load.
-- **`sinks: string[]` on transmit elements** (no wildcard — `sinks`
-  is an explicit list to avoid silently picking up a newly-added
-  bus). The transmit panel composes one frame per bus in `sinks` and
-  the host resolves each `bus_id → (server, interface)` via the
-  project's interface bindings. The per-frame `channel: u8` field is
-  gone end-to-end (`TransmitRequest.bus_id` is the wire form).
-- **By-id collision fix**: `TraceStore::FrameKey` now includes the
-  frame's `bus_id`, so two servers sharing wire channel 0 no longer
-  collapse their per-id snapshots.
-- **Trace column "bus"** instead of "ch": looks up `bus_id` against
-  the project's buses and renders the bus *name* (or "unassigned").
-- **BLF save/load round-trips bus assignment** via the project's
-  ordered bus list (channel `N` ↔ `project.buses[N]`). No sidecar —
-  the BLF is the serialization (CLAUDE.md § File formats). The
-  open-BLF modal pre-seeds bus matches from this ordering.
-- **Filter UI**: a "+ filter" button on the project graph panel's
-  toolbar creates a free-standing filter (fans in from every bus,
-  no downstream until wired). Each filter node has an inline
-  predicate editor (caret-expand) for the structured leaf variants
-  (`bus | id_range | id_list | name_regex | signal_equals`).
-  Composition variants (`all | any`) stay JSON-only.
-- **Sources / sinks picker** lives in right-click context menus on
-  the trace, plot, and transmit panels — checkboxes for every project
-  bus + filter, with an "All" toggle that re-collapses to `["*"]`.
-  Plot panel embeds it in the existing toolbar context menu shell.
-- **Insert filter upstream** lives on each consumer node in the
-  graph (a `+ filter` button on the trace/plot node). Creates a
-  fresh filter, transfers the consumer's `sources` to it, then
-  re-routes the consumer through the filter.
-- **Edge deletion**: right-click an edge in the graph view to drop
-  the matching bus / filter id from the consumer's `sources` (or
-  from the transmit's `sinks`). The wildcard `"*"` expands into the
-  explicit "every bus except this one" list on first deletion. The
-  gateway↔bus edges are not user-deletable here — they're project-
-  panel bindings.
-- **Filter cycle prevention** at the registry layer: patching a
-  filter's `sources` to a value that would close a filter→filter
-  cycle is silently refused by `applyElementPatch`.
-- **Schema is purely additive** — no migration step. Old projects
-  load with `sources` defaulted to `["*"]`. The `PROJECT_SCHEMA_VERSION`
-  stayed at 4.
+Implementation specifics that landed in the same pass:
+
+- **Graph affordances**: right-click an edge → delete; right-click a
+  trace / plot / transmit panel → sources / sinks picker (checkboxes
+  for every project bus + filter, with an "All" toggle that
+  re-collapses to `["*"]`); `+ filter` button on each consumer node
+  in the graph (creates a fresh filter, transfers the consumer's
+  `sources` to it, re-routes through the filter); `+ filter` button
+  on the graph panel toolbar (free-standing filter, fans in from
+  every bus, no downstream until wired). Cycle prevention is
+  enforced in `applyElementPatch`.
+- **Filter predicate editor**: inline (caret-expand) on each filter
+  node for the structured leaf variants
+  (`bus | id_range | id_list | name_regex | signal_equals`);
+  composition variants (`all | any`) stay JSON-only.
+- **Sources picker on plot panel** is embedded in the existing
+  toolbar context-menu shell.
+- **Open-BLF modal** pre-seeds bus matches from the project's
+  ordered bus list (channel `N` ↔ `project.buses[N]`).
+- **Trace view column rename**: `ch` → `bus`, rendering the bus
+  *name* (or "unassigned").
 
 Out of scope (tracked in `plans/backlog.md`):
 
@@ -1343,18 +1321,16 @@ Realised scope notes:
   events appear tagged `sidecar:python-can`" exit criterion. The
   wire-level `LogMessage` bridge has a unit test on the sidecar side;
   the GUI host consumer is tracked in `backlog.md`.
-- **`uv` is fetched, not bundled.** `scripts/fetch-uv.sh` produces a
-  per-OS `uv` binary under `tools/uv/` at build time; the host
-  discovers it at runtime alongside its executable, falls back to a
-  `uv` already on `PATH`, and failing that logs a warn-level System
-  Message with the install instructions. The dev-side fetch ships
-  today; the end-user-side fetch (installer post-step vs. first-run
-  host downloader) is a Phase-18 deliverable. We deliberately do
-  **not** commit `uv` binaries into the repo or bake them into the
-  Tauri bundle artefact — see the Phase-18 "third-party runtime tool
-  fetching strategy" note for the rationale. The README documents
-  the dev-side path today and will document the end-user path when
-  the Phase-18 mechanism lands.
+- **`uv` is fetched, not bundled** — per
+  [ADR 0015](../docs/adr/0015-fetched-runtime-binaries.md).
+  `scripts/fetch-uv.sh` produces a per-OS `uv` binary under
+  `tools/uv/` at build time; the host discovers it at runtime
+  alongside its executable, falls back to a `uv` already on `PATH`,
+  and failing that logs a warn-level System Message with the install
+  instructions. Dev-side fetch ships today; the end-user-side fetch
+  (installer post-step vs first-run host downloader) is a Phase-18
+  deliverable. README documents the dev-side path today and gains
+  the end-user path when the Phase-18 mechanism lands.
 - **Hardware-specific paths are documented procedures, not executable
   tests.** Per-vendor smoke procedures live in
   `servers/cannet-python-can/SMOKE.md` with clearly marked
@@ -1723,21 +1699,12 @@ drag** fix, and the **BLF f64-timestamp precision** documentation note
 (if it hasn't already been folded into a user-facing surface message
 by then).
 
-**Third-party runtime tool fetching strategy.** External runtime
-binaries we depend on (today: `uv`; potentially others later) are
-**fetched, not committed to the repo and not packed into the
-installer artefact**. First-party code we maintain (the sidecar
-package, the GUI, the Rust crates) is bundled; tools we do *not*
-maintain are pulled from their upstream release channel at the
-pinned version. This keeps the distributable small, keeps the
-supply chain auditable against upstream releases instead of a
-snapshot we'd have to re-cut on every upstream version bump, and
-gives us one place to revisit the pin.
-
-The dev-side fetch already exists ([`scripts/fetch-uv.sh`](../scripts/fetch-uv.sh)
-drops `uv` into `tools/uv/` next to the GUI binary, which the host
-discovers at runtime). The Phase-18 deliverable is the **end-user**
-fetch — choose between:
+**Third-party runtime tool fetching strategy.** The architectural
+decision is recorded in
+[ADR 0015](../docs/adr/0015-fetched-runtime-binaries.md): external
+runtime binaries are fetched from upstream at a pinned version, not
+committed or bundled. Phase 18's deliverable is the **end-user**
+fetch flow — pick between:
 
 1. **Installer post-step** — the installer (Tauri's per-OS bundler
    target, or a thin wrapper around it) downloads `uv` at install
@@ -1749,5 +1716,6 @@ fetch — choose between:
 
 Both keep the runtime lookup chain in `sidecar.rs` unchanged
 (`tools/uv/uv` → `PATH` `uv` → `python3` fallback). The pin
-(`UV_VERSION` in `scripts/fetch-uv.sh`) is the single source of
-truth in either flow.
+(`UV_VERSION` in [`scripts/fetch-uv.sh`](../scripts/fetch-uv.sh),
+already in use on the dev side) is the single source of truth in
+either flow.

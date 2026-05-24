@@ -449,7 +449,7 @@ buses the DBC decodes for. A DBC with no boxes checked is *unscoped*
 bus A doesn't decode bus-B frames; an unassigned frame matches only
 unscoped DBCs.
 
-**Default fan-out**. Each consumer (trace, plot, filter) carries a
+**Default: receive from every bus**. Each consumer (trace, plot, filter) carries a
 `sources: string[]` list of upstream producer ids — bus ids or filter
 ids — with the literal `"*"` as a wildcard meaning "every bus in the
 project, including ones added later." Freshly created consumers
@@ -583,11 +583,9 @@ and exit code feed the **System Messages** panel tagged
 attempts per session; once the budget is exhausted, the **Restart
 sidecar** Tauri command clears it.
 
-**`uv` resolution**. `uv` is fetched, not bundled — we don't commit
-binaries to the repo and don't pack them into the installer artefact
-(see [`plans/phased-implementation.md`](plans/phased-implementation.md)
-Phase 18, "third-party runtime tool fetching strategy"). The host
-launcher resolves `uv` in this order:
+**`uv` resolution**. `uv` is fetched, not bundled — see
+[`docs/adr/0015-fetched-runtime-binaries.md`](docs/adr/0015-fetched-runtime-binaries.md).
+The host launcher resolves `uv` in this order:
 
 1. **Local fetch** — `tools/uv/uv[.exe]` next to the GUI executable.
    [`scripts/fetch-uv.sh`](scripts/fetch-uv.sh) downloads the pinned

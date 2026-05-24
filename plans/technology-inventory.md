@@ -213,12 +213,13 @@ without reshaping callers.
 - **`uv`** (Rust, Apache-2.0 / MIT) — `adopted` (Phase 8). Astral's
   Python package & project manager, distributed as a single
   self-contained binary; manages venvs, installs Python itself if
-  needed. Bundled with the GUI per supported OS; `uv sync`
-  materialises the sidecar's venv lazily on first launch, `uv run`
-  starts the sidecar. Lets users replace the default driver library
-  in-place (`uv pip install …`) without rebuilding the app. Fallback
-  if Astral disappears is `python -m venv` + `pip`, a recoverable
-  swap.
+  needed. **Fetched at a pinned version, not committed or
+  bundled** — see [ADR 0015](../docs/adr/0015-fetched-runtime-binaries.md).
+  `uv sync` materialises the sidecar's venv lazily on first launch,
+  `uv run` starts the sidecar. Lets users replace the default
+  driver library in-place (`uv pip install …`) without rebuilding
+  the app. Fallback if Astral disappears is `python -m venv` +
+  `pip`, a recoverable swap.
 - **`grpcio`** + **`grpcio-tools`** (Python, Apache-2.0) — `adopted`
   (Phase 8). Python implementation of gRPC; generates stubs from
   `cannet-wire`'s existing `.proto` so the sidecar speaks the same
