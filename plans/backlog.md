@@ -40,9 +40,14 @@ These need detailing
     sidecar watches it in
     `cannet_python_can.__main__._install_stdin_eof_watcher`. A host
     crash now closes the pipe and the sidecar shuts down cleanly.)
-  - host parses the sidecar's `listening` banner and exposes the
+  - ~~host parses the sidecar's `listening` banner and exposes the
     address via a Tauri command (`get_sidecar_status`) + event
-    (`sidecar-status-changed`); stops hard-coding port 50061.
+    (`sidecar-status-changed`); stops hard-coding port 50061.~~
+    (landed in `sidecar.rs`: `SidecarPhase` + `bound_address` in
+    `SidecarState`; `parse_listening_address` updates them from the
+    banner; `get_sidecar_status` returns a snapshot; `STATUS_EVENT`
+    fires on transitions; `build_command` no longer passes
+    `--bind`.)
   - update connection selector panel in gui; local ports should be a
     top-level item alongside an 'add network' interface action.
   - test with real hardware when it arrives, maybe can do virtual
