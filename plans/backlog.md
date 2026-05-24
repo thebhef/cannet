@@ -29,9 +29,22 @@ lower-priority follow-ups below.
 These need detailing
 
 - Local python sidecar:
-  - random port selection on start, report back to gui
-  - update connection selector panel in gui; local ports should be top-level item along third 'add network' interface
-  - test with real hardware when it arrives, maybe can do virtual hardware with specific vendor drivers? maccan?
+  - ~~random port selection on start, report back to gui~~ (sidecar
+    side landed: default `--bind 127.0.0.1:0` + retry on pinned-port
+    collision, banner reports actual bound port. Host-side parsing of
+    that banner into a Tauri-exposed sidecar address, plus the GUI
+    surfacing as a top-level connection-panel item, are the remaining
+    pieces.)
+  - host parses the sidecar's `listening` banner and exposes the
+    address via a Tauri command (`get_sidecar_status`) + event
+    (`sidecar-status-changed`); stops hard-coding port 50061.
+  - host pipes stdin to the sidecar so the sidecar exits on EOF —
+    matches the sidecar's stdin-EOF shutdown watcher so a host
+    crash never leaves an orphaned sidecar.
+  - update connection selector panel in gui; local ports should be a
+    top-level item alongside an 'add network' interface action.
+  - test with real hardware when it arrives, maybe can do virtual
+    hardware with specific vendor drivers? maccan?
 - BLF i/o implementation and removal of sidecar notes.json
 
 #### `cannet-blf` own implementation ([ADR 0009](../docs/adr/0009-dbc-blf-readers.md))

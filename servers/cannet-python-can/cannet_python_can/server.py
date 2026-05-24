@@ -311,19 +311,99 @@ class CannetServerService(pb_grpc.CannetServerServicer):
                 )
 
 
-def serve(address: str, *, driver: Optional[drv.Driver] = None) -> grpc.Server:
-    """Build and start a gRPC server bound to ``address``.
+def serve(
+    address: str,
+    *,
+    driver: Optional[drv.Driver] = None,
+    fallback_attempts: int = 3,
+) -> tuple[grpc.Server, str]:
+    """Build and start a gRPC server bound near ``address``.
 
-    Returns the running ``grpc.Server`` so the caller can ``wait_for_termination``
-    or trigger a graceful ``stop``.
+    ``address`` is ``host:port``; ``port == 0`` asks the OS for any free
+    ephemeral port (the supported "random port" path — collisions are
+    impossible because the kernel only returns unused ports). A non-zero
+    port is honoured first; if its bind raises, the function logs a
+    warning and falls back to ``host:0`` for up to ``fallback_attempts``
+    tries before giving up.
+
+    Returns ``(server, bound_address)`` where ``bound_address`` is the
+    actually-bound ``host:port`` string. The host writes it onto the
+    sidecar's banner so the GUI host learns the port without a side
+    channel.
     """
     server = grpc.server(_thread_pool())
     pb_grpc.add_CannetServerServicer_to_server(
         CannetServerService(driver or load_driver()), server
     )
-    server.add_insecure_port(address)
+    bound = bind_with_retry(server, address, fallback_attempts=fallback_attempts)
     server.start()
-    return server
+    return server, bound
+
+
+def bind_with_retry(
+    server: grpc.Server, address: str, *, fallback_attempts: int = 3
+) -> str:
+    """Add an insecure port to ``server``, falling back to ``host:0``.
+
+    Returns the actually-bound ``host:port`` string. Raises
+    :class:`OSError` if every attempt fails (which only happens when the
+    OS is out of ephemeral ports — the ``:0`` fallback otherwise always
+    succeeds).
+    """
+    host, requested_port = _split_address(address)
+    if requested_port != 0:
+        try:
+            bound_port = server.add_insecure_port(f"{host}:{requested_port}")
+        except RuntimeError as e:
+            _log.warning(
+                "bind to requested port %d failed (%s); falling back to a random port",
+                requested_port,
+                e,
+            )
+        else:
+            if bound_port != 0:
+                return f"{host}:{bound_port}"
+    for attempt in range(1, fallback_attempts + 1):
+        try:
+            bound_port = server.add_insecure_port(f"{host}:0")
+        except RuntimeError as e:
+            _log.warning("random-port bind attempt %d failed: %s", attempt, e)
+            continue
+        if bound_port != 0:
+            return f"{host}:{bound_port}"
+    raise OSError(
+        f"failed to bind sidecar near {address!r} after "
+        f"{fallback_attempts} random-port fallback attempts"
+    )
+
+
+def _split_address(address: str) -> tuple[str, int]:
+    """Parse ``host:port`` into ``(host, port)``; ``port`` defaults to 0.
+
+    Liberal on input: ``"127.0.0.1"`` (no colon) is read as port 0, and
+    a non-numeric port string raises :class:`ValueError`. IPv6 literals
+    must be bracketed (``"[::1]:50061"``) per the standard.
+    """
+    if address.startswith("["):
+        end = address.rfind("]")
+        if end < 0:
+            raise ValueError(f"unterminated IPv6 literal: {address!r}")
+        host = address[: end + 1]
+        rest = address[end + 1 :]
+    else:
+        last = address.rfind(":")
+        if last < 0:
+            return address, 0
+        host = address[:last]
+        rest = address[last:]
+    if not rest:
+        return host, 0
+    if not rest.startswith(":"):
+        raise ValueError(f"malformed address: {address!r}")
+    port_str = rest[1:]
+    if not port_str:
+        return host, 0
+    return host, int(port_str)
 
 
 def _thread_pool():
@@ -339,6 +419,7 @@ __all__ = [
     "DEFAULT_DRIVER_MODULE",
     "DRIVER_MODULE_ENV",
     "WIRE_SOURCE",
+    "bind_with_retry",
     "load_driver",
     "serve",
 ]
