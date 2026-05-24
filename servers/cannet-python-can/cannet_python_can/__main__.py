@@ -1,8 +1,9 @@
 """``uv run cannet-python-can`` entry point.
 
 Boots the gRPC service, emits the discovered interfaces as
-structured banner lines, and blocks until either Ctrl-C or the host
-closes the process group.
+structured banner lines, and blocks until either Ctrl-C, a SIGTERM,
+or the host closes our stdin (the cross-platform "parent went away"
+contract — see :func:`_install_stdin_eof_watcher`).
 
 All process output is routed through :mod:`logging`. Two logger
 trees coexist:
@@ -26,6 +27,7 @@ import argparse
 import logging
 import signal
 import sys
+import threading
 import traceback
 
 from . import __version__
@@ -73,6 +75,45 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _install_stdin_eof_watcher(shutdown_callback) -> None:
+    """Trigger ``shutdown_callback`` when stdin closes.
+
+    The GUI host pipes the sidecar's stdin and writes nothing to it;
+    when the host process dies, the kernel closes the pipe and the
+    blocking read below returns 0 bytes. That's our cue to shut down
+    cleanly so we don't outlive our parent.
+
+    No-op when stdin is a TTY (the developer is running the sidecar by
+    hand and Ctrl-C is the expected shutdown path) or absent (some
+    embedded launchers). Runs on a daemon thread so it never blocks
+    interpreter exit if the watcher is still waiting on read at the
+    moment the server stops for another reason.
+    """
+    if sys.stdin is None or not hasattr(sys.stdin, "buffer"):
+        return
+    try:
+        if sys.stdin.isatty():
+            return
+    except (ValueError, OSError):
+        # stdin already closed — treat as "no watcher", and let the
+        # signal path handle shutdown.
+        return
+
+    def _watch() -> None:
+        try:
+            while True:
+                chunk = sys.stdin.buffer.read(1)
+                if not chunk:
+                    break
+        except (OSError, ValueError):
+            # OSError on broken pipe; ValueError if stdin gets closed
+            # underneath us during interpreter shutdown.
+            pass
+        shutdown_callback()
+
+    threading.Thread(target=_watch, name="stdin-eof-watcher", daemon=True).start()
+
+
 def _emit_startup_banner(driver) -> None:
     """One banner line per channel; the GUI host parses these.
 
@@ -98,18 +139,26 @@ def _run(args: argparse.Namespace) -> int:
     server, bound_address = srv.serve(args.bind, driver=driver)
     BANNER.info("sidecar\tlistening\t%s", bound_address)
 
-    stop_requested = False
+    stop_lock = threading.Lock()
+    stop_requested = [False]
+
+    def _request_stop(banner_line: str) -> None:
+        with stop_lock:
+            if stop_requested[0]:
+                return
+            stop_requested[0] = True
+        BANNER.info(banner_line)
+        server.stop(grace=2.0)
 
     def _on_signal(signum, _frame):
-        nonlocal stop_requested
-        if stop_requested:
-            return
-        stop_requested = True
-        BANNER.info("sidecar\tshutdown\tsignal=%d", signum)
-        server.stop(grace=2.0)
+        _request_stop(f"sidecar\tshutdown\tsignal={signum}")
 
     signal.signal(signal.SIGINT, _on_signal)
     signal.signal(signal.SIGTERM, _on_signal)
+
+    _install_stdin_eof_watcher(
+        lambda: _request_stop("sidecar\tshutdown\treason=stdin-eof")
+    )
 
     try:
         # Block on `wait_for_termination` so the process exits cleanly

@@ -56,6 +56,18 @@
 //! trying; an error-level message tells the user to click "Restart
 //! sidecar" by hand (the Tauri command exposed below). The budget
 //! resets when the user runs the manual restart command.
+//!
+//! ## Lifecycle: sidecar dies when the host dies
+//!
+//! The host pipes the sidecar's stdin and writes nothing to it. The
+//! `Child` keeps the write end open for its own lifetime; when the
+//! host process exits (clean or not), the OS closes the pipe and the
+//! sidecar's stdin-EOF watcher
+//! (`cannet_python_can.__main__._install_stdin_eof_watcher`)
+//! gracefully stops the gRPC server. That cross-platform "your parent
+//! went away" contract is why a host crash never leaves an orphaned
+//! sidecar holding hardware open — no `prctl(PR_SET_PDEATHSIG)` /
+//! Windows job-object plumbing required.
 
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -309,7 +321,19 @@ fn spawn_blocking_inner(app: &AppHandle) {
     }
     sys_info!(app, SOURCE, "sidecar dir: {}", sidecar_dir.display());
     let mut cmd = build_command(launcher, &sidecar_dir, bind);
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    // stdin is piped so we hold the write end for the lifetime of the
+    // child; we never write to it. When the host process dies (clean
+    // exit, panic, OS kill, …), Rust drops the `Child`, the pipe
+    // closes, and the sidecar's stdin-EOF watcher (see
+    // `cannet_python_can.__main__._install_stdin_eof_watcher`) reads
+    // EOF and triggers its own graceful shutdown. Without this, a
+    // host crash would leave an orphaned sidecar holding hardware
+    // open. The default (inherited stdin from a GUI process is
+    // typically `/dev/null`) would also fire the watcher immediately,
+    // so the pipe is what keeps the sidecar alive in the first place.
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     // Capture the resolved invocation so we can both log it at info
     // level on the happy path AND attach it to the error-level
     // failure message when the sidecar exits non-zero — the panel's

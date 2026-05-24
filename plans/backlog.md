@@ -35,12 +35,14 @@ These need detailing
     that banner into a Tauri-exposed sidecar address, plus the GUI
     surfacing as a top-level connection-panel item, are the remaining
     pieces.)
+  - ~~host pipes stdin to the sidecar so the sidecar exits on EOF~~
+    (landed — host pipes stdin in `sidecar.rs::spawn_blocking_inner`,
+    sidecar watches it in
+    `cannet_python_can.__main__._install_stdin_eof_watcher`. A host
+    crash now closes the pipe and the sidecar shuts down cleanly.)
   - host parses the sidecar's `listening` banner and exposes the
     address via a Tauri command (`get_sidecar_status`) + event
     (`sidecar-status-changed`); stops hard-coding port 50061.
-  - host pipes stdin to the sidecar so the sidecar exits on EOF —
-    matches the sidecar's stdin-EOF shutdown watcher so a host
-    crash never leaves an orphaned sidecar.
   - update connection selector panel in gui; local ports should be a
     top-level item alongside an 'add network' interface action.
   - test with real hardware when it arrives, maybe can do virtual
