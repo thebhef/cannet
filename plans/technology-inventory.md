@@ -23,8 +23,6 @@ and the license / platform constraints we need to be aware of.
   inside the WebView. See [`../docs/adr/0003-tauri-shell-react-frontend.md`](../docs/adr/0003-tauri-shell-react-frontend.md).
 - **`dockview`** (v6, MIT) — `adopted` in Phase 3 for the
   multi-panel shell. See [`../docs/adr/0005-dockview-panel-layout.md`](../docs/adr/0005-dockview-panel-layout.md).
-  Alternatives considered (`flexlayout-react`, `rc-dock`,
-  `react-mosaic`, `golden-layout`) all `rejected` — see ADR 0005.
 - **`serde_json`** (Rust) / native JSON (frontend) — adopted Phase 3
   for the project file. Already in the dep graph via Tauri IPC; no
   new crate. See [`../docs/adr/0011-project-file-format.md`](../docs/adr/0011-project-file-format.md).
@@ -38,13 +36,6 @@ and the license / platform constraints we need to be aware of.
   row index. ~120 lines, no external dep.
 - **`@xyflow/react`** (formerly `react-flow`, MIT) — `adopted` in
   Phase 6 for the project graph view. See [`../docs/adr/0006-xyflow-project-graph.md`](../docs/adr/0006-xyflow-project-graph.md).
-  Alternatives considered (`cytoscape.js`, `d3-force` / `d3-zoom`
-  + SVG hand-roll, `reaflow` / `reagraph` / `nivo/network`) all
-  `rejected` — see ADR 0006.
-- **Electron** — `proposed (fallback)`. Documented fallback if
-  Tauri's per-OS WebView fragmentation blocks us. See ADR 0003.
-- **Qt 6** / **Dear ImGui + ImPlot** / **wxWidgets** — `rejected`.
-  See ADR 0003.
 
 ### CAN / CANFD Abstraction
 
@@ -56,9 +47,6 @@ without reshaping callers.
 - Network transport: **tonic / gRPC over HTTP/2** + **prost** —
   `adopted` (Phase 2). Schema in `crates/cannet-wire`, `tonic-build`
   codegen on both ends. See [`../docs/adr/0004-grpc-wire-protocol.md`](../docs/adr/0004-grpc-wire-protocol.md).
-- Network transport (alternatives considered): raw TCP + prost,
-  raw TCP + bincode/postcard, ZMQ, WebSockets via
-  `tokio-tungstenite` — all `rejected`. See ADR 0004.
 - **`async-stream`** crate (v0.3, MIT) — `adopted` in Phase 2.
   Wire-crate implementation helper for stream adapters; see
   ADR 0004 § Consequences.
@@ -86,9 +74,6 @@ without reshaping callers.
 - **Vector XL Driver Library** / **Kvaser CANlib** /
   **PEAK PCAN-Basic** — `adopted` as runtime, user-installed
   vendor dependencies; not bundled. See ADR 0008.
-- **Native Rust FFI per vendor**, **socketcan-only Linux path**,
-  **Multiple vendor sidecars** — all `rejected` (or deferred).
-  See ADR 0008.
 
 ### File Formats
 
@@ -106,33 +91,12 @@ crate retained long-term).
   in [`../docs/blf-feature-support.md`](../docs/blf-feature-support.md).
   - **`blf_asc`** (v0.2, MIT/Apache) — adopted Phase 1, retiring
     once `cannet-blf`'s own implementation reaches parity. See ADR 0009.
-  - **`ablf`** — considered as an alternative; rejected. See ADR 0009.
-  - **Technica `vector_blf`** (C++, GPL-3.0-or-later) — considered
-    as a candidate via FFI; rejected because cannet is a Rust
-    project and writing the focused subset we need from Vector's
-    public spec is lower-friction than maintaining a Rust↔C++
-    binding for a library we'd use ~20% of. See ADR 0009.
 
 ### Storage
 
-- **`memmap2`** crate (Rust, MIT / Apache-2.0) — `proposed`
-  (Phase 11). Cross-platform memory-mapped file access for the
-  disk-spill raw store and its index files — POSIX `mmap` on
-  Linux / macOS, `CreateFileMapping` / `MapViewOfFile` on Windows,
-  behind one Rust API. Phase 11's store is write-through and reads
-  through the kernel page cache (see
-  [`../docs/adr/0002-disk-spill-store.md`](../docs/adr/0002-disk-spill-store.md),
-  DS-2); `memmap2` is the syscall abstraction for that — the one
-  failure-mode-rich part of the design worth a vetted library, while
-  the on-disk format itself (fixed-size append-only records) stays
-  hand-rolled and small. It is the maintained successor to the
-  unmaintained `memmap` crate and the de-facto Rust standard.
-  Windows constraints are handled in-design: a mapping has a fixed
-  maximum size and a mapped file cannot be resized, so segments are
-  pre-allocated fixed-size and mapped whole (ADR 0002, DS-4). The raw
-  `libc` / `windows-sys` FFI alternative is `rejected` — re-creating
-  this abstraction is exactly the hand-written failure-mode-rich
-  surface `CLAUDE.md` says to avoid.
+- **`memmap2`** crate (Rust, MIT / Apache-2.0) — `proposed` for
+  Phase 11. Cross-platform `mmap` syscall abstraction for the
+  disk-spill raw store. See [`../docs/adr/0002-disk-spill-store.md`](../docs/adr/0002-disk-spill-store.md).
 
 ### Protocols
 
@@ -144,10 +108,6 @@ crate retained long-term).
 
 - **uPlot** (MIT) — `adopted` in Phase 4 for the plot panel
   renderer. See [`../docs/adr/0007-uplot-plot-renderer.md`](../docs/adr/0007-uplot-plot-renderer.md).
-  Alternatives considered (dygraphs, Chart.js + plugins,
-  lightweight-charts, Apache ECharts, Plotly.js, Highcharts /
-  amCharts, hand-rolled canvas/WebGL) all `rejected` — see
-  ADR 0007.
 
   Reference design: `plans/plot-panel-reference.html` — a
   standalone prototype (5 stacked panes × 4 signals, synced
