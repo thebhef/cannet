@@ -54,15 +54,9 @@ and the license / platform constraints we need to be aware of.
   - **`golden-layout`** v2 (MIT) — `rejected`. Capable and mature, but
     framework-agnostic with no React bindings, so adopting it means
     writing and maintaining the React glue ourselves.
-- **`serde_json`** (Rust) / native JSON (frontend) — `adopted` (Phase 3)
-  for the project file (`features.md`: window layouts + bus configs + DBC
-  references, JSON, reloadable from disk). `serde` / `serde_json` were
-  already in the dependency graph via Tauri's IPC; the project format adds
-  no new crate, just schema types in the GUI host (`src-tauri/src/project.rs`:
-  the `Project` struct, `open_project` / `save_project`) and matching TS
-  types. The schema is our own, versioned (`PROJECT_SCHEMA_VERSION`) — no
-  external project-file format is adopted. The `dockview` layout blob is
-  stored verbatim as a `serde_json::Value` (the host doesn't interpret it).
+- **`serde_json`** (Rust) / native JSON (frontend) — adopted Phase 3
+  for the project file. Already in the dep graph via Tauri IPC; no
+  new crate. See [`../docs/adr/0011-project-file-format.md`](../docs/adr/0011-project-file-format.md).
 - **`@tanstack/react-virtual`** — `adopted` in Phase 1, `removed` in
   Phase 2. The library's count-based virtualizer doesn't handle the
   browser's CSS dimension cap (≈17M-33M px depending on the engine):
@@ -265,39 +259,26 @@ without reshaping callers.
 
 ### File Formats
 
-- **DBC** — CAN database, signal definitions and decoding rules.
-  - **`can-dbc`** crate (v9, MIT/Apache) — `adopted` in Phase 1 for parsing
-    DBC files into an AST. Decoding signals from raw frames is implemented
-    in our own thin runtime on top of the AST (the crate intentionally
-    stops at parsing). The runtime also resolves the long-name extension
-    (`BA_ "System{Message,Signal}LongSymbol" …`) from the AST's
-    attribute-value lists, so names truncated to the classic 32-char
-    limit on the `BO_` / `SG_` lines come back full.
-- **EDS** — CANopen Electronic Data Sheet, used for SDO/PDO decoding. Library
-  TBD; not in scope until CANopen work begins.
-- **BLF** — Vector binary log format, source for replay in early phases.
-  - **`blf_asc`** crate (v0.2, MIT/Apache) — `adopted` in Phase 1. Pure-Rust
-    reader exposing `Iterator<Item = Message>`; supports CAN classic, CAN
-    FD, and error frames (object types CAN_MESSAGE, CAN_MESSAGE2,
-    CAN_ERROR_EXT, CAN_FD_MESSAGE, CAN_FD_MESSAGE_64).
-  - **`ablf`** — `rejected` (Phase 1 evaluation). Cleanly scoped pure-Rust
-    BLF reader, but only decodes classic CAN messages — no CAN FD support,
-    which our Phase 1 scope requires.
-  - **`blf_asc` writer (frames only)** — `adopted` (Phase 9). The
-    Phase-9 capture writer uses `blf_asc::BlfWriter` directly for
-    classic CAN, CAN FD, error, and remote-frame append; `cannet-blf`
-    wraps it as `BlfCaptureWriter` with atomic temp-file + rename.
-  - **`blf_asc` `GLOBAL_MARKER` write + read** — `deferred upstream
-    contribution` (Phase 9). Upstream `blf_asc` 0.2 exposes no
-    marker type and no public hook on `BlfWriter` for adding
-    arbitrary object types, so Phase 9 ships note round-trip via a
-    sidecar `<file>.blf.notes.json` written alongside the BLF
-    instead of native `GLOBAL_MARKER` records. The third-party-
-    reader visibility of notes is the deferred piece; a follow-up
-    contributes `GLOBAL_MARKER` write + read upstream (the crate is
-    1.6 kloc, MIT / Apache) and the host swaps the sidecar layer
-    for native markers without changing the session-buffer notes
-    API. Tracked in `plans/backlog.md`.
+Decisions: [`../docs/adr/0009-dbc-blf-readers.md`](../docs/adr/0009-dbc-blf-readers.md)
+— `can-dbc` for DBC parsing (semantics in `cannet-dbc`); for BLF,
+our own focused reader/writer in `cannet-blf` (no third-party BLF
+crate retained long-term).
+
+- **DBC** — CAN signal database.
+  - **`can-dbc`** (v9, MIT/Apache) — adopted Phase 1. See ADR 0009.
+- **EDS** — CANopen Electronic Data Sheet. Library TBD; not in scope
+  until CANopen work begins.
+- **BLF** — Vector binary log format. Implementation lives in
+  `cannet-blf`; the per-object-type coverage matrix is maintained
+  in [`../docs/blf-feature-support.md`](../docs/blf-feature-support.md).
+  - **`blf_asc`** (v0.2, MIT/Apache) — adopted Phase 1, retiring
+    once `cannet-blf`'s own implementation reaches parity. See ADR 0009.
+  - **`ablf`** — considered as an alternative; rejected. See ADR 0009.
+  - **Technica `vector_blf`** (C++, GPL-3.0-or-later) — considered
+    as a candidate via FFI; rejected because cannet is a Rust
+    project and writing the focused subset we need from Vector's
+    public spec is lower-friction than maintaining a Rust↔C++
+    binding for a library we'd use ~20% of. See ADR 0009.
 
 ### Storage
 
