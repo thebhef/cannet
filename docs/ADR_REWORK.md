@@ -54,6 +54,12 @@ ADR until explicitly revised.
   explicit-source model imposed setup cost") — the ADR records the
   current decision, not the diff from history. Git carries the
   diff. (Caught on ADR 0013 in two passes after the initial draft.)
+- **ADRs don't cite CLAUDE.md (or other working-agreement docs)
+  as authority.** The decision stands on its own. If a rule from
+  CLAUDE.md is the actual basis for the ADR, restate the rule
+  inside the ADR — the ADR is the durable record, working-agreement
+  docs are advisory and movable. (Caught on ADR 0003 after the
+  initial draft.)
 
 ## ADRs done
 
@@ -68,24 +74,21 @@ ADR until explicitly revised.
 | 0013 | [`adr/0013-default-receive-all-edge-edits-transmit-by-bus.md`](adr/0013-default-receive-all-edge-edits-transmit-by-bus.md) | Phase 6.5 in `plans/phased-implementation.md` | Three coordinated decisions: consumers receive from every bus by default, user-editable graph edges, transmit binds to `bus_id` not wire channel |
 | 0014 | [`adr/0014-host-system-log.md`](adr/0014-host-system-log.md) | Phase 7 in `plans/phased-implementation.md` | Bounded, session-scoped, flood-protected in-process bus tee'd to `tracing`; sidecars contribute via wire `Log` envelope. **Framing under review** — see Open questions. |
 | 0015 | [`adr/0015-fetched-runtime-binaries.md`](adr/0015-fetched-runtime-binaries.md) | Phase 18 + backlog uv-fetch item | External runtime binaries fetched at a pinned version, not committed or bundled; `uv` is today's instance |
+| 0003 | [`adr/0003-tauri-shell-react-frontend.md`](adr/0003-tauri-shell-react-frontend.md) | inventory § GUI / Application Framework | Single-window Tauri 2 shell; React 18 + TypeScript + Vite inside the WebView; Electron documented as fallback; Qt/ImGui/wxWidgets rejected |
 
 ## ADRs outstanding
 
-### Inventory-derived (consolidate meaty entries in `plans/technology-inventory.md`)
+All remaining ADRs are inventory-derived (consolidate meaty entries
+in `plans/technology-inventory.md`). The plan-doc-extracted set is
+complete.
 
 | # | Title | Source material |
 |---|---|---|
-| 0003 | GUI is a single-window Tauri shell with a React/TS frontend | Tauri 2, React 18, Vite, TS entries; the hand-rolled scaled-scrollbar virtualizer (deliberate `@tanstack/react-virtual` replacement); Qt / Electron / ImGui / wxWidgets rejections |
-| 0004 | Wire protocol is gRPC over HTTP/2; wire is the universal driver contract | tonic, prost, tonic-build, async-stream, clap; raw-TCP / ZMQ / WebSockets rejections; `bus-config` and `LogMessage` envelope shape |
-| 0005 | Multi-panel UI uses `dockview` | dockview entry; flexlayout / rc-dock / react-mosaic / golden-layout rejections |
-| 0006 | Project graph uses `@xyflow/react`; filter predicates stay structured JSON (no DSL) | `@xyflow/react` entry; cytoscape / d3-force / reaflow rejections; the explicit filter-DSL rejection |
-| 0007 | Plot renderer is uPlot | uPlot entry; dygraphs / Chart.js / lightweight-charts / ECharts / Plotly / Highcharts / hand-rolled rejections |
-| 0008 | Hardware drivers via one `python-can` sidecar | python-can, uv, grpcio entries; Vector XL / Kvaser / PEAK vendor blobs; native-FFI rejection; socketcan-only rejection; multi-sidecar deferral |
-
-### Plan-doc-extracted (typically one phase's decision)
-
-| # | Title | Source material |
-|---|---|---|
+| 0004 | Wire protocol is gRPC over HTTP/2; wire is the universal driver contract | tonic, prost, tonic-build, async-stream, clap; raw-TCP / ZMQ / WebSockets rejections; `bus-config` and `LogMessage` envelope shape. Several existing ADRs forward-reference this (0009, 0014, 0015). |
+| 0005 | Multi-panel UI uses `dockview` | dockview entry; flexlayout / rc-dock / react-mosaic / golden-layout rejections. Forward-referenced by 0011 ("ADR 0005 once it lands"). |
+| 0006 | Project graph uses `@xyflow/react`; filter predicates stay structured JSON (no DSL) | `@xyflow/react` entry; cytoscape / d3-force / reaflow rejections; the explicit filter-DSL rejection. |
+| 0007 | Plot renderer is uPlot | uPlot entry; dygraphs / Chart.js / lightweight-charts / ECharts / Plotly / Highcharts / hand-rolled rejections. |
+| 0008 | Hardware drivers via one `python-can` sidecar | python-can, uv, grpcio entries; Vector XL / Kvaser / PEAK vendor blobs; native-FFI rejection; socketcan-only rejection; multi-sidecar deferral. Forward-referenced by 0009 and 0015. |
 
 ## Surfaced this session but not promoted to ADRs
 
@@ -124,6 +127,30 @@ ADR until explicitly revised.
 - **Phase-9 mentions to scrub from rustdoc** when the sidecar
   removal above lands — listed in the sidecar-removal backlog
   item's task body.
+- **ADR 0014 framing revisit.** Status is `accepted (framing under
+  review)`. Open questions documented inline in the ADR: rate-limit
+  key shape, scope of the wire `Log` envelope in this ADR vs in a
+  future wire-protocol ADR, tee-to-`tracing` as commitment vs
+  convenience, cross-session persistence if cannet ever grows a
+  headless mode. Promote to plain `accepted` (or amend) once
+  exercised under real load and once 0004 lands.
+- **Forward references in the done set.** Each landed ADR below
+  contains forward references that should be revisited (and the
+  "once it lands" hedge dropped) when the target ADR lands. Sweep
+  per-target when writing the new ADR:
+  - **When 0004 (gRPC wire) lands**: 0014 § Open questions
+    references `ADR 0004 when it lands` for the wire `Log` envelope
+    scope.
+  - **When 0005 (dockview) lands**: 0003 § Why ("dock layout
+    (ADR 0005 once it lands)"); 0011 § Consequences ("see ADR 0005
+    once it lands").
+  - **When 0006 (xyflow) lands**: 0003 § Why ("graph editing
+    (ADR 0006)") — no "once it lands" hedge but still a forward
+    pointer.
+  - **When 0007 (uPlot) lands**: 0003 § Why ("high-rate plotting
+    (ADR 0007)") — same.
+  - **When 0008 (python-can sidecar) lands**: 0015 § Decision
+    ("ADR 0008 once it lands").
 
 ## Process notes (so we can resume cleanly)
 

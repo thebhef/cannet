@@ -18,14 +18,9 @@ and the license / platform constraints we need to be aware of.
 
 ### GUI / Application Framework
 
-- **Tauri 2** — `adopted` in Phase 1. Rust backend + system WebView frontend.
-  Pairs well with our Rust-friendly server-tier work (ZMQ, binary
-  protocols), fully permissive licensing (MIT + Apache-2.0), small
-  footprint. Risk: WebKitGTK feature/perf parity on Linux — re-evaluate if
-  the trace view can't keep up; Electron remains the documented fallback.
-- **React 18 + Vite + TypeScript** — `adopted` in Phase 1 as the frontend
-  stack inside the Tauri WebView. Mainstream ecosystem, strong virtualized
-  grid options. MIT-licensed.
+- **Tauri 2** / **React 18 + Vite + TypeScript** — `adopted` in
+  Phase 1. Tauri Rust host + system WebView; React/TS/Vite frontend
+  inside the WebView. See [`../docs/adr/0003-tauri-shell-react-frontend.md`](../docs/adr/0003-tauri-shell-react-frontend.md).
 - **`dockview`** (v6, MIT) — `adopted` in Phase 3 for the multi-panel
   shell: arbitrary split / tab / drag / resize layouts of trace and
   project panels (and the plot / transmit panels that arrive in
@@ -94,20 +89,10 @@ and the license / platform constraints we need to be aware of.
   `nom`/`chumsky`/`pest` would be friendlier for power users but adds
   a parser dep plus an autocomplete / error-reporting problem. Revisit
   if the structured editor turns out to be clunky in practice.
-- **Electron** — `proposed (fallback)`. Documented fallback if Tauri's
-  per-OS WebView fragmentation blocks us. Same JS frontend, swap the host
-  shell. Trade-off: ~150 MB bundle, heavier RAM, Node backend instead of
-  Rust.
-- **Qt 6** — `rejected`. Excellent feature set but LGPL relink discipline
-  and the lurking commercial-license question add friction we don't need;
-  prior PySide experience surfaced ergonomic pain getting complex layouts
-  right.
-- **Dear ImGui + ImPlot** — `rejected`. MIT and very fast, but immediate-
-  mode aesthetic and reinvention of standard desktop chrome don't match
-  user expectations for a CAN analyzer.
-- **wxWidgets** — `rejected`. Permissive license and native widgets, but
-  dated tooling (wxAUI), weaker plotting story, and smaller community than
-  the alternatives.
+- **Electron** — `proposed (fallback)`. Documented fallback if
+  Tauri's per-OS WebView fragmentation blocks us. See ADR 0003.
+- **Qt 6** / **Dear ImGui + ImPlot** / **wxWidgets** — `rejected`.
+  See ADR 0003.
 
 ### CAN / CANFD Abstraction
 
