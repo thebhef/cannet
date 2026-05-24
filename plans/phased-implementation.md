@@ -970,13 +970,11 @@ Realised scope notes:
   / filter from the panel toolbar, drag-connect a source onto a
   consumer, and remove a node to delete the underlying element. Node
   positions and viewport persist in the panel's dockview `params`.
-- **Project panel design note** lives at
-  [`plans/project-panel-design.md`](project-panel-design.md): the
-  project panel keeps file-IO + inventory roles (project actions, bus /
-  binding / DBC lists, scoping checkboxes); the graph view owns the
-  spatial wiring story (which filter feeds which trace, etc.). The two
-  surfaces share the same underlying `Project` state through the
-  element registry and context.
+- **Project panel / project graph surface-role split** —
+  see [ADR 0012](../docs/adr/0012-project-panel-graph-split.md).
+  The project panel keeps file-IO + inventory roles; the graph view
+  owns the spatial wiring story. Both surfaces are views over the
+  same `Project` state.
 - **Schema migration**: `PROJECT_SCHEMA_VERSION = 3`. v2 projects open
   via an in-memory migration step that defaults `buses` and
   `interface_bindings` to empty and treats every existing DBC as
