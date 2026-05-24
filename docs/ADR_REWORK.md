@@ -66,6 +66,7 @@ ADR until explicitly revised.
 | 0011 | [`adr/0011-project-file-format.md`](adr/0011-project-file-format.md) | Phase 3 in `plans/phased-implementation.md` | TS/Rust `PROJECT_SCHEMA_VERSION` mismatch flagged in backlog as bug |
 | 0012 | [`adr/0012-project-panel-graph-split.md`](adr/0012-project-panel-graph-split.md) | `plans/project-panel-design.md` (deleted, fully dissolved) | — |
 | 0013 | [`adr/0013-default-receive-all-edge-edits-transmit-by-bus.md`](adr/0013-default-receive-all-edge-edits-transmit-by-bus.md) | Phase 6.5 in `plans/phased-implementation.md` | Three coordinated decisions: consumers receive from every bus by default, user-editable graph edges, transmit binds to `bus_id` not wire channel |
+| 0014 | [`adr/0014-host-system-log.md`](adr/0014-host-system-log.md) | Phase 7 in `plans/phased-implementation.md` | Bounded, session-scoped, flood-protected in-process bus tee'd to `tracing`; sidecars contribute via wire `Log` envelope. **Framing under review** — see Open questions. |
 | 0015 | [`adr/0015-fetched-runtime-binaries.md`](adr/0015-fetched-runtime-binaries.md) | Phase 18 + backlog uv-fetch item | External runtime binaries fetched at a pinned version, not committed or bundled; `uv` is today's instance |
 
 ## ADRs outstanding
@@ -85,7 +86,6 @@ ADR until explicitly revised.
 
 | # | Title | Source material |
 |---|---|---|
-| 0014 | System log: bounded in-process ring + `tracing` fmt + per-(source, template) rate limit | `plans/phased-implementation.md` Phase 7. **Framing flagged for review** by the user when we agreed it — capture the decision but mark `accepted (framing under review)` with an "Open questions" section. |
 
 ## Surfaced this session but not promoted to ADRs
 
