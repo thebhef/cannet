@@ -103,42 +103,27 @@ into.
 
 Scope:
 
-- Define the wire protocol as a tonic / gRPC service in a new
-  `crates/cannet-wire` crate. The service exposes `ListInterfaces` (unary
-  discovery — what CAN interfaces does this server provide?) and `Session`
-  (a single bidirectional stream of `Envelope` messages with `Subscribe`,
-  `Unsubscribe`, `FrameBatch`, and `Error` variants). Frame movement is
-  symmetric: either side sends frames on a subscribed interface using the
-  same wire shape. The protocol does not model cyclic / scheduled emission
-  — sending on a cadence is a feature of the client transmit UI in
-  Phase 5, not the wire.
-- The wire protocol is the universal driver contract. A server can run
-  in-process (Phase 2's BLF replay), as a sidecar (Phase 6 wrappers around
-  `python-can`), or on the network. The same `.proto` covers all three;
-  only the transport varies.
-- `cannet-wire` provides batching adapters between `Stream<CanFrame>` and
-  `Stream<FrameBatch>` so the application code on either side speaks the
-  Phase 1 `cannet-core` types and never deals with batching directly.
-  `FrameBatch` is the only frame-carrying envelope variant — single
-  frames are batches of size one, emitted by the latency-flush rule.
-- New `crates/cannet-server` runs the gRPC service. Phase 2's only
-  supported input is BLF: the server loads a file at startup and streams
-  it on a loop while clients are subscribed to its interfaces. Looping is
-  a server-CLI concern, not a wire concern. BLF is read-only, so the
-  server rejects client transmits with `Error::TX_REJECTED`.
-- Phase 2 is **single-client per server**: a second connection is
+- **Wire protocol in a new `crates/cannet-wire`.** Decisions
+  (transport, encoding, service surface, envelope variants):
+  see [`../docs/adr/0004-grpc-wire-protocol.md`](../docs/adr/0004-grpc-wire-protocol.md).
+- **`crates/cannet-server`** — Phase 2's only supported input is BLF:
+  the server loads a file at startup and streams it on a loop while
+  clients are subscribed to its interfaces. Looping is a server-CLI
+  concern, not a wire concern. BLF is read-only, so the server
+  rejects client transmits with `Error::TX_REJECTED`.
+- **Single-client per server** for Phase 2: a second connection is
   rejected with `Error::BUSY`. Multi-client fanout is in
   `plans/backlog.md`.
-- New `crates/cannet-client` implements `cannet_core::CanFrameSource` over
-  a tonic client, so the GUI's existing trace + decode pipeline consumes a
-  remote server with no changes to its consumer code. The GUI grows a
-  connection panel (host:port + interface picker driven by
-  `ListInterfaces`) alongside the in-process BLF path.
+- **`crates/cannet-client`** implements `cannet_core::CanFrameSource`
+  over a tonic client, so the GUI's existing trace + decode pipeline
+  consumes a remote server with no changes to its consumer code.
+  The GUI grows a connection panel (host:port + interface picker
+  driven by `ListInterfaces`) alongside the in-process BLF path.
 - Server is addressable by host:port. Discovery is **not** in scope.
-- TLS via tonic's `tls` feature (rustls) is configurable but **off by
-  default**; plaintext on loopback is the dev / demo flow. Cert UX
-  (fingerprint pinning, project-file persistence) is deferred until the
-  project-file feature lands.
+- TLS is configurable but off by default (per ADR 0004); plaintext
+  on loopback is the dev / demo flow. Cert UX (fingerprint pinning,
+  project-file persistence) is deferred until the project-file
+  feature lands.
 
 Refinements that landed during implementation:
 
