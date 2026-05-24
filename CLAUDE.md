@@ -129,15 +129,17 @@ inconsistent.
 
 ## File formats
 
-**The BLF is the serialization.** Do not introduce companion sidecar
-files alongside `.blf` to carry data the BLF format can already
-represent. Logical bus assignment is conveyed by the ordered project
-bus list mapping 1:1 to BLF channel numbers — channel index `N`
-corresponds to `project.buses[N]`. The existing notes sidecar
-(`<blf>.notes.json`) predates this rule and is on the list to migrate
-into BLF markers — see `plans/backlog.md`. Don't add new sidecars or
-new fields to the notes sidecar; if it isn't expressible in BLF, raise
-it as a separate decision.
+**No sidecar files.** Data that logically belongs to a file lives
+inside it, using the format's own extension mechanism when one exists
+(DBC's `BA_` custom attributes, BLF's `GLOBAL_MARKER` records, etc.).
+We do not create separate companion files alongside a format file to
+carry project state. See [`docs/adr/0010-no-sidecar-files.md`](docs/adr/0010-no-sidecar-files.md)
+for the rule, the rationale, and the options when a format library
+doesn't yet expose the extension mechanism we need.
+
+BLF specifics: logical bus assignment is conveyed by the ordered
+project bus list mapping 1:1 to BLF channel numbers — channel index
+`N` corresponds to `project.buses[N]`.
 
 ## Documentation
 
