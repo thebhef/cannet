@@ -78,5 +78,5 @@ other.
   doesn't fit either ("clearly file-IO" vs "clearly wiring"), the
   ambiguity is a signal to redesign the affordance, not to
   duplicate it.
-- `plans/project-panel-design.md` (the Phase-6 source for this ADR)
+- `plans/project-panel-design.md` (the prior source for this ADR)
   dissolves; this ADR replaces it.

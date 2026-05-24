@@ -4,9 +4,7 @@ Status: accepted (2026-05-23)
 
 ## Decision
 
-Three coordinated decisions about the project's wiring model,
-landed together in Phase 6.5
-([plans/phased-implementation.md](../../plans/phased-implementation.md)):
+Three coordinated decisions about the project's wiring model:
 
 ### 1. Consumers receive from every bus by default
 

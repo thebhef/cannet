@@ -52,10 +52,10 @@ different version replaces it in place.
 
 - **Two fetch flows are needed**: a dev-side fetch (today
   `scripts/fetch-uv.sh`) and an end-user fetch as part of the
-  installer or first-run host flow. The end-user-side mechanism
-  is a Phase 18 deliverable — see `plans/phased-implementation.md`
-  Phase 18 "Third-party runtime tool fetching strategy" for the
-  remaining implementation choice and per-OS specifics.
+  installer or first-run host flow. The end-user-side mechanism is
+  still TBD — see `plans/phased-implementation.md` §
+  "Third-party runtime tool fetching strategy" for the remaining
+  implementation choice and per-OS specifics.
 - **An offline first-run on a fresh install must surface a clear
   error** with the manual install instructions; "tool not found"
   cannot fail silently.
