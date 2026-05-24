@@ -186,78 +186,20 @@ crate retained long-term).
 
 ### Plotting / Visualization
 
-- **uPlot** — `adopted` (Phase 4; decision confirmed). MIT, ~50 KB, zero
-  dependencies, canvas-based, purpose-built for our case rather than
-  adapted to it: many series on a shared x-axis, built-in drag-zoom and a
-  readout cursor/legend, fast incremental redraw, and a tiny imperative
-  API (`new uPlot(opts, data, el)` + `setData` / `setScale` / `setSize`,
-  plus a `plugins` hook for custom canvas overlays) that drops into a
-  React panel with no wrapper library. The data feeding it comes from the
-  host-side signal sampler (`apps/gui/src-tauri/src/signal_sampler.rs`)
-  merged onto a shared timeline by `apps/gui/src/plotData.ts` — uPlot
-  only renders. Used by `apps/gui/src/PlotPanel.tsx`.
+- **uPlot** (MIT) — `adopted` in Phase 4 for the plot panel
+  renderer. See [`../docs/adr/0007-uplot-plot-renderer.md`](../docs/adr/0007-uplot-plot-renderer.md).
+  Alternatives considered (dygraphs, Chart.js + plugins,
+  lightweight-charts, Apache ECharts, Plotly.js, Highcharts /
+  amCharts, hand-rolled canvas/WebGL) all `rejected` — see
+  ADR 0007.
 
-  Criteria weighting for this pick (confirmed with the maintainer):
-  **cost** first — must be permissively licensed forever, with a low
-  build-it-ourselves cost (the library has to actually save the work);
-  then **performance**, **feature set**, **architectural fit**;
-  maintenance / openness / popularity secondary, since the blast radius
-  is one panel behind a thin adapter. uPlot's one real weakness is bus
-  factor (essentially a single very-active maintainer); mitigated by the
-  permissive license and the small, isolated adapter — fork-and-freeze is
-  cheap if it ever goes dark.
-
-  Scale note: the trace store can hold **hundreds of thousands to
-  millions** of frames, so a signal series can be far larger than uPlot's
-  comfortable redraw size. The renderer is not where that's solved — the
-  host (`signal_sampler::decimate_min_max`, driven by the `sample_signals`
-  command's `max_points` hint) min/max-decimates the decoded series down
-  to ≈the pixel width of the visible window before it reaches uPlot;
-  spikes survive (per-bucket extrema). The live plot also samples
-  incrementally — only the frames appended since the previous tick are
-  decoded, appended to a bounded per-signal cache (re-decimated full
-  re-fetch on overflow) — so a long capture isn't re-decoded every tick.
-
-  Reference design: `plans/plot-panel-reference.html` — a standalone
-  prototype (5 stacked panes × 4 signals, synced x-zoom across panes,
-  per-pane y-zoom, global X cursors + per-pane Y cursors with Δt / 1/Δt /
-  Δy readouts, event marker lines + user notes, a perf badge strip). It's
-  the shape Phase 4's plot panel should grow toward; the current
-  single-pane `PlotPanel.tsx` is the first step, not the destination.
-
-  Seriously considered and rejected:
-  - **dygraphs** — `rejected`. MIT, canvas, mature, with a good
-    live-append story; the credible fallback. But it owns more of the
-    container / interaction model than uPlot, its bundle is several times
-    larger for features we don't need (range selector, annotations, CSV
-    ingest), and its release cadence is much slower.
-  - **Chart.js + chartjs-plugin-streaming + zoom** — `rejected`. MIT and
-    familiar, but a general charting library, not a time-series engine;
-    poor per-update cost and GC pressure at our point counts, and three
-    packages plus a plugin lifecycle to keep working.
-  - **lightweight-charts** — `rejected`. Apache-2.0 and very fast, but
-    finance-chart-shaped (candles, a single price/time pane, a fixed
-    interaction grammar); mapping arbitrary CAN signals with their own
-    units and y-scales onto it fights the API.
-  - **Apache ECharts** — `rejected`. Apache-2.0 and does everything
-    (including streaming via `appendData`), but a large dependency with a
-    config-object programming model — disproportionate bundle and
-    complexity for one panel in a WebView.
-  - **Plotly.js** — `rejected`. The library is MIT (the SaaS is separate
-    and paid) and has a WebGL `scattergl` mode, but it's ~1 MB+ and
-    D3-based — far heavier than the job needs.
-  - **Highcharts / amCharts** — `rejected on cost`. Free for
-    non-commercial use only; commercial use requires a paid license. Out
-    per the "permissively licensed, no fees ever" constraint.
-  - **Hand-rolled canvas / WebGL renderer** — `rejected`. A *good* one
-    (incremental redraw on append, min/max decimation, cursor
-    hit-testing, correct pan/zoom scale maths, DPR handling, axis tick
-    generation) is most of what uPlot already is, tested against a large
-    user base hitting the same edge cases — weeks of build plus ongoing
-    maintenance to re-create an MIT library. Revisit only if a Phase 7
-    profiling baseline shows uPlot's canvas path is a real bottleneck,
-    and then as a WebGL *renderer* (regl-plot-style) under the same data
-    pipeline, not a from-scratch chart.
+  Reference design: `plans/plot-panel-reference.html` — a
+  standalone prototype (5 stacked panes × 4 signals, synced
+  x-zoom across panes, per-pane y-zoom, global X cursors +
+  per-pane Y cursors with Δt / 1/Δt / Δy readouts, event marker
+  lines + user notes, a perf badge strip). The shape the plot
+  panel should grow toward; the current single-pane
+  `PlotPanel.tsx` is the first step, not the destination.
 
 ### Build / Packaging / CI
 
