@@ -37,34 +37,12 @@ and the license / platform constraints we need to be aware of.
   container at 16M px and maps scrollTop fractionally to absolute
   row index. ~120 lines, no external dep.
 - **`@xyflow/react`** (formerly `react-flow`, MIT) — `adopted` in
-  Phase 6 for the project graph view (`apps/gui/src/ProjectGraphPanel.tsx`).
-  Node / edge model with drag-to-create-edge, custom node renderers,
-  controllable state, and a serialisable layout — fits the "lean on a
-  vetted library for failure-mode-rich UI" call from `CLAUDE.md` (graph
-  interaction is the kind of work that compounds badly when
-  hand-rolled). The logical model lives in the project schema
-  (`buses`, `interface_bindings`, `elements` with `filter` /
-  `trace` / `plot` / `transmit` kinds); the view only stores viewport
-  + per-node positions in the panel's dockview `params`, so the
-  library boundary stays thin (swap-out cost is one file). Cost note:
-  ≈100 KB JS gzipped + a small CSS bundle; fine for a desktop app.
-  Alternatives considered (all permissive):
-  - **`cytoscape.js`** + React wrapper — `rejected`. Graph-algorithms-
-    first; weak React integration story (glue rather than first-class).
-  - **`d3-force`** / `d3-zoom` + SVG hand-roll — `rejected`. Viable
-    for very small graphs, but rebuilds what `@xyflow/react` already
-    gives us once the project gains multiple buses / DBCs / filters /
-    consumers.
-  - **`reaflow`, `reagraph`, `nivo/network`** — `rejected`. Smaller
-    bus factor and missing the editing affordances (drag-to-create-
-    edge, custom node UIs) we need.
-- **Filter predicate expression DSL** — `rejected` (Phase 6
-  evaluation). Filter predicates stay structured JSON, edited by the
-  graph view's filter-node UI; `serde_json::Value` already round-trips
-  in the project file (no new dep). A small text DSL parsed by
-  `nom`/`chumsky`/`pest` would be friendlier for power users but adds
-  a parser dep plus an autocomplete / error-reporting problem. Revisit
-  if the structured editor turns out to be clunky in practice.
+  Phase 6 for the project graph view. See [`../docs/adr/0006-xyflow-project-graph.md`](../docs/adr/0006-xyflow-project-graph.md).
+  Alternatives considered (`cytoscape.js`, `d3-force` / `d3-zoom`
+  + SVG hand-roll, `reaflow` / `reagraph` / `nivo/network`) all
+  `rejected` — see ADR 0006.
+- **Filter predicates** — structured JSON in the project file (no
+  new dep). See [`../docs/adr/0016-filter-predicates-structured-json.md`](../docs/adr/0016-filter-predicates-structured-json.md).
 - **Electron** — `proposed (fallback)`. Documented fallback if
   Tauri's per-OS WebView fragmentation blocks us. See ADR 0003.
 - **Qt 6** / **Dear ImGui + ImPlot** / **wxWidgets** — `rejected`.
