@@ -134,7 +134,7 @@ These need detailing
 
 ### Graph-and-bus integration fixes
 
-Items surfaced during the Phase-6.5 bus fan-out / graph-view follow-up
+Items surfaced during the Phase-6.5 default-receive-all / graph-view follow-up
 work that haven't been closed out yet. Group them together so the
 next pass on this surface can address them as one piece.
 
@@ -359,14 +359,15 @@ next pass on this surface can address them as one piece.
   a hard kill, not the nominal `server.stop` shutdown the user wants
   for the normal-exit path.
 - `[packaging]` end-user `uv` fetch mechanism: pick between an
-  installer post-step and a first-run host downloader, and implement.
-  We have decided **not** to commit per-OS `uv` binaries into the
-  repo or pack them into the Tauri bundle artefact (see Phase 18
-  "third-party runtime tool fetching strategy"); the runtime lookup
-  chain (`tools/uv/uv` → `PATH` `uv` → `python3` fallback) stays
-  unchanged, only how `tools/uv/uv` gets populated on an end-user
-  machine. Today `scripts/fetch-uv.sh` is the dev-side fetch; the
-  end-user-side fetch is the open work.
+  installer post-step and a first-run host downloader, and
+  implement. Per [ADR 0015](../docs/adr/0015-fetched-runtime-binaries.md),
+  the binary is fetched, not committed or bundled; the runtime
+  lookup chain (`tools/uv/uv` → `PATH` `uv` → `python3` fallback)
+  stays unchanged, only how `tools/uv/uv` gets populated on an
+  end-user machine. Today `scripts/fetch-uv.sh` is the dev-side
+  fetch; the end-user-side fetch is the open work. See Phase 18
+  "Third-party runtime tool fetching strategy" for the two
+  candidate mechanisms.
 - `[naming]` `sidecar.rs` internal identifiers `LaunchPath::BundledUv`
   and `bundled_uv_path()` predate the "fetched, not bundled" decision
   and should be renamed (e.g. `LocalUv` / `local_uv_path`) for
