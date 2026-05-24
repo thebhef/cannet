@@ -10,9 +10,9 @@ committed to this repo, and not packed into the installer artefact.
 
 Today this means `uv` (Apache-2.0/MIT, Astral's Python toolchain
 manager used by the python-can sidecar — see
-[ADR 0008](0008-python-can-sidecar.md) once it lands). The rule
-generalises: any future third-party runtime binary we depend on
-follows the same pattern.
+[ADR 0008](0008-python-can-sidecar.md)). The rule generalises:
+any future third-party runtime binary we depend on follows the
+same pattern.
 
 First-party code we maintain (the GUI, our Rust crates, the
 sidecar Python package) is bundled as usual. The split is **by who

@@ -87,16 +87,14 @@ ADR until explicitly revised.
 | 0005 | [`adr/0005-dockview-panel-layout.md`](adr/0005-dockview-panel-layout.md) | inventory § GUI / Application Framework | dockview for the multi-panel shell; layout serialised via dockview's JSON and stored verbatim in the project file (ADR 0011); flexlayout-react / rc-dock / react-mosaic / golden-layout rejected. Closed forward references in 0003 and 0011. |
 | 0006 | [`adr/0006-xyflow-project-graph.md`](adr/0006-xyflow-project-graph.md) | inventory § GUI / Application Framework | `@xyflow/react` for the project graph view; cytoscape / d3-force / reaflow rejected. Closed forward reference in 0003. |
 | 0007 | [`adr/0007-uplot-plot-renderer.md`](adr/0007-uplot-plot-renderer.md) | inventory § Plotting / Visualization | uPlot as the canvas renderer; host owns decimation (min/max bucketing, `max_points` hint); frontend merges per-signal series onto a shared timeline; dygraphs (credible fallback) / Chart.js / lightweight-charts / ECharts / Plotly / Highcharts/amCharts (license) / hand-rolled rejected. Closed forward reference in 0003. |
+| 0008 | [`adr/0008-python-can-sidecar.md`](adr/0008-python-can-sidecar.md) | inventory § Hardware Drivers | Separate sidecar process wrapping python-can for Vector/Kvaser/PEAK; gRPC wire is the universal driver contract (ADR 0004); vendor libraries are runtime, user-installed (not bundled); native-FFI-per-vendor / socketcan-only / multi-sidecar rejected. Closed forward references in 0014 and 0015. |
 
 ## ADRs outstanding
 
-All remaining ADRs are inventory-derived (consolidate meaty entries
-in `plans/technology-inventory.md`). The plan-doc-extracted set is
-complete.
-
-| # | Title | Source material |
-|---|---|---|
-| 0008 | Hardware drivers via one `python-can` sidecar | python-can, uv, grpcio entries; Vector XL / Kvaser / PEAK vendor blobs; native-FFI rejection; socketcan-only rejection; multi-sidecar deferral. Forward-referenced by 0014 and 0015. |
+**None — the migration is complete.** Every architectural decision
+identified at the start of this session has its own ADR; the
+inventory and plan-doc source entries have been shrunk to pointers;
+every forward reference between landed ADRs has been swept.
 
 ## Surfaced this session but not promoted to ADRs
 
@@ -141,14 +139,9 @@ complete.
   tee-to-`tracing` as commitment vs convenience, cross-session
   persistence if cannet ever grows a headless mode. Promote to
   plain `accepted` (or amend) once exercised under real load.
-- **Forward references in the done set.** Each landed ADR below
-  contains forward references that should be revisited (and the
-  "once it lands" hedge dropped) when the target ADR lands. Sweep
-  per-target when writing the new ADR:
-  - **When 0007 (uPlot) lands**: 0003 § Why ("high-rate plotting
-    (ADR 0007)") — forward pointer with no hedge.
-  - **When 0008 (python-can sidecar) lands**: 0015 § Decision
-    ("ADR 0008 once it lands").
+- **Forward references in the done set.** All swept — every
+  "once it lands" hedge has been removed; every cross-ADR pointer
+  in the done set targets an ADR that exists on disk.
 
 ## Process notes (so we can resume cleanly)
 

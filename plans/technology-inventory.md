@@ -73,64 +73,22 @@ without reshaping callers.
 
 ### Hardware Drivers
 
-- **`python-can`** (Apache-2.0; depends on LGPL-3.0 vendor wrappers
-  internally for some backends) — `adopted` (Phase 8). Used inside
-  the auto-launched `cannet-python-can` sidecar process to enumerate
-  and drive Vector, Kvaser, and PEAK channels through one library.
-  The single sidecar is the canonical Phase-8 shape; the wire protocol
-  is the universal driver contract, so adding a second sidecar later
-  (Rust-native, different driver, etc.) needs no protocol change.
-  LGPL diligence: the sidecar is its own process with its own
-  user-replaceable venv (see `uv` below) and a small internal driver
-  interface, so a user can swap `python-can` out without touching
-  `cannet-*` code. `servers/LICENSING.md` records the analysis.
-- **`uv`** (Rust, Apache-2.0 / MIT) — `adopted` (Phase 8). Astral's
-  Python package & project manager, distributed as a single
-  self-contained binary; manages venvs, installs Python itself if
-  needed. **Fetched at a pinned version, not committed or
-  bundled** — see [ADR 0015](../docs/adr/0015-fetched-runtime-binaries.md).
-  `uv sync` materialises the sidecar's venv lazily on first launch,
-  `uv run` starts the sidecar. Lets users replace the default
-  driver library in-place (`uv pip install …`) without rebuilding
-  the app. Fallback if Astral disappears is `python -m venv` +
-  `pip`, a recoverable swap.
-- **`grpcio`** + **`grpcio-tools`** (Python, Apache-2.0) — `adopted`
-  (Phase 8). Python implementation of gRPC; generates stubs from
-  `cannet-wire`'s existing `.proto` so the sidecar speaks the same
-  protocol as `cannet-server` and `cannet-client`. Mainstream, no
-  realistic alternative if we want gRPC clients in Python.
-- **Vector XL Driver Library** — `adopted` (Phase 8) as a
-  *runtime, user-installed* dependency. Vector's proprietary,
-  freely redistributable for use with Vector hardware. Windows is the
-  first-class target; Linux is partial. Not bundled with the GUI;
-  installed by the user per Vector's own instructions. Wrapped via
-  `python-can`'s `vector` backend.
-- **Kvaser CANlib** — `adopted` (Phase 8) as a *runtime, user-
-  installed* dependency. Kvaser's proprietary, freely redistributable.
-  Cross-platform (Windows, Linux; macOS partial). Wrapped via
-  `python-can`'s `kvaser` backend.
-- **PEAK PCAN-Basic** — `adopted` (Phase 8) as a *runtime, user-
-  installed* dependency. PEAK's proprietary, freely redistributable.
-  Cross-platform. Wrapped via `python-can`'s `pcan` backend. (PEAK on
-  Linux can alternatively go through the in-kernel `peak_usb` driver
-  via socketcan; that's a future option, see the socketcan backlog
-  entry.)
-- **Native Rust FFI per vendor** (e.g. `vector-xl-sys`,
-  `kvaser-canlib-sys`, `pcan-basic-sys`) — `rejected for Phase 8`.
-  Writing three FFI shims plus their packaging is ≈3× the work of
-  wrapping one `python-can` library, for a performance win we have no
-  evidence we need. Revisit only if Phase 14 profiling shows a
-  specific sidecar is the bottleneck for a specific workload; the
-  wire protocol lets us swap one vendor over to a native adapter
-  without touching the rest.
-- **socketcan-only Linux path** — `rejected for Phase 8`. Not
-  cross-platform; covers neither Windows nor macOS. PEAK's Linux
-  kernel driver path is a future option, tracked in
-  `plans/backlog.md`.
-- **Multiple vendor sidecars in Phase 8** — `rejected for Phase 8`,
-  deliberately preserved as a future possibility on the same wire.
-  One `python-can` process covers all three vendors today; we can
-  fan out later if needed.
+- **`python-can`** (Apache-2.0) — `adopted` in Phase 8. Wrapped
+  by the `cannet-python-can` sidecar. See [`../docs/adr/0008-python-can-sidecar.md`](../docs/adr/0008-python-can-sidecar.md).
+- **`uv`** (Rust, Apache-2.0 / MIT) — `adopted` in Phase 8.
+  Astral's Python package & project manager. Manages the
+  sidecar's venv; `uv sync` materialises it lazily on first
+  launch, `uv run` starts the sidecar. Fetching strategy: see
+  [ADR 0015](../docs/adr/0015-fetched-runtime-binaries.md).
+- **`grpcio`** + **`grpcio-tools`** (Python, Apache-2.0) —
+  `adopted` in Phase 8 as the sidecar's gRPC runtime. See
+  ADR 0008.
+- **Vector XL Driver Library** / **Kvaser CANlib** /
+  **PEAK PCAN-Basic** — `adopted` as runtime, user-installed
+  vendor dependencies; not bundled. See ADR 0008.
+- **Native Rust FFI per vendor**, **socketcan-only Linux path**,
+  **Multiple vendor sidecars** — all `rejected` (or deferred).
+  See ADR 0008.
 
 ### File Formats
 
