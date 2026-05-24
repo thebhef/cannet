@@ -577,11 +577,24 @@ vendor-prefixed names (`vector:VN1640A/ch0`, `kvaser:0`,
 
 **Auto-launch**. The GUI's Tauri host spawns the sidecar at startup
 (`apps/gui/src-tauri/src/sidecar.rs`); the user does not run anything
-in `servers/cannet-python-can/` by hand. The sidecar's stdout / stderr
-and exit code feed the **System Messages** panel tagged
-`sidecar:python-can`. A crashing sidecar gets up to three auto-restart
-attempts per session; once the budget is exhausted, the **Restart
-sidecar** Tauri command clears it.
+in `servers/cannet-python-can/` by hand. The sidecar binds to an
+OS-assigned ephemeral port (`127.0.0.1:0`) and reports the actual
+address back on its `sidecar\tlistening\t<addr>` banner; the host
+parses it into `SidecarState` and exposes it through the
+`get_sidecar_status` Tauri command and the `sidecar-status-changed`
+event, which the project panel's "Local sidecar" row reads so the
+user can bind interfaces without typing an address. The sidecar's
+stdout / stderr and exit code feed the **System Messages** panel
+tagged `sidecar:python-can`. A crashing sidecar gets up to three
+auto-restart attempts per session; once the budget is exhausted,
+the **Restart sidecar** Tauri command clears it.
+
+**Lifecycle: dies with the host**. The host pipes the sidecar's
+stdin and writes nothing to it. When the host process exits (clean
+or not), the OS closes the pipe and the sidecar's stdin-EOF watcher
+calls `server.stop(grace=2.0)` — no orphaned sidecar holds hardware
+open. The same mechanism covers panics and SIGKILL; it does not
+require a `RunEvent::Exit` handler or a Windows job-object.
 
 **`uv` resolution**. `uv` is fetched, not bundled — see
 [`docs/adr/0015-fetched-runtime-binaries.md`](docs/adr/0015-fetched-runtime-binaries.md).
