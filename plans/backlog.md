@@ -21,8 +21,37 @@ work or admit it isn't going to happen and delete it.
 
 ### High priority
 
-Usability issues flagged for near-term work — fold these into a phase
-before picking up the lower-priority follow-ups below.
+Near-term work — fold these into a phase before picking up the
+lower-priority follow-ups below.
+
+#### No-sidecar return-to-compliance ([ADR 0010](../docs/adr/0010-no-sidecar-files.md))
+
+- `[refactor]` **Remove the `<blf>.notes.json` sidecar; store notes as
+  marker frames inside the BLF itself.** Touches `cannet-blf` and
+  `cannet-gui` (`save_capture`, `open_log`). The BLF format supports
+  marker entries natively (`GLOBAL_MARKER`, object type 96); the
+  sidecar exists only because the upstream writer doesn't yet expose
+  them — see the next item. Migration: existing `.notes.json` files
+  are read once on `open_log` (best effort), promoted to BLF markers
+  on the next `save_capture`, then deleted. Once this lands, remove
+  the sidecar load path entirely **and** scrub residual mentions of
+  the sidecar (and of the phase that introduced it) from project
+  docs — both plan docs (`plans/technology-inventory.md`,
+  `plans/phased-implementation.md`) and rustdoc
+  ([crates/cannet-blf/src/lib.rs](../crates/cannet-blf/src/lib.rs)
+  module comment, [apps/gui/src-tauri/src/notes.rs](../apps/gui/src-tauri/src/notes.rs)
+  module comment, and the `AppState::notes` / `open_log` comments in
+  [apps/gui/src-tauri/src/lib.rs](../apps/gui/src-tauri/src/lib.rs)).
+  Blocked on the upstream contribution below.
+- `[feat]` **Upstream `blf_asc`: contribute `GLOBAL_MARKER` object
+  write and read** (Vector's native annotation type, object type 96).
+  The upstream crate currently exposes no marker type and no public
+  hook on `BlfWriter` for arbitrary object emission. Crate is small
+  (1.6 kloc, MIT/Apache, contribution-friendly). Once the API exists,
+  `cannet-blf`'s `BlfCaptureWriter` folds notes into the BLF as
+  markers and the previous item unblocks.
+
+#### Other near-term work
 
 - `[ui]` **Element display names need one model-owned source of truth
   and a shared resolver, used by every view.** Today each view derives
