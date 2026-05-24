@@ -41,8 +41,6 @@ and the license / platform constraints we need to be aware of.
   Alternatives considered (`cytoscape.js`, `d3-force` / `d3-zoom`
   + SVG hand-roll, `reaflow` / `reagraph` / `nivo/network`) all
   `rejected` — see ADR 0006.
-- **Filter predicates** — structured JSON in the project file (no
-  new dep). See [`../docs/adr/0016-filter-predicates-structured-json.md`](../docs/adr/0016-filter-predicates-structured-json.md).
 - **Electron** — `proposed (fallback)`. Documented fallback if
   Tauri's per-OS WebView fragmentation blocks us. See ADR 0003.
 - **Qt 6** / **Dear ImGui + ImPlot** / **wxWidgets** — `rejected`.
