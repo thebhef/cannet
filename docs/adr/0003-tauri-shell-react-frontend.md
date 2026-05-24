@@ -25,11 +25,12 @@ WebView gets OS security updates.
 
 **React + TypeScript.** The panels cannet needs — dock layout
 ([ADR 0005](0005-dockview-panel-layout.md)), graph editing
-([ADR 0006](0006-xyflow-project-graph.md)), high-rate
-plotting (ADR 0007) — are failure-mode-rich UI worth leaning on
-vetted libraries for rather than hand-rolling. React has
-first-class TypeScript packages for each. TypeScript surfaces
-shape mismatches at the IPC boundary before they hit runtime.
+([ADR 0006](0006-xyflow-project-graph.md)), high-rate plotting
+([ADR 0007](0007-uplot-plot-renderer.md)) — are failure-mode-rich
+UI worth leaning on vetted libraries for rather than hand-rolling.
+React has first-class TypeScript packages for each. TypeScript
+surfaces shape mismatches at the IPC boundary before they hit
+runtime.
 
 **Vite.** The de-facto React/TS dev-loop tool — fast HMR, no
 configuration mass. Mentioned by name because the project version
