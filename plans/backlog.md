@@ -32,6 +32,7 @@ These need detailing
   - random port selection on start, report back to gui
   - update connection selector panel in gui; local ports should be top-level item along third 'add network' interface
   - test with real hardware when it arrives, maybe can do virtual hardware with specific vendor drivers? maccan?
+  - BLF i/o implementation and removal of sidecar notes.json
 
 #### `cannet-blf` own implementation ([ADR 0009](../docs/adr/0009-dbc-blf-readers.md))
 
