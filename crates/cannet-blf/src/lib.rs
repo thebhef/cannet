@@ -2,7 +2,7 @@
 //! Phase-9 [`BlfCaptureWriter`] that turns a stream of
 //! [`cannet_core::CanFrame`]s back into a BLF file.
 //!
-//! The reader wraps `blf_asc::BlfReader` and translates each
+//! Today the reader wraps `blf_asc::BlfReader` and translates each
 //! `blf_asc::Message` into a [`cannet_core::CanFrame`], picking the
 //! right [`CanFramePayload`] variant based on the BLF object flags
 //! (classic data / FD / remote / error). The wire shape from the
@@ -14,6 +14,22 @@
 //! [`BlfCaptureWriter::finish`] — a mid-write crash therefore leaves
 //! no half-file behind at `<dest>`.
 //!
+//! ## Phase 9.5 — native implementation in progress
+//!
+//! Per [ADR 0009](../../../docs/adr/0009-dbc-blf-readers.md), the
+//! `blf_asc` wrapper is being replaced tranche-by-tranche with a
+//! focused native implementation rooted in [`format`]. The public
+//! `BlfCanFrameSource` / `BlfCaptureWriter` surface stays unchanged
+//! across the swap. The
+//! [BLF feature-support matrix](../../../docs/blf-feature-support.md)
+//! is the running checklist; each landed object type updates its
+//! row in the same commit that ships the code. The
+//! `vector-blf-oracle` cargo feature enables black-box comparison
+//! tests against Technica's `vector_blf` C++ library
+//! (`tests/oracle.rs`).
+//!
+//! [`CanFramePayload`]: cannet_core::CanFramePayload
+//!
 //! ## Marker / annotation round-trip
 //!
 //! Upstream `blf_asc` 0.2 covers only frame object types; it has no
@@ -21,9 +37,10 @@
 //! for arbitrary object emission. Phase 9 ships note round-trip via
 //! a sidecar `<file>.blf.notes.json` written alongside the BLF —
 //! the third-party-reader visibility of notes is a documented
-//! deferral pending an upstream contribution. See
-//! `plans/technology-inventory.md` (the `blf_asc` `GLOBAL_MARKER`
-//! entry) and `plans/backlog.md` (the upstream contribution item).
+//! deferral that Phase 9.5 Tranche 2 (`GLOBAL_MARKER` read+write)
+//! unblocks.
+
+pub mod format;
 
 use std::fs::{self, File};
 use std::io;
