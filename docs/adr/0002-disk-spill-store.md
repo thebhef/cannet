@@ -153,6 +153,12 @@ not two production paths to keep in sync.
   Rejected (DS-6). Two production implementations of one contract is
   duplication the project has already shed on the view side; the
   `Vec` store earns its keep only as a test double.
+- **Raw `libc` / `windows-sys` FFI for the `mmap` syscalls.**
+  Rejected. `memmap2` already wraps POSIX `mmap` and Windows
+  `CreateFileMapping` / `MapViewOfFile` behind one Rust API.
+  Re-creating that per-OS plumbing is hand-written failure-mode
+  surface for no gain — `memmap2` is the maintained successor to
+  the unmaintained `memmap` crate and the de-facto Rust standard.
 - **An append-only file with no random-access index** was already
   rejected in ADR 0001; DS-1's fixed-size records are how this ADR
   delivers the random access ADR 0001 requires.
