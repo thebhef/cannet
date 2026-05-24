@@ -508,7 +508,7 @@ to delete it (the wildcard `"*"` source expands into the explicit
 and the viewport persist in the panel's dockview `params`. The
 graph is the spatial view onto the same project state the project
 panel shows as lists — see
-[`plans/project-panel-design.md`](plans/project-panel-design.md)
+[`docs/adr/0012-project-panel-graph-split.md`](docs/adr/0012-project-panel-graph-split.md)
 for the split of responsibilities.
 
 **Transmit by bus**. The transmit panel composes a frame per
