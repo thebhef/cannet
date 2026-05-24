@@ -215,6 +215,7 @@ pub fn run() {
             clear_notes,
             save_capture,
             sidecar::restart_sidecar,
+            sidecar::get_sidecar_status,
         ])
         .setup(|app| {
             // Make sure the main window has the id our capabilities expect.
