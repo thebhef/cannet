@@ -55,6 +55,5 @@ surface; see `plans/backlog.md` § High priority.
   contribute `GLOBAL_MARKER` write/read to `blf_asc`; migrate
   `cannet-blf`'s `BlfCaptureWriter` to write markers; one-shot
   read-and-promote of any legacy `.notes.json` on `open_log`; delete
-  the sidecar code path; scrub residual mentions of the sidecar (and
-  of the phase that introduced it) from active project docs as the
-  cleanup lands.
+  the sidecar code path; scrub residual mentions of the sidecar from
+  active project docs as the cleanup lands.

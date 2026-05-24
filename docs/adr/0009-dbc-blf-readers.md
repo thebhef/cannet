@@ -192,8 +192,10 @@ most-used BLF implementations in the open ecosystem: `python-can`
   sidecar removal per [ADR 0010](0010-no-sidecar-files.md));
   (3) `EVENT_COMMENT` + `APP_TEXT` (preserves third-party annotations);
   (4) `CAN_STATISTIC` + `DATA_LOST_BEGIN/END` (capture-integrity
-  surfacing). Scheduled as a phase in `plans/phased-implementation.md`
-  when picked up; not blocking on Phase 10 / 11.
+  surfacing). Scheduled in `plans/phased-implementation.md` when
+  picked up; not blocking on the disk-spill capture-store work
+  (ADRs [0001](0001-indefinite-length-capture.md) /
+  [0002](0002-disk-spill-store.md)).
 - **Optional future contribution.** If the implementation matures
   well, publishing it as a standalone crate would fill a real gap
   in the Rust BLF ecosystem — no existing Rust crate covers

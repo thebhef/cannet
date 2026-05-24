@@ -47,15 +47,17 @@ are not part of this source-of-truth guarantee.
 - The host accessor contract — `RowPage` and `DecimatedRange`, see
   [`../../plans/windowed-model-convergence.md`](../../plans/windowed-model-convergence.md)
   — must be async and paged, and must never assume the capture fits in
-  RAM. It is frozen disk-spill-ready in Phase 10 Slice 1, before the
-  disk-spilled store exists.
-- The filtered-trace scan and the decoded-signal cache, O(capture) or
-  unbounded today, become mandatory perf work: a filter index and a
-  decimated decoded-sample tier. Both land in Phase 11.
+  RAM. The contract is the same whether the underlying store is
+  RAM-only or disk-spilled.
+- The filtered-trace scan and the decoded-signal cache cannot stay
+  O(capture) or unbounded when the capture exceeds RAM. A filter
+  index and a decimated decoded-sample tier are the required perf
+  work; both are decided in
+  [`0002-disk-spill-store.md`](0002-disk-spill-store.md).
 - Frontend views must page and never hold the whole capture — already
   the binding rule in CLAUDE.md "GUI architecture".
 - The on-disk format, the index structure, the hot-window eviction
-  policy, and the decimated tiers are Phase 11 design work; this ADR
+  policy, and the decimated tiers are out of scope for this ADR — it
   fixes only that the store is random-access and loss-free. Those
   decisions are made in
   [`0002-disk-spill-store.md`](0002-disk-spill-store.md).

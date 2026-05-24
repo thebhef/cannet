@@ -6,13 +6,10 @@ Status: accepted (2026-05-20)
 
 [ADR 0001](0001-indefinite-length-capture.md) fixed that captures are
 indefinite-length and that the raw store is random-access and
-disk-spilled. It deliberately deferred the design: "The on-disk
-format, the index structure, the hot-window eviction policy, and the
-decimated tiers are Phase 11 design work; this ADR fixes only that the
-store is random-access and loss-free."
+disk-spilled. It deliberately deferred the on-disk format, the index
+structure, the hot-window eviction policy, and the decimated tiers.
 
-This ADR makes those deferred decisions. It is **normative for
-Phase 11**.
+This ADR makes those deferred decisions.
 
 The constraints they answer to:
 
@@ -156,8 +153,8 @@ not two production paths to keep in sync.
   frames.
 - **Keeping the in-RAM `Vec` store as a parallel production path.**
   Rejected (DS-6). Two production implementations of one contract is
-  the duplication Phase 10 removed on the view side; the `Vec` store
-  earns its keep only as a test double.
+  duplication the project has already shed on the view side; the
+  `Vec` store earns its keep only as a test double.
 - **An append-only file with no random-access index** was already
   rejected in ADR 0001; DS-1's fixed-size records are how this ADR
   delivers the random access ADR 0001 requires.
@@ -166,11 +163,10 @@ not two production paths to keep in sync.
 
 - **New dependency: `memmap2`** (cross-platform `mmap`: POSIX `mmap`
   on Unix, `CreateFileMapping` / `MapViewOfFile` on Windows;
-  MIT/Apache-2.0). Recorded in `plans/technology-inventory.md`, status
-  `proposed` for Phase 11.
-- The `RowPage` / `DecimatedRange` host accessor signatures frozen in
-  Phase 10 Slice 1 are unchanged; Phase 11 swaps only their
-  implementation.
+  MIT/Apache-2.0). Recorded in `plans/technology-inventory.md`.
+- The `RowPage` / `DecimatedRange` host accessor signatures from
+  [ADR 0001](0001-indefinite-length-capture.md) are unchanged; only
+  their implementation swaps.
 - The disk-spill store is **ephemeral scratch** — created per session,
   not persisted across runs, and not a serialization format. "Save
   Capture" to `.blf` remains the separate export. No new `.blf`
@@ -186,4 +182,4 @@ not two production paths to keep in sync.
   `EXCEPTION_IN_PAGE_ERROR` (Windows) rather than a recoverable error
   return — an acceptable "the scratch volume failed" failure mode for
   an ephemeral store.
-- Phase 11's exit benchmark exercises this design at 10^8+ frames.
+- The design is exercised at 10^8+ frames by an exit benchmark.

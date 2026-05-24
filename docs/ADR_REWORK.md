@@ -60,11 +60,14 @@ ADR until explicitly revised.
   inside the ADR — the ADR is the durable record, working-agreement
   docs are advisory and movable. (Caught on ADR 0003 after the
   initial draft.)
-- **ADRs don't refer to phases.** No "Phase 2 baseline / Phase 6
-  adds X / re-validated under Phase 7." Phases are a plan-doc
-  ordering artefact; ADRs describe the decision in present tense
-  ("the service is two RPCs"), not the schedule on which it
-  landed. (Caught on ADR 0004 after the initial draft.)
+- **ADRs don't refer to specific phase numbers.** No "Phase 2
+  baseline / Phase 6 adds X / re-validated under Phase 7 / lands in
+  Phase 11." Specific phases are a plan-doc schedule artefact; ADRs
+  describe the decision in present tense ("the service is two RPCs",
+  "the contract is the same whether the underlying store is RAM-only
+  or disk-spilled"). Generic words ("phased delivery") are fine — the
+  point is to avoid coupling the *architecture* to a *schedule*.
+  (Caught on ADR 0004 after the initial draft.)
 
 ## ADRs done
 
