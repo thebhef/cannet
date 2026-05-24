@@ -16,7 +16,7 @@ The same service definition is implemented by every driver context:
 - **In-process drivers** (the BLF replay source, future Rust-native
   drivers) speak it through a loopback channel.
 - **Local sidecar processes** (the `cannet-python-can` sidecar of
-  ADR 0008 once it lands) speak it over loopback TCP.
+  [ADR 0008](0008-python-can-sidecar.md)) speak it over loopback TCP.
 - **Remote test rigs and Rust-native servers** speak it over the
   network with optional TLS via tonic's `tls` feature
   (rustls — Apache-2.0/MIT/ISC).

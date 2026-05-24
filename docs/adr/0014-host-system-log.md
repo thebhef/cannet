@@ -79,7 +79,8 @@ as in-process emitters.
   persistent record.
 - **The wire→bus bridge ships before its live producer.** The host
   side that maps wire `Log` → local bus is in place but has no live
-  producer until the first sidecar uses it (ADR 0008 once it lands).
+  producer until the first sidecar uses it
+  ([ADR 0008](0008-python-can-sidecar.md)).
 
 ## Open questions (framing under review)
 
