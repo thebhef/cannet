@@ -264,19 +264,14 @@ Scope:
   trace, same as a chronological panel. (Folds in the `[ui]` "by ID
   mode" item from `plans/backlog.md`; the rest-of-bus *transmit*
   gridview from `features.md` is the TX counterpart and stays Phase 5+.)
-- **Project panel + project file.** A project is a JSON file
-  (`features.md`: "projects — includes window layouts, bus configs,
-  references DBCs … DBC should be reloadable from disk at any time").
-  Opening a project restores the panel layout (which panels exist, their
-  dock positions, their per-panel config), the bus / connection
-  configuration (in-process BLF path and/or remote server host:port plus
-  subscribed interfaces), and the DBC reference(s) by path. The project
-  panel is the UI for New / Open / Save / Save As, lists the configured
-  buses, and shows the referenced DBC(s) with a "reload from disk" action
-  — a project's DBC reference is a path, not an embedded copy, so reload
-  re-reads the file. The most-recently-opened project is reopened on
-  launch, so panel layout survives an app restart by virtue of living in
-  the project file rather than in a separate layout blob.
+- **Project panel + project file.** Phase 3 ships the project file
+  ([ADR 0011](../docs/adr/0011-project-file-format.md) — single JSON
+  document holding the panel layout, bus/connection config, project
+  elements, and DBC references) and its project panel UI: New / Open /
+  Save / Save As, the configured-buses list, and the referenced DBC(s)
+  with a "reload from disk" action (DBCs are referenced by path, never
+  embedded). The most-recently-opened project is reopened on launch,
+  so panel layout survives an app restart.
 
 Out of scope (deferred to later phases / backlog):
 
