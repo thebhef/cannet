@@ -4,9 +4,8 @@ Status: accepted (2026-05-23)
 
 ## Decision
 
-A project is a single JSON file, read and written by `open_project` /
-`save_project` ([apps/gui/src-tauri/src/project.rs](../../apps/gui/src-tauri/src/project.rs)).
-It carries the panel layout, the project's elements
+A project is a single JSON file with explicit open and save
+operations. It carries the panel layout, the project's elements
 (`trace` / `plot` / `transmit` / `filter`), the logical buses and
 interface bindings, the loaded DBC references with per-DBC bus
 scoping, and the remote-server address. DBCs are **referenced by
@@ -51,16 +50,15 @@ file is in a different category.
 
 ## Consequences
 
-- Adding fields means bumping `PROJECT_SCHEMA_VERSION` and adding a
-  migration step in `project.rs`. The version history is documented
-  inline on the const.
+- Adding fields means bumping the schema version and adding a
+  migration step. Version history is documented in place.
 - The "host doesn't interpret the layout" rule has one documented
   exception: schema migrations that need to reach into the dockview
-  blob (e.g. the v3 → v4 strip of plot-panel `params.notes`) walk it
-  deliberately and locally. Each such migration is a few lines in
-  `project.rs` and is the only time the host parses the blob's shape.
-- TypeScript and Rust both define `PROJECT_SCHEMA_VERSION`; they must
-  stay in lockstep. They currently do not — see `plans/backlog.md`.
+  blob walk it deliberately and locally. That is the only time the
+  host parses the blob's shape.
+- The schema version is defined in both TypeScript and Rust; they
+  must stay in lockstep. They currently do not — see
+  `plans/backlog.md`.
 - When dockview is one day swapped (it sits behind a thin adapter —
   see [ADR 0005](0005-dockview-panel-layout.md)), the on-disk
   `layout` field can either migrate forward or be re-derived from

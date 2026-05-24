@@ -29,16 +29,16 @@ reads it for free. Use them.
 
 ## Outstanding violation
 
-`<file>.blf.notes.json` exists alongside saved captures today. It was
-introduced because `blf_asc` 0.2 supports neither `GLOBAL_MARKER`
-writes (no public `BlfWriter` hook for arbitrary object emission) nor
-reads (the reader silently drops unrecognised object types), so a
-marker authored by us would be invisible and one authored by Vector
-CANalyzer is already invisible. Reaching for a sidecar was the wrong
-response — the correct one was to contribute the missing API upstream
-(the crate is small, 1.6 kloc, MIT/Apache, contribution-friendly).
-Returning to compliance is the highest-priority follow-up on this
-surface; see `plans/backlog.md` § High priority.
+`<file>.blf.notes.json` exists alongside saved captures today. It
+was introduced because the BLF library cannet then used supported
+neither `GLOBAL_MARKER` writes nor reads, so a marker authored by
+cannet would have been invisible and one authored by Vector
+CANalyzer was already invisible. Reaching for a sidecar was the
+wrong response — the correct one is to control the BLF
+implementation enough to use the format's own extension mechanism,
+which is exactly what [ADR 0009](0009-dbc-blf-readers.md) commits
+cannet to doing. Returning to compliance is the highest-priority
+follow-up on this surface; see `plans/backlog.md` § High priority.
 
 ## Consequences
 
@@ -47,13 +47,15 @@ surface; see `plans/backlog.md` § High priority.
   format library upstream and use the format's extension mechanism;
   (b) pick a different format; (c) don't store the data. A sidecar is
   not an option.
-- Library evaluations (see [ADR 0009](0009-dbc-blf-readers.md) once it
-  lands) weigh whether the library exposes the format's extension
-  mechanisms — a library that hides them turns this rule into a
-  recurring contribution burden.
+- Library evaluations weigh whether the library exposes the
+  format's extension mechanisms — a library that hides them turns
+  this rule into a recurring contribution burden, or forces the
+  kind of own-implementation decision recorded in
+  [ADR 0009](0009-dbc-blf-readers.md) for BLF.
 - The return-to-compliance path for `<file>.blf.notes.json` is:
-  contribute `GLOBAL_MARKER` write/read to `blf_asc`; migrate
-  `cannet-blf`'s `BlfCaptureWriter` to write markers; one-shot
-  read-and-promote of any legacy `.notes.json` on `open_log`; delete
-  the sidecar code path; scrub residual mentions of the sidecar from
-  active project docs as the cleanup lands.
+  `cannet-blf` gains `GLOBAL_MARKER` read+write per
+  [ADR 0009](0009-dbc-blf-readers.md); migrate `cannet-blf`'s
+  `BlfCaptureWriter` to write markers; one-shot read-and-promote
+  of any legacy `.notes.json` on `open_log`; delete the sidecar
+  code path; scrub residual mentions of the sidecar from active
+  project docs as the cleanup lands.

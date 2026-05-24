@@ -54,8 +54,9 @@ are not part of this source-of-truth guarantee.
   index and a decimated decoded-sample tier are the required perf
   work; both are decided in
   [`0002-disk-spill-store.md`](0002-disk-spill-store.md).
-- Frontend views must page and never hold the whole capture — already
-  the binding rule in CLAUDE.md "GUI architecture".
+- Frontend views must page and never hold the whole capture — the
+  thin-views-over-paged-model contract of
+  [ADR 0003](0003-tauri-shell-react-frontend.md).
 - The on-disk format, the index structure, the hot-window eviction
   policy, and the decimated tiers are out of scope for this ADR — it
   fixes only that the store is random-access and loss-free. Those

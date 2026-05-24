@@ -6,24 +6,23 @@ Status: accepted (2026-05-23)
 
 The project has two GUI surfaces with distinct roles:
 
-- **Project panel**
-  ([`apps/gui/src/ProjectPanel.tsx`](../../apps/gui/src/ProjectPanel.tsx))
-  — the *inventory* surface. Optimised for "what's in this project"
-  and "open the file actions I need."
-- **Project graph**
-  ([`apps/gui/src/ProjectGraphPanel.tsx`](../../apps/gui/src/ProjectGraphPanel.tsx))
-  — the *spatial* surface. Optimised for "show me what feeds what."
+- **Project panel** — the *inventory* surface. Optimised for
+  "what's in this project" and "open the file actions I need."
+- **Project graph** — the *spatial* surface. Optimised for "show
+  me what feeds what."
 
-Both are views over the same `Project`
-([`apps/gui/src/types.ts`](../../apps/gui/src/types.ts), host
-[`apps/gui/src-tauri/src/project.rs`](../../apps/gui/src-tauri/src/project.rs)
-— see [ADR 0011](0011-project-file-format.md)) routed through
-`ProjectContext` (file-IO actions, top-level bus / connection state,
-DBC list + per-bus scoping) and `ElementRegistryContext` (the element
-list — `trace` / `plot` / `transmit` / `filter` — and the `source`
-wiring between filters and consumers). Changes from either surface go
-through the same callbacks, so the two stay in sync without an
-explicit sync step.
+Both are views over the same `Project` model
+([ADR 0011](0011-project-file-format.md)). The model splits into
+two cross-cutting facets:
+
+- **Project / connection state** — file-IO actions, top-level bus
+  and connection state, DBC list + per-bus scoping.
+- **Element registry** — the element list (`trace` / `plot` /
+  `transmit` / `filter`) and the `source` wiring between filters
+  and consumers.
+
+Changes from either surface flow through the same callbacks, so
+the two stay in sync without an explicit sync step.
 
 ### Project panel owns
 
