@@ -1084,35 +1084,31 @@ phases add sources (vendor sidecars, capture writer, perf events) that
 all want a uniform place to talk to the user. Small, focused, and
 exactly the kind of plumbing every phase from 8 onward leans on.
 
+The architectural shape of the bus — bounded, session-scoped,
+flood-protected, tee'd to `tracing`, plus the sidecar wire `Log`
+envelope distinct from `Error` — is recorded in
+[ADR 0014](../docs/adr/0014-host-system-log.md). Phase 7's scope
+is the panel, the initial-source conversion, the unread indicator,
+and the wire envelope's definition (consumer arrives in Phase 8).
+
 Scope:
 
-- **Host-side log bus.** A bounded ring of structured messages
-  (`{ ts, source, level, message, optional_payload }`) in the Tauri
-  host. Sources are tagged (`project`, `dbc`, `connection`,
-  `blf-import`, `plot`, …; `sidecar:<vendor>` arrives in Phase 8);
-  levels are `info` / `warn` / `error`. A small `system_log` module
-  exposes `info!` / `warn!` / `error!` macros that fan out to the ring
-  **and** to `tracing`'s normal subscriber (so dev logs to stderr still
-  work). Includes a simple per-`(source, template)` rate-limiter as
-  insurance against floods.
 - **System Messages panel.** A new dockview panel
   `kind: "system-messages"`, registered in the toolbar's panel-add set.
   Renders the buffer as a virtualised list (timestamp, source, level,
   message), filterable by source and minimum level (defaulting to
   `warn`), with copy-entry / copy-all / clear actions. Per-panel filter
-  state in dockview `params`. Session-scoped, not persisted in the
-  project file.
+  state in dockview `params`.
 - **Initial message sources.** Convert the existing ad-hoc `eprintln!`
   / `console.error` paths in project open / save, DBC parse / reload,
-  connection lifecycle, and BLF import to structured `tracing` events
-  feeding the bus.
-- **Unread-error indicator.** A count badge in the titlebar / toolbar
-  for unread `warn` + `error` entries since the panel was last focused;
-  clicking it focuses the panel and clears the badge.
-- **Wire-level surface for sidecar messages.** A new envelope variant
-  on `cannet-wire`'s `Session` stream — `Log { ts, level, source,
-  message }` — distinct from `Error` (which still ends the session).
-  Defined here, consumed in Phase 8.
+  connection lifecycle, and BLF import to structured events feeding
+  the bus.
+- **Unread-error indicator.** A count badge on the toolbar's *System
+  messages* button for unread `warn` + `error` entries since the panel
+  was last focused; clicking it focuses the panel and clears the
+  badge.
+- **Wire `Log` envelope** on `cannet-wire`'s `Session` stream
+  (per ADR 0014). Defined here, consumed in Phase 8.
 
 Exit criteria:
 
