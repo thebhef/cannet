@@ -32,25 +32,34 @@ cannet-python-can/
 From the repo root, with [`uv`](https://docs.astral.sh/uv/) on `PATH`:
 
 ```sh
-uv --directory servers/cannet-python-can run cannet-python-can --bind 127.0.0.1:50061
+uv --directory servers/cannet-python-can run cannet-python-can
 ```
 
-The sidecar prints one tab-separated banner line per discovered
-interface, then serves the `cannet.v1.CannetServer` gRPC service on
-the given address. With **no hardware and no `python-can` installed**
-the process still boots and reports zero interfaces — the GUI uses
-this as the "no vendor hardware plugged in" state, not as a failure.
+The default `--bind` is `127.0.0.1:0` — the OS picks any free
+ephemeral port and the sidecar prints the actual address on the
+`sidecar\tlistening\t<addr>` banner line, which is what the GUI host
+reads to discover the port. Pinning a specific port still works
+(`--bind 127.0.0.1:50061`); if that port is in use, the sidecar
+logs a warning and falls back to a random port rather than refusing
+to start, so a developer can never wedge themselves out of the
+sidecar by leaving a stale instance behind.
+
+With **no hardware and no `python-can` installed** the process still
+boots and reports zero interfaces — the GUI uses this as the "no
+vendor hardware plugged in" state, not as a failure.
 
 The banner is intentionally machine-readable:
 
 ```
 sidecar    version       0.1.0
 sidecar    interfaces    0
-sidecar    listening     127.0.0.1:50061
+sidecar    listening     127.0.0.1:49725
 ```
 
 `interface\t<id>\t<display_name>\t<fd?>` lines appear before
-`sidecar\tlistening\t...` when there is hardware to enumerate.
+`sidecar\tlistening\t...` when there is hardware to enumerate. The
+port in `listening` is the OS-assigned one when `--bind` was left at
+its default — never a hard-coded value.
 
 ## Swap the driver library
 

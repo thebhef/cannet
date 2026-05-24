@@ -50,8 +50,14 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--bind",
-        default="127.0.0.1:50061",
-        help="Address to bind the gRPC service on (default: 127.0.0.1:50061).",
+        default="127.0.0.1:0",
+        help=(
+            "Address to bind the gRPC service on (default: 127.0.0.1:0 — "
+            "the OS picks a free ephemeral port and the actual address is "
+            "emitted on the `sidecar\\tlistening\\t<addr>` banner line). "
+            "Pinning a non-zero port is honoured first; on bind failure "
+            "the sidecar falls back to a random port rather than exiting."
+        ),
     )
     parser.add_argument(
         "--log-level",
@@ -89,8 +95,8 @@ def _run(args: argparse.Namespace) -> int:
     driver = srv.load_driver()
     _emit_startup_banner(driver)
 
-    server = srv.serve(args.bind, driver=driver)
-    BANNER.info("sidecar\tlistening\t%s", args.bind)
+    server, bound_address = srv.serve(args.bind, driver=driver)
+    BANNER.info("sidecar\tlistening\t%s", bound_address)
 
     stop_requested = False
 
