@@ -641,6 +641,16 @@ header {
   border: 1px solid #1e293b;
   border-radius: 0.3rem;
 }
+.project-binding-form-source {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.project-binding-form-or {
+  font-size: 0.72rem;
+  color: #94a3b8;
+}
 .project-binding-form-row {
   display: flex;
   gap: 0.3rem;

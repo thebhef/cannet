@@ -4,12 +4,17 @@ import type { IDockviewPanel, IDockviewPanelProps } from "dockview";
 
 import { useProjectContext } from "./projectContext";
 import { useElementRegistry } from "./projectElements";
+import {
+  describeSidecarStatus,
+  useSidecarStatus,
+} from "./sidecarStatus";
 import type {
   Bus,
   InterfaceBinding,
   InterfaceRecord,
   ProjectElement,
   ProjectElementKind,
+  SidecarStatus,
 } from "./types";
 import {
   PROJECT_GRAPH_PANEL_COMPONENT,
@@ -39,6 +44,7 @@ const PANEL_TITLE: Record<ProjectElementKind, string> = {
 export function ProjectPanel(props: IDockviewPanelProps) {
   const p = useProjectContext();
   const reg = useElementRegistry();
+  const sidecar = useSidecarStatus();
   const { containerApi } = props;
 
   // The element list re-renders us (the registry context value
@@ -149,39 +155,39 @@ export function ProjectPanel(props: IDockviewPanelProps) {
             </span>
           </div>
         )}
+        <SidecarConnectionRow sidecar={sidecar} />
+        {uniqueRemoteServers(p.interfaceBindings, sidecar.address).map((server) => {
+          const isConnected = p.connectedAddresses.includes(server);
+          return (
+            <div className="project-bus" key={server}>
+              <span className="project-bus-name" title={server}>
+                {server}
+              </span>
+              <span
+                className={`project-bus-state ${isConnected ? "connected" : ""}`}
+              >
+                {isConnected ? "connected" : "offline"}
+              </span>
+            </div>
+          );
+        })}
         {p.interfaceBindings.length === 0 ? (
           <div className="project-empty">
-            No interface bindings. Add one below to enable Connect.
+            No interface bindings. Add one in <em>Interface bindings</em> below
+            to enable Connect.
           </div>
         ) : (
-          <>
-            {uniqueServers(p.interfaceBindings).map((server) => {
-              const isConnected = p.connectedAddresses.includes(server);
-              return (
-                <div className="project-bus" key={server}>
-                  <span className="project-bus-name" title={server}>
-                    {server}
-                  </span>
-                  <span
-                    className={`project-bus-state ${isConnected ? "connected" : ""}`}
-                  >
-                    {isConnected ? "connected" : "offline"}
-                  </span>
-                </div>
-              );
-            })}
-            <div className="project-buttons">
-              {p.remoteConnected ? (
-                <button type="button" onClick={p.onDisconnect}>
-                  Disconnect all
-                </button>
-              ) : (
-                <button type="button" onClick={p.onConnect}>
-                  Connect all
-                </button>
-              )}
-            </div>
-          </>
+          <div className="project-buttons">
+            {p.remoteConnected ? (
+              <button type="button" onClick={p.onDisconnect}>
+                Disconnect all
+              </button>
+            ) : (
+              <button type="button" onClick={p.onConnect}>
+                Connect all
+              </button>
+            )}
+          </div>
         )}
       </section>
 
@@ -243,10 +249,16 @@ export function ProjectPanel(props: IDockviewPanelProps) {
           const available = p.buses.filter(
             (bus) => bus.id === b.bus_id || !taken.has(bus.id),
           );
+          const isSidecarBinding =
+            sidecar.address !== null && b.server === sidecar.address;
           return (
             <div className="project-bus" key={`${b.server}::${b.interface}`}>
-              <span className="project-bus-name" title={`${b.server} / ${b.interface}`}>
-                {b.interface} ({basename(b.server)})
+              <span
+                className="project-bus-name"
+                title={`${b.server} / ${b.interface}`}
+              >
+                {b.interface}{" "}
+                {isSidecarBinding ? "(local sidecar)" : `(${basename(b.server)})`}
               </span>
               <select
                 value={b.bus_id}
@@ -274,6 +286,9 @@ export function ProjectPanel(props: IDockviewPanelProps) {
           buses={p.buses}
           bindings={p.interfaceBindings}
           onAdd={p.onAddBinding}
+          sidecarAddress={
+            sidecar.phase === "ready" ? sidecar.address : null
+          }
         />
       </section>
 
@@ -349,18 +364,45 @@ function basename(path: string): string {
   return i >= 0 ? path.slice(i + 1) : path;
 }
 
-/// Distinct server addresses referenced by any binding, in first-seen
-/// order. Used by the Connection section to surface per-server status
-/// (one row per server, regardless of how many bindings target it).
-function uniqueServers(bindings: readonly InterfaceBinding[]): string[] {
+/// Distinct **non-sidecar** server addresses referenced by any
+/// binding, in first-seen order. The local sidecar gets its own
+/// dedicated row in the Connection section (always present, with its
+/// own status text), so listing it again here would double-count it.
+export function uniqueRemoteServers(
+  bindings: readonly InterfaceBinding[],
+  sidecarAddress: string | null,
+): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const b of bindings) {
+    if (sidecarAddress !== null && b.server === sidecarAddress) continue;
     if (seen.has(b.server)) continue;
     seen.add(b.server);
     out.push(b.server);
   }
   return out;
+}
+
+/// Top-level "Local sidecar" row in the Connection section. Always
+/// rendered (even when the sidecar is offline) so the user has a
+/// fixed handle for the local-driver path — adding network servers
+/// is the separate path inside the binding form below.
+function SidecarConnectionRow({ sidecar }: { sidecar: SidecarStatus }) {
+  return (
+    <div className="project-bus" data-testid="sidecar-connection-row">
+      <span
+        className="project-bus-name"
+        title={sidecar.address ?? "Auto-launched python-can sidecar"}
+      >
+        Local sidecar
+      </span>
+      <span
+        className={`project-bus-state ${sidecar.phase === "ready" ? "connected" : ""}`}
+      >
+        {describeSidecarStatus(sidecar)}
+      </span>
+    </div>
+  );
 }
 
 const DEFAULT_BINDING_SERVER = "127.0.0.1:50051";
@@ -369,13 +411,29 @@ interface NewBindingFormProps {
   buses: readonly Bus[];
   bindings: readonly InterfaceBinding[];
   onAdd: (binding: InterfaceBinding) => void;
+  /// The local sidecar's bound address when the sidecar is in the
+  /// `ready` phase, or `null` when it's starting/offline. Drives the
+  /// "Use local sidecar" affordance: clicking it prefills the server
+  /// field with this address so the user can discover-and-bind
+  /// without typing.
+  sidecarAddress: string | null;
 }
 
-/// Form for creating a new interface binding. The user types a server
-/// address, hits "Discover" to list its interfaces, picks one, picks an
-/// unbound bus, and clicks "Add". Each bus is allowed at most one
-/// binding, so the bus picker hides buses that already have one.
-function NewBindingForm({ buses, bindings, onAdd }: NewBindingFormProps) {
+/// Form for creating a new interface binding. The user picks either
+/// the local sidecar (one click — prefills the server with the
+/// sidecar's bound address) or a network server (types `host:port`),
+/// hits "Discover" to list interfaces, picks one, picks an unbound
+/// bus, and clicks "Add". Each bus is allowed at most one binding,
+/// so the bus picker hides buses that already have one.
+///
+/// Exported for direct DOM testing of the "Use local sidecar" / "add a
+/// network server" branching without standing up the whole panel.
+export function NewBindingForm({
+  buses,
+  bindings,
+  onAdd,
+  sidecarAddress,
+}: NewBindingFormProps) {
   const [server, setServer] = useState(DEFAULT_BINDING_SERVER);
   const [discovered, setDiscovered] = useState<InterfaceRecord[] | null>(null);
   const [iface, setIface] = useState("");
@@ -385,6 +443,14 @@ function NewBindingForm({ buses, bindings, onAdd }: NewBindingFormProps) {
 
   const takenBusIds = new Set(bindings.map((b) => b.bus_id));
   const availableBuses = buses.filter((b) => !takenBusIds.has(b.id));
+
+  const useSidecar = () => {
+    if (sidecarAddress === null) return;
+    setServer(sidecarAddress);
+    setDiscovered(null);
+    setIface("");
+    setError(null);
+  };
 
   const handleDiscover = async () => {
     const addr = server.trim();
@@ -418,8 +484,27 @@ function NewBindingForm({ buses, bindings, onAdd }: NewBindingFormProps) {
   const canAdd =
     server.trim().length > 0 && iface.length > 0 && busId.length > 0;
 
+  const usingSidecar =
+    sidecarAddress !== null && server.trim() === sidecarAddress;
+
   return (
     <div className="project-binding-form">
+      <div className="project-binding-form-source">
+        <button
+          type="button"
+          onClick={useSidecar}
+          disabled={sidecarAddress === null || usingSidecar}
+          aria-pressed={usingSidecar}
+          title={
+            sidecarAddress === null
+              ? "Local sidecar is not ready yet"
+              : `Bind against ${sidecarAddress}`
+          }
+        >
+          Use local sidecar
+        </button>
+        <span className="project-binding-form-or">or add a network server:</span>
+      </div>
       <div className="project-binding-form-row">
         <input
           type="text"

@@ -104,6 +104,28 @@ export interface InterfaceRecord {
   fd_capable: boolean;
 }
 
+/// Coarse lifecycle of the auto-launched python-can sidecar. Mirrors
+/// `src-tauri/src/sidecar.rs::SidecarPhase`. The connection panel
+/// uses this to label its "Local sidecar" row — "Starting…",
+/// "Listening on 127.0.0.1:43891", "Offline" — and decide whether
+/// the user can bind interfaces against it without typing an address.
+export type SidecarPhase = "offline" | "starting" | "ready";
+
+/// Snapshot of the sidecar's state — see {@link SidecarPhase}.
+/// Returned by the `get_sidecar_status` Tauri command and the payload
+/// of the `sidecar-status-changed` event. `address` is the bound
+/// `host:port` once the sidecar reports `listening`; `null` otherwise.
+export interface SidecarStatus {
+  phase: SidecarPhase;
+  address: string | null;
+}
+
+/// Event name the Tauri host emits whenever the sidecar's phase or
+/// bound address changes. Frontend subscribers re-fetch with
+/// `get_sidecar_status` and re-render. Must match
+/// `sidecar.rs::STATUS_EVENT`.
+export const SIDECAR_STATUS_EVENT = "sidecar-status-changed";
+
 export interface SubscriptionRecord {
   interface_id: string;
   channel: number;
