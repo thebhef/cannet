@@ -90,11 +90,10 @@ per-type coverage gaps:
    been before — the bar for "just write the Rust crate yourself"
    is lower than the bar for adopting a C++ library through FFI.
 
-This aligns with CLAUDE.md's "Work in small, verifiable steps"
-guidance: BLF's on-disk format is fixed-size records and
-length-prefixed objects against a public spec — exactly the shape
-the working agreement identifies as worth hand-rolling (small,
-controlled, the hard parts are spec-driven, not failure-mode-rich).
+BLF's on-disk format is fixed-size records and length-prefixed
+objects against a public spec — small, controlled, the hard parts
+spec-driven rather than failure-mode-rich. That's the shape worth
+hand-rolling rather than wrapping.
 
 ## Implementation sources
 
@@ -186,14 +185,15 @@ most-used BLF implementations in the open ecosystem: `python-can`
   crate supports `GLOBAL_MARKER` write. The backlog item for the
   notes-sidecar removal stays gated on that — but the gating
   upstream contribution (to `blf_asc`) is no longer needed.
-- **Phased delivery.** Tranches matching the type-coverage priorities:
-  (1) parity with current `cannet-blf` (CAN classic + FD + error +
-  LOG_CONTAINER read+write); (2) `GLOBAL_MARKER` read+write (unblocks
-  sidecar removal per [ADR 0010](0010-no-sidecar-files.md));
-  (3) `EVENT_COMMENT` + `APP_TEXT` (preserves third-party annotations);
-  (4) `CAN_STATISTIC` + `DATA_LOST_BEGIN/END` (capture-integrity
-  surfacing). Scheduled in `plans/phased-implementation.md` when
-  picked up; not blocking on the disk-spill capture-store work
+- **Feature scope.** The required-and-desired BLF object types
+  the implementation covers: parity with current `cannet-blf`
+  (CAN classic + FD + error + LOG_CONTAINER read+write);
+  `GLOBAL_MARKER` read+write (unblocks sidecar removal per
+  [ADR 0010](0010-no-sidecar-files.md));
+  `EVENT_COMMENT` + `APP_TEXT` (preserves third-party annotations);
+  `CAN_STATISTIC` + `DATA_LOST_BEGIN/END` (capture-integrity
+  surfacing). Scheduling lives in `plans/phased-implementation.md`
+  when picked up; not blocking on the disk-spill capture-store work
   (ADRs [0001](0001-indefinite-length-capture.md) /
   [0002](0002-disk-spill-store.md)).
 - **Optional future contribution.** If the implementation matures

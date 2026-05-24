@@ -19,14 +19,12 @@ The constraints they answer to:
   decoupled from the ingest rate (`windowed-model-convergence.md`).
 - **Loss-free addressability.** Every historical row stays addressable
   for the life of the capture (ADR 0001).
-- **Reviewability.** CLAUDE.md "Work in small, verifiable steps": keep
-  the hand-written surface small and lean on a vetted library for the
-  failure-mode-rich parts.
-- **Not a serialization artifact.** The disk-spill store is the *live
-  working store* — ephemeral scratch, rebuilt each session. CLAUDE.md
-  "the BLF is the serialization" governs saved artifacts, not this
-  scratch store; explicit `.blf` "Save Capture" stays the separate
-  export path.
+- **Reviewability.** Keep the hand-written surface small and lean
+  on a vetted library for the failure-mode-rich parts.
+- **Not a serialization artifact.** The disk-spill store is the
+  *live working store* — ephemeral scratch, rebuilt each session.
+  Explicit `.blf` "Save Capture" stays the separate export path;
+  this scratch store is not a saved-capture format.
 
 ## Decision
 
@@ -137,8 +135,8 @@ not two production paths to keep in sync.
 - **A hand-rolled hot-window cache with an eviction policy.** Rejected
   (DS-2). The kernel page cache is already an LRU file cache — shared
   across processes, tuned, and the demand-paging path the OS uses for
-  everything. Hand-rolling one is the expensive-to-review surface
-  CLAUDE.md warns against, for no gain over `mmap`.
+  everything. Hand-rolling one is expensive-to-review surface for no
+  gain over `mmap`.
 - **A single growing file per family instead of segments.** Rejected
   (DS-4). A growing mapped file must be remapped as it grows, and
   Windows cannot resize a file that has an active mapping. Fixed-size
@@ -170,8 +168,7 @@ not two production paths to keep in sync.
 - The disk-spill store is **ephemeral scratch** — created per session,
   not persisted across runs, and not a serialization format. "Save
   Capture" to `.blf` remains the separate export. No new `.blf`
-  sidecar is introduced; CLAUDE.md "the BLF is the serialization" is
-  unaffected.
+  sidecar is introduced ([ADR 0010](0010-no-sidecar-files.md)).
 - **Disk-space cost.** ~26 B per frame of metadata plus payload; a
   10^9-frame capture needs tens of GB of scratch space. The host sites
   the scratch files on a volume with room and surfaces a clear error
