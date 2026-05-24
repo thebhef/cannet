@@ -89,8 +89,19 @@ crate retained long-term).
 - **BLF** — Vector binary log format. Implementation lives in
   `cannet-blf`; the per-object-type coverage matrix is maintained
   in [`../docs/blf-feature-support.md`](../docs/blf-feature-support.md).
-  - **`blf_asc`** (v0.2, MIT/Apache) — adopted Phase 1, retiring
-    once `cannet-blf`'s own implementation reaches parity. See ADR 0009.
+  - **`blf_asc`** (v0.2, MIT/Apache) — adopted Phase 1, scheduled
+    to retire in
+    [Phase 9.5 — `cannet-blf` Own Implementation](phased-implementation.md)
+    Tranche 1, once the native reader/writer reaches parity. See
+    ADR 0009.
+  - **`vector_blf`** (Technica-Engineering, C++, GPL-3.0-or-later) —
+    `proposed` in Phase 9.5 Tranche 0 as a test-only black-box
+    oracle. Cloned at a pinned upstream ref into `target/` at test
+    time, never vendored, never shipped in cannet's runtime binary;
+    its GPL posture stays outside the runtime distribution. Gated
+    behind the `vector-blf-oracle` cargo feature so default CI
+    doesn't require a C++ toolchain. See ADR 0009 "Test coverage
+    strategy" §4.
 
 ### Storage
 

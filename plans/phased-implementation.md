@@ -1455,6 +1455,116 @@ Realised scope notes:
   `marker_count`) and error / warn on decode anomalies tagged
   `blf-import`. Recent BLFs replay through the same path.
 
+## Phase 9.5 — `cannet-blf` Own Implementation
+
+Replace `cannet-blf`'s `blf_asc` wrapper with our own focused BLF
+reader / writer per [ADR 0009](../docs/adr/0009-dbc-blf-readers.md).
+Retires the third-party Rust BLF crate from the dep tree, unlocks
+`GLOBAL_MARKER` write so [ADR 0010](../docs/adr/0010-no-sidecar-files.md)
+can retire the `<file>.blf.notes.json` sidecar, and gives us the
+typed-write surface for the rest of the desired BLF object catalogue
+([feature support matrix](../docs/blf-feature-support.md)).
+
+Inserted between shipped Phase 9 and pending Phase 10 because it's the
+highest-priority usability follow-up out of Phase 9 (third-party
+visibility of notes) and is independent of Phase 10's view-cache
+refactor — the two can be scheduled in either order.
+
+Scope (four tranches plus a Tranche 0 oracle preamble; each lands as
+its own working slice in the order below):
+
+- **Tranche 0 — `vector_blf` test oracle.** A build script clones
+  Technica's
+  [`vector_blf`](https://github.com/Technica-Engineering/vector_blf)
+  at a pinned upstream ref into `target/` (never vendored), cmake-
+  builds it, and compiles a small C++ test harness that reads and
+  writes BLFs through it. Harness sources live test-only under
+  `crates/cannet-blf/tests/oracle/`; the clone, the cmake build, and
+  the resulting binary all sit in `target/` and never ship in
+  cannet's runtime binary. Gated behind a cargo feature
+  (`vector-blf-oracle`) so default CI doesn't require a C++
+  toolchain. Smoke test: read one of the vendored python-can
+  fixtures through both the oracle and (initially) the existing
+  `blf_asc` wrapper, assert frame counts agree.
+- **Tranche 1 — Parity.** Native read+write for `LOG_CONTAINER`
+  (10), `CAN_MESSAGE` (1), `CAN_MESSAGE2` (86), `CAN_FD_MESSAGE`
+  (100), `CAN_FD_MESSAGE_64` (101), `CAN_ERROR_EXT` (73). The
+  public `BlfCanFrameSource` / `BlfCaptureWriter` surface stays
+  unchanged. `blf_asc` is removed from the dep tree in the same
+  commit that switches the wrapper over.
+- **Tranche 2 — `GLOBAL_MARKER`.** Read + write for object type 96.
+  Unblocks the no-sidecar follow-up that retires
+  `<file>.blf.notes.json` (ADR 0010 — itself stays a separate
+  backlog item; this tranche only removes its gate).
+- **Tranche 3 — Annotation round-trip.** Read + write for
+  `EVENT_COMMENT` (92) and `APP_TEXT` (65). Preserves third-party
+  annotations when reading captures from Vector tooling.
+- **Tranche 4 — Capture integrity.** Read + write for
+  `CAN_STATISTIC` (4), `DATA_LOST_BEGIN` (125), `DATA_LOST_END`
+  (126). Surfaces bus-load and gap-bracket info when reading
+  third-party captures.
+
+Test corpora (cumulative across tranches, per ADR 0009):
+
+1. **python-can BLF fixtures** (Apache-2.0) — vendored under
+   `crates/cannet-blf/tests/fixtures/python-can/` in Tranche 1.
+2. **`blf_asc` test fixtures** — captured into
+   `crates/cannet-blf/tests/fixtures/blf-asc/` in Tranche 1 before
+   `blf_asc` retires from the dep tree.
+3. **Vector CANalyzer round-trips** — fixtures the user generates
+   from CANalyzer, vendored under
+   `crates/cannet-blf/tests/fixtures/canalyzer/` as each tranche
+   needs them.
+4. **`vector_blf` live oracle** — the Tranche-0 harness, used as
+   a black-box comparator from Tranche 1 onwards. Behind the
+   `vector-blf-oracle` cargo feature so it isn't a default-CI
+   requirement.
+
+Out of scope (deferred):
+
+- Any of the `oos` rows in the feature-support matrix (LIN, MOST,
+  FlexRay, Ethernet, J1708, WLAN, AFDX, A429, K-Line). Cannet
+  doesn't address these bus types and the matrix records that intent.
+- Post-2018-v8 object types (`CAN_SETTING_CHANGED` and later). Out
+  of scope until a capture from a modern CANalyzer needs them; the
+  feature-support matrix's "Post-2018-v8 additions" section covers
+  the lookup if that day comes.
+- The ADR 0010 cleanup itself (removing the `.blf.notes.json` read
+  + write path). Stays in `plans/backlog.md` as a follow-up that
+  this phase un-gates but doesn't ship.
+
+Exit criteria:
+
+- `crates/cannet-blf` parses + writes every in-scope object type
+  natively; the public `BlfCanFrameSource` / `BlfCaptureWriter`
+  surface is preserved across the swap (consumers in `apps/gui` and
+  `cannet-server` don't need to change).
+- `blf_asc` is removed from `crates/cannet-blf/Cargo.toml` and from
+  the workspace's `Cargo.lock`; `cargo tree -p cannet-blf | grep -i
+  blf_asc` is empty.
+- The `cannet` column of every row in
+  [`docs/blf-feature-support.md`](../docs/blf-feature-support.md)
+  matches reality, updated row-by-row in the same commit that lands
+  each type's support (per the doc's own maintenance section).
+- The `vector_blf` oracle harness is reachable from `cargo test -p
+  cannet-blf --features vector-blf-oracle`; default `cargo test`
+  passes without the feature, with no C++ toolchain on the
+  developer's path.
+- README's Phase-9 section is rewritten: the sidecar-vs-marker
+  workaround explanation retires; the new in-BLF marker write path
+  takes its place. Same commit that lands Tranche 2.
+- Rustdoc on the `cannet_blf` crate root explains the new module
+  layout and the per-object-type support; `BlfCanFrameSource` and
+  `BlfCaptureWriter` rustdoc reflects the native implementation.
+- `plans/technology-inventory.md` marks `blf_asc` `retired` with a
+  link to ADR 0009.
+- `plans/backlog.md`'s "cannet-blf own implementation" item is
+  removed (folded into this phase); the no-sidecar item's "blocked
+  on tranche 2 of the above" note repoints at this phase's
+  Tranche 2.
+
+Realised scope notes: TBD as tranches land.
+
 ## Phase 10 — Windowed-Model Convergence
 
 Converge the GUI's four hand-rolled view caches — chrono trace,
