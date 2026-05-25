@@ -28,6 +28,10 @@
 //!   time across Tranche 1.
 //! - [`marker`] — `GLOBAL_MARKER` (object type 96), the text
 //!   annotation type that retires `<file>.blf.notes.json`.
+//! - [`text`] — `EVENT_COMMENT` (92) and `APP_TEXT` (65), the two
+//!   free-form-text annotation types Vector tools write. Preserves
+//!   third-party annotations on read; lets us round-trip them on
+//!   re-export.
 //! - [`reader`] — streaming reader that drives the above modules:
 //!   parses `FileStatistics`, walks top-level `LOG_CONTAINER`s,
 //!   inflates each, and yields decoded inner objects out of a
@@ -43,6 +47,7 @@
 //! [`log_container`]: crate::format::log_container
 //! [`can`]: crate::format::can
 //! [`marker`]: crate::format::marker
+//! [`text`]: crate::format::text
 //! [`reader`]: crate::format::reader
 //! [`writer`]: crate::format::writer
 
@@ -52,4 +57,5 @@ pub mod log_container;
 pub mod marker;
 pub mod object;
 pub mod reader;
+pub mod text;
 pub mod writer;

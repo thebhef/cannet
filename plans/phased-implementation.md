@@ -1531,9 +1531,16 @@ its own working slice in the order below):
   bytes back. Unblocks the no-sidecar follow-up that retires
   `<file>.blf.notes.json` (ADR 0010 — itself stays a separate
   backlog item; this tranche only removes its gate).
-- **Tranche 3 — Annotation round-trip.** Read + write for
-  `EVENT_COMMENT` (92) and `APP_TEXT` (65). Preserves third-party
-  annotations when reading captures from Vector tooling.
+- **Tranche 3 — Annotation round-trip.** ✅ **Complete.** Read +
+  write for `EVENT_COMMENT` (92) and `APP_TEXT` (65) in
+  `cannet-blf::format::text`. Preserves third-party annotations
+  when reading captures from Vector tooling — `BlfReader` exposes
+  both as `BlfObject::EventComment(_)` / `BlfObject::AppText(_)`
+  variants. `pack_db_channel_info(version, channel, bus_type,
+  is_can_fd)` helper covers the `APP_TEXT.source == DB_CHANNEL_INFO`
+  packing of `reserved_app_text1`. Oracle test
+  (`oracle_lists_text_annotations_written_by_our_writer`) green:
+  Vector's reference library reads both types back.
 - **Tranche 4 — Capture integrity.** Read + write for
   `CAN_STATISTIC` (4), `DATA_LOST_BEGIN` (125), `DATA_LOST_END`
   (126). Surfaces bus-load and gap-bracket info when reading

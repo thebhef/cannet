@@ -24,6 +24,7 @@ use super::marker::{self, GlobalMarker, MarkerError};
 use super::object::{
     object_type, ObjectHeaderBase, ObjectHeaderError, OBJECT_HEADER_BASE_BYTES,
 };
+use super::text::{self, AppText, EventComment, TextError};
 
 /// One on-disk object, decoded into a typed variant when we
 /// recognise its `object_type`, or surfaced as `Other` with its base
@@ -39,6 +40,13 @@ pub enum BlfObject {
     /// the `<file>.blf.notes.json` sidecar — notes ride inside
     /// the BLF itself.
     GlobalMarker(GlobalMarker),
+    /// Free-form comment attached to an adjacent event (type 92).
+    /// Vector's Trace window writes these when a user comments on
+    /// a row.
+    EventComment(EventComment),
+    /// Application-defined text (type 65) — measurement comment,
+    /// database channel info, or meta data depending on `source`.
+    AppText(AppText),
     /// An object type this implementation does not decode. The
     /// `ObjectHeaderBase` is exposed so callers can inspect / log
     /// it; the body bytes have already been consumed from the stream.
@@ -63,6 +71,8 @@ pub enum BlfReadError {
     CanObject(CanObjectError),
     /// A `GLOBAL_MARKER` failed to decode.
     Marker(MarkerError),
+    /// An `EVENT_COMMENT` or `APP_TEXT` failed to decode.
+    Text(TextError),
     /// The file ended mid-object — we had the base header but the
     /// body was truncated.
     UnexpectedEof,
@@ -78,6 +88,7 @@ impl std::fmt::Display for BlfReadError {
             Self::LogContainer(e) => write!(f, "BLF LOG_CONTAINER decode failed: {e}"),
             Self::CanObject(e) => write!(f, "BLF CAN object decode failed: {e}"),
             Self::Marker(e) => write!(f, "BLF GLOBAL_MARKER decode failed: {e}"),
+            Self::Text(e) => write!(f, "BLF text-annotation decode failed: {e}"),
             Self::UnexpectedEof => write!(f, "BLF ended mid-object"),
         }
     }
@@ -92,6 +103,7 @@ impl std::error::Error for BlfReadError {
             Self::LogContainer(e) => Some(e),
             Self::CanObject(e) => Some(e),
             Self::Marker(e) => Some(e),
+            Self::Text(e) => Some(e),
             Self::UnexpectedEof => None,
         }
     }
@@ -120,6 +132,11 @@ impl From<CanObjectError> for BlfReadError {
 impl From<MarkerError> for BlfReadError {
     fn from(value: MarkerError) -> Self {
         Self::Marker(value)
+    }
+}
+impl From<TextError> for BlfReadError {
+    fn from(value: TextError) -> Self {
+        Self::Text(value)
     }
 }
 
@@ -227,6 +244,12 @@ impl BlfReader {
                 }
                 object_type::GLOBAL_MARKER => {
                     BlfObject::GlobalMarker(marker::decode(object_bytes)?)
+                }
+                object_type::EVENT_COMMENT => {
+                    BlfObject::EventComment(text::decode_event_comment(object_bytes)?)
+                }
+                object_type::APP_TEXT => {
+                    BlfObject::AppText(text::decode_app_text(object_bytes)?)
                 }
                 _ => BlfObject::Other(base),
             };

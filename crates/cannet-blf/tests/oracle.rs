@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use cannet_blf::format::marker;
+use cannet_blf::format::text;
 use cannet_blf::format::writer::BlfFileWriter;
 use cannet_blf::BlfCaptureWriter;
 use cannet_core::{CanFrame, CanId, Direction};
@@ -176,4 +177,55 @@ fn oracle_lists_global_marker_written_by_our_writer() {
         "oracle should see the one marker we wrote; listing: {listing:#?}",
     );
     assert_eq!(marker_rows[0].type_id, 96);
+}
+
+/// Tranche 3: Vector's reference library reads `EVENT_COMMENT`
+/// and `APP_TEXT` objects our native writer emits.
+#[test]
+fn oracle_lists_text_annotations_written_by_our_writer() {
+    let harness = ensure_harness();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("text.blf");
+
+    let mut w = BlfFileWriter::create(&path).unwrap();
+    let abs_ns = TS_BASE_NS + 9_876_543;
+    let start = w.set_start_if_unset((abs_ns / 1_000_000) * 1_000_000);
+    let rel = abs_ns - start;
+
+    let comment = text::build_event_comment(
+        rel,
+        86, // CAN_MESSAGE2 — the type we're commenting on
+        b"Oracle test comment.".to_vec(),
+    );
+    w.append_object(&text::encode_event_comment(&comment), abs_ns)
+        .unwrap();
+
+    let app = text::build_app_text(
+        rel + 1_000_000,
+        text::APP_TEXT_SOURCE_MEASUREMENT_COMMENT,
+        0,
+        b"Oracle test app-text.".to_vec(),
+    );
+    w.append_object(&text::encode_app_text(&app), abs_ns + 1_000_000)
+        .unwrap();
+
+    w.finish().unwrap();
+
+    let listing = list_objects(&harness, &path);
+    let comment_rows: Vec<&ObjectListing> =
+        listing.iter().filter(|o| o.type_name == "EVENT_COMMENT").collect();
+    let app_rows: Vec<&ObjectListing> =
+        listing.iter().filter(|o| o.type_name == "APP_TEXT").collect();
+    assert_eq!(
+        comment_rows.len(),
+        1,
+        "oracle should see one EVENT_COMMENT; listing: {listing:#?}",
+    );
+    assert_eq!(comment_rows[0].type_id, 92);
+    assert_eq!(
+        app_rows.len(),
+        1,
+        "oracle should see one APP_TEXT; listing: {listing:#?}",
+    );
+    assert_eq!(app_rows[0].type_id, 65);
 }

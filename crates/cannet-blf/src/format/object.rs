@@ -41,8 +41,10 @@ pub const OBJECT_HEADER_BASE_BYTES: usize = 16;
 pub mod object_type {
     pub const CAN_MESSAGE: u32 = 1;
     pub const LOG_CONTAINER: u32 = 10;
+    pub const APP_TEXT: u32 = 65;
     pub const CAN_ERROR_EXT: u32 = 73;
     pub const CAN_MESSAGE2: u32 = 86;
+    pub const EVENT_COMMENT: u32 = 92;
     pub const GLOBAL_MARKER: u32 = 96;
     pub const CAN_FD_MESSAGE: u32 = 100;
     pub const CAN_FD_MESSAGE_64: u32 = 101;
