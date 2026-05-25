@@ -2,26 +2,27 @@
 //! Phase-9 [`BlfCaptureWriter`] that turns a stream of
 //! [`cannet_core::CanFrame`]s back into a BLF file.
 //!
-//! Today the reader wraps `blf_asc::BlfReader` and translates each
-//! `blf_asc::Message` into a [`cannet_core::CanFrame`], picking the
-//! right [`CanFramePayload`] variant based on the BLF object flags
-//! (classic data / FD / remote / error). The wire shape from the
-//! underlying parser is hidden behind this adapter so the rest of
-//! the system only ever sees `cannet_core` types.
+//! The reader is a focused native implementation rooted in
+//! [`format`] — it owns the on-disk codec end-to-end (`FileStatistics`
+//! header → top-level `LOG_CONTAINER` framing → zlib inflate →
+//! per-type CAN event decoders). The wire shape is hidden behind
+//! [`BlfCanFrameSource`] so the rest of the system only ever sees
+//! `cannet_core` types.
 //!
-//! The writer mirrors the reader on top of `blf_asc::BlfWriter` and
-//! streams to `<dest>.part` before atomically renaming into place on
-//! [`BlfCaptureWriter::finish`] — a mid-write crash therefore leaves
-//! no half-file behind at `<dest>`.
+//! The writer still wraps `blf_asc::BlfWriter` (Phase 9.5 Tranche 1
+//! step 9 retires that too) and streams to `<dest>.part` before
+//! atomically renaming into place on [`BlfCaptureWriter::finish`] —
+//! a mid-write crash therefore leaves no half-file behind at
+//! `<dest>`.
 //!
 //! ## Phase 9.5 — native implementation in progress
 //!
 //! Per [ADR 0009](../../../docs/adr/0009-dbc-blf-readers.md), the
-//! `blf_asc` wrapper is being replaced tranche-by-tranche with a
-//! focused native implementation rooted in [`format`]. The public
-//! `BlfCanFrameSource` / `BlfCaptureWriter` surface stays unchanged
-//! across the swap. The
-//! [BLF feature-support matrix](../../../docs/blf-feature-support.md)
+//! `blf_asc` wrapper is being replaced tranche-by-tranche with the
+//! native implementation in [`format`]. The reader swap landed in
+//! Tranche 1 step 6; the writer retires in step 9. The public
+//! `BlfCanFrameSource` / `BlfCaptureWriter` surface is unchanged.
+//! The [BLF feature-support matrix](../../../docs/blf-feature-support.md)
 //! is the running checklist; each landed object type updates its
 //! row in the same commit that ships the code. The
 //! `vector-blf-oracle` cargo feature enables black-box comparison
@@ -46,14 +47,24 @@ use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
 
-use blf_asc::{ArbitrationId, BlfError, BlfReader, BlfWriter, DataBytes, Message};
+use blf_asc::{ArbitrationId, BlfError, BlfWriter, DataBytes, Message};
 use cannet_core::{
     CanFdFlags, CanFrame, CanFrameError, CanFramePayload, CanFrameSource, CanId, Direction, IdError,
 };
 
+use format::can::{
+    CanErrorExt, CanFdMessage, CanFdMessage64, CanMessage, CanMessage2, CAN_FLAG_RTR, CAN_FLAG_TX,
+};
+use format::reader::{BlfObject, BlfReadError, BlfReader};
+
 /// A `CanFrameSource` backed by a Vector BLF log file.
 pub struct BlfCanFrameSource {
     reader: BlfReader,
+    /// File-level start time (ns since UNIX epoch). Per-event
+    /// `object_timestamp` is *relative* to this; the adapter
+    /// functions add it to recover the absolute timestamp the
+    /// `CanFrame` carries.
+    start_unix_nanos: u64,
 }
 
 impl BlfCanFrameSource {
@@ -61,7 +72,11 @@ impl BlfCanFrameSource {
     /// opened or fails BLF header validation.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, BlfSourceError> {
         let reader = BlfReader::open(path)?;
-        Ok(Self { reader })
+        let start_unix_nanos = reader.start_unix_nanos();
+        Ok(Self {
+            reader,
+            start_unix_nanos,
+        })
     }
 }
 
@@ -69,18 +84,40 @@ impl CanFrameSource for BlfCanFrameSource {
     type Error = BlfSourceError;
 
     fn next_frame(&mut self) -> Result<Option<CanFrame>, Self::Error> {
-        match self.reader.next_message()? {
-            Some(msg) => Ok(Some(message_to_frame(&msg)?)),
-            None => Ok(None),
+        loop {
+            match self.reader.next_object()? {
+                None => return Ok(None),
+                Some(BlfObject::CanMessage(m)) => {
+                    return can_message_to_frame(&m, self.start_unix_nanos).map(Some)
+                }
+                Some(BlfObject::CanMessage2(m)) => {
+                    return can_message2_to_frame(&m, self.start_unix_nanos).map(Some)
+                }
+                Some(BlfObject::CanFdMessage(m)) => {
+                    return can_fd_message_to_frame(&m, self.start_unix_nanos).map(Some)
+                }
+                Some(BlfObject::CanFdMessage64(m)) => {
+                    return can_fd_message_64_to_frame(&m, self.start_unix_nanos).map(Some)
+                }
+                Some(BlfObject::CanErrorExt(m)) => {
+                    return can_error_ext_to_frame(&m, self.start_unix_nanos).map(Some)
+                }
+                // Object types this implementation doesn't decode
+                // (markers, FlexRay events, etc.) — skip and keep
+                // looking for the next CAN frame.
+                Some(BlfObject::Other(_)) => {}
+            }
         }
     }
 }
 
 #[derive(Debug)]
 pub enum BlfSourceError {
-    /// Underlying BLF parser error.
-    Blf(BlfError),
-    /// BLF channel field overflowed `CanFrame`'s 0..=255 channel space.
+    /// Native BLF reader error (I/O, framing, decode).
+    Read(BlfReadError),
+    /// BLF channel field (1-based on disk; cannet uses 0-based)
+    /// overflowed `CanFrame`'s 0..=255 channel space after the
+    /// 1-based → 0-based adjustment.
     ChannelOutOfRange(u16),
     /// BLF row carried a CAN id that didn't fit its declared addressing
     /// mode (standard / extended).
@@ -88,20 +125,17 @@ pub enum BlfSourceError {
     /// Payload length didn't match the constraints of the chosen frame
     /// variant (e.g. >8 bytes on a classic frame).
     InvalidFrame(CanFrameError),
-    /// Negative or non-finite timestamp, which BLF should never produce.
-    InvalidTimestamp(f64),
 }
 
 impl std::fmt::Display for BlfSourceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Blf(e) => write!(f, "blf parser error: {e}"),
+            Self::Read(e) => write!(f, "blf reader error: {e}"),
             Self::ChannelOutOfRange(c) => {
                 write!(f, "blf channel {c} exceeds CanFrame::channel u8 range")
             }
             Self::InvalidId(e) => write!(f, "invalid CAN id in BLF row: {e}"),
             Self::InvalidFrame(e) => write!(f, "invalid frame produced from BLF row: {e}"),
-            Self::InvalidTimestamp(t) => write!(f, "non-representable BLF timestamp: {t}"),
         }
     }
 }
@@ -109,17 +143,17 @@ impl std::fmt::Display for BlfSourceError {
 impl std::error::Error for BlfSourceError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Blf(e) => Some(e),
+            Self::Read(e) => Some(e),
             Self::InvalidId(e) => Some(e),
             Self::InvalidFrame(e) => Some(e),
-            Self::ChannelOutOfRange(_) | Self::InvalidTimestamp(_) => None,
+            Self::ChannelOutOfRange(_) => None,
         }
     }
 }
 
-impl From<BlfError> for BlfSourceError {
-    fn from(value: BlfError) -> Self {
-        Self::Blf(value)
+impl From<BlfReadError> for BlfSourceError {
+    fn from(value: BlfReadError) -> Self {
+        Self::Read(value)
     }
 }
 impl From<IdError> for BlfSourceError {
@@ -133,46 +167,121 @@ impl From<CanFrameError> for BlfSourceError {
     }
 }
 
-fn message_to_frame(msg: &Message) -> Result<CanFrame, BlfSourceError> {
-    let timestamp_ns = seconds_to_nanos(msg.timestamp)?;
-    let channel = u8::try_from(msg.channel)
-        .map_err(|_| BlfSourceError::ChannelOutOfRange(msg.channel))?;
+/// BLF stores 1-based channel numbers on disk (channel 0 means
+/// "unknown"). cannet's [`CanFrame`] uses 0-based channels, so we
+/// subtract 1 here (saturating). Round-trips with `blf_asc`'s
+/// writer match: `blf_asc`'s writer adds 1 on the way to disk.
+fn adjust_channel_to_zero_based(disk_channel: u16) -> Result<u8, BlfSourceError> {
+    let zero_based = disk_channel.saturating_sub(1);
+    u8::try_from(zero_based).map_err(|_| BlfSourceError::ChannelOutOfRange(disk_channel))
+}
 
-    let raw_id = u32::from(msg.arbitration_id);
-    let id = if msg.is_extended_id {
-        CanId::extended(raw_id)?
+fn classify_id(id_raw: u32, is_extended: bool) -> Result<CanId, BlfSourceError> {
+    if is_extended {
+        Ok(CanId::extended(id_raw)?)
     } else {
-        CanId::standard(raw_id)?
-    };
-
-    let direction = if msg.is_rx { Direction::Rx } else { Direction::Tx };
-
-    let payload = if msg.is_error_frame {
-        CanFramePayload::Error
-    } else if msg.is_remote_frame {
-        CanFramePayload::Remote { dlc: msg.dlc }
-    } else if msg.is_fd {
-        let flags = CanFdFlags {
-            bitrate_switch: msg.bitrate_switch,
-            error_state_indicator: msg.error_state_indicator,
-        };
-        CanFramePayload::Fd { data: msg.data.to_vec(), flags }
-    } else {
-        CanFramePayload::Classic(msg.data.to_vec())
-    };
-
-    // The validating constructors live on CanFrame, but we already chose the
-    // payload variant explicitly above. Re-check via the constructors so
-    // any length violation surfaces as InvalidFrame instead of silently
-    // producing a malformed frame.
-    match payload {
-        CanFramePayload::Classic(data) => Ok(CanFrame::classic(timestamp_ns, channel, id, direction, data)?),
-        CanFramePayload::Fd { data, flags } => {
-            Ok(CanFrame::fd(timestamp_ns, channel, id, direction, data, flags)?)
-        }
-        CanFramePayload::Remote { dlc } => Ok(CanFrame::remote(timestamp_ns, channel, id, direction, dlc)),
-        CanFramePayload::Error => Ok(CanFrame::error(timestamp_ns, channel, id, direction)),
+        Ok(CanId::standard(id_raw)?)
     }
+}
+
+fn classify_direction(flags: u8) -> Direction {
+    if (flags & CAN_FLAG_TX) != 0 {
+        Direction::Tx
+    } else {
+        Direction::Rx
+    }
+}
+
+fn absolute_ts(rel: u64, start: u64) -> u64 {
+    start.saturating_add(rel)
+}
+
+fn can_message_to_frame(m: &CanMessage, start_ns: u64) -> Result<CanFrame, BlfSourceError> {
+    let timestamp_ns = absolute_ts(m.event.timestamp_ns(), start_ns);
+    let channel = adjust_channel_to_zero_based(m.channel)?;
+    let id = classify_id(m.can_id(), m.is_extended_id())?;
+    let direction = classify_direction(m.flags);
+    if (m.flags & CAN_FLAG_RTR) != 0 {
+        return Ok(CanFrame::remote(timestamp_ns, channel, id, direction, m.dlc));
+    }
+    Ok(CanFrame::classic(
+        timestamp_ns,
+        channel,
+        id,
+        direction,
+        m.payload().to_vec(),
+    )?)
+}
+
+fn can_message2_to_frame(m: &CanMessage2, start_ns: u64) -> Result<CanFrame, BlfSourceError> {
+    let timestamp_ns = absolute_ts(m.event.timestamp_ns(), start_ns);
+    let channel = adjust_channel_to_zero_based(m.channel)?;
+    let id = classify_id(m.can_id(), m.is_extended_id())?;
+    let direction = classify_direction(m.flags);
+    if m.is_remote() {
+        return Ok(CanFrame::remote(timestamp_ns, channel, id, direction, m.dlc));
+    }
+    Ok(CanFrame::classic(
+        timestamp_ns,
+        channel,
+        id,
+        direction,
+        m.data.clone(),
+    )?)
+}
+
+fn can_fd_message_to_frame(m: &CanFdMessage, start_ns: u64) -> Result<CanFrame, BlfSourceError> {
+    let timestamp_ns = absolute_ts(m.event.timestamp_ns(), start_ns);
+    let channel = adjust_channel_to_zero_based(m.channel)?;
+    let id = classify_id(m.can_id(), m.is_extended_id())?;
+    let direction = classify_direction(m.flags);
+    Ok(CanFrame::fd(
+        timestamp_ns,
+        channel,
+        id,
+        direction,
+        m.payload().to_vec(),
+        CanFdFlags {
+            bitrate_switch: m.bitrate_switch(),
+            error_state_indicator: m.error_state_indicator(),
+        },
+    )?)
+}
+
+fn can_fd_message_64_to_frame(m: &CanFdMessage64, start_ns: u64) -> Result<CanFrame, BlfSourceError> {
+    let timestamp_ns = absolute_ts(m.event.timestamp_ns(), start_ns);
+    let channel = adjust_channel_to_zero_based(u16::from(m.channel))?;
+    let id = classify_id(m.can_id(), m.is_extended_id())?;
+    // Direction in CAN_FD_MESSAGE_64 is encoded in `dir`, not in `flags`.
+    // 0 = Rx, 1 = Tx (mirrors Vector's convention).
+    let direction = if m.dir == 0 { Direction::Rx } else { Direction::Tx };
+    if m.is_remote() {
+        return Ok(CanFrame::remote(timestamp_ns, channel, id, direction, m.dlc));
+    }
+    Ok(CanFrame::fd(
+        timestamp_ns,
+        channel,
+        id,
+        direction,
+        m.data.clone(),
+        CanFdFlags {
+            bitrate_switch: m.bitrate_switch(),
+            error_state_indicator: m.error_state_indicator(),
+        },
+    )?)
+}
+
+fn can_error_ext_to_frame(m: &CanErrorExt, start_ns: u64) -> Result<CanFrame, BlfSourceError> {
+    let timestamp_ns = absolute_ts(m.event.timestamp_ns(), start_ns);
+    let channel = adjust_channel_to_zero_based(m.channel)?;
+    let id = classify_id(m.can_id(), m.is_extended_id())?;
+    // CAN_ERROR_EXT carries direction in flags_ext bit 5 (1 = RX).
+    let direction = if (m.flags_ext & 0x0020) != 0 {
+        Direction::Rx
+    } else {
+        Direction::Tx
+    };
+    Ok(CanFrame::error(timestamp_ns, channel, id, direction))
 }
 
 /// Streaming BLF writer driven by [`cannet_core::CanFrame`]s.
@@ -426,22 +535,6 @@ fn ns_to_seconds(ns: u64) -> f64 {
     (ns as f64) / 1e9
 }
 
-fn seconds_to_nanos(seconds: f64) -> Result<u64, BlfSourceError> {
-    if !seconds.is_finite() || seconds < 0.0 {
-        return Err(BlfSourceError::InvalidTimestamp(seconds));
-    }
-    // 2^64 ns ≈ 584 years; BLF timestamps cover well under that. The
-    // largest f64 that fits in u64 is 2^64 - 2048 ≈ 1.844_674_407e19; the
-    // exclusive upper bound `2.0_f64.powi(64)` is the cleanest guard.
-    let ns = seconds * 1e9;
-    if ns >= 2.0_f64.powi(64) {
-        return Err(BlfSourceError::InvalidTimestamp(seconds));
-    }
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let ns_u64 = ns as u64;
-    Ok(ns_u64)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,23 +676,8 @@ mod tests {
         let Err(err) = BlfCanFrameSource::open("/nonexistent/path/no.blf") else {
             panic!("expected error opening nonexistent file");
         };
-        assert!(matches!(err, BlfSourceError::Blf(_)));
-    }
-
-    #[test]
-    fn negative_timestamp_is_rejected() {
-        assert!(matches!(
-            seconds_to_nanos(-1.0),
-            Err(BlfSourceError::InvalidTimestamp(_))
-        ));
-    }
-
-    #[test]
-    fn nan_timestamp_is_rejected() {
-        assert!(matches!(
-            seconds_to_nanos(f64::NAN),
-            Err(BlfSourceError::InvalidTimestamp(_))
-        ));
+        // Native reader surfaces an I/O error inside BlfReadError::Io.
+        assert!(matches!(err, BlfSourceError::Read(_)));
     }
 
     // ---- Phase-9 capture writer tests ----

@@ -26,6 +26,11 @@
 //!   (`CAN_MESSAGE`, `CAN_MESSAGE2`, `CAN_FD_MESSAGE`,
 //!   `CAN_FD_MESSAGE_64`, `CAN_ERROR_EXT`). Growing one type at a
 //!   time across Tranche 1.
+//! - [`reader`] — streaming reader that drives the above modules:
+//!   parses `FileStatistics`, walks top-level `LOG_CONTAINER`s,
+//!   inflates each, and yields decoded inner objects out of a
+//!   carry-over buffer that handles objects crossing container
+//!   boundaries.
 //!
 //! Encoders (`write_*`) for each of the above land in the same
 //! modules in later Tranche-1 steps.
@@ -34,8 +39,10 @@
 //! [`object`]: crate::format::object
 //! [`log_container`]: crate::format::log_container
 //! [`can`]: crate::format::can
+//! [`reader`]: crate::format::reader
 
 pub mod can;
 pub mod header;
 pub mod log_container;
 pub mod object;
+pub mod reader;

@@ -333,11 +333,17 @@ pub fn decode_can_message(object_bytes: &[u8]) -> Result<CanMessage, CanObjectEr
 //
 // object_size: 32 + 88 = 120 bytes.
 
-/// Fixed body size of `CAN_FD_MESSAGE`: 86 bytes (per
-/// `vector_blf::CanFdMessage::calculateObjectSize` —
+/// Body size of `CAN_FD_MESSAGE` as Vector's spec defines it:
 /// 18 bytes of fixed prefix + 64-byte `data` slot + 4-byte
-/// `reserved3` trailer).
+/// `reserved3` trailer = 86 bytes. The decoder will still accept
+/// 82 bytes (no `reserved3`) since `blf_asc` writes that shorter
+/// form and at least one BLF library round-trips it.
 pub const CAN_FD_MESSAGE_BODY_BYTES: usize = 86;
+
+/// Minimum body size the `CAN_FD_MESSAGE` decoder accepts: the
+/// fixed 18-byte prefix + 64-byte data slot (no trailing
+/// `reserved3`). Files written by `blf_asc` stop here.
+pub const CAN_FD_MESSAGE_MIN_BODY_BYTES: usize = 82;
 /// Fixed-width `data` slot in a `CAN_FD_MESSAGE`. The meaningful
 /// prefix is `valid_data_bytes` long.
 pub const CAN_FD_MESSAGE_DATA_BYTES: usize = 64;
@@ -394,7 +400,9 @@ impl CanFdMessage {
     }
 }
 
-/// Decode one `CAN_FD_MESSAGE`.
+/// Decode one `CAN_FD_MESSAGE`. Accepts both Vector-spec 86-byte
+/// bodies and `blf_asc`'s shorter 82-byte form (missing the
+/// trailing `reservedCanFdMessage3`).
 // `try_into().unwrap()` calls are unreachable: every slice is
 // length-checked at the top.
 #[allow(clippy::missing_panics_doc)]
@@ -406,7 +414,7 @@ pub fn decode_can_fd_message(object_bytes: &[u8]) -> Result<CanFdMessage, CanObj
             base.object_type,
         ));
     }
-    let required = CAN_EVENT_HEADER_BYTES + CAN_FD_MESSAGE_BODY_BYTES;
+    let required = CAN_EVENT_HEADER_BYTES + CAN_FD_MESSAGE_MIN_BODY_BYTES;
     if (base.object_size as usize) < required {
         return Err(CanObjectError::TooSmall(base.object_size, required));
     }
@@ -420,7 +428,7 @@ pub fn decode_can_fd_message(object_bytes: &[u8]) -> Result<CanFdMessage, CanObj
         &object_bytes[OBJECT_HEADER_BASE_BYTES..OBJECT_HEADER_BASE_BYTES + OBJECT_HEADER_V1_BYTES],
     )
     .map_err(CanObjectError::EventHeader)?;
-    let body = &object_bytes[CAN_EVENT_HEADER_BYTES..CAN_EVENT_HEADER_BYTES + CAN_FD_MESSAGE_BODY_BYTES];
+    let body = &object_bytes[CAN_EVENT_HEADER_BYTES..base.object_size as usize];
     Ok(CanFdMessage {
         base,
         event,
@@ -435,7 +443,7 @@ pub fn decode_can_fd_message(object_bytes: &[u8]) -> Result<CanFdMessage, CanObj
         // body[15] = reserved1
         // body[16..18] = reserved2
         data: body[18..18 + CAN_FD_MESSAGE_DATA_BYTES].try_into().unwrap(),
-        // body[82..86] = reserved3
+        // body[82..86] = reserved3 (Vector spec; absent in blf_asc-written files)
     })
 }
 

@@ -149,13 +149,17 @@ impl ObjectHeaderBase {
     }
 
     /// Bytes consumed by this object on disk, including the trailing
-    /// 4-byte padding alignment Vector inserts between consecutive
-    /// objects. `object_size` itself is *not* aligned; the next
-    /// object starts at `floor_offset + advance_bytes()`.
+    /// padding Vector writes between consecutive objects. **The
+    /// padding rule is `object_size % 4`**, not `(4 - object_size %
+    /// 4) % 4` — this matches Vector's own `LogContainer.cpp`
+    /// (`is.seekg(objectSize % 4, std::ios_base::cur);`) and
+    /// `blf_asc`'s writer/reader. The padding therefore doesn't
+    /// 4-align the next object's start in general; it's a vestigial
+    /// formula but every BLF implementation in the wild follows it
+    /// so we do too.
     pub fn advance_bytes(&self) -> u64 {
         let raw = u64::from(self.object_size);
-        let pad = (4 - (raw % 4)) % 4;
-        raw + pad
+        raw + (raw % 4)
     }
 }
 
@@ -323,18 +327,19 @@ mod tests {
         assert_eq!(err, ObjectHeaderError::Truncated(8));
     }
 
-    /// Vector aligns the *next* object's start to a 4-byte boundary,
-    /// so an object of size 17 advances the cursor by 20 bytes.
+    /// Padding formula is `object_size % 4` per Vector's own code
+    /// (and `blf_asc`'s). For `object_size` = 17, that's 1 byte of
+    /// padding → next object starts at offset 18, NOT 20.
     #[test]
-    fn advance_bytes_pads_to_4_byte_alignment() {
+    fn advance_bytes_follows_vector_padding_formula() {
         let cases = [
-            (16u32, 16u64),
-            (17, 20),
-            (18, 20),
-            (19, 20),
-            (20, 20),
-            (47, 48),
-            (48, 48),
+            (16u32, 16u64), // 16 % 4 = 0
+            (17, 18),       // 17 % 4 = 1
+            (18, 20),       // 18 % 4 = 2
+            (19, 22),       // 19 % 4 = 3
+            (20, 20),       // 20 % 4 = 0
+            (48, 48),       // 48 % 4 = 0 (CAN_MESSAGE / CAN_MESSAGE2 with empty body)
+            (113, 114),     // matches the LOG_CONTAINER size seen in a real BLF
         ];
         for (size, expected) in cases {
             let bytes = synth_header(16, 1, size, object_type::LOG_CONTAINER);

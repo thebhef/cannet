@@ -69,6 +69,49 @@ impl SystemTime {
             millisecond: u16::from_le_bytes([bytes[14], bytes[15]]),
         }
     }
+
+    /// Convert this SYSTEMTIME to nanoseconds since the UNIX epoch
+    /// (1970-01-01 00:00:00 UTC), proleptic Gregorian, no leap
+    /// seconds (BLF, like Windows SYSTEMTIME, doesn't model them).
+    ///
+    /// Returns 0 if any field is zero or out of range — the
+    /// convention Vector uses for "not set", and what
+    /// `blf_asc::systemtime_to_timestamp` returns for the same input.
+    pub fn to_unix_nanos(self) -> u64 {
+        if self.year == 0 || self.month == 0 || self.day == 0 {
+            return 0;
+        }
+        let y = i32::from(self.year);
+        let m = u32::from(self.month);
+        let d = u32::from(self.day);
+        if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+            return 0;
+        }
+        let days = days_since_unix_epoch(y, m, d);
+        if days < 0 {
+            return 0;
+        }
+        let secs = u64::try_from(days).unwrap_or(0) * 86_400
+            + u64::from(self.hour) * 3_600
+            + u64::from(self.minute) * 60
+            + u64::from(self.second);
+        secs * 1_000_000_000 + u64::from(self.millisecond) * 1_000_000
+    }
+}
+
+/// Days between 1970-01-01 and (`year`, `month`, `day`), proleptic
+/// Gregorian. Returns a signed count so dates before the epoch (rare
+/// but possible) can be detected with `< 0`.
+fn days_since_unix_epoch(year: i32, month: u32, day: u32) -> i64 {
+    // Howard Hinnant's "days from civil" — well-known constant-time
+    // proleptic Gregorian day count. Origin: 1970-03-01 shifted by
+    // 60 days to land back on 1970-01-01.
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = u32::try_from(y.rem_euclid(400)).expect("rem_euclid(400) ∈ [0,400)");
+    let doy = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    i64::from(era) * 146_097 + i64::from(doe) - 719_468
 }
 
 /// Parsed `FileStatistics` header.
@@ -212,6 +255,41 @@ mod tests {
         assert_eq!(parsed.application_build, 7);
         assert_eq!(parsed.measurement_start_time.year, 2026);
         assert_eq!(parsed.measurement_start_time.month, 5);
+    }
+
+    #[test]
+    fn system_time_to_unix_nanos_handles_unset_sentinel() {
+        // Zero year / month / day means "not set" — Vector and
+        // blf_asc both return 0 here.
+        assert_eq!(SystemTime::default().to_unix_nanos(), 0);
+    }
+
+    #[test]
+    fn system_time_to_unix_nanos_converts_a_known_date() {
+        // 2024-01-15 12:30:45.250 UTC = 1_705_321_845_250_000_000 ns.
+        let t = SystemTime {
+            year: 2024,
+            month: 1,
+            day: 15,
+            hour: 12,
+            minute: 30,
+            second: 45,
+            millisecond: 250,
+            ..SystemTime::default()
+        };
+        assert_eq!(t.to_unix_nanos(), 1_705_321_845_250_000_000);
+    }
+
+    #[test]
+    fn system_time_to_unix_nanos_handles_leap_year_feb_29() {
+        // 2024 is a leap year. 2024-02-29 00:00:00 UTC = 1_709_164_800 s.
+        let t = SystemTime {
+            year: 2024,
+            month: 2,
+            day: 29,
+            ..SystemTime::default()
+        };
+        assert_eq!(t.to_unix_nanos(), 1_709_164_800_000_000_000);
     }
 
     #[test]
