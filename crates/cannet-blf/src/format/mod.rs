@@ -31,18 +31,21 @@
 //!   inflates each, and yields decoded inner objects out of a
 //!   carry-over buffer that handles objects crossing container
 //!   boundaries.
-//!
-//! Encoders (`write_*`) for each of the above land in the same
-//! modules in later Tranche-1 steps.
+//! - [`writer`] — streaming writer; the reader's mirror image.
+//!   Accumulates encoded inner objects, periodically flushes them
+//!   as zlib-compressed `LOG_CONTAINER`s, and rewrites the
+//!   `FileStatistics` header in place at finish.
 //!
 //! [`header`]: crate::format::header
 //! [`object`]: crate::format::object
 //! [`log_container`]: crate::format::log_container
 //! [`can`]: crate::format::can
 //! [`reader`]: crate::format::reader
+//! [`writer`]: crate::format::writer
 
 pub mod can;
 pub mod header;
 pub mod log_container;
 pub mod object;
 pub mod reader;
+pub mod writer;

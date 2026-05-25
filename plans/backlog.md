@@ -60,6 +60,16 @@ the live-hardware exercise the items below describe:
 
 #### Other near-term work
 
+- `[test-corpus]` **Vendor python-can BLF fixtures under
+  `crates/cannet-blf/tests/fixtures/python-can/`.** Phase 9.5
+  Tranche 1 listed this as the first of four test corpora but
+  deferred actual vendoring; today the tranche's coverage is
+  synthetic-bytes per-module tests + the vector_blf oracle
+  cross-check (gated behind `vector-blf-oracle`). Adding the
+  python-can-written files would give us a third-party-writer
+  cross-check that runs without C++ toolchain. ~30 KB binary
+  per file, expect ~5 files covering classic / FD / error / mixed
+  channels / big payloads.
 - `[decision]` **Revisit [ADR 0009](../docs/adr/0009-dbc-blf-readers.md)
   in light of the full BLF feature-support matrix
   ([docs/blf-feature-support.md](../docs/blf-feature-support.md)).**

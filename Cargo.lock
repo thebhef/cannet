@@ -391,7 +391,6 @@ dependencies = [
 name = "cannet-blf"
 version = "0.0.0"
 dependencies = [
- "blf_asc",
  "cannet-core",
  "flate2",
  "tempfile",

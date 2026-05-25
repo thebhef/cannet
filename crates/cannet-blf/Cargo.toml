@@ -7,7 +7,6 @@ publish.workspace = true
 
 [dependencies]
 cannet-core = { path = "../cannet-core" }
-blf_asc = "0.2"
 # zlib inflate/deflate for LOG_CONTAINER bodies. `rust_backend`
 # selects `miniz_oxide` (pure Rust, no system zlib needed).
 # Phase 9.5 Tranche 1 (`plans/technology-inventory.md`).

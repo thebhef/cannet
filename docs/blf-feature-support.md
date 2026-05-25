@@ -67,17 +67,16 @@ records intent as of today, not a permanent decision.
 - `✓ read` — typed read only
 - `✗` — not exposed
 
-As of Phase 9.5 Tranche 1 step 6, the **reader** is a native
-implementation rooted in [`cannet-blf::format`](../crates/cannet-blf/src/format/);
-the **writer** still wraps `blf_asc::BlfWriter` and retires in
-step 9. Both halves are exposed under the same public
-`BlfCanFrameSource` / `BlfCaptureWriter` surface, so this column
-tracks the surface, not the implementation underneath. The current
-read-side native coverage is: `FileStatistics`, `LOG_CONTAINER`
-(zlib + uncompressed), `CAN_MESSAGE`, `CAN_MESSAGE2`,
-`CAN_FD_MESSAGE`, `CAN_FD_MESSAGE_64`, and `CAN_ERROR_EXT` —
-i.e. every CAN-class frame the public surface reads back is
-decoded by our own code, not `blf_asc`'s.
+As of Phase 9.5 Tranche 1 step 9, both the **reader** and the
+**writer** are native implementations rooted in
+[`cannet-blf::format`](../crates/cannet-blf/src/format/) — the
+`blf_asc` wrapper has been retired. Native coverage as of
+Tranche 1: `FileStatistics`, `LOG_CONTAINER` (zlib + uncompressed),
+`CAN_MESSAGE`, `CAN_MESSAGE2`, `CAN_FD_MESSAGE`,
+`CAN_FD_MESSAGE_64`, and `CAN_ERROR_EXT`. The writer emits
+`CAN_MESSAGE2` for classic CAN frames and `CAN_FD_MESSAGE_64` for
+CAN FD (the modern types Vector's own tools write today); the
+reader still accepts both the older types and the modern ones.
 
 **`ablf` column** — what the leading alternative Rust crate does
 (read-only, no write surface). Shown for cross-reference:

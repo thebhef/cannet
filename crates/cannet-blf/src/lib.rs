@@ -1,28 +1,29 @@
 //! Vector BLF log file as a [`cannet_core::CanFrameSource`], plus the
-//! Phase-9 [`BlfCaptureWriter`] that turns a stream of
+//! [`BlfCaptureWriter`] that turns a stream of
 //! [`cannet_core::CanFrame`]s back into a BLF file.
 //!
-//! The reader is a focused native implementation rooted in
-//! [`format`] — it owns the on-disk codec end-to-end (`FileStatistics`
-//! header → top-level `LOG_CONTAINER` framing → zlib inflate →
-//! per-type CAN event decoders). The wire shape is hidden behind
-//! [`BlfCanFrameSource`] so the rest of the system only ever sees
+//! Both the reader and the writer are native implementations
+//! rooted in [`format`] — they own the on-disk codec end-to-end
+//! (`FileStatistics` header → top-level `LOG_CONTAINER` framing →
+//! zlib deflate/inflate → per-type CAN event decoders/encoders).
+//! The wire shape is hidden behind [`BlfCanFrameSource`] and
+//! [`BlfCaptureWriter`] so the rest of the system only ever sees
 //! `cannet_core` types.
 //!
-//! The writer still wraps `blf_asc::BlfWriter` (Phase 9.5 Tranche 1
-//! step 9 retires that too) and streams to `<dest>.part` before
-//! atomically renaming into place on [`BlfCaptureWriter::finish`] —
-//! a mid-write crash therefore leaves no half-file behind at
-//! `<dest>`.
+//! The writer streams to `<dest>.part` before atomically renaming
+//! into place on [`BlfCaptureWriter::finish`] — a mid-write crash
+//! therefore leaves no half-file behind at `<dest>`.
 //!
-//! ## Phase 9.5 — native implementation in progress
+//! ## Phase 9.5 — native implementation
 //!
 //! Per [ADR 0009](../../../docs/adr/0009-dbc-blf-readers.md), the
-//! `blf_asc` wrapper is being replaced tranche-by-tranche with the
-//! native implementation in [`format`]. The reader swap landed in
-//! Tranche 1 step 6; the writer retires in step 9. The public
-//! `BlfCanFrameSource` / `BlfCaptureWriter` surface is unchanged.
-//! The [BLF feature-support matrix](../../../docs/blf-feature-support.md)
+//! Phase-1 `blf_asc` wrapper retired in Phase 9.5 Tranche 1 step 9.
+//! The native implementation in [`format`] covers reading and
+//! writing of `CAN_MESSAGE` (1), `CAN_MESSAGE2` (86),
+//! `CAN_FD_MESSAGE` (100), `CAN_FD_MESSAGE_64` (101), and
+//! `CAN_ERROR_EXT` (73) — plus the `LOG_CONTAINER` (10) outer
+//! wrapper and the `FileStatistics` header. The
+//! [BLF feature-support matrix](../../../docs/blf-feature-support.md)
 //! is the running checklist; each landed object type updates its
 //! row in the same commit that ships the code. The
 //! `vector-blf-oracle` cargo feature enables black-box comparison
@@ -43,11 +44,10 @@
 
 pub mod format;
 
-use std::fs::{self, File};
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use blf_asc::{ArbitrationId, BlfError, BlfWriter, DataBytes, Message};
 use cannet_core::{
     CanFdFlags, CanFrame, CanFrameError, CanFramePayload, CanFrameSource, CanId, Direction, IdError,
 };
@@ -288,36 +288,33 @@ fn can_error_ext_to_frame(m: &CanErrorExt, start_ns: u64) -> Result<CanFrame, Bl
 ///
 /// Streams to `<dest>.part` and renames to `<dest>` on
 /// [`BlfCaptureWriter::finish`]. Drop without `finish` discards
-/// the partial file. Frame types covered match what
-/// [`BlfCanFrameSource`] reads back — classic CAN, CAN FD, error,
-/// and remote.
+/// the partial file.
+///
+/// # On-disk shape
+///
+/// Classic frames are written as `CAN_MESSAGE2` (object type 86)
+/// and CAN FD frames as `CAN_FD_MESSAGE_64` (object type 101) —
+/// the modern types Vector's own tools emit. Error frames are
+/// `CAN_ERROR_EXT` (73). Remote frames become a `CAN_MESSAGE2`
+/// with the RTR flag bit set.
 ///
 /// # Time precision
 ///
-/// `blf_asc` stores per-object timestamps as a relative `u64`
-/// nanosecond offset from the file's start, but the public
-/// `Message.timestamp` is `f64` seconds. The writer converts
-/// `u64`-ns → `f64`-s and back via `blf_asc`; for absolute
-/// timestamps in the modern epoch (≈1.7e18 ns) the round-trip
-/// loses sub-microsecond precision. The caller can compare
-/// [`BlfCaptureWriter::finish`]'s reported `max_timestamp_drift_ns`
-/// against an expected tolerance to decide whether to surface a
-/// "precision degraded" message — see the Phase-9 docs.
+/// Per-event `object_timestamp` is encoded as `u64` nanoseconds
+/// relative to the file's `measurement_start_time`. The conversion
+/// is lossless — there's no `f64` precision boundary anywhere on
+/// the write path. [`FinishedCapture::max_timestamp_drift_ns`]
+/// stays for backwards compatibility but is always 0 with the
+/// native writer.
 pub struct BlfCaptureWriter {
     /// Final destination path the temp file renames to on
     /// [`Self::finish`].
     dest: PathBuf,
     /// Temp file path the writer streams to (`<dest>.part`).
     temp: PathBuf,
-    /// `Option` so [`Self::finish`] can take ownership and call
-    /// `finish` on it before the rename. Cleared on success so
-    /// [`Drop`] doesn't double-finish.
-    inner: Option<BlfWriter>,
-    /// Largest observed `|on-disk-ns - source-ns|` across the
-    /// frames we've written so far. Reported by [`Self::finish`]
-    /// so the host can warn if the f64-seconds round-trip is
-    /// dropping measurable precision.
-    max_drift_ns: u64,
+    /// `Option` so [`Self::finish`] can take ownership before the
+    /// rename. Cleared on success so [`Drop`] doesn't double-finish.
+    inner: Option<format::writer::BlfFileWriter>,
     /// Frame count appended so far — included in
     /// [`FinishedCapture`] for system-log integration.
     frame_count: u64,
@@ -331,32 +328,24 @@ pub struct FinishedCapture {
     /// On-disk file size of the renamed-into-place BLF.
     pub byte_size: u64,
     /// Largest observed `|on-disk-ns - source-ns|` round-trip
-    /// drift across the written frames. Useful for surfacing a
-    /// "precision degraded" warning when the f64-seconds storage
-    /// loses sub-microsecond precision vs. the in-memory ns
-    /// timeline (which it does for modern absolute timestamps).
+    /// drift across the written frames. Always 0 with the native
+    /// writer (the f64-seconds storage layer that drove this field
+    /// retired in Phase 9.5 Tranche 1 step 9); kept in the struct
+    /// for backwards compatibility with system-message consumers.
     pub max_timestamp_drift_ns: u64,
 }
 
 /// Anything that can go wrong driving a [`BlfCaptureWriter`].
 #[derive(Debug)]
 pub enum BlfWriteError {
-    /// Underlying BLF writer error.
-    Blf(BlfError),
-    /// I/O error opening, finalising, or renaming the temp file.
+    /// I/O error opening, writing, finalising, or renaming the file.
     Io(io::Error),
-    /// The wrapped writer's reported byte length didn't fit a
-    /// `u64`. (Practically unreachable; reported for completeness
-    /// rather than swallowed.)
-    LengthOverflow,
 }
 
 impl std::fmt::Display for BlfWriteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Blf(e) => write!(f, "blf writer error: {e}"),
             Self::Io(e) => write!(f, "blf writer I/O error: {e}"),
-            Self::LengthOverflow => f.write_str("finished BLF file length overflowed u64"),
         }
     }
 }
@@ -364,16 +353,8 @@ impl std::fmt::Display for BlfWriteError {
 impl std::error::Error for BlfWriteError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Blf(e) => Some(e),
             Self::Io(e) => Some(e),
-            Self::LengthOverflow => None,
         }
-    }
-}
-
-impl From<BlfError> for BlfWriteError {
-    fn from(value: BlfError) -> Self {
-        Self::Blf(value)
     }
 }
 
@@ -391,12 +372,11 @@ impl BlfCaptureWriter {
     pub fn create<P: AsRef<Path>>(dest: P) -> Result<Self, BlfWriteError> {
         let dest = dest.as_ref().to_path_buf();
         let temp = temp_path_for(&dest);
-        let inner = BlfWriter::create(&temp)?;
+        let inner = format::writer::BlfFileWriter::create(&temp)?;
         Ok(Self {
             dest,
             temp,
             inner: Some(inner),
-            max_drift_ns: 0,
             frame_count: 0,
         })
     }
@@ -406,21 +386,15 @@ impl BlfCaptureWriter {
         let inner = self.inner.as_mut().ok_or_else(|| {
             BlfWriteError::Io(io::Error::other("writer has already been finished"))
         })?;
-        let msg = frame_to_message(frame);
-        // Track the round-trip drift the f64-seconds storage will
-        // introduce. We're about to write `msg.timestamp`; the
-        // reader will recover `(msg.timestamp * 1e9) as u64`, which
-        // for modern absolute timestamps differs from the source
-        // ns by tens to hundreds of ns. Comparing the two before
-        // we hand off the message gives us the exact drift this
-        // frame contributes.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let recovered_ns = (msg.timestamp * 1e9) as u64;
-        let drift = recovered_ns.abs_diff(frame.timestamp_ns);
-        if drift > self.max_drift_ns {
-            self.max_drift_ns = drift;
-        }
-        inner.on_message_received(&msg)?;
+        // Floor the candidate start to a ms boundary so the
+        // SYSTEMTIME-encoded `measurement_start_time` round-trips
+        // losslessly. `set_start_if_unset` returns the agreed start
+        // (existing or just-set) so the encoder produces a relative
+        // per-event timestamp that carries the sub-ms tail.
+        let candidate = (frame.timestamp_ns / 1_000_000) * 1_000_000;
+        let start = inner.set_start_if_unset(candidate);
+        let bytes = frame_to_object_bytes(frame, Some(start));
+        inner.append_object(&bytes, frame.timestamp_ns)?;
         self.frame_count += 1;
         Ok(())
     }
@@ -429,21 +403,16 @@ impl BlfCaptureWriter {
     /// destination. Returns the byte size and frame count for the
     /// host's system-message integration.
     pub fn finish(mut self) -> Result<FinishedCapture, BlfWriteError> {
-        let mut inner = self
+        let inner = self
             .inner
             .take()
             .ok_or_else(|| BlfWriteError::Io(io::Error::other("writer has already been finished")))?;
-        inner.finish()?;
-        // Drop the writer to close the underlying file before
-        // rename — on Windows, renaming a file with an open
-        // handle fails.
-        drop(inner);
+        let byte_size = inner.finish()?;
         fs::rename(&self.temp, &self.dest)?;
-        let byte_size = File::open(&self.dest)?.metadata()?.len();
         Ok(FinishedCapture {
             frame_count: self.frame_count,
             byte_size,
-            max_timestamp_drift_ns: self.max_drift_ns,
+            max_timestamp_drift_ns: 0,
         })
     }
 }
@@ -451,11 +420,11 @@ impl BlfCaptureWriter {
 impl Drop for BlfCaptureWriter {
     fn drop(&mut self) {
         // If we still have an inner writer, the caller never
-        // reached `finish`. Drop the inner first so the file
-        // handle closes, then remove the partial file so the
-        // destination is observably untouched.
-        if let Some(mut inner) = self.inner.take() {
-            let _ = inner.finish();
+        // reached `finish`. Drop it (closes the underlying file
+        // handle) and remove the partial file so the destination
+        // is observably untouched.
+        if let Some(inner) = self.inner.take() {
+            drop(inner);
             let _ = fs::remove_file(&self.temp);
         }
     }
@@ -472,103 +441,209 @@ fn temp_path_for(dest: &Path) -> PathBuf {
     dest.with_file_name(name)
 }
 
-/// Convert a [`CanFrame`] into the on-the-wire `blf_asc::Message`
-/// shape — the inverse of [`message_to_frame`]. The mapping is
-/// total: every `CanFrame` produces one `Message`.
-fn frame_to_message(frame: &CanFrame) -> Message {
-    let timestamp = ns_to_seconds(frame.timestamp_ns);
-    let arbitration_id = ArbitrationId(frame.id.raw());
-    let is_extended_id = frame.id.is_extended();
-    let is_rx = matches!(frame.direction, Direction::Rx);
-    let channel = u16::from(frame.channel);
-
-    let (is_remote_frame, is_error_frame, is_fd, bitrate_switch, error_state_indicator, dlc, data) =
-        match &frame.payload {
-            CanFramePayload::Classic(d) => (
-                false,
-                false,
-                false,
-                false,
-                false,
-                u8::try_from(d.len()).unwrap_or(u8::MAX),
-                d.clone(),
-            ),
-            CanFramePayload::Fd { data, flags } => (
-                false,
-                false,
-                true,
-                flags.bitrate_switch,
-                flags.error_state_indicator,
-                u8::try_from(data.len()).unwrap_or(u8::MAX),
-                data.clone(),
-            ),
-            CanFramePayload::Remote { dlc } => (
-                true,
-                false,
-                false,
-                false,
-                false,
-                *dlc,
-                Vec::new(),
-            ),
-            CanFramePayload::Error => (false, true, false, false, false, 0, Vec::new()),
-        };
-
-    Message {
-        timestamp,
-        arbitration_id,
-        is_extended_id,
-        is_remote_frame,
-        is_rx,
-        is_error_frame,
-        is_fd,
-        bitrate_switch,
-        error_state_indicator,
-        dlc,
-        data: DataBytes(data),
-        channel,
-    }
+/// Channel-convention inverse of [`adjust_channel_to_zero_based`]:
+/// cannet's 0-based channel becomes the 1-based on-disk value.
+fn adjust_channel_to_one_based(cannet_channel: u8) -> u16 {
+    u16::from(cannet_channel).saturating_add(1)
 }
 
-#[allow(clippy::cast_precision_loss)]
-fn ns_to_seconds(ns: u64) -> f64 {
-    (ns as f64) / 1e9
+/// Encode `frame` to its on-disk object bytes. The object's
+/// `event.timestamp` is the *relative* offset from `start_ns`; the
+/// caller (`BlfFileWriter::append_object`) tracks the absolute
+/// timestamp separately so it can stamp the `FileStatistics`
+/// `measurement_start_time` correctly.
+#[allow(clippy::too_many_lines)]
+fn frame_to_object_bytes(frame: &CanFrame, start_ns: Option<u64>) -> Vec<u8> {
+    use format::can::{
+        encode_can_error_ext, encode_can_fd_message_64, encode_can_message2, CanErrorExt,
+        CanFdMessage64, CanMessage2, CAN_EVENT_HEADER_BYTES, CAN_FD_64_FLAG_BRS,
+        CAN_FD_64_FLAG_EDL, CAN_FD_64_FLAG_ESI, CAN_FD_MESSAGE_64_FIXED_PREFIX_BYTES,
+        CAN_FLAG_RTR, CAN_FLAG_TX, CAN_ID_EXTENDED_BIT,
+    };
+    use format::object::{
+        object_type, ObjectHeaderBase, ObjectHeaderV1, OBJECT_FLAG_TIME_ONE_NANS,
+    };
+
+    let rel_ns = match start_ns {
+        None => 0,
+        Some(s) => frame.timestamp_ns.saturating_sub(s),
+    };
+    let channel = adjust_channel_to_one_based(frame.channel);
+    let id_raw = if frame.id.is_extended() {
+        frame.id.raw() | CAN_ID_EXTENDED_BIT
+    } else {
+        frame.id.raw()
+    };
+    let mut flags: u8 = 0;
+    if matches!(frame.direction, Direction::Tx) {
+        flags |= CAN_FLAG_TX;
+    }
+
+    match &frame.payload {
+        CanFramePayload::Classic(data) => {
+            let dlc = u8::try_from(data.len()).unwrap_or(u8::MAX);
+            let mut m = CanMessage2 {
+                base: ObjectHeaderBase {
+                    header_size: 32,
+                    header_version: 1,
+                    object_size: 0, // filled in below
+                    object_type: object_type::CAN_MESSAGE2,
+                },
+                event: ObjectHeaderV1 {
+                    object_flags: OBJECT_FLAG_TIME_ONE_NANS,
+                    client_index: 0,
+                    object_version: 0,
+                    object_timestamp: rel_ns,
+                },
+                channel,
+                flags,
+                dlc,
+                id_raw,
+                data: data.clone(),
+                frame_length_ns: 0,
+                bit_count: 0,
+            };
+            m.base.object_size = u32::try_from(
+                CAN_EVENT_HEADER_BYTES + 16 + data.len(),
+            )
+            .unwrap_or(u32::MAX);
+            encode_can_message2(&m)
+        }
+        CanFramePayload::Remote { dlc } => {
+            // Remote frames carry no data; emit a CAN_MESSAGE2 with
+            // RTR bit set and an empty data slot.
+            let mut m = CanMessage2 {
+                base: ObjectHeaderBase {
+                    header_size: 32,
+                    header_version: 1,
+                    object_size: 0,
+                    object_type: object_type::CAN_MESSAGE2,
+                },
+                event: ObjectHeaderV1 {
+                    object_flags: OBJECT_FLAG_TIME_ONE_NANS,
+                    client_index: 0,
+                    object_version: 0,
+                    object_timestamp: rel_ns,
+                },
+                channel,
+                flags: flags | CAN_FLAG_RTR,
+                dlc: *dlc,
+                id_raw,
+                data: Vec::new(),
+                frame_length_ns: 0,
+                bit_count: 0,
+            };
+            m.base.object_size = u32::try_from(CAN_EVENT_HEADER_BYTES + 16).unwrap_or(u32::MAX);
+            encode_can_message2(&m)
+        }
+        CanFramePayload::Fd { data, flags: fd_flags } => {
+            let dlc = u8::try_from(data.len()).unwrap_or(u8::MAX);
+            let valid_data_bytes = dlc;
+            let mut flags_32: u32 = CAN_FD_64_FLAG_EDL;
+            if fd_flags.bitrate_switch {
+                flags_32 |= CAN_FD_64_FLAG_BRS;
+            }
+            if fd_flags.error_state_indicator {
+                flags_32 |= CAN_FD_64_FLAG_ESI;
+            }
+            let dir: u8 = u8::from(matches!(frame.direction, Direction::Tx));
+            // `channel` in CAN_FD_MESSAGE_64 is a single byte —
+            // cap the on-disk channel at 255 (effectively at
+            // cannet's u8 channel + 1 saturating to u8::MAX).
+            let channel_u8 = u8::try_from(channel).unwrap_or(u8::MAX);
+            let mut m = CanFdMessage64 {
+                base: ObjectHeaderBase {
+                    header_size: 32,
+                    header_version: 1,
+                    object_size: 0,
+                    object_type: object_type::CAN_FD_MESSAGE_64,
+                },
+                event: ObjectHeaderV1 {
+                    object_flags: OBJECT_FLAG_TIME_ONE_NANS,
+                    client_index: 0,
+                    object_version: 0,
+                    object_timestamp: rel_ns,
+                },
+                channel: channel_u8,
+                dlc,
+                valid_data_bytes,
+                tx_count: 0,
+                id_raw,
+                frame_length_ns: 0,
+                flags: flags_32,
+                btr_cfg_arb: 0,
+                btr_cfg_data: 0,
+                time_offset_brs_ns: 0,
+                time_offset_crc_del_ns: 0,
+                bit_count: 0,
+                dir,
+                ext_data_offset: 0,
+                crc: 0,
+                data: data.clone(),
+                trailing: Vec::new(),
+            };
+            m.base.object_size = u32::try_from(
+                CAN_EVENT_HEADER_BYTES + CAN_FD_MESSAGE_64_FIXED_PREFIX_BYTES + data.len(),
+            )
+            .unwrap_or(u32::MAX);
+            encode_can_fd_message_64(&m)
+        }
+        CanFramePayload::Error => {
+            let flags_ext: u16 = if matches!(frame.direction, Direction::Rx) {
+                0x0020
+            } else {
+                0
+            };
+            let mut e = CanErrorExt {
+                base: ObjectHeaderBase {
+                    header_size: 32,
+                    header_version: 1,
+                    object_size: 0,
+                    object_type: object_type::CAN_ERROR_EXT,
+                },
+                event: ObjectHeaderV1 {
+                    object_flags: OBJECT_FLAG_TIME_ONE_NANS,
+                    client_index: 0,
+                    object_version: 0,
+                    object_timestamp: rel_ns,
+                },
+                channel,
+                length: 0,
+                flags: 0,
+                ecc: 0,
+                position: 0,
+                dlc: 0,
+                frame_length_in_ns: 0,
+                id_raw,
+                flags_ext,
+                data: Vec::new(),
+            };
+            e.base.object_size = u32::try_from(CAN_EVENT_HEADER_BYTES + 24).unwrap_or(u32::MAX);
+            encode_can_error_ext(&e)
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use blf_asc::{ArbitrationId, BlfWriter, DataBytes};
     use cannet_core::{pump, CanFrameSink};
 
-    /// `blf_asc` only round-trips absolute timestamps when they fit a
-    /// SYSTEMTIME header (≥ 1990-01-01). Tests use this base + a small
-    /// offset so the round-trip preserves the offset.
-    const TS_BASE: f64 = 1_700_000_000.0;
+    /// Base timestamp for round-trip tests — a "modern" absolute
+    /// value where the native writer should now be ns-exact. (The
+    /// blf_asc-backed writer this replaced lost sub-µs precision
+    /// at this regime; we now expect zero drift.)
+    const TS_BASE_NS: u64 = 1_700_000_000_u64 * 1_000_000_000;
 
-    fn message(offset_secs: f64, id: u32, data: Vec<u8>) -> Message {
-        Message {
-            timestamp: TS_BASE + offset_secs,
-            arbitration_id: ArbitrationId(id),
-            is_extended_id: false,
-            is_remote_frame: false,
-            is_rx: true,
-            is_error_frame: false,
-            is_fd: false,
-            bitrate_switch: false,
-            error_state_indicator: false,
-            dlc: u8::try_from(data.len()).unwrap(),
-            data: DataBytes(data),
-            channel: 0,
-        }
-    }
-
-    fn write_fixture(path: &std::path::Path, msgs: &[Message]) {
-        let mut writer = BlfWriter::create(path).unwrap();
-        for m in msgs {
-            writer.on_message_received(m).unwrap();
-        }
-        writer.finish().unwrap();
+    /// Build, write, finish a one-frame BLF and return its path's
+    /// owning tempdir + the file path.
+    fn write_one(frame: &CanFrame) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fixture.blf");
+        let mut w = BlfCaptureWriter::create(&path).unwrap();
+        w.append(frame).unwrap();
+        w.finish().unwrap();
+        (dir, path)
     }
 
     #[derive(Default)]
@@ -583,63 +658,68 @@ mod tests {
 
     #[test]
     fn round_trips_classic_frame_through_blf() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("classic.blf");
-        write_fixture(&path, &[message(0.0, 0x123, vec![1, 2, 3, 4])]);
+        let frame = CanFrame::classic(
+            TS_BASE_NS,
+            0,
+            CanId::standard(0x123).unwrap(),
+            Direction::Rx,
+            vec![1, 2, 3, 4],
+        )
+        .unwrap();
+        let (_dir, path) = write_one(&frame);
 
         let mut source = BlfCanFrameSource::open(&path).unwrap();
         let mut sink = VecSink::default();
         pump(&mut source, &mut sink).unwrap();
 
         assert_eq!(sink.0.len(), 1);
-        let frame = &sink.0[0];
-        assert_eq!(frame.id.raw(), 0x123);
-        assert!(!frame.id.is_extended());
-        assert_eq!(frame.payload.data(), &[1, 2, 3, 4]);
-        assert_eq!(frame.direction, Direction::Rx);
+        let back = &sink.0[0];
+        assert_eq!(back.id.raw(), 0x123);
+        assert!(!back.id.is_extended());
+        assert_eq!(back.payload.data(), &[1, 2, 3, 4]);
+        assert_eq!(back.direction, Direction::Rx);
     }
 
     #[test]
     fn maps_extended_ids() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("ext.blf");
-        let msg = Message {
-            arbitration_id: ArbitrationId(0x01AB_CDEF),
-            is_extended_id: true,
-            ..message(0.001, 0x01AB_CDEF, vec![0xAA])
-        };
-        write_fixture(&path, &[msg]);
+        let ts_ns = TS_BASE_NS + 1_000_000;
+        let frame = CanFrame::classic(
+            ts_ns,
+            0,
+            CanId::extended(0x01AB_CDEF).unwrap(),
+            Direction::Rx,
+            vec![0xAA],
+        )
+        .unwrap();
+        let (_dir, path) = write_one(&frame);
 
         let mut source = BlfCanFrameSource::open(&path).unwrap();
-        let frame = source.next_frame().unwrap().unwrap();
-        assert!(frame.id.is_extended());
-        assert_eq!(frame.id.raw(), 0x01AB_CDEF);
-        // CanFrame is at offset 0.001 s. blf_asc round-trips timestamps as
-        // f64 seconds, which loses sub-microsecond precision at modern
-        // absolute timestamps; accept ±1 µs of slop.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let expected_ns = (TS_BASE * 1e9) as u64 + 1_000_000;
-        let drift = frame.timestamp_ns.abs_diff(expected_ns);
-        assert!(drift < 1_000, "timestamp drifted by {drift} ns");
+        let back = source.next_frame().unwrap().unwrap();
+        assert!(back.id.is_extended());
+        assert_eq!(back.id.raw(), 0x01AB_CDEF);
+        // Native writer/reader is ns-exact; no drift.
+        assert_eq!(back.timestamp_ns, ts_ns);
     }
 
     #[test]
     fn maps_fd_frame_with_flags() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("fd.blf");
-        let msg = Message {
-            is_fd: true,
-            bitrate_switch: true,
-            error_state_indicator: false,
-            dlc: 9, // FD DLC 9 = 12 bytes
-            data: DataBytes(vec![0; 12]),
-            ..message(0.5, 0x100, vec![])
-        };
-        write_fixture(&path, &[msg]);
+        let frame = CanFrame::fd(
+            TS_BASE_NS + 500_000_000,
+            0,
+            CanId::standard(0x100).unwrap(),
+            Direction::Rx,
+            vec![0; 12],
+            CanFdFlags {
+                bitrate_switch: true,
+                error_state_indicator: false,
+            },
+        )
+        .unwrap();
+        let (_dir, path) = write_one(&frame);
 
         let mut source = BlfCanFrameSource::open(&path).unwrap();
-        let frame = source.next_frame().unwrap().unwrap();
-        match &frame.payload {
+        let back = source.next_frame().unwrap().unwrap();
+        match &back.payload {
             CanFramePayload::Fd { data, flags } => {
                 assert_eq!(data.len(), 12);
                 assert!(flags.bitrate_switch);
@@ -651,21 +731,27 @@ mod tests {
 
     #[test]
     fn maps_tx_direction() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("tx.blf");
-        let msg = Message { is_rx: false, ..message(0.0, 0x10, vec![]) };
-        write_fixture(&path, &[msg]);
+        let frame = CanFrame::classic(
+            TS_BASE_NS,
+            0,
+            CanId::standard(0x10).unwrap(),
+            Direction::Tx,
+            vec![],
+        )
+        .unwrap();
+        let (_dir, path) = write_one(&frame);
 
         let mut source = BlfCanFrameSource::open(&path).unwrap();
-        let frame = source.next_frame().unwrap().unwrap();
-        assert_eq!(frame.direction, Direction::Tx);
+        let back = source.next_frame().unwrap().unwrap();
+        assert_eq!(back.direction, Direction::Tx);
     }
 
     #[test]
     fn next_frame_returns_none_at_eof() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("empty.blf");
-        write_fixture(&path, &[]);
+        let w = BlfCaptureWriter::create(&path).unwrap();
+        w.finish().unwrap();
 
         let mut source = BlfCanFrameSource::open(&path).unwrap();
         assert!(source.next_frame().unwrap().is_none());
@@ -680,18 +766,16 @@ mod tests {
         assert!(matches!(err, BlfSourceError::Read(_)));
     }
 
-    // ---- Phase-9 capture writer tests ----
+    // ---- BlfCaptureWriter tests ----
 
     /// Round-trip a classic frame through `BlfCaptureWriter` and
-    /// `BlfCanFrameSource`. The base `TS_BASE` is multiplied by 1e9
-    /// to land in the same "modern absolute timestamps" regime the
-    /// reader tests already use.
+    /// `BlfCanFrameSource`. With the native writer/reader the
+    /// timestamp is ns-exact; no drift.
     #[test]
     fn capture_writer_round_trips_classic_frame() {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("out.blf");
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let ts_ns = (TS_BASE * 1e9) as u64 + 1_000_000;
+        let ts_ns = TS_BASE_NS + 1_000_000;
         let frame = CanFrame::classic(
             ts_ns,
             2,
@@ -705,6 +789,8 @@ mod tests {
         let outcome = w.finish().unwrap();
         assert_eq!(outcome.frame_count, 1);
         assert!(outcome.byte_size > 0);
+        // Native path has no f64-seconds precision boundary.
+        assert_eq!(outcome.max_timestamp_drift_ns, 0);
 
         let mut r = BlfCanFrameSource::open(&dest).unwrap();
         let back = r.next_frame().unwrap().unwrap();
@@ -712,10 +798,8 @@ mod tests {
         assert!(!back.id.is_extended());
         assert_eq!(back.channel, 2);
         assert_eq!(back.payload.data(), &[1, 2, 3, 4]);
-        // Round-trip ns drift fits in 1 µs — the documented
-        // precision floor of the f64-seconds storage layer.
-        let drift = back.timestamp_ns.abs_diff(ts_ns);
-        assert!(drift < 1_000, "round-trip drift {drift} ns > 1 µs");
+        // Native is ns-exact; no drift.
+        assert_eq!(back.timestamp_ns, ts_ns);
         assert!(r.next_frame().unwrap().is_none());
     }
 
@@ -723,10 +807,8 @@ mod tests {
     fn capture_writer_round_trips_fd_frame_with_flags() {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("fd.blf");
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let ts_ns = (TS_BASE * 1e9) as u64;
         let frame = CanFrame::fd(
-            ts_ns,
+            TS_BASE_NS,
             0,
             CanId::extended(0x01AB_CDEF).unwrap(),
             Direction::Tx,
@@ -760,9 +842,7 @@ mod tests {
     fn capture_writer_round_trips_error_frame() {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("err.blf");
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let ts_ns = (TS_BASE * 1e9) as u64;
-        let frame = CanFrame::error(ts_ns, 1, CanId::standard(0x10).unwrap(), Direction::Rx);
+        let frame = CanFrame::error(TS_BASE_NS, 1, CanId::standard(0x10).unwrap(), Direction::Rx);
         let mut w = BlfCaptureWriter::create(&dest).unwrap();
         w.append(&frame).unwrap();
         w.finish().unwrap();
@@ -781,11 +861,9 @@ mod tests {
         let dest = dir.path().join("many.blf");
         let temp = temp_path_for(&dest);
         let mut w = BlfCaptureWriter::create(&dest).unwrap();
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let base = (TS_BASE * 1e9) as u64;
         for i in 0u32..32 {
             let f = CanFrame::classic(
-                base + u64::from(i) * 1_000,
+                TS_BASE_NS + u64::from(i) * 1_000,
                 0,
                 CanId::standard(0x100 + i).unwrap(),
                 Direction::Rx,
@@ -811,11 +889,9 @@ mod tests {
         let temp = temp_path_for(&dest);
         {
             let mut w = BlfCaptureWriter::create(&dest).unwrap();
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let ts = (TS_BASE * 1e9) as u64;
             w.append(
                 &CanFrame::classic(
-                    ts,
+                    TS_BASE_NS,
                     0,
                     CanId::standard(0x10).unwrap(),
                     Direction::Rx,
@@ -840,18 +916,12 @@ mod tests {
         assert_eq!(temp_path_for(Path::new("x.blf")), PathBuf::from("x.blf.part"));
     }
 
-    /// The reported drift is non-zero for modern absolute
-    /// timestamps (f64 seconds can't represent ns precision at
-    /// ≈1.7e18 ns) — verify it surfaces so the host can warn.
+    /// The native writer is ns-exact — drift on a high-precision
+    /// modern timestamp is zero.
     #[test]
-    fn capture_writer_reports_round_trip_drift_for_modern_timestamps() {
+    fn capture_writer_reports_zero_drift_for_modern_timestamps() {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("drift.blf");
-        // 1.7e18 ns ≈ 2023-11-14 — modern, where f64-s drops
-        // sub-microsecond precision. Pick a ns value that
-        // *intentionally* lands between two representable f64-s
-        // values: a prime under 1_000_000 keeps it away from
-        // anything the conversion would happen to land on exactly.
         let ts_ns = 1_700_000_000_999_999_983u64;
         let mut w = BlfCaptureWriter::create(&dest).unwrap();
         w.append(
@@ -866,17 +936,11 @@ mod tests {
         )
         .unwrap();
         let outcome = w.finish().unwrap();
-        // Drift is non-zero for this regime, and is at most a
-        // small number of ns (well under 1 µs).
-        assert!(
-            outcome.max_timestamp_drift_ns > 0,
-            "expected non-zero drift; got {}",
-            outcome.max_timestamp_drift_ns,
-        );
-        assert!(
-            outcome.max_timestamp_drift_ns < 1_000,
-            "drift {} ns exceeded 1 µs",
-            outcome.max_timestamp_drift_ns,
-        );
+        assert_eq!(outcome.max_timestamp_drift_ns, 0);
+
+        // Confirm the read-back ns matches the input bit-for-bit.
+        let mut r = BlfCanFrameSource::open(&dest).unwrap();
+        let back = r.next_frame().unwrap().unwrap();
+        assert_eq!(back.timestamp_ns, ts_ns);
     }
 }

@@ -1486,12 +1486,38 @@ its own working slice in the order below):
   toolchain. Smoke test: read one of the vendored python-can
   fixtures through both the oracle and (initially) the existing
   `blf_asc` wrapper, assert frame counts agree.
-- **Tranche 1 — Parity.** Native read+write for `LOG_CONTAINER`
-  (10), `CAN_MESSAGE` (1), `CAN_MESSAGE2` (86), `CAN_FD_MESSAGE`
-  (100), `CAN_FD_MESSAGE_64` (101), `CAN_ERROR_EXT` (73). The
-  public `BlfCanFrameSource` / `BlfCaptureWriter` surface stays
-  unchanged. `blf_asc` is removed from the dep tree in the same
-  commit that switches the wrapper over.
+- **Tranche 1 — Parity.** ✅ **Complete.** Native read+write for
+  `LOG_CONTAINER` (10), `CAN_MESSAGE` (1), `CAN_MESSAGE2` (86),
+  `CAN_FD_MESSAGE` (100), `CAN_FD_MESSAGE_64` (101),
+  `CAN_ERROR_EXT` (73). The public `BlfCanFrameSource` /
+  `BlfCaptureWriter` surface is unchanged. `blf_asc` is removed
+  from the dep tree. Oracle test (vector_blf cross-check) green.
+  Notes from implementation:
+  - The on-disk inter-object padding rule is `object_size % 4`,
+    not `(4 - object_size % 4) % 4` — matches Vector's reference
+    `LogContainer.cpp` (`is.seekg(objectSize % 4, ...)`) and
+    `blf_asc`. The padding therefore doesn't 4-align the next
+    object's start; it's a vestigial formula but every BLF
+    implementation in the wild follows it.
+  - `blf_asc` wrote `CAN_FD_MESSAGE` bodies missing the trailing
+    `reservedCanFdMessage3` (82 bytes vs Vector's spec 86). The
+    decoder accepts both forms; the encoder always emits the
+    spec-compliant 86-byte form. Any `blf_asc`-written files
+    still read correctly.
+  - The native writer emits `CAN_MESSAGE2` for classic CAN frames
+    and `CAN_FD_MESSAGE_64` for CAN FD (the modern types Vector's
+    tools emit). The reader handles all five frame types in
+    either direction.
+  - `FileStatistics.measurement_start_time` is a SYSTEMTIME
+    (ms granularity). The writer floors the first event's
+    timestamp to the ms boundary so per-event relative timestamps
+    carry the sub-ms tail losslessly. End-to-end timestamp
+    round-trip is ns-exact (previously ~10–100 ns drift via
+    `blf_asc`'s f64 seconds).
+  - python-can fixture vendoring (corpus #1, planned for this
+    tranche) deferred to a follow-up; synthetic tests + oracle
+    cross-check provide tranche-1 coverage today. Tracked in
+    `plans/backlog.md`.
 - **Tranche 2 — `GLOBAL_MARKER`.** Read + write for object type 96.
   Unblocks the no-sidecar follow-up that retires
   `<file>.blf.notes.json` (ADR 0010 — itself stays a separate
