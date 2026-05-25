@@ -161,6 +161,17 @@ impl ObjectHeaderBase {
         let raw = u64::from(self.object_size);
         raw + (raw % 4)
     }
+
+    /// Encode this base header to its fixed 16 bytes.
+    pub fn encode(&self) -> [u8; OBJECT_HEADER_BASE_BYTES] {
+        let mut bytes = [0u8; OBJECT_HEADER_BASE_BYTES];
+        bytes[0..4].copy_from_slice(&OBJECT_SIGNATURE.to_le_bytes());
+        bytes[4..6].copy_from_slice(&self.header_size.to_le_bytes());
+        bytes[6..8].copy_from_slice(&self.header_version.to_le_bytes());
+        bytes[8..12].copy_from_slice(&self.object_size.to_le_bytes());
+        bytes[12..16].copy_from_slice(&self.object_type.to_le_bytes());
+        bytes
+    }
 }
 
 // ---- ObjectHeader v1 ---------------------------------------------
@@ -227,6 +238,16 @@ impl ObjectHeaderV1 {
             OBJECT_FLAG_TIME_TEN_MICS => self.object_timestamp.saturating_mul(10_000),
             _ => self.object_timestamp,
         }
+    }
+
+    /// Encode this v1 extension header to its fixed 16 bytes.
+    pub fn encode(&self) -> [u8; OBJECT_HEADER_V1_BYTES] {
+        let mut bytes = [0u8; OBJECT_HEADER_V1_BYTES];
+        bytes[0..4].copy_from_slice(&self.object_flags.to_le_bytes());
+        bytes[4..6].copy_from_slice(&self.client_index.to_le_bytes());
+        bytes[6..8].copy_from_slice(&self.object_version.to_le_bytes());
+        bytes[8..16].copy_from_slice(&self.object_timestamp.to_le_bytes());
+        bytes
     }
 }
 

@@ -24,11 +24,15 @@
 //! [`ObjectHeaderBase`]: super::object::ObjectHeaderBase
 //! [`ObjectHeaderBase::advance_bytes`]: super::object::ObjectHeaderBase::advance_bytes
 
-use std::io::Read;
+use std::io::{Read, Write};
 
 use flate2::read::ZlibDecoder;
+use flate2::write::ZlibEncoder;
+use flate2::Compression;
 
-use super::object::{object_type, ObjectHeaderBase, ObjectHeaderError};
+use super::object::{
+    object_type, ObjectHeaderBase, ObjectHeaderError, OBJECT_HEADER_BASE_BYTES,
+};
 
 /// Width of the `LOG_CONTAINER`-specific extension body that sits
 /// between the 16-byte [`ObjectHeaderBase`] and the compressed
@@ -172,6 +176,68 @@ pub struct LogContainer {
     pub uncompressed_payload: Vec<u8>,
 }
 
+/// Encode a sequence of inner-object bytes into one on-disk
+/// `LOG_CONTAINER`, including the 16-byte base header, the 16-byte
+/// extension, the (compressed or raw) payload, and the trailing
+/// `object_size % 4` padding bytes. Returns the on-disk byte
+/// sequence ready to write.
+///
+/// `inner_bytes` is the back-to-back stream of already-encoded
+/// inner objects (each with its own `ObjectHeaderBase`, body, and
+/// any inter-object padding). The caller built it; this function
+/// just wraps and compresses.
+///
+/// `compression_method` must be either [`COMPRESSION_NONE`] (0) or
+/// [`COMPRESSION_ZLIB`] (2).
+///
+/// # Errors
+///
+/// Returns [`LogContainerError::UnknownCompressionMethod`] for any
+/// other method value; the zlib path itself can't fail (we use
+/// `flate2::write::ZlibEncoder<Vec<u8>>`, an in-memory sink).
+#[allow(clippy::missing_panics_doc)]
+pub fn encode(inner_bytes: &[u8], compression_method: u16) -> Result<Vec<u8>, LogContainerError> {
+    let compressed = match compression_method {
+        COMPRESSION_NONE => inner_bytes.to_vec(),
+        COMPRESSION_ZLIB => {
+            let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+            encoder.write_all(inner_bytes).expect("in-memory write");
+            encoder.finish().expect("in-memory finish")
+        }
+        other => return Err(LogContainerError::UnknownCompressionMethod(other)),
+    };
+
+    let object_size = u32::try_from(LOG_CONTAINER_HEADER_BYTES + compressed.len())
+        .expect("LOG_CONTAINER size fits in u32 (4 GiB upper bound)");
+    let padding = (object_size % 4) as usize;
+
+    let mut out = Vec::with_capacity(object_size as usize + padding);
+
+    let base = ObjectHeaderBase {
+        header_size: u16::try_from(OBJECT_HEADER_BASE_BYTES)
+            .expect("OBJECT_HEADER_BASE_BYTES == 16, fits in u16"),
+        header_version: 1,
+        object_size,
+        object_type: object_type::LOG_CONTAINER,
+    };
+    out.extend_from_slice(&base.encode());
+
+    // Extension header
+    out.extend_from_slice(&compression_method.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes()); // reserved1
+    out.extend_from_slice(&0u32.to_le_bytes()); // reserved2
+    let uncompressed_file_size = u32::try_from(inner_bytes.len())
+        .expect("inner_bytes length fits in u32");
+    out.extend_from_slice(&uncompressed_file_size.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes()); // reserved3
+
+    // Payload + padding
+    out.extend_from_slice(&compressed);
+    out.resize(out.len() + padding, 0);
+
+    Ok(out)
+}
+
 /// Decode one `LOG_CONTAINER` object whose on-disk bytes start at
 /// the front of `object_bytes`. Slice length must be at least
 /// `base.object_size` — typically the caller will pass exactly that
@@ -228,9 +294,6 @@ pub fn decode(object_bytes: &[u8]) -> Result<LogContainer, LogContainerError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use flate2::write::ZlibEncoder;
-    use flate2::Compression;
-    use std::io::Write;
 
     /// Hand-rolls one full `LOG_CONTAINER` object's on-disk bytes
     /// (base header + extension + payload), no padding. The caller
@@ -331,6 +394,30 @@ mod tests {
         bytes[12..16].copy_from_slice(&object_type::LOG_CONTAINER.to_le_bytes());
         let err = decode(&bytes).unwrap_err();
         assert!(matches!(err, LogContainerError::BodyMissing(24)));
+    }
+
+    #[test]
+    fn encode_round_trips_through_decode() {
+        let inner = (0..512u32)
+            .map(|i| u8::try_from(i & 0xFF).unwrap())
+            .collect::<Vec<_>>();
+        for method in [COMPRESSION_NONE, COMPRESSION_ZLIB] {
+            let bytes = encode(&inner, method).unwrap();
+            let decoded = decode(&bytes).unwrap();
+            assert_eq!(decoded.header.compression_method, method);
+            assert_eq!(decoded.uncompressed_payload, inner);
+            // Padding is applied correctly: total bytes is object_size
+            // plus `object_size % 4`.
+            let expected_total = decoded.base.object_size as usize
+                + (decoded.base.object_size as usize % 4);
+            assert_eq!(bytes.len(), expected_total);
+        }
+    }
+
+    #[test]
+    fn encode_rejects_unknown_compression_method() {
+        let err = encode(b"abc", 7).unwrap_err();
+        assert!(matches!(err, LogContainerError::UnknownCompressionMethod(7)));
     }
 
     /// Round-trip: pull the (single, well-formed) `LOG_CONTAINER` out

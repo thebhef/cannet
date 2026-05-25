@@ -99,6 +99,60 @@ impl SystemTime {
     }
 }
 
+/// Inverse of [`SystemTime::to_unix_nanos`]. Input 0 maps to the
+/// all-zero "unset" sentinel SYSTEMTIME.
+impl SystemTime {
+    pub fn from_unix_nanos(ns: u64) -> Self {
+        if ns == 0 {
+            return Self::default();
+        }
+        let secs = ns / 1_000_000_000;
+        let millisecond = u16::try_from((ns / 1_000_000) % 1_000).unwrap_or(0);
+        let day_secs = secs % 86_400;
+        let days_since_epoch = i64::try_from(secs / 86_400).unwrap_or(0);
+        let (year, month, day) = civil_from_days(days_since_epoch);
+        Self {
+            year: u16::try_from(year).unwrap_or(0),
+            month: u16::try_from(month).unwrap_or(0),
+            day_of_week: 0, // BLF readers don't require this; Vector
+                            // populates it but it's redundant info
+            day: u16::try_from(day).unwrap_or(0),
+            hour: u16::try_from(day_secs / 3_600).unwrap_or(0),
+            minute: u16::try_from((day_secs % 3_600) / 60).unwrap_or(0),
+            second: u16::try_from(day_secs % 60).unwrap_or(0),
+            millisecond,
+        }
+    }
+}
+
+fn write_system_time(dst: &mut [u8], t: SystemTime) {
+    assert_eq!(dst.len(), 16, "SYSTEMTIME slot is 16 bytes");
+    dst[0..2].copy_from_slice(&t.year.to_le_bytes());
+    dst[2..4].copy_from_slice(&t.month.to_le_bytes());
+    dst[4..6].copy_from_slice(&t.day_of_week.to_le_bytes());
+    dst[6..8].copy_from_slice(&t.day.to_le_bytes());
+    dst[8..10].copy_from_slice(&t.hour.to_le_bytes());
+    dst[10..12].copy_from_slice(&t.minute.to_le_bytes());
+    dst[12..14].copy_from_slice(&t.second.to_le_bytes());
+    dst[14..16].copy_from_slice(&t.millisecond.to_le_bytes());
+}
+
+/// Inverse of [`days_since_unix_epoch`] — Howard Hinnant's "civil
+/// from days." Returns (year, month, day).
+fn civil_from_days(days_since_epoch: i64) -> (i32, u32, u32) {
+    let z = days_since_epoch + 719_468;
+    let era = if z >= 0 { z / 146_097 } else { (z - 146_096) / 146_097 };
+    let doe = u32::try_from(z - era * 146_097).unwrap_or(0); // [0, 146097)
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365; // [0, 400)
+    let y_offset = i64::from(yoe) + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let y = if m <= 2 { y_offset + 1 } else { y_offset };
+    (i32::try_from(y).unwrap_or(0), m, d)
+}
+
 /// Days between 1970-01-01 and (`year`, `month`, `day`), proleptic
 /// Gregorian. Returns a signed count so dates before the epoch (rare
 /// but possible) can be detected with `< 0`.
@@ -177,6 +231,29 @@ impl std::fmt::Display for HeaderError {
 impl std::error::Error for HeaderError {}
 
 impl FileStatistics {
+    /// Encode this header to its fixed 144 bytes. The trailing
+    /// 64-byte reserved region is zero-filled (matches what every
+    /// BLF writer in the wild does).
+    pub fn encode(&self) -> [u8; FILE_STATISTICS_MIN_BYTES] {
+        let mut bytes = [0u8; FILE_STATISTICS_MIN_BYTES];
+        bytes[0..4].copy_from_slice(&FILE_SIGNATURE.to_le_bytes());
+        bytes[4..8].copy_from_slice(&self.statistics_size.to_le_bytes());
+        bytes[8..12].copy_from_slice(&self.api_number.to_le_bytes());
+        bytes[12] = self.application_id;
+        bytes[13] = self.compression_level;
+        bytes[14] = self.application_major;
+        bytes[15] = self.application_minor;
+        bytes[16..24].copy_from_slice(&self.file_size.to_le_bytes());
+        bytes[24..32].copy_from_slice(&self.uncompressed_file_size.to_le_bytes());
+        bytes[32..36].copy_from_slice(&self.object_count.to_le_bytes());
+        bytes[36..40].copy_from_slice(&self.application_build.to_le_bytes());
+        write_system_time(&mut bytes[40..56], self.measurement_start_time);
+        write_system_time(&mut bytes[56..72], self.last_object_time);
+        bytes[72..80].copy_from_slice(&self.restore_points_offset.to_le_bytes());
+        // bytes[80..144] = reserved (already zero from initialisation)
+        bytes
+    }
+
     /// Parse the fixed 144-byte prefix as a `FileStatistics` record.
     /// Trailing bytes past 144 (when `statistics_size` reports more)
     /// are the writer's responsibility to expose; this parse covers
@@ -278,6 +355,45 @@ mod tests {
             ..SystemTime::default()
         };
         assert_eq!(t.to_unix_nanos(), 1_705_321_845_250_000_000);
+    }
+
+    #[test]
+    fn system_time_round_trips_through_unix_nanos() {
+        for ns in [
+            1_705_321_845_250_000_000u64, // 2024-01-15 12:30:45.250
+            1_709_164_800_000_000_000u64, // 2024-02-29 00:00:00 (leap)
+            946_684_800_000_000_000u64,   // 2000-01-01 00:00:00 (century leap)
+            1_577_836_800_001_000_000u64, // 2020-01-01 00:00:00.001
+        ] {
+            let st = SystemTime::from_unix_nanos(ns);
+            assert_eq!(
+                st.to_unix_nanos(),
+                ns,
+                "round-trip failed for {ns}: got {st:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn file_statistics_round_trips_through_encode_parse() {
+        let original = FileStatistics {
+            statistics_size: 144,
+            api_number: 4_080_200,
+            application_id: 2,
+            compression_level: 6,
+            application_major: 1,
+            application_minor: 2,
+            file_size: 12_345,
+            uncompressed_file_size: 67_890,
+            object_count: 42,
+            application_build: 7,
+            measurement_start_time: SystemTime::from_unix_nanos(1_705_321_845_250_000_000),
+            last_object_time: SystemTime::from_unix_nanos(1_705_321_855_750_000_000),
+            restore_points_offset: 0,
+        };
+        let bytes = original.encode();
+        let parsed = FileStatistics::parse(&bytes).unwrap();
+        assert_eq!(parsed, original);
     }
 
     #[test]

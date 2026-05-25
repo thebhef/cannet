@@ -31,8 +31,8 @@
 //! [`ObjectHeaderV1`]: super::object::ObjectHeaderV1
 
 use super::object::{
-    object_type, ObjectHeaderBase, ObjectHeaderError, ObjectHeaderV1, OBJECT_HEADER_BASE_BYTES,
-    OBJECT_HEADER_V1_BYTES,
+    object_type, ObjectHeaderBase, ObjectHeaderError, ObjectHeaderV1, OBJECT_FLAG_TIME_ONE_NANS,
+    OBJECT_HEADER_BASE_BYTES, OBJECT_HEADER_V1_BYTES,
 };
 
 /// Width of the per-event header that prefixes every CAN-class
@@ -209,6 +209,68 @@ pub fn decode_can_message2(object_bytes: &[u8]) -> Result<CanMessage2, CanObject
     })
 }
 
+/// Convenience constructor: build a `CAN_MESSAGE2` from cannet's
+/// usual ingredients (timestamp ns, raw id with the extended bit
+/// already baked in if applicable, etc.). Produces a struct ready
+/// for [`encode_can_message2`].
+// The `expect` is unreachable on every realistic input: a frame
+// with > 4 GiB of data isn't a CAN frame.
+#[allow(clippy::missing_panics_doc)]
+#[must_use]
+pub fn build_can_message2(
+    timestamp_ns: u64,
+    channel: u16,
+    flags: u8,
+    dlc: u8,
+    id_raw: u32,
+    data: Vec<u8>,
+) -> CanMessage2 {
+    let object_size = u32::try_from(
+        CAN_EVENT_HEADER_BYTES + CAN_MESSAGE2_FIXED_BODY_BYTES + data.len(),
+    )
+    .expect("CAN_MESSAGE2 size fits in u32");
+    CanMessage2 {
+        base: ObjectHeaderBase {
+            header_size: 32,
+            header_version: 1,
+            object_size,
+            object_type: object_type::CAN_MESSAGE2,
+        },
+        event: ObjectHeaderV1 {
+            object_flags: OBJECT_FLAG_TIME_ONE_NANS,
+            client_index: 0,
+            object_version: 0,
+            object_timestamp: timestamp_ns,
+        },
+        channel,
+        flags,
+        dlc,
+        id_raw,
+        data,
+        frame_length_ns: 0,
+        bit_count: 0,
+    }
+}
+
+/// Encode a `CAN_MESSAGE2` to its on-disk bytes (no trailing
+/// inter-object padding — the caller applies that).
+#[must_use]
+pub fn encode_can_message2(m: &CanMessage2) -> Vec<u8> {
+    let mut out = Vec::with_capacity(m.base.object_size as usize);
+    out.extend_from_slice(&m.base.encode());
+    out.extend_from_slice(&m.event.encode());
+    out.extend_from_slice(&m.channel.to_le_bytes());
+    out.push(m.flags);
+    out.push(m.dlc);
+    out.extend_from_slice(&m.id_raw.to_le_bytes());
+    out.extend_from_slice(&m.data);
+    out.extend_from_slice(&m.frame_length_ns.to_le_bytes());
+    out.push(m.bit_count);
+    out.push(0); // reserved1
+    out.extend_from_slice(&0u16.to_le_bytes()); // reserved2
+    out
+}
+
 // =================================================================
 // CAN_MESSAGE (object type 1)
 // =================================================================
@@ -308,6 +370,20 @@ pub fn decode_can_message(object_bytes: &[u8]) -> Result<CanMessage, CanObjectEr
         id_raw: u32::from_le_bytes(body[4..8].try_into().unwrap()),
         data: body[8..16].try_into().unwrap(),
     })
+}
+
+/// Encode a `CAN_MESSAGE` to its on-disk bytes (no trailing padding).
+#[must_use]
+pub fn encode_can_message(m: &CanMessage) -> Vec<u8> {
+    let mut out = Vec::with_capacity(m.base.object_size as usize);
+    out.extend_from_slice(&m.base.encode());
+    out.extend_from_slice(&m.event.encode());
+    out.extend_from_slice(&m.channel.to_le_bytes());
+    out.push(m.flags);
+    out.push(m.dlc);
+    out.extend_from_slice(&m.id_raw.to_le_bytes());
+    out.extend_from_slice(&m.data);
+    out
 }
 
 // =================================================================
@@ -445,6 +521,40 @@ pub fn decode_can_fd_message(object_bytes: &[u8]) -> Result<CanFdMessage, CanObj
         data: body[18..18 + CAN_FD_MESSAGE_DATA_BYTES].try_into().unwrap(),
         // body[82..86] = reserved3 (Vector spec; absent in blf_asc-written files)
     })
+}
+
+/// Encode a `CAN_FD_MESSAGE` to its on-disk bytes (Vector-spec
+/// 86-byte body — includes the trailing `reserved3` field; the
+/// decoder accepts both forms but the encoder always writes the
+/// spec-compliant one).
+// The `expect` is unreachable: a CAN FD frame's encoded size is
+// at most a few hundred bytes.
+#[allow(clippy::missing_panics_doc)]
+#[must_use]
+pub fn encode_can_fd_message(m: &CanFdMessage) -> Vec<u8> {
+    let body_size = CAN_FD_MESSAGE_BODY_BYTES;
+    let object_size = u32::try_from(CAN_EVENT_HEADER_BYTES + body_size)
+        .expect("CAN_FD_MESSAGE object_size is 118 — fits in u32");
+    let base = ObjectHeaderBase {
+        object_size,
+        ..m.base
+    };
+    let mut out = Vec::with_capacity(object_size as usize);
+    out.extend_from_slice(&base.encode());
+    out.extend_from_slice(&m.event.encode());
+    out.extend_from_slice(&m.channel.to_le_bytes());
+    out.push(m.flags);
+    out.push(m.dlc);
+    out.extend_from_slice(&m.id_raw.to_le_bytes());
+    out.extend_from_slice(&m.frame_length_ns.to_le_bytes());
+    out.push(m.arb_bit_count);
+    out.push(m.can_fd_flags);
+    out.push(m.valid_data_bytes);
+    out.push(0); // reserved1
+    out.extend_from_slice(&0u16.to_le_bytes()); // reserved2
+    out.extend_from_slice(&m.data);
+    out.extend_from_slice(&0u32.to_le_bytes()); // reserved3 (Vector spec)
+    out
 }
 
 // =================================================================
@@ -611,6 +721,45 @@ pub fn decode_can_fd_message_64(
     })
 }
 
+/// Encode a `CAN_FD_MESSAGE_64` to its on-disk bytes. The
+/// `trailing` field (`CanFdExtFrameData` / reserved padding from a
+/// decoded round-trip) is preserved verbatim after the data
+/// payload, so a decode→encode loop reproduces the input
+/// byte-for-byte.
+// The `expect` is unreachable on realistic CAN inputs.
+#[allow(clippy::missing_panics_doc)]
+#[must_use]
+pub fn encode_can_fd_message_64(m: &CanFdMessage64) -> Vec<u8> {
+    let body_size = CAN_FD_MESSAGE_64_FIXED_PREFIX_BYTES + m.data.len() + m.trailing.len();
+    let object_size = u32::try_from(CAN_EVENT_HEADER_BYTES + body_size)
+        .expect("CAN_FD_MESSAGE_64 object_size fits in u32 for realistic CAN payloads");
+    let base = ObjectHeaderBase {
+        object_size,
+        ..m.base
+    };
+    let mut out = Vec::with_capacity(object_size as usize);
+    out.extend_from_slice(&base.encode());
+    out.extend_from_slice(&m.event.encode());
+    out.push(m.channel);
+    out.push(m.dlc);
+    out.push(m.valid_data_bytes);
+    out.push(m.tx_count);
+    out.extend_from_slice(&m.id_raw.to_le_bytes());
+    out.extend_from_slice(&m.frame_length_ns.to_le_bytes());
+    out.extend_from_slice(&m.flags.to_le_bytes());
+    out.extend_from_slice(&m.btr_cfg_arb.to_le_bytes());
+    out.extend_from_slice(&m.btr_cfg_data.to_le_bytes());
+    out.extend_from_slice(&m.time_offset_brs_ns.to_le_bytes());
+    out.extend_from_slice(&m.time_offset_crc_del_ns.to_le_bytes());
+    out.extend_from_slice(&m.bit_count.to_le_bytes());
+    out.push(m.dir);
+    out.push(m.ext_data_offset);
+    out.extend_from_slice(&m.crc.to_le_bytes());
+    out.extend_from_slice(&m.data);
+    out.extend_from_slice(&m.trailing);
+    out
+}
+
 // =================================================================
 // CAN_ERROR_EXT (object type 73)
 // =================================================================
@@ -712,6 +861,36 @@ pub fn decode_can_error_ext(object_bytes: &[u8]) -> Result<CanErrorExt, CanObjec
         // body[22..24] = reserved2
         data,
     })
+}
+
+/// Encode a `CAN_ERROR_EXT` to its on-disk bytes.
+// The `expect` is unreachable on realistic CAN inputs.
+#[allow(clippy::missing_panics_doc)]
+#[must_use]
+pub fn encode_can_error_ext(m: &CanErrorExt) -> Vec<u8> {
+    let body_size = CAN_ERROR_EXT_FIXED_PREFIX_BYTES + m.data.len();
+    let object_size = u32::try_from(CAN_EVENT_HEADER_BYTES + body_size)
+        .expect("CAN_ERROR_EXT object_size fits in u32 for realistic CAN payloads");
+    let base = ObjectHeaderBase {
+        object_size,
+        ..m.base
+    };
+    let mut out = Vec::with_capacity(object_size as usize);
+    out.extend_from_slice(&base.encode());
+    out.extend_from_slice(&m.event.encode());
+    out.extend_from_slice(&m.channel.to_le_bytes());
+    out.extend_from_slice(&m.length.to_le_bytes());
+    out.extend_from_slice(&m.flags.to_le_bytes());
+    out.push(m.ecc);
+    out.push(m.position);
+    out.push(m.dlc);
+    out.push(0); // reserved1
+    out.extend_from_slice(&m.frame_length_in_ns.to_le_bytes());
+    out.extend_from_slice(&m.id_raw.to_le_bytes());
+    out.extend_from_slice(&m.flags_ext.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes()); // reserved2
+    out.extend_from_slice(&m.data);
+    out
 }
 
 #[cfg(test)]
@@ -1224,5 +1403,82 @@ mod tests {
         bytes[16..20].copy_from_slice(&OBJECT_FLAG_TIME_ONE_NANS.to_le_bytes());
         let e = decode_can_error_ext(&bytes).unwrap();
         assert!(e.data.is_empty());
+    }
+
+    // ----- Encoder round-trip tests -----------------------------
+
+    #[test]
+    fn encode_can_message_round_trips() {
+        let bytes_in = synth_can_message(5_000_000, 1, CAN_FLAG_TX, 4, 0x123, [1, 2, 3, 4, 0, 0, 0, 0]);
+        let decoded = decode_can_message(&bytes_in).unwrap();
+        let bytes_out = encode_can_message(&decoded);
+        assert_eq!(bytes_out, bytes_in, "encode→decode→encode preserves bytes");
+    }
+
+    #[test]
+    fn encode_can_message2_round_trips() {
+        let bytes_in = synth_can_message2(Cm2Fixture {
+            timestamp_ns: 1_700_000_000_000_000_000,
+            channel: 3,
+            dlc: 6,
+            id_raw: 0x456,
+            data: &[10, 20, 30, 40, 50, 60],
+            frame_length_ns: 1500,
+            bit_count: 90,
+            ..Cm2Fixture::benign()
+        });
+        let decoded = decode_can_message2(&bytes_in).unwrap();
+        let bytes_out = encode_can_message2(&decoded);
+        assert_eq!(bytes_out, bytes_in);
+    }
+
+    #[test]
+    fn build_can_message2_helper_produces_decodable_output() {
+        let m = build_can_message2(123_000, 2, 0, 4, 0x300, vec![0xAA, 0xBB, 0xCC, 0xDD]);
+        let bytes = encode_can_message2(&m);
+        let parsed = decode_can_message2(&bytes).unwrap();
+        assert_eq!(parsed.can_id(), 0x300);
+        assert_eq!(parsed.data, vec![0xAA, 0xBB, 0xCC, 0xDD]);
+        assert_eq!(parsed.event.timestamp_ns(), 123_000);
+    }
+
+    #[test]
+    fn encode_can_fd_message_64_preserves_trailing_bytes() {
+        let data_len = 4usize;
+        let trailing = vec![0x55u8, 0x66, 0x77, 0x88];
+        let body_len = CAN_FD_MESSAGE_64_FIXED_PREFIX_BYTES + data_len + trailing.len();
+        let object_size = u32::try_from(CAN_EVENT_HEADER_BYTES + body_len).unwrap();
+        let mut bytes = Vec::with_capacity(CAN_EVENT_HEADER_BYTES + body_len);
+        bytes.extend_from_slice(b"LOBJ");
+        bytes.extend_from_slice(&32u16.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&object_size.to_le_bytes());
+        bytes.extend_from_slice(&object_type::CAN_FD_MESSAGE_64.to_le_bytes());
+        bytes.extend_from_slice(&OBJECT_FLAG_TIME_ONE_NANS.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.extend_from_slice(&42u64.to_le_bytes());
+        // Body
+        bytes.push(0); // channel
+        bytes.push(4); // dlc
+        bytes.push(u8::try_from(data_len).unwrap());
+        bytes.push(0);
+        bytes.extend_from_slice(&0x10_u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // frame_length
+        bytes.extend_from_slice(&CAN_FD_64_FLAG_EDL.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes());
+        bytes.push(0);
+        bytes.push(0);
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+        bytes.extend_from_slice(&trailing);
+
+        let decoded = decode_can_fd_message_64(&bytes).unwrap();
+        let re = encode_can_fd_message_64(&decoded);
+        assert_eq!(re, bytes, "ext-frame-data trailing bytes round-trip");
     }
 }
