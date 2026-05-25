@@ -19,13 +19,17 @@
 //! - [`object`] — the 16-byte `ObjectHeaderBase` preamble of every
 //!   on-disk object. Per-type body framing lives in the per-type
 //!   modules listed below.
+//! - [`log_container`] — `LOG_CONTAINER` (object type 10), the
+//!   outer wrapper every inner BLF object lives inside. Owns the
+//!   zlib inflate path.
 //!
-//! Subsequent tranche-1 steps add: `LOG_CONTAINER` decompression
-//! (`log_container`) and the per-type CAN object decoders / encoders
-//! (`can`).
+//! Subsequent tranche-1 steps add the per-type CAN object decoders /
+//! encoders (`can`).
 //!
 //! [`header`]: crate::format::header
 //! [`object`]: crate::format::object
+//! [`log_container`]: crate::format::log_container
 
 pub mod header;
+pub mod log_container;
 pub mod object;

@@ -102,6 +102,13 @@ crate retained long-term).
     behind the `vector-blf-oracle` cargo feature so default CI
     doesn't require a C++ toolchain. See ADR 0009 "Test coverage
     strategy" §4.
+  - **`flate2`** (v1, MIT / Apache-2.0) — `adopted` Phase 9.5
+    Tranche 1 for `LOG_CONTAINER` zlib inflate/deflate. Default
+    backend (`rust_backend` → `miniz_oxide`) keeps the build
+    pure-Rust and matches `vector_blf`'s on-the-wire format
+    (raw zlib, not gzip). The crate is already in `Cargo.lock`
+    transitively, so this is a direct-dep promotion rather than
+    a new tree node.
 
 ### Storage
 
