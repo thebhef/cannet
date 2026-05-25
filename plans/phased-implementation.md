@@ -1518,8 +1518,17 @@ its own working slice in the order below):
     tranche) deferred to a follow-up; synthetic tests + oracle
     cross-check provide tranche-1 coverage today. Tracked in
     `plans/backlog.md`.
-- **Tranche 2 — `GLOBAL_MARKER`.** Read + write for object type 96.
-  Unblocks the no-sidecar follow-up that retires
+- **Tranche 2 — `GLOBAL_MARKER`.** ✅ **Complete.** Read + write
+  for object type 96 in `cannet-blf::format::marker`. `BlfReader`
+  exposes the marker variant on `BlfObject` for callers walking
+  the inflated stream; `BlfFileWriter::append_object` accepts the
+  encoded bytes from `marker::encode`, so writers can intersperse
+  markers with CAN frames in chronological order. `BlfCanFrameSource`
+  (the `CanFrameSource` adapter) skips markers — they're not CAN
+  frames; consumers that want them walk `BlfReader` directly.
+  Oracle test (`oracle_lists_global_marker_written_by_our_writer`)
+  green: Vector's reference `vector_blf` library reads our marker
+  bytes back. Unblocks the no-sidecar follow-up that retires
   `<file>.blf.notes.json` (ADR 0010 — itself stays a separate
   backlog item; this tranche only removes its gate).
 - **Tranche 3 — Annotation round-trip.** Read + write for

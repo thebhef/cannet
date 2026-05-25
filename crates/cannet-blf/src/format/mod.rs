@@ -26,6 +26,8 @@
 //!   (`CAN_MESSAGE`, `CAN_MESSAGE2`, `CAN_FD_MESSAGE`,
 //!   `CAN_FD_MESSAGE_64`, `CAN_ERROR_EXT`). Growing one type at a
 //!   time across Tranche 1.
+//! - [`marker`] — `GLOBAL_MARKER` (object type 96), the text
+//!   annotation type that retires `<file>.blf.notes.json`.
 //! - [`reader`] — streaming reader that drives the above modules:
 //!   parses `FileStatistics`, walks top-level `LOG_CONTAINER`s,
 //!   inflates each, and yields decoded inner objects out of a
@@ -40,12 +42,14 @@
 //! [`object`]: crate::format::object
 //! [`log_container`]: crate::format::log_container
 //! [`can`]: crate::format::can
+//! [`marker`]: crate::format::marker
 //! [`reader`]: crate::format::reader
 //! [`writer`]: crate::format::writer
 
 pub mod can;
 pub mod header;
 pub mod log_container;
+pub mod marker;
 pub mod object;
 pub mod reader;
 pub mod writer;

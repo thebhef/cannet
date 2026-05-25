@@ -102,10 +102,12 @@ impl CanFrameSource for BlfCanFrameSource {
                 Some(BlfObject::CanErrorExt(m)) => {
                     return can_error_ext_to_frame(&m, self.start_unix_nanos).map(Some)
                 }
-                // Object types this implementation doesn't decode
-                // (markers, FlexRay events, etc.) — skip and keep
-                // looking for the next CAN frame.
-                Some(BlfObject::Other(_)) => {}
+                // GLOBAL_MARKER (notes), and `Other` (anything we
+                // don't decode — FlexRay events etc.) aren't CAN
+                // frames. Skip both and keep walking. Marker
+                // consumers walk the same file through `BlfReader`
+                // directly to see them.
+                Some(BlfObject::GlobalMarker(_) | BlfObject::Other(_)) => {}
             }
         }
     }

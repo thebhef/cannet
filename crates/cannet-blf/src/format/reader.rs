@@ -20,6 +20,7 @@ use super::can::{
 };
 use super::header::{FileStatistics, HeaderError, FILE_STATISTICS_MIN_BYTES};
 use super::log_container::{self, LogContainerError};
+use super::marker::{self, GlobalMarker, MarkerError};
 use super::object::{
     object_type, ObjectHeaderBase, ObjectHeaderError, OBJECT_HEADER_BASE_BYTES,
 };
@@ -34,6 +35,10 @@ pub enum BlfObject {
     CanFdMessage(CanFdMessage),
     CanFdMessage64(CanFdMessage64),
     CanErrorExt(CanErrorExt),
+    /// Text-annotation marker (object type 96). Used to retire
+    /// the `<file>.blf.notes.json` sidecar — notes ride inside
+    /// the BLF itself.
+    GlobalMarker(GlobalMarker),
     /// An object type this implementation does not decode. The
     /// `ObjectHeaderBase` is exposed so callers can inspect / log
     /// it; the body bytes have already been consumed from the stream.
@@ -56,6 +61,8 @@ pub enum BlfReadError {
     LogContainer(LogContainerError),
     /// A CAN-class inner object failed to decode.
     CanObject(CanObjectError),
+    /// A `GLOBAL_MARKER` failed to decode.
+    Marker(MarkerError),
     /// The file ended mid-object — we had the base header but the
     /// body was truncated.
     UnexpectedEof,
@@ -70,6 +77,7 @@ impl std::fmt::Display for BlfReadError {
             Self::InnerHeader(e) => write!(f, "BLF inner object header invalid: {e}"),
             Self::LogContainer(e) => write!(f, "BLF LOG_CONTAINER decode failed: {e}"),
             Self::CanObject(e) => write!(f, "BLF CAN object decode failed: {e}"),
+            Self::Marker(e) => write!(f, "BLF GLOBAL_MARKER decode failed: {e}"),
             Self::UnexpectedEof => write!(f, "BLF ended mid-object"),
         }
     }
@@ -83,6 +91,7 @@ impl std::error::Error for BlfReadError {
             Self::TopLevelHeader(e) | Self::InnerHeader(e) => Some(e),
             Self::LogContainer(e) => Some(e),
             Self::CanObject(e) => Some(e),
+            Self::Marker(e) => Some(e),
             Self::UnexpectedEof => None,
         }
     }
@@ -106,6 +115,11 @@ impl From<LogContainerError> for BlfReadError {
 impl From<CanObjectError> for BlfReadError {
     fn from(value: CanObjectError) -> Self {
         Self::CanObject(value)
+    }
+}
+impl From<MarkerError> for BlfReadError {
+    fn from(value: MarkerError) -> Self {
+        Self::Marker(value)
     }
 }
 
@@ -210,6 +224,9 @@ impl BlfReader {
                 }
                 object_type::CAN_ERROR_EXT => {
                     BlfObject::CanErrorExt(decode_can_error_ext(object_bytes)?)
+                }
+                object_type::GLOBAL_MARKER => {
+                    BlfObject::GlobalMarker(marker::decode(object_bytes)?)
                 }
                 _ => BlfObject::Other(base),
             };

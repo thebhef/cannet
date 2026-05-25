@@ -16,6 +16,8 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use cannet_blf::format::marker;
+use cannet_blf::format::writer::BlfFileWriter;
 use cannet_blf::BlfCaptureWriter;
 use cannet_core::{CanFrame, CanId, Direction};
 
@@ -139,4 +141,39 @@ fn oracle_lists_frames_written_by_our_writer() {
         kind_ids.iter().all(|&id| id == 1 || id == 86),
         "expected CAN_MESSAGE(1) or CAN_MESSAGE2(86), got {kind_ids:?}",
     );
+}
+
+/// Tranche 2: Vector's reference library reads `GLOBAL_MARKER`
+/// objects our native writer emits.
+#[test]
+fn oracle_lists_global_marker_written_by_our_writer() {
+    let harness = ensure_harness();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("marker.blf");
+
+    let mut w = BlfFileWriter::create(&path).unwrap();
+    let abs_ns = TS_BASE_NS + 12_345_678;
+    let start = w.set_start_if_unset((abs_ns / 1_000_000) * 1_000_000);
+    let rel = abs_ns - start;
+    let m = marker::build(
+        rel,
+        b"Notes".to_vec(),
+        b"oracle-marker".to_vec(),
+        b"Round-trip oracle for GLOBAL_MARKER (Tranche 2).".to_vec(),
+    );
+    let bytes = marker::encode(&m);
+    w.append_object(&bytes, abs_ns).unwrap();
+    w.finish().unwrap();
+
+    let listing = list_objects(&harness, &path);
+    let marker_rows: Vec<&ObjectListing> = listing
+        .iter()
+        .filter(|o| o.type_name == "GLOBAL_MARKER")
+        .collect();
+    assert_eq!(
+        marker_rows.len(),
+        1,
+        "oracle should see the one marker we wrote; listing: {listing:#?}",
+    );
+    assert_eq!(marker_rows[0].type_id, 96);
 }
