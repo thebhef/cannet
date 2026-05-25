@@ -12,13 +12,20 @@
 //!
 //! ## Layout (work in progress)
 //!
-//! Tranches land per the phase doc. As of Tranche 0:
+//! Tranches land per the phase doc. Modules present so far:
 //!
 //! - [`header`] — the 144-byte `FileStatistics` record every BLF
 //!   opens with (object-type 0 in spirit; not in the object stream).
+//! - [`object`] — the 16-byte `ObjectHeaderBase` preamble of every
+//!   on-disk object. Per-type body framing lives in the per-type
+//!   modules listed below.
 //!
-//! Subsequent tranches add: outer object framing (`object`),
-//! `LOG_CONTAINER` decompression (`log_container`), and the per-type
-//! CAN object decoders / encoders (`can`).
+//! Subsequent tranche-1 steps add: `LOG_CONTAINER` decompression
+//! (`log_container`) and the per-type CAN object decoders / encoders
+//! (`can`).
+//!
+//! [`header`]: crate::format::header
+//! [`object`]: crate::format::object
 
 pub mod header;
+pub mod object;

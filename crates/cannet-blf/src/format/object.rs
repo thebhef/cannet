@@ -1,0 +1,254 @@
+//! BLF `ObjectHeaderBase` — the fixed 16-byte preamble of every
+//! on-disk object.
+//!
+//! Layout per Vector's `binlog_objects.h` (2018 v8) §
+//! `VBLObjectHeaderBase`, cross-referenced against `vector_blf`'s
+//! `ObjectHeaderBase.h`:
+//!
+//! ```text
+//! offset  size  field
+//! 0       4     signature       ("LOBJ" = 0x4A42_4F4C little-endian)
+//! 4       2     header_size     (bytes from start of this base header
+//!                                to the end of the per-type extension
+//!                                header — e.g. 16 for v1 of v2-only
+//!                                objects like `LOG_CONTAINER`, 32 for
+//!                                objects that embed an `ObjectHeader` v1)
+//! 6       2     header_version  (1 → `ObjectHeader`, 2 → `ObjectHeader2`,
+//!                                or 1 for `LOG_CONTAINER` which uses
+//!                                only the base header)
+//! 8       4     object_size     (total bytes of the object, including
+//!                                this 16-byte base header)
+//! 12      4     object_type     (enum value; e.g. 10 = `LOG_CONTAINER`,
+//!                                86 = `CAN_MESSAGE2`, 96 = `GLOBAL_MARKER`)
+//! ```
+//!
+//! Total: 16 bytes. All multi-byte integers are little-endian.
+//!
+//! This module owns the *base* header only. Per-type body framing
+//! (`LOG_CONTAINER`, `CAN_MESSAGE2`, …) lives in the per-type modules
+//! that consume the body starting at `+header_size`.
+
+/// Vector's `LOBJ` per-object signature, little-endian (the bytes are
+/// `L O B J` in the order they appear on disk).
+pub const OBJECT_SIGNATURE: u32 = 0x4A42_4F4C;
+
+/// The fixed byte width of the `ObjectHeaderBase` preamble.
+pub const OBJECT_HEADER_BASE_BYTES: usize = 16;
+
+/// Object-type IDs we decode natively. Unknown values stay as the raw
+/// `u32` on `ObjectHeaderBase::object_type` so the caller can skip
+/// past them using `object_size`.
+pub mod object_type {
+    pub const CAN_MESSAGE: u32 = 1;
+    pub const LOG_CONTAINER: u32 = 10;
+    pub const CAN_ERROR_EXT: u32 = 73;
+    pub const CAN_MESSAGE2: u32 = 86;
+    pub const GLOBAL_MARKER: u32 = 96;
+    pub const CAN_FD_MESSAGE: u32 = 100;
+    pub const CAN_FD_MESSAGE_64: u32 = 101;
+}
+
+/// Parsed `ObjectHeaderBase`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ObjectHeaderBase {
+    /// Combined size in bytes of the base header plus the per-type
+    /// extension header (see module docs). The object's *body*
+    /// starts at `+header_size`.
+    pub header_size: u16,
+    /// Header version: 1 for objects whose extension is
+    /// `ObjectHeader`, 2 for `ObjectHeader2`. `LOG_CONTAINER` reports
+    /// 1 and uses no extension.
+    pub header_version: u16,
+    /// Total bytes of the on-disk object, *including* the 16-byte
+    /// base header.
+    pub object_size: u32,
+    /// Type discriminator. See [`object_type`] for known values; any
+    /// other value is a type this implementation doesn't decode.
+    pub object_type: u32,
+}
+
+/// Parse errors specific to the per-object base header.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ObjectHeaderError {
+    /// Buffer was shorter than the 16-byte base header.
+    /// Carries the byte length we got.
+    Truncated(usize),
+    /// First 4 bytes weren't `LOBJ`. Carries what we saw.
+    BadSignature(u32),
+    /// `header_size` was smaller than the 16-byte base, which would
+    /// place the body inside the base header. Carries the reported size.
+    HeaderSizeTooSmall(u16),
+    /// `object_size` was smaller than `header_size`, which would
+    /// leave no room for the body and would underflow the body-size
+    /// calculation. Carries `(object_size, header_size)`.
+    ObjectSizeBelowHeader(u32, u16),
+}
+
+impl std::fmt::Display for ObjectHeaderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Truncated(n) => write!(
+                f,
+                "BLF object header truncated: got {n} bytes, need at least {OBJECT_HEADER_BASE_BYTES}",
+            ),
+            Self::BadSignature(sig) => write!(
+                f,
+                "BLF object signature mismatch: expected {OBJECT_SIGNATURE:#010x} (LOBJ), got {sig:#010x}",
+            ),
+            Self::HeaderSizeTooSmall(n) => write!(
+                f,
+                "BLF ObjectHeaderBase.header_size = {n} bytes, below the {OBJECT_HEADER_BASE_BYTES}-byte minimum",
+            ),
+            Self::ObjectSizeBelowHeader(obj, hdr) => write!(
+                f,
+                "BLF ObjectHeaderBase.object_size = {obj} < header_size = {hdr}",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ObjectHeaderError {}
+
+impl ObjectHeaderBase {
+    /// Parse the 16-byte base header at the start of `bytes`.
+    /// Trailing bytes past 16 are the per-type extension header and
+    /// the body, which this module does not touch.
+    // The `try_into().unwrap()` calls are unreachable: every slice
+    // is taken from the bytes[0..N] window after the length check
+    // at the top.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn parse(bytes: &[u8]) -> Result<Self, ObjectHeaderError> {
+        if bytes.len() < OBJECT_HEADER_BASE_BYTES {
+            return Err(ObjectHeaderError::Truncated(bytes.len()));
+        }
+        let signature = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        if signature != OBJECT_SIGNATURE {
+            return Err(ObjectHeaderError::BadSignature(signature));
+        }
+        let header_size = u16::from_le_bytes(bytes[4..6].try_into().unwrap());
+        let header_version = u16::from_le_bytes(bytes[6..8].try_into().unwrap());
+        let object_size = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+        let object_type = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
+
+        if (header_size as usize) < OBJECT_HEADER_BASE_BYTES {
+            return Err(ObjectHeaderError::HeaderSizeTooSmall(header_size));
+        }
+        if object_size < u32::from(header_size) {
+            return Err(ObjectHeaderError::ObjectSizeBelowHeader(
+                object_size,
+                header_size,
+            ));
+        }
+
+        Ok(Self {
+            header_size,
+            header_version,
+            object_size,
+            object_type,
+        })
+    }
+
+    /// Bytes consumed by this object on disk, including the trailing
+    /// 4-byte padding alignment Vector inserts between consecutive
+    /// objects. `object_size` itself is *not* aligned; the next
+    /// object starts at `floor_offset + advance_bytes()`.
+    pub fn advance_bytes(&self) -> u64 {
+        let raw = u64::from(self.object_size);
+        let pad = (4 - (raw % 4)) % 4;
+        raw + pad
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn signature_constant_matches_lobj_ascii() {
+        assert_eq!(OBJECT_SIGNATURE.to_le_bytes(), *b"LOBJ");
+    }
+
+    fn synth_header(header_size: u16, header_version: u16, object_size: u32, object_type: u32) -> [u8; 16] {
+        let mut bytes = [0u8; 16];
+        bytes[0..4].copy_from_slice(b"LOBJ");
+        bytes[4..6].copy_from_slice(&header_size.to_le_bytes());
+        bytes[6..8].copy_from_slice(&header_version.to_le_bytes());
+        bytes[8..12].copy_from_slice(&object_size.to_le_bytes());
+        bytes[12..16].copy_from_slice(&object_type.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn parses_a_minimum_synthetic_header() {
+        // A degenerate but well-formed LOG_CONTAINER preamble (no
+        // body, no extension): header_size == object_size == 16.
+        let bytes = synth_header(16, 1, 16, object_type::LOG_CONTAINER);
+        let parsed = ObjectHeaderBase::parse(&bytes).expect("base header should parse");
+        assert_eq!(parsed.header_size, 16);
+        assert_eq!(parsed.header_version, 1);
+        assert_eq!(parsed.object_size, 16);
+        assert_eq!(parsed.object_type, object_type::LOG_CONTAINER);
+    }
+
+    #[test]
+    fn parses_a_can_message2_preamble() {
+        // CAN_MESSAGE2: header_size = 32 (ObjectHeaderBase + ObjectHeader v1),
+        // object_size = 32 + 16 (CAN_MESSAGE2 body) + 0 data bytes = 48.
+        let bytes = synth_header(32, 1, 48, object_type::CAN_MESSAGE2);
+        let parsed = ObjectHeaderBase::parse(&bytes).expect("CAN_MESSAGE2 preamble parses");
+        assert_eq!(parsed.header_size, 32);
+        assert_eq!(parsed.object_type, object_type::CAN_MESSAGE2);
+    }
+
+    #[test]
+    fn rejects_short_buffer() {
+        let err = ObjectHeaderBase::parse(&[0u8; 15]).unwrap_err();
+        assert_eq!(err, ObjectHeaderError::Truncated(15));
+    }
+
+    #[test]
+    fn rejects_bad_signature() {
+        let mut bytes = synth_header(16, 1, 16, object_type::LOG_CONTAINER);
+        bytes[0..4].copy_from_slice(b"NOPE");
+        let err = ObjectHeaderBase::parse(&bytes).unwrap_err();
+        assert!(matches!(err, ObjectHeaderError::BadSignature(_)));
+    }
+
+    #[test]
+    fn rejects_undersized_header_size() {
+        let bytes = synth_header(8, 1, 32, object_type::LOG_CONTAINER);
+        let err = ObjectHeaderBase::parse(&bytes).unwrap_err();
+        assert_eq!(err, ObjectHeaderError::HeaderSizeTooSmall(8));
+    }
+
+    #[test]
+    fn rejects_object_size_below_header() {
+        let bytes = synth_header(32, 1, 24, object_type::CAN_MESSAGE2);
+        let err = ObjectHeaderBase::parse(&bytes).unwrap_err();
+        assert_eq!(err, ObjectHeaderError::ObjectSizeBelowHeader(24, 32));
+    }
+
+    /// Vector aligns the *next* object's start to a 4-byte boundary,
+    /// so an object of size 17 advances the cursor by 20 bytes.
+    #[test]
+    fn advance_bytes_pads_to_4_byte_alignment() {
+        let cases = [
+            (16u32, 16u64),
+            (17, 20),
+            (18, 20),
+            (19, 20),
+            (20, 20),
+            (47, 48),
+            (48, 48),
+        ];
+        for (size, expected) in cases {
+            let bytes = synth_header(16, 1, size, object_type::LOG_CONTAINER);
+            let parsed = ObjectHeaderBase::parse(&bytes).unwrap();
+            assert_eq!(
+                parsed.advance_bytes(),
+                expected,
+                "object_size={size} expected advance {expected}",
+            );
+        }
+    }
+}
