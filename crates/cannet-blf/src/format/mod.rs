@@ -22,14 +22,20 @@
 //! - [`log_container`] — `LOG_CONTAINER` (object type 10), the
 //!   outer wrapper every inner BLF object lives inside. Owns the
 //!   zlib inflate path.
+//! - [`can`] — per-type decoders for the CAN-class objects
+//!   (`CAN_MESSAGE`, `CAN_MESSAGE2`, `CAN_FD_MESSAGE`,
+//!   `CAN_FD_MESSAGE_64`, `CAN_ERROR_EXT`). Growing one type at a
+//!   time across Tranche 1.
 //!
-//! Subsequent tranche-1 steps add the per-type CAN object decoders /
-//! encoders (`can`).
+//! Encoders (`write_*`) for each of the above land in the same
+//! modules in later Tranche-1 steps.
 //!
 //! [`header`]: crate::format::header
 //! [`object`]: crate::format::object
 //! [`log_container`]: crate::format::log_container
+//! [`can`]: crate::format::can
 
+pub mod can;
 pub mod header;
 pub mod log_container;
 pub mod object;

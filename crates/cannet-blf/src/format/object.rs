@@ -159,6 +159,73 @@ impl ObjectHeaderBase {
     }
 }
 
+// ---- ObjectHeader v1 ---------------------------------------------
+
+/// The v1 per-object extension header that follows `ObjectHeaderBase`
+/// for every event type except `LOG_CONTAINER`. Carries the per-object
+/// timestamp and flags. Total: 16 bytes; combined with the 16-byte
+/// base header, an `ObjectHeader`-bearing object's body starts at +32.
+///
+/// Layout per Vector's `binlog_objects.h` § `VBLObjectHeader`,
+/// cross-referenced against `vector_blf::ObjectHeader`:
+///
+/// ```text
+/// offset  size  field
+/// 0       4     object_flags     (1 = 10-µs ticks, 2 = ns)
+/// 4       2     client_index
+/// 6       2     object_version
+/// 8       8     object_timestamp (units determined by object_flags)
+/// ```
+pub const OBJECT_HEADER_V1_BYTES: usize = 16;
+
+/// `object_flags` enumerand: timestamp is in 10-microsecond ticks.
+pub const OBJECT_FLAG_TIME_TEN_MICS: u32 = 1;
+/// `object_flags` enumerand: timestamp is in nanoseconds.
+pub const OBJECT_FLAG_TIME_ONE_NANS: u32 = 2;
+
+/// Parsed `ObjectHeader` v1 extension (the 16 bytes after `ObjectHeaderBase`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ObjectHeaderV1 {
+    pub object_flags: u32,
+    pub client_index: u16,
+    pub object_version: u16,
+    /// Raw `object_timestamp` field. Multiply by 10000 if
+    /// `object_flags == OBJECT_FLAG_TIME_TEN_MICS`, or use as-is if
+    /// `OBJECT_FLAG_TIME_ONE_NANS`. Use [`Self::timestamp_ns`] for
+    /// the normalised value.
+    pub object_timestamp: u64,
+}
+
+impl ObjectHeaderV1 {
+    /// Parse the 16-byte extension at the start of `bytes`. Caller
+    /// must have already consumed the 16-byte `ObjectHeaderBase` and
+    /// be looking at the extension's first byte.
+    // `try_into().unwrap()` is unreachable: slices come from a
+    // length-checked window.
+    #[allow(clippy::missing_panics_doc)]
+    pub fn parse(bytes: &[u8]) -> Result<Self, ObjectHeaderError> {
+        if bytes.len() < OBJECT_HEADER_V1_BYTES {
+            return Err(ObjectHeaderError::Truncated(bytes.len()));
+        }
+        Ok(Self {
+            object_flags: u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
+            client_index: u16::from_le_bytes(bytes[4..6].try_into().unwrap()),
+            object_version: u16::from_le_bytes(bytes[6..8].try_into().unwrap()),
+            object_timestamp: u64::from_le_bytes(bytes[8..16].try_into().unwrap()),
+        })
+    }
+
+    /// Normalise `object_timestamp` to nanoseconds per `object_flags`.
+    /// Unknown flag values default to ns (matching `vector_blf`'s
+    /// permissive read).
+    pub fn timestamp_ns(self) -> u64 {
+        match self.object_flags {
+            OBJECT_FLAG_TIME_TEN_MICS => self.object_timestamp.saturating_mul(10_000),
+            _ => self.object_timestamp,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,6 +293,34 @@ mod tests {
         let bytes = synth_header(32, 1, 24, object_type::CAN_MESSAGE2);
         let err = ObjectHeaderBase::parse(&bytes).unwrap_err();
         assert_eq!(err, ObjectHeaderError::ObjectSizeBelowHeader(24, 32));
+    }
+
+    #[test]
+    fn object_header_v1_parses_a_nanosecond_timestamp() {
+        let mut bytes = [0u8; 16];
+        bytes[0..4].copy_from_slice(&OBJECT_FLAG_TIME_ONE_NANS.to_le_bytes());
+        bytes[4..6].copy_from_slice(&7u16.to_le_bytes());
+        bytes[6..8].copy_from_slice(&0u16.to_le_bytes());
+        bytes[8..16].copy_from_slice(&1_700_000_000_999_888_777u64.to_le_bytes());
+        let parsed = ObjectHeaderV1::parse(&bytes).unwrap();
+        assert_eq!(parsed.object_flags, OBJECT_FLAG_TIME_ONE_NANS);
+        assert_eq!(parsed.client_index, 7);
+        assert_eq!(parsed.timestamp_ns(), 1_700_000_000_999_888_777);
+    }
+
+    #[test]
+    fn object_header_v1_scales_ten_micros_to_nanoseconds() {
+        let mut bytes = [0u8; 16];
+        bytes[0..4].copy_from_slice(&OBJECT_FLAG_TIME_TEN_MICS.to_le_bytes());
+        bytes[8..16].copy_from_slice(&123u64.to_le_bytes());
+        let parsed = ObjectHeaderV1::parse(&bytes).unwrap();
+        assert_eq!(parsed.timestamp_ns(), 123 * 10_000);
+    }
+
+    #[test]
+    fn object_header_v1_rejects_short_buffer() {
+        let err = ObjectHeaderV1::parse(&[0u8; 8]).unwrap_err();
+        assert_eq!(err, ObjectHeaderError::Truncated(8));
     }
 
     /// Vector aligns the *next* object's start to a 4-byte boundary,
