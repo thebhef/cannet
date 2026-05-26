@@ -170,6 +170,29 @@ next pass on this surface can address them as one piece.
   event-line rendering already exists; the trigger engine doesn't.
 - `[feat]` `cannet-gui` plot panel: CSV / image export of the visible
   window or the cursor span.
+- `[ui/feat]` cursor + marker rework.
+  - Each cursor-created marker carries an editable description; the
+    list UI gets an expand-to-show body on the row, collapsed by
+    default, plus a per-marker colour picker.
+  - Cursors / markers grow into their own top-level view (they are
+    global, not per-panel; their lifecycle is similar to project
+    view, graph view, system messages). The view shows both BLF
+    record types — `GLOBAL_MARKER` and `EVENT_COMMENT` — with
+    filtering by record type and by the user-defined event tag (below).
+  - Add a "create marker from message" flow: emit an `EVENT_COMMENT`
+    whose `commentedEventType` matches the source message
+    (`can` / `can-fd`) and whose object timestamp equals the source
+    message's, so it tracks with the message per the BLF spec. The
+    text field is prefixed `cannet:event:<user-string>\n` to enable
+    filtering; the UI strips the prefix and renders just `<user-string>`.
+    `<user-string>` is configurable in the UI. Use cases: fault
+    detections, contactor open/close, specific commands sent. UI
+    design needed for picking the source message and authoring the
+    rendered text.
+  - `EVENT_COMMENT` markers should be rendered in the graph view,
+    when enabled in the filter
+  - `GLOBAL_MARKER` and `EVENT_COMMENT` items should appear in 
+    historical-mode trace views
 - `[feat]` `cannet-gui`: drag a decoded signal *into* a plot from
   elsewhere — a trace panel's expanded-row signal grid, the by-ID
   table. Make those rows `draggable` carrying the same
