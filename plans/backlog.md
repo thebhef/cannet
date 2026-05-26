@@ -22,25 +22,12 @@ work or admit it isn't going to happen and delete it.
 ### High priority
 
 Near-term work — fold these into a phase before picking up the
-lower-priority follow-ups below.
-
-#### Minimum Usability Tasks
-
-TODO: /grill-with-docs on these items
-
-1. The transmit view is awkward, DBC rework is needed as described below, but I can't set values on any signals currently. I think a table view might be better for the signals, and for the raw bytes.
-2. show points in plot
-3. Drag+drop signals from DBC or trace into graph, and between graphs
-4. DBC view with good filter behavior 
-  - View live filtered based on on textbox search against DBC content; names, ids, notes, enum values, attribs, etc.
-  - The style of search VSCode implements: you could do "MyCanMessage" by searching for "mcmess", for example. The search
-  - string search implementation should be common across modules. 3rd party library may be preferred here.
-  - define plot windows by filter: dict of `plot area`:`filter string`
-    - Filter string should be regex
-5. ui-architecture-backlog.md
-6. hotkey framework + new hotkeys
-  - f: fit plot x axis
-  - l: enable 'follow live' on plot
+lower-priority follow-ups below. The original "Minimum Usability
+Tasks" list (transmit signals, show points, DBC view, drag/drop,
+hotkey framework) is scheduled as **Phase 10 — Integration Testing
+and Refinement** in `phased-implementation.md`; the
+`ui-architecture-backlog.md` item is left in `ui-architecture-backlog.md`
+and absorbed into Phase 11.
 
 #### Other near-term work
 
@@ -57,7 +44,7 @@ TODO: /grill-with-docs on these items
   wipes `current/` on clean shutdown. Other settings will land here
   as they come up; spec the panel itself when picking this up.
 - `[test-fixtures]` **Vendor python-can BLF fixtures under
-  `crates/cannet-blf/tests/fixtures/python-can/`.** Phase 9.5
+  `crates/cannet-blf/tests/fixtures/python-can/`.** Phase 10 (Track 1)
   Step 1 listed this as the first of four test sources but
   deferred actual vendoring; today the step's coverage is
   synthetic-bytes per-module tests + the vector_blf oracle
@@ -126,7 +113,7 @@ next pass on this surface can address them as one piece.
 
 - `[perf]` `cannet-core`: revisit `CanFramePayload::Classic`/`Fd` to share
   a fixed-size inline buffer instead of `Vec<u8>` once the trace store /
-  benchmark in Phase 14 shows allocator pressure.
+  benchmark in Phase 15 shows allocator pressure.
 - `[ui]` trace view: dock / undock as a separate window. (Resizable and
   hideable columns folded into Phase 3; tear-out into a separate OS window
   stays here — Phase 3 docking is within the single main window.)
@@ -305,7 +292,7 @@ next pass on this surface can address them as one piece.
   lookup chain (`tools/uv/uv` → `PATH` `uv` → `python3` fallback)
   stays unchanged, only how `tools/uv/uv` gets populated on an
   end-user machine. Today `scripts/fetch-uv.sh` is the dev-side
-  fetch; the end-user-side fetch is the open work. See Phase 18
+  fetch; the end-user-side fetch is the open work. See Phase 19
   "Third-party runtime tool fetching strategy" for the two
   candidate mechanisms.
 - `[naming]` `sidecar.rs` internal identifiers `LaunchPath::BundledUv`
