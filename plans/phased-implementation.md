@@ -1661,8 +1661,13 @@ materialized mmap'd files, every predicate id-narrowable against the
 DBC so no index build is an O(capture) scan (DS-3); every file family
 is fixed-size pre-allocated segments mapped whole with a valid-length
 watermark (DS-4); the decoded-signal cache gains a per-signal min/max
-resolution pyramid (DS-5); and the disk store is the only production
-path, the in-RAM `Vec` retiring to a test double (DS-6).
+resolution pyramid (DS-5); the disk store is the only production
+path, the in-RAM `Vec` retiring to a test double (DS-6); and the
+scratch lives in a single `current/` directory under the OS cache
+dir and is wiped exactly when the session buffer is — on Clear, or
+on Start of a new capture — never on exit or crash, so a prior
+session present at launch is loaded as a stopped historical trace
+(DS-7).
 
 Steps — each lands independently, leaves the app working and tested
 (`cargo test -p cannet-gui`, `pnpm --dir apps/gui test`), and keeps

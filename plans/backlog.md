@@ -26,12 +26,36 @@ lower-priority follow-ups below.
 
 #### Minimum Usability Tasks
 
-- The transmit view sucks
-- Drag+drop signals from DBC or trace into graph, and between graphs
-- DBC view with good filter behavior (must be implemented with search that will be consistent across all searches implemented in application. The style of search VSCode implements: you could do "MyCanMessage" by searching for "mcmess", for example)
+TODO: /grill-with-docs on these items
+
+1. The transmit view is awkward, DBC rework is needed as described below, but I can't set values on any signals currently. I think a table view might be better for the signals, and for the raw bytes.
+2. show points in plot
+3. Drag+drop signals from DBC or trace into graph, and between graphs
+4. DBC view with good filter behavior 
+  - View live filtered based on on textbox search against DBC content; names, ids, notes, enum values, attribs, etc.
+  - The style of search VSCode implements: you could do "MyCanMessage" by searching for "mcmess", for example. The search
+  - string search implementation should be common across modules. 3rd party library may be preferred here.
+  - define plot windows by filter: dict of `plot area`:`filter string`
+    - Filter string should be regex
+5. ui-architecture-backlog.md
+6. hotkey framework + new hotkeys
+  - f: fit plot x axis
+  - l: enable 'follow live' on plot
 
 #### Other near-term work
 
+- `[feat]` **Settings panel — first entry: `clear scratch cache on exit`.**
+  Per [ADR 0002 DS-7](../docs/adr/0002-disk-spill-store.md), the
+  disk-spill scratch (raw store + indexes + pyramids + session-authored
+  markers/events) lives in `$XDG_CACHE_HOME/cannet/current/` and is
+  wiped only when the session buffer is — on Clear, or on Start of a
+  new capture — never on exit or crash. That makes the launch-loads-
+  prior-as-stopped behavior mechanically free, but means a user who
+  quits without Clearing/Starting leaves the prior session on disk
+  indefinitely. A settings panel needs to exist; its first setting is
+  an opt-in `clear scratch cache on exit` toggle (default off) that
+  wipes `current/` on clean shutdown. Other settings will land here
+  as they come up; spec the panel itself when picking this up.
 - `[test-fixtures]` **Vendor python-can BLF fixtures under
   `crates/cannet-blf/tests/fixtures/python-can/`.** Phase 9.5
   Step 1 listed this as the first of four test sources but
@@ -42,16 +66,6 @@ lower-priority follow-ups below.
   cross-check that runs without C++ toolchain. ~30 KB binary
   per file, expect ~5 files covering classic / FD / error / mixed
   channels / big payloads.
-- `[bug]` **`PROJECT_SCHEMA_VERSION` is out of sync between Rust and
-  TypeScript.** Rust is at `4`
-  ([project.rs:41](apps/gui/src-tauri/src/project.rs#L41)), TypeScript
-  is still at `3` ([types.ts:200](apps/gui/src/types.ts#L200)). The
-  frontend stamps new projects with the TS value
-  ([App.tsx:749](apps/gui/src/App.tsx#L749)), so every freshly created
-  project lands on disk as v3 and round-trips through the v3 → v4
-  migration on first save. Bump the TS const to `4` and add a tiny
-  test (or a build-time check) that the two stay in lockstep.
-  Background: [ADR 0011](../docs/adr/0011-project-file-format.md).
 - `[ui]` **Element display names need one model-owned source of truth
   and a shared resolver, used by every view.** Today each view derives
   an element's label independently and they disagree — basically every
@@ -284,22 +298,6 @@ next pass on this surface can address them as one piece.
   surface `TX_REJECTED` from the sidecar without a round-trip
   config call, and so the BLF replay server can advertise the
   bitrate the BLF was captured at. Additive proto change.
-- ~~`[robustness]` sidecar should bind an OS-chosen free port and
-  report it back, instead of a hard-coded port.~~ *(landed:
-  default `--bind 127.0.0.1:0`; sidecar reports the actual bound
-  port on the existing `sidecar\tlistening\t<addr>` banner;
-  host parses it into `SidecarState::bound_address` and exposes
-  it through `get_sidecar_status` + `sidecar-status-changed`.)*
-- ~~`[robustness]` host must track the sidecar process and command
-  it to shut down nominally on GUI exit and on restart.~~ *(landed
-  via stdin-EOF: host pipes the sidecar's stdin and writes nothing;
-  the OS closes the pipe on host death; the sidecar reads EOF and
-  hits the same `server.stop(grace=2.0)` path SIGTERM uses, emitting
-  `sidecar\tshutdown\treason=stdin-eof`. Works on clean exit,
-  panic, and SIGKILL; pipe close propagates through the `uv → uv →
-  python` chain too since `uv run` inherits stdio. The `kill()`
-  hard-stop in `restart_sidecar` stays as the manual-restart
-  backstop.)*
 - `[packaging]` end-user `uv` fetch mechanism: pick between an
   installer post-step and a first-run host downloader, and
   implement. Per [ADR 0015](../docs/adr/0015-fetched-runtime-binaries.md),
