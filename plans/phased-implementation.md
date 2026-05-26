@@ -1541,10 +1541,27 @@ its own working slice in the order below):
   packing of `reserved_app_text1`. Oracle test
   (`oracle_lists_text_annotations_written_by_our_writer`) green:
   Vector's reference library reads both types back.
-- **Tranche 4 — Capture integrity.** Read + write for
-  `CAN_STATISTIC` (4), `DATA_LOST_BEGIN` (125), `DATA_LOST_END`
-  (126). Surfaces bus-load and gap-bracket info when reading
-  third-party captures.
+- **Tranche 4 — Capture integrity.** ✅ **Complete.** Read +
+  write for `CAN_STATISTIC` (4), `DATA_LOST_BEGIN` (125),
+  `DATA_LOST_END` (126) in `cannet-blf::format::diagnostics`.
+  `BlfReader` exposes all three as new `BlfObject` variants so
+  third-party captures' bus-load and gap-bracket info surfaces
+  to consumers walking the inflated stream. `CanStatistic`
+  exposes a `bus_load_percent() -> f32` convenience for the
+  hundredths-of-a-percent on-disk encoding; queue-identifier
+  constants (`QUEUE_RT` / `QUEUE_ANALYZER` / `QUEUE_RT_AND_ANALYZER`)
+  cover Vector's three values. Oracle test
+  (`oracle_lists_diagnostics_written_by_our_writer`) green:
+  Vector's reference library reads all three back.
+
+**Phase 9.5 complete.** Four tranches landed: parity, marker,
+annotation, capture-integrity. The native BLF codec covers every
+object type listed in `plans/features.md` as `required` or
+`desired`. Object types listed `nice` (e.g. `CAN_OVERLOAD`,
+`CAN_FD_ERROR_64`, FlexRay events) remain undecoded; the reader
+surfaces them via `BlfObject::Other` so they can be skipped or
+logged. Future phases that need them can add per-type decoders
+incrementally using the established pattern.
 
 Test corpora (cumulative across tranches, per ADR 0009):
 

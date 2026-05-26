@@ -18,6 +18,9 @@ use super::can::{
     decode_can_message2, CanErrorExt, CanFdMessage, CanFdMessage64, CanMessage, CanMessage2,
     CanObjectError,
 };
+use super::diagnostics::{
+    self, CanStatistic, DataLostBegin, DataLostEnd, DiagnosticError,
+};
 use super::header::{FileStatistics, HeaderError, FILE_STATISTICS_MIN_BYTES};
 use super::log_container::{self, LogContainerError};
 use super::marker::{self, GlobalMarker, MarkerError};
@@ -47,6 +50,15 @@ pub enum BlfObject {
     /// Application-defined text (type 65) — measurement comment,
     /// database channel info, or meta data depending on `source`.
     AppText(AppText),
+    /// Periodic CAN driver statistics (type 4) — per-channel bus
+    /// load and frame counts.
+    CanStatistic(CanStatistic),
+    /// Sentinel marking the start of a region where the recorder
+    /// dropped frames (type 125).
+    DataLostBegin(DataLostBegin),
+    /// Sentinel marking the end of the lost-data region (type 126),
+    /// with the first-lost timestamp and lost-event count.
+    DataLostEnd(DataLostEnd),
     /// An object type this implementation does not decode. The
     /// `ObjectHeaderBase` is exposed so callers can inspect / log
     /// it; the body bytes have already been consumed from the stream.
@@ -73,6 +85,9 @@ pub enum BlfReadError {
     Marker(MarkerError),
     /// An `EVENT_COMMENT` or `APP_TEXT` failed to decode.
     Text(TextError),
+    /// A `CAN_STATISTIC` / `DATA_LOST_BEGIN` / `DATA_LOST_END`
+    /// failed to decode.
+    Diagnostic(DiagnosticError),
     /// The file ended mid-object — we had the base header but the
     /// body was truncated.
     UnexpectedEof,
@@ -89,6 +104,7 @@ impl std::fmt::Display for BlfReadError {
             Self::CanObject(e) => write!(f, "BLF CAN object decode failed: {e}"),
             Self::Marker(e) => write!(f, "BLF GLOBAL_MARKER decode failed: {e}"),
             Self::Text(e) => write!(f, "BLF text-annotation decode failed: {e}"),
+            Self::Diagnostic(e) => write!(f, "BLF diagnostic decode failed: {e}"),
             Self::UnexpectedEof => write!(f, "BLF ended mid-object"),
         }
     }
@@ -104,6 +120,7 @@ impl std::error::Error for BlfReadError {
             Self::CanObject(e) => Some(e),
             Self::Marker(e) => Some(e),
             Self::Text(e) => Some(e),
+            Self::Diagnostic(e) => Some(e),
             Self::UnexpectedEof => None,
         }
     }
@@ -137,6 +154,11 @@ impl From<MarkerError> for BlfReadError {
 impl From<TextError> for BlfReadError {
     fn from(value: TextError) -> Self {
         Self::Text(value)
+    }
+}
+impl From<DiagnosticError> for BlfReadError {
+    fn from(value: DiagnosticError) -> Self {
+        Self::Diagnostic(value)
     }
 }
 
@@ -250,6 +272,15 @@ impl BlfReader {
                 }
                 object_type::APP_TEXT => {
                     BlfObject::AppText(text::decode_app_text(object_bytes)?)
+                }
+                object_type::CAN_STATISTIC => {
+                    BlfObject::CanStatistic(diagnostics::decode_can_statistic(object_bytes)?)
+                }
+                object_type::DATA_LOST_BEGIN => {
+                    BlfObject::DataLostBegin(diagnostics::decode_data_lost_begin(object_bytes)?)
+                }
+                object_type::DATA_LOST_END => {
+                    BlfObject::DataLostEnd(diagnostics::decode_data_lost_end(object_bytes)?)
                 }
                 _ => BlfObject::Other(base),
             };

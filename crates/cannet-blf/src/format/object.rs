@@ -40,6 +40,7 @@ pub const OBJECT_HEADER_BASE_BYTES: usize = 16;
 /// past them using `object_size`.
 pub mod object_type {
     pub const CAN_MESSAGE: u32 = 1;
+    pub const CAN_STATISTIC: u32 = 4;
     pub const LOG_CONTAINER: u32 = 10;
     pub const APP_TEXT: u32 = 65;
     pub const CAN_ERROR_EXT: u32 = 73;
@@ -48,6 +49,8 @@ pub mod object_type {
     pub const GLOBAL_MARKER: u32 = 96;
     pub const CAN_FD_MESSAGE: u32 = 100;
     pub const CAN_FD_MESSAGE_64: u32 = 101;
+    pub const DATA_LOST_BEGIN: u32 = 125;
+    pub const DATA_LOST_END: u32 = 126;
 }
 
 /// Parsed `ObjectHeaderBase`.

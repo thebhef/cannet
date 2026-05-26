@@ -104,7 +104,7 @@ in the Description column is a verbatim quote from the cited line.
 | 1 | `CAN_MESSAGE` | desired | ✓ read+write | ✗ | *CAN message object* (binlog_objects.h:30). `[cannet]` Older format; modern captures use `CAN_MESSAGE2`. |
 | 2 | `CAN_ERROR` | desired | ✗ | ✗ | *CAN error frame object* (binlog_objects.h:31). Superseded by `CAN_ERROR_EXT`. |
 | 3 | `CAN_OVERLOAD` | nice | ✗ | ✗ | *CAN overload frame object* (binlog_objects.h:32). |
-| 4 | `CAN_STATISTIC` | desired | ✗ | ✗ | *CAN driver statistics object* (binlog_objects.h:33). The struct (`VBLCanDriverStatistic` in `binlog_objects.h`) carries channel, bus load, std/ext frame counts (data + remote), error frames, overload frames. |
+| 4 | `CAN_STATISTIC` | desired | ✓ read+write | ✗ | *CAN driver statistics object* (binlog_objects.h:33). The struct (`VBLCanDriverStatistic` in `binlog_objects.h`) carries channel, bus load, std/ext frame counts (data + remote), error frames, overload frames. `[cannet]` Landed Phase 9.5 Tranche 4 in `cannet-blf::format::diagnostics`. |
 | 73 | `CAN_ERROR_EXT` | desired | ✓ read+write | ✓ read | *CAN error frame object (extended)* (binlog_objects.h:124). |
 | 86 | `CAN_MESSAGE2` | required | ✓ read+write | ✓ read | *CAN message object - extended* (binlog_objects.h:140). `[cannet]` The default CAN message format in modern captures. |
 | 100 | `CAN_FD_MESSAGE` | required | ✓ read+write | ✗ | *CAN FD message object* (binlog_objects.h:164). Classic CAN FD frame (≤8-byte data path). |
@@ -144,8 +144,8 @@ in the Description column is a verbatim quote from the cited line.
 |---:|------|------|--------|--------|-------|
 | 51 | `REALTIMECLOCK` | nice | ✗ | ✗ | *Realtime clock object* (binlog_objects.h:93). |
 | 91 | `OVERRUN_ERROR` | nice | ✗ | ✗ | *driver overrun event* (binlog_objects.h:148). |
-| 125 | `DATA_LOST_BEGIN` | desired | ✗ | ✗ | *Data lost begin* (binlog_objects.h:203). Struct `VBLDataLostBegin` (binlog_objects.h:2519) carries `mQueueIdentifier` (the leaking queue's id). `[cannet]` Pairs with `DATA_LOST_END` to bracket a capture gap. Important for data-integrity surfacing when reading third-party captures. |
-| 126 | `DATA_LOST_END` | desired | ✗ | ✗ | *Data lost end* (binlog_objects.h:204). Struct `VBLDataLostEnd` (binlog_objects.h:2525) carries `mQueueIdentifier`, `mFirstObjectLostTimeStamp`, and `mNumberOfLostEvents`. |
+| 125 | `DATA_LOST_BEGIN` | desired | ✓ read+write | ✗ | *Data lost begin* (binlog_objects.h:203). Struct `VBLDataLostBegin` (binlog_objects.h:2519) carries `mQueueIdentifier` (the leaking queue's id). `[cannet]` Landed Phase 9.5 Tranche 4 in `cannet-blf::format::diagnostics`. Pairs with `DATA_LOST_END` to bracket a capture gap; important for data-integrity surfacing when reading third-party captures. |
+| 126 | `DATA_LOST_END` | desired | ✓ read+write | ✗ | *Data lost end* (binlog_objects.h:204). Struct `VBLDataLostEnd` (binlog_objects.h:2525) carries `mQueueIdentifier`, `mFirstObjectLostTimeStamp`, and `mNumberOfLostEvents`. `[cannet]` Landed Phase 9.5 Tranche 4 in `cannet-blf::format::diagnostics`. |
 | 127 | `WATER_MARK_EVENT` | nice | ✗ | ✗ | *Watermark event* (binlog_objects.h:205). |
 | 128 | `TRIGGER_CONDITION` | nice | ✗ | ✗ | *Trigger Condition event* (binlog_objects.h:206). |
 

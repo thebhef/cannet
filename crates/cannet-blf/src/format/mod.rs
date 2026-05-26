@@ -32,6 +32,10 @@
 //!   free-form-text annotation types Vector tools write. Preserves
 //!   third-party annotations on read; lets us round-trip them on
 //!   re-export.
+//! - [`diagnostics`] — capture-integrity / diagnostic objects:
+//!   `CAN_STATISTIC` (4) for periodic bus-load metrics, and the
+//!   `DATA_LOST_BEGIN` (125) / `DATA_LOST_END` (126) sentinel pair
+//!   bracketing recorder-dropped frame regions.
 //! - [`reader`] — streaming reader that drives the above modules:
 //!   parses `FileStatistics`, walks top-level `LOG_CONTAINER`s,
 //!   inflates each, and yields decoded inner objects out of a
@@ -48,10 +52,12 @@
 //! [`can`]: crate::format::can
 //! [`marker`]: crate::format::marker
 //! [`text`]: crate::format::text
+//! [`diagnostics`]: crate::format::diagnostics
 //! [`reader`]: crate::format::reader
 //! [`writer`]: crate::format::writer
 
 pub mod can;
+pub mod diagnostics;
 pub mod header;
 pub mod log_container;
 pub mod marker;

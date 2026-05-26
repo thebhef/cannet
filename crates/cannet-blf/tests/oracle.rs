@@ -16,6 +16,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use cannet_blf::format::diagnostics;
 use cannet_blf::format::marker;
 use cannet_blf::format::text;
 use cannet_blf::format::writer::BlfFileWriter;
@@ -228,4 +229,76 @@ fn oracle_lists_text_annotations_written_by_our_writer() {
         "oracle should see one APP_TEXT; listing: {listing:#?}",
     );
     assert_eq!(app_rows[0].type_id, 65);
+}
+
+/// Tranche 4: Vector's reference library reads `CAN_STATISTIC`,
+/// `DATA_LOST_BEGIN`, and `DATA_LOST_END` objects our native
+/// writer emits.
+#[test]
+fn oracle_lists_diagnostics_written_by_our_writer() {
+    let harness = ensure_harness();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("diag.blf");
+
+    let mut w = BlfFileWriter::create(&path).unwrap();
+    let base_abs = TS_BASE_NS;
+    let start = w.set_start_if_unset((base_abs / 1_000_000) * 1_000_000);
+
+    let mut s = diagnostics::build_can_statistic(base_abs - start, 1, 1_500);
+    s.standard_data_frames = 250;
+    s.error_frames = 1;
+    w.append_object(&diagnostics::encode_can_statistic(&s), base_abs)
+        .unwrap();
+
+    let begin_ns = base_abs + 10_000_000;
+    let begin = diagnostics::build_data_lost_begin(
+        begin_ns - start,
+        diagnostics::QUEUE_RT,
+    );
+    w.append_object(&diagnostics::encode_data_lost_begin(&begin), begin_ns)
+        .unwrap();
+
+    let end_ns = base_abs + 20_000_000;
+    let end = diagnostics::build_data_lost_end(
+        end_ns - start,
+        diagnostics::QUEUE_RT,
+        (base_abs + 12_000_000) - start,
+        42,
+    );
+    w.append_object(&diagnostics::encode_data_lost_end(&end), end_ns)
+        .unwrap();
+
+    w.finish().unwrap();
+
+    let listing = list_objects(&harness, &path);
+    let stat: Vec<&ObjectListing> = listing
+        .iter()
+        .filter(|o| o.type_name == "CAN_STATISTIC")
+        .collect();
+    let begin_rows: Vec<&ObjectListing> = listing
+        .iter()
+        .filter(|o| o.type_name == "DATA_LOST_BEGIN")
+        .collect();
+    let end_rows: Vec<&ObjectListing> = listing
+        .iter()
+        .filter(|o| o.type_name == "DATA_LOST_END")
+        .collect();
+    assert_eq!(
+        stat.len(),
+        1,
+        "oracle should see one CAN_STATISTIC; listing: {listing:#?}",
+    );
+    assert_eq!(stat[0].type_id, 4);
+    assert_eq!(
+        begin_rows.len(),
+        1,
+        "oracle should see one DATA_LOST_BEGIN; listing: {listing:#?}",
+    );
+    assert_eq!(begin_rows[0].type_id, 125);
+    assert_eq!(
+        end_rows.len(),
+        1,
+        "oracle should see one DATA_LOST_END; listing: {listing:#?}",
+    );
+    assert_eq!(end_rows[0].type_id, 126);
 }

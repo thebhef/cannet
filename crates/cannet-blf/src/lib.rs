@@ -102,16 +102,21 @@ impl CanFrameSource for BlfCanFrameSource {
                 Some(BlfObject::CanErrorExt(m)) => {
                     return can_error_ext_to_frame(&m, self.start_unix_nanos).map(Some)
                 }
-                // Text-annotation events (GLOBAL_MARKER notes,
-                // EVENT_COMMENT comments, APP_TEXT app-defined
-                // text) and `Other` (anything we don't decode —
-                // FlexRay events etc.) aren't CAN frames. Skip and
-                // keep walking; annotation consumers walk the same
-                // file through `BlfReader` directly.
+                // Non-frame events — text annotations
+                // (GLOBAL_MARKER, EVENT_COMMENT, APP_TEXT),
+                // diagnostic events (CAN_STATISTIC,
+                // DATA_LOST_BEGIN, DATA_LOST_END), and `Other`
+                // (anything we don't decode) — skip at the
+                // adapter layer and keep walking. Consumers that
+                // want them walk the same file through
+                // `BlfReader` directly.
                 Some(
                     BlfObject::GlobalMarker(_)
                     | BlfObject::EventComment(_)
                     | BlfObject::AppText(_)
+                    | BlfObject::CanStatistic(_)
+                    | BlfObject::DataLostBegin(_)
+                    | BlfObject::DataLostEnd(_)
                     | BlfObject::Other(_),
                 ) => {}
             }
