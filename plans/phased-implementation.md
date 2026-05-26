@@ -1415,18 +1415,6 @@ Realised scope notes:
   `<dest>.part` temp file and renames into place on `finish()` so
   a mid-write crash leaves no half-file behind. Round-tripped in
   `cannet-blf` unit tests against `BlfCanFrameSource`.
-- **Markers ride beside the BLF, not inside it (deferred upstream
-  contribution).** Upstream `blf_asc` (0.2) doesn't expose the
-  `GLOBAL_MARKER` object surface — its `BlfWriter` carries a private
-  `add_object` and no marker types. Re-implementing the BLF container
-  + compression layer in `cannet-blf` to emit one marker type is
-  phase-sized on its own, so Phase 9 ships marker round-trip via a
-  sidecar `<file>.blf.notes.json` written and renamed atomically
-  alongside the BLF. Open Capture loads both. The third-party-reader
-  visibility of markers is **deferred** to a follow-up that
-  contributes `GLOBAL_MARKER` write + read upstream; tracked in
-  `plans/backlog.md` and recorded in `plans/technology-inventory.md`
-  alongside the existing `blf_asc` entry.
 - **Notes on the host, not in plot params**. A new
   `crate::trace_store` neighbour module owns a session-scoped notes
   list (`{id, timestamp_ns, label}`); Tauri commands let the
@@ -1460,8 +1448,8 @@ Realised scope notes:
 Replace `cannet-blf`'s `blf_asc` wrapper with our own focused BLF
 reader / writer per [ADR 0009](../docs/adr/0009-dbc-blf-readers.md).
 Retires the third-party Rust BLF crate from the dep tree, unlocks
-`GLOBAL_MARKER` write so [ADR 0010](../docs/adr/0010-no-sidecar-files.md)
-can retire the `<file>.blf.notes.json` sidecar, and gives us the
+`GLOBAL_MARKER` write so notes can live inside the BLF per
+[ADR 0010](../docs/adr/0010-no-sidecar-files.md), and gives us the
 typed-write surface for the rest of the desired BLF object catalogue
 ([feature support matrix](../docs/blf-feature-support.md)).
 
@@ -1512,8 +1500,8 @@ landed as its own working slice in the order below):
     carry the sub-ms tail losslessly. End-to-end timestamp
     round-trip is ns-exact (previously ~10–100 ns drift via
     `blf_asc`'s f64 seconds).
-  - python-can fixture vendoring (corpus #1, planned for this
-    step) deferred to a follow-up; synthetic tests + oracle
+  - python-can fixture vendoring (test source #1, planned for
+    this step) deferred to a follow-up; synthetic tests + oracle
     cross-check provide the step's coverage today. Tracked in
     `plans/backlog.md`.
 - **Step 2 — `GLOBAL_MARKER`.** ✅ **Complete.** Read + write
@@ -1526,9 +1514,7 @@ landed as its own working slice in the order below):
   frames; consumers that want them walk `BlfReader` directly.
   Oracle test (`oracle_lists_global_marker_written_by_our_writer`)
   green: Vector's reference `vector_blf` library reads our marker
-  bytes back. Unblocks the no-sidecar follow-up that retires
-  `<file>.blf.notes.json` (ADR 0010 — itself a separate backlog
-  item; this step only removes its gate).
+  bytes back. Notes now live inside the BLF per ADR 0010.
 - **Step 3 — Annotation round-trip.** ✅ **Complete.** Read +
   write for `EVENT_COMMENT` (92) and `APP_TEXT` (65) in
   `cannet-blf::format::text`. Preserves third-party annotations
@@ -1561,7 +1547,7 @@ surfaces them via `BlfObject::Other` so they can be skipped or
 logged. Future phases that need them can add per-type decoders
 incrementally using the established pattern.
 
-Test corpora (cumulative, per ADR 0009):
+Test sources (cumulative, per ADR 0009):
 
 1. **python-can BLF fixtures** (Apache-2.0) — scheduled for
    `crates/cannet-blf/tests/fixtures/python-can/`. Deferred during
@@ -1582,9 +1568,6 @@ Out of scope (deferred):
   of scope until a capture from a modern CANalyzer needs them; the
   feature-support matrix's "Post-2018-v8 additions" section covers
   the lookup if that day comes.
-- The ADR 0010 cleanup itself (removing the `.blf.notes.json` read
-  + write path). Stays in `plans/backlog.md` as a follow-up that
-  this phase un-gates but doesn't ship.
 
 Exit criteria (all met):
 

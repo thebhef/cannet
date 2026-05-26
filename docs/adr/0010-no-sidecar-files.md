@@ -27,27 +27,20 @@ In-format custom attributes are categorically different: the data
 lives in the file, the format spec defines the carriage, and tooling
 reads it for free. Use them.
 
-## History: `<file>.blf.notes.json`
+## Cautionary example: `<file>.blf.notes.json`
 
 `<file>.blf.notes.json` was a sidecar cannet briefly emitted
-alongside saved captures (Phase 9). It was introduced because the
-BLF library cannet then used supported neither `GLOBAL_MARKER`
-writes nor reads, so a marker authored by cannet would have been
+alongside saved captures. It was introduced because the BLF
+library cannet then used supported neither `GLOBAL_MARKER` writes
+nor reads, so a marker authored by cannet would have been
 invisible and one authored by Vector CANalyzer was already
 invisible. Reaching for a sidecar was the wrong response — the
 correct one is to control the BLF implementation enough to use the
 format's own extension mechanism, which is exactly what
 [ADR 0009](0009-dbc-blf-readers.md) committed cannet to doing.
-
-Phase 9.5 landed `GLOBAL_MARKER` read+write in the native BLF
-codec. Save Capture now writes notes inside the BLF as
-`GLOBAL_MARKER` records (Phase 9.5 follow-up); Open Capture reads
-them from the same place. Sidecar-write is gone. Sidecar-read
-stays as a one-shot fallback: if a BLF carries no markers but a
-legacy `<file>.blf.notes.json` is alongside, the host loads it
-once and emits a system-message warning telling the user the next
-Save Capture will promote those notes into the BLF itself. After
-that promotion the legacy sidecar can be deleted by hand.
+Notes now live inside the BLF as `GLOBAL_MARKER` records; the
+sidecar code path is gone and any files of that shape are ignored
+— they predate this rule and have no standing under it.
 
 ## Consequences
 
@@ -61,10 +54,3 @@ that promotion the legacy sidecar can be deleted by hand.
   this rule into a recurring contribution burden, or forces the
   kind of own-implementation decision recorded in
   [ADR 0009](0009-dbc-blf-readers.md) for BLF.
-- The `<file>.blf.notes.json` return-to-compliance landed:
-  `cannet-blf` gained `GLOBAL_MARKER` read+write per
-  [ADR 0009](0009-dbc-blf-readers.md); `BlfCaptureWriter::append_marker`
-  writes notes inside the BLF; `open_log` reads them from the same
-  place; the sidecar-write path was deleted; a one-shot
-  `.notes.json` read on open stays as a backwards-compat fallback
-  for legacy files.

@@ -40,9 +40,9 @@ the live-hardware exercise the items below describe:
 
 #### Other near-term work
 
-- `[test-corpus]` **Vendor python-can BLF fixtures under
+- `[test-fixtures]` **Vendor python-can BLF fixtures under
   `crates/cannet-blf/tests/fixtures/python-can/`.** Phase 9.5
-  Step 1 listed this as the first of four test corpora but
+  Step 1 listed this as the first of four test sources but
   deferred actual vendoring; today the step's coverage is
   synthetic-bytes per-module tests + the vector_blf oracle
   cross-check (gated behind `vector-blf-oracle`). Adding the

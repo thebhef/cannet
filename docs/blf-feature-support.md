@@ -127,7 +127,7 @@ in the Description column is a verbatim quote from the cited line.
 | 5 | `APP_TRIGGER` | nice | ✗ | ◐ skip | *application trigger object* (binlog_objects.h:34). `[cannet]` Application-defined slot; only useful if cannet defines its own trigger semantics. |
 | 65 | `APP_TEXT` | nice | ✓ read+write | ✓ read | *text object* (binlog_objects.h:111). The struct `VBLAppText` (binlog_objects.h:2259) carries `mSource` (text-source flag: `BL_APPTEXT_MEASUREMENTCOMMENT=0`, `BL_APPTEXT_DBCHANNELINFO=1`, `BL_APPTEXT_METADATA=2`), `mTextLength`, and `mText` (MBCS). `[cannet]` Landed Phase 9.5 Step 3 in `cannet-blf::format::text`. |
 | 92 | `EVENT_COMMENT` | desired | ✓ read+write | ◐ skip | `[bare in spec]` — `binlog_objects.h:150` defines the type without an enum comment. Struct `VBLEventComment` (binlog_objects.h:2363) carries `mCommentedEventType`, `mTextLength`, and `mText` (MBCS). `[cannet]` Landed Phase 9.5 Step 3 in `cannet-blf::format::text`; the user-typed annotation in Vector CANalyzer's Trace Window, important for reading third-party captures. |
-| 96 | `GLOBAL_MARKER` | **required** | ✓ read+write | ◐ skip | `[bare in spec]` — `binlog_objects.h:157` defines the type without an enum comment. Struct `VBLGlobalMarker` (binlog_objects.h:2379) is a self-sized record with group name + marker name + description lengths concatenated after the fixed fields. `[cannet]` Landed Phase 9.5 Step 2 in `cannet-blf::format::marker`; unblocks retiring `<file>.blf.notes.json` per [ADR 0010](adr/0010-no-sidecar-files.md). |
+| 96 | `GLOBAL_MARKER` | **required** | ✓ read+write | ◐ skip | `[bare in spec]` — `binlog_objects.h:157` defines the type without an enum comment. Struct `VBLGlobalMarker` (binlog_objects.h:2379) is a self-sized record with group name + marker name + description lengths concatenated after the fixed fields. `[cannet]` Landed Phase 9.5 Step 2 in `cannet-blf::format::marker`; carries cannet's plot-panel notes inside the BLF per [ADR 0010](adr/0010-no-sidecar-files.md). |
 
 ### Environment / system variables
 
@@ -366,8 +366,8 @@ which landed in four steps:
 
 1. **Parity** — CAN classic + FD + error + `LOG_CONTAINER`
    read+write. Let `blf_asc` retire from the dep tree.
-2. **`GLOBAL_MARKER`** — read+write. Unblocked the
-   `<file>.blf.notes.json` removal (ADR 0010).
+2. **`GLOBAL_MARKER`** — read+write. Carries cannet's plot-panel
+   notes inside the BLF (ADR 0010).
 3. **Annotation** — `EVENT_COMMENT` + `APP_TEXT`. Preserves
    third-party annotations.
 4. **Capture-integrity** — `CAN_STATISTIC` + `DATA_LOST_BEGIN/END`.

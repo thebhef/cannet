@@ -312,57 +312,21 @@ fn open_log(
     // session-scoped, so any notes already in the store are replaced:
     // Open BLF is a fresh-capture action that wipes the trace store via
     // the surrounding GUI flow.
-    //
-    // One-shot legacy fallback: if the BLF carries no markers but a
-    // sibling `<blf>.notes.json` exists, load that instead and log a
-    // warning. The migration on next Save Capture promotes those notes
-    // to in-BLF markers, after which the sidecar can be deleted by hand.
-    let in_blf_notes = match read_notes_from_blf(&blf_path) {
+    let notes = match read_notes_from_blf(&blf_path) {
         Ok(v) => v,
         Err(e) => {
             sys_warn!(&app, "blf-import", "couldn't read markers from {blf_path}: {e}");
             Vec::new()
         }
     };
-    let (notes, notes_source) = if in_blf_notes.is_empty() {
-        let sidecar = legacy_notes_sidecar_path(&blf_path);
-        match load_notes_sidecar(&sidecar) {
-            Ok(Some(notes)) if !notes.is_empty() => {
-                sys_warn!(
-                    &app,
-                    "blf-import",
-                    "loaded {n} legacy sidecar note(s) from {p}; next Save Capture will promote them into the BLF (ADR 0010)",
-                    n = notes.len(),
-                    p = sidecar.display(),
-                );
-                (notes, NotesSource::LegacySidecar)
-            }
-            Ok(_) => (Vec::new(), NotesSource::BlfMarkers),
-            Err(e) => {
-                sys_warn!(
-                    &app,
-                    "blf-import",
-                    "ignoring malformed legacy sidecar at {p}: {e}",
-                    p = sidecar.display(),
-                );
-                (Vec::new(), NotesSource::BlfMarkers)
-            }
-        }
-    } else {
-        (in_blf_notes, NotesSource::BlfMarkers)
-    };
     let marker_count = notes.len();
     if marker_count > 0 {
         let _ = app.state::<AppState>().notes.replace(notes.clone());
         let _ = app.emit("notes-changed", notes);
-        let source_label = match notes_source {
-            NotesSource::BlfMarkers => "BLF markers",
-            NotesSource::LegacySidecar => "legacy sidecar",
-        };
         sys_info!(
             &app,
             "blf-import",
-            "loaded {marker_count} note(s) from {source_label}",
+            "loaded {marker_count} note(s) from BLF markers",
         );
     }
 
@@ -463,41 +427,6 @@ pub struct SaveCaptureResult {
     pub byte_size: u64,
     pub marker_count: u64,
     pub max_timestamp_drift_ns: u64,
-}
-
-/// Where notes came from on the most recent `open_log`. Drives the
-/// system-message label so users can see whether their BLF is on the
-/// in-BLF marker path or still relying on the legacy sidecar.
-enum NotesSource {
-    BlfMarkers,
-    LegacySidecar,
-}
-
-/// Path of the *legacy* `<blf>.notes.json` sidecar that predated
-/// in-BLF markers. Kept for one-shot read on `open_log`; never
-/// written by save (ADR 0010 — no sidecar files).
-fn legacy_notes_sidecar_path(blf_path: &str) -> std::path::PathBuf {
-    let p = std::path::Path::new(blf_path);
-    let mut name = p
-        .file_name()
-        .map(std::ffi::OsString::from)
-        .unwrap_or_default();
-    name.push(".notes.json");
-    p.with_file_name(name)
-}
-
-/// One-shot legacy read of a pre-marker sidecar JSON. `Ok(None)` if
-/// the file doesn't exist (the normal case); `Err` only for
-/// malformed content.
-fn load_notes_sidecar(path: &std::path::Path) -> Result<Option<Vec<Note>>, String> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e.to_string()),
-    };
-    let notes: Vec<Note> =
-        serde_json::from_str(&text).map_err(|e| format!("invalid sidecar JSON: {e}"))?;
-    Ok(Some(notes))
 }
 
 /// Read every `GLOBAL_MARKER` out of `blf_path` and project it to a
@@ -2266,13 +2195,6 @@ mod tests {
         // ms-rounded values.
         assert_eq!(recovered[0].timestamp_ns / 1_000_000, (ts_base + 500) / 1_000_000);
         assert_eq!(recovered[1].timestamp_ns / 1_000_000, (ts_base + 1_500) / 1_000_000);
-        // The sidecar must NOT have been emitted (ADR 0010).
-        let sidecar = legacy_notes_sidecar_path(dest.to_str().unwrap());
-        assert!(
-            !sidecar.exists(),
-            "save must not emit {} (ADR 0010 — no sidecar files)",
-            sidecar.display(),
-        );
     }
 
     /// `write_capture` re-channels each frame by its `bus_id`'s
@@ -2359,45 +2281,6 @@ mod tests {
             .map(|f| f.channel)
             .collect();
         assert_eq!(read, vec![3, 4, 0]);
-    }
-
-    /// An empty notes list still writes the sidecar (as `[]`) so
-    /// "BLF present, sidecar absent" unambiguously means "this
-    /// BLF came from some other tool".
-    /// Empty captures (no frames, no notes) still produce a valid
-    /// BLF and do not emit any sidecar file.
-    #[test]
-    fn write_capture_with_no_notes_emits_no_sidecar() {
-        let dir = tempfile::tempdir().unwrap();
-        let dest = dir.path().join("empty.blf");
-        let outcome = write_capture(dest.to_str().unwrap(), &[], &[], &[]).unwrap();
-        assert_eq!(outcome.frame_count, 0);
-        assert_eq!(outcome.marker_count, 0);
-        let sidecar = legacy_notes_sidecar_path(dest.to_str().unwrap());
-        assert!(!sidecar.exists(), "save must not emit a sidecar (ADR 0010)");
-    }
-
-    #[test]
-    fn legacy_notes_sidecar_path_appends_notes_json() {
-        assert_eq!(
-            legacy_notes_sidecar_path("/tmp/x.blf"),
-            std::path::PathBuf::from("/tmp/x.blf.notes.json"),
-        );
-    }
-
-    #[test]
-    fn load_notes_sidecar_missing_returns_none() {
-        let dir = tempfile::tempdir().unwrap();
-        let absent = dir.path().join("no.blf.notes.json");
-        assert!(load_notes_sidecar(&absent).unwrap().is_none());
-    }
-
-    #[test]
-    fn load_notes_sidecar_malformed_errors() {
-        let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("bad.blf.notes.json");
-        std::fs::write(&p, b"not json").unwrap();
-        assert!(load_notes_sidecar(&p).is_err());
     }
 
     /// Third-party-written `GLOBAL_MARKER`s (no `description` =

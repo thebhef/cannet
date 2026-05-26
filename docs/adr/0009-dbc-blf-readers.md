@@ -1,11 +1,6 @@
 # ADR 0009 — DBC via `can-dbc`; BLF via our own focused crate
 
-Status: accepted (2026-05-23, revised same day to record the BLF
-parser decision after the feature-support analysis; supersedes the
-initial drafting which named `blf_asc` as the BLF parser).
-Implementation completed in Phase 9.5 (2026-05-26): the native
-`cannet-blf` codec covers every `required` / `desired` object
-type and `blf_asc` is gone from the dep tree.
+Status: accepted (2026-05-23)
 
 ## Decision
 
@@ -47,25 +42,21 @@ Four candidate paths were considered; the
 [BLF feature support matrix](../blf-feature-support.md) tracks the
 per-type coverage gaps:
 
-1. **Continue on `blf_asc`.** Pure-Rust, MIT/Apache-2.0, but two
-   months old at the time of decision (created 2026-03-19), single
-   maintainer with a
-   provenance-ambiguous sibling crate (`codex_blf` v0.0.0, same
+1. **`blf_asc`.** Pure-Rust, MIT/Apache-2.0, but two months old at
+   the time of decision (created 2026-03-19), single maintainer with
+   a provenance-ambiguous sibling crate (`codex_blf` v0.0.0, same
    author and repo), narrow coverage (~6 CAN object types), and no
-   extension hook for writing other object types. The marker gap is
-   what produced the `<file>.blf.notes.json` sidecar (see
-   [ADR 0010](0010-no-sidecar-files.md)), and closing it would mean
-   a long tail of upstream PRs gated on a single-maintainer review
-   velocity we have no read on.
+   extension hook for writing other object types — including
+   `GLOBAL_MARKER`, which [ADR 0010](0010-no-sidecar-files.md)
+   requires for in-BLF notes. The capability gap is structural, not
+   incidental: cannet would carry a dependency that doesn't do what
+   cannet needs.
 
-2. **Switch to `ablf`.** Pure-Rust, MIT/Apache-2.0, better-established
-   (2 years, ~17× downloads), broader recognise-and-skip surface. But: no
-   CAN FD read (the differentiator that made us pick `blf_asc`
-   originally), no write surface at all. Using `ablf` would require
-   us to contribute CAN FD read + a generic writer upstream before
-   we could even use it for our existing capture workflows.
-   Substantial up-front work for the same kind of maintainer-
-   velocity dependency we have on `blf_asc`.
+2. **`ablf`.** Pure-Rust, MIT/Apache-2.0, better-established (2
+   years, ~17× downloads), broader recognise-and-skip surface. But:
+   no CAN FD read (the differentiator that made us pick `blf_asc`
+   originally) and no write surface at all. Same shape of gap as
+   `blf_asc` — a dependency missing capabilities cannet has to have.
 
 3. **Wrap Technica's `vector_blf` via FFI.** C++, GPL-3.0-or-later.
    Comprehensive (~132 object types, bidirectional read+write),
@@ -167,7 +158,7 @@ The new crate is tested against four independent sources:
 
 The combination gives us compatibility checking against the two
 most-used BLF implementations in the open ecosystem: `python-can`
-(corpus 1) and `vector_blf` (corpus 4).
+(source 1) and `vector_blf` (source 4).
 
 ## Consequences
 
@@ -188,21 +179,12 @@ most-used BLF implementations in the open ecosystem: `python-can`
   the implementation gains support for a new object type, that
   matrix's row updates in the same commit (per the doc's own
   maintenance section).
-- **`<file>.blf.notes.json` is gone from the write path.** Save
-  Capture writes notes as in-BLF `GLOBAL_MARKER` records (ADR 0010);
-  Open Capture reads them from the same place. A one-shot read of
-  any legacy `.notes.json` stays as a backwards-compat fallback.
-- **Feature scope.** The implementation covers parity with the
-  prior `blf_asc`-wrapping version (CAN classic + FD + error +
-  `LOG_CONTAINER` read+write), `GLOBAL_MARKER` read+write (sidecar
-  removal per [ADR 0010](0010-no-sidecar-files.md)), `EVENT_COMMENT`
-  + `APP_TEXT` (third-party annotation preservation), and
-  `CAN_STATISTIC` + `DATA_LOST_BEGIN/END` (capture-integrity
-  surfacing). `nice`-tier types (`CAN_OVERLOAD`, `CAN_FD_ERROR_64`,
-  FlexRay events, etc.) stay as `BlfObject::Other` so the reader
-  skips them cleanly; future phases that need them add per-type
-  modules using the established pattern.
-- **Optional future contribution.** Publishing `cannet-blf` as a
-  standalone crate would fill a real gap in the Rust BLF ecosystem
-  — no other Rust crate covers CAN FD + markers + writes. Not a
-  goal, but the option stays open.
+- **Feature scope.** The implementation covers CAN classic + FD +
+  error + `LOG_CONTAINER` read+write, `GLOBAL_MARKER` read+write
+  (in-BLF notes per [ADR 0010](0010-no-sidecar-files.md)),
+  `EVENT_COMMENT` + `APP_TEXT` (third-party annotation
+  preservation), and `CAN_STATISTIC` + `DATA_LOST_BEGIN/END`
+  (capture-integrity surfacing). `nice`-tier types (`CAN_OVERLOAD`,
+  `CAN_FD_ERROR_64`, FlexRay events, etc.) stay as
+  `BlfObject::Other` so the reader skips them cleanly; new per-type
+  modules slot in using the established pattern when a need arises.

@@ -922,10 +922,9 @@ export function App() {
     [projectPath, saveProjectTo, handleSaveProjectAs],
   );
 
-  // Phase 9 Save Capture: write the session buffer to a BLF (with
-  // notes as a sidecar JSON). System Messages handle the
-  // user-visible success / failure feedback; this just routes
-  // through the host command.
+  // Phase 9 Save Capture: write the session buffer to a BLF.
+  // System Messages handle the user-visible success / failure
+  // feedback; this just routes through the host command.
   //
   // The project's ordered `buses` list IS the BLF channel order
   // (see CLAUDE.md § File formats). Frames get re-channeled by the

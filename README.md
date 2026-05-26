@@ -708,13 +708,6 @@ third-party tools like CANalyzer see them too). Open BLF reads
 those markers back into the session-scoped store. No sidecar
 file is written, per [ADR 0010](docs/adr/0010-no-sidecar-files.md).
 
-For backwards compatibility with the brief Phase-9 era when notes
-rode in a `<file>.blf.notes.json` sidecar, Open BLF does a
-one-shot read of any legacy sidecar it finds next to a BLF
-*without* in-BLF markers, and emits a warn-level System Message
-saying the next Save Capture will promote those notes into the
-BLF itself.
-
 **Recent BLFs**. The toolbar grows a **Recent** dropdown next to
 **Open BLF…** that lists the last 8 opened BLF paths, persisted
 in `localStorage`. Picking one fast-paths through the standard

@@ -24,9 +24,7 @@
 //!   (`CAN_MESSAGE`, `CAN_MESSAGE2`, `CAN_FD_MESSAGE`,
 //!   `CAN_FD_MESSAGE_64`, `CAN_ERROR_EXT`).
 //! - [`marker`] — `GLOBAL_MARKER` (object type 96), the text
-//!   annotation type that carries cannet's plot-panel notes (the
-//!   in-BLF replacement for the legacy `<file>.blf.notes.json`
-//!   sidecar).
+//!   annotation type that carries cannet's plot-panel notes.
 //! - [`text`] — `EVENT_COMMENT` (92) and `APP_TEXT` (65), the two
 //!   free-form-text annotation types Vector tools write. Preserves
 //!   third-party annotations on read; lets us round-trip them on

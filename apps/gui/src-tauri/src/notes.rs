@@ -137,8 +137,8 @@ impl NotesStore {
     }
 
     /// Replace the store's contents with `notes`. Used by Open
-    /// Capture (sidecar load) and project-open migration. Always
-    /// emits `Some` so the change is observable.
+    /// Capture and project-open migration. Always emits `Some` so
+    /// the change is observable.
     // `allow(dead_code)` — first caller (`open_capture`) lands in
     // the next commit; the API is part of this commit because the
     // unit tests exercise it.
