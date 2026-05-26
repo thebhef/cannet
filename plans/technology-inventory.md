@@ -36,6 +36,16 @@ and the license / platform constraints we need to be aware of.
   row index. ~120 lines, no external dep.
 - **`@xyflow/react`** (formerly `react-flow`, MIT) — `adopted` in
   Phase 6 for the project graph view. See [`../docs/adr/0006-xyflow-project-graph.md`](../docs/adr/0006-xyflow-project-graph.md).
+- **`fzf-for-js`** (MIT) — `proposed` for Phase 10 Track 4 as the
+  fuzzy / acronym matcher shared by the command palette
+  (`Cmd/Ctrl+Shift+P`), the go-to-view palette (`Cmd/Ctrl+P`), and
+  the DBC panel's search (Phase 10 Track 5). Port of VS Code / fzf's
+  matcher — camelHump and abbreviation matching ("MyCanMessage"
+  reachable from "mcmess"), ranking. Pending evaluation against
+  `fuse.js` (popular, lower-quality acronym matching) and `kbar`'s
+  built-in matcher; flip to `adopted` once Track 4's evaluation
+  step confirms parity with the VS Code matcher we're emulating.
+  See [`../docs/adr/0018-command-keybinding-framework.md`](../docs/adr/0018-command-keybinding-framework.md).
 
 ### CAN / CANFD Abstraction
 

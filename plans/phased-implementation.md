@@ -1432,11 +1432,10 @@ What lands:
   `dataHex` directly; the signals table re-decodes. Mux-inactive
   byte regions are never clobbered by signal edits.
 
-ADR candidate: a short ADR captures (i) where the encoder lives
-(`cannet-dbc`), (ii) the partial-encode semantics, and (iii) the
-bytes-as-source-of-truth two-way sync model. All three are
-non-obvious to a future reader looking at why signal edits don't
-re-encode the whole payload.
+ADR: [`docs/adr/0017-transmit-signal-encoder-and-bytes-source-of-truth.md`](../docs/adr/0017-transmit-signal-encoder-and-bytes-source-of-truth.md)
+captures (i) where the encoder lives (`cannet-dbc`), (ii) the
+partial-encode semantics, and (iii) the bytes-as-source-of-truth
+two-way sync model.
 
 Deferred follow-ups (backlog):
 
@@ -1559,16 +1558,17 @@ What lands:
 
 ADRs:
 
-- **Command / keybinding framework architecture.** Frontend-only
-  React context, code-declared bindings (no user persistence),
-  context predicates over typed panel-kind. Non-obvious to a
-  future reader; hard to reverse (downstream code couples to
-  the registry shape); real trade-off vs going straight to a
-  persistable customisation story like VS Code's
-  `keybindings.json`.
-- **Fuzzy-search library choice** — only if the rejected
-  alternatives warrant a record. Otherwise just a
-  `technology-inventory.md` entry.
+- [`docs/adr/0018-command-keybinding-framework.md`](../docs/adr/0018-command-keybinding-framework.md)
+  — frontend-only React-context registry, code-declared bindings
+  (no user persistence), typed-context predicates, build-time
+  conflict assertion, two palettes sharing one matcher.
+- [`docs/adr/0019-project-element-display-names.md`](../docs/adr/0019-project-element-display-names.md)
+  — every `ProjectElement` carries a model-owned `name`; views
+  resolve through one shared `elementLabel(el)` resolver; the
+  project panel is the canonical edit surface.
+- **Fuzzy-search library choice** — captured as a
+  `technology-inventory.md` entry rather than a standalone ADR
+  (the decision is a library pick, not architecture).
 
 Exit criteria:
 
@@ -1586,43 +1586,94 @@ Exit criteria:
 
 ### Track 5 — DBC View, Drag/Drop, Filter-Defined Plot Areas
 
-Replace the project panel's DBC section as the *discovery*
-surface (the project panel keeps it as the add/remove/bus-scope
-inventory list — that section is untouched). Lifts the DBC panel
-+ signal drag/drop out of old Phase 13. The shape of "define
-plot areas by filter dict" is still being grilled — Q11 onwards
-in the design discussion. Placeholder scope below; fill in
-when grilling completes.
+Make the DBC database first-class as a *discovery* surface and let
+the user move signals around the GUI by dragging. The project
+panel's existing DBC inventory section stays untouched — that's
+the add / remove / per-bus-scope list, an ADR-0012 file-IO+inventory
+role. Track 5 is the spatial / search counterpart.
 
-Tentative scope (to be refined):
+What lands:
 
-- **New `kind: "dbc"` dockview panel.** Tree-with-search:
-  DBC file → messages → signals. Default search is a single
-  textbox fuzzy-matching across signal name, signal comment,
-  message name, message id (hex and decimal), message comment,
-  value-table labels and raw values, units, attribute names and
-  values. The matcher is Track 4's `fzf-for-js`. Read-only;
-  no editing. Multiple instances allowed (different searches
-  per panel).
-- **Drag sources** from the DBC panel: signal rows are
-  draggable carrying the existing
-  `application/x-cannet-plot-signal` mime so plot areas (already
-  drop targets) accept them with no new wiring.
-- **Drag sources from elsewhere** — folds in the backlog item
-  "drag a decoded signal into a plot from elsewhere — a trace
-  panel's expanded-row signal grid, the by-ID table" so every
-  surface that names a signal is draggable.
-- **Drag between plot panels** already works for signal rows
-  inside a plot; "drag between graphs" wants confirming —
-  whether that means between plot panels (already works) or
-  some new surface.
-- **Filter-defined plot areas** — `{plotAreaId → regexString}`
-  attached to the plot panel; matching signals auto-populate
-  the area. Distinct from project-level filter elements
-  (which narrow *frames*); this picks *signals*. Shape pending.
+- **New `kind: "dbc"` dockview panel.** Tree-with-search: DBC
+  file → messages → signals. Default-rendered as a tree; typing in
+  the search box filters the tree, expanding ancestors of matches
+  and dimming non-matches. The search is the same fuzzy matcher
+  Track 4 picks (`fzf-for-js` proposed). Searched fields: signal
+  name, signal comment, message name, message id (hex and
+  decimal), message comment, value-table labels and raw values,
+  units, attribute names and values. Read-only; multiple instances
+  allowed; selection / scroll / expand state is panel-local.
+- **Multi-select in the DBC panel.** Click selects one; Shift-
+  click range-extends within the visible tree; Cmd/Ctrl-click
+  toggles individual rows. Selection may mix message rows and
+  signal rows — a message contributes its signal set.
+- **Drag sources** producing the existing
+  `application/x-cannet-plot-signal` mime (an object carrying
+  `{signals: SignalRef[]}` — the plot panel's drop handler already
+  accepts arrays):
+  - DBC panel signal row → array of one.
+  - DBC panel message row → array of every signal in that message.
+  - DBC panel multi-selection → resolved set of signals, deduped.
+  - Trace panel expanded-row signal grid → array of one (folds in
+    the backlog item "drag a decoded signal into a plot from
+    elsewhere").
+  - By-ID panel signal row → array of one (same backlog item).
+- **Plot panel drop target unchanged.** It already accepts the
+  `signals: SignalRef[]` shape. Dropping a message adds every
+  signal as a series, each round-robin-coloured.
+- **Drag between plot panels** is verified-working today via the
+  same mime and not new code. Track 5 confirms parity.
 
-Track 5 scoping continues in the design discussion; this
-section will be filled in before the track starts.
+- **Filter-defined plot areas.** Each plot area gains an optional
+  `signalFilter: string` (regex). When set, the area is **filter
+  mode** and its `signals` list is *computed* from every signal
+  whose `${busName}.${messageName}.${signalName}` matches the
+  regex, drawn from the panel's `sources`-scoped DBC set. Manual
+  signal management is disabled in filter mode (toggle clears the
+  filter and promotes the computed signals to manual). The regex
+  is re-evaluated on every DBC add / remove / reload event and on
+  app launch (so a project saved with a filter rehydrates its
+  series). `${busName}` is the displayed bus name; unbound frames
+  render as `(unassigned)`. A bus rename invalidates a regex that
+  referenced the old name — surfaced as a System Messages warning.
+
+ADRs:
+
+- **DBC panel as standalone discovery surface** — already covered
+  by [ADR 0012](../docs/adr/0012-project-panel-graph-split.md)'s
+  surface-role split; no new ADR.
+- [`docs/adr/0020-filter-defined-plot-areas.md`](../docs/adr/0020-filter-defined-plot-areas.md)
+  — filter-mode vs manual-mode (never both per area); regex target
+  is `${busName}.${messageName}.${signalName}`; re-evaluation on
+  DBC change, `sources` change, and app launch; bus renames warn
+  rather than rewrite.
+
+Exit criteria:
+
+- A DBC panel can be added to the layout from the toolbar; it
+  shows every loaded DBC's message → signal tree. Typing in the
+  search filters the tree live with fuzzy / acronym matching.
+- Multi-select (click / Shift-click / Cmd-Ctrl-click) selects a
+  mix of signal and message rows; dragging the selection drops as
+  a `signals: SignalRef[]` array onto a plot area.
+- Dragging a single message row drops as all of that message's
+  signals; dragging from a trace panel's expanded-row signal grid
+  and from a by-ID panel's signal row also produce the array
+  shape and drop onto a plot area as series.
+- A plot area with `signalFilter` set populates from the regex
+  against `${busName}.${messageName}.${signalName}`. Loading a
+  new DBC adds matching signals; removing a DBC drops them;
+  reopening the project rehydrates the series.
+- Bus renames that invalidate a filter regex surface a System
+  Messages warning naming the panel and the broken regex.
+- Backlog items removed: "DBC view with good filter behavior";
+  "Drag+drop signals from DBC or trace into graph, and between
+  graphs"; the relevant drag-source bullets in the
+  graph-and-bus-integration section.
+- README documents the DBC panel; rustdoc covers any new public
+  Tauri commands (the host needs to enumerate DBC content for the
+  panel — likely an extension of `list_signals`); ADR 0020 checked
+  in; `plans/technology-inventory.md` records `fzf-for-js`.
 
 ## Phase 11 — Windowed-Model Convergence
 
