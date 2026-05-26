@@ -156,11 +156,11 @@ struct AppState {
     /// `system-log-appended` event the host emits on every successful
     /// push.
     system_log: SystemLog,
-    /// Phase 9 session-scoped notes. Edited by `add_note` /
-    /// `rename_note` / `remove_note` / `clear_notes` (each emits
-    /// `notes-changed` on success); snapshotted by `fetch_notes`.
-    /// Save Capture writes it as a sidecar JSON; Open Capture and
-    /// project-open migration restore through it.
+    /// Session-scoped notes. Edited by `add_note` / `rename_note` /
+    /// `remove_note` / `clear_notes` (each emits `notes-changed` on
+    /// success); snapshotted by `fetch_notes`. Save Capture writes
+    /// them inside the BLF as `GLOBAL_MARKER` records; Open Capture
+    /// and project-open migration restore through them.
     notes: NotesStore,
 }
 
@@ -306,36 +306,63 @@ fn open_log(
     };
     sys_info!(&app, "blf-import", "opened BLF {blf_path}");
 
-    // Phase 9: load the sidecar notes (`<blf>.notes.json`) if it
-    // exists. The session-buffer notes are session-scoped, so any
-    // notes already in the store are replaced — Open BLF is a
-    // fresh-capture action that wipes the trace store via the
-    // surrounding GUI flow.
-    let sidecar = notes_sidecar_path(&blf_path);
-    let marker_count = match load_notes_sidecar(&sidecar) {
-        Ok(Some(notes)) => {
-            let n = notes.len();
-            let _ = app.state::<AppState>().notes.replace(notes.clone());
-            let _ = app.emit("notes-changed", notes);
-            n
-        }
-        Ok(None) => 0,
+    // Notes live inside the BLF as `GLOBAL_MARKER` records (ADR 0010 —
+    // no sidecar files). Pull them out of the file in a quick pre-pass
+    // before kicking off the frame pump. The session-buffer notes are
+    // session-scoped, so any notes already in the store are replaced:
+    // Open BLF is a fresh-capture action that wipes the trace store via
+    // the surrounding GUI flow.
+    //
+    // One-shot legacy fallback: if the BLF carries no markers but a
+    // sibling `<blf>.notes.json` exists, load that instead and log a
+    // warning. The migration on next Save Capture promotes those notes
+    // to in-BLF markers, after which the sidecar can be deleted by hand.
+    let in_blf_notes = match read_notes_from_blf(&blf_path) {
+        Ok(v) => v,
         Err(e) => {
-            sys_warn!(
-                &app,
-                "blf-import",
-                "ignoring malformed notes sidecar at {p}: {e}",
-                p = sidecar.display(),
-            );
-            0
+            sys_warn!(&app, "blf-import", "couldn't read markers from {blf_path}: {e}");
+            Vec::new()
         }
     };
+    let (notes, notes_source) = if in_blf_notes.is_empty() {
+        let sidecar = legacy_notes_sidecar_path(&blf_path);
+        match load_notes_sidecar(&sidecar) {
+            Ok(Some(notes)) if !notes.is_empty() => {
+                sys_warn!(
+                    &app,
+                    "blf-import",
+                    "loaded {n} legacy sidecar note(s) from {p}; next Save Capture will promote them into the BLF (ADR 0010)",
+                    n = notes.len(),
+                    p = sidecar.display(),
+                );
+                (notes, NotesSource::LegacySidecar)
+            }
+            Ok(_) => (Vec::new(), NotesSource::BlfMarkers),
+            Err(e) => {
+                sys_warn!(
+                    &app,
+                    "blf-import",
+                    "ignoring malformed legacy sidecar at {p}: {e}",
+                    p = sidecar.display(),
+                );
+                (Vec::new(), NotesSource::BlfMarkers)
+            }
+        }
+    } else {
+        (in_blf_notes, NotesSource::BlfMarkers)
+    };
+    let marker_count = notes.len();
     if marker_count > 0 {
+        let _ = app.state::<AppState>().notes.replace(notes.clone());
+        let _ = app.emit("notes-changed", notes);
+        let source_label = match notes_source {
+            NotesSource::BlfMarkers => "BLF markers",
+            NotesSource::LegacySidecar => "legacy sidecar",
+        };
         sys_info!(
             &app,
             "blf-import",
-            "loaded {marker_count} note(s) from {p}",
-            p = sidecar.display(),
+            "loaded {marker_count} note(s) from {source_label}",
         );
     }
 
@@ -367,17 +394,16 @@ fn open_log(
     Ok(result)
 }
 
-/// Phase 9: write the entire session buffer to `blf_path` as a
-/// Vector BLF, with notes alongside in
-/// `<blf_path>.notes.json`. Every frame on every bus, no per-trace
-/// slicing — the project file's bus bindings handle re-routing on
-/// import. The write is atomic at the BLF level (temp file +
-/// rename in `cannet-blf`); the sidecar gets the same treatment.
+/// Write the entire session buffer to `blf_path` as a Vector BLF.
+/// Every frame on every bus, no per-trace slicing — the project
+/// file's bus bindings handle re-routing on import. Notes ride
+/// inside the BLF as `GLOBAL_MARKER` records (object type 96) —
+/// no sidecar file (ADR 0010). The write is atomic at the BLF
+/// level (temp file + rename in `cannet-blf`).
 ///
 /// Emits `capture`-tagged System Messages: `info` with the frame
-/// count + byte size + marker count on success, `warn` if the
-/// f64-second round-trip drops measurable precision vs. the
-/// in-memory ns timestamps, `error` on failure.
+/// count + byte size + marker count on success, `error` on
+/// failure.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 fn save_capture(
@@ -410,9 +436,10 @@ fn save_capture(
         b = outcome.byte_size,
         m = outcome.marker_count,
     );
-    // 1 µs is the documented precision floor of the f64-seconds
-    // BLF timestamp storage; anything above that is a real loss
-    // worth telling the user about.
+    // The native BLF writer is ns-exact (no f64-second boundary
+    // since blf_asc retired); `max_timestamp_drift_ns` is always
+    // 0. The warn branch stays for surface stability but is
+    // effectively unreachable.
     if outcome.max_timestamp_drift_ns >= 1_000 {
         sys_warn!(
             &app,
@@ -438,9 +465,18 @@ pub struct SaveCaptureResult {
     pub max_timestamp_drift_ns: u64,
 }
 
-/// Path of the notes sidecar next to `blf_path`. Stable so
-/// frontend logic can show it in the file-saved confirmation.
-fn notes_sidecar_path(blf_path: &str) -> std::path::PathBuf {
+/// Where notes came from on the most recent `open_log`. Drives the
+/// system-message label so users can see whether their BLF is on the
+/// in-BLF marker path or still relying on the legacy sidecar.
+enum NotesSource {
+    BlfMarkers,
+    LegacySidecar,
+}
+
+/// Path of the *legacy* `<blf>.notes.json` sidecar that predated
+/// in-BLF markers. Kept for one-shot read on `open_log`; never
+/// written by save (ADR 0010 — no sidecar files).
+fn legacy_notes_sidecar_path(blf_path: &str) -> std::path::PathBuf {
     let p = std::path::Path::new(blf_path);
     let mut name = p
         .file_name()
@@ -450,10 +486,9 @@ fn notes_sidecar_path(blf_path: &str) -> std::path::PathBuf {
     p.with_file_name(name)
 }
 
-/// Read `<path>` as a `Vec<Note>`. `Ok(None)` if the file
-/// doesn't exist; `Err` only for malformed content. Missing
-/// sidecar is the normal case for a BLF saved by some other
-/// tool, so it isn't an error.
+/// One-shot legacy read of a pre-marker sidecar JSON. `Ok(None)` if
+/// the file doesn't exist (the normal case); `Err` only for
+/// malformed content.
 fn load_notes_sidecar(path: &std::path::Path) -> Result<Option<Vec<Note>>, String> {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
@@ -465,16 +500,58 @@ fn load_notes_sidecar(path: &std::path::Path) -> Result<Option<Vec<Note>>, Strin
     Ok(Some(notes))
 }
 
-/// Perform the actual BLF + sidecar write. Split from the
-/// command so unit tests can drive it without a `tauri::AppHandle`.
+/// Read every `GLOBAL_MARKER` out of `blf_path` and project it to a
+/// [`Note`]. Marker layout matches what [`BlfCaptureWriter::append_marker`]
+/// emits: `group_name = "cannet"`, `marker_name = label`,
+/// `description = id`. Third-party markers (any other group, or
+/// `description` empty) get a synthetic id `blf-marker-<index>` so
+/// their `rename` / `remove` paths still work; this mints a stable
+/// id deterministic in the marker's position within the file.
+fn read_notes_from_blf(blf_path: &str) -> Result<Vec<Note>, String> {
+    use cannet_blf::format::reader::{BlfObject, BlfReader};
+    let mut reader = BlfReader::open(blf_path).map_err(|e| e.to_string())?;
+    let start_unix_nanos = reader.start_unix_nanos();
+    let mut notes = Vec::new();
+    let mut synthetic_idx: u64 = 0;
+    while let Some(obj) = reader.next_object().map_err(|e| e.to_string())? {
+        if let BlfObject::GlobalMarker(m) = obj {
+            let label = String::from_utf8_lossy(&m.marker_name).into_owned();
+            let id = if m.description.is_empty() {
+                let id = format!("blf-marker-{synthetic_idx}");
+                synthetic_idx += 1;
+                id
+            } else {
+                String::from_utf8_lossy(&m.description).into_owned()
+            };
+            // Per-event timestamp is relative to the file's start;
+            // recover the absolute ns the rest of cannet uses.
+            let timestamp_ns = start_unix_nanos.saturating_add(m.event.timestamp_ns());
+            notes.push(Note {
+                id,
+                timestamp_ns,
+                label,
+            });
+        }
+    }
+    Ok(notes)
+}
+
+/// Perform the actual BLF write. Frames go in as CAN events, notes
+/// go in as `GLOBAL_MARKER` (object type 96) records — both inside
+/// the BLF file itself, no sidecar (per [ADR 0010]).
+///
+/// [ADR 0010]: ../../../docs/adr/0010-no-sidecar-files.md
 ///
 /// `buses` is the project's ordered bus-id list. Each frame's
 /// `bus_id` is resolved to its position in this list and that
 /// position becomes the BLF channel — so the logical bus assignment
-/// round-trips through the channel number alone (no sidecar). A
-/// frame whose `bus_id` is `None` or isn't in `buses` keeps its
-/// original wire channel as a fallback, so a partial mapping never
-/// loses data.
+/// round-trips through the channel number alone. A frame whose
+/// `bus_id` is `None` or isn't in `buses` keeps its original wire
+/// channel as a fallback, so a partial mapping never loses data.
+///
+/// Markers carry the note's `label` as `marker_name` and the note's
+/// `id` as `description`, so a save → open round-trip preserves the
+/// frontend-stable id.
 fn write_capture(
     blf_path: &str,
     frames: &[trace_store::RawTraceFrame],
@@ -483,45 +560,48 @@ fn write_capture(
 ) -> Result<SaveCaptureResult, String> {
     let mut writer = BlfCaptureWriter::create(blf_path)
         .map_err(|e| format!("failed to open {blf_path} for writing: {e}"))?;
-    for frame in frames {
-        let core = raw_to_core_frame(frame, buses)
-            .map_err(|e| format!("invalid frame in session buffer: {e}"))?;
-        writer
-            .append(&core)
-            .map_err(|e| format!("failed to write frame: {e}"))?;
+    // Interleave frames and markers in chronological order. The
+    // BLF writer doesn't enforce ordering, but consumers (Vector
+    // CANalyzer, our own reader) expect timestamps to climb, so we
+    // merge-sort the two streams on the way in.
+    let mut frame_iter = frames.iter().peekable();
+    let mut note_iter = notes.iter().peekable();
+    loop {
+        let next_frame_ts = frame_iter.peek().map(|f| f.timestamp_ns);
+        let next_note_ts = note_iter.peek().map(|n| n.timestamp_ns);
+        let take_frame = match (next_frame_ts, next_note_ts) {
+            (None, None) => break,
+            (Some(_), None) => true,
+            (None, Some(_)) => false,
+            // Tie goes to the frame so a marker placed at exactly
+            // a frame's timestamp sorts after it; matches Vector's
+            // convention where a marker comments on the frame
+            // immediately before it.
+            (Some(ft), Some(nt)) => ft <= nt,
+        };
+        if take_frame {
+            let frame = frame_iter.next().expect("peek matched");
+            let core = raw_to_core_frame(frame, buses)
+                .map_err(|e| format!("invalid frame in session buffer: {e}"))?;
+            writer
+                .append(&core)
+                .map_err(|e| format!("failed to write frame: {e}"))?;
+        } else {
+            let note = note_iter.next().expect("peek matched");
+            writer
+                .append_marker(note.timestamp_ns, &note.label, &note.id)
+                .map_err(|e| format!("failed to write marker: {e}"))?;
+        }
     }
     let outcome = writer
         .finish()
         .map_err(|e| format!("failed to finalise capture: {e}"))?;
 
-    // Sidecar JSON, atomic via `<path>.part` rename. Empty list
-    // produces an empty `[]` file rather than no file at all —
-    // that way "BLF present, sidecar absent" unambiguously means
-    // "no notes were ever attached" rather than "save was
-    // interrupted".
-    let sidecar = notes_sidecar_path(blf_path);
-    let sidecar_tmp = {
-        let mut t = sidecar.clone();
-        let mut name = t
-            .file_name()
-            .map(std::ffi::OsString::from)
-            .unwrap_or_default();
-        name.push(".part");
-        t.set_file_name(name);
-        t
-    };
-    let payload = serde_json::to_vec_pretty(notes)
-        .map_err(|e| format!("failed to serialise notes: {e}"))?;
-    std::fs::write(&sidecar_tmp, payload)
-        .map_err(|e| format!("failed to write notes sidecar: {e}"))?;
-    std::fs::rename(&sidecar_tmp, &sidecar)
-        .map_err(|e| format!("failed to finalise notes sidecar: {e}"))?;
-
     Ok(SaveCaptureResult {
         blf_path: blf_path.to_string(),
         frame_count: outcome.frame_count,
         byte_size: outcome.byte_size,
-        marker_count: u64::try_from(notes.len()).unwrap_or(u64::MAX),
+        marker_count: outcome.marker_count,
         max_timestamp_drift_ns: outcome.max_timestamp_drift_ns,
     })
 }
@@ -2084,9 +2164,9 @@ mod tests {
     }
 
     /// Round-trip: write the trace-store contents + notes via
-    /// `write_capture`, then read back via `BlfCanFrameSource`
-    /// and the sidecar JSON. The frame ids and the marker count
-    /// must match the input.
+    /// `write_capture`, then read back via `BlfCanFrameSource` for
+    /// the frames and `read_notes_from_blf` for the markers. The
+    /// frame ids and the marker count must match the input.
     #[test]
     fn write_capture_round_trips_frames_and_notes() {
         use cannet_blf::BlfCanFrameSource;
@@ -2172,15 +2252,27 @@ mod tests {
         ));
         assert!(matches!(f3.payload, cannet_core::CanFramePayload::Error));
 
-        // Notes recovered from the sidecar JSON in chronological
-        // order, ids + labels intact.
-        let sidecar = notes_sidecar_path(dest.to_str().unwrap());
-        let recovered: Vec<notes::Note> =
-            serde_json::from_slice(&std::fs::read(&sidecar).unwrap()).unwrap();
+        // Notes recovered from in-BLF GLOBAL_MARKERs in
+        // chronological order, ids + labels + timestamps intact.
+        // No sidecar file is written.
+        let recovered = read_notes_from_blf(dest.to_str().unwrap()).unwrap();
         assert_eq!(recovered.len(), 2);
         assert_eq!(recovered[0].id, "a");
+        assert_eq!(recovered[0].label, "first");
         assert_eq!(recovered[1].id, "b");
         assert_eq!(recovered[1].label, "second");
+        // Timestamps round-trip within ms precision (the SYSTEMTIME
+        // header floor that the writer applies); accept the
+        // ms-rounded values.
+        assert_eq!(recovered[0].timestamp_ns / 1_000_000, (ts_base + 500) / 1_000_000);
+        assert_eq!(recovered[1].timestamp_ns / 1_000_000, (ts_base + 1_500) / 1_000_000);
+        // The sidecar must NOT have been emitted (ADR 0010).
+        let sidecar = legacy_notes_sidecar_path(dest.to_str().unwrap());
+        assert!(
+            !sidecar.exists(),
+            "save must not emit {} (ADR 0010 — no sidecar files)",
+            sidecar.display(),
+        );
     }
 
     /// `write_capture` re-channels each frame by its `bus_id`'s
@@ -2272,24 +2364,23 @@ mod tests {
     /// An empty notes list still writes the sidecar (as `[]`) so
     /// "BLF present, sidecar absent" unambiguously means "this
     /// BLF came from some other tool".
+    /// Empty captures (no frames, no notes) still produce a valid
+    /// BLF and do not emit any sidecar file.
     #[test]
-    fn write_capture_emits_empty_sidecar_for_empty_notes() {
+    fn write_capture_with_no_notes_emits_no_sidecar() {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("empty.blf");
         let outcome = write_capture(dest.to_str().unwrap(), &[], &[], &[]).unwrap();
         assert_eq!(outcome.frame_count, 0);
         assert_eq!(outcome.marker_count, 0);
-        let sidecar = notes_sidecar_path(dest.to_str().unwrap());
-        assert!(sidecar.exists());
-        let text = std::fs::read_to_string(&sidecar).unwrap();
-        // `serde_json::to_vec_pretty(&Vec::<Note>::new())` emits `[]`.
-        assert_eq!(text.trim(), "[]");
+        let sidecar = legacy_notes_sidecar_path(dest.to_str().unwrap());
+        assert!(!sidecar.exists(), "save must not emit a sidecar (ADR 0010)");
     }
 
     #[test]
-    fn notes_sidecar_path_appends_notes_json() {
+    fn legacy_notes_sidecar_path_appends_notes_json() {
         assert_eq!(
-            notes_sidecar_path("/tmp/x.blf"),
+            legacy_notes_sidecar_path("/tmp/x.blf"),
             std::path::PathBuf::from("/tmp/x.blf.notes.json"),
         );
     }
@@ -2307,6 +2398,39 @@ mod tests {
         let p = dir.path().join("bad.blf.notes.json");
         std::fs::write(&p, b"not json").unwrap();
         assert!(load_notes_sidecar(&p).is_err());
+    }
+
+    /// Third-party-written `GLOBAL_MARKER`s (no `description` =
+    /// no cannet id) get synthetic `blf-marker-N` ids on read, so
+    /// rename / remove on them still works through the existing
+    /// id-keyed APIs.
+    #[test]
+    fn read_notes_from_blf_mints_synthetic_ids_for_third_party_markers() {
+        use cannet_blf::format::marker;
+        use cannet_blf::format::writer::BlfFileWriter;
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("third-party.blf");
+        let mut w = BlfFileWriter::create(&dest).unwrap();
+        let abs = 1_700_000_000_000_000_000u64;
+        let start = w.set_start_if_unset((abs / 1_000_000) * 1_000_000);
+        // Two markers with no description (third-party shape).
+        let m1 = marker::build(abs - start, b"Notes".to_vec(), b"first".to_vec(), Vec::new());
+        let m2 = marker::build(
+            (abs + 1_000_000) - start,
+            b"Notes".to_vec(),
+            b"second".to_vec(),
+            Vec::new(),
+        );
+        w.append_object(&marker::encode(&m1), abs).unwrap();
+        w.append_object(&marker::encode(&m2), abs + 1_000_000).unwrap();
+        w.finish().unwrap();
+
+        let read = read_notes_from_blf(dest.to_str().unwrap()).unwrap();
+        assert_eq!(read.len(), 2);
+        assert_eq!(read[0].id, "blf-marker-0");
+        assert_eq!(read[0].label, "first");
+        assert_eq!(read[1].id, "blf-marker-1");
+        assert_eq!(read[1].label, "second");
     }
 
     #[test]

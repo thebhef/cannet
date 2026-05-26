@@ -1,23 +1,22 @@
-//! Session-buffer notes — the Phase-9 home for the plot panel's
+//! Session-buffer notes — the host home for the plot panel's
 //! event-marker annotations.
 //!
 //! Phase 4 put notes in each plot panel's dockview `params`, which
 //! meant a note placed in panel A wasn't visible in panel B even
-//! over the same timeline. Phase 9 lifts them out: a single
+//! over the same timeline. Phase 9 lifted them out: a single
 //! session-scoped list, edited through Tauri commands, observed by
 //! every plot panel via `notes-changed` IPC events. The session
 //! buffer (the trace store) is the source of truth for the data; a
 //! note is a labelled point on that timeline, so it belongs in the
 //! same scope.
 //!
-//! On Save Capture the notes ride beside the BLF as a
-//! `<file>.blf.notes.json` sidecar (a deliberate Phase-9 deferral
-//! pending upstream `blf_asc` `GLOBAL_MARKER` support; see
-//! `plans/technology-inventory.md`). On Open Capture the host
-//! reads the sidecar (if present) into this store. The wire shape
-//! between the host and the frontend (and between the host and the
-//! sidecar file) is the same — `{ id, timestamp_ns, label }` per
-//! note — so the path from a plot click to a saved BLF is direct.
+//! On Save Capture the notes ride inside the BLF as `GLOBAL_MARKER`
+//! (object type 96) records — no sidecar file (ADR 0010); see
+//! `BlfCaptureWriter::append_marker` in `cannet-blf`. On Open
+//! Capture the host pre-walks the BLF for markers and replaces
+//! this store with what it found. The wire shape between the host
+//! and the frontend is `{ id, timestamp_ns, label }` per note, so
+//! the path from a plot click to a saved BLF is direct.
 
 use std::sync::Mutex;
 

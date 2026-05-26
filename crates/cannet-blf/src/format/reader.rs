@@ -39,9 +39,9 @@ pub enum BlfObject {
     CanFdMessage(CanFdMessage),
     CanFdMessage64(CanFdMessage64),
     CanErrorExt(CanErrorExt),
-    /// Text-annotation marker (object type 96). Used to retire
-    /// the `<file>.blf.notes.json` sidecar — notes ride inside
-    /// the BLF itself.
+    /// Text-annotation marker (object type 96). `BlfCaptureWriter`
+    /// writes user-authored notes as these, so they ride inside the
+    /// BLF itself per ADR 0010.
     GlobalMarker(GlobalMarker),
     /// Free-form comment attached to an adjacent event (type 92).
     /// Vector's Trace window writes these when a user comments on

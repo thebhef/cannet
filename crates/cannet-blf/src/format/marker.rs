@@ -1,8 +1,8 @@
 //! BLF `GLOBAL_MARKER` (object type 96) — text annotation attached
 //! to a point in time. Vector tools use this for user-authored
-//! markers on a capture; cannet's roadmap uses it to replace the
-//! `<file>.blf.notes.json` sidecar so notes live inside the BLF
-//! itself (ADR 0010).
+//! markers on a capture; `BlfCaptureWriter::append_marker` writes
+//! cannet's plot-panel notes as these, keeping the annotations
+//! inside the BLF itself (ADR 0010).
 //!
 //! Body layout (after the 32-byte CAN-event header — base + v1):
 //!

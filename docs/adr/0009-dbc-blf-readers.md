@@ -188,9 +188,10 @@ most-used BLF implementations in the open ecosystem: `python-can`
   the implementation gains support for a new object type, that
   matrix's row updates in the same commit (per the doc's own
   maintenance section).
-- **`<file>.blf.notes.json` migration is unblocked.** The codec
-  prerequisite (`GLOBAL_MARKER` read+write) is done; the migration
-  work in `cannet-gui` remains in the backlog.
+- **`<file>.blf.notes.json` is gone from the write path.** Save
+  Capture writes notes as in-BLF `GLOBAL_MARKER` records (ADR 0010);
+  Open Capture reads them from the same place. A one-shot read of
+  any legacy `.notes.json` stays as a backwards-compat fallback.
 - **Feature scope.** The implementation covers parity with the
   prior `blf_asc`-wrapping version (CAN classic + FD + error +
   `LOG_CONTAINER` read+write), `GLOBAL_MARKER` read+write (sidecar

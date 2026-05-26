@@ -342,47 +342,31 @@ means *the payload is not surfaced to cannet*.
 
 Sorted by need.
 
-**Required and not currently supported:**
-
-- `GLOBAL_MARKER` (96) — the reason `<file>.blf.notes.json` is in
-  the codebase. Cleanup is the highest-priority item in
-  `plans/backlog.md` § High priority; see
-  [ADR 0010](adr/0010-no-sidecar-files.md).
+**Required and not currently supported:** none.
 
 **Desired and not currently supported:**
 
-- `CAN_MESSAGE` (1) is supported, but `CAN_ERROR` (2),
-  `CAN_FD_ERROR_64` (104) are not — error-frame variants we don't
-  yet decode.
-- `CAN_STATISTIC` (4) — driver statistics. Useful for reading
-  third-party captures that embed bus-load info.
-- `EVENT_COMMENT` (92) — the actual user-typed annotation in Vector
-  CANalyzer. Needed to preserve those annotations when reading
-  third-party captures. Note: `APP_TEXT` (65) is *not* the
-  CANalyzer-emitted annotation; that's a common misconception (see
-  the `mSource` field semantics in `binlog_objects.h:2259`).
-- `DATA_LOST_BEGIN` (125), `DATA_LOST_END` (126) — capture-integrity
-  markers; cannet should surface gaps when reading third-party
-  captures.
+- `CAN_ERROR` (2) and `CAN_FD_ERROR_64` (104) — additional
+  error-frame variants we don't yet decode. `CAN_MESSAGE` (1),
+  `CAN_ERROR_EXT` (73), and the modern CAN-FD types are supported.
 
-**Write-surface gap:**
+**Write-surface gap:** none. The native writer
+([`cannet-blf::format::writer`](../crates/cannet-blf/src/format/writer.rs))
+exposes `append_object` for any encoded object type, with
+ergonomic wrappers (`append`, `append_marker`) on the higher-level
+[`BlfCaptureWriter`](../crates/cannet-blf/src/lib.rs) for the
+common paths.
 
-- The current `blf_asc`-based wrapper has no public hook for
-  arbitrary object-type writes. Every "desired" or "required"
-  non-frame type above also needs a writer path to round-trip our
-  own captures. ADR 0009's own-implementation path (selected)
-  provides that arbitrary-write surface natively.
-
-## Decision and forward plan
+## Decision and history
 
 Recorded in [ADR 0009](adr/0009-dbc-blf-readers.md): cannet ships
 its own focused BLF reader/writer inside `cannet-blf`. The
 third-party Rust crate (`blf_asc`) was retired in Phase 9.5,
-which landed in four steps, in the order of the gap list above:
+which landed in four steps:
 
 1. **Parity** — CAN classic + FD + error + `LOG_CONTAINER`
    read+write. Let `blf_asc` retire from the dep tree.
-2. **`GLOBAL_MARKER`** — read+write. Unblocks the
+2. **`GLOBAL_MARKER`** — read+write. Unblocked the
    `<file>.blf.notes.json` removal (ADR 0010).
 3. **Annotation** — `EVENT_COMMENT` + `APP_TEXT`. Preserves
    third-party annotations.

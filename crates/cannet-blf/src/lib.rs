@@ -321,6 +321,8 @@ pub struct BlfCaptureWriter {
     /// Frame count appended so far — included in
     /// [`FinishedCapture`] for system-log integration.
     frame_count: u64,
+    /// `GLOBAL_MARKER` (note) count appended so far.
+    marker_count: u64,
 }
 
 /// Successful [`BlfCaptureWriter::finish`] outcome.
@@ -328,6 +330,8 @@ pub struct BlfCaptureWriter {
 pub struct FinishedCapture {
     /// Number of frames written to the BLF.
     pub frame_count: u64,
+    /// Number of `GLOBAL_MARKER` (note) objects written.
+    pub marker_count: u64,
     /// On-disk file size of the renamed-into-place BLF.
     pub byte_size: u64,
     /// Largest observed `|on-disk-ns - source-ns|` round-trip
@@ -381,6 +385,7 @@ impl BlfCaptureWriter {
             temp,
             inner: Some(inner),
             frame_count: 0,
+            marker_count: 0,
         })
     }
 
@@ -402,6 +407,41 @@ impl BlfCaptureWriter {
         Ok(())
     }
 
+    /// Append a `GLOBAL_MARKER` (text annotation) at
+    /// `timestamp_ns`. `marker_name` is the user-visible label;
+    /// `description` carries opaque metadata the host wants to
+    /// round-trip (e.g. a stable id). Both are written as raw
+    /// UTF-8 bytes — BLF's "MBCS" is encoding-tolerant.
+    ///
+    /// The marker uses `group_name = "cannet"` and the default
+    /// colour / relocatable flags `GlobalMarker::build` stamps.
+    /// Markers ride in the same `LOG_CONTAINER`s as CAN frames in
+    /// timestamp order; intersperse them with `append` as the
+    /// capture timeline dictates.
+    pub fn append_marker(
+        &mut self,
+        timestamp_ns: u64,
+        marker_name: &str,
+        description: &str,
+    ) -> Result<(), BlfWriteError> {
+        let inner = self.inner.as_mut().ok_or_else(|| {
+            BlfWriteError::Io(io::Error::other("writer has already been finished"))
+        })?;
+        let candidate = (timestamp_ns / 1_000_000) * 1_000_000;
+        let start = inner.set_start_if_unset(candidate);
+        let rel = timestamp_ns.saturating_sub(start);
+        let marker = format::marker::build(
+            rel,
+            b"cannet".to_vec(),
+            marker_name.as_bytes().to_vec(),
+            description.as_bytes().to_vec(),
+        );
+        let bytes = format::marker::encode(&marker);
+        inner.append_object(&bytes, timestamp_ns)?;
+        self.marker_count += 1;
+        Ok(())
+    }
+
     /// Flush, finalise, and rename the temp file into the
     /// destination. Returns the byte size and frame count for the
     /// host's system-message integration.
@@ -414,6 +454,7 @@ impl BlfCaptureWriter {
         fs::rename(&self.temp, &self.dest)?;
         Ok(FinishedCapture {
             frame_count: self.frame_count,
+            marker_count: self.marker_count,
             byte_size,
             max_timestamp_drift_ns: 0,
         })
@@ -854,6 +895,56 @@ mod tests {
         let back = r.next_frame().unwrap().unwrap();
         assert!(matches!(back.payload, CanFramePayload::Error));
         assert_eq!(back.channel, 1);
+    }
+
+    /// `append_marker` interleaves with frame writes; the reader's
+    /// `next_object` surface sees the marker; the
+    /// `CanFrameSource` adapter still yields just the frame.
+    #[test]
+    fn capture_writer_appends_a_marker_alongside_a_frame() {
+        use format::reader::{BlfObject, BlfReader};
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("notes.blf");
+        let frame = CanFrame::classic(
+            TS_BASE_NS,
+            0,
+            CanId::standard(0x123).unwrap(),
+            Direction::Rx,
+            vec![1, 2, 3, 4],
+        )
+        .unwrap();
+        let mut w = BlfCaptureWriter::create(&dest).unwrap();
+        w.append(&frame).unwrap();
+        w.append_marker(TS_BASE_NS + 1_000_000, "stuck bit", "note-uuid-1")
+            .unwrap();
+        let outcome = w.finish().unwrap();
+        assert_eq!(outcome.frame_count, 1);
+        assert_eq!(outcome.marker_count, 1);
+
+        // CanFrameSource path: just the frame.
+        let mut src = BlfCanFrameSource::open(&dest).unwrap();
+        let back = src.next_frame().unwrap().unwrap();
+        assert_eq!(back.id.raw(), 0x123);
+        assert!(src.next_frame().unwrap().is_none());
+
+        // BlfReader path: frame + marker.
+        let mut reader = BlfReader::open(&dest).unwrap();
+        let mut saw_frame = false;
+        let mut saw_marker = false;
+        while let Some(obj) = reader.next_object().unwrap() {
+            match obj {
+                BlfObject::CanMessage2(_) | BlfObject::CanMessage(_) => saw_frame = true,
+                BlfObject::GlobalMarker(m) => {
+                    assert_eq!(m.group_name, b"cannet");
+                    assert_eq!(m.marker_name, b"stuck bit");
+                    assert_eq!(m.description, b"note-uuid-1");
+                    saw_marker = true;
+                }
+                _ => {}
+            }
+        }
+        assert!(saw_frame);
+        assert!(saw_marker);
     }
 
     /// Writes succeed across many frames, atomic rename actually

@@ -38,26 +38,6 @@ the live-hardware exercise the items below describe:
   also evaluate `maccan` or another virtual-vendor backend as a
   short-term stand-in.
 
-#### No-sidecar return-to-compliance ([ADR 0010](../docs/adr/0010-no-sidecar-files.md))
-
-- `[refactor]` **Remove the `<blf>.notes.json` sidecar; store notes as
-  marker frames (`GLOBAL_MARKER`, object type 96) inside the BLF
-  itself.** Touches `cannet-blf` and `cannet-gui` (`save_capture`,
-  `open_log`). Migration: existing `.notes.json` files are read once
-  on `open_log` (best effort), promoted to BLF markers on the next
-  `save_capture`, then deleted. Once this lands, remove the sidecar
-  load path entirely **and** scrub residual mentions of the sidecar
-  (and of the phase that introduced it) from project docs — both
-  plan docs (`plans/technology-inventory.md`,
-  `plans/phased-implementation.md`) and rustdoc
-  ([crates/cannet-blf/src/lib.rs](../crates/cannet-blf/src/lib.rs)
-  module comment, [apps/gui/src-tauri/src/notes.rs](../apps/gui/src-tauri/src/notes.rs)
-  module comment, and the `AppState::notes` / `open_log` comments in
-  [apps/gui/src-tauri/src/lib.rs](../apps/gui/src-tauri/src/lib.rs)).
-  `GLOBAL_MARKER` read+write landed in Phase 9.5; the codec
-  prerequisite is no longer a blocker, only the migration work
-  in `cannet-gui` remains.
-
 #### Other near-term work
 
 - `[test-corpus]` **Vendor python-can BLF fixtures under
