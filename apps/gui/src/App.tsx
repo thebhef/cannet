@@ -20,7 +20,8 @@ import type {
   TraceFrameRecord,
   TraceGrew,
 } from "./types";
-import { PROJECT_SCHEMA_VERSION } from "./types";
+import { PROJECT_SCHEMA_VERSION, isLocalBinding, resolveServer } from "./types";
+import { useSidecarStatus } from "./sidecarStatus";
 import { TitleBar } from "./TitleBar";
 import { TracePanel } from "./TracePanel";
 import { ProjectPanel } from "./ProjectPanel";
@@ -120,6 +121,13 @@ const SYSTEM_MESSAGES_PANEL_ID = "system-messages";
 export function App() {
   const [count, setCount] = useState(0);
   const [framesPerSecond, setFramesPerSecond] = useState(0);
+  // Live sidecar status — needed to resolve the `"local"` sentinel on
+  // interface bindings to the sidecar's current bound address before
+  // we invoke connect_remote_server (the Rust command takes a
+  // concrete host:port, not the sentinel).
+  const sidecar = useSidecarStatus();
+  const sidecarAddress =
+    sidecar.phase === "ready" ? sidecar.address : null;
 
   // Chunked cache of fetched trace rows, keyed by chunk index. Shared by
   // every trace panel — they all view the one host-side capture; only
@@ -644,15 +652,40 @@ export function App() {
   // Connect to every server that has at least one binding in the
   // project. Each unique `server` in `interfaceBindings` becomes its
   // own `connect_remote_server` call; the host subscribes only to the
-  // bound interfaces on that server.
+  // bound interfaces on that server. Bindings with the `"local"`
+  // sentinel are resolved to the live sidecar address — if the
+  // sidecar isn't ready yet they're dropped from this attempt with a
+  // System Message rather than failing the whole connect.
   const handleConnect = useCallback(async () => {
-    const servers = Array.from(
-      new Set(interfaceBindings.map((b) => b.server)),
-    ).filter((s) => s.length > 0);
-    if (servers.length === 0) {
+    if (interfaceBindings.length === 0) {
       setState({
         kind: "error",
         message: "No interface bindings — add at least one in the project panel.",
+      });
+      return;
+    }
+    if (
+      interfaceBindings.some(isLocalBinding) &&
+      sidecarAddress === null
+    ) {
+      setState({
+        kind: "error",
+        message:
+          "Local sidecar isn't ready yet — wait for the Connection panel's Local row to go green, then Connect.",
+      });
+      return;
+    }
+    const servers = Array.from(
+      new Set(
+        interfaceBindings
+          .map((b) => resolveServer(b.server, sidecarAddress))
+          .filter((s): s is string => s !== null && s.length > 0),
+      ),
+    );
+    if (servers.length === 0) {
+      setState({
+        kind: "error",
+        message: "No reachable servers — check the Connection panel.",
       });
       return;
     }
@@ -677,7 +710,7 @@ export function App() {
 
     for (const address of servers) {
       const bindings = interfaceBindings
-        .filter((b) => b.server === address)
+        .filter((b) => resolveServer(b.server, sidecarAddress) === address)
         .map((b) => ({ interface: b.interface, busId: b.bus_id }));
       try {
         const result = await invoke<RemoteSessionResult>(
@@ -697,7 +730,7 @@ export function App() {
         });
       }
     }
-  }, [interfaceBindings, invalidateCache, startAllElements]);
+  }, [interfaceBindings, sidecarAddress, invalidateCache, startAllElements]);
 
   // Tear down every active session. The host drains its session map.
   const handleDisconnect = useCallback(async () => {

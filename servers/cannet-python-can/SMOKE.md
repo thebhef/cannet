@@ -32,8 +32,8 @@ simply skips that vendor and the others still work.
 - **SDK**: [Vector XL Driver Library](https://www.vector.com/int/en/download/vector-driver-disk/).
   Windows is the first-class target; Linux support is partial.
 - **python-can backend**: `vector`.
-- **Channel id format**: `vector:<hw_name>/ch<n>` (for example
-  `vector:VN1640A/ch0`).
+- **Channel id format**: `vector:<hw_name>(SN:<serial>, ch:<n>)` (for
+  example `vector:VN1630A(SN:12345, ch:0)`).
 - **Smoke**:
   1. Install the Vector XL Driver and confirm `Vector Hardware Config`
      can see the device.

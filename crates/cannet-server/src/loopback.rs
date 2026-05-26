@@ -43,7 +43,7 @@ use cannet_wire::{
         envelope::Body,
         error::Code,
         Envelope, Error as ErrorMsg, FrameBatch, Interface as ProtoInterface, InterfaceList,
-        ListInterfacesRequest,
+        ListInterfacesRequest, WatchInterfacesRequest,
     },
     proto_to_frame,
 };
@@ -95,6 +95,19 @@ impl Default for LoopbackServerImpl {
     }
 }
 
+/// The fixed single-interface snapshot the loopback server reports
+/// for both `ListInterfaces` and `WatchInterfaces`. Pulled out into a
+/// free fn so both impls return byte-identical data.
+fn snapshot_interfaces() -> InterfaceList {
+    InterfaceList {
+        interfaces: vec![ProtoInterface {
+            id: LOOPBACK_INTERFACE_ID.to_string(),
+            display_name: "Loopback".to_string(),
+            fd_capable: true,
+        }],
+    }
+}
+
 /// Releases the busy flag when dropped — including on task panic.
 struct BusyGuard(Arc<AtomicBool>);
 
@@ -110,13 +123,27 @@ impl CannetServerTrait for LoopbackServerImpl {
         &self,
         _request: Request<ListInterfacesRequest>,
     ) -> Result<Response<InterfaceList>, Status> {
-        Ok(Response::new(InterfaceList {
-            interfaces: vec![ProtoInterface {
-                id: LOOPBACK_INTERFACE_ID.to_string(),
-                display_name: "Loopback".to_string(),
-                fd_capable: true,
-            }],
-        }))
+        Ok(Response::new(snapshot_interfaces()))
+    }
+
+    type WatchInterfacesStream = ReceiverStream<Result<InterfaceList, Status>>;
+
+    /// Loopback exposes one fixed interface, so `WatchInterfaces` is
+    /// "emit once, hang forever" — there's nothing the underlying
+    /// driver could change and nothing to push. The client gets the
+    /// initial snapshot the same way `WatchInterfaces` always works
+    /// and we keep the stream alive until they disconnect.
+    async fn watch_interfaces(
+        &self,
+        _request: Request<WatchInterfacesRequest>,
+    ) -> Result<Response<Self::WatchInterfacesStream>, Status> {
+        let (tx, rx) = mpsc::channel(1);
+        let _ = tx.send(Ok(snapshot_interfaces())).await;
+        tokio::spawn(async move {
+            let _hold = tx;
+            std::future::pending::<()>().await;
+        });
+        Ok(Response::new(ReceiverStream::new(rx)))
     }
 
     type SessionStream = ReceiverStream<Result<Envelope, Status>>;

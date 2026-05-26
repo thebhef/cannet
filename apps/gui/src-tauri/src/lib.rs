@@ -35,6 +35,7 @@
 //! return.
 
 mod filter;
+mod interfaces;
 mod ipc;
 mod notes;
 mod project;
@@ -186,6 +187,7 @@ pub fn run() {
             notes: NotesStore::new(),
         })
         .manage(sidecar::SidecarState::default())
+        .manage(interfaces::InterfacesState::default())
         .invoke_handler(tauri::generate_handler![
             open_log,
             scan_blf_channels,
@@ -197,7 +199,6 @@ pub fn run() {
             fetch_latest_by_id,
             fetch_filtered_trace,
             clear_trace_store,
-            list_remote_interfaces,
             connect_remote_server,
             disconnect_remote_server,
             project::open_project,
@@ -216,6 +217,10 @@ pub fn run() {
             save_capture,
             sidecar::restart_sidecar,
             sidecar::get_sidecar_status,
+            interfaces::get_interfaces,
+            interfaces::watch_interfaces,
+            interfaces::unwatch_interfaces,
+            interfaces::refresh_interfaces,
         ])
         .setup(|app| {
             // Make sure the main window has the id our capabilities expect.
@@ -1348,15 +1353,6 @@ fn decode_raw_frame(db: &Database, frame: &RawTraceFrame) -> Option<DecodedRecor
     })
 }
 
-/// One-shot RPC: connect, list the server's interfaces, disconnect.
-/// Used by the connection panel before the user commits to a session.
-#[tauri::command]
-async fn list_remote_interfaces(address: String) -> Result<Vec<InterfaceRecord>, String> {
-    let interfaces = cannet_client::list_interfaces(&address)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(interfaces.into_iter().map(InterfaceRecord::from).collect())
-}
 
 /// Connect to a `cannet-server`, list its interfaces, subscribe only
 /// to the interfaces named by `bindings`, and spawn a pump thread to

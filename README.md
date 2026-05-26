@@ -434,7 +434,14 @@ panel) iterates every unique server in `interface_bindings`, opens one
 gRPC session per server, and subscribes only to the bound interfaces.
 The host's pump thread stamps every received frame with the chosen
 `bus_id`. **Disconnect** ends every session. Server addresses no
-longer live in the toolbar — they're per-binding configuration.
+longer live in the toolbar — they're per-binding configuration. A
+binding's `server` is either the literal `"local"` (sentinel meaning
+"the local sidecar at whatever address it's bound to this session" —
+the sidecar's port is randomised per launch, so persisting a literal
+`host:port` would orphan the binding on every reload) or a
+`host:port` for a specific remote `cannet-server`; the frontend
+resolves `"local"` to the live sidecar address before invoking the
+connect command.
 
 **BLF channel mapping**. Opening a BLF now pre-scans the file for its
 distinct channels (capped at 200k frames for huge BLFs) and shows a
@@ -572,8 +579,27 @@ Phase 8 plugs in real hardware sources by way of a single auto-launched
 speaks the same `cannet-wire` gRPC protocol as `cannet-server`, so the
 host pipeline is unchanged — interfaces show up in the project graph
 view the same way the BLF replay fixture's do, just under
-vendor-prefixed names (`vector:VN1640A/ch0`, `kvaser:0`,
-`pcan:PCAN_USBBUS1`).
+vendor-prefixed names with a paren-delimited `key:value` metadata
+list. Examples:
+- `vector:VN1640A(SN:12345, ch:0)` — Vector card serial + per-card
+  channel.
+- `kvaser:1(SN:67890, ch:0)` — Kvaser card serial + per-card channel.
+- `pcan:PCAN_USBBUS1(h:0x51, ch:0)` — PEAK slot constant + channel
+  handle integer + controller number. PCAN-Basic doesn't standardly
+  expose a per-device factory serial, so the handle integer is the
+  stable per-attached-channel anchor; `uid:<n>` joins the list when
+  the user has set a non-default device ID in PCAN-View.
+
+For Kvaser and PCAN, the body alone (everything before `(`) is what
+python-can needs to open the channel — the paren metadata is
+identity for the GUI, and `_bus_kwargs_for` strips it before handing
+the body off. Vector is different: the open path reads `SN:` and
+`ch:` out of the parens and passes `serial=` + `channel=` to
+python-can's vector backend, so the driver resolves the physical
+channel via `get_channel_configs` and never calls `xlGetApplConfig`.
+That bypasses Vector Hardware Config's application-channel mapping
+entirely, so an unmapped slot in the VHC app view can't break open
+or close.
 
 **Auto-launch**. The GUI's Tauri host spawns the sidecar at startup
 (`apps/gui/src-tauri/src/sidecar.rs`); the user does not run anything

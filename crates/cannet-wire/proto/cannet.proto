@@ -4,16 +4,30 @@ package cannet.v1;
 
 // CAN frame transport between cannet clients and servers.
 //
-// Two RPCs: `ListInterfaces` for on-demand discovery of the interfaces
-// a server provides, and `Session` for a single bidirectional Envelope
-// stream. Frame movement is symmetric — either side sends frames on a
-// subscribed interface using the same wire shape.
+// Three RPCs: `ListInterfaces` for an on-demand snapshot of the
+// interfaces a server provides, `WatchInterfaces` for a long-lived
+// subscription to changes in that set, and `Session` for a single
+// bidirectional Envelope stream. Frame movement is symmetric — either
+// side sends frames on a subscribed interface using the same wire
+// shape.
 //
 // Cyclic / scheduled emission is not modelled at the wire layer.
 // Sending on a cadence is a feature of the client transmit UI.
+//
+// Discovery: see ADR 0016. `ListInterfaces` and `WatchInterfaces`
+// are deliberately redundant in the steady state — pull vs. push of
+// the same underlying server-side cache. The server owns the polling
+// cadence and the change-detection rule; clients either ask once or
+// subscribe.
 service CannetServer {
   // Stateless query: what CAN interfaces does this server expose?
   rpc ListInterfaces(ListInterfacesRequest) returns (InterfaceList);
+
+  // Long-lived subscription: emits a snapshot on subscribe, then a
+  // fresh snapshot every time the server's view of its interfaces
+  // changes. The server decides when its view changed; the client
+  // just receives. Closing the stream ends the subscription.
+  rpc WatchInterfaces(WatchInterfacesRequest) returns (stream InterfaceList);
 
   // A single bidirectional stream of Envelopes for the lifetime of a
   // client session. Closing the stream ends the session.
@@ -21,6 +35,8 @@ service CannetServer {
 }
 
 message ListInterfacesRequest {}
+
+message WatchInterfacesRequest {}
 
 message InterfaceList {
   repeated Interface interfaces = 1;

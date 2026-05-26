@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use blf_asc::{ArbitrationId, BlfWriter, DataBytes, Message};
 use cannet_client::{
-    connect_and_subscribe, list_interfaces, ConnectionError, FrameReceiver, RemoteCanFrameSource,
-    SessionHandle, Subscription,
+    connect_and_subscribe, list_interfaces, watch_interfaces, ConnectionError, FrameReceiver,
+    RemoteCanFrameSource, SessionHandle, Subscription,
 };
 use cannet_core::CanFrameSource;
 use cannet_server::{CannetServerImpl, LoopingBlfReplay};
@@ -96,6 +96,35 @@ async fn list_interfaces_round_trip() {
     assert_eq!(interfaces.len(), 2);
     assert_eq!(interfaces[0].id, "blf:0");
     assert_eq!(interfaces[1].id, "blf:1");
+    server.abort();
+}
+
+/// `WatchInterfaces` against the BLF server: emits exactly one
+/// snapshot (the channel set is fixed for the session) and then
+/// keeps the stream open until the client drops it. ADR 0016
+/// specifies this initial-snapshot-on-subscribe behaviour as the
+/// minimum useful contract.
+#[tokio::test(flavor = "multi_thread")]
+async fn watch_interfaces_emits_initial_snapshot() {
+    let (addr, server) = spawn_server().await;
+    let mut stream = watch_interfaces(&addr.to_string()).await.unwrap();
+    let first = timeout(Duration::from_secs(2), stream.next())
+        .await
+        .expect("initial snapshot should arrive promptly")
+        .expect("watch stream errored")
+        .expect("watch stream closed before snapshot");
+    assert_eq!(first.len(), 2);
+    assert_eq!(first[0].id, "blf:0");
+    assert_eq!(first[1].id, "blf:1");
+    // No second snapshot should arrive — BLF replay's interface set
+    // never changes. A short timeout confirms the stream is sitting
+    // open with nothing to push.
+    let pending = timeout(Duration::from_millis(150), stream.next()).await;
+    assert!(
+        pending.is_err(),
+        "expected the watch stream to stay quiet after the initial snapshot, got {pending:?}"
+    );
+    drop(stream);
     server.abort();
 }
 

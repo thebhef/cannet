@@ -531,19 +531,72 @@ fn set_phase(app: &AppHandle, phase: SidecarPhase, address: Option<String>) {
     let Some(state) = app.try_state::<SidecarState>() else {
         return;
     };
-    let snapshot = {
+    let (status, watch_change) = {
         let mut inner = state.inner.lock().expect("sidecar state mutex poisoned");
         if inner.phase == phase && inner.bound_address == address {
             return;
         }
+        let prev_address = inner.bound_address.clone();
+        let prev_was_ready = inner.phase == SidecarPhase::Ready;
         inner.phase = phase;
         inner.bound_address = address.clone();
-        SidecarStatus {
-            phase,
-            address: inner.bound_address.clone(),
-        }
+        let now_ready = phase == SidecarPhase::Ready;
+        // Lifecycle drives the local-address watch. The actual
+        // subscription manager lives in `interfaces.rs`; this just
+        // decides which transitions add/remove the local address from
+        // its managed set. Done after the lock is released so the
+        // interface state's own lock isn't taken under ours.
+        let change = match (prev_was_ready, now_ready) {
+            (false, true) => WatchChange::Start(inner.bound_address.clone()),
+            (true, false) => WatchChange::Stop(prev_address),
+            (true, true) if prev_address != inner.bound_address => {
+                WatchChange::Replace {
+                    stop: prev_address,
+                    start: inner.bound_address.clone(),
+                }
+            }
+            _ => WatchChange::None,
+        };
+        (
+            SidecarStatus {
+                phase,
+                address: inner.bound_address.clone(),
+            },
+            change,
+        )
     };
-    let _ = app.emit(STATUS_EVENT, snapshot);
+    let _ = app.emit(STATUS_EVENT, status);
+    match watch_change {
+        WatchChange::None => {}
+        WatchChange::Start(Some(addr)) => crate::interfaces::watch(app, addr),
+        WatchChange::Stop(Some(addr)) => crate::interfaces::unwatch(app, &addr),
+        WatchChange::Replace { stop, start } => {
+            if let Some(addr) = stop {
+                crate::interfaces::unwatch(app, &addr);
+            }
+            if let Some(addr) = start {
+                crate::interfaces::watch(app, addr);
+            }
+        }
+        // Start without address / Stop without address: the address
+        // slot is `None` on phase transitions the launcher drives
+        // before the listening banner arrives. Nothing to do for
+        // interface discovery in that case.
+        WatchChange::Start(None) | WatchChange::Stop(None) => {}
+    }
+}
+
+/// Outcome the locked critical section in `set_phase` decides; the
+/// matching subscription-manager call happens after the lock so the
+/// `InterfacesState` lock isn't taken under the sidecar one.
+enum WatchChange {
+    None,
+    Start(Option<String>),
+    Stop(Option<String>),
+    Replace {
+        stop: Option<String>,
+        start: Option<String>,
+    },
 }
 
 /// Tauri command — snapshot the current sidecar status. The
@@ -566,8 +619,51 @@ fn stream_stderr(app: &AppHandle, stderr: ChildStderr) {
         if line.is_empty() {
             continue;
         }
-        emit_system_log(app, SOURCE, LogLevel::Warn, line);
+        let (level, message) = classify_stderr_line(&line);
+        emit_system_log(app, SOURCE, level, message);
     }
+}
+
+/// Parse one stderr line from the sidecar against the Python logger
+/// format configured by `logging.basicConfig` in `__main__.py`:
+/// `"%(asctime)s %(levelname)s %(name)s %(message)s"`. Returns the
+/// embedded severity (mapped onto our 3-level [`LogLevel`]) so a
+/// run-of-the-mill `INFO` line isn't surfaced as a warning, and the
+/// timestamp is stripped from the displayed text (the System Messages
+/// panel already stamps its own time).
+///
+/// Anything that doesn't look like that format — a raw traceback
+/// frame, an unbuffered `print`, a third-party library writing
+/// directly to stderr — falls through as `Warn` with the line
+/// unchanged. Warn is the safest default: it lands at the panel's
+/// default filter level so the user actually sees it, without
+/// pretending to know its real severity.
+pub fn classify_stderr_line(line: &str) -> (LogLevel, String) {
+    // asctime = "YYYY-MM-DD HH:MM:SS,mmm" → two whitespace-separated
+    // tokens. `splitn(5, …)` then peels: date, time, levelname, name,
+    // message-rest.
+    let mut parts = line.splitn(5, ' ');
+    let _date = parts.next();
+    let _time = parts.next();
+    let level_token = parts.next();
+    let name = parts.next();
+    let message = parts.next();
+    let (Some(level_token), Some(name), Some(message)) = (level_token, name, message) else {
+        return (LogLevel::Warn, line.to_string());
+    };
+    let level = match level_token {
+        // Python: DEBUG / INFO / WARNING / ERROR / CRITICAL — plus the
+        // `WARN` alias some loggers emit. We collapse DEBUG to Info
+        // (the panel has no debug level) and CRITICAL to Error.
+        "DEBUG" | "INFO" => LogLevel::Info,
+        "WARNING" | "WARN" => LogLevel::Warn,
+        "ERROR" | "CRITICAL" => LogLevel::Error,
+        // Token doesn't look like a Python level — bail out so a
+        // traceback frame like `  File "x.py", line 42, in foo`
+        // isn't mis-classified.
+        _ => return (LogLevel::Warn, line.to_string()),
+    };
+    (level, format!("{name} {message}"))
 }
 
 /// Parse one tab-separated banner line from the sidecar's stdout into
@@ -671,9 +767,10 @@ mod tests {
         assert!(msg.contains('0'));
         let (_lvl, msg) = classify_stdout_line("sidecar\tlistening\t127.0.0.1:50061");
         assert!(msg.contains("127.0.0.1:50061"));
-        let (_lvl, msg) =
-            classify_stdout_line("interface\tvector:VN1640A/ch0\tVector VN1640A ch0\tfd");
-        assert!(msg.contains("vector:VN1640A/ch0"));
+        let (_lvl, msg) = classify_stdout_line(
+            "interface\tvector:VN1630A(SN:12345, ch:0)\tVector VN1630A ch0\tfd",
+        );
+        assert!(msg.contains("vector:VN1630A(SN:12345, ch:0)"));
         assert!(msg.contains("[fd]"));
     }
 
@@ -682,6 +779,57 @@ mod tests {
         let (lvl, msg) = classify_stdout_line("a stray print from the sidecar");
         assert!(matches!(lvl, LogLevel::Info));
         assert_eq!(msg, "a stray print from the sidecar");
+    }
+
+    #[test]
+    fn classify_stderr_reads_python_levelname() {
+        // The Python sidecar's basicConfig format is
+        // "%(asctime)s %(levelname)s %(name)s %(message)s".
+        let (lvl, msg) = classify_stderr_line(
+            "2026-05-25 16:05:43,487 INFO cannet_python_can.server ListInterfaces -> 2 channels",
+        );
+        assert!(matches!(lvl, LogLevel::Info), "INFO should not be warned");
+        assert_eq!(
+            msg,
+            "cannet_python_can.server ListInterfaces -> 2 channels",
+            "timestamp should be stripped; name + message retained"
+        );
+
+        let (lvl, _) = classify_stderr_line(
+            "2026-05-25 16:05:43,487 WARNING cannet_python_can.server rx pump for X failed",
+        );
+        assert!(matches!(lvl, LogLevel::Warn));
+
+        let (lvl, _) = classify_stderr_line(
+            "2026-05-25 16:05:43,487 ERROR cannet_python_can sidecar fatal error",
+        );
+        assert!(matches!(lvl, LogLevel::Error));
+
+        let (lvl, _) = classify_stderr_line(
+            "2026-05-25 16:05:43,487 CRITICAL cannet_python_can boom",
+        );
+        assert!(matches!(lvl, LogLevel::Error));
+
+        let (lvl, _) = classify_stderr_line(
+            "2026-05-25 16:05:43,487 DEBUG cannet_python_can chatty",
+        );
+        assert!(matches!(lvl, LogLevel::Info));
+    }
+
+    #[test]
+    fn classify_stderr_falls_back_to_warn_on_unrecognised_lines() {
+        // Traceback frame — no levelname token at position 2.
+        let (lvl, msg) =
+            classify_stderr_line("  File \"server.py\", line 42, in <module>");
+        assert!(matches!(lvl, LogLevel::Warn));
+        assert_eq!(msg, "  File \"server.py\", line 42, in <module>");
+
+        // Looks roughly right but the level token isn't a real level.
+        let (lvl, msg) = classify_stderr_line(
+            "2026-05-25 16:05:43,487 BANANAS cannet_python_can not a level",
+        );
+        assert!(matches!(lvl, LogLevel::Warn));
+        assert!(msg.contains("BANANAS"));
     }
 
     #[test]

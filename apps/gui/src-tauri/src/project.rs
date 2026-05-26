@@ -38,7 +38,15 @@ use serde::{Deserialize, Serialize};
 ///   the dockview layout so a Phase-4-vintage project opens
 ///   cleanly. The on-disk `schema_version` is rewritten to 4 the
 ///   next time a migrated project is saved.
-pub const PROJECT_SCHEMA_VERSION: u32 = 4;
+/// - v5: `InterfaceBinding.server` may be the literal `"local"`
+///   sentinel, meaning "the local sidecar at whatever address it's
+///   bound to in the current session". This decouples the persisted
+///   binding from the sidecar's random per-launch port. v4 files
+///   parse unchanged; any pre-existing `127.0.0.1:<port>` binding
+///   renders under a stale remote-server row until the user re-picks
+///   it from the Local group (the existing offline-fallback UX
+///   already supports this).
+pub const PROJECT_SCHEMA_VERSION: u32 = 5;
 
 /// A logical bus. `id` is a stable, project-local identifier (graph
 /// edges reference it; per-DBC scoping and the filter `bus` predicate
@@ -61,9 +69,12 @@ pub struct Bus {
 }
 
 /// An interface binding: a `(server, interface)` pair routed onto a
-/// logical bus. `server` is an opaque key (the remote address for now;
-/// vendor sidecars get their own prefix in Phase 8). `interface` is
-/// the wire-level `Interface.id` from `ListInterfaces`.
+/// logical bus. `server` is an opaque key — either the literal
+/// `"local"` (meaning "the local sidecar at whatever address it's
+/// bound to this session" — the sidecar's port is randomised per
+/// launch, so a literal `host:port` here would break on every
+/// reload) or a `host:port` for a specific remote `cannet-server`.
+/// `interface` is the wire-level `Interface.id` from `ListInterfaces`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InterfaceBinding {
     pub server: String,
@@ -125,7 +136,8 @@ fn parse_project(text: &str) -> Result<Project, String> {
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| "missing schema_version".to_string())?;
     match version {
-        4 => serde_json::from_value(raw).map_err(|e| format!("invalid project JSON: {e}")),
+        5 => serde_json::from_value(raw).map_err(|e| format!("invalid project JSON: {e}")),
+        4 => migrate_v4(raw),
         3 => migrate_v3(raw),
         2 => migrate_v2(raw).map(|mut p| {
             strip_plot_notes_from_layout(&mut p.layout);
@@ -135,6 +147,22 @@ fn parse_project(text: &str) -> Result<Project, String> {
             "schema version {v}; this build expects {PROJECT_SCHEMA_VERSION}",
         )),
     }
+}
+
+/// v4 → v5. No shape change: v5 only relaxes the meaning of
+/// `InterfaceBinding.server` to allow the literal `"local"` sentinel.
+/// Per the approved plan we do not auto-rewrite existing
+/// `127.0.0.1:<port>` bindings — the user re-picks them once from
+/// the live Local group, and the offline-fallback UI handles the
+/// transition.
+fn migrate_v4(mut raw: serde_json::Value) -> Result<Project, String> {
+    if let Some(obj) = raw.as_object_mut() {
+        obj.insert(
+            "schema_version".into(),
+            serde_json::Value::from(PROJECT_SCHEMA_VERSION),
+        );
+    }
+    serde_json::from_value(raw).map_err(|e| format!("v4 migration failed: {e}"))
 }
 
 /// v3 → v4. Walks the `dockview` layout and removes the per-plot-
@@ -277,8 +305,8 @@ mod tests {
                 color: Some("#60a5fa".into()),
             }],
             interface_bindings: vec![InterfaceBinding {
-                server: "127.0.0.1:50051".into(),
-                interface: "blf-channel-1".into(),
+                server: "local".into(),
+                interface: "pcan:PCAN_USBBUS1(h:0x51, ch:0)".into(),
                 bus_id: "p".into(),
             }],
             dbcs: vec![DbcRef {
@@ -297,13 +325,71 @@ mod tests {
 
     #[test]
     fn parse_defaults_the_optional_fields() {
-        let p = parse_project(r#"{"schema_version": 4, "layout": {"grid": {}, "panels": {}}}"#)
+        let p = parse_project(r#"{"schema_version": 5, "layout": {"grid": {}, "panels": {}}}"#)
             .unwrap();
         assert!(p.elements.is_empty());
         assert!(p.dbcs.is_empty());
         assert!(p.buses.is_empty());
         assert!(p.interface_bindings.is_empty());
         assert_eq!(p.remote_address, None);
+    }
+
+    /// v4 → v5 is shape-compatible: the only change is that v5
+    /// allows `InterfaceBinding.server == "local"` as a sentinel.
+    /// A v4 file with a `127.0.0.1:<port>` binding must parse
+    /// unchanged (the user re-picks it from the live Local group on
+    /// next launch — see the schema-version doc).
+    #[test]
+    fn parse_migrates_a_v4_project_to_v5_preserving_existing_bindings() {
+        let v4 = r#"{
+            "schema_version": 4,
+            "layout": {"grid": {}, "panels": {}},
+            "interface_bindings": [
+                {
+                    "server": "127.0.0.1:50051",
+                    "interface": "pcan:PCAN_USBBUS1",
+                    "bus_id": "p"
+                }
+            ]
+        }"#;
+        let p = parse_project(v4).expect("v4 migrates");
+        assert_eq!(p.schema_version, PROJECT_SCHEMA_VERSION);
+        assert_eq!(p.interface_bindings.len(), 1);
+        // The legacy host:port is preserved verbatim — no auto-rewrite
+        // to the "local" sentinel. The GUI's offline-fallback path
+        // surfaces it under a stale remote-server row until re-picked.
+        assert_eq!(p.interface_bindings[0].server, "127.0.0.1:50051");
+        assert_eq!(p.interface_bindings[0].interface, "pcan:PCAN_USBBUS1");
+    }
+
+    /// v5 round-trips a binding that uses the `"local"` sentinel
+    /// verbatim — i.e. saving and reloading doesn't drop or rewrite
+    /// the sentinel.
+    #[test]
+    fn local_sentinel_round_trips_through_serialize_and_parse() {
+        let p = Project {
+            schema_version: PROJECT_SCHEMA_VERSION,
+            layout: serde_json::json!({"grid": {}, "panels": {}}),
+            elements: vec![],
+            buses: vec![Bus {
+                id: "p".into(),
+                name: "Powertrain".into(),
+                speed_bps: None,
+                fd: None,
+                color: None,
+            }],
+            interface_bindings: vec![InterfaceBinding {
+                server: "local".into(),
+                interface: "pcan:PCAN_USBBUS1(h:0x51, ch:0)".into(),
+                bus_id: "p".into(),
+            }],
+            dbcs: vec![],
+            remote_address: None,
+        };
+        let text = serde_json::to_string_pretty(&p).unwrap();
+        let parsed = parse_project(&text).unwrap();
+        assert_eq!(parsed, p);
+        assert_eq!(parsed.interface_bindings[0].server, "local");
     }
 
     #[test]
