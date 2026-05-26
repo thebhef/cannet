@@ -1,6 +1,4 @@
-//! BLF capture-integrity / diagnostic objects.
-//!
-//! Tranche 4 covers:
+//! BLF capture-integrity / diagnostic objects:
 //!
 //! - `CAN_STATISTIC` (type 4) — periodic CAN driver statistics
 //!   (bus load, per-channel frame counts). Vector tools emit these

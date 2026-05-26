@@ -420,10 +420,10 @@ mod tests {
         assert!(matches!(err, LogContainerError::UnknownCompressionMethod(7)));
     }
 
-    /// Round-trip: pull the (single, well-formed) `LOG_CONTAINER` out
-    /// of a real BLF written by our wrapper (still `blf_asc`-backed
-    /// in Tranche 0/early-1) and inflate it. Confirms the on-disk
-    /// shape `blf_asc` produces matches what our parser expects.
+    /// Round-trip: pull the (single, well-formed) `LOG_CONTAINER`
+    /// out of a real BLF written by `BlfCaptureWriter` and inflate
+    /// it. End-to-end check that the writer's on-disk shape matches
+    /// what `decode` expects.
     #[test]
     fn decodes_log_container_of_a_blf_written_by_our_writer() {
         use crate::BlfCaptureWriter;

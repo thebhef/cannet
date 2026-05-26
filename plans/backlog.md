@@ -54,34 +54,22 @@ the live-hardware exercise the items below describe:
   module comment, [apps/gui/src-tauri/src/notes.rs](../apps/gui/src-tauri/src/notes.rs)
   module comment, and the `AppState::notes` / `open_log` comments in
   [apps/gui/src-tauri/src/lib.rs](../apps/gui/src-tauri/src/lib.rs)).
-  Blocked on Tranche 2 of
-  [Phase 9.5 — `cannet-blf` Own Implementation](phased-implementation.md)
-  (`GLOBAL_MARKER` read+write).
+  `GLOBAL_MARKER` read+write landed in Phase 9.5; the codec
+  prerequisite is no longer a blocker, only the migration work
+  in `cannet-gui` remains.
 
 #### Other near-term work
 
 - `[test-corpus]` **Vendor python-can BLF fixtures under
   `crates/cannet-blf/tests/fixtures/python-can/`.** Phase 9.5
-  Tranche 1 listed this as the first of four test corpora but
-  deferred actual vendoring; today the tranche's coverage is
+  Step 1 listed this as the first of four test corpora but
+  deferred actual vendoring; today the step's coverage is
   synthetic-bytes per-module tests + the vector_blf oracle
   cross-check (gated behind `vector-blf-oracle`). Adding the
   python-can-written files would give us a third-party-writer
   cross-check that runs without C++ toolchain. ~30 KB binary
   per file, expect ~5 files covering classic / FD / error / mixed
   channels / big payloads.
-- `[decision]` **Revisit [ADR 0009](../docs/adr/0009-dbc-blf-readers.md)
-  in light of the full BLF feature-support matrix
-  ([docs/blf-feature-support.md](../docs/blf-feature-support.md)).**
-  The ADR was drafted before the gap analysis was done; it now
-  understates the trade-off (we picked the less-popular Rust crate
-  `blf_asc` and have a long gap list to close upstream), and it
-  predates Technica's `vector_blf` being considered as a candidate
-  via FFI (no off-the-shelf Rust binding exists; we'd be first-movers
-  on Rust↔`vector_blf`, possibly publishing the bindings upstream).
-  Four paths are sketched in the feature-support doc; one of them
-  should land as the recorded decision, and the ADR rewritten
-  accordingly.
 - `[bug]` **`PROJECT_SCHEMA_VERSION` is out of sync between Rust and
   TypeScript.** Rust is at `4`
   ([project.rs:41](apps/gui/src-tauri/src/project.rs#L41)), TypeScript

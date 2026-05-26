@@ -1,6 +1,4 @@
-//! BLF text-annotation objects.
-//!
-//! Tranche 3 covers:
+//! BLF text-annotation objects:
 //!
 //! - `EVENT_COMMENT` (type 92) — free-form comment attached to an
 //!   adjacent event (CAN frame, error frame, etc.). Vector's Trace

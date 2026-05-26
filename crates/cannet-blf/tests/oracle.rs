@@ -1,8 +1,8 @@
 //! Tests against the `vector_blf` C++ live oracle.
 //!
 //! Only compiled when the `vector-blf-oracle` cargo feature is enabled.
-//! See ADR 0009 §"Test coverage strategy" source 4 and Phase 9.5
-//! Tranche 0 in `plans/phased-implementation.md`.
+//! See ADR 0009 §"Test coverage strategy" source 4 in
+//! `plans/phased-implementation.md`.
 //!
 //! The harness binary is built by `scripts/build-vector-blf-oracle.sh`,
 //! which clones Technica's `vector_blf` at a pinned commit and links a
@@ -93,15 +93,11 @@ fn repo_root() -> PathBuf {
         .expect("repo root not canonicalisable")
 }
 
-/// Smoke test for Tranche 0: a BLF produced by our (current `blf_asc`-
-/// backed) writer is readable by the oracle, and the oracle sees the
-/// frames we wrote.
-///
-/// Once Tranche 1 lands the native writer, this test becomes a contract
-/// that the new writer also produces oracle-readable output. Failing
-/// here means the new writer disagrees with `vector_blf` on the wire
+/// Contract: a BLF produced by our native writer is readable by
+/// `vector_blf`, and the oracle sees the frames we wrote. Failing
+/// here means our writer disagrees with `vector_blf` on the wire
 /// format.
-// Modern BLF timestamps need to be ≥ 1990-01-01 for blf_asc's
+// Modern BLF timestamps need to be ≥ 1990-01-01 for the
 // SYSTEMTIME header to round-trip; same constraint the existing
 // unit tests use.
 const TS_BASE_NS: u64 = 1_700_000_000 * 1_000_000_000;
@@ -136,8 +132,10 @@ fn oracle_lists_frames_written_by_our_writer() {
         3,
         "oracle should see the 3 frames we wrote; full listing: {listing:#?}",
     );
-    // The exact object type the writer emits is an implementation
-    // detail of blf_asc today; Tranche 1's native writer will pin it.
+    // The native writer emits CAN_MESSAGE2 (86) for classic
+    // frames; the older CAN_MESSAGE (1) is also acceptable here
+    // so the assertion stays permissive against any future
+    // writer-side type choice.
     let kind_ids: Vec<u32> = frame_rows.iter().map(|o| o.type_id).collect();
     assert!(
         kind_ids.iter().all(|&id| id == 1 || id == 86),
@@ -145,8 +143,8 @@ fn oracle_lists_frames_written_by_our_writer() {
     );
 }
 
-/// Tranche 2: Vector's reference library reads `GLOBAL_MARKER`
-/// objects our native writer emits.
+/// Vector's reference library reads `GLOBAL_MARKER` objects our
+/// native writer emits.
 #[test]
 fn oracle_lists_global_marker_written_by_our_writer() {
     let harness = ensure_harness();
@@ -161,7 +159,7 @@ fn oracle_lists_global_marker_written_by_our_writer() {
         rel,
         b"Notes".to_vec(),
         b"oracle-marker".to_vec(),
-        b"Round-trip oracle for GLOBAL_MARKER (Tranche 2).".to_vec(),
+        b"Round-trip oracle for GLOBAL_MARKER.".to_vec(),
     );
     let bytes = marker::encode(&m);
     w.append_object(&bytes, abs_ns).unwrap();
@@ -180,7 +178,7 @@ fn oracle_lists_global_marker_written_by_our_writer() {
     assert_eq!(marker_rows[0].type_id, 96);
 }
 
-/// Tranche 3: Vector's reference library reads `EVENT_COMMENT`
+/// Vector's reference library reads `EVENT_COMMENT`
 /// and `APP_TEXT` objects our native writer emits.
 #[test]
 fn oracle_lists_text_annotations_written_by_our_writer() {
@@ -231,7 +229,7 @@ fn oracle_lists_text_annotations_written_by_our_writer() {
     assert_eq!(app_rows[0].type_id, 65);
 }
 
-/// Tranche 4: Vector's reference library reads `CAN_STATISTIC`,
+/// Vector's reference library reads `CAN_STATISTIC`,
 /// `DATA_LOST_BEGIN`, and `DATA_LOST_END` objects our native
 /// writer emits.
 #[test]

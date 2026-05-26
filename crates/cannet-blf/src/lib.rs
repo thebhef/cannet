@@ -17,9 +17,9 @@
 //! ## Phase 9.5 — native implementation
 //!
 //! Per [ADR 0009](../../../docs/adr/0009-dbc-blf-readers.md), the
-//! Phase-1 `blf_asc` wrapper retired in Phase 9.5 Tranche 1 step 9.
-//! The native implementation in [`format`] covers reading and
-//! writing of `CAN_MESSAGE` (1), `CAN_MESSAGE2` (86),
+//! Phase-1 `blf_asc` wrapper was retired in Phase 9.5. The native
+//! implementation in [`format`] covers reading and writing of
+//! `CAN_MESSAGE` (1), `CAN_MESSAGE2` (86),
 //! `CAN_FD_MESSAGE` (100), `CAN_FD_MESSAGE_64` (101), and
 //! `CAN_ERROR_EXT` (73) — plus the `LOG_CONTAINER` (10) outer
 //! wrapper and the `FileStatistics` header. The
@@ -31,16 +31,6 @@
 //! (`tests/oracle.rs`).
 //!
 //! [`CanFramePayload`]: cannet_core::CanFramePayload
-//!
-//! ## Marker / annotation round-trip
-//!
-//! Upstream `blf_asc` 0.2 covers only frame object types; it has no
-//! `GLOBAL_MARKER` write surface and exposes no hook on `BlfWriter`
-//! for arbitrary object emission. Phase 9 ships note round-trip via
-//! a sidecar `<file>.blf.notes.json` written alongside the BLF —
-//! the third-party-reader visibility of notes is a documented
-//! deferral that Phase 9.5 Tranche 2 (`GLOBAL_MARKER` read+write)
-//! unblocks.
 
 pub mod format;
 
@@ -343,8 +333,8 @@ pub struct FinishedCapture {
     /// Largest observed `|on-disk-ns - source-ns|` round-trip
     /// drift across the written frames. Always 0 with the native
     /// writer (the f64-seconds storage layer that drove this field
-    /// retired in Phase 9.5 Tranche 1 step 9); kept in the struct
-    /// for backwards compatibility with system-message consumers.
+    /// retired when `blf_asc` did); kept in the struct for
+    /// backwards compatibility with system-message consumers.
     pub max_timestamp_drift_ns: u64,
 }
 

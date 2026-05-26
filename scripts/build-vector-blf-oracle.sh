@@ -2,7 +2,7 @@
 # Build the `vector_blf` test oracle used by the cannet-blf crate's
 # `vector-blf-oracle` feature.
 #
-# Phase 9.5 Tranche 0 (per ADR 0009): cannet's own BLF implementation
+# Phase 9.5 Step 0 (per ADR 0009): cannet's own BLF implementation
 # is cross-checked against Technica's `vector_blf` C++ library, used as
 # a black-box test oracle. The library is cloned at a pinned upstream
 # commit, cmake-built, and linked into a small C++ harness; both live

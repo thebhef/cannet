@@ -27,9 +27,10 @@
 //! Total: 144 bytes. All multi-byte integers are little-endian
 //! (BLF is a little-endian-only format per `vector_blf`'s README).
 //!
-//! For Tranche 0 only `signature` is meaningfully validated — the
-//! rest is read into a typed struct so later tranches can build on
-//! it without a second pass.
+//! Only `signature` and `statistics_size` are structurally
+//! validated on parse; the remaining fields are read into a typed
+//! struct so callers (e.g. the streaming reader) can use the
+//! measurement-start time and other metadata without a second pass.
 
 /// Vector's `LOGG` file-signature constant, little-endian (i.e. the
 /// bytes are `L O G G` in the order they appear on disk).
@@ -432,10 +433,9 @@ mod tests {
         assert_eq!(err, HeaderError::StatisticsSizeTooSmall(100));
     }
 
-    /// A real BLF written by our wrapper (still `blf_asc`-backed in
-    /// Tranche 0) must have a parseable header. As Tranche 1 lands
-    /// the native writer this becomes the "the writer's header is
-    /// well-formed by the new parser's definition" cross-check.
+    /// A real BLF written by `BlfCaptureWriter` must have a header
+    /// the parser accepts — round-trip check that the writer's
+    /// stamped header is well-formed by the parser's definition.
     #[test]
     fn parses_header_of_a_blf_written_by_our_writer() {
         use crate::BlfCaptureWriter;

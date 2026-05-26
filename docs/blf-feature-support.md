@@ -67,16 +67,17 @@ records intent as of today, not a permanent decision.
 - `✓ read` — typed read only
 - `✗` — not exposed
 
-As of Phase 9.5 Tranche 1 step 9, both the **reader** and the
-**writer** are native implementations rooted in
-[`cannet-blf::format`](../crates/cannet-blf/src/format/) — the
-`blf_asc` wrapper has been retired. Native coverage as of
-Tranche 1: `FileStatistics`, `LOG_CONTAINER` (zlib + uncompressed),
-`CAN_MESSAGE`, `CAN_MESSAGE2`, `CAN_FD_MESSAGE`,
-`CAN_FD_MESSAGE_64`, and `CAN_ERROR_EXT`. The writer emits
-`CAN_MESSAGE2` for classic CAN frames and `CAN_FD_MESSAGE_64` for
-CAN FD (the modern types Vector's own tools write today); the
-reader still accepts both the older types and the modern ones.
+Both the **reader** and the **writer** are native implementations
+rooted in [`cannet-blf::format`](../crates/cannet-blf/src/format/);
+the `blf_asc` wrapper was retired in Phase 9.5. Native coverage:
+`FileStatistics`, `LOG_CONTAINER` (zlib + uncompressed), the five
+CAN-class types (`CAN_MESSAGE`, `CAN_MESSAGE2`, `CAN_FD_MESSAGE`,
+`CAN_FD_MESSAGE_64`, `CAN_ERROR_EXT`), `GLOBAL_MARKER`,
+`EVENT_COMMENT`, `APP_TEXT`, `CAN_STATISTIC`, `DATA_LOST_BEGIN`,
+and `DATA_LOST_END`. The writer emits `CAN_MESSAGE2` for classic
+CAN frames and `CAN_FD_MESSAGE_64` for CAN FD (the modern types
+Vector's own tools write today); the reader still accepts both
+the older types and the modern ones.
 
 **`ablf` column** — what the leading alternative Rust crate does
 (read-only, no write surface). Shown for cross-reference:
@@ -104,7 +105,7 @@ in the Description column is a verbatim quote from the cited line.
 | 1 | `CAN_MESSAGE` | desired | ✓ read+write | ✗ | *CAN message object* (binlog_objects.h:30). `[cannet]` Older format; modern captures use `CAN_MESSAGE2`. |
 | 2 | `CAN_ERROR` | desired | ✗ | ✗ | *CAN error frame object* (binlog_objects.h:31). Superseded by `CAN_ERROR_EXT`. |
 | 3 | `CAN_OVERLOAD` | nice | ✗ | ✗ | *CAN overload frame object* (binlog_objects.h:32). |
-| 4 | `CAN_STATISTIC` | desired | ✓ read+write | ✗ | *CAN driver statistics object* (binlog_objects.h:33). The struct (`VBLCanDriverStatistic` in `binlog_objects.h`) carries channel, bus load, std/ext frame counts (data + remote), error frames, overload frames. `[cannet]` Landed Phase 9.5 Tranche 4 in `cannet-blf::format::diagnostics`. |
+| 4 | `CAN_STATISTIC` | desired | ✓ read+write | ✗ | *CAN driver statistics object* (binlog_objects.h:33). The struct (`VBLCanDriverStatistic` in `binlog_objects.h`) carries channel, bus load, std/ext frame counts (data + remote), error frames, overload frames. `[cannet]` Landed Phase 9.5 Step 4 in `cannet-blf::format::diagnostics`. |
 | 73 | `CAN_ERROR_EXT` | desired | ✓ read+write | ✓ read | *CAN error frame object (extended)* (binlog_objects.h:124). |
 | 86 | `CAN_MESSAGE2` | required | ✓ read+write | ✓ read | *CAN message object - extended* (binlog_objects.h:140). `[cannet]` The default CAN message format in modern captures. |
 | 100 | `CAN_FD_MESSAGE` | required | ✓ read+write | ✗ | *CAN FD message object* (binlog_objects.h:164). Classic CAN FD frame (≤8-byte data path). |
@@ -124,9 +125,9 @@ in the Description column is a verbatim quote from the cited line.
 | ID | Name | Need | cannet | `ablf` | Description |
 |---:|------|------|--------|--------|-------|
 | 5 | `APP_TRIGGER` | nice | ✗ | ◐ skip | *application trigger object* (binlog_objects.h:34). `[cannet]` Application-defined slot; only useful if cannet defines its own trigger semantics. |
-| 65 | `APP_TEXT` | nice | ✓ read+write | ✓ read | *text object* (binlog_objects.h:111). The struct `VBLAppText` (binlog_objects.h:2259) carries `mSource` (text-source flag: `BL_APPTEXT_MEASUREMENTCOMMENT=0`, `BL_APPTEXT_DBCHANNELINFO=1`, `BL_APPTEXT_METADATA=2`), `mTextLength`, and `mText` (MBCS). `[cannet]` Landed Phase 9.5 Tranche 3 in `cannet-blf::format::text`. |
-| 92 | `EVENT_COMMENT` | desired | ✓ read+write | ◐ skip | `[bare in spec]` — `binlog_objects.h:150` defines the type without an enum comment. Struct `VBLEventComment` (binlog_objects.h:2363) carries `mCommentedEventType`, `mTextLength`, and `mText` (MBCS). `[cannet]` Landed Phase 9.5 Tranche 3 in `cannet-blf::format::text`; the user-typed annotation in Vector CANalyzer's Trace Window, important for reading third-party captures. |
-| 96 | `GLOBAL_MARKER` | **required** | ✓ read+write | ◐ skip | `[bare in spec]` — `binlog_objects.h:157` defines the type without an enum comment. Struct `VBLGlobalMarker` (binlog_objects.h:2379) is a self-sized record with group name + marker name + description lengths concatenated after the fixed fields. `[cannet]` Landed Phase 9.5 Tranche 2 in `cannet-blf::format::marker`; unblocks retiring `<file>.blf.notes.json` per [ADR 0010](adr/0010-no-sidecar-files.md). |
+| 65 | `APP_TEXT` | nice | ✓ read+write | ✓ read | *text object* (binlog_objects.h:111). The struct `VBLAppText` (binlog_objects.h:2259) carries `mSource` (text-source flag: `BL_APPTEXT_MEASUREMENTCOMMENT=0`, `BL_APPTEXT_DBCHANNELINFO=1`, `BL_APPTEXT_METADATA=2`), `mTextLength`, and `mText` (MBCS). `[cannet]` Landed Phase 9.5 Step 3 in `cannet-blf::format::text`. |
+| 92 | `EVENT_COMMENT` | desired | ✓ read+write | ◐ skip | `[bare in spec]` — `binlog_objects.h:150` defines the type without an enum comment. Struct `VBLEventComment` (binlog_objects.h:2363) carries `mCommentedEventType`, `mTextLength`, and `mText` (MBCS). `[cannet]` Landed Phase 9.5 Step 3 in `cannet-blf::format::text`; the user-typed annotation in Vector CANalyzer's Trace Window, important for reading third-party captures. |
+| 96 | `GLOBAL_MARKER` | **required** | ✓ read+write | ◐ skip | `[bare in spec]` — `binlog_objects.h:157` defines the type without an enum comment. Struct `VBLGlobalMarker` (binlog_objects.h:2379) is a self-sized record with group name + marker name + description lengths concatenated after the fixed fields. `[cannet]` Landed Phase 9.5 Step 2 in `cannet-blf::format::marker`; unblocks retiring `<file>.blf.notes.json` per [ADR 0010](adr/0010-no-sidecar-files.md). |
 
 ### Environment / system variables
 
@@ -144,8 +145,8 @@ in the Description column is a verbatim quote from the cited line.
 |---:|------|------|--------|--------|-------|
 | 51 | `REALTIMECLOCK` | nice | ✗ | ✗ | *Realtime clock object* (binlog_objects.h:93). |
 | 91 | `OVERRUN_ERROR` | nice | ✗ | ✗ | *driver overrun event* (binlog_objects.h:148). |
-| 125 | `DATA_LOST_BEGIN` | desired | ✓ read+write | ✗ | *Data lost begin* (binlog_objects.h:203). Struct `VBLDataLostBegin` (binlog_objects.h:2519) carries `mQueueIdentifier` (the leaking queue's id). `[cannet]` Landed Phase 9.5 Tranche 4 in `cannet-blf::format::diagnostics`. Pairs with `DATA_LOST_END` to bracket a capture gap; important for data-integrity surfacing when reading third-party captures. |
-| 126 | `DATA_LOST_END` | desired | ✓ read+write | ✗ | *Data lost end* (binlog_objects.h:204). Struct `VBLDataLostEnd` (binlog_objects.h:2525) carries `mQueueIdentifier`, `mFirstObjectLostTimeStamp`, and `mNumberOfLostEvents`. `[cannet]` Landed Phase 9.5 Tranche 4 in `cannet-blf::format::diagnostics`. |
+| 125 | `DATA_LOST_BEGIN` | desired | ✓ read+write | ✗ | *Data lost begin* (binlog_objects.h:203). Struct `VBLDataLostBegin` (binlog_objects.h:2519) carries `mQueueIdentifier` (the leaking queue's id). `[cannet]` Landed Phase 9.5 Step 4 in `cannet-blf::format::diagnostics`. Pairs with `DATA_LOST_END` to bracket a capture gap; important for data-integrity surfacing when reading third-party captures. |
+| 126 | `DATA_LOST_END` | desired | ✓ read+write | ✗ | *Data lost end* (binlog_objects.h:204). Struct `VBLDataLostEnd` (binlog_objects.h:2525) carries `mQueueIdentifier`, `mFirstObjectLostTimeStamp`, and `mNumberOfLostEvents`. `[cannet]` Landed Phase 9.5 Step 4 in `cannet-blf::format::diagnostics`. |
 | 127 | `WATER_MARK_EVENT` | nice | ✗ | ✗ | *Watermark event* (binlog_objects.h:205). |
 | 128 | `TRIGGER_CONDITION` | nice | ✗ | ✗ | *Trigger Condition event* (binlog_objects.h:206). |
 
@@ -374,21 +375,21 @@ Sorted by need.
 
 ## Decision and forward plan
 
-Recorded in [ADR 0009](adr/0009-dbc-blf-readers.md): cannet will
-ship its own focused BLF reader/writer inside `cannet-blf`, retiring
-the third-party Rust crates. Phased delivery, in the order of the
-gap list above:
+Recorded in [ADR 0009](adr/0009-dbc-blf-readers.md): cannet ships
+its own focused BLF reader/writer inside `cannet-blf`. The
+third-party Rust crate (`blf_asc`) was retired in Phase 9.5,
+which landed in four steps, in the order of the gap list above:
 
-1. **Parity tranche** — CAN classic + FD + error + `LOG_CONTAINER`
-   read+write. Lets `blf_asc` retire from the dep tree.
-2. **`GLOBAL_MARKER` tranche** — read+write. Unblocks the
+1. **Parity** — CAN classic + FD + error + `LOG_CONTAINER`
+   read+write. Let `blf_asc` retire from the dep tree.
+2. **`GLOBAL_MARKER`** — read+write. Unblocks the
    `<file>.blf.notes.json` removal (ADR 0010).
-3. **Annotation tranche** — `EVENT_COMMENT` + `APP_TEXT`. Preserves
+3. **Annotation** — `EVENT_COMMENT` + `APP_TEXT`. Preserves
    third-party annotations.
-4. **Capture-integrity tranche** — `CAN_STATISTIC` +
-   `DATA_LOST_BEGIN/END`. Surfaces gaps in third-party captures.
+4. **Capture-integrity** — `CAN_STATISTIC` + `DATA_LOST_BEGIN/END`.
+   Surfaces gaps in third-party captures.
 
-Each tranche updates this table's `cannet` column for the affected
+Each step updated this table's `cannet` column for the affected
 rows in the same commit.
 
 ## Maintaining this doc

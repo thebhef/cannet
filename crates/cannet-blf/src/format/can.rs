@@ -1,4 +1,4 @@
-//! BLF CAN-class object decoders. Tranche 1 covers:
+//! BLF CAN-class object decoders/encoders:
 //!
 //! - `CAN_MESSAGE` (type 1) — older, fixed 8-byte data
 //! - `CAN_ERROR_EXT` (type 73) — extended error frame

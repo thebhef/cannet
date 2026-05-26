@@ -89,20 +89,20 @@ crate retained long-term).
 - **BLF** — Vector binary log format. Implementation lives in
   `cannet-blf`; the per-object-type coverage matrix is maintained
   in [`../docs/blf-feature-support.md`](../docs/blf-feature-support.md).
-  - **`blf_asc`** (v0.2, MIT/Apache) — `adopted` Phase 1,
-    `retired` Phase 9.5 Tranche 1 step 9. The native reader/writer
-    in `cannet-blf::format::{reader, writer}` covers everything
-    the wrapper used to. See ADR 0009.
+  - **`blf_asc`** (v0.2, MIT/Apache) — `adopted` Phase 1, `retired`
+    Phase 9.5. The native reader/writer in
+    `cannet-blf::format::{reader, writer}` covers everything the
+    wrapper used to. See ADR 0009.
   - **`vector_blf`** (Technica-Engineering, C++, GPL-3.0-or-later) —
-    `proposed` in Phase 9.5 Tranche 0 as a test-only black-box
-    oracle. Cloned at a pinned upstream ref into `target/` at test
-    time, never vendored, never shipped in cannet's runtime binary;
-    its GPL posture stays outside the runtime distribution. Gated
-    behind the `vector-blf-oracle` cargo feature so default CI
-    doesn't require a C++ toolchain. See ADR 0009 "Test coverage
-    strategy" §4.
-  - **`flate2`** (v1, MIT / Apache-2.0) — `adopted` Phase 9.5
-    Tranche 1 for `LOG_CONTAINER` zlib inflate/deflate. Default
+    `adopted` Phase 9.5 as a test-only black-box oracle. Cloned at
+    a pinned upstream ref into `target/` at test time, never
+    vendored, never shipped in cannet's runtime binary; its GPL
+    posture stays outside the runtime distribution. Gated behind
+    the `vector-blf-oracle` cargo feature so default CI doesn't
+    require a C++ toolchain. See ADR 0009 "Test coverage strategy"
+    §4.
+  - **`flate2`** (v1, MIT / Apache-2.0) — `adopted` Phase 9.5 for
+    `LOG_CONTAINER` zlib inflate/deflate. Default
     backend (`rust_backend` → `miniz_oxide`) keeps the build
     pure-Rust and matches `vector_blf`'s on-the-wire format
     (raw zlib, not gzip). The crate is already in `Cargo.lock`

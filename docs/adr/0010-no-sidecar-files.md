@@ -37,8 +37,14 @@ CANalyzer was already invisible. Reaching for a sidecar was the
 wrong response — the correct one is to control the BLF
 implementation enough to use the format's own extension mechanism,
 which is exactly what [ADR 0009](0009-dbc-blf-readers.md) commits
-cannet to doing. Returning to compliance is the highest-priority
-follow-up on this surface; see `plans/backlog.md` § High priority.
+cannet to doing.
+
+The codec prerequisite is now done (Phase 9.5 landed `GLOBAL_MARKER`
+read+write in `cannet-blf::format::marker`). The migration work in
+`cannet-gui` — read `.notes.json` once on open, promote to BLF
+markers on save, delete the sidecar code path — remains as the
+highest-priority follow-up on this surface; see `plans/backlog.md`
+§ High priority.
 
 ## Consequences
 

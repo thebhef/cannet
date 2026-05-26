@@ -1,5 +1,5 @@
-//! Native Vector BLF format codec, growing under Phase 9.5
-//! (`plans/phased-implementation.md`).
+//! Native Vector BLF format codec (Phase 9.5; see
+//! `plans/phased-implementation.md`).
 //!
 //! This module is the on-disk format surface — it parses and emits
 //! the byte sequences described in Vector's "Read Write BLF API 2018
@@ -10,9 +10,7 @@
 //! [`BlfCanFrameSource`]: crate::BlfCanFrameSource
 //! [`BlfCaptureWriter`]: crate::BlfCaptureWriter
 //!
-//! ## Layout (work in progress)
-//!
-//! Tranches land per the phase doc. Modules present so far:
+//! ## Modules
 //!
 //! - [`header`] — the 144-byte `FileStatistics` record every BLF
 //!   opens with (object-type 0 in spirit; not in the object stream).
@@ -22,10 +20,9 @@
 //! - [`log_container`] — `LOG_CONTAINER` (object type 10), the
 //!   outer wrapper every inner BLF object lives inside. Owns the
 //!   zlib inflate path.
-//! - [`can`] — per-type decoders for the CAN-class objects
+//! - [`can`] — per-type decoders/encoders for the CAN-class objects
 //!   (`CAN_MESSAGE`, `CAN_MESSAGE2`, `CAN_FD_MESSAGE`,
-//!   `CAN_FD_MESSAGE_64`, `CAN_ERROR_EXT`). Growing one type at a
-//!   time across Tranche 1.
+//!   `CAN_FD_MESSAGE_64`, `CAN_ERROR_EXT`).
 //! - [`marker`] — `GLOBAL_MARKER` (object type 96), the text
 //!   annotation type that retires `<file>.blf.notes.json`.
 //! - [`text`] — `EVENT_COMMENT` (92) and `APP_TEXT` (65), the two
