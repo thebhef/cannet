@@ -26,17 +26,9 @@ lower-priority follow-ups below.
 
 #### Minimum Usability Tasks
 
-The local-sidecar usability slice landed (random-port selection,
-host-side address discovery, stdin-EOF parent-death, top-level
-"Local sidecar" row in the connection panel). What's left here is
-the live-hardware exercise the items below describe:
-
-- `[smoke]` exercise the sidecar against real Vector / Kvaser / PEAK
-  hardware once a rig is available. The per-vendor manual procedure
-  is already in
-  [servers/cannet-python-can/SMOKE.md](../servers/cannet-python-can/SMOKE.md);
-  also evaluate `maccan` or another virtual-vendor backend as a
-  short-term stand-in.
+- The transmit view sucks
+- Drag+drop signals from DBC or trace into graph, and between graphs
+- DBC view with good filter behavior (must be implemented with search that will be consistent across all searches implemented in application. The style of search VSCode implements: you could do "MyCanMessage" by searching for "mcmess", for example)
 
 #### Other near-term work
 
