@@ -38,6 +38,12 @@ export interface ProjectContextValue {
   connectedAddresses: string[];
   /// True if any remote session is currently connecting or running.
   remoteConnected: boolean;
+  /// Bus ids whose interface binding points at a server with a
+  /// currently-running session. The transmit panel uses this to gate
+  /// send / cyclic actions — transmit is a no-op for a bus whose
+  /// session isn't up. Computed from {@link interfaceBindings} +
+  /// {@link connectedAddresses} + the resolved sidecar address.
+  connectedBusIds: string[];
   /// Path of a loaded BLF replay, if one is the active source.
   blfPath: string | null;
 

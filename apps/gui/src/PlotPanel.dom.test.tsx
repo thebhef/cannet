@@ -147,6 +147,7 @@ const projectCtx: ProjectContextValue = {
   buses: [],
   interfaceBindings: [],
   connectedAddresses: [],
+  connectedBusIds: [],
   remoteConnected: false,
   blfPath: null,
   onNewProject: () => {},

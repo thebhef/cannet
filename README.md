@@ -330,24 +330,52 @@ see the Phase-9 section below. (Still pending — see
 per-trace y offset/gain and log scale, triggers, math channels,
 CSV/image export.)
 
-### Phase-5 transmit + enum signals
+### Transmit panel + enum signals
 
-**Add transmit panel** opens a Phase-5 transmit panel: compose CAN /
-CAN FD frames, send them on demand, and optionally schedule a cyclic
-resend. Each frame in a panel carries an id (hex), addressing mode
-(standard / extended), channel, kind (classic / FD / remote / error),
-payload, BRS / ESI / DLC where applicable, and a cycle-time. The
-configured frames persist as the panel's params and round-trip
-through the project file (as a project element with `kind:
-"transmit"`).
+**Add transmit panel** opens the transmit panel: a single column of
+collapsible frame-tiles, each composing one CAN / CAN FD frame that
+can be sent on demand or scheduled cyclically. The configured frames
+persist as the panel's params and round-trip through the project file
+(as a project element with `kind: "transmit"`).
 
-Two entry modes per frame: **raw bytes** (always; space-separated hex
-digits, validated against the kind's max length) and **signals**
-(enabled when a DBC message matches the chosen id). In signals
-mode, enum signals — those with a `VAL_` table in the DBC — show as a
-dropdown of `<value> "<label>"` options; picking a label copies the
-raw value into the payload (proper per-signal-to-bytes encoding is
-follow-up work).
+Each tile carries an id (hex), addressing mode (standard / extended),
+destination bus, kind (classic / FD / remote / error), payload, BRS
+where applicable, DLC for remote frames, a manual-vs-periodic mode
+toggle, and a cycle-time when periodic. Tiles drag-reorder via a
+bus-tinted handle on the left edge.
+
+The collapsed face is the everyday control surface:
+
+- **Per-byte hex cells.** The payload is shown as a row of two-digit
+  hex cells (8 for classic, up to 64 for FD; FD wraps). `Tab` /
+  `Shift+Tab` traverses cells.
+- **Send / cycle controls.** A manual/periodic toggle picks between
+  a `send` button (one-shot) or a period-ms input + `start` / `stop`
+  pair (cyclic). Periodic transmit is a client-side `setInterval` on
+  the frame's cycle-time; closing the panel, removing the frame, or
+  flipping back to manual stops the loop.
+- **Identity strip.** Name, bus, hex id, the DBC message name when
+  the id matches a loaded DBC, and a per-frame `×` remove (confirm-
+  on-click so an accidental tap doesn't drop a frame).
+
+Expanding a tile reveals the **frame-shape strip** (kind, extended,
+BRS / DLC) and — when the id binds to a DBC message — the **signals
+table**. Rows are spreadsheet-dense: `name · value · unit · range`.
+Range comes from the DBC `SG_` min/max when set, else derived from
+the signal's `factor / offset / size / signed`. Plain signals show a
+numeric input; **enum signals show a combobox** that filters the
+`VAL_` labels as the user types and also accepts a raw number for
+out-of-table values. Multiplexed messages show only the *active arm*
+of the mux — switching the multiplexor zeroes the new arm's bits so
+it starts fresh. Messages that declare *extended* multiplexing
+(`m<N>M`) fall back to bytes-only editing with a note in the
+expanded face.
+
+Per-signal edits go through the host's `encode_frame` Tauri command,
+which partial-encodes the named signals into the current payload
+without disturbing any other byte. See
+[ADR 0017](docs/adr/0017-transmit-signal-encoder-and-bytes-source-of-truth.md)
+for the ownership and source-of-truth rules.
 
 Where a sent frame goes:
 
@@ -355,22 +383,21 @@ Where a sent frame goes:
   like a real analyzer shows for its own transmits. The transmit
   pipeline is observable end-to-end even with no remote source open.
 - **If a remote session is open**, also onto the wire as a one-frame
-  `FrameBatch` envelope on the channel's bound interface. The BLF
-  replay server is read-only and rejects the transmit with
-  `Error::TX_REJECTED`, which surfaces inline on the transmit panel.
-  Start the new `cannet-server --loopback` mode (see below) to demo
-  the wire transmit path end-to-end — it echoes every transmit back
-  as an `Rx` frame on the same interface.
-- A **cyclic send** is a client-side `setInterval` on the frame's
-  cycle-time entry; not a wire feature. Stopping the toggle, removing
-  the frame, or closing the panel cancels the loop.
+  `FrameBatch` envelope on the bus's bound interface. The BLF replay
+  server is read-only and rejects the transmit with
+  `Error::TX_REJECTED`, which surfaces in the system messages log
+  (no per-frame status panel — successful sends show as Tx-confirm
+  rows in the trace; failures are visible in the log). Start the
+  `cannet-server --loopback` mode (see below) to demo the wire
+  transmit path end-to-end — it echoes every transmit back as an
+  `Rx` frame on the same interface.
 
 **Enum / state signals** render symbolically wherever they appear:
 
 - A trace row's expanded signal grid shows `<value> "<label>"` for
   signals with a matching `VAL_` row; numeric signals are unchanged.
-- The transmit panel's signals mode offers a dropdown of the labelled
-  values (above).
+- The transmit panel's signals table renders enum signals as a
+  combobox of labelled values (above).
 - A plot area that contains *exactly one* signal with a value table
   switches to **enum mode**: the line is rendered stepped (no
   interpolation between codes) and the y-axis ticks become symbolic

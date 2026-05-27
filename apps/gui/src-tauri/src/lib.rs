@@ -207,6 +207,9 @@ pub fn run() {
             sample_signals,
             transmit_frame,
             list_value_tables,
+            encode_frame,
+            describe_message,
+            decode_frame,
             fetch_system_log,
             clear_system_log,
             fetch_notes,
@@ -1842,6 +1845,183 @@ fn list_value_tables(
     Vec::new()
 }
 
+/// Run a batch of signal edits through
+/// [`cannet_dbc::Database::encode_frame`] against the first DBC that
+/// claims the `(message_id, extended)` pair. Returns the updated
+/// payload bytes plus any signals the encoder couldn't place.
+///
+/// The transmit panel calls this on every signal-table edit: it passes
+/// the current `dataHex` (decoded to bytes) and the signal that
+/// changed; the host returns the new bytes which the panel writes back
+/// into `dataHex`. Partial encode means an unrelated signal in the
+/// same payload (or a non-DBC-mapped byte — CRC, sequence count,
+/// padding) is preserved across the call.
+///
+/// Returns `Err` only on infrastructure faults (mutex poisoned, no
+/// DBC matches the id). A signal name with no match on the resolved
+/// message lands in the `skipped` list instead — same shape as a
+/// successful response. The frontend treats "no DBC matches" as
+/// "stay in raw-bytes mode."
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn encode_frame(
+    state: State<'_, AppState>,
+    message_id: u32,
+    extended: bool,
+    signals: Vec<ipc::EncodeFrameSignal>,
+    base: Vec<u8>,
+) -> Result<ipc::EncodeFrameResponse, String> {
+    encode_frame_inner(state.inner(), message_id, extended, &signals, base)
+}
+
+/// Return the rich descriptor for one DBC message (signals, range,
+/// mux indicator, …) — what the transmit panel needs to render the
+/// signals table without reimplementing DBC walking on the frontend.
+/// Returns `None` if no DBC matches the id.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn describe_message(
+    state: State<'_, AppState>,
+    message_id: u32,
+    extended: bool,
+) -> Option<ipc::MessageDescriptorRecord> {
+    describe_message_inner(state.inner(), message_id, extended)
+}
+
+fn describe_message_inner(
+    state: &AppState,
+    message_id: u32,
+    extended: bool,
+) -> Option<ipc::MessageDescriptorRecord> {
+    let id = if extended {
+        cannet_core::CanId::extended(message_id).ok()?
+    } else {
+        cannet_core::CanId::standard(message_id).ok()?
+    };
+    let dbs = state.databases.lock().expect("databases mutex poisoned");
+    for loaded in dbs.iter() {
+        if let Some(desc) = loaded.db.describe_message(id) {
+            let signals: Vec<ipc::SignalDescriptorRichRecord> = desc
+                .signals
+                .into_iter()
+                .map(|s| ipc::SignalDescriptorRichRecord {
+                    name: s.name,
+                    unit: s.unit,
+                    factor: s.factor,
+                    offset: s.offset,
+                    min: s.min,
+                    max: s.max,
+                    size: s.size,
+                    signed: s.signed,
+                    mux: match s.mux {
+                        cannet_dbc::SignalMux::Plain => ipc::SignalMuxRecord::Plain,
+                        cannet_dbc::SignalMux::Multiplexor => ipc::SignalMuxRecord::Multiplexor,
+                        cannet_dbc::SignalMux::Multiplexed { selector } => {
+                            ipc::SignalMuxRecord::Multiplexed { selector }
+                        }
+                        cannet_dbc::SignalMux::MultiplexorAndMultiplexed { selector } => {
+                            ipc::SignalMuxRecord::MultiplexorAndMultiplexed { selector }
+                        }
+                    },
+                    float_kind: match s.float_kind {
+                        cannet_dbc::FloatKind::Integer => "integer",
+                        cannet_dbc::FloatKind::Float32 => "float32",
+                        cannet_dbc::FloatKind::Float64 => "float64",
+                    },
+                    has_value_table: s.has_value_table,
+                })
+                .collect();
+            return Some(ipc::MessageDescriptorRecord {
+                name: desc.name,
+                expected_len: desc.expected_len,
+                is_fd: desc.is_fd,
+                brs: desc.brs,
+                uses_extended_mux: desc.uses_extended_mux,
+                signals,
+            });
+        }
+    }
+    None
+}
+
+/// Decode the current payload bytes of a hypothetical (panel-side)
+/// frame through the first DBC that claims `(message_id, extended)`.
+/// Same decoded-signal shape the trace view uses, but the frame
+/// doesn't need to be in the trace store.
+///
+/// Returns `None` if no DBC matches the id.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn decode_frame(
+    state: State<'_, AppState>,
+    message_id: u32,
+    extended: bool,
+    data: Vec<u8>,
+) -> Option<ipc::DecodedFrameRecord> {
+    decode_frame_inner(state.inner(), message_id, extended, &data)
+}
+
+fn decode_frame_inner(
+    state: &AppState,
+    message_id: u32,
+    extended: bool,
+    data: &[u8],
+) -> Option<ipc::DecodedFrameRecord> {
+    let id = if extended {
+        cannet_core::CanId::extended(message_id).ok()?
+    } else {
+        cannet_core::CanId::standard(message_id).ok()?
+    };
+    let dbs = state.databases.lock().expect("databases mutex poisoned");
+    for loaded in dbs.iter() {
+        if let Some(decoded) = loaded.db.decode_raw(id, data) {
+            return Some(ipc::DecodedFrameRecord {
+                name: decoded.name.to_string(),
+                signals: decoded.signals.iter().map(signal_to_wire).collect(),
+            });
+        }
+    }
+    None
+}
+
+fn encode_frame_inner(
+    state: &AppState,
+    message_id: u32,
+    extended: bool,
+    signals: &[ipc::EncodeFrameSignal],
+    base: Vec<u8>,
+) -> Result<ipc::EncodeFrameResponse, String> {
+    let id = if extended {
+        cannet_core::CanId::extended(message_id).map_err(|e| format!("invalid extended id: {e}"))?
+    } else {
+        cannet_core::CanId::standard(message_id).map_err(|e| format!("invalid standard id: {e}"))?
+    };
+    let dbs = state.databases.lock().expect("databases mutex poisoned");
+    let mut bytes = base;
+    let signal_pairs: Vec<(&str, f64)> = signals
+        .iter()
+        .map(|s| (s.name.as_str(), s.physical))
+        .collect();
+    for loaded in dbs.iter() {
+        if let Some(report) = loaded.db.encode_frame(id, &signal_pairs, &mut bytes) {
+            let skipped = report
+                .skipped
+                .into_iter()
+                .map(|s| ipc::EncodeFrameSkipped {
+                    name: s.name,
+                    reason: match s.reason {
+                        cannet_dbc::SkipReason::SignalNotFound => "signal_not_found",
+                        cannet_dbc::SkipReason::BaseTooShort => "base_too_short",
+                        cannet_dbc::SkipReason::SizeOutOfRange => "size_out_of_range",
+                    },
+                })
+                .collect();
+            return Ok(ipc::EncodeFrameResponse { bytes, skipped });
+        }
+    }
+    Err(format!("no DBC matches id 0x{message_id:X} (extended={extended})"))
+}
+
 fn signal_to_wire(sig: &DecodedSignal<'_>) -> SignalRecord {
     SignalRecord {
         name: sig.name.to_string(),
@@ -2061,6 +2241,64 @@ mod tests {
         assert_eq!(tail.last().map(|r| r.index), Some(9));
         // Entirely past the end -> empty.
         assert!(collect_trace_records(&state, 20, 30).is_empty());
+    }
+
+    #[test]
+    fn encode_frame_inner_writes_signal_bits_through_first_matching_dbc() {
+        // Two-byte signal `Sig` lives in byte 0 (factor 1, offset 0).
+        // Encoding physical=42 writes byte 0 = 42 and leaves the rest
+        // of base alone.
+        let state = test_state();
+        let dbc = tiny_dbc(256, "M", "Sig");
+        *state.databases.lock().unwrap() = vec![loaded("any.dbc", &dbc)];
+        let base = vec![0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11];
+        let resp = encode_frame_inner(
+            &state,
+            256,
+            false,
+            &[ipc::EncodeFrameSignal {
+                name: "Sig".into(),
+                physical: 42.0,
+            }],
+            base,
+        )
+        .unwrap();
+        assert!(resp.skipped.is_empty());
+        assert_eq!(resp.bytes[0], 42);
+        // Bytes 1..8 preserved.
+        assert_eq!(
+            &resp.bytes[1..],
+            &[0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11]
+        );
+    }
+
+    #[test]
+    fn encode_frame_inner_reports_unknown_signal_in_skipped() {
+        let state = test_state();
+        let dbc = tiny_dbc(256, "M", "Sig");
+        *state.databases.lock().unwrap() = vec![loaded("any.dbc", &dbc)];
+        let resp = encode_frame_inner(
+            &state,
+            256,
+            false,
+            &[ipc::EncodeFrameSignal {
+                name: "NotThere".into(),
+                physical: 0.0,
+            }],
+            vec![0u8; 8],
+        )
+        .unwrap();
+        assert_eq!(resp.skipped.len(), 1);
+        assert_eq!(resp.skipped[0].name, "NotThere");
+        assert_eq!(resp.skipped[0].reason, "signal_not_found");
+    }
+
+    #[test]
+    fn encode_frame_inner_errors_when_no_dbc_matches() {
+        let state = test_state();
+        // No DBCs loaded.
+        let err = encode_frame_inner(&state, 0x123, false, &[], vec![0u8; 8]).unwrap_err();
+        assert!(err.contains("no DBC matches"));
     }
 
     #[test]

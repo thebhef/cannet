@@ -8,7 +8,11 @@
       "Bash(python -m pytest -x -q)",
       "Bash(python -m pytest tests/test_pump_batching.py tests/test_enumeration.py -x -v)",
       "Bash(python -m pytest tests/test_pump_batching.py tests/test_enumeration.py -x -v)",
-      "Bash(cargo test *)"
+      "Bash(cargo test *)",
+      "Bash(cargo clippy *)",
+      "Bash(pnpm --dir apps/gui test)",
+      "Bash(pnpm --dir apps/gui build)",
+      "Bash(cargo build *)"
     ]
   }
 }
