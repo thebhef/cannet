@@ -56,34 +56,6 @@ and absorbed into Phase 11.
   cross-check that runs without C++ toolchain. ~30 KB binary
   per file, expect ~5 files covering classic / FD / error / mixed
   channels / big payloads.
-- `[ui]` **Element display names need one model-owned source of truth
-  and a shared resolver, used by every view.** Today each view derives
-  an element's label independently and they disagree — basically every
-  view has this problem, so fix it structurally rather than per-view.
-  `trace` / `plot` / `transmit` `ProjectElement`s
-  ([types.ts:146-148](apps/gui/src/types.ts#L146-L148)) carry no `name`
-  field at all — only `filter` does
-  ([types.ts:152](apps/gui/src/types.ts#L152)) — so the dockview title
-  bar fabricates one from a monotonic counter held in a React ref
-  (`Trace ${panelCounterRef.current}` —
-  [App.tsx:1067](apps/gui/src/App.tsx#L1067),
-  [App.tsx:1080](apps/gui/src/App.tsx#L1080)) that is not persisted on
-  the element or visible to any other view, while the graph view
-  labels the same node `${capitalise(el.kind)} ${shortId(el.id)}`
-  ([projectGraph.ts:134](apps/gui/src/projectGraph.ts#L134)) and the
-  project panel uses a static per-kind string `PANEL_TITLE[el.kind]`
-  ([ProjectPanel.tsx:24](apps/gui/src/ProjectPanel.tsx#L24)). One
-  element reads "Trace 1" in the title bar, "Trace a3f2b1" in the
-  graph, and a bare "Trace" in the project panel, and none of them is
-  editable. Fix once, structurally: every element kind carries a
-  model-owned `name` (filter / bus already do — make it uniform),
-  defaulted on creation and editable in one place (the project panel
-  already inline-renames buses —
-  [ProjectPanel.tsx:203](apps/gui/src/ProjectPanel.tsx#L203)); add a
-  single shared resolver (e.g. `elementLabel(el)`) that every view —
-  title bar, project panel, graph, and any view added later — calls
-  instead of rolling its own. A new view then gets correct,
-  consistent, renameable labels for free.
 
 ### CI / checks
 
@@ -106,11 +78,6 @@ trip over it.
 
 ### Trace view
 
-- `[ui]` trace view: dock / undock as a separate window. (Resizable and
-  hideable columns folded into Phase 3; tear-out into a separate OS window
-  stays here — Phase 3 docking is within the single main window.)
-- `[ui]` trace view: list decoded signals on their own lines under the
-  message row instead of expand-to-show.
 - `[ui]` `cannet-gui`: **bitfield message visualizer**. Render a CAN
   message as its raw bits laid out as a grid (8×N cells, one per bit),
   coloured / lit by current value, with DBC-derived signal overlays
@@ -120,17 +87,6 @@ trip over it.
   or as a small standalone panel for watching one ID's status flags.
   Useful for messages that pack many flags into a byte where the bare
   decoded-signal list is harder to read at a glance.
-- `[ui]` `cannet-gui` (`ByIdPanel`): tighten the by-ID snapshot for a
-  paused/stopped trace. Today it reads the host's *global*
-  latest-frame-per-id index (`fetch_latest_by_id(since)`), so for a
-  trace whose `end` is below the buffer's tip a row can show an id's
-  occurrence *after* the trace stopped, and the freeze snapshot can
-  include a frame or two received between the pause/stop click and the
-  final refresh. Fix: pass the window's `end` too and have the host
-  return the latest of each id within `[since, end)` — walking
-  `frames[since..end]` backwards rather than reading the latest index.
-  (Surfaced reviewing the trace-controls / by-ID work; harmless for the
-  common "running" case.)
 - `[ui]` trace view (`TraceView.tsx`): under a fast (unlimited-rate)
   stream, scrolling up doesn't reliably leave auto-scroll and a parked
   panel can be yanked back to the live tail — the auto-scroll re-pin
@@ -149,19 +105,6 @@ trip over it.
 
 ### Plot panel
 
-- `[feat]` `cannet-gui` plot panel: **manual** per-*trace* y controls —
-  offset / gain (so the user can override the per-trace auto-normalise
-  that ships today) and log scaling. The auto-norm is implemented as a
-  per-trace gain/offset applied just before draw, so the UI plumbing is
-  "expose those numbers"; uPlot also supports multiple stacked y-axes
-  if that turns out to be the better UX for "I want to read absolute
-  values off the axis" instead of normalised positions.
-- `[feat]` `cannet-gui` plot panel: triggers — edge / level /
-  value-match on a chosen signal that freeze the view and emit an event
-  marker (into the plot's event list, and later the trace). The
-  event-line rendering already exists; the trigger engine doesn't.
-- `[feat]` `cannet-gui` plot panel: CSV / image export of the visible
-  window or the cursor span.
 - `[feat]` `cannet-gui` plot panel: enum rendering for multi-signal /
   mixed areas. Phase 5 only switches to stepped + symbolic when an
   area shows exactly one signal with a `VAL_` table — that's the
@@ -170,24 +113,6 @@ trip over it.
   the same axis, both want a different layout (multiple y-axes /
   per-signal step overlays). Pick this up alongside the per-trace
   y offset / gain work, which already needs the same plumbing.
-- `[feat]` `cannet-gui`: drag a decoded signal *into* a plot from
-  elsewhere — a trace panel's expanded-row signal grid, the by-ID
-  table. Make those rows `draggable` carrying the same
-  `application/x-cannet-plot-signal` payload (a `SignalRef`) the plot
-  panel's signal rows use; a plot area is already a drop target. (Today
-  you add signals only via the plot's "add signal…" dropdown or by
-  dragging between plot panels.)
-- `[feat]` `cannet-gui` plot panel: drag a *plot area* (not just a
-  signal) between plot panels — re-order areas within a panel and move /
-  copy a whole area (its signals + y-range) to another plot panel.
-  Today only individual signal rows are draggable; the area's
-  drag-handle would carry the area config the same way.
-- `[ui]` `cannet-gui` plot panel: pick a trace's plot colour from a
-  colour dialog on right-click of its swatch (today the swatch toggles
-  hidden on left-click and colours are assigned round-robin from a fixed
-  palette on add). Right-click → a small swatch-grid / `<input
-  type="color">` popover; the chosen colour is sticky like the
-  auto-assigned one.
 
 ### Transmit panel
 
@@ -214,14 +139,6 @@ trip over it.
   refactor (host-side periodic scheduler + signal-to-bytes encoding
   in `cannet-dbc`); revisit after that lands and drop this item if
   the refactor covers it.
-- `[feat]` `cannet-gui` transmit panel: proper signal-to-bytes
-  encoding. Phase 5 surfaces enum dropdowns and lets the user copy a
-  picked raw value into the payload as a single byte, but per-signal
-  bit-pack encoding (factor / offset / endianness, multi-byte signals,
-  multiplexed messages) lives in `cannet-dbc` and isn't exposed
-  yet. Cleanly the inverse of `cannet_dbc::Database::decode` and
-  belongs there; the GUI host gains an `encode_frame` command that
-  the panel calls instead of building hex by hand.
 - `[feat]` `cannet-gui` transmit panel: top level start/stop button in message list view
 
 ### Cursors and markers
@@ -267,12 +184,6 @@ trip over it.
   panel shows its own re-sample rate now; generalise that to a small
   always-available indicator so other panels' costs are visible too.
   Useful while tuning the trace virtualizer and any future heavy view.
-- `[ui]` `cannet-gui`: dragging the divider to resize a plot panel vs.
-  an adjacent trace panel — confirm dockview's split-resize works for
-  the plot panel (it's a normal dockview panel, so it should once they
-  sit in separate groups rather than tabbed together); if a plot-panel
-  CSS rule (`min-height` chains, the flex-filled areas) is fighting it,
-  fix that. (Reported as not working; not yet reproduced here.)
 - `[ui]` GUI-wide visual restyle: adopt the dark "scope" visual
   language from `plans/plot-panel-reference.html` (the prototype's colour
   variables, monospace type scale, panel chrome, control styling) across
@@ -280,19 +191,6 @@ trip over it.
   has its own ad-hoc styling in `apps/gui/src/index.css`. Approved in
   principle; do it as one deliberate pass once the plot panel's own
   styling has settled, not piecemeal.
-- `[feat]` `cannet-gui`: VS Code-style command palette (Cmd/Ctrl+
-  Shift+P) for keyboard-driven access to toolbar actions
-  (Open BLF…, Add DBC…, Connect / Disconnect, Clear, Go to row,
-  Save Capture…). Useful once the toolbar grows past a single line
-  in Phase 3.
-- `[feat]` `cannet-gui`: "Go to row…" navigation
-  (Cmd/Ctrl+G) — type an absolute index, the trace view scrolls
-  there. Especially valuable past ~730k rows where the scaled
-  scrollbar's per-pixel resolution gets coarse.
-- `[feat]` `cannet-gui` math channels — derived signals computed from
-  other signals (sum, diff, scale, filter, …). Useful to the plot panel,
-  the transmit panel, and a future scripting surface, so it may outgrow
-  plotting; scope it on its own when picked up.
 
 ### Graph view (and bus topology)
 
@@ -359,16 +257,6 @@ next pass on this surface can address them as one piece.
 
 ### Packaging and naming
 
-- `[packaging]` end-user `uv` fetch mechanism: pick between an
-  installer post-step and a first-run host downloader, and
-  implement. Per [ADR 0015](../docs/adr/0015-fetched-runtime-binaries.md),
-  the binary is fetched, not committed or bundled; the runtime
-  lookup chain (`tools/uv/uv` → `PATH` `uv` → `python3` fallback)
-  stays unchanged, only how `tools/uv/uv` gets populated on an
-  end-user machine. Today `scripts/fetch-uv.sh` is the dev-side
-  fetch; the end-user-side fetch is the open work. See Phase 19
-  "Third-party runtime tool fetching strategy" for the two
-  candidate mechanisms.
 - `[naming]` `sidecar.rs` internal identifiers `LaunchPath::BundledUv`
   and `bundled_uv_path()` predate the "fetched, not bundled" decision
   and should be renamed (e.g. `LocalUv` / `local_uv_path`) for
