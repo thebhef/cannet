@@ -288,7 +288,8 @@ export interface DbcContentRecord {
 
 /// One message row inside a [`DbcContentRecord`]. Every text field
 /// is inlined so the fuzzy matcher (Phase 12 picks `fzf-for-js`) has
-/// no lookups to do on its own.
+/// no lookups to do on its own. The layout / FD / mux metadata
+/// powers the discovery panel's per-message detail view.
 export interface DbcMessageContentRecord {
   messageId: number;
   extended: boolean;
@@ -296,21 +297,60 @@ export interface DbcMessageContentRecord {
   /// Empty when the DBC has no `CM_ BO_` comment for this message
   /// — empty, not absent, so the search has no nil case.
   comment: string;
+  /// `BO_` declared payload length in bytes.
+  expectedLen: number;
+  /// CAN-FD message? (`VFrameFormat` 14/15, or `expectedLen > 8`
+  /// fallback.)
+  isFd: boolean;
+  /// CAN-FD BRS — false on classic frames.
+  brs: boolean;
+  /// True when any signal uses nested / extended multiplexing.
+  usesExtendedMux: boolean;
   attributes: DbcAttributeRecord[];
   signals: DbcSignalContentRecord[];
 }
 
 /// One signal row inside a [`DbcMessageContentRecord`]. Kept in
-/// declared order — matches the DBC author's bit-layout intent.
+/// `SG_` declared order — matches the DBC author's bit-layout
+/// intent. Carries every per-signal field the discovery panel
+/// needs to display (bit layout, scale, range, mux, float kind,
+/// attributes, value table, comment).
 export interface DbcSignalContentRecord {
   name: string;
   unit: string;
   comment: string;
+  /// First bit of the signal in the payload.
+  startBit: number;
+  /// Width in bits (1..=64).
+  length: number;
+  /// `little` (Intel) or `big` (Motorola).
+  byteOrder: "little" | "big";
+  signed: boolean;
+  /// `physical = raw * factor + offset`.
+  factor: number;
+  offset: number;
+  /// DBC-declared physical range. `min === max` indicates the DBC
+  /// declared `[0|0]` (no constraint); the renderer should fall
+  /// back to a `factor / offset / length / signed` derivation.
+  min: number;
+  max: number;
+  /// Multiplexor / multiplexed-arm marker.
+  mux: DbcSignalMux;
+  /// `integer` / `float32` / `float64` (from `SIG_VALTYPE_`).
+  floatKind: "integer" | "float32" | "float64";
   attributes: DbcAttributeRecord[];
   /// `VAL_` table rows in raw-ascending order. Empty when the signal
   /// has no value table.
   valueTable: ValueTableEntryRecord[];
 }
+
+/// Mux marker for a DBC signal. Mirrors the host's `SignalMuxRecord`
+/// — same `{kind, selector?}` shape as the transmit panel uses.
+export type DbcSignalMux =
+  | { kind: "plain" }
+  | { kind: "multiplexor" }
+  | { kind: "multiplexed"; selector: number }
+  | { kind: "multiplexor_and_multiplexed"; selector: number };
 
 /// One `BA_ "<name>" … <value>` attribute pair, stringified on the
 /// host so both display and fuzzy search work without per-variant

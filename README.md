@@ -223,12 +223,23 @@ lists the elements — closing a panel doesn't destroy its element,
 reopen or remove it from there. **Project panel** toggles the project
 panel itself (it's a show/hide singleton). **DBC panel** opens (or
 focuses, if it's already open) the discovery panel — a
-tree-with-fuzzy-search over every loaded DBC: type any fragment of a
+tree-with-fuzzy-search over every loaded DBC, grouped by bus
+(`bus → DBC → message → signal`; unscoped DBCs appear under each
+bus group labelled "applies to all buses"). Type any fragment of a
 signal name, comment, value-table label, message id (hex or decimal),
 or attribute, and the matching rows surface with their ancestors
-auto-expanded and unrelated rows dimmed. Singleton like the project
-panel, and read-only (DBCs are added / removed from the project panel,
-not from here). New panels arrive as a tab
+auto-expanded and unrelated rows dimmed. The toolbar's **details**
+toggle reveals the full per-signal detail (bit positions, scale,
+range, mux indicator, float kind, attributes, value table) and
+per-message detail (length, FD/BRS, mux flag, attributes). Drag a
+signal or message row onto a plot panel to add it as a series, or onto
+the transmit panel to create a new TX frame for that message;
+multi-select (click / Shift-click / Cmd-Ctrl-click) drags the whole
+selection at once. The host watches every loaded DBC file and
+auto-reloads the in-memory copy when the file changes on disk — no
+need to click Reload after editing a DBC in another tool. Singleton
+like the project panel, and read-only (DBCs are added / removed from
+the project panel, not from here). New panels arrive as a tab
 in the active group — drag a
 panel by its tab and drop it against an edge of the area to split it
 side-by-side, or onto another panel to tab them together. Each trace

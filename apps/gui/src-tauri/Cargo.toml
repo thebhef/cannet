@@ -36,6 +36,11 @@ tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 # in-process ring the System Messages panel renders.
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "registry"] }
+# Phase 12: filesystem watcher for loaded DBC files — auto-reload on
+# change so the GUI stays current with an editor saving the file
+# next door. Default backend wraps the OS-native APIs (FSEvents,
+# inotify, ReadDirectoryChangesW).
+notify = { version = "8", default-features = false, features = ["macos_kqueue"] }
 
 [dev-dependencies]
 # Phase 9: round-trip the Save Capture writer through real files

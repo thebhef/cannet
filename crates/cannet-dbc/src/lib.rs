@@ -14,8 +14,8 @@ use std::collections::HashMap;
 
 use cannet_core::CanFrame;
 use can_dbc::{
-    AttributeValue, Comment, Dbc, MessageId, MultiplexIndicator, NumericValue, Signal,
-    SignalExtendedValueType, ValueType,
+    AttributeValue, ByteOrder as CanDbcByteOrder, Comment, Dbc, MessageId, MultiplexIndicator,
+    NumericValue, Signal, SignalExtendedValueType, ValueType,
 };
 
 /// A parsed DBC database, indexed for fast frame lookup.
@@ -356,23 +356,63 @@ impl Database {
             .iter()
             .map(|(id, entry)| {
                 let (message_id, extended) = message_id_parts(*id);
+                let mut uses_extended_mux = false;
+                let signals: Vec<DbcSignalContent> = entry
+                    .signals
+                    .iter()
+                    .map(|s| {
+                        let mux = match s.signal.multiplexer_indicator {
+                            MultiplexIndicator::Plain => SignalMux::Plain,
+                            MultiplexIndicator::Multiplexor => SignalMux::Multiplexor,
+                            MultiplexIndicator::MultiplexedSignal(sel) => {
+                                SignalMux::Multiplexed { selector: sel }
+                            }
+                            MultiplexIndicator::MultiplexorAndMultiplexedSignal(sel) => {
+                                uses_extended_mux = true;
+                                SignalMux::MultiplexorAndMultiplexed { selector: sel }
+                            }
+                        };
+                        let float_kind = match s.extended_type {
+                            SignalExtendedValueType::IEEEfloat32Bit => FloatKind::Float32,
+                            SignalExtendedValueType::IEEEdouble64bit => FloatKind::Float64,
+                            SignalExtendedValueType::SignedOrUnsignedInteger => {
+                                FloatKind::Integer
+                            }
+                        };
+                        let byte_order = match s.signal.byte_order {
+                            CanDbcByteOrder::LittleEndian => ByteOrder::Little,
+                            CanDbcByteOrder::BigEndian => ByteOrder::Big,
+                        };
+                        DbcSignalContent {
+                            name: s.signal.name.clone(),
+                            unit: s.signal.unit.clone(),
+                            comment: s.comment.clone(),
+                            start_bit: u32::try_from(s.signal.start_bit).unwrap_or(0),
+                            length: u32::try_from(s.signal.size).unwrap_or(0),
+                            byte_order,
+                            signed: s.signal.value_type == ValueType::Signed,
+                            factor: s.signal.factor,
+                            offset: s.signal.offset,
+                            min: numeric_to_f64(s.signal.min),
+                            max: numeric_to_f64(s.signal.max),
+                            mux,
+                            float_kind,
+                            attributes: s.attributes.clone(),
+                            value_table: s.value_table.clone(),
+                        }
+                    })
+                    .collect();
                 DbcMessageContent {
                     message_id,
                     extended,
                     name: entry.name.clone(),
                     comment: entry.comment.clone(),
+                    expected_len: entry.expected_len,
+                    is_fd: entry.is_fd,
+                    brs: entry.brs,
+                    uses_extended_mux,
                     attributes: entry.attributes.clone(),
-                    signals: entry
-                        .signals
-                        .iter()
-                        .map(|s| DbcSignalContent {
-                            name: s.signal.name.clone(),
-                            unit: s.signal.unit.clone(),
-                            comment: s.comment.clone(),
-                            attributes: s.attributes.clone(),
-                            value_table: s.value_table.clone(),
-                        })
-                        .collect(),
+                    signals,
                 }
             })
             .collect();
@@ -937,6 +977,10 @@ pub struct SignalDescriptor {
 /// fuzzy search has to match against is inlined as plain owned
 /// strings.
 #[derive(Debug, Clone, PartialEq)]
+// `extended`, `is_fd`, `brs`, and `uses_extended_mux` are independent
+// DBC-declared flags; collapsing them into an enum would erase the
+// fact that each comes from a different DBC attribute.
+#[allow(clippy::struct_excessive_bools)]
 pub struct DbcMessageContent {
     /// Raw CAN id of the message (29-bit if `extended`).
     pub message_id: u32,
@@ -949,6 +993,22 @@ pub struct DbcMessageContent {
     /// defines none — empty (not `Option::None`) so the panel's
     /// search can match against it without a nil check.
     pub comment: String,
+    /// Declared `BO_` payload length in bytes (`is_fd` is true for
+    /// CAN-FD messages whose declared length exceeds 8).
+    pub expected_len: usize,
+    /// `true` if the DBC marks this as a CAN-FD message
+    /// (`VFrameFormat` 14/15, or `expected_len > 8` as fallback).
+    /// The discovery panel surfaces this as a small "FD" badge.
+    pub is_fd: bool,
+    /// CAN-FD BRS (Bit Rate Switch) from the `GenMsgCANFDBRS`
+    /// attribute. Defaults to `true` for FD messages with no
+    /// attribute; always `false` for classic messages.
+    pub brs: bool,
+    /// `true` if any signal in this message uses nested / extended
+    /// multiplexing (`m<N>M`). The transmit panel falls back to
+    /// bytes-only editing for messages with this flag; the
+    /// discovery panel surfaces it as a hint next to the message id.
+    pub uses_extended_mux: bool,
     /// `BA_ "<name>" BO_ <id> <value>` per-message attribute values
     /// (excluding the long-symbol attributes — see the rustdoc on
     /// [`Database::dbc_content`]). Sorted by attribute name.
@@ -963,6 +1023,13 @@ pub struct DbcMessageContent {
 /// of the DBC discovery tree. Decoding / encoding still go through
 /// [`Database::decode`] / [`Database::encode_frame`] / the rich
 /// [`Database::describe_message`] view; this one is search-shaped.
+///
+/// Phase 12 polish surfaces every per-signal field the DBC declares
+/// so the discovery panel can show bit positions, scale, range, mux
+/// indicator, float kind, and signedness alongside the comments /
+/// attributes / value-table entries. The fields mirror
+/// [`SignalDescriptorRich`] (which serves the encoder / transmit
+/// path) plus the discovery-only extras.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DbcSignalContent {
     /// Resolved name (long-symbol applied).
@@ -971,6 +1038,30 @@ pub struct DbcSignalContent {
     pub unit: String,
     /// `CM_ SG_ <id> <name> "..."` comment. Empty when absent.
     pub comment: String,
+    /// `SG_` start bit (the first bit of the signal within the
+    /// payload). Combined with `length` and `byte_order` this fully
+    /// places the signal.
+    pub start_bit: u32,
+    /// Signal width in bits, `1..=64`.
+    pub length: u32,
+    /// `little` (Intel / `@1`) vs `big` (Motorola / `@0`).
+    pub byte_order: ByteOrder,
+    /// `+` (`unsigned`) vs `-` (`signed`) on the `SG_` line.
+    pub signed: bool,
+    /// Multiplier applied during decode: `raw * factor + offset`.
+    pub factor: f64,
+    /// Offset applied during decode (see `factor`).
+    pub offset: f64,
+    /// `SG_` declared minimum (physical units). DBCs frequently
+    /// declare `[0|0]` to mean "no constraint" — when `min == max`
+    /// the panel should derive a fallback from `factor/offset`.
+    pub min: f64,
+    /// `SG_` declared maximum (physical units). See `min`.
+    pub max: f64,
+    /// Multiplexor / multiplexed-arm marker.
+    pub mux: SignalMux,
+    /// `integer` / `float32` / `float64` — from `SIG_VALTYPE_`.
+    pub float_kind: FloatKind,
     /// `BA_ "<name>" SG_ <id> <name> <value>` attribute values.
     /// Sorted by attribute name.
     pub attributes: Vec<DbcAttribute>,
@@ -978,6 +1069,15 @@ pub struct DbcSignalContent {
     /// [`Database::value_table_for_signal`]. Empty when the signal
     /// has no value table.
     pub value_table: Vec<ValueTableEntry>,
+}
+
+/// Byte order on the wire for a single signal — Intel (little-endian)
+/// or Motorola (big-endian). Mirrors `can_dbc::ByteOrder` but lives
+/// in this crate so the discovery API doesn't leak the parser type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ByteOrder {
+    Little,
+    Big,
 }
 
 /// One `BA_ "<name>" … <value>` attribute pair, stringified for
@@ -1964,6 +2064,84 @@ VAL_ 256 Mode 0 "Park" 1 "Reverse" 2 "Neutral" 3 "Drive" ;
         let ext = content.iter().find(|m| m.name == "ExtendedMsg").unwrap();
         assert!(ext.extended);
         assert_eq!(ext.message_id, 0x98FF_0502 & 0x1FFF_FFFF);
+    }
+
+    #[test]
+    fn dbc_content_carries_message_layout_fields() {
+        // EngineData in SAMPLE_DBC is a classic 8-byte message; the
+        // discovery panel needs its expected_len, is_fd, brs,
+        // uses_extended_mux flags.
+        let db = Database::parse(SAMPLE_DBC).unwrap();
+        let content = db.dbc_content();
+        let engine = content.iter().find(|m| m.name == "EngineData").unwrap();
+        assert_eq!(engine.expected_len, 8);
+        assert!(!engine.is_fd);
+        assert!(!engine.brs);
+        assert!(!engine.uses_extended_mux);
+    }
+
+    #[test]
+    fn dbc_content_carries_signal_bit_layout() {
+        let db = Database::parse(SAMPLE_DBC).unwrap();
+        let content = db.dbc_content();
+        let engine = content.iter().find(|m| m.name == "EngineData").unwrap();
+        let speed = engine.signals.iter().find(|s| s.name == "EngineSpeed").unwrap();
+        assert_eq!(speed.start_bit, 0);
+        assert_eq!(speed.length, 16);
+        assert_eq!(speed.byte_order, ByteOrder::Little);
+        assert!(!speed.signed);
+        let be_signed = content
+            .iter()
+            .find(|m| m.name == "BigEndianMsg")
+            .unwrap()
+            .signals
+            .iter()
+            .find(|s| s.name == "BeSigned")
+            .unwrap();
+        assert_eq!(be_signed.byte_order, ByteOrder::Big);
+        assert!(be_signed.signed);
+    }
+
+    #[test]
+    fn dbc_content_carries_signal_factor_offset_and_range() {
+        let db = Database::parse(SAMPLE_DBC).unwrap();
+        let content = db.dbc_content();
+        let engine = content.iter().find(|m| m.name == "EngineData").unwrap();
+        let speed = engine.signals.iter().find(|s| s.name == "EngineSpeed").unwrap();
+        assert!((speed.factor - 0.25).abs() < 1e-9);
+        assert!((speed.offset - 0.0).abs() < 1e-9);
+        assert!((speed.min - 0.0).abs() < 1e-9);
+        assert!((speed.max - 16383.75).abs() < 1e-9);
+        let temp = engine.signals.iter().find(|s| s.name == "EngineTemp").unwrap();
+        assert!((temp.offset - -40.0).abs() < 1e-9);
+        assert!((temp.min - -40.0).abs() < 1e-9);
+        assert!((temp.max - 215.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn dbc_content_carries_mux_indicator() {
+        let db = Database::parse(SAMPLE_DBC).unwrap();
+        let content = db.dbc_content();
+        let muxed = content.iter().find(|m| m.name == "MuxedMsg").unwrap();
+        let switch = muxed.signals.iter().find(|s| s.name == "Mux").unwrap();
+        assert_eq!(switch.mux, SignalMux::Multiplexor);
+        let mode0 = muxed.signals.iter().find(|s| s.name == "Mode0Field").unwrap();
+        assert_eq!(mode0.mux, SignalMux::Multiplexed { selector: 0 });
+        let always = muxed.signals.iter().find(|s| s.name == "Always").unwrap();
+        assert_eq!(always.mux, SignalMux::Plain);
+    }
+
+    #[test]
+    fn dbc_content_carries_float_kind_from_sig_valtype() {
+        let db = Database::parse(SAMPLE_DBC).unwrap();
+        let content = db.dbc_content();
+        let floats = content.iter().find(|m| m.name == "FloatMsg").unwrap();
+        let lat = floats.signals.iter().find(|s| s.name == "Lat").unwrap();
+        // Lat is declared `SIG_VALTYPE_ 513 Lat : 1;` in SAMPLE_DBC.
+        assert_eq!(lat.float_kind, FloatKind::Float32);
+        let alt = floats.signals.iter().find(|s| s.name == "Alt").unwrap();
+        // Alt has no SIG_VALTYPE_ entry — falls through to integer.
+        assert_eq!(alt.float_kind, FloatKind::Integer);
     }
 
     #[test]

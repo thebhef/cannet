@@ -14,11 +14,34 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import type { DbcContentRecord, Bus, InterfaceBinding } from "./types";
 import { SIGNAL_DND_MIME, parseSignalDragData } from "./dragSignals";
 
+/// Defaults for the Phase-12-polish rich signal fields so the test
+/// fixtures stay concise while satisfying the full `DbcSignalContentRecord`
+/// shape.
+const SIGNAL_DEFAULTS = {
+  startBit: 0,
+  length: 8,
+  byteOrder: "little" as const,
+  signed: false,
+  factor: 1,
+  offset: 0,
+  min: 0,
+  max: 0,
+  mux: { kind: "plain" as const },
+  floatKind: "integer" as const,
+};
+const MESSAGE_DEFAULTS = {
+  expectedLen: 8,
+  isFd: false,
+  brs: false,
+  usesExtendedMux: false,
+};
+
 const DBC_CONTENT: DbcContentRecord[] = [
   {
     dbcPath: "/tmp/powertrain.dbc",
     messages: [
       {
+        ...MESSAGE_DEFAULTS,
         messageId: 256,
         extended: false,
         name: "EngineData",
@@ -26,14 +49,19 @@ const DBC_CONTENT: DbcContentRecord[] = [
         attributes: [{ name: "GenMsgCycleTime", value: "100" }],
         signals: [
           {
+            ...SIGNAL_DEFAULTS,
             name: "EngineSpeed",
+            length: 16,
+            factor: 0.25,
             unit: "rpm",
             comment: "Crankshaft RPM.",
             attributes: [],
             valueTable: [],
           },
           {
+            ...SIGNAL_DEFAULTS,
             name: "EngineTemp",
+            startBit: 16,
             unit: "degC",
             comment: "Coolant temperature.",
             attributes: [],
@@ -42,6 +70,7 @@ const DBC_CONTENT: DbcContentRecord[] = [
         ],
       },
       {
+        ...MESSAGE_DEFAULTS,
         messageId: 512,
         extended: false,
         name: "GearState",
@@ -49,6 +78,7 @@ const DBC_CONTENT: DbcContentRecord[] = [
         attributes: [],
         signals: [
           {
+            ...SIGNAL_DEFAULTS,
             name: "Mode",
             unit: "",
             comment: "Selected gear.",
@@ -69,6 +99,12 @@ vi.mock("@tauri-apps/api/core", () => ({
     if (cmd === "list_dbc_content") return DBC_CONTENT;
     return undefined;
   }),
+}));
+// `listen` is what the panel hooks up to receive `dbc-changed`
+// events from the host's filesystem watcher. The mock returns a
+// resolved no-op unsubscriber so the cleanup path runs cleanly.
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async () => () => {}),
 }));
 
 import { DbcPanel } from "./DbcPanel";
@@ -378,17 +414,131 @@ describe("DbcPanel", () => {
         <DbcPanel {...props} />
       </ProjectContext.Provider>,
     );
-    const msg = await screen.findByText("EngineData");
-    const chevron = msg.closest(".dbc-row")?.querySelector(".dbc-row-chevron") as HTMLElement;
+    // Per-bus tree grouping: a DBC scoped to two buses appears
+    // under each bus group, so EngineData renders twice — expand
+    // the first one to reveal its signals.
+    const allEng = await screen.findAllByText("EngineData");
+    expect(allEng.length).toBe(2);
+    const chevron = allEng[0]
+      .closest(".dbc-row")
+      ?.querySelector(".dbc-row-chevron") as HTMLElement;
     fireEvent.click(chevron);
-    const signalRow = (await screen.findByText("EngineSpeed")).closest(
-      ".dbc-row",
-    ) as HTMLElement;
+    const allEngineSpeed = await screen.findAllByText("EngineSpeed");
+    const signalRow = allEngineSpeed[0].closest(".dbc-row") as HTMLElement;
     const dt = makeFakeDataTransfer();
     fireEvent.dragStart(signalRow, { dataTransfer: dt });
     const refs = parseSignalDragData(dt.getData(SIGNAL_DND_MIME)).signals;
     expect(refs).toHaveLength(2);
     expect(refs.map((r) => r.busId).sort()).toEqual(["bus-a", "bus-b"]);
+  });
+
+  it("'details' toggle reveals bit layout, scale, range, value table for each signal", async () => {
+    renderPanel();
+    const eng = await screen.findByText("EngineData");
+    // Expand the message so the signals (and their detail blocks)
+    // are visible.
+    const chevron = eng.closest(".dbc-row")?.querySelector(".dbc-row-chevron") as HTMLElement;
+    fireEvent.click(chevron);
+    // No details block until the toggle is checked.
+    expect(screen.queryByText(/^bits 0/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText(/details/i));
+    // EngineSpeed: 16 bits at 0, factor 0.25 — the formatter prints
+    // "bits 0–15 (16)@1+" and "(0.25, 0)".
+    expect(await screen.findByText("bits 0–15 (16)@1+")).toBeInTheDocument();
+    expect(screen.getByText("(0.25, 0)")).toBeInTheDocument();
+    // Mode signal's value-table entries show up.
+    // Expand GearState first.
+    const gearChevron = screen
+      .getByText("GearState")
+      .closest(".dbc-row")
+      ?.querySelector(".dbc-row-chevron") as HTMLElement;
+    fireEvent.click(gearChevron);
+    expect(screen.getByText("0=Park")).toBeInTheDocument();
+    expect(screen.getByText("1=Drive")).toBeInTheDocument();
+  });
+
+  it("'details' toggle reveals message length / id / attributes", async () => {
+    renderPanel();
+    await screen.findByText("EngineData");
+    fireEvent.click(screen.getByLabelText(/details/i));
+    // EngineData id row: "0x100 (256)". Both messages have length
+    // "8 B" so look at the attribute-bearing message specifically.
+    expect(screen.getAllByText(/8 B/).length).toBeGreaterThanOrEqual(1);
+    // "0x100" appears both in the row meta (always) and in the
+    // details block — finding it twice is fine, finding it at all
+    // is what the toggle actually changes.
+    expect(screen.getAllByText(/0x100/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/\(256\)/)).toBeInTheDocument();
+    // The GenMsgCycleTime attribute is surfaced.
+    expect(screen.getByText("GenMsgCycleTime", { exact: false })).toBeInTheDocument();
+  });
+
+  it("search can match by bus name (e.g. 'chassis.brake')", async () => {
+    const ctx: ProjectContextValue = {
+      ...projectCtx,
+      buses: [
+        { id: "bus-a", name: "powertrain" },
+        { id: "bus-b", name: "chassis" },
+      ],
+      // powertrain.dbc scoped to bus-a only — so EngineData only
+      // lives under the 'powertrain' bus group, and a search for
+      // 'chassis' should NOT match it.
+      dbcBuses: { "/tmp/powertrain.dbc": ["bus-a"] },
+    };
+    const api = { updateParameters: vi.fn() };
+    const props = { params: {}, api } as unknown as Parameters<typeof DbcPanel>[0];
+    render(
+      <ProjectContext.Provider value={ctx}>
+        <DbcPanel {...props} />
+      </ProjectContext.Provider>,
+    );
+    await screen.findByText("powertrain");
+    const search = screen.getByLabelText("search DBC content");
+    // 'powertrain.engine' → EngineData under bus-a matches.
+    fireEvent.change(search, { target: { value: "powertrain.engine" } });
+    await waitFor(() => {
+      const row = screen.getByText("EngineData").closest(".dbc-row");
+      expect(row).not.toHaveClass("dbc-row-dim");
+    });
+    // 'chassis.engine' → no chassis-scoped EngineData → message
+    // row should be dim.
+    fireEvent.change(search, { target: { value: "chassis.engine" } });
+    await waitFor(() => {
+      const row = screen.getByText("EngineData").closest(".dbc-row");
+      expect(row).toHaveClass("dbc-row-dim");
+    });
+  });
+
+  it("groups the tree by bus when project buses are configured", async () => {
+    const ctx: ProjectContextValue = {
+      ...projectCtx,
+      buses: [
+        { id: "bus-a", name: "powertrain" },
+        { id: "bus-b", name: "chassis" },
+      ],
+      // powertrain.dbc is unscoped here — it should appear under
+      // BOTH bus groups, marked "applies to all buses".
+      dbcBuses: {},
+    };
+    const api = { updateParameters: vi.fn() };
+    const props = { params: {}, api } as unknown as Parameters<typeof DbcPanel>[0];
+    render(
+      <ProjectContext.Provider value={ctx}>
+        <DbcPanel {...props} />
+      </ProjectContext.Provider>,
+    );
+    // Both bus group rows are visible at the top.
+    expect(await screen.findByText("powertrain")).toBeInTheDocument();
+    expect(screen.getByText("chassis")).toBeInTheDocument();
+    // Unscoped DBC appears under both bus groups.
+    expect(screen.getAllByText("powertrain.dbc").length).toBe(2);
+    // The unscoped scope-label is rendered on each occurrence.
+    expect(screen.getAllByText(/applies to all buses/i).length).toBe(2);
+  });
+
+  it("collapses to '(All DBCs)' when the project has no buses configured", async () => {
+    renderPanel(); // projectCtx.buses === []
+    expect(await screen.findByText(/All DBCs/i)).toBeInTheDocument();
   });
 
   it("renders an empty-state message when no DBCs are loaded", async () => {

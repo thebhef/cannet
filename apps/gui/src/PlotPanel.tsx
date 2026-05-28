@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 
@@ -706,6 +707,18 @@ export function PlotPanel(props: IDockviewPanelProps) {
     }).then(setCatalog);
   }, [buses]);
   useEffect(refreshCatalog, [refreshCatalog, dbcPaths, buses]);
+
+  // Phase 12 follow-up: re-fetch the signal catalog when the host's
+  // filesystem watcher reports a DBC change. Filter-mode plot areas
+  // re-evaluate automatically off the new `catalog`.
+  useEffect(() => {
+    const unlisten = listen<string>("dbc-changed", () => {
+      refreshCatalog();
+    });
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
+  }, [refreshCatalog]);
 
   // --- area ops ---
   const addArea = useCallback(() => {
@@ -2791,7 +2804,12 @@ function PlotArea(p: PlotAreaProps) {
       onDragOver={(e) => {
         if (e.dataTransfer.types.includes(SIGNAL_DND_MIME)) {
           e.preventDefault();
-          e.dataTransfer.dropEffect = "move";
+          // `copy` shows the "+" cursor — matches the transmit
+          // panel's drop affordance and is the more useful signal
+          // ("you can drop here"). The actual move-vs-add decision
+          // happens at drop time via `sourcePanelId`, so the cursor
+          // doesn't have to match the post-drop semantics.
+          e.dataTransfer.dropEffect = "copy";
         }
       }}
       onDrop={(e) => {
@@ -2994,7 +3012,11 @@ function PlotArea(p: PlotAreaProps) {
                   if (e.dataTransfer.types.includes(SIGNAL_DND_MIME)) {
                     e.preventDefault();
                     e.stopPropagation();
-                    e.dataTransfer.dropEffect = "move";
+                    // Same rationale as the area-level dragOver:
+                    // "copy" gives the most legible "yes, drop here"
+                    // cursor across browsers / editors. The real
+                    // move-vs-add decision happens at drop time.
+                    e.dataTransfer.dropEffect = "copy";
                   }
                 }}
                 onDrop={(e) => {

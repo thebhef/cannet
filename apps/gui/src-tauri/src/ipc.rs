@@ -281,7 +281,10 @@ pub struct DbcContentRecord {
 
 /// One message row in a [`DbcContentRecord`] — fuzzy-search-shaped:
 /// every text field is owned + inlined so the JS-side matcher has
-/// nothing left to fetch.
+/// nothing left to fetch. The bit-layout / FD / mux / encoder
+/// metadata is also present so the discovery panel can show the
+/// full per-message detail without a second `describe_message`
+/// round-trip.
 #[derive(serde::Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct DbcMessageContentRecord {
@@ -291,6 +294,15 @@ pub struct DbcMessageContentRecord {
     /// `CM_ BO_` comment. Empty when absent — empty (not absent) so the
     /// search has nothing optional to special-case.
     pub comment: String,
+    /// Declared `BO_` payload length in bytes.
+    pub expected_len: usize,
+    /// `true` for CAN-FD messages (`VFrameFormat` 14/15, or
+    /// `expectedLen > 8` fallback).
+    pub is_fd: bool,
+    /// CAN-FD BRS (`GenMsgCANFDBRS`). False on classic frames.
+    pub brs: bool,
+    /// `true` if any signal uses nested / extended multiplexing.
+    pub uses_extended_mux: bool,
     /// `BA_ "<name>" BO_ <id> <value>` attribute values, sorted by name.
     pub attributes: Vec<DbcAttributeRecord>,
     pub signals: Vec<DbcSignalContentRecord>,
@@ -298,12 +310,34 @@ pub struct DbcMessageContentRecord {
 
 /// One signal row in a [`DbcMessageContentRecord`]. Stays in `SG_`
 /// declared order — preserves the DBC author's bit-layout intent.
+/// The bit-layout / scale / range / mux / float-kind fields mirror
+/// the rich-encoder shape so the discovery panel can show the same
+/// detail the transmit panel uses without a separate round-trip.
 #[derive(serde::Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct DbcSignalContentRecord {
     pub name: String,
     pub unit: String,
     pub comment: String,
+    /// First bit of the signal in the payload.
+    pub start_bit: u32,
+    /// Width in bits, 1..=64.
+    pub length: u32,
+    /// `little` (Intel / `@1`) or `big` (Motorola / `@0`).
+    pub byte_order: &'static str,
+    /// `+` / `-` flag on the `SG_` line — `true` for signed.
+    pub signed: bool,
+    /// `factor` / `offset` describe `physical = raw * factor + offset`.
+    pub factor: f64,
+    pub offset: f64,
+    /// DBC-declared physical range (`SG_ ... [min|max]`). When
+    /// `min == max` the DBC didn't set a useful range.
+    pub min: f64,
+    pub max: f64,
+    /// Multiplexor / multiplexed-arm marker.
+    pub mux: SignalMuxRecord,
+    /// `integer` / `float32` / `float64` (from `SIG_VALTYPE_`).
+    pub float_kind: &'static str,
     pub attributes: Vec<DbcAttributeRecord>,
     pub value_table: Vec<ValueTableEntryRecord>,
 }

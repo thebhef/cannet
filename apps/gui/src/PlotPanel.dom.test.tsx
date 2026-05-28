@@ -89,6 +89,12 @@ vi.mock("@tauri-apps/api/core", () => ({
     return undefined;
   }),
 }));
+// `listen` is hooked up by the filter-defined-areas / file-watcher
+// pathway for `dbc-changed`. The tests don't fire that event, but
+// the mount-time `listen()` call needs a resolved unsubscriber.
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async () => () => {}),
+}));
 
 import { PlotPanel } from "./PlotPanel";
 import { TraceDataContext, type TraceData } from "./traceData";

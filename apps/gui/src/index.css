@@ -2324,9 +2324,16 @@ header {
   width: 0.8rem;
   color: #64748b;
 }
+.dbc-row-bus .dbc-row-label {
+  color: #fbbf24;
+  font-weight: 600;
+}
 .dbc-row-dbc .dbc-row-label {
   color: #a5b4fc;
   font-weight: 600;
+}
+.dbc-row-scope {
+  font-style: italic;
 }
 .dbc-row-message .dbc-row-label {
   color: #cbd5e1;
@@ -2345,4 +2352,53 @@ header {
   font-style: italic;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Phase 12 polish: panel-wide "details" toggle + per-row detail block. */
+.dbc-panel-details-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: #cbd5e1;
+  font-size: 0.78rem;
+  cursor: pointer;
+  user-select: none;
+}
+.dbc-row-details {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+  color: #94a3b8;
+  padding-right: 0.5rem;
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid rgba(30, 41, 59, 0.5);
+}
+.dbc-details-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.15rem 0.7rem;
+  margin: 0;
+}
+.dbc-details-grid dt {
+  color: #64748b;
+  text-align: right;
+}
+.dbc-details-grid dd {
+  margin: 0;
+  color: #cbd5e1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dbc-details-aside {
+  color: #64748b;
+}
+.dbc-details-attr,
+.dbc-details-value {
+  display: inline-block;
+  margin-right: 0.6rem;
+}
+.dbc-details-attr em,
+.dbc-details-value {
+  color: #e2e8f0;
+  font-style: normal;
 }

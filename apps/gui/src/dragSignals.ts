@@ -69,7 +69,12 @@ export function setSignalDragData(
     SIGNAL_DND_MIME,
     JSON.stringify({ signals, sourcePanelId }),
   );
-  e.dataTransfer.effectAllowed = "move";
+  // `copyMove` lets a receiver use either dropEffect — plot panel
+  // shows "copy" (the more useful "drop here" cursor); other
+  // receivers can pick "move". With `effectAllowed = "move"` some
+  // browsers refuse the "copy" cursor and the drop-target gets
+  // the circle-slash "no drop" indicator instead.
+  e.dataTransfer.effectAllowed = "copyMove";
 }
 
 /// Parsed drag payload. `sourcePanelId` is `null` for the legacy

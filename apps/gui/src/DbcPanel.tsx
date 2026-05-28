@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { Fzf } from "fzf";
 
 import type {
   DbcContentRecord,
   DbcMessageContentRecord,
   DbcSignalContentRecord,
+  DbcSignalMux,
 } from "./types";
 import { useProjectContext } from "./projectContext";
 import {
@@ -44,6 +46,11 @@ interface PanelParams {
   /// Node ids the user has manually expanded (see `nodeId`). Persisted
   /// as an array; loaded back as a Set on mount.
   expanded?: unknown;
+  /// Panel-wide "show details" toggle (Phase 12 polish). When `true`,
+  /// each message / signal row renders a detail block underneath
+  /// showing bit layout, scale, range, mux, attributes, value table,
+  /// etc. — every DBC field we have a frontend representation for.
+  showDetails?: unknown;
 }
 
 function filterFromParams(raw: unknown): string {
@@ -59,24 +66,47 @@ function expandedFromParams(raw: unknown): Set<string> {
   return out;
 }
 
-/// Stable id for one tree node. The `path` component is the DBC file
-/// path the host returned in [`DbcContentRecord.dbcPath`] — stable
-/// across reloads of the same file. The id is the React key, the
-/// expand-state key, and the parent/ancestor lookup key.
-function dbcNodeId(path: string): string {
-  return `dbc:${path}`;
+function showDetailsFromParams(raw: unknown): boolean {
+  return typeof raw === "boolean" ? raw : false;
 }
-function messageNodeId(path: string, messageId: number, extended: boolean): string {
-  return `msg:${path}::${extended ? "x" : "s"}${messageId}`;
+
+/// Stable id for one tree node. The bus-prefix in every node id below
+/// the bus root scopes the rest — a DBC under bus-a is a distinct
+/// expand-state key from the same DBC under bus-b, so the user's
+/// expand/collapse choices per bus group survive a layout save.
+///
+/// Bus ids: `bus:<bus_id>` for a project bus, `bus:::unassigned` for
+/// the orphan group (DBCs scoped to no current bus), and `bus:::all`
+/// for the no-buses-configured fallback. The `:::` separator avoids
+/// collision with a literal bus id of "unassigned" or "all".
+function busNodeId(busId: string): string {
+  return `bus:${busId}`;
+}
+function dbcNodeId(busId: string, path: string): string {
+  return `dbc:${busId}::${path}`;
+}
+function messageNodeId(
+  busId: string,
+  path: string,
+  messageId: number,
+  extended: boolean,
+): string {
+  return `msg:${busId}::${path}::${extended ? "x" : "s"}${messageId}`;
 }
 function signalNodeId(
+  busId: string,
   path: string,
   messageId: number,
   extended: boolean,
   signalName: string,
 ): string {
-  return `sig:${path}::${extended ? "x" : "s"}${messageId}::${signalName}`;
+  return `sig:${busId}::${path}::${extended ? "x" : "s"}${messageId}::${signalName}`;
 }
+
+/// Sentinel bus ids. Real project bus ids are UUIDs, so the `:::`
+/// prefix can't collide.
+const UNASSIGNED_BUS_ID = ":::unassigned";
+const ALL_BUSES_BUS_ID = ":::all";
 
 /// Last path component for display — DBC file paths can get long; the
 /// basename is what the user actually recognises. Falls back to the
@@ -91,15 +121,23 @@ function basename(path: string): string {
 /// Concatenated search haystack for one node — every text fragment
 /// the phase-12 spec requires we match against, joined with spaces.
 /// fzf's matcher then does the fuzzy work over this single string.
-function messageHaystack(m: DbcMessageContentRecord): string {
+///
+/// `busPrefix` (when non-empty) is woven in as `${bus}.${msg}.${sig}`
+/// so queries like `chassis.BrakeStatus.Speed` (or fzf's abbreviation
+/// form `c.BrSt.Sp`, `c.brsps`, etc.) home in on a single (bus, message,
+/// signal) triple. Bus-prefix is empty for the sentinel groups
+/// ("(All DBCs)", "(Unassigned)") where there's no real bus context.
+function messageHaystack(busPrefix: string, m: DbcMessageContentRecord): string {
   const decId = m.messageId.toString(10);
   const hexId = `0x${m.messageId.toString(16).toUpperCase()}`;
   const attrs = m.attributes
     .map((a) => `${a.name}=${a.value}`)
     .join(" ");
-  return `${m.name} ${m.comment} ${decId} ${hexId} ${attrs}`.trim();
+  const dotted = busPrefix ? `${busPrefix}.${m.name}` : m.name;
+  return `${dotted} ${m.comment} ${decId} ${hexId} ${attrs}`.trim();
 }
 function signalHaystack(
+  busPrefix: string,
   m: DbcMessageContentRecord,
   s: DbcSignalContentRecord,
 ): string {
@@ -107,28 +145,44 @@ function signalHaystack(
     .map((e) => `${e.raw} ${e.label}`)
     .join(" ");
   const attrs = s.attributes.map((a) => `${a.name}=${a.value}`).join(" ");
-  // Inline the parent message's identity so a query like "EngineData"
-  // surfaces every signal under it, not just the message row.
-  return `${m.name} ${s.name} ${s.unit} ${s.comment} ${vals} ${attrs}`.trim();
+  const dotted = busPrefix
+    ? `${busPrefix}.${m.name}.${s.name}`
+    : `${m.name}.${s.name}`;
+  // The dotted form is the fzf-target shape — same as the
+  // filter-defined plot area target (ADR 0020). Other fields are
+  // appended so a query against units / comments / value-table
+  // labels / attribute names still hits.
+  return `${dotted} ${s.unit} ${s.comment} ${vals} ${attrs}`.trim();
+}
+
+/// Bus-name prefix used when building haystacks. Empty for sentinel
+/// groups (no real bus context to disambiguate against).
+function busSearchPrefix(g: BusGroup): string {
+  if (g.busId === ALL_BUSES_BUS_ID || g.busId === UNASSIGNED_BUS_ID) {
+    return "";
+  }
+  return g.label;
 }
 
 /// One row the panel renders. Carries `dim` (filter active, not in
 /// match set) and `expanded`/`hasChildren` flags so the row renderer
-/// is a flat map. The `kind` discriminator picks between the three
-/// row layouts; signal / message rows carry their owning DBC path
-/// so the drag handler can resolve per-DBC bus scoping at drag time.
+/// is a flat map. The `kind` discriminator picks between the four
+/// row layouts; signal / message / dbc rows carry their owning DBC
+/// path so the drag handler can resolve per-DBC bus scoping at drag
+/// time.
 interface RenderRow {
   id: string;
   depth: number;
   expanded: boolean;
   hasChildren: boolean;
   dim: boolean;
-  /// True when this row is in the panel's selection set. DBC rows are
-  /// never selectable (clicking expands/collapses them); message /
-  /// signal rows can be selected and dragged.
+  /// True when this row is in the panel's selection set. Bus and DBC
+  /// rows are never selectable (clicking expands/collapses them);
+  /// message / signal rows can be selected and dragged.
   selected: boolean;
   kind:
-    | { tag: "dbc"; path: string }
+    | { tag: "bus"; busId: string; label: string; unscopedNote: boolean }
+    | { tag: "dbc"; path: string; scopeLabel: string | null }
     | { tag: "message"; dbcPath: string; message: DbcMessageContentRecord }
     | {
         tag: "signal";
@@ -140,63 +194,158 @@ interface RenderRow {
       };
 }
 
-/// Walk the content tree, applying `effectiveExpanded` (= user's
-/// expand state ∪ ancestors-of-matches when filtering), and produce
-/// a flat row list ready to render. `matchSet` is the fzf-matched
-/// node ids; rows not in it are dimmed (when `filterActive`).
-/// `selection` flips rows' `selected` flag for the highlight class.
-function buildRows(
+/// Group [`DbcContentRecord`]s by the bus(es) they apply to. Each
+/// project bus gets its own group; an unscoped DBC appears in every
+/// bus group (it applies to all buses). DBCs scoped to bus ids no
+/// longer in the project fall into an `(Unassigned)` group at the
+/// end. When the project has zero buses configured we collapse to a
+/// single `(All DBCs)` group so the tree still has a single root
+/// pattern.
+interface BusGroup {
+  busId: string;
+  label: string;
+  /// `true` when an entry in `dbcs` is unscoped (would otherwise be
+  /// invisibly merged into every per-bus group). The DBC row gets a
+  /// small "(applies to all buses)" label so the user knows why it's
+  /// duplicated across bus groups.
+  dbcs: Array<{ dbc: DbcContentRecord; unscoped: boolean }>;
+}
+
+function groupByBus(
   content: readonly DbcContentRecord[],
+  buses: readonly { id: string; name: string }[],
+  dbcBuses: Readonly<Record<string, string[]>>,
+): BusGroup[] {
+  if (buses.length === 0) {
+    // No project buses → collapse to a single "All DBCs" group.
+    return [
+      {
+        busId: ALL_BUSES_BUS_ID,
+        label: "All DBCs (no buses configured)",
+        dbcs: content.map((d) => ({ dbc: d, unscoped: true })),
+      },
+    ];
+  }
+  const knownBusIds = new Set(buses.map((b) => b.id));
+  const groups: BusGroup[] = buses.map((b) => ({
+    busId: b.id,
+    label: b.name || b.id,
+    dbcs: [],
+  }));
+  const groupByBusId = new Map(groups.map((g) => [g.busId, g]));
+  const unassigned: BusGroup = {
+    busId: UNASSIGNED_BUS_ID,
+    label: "(Unassigned — scoped to a bus that's no longer in the project)",
+    dbcs: [],
+  };
+  for (const d of content) {
+    const scope = dbcBuses[d.dbcPath] ?? [];
+    if (scope.length === 0) {
+      // Unscoped: applies to every project bus.
+      for (const g of groups) g.dbcs.push({ dbc: d, unscoped: true });
+      continue;
+    }
+    const liveScope = scope.filter((b) => knownBusIds.has(b));
+    if (liveScope.length === 0) {
+      unassigned.dbcs.push({ dbc: d, unscoped: false });
+      continue;
+    }
+    for (const busId of liveScope) {
+      const g = groupByBusId.get(busId);
+      if (g) g.dbcs.push({ dbc: d, unscoped: false });
+    }
+  }
+  if (unassigned.dbcs.length > 0) groups.push(unassigned);
+  return groups;
+}
+
+/// Walk the bus-grouped content tree, applying `effectiveExpanded`
+/// (= user's expand state ∪ ancestors-of-matches when filtering),
+/// and produce a flat row list ready to render. `matchSet` is the
+/// fzf-matched node ids; rows not in it are dimmed (when
+/// `filterActive`). `selection` flips rows' `selected` flag for the
+/// highlight class.
+function buildRows(
+  groups: readonly BusGroup[],
   effectiveExpanded: ReadonlySet<string>,
   matchSet: ReadonlySet<string>,
   filterActive: boolean,
   selection: ReadonlySet<string>,
 ): RenderRow[] {
   const out: RenderRow[] = [];
-  for (const d of content) {
-    const dId = dbcNodeId(d.dbcPath);
-    const dExpanded = effectiveExpanded.has(dId);
+  for (const g of groups) {
+    const bId = busNodeId(g.busId);
+    const bExpanded = effectiveExpanded.has(bId);
     out.push({
-      id: dId,
+      id: bId,
       depth: 0,
-      expanded: dExpanded,
-      hasChildren: d.messages.length > 0,
-      dim: filterActive && !matchSet.has(dId),
+      expanded: bExpanded,
+      hasChildren: g.dbcs.length > 0,
+      dim: filterActive && !matchSet.has(bId),
       selected: false,
-      kind: { tag: "dbc", path: d.dbcPath },
+      kind: {
+        tag: "bus",
+        busId: g.busId,
+        label: g.label,
+        unscopedNote: false,
+      },
     });
-    if (!dExpanded) continue;
-    for (const m of d.messages) {
-      const mId = messageNodeId(d.dbcPath, m.messageId, m.extended);
-      const mExpanded = effectiveExpanded.has(mId);
+    if (!bExpanded) continue;
+    for (const { dbc, unscoped } of g.dbcs) {
+      const dId = dbcNodeId(g.busId, dbc.dbcPath);
+      const dExpanded = effectiveExpanded.has(dId);
       out.push({
-        id: mId,
+        id: dId,
         depth: 1,
-        expanded: mExpanded,
-        hasChildren: m.signals.length > 0,
-        dim: filterActive && !matchSet.has(mId),
-        selected: selection.has(mId),
-        kind: { tag: "message", dbcPath: d.dbcPath, message: m },
+        expanded: dExpanded,
+        hasChildren: dbc.messages.length > 0,
+        dim: filterActive && !matchSet.has(dId),
+        selected: false,
+        kind: {
+          tag: "dbc",
+          path: dbc.dbcPath,
+          scopeLabel: unscoped ? "applies to all buses" : null,
+        },
       });
-      if (!mExpanded) continue;
-      for (const s of m.signals) {
-        const sId = signalNodeId(d.dbcPath, m.messageId, m.extended, s.name);
+      if (!dExpanded) continue;
+      for (const m of dbc.messages) {
+        const mId = messageNodeId(g.busId, dbc.dbcPath, m.messageId, m.extended);
+        const mExpanded = effectiveExpanded.has(mId);
         out.push({
-          id: sId,
+          id: mId,
           depth: 2,
-          expanded: false,
-          hasChildren: false,
-          dim: filterActive && !matchSet.has(sId),
-          selected: selection.has(sId),
-          kind: {
-            tag: "signal",
-            dbcPath: d.dbcPath,
-            messageId: m.messageId,
-            extended: m.extended,
-            messageName: m.name,
-            signal: s,
-          },
+          expanded: mExpanded,
+          hasChildren: m.signals.length > 0,
+          dim: filterActive && !matchSet.has(mId),
+          selected: selection.has(mId),
+          kind: { tag: "message", dbcPath: dbc.dbcPath, message: m },
         });
+        if (!mExpanded) continue;
+        for (const s of m.signals) {
+          const sId = signalNodeId(
+            g.busId,
+            dbc.dbcPath,
+            m.messageId,
+            m.extended,
+            s.name,
+          );
+          out.push({
+            id: sId,
+            depth: 3,
+            expanded: false,
+            hasChildren: false,
+            dim: filterActive && !matchSet.has(sId),
+            selected: selection.has(sId),
+            kind: {
+              tag: "signal",
+              dbcPath: dbc.dbcPath,
+              messageId: m.messageId,
+              extended: m.extended,
+              messageName: m.name,
+              signal: s,
+            },
+          });
+        }
       }
     }
   }
@@ -212,23 +361,27 @@ interface SearchEntry {
   haystack: string;
 }
 
-function buildSearchIndex(content: readonly DbcContentRecord[]): SearchEntry[] {
+function buildSearchIndex(groups: readonly BusGroup[]): SearchEntry[] {
   const out: SearchEntry[] = [];
-  for (const d of content) {
-    const dId = dbcNodeId(d.dbcPath);
-    for (const m of d.messages) {
-      const mId = messageNodeId(d.dbcPath, m.messageId, m.extended);
-      out.push({
-        id: mId,
-        ancestors: [dId],
-        haystack: messageHaystack(m),
-      });
-      for (const s of m.signals) {
+  for (const g of groups) {
+    const bId = busNodeId(g.busId);
+    const prefix = busSearchPrefix(g);
+    for (const { dbc } of g.dbcs) {
+      const dId = dbcNodeId(g.busId, dbc.dbcPath);
+      for (const m of dbc.messages) {
+        const mId = messageNodeId(g.busId, dbc.dbcPath, m.messageId, m.extended);
         out.push({
-          id: signalNodeId(d.dbcPath, m.messageId, m.extended, s.name),
-          ancestors: [dId, mId],
-          haystack: signalHaystack(m, s),
+          id: mId,
+          ancestors: [bId, dId],
+          haystack: messageHaystack(prefix, m),
         });
+        for (const s of m.signals) {
+          out.push({
+            id: signalNodeId(g.busId, dbc.dbcPath, m.messageId, m.extended, s.name),
+            ancestors: [bId, dId, mId],
+            haystack: signalHaystack(prefix, m, s),
+          });
+        }
       }
     }
   }
@@ -265,13 +418,19 @@ function searchMatches(
 
 const DEFAULT_EXPANDED_DEPTH_ON_LOAD = 1;
 
-/// Auto-expand every DBC root when the panel first loads content, so
-/// the user sees something other than file names. Used once on mount /
-/// content-arrival; the user's subsequent toggle clicks override.
-function initialExpandedRoots(content: readonly DbcContentRecord[]): Set<string> {
+/// Auto-expand every bus group AND its immediate DBC children when
+/// the panel first loads content, so the user sees the messages
+/// without an extra click. Used once on mount / content-arrival;
+/// subsequent toggle clicks override.
+function initialExpandedRoots(groups: readonly BusGroup[]): Set<string> {
   const out = new Set<string>();
   if (DEFAULT_EXPANDED_DEPTH_ON_LOAD < 1) return out;
-  for (const d of content) out.add(dbcNodeId(d.dbcPath));
+  for (const g of groups) {
+    out.add(busNodeId(g.busId));
+    for (const { dbc } of g.dbcs) {
+      out.add(dbcNodeId(g.busId, dbc.dbcPath));
+    }
+  }
   return out;
 }
 
@@ -289,7 +448,7 @@ function rowToSignalRefs(
   content: readonly DbcContentRecord[],
   dbcBuses: Readonly<Record<string, string[]>>,
 ): DraggableSignalRef[] {
-  if (row.kind.tag === "dbc") return [];
+  if (row.kind.tag === "bus" || row.kind.tag === "dbc") return [];
   const dbcPath = row.kind.dbcPath;
   const scopedBuses = dbcBuses[dbcPath] ?? [];
   if (row.kind.tag === "signal") {
@@ -331,20 +490,25 @@ function rowToSignalRefs(
 }
 
 /// The set of selectable rows in display order — used by Shift-click
-/// range-extend to walk from the anchor to the clicked row. DBC rows
-/// are filtered out because they aren't selectable.
+/// range-extend to walk from the anchor to the clicked row. Bus /
+/// DBC rows are filtered out because they aren't selectable.
 function selectableIdsInOrder(rows: readonly RenderRow[]): string[] {
-  return rows.filter((r) => r.kind.tag !== "dbc").map((r) => r.id);
+  return rows
+    .filter((r) => r.kind.tag !== "bus" && r.kind.tag !== "dbc")
+    .map((r) => r.id);
 }
 
 export function DbcPanel(props: IDockviewPanelProps) {
   const { api } = props;
   const params = props.params as PanelParams | undefined;
-  const { dbcPaths, dbcBuses } = useProjectContext();
+  const { dbcPaths, dbcBuses, buses } = useProjectContext();
 
   const [filter, setFilter] = useState<string>(() => filterFromParams(params?.filter));
   const [expanded, setExpanded] = useState<Set<string>>(() =>
     expandedFromParams(params?.expanded),
+  );
+  const [showDetails, setShowDetails] = useState<boolean>(() =>
+    showDetailsFromParams(params?.showDetails),
   );
   const [content, setContent] = useState<DbcContentRecord[]>([]);
   /// Per-panel selection set (panel-local; not persisted in params —
@@ -355,37 +519,66 @@ export function DbcPanel(props: IDockviewPanelProps) {
   /// started the current selection contour.
   const selectionAnchorRef = useRef<string | null>(null);
 
-  // Re-fetch on mount and whenever the loaded-DBC set changes. The
-  // project context's `dbcPaths` mirrors the host's set so it's the
-  // right dependency without a separate `dbc-changed` event.
-  useEffect(() => {
+  /// Bus-grouped view of the loaded DBC content. Reshapes the host's
+  /// flat list into one entry per bus (+ optional Unassigned /
+  /// All-DBCs fallback groups). Memoised so a re-render that doesn't
+  /// touch `content` / `buses` / `dbcBuses` doesn't rebuild it.
+  const busGroups = useMemo(
+    () => groupByBus(content, buses, dbcBuses),
+    [content, buses, dbcBuses],
+  );
+
+  /// Pull a fresh `list_dbc_content` snapshot and slot it in. Used
+  /// both for the dependency-driven refresh (project's DBC set
+  /// changed) and the event-driven refresh (host's filesystem
+  /// watcher saw the file change on disk).
+  const refreshContent = useCallback(() => {
     let cancelled = false;
     void invoke<DbcContentRecord[]>("list_dbc_content").then((next) => {
       if (cancelled) return;
       setContent(next);
-      // Auto-expand each DBC root the first time content arrives if
-      // the user has no expand-state of their own (a freshly-added
-      // panel or one with no saved expansion). Doesn't override a
-      // user who has explicitly collapsed everything — only opens
-      // roots that have no entry either way.
+      // Auto-expand each bus group the first time content arrives
+      // if the user has no expand-state of their own. Compute the
+      // groups locally — the memoised `busGroups` reflects state
+      // from a previous render.
       setExpanded((prev) => {
         if (prev.size > 0) return prev;
-        return initialExpandedRoots(next);
+        return initialExpandedRoots(groupByBus(next, buses, dbcBuses));
       });
     });
     return () => {
       cancelled = true;
     };
-  }, [dbcPaths]);
+  }, [buses, dbcBuses]);
 
-  // Persist filter + expanded into the dockview panel params so the
-  // saved layout round-trips them. Selection deliberately doesn't
-  // ride along — it's transient state, like an editor's text caret.
+  // Re-fetch on mount and whenever the loaded-DBC set changes. The
+  // project context's `dbcPaths` mirrors the host's set so it's the
+  // right dependency for add/remove/reload-via-UI; the explicit
+  // `dbc-changed` event below covers the auto-reload-on-file-change
+  // path (Phase 12 follow-up: host watches DBC files).
+  useEffect(() => refreshContent(), [dbcPaths, refreshContent]);
+
+  // Phase 12 follow-up: when the host's filesystem watcher reports a
+  // DBC change, refresh our snapshot so the tree reflects the new
+  // content without a manual reload.
   useEffect(() => {
-    api.updateParameters({ filter, expanded: Array.from(expanded) });
-  }, [api, filter, expanded]);
+    const unlisten = listen<string>("dbc-changed", () => {
+      refreshContent();
+    });
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
+  }, [refreshContent]);
 
-  const searchIndex = useMemo(() => buildSearchIndex(content), [content]);
+  // Persist filter + expanded + showDetails into the dockview panel
+  // params so the saved layout round-trips them. Selection
+  // deliberately doesn't ride along — it's transient state, like an
+  // editor's text caret.
+  useEffect(() => {
+    api.updateParameters({ filter, expanded: Array.from(expanded), showDetails });
+  }, [api, filter, expanded, showDetails]);
+
+  const searchIndex = useMemo(() => buildSearchIndex(busGroups), [busGroups]);
   const { matchSet, ancestorsOfMatches } = useMemo(
     () => searchMatches(searchIndex, filter),
     [searchIndex, filter],
@@ -399,8 +592,8 @@ export function DbcPanel(props: IDockviewPanelProps) {
   }, [expanded, ancestorsOfMatches, filterActive]);
 
   const rows = useMemo(
-    () => buildRows(content, effectiveExpanded, matchSet, filterActive, selection),
-    [content, effectiveExpanded, matchSet, filterActive, selection],
+    () => buildRows(busGroups, effectiveExpanded, matchSet, filterActive, selection),
+    [busGroups, effectiveExpanded, matchSet, filterActive, selection],
   );
 
   const toggle = useCallback((id: string) => {
@@ -481,6 +674,14 @@ export function DbcPanel(props: IDockviewPanelProps) {
             {matchSet.size} match{matchSet.size === 1 ? "" : "es"}
           </span>
         )}
+        <label className="dbc-panel-details-toggle" title="show bit layout, scale, range, attributes, value table for every signal">
+          <input
+            type="checkbox"
+            checked={showDetails}
+            onChange={(e) => setShowDetails(e.target.checked)}
+          />
+          details
+        </label>
       </div>
       <div className="dbc-panel-tree" role="tree">
         {content.length === 0 && (
@@ -492,6 +693,7 @@ export function DbcPanel(props: IDockviewPanelProps) {
           <DbcRow
             key={row.id}
             row={row}
+            showDetails={showDetails}
             onToggle={toggle}
             onClick={onRowClick}
             onDragStart={handleDragStart}
@@ -504,20 +706,21 @@ export function DbcPanel(props: IDockviewPanelProps) {
 
 interface DbcRowProps {
   row: RenderRow;
+  showDetails: boolean;
   onToggle: (id: string) => void;
   onClick: (id: string, modifiers: { shift: boolean; meta: boolean }) => void;
   onDragStart: (e: React.DragEvent, row: RenderRow) => void;
 }
 
-function DbcRow({ row, onToggle, onClick, onDragStart }: DbcRowProps) {
+function DbcRow({ row, showDetails, onToggle, onClick, onDragStart }: DbcRowProps) {
   const indent = `${row.depth * 14}px`;
-  // DBC root rows: clicking anywhere toggles expand (they aren't
+  // Bus / DBC rows: clicking anywhere toggles expand (they aren't
   // selectable). Message / signal rows: row body selects, chevron
   // toggles expand separately. A draggable row carries the drag-
   // source handlers.
-  const isDbcRoot = row.kind.tag === "dbc";
-  const selectable = !isDbcRoot;
-  const draggable = !isDbcRoot;
+  const isContainerRow = row.kind.tag === "bus" || row.kind.tag === "dbc";
+  const selectable = !isContainerRow;
+  const draggable = !isContainerRow;
   const baseClass = [
     "dbc-row",
     `dbc-row-${row.kind.tag}`,
@@ -527,7 +730,7 @@ function DbcRow({ row, onToggle, onClick, onDragStart }: DbcRowProps) {
     .filter(Boolean)
     .join(" ");
   const onRowClick = (e: React.MouseEvent) => {
-    if (isDbcRoot) {
+    if (isContainerRow) {
       if (row.hasChildren) onToggle(row.id);
       return;
     }
@@ -538,36 +741,192 @@ function DbcRow({ row, onToggle, onClick, onDragStart }: DbcRowProps) {
     e.stopPropagation();
     onToggle(row.id);
   };
+  // The details block sits below the row at the same indent + 14 px
+  // (so it's visually associated with the row's content column).
+  const detailIndent = `${row.depth * 14 + 14}px`;
   return (
-    <div
-      className={baseClass}
-      role="treeitem"
-      aria-selected={selectable ? row.selected : undefined}
-      aria-expanded={row.hasChildren ? row.expanded : undefined}
-      aria-level={row.depth + 1}
-      style={{ paddingLeft: indent }}
-      onClick={onRowClick}
-      draggable={draggable}
-      onDragStart={draggable ? (e) => onDragStart(e, row) : undefined}
-    >
-      <span
-        className="dbc-row-chevron"
-        aria-hidden="true"
-        onClick={onChevronClick}
+    <>
+      <div
+        className={baseClass}
+        role="treeitem"
+        aria-selected={selectable ? row.selected : undefined}
+        aria-expanded={row.hasChildren ? row.expanded : undefined}
+        aria-level={row.depth + 1}
+        style={{ paddingLeft: indent }}
+        onClick={onRowClick}
+        draggable={draggable}
+        onDragStart={draggable ? (e) => onDragStart(e, row) : undefined}
       >
-        {row.hasChildren ? (row.expanded ? "▼" : "▶") : ""}
-      </span>
-      <DbcRowContent kind={row.kind} />
+        <span
+          className="dbc-row-chevron"
+          aria-hidden="true"
+          onClick={onChevronClick}
+        >
+          {row.hasChildren ? (row.expanded ? "▼" : "▶") : ""}
+        </span>
+        <DbcRowContent kind={row.kind} />
+      </div>
+      {showDetails && row.kind.tag === "message" && (
+        <MessageDetails message={row.kind.message} indent={detailIndent} />
+      )}
+      {showDetails && row.kind.tag === "signal" && (
+        <SignalDetails signal={row.kind.signal} indent={detailIndent} />
+      )}
+    </>
+  );
+}
+
+/// Compact human-readable summary of a signal's bit-layout. Mirrors
+/// what a DBC editor would show on the signal line: start bit + size,
+/// byte order, signedness, float kind.
+function formatBitLayout(s: DbcSignalContentRecord): string {
+  const order = s.byteOrder === "little" ? "@1" : "@0";
+  const sign = s.signed ? "-" : "+";
+  const endBit = s.startBit + s.length - 1;
+  const float = s.floatKind === "integer" ? "" : ` · ${s.floatKind}`;
+  return `bits ${s.startBit}–${endBit} (${s.length})${order}${sign}${float}`;
+}
+
+/// `physical = raw * factor + offset`, formatted for display. We
+/// preserve the DBC's literal `(factor,offset)` shape so the text is
+/// recognisable to anyone reading the DBC source.
+function formatScale(s: DbcSignalContentRecord): string {
+  return `(${s.factor}, ${s.offset})`;
+}
+
+/// `[min, max]` physical range. DBCs frequently declare `[0|0]` to
+/// mean "no constraint" — surface that explicitly rather than
+/// printing the literal `[0, 0]` which would mislead a reader.
+function formatRange(s: DbcSignalContentRecord): string {
+  if (s.min === s.max) return "[no range]";
+  return `[${s.min}, ${s.max}]${s.unit ? ` ${s.unit}` : ""}`;
+}
+
+/// Mux indicator as a short label — `mux`, `m<N>`, `m<N>M`, or empty
+/// for plain signals.
+function formatMux(mux: DbcSignalMux): string {
+  switch (mux.kind) {
+    case "plain":
+      return "";
+    case "multiplexor":
+      return "mux switch (M)";
+    case "multiplexed":
+      return `mux arm m${mux.selector}`;
+    case "multiplexor_and_multiplexed":
+      return `extended mux m${mux.selector}M`;
+  }
+}
+
+interface SignalDetailsProps {
+  signal: DbcSignalContentRecord;
+  indent: string;
+}
+
+function SignalDetails({ signal, indent }: SignalDetailsProps) {
+  const mux = formatMux(signal.mux);
+  return (
+    <div className="dbc-row-details" style={{ paddingLeft: indent }}>
+      <dl className="dbc-details-grid">
+        <dt>layout</dt>
+        <dd>{formatBitLayout(signal)}</dd>
+        <dt>scale</dt>
+        <dd>{formatScale(signal)}</dd>
+        <dt>range</dt>
+        <dd>{formatRange(signal)}</dd>
+        {mux && (
+          <>
+            <dt>mux</dt>
+            <dd>{mux}</dd>
+          </>
+        )}
+        {signal.attributes.length > 0 && (
+          <>
+            <dt>attrs</dt>
+            <dd>
+              {signal.attributes.map((a) => (
+                <span key={a.name} className="dbc-details-attr">
+                  {a.name}=<em>{a.value}</em>
+                </span>
+              ))}
+            </dd>
+          </>
+        )}
+        {signal.valueTable.length > 0 && (
+          <>
+            <dt>values</dt>
+            <dd>
+              {signal.valueTable.map((v) => (
+                <span key={v.raw} className="dbc-details-value">
+                  {v.raw}={v.label}
+                </span>
+              ))}
+            </dd>
+          </>
+        )}
+      </dl>
+    </div>
+  );
+}
+
+interface MessageDetailsProps {
+  message: DbcMessageContentRecord;
+  indent: string;
+}
+
+function MessageDetails({ message, indent }: MessageDetailsProps) {
+  const decId = message.messageId.toString(10);
+  const hexId = `0x${message.messageId.toString(16).toUpperCase()}${
+    message.extended ? "x" : ""
+  }`;
+  return (
+    <div className="dbc-row-details" style={{ paddingLeft: indent }}>
+      <dl className="dbc-details-grid">
+        <dt>id</dt>
+        <dd>
+          {hexId} <span className="dbc-details-aside">({decId})</span>
+        </dd>
+        <dt>length</dt>
+        <dd>
+          {message.expectedLen} B{message.isFd ? " · FD" : ""}
+          {message.isFd && message.brs ? " · BRS" : ""}
+        </dd>
+        {message.usesExtendedMux && (
+          <>
+            <dt>mux</dt>
+            <dd>extended (m&lt;N&gt;M) — bytes-only in TX</dd>
+          </>
+        )}
+        {message.attributes.length > 0 && (
+          <>
+            <dt>attrs</dt>
+            <dd>
+              {message.attributes.map((a) => (
+                <span key={a.name} className="dbc-details-attr">
+                  {a.name}=<em>{a.value}</em>
+                </span>
+              ))}
+            </dd>
+          </>
+        )}
+      </dl>
     </div>
   );
 }
 
 function DbcRowContent({ kind }: { kind: RenderRow["kind"] }) {
+  if (kind.tag === "bus") {
+    return <span className="dbc-row-label">{kind.label}</span>;
+  }
   if (kind.tag === "dbc") {
     return (
-      <span className="dbc-row-label" title={kind.path}>
-        {basename(kind.path)}
-      </span>
+      <>
+        <span className="dbc-row-label" title={kind.path}>
+          {basename(kind.path)}
+        </span>
+        {kind.scopeLabel && (
+          <span className="dbc-row-meta dbc-row-scope">{kind.scopeLabel}</span>
+        )}
+      </>
     );
   }
   if (kind.tag === "message") {

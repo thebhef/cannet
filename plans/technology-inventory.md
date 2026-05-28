@@ -134,6 +134,16 @@ crate retained long-term).
 - **`memmap2`** crate (Rust, MIT / Apache-2.0) — `proposed` for
   Phase 17. Cross-platform `mmap` syscall abstraction for the
   disk-spill raw store. See [`../docs/adr/0002-disk-spill-store.md`](../docs/adr/0002-disk-spill-store.md).
+- **`notify`** crate (Rust, CC0-1.0 / Apache-2.0) — `adopted` in
+  Phase 12 follow-up for the GUI host's DBC file watcher
+  (`apps/gui/src-tauri/src/dbc_watcher.rs`). Wraps the OS-native
+  watchers (FSEvents on macOS, inotify on Linux,
+  ReadDirectoryChangesW on Windows) behind one interface; we use
+  it to auto-reload a loaded DBC when its file changes on disk
+  and emit a `dbc-changed` event the DBC panel + plot panel
+  listen for. We watch parent directories with a refcount + filter
+  events by exact path because watching a single file directly
+  loses the watch on atomic-rename saves on several editors.
 
 ### Protocols
 

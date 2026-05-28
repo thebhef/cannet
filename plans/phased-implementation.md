@@ -1534,11 +1534,12 @@ Exit criteria:
 
 ## Phase 12 — DBC View, Drag/Drop, Filter-Defined Plot Areas
 
-Make the DBC database first-class as a *discovery* surface and let
-the user move signals around the GUI by dragging. The project
-panel's existing DBC inventory section stays untouched — that's
-the add / remove / per-bus-scope list, an ADR-0012 file-IO+inventory
-role. This phase is the spatial / search counterpart.
+Status: **shipped.** Made the DBC database first-class as a
+*discovery* surface and let the user move signals around the GUI by
+dragging. The project panel's existing DBC inventory section stays
+untouched — that's the add / remove / per-bus-scope list, an
+ADR-0012 file-IO+inventory role. This phase is the spatial / search
+counterpart.
 
 What lands:
 
@@ -1616,30 +1617,52 @@ ADRs:
 
 Exit criteria:
 
-- A DBC panel can be added to the layout from the toolbar; it
-  shows every loaded DBC's message → signal tree. Typing in the
-  search filters the tree live with fuzzy / acronym matching.
+- A singleton DBC panel is reachable from the toolbar; it shows
+  every loaded DBC's message → signal tree, grouped by bus
+  (bus → DBC → message → signal). Unscoped DBCs appear under
+  each bus group with a small "applies to all buses" label.
+  Typing in the search filters the tree live with fuzzy / acronym
+  matching (fzf).
 - Multi-select (click / Shift-click / Cmd-Ctrl-click) selects a
   mix of signal and message rows; dragging the selection drops as
-  a `signals: SignalRef[]` array onto a plot area.
+  a `signals: SignalRef[]` array onto a plot area or transmit
+  panel.
 - Dragging a single message row drops as all of that message's
   signals; dragging from a trace panel's expanded-row signal grid
   and from a by-ID panel's signal row also produce the array
   shape and drop onto a plot area as series.
+- Dropping a signal / message payload onto the transmit panel
+  creates one new transmit frame per distinct `(canId, extended)`,
+  busId inherited from the dropped ref (with project's first bus
+  as fallback for unscoped DBCs).
+- Drag-source semantics: drops from inside one plot panel = move
+  between its areas (preserving colour); drops from a different
+  source — DBC panel, trace cell, by-id cell, another plot panel —
+  = add. Discrimination via a `sourcePanelId` field in the drag
+  payload. Plot-area drop cursor is `copy` for clarity (TX-panel
+  parity).
 - A plot area with `signalFilter` set populates from the regex
-  against `${busName}.${messageName}.${signalName}`. Loading a
-  new DBC adds matching signals; removing a DBC drops them;
-  reopening the project rehydrates the series.
-- Bus renames that invalidate a filter regex surface a System
-  Messages warning naming the panel and the broken regex.
+  against `${busName}.${messageName}.${signalName}` (filter-mode);
+  unbound frames render as `(unassigned)`. Loading a new DBC adds
+  matching signals; removing a DBC drops them; reopening the
+  project rehydrates the series; bus renames that invalidate a
+  filter regex surface a `warn` System Messages entry via a new
+  `gui_emit_system_log` Tauri command.
+- A panel-wide "details" toggle in the DBC panel reveals every
+  per-signal field (bit layout, scale, range, mux, float kind,
+  attributes, value table) and per-message field (id hex+decimal,
+  length, FD/BRS, extended-mux flag, attributes).
+- The host watches every loaded DBC file with `notify` and
+  auto-reloads the in-memory copy on change; the DBC panel and
+  plot panel listen for the `dbc-changed` event and refresh.
 - Backlog items removed: "DBC view with good filter behavior";
   "Drag+drop signals from DBC or trace into graph, and between
   graphs"; the relevant drag-source bullets in the
   graph-and-bus-integration section.
-- README documents the DBC panel; rustdoc covers any new public
-  Tauri commands (the host needs to enumerate DBC content for the
-  panel — likely an extension of `list_signals`); ADR 0020 checked
-  in; `plans/technology-inventory.md` records `fzf-for-js`.
+- README documents the DBC panel; rustdoc covers the new public
+  Tauri commands (`list_dbc_content`, `gui_emit_system_log`); ADR
+  0020 checked in; `plans/technology-inventory.md` records `fzf`
+  (npm name for `fzf-for-js`) and `notify`.
 
 ## Phase 13 — Virtual Bus
 
