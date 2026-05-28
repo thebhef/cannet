@@ -1,34 +1,35 @@
-//! gRPC server for the Phase-2 cannet wire protocol.
+//! gRPC server for the cannet wire protocol.
 //!
-//! Phase 2's only supported input is BLF: a server is constructed with a
-//! [`LoopingBlfReplay`] loaded from a file at startup, and that replay is
-//! streamed forever (looping at end-of-file) to whichever client is
-//! currently subscribed. Phase 6 will introduce hardware-backed sources;
-//! this crate stays focused on BLF for now.
+//! Two server modes ship today:
+//!
+//! - **BLF replay** ([`server::CannetServerImpl`] over a
+//!   [`replay::LoopingBlfReplay`]) loads a BLF file once at startup
+//!   and streams it on a loop to the subscribed client. Read-only:
+//!   client transmits are rejected with `Error::TX_REJECTED`.
+//!   Single-client per server.
+//! - **Virtual bus** ([`virtual_bus::VirtualBusServerImpl`] over a
+//!   [`cannet_core::SharedBus`]) hosts a multi-client virtual CAN
+//!   bus (ADR 0021): one factory interface, fan-out with sender
+//!   attribution, `NoAcknowledger` on zero-recipient transmits,
+//!   runtime `ConfigureBus`.
 //!
 //! ## Crate layout
 //!
 //! - [`replay`] — pure-data: load a BLF file into memory, partition it by
 //!   channel, expose interfaces and frame slices.
-//! - [`server`] — the [`tonic`] [`cannet_wire::proto::cannet_server_server::CannetServer`]
-//!   implementation: [`ListInterfaces`](server::CannetServer::list_interfaces)
-//!   and [`Session`](server::CannetServer::session). Single-client per
-//!   server (multi-client is in `plans/backlog.md`); transmit envelopes
-//!   are rejected with `Error::TX_REJECTED` because BLF sources are
-//!   read-only.
-//! - [`loopback`] — Phase-5 demo mode. Exposes one fixed `loopback:0`
-//!   interface; every client-transmitted frame is mirrored back as an
-//!   `Rx` frame on the same interface. The in-process building block
-//!   is [`cannet_core::loopback_bus`]; the server task just wraps it.
-//!   Picked by `--loopback` on the CLI.
+//! - [`server`] — BLF replay tonic service.
+//! - [`virtual_bus`] — virtual-bus tonic service.
+//! - [`bridge_client`] — server-internal gRPC client the virtual-bus
+//!   server uses to install a bridge that fronts a remote interface.
 //!
-//! The CLI binary (`src/main.rs`) is a thin wrapper that parses arguments
-//! and calls into this library.
+//! The CLI binary (`src/main.rs`) is a thin wrapper that parses
+//! arguments and chooses one of the services.
 
-pub mod loopback;
+pub mod bridge_client;
 pub mod replay;
 pub mod server;
+pub mod virtual_bus;
 
-pub use loopback::{LoopbackServerImpl, LOOPBACK_INTERFACE_ID};
 pub use replay::{LoopingBlfReplay, ReplayError};
 pub use server::CannetServerImpl;
+pub use virtual_bus::{VirtualBusServerImpl, VIRTUAL_BUS_FACTORY_ID};

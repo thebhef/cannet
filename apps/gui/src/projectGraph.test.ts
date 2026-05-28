@@ -54,6 +54,33 @@ describe("deriveGraph", () => {
     expect(g.edges).toEqual([]);
   });
 
+  it("a local-virtual-bus binding does not produce a gateway node (the bus is the source)", () => {
+    const b: InterfaceBinding = {
+      kind: "local-virtual-bus",
+      server: "local-vbus://vbus1",
+      interface: "bus",
+      bus_id: "v",
+    };
+    const g = deriveGraph([bus("v", "Test virtual")], [b], []);
+    // Only the bus node, no gateway node.
+    expect(g.nodes).toHaveLength(1);
+    expect(g.nodes[0].kind).toBe("bus");
+    expect(g.edges).toEqual([]);
+  });
+
+  it("a remote-virtual-bus binding renders as a gateway with a vbus label", () => {
+    const b: InterfaceBinding = {
+      kind: "remote-virtual-bus",
+      server: "10.0.0.5:50051",
+      interface: "",
+      bus_id: "p",
+    };
+    const g = deriveGraph([bus("p")], [b], []);
+    expect(g.nodes).toHaveLength(2);
+    const gateway = g.nodes.find((n) => n.kind === "gateway");
+    expect(gateway?.label).toContain("vbus factory");
+  });
+
   it("a sink with sources=['*'] draws an edge from every bus", () => {
     const trace: ProjectElement = { kind: "trace", id: "t1", sources: ["*"] };
     const g = deriveGraph([bus("p"), bus("c"), bus("b")], [], [trace]);
@@ -150,7 +177,7 @@ describe("deriveGraph", () => {
     // transmit panel treats it as "every bus" and so does the
     // graph, so a newly created transmit element doesn't render as
     // a disconnected node.
-    const tx: ProjectElement = { kind: "transmit", id: "tx1", sinks: [] };
+    const tx: ProjectElement = { kind: "transmit", id: "tx1", sinks: [], frameIds: [] };
     const g = deriveGraph([bus("p"), bus("c")], [], [tx]);
     const outgoing = g.edges.filter((e) => e.source === elementNodeId("tx1"));
     expect(outgoing.map((e) => e.target).sort()).toEqual(
@@ -163,6 +190,7 @@ describe("deriveGraph", () => {
       kind: "transmit",
       id: "tx1",
       sinks: ["p", "c"],
+      frameIds: [],
     };
     const g = deriveGraph([bus("p"), bus("c"), bus("b")], [], [tx]);
     const outgoing = g.edges.filter((e) => e.source === elementNodeId("tx1"));
@@ -181,6 +209,7 @@ describe("deriveGraph", () => {
       kind: "transmit",
       id: "tx1",
       sinks: ["gone"],
+      frameIds: [],
     };
     const g = deriveGraph([bus("p")], [], [tx]);
     expect(g.edges).toEqual([]);

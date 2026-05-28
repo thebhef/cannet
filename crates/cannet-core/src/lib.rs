@@ -38,33 +38,26 @@
 //! [`PumpError`] so the source error type and the sink error type
 //! don't have to share a parent.
 //!
-//! ## Phase plan
+//! ## Shared bus
 //!
-//! - **Phase 1** (alpha0): BLF reader implements `CanFrameSource`; the
-//!   Tauri host consumes via a per-thread loop that fans out batched
-//!   frame events to the trace view.
-//! - **Phase 2** (client/server): a network client implements
-//!   `CanFrameSource`; the server bridges its own input to a `CanFrameSink`.
-//!   `CanFrame` does not change; only adapters are added.
-//! - **Phase 5** (transmit): the abstraction grows a transmit direction
-//!   so a GUI transmit panel can send through a remote server (or a
-//!   `cannet-server --loopback`); `CanFrameSink` is the seam, and
-//!   [`loopback_bus`] is the in-process building block (paired sink +
-//!   source over an MPSC queue) that the `--loopback` server wraps.
-//! - **Phase 6** (hardware): per-vendor server processes implement
-//!   `CanFrameSource` against vendor SDKs / `python-can`. The GUI sees
-//!   only the network transport.
-//!
-//! Anything that needs to slot in later (transports, hardware, replay
-//! controllers) lives behind one of these traits.
+//! [`SharedBus`] (ADR 0021) is a multi-participant fan-out + per-
+//! participant arbitration primitive: one in-process CAN bus shared by
+//! N participants, with configurable bitrate, ISO 11898-style
+//! arbitration at frame boundaries, and bridge participants that front
+//! an external sink/source pair (typically a wire session into another
+//! endpoint). It's used in-process by the GUI host for local virtual
+//! buses and over the wire by `cannet-server --virtual-bus`.
 
 mod frame;
 mod io;
-mod loopback;
+mod shared_bus;
 
 pub use frame::{
     CanId, Direction, EXTENDED_ID_MAX, FD_DATA_MAX, CanFdFlags, CanFrame, CanFrameError, CanFramePayload,
     IdError, CLASSIC_DATA_MAX, STANDARD_ID_MAX,
 };
 pub use io::{pump, CanFrameSink, CanFrameSource, PumpError};
-pub use loopback::{loopback_bus, LoopbackBusClosed, LoopbackSink, LoopbackSource};
+pub use shared_bus::{
+    BridgeHandle, BusClosed, BusConfig, LocalSink, LocalSource, ParticipantEvent, ParticipantId,
+    SharedBus,
+};

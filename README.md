@@ -20,13 +20,12 @@ and offers a Recent BLFs list in the toolbar. See
 ```
 crates/
   cannet-core/   CanFrame model + CanFrameSource / CanFrameSink traits,
-                 plus the Phase-5 in-memory `loopback_bus` (paired
-                 sink + source — the building block the `--loopback`
-                 server and unit-tested transmit fixtures wrap).
-                 Every other crate either produces or consumes through
-                 these — the seam where future network transports and
-                 hardware adapters slot in. See its rustdoc for the
-                 contract.
+                 plus the `SharedBus` virtual-bus primitive (ADR 0021)
+                 used in-process by the GUI host and over the wire by
+                 `cannet-server --virtual-bus`. Every other crate
+                 either produces or consumes through these — the seam
+                 where network transports and hardware adapters slot
+                 in. See its rustdoc for the contract.
   cannet-blf/    `BlfCanFrameSource`: Vector BLF files as a CanFrameSource.
                  Wraps `blf-asc` and translates each object into a
                  `cannet_core::CanFrame` (classic / FD / remote / error).
@@ -41,17 +40,15 @@ crates/
                  stubs, conversion helpers between `cannet_core`
                  frames and the wire types, and a batching adapter
                  layer so application code stays in `Stream<CanFrame>`.
-  cannet-server/ Phase-2 BLF replay server + Phase-5 `--loopback`
-                 server. The replay mode loads a BLF into memory and
-                 streams its channels on a loop while a client is
-                 subscribed (transmits rejected, read-only). The
-                 `--loopback` mode exposes one `loopback:0` interface
-                 and mirrors every client-transmitted frame back as an
-                 `Rx` frame on the same interface — the demo target
-                 for the Phase-5 transmit pipeline. Both modes are
-                 single-client per server (multi-client deferred to
-                 backlog). Ships a `cannet-server` binary; lib is
-                 reusable.
+  cannet-server/ BLF replay server + `--virtual-bus` server. The
+                 replay mode loads a BLF into memory and streams its
+                 channels on a loop while a client is subscribed
+                 (transmits rejected, read-only; single-client).
+                 The `--virtual-bus` mode (ADR 0021) hosts a multi-
+                 client virtual CAN bus: one factory interface, fan-
+                 out with sender attribution, `NoAcknowledger` on
+                 zero-recipient transmits, runtime `ConfigureBus`.
+                 Ships a `cannet-server` binary; lib is reusable.
   cannet-client/ Phase-2 gRPC client. `list_interfaces` is a one-shot
                  async RPC for the connection panel. `connect_and_
                  subscribe` returns a `RemoteCanFrameSource` (sync
@@ -351,16 +348,28 @@ CSV/image export.)
 ### Transmit panel + enum signals
 
 **Add transmit panel** opens the transmit panel: a single column of
-collapsible frame-tiles, each composing one CAN / CAN FD frame that
-can be sent on demand or scheduled cyclically. The configured frames
-persist as the panel's params and round-trip through the project file
-(as a project element with `kind: "transmit"`).
+collapsible frame-tiles, each composing one CAN / CAN FD message that
+can be sent on demand or scheduled cyclically.
+
+The transmit messages are a **host-owned model**, not panel state: the
+Rust host holds the single TX-message pool (`transmit_frames`), runs
+periodic schedules on host threads, and persists the pool in the
+project file (`Project.transmit_frames`). The panel is a thin view —
+it lists the pool, renders the subset its element's `frameIds` group
+names (in that order), and routes every edit / send / start / stop
+through a Tauri command. So a running periodic keeps emitting at its
+true cadence regardless of UI frame-rate, edits to a running message
+take effect on the next emitted frame without a stop/start, any number
+of messages can share an id/bus, and two transmit panels grouping the
+same message stay consistent. (Phase 13 Step 9; ADR 0003.)
 
 Each tile carries an id (hex), addressing mode (standard / extended),
 destination bus, kind (classic / FD / remote / error), payload, BRS
 where applicable, DLC for remote frames, a manual-vs-periodic mode
-toggle, and a cycle-time when periodic. Tiles drag-reorder via a
-bus-tinted handle on the left edge.
+toggle, a cycle-time when periodic, and an optional free-text
+**description** (the message's *name* is the DBC message name resolved
+from its id). Tiles drag-reorder via a bus-tinted handle on the left
+edge (which rewrites the group order).
 
 The collapsed face is the everyday control surface:
 
@@ -369,12 +378,14 @@ The collapsed face is the everyday control surface:
   `Shift+Tab` traverses cells.
 - **Send / cycle controls.** A manual/periodic toggle picks between
   a `send` button (one-shot) or a period-ms input + `start` / `stop`
-  pair (cyclic). Periodic transmit is a client-side `setInterval` on
-  the frame's cycle-time; closing the panel, removing the frame, or
-  flipping back to manual stops the loop.
-- **Identity strip.** Name, bus, hex id, the DBC message name when
-  the id matches a loaded DBC, and a per-frame `×` remove (confirm-
-  on-click so an accidental tap doesn't drop a frame).
+  pair (cyclic). The periodic schedule runs on a **host thread** at
+  the message's cycle-time (not a UI-rate `setInterval`); removing
+  the message, flipping back to manual, or stopping it ends the loop,
+  and reopening a project leaves every periodic stopped until you
+  press `start`.
+- **Identity strip.** Description, bus, hex id, the DBC message name
+  when the id matches a loaded DBC, and a per-frame `×` remove
+  (confirm-on-click so an accidental tap doesn't drop a frame).
 
 Expanding a tile reveals the **frame-shape strip** (kind, extended,
 BRS / DLC) and — when the id binds to a DBC message — the **signals
@@ -405,10 +416,11 @@ Where a sent frame goes:
   server is read-only and rejects the transmit with
   `Error::TX_REJECTED`, which surfaces in the system messages log
   (no per-frame status panel — successful sends show as Tx-confirm
-  rows in the trace; failures are visible in the log). Start the
-  `cannet-server --loopback` mode (see below) to demo the wire
-  transmit path end-to-end — it echoes every transmit back as an
-  `Rx` frame on the same interface.
+  rows in the trace; failures are visible in the log). A
+  `cannet-server --virtual-bus` server accepts transmits on its
+  allocated participant id and fans them out to every other
+  subscriber; a solo subscriber's transmit reaches no recipients and
+  comes back as `Error::NO_ACKNOWLEDGER` instead.
 
 **Enum / state signals** render symbolically wherever they appear:
 
@@ -423,33 +435,73 @@ Where a sent frame goes:
   disabled. Multi-signal areas / mixed enum + numeric areas keep
   the numeric rendering.
 
-#### Loopback server demo
+#### Virtual-bus server demo
 
-`cannet-server --loopback` exposes one fixed interface, `loopback:0`,
-and echoes every client-transmitted frame back as an `Rx` frame on
-the same interface. The GUI's transmit panel sends, the loopback
-server returns, the trace sees the round-trip. No BLF, no hardware,
-no Linux `vcan`.
+`cannet-server --virtual-bus` exposes one factory interface,
+`virtual:bus0`, and hosts a multi-client virtual CAN bus (ADR 0021).
+Each connecting client `Subscribes` to the factory, the server
+allocates them a fresh participant (`virtual:bus0/p<n>` returned via
+`InterfaceAllocated`), and every transmit from one participant fans
+out as `Rx` frames to every other participant tagged with the
+sender's allocated id.
 
 ```sh
-cargo run -p cannet-server -- --loopback
-# → loopback mode: every transmit is echoed back on loopback:0
+cargo run -p cannet-server -- --virtual-bus
+# → virtual-bus mode: factory virtual:bus0 (speed 500000 bit/s, fd data off)
 # → listening on 127.0.0.1:50051
 ```
 
-Then in the GUI:
+Tunable via `--speed-bps` (arbitration-phase bit rate, default
+500 000) and `--fd-data-speed-bps` (data-phase bit rate for FD frames
+with BRS; `0` leaves the bus classic-only). Runtime reconfiguration
+goes through the wire's `ConfigureBus` envelope and takes effect on
+the next arbitration round.
 
-1. Add a bus and an interface binding for `127.0.0.1:50051` in the
-   project panel (Discover → pick → Add binding), then click
-   **Connect** in the toolbar.
-2. Open **Add transmit panel**.
-3. Click **+ frame**, type an id (hex), enter a payload, hit
-   **send once** — the trace gets the `Tx` confirm and (a moment
-   later, off the network) the `Rx` mirror from the loopback.
+**Bridges.** Any session may install a bridge with `AttachBridge {
+remote_address, interface_id, name }`. The server opens a session to
+the remote endpoint, subscribes to the named interface, and wires the
+resulting frame stream into the bus as a bridge participant. The new
+bridge is published as `virtual:bus0/bridge-<name>` and every open
+`WatchInterfaces` stream gets a fresh snapshot. `DetachBridge { name }`
+tears it down; the same `WatchInterfaces` push announces the removal.
+Pointing a bridge at another `cannet-server --virtual-bus`'s factory
+yields the **CAN-over-IP gateway shape**: traffic on one server fans
+out across the bridge to the other and vice-versa.
 
-The in-process building block is the new `cannet_core::loopback_bus`
-(paired `LoopbackSink` / `LoopbackSource`); the `--loopback` server
-just wraps it.
+**`cannet-client` factory subscribes.** The Rust client now
+understands `InterfaceAllocated`: a `Subscription::factory(id, ch)`
+sends the factory subscribe, waits for the server's response, and
+surfaces the allocated participant id through
+`Subscription::effective_id()` on the resolved session. Frames the
+server fans out (tagged with each sender's allocated id) are routed
+back to the originating factory subscription by prefix-match so the
+caller's `channel` mapping holds.
+
+**GUI integration (Phase 13 Step 7).** A *logical bus* (project
+state) routes from a *source* (a host-side data path) — see
+[ADR 0023](docs/adr/0023-logical-bus-vs-interface.md). The project
+schema (v6) carries three source kinds on each binding:
+
+- `kind: "remote"` — a `(server, interface)` on a remote
+  `cannet-server` or the local sidecar. v5 entries migrate here.
+- `kind: "remote-virtual-bus"` — subscribe to a remote virtual-bus
+  server's factory id; the GUI uses the allocated participant id
+  when transmitting.
+- `kind: "local-virtual-bus"` — bind to a virtual bus defined in
+  `Project.local_virtual_buses` (id + name + bus_config + bridges).
+  The Tauri host instantiates one `SharedBus` per definition on
+  project open; many bindings may target the same virtual bus.
+
+Each logical bus has a single combo on its row that lists every
+source the project knows about — sidecar interfaces, remote
+interfaces, and the project's virtual buses — plus *+ Add server…*
+and *+ Add virtual bus*. Picking from the combo writes the binding.
+Step 6's multi-client fan-out means the same source may be picked
+for many logical buses; the GUI no longer hides "in use" options.
+A dedicated *Virtual buses* section lets the user rename, configure,
+add bridges to, or delete each virtual bus the project owns; the
+host applies bus_config edits via `SharedBus::reconfigure` and
+manages bridge teardown.
 
 > **Note:** plain `cargo run -p cannet-gui` will build the Rust host on
 > its own but won't bring up a usable window — the host expects either

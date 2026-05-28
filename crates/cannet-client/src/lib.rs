@@ -33,9 +33,17 @@
 //!   borrowing the host's executor.
 //! - **`interface_id → channel` mapping is the caller's.** The wire
 //!   addresses interfaces by string (`"blf:0"`); `CanFrame` carries a
-//!   numeric `channel: u8`. Step-3 callers tell the client which wire
-//!   id they want surfaced as which channel via [`Subscription`]. Any
+//!   numeric `channel: u8`. Callers tell the client which wire id they
+//!   want surfaced as which channel via [`Subscription`]. Any
 //!   `FrameBatch` for an unsubscribed `interface_id` is dropped.
+//! - **Factory subscribes (virtual-bus, ADR 0021).** A `Subscription`
+//!   with `allocates: true` is a request against a virtual-bus
+//!   factory id. The server responds with an `InterfaceAllocated`
+//!   envelope naming the freshly-allocated participant id; the
+//!   client waits for that envelope before signalling readiness, maps
+//!   the allocated id onto the subscription's `channel`, and surfaces
+//!   the resolved id through [`ResolvedSubscription::allocated_id`]
+//!   so the caller can transmit against it.
 
 use std::sync::mpsc;
 use std::thread;
@@ -67,6 +75,65 @@ pub struct Subscription {
     /// interface. The caller picks the mapping; the wire only carries
     /// `interface_id`.
     pub channel: u8,
+    /// Whether to expect an `InterfaceAllocated` envelope in
+    /// response. Set this when subscribing to a virtual-bus factory
+    /// id (ADR 0021); the worker thread blocks readiness until the
+    /// allocated id arrives and surfaces it via the resolved
+    /// subscriptions on [`RemoteCanFrameSource`].
+    pub allocates: bool,
+}
+
+impl Subscription {
+    /// Construct an ordinary (non-factory) subscription.
+    #[must_use]
+    pub fn new(interface_id: impl Into<String>, channel: u8) -> Self {
+        Self {
+            interface_id: interface_id.into(),
+            channel,
+            allocates: false,
+        }
+    }
+
+    /// Construct a virtual-bus factory subscription (ADR 0021).
+    #[must_use]
+    pub fn factory(interface_id: impl Into<String>, channel: u8) -> Self {
+        Self {
+            interface_id: interface_id.into(),
+            channel,
+            allocates: true,
+        }
+    }
+}
+
+/// A subscription as the server resolved it.
+///
+/// For ordinary subscribes `allocated_id` is `None` and
+/// [`Self::effective_id`] returns the requested id. For factory
+/// subscribes against a virtual-bus server, `allocated_id` holds the
+/// participant id the server allocated, and
+/// [`Self::effective_id`] returns that — the id the caller must use
+/// when transmitting.
+#[derive(Debug, Clone)]
+pub struct ResolvedSubscription {
+    /// The interface id the caller passed to [`connect_and_subscribe`].
+    pub requested_id: String,
+    /// The channel the caller asked frames to be tagged with.
+    pub channel: u8,
+    /// `Some(id)` when the server returned an `InterfaceAllocated`
+    /// naming this subscription's participant; `None` otherwise.
+    pub allocated_id: Option<String>,
+}
+
+impl ResolvedSubscription {
+    /// The wire id frames on this subscription arrive with and
+    /// transmits must be addressed to. The allocated id when present,
+    /// otherwise the requested id.
+    #[must_use]
+    pub fn effective_id(&self) -> &str {
+        self.allocated_id
+            .as_deref()
+            .unwrap_or(self.requested_id.as_str())
+    }
 }
 
 /// One CAN interface the server exposes. Mirrors
@@ -174,9 +241,8 @@ pub fn connect_and_subscribe(
     let address = address.to_string();
     let subs_for_thread = subscriptions.clone();
     let (frame_tx, frame_rx) = mpsc::channel::<Result<CanFrame, ConnectionError>>();
-    let (ready_tx, ready_rx) = mpsc::sync_channel::<
-        Result<tokio_mpsc::Sender<Envelope>, ConnectionError>,
-    >(1);
+    let (ready_tx, ready_rx) =
+        mpsc::sync_channel::<Result<SessionReady, ConnectionError>>(1);
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
     let thread = thread::Builder::new()
@@ -185,22 +251,32 @@ pub fn connect_and_subscribe(
         .map_err(|e| ConnectionError::Thread(e.to_string()))?;
 
     match ready_rx.recv() {
-        Ok(Ok(req_tx)) => Ok(RemoteCanFrameSource {
+        Ok(Ok(ready)) => Ok(RemoteCanFrameSource {
             receiver: FrameReceiver {
                 rx: frame_rx,
-                subscriptions,
+                subscriptions: ready.resolved,
             },
             handle: SessionHandle {
                 shutdown_tx: Some(shutdown_tx),
                 _thread: thread,
             },
-            transmitter: SessionTransmitter { req_tx },
+            transmitter: SessionTransmitter {
+                req_tx: ready.req_tx,
+            },
         }),
         Ok(Err(e)) => Err(e),
         Err(_) => Err(ConnectionError::Thread(
             "client worker thread exited before signalling readiness".into(),
         )),
     }
+}
+
+/// What the worker thread hands back to [`connect_and_subscribe`] when
+/// the session is fully established (every subscribe sent, every
+/// expected `InterfaceAllocated` received).
+struct SessionReady {
+    req_tx: tokio_mpsc::Sender<Envelope>,
+    resolved: Vec<ResolvedSubscription>,
 }
 
 /// The combined receive + shutdown handle returned by
@@ -221,10 +297,11 @@ pub struct RemoteCanFrameSource {
 }
 
 impl RemoteCanFrameSource {
-    /// The subscriptions this session was opened with, in the order
-    /// they were requested.
+    /// The subscriptions this session was opened with — including
+    /// the allocated id assigned by the server for any factory
+    /// subscribe (`Subscription::allocates`).
     #[must_use]
-    pub fn subscriptions(&self) -> &[Subscription] {
+    pub fn subscriptions(&self) -> &[ResolvedSubscription] {
         self.receiver.subscriptions()
     }
 
@@ -258,14 +335,14 @@ impl CanFrameSource for RemoteCanFrameSource {
 /// for an in-band server error or transport failure.
 pub struct FrameReceiver {
     rx: mpsc::Receiver<Result<CanFrame, ConnectionError>>,
-    subscriptions: Vec<Subscription>,
+    subscriptions: Vec<ResolvedSubscription>,
 }
 
 impl FrameReceiver {
-    /// The subscriptions this session was opened with, in the order
-    /// they were requested.
+    /// The subscriptions this session was opened with — including
+    /// any server-allocated id (see [`ResolvedSubscription`]).
     #[must_use]
-    pub fn subscriptions(&self) -> &[Subscription] {
+    pub fn subscriptions(&self) -> &[ResolvedSubscription] {
         &self.subscriptions
     }
 }
@@ -365,7 +442,7 @@ fn run_worker(
     address: String,
     subscriptions: Vec<Subscription>,
     frame_tx: mpsc::Sender<Result<CanFrame, ConnectionError>>,
-    ready_tx: mpsc::SyncSender<Result<tokio_mpsc::Sender<Envelope>, ConnectionError>>,
+    ready_tx: mpsc::SyncSender<Result<SessionReady, ConnectionError>>,
     shutdown_rx: oneshot::Receiver<()>,
 ) {
     let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -387,7 +464,7 @@ async fn run_session(
     address: String,
     subscriptions: Vec<Subscription>,
     frame_tx: mpsc::Sender<Result<CanFrame, ConnectionError>>,
-    ready_tx: mpsc::SyncSender<Result<tokio_mpsc::Sender<Envelope>, ConnectionError>>,
+    ready_tx: mpsc::SyncSender<Result<SessionReady, ConnectionError>>,
     mut shutdown_rx: oneshot::Receiver<()>,
 ) {
     let endpoint = format!("http://{address}");
@@ -422,25 +499,71 @@ async fn run_session(
         }
     };
 
-    // Hand a clone of the request sender back to the caller through
-    // the ready channel — this is what a `SessionTransmitter` wraps.
-    // Keep our own clone alive locally so the bidi request half stays
-    // open for the session's lifetime even after every external
-    // [`SessionTransmitter`] is dropped (a tx-only session is still
-    // valid; the server just won't see anything from us, but the
-    // receive half keeps streaming).
-    let _ = ready_tx.send(Ok(req_tx.clone()));
+    // Resolved-subscription state. For non-factory subscribes the
+    // allocation is fixed up-front; for factory subscribes we wait
+    // for `InterfaceAllocated` envelopes before signalling readiness
+    // and populate the allocated id then.
+    let mut resolved: Vec<ResolvedSubscription> = subscriptions
+        .iter()
+        .map(|s| ResolvedSubscription {
+            requested_id: s.interface_id.clone(),
+            channel: s.channel,
+            allocated_id: None,
+        })
+        .collect();
+    // FIFO of indices into `resolved` for the not-yet-matched factory
+    // subscribes, in the order their `Subscribe` envelopes were sent.
+    // The wire has no correlation id; we rely on the server emitting
+    // `InterfaceAllocated`s in the same order it sees the
+    // `Subscribe`s (which the in-tree virtual-bus server does).
+    let mut pending_allocations: std::collections::VecDeque<usize> = subscriptions
+        .iter()
+        .enumerate()
+        .filter_map(|(i, s)| if s.allocates { Some(i) } else { None })
+        .collect();
 
+    // `id_to_channel` is what the rx-pump arm below uses to tag
+    // incoming frames. Seed it with the non-factory ids; factory
+    // entries are added once `InterfaceAllocated` arrives. Indexed
+    // by the wire id the server actually puts on `FrameBatch`.
     let mut id_to_channel = std::collections::HashMap::with_capacity(subscriptions.len());
     for sub in &subscriptions {
-        id_to_channel.insert(sub.interface_id.clone(), sub.channel);
+        if !sub.allocates {
+            id_to_channel.insert(sub.interface_id.clone(), sub.channel);
+        }
     }
+    // For factory subscriptions, the virtual-bus server tags each
+    // fan-out `FrameBatch` with the *sender's* allocated id (ADR 0021),
+    // not the receiver's. So a client subscribed via factory id
+    // `virtual:bus0` and assigned participant `virtual:bus0/p1`
+    // observes frames tagged `virtual:bus0/p0`, `virtual:bus0/p2`, …
+    // Map any id whose prefix matches a factory subscription's
+    // requested id (plus the canonical separator) onto that
+    // subscription's channel.
+    let factory_prefixes: Vec<(String, u8)> = subscriptions
+        .iter()
+        .filter(|s| s.allocates)
+        .map(|s| (format!("{}/", s.interface_id), s.channel))
+        .collect();
 
     // Keep the request side of the bidi stream alive for the session's
     // lifetime — dropping it would close the request half early.
+    let req_tx_for_handle = req_tx.clone();
     let _req_tx = req_tx;
 
     let mut stream = response.into_inner();
+    let mut ready_sent = false;
+    let mut maybe_ready = Some(ready_tx);
+    // Signal readiness now if there's nothing to wait for.
+    if pending_allocations.is_empty() {
+        if let Some(tx) = maybe_ready.take() {
+            let _ = tx.send(Ok(SessionReady {
+                req_tx: req_tx_for_handle.clone(),
+                resolved: resolved.clone(),
+            }));
+        }
+        ready_sent = true;
+    }
     loop {
         tokio::select! {
             biased;
@@ -451,8 +574,17 @@ async fn run_session(
             message = stream.next() => match message {
                 Some(Ok(envelope)) => match envelope.body {
                     Some(Body::FrameBatch(batch)) => {
-                        let Some(channel) = id_to_channel.get(&batch.interface_id).copied() else {
-                            continue;
+                        let channel = match id_to_channel.get(&batch.interface_id).copied() {
+                            Some(c) => c,
+                            None => {
+                                let Some((_, c)) = factory_prefixes
+                                    .iter()
+                                    .find(|(p, _)| batch.interface_id.starts_with(p))
+                                else {
+                                    continue;
+                                };
+                                *c
+                            }
                         };
                         for proto_frame in batch.frames {
                             match proto_to_frame(&proto_frame, channel) {
@@ -468,7 +600,40 @@ async fn run_session(
                             }
                         }
                     }
+                    Some(Body::InterfaceAllocated(alloc)) => {
+                        // Pair with the oldest unresolved factory subscribe.
+                        if let Some(idx) = pending_allocations.pop_front() {
+                            resolved[idx].allocated_id = Some(alloc.interface_id.clone());
+                            id_to_channel.insert(
+                                alloc.interface_id,
+                                resolved[idx].channel,
+                            );
+                            if pending_allocations.is_empty() && !ready_sent {
+                                if let Some(tx) = maybe_ready.take() {
+                                    let _ = tx.send(Ok(SessionReady {
+                                        req_tx: req_tx_for_handle.clone(),
+                                        resolved: resolved.clone(),
+                                    }));
+                                }
+                                ready_sent = true;
+                            }
+                        }
+                    }
                     Some(Body::Error(err)) => {
+                        // A server-side error during the
+                        // wait-for-allocation phase is reported back
+                        // through the readiness channel so the caller
+                        // sees `connect_and_subscribe` fail, not a
+                        // post-success rx error.
+                        if !ready_sent {
+                            if let Some(tx) = maybe_ready.take() {
+                                let _ = tx.send(Err(ConnectionError::Server {
+                                    code: err.code,
+                                    message: err.message,
+                                }));
+                            }
+                            return;
+                        }
                         let _ = frame_tx.send(Err(ConnectionError::Server {
                             code: err.code,
                             message: err.message,
@@ -476,20 +641,47 @@ async fn run_session(
                         return;
                     }
                     // Subscribe / Unsubscribe round-trips (a peer
-                    // echoing the request) are ignored; Phase 7's
-                    // wire `Log` envelopes have no consumer in this
-                    // crate yet (Phase 8 bridges them at the GUI
-                    // host); `None` is the no-body case. All drop.
+                    // echoing the request) are ignored; wire `Log`
+                    // envelopes (ADR 0014) and the remaining
+                    // virtual-bus / hardware-server envelopes
+                    // (`InterfaceState`, `ConfigureBus`,
+                    // `AttachBridge`, `DetachBridge`) have no
+                    // consumer in this crate; the GUI host bridges
+                    // them into its own surfaces. `None` is the
+                    // no-body case. All drop.
                     Some(
-                        Body::Log(_) | Body::Subscribe(_) | Body::Unsubscribe(_),
+                        Body::Log(_)
+                        | Body::Subscribe(_)
+                        | Body::Unsubscribe(_)
+                        | Body::ConfigureBus(_)
+                        | Body::InterfaceState(_)
+                        | Body::AttachBridge(_)
+                        | Body::DetachBridge(_),
                     )
                     | None => {}
                 },
                 Some(Err(status)) => {
+                    if !ready_sent {
+                        if let Some(tx) = maybe_ready.take() {
+                            let _ = tx.send(Err(ConnectionError::Status(
+                                status.message().into(),
+                            )));
+                        }
+                        return;
+                    }
                     let _ = frame_tx.send(Err(ConnectionError::Status(status.message().into())));
                     return;
                 }
-                None => return,
+                None => {
+                    if !ready_sent {
+                        if let Some(tx) = maybe_ready.take() {
+                            let _ = tx.send(Err(ConnectionError::Session(
+                                "server closed stream before allocating".into(),
+                            )));
+                        }
+                    }
+                    return;
+                }
             },
         }
     }

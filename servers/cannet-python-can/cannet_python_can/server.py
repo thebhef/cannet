@@ -1,28 +1,27 @@
-"""gRPC service implementation: wire-protocol surface on top of the
-internal :mod:`cannet_python_can.driver` adapter.
+"""gRPC service implementation: hardware-server wire model (ADR 0022).
 
-The service is a faithful Python port of `cannet-server`'s replay
-service, scoped to live hardware: ``ListInterfaces`` enumerates the
-driver's channels, ``Session`` opens a bidirectional stream that
-- subscribes channels on demand,
-- streams ``FrameBatch`` envelopes per channel,
-- accepts client-originated ``FrameBatch`` envelopes as transmits,
-- reports ``Error`` for unknown / unsubscribed channels and
-  ``Error.CODE_TX_REJECTED`` for a rejected transmit,
-- emits ``LogMessage`` envelopes for vendor-level info / warn / error
-  events tagged with ``sidecar:python-can``.
+The service implements the hardware-server wire contract:
 
-One Subscribe spawns one worker thread that pulls frames out of the
-driver. The thread blocks for the first frame, then drains
-non-blocking up to ``_BATCH_FLUSH_NS`` or ``_BATCH_MAX_FRAMES`` and
-emits one ``FrameBatch`` envelope per drain. At low rates this is a
-single-frame envelope (same as a strict one-frame-per-envelope pump);
-at high rates it amortizes protobuf allocation, the outbox lock
-hand-off, the GIL hand-off between the pump and the session-yield
-thread, and the per-envelope gRPC overhead across N frames. Without
-this, CPython tops out around 5k frames/s on a single channel — the
-Rust BLF replay clears 60k+/s with one-frame envelopes because in
-Rust the per-envelope cost is trivial; in Python it dominates.
+- Each physical interface is opened **once**, shared across every
+  session that subscribes to it; a reference count on subscriptions
+  drives start (first ``Subscribe``) and stop (last ``Unsubscribe``).
+- One rx pump per shared interface fans every received ``FrameBatch``
+  out to every subscribed session's outbox.
+- ``Body::ConfigureBus`` updates the interface's :class:`OpenConfig`;
+  if the interface is currently open the bus is closed and reopened
+  with the new config. Conflict semantics across concurrent clients
+  are deliberately left to whatever the underlying python-can backend
+  does.
+- ``Body::InterfaceState`` is pushed: a snapshot on each subscribe,
+  and a fresh push whenever the controller's fault-confinement state
+  or its TEC / REC counters change.
+- ``LogMessage`` envelopes are emitted for vendor-level info / warn /
+  error events tagged with ``sidecar:python-can``.
+
+The rx pump's batching policy (drain up to ``_BATCH_FLUSH_NS`` /
+``_BATCH_MAX_FRAMES``) is unchanged from the original per-session
+pump; it just runs once per interface instead of once per
+(session, interface) pair.
 """
 
 from __future__ import annotations
@@ -152,6 +151,30 @@ def _interfaces_equal(a: list[pb.Interface], b: list[pb.Interface]) -> bool:
     )
 
 
+def _configure_to_open_config(cfg: pb.ConfigureBus) -> drv.OpenConfig:
+    """Translate a wire ``ConfigureBus`` into an :class:`OpenConfig`.
+
+    ``speed_bps`` / ``fd_data_speed_bps`` of 0 are taken as "unset";
+    the OpenConfig field becomes ``None`` so the driver picks its own
+    default.
+    """
+    return drv.OpenConfig(
+        bitrate_bps=int(cfg.speed_bps) if cfg.speed_bps else None,
+        data_bitrate_bps=(
+            int(cfg.fd_data_speed_bps) if cfg.fd_data_speed_bps else None
+        ),
+        fd=bool(cfg.fd_enabled),
+    )
+
+
+def _state_name_to_proto(name: str) -> "pb.ControllerState.V":
+    if name == drv.STATE_PASSIVE:
+        return pb.CONTROLLER_STATE_PASSIVE
+    if name == drv.STATE_BUS_OFF:
+        return pb.CONTROLLER_STATE_BUS_OFF
+    return pb.CONTROLLER_STATE_ACTIVE
+
+
 #: Pump drains for at most this many nanoseconds after the first
 #: frame in a batch before flushing. Bounds the wall-clock latency the
 #: pump adds to a frame.
@@ -165,79 +188,364 @@ _BATCH_FLUSH_NS = 5_000_000  # 5 ms
 #: of classic-CAN payload, well below gRPC's default 4 MB message cap.
 _BATCH_MAX_FRAMES = 2048
 
+#: How often the state-poll thread re-reads the controller's
+#: fault-confinement state. Cheap on every backend that exposes it; on
+#: backends that don't, the read returns the default (ACTIVE / 0 / 0)
+#: and the watcher does nothing.
+_STATE_POLL_INTERVAL_S = 0.5
 
-class _Subscription:
-    """Per-(session, interface) state: an open channel + a pump thread."""
+
+class _SharedInterface:
+    """One open physical channel, shared across all subscribed sessions.
+
+    The first subscribing session causes the underlying channel to be
+    opened; the last unsubscribing session causes it to be closed.
+    Frames received from the channel are broadcast to every subscribed
+    outbox; transmits from any subscriber go through the same channel.
+
+    ``ConfigureBus`` flows through :meth:`reconfigure`, which swaps the
+    underlying channel in place — the rx and state pumps pick up the
+    new channel on their next loop iteration.
+    """
 
     def __init__(
         self,
         *,
-        channel: drv.OpenChannel,
-        outbox: "queue.Queue[pb.Envelope]",
+        driver: drv.Driver,
+        channel_id: str,
+        initial_config: drv.OpenConfig,
     ) -> None:
-        self.channel = channel
-        self._outbox = outbox
+        self._driver = driver
+        self._channel_id = channel_id
+        self._lock = threading.Lock()
+        self._config = initial_config
+        self._channel: Optional[drv.OpenChannel] = None
+        # Ordered subscriber list; values are gRPC-Session outboxes.
+        # We keep it as a list (not a set) so iteration order is
+        # deterministic for tests.
+        self._outboxes: list["queue.Queue[Optional[pb.Envelope]]"] = []
         self._stop = threading.Event()
-        self._thread = threading.Thread(
-            target=self._pump, name=f"rx-{channel.channel_id}", daemon=True
-        )
-        self._thread.start()
+        self._rx_thread: Optional[threading.Thread] = None
+        self._state_thread: Optional[threading.Thread] = None
+        # Last-pushed state, used by the state pump to decide whether
+        # to emit a fresh ``InterfaceState`` envelope.
+        self._last_state: pb.ControllerState.V = pb.CONTROLLER_STATE_ACTIVE
+        self._last_tec: int = 0
+        self._last_rec: int = 0
 
-    def _pump(self) -> None:
-        cid = self.channel.channel_id
+    @property
+    def channel_id(self) -> str:
+        return self._channel_id
+
+    def attach(
+        self, outbox: "queue.Queue[Optional[pb.Envelope]]"
+    ) -> None:
+        """Register ``outbox`` as a subscriber.
+
+        Opens the underlying channel on the first attach. Pushes the
+        current :class:`InterfaceState` snapshot to ``outbox`` so
+        every subscriber gets one regardless of when it joined.
+        Raises whatever the driver raises (``KeyError`` for unknown id,
+        ``OSError`` for open failures) on the *first* attach; later
+        attaches reuse the already-open channel.
+        """
+        with self._lock:
+            if outbox not in self._outboxes:
+                self._outboxes.append(outbox)
+            if self._channel is None:
+                self._open_locked()
+            snapshot_state = self._last_state
+            snapshot_tec = self._last_tec
+            snapshot_rec = self._last_rec
+        outbox.put(
+            pb.Envelope(
+                interface_state=pb.InterfaceState(
+                    interface_id=self._channel_id,
+                    state=snapshot_state,
+                    tec=snapshot_tec,
+                    rec=snapshot_rec,
+                )
+            )
+        )
+
+    def detach(
+        self, outbox: "queue.Queue[Optional[pb.Envelope]]"
+    ) -> bool:
+        """Drop ``outbox`` from the subscriber list.
+
+        Returns ``True`` when this was the last subscriber and the
+        channel has been closed (so the registry can drop the entry).
+        """
+        with self._lock:
+            try:
+                self._outboxes.remove(outbox)
+            except ValueError:
+                pass
+            if self._outboxes:
+                return False
+            self._close_locked()
+            return True
+
+    def has_subscribers(self) -> bool:
+        with self._lock:
+            return bool(self._outboxes)
+
+    def transmit(self, frame: drv.Frame) -> None:
+        with self._lock:
+            ch = self._channel
+        if ch is None:
+            raise drv.TxRejected(f"{self._channel_id}: interface closed")
+        ch.send(frame)
+
+    def reconfigure(self, new_config: drv.OpenConfig) -> None:
+        """Apply a new :class:`OpenConfig`.
+
+        If the interface is currently open, the channel is closed and
+        reopened with the new config — the rx pump rolls over to the
+        new channel on its next loop iteration. If the open call
+        fails, the old channel is kept (and a ``LogMessage`` is
+        emitted to every subscriber).
+        """
+        with self._lock:
+            self._config = new_config
+            if self._channel is None:
+                return
+            old = self._channel
+            try:
+                new = self._driver.open(self._channel_id, new_config)
+            except Exception as e:  # noqa: BLE001
+                msg = f"reconfigure {self._channel_id} failed: {e}"
+                _log.warning(msg)
+                outboxes = list(self._outboxes)
+                for ob in outboxes:
+                    ob.put(_log_envelope(pb.LOG_LEVEL_ERROR, msg))
+                return
+            self._channel = new
+            self._reset_state_baseline_locked()
+        try:
+            old.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    # ---- internal --------------------------------------------------------
+
+    def _open_locked(self) -> None:
+        self._channel = self._driver.open(self._channel_id, self._config)
+        self._stop.clear()
+        self._reset_state_baseline_locked()
+        self._rx_thread = threading.Thread(
+            target=self._rx_pump,
+            name=f"rx-{self._channel_id}",
+            daemon=True,
+        )
+        self._state_thread = threading.Thread(
+            target=self._state_pump,
+            name=f"state-{self._channel_id}",
+            daemon=True,
+        )
+        self._rx_thread.start()
+        self._state_thread.start()
+
+    def _close_locked(self) -> None:
+        self._stop.set()
+        ch = self._channel
+        self._channel = None
+        if ch is not None:
+            try:
+                ch.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _reset_state_baseline_locked(self) -> None:
+        """Pin the controller-state baseline to ACTIVE / 0 / 0 so the
+        first poll after open emits an :class:`InterfaceState` only if
+        the controller is actually elsewhere."""
+        self._last_state = pb.CONTROLLER_STATE_ACTIVE
+        self._last_tec = 0
+        self._last_rec = 0
+
+    def _current_channel(self) -> Optional[drv.OpenChannel]:
+        with self._lock:
+            return self._channel
+
+    def _outbox_snapshot(self) -> list["queue.Queue[Optional[pb.Envelope]]"]:
+        with self._lock:
+            return list(self._outboxes)
+
+    def _rx_pump(self) -> None:
+        cid = self._channel_id
         try:
             while not self._stop.is_set():
-                # Block for the first frame so an idle channel doesn't
-                # spin the CPU.
-                frame = self.channel.recv(timeout_s=0.25)
+                ch = self._current_channel()
+                if ch is None:
+                    if self._stop.wait(0.05):
+                        break
+                    continue
+                try:
+                    frame = ch.recv(timeout_s=0.25)
+                except Exception as e:  # noqa: BLE001
+                    _log.warning("rx for %s failed: %s", cid, e)
+                    if self._stop.wait(0.1):
+                        break
+                    continue
                 if frame is None:
                     continue
                 batch_frames = [_frame_to_proto(frame)]
-                # Drain anything python-can already has buffered, plus
-                # whatever arrives within the flush window, up to the
-                # batch cap. ``recv(timeout=0)`` is the non-blocking
-                # poll used to peel buffered frames off the driver
-                # without re-entering a wait.
                 deadline = time.monotonic_ns() + _BATCH_FLUSH_NS
                 while len(batch_frames) < _BATCH_MAX_FRAMES:
                     if self._stop.is_set():
                         break
-                    next_frame = self.channel.recv(timeout_s=0.0)
-                    if next_frame is None:
+                    ch = self._current_channel()
+                    if ch is None:
+                        break
+                    try:
+                        nxt = ch.recv(timeout_s=0.0)
+                    except Exception:  # noqa: BLE001
+                        break
+                    if nxt is None:
                         if time.monotonic_ns() >= deadline:
                             break
-                        # No buffered frame yet but the window hasn't
-                        # closed; wait for a fresh one with whatever
-                        # time remains.
                         remaining_s = (
                             deadline - time.monotonic_ns()
                         ) / 1_000_000_000
                         if remaining_s <= 0:
                             break
-                        next_frame = self.channel.recv(timeout_s=remaining_s)
-                        if next_frame is None:
+                        try:
+                            nxt = ch.recv(timeout_s=remaining_s)
+                        except Exception:  # noqa: BLE001
                             break
-                    batch_frames.append(_frame_to_proto(next_frame))
-                self._outbox.put(
-                    pb.Envelope(
-                        frame_batch=pb.FrameBatch(
-                            interface_id=cid, frames=batch_frames
-                        )
+                        if nxt is None:
+                            break
+                    batch_frames.append(_frame_to_proto(nxt))
+                env = pb.Envelope(
+                    frame_batch=pb.FrameBatch(
+                        interface_id=cid, frames=batch_frames
                     )
                 )
-        except Exception as e:  # noqa: BLE001 - the wire layer reports it.
-            _log.warning("rx pump for %s failed: %s", cid, e)
-            self._outbox.put(
-                _log_envelope(pb.LOG_LEVEL_ERROR, f"rx pump for {cid} failed: {e}")
+                for ob in self._outbox_snapshot():
+                    ob.put(env)
+        except Exception as e:  # noqa: BLE001
+            _log.warning("rx pump for %s crashed: %s", cid, e)
+            err = _log_envelope(
+                pb.LOG_LEVEL_ERROR, f"rx pump for {cid} crashed: {e}"
             )
-        finally:
-            try:
-                self.channel.close()
-            except Exception:  # noqa: BLE001 - best-effort
-                pass
+            for ob in self._outbox_snapshot():
+                ob.put(err)
 
-    def stop(self) -> None:
-        self._stop.set()
+    def _state_pump(self) -> None:
+        cid = self._channel_id
+        while not self._stop.is_set():
+            if self._stop.wait(_STATE_POLL_INTERVAL_S):
+                break
+            ch = self._current_channel()
+            if ch is None:
+                continue
+            try:
+                st = ch.state()
+            except Exception as e:  # noqa: BLE001
+                _log.debug("state poll for %s failed: %s", cid, e)
+                continue
+            mapped = _state_name_to_proto(st.state)
+            with self._lock:
+                if (
+                    mapped == self._last_state
+                    and st.tec == self._last_tec
+                    and st.rec == self._last_rec
+                ):
+                    continue
+                self._last_state = mapped
+                self._last_tec = st.tec
+                self._last_rec = st.rec
+                outboxes = list(self._outboxes)
+            env = pb.Envelope(
+                interface_state=pb.InterfaceState(
+                    interface_id=cid,
+                    state=mapped,
+                    tec=st.tec,
+                    rec=st.rec,
+                )
+            )
+            for ob in outboxes:
+                ob.put(env)
+
+
+class _InterfaceRegistry:
+    """Process-wide registry of :class:`_SharedInterface` entries.
+
+    The service holds exactly one registry. Each session is a thin
+    client: ``Subscribe`` → ``registry.subscribe``,
+    ``Unsubscribe`` → ``registry.unsubscribe``,
+    ``FrameBatch`` → ``registry.transmit``,
+    ``ConfigureBus`` → ``registry.reconfigure``.
+    The registry holds the per-interface :class:`OpenConfig` even
+    before a session subscribes, so a ``ConfigureBus`` that arrives
+    early is applied at the next open.
+    """
+
+    def __init__(self, driver: drv.Driver) -> None:
+        self._driver = driver
+        self._lock = threading.Lock()
+        self._interfaces: dict[str, _SharedInterface] = {}
+        self._configs: dict[str, drv.OpenConfig] = {}
+
+    def subscribe(
+        self,
+        channel_id: str,
+        outbox: "queue.Queue[Optional[pb.Envelope]]",
+    ) -> _SharedInterface:
+        with self._lock:
+            shared = self._interfaces.get(channel_id)
+            new = shared is None
+            if new:
+                cfg = self._configs.get(channel_id, drv.OpenConfig())
+                shared = _SharedInterface(
+                    driver=self._driver,
+                    channel_id=channel_id,
+                    initial_config=cfg,
+                )
+                self._interfaces[channel_id] = shared
+        assert shared is not None
+        try:
+            shared.attach(outbox)
+        except Exception:
+            if new:
+                with self._lock:
+                    self._interfaces.pop(channel_id, None)
+            raise
+        return shared
+
+    def unsubscribe(
+        self,
+        channel_id: str,
+        outbox: "queue.Queue[Optional[pb.Envelope]]",
+    ) -> None:
+        with self._lock:
+            shared = self._interfaces.get(channel_id)
+        if shared is None:
+            return
+        if shared.detach(outbox):
+            with self._lock:
+                # Re-check under the lock — another session may have
+                # attached between the detach and this pop.
+                cur = self._interfaces.get(channel_id)
+                if cur is shared and not cur.has_subscribers():
+                    self._interfaces.pop(channel_id, None)
+
+    def reconfigure(
+        self, channel_id: str, config: drv.OpenConfig
+    ) -> None:
+        with self._lock:
+            shared = self._interfaces.get(channel_id)
+            self._configs[channel_id] = config
+        if shared is not None:
+            shared.reconfigure(config)
+
+    def transmit(self, channel_id: str, frame: drv.Frame) -> None:
+        with self._lock:
+            shared = self._interfaces.get(channel_id)
+        if shared is None:
+            raise KeyError(channel_id)
+        shared.transmit(frame)
 
 
 #: How often the background watcher thread re-enumerates the driver's
@@ -257,6 +565,7 @@ class CannetServerService(pb_grpc.CannetServerServicer):
         watch_poll_interval_s: float = _WATCH_POLL_INTERVAL_S,
     ) -> None:
         self._driver = driver
+        self._registry = _InterfaceRegistry(driver)
         # Shared snapshot cache + sequence counter, both guarded by
         # `_watch_cond`. Watchers block on the condition until the
         # sequence advances past their last-seen value. The poll
@@ -402,12 +711,15 @@ class CannetServerService(pb_grpc.CannetServerServicer):
         """Bidirectional stream. See `cannet.proto`'s `Session` rpc."""
 
         outbox: "queue.Queue[Optional[pb.Envelope]]" = queue.Queue()
-        subscriptions: dict[str, _Subscription] = {}
+        # Per-session set of subscribed interface ids — needed to
+        # 1) gate `FrameBatch` (CODE_NOT_SUBSCRIBED if absent) and
+        # 2) clean up on session end.
+        subscribed: set[str] = set()
 
         def cleanup() -> None:
-            for sub in subscriptions.values():
-                sub.stop()
-            subscriptions.clear()
+            for cid in list(subscribed):
+                self._registry.unsubscribe(cid, outbox)
+            subscribed.clear()
             outbox.put(None)
 
         def request_pump() -> None:
@@ -423,11 +735,17 @@ class CannetServerService(pb_grpc.CannetServerServicer):
                 for env in request_iterator:
                     body = env.WhichOneof("body")
                     if body == "subscribe":
-                        self._handle_subscribe(env.subscribe, subscriptions, outbox)
+                        self._handle_subscribe(
+                            env.subscribe, subscribed, outbox
+                        )
                     elif body == "unsubscribe":
-                        self._handle_unsubscribe(env.unsubscribe, subscriptions, outbox)
+                        self._handle_unsubscribe(
+                            env.unsubscribe, subscribed, outbox
+                        )
                     elif body == "frame_batch":
-                        self._handle_tx(env.frame_batch, subscriptions, outbox)
+                        self._handle_tx(env.frame_batch, subscribed, outbox)
+                    elif body == "configure_bus":
+                        self._handle_configure(env.configure_bus, outbox)
                     elif body == "error":
                         _log.info("client error envelope: %s", env.error.message)
                     elif body == "log":
@@ -453,14 +771,14 @@ class CannetServerService(pb_grpc.CannetServerServicer):
     def _handle_subscribe(
         self,
         sub: pb.Subscribe,
-        subscriptions: dict[str, _Subscription],
+        subscribed: set[str],
         outbox: "queue.Queue[Optional[pb.Envelope]]",
     ) -> None:
         cid = sub.interface_id
-        if cid in subscriptions:
-            return  # idempotent
+        if cid in subscribed:
+            return  # idempotent within a session
         try:
-            channel = self._driver.open(cid, drv.OpenConfig())
+            self._registry.subscribe(cid, outbox)
         except KeyError:
             outbox.put(
                 _error_envelope(
@@ -478,41 +796,76 @@ class CannetServerService(pb_grpc.CannetServerServicer):
                 )
             )
             return
-        subscriptions[cid] = _Subscription(channel=channel, outbox=outbox)  # type: ignore[arg-type]
+        subscribed.add(cid)
 
     def _handle_unsubscribe(
         self,
         unsub: pb.Unsubscribe,
-        subscriptions: dict[str, _Subscription],
+        subscribed: set[str],
         outbox: "queue.Queue[Optional[pb.Envelope]]",
     ) -> None:
-        sub = subscriptions.pop(unsub.interface_id, None)
-        if sub is not None:
-            sub.stop()
+        cid = unsub.interface_id
+        if cid not in subscribed:
+            return
+        self._registry.unsubscribe(cid, outbox)
+        subscribed.discard(cid)
 
     def _handle_tx(
         self,
         batch: pb.FrameBatch,
-        subscriptions: dict[str, _Subscription],
+        subscribed: set[str],
         outbox: "queue.Queue[Optional[pb.Envelope]]",
     ) -> None:
-        sub = subscriptions.get(batch.interface_id)
-        if sub is None:
+        cid = batch.interface_id
+        if cid not in subscribed:
             outbox.put(
                 _error_envelope(
                     pb.Error.CODE_NOT_SUBSCRIBED,
-                    f"transmit on unsubscribed {batch.interface_id}",
+                    f"transmit on unsubscribed {cid}",
                 )
             )
             return
         for proto_frame in batch.frames:
             frame = _proto_to_frame(proto_frame)
             try:
-                sub.channel.send(frame)
+                self._registry.transmit(cid, frame)
             except drv.TxRejected as e:
                 outbox.put(
                     _error_envelope(pb.Error.CODE_TX_REJECTED, str(e))
                 )
+            except KeyError:
+                # Interface was closed between the subscribed-check
+                # and the transmit — race with another session's last
+                # unsubscribe. Surface as TX_REJECTED.
+                outbox.put(
+                    _error_envelope(
+                        pb.Error.CODE_TX_REJECTED,
+                        f"interface {cid} closed",
+                    )
+                )
+
+    def _handle_configure(
+        self,
+        cfg: pb.ConfigureBus,
+        outbox: "queue.Queue[Optional[pb.Envelope]]",
+    ) -> None:
+        """Apply a wire ``ConfigureBus``.
+
+        Multi-client conflict semantics are deliberately not enforced
+        here (ADR 0022 § Known unknowns); whatever the underlying
+        python-can backend does on reopen is what the user gets.
+        """
+        cid = cfg.interface_id
+        config = _configure_to_open_config(cfg)
+        try:
+            self._registry.reconfigure(cid, config)
+        except Exception as e:  # noqa: BLE001
+            outbox.put(
+                _log_envelope(
+                    pb.LOG_LEVEL_ERROR,
+                    f"configure {cid} failed: {e}",
+                )
+            )
 
 
 def serve(

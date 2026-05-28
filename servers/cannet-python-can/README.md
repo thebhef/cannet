@@ -61,11 +61,38 @@ sidecar    listening     127.0.0.1:49725
 port in `listening` is the OS-assigned one when `--bind` was left at
 its default — never a hard-coded value.
 
+## Wire model
+
+The sidecar implements the **hardware-server wire model** described in
+[ADR 0022](../../docs/adr/0022-hardware-server-model.md):
+
+- `ListInterfaces` / `WatchInterfaces` enumerate the driver's
+  channels (ADR 0016).
+- A physical channel is **opened once and shared** across every
+  subscribed session. A reference count on `Subscribe` /
+  `Unsubscribe` drives start / stop; the first subscriber opens the
+  python-can `Bus`, the last unsubscriber closes it.
+- Multi-client is the python-can backend's native behaviour:
+  multiple sessions can subscribe to the same interface
+  concurrently; rx fans out to every subscriber, and any subscriber
+  can tx.
+- `Body::ConfigureBus { interface_id, speed_bps,
+  fd_data_speed_bps?, fd_enabled }` updates the interface's open
+  config. If the interface is currently open the underlying bus is
+  closed and reopened with the new config. Conflict semantics under
+  concurrent clients are deliberately whatever python-can does
+  (ADR 0022 § Known unknowns).
+- `Body::InterfaceState { interface_id, state, tec, rec }` is
+  pushed: a snapshot on each `Subscribe`, plus a fresh push whenever
+  the controller's fault-confinement state or its TEC / REC
+  counters change. python-can's `Bus.state` is polled at ~2 Hz;
+  TEC / REC are reported as 0 on backends that don't expose them.
+
 ## Swap the driver library
 
 `driver.py` defines a small adapter protocol (`list_channels`,
-`open`, `recv`, `send`, `close`); the default implementation in
-`driver_python_can.py` wraps `python-can`. To use something else:
+`open`, `recv`, `send`, `state`, `close`); the default implementation
+in `driver_python_can.py` wraps `python-can`. To use something else:
 
 1. `uv pip install <your-driver>` into the sidecar's venv (or edit
    `pyproject.toml` and re-run `uv sync`).

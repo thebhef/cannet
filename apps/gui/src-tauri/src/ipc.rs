@@ -152,7 +152,7 @@ pub struct TraceGrew {
 /// fields). `data` is the raw payload (empty for `remote` / `error`).
 /// `brs` / `esi` are only meaningful for `fd` kinds; `dlc` only for
 /// `remote`.
-#[derive(serde::Deserialize, Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TransmitRequest {
     /// Destination bus id (one of the project's logical buses). The
@@ -175,7 +175,7 @@ pub struct TransmitRequest {
 
 /// Frame kind the transmit panel picks. Lower-case on the wire so the
 /// frontend's discriminated union matches.
-#[derive(serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TransmitKind {
     Classic,
@@ -399,6 +399,10 @@ pub struct MessageDescriptorRecord {
     /// CAN-FD BRS from the `GenMsgCANFDBRS` attribute (default `true`
     /// on FD messages with no attribute). Always `false` on classic.
     pub brs: bool,
+    /// The DBC's `GenMsgCycleTime` attribute in milliseconds, or `None`
+    /// when absent. The transmit panel pre-fills a newly-added
+    /// message's cycle period from this.
+    pub gen_msg_cycle_time_ms: Option<u32>,
     /// `true` iff any signal uses nested / extended multiplexing
     /// (`m<N>M`). The transmit panel falls back to bytes-only editing
     /// in that case.

@@ -74,6 +74,10 @@ const projectCtx: ProjectContextValue = {
   onRemoveBinding: noop,
   onConnect: noop,
   onDisconnect: noop,
+  localVirtualBuses: [],
+  onAddVirtualBus: noop,
+  onRemoveVirtualBus: noop,
+  onUpdateVirtualBus: noop,
 };
 
 function makeRegistry(create: ReturnType<typeof vi.fn>): ElementRegistry {

@@ -172,6 +172,10 @@ const projectCtx: ProjectContextValue = {
   onRemoveBinding: () => {},
   onConnect: () => {},
   onDisconnect: () => {},
+  localVirtualBuses: [],
+  onAddVirtualBus: () => {},
+  onRemoveVirtualBus: () => {},
+  onUpdateVirtualBus: () => {},
 };
 
 function renderPanel() {

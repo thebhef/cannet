@@ -103,7 +103,7 @@ describe("buildSinkPredicate", () => {
   });
 
   it("returns null for a transmit element (it isn't a consumer of frames)", () => {
-    const tx: ProjectElement = { kind: "transmit", id: "tx", sinks: ["b1"] };
+    const tx: ProjectElement = { kind: "transmit", id: "tx", sinks: ["b1"], frameIds: [] };
     expect(buildSinkPredicate(tx, lookup([tx]))).toBeNull();
   });
 

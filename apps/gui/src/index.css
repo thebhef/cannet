@@ -1882,7 +1882,16 @@ header {
   color: #64748b;
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 0.78rem;
-  padding-right: 0.15rem;
+  padding: 0 0.15rem 0 0;
+  margin: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  border-radius: 2px;
+}
+.tx-canid-prefix:hover {
+  color: #cbd5e1;
+  background: #1c2433;
 }
 .tx-canid-input {
   background: transparent;

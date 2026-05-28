@@ -11,6 +11,7 @@ import type {
   DbcInfo,
   DbcRef,
   InterfaceBinding,
+  LocalVirtualBusDef,
   LogFinished,
   OpenLogResult,
   Project,
@@ -20,7 +21,12 @@ import type {
   TraceFrameRecord,
   TraceGrew,
 } from "./types";
-import { PROJECT_SCHEMA_VERSION, isLocalBinding, resolveServer } from "./types";
+import {
+  PROJECT_SCHEMA_VERSION,
+  isLocalBinding,
+  localVbusId,
+  resolveServer,
+} from "./types";
 import { useSidecarStatus } from "./sidecarStatus";
 import { TitleBar } from "./TitleBar";
 import { TracePanel } from "./TracePanel";
@@ -159,6 +165,10 @@ export function App() {
   // Phase 6: logical buses + interface bindings. Project-owned state.
   const [buses, setBuses] = useState<Bus[]>([]);
   const [interfaceBindings, setInterfaceBindings] = useState<InterfaceBinding[]>([]);
+  // Phase 13: virtual buses owned by the project (ADR 0021).
+  const [localVirtualBuses, setLocalVirtualBuses] = useState<LocalVirtualBusDef[]>(
+    [],
+  );
   // Multi-server remote-session tracking, keyed by address. Connect/
   // Disconnect drives this; entries clear on a server-side hang up via
   // `log-finished` (which doesn't carry an address — we treat it as
@@ -253,7 +263,7 @@ export function App() {
   const buildFreshElement = (kind: ProjectElementKind, id: string): ProjectElement => {
     switch (kind) {
       case "transmit":
-        return { kind, id, sinks: busesRef.current.map((b) => b.id) };
+        return { kind, id, sinks: busesRef.current.map((b) => b.id), frameIds: [] };
       case "filter":
         return { kind, id, sources: ["*"] };
       default:
@@ -309,14 +319,37 @@ export function App() {
     },
     [],
   );
-  const removeElement = useCallback((id: string) => {
-    setRegistry((prev) => prev.filter((e) => e.element.id !== id));
-    const api = dockApiRef.current;
-    const panel = api?.panels.find(
-      (p) => (p.params as { elementId?: unknown } | undefined)?.elementId === id,
-    );
-    if (api && panel) api.removePanel(panel);
-  }, []);
+  const removeElement = useCallback(
+    (id: string) => {
+      // Removing a *transmit* element (the explicit "Remove element"
+      // action — not closing its panel) deletes its TX messages from
+      // the host pool too, which also stops any running periodic. A
+      // message still grouped by another transmit element survives
+      // (the pool is shared; only this group is going away). Phase 13
+      // Step 9.
+      const removed = registry.find((e) => e.element.id === id);
+      if (removed && removed.element.kind === "transmit") {
+        const stillReferenced = new Set<string>();
+        for (const e of registry) {
+          if (e.element.id !== id && e.element.kind === "transmit") {
+            for (const fid of e.element.frameIds) stillReferenced.add(fid);
+          }
+        }
+        for (const fid of removed.element.frameIds) {
+          if (!stillReferenced.has(fid)) {
+            void invoke("remove_transmit_frame", { id: fid }).catch(() => {});
+          }
+        }
+      }
+      setRegistry((prev) => prev.filter((e) => e.element.id !== id));
+      const api = dockApiRef.current;
+      const panel = api?.panels.find(
+        (p) => (p.params as { elementId?: unknown } | undefined)?.elementId === id,
+      );
+      if (api && panel) api.removePanel(panel);
+    },
+    [registry],
+  );
   const plotCounterRef = useRef(0);
 
   const invalidateCache = useCallback(() => {
@@ -659,7 +692,10 @@ export function App() {
   // bound interfaces on that server. Bindings with the `"local"`
   // sentinel are resolved to the live sidecar address — if the
   // sidecar isn't ready yet they're dropped from this attempt with a
-  // System Message rather than failing the whole connect.
+  // System Message rather than failing the whole connect. Bindings
+  // with the `local-vbus://` scheme open an in-process session
+  // against the named virtual bus (ADR 0021) — the host dispatches on
+  // the binding's `kind`; the frontend treats every binding the same.
   const handleConnect = useCallback(async () => {
     if (interfaceBindings.length === 0) {
       setState({
@@ -793,9 +829,10 @@ export function App() {
         // addresses now live per-binding on `interface_bindings`. Kept
         // null for v3 schema compatibility.
         remote_address: null,
+        local_virtual_buses: localVirtualBuses,
       };
     },
-    [registry, dbcPaths, dbcBuses, buses, interfaceBindings],
+    [registry, dbcPaths, dbcBuses, buses, interfaceBindings, localVirtualBuses],
   );
 
   // Record which project is "open" — both the React state and the
@@ -848,8 +885,14 @@ export function App() {
         ? project.interface_bindings
         : [];
       const incomingDbcs: DbcRef[] = Array.isArray(project.dbcs) ? project.dbcs : [];
+      const incomingVbuses: LocalVirtualBusDef[] = Array.isArray(
+        project.local_virtual_buses,
+      )
+        ? project.local_virtual_buses
+        : [];
       setBuses(incomingBuses);
       setInterfaceBindings(incomingBindings);
+      setLocalVirtualBuses(incomingVbuses);
       const scoping: Record<string, string[]> = {};
       for (const d of incomingDbcs) scoping[d.path] = d.buses ?? [];
       setDbcBuses(scoping);
@@ -857,6 +900,14 @@ export function App() {
         incomingDbcs.map((d) => d.path),
         scoping,
       );
+      // Phase 13: rebuild host-side virtual buses from project defs
+      // (ADR 0021). Per-binding session participants are opened on
+      // Connect, not here.
+      void invoke("replay_local_virtual_buses", {
+        defs: incomingVbuses,
+      }).catch((err) => {
+        console.error("replay_local_virtual_buses failed", err);
+      });
     },
     [loadDbcSet],
   );
@@ -870,8 +921,17 @@ export function App() {
     setDbcBuses({});
     setBuses([]);
     setInterfaceBindings([]);
+    setLocalVirtualBuses([]);
     void invoke("disconnect_remote_server", { address: null }).catch(() => {});
     setRemoteSessions(new Map());
+    // Drop any host-side local virtual buses left from the
+    // previous project (ADR 0021).
+    void invoke("replay_local_virtual_buses", {
+      defs: [],
+    }).catch(() => {});
+    // Phase 13 Step 9: drop the host TX-message pool too, so a New
+    // project starts with no transmit frames.
+    void invoke("clear_transmit_frames").catch(() => {});
     void invoke("clear_trace_store").catch(() => {});
     invalidateCache();
     setBaseTimestampSeconds(null);
@@ -1039,23 +1099,59 @@ export function App() {
     setBuses((prev) => prev.map((b) => (b.id === id ? { ...b, color } : b)));
     setDirty(true);
   }, []);
-  // Phase 6: interface-binding mutations.
+  // Phase 6: interface-binding mutations. Each project bus has at
+  // most one binding (key is `bus_id`); multiple bindings may target
+  // the same source — Phase 13 Step 6 made the sidecar and the
+  // in-process bus both fan out to N subscribers. Binding mutations
+  // are pure project state — the host-side session for the binding
+  // is opened on Connect, not on bind.
   const handleAddBinding = useCallback((binding: InterfaceBinding) => {
     setInterfaceBindings((prev) => {
-      // Last-write-wins on (server, interface).
-      const filtered = prev.filter(
-        (b) => !(b.server === binding.server && b.interface === binding.interface),
-      );
+      const filtered = prev.filter((b) => b.bus_id !== binding.bus_id);
       return [...filtered, binding];
     });
     setDirty(true);
   }, []);
-  const handleRemoveBinding = useCallback((server: string, iface: string) => {
-    setInterfaceBindings((prev) =>
-      prev.filter((b) => !(b.server === server && b.interface === iface)),
-    );
+  const handleRemoveBinding = useCallback((bus_id: string) => {
+    setInterfaceBindings((prev) => prev.filter((b) => b.bus_id !== bus_id));
     setDirty(true);
   }, []);
+
+  // Phase 13: virtual-bus mutations (ADR 0021).
+  const handleAddVirtualBus = useCallback((def: LocalVirtualBusDef) => {
+    setLocalVirtualBuses((prev) => {
+      if (prev.some((v) => v.id === def.id)) return prev;
+      return [...prev, def];
+    });
+    setDirty(true);
+    void invoke("create_local_virtual_bus", {
+      id: def.id,
+      name: def.name,
+    }).catch((err) => {
+      console.error("create_local_virtual_bus failed", err);
+    });
+  }, []);
+
+  const handleRemoveVirtualBus = useCallback((id: string) => {
+    setLocalVirtualBuses((prev) => prev.filter((v) => v.id !== id));
+    setInterfaceBindings((prev) =>
+      prev.filter((b) => localVbusId(b) !== id),
+    );
+    setDirty(true);
+    void invoke("drop_local_virtual_bus", { id }).catch((err) => {
+      console.error("drop_local_virtual_bus failed", err);
+    });
+  }, []);
+
+  const handleUpdateVirtualBus = useCallback(
+    (id: string, patch: Partial<LocalVirtualBusDef>) => {
+      setLocalVirtualBuses((prev) =>
+        prev.map((v) => (v.id === id ? { ...v, ...patch } : v)),
+      );
+      setDirty(true);
+    },
+    [],
+  );
 
   const getFrame = useCallback((index: number): TraceFrameRecord | null => {
     const chunkIdx = Math.floor(index / CHUNK_SIZE);
@@ -1128,7 +1224,7 @@ export function App() {
       id: `transmit-${elementId}`,
       component: TRANSMIT_PANEL_COMPONENT,
       title: `Transmit ${transmitCounterRef.current}`,
-      params: { elementId, frames: [] },
+      params: { elementId },
     });
   }, [create]);
 
@@ -1384,6 +1480,10 @@ export function App() {
       onRemoveBinding: handleRemoveBinding,
       onConnect: handleConnect,
       onDisconnect: handleDisconnect,
+      localVirtualBuses,
+      onAddVirtualBus: handleAddVirtualBus,
+      onRemoveVirtualBus: handleRemoveVirtualBus,
+      onUpdateVirtualBus: handleUpdateVirtualBus,
     }),
     [
       projectPath,
@@ -1412,6 +1512,10 @@ export function App() {
       handleRemoveBinding,
       handleConnect,
       handleDisconnect,
+      localVirtualBuses,
+      handleAddVirtualBus,
+      handleRemoveVirtualBus,
+      handleUpdateVirtualBus,
     ],
   );
 

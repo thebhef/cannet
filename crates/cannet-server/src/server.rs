@@ -198,8 +198,7 @@ async fn run_session(
     replay: Arc<LoopingBlfReplay>,
     rate: f64,
 ) {
-    let subscriptions: Arc<RwLock<HashSet<String>>> =
-        Arc::new(RwLock::new(HashSet::new()));
+    let subscriptions: Arc<RwLock<HashSet<String>>> = Arc::new(RwLock::new(HashSet::new()));
 
     let pump_handle = tokio::spawn(pump_paced(
         replay.clone(),
@@ -241,10 +240,28 @@ async fn run_session(
                     .await;
             }
             // Client-side `Error` is informational on this server (the
-            // BLF replay surface has nothing to do about it); Phase 7
-            // wire `Log` messages likewise have no log destination on
-            // this server, so both arms drop.
-            Body::Error(_) | Body::Log(_) => {}
+            // BLF replay surface has nothing to do about it); wire
+            // `Log` messages likewise have no log destination here.
+            // `ConfigureBus` is a no-op on a read-only BLF replay
+            // (ADR 0021); the server→client envelopes
+            // (`InterfaceAllocated`, `InterfaceState`) only flow the
+            // other way but the match must stay exhaustive.
+            Body::Error(_)
+            | Body::Log(_)
+            | Body::ConfigureBus(_)
+            | Body::InterfaceAllocated(_)
+            | Body::InterfaceState(_) => {}
+            // Bridges are a virtual-bus server feature; the replay
+            // server doesn't host them, so installing or detaching a
+            // bridge through this session is rejected (ADR 0021).
+            Body::AttachBridge(_) | Body::DetachBridge(_) => {
+                let _ = outgoing
+                    .send(Ok(error_envelope(
+                        Code::TxRejected,
+                        "BLF replay does not host bridges".into(),
+                    )))
+                    .await;
+            }
         }
     }
 

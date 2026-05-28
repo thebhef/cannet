@@ -1,6 +1,6 @@
 import { createContext, useContext } from "react";
 
-import type { Bus, InterfaceBinding } from "./types";
+import type { Bus, InterfaceBinding, LocalVirtualBusDef } from "./types";
 
 /**
  * The current project + bus/DBC configuration and the actions that
@@ -66,11 +66,26 @@ export interface ProjectContextValue {
   onRenameBus: (id: string, name: string) => void;
   /// Set a bus's graph colour (`#rrggbb`).
   onSetBusColor: (id: string, color: string) => void;
-  /// Phase 6: interface-binding ops.
+  /// Phase 6: interface-binding ops. Multiple bindings may target
+  /// the same `(server, interface)` — Step-6 multi-client and the
+  /// in-process bus both fan out, so the historical
+  /// 1-binding-per-source rule is dropped.
   onAddBinding: (binding: InterfaceBinding) => void;
-  onRemoveBinding: (server: string, iface: string) => void;
+  /// Remove the binding currently routing the given project
+  /// `bus_id`. Each project bus has at most one binding, so a
+  /// single id is enough to address it.
+  onRemoveBinding: (bus_id: string) => void;
   onConnect: () => void;
   onDisconnect: () => void;
+  /// Phase 13: virtual buses (ADR 0021).
+  localVirtualBuses: LocalVirtualBusDef[];
+  /// Add a new virtual bus def. The host instantiates it
+  /// in-process. Idempotent on `id` collision (no-op).
+  onAddVirtualBus: (def: LocalVirtualBusDef) => void;
+  /// Drop a virtual bus and detach any bindings that referenced it.
+  onRemoveVirtualBus: (id: string) => void;
+  /// Rename / re-configure / replace bridges on a virtual bus.
+  onUpdateVirtualBus: (id: string, patch: Partial<LocalVirtualBusDef>) => void;
 }
 
 export const ProjectContext = createContext<ProjectContextValue | null>(null);

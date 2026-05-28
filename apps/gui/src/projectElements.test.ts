@@ -70,9 +70,23 @@ describe("normalizeElement", () => {
   });
 
   it("preserves a transmit's explicit `sinks` list verbatim", () => {
-    const tx: ProjectElement = { kind: "transmit", id: "x", sinks: ["p", "c"] };
+    const tx: ProjectElement = { kind: "transmit", id: "x", sinks: ["p", "c"], frameIds: [] };
     const out = normalizeElement(tx);
     expect(out.kind === "transmit" ? out.sinks : null).toEqual(["p", "c"]);
+  });
+
+  it("defaults transmit `frameIds` to [] and preserves an explicit list", () => {
+    const bare = { kind: "transmit", id: "x", sinks: [] } as unknown as ProjectElement;
+    const out = normalizeElement(bare);
+    expect(out.kind === "transmit" ? out.frameIds : null).toEqual([]);
+    const withIds = {
+      kind: "transmit",
+      id: "y",
+      sinks: [],
+      frameIds: ["f1", "f2"],
+    } as ProjectElement;
+    const out2 = normalizeElement(withIds);
+    expect(out2.kind === "transmit" ? out2.frameIds : null).toEqual(["f1", "f2"]);
   });
 
   it("normalises a filter, preserving its name + predicate", () => {
@@ -117,6 +131,27 @@ describe("applyElementPatch", () => {
   it("is a no-op on unknown id", () => {
     const before = [trace("t1")];
     expect(applyElementPatch(before, "nope", { sources: [] })).toBe(before);
+  });
+
+  it("returns the same entries ref when the patch changes nothing", () => {
+    // A patch whose values equal the element's current values must not
+    // allocate a new entries array — otherwise a caller that derives the
+    // patch in a render effect and depends on the registry identity (the
+    // transmit panel's sinks-sync effect) re-fires forever: update → new
+    // entries → new registry value → effect re-runs → update → …
+    // Arrays are compared by content because the deriving effect builds a
+    // fresh array every render, so reference equality alone never holds.
+    const before = [trace("t1", ["b1", "b2"])];
+    expect(applyElementPatch(before, "t1", { sources: ["b1", "b2"] })).toBe(before);
+  });
+
+  it("returns the same entries ref for a no-op transmit sinks patch", () => {
+    const tx: RegistryEntry = {
+      element: { kind: "transmit", id: "x", sinks: ["b1"], frameIds: [] },
+      trace: freshTrace(0),
+    };
+    const before = [tx];
+    expect(applyElementPatch(before, "x", { sinks: ["b1"] })).toBe(before);
   });
 
   it("refuses a kind/id mismatch (stale closure protection)", () => {

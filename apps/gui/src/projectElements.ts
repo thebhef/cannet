@@ -82,7 +82,8 @@ export function isProjectElement(v: unknown): v is ProjectElement {
 export function normalizeElement(el: ProjectElement): ProjectElement {
   if (el.kind === "transmit") {
     const raw = (el as unknown as { sinks?: unknown }).sinks;
-    return { ...el, sinks: stringList(raw, []) };
+    const frameIdsRaw = (el as unknown as { frameIds?: unknown }).frameIds;
+    return { ...el, sinks: stringList(raw, []), frameIds: stringList(frameIdsRaw, []) };
   }
   const raw = (el as unknown as { sources?: unknown }).sources;
   return { ...el, sources: stringList(raw, ["*"]) } as ProjectElement;
@@ -125,10 +126,37 @@ export function applyElementPatch(
   ) {
     return entries;
   }
+  // A patch that changes no value must return the SAME entries array, so
+  // a caller deriving the patch in a render effect doesn't churn the
+  // registry identity. The transmit panel's sinks-sync effect recomputes
+  // its `ordered` array every render and depends on the registry value;
+  // without this short-circuit each (value-equal) update allocates a new
+  // entries array → new registry identity → the effect re-fires → update
+  // → … an unbounded render loop while the panel is mounted. Arrays are
+  // compared by content because the effect always passes a fresh array.
+  if (patchIsNoOp(current, patch)) return entries;
   const merged = { ...current, ...patch } as ProjectElement;
   const next = entries.slice();
   next[i] = { ...entries[i], element: merged };
   return next;
+}
+
+/// True when every field in `patch` already equals the element's current
+/// value (array fields compared element-wise). Used by [`applyElementPatch`]
+/// to keep a no-op patch identity-stable.
+function patchIsNoOp(current: ProjectElement, patch: Partial<ProjectElement>): boolean {
+  const cur = current as unknown as Record<string, unknown>;
+  const pat = patch as unknown as Record<string, unknown>;
+  for (const key of Object.keys(pat)) {
+    const a = cur[key];
+    const b = pat[key];
+    if (Array.isArray(a) && Array.isArray(b)) {
+      if (a.length !== b.length || a.some((v, idx) => v !== b[idx])) return false;
+    } else if (a !== b) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /// Would patching filter `filterId`'s `sources` to `newSources`

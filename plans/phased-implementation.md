@@ -1670,9 +1670,25 @@ Exit criteria:
 
 ## Phase 13 — Virtual Bus
 
+Status: **done** — all 9 steps landed. Step 8's host-side gate (the
+`trace-grew` emitter) has landed and is unit-tested; the plot loop's
+IPC/redraw was already gated inside `resample` (it skips when the
+visible-window fetch key is unchanged). A separate idle-CPU regression —
+a mounted transmit panel pegged a WebView core via an unbounded React
+effect loop, independent of any host tick — was found and fixed (see
+Step 8's follow-on note below). A live measurement confirms the idle
+exit criterion: a connected, otherwise-idle session now sits at <5% (was
+111% with the transmit panel open). Everything verifiable from a desk is
+green: `cargo test --workspace` + the frontend suite pass, loopback is
+removed, ADRs 0021/0022 and the README virtual-bus docs are in. The
+three live / hardware exit criteria (bridge configs via `SMOKE.md`, two
+GUIs getting distinct allocated ids, the 500 kbps frame-timing stagger)
+require a rig and were **consciously deferred to [`backlog.md`](backlog.md)**
+for an ad-hoc verify-and-bugfix pass — not silently marked passed.
+
 `cannet-core` grows a `shared_bus` primitive — one CAN bus shared
-by N nodes with configurable bitrate, ISO 11898-style arbitration,
-and bridge nodes that front a physical interface on a remote wire
+by N participants with configurable bitrate, ISO 11898-style
+arbitration, and bridge participants that front a physical interface on a remote wire
 endpoint. `cannet-server --virtual-bus` wraps it as a gRPC service;
 the GUI host uses the same primitive in-process (the foundation
 the eventual rest-of-bus simulation will sit on). The existing
@@ -1684,8 +1700,323 @@ Architectural decisions live in
 the normative reference. The summary below is what changes in the
 codebase and how it gets demonstrated.
 
+Planned implementation order — each step lands as its own commit
+with the tree green; later steps depend on earlier ones, so the
+order is binding rather than indicative:
+
+1. **`cannet-core::shared_bus` primitive.** New module with
+   `SharedBus::new(BusConfig)`, `attach_participant()`,
+   `attach_bridge()`, `reconfigure()`; fan-out with sender attribution;
+   per-participant FIFO TX queues; frame-boundary arbitration on one
+   timeline; `NoAcknowledger` when a TX has zero recipients; FD/BRS-
+   aware frame-duration timing. Pure Rust, unit-tested in isolation.
+   "Participant" rather than "node" because CANopen uses "node" as a
+   protocol concept. `loopback_bus` is left in place until Step 4
+   retires it.
+2. **`cannet-wire` envelope additions.** Add `ConfigureBus`,
+   `InterfaceAllocated`, `InterfaceState`, `AttachBridge`,
+   `DetachBridge`, plus `Code::NoAcknowledger`. Confirm the existing
+   `CanFramePayload::Error` round-trip with a test (the converter in
+   `convert.rs` already covers it). Exhaustive matches updated in
+   `cannet-server` (both modes drop the new variants for now) and
+   `cannet-client`.
+3. **`cannet-server --virtual-bus` mode.** Wraps `SharedBus` as a
+   gRPC service: factory `virtual:bus0`, monotonic allocated ids,
+   multi-client sessions. Tested through `cannet-client`. Both
+   BLF replay and the virtual-bus server silently drop
+   `ConfigureBus` (controller config belongs to the hardware
+   server, ADR 0021); BLF replay rejects bridge ops with
+   `TxRejected`.
+4. **Retire `--loopback`.** Virtual-bus is a strict superset of
+   loopback's role; delete `cannet-core::loopback_bus`,
+   `cannet-server::loopback`, `crates/cannet-server/tests/loopback.rs`,
+   and the `--loopback` CLI flag. Drop the now-obsolete
+   `transmit_through_session_round_trips_via_loopback` test from
+   `cannet-client/tests/end_to_end.rs` and log the cannet-client
+   virtual-bus subscription/transmit follow-up to
+   `plans/backlog.md` (full end-to-end TX coverage for cannet-client
+   needs `InterfaceAllocated` handling, which is a Step 6 piece).
+   README's loopback demo section is rewritten as a virtual-bus demo.
+5. **Bridge orchestration.** `AttachBridge` / `DetachBridge` on the
+   virtual-bus server, `WatchInterfaces` push on topology change.
+   Tested against another virtual-bus server (the CAN-over-IP
+   gateway shape). (Controller `InterfaceState` originates at the
+   hardware server, not relayed through the virtual-bus server —
+   see ADR 0022.)
+6. **Hardware-server model in the python-can sidecar (ADR 0022).**
+   The sidecar implements the hardware-server wire contract:
+   `Subscribe` / `Unsubscribe`-gated reference-counted start / stop,
+   `ConfigureBus` forwarded to the underlying python-can `Bus`,
+   `InterfaceState` push on controller fault-confinement
+   transitions. Multi-client supported per python-can's native
+   behavior; `ConfigureBus` conflict semantics deliberately left
+   open (observe and ADR if needed). Proto regenerated from
+   `crates/cannet-wire/proto/cannet.proto` via
+   `servers/cannet-python-can/scripts/regen_proto.sh`.
+7. **GUI host integration.** Project schema bump (additive:
+   `remote` / `remote-virtual-bus` / `local-virtual-bus`); in-process
+   `SharedBus` for local buses; trace store ingests fan-out;
+   project-panel "Create virtual bus" + per-binding "Add bridge";
+   graph-view rendering of the new binding kinds. Bus configuration
+   (arbitration speed, FD data-phase speed, FD enable) surfaces as
+   a readout on the bus element and graph node; editability depends
+   on binding kind — `local-virtual-bus` editable in-process via
+   `SharedBus::reconfigure`; hardware (sidecar) interfaces editable
+   via `Body::ConfigureBus`; `remote-virtual-bus` is read-only at
+   the GUI (the bus's params are set on the server's CLI).
+   `cannet-client` learns to match `InterfaceAllocated` against its
+   originating subscribe call and surface the allocated id through
+   the `Subscription` API, so a factory subscription becomes usable
+   through the client surface (and reinstates the wire-level
+   transmit round-trip coverage that retiring loopback removed).
+   Backlog items removed: the "bus bitrate is not surfaced in the
+   GUI" UI item; the cannet-client virtual-bus
+   subscription/transmit follow-up.
+8. **Idle-CPU cleanup: gate `trace-grew` and the plot resample on
+   real change.** A connected, otherwise-idle GUI session burns
+   noticeable WebView CPU because two host-driven ticks fire
+   unconditionally:
+   - **`trace-grew` emitter**
+     ([`spawn_trace_grew_emitter`](apps/gui/src-tauri/src/lib.rs#L341))
+     pushes an event every `TRACE_GREW_TICK` (100 ms) even when
+     `trace_store.len()` is unchanged. Each emission collects up
+     to `TRACE_GREW_TAIL` (256) tail frames, computes
+     `frames_per_second()`, and ships the lot over the Tauri
+     bridge; the frontend's listener
+     ([App.tsx:440](apps/gui/src/App.tsx#L440)) parses it and
+     updates refs whether or not anything moved. Make the emitter
+     compare against the last-emitted `(count, fps)` and skip the
+     emission when both are unchanged. (Optional follow-on: when
+     count *did* advance, ship only the *new* tail rows rather
+     than the rolling 256 — the frontend's chunk cache already
+     handles back-fill.)
+   - **Plot live-resample loop**
+     ([PlotPanel.tsx:2618](apps/gui/src/PlotPanel.tsx#L2618)) calls
+     `sample_signals` at the panel's configured rate (default
+     15 Hz) whenever `state === "running"`, regardless of whether
+     new frames have landed since the last sample. Gate the next
+     tick on the count/version the prior sample observed; when
+     the host hasn't grown the trace, skip the IPC round-trip and
+     the uPlot redraw it drives.
+
+   Exit: with a connected session and no frames flowing, the
+   WebView content process sits near 0% CPU (was observed at
+   ~79% during Step 7 development).
+
+   Realised (host gate): the pure, unit-tested `should_emit_trace_grew`
+   drives `spawn_trace_grew_emitter`, which now reads only `len()` +
+   `frames_per_second()` each tick and emits only when that
+   `(count, fps)` pair changed. An idle session settles because
+   `frames_per_second()` returns exactly `0.0` after one second of
+   silence, so the tuple stops changing and the tail decode + emit stop
+   entirely (the one-second rate decay still ticks through, so the
+   status line slides to zero first).
+
+   Plot loop: the IPC round-trip + uPlot redraw this step calls for are
+   *already* gated inside `resample` ([PlotPanel.tsx](apps/gui/src/PlotPanel.tsx)):
+   when the visible-window request is identical to the last successful
+   fetch (`cache.fetchKey === fetchKey`), it skips both `sample_signals`
+   and the redraw and returns early, so no new gate was added there. The
+   legend's present-value / range / cache readouts live in refs and are
+   repainted via a `setValueTick` bump, but that bump fires only after a
+   *real* resample (new data fetched) or when the area has no signals —
+   **not** on the window-unchanged skip path — so a live-but-idle plot
+   does not re-render the side panel every tick. The only residual
+   per-tick work on an idle live plot is the 15 Hz loop calling the
+   rate / cache diagnostic-report callbacks; with idle CPU measured at
+   <5% this is not worth gating further.
+
+   Follow-on (transmit-panel idle CPU): a separate WebView-CPU pin was
+   found that the two ticks above don't explain — an *open* transmit
+   panel pegged a renderer core whether or not frames were flowing, and
+   even with zero frames. Root cause was a render loop, not a tick: the
+   panel's sinks-sync effect ([`TransmitPanel.tsx`](apps/gui/src/TransmitPanel.tsx)
+   sinks `useEffect`) rebuilds its `ordered` array every render, calls
+   `registry.update` unconditionally, and depends on the registry value;
+   `applyElementPatch` ([`projectElements.ts`](apps/gui/src/projectElements.ts))
+   allocated a fresh entries array even for a value-equal patch, so each
+   update changed the registry identity → re-fired the effect → updated
+   again, unboundedly. Fixed by making `applyElementPatch` identity-stable
+   on a no-op patch (array fields compared by content, matching the
+   `ensure` / `updateTrace` mutators that already short-circuit). Guarded
+   by two `applyElementPatch` unit tests (same-ref on a content-equal
+   patch, incl. the transmit `sinks` case); the existing transmit-panel
+   DOM tests miss it because their fake registry has a stable identity and
+   never models the host's per-update identity churn. Confirmed by live
+   measurement: with the fix, a connected idle session with the transmit
+   panel open sits at <5% (was 111%).
+9. **Move the TX-message model to the host
+   (ADR 0003 alignment).** Today the transmit panel owns the
+   transmit-frame configs (in React state, persisted via dockview
+   panel params) and runs the periodic schedule itself via
+   `setInterval`. That's the panel owning model state — the exact
+   inversion ADR 0003 and CLAUDE.md § "thin views over a paged
+   model" prohibit, and the source of every transmit-panel bug
+   surfaced this phase (edits to a running periodic not landing
+   until stop/start; period changes resetting the schedule; rate
+   capped at ~one-send-per-event-loop-turn; "manual" send and
+   "periodic" send treated as separate code paths). Fix the model.
+
+   The model is **one host-side TX message** — a single shape the
+   project creates, destroys, edits, and persists. It is the source
+   of truth; every transmit panel is a thin view onto it. Four
+   properties pin the design:
+
+   1. **One model object per TX message.** Created / destroyed in
+      the project, edited host-side, persisted in the project file.
+   2. **Mode (manual vs periodic) is a persisted attribute, distinct
+      from running (started / stopped), which is runtime-only.** A
+      message *is* manual (sent on demand) or *is* periodic (then
+      started / stopped); reopening a project never auto-starts a
+      periodic.
+   3. **Any number of messages may share an id / bus.** The registry
+      key is a stable per-message id (UUID), never `(bus, can_id)` —
+      so duplicates of the same arbitration id on the same bus are
+      ordinary, independent entries. **Nothing in the host may
+      dedupe or key TX messages by `(bus, can_id)`.**
+   4. **Every attribute is editable on a running periodic without
+      stopping it; the change lands on the *next* emitted message.**
+      Not just payload / signal values — id, kind, bus, BRS, DLC, and
+      the period itself all apply on the next tick, via a
+      snapshot-at-top-of-iteration loop (no double-buffering).
+
+   - **Host** gains a `transmit_frames` module with a
+     `TransmitFrameRegistry`: an ordered, id-keyed map (the global
+     pool) of `TransmitFrame { id, description: String,
+     request: TransmitRequest, cycle_ms: u32, mode: Manual |
+     Periodic }` plus a runtime-only
+     `periodic: Option<PeriodicTask>` (the live handle — never
+     persisted). `transmit_frame_once` and the periodic task both
+     look up the entry by id and call the existing
+     `transmit_frame_inner(state, &request)` — one transmit
+     primitive, no special-casing for the periodic case. The
+     periodic schedule runs on a dedicated host thread (one per
+     running message, in `spawn_periodic_transmit`), snapshots the
+     current `request` + `cycle_ms` at the top of each iteration (so
+     any live edit lands on the next tick — property 4), skips the
+     tick when the target bus has no live session (no tx-confirm
+     while disconnected — Phase 11; the schedule resumes on
+     reconnect), and exits when its stop flag is set (stop / remove /
+     park) or the entry is gone. A period edit takes effect on the
+     next iteration (the loop sleeps the freshly-read `cycle_ms`).
+     Mutations emit a `transmit-frames-changed` event so views
+     re-fetch. The `running` flag is runtime-only — the presence of
+     a live thread — and is never persisted.
+   - **Grouping is project-managed, not view-local.** The pool is
+     flat and global, but the *layout grouping* (which messages a
+     given transmit panel shows, and in what order) belongs to the
+     project model so it round-trips with the project rather than
+     hiding in dockview params. The `kind: "transmit"` element
+     carries an ordered `frame_ids: Vec<String>` referencing the
+     pool; "+ frame" / drop / reorder mutate that list (and create /
+     destroy pool entries). The element's `sinks` still derive from
+     the union of its grouped frames' buses (the graph view reads
+     `sinks` unchanged). A message id may appear in more than one
+     group; removing it from the pool removes it from every group.
+   - **Tauri commands** (the IPC surface):
+     `list_transmit_frames()`,
+     `set_transmit_frame(id, frame)` (the `{ description, request,
+     cycle_ms, mode }` shape; runtime `periodic` is never sent over
+     IPC), `remove_transmit_frame(id)`,
+     `reorder_transmit_frames(ids)`,
+     `transmit_frame_once(id) -> TransmitResult`,
+     `start_periodic_transmit(id)`,
+     `stop_periodic_transmit(id)`, `clear_transmit_frames()`.
+     `start_periodic_transmit` rejects `mode != Periodic` and
+     `cycle_ms == 0`; `set_transmit_frame` accepts `cycle_ms == 0`
+     so a parked / manual message can sit at 0 between edits, and
+     accepts `mode` flips freely (flipping a running periodic to
+     `Manual` stops its task). The existing `transmit_frame(request)`
+     command is removed (the frontend's last caller is the transmit
+     panel, which routes through the registry from this step on).
+   - **Project schema** picks up `transmit_frames: Vec<TransmitFrame>`
+     (the pool, sans the runtime `periodic`) at the top level, and
+     each `kind: "transmit"` element gains `frame_ids: Vec<String>`.
+     Additive, `#[serde(default)]`, no schema-version bump.
+     `open_project` populates the host registry from the pool (all
+     periodics stopped); `save_project` snapshots the registry back.
+     Pool order and per-group order both persist.
+   - **Frontend `TransmitPanel`** becomes a thin view. It drops its
+     local `frames` state and the dockview-params `frames` field. On
+     mount it calls `list_transmit_frames`, reads its element's
+     `frame_ids` group, and subscribes to `transmit-frames-changed`.
+     Every cell edit invokes `set_transmit_frame` with the resulting
+     `{ description, request, cycle_ms, mode }`; Send / Start / Stop
+     invoke the matching command; the manual / periodic toggle sets
+     `mode`. A message's displayed **name is the DBC message name**
+     resolved from its `(can_id, extended)` against the loaded DBCs
+     (the existing `describe_message` path) — there is no free-text
+     name field. `description` is an optional user annotation (e.g.
+     "open contactor", "fault-injection variant") shown alongside it.
+     Per-row *view*-local state (collapsed row, signals-table-open,
+     last-typed period text, …) stays in panel params. The period
+     input is controlled-text with revert-on-blur — the user can
+     type freely (including transient invalid values); blurring with
+     a non-positive number reverts to the last valid `cycle_ms`
+     without dispatching anything to the host.
+
+   Exit:
+   - Creating, editing, and removing a TX message goes through the
+     host registry; the panel holds no frame model state. Two
+     transmit panels grouping overlapping messages stay consistent —
+     an edit in one is reflected in the other via
+     `transmit-frames-changed`.
+   - Two (or more) messages with the **same id and bus** coexist as
+     independent entries, edit independently, and can run
+     independently (a regression test asserts the registry never
+     collapses them).
+   - A message's mode (manual / periodic) persists across save /
+     reopen; running state does not — every periodic reopens
+     stopped (the user re-presses Start) so reopen never fires
+     traffic onto a bus the user hasn't intentionally reconnected.
+   - Editing *any* attribute of a running periodic — payload, signal
+     values, id, kind, bus, BRS / DLC — takes effect on the next
+     host-side tick without stop / start.
+   - Changing the period of a running periodic swaps the cadence in
+     place — the schedule keeps running, no extra immediate send, no
+     flicker through the "stopped" state.
+   - Setting the period to a non-positive value via the input
+     reverts on blur; the host never sees `cycle_ms == 0` for a
+     running periodic.
+   - Save + reopen restores the full pool in order with
+     `description`, `cycle_ms`, and `mode`, and restores each
+     transmit panel's `frame_ids` grouping and order.
+   - The backlog's two transmit-panel `[bug]` items are closed: the
+     TX-rate cap ("1 ms periodic observed at ~20–40 msg/s") and the
+     signals-view-doesn't-refresh item (obviated: the signals view
+     re-fetches from the host model on `transmit-frames-changed`).
+     Resolution of the rate cap, with the design that followed:
+     - **Root cause (host).** Once ticks left the JS event loop, the
+       per-message host thread still slept a *full* `cycle_ms`
+       **after** doing the transmit work, so the true period was
+       `cycle_ms + work` — a fixed-delay loop, not fixed-rate. Fixed
+       by scheduling to absolute deadlines (`next_tick_deadline`):
+       work time is absorbed into the wait, and an overrun realigns to
+       `now` rather than firing a catch-up burst.
+     - **Measured ceiling.** `transmit_frame_inner` over a live vbus
+       session costs ~1.2 µs (≈828k frames/s single-threaded);
+       building a frame + trace-append alone is ~0.3 µs (≈3M/s). See
+       the `#[ignore]`d `bench_tx_*` tests in `lib.rs`. So per-frame
+       CPU work is *not* the limit — the cap was timing, and OS sleep
+       resolution is fine to ~1 kHz.
+     - **Target.** TX is not bound by app performance for *arbitrarily
+       many* cyclic messages at 5–10 ms periods (100–200 Hz each)
+       across multiple buses — comfortably within real CAN / CAN-FD
+       bus capacity (a single fully-loaded bus is < 20k frames/s).
+     - **Design (single scheduler).** Thread-per-message is replaced
+       by **one** scheduler thread (`run_transmit_scheduler`) driving a
+       `transmit_scheduler::PeriodicSchedule` (min-heap of deadlines
+       with generation bookkeeping so stop→start can't double-fire).
+       It blocks on a command channel with a timeout equal to the time
+       to the next deadline — no busy-wait — and fires all due
+       messages per wake. This removes the per-thread wake-up jitter
+       and the N-way lock contention that scaling to many messages
+       would have caused. Per-bus `FrameBatch` batching is a deferred
+       optimization (see backlog) — the benchmarks show it isn't
+       needed to hit the target.
+
 **`cannet-core`** gains `shared_bus`: `SharedBus::new(BusConfig)`,
-`attach_node() -> (LocalSink, LocalSource)`,
+`attach_participant() -> (LocalSink, LocalSource)`,
 `attach_bridge(name, remote_sink, remote_source) -> BridgeHandle`,
 `reconfigure(BusConfig)`. `BusConfig` carries `speed_bps`,
 optional `fd_data_speed_bps`, classic-vs-FD enable flag. Drop
@@ -1704,16 +2035,20 @@ along with `LoopbackServerImpl` exports.
 it — the audit is part of this phase).
 
 **`cannet-python-can` sidecar** implements `Body::ConfigureBus`
-against its physical interfaces — same envelope, same semantics
-as the virtual-bus server. `ConfigureBus` is the server-API
-contract for bus configuration; servers diverging on this is a
-bug in either implementation. The sidecar's `proto/cannet.proto`
-stays in sync (regenerated via
+against its physical interfaces. `ConfigureBus` is a hardware-
+server concern only (ADR 0021); the virtual-bus server doesn't
+handle it. The sidecar's `proto/cannet.proto` stays in sync
+(regenerated via
 `servers/cannet-python-can/scripts/regen_proto.sh`) and tests
 exercise the round-trip.
 
 **`cannet-client`** picks up exhaustive matches on the new wire
-variants and surfaces them through its existing event shape.
+variants and surfaces them through its existing event shape, and
+learns to drive a factory subscription: when a `Subscribe` is
+followed by an `InterfaceAllocated`, the client maps the allocated
+id to the originating subscription's channel and exposes it through
+the `Subscription` / `RemoteCanFrameSource` surface so callers can
+transmit on the allocated id.
 
 **Project schema** gains three binding kinds (additive,
 `PROJECT_SCHEMA_VERSION` bumps; existing remote bindings
@@ -1729,7 +2064,7 @@ migrate to `"remote"`):
 
 **GUI host** instantiates local virtual buses in-process — the
 `SharedBus` primitive from `cannet-core` lives directly in the
-Tauri host. The trace store ingests fan-out from local nodes the
+Tauri host. The trace store ingests fan-out from local participants the
 same way it ingests frames from a remote session. For bridges
 on a local bus, the host opens a `cannet-client` session to the
 bridge target (typically a python-can sidecar) and wires those
@@ -1742,7 +2077,14 @@ grows "Create virtual bus" (creates a `local-virtual-bus`
 binding, instantiates the bus in-process) and per-binding
 "Add bridge" (for a local bus, opens the client session and
 calls `attach_bridge`; for a remote-virtual-bus, sends
-`AttachBridge` over the wire).
+`AttachBridge` over the wire). Each bus element also gains a
+configuration readout (arbitration speed, FD data-phase speed,
+FD enable) on the bus's project-panel row and graph node;
+editability depends on binding kind: `local-virtual-bus` is
+edited in-process via `SharedBus::reconfigure`; hardware
+(sidecar) interfaces are edited via `Body::ConfigureBus`;
+`remote-virtual-bus` is read-only at the GUI (the bus's params
+are set on the server's CLI).
 
 **Out of scope (deferred):**
 
@@ -1753,51 +2095,61 @@ calls `attach_bridge`; for a remote-virtual-bus, sends
 
 **Exit criteria:**
 
+> **Deferred (live / hardware):** the two-GUI distinct-allocated-ids
+> criterion, the 500 kbps frame-timing-stagger criterion, and the three
+> end-to-end bridge configurations (passive monitor / full bidirectional
+> against hardware / cross-server gateway) require a rig and were moved to
+> [`backlog.md`](backlog.md) for an ad-hoc verify-and-bugfix pass. Their
+> supporting code, unit/integration tests, and docs are in; only the live
+> sign-off is outstanding. Every other criterion below is met.
+
 - `cannet-server --virtual-bus` runs and exposes the factory
   `virtual:bus0` via `ListInterfaces`. Subscribing returns
-  `InterfaceAllocated` naming the allocated node id. Allocated
+  `InterfaceAllocated` naming the allocated participant id. Allocated
   ids are monotonic per server lifetime, never re-used; a
   session may subscribe multiple times to operate as multiple
-  nodes; session end disposes that session's nodes.
+  participants; session end disposes that session's participants.
 - Two cannet GUIs against the same virtual-bus server each
   subscribe and receive distinct allocated ids; each sees the
   other's transmissions as Rx (tagged with the sender's id) on
   its own session.
-- A session whose node has zero recipients receives
-  `Code::NoAcknowledger` per TX. Allocated nodes carry no
+- A session whose participant has zero recipients receives
+  `Code::NoAcknowledger` per TX. Allocated participants carry no
   further error state (no TEC/REC tracking, no Bus-off
   progression — that machinery lives only on bridges).
-- Per-node TX queues arbitrate correctly: Node A's batch
-  `[0x000, 0x000, 0x500]` against Node B's `[0x100]` plays
+- Per-participant TX queues arbitrate correctly: Participant A's batch
+  `[0x000, 0x000, 0x500]` against Participant B's `[0x100]` plays
   out 0x000, 0x000, 0x100, 0x500 at the bus.
 - Frame timing honours the bus's `speed_bps`: a 500-kbps bus
   measurably staggers fan-out of a sustained transmit by the
   computed frame duration; back-to-back frames do not collapse
   to one timestamp.
-- `Body::ConfigureBus` from any session reconfigures the
-  virtual bus at runtime without re-subscribe; the same
-  envelope, sent to a python-can sidecar's physical interface,
-  configures bitrate / FD mode on the controller.
+- `Body::ConfigureBus` sent to a python-can sidecar's physical
+  interface configures bitrate / FD mode on the controller. The
+  virtual-bus server silently ignores `ConfigureBus`; its bus
+  parameters are set on the server's CLI at startup (ADR 0021
+  § "Server roles").
 - `AttachBridge { remote_address, interface_id }` installs a
   bridge whose Rx fans into the virtual bus and whose TX queue
   forwards to the remote interface; `WatchInterfaces` pushes
-  the updated list. Bridge `InterfaceState` envelopes deliver
-  the controller's actual TEC/REC and Active/Passive/Bus-off
-  transitions to every subscriber of the bridge id.
+  the updated list. Controller `InterfaceState`
+  (TEC/REC/Active/Passive/Bus-off) is observed on the hardware
+  server that owns the underlying controller, not relayed
+  through the virtual-bus server.
 - Error frames (`CanFramePayload::Error`) round-trip through
-  the wire and through a bridge node (a bridge's controller
+  the wire and through a bridge participant (a bridge's controller
   emitting an error frame appears on the virtual bus as
   fan-out content).
 - Three bridge configurations work end-to-end:
   - **Passive monitor**: physical traffic appears as Rx on
-    allocated nodes; allocated TX is not forwarded.
+    allocated participants; allocated TX is not forwarded.
   - **Full bidirectional bridge**: allocated TX appears on the
     physical bus and vice-versa, against real hardware (smoke
     procedure in `servers/cannet-python-can/SMOKE.md`).
   - **Cross-server bridge / CAN-over-IP gateway**: Server A
     bridges against Server B's `virtual:bus0` factory; B
     treats A's connection as an ordinary session and allocates
-    it a node; both servers continue to act as full virtual
+    it a participant; both servers continue to act as full virtual
     buses for other clients. Extended to two physical-fronted
     servers, the shape connects two real buses across a
     network.
@@ -1813,15 +2165,27 @@ calls `attach_bridge`; for a remote-virtual-bus, sends
 - A pre-existing project opens cleanly: every existing binding
   migrates to `{ kind: "remote" }`; the version is rewritten on
   next save.
+- The bus element shows its configured arbitration speed, FD
+  data-phase speed, and FD-enable on the project-panel row and
+  graph node. Editing the values from the panel takes effect on
+  a `local-virtual-bus` binding via `SharedBus::reconfigure`
+  in-process and on a remote sidecar (hardware-server) interface
+  via `Body::ConfigureBus` on the open session.
+  `remote-virtual-bus` is read-only (params set on the server's
+  CLI).
 - `--loopback` and `LoopbackServerImpl` are removed; tests and
   docs that referenced them are updated to virtual-bus
   equivalents.
 - Backlog items removed: "[feat] Linux `vcan` via socketcan as
   a writable CAN source" (covered); "Subscribe carrying bus
   speed / FD config + listen-only TX_REJECTED wire surfacing"
-  (subsumed by `ConfigureBus`).
+  (subsumed by `ConfigureBus`); "[ui] bus bitrate is not
+  surfaced in the GUI" (readout + editor land on the bus
+  element); the cannet-client virtual-bus subscription /
+  transmit follow-up (factory `Subscribe` becomes usable
+  through the `Subscription` API).
 - README documents `--virtual-bus`, its CLI knobs, the
-  multi-node demo flow, the bridge attach/detach flow, the
+  multi-participant demo flow, the bridge attach/detach flow, the
   cross-server bridging shape, and the in-process local-bus
   GUI action. Rustdoc covers the new public surface on
   `cannet-core::shared_bus`, `cannet-server::virtual_bus`, and

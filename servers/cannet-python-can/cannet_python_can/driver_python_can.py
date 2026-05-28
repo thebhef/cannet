@@ -39,7 +39,17 @@ import logging
 import time
 from typing import Iterable, List, Optional
 
-from .driver import Channel, Frame, OpenChannel, OpenConfig, TxRejected
+from .driver import (
+    Channel,
+    ControllerState,
+    Frame,
+    OpenChannel,
+    OpenConfig,
+    STATE_ACTIVE,
+    STATE_BUS_OFF,
+    STATE_PASSIVE,
+    TxRejected,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -114,6 +124,28 @@ class PythonCanChannel:
             self._bus.send(msg)  # type: ignore[attr-defined]
         except Exception as e:  # noqa: BLE001
             raise TxRejected(str(e)) from e
+
+    def state(self) -> ControllerState:
+        """Read the controller's fault-confinement state.
+
+        python-can exposes ``Bus.state`` (``BusState.ACTIVE`` /
+        ``PASSIVE`` / ``ERROR``); we map ``ERROR`` to ``bus_off`` since
+        that's the closest analog of an ISO 11898-1 fault state in
+        python-can's three-value enum. TEC / REC aren't exposed
+        uniformly across backends; reported as 0.
+        """
+        if self._closed or can is None:
+            return ControllerState()
+        try:
+            raw = self._bus.state  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            return ControllerState()
+        name = getattr(raw, "name", str(raw)).upper()
+        if name == "PASSIVE":
+            return ControllerState(state=STATE_PASSIVE)
+        if name in ("ERROR", "BUS_OFF", "BUSOFF"):
+            return ControllerState(state=STATE_BUS_OFF)
+        return ControllerState(state=STATE_ACTIVE)
 
     def close(self) -> None:
         if self._closed:

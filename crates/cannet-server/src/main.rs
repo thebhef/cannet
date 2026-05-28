@@ -1,20 +1,23 @@
 //! `cannet-server` CLI: load a BLF file and serve it on the gRPC wire
-//! protocol defined in `cannet-wire`, or run in `--loopback` mode and
-//! echo client transmits back as `Rx` frames.
+//! protocol defined in `cannet-wire`, or run in `--virtual-bus` mode
+//! (ADR 0021) and host a multi-client virtual CAN bus.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use cannet_server::{CannetServerImpl, LoopbackServerImpl, LoopingBlfReplay};
+use cannet_core::BusConfig;
+use cannet_server::{
+    CannetServerImpl, LoopingBlfReplay, VirtualBusServerImpl, VIRTUAL_BUS_FACTORY_ID,
+};
 use clap::Parser;
 use tonic::transport::Server;
 
 #[derive(Parser, Debug)]
-#[command(version, about = "cannet Phase 2 BLF replay server")]
+#[command(version, about = "cannet gRPC server (BLF replay or virtual bus)")]
 struct Cli {
     /// Path to the BLF file to load and replay on a loop. Required
-    /// unless `--loopback` is set.
+    /// unless `--virtual-bus` is set.
     blf: Option<PathBuf>,
     /// Address to bind the gRPC service on.
     #[arg(long, default_value = "127.0.0.1:50051")]
@@ -27,30 +30,58 @@ struct Cli {
     /// resemble the cadence of any real CAN bus.
     #[arg(long, default_value_t = 0.0)]
     rate: f64,
-    /// Run in loopback mode: expose one fixed `loopback:0` interface
-    /// and echo every client-transmitted frame back as an `Rx` frame
-    /// on that interface. Mutually exclusive with a BLF path. Used by
-    /// the Phase-5 transmit demo, where the GUI's transmit panel sends
-    /// frames over the wire and sees them appear in the trace.
+    /// Run in virtual-bus mode (ADR 0021): expose one factory
+    /// interface (`virtual:bus0`). Any number of concurrent clients
+    /// may connect; each `Subscribe` allocates a fresh participant
+    /// whose transmissions fan out to every other participant.
+    /// Mutually exclusive with a BLF path.
     #[arg(long)]
-    loopback: bool,
+    virtual_bus: bool,
+    /// Arbitration-phase bit rate (bits per second) for the virtual
+    /// bus's initial configuration.
+    #[arg(long, default_value_t = 500_000)]
+    speed_bps: u64,
+    /// Data-phase bit rate (bits per second) for CAN FD frames with
+    /// BRS set. `0` (default) leaves the virtual bus classic-only.
+    #[arg(long, default_value_t = 0)]
+    fd_data_speed_bps: u64,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    if cli.loopback {
+    if cli.virtual_bus {
         if cli.blf.is_some() {
-            return Err("--loopback and a BLF path are mutually exclusive".into());
+            return Err("--virtual-bus and a BLF path are mutually exclusive".into());
         }
-        eprintln!("loopback mode: every transmit is echoed back on loopback:0");
+        let fd_enabled = cli.fd_data_speed_bps > 0;
+        let config = BusConfig {
+            speed_bps: cli.speed_bps,
+            fd_data_speed_bps: if fd_enabled {
+                Some(cli.fd_data_speed_bps)
+            } else {
+                None
+            },
+            fd_enabled,
+        };
+        eprintln!(
+            "virtual-bus mode: factory {VIRTUAL_BUS_FACTORY_ID} \
+             (speed {} bit/s, fd data {})",
+            config.speed_bps,
+            config
+                .fd_data_speed_bps
+                .map_or_else(|| "off".to_string(), |v| format!("{v} bit/s"))
+        );
         eprintln!("listening on {}", cli.bind);
-        let service = LoopbackServerImpl::new().into_service();
-        Server::builder().add_service(service).serve(cli.bind).await?;
+        let service = VirtualBusServerImpl::new(config).into_service();
+        Server::builder()
+            .add_service(service)
+            .serve(cli.bind)
+            .await?;
         return Ok(());
     }
     let Some(blf) = cli.blf else {
-        return Err("expected a BLF path (or --loopback)".into());
+        return Err("expected a BLF path (or --virtual-bus)".into());
     };
     let replay = Arc::new(LoopingBlfReplay::open(&blf)?);
 
@@ -78,6 +109,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let service = CannetServerImpl::new(replay, cli.rate).into_service();
-    Server::builder().add_service(service).serve(cli.bind).await?;
+    Server::builder()
+        .add_service(service)
+        .serve(cli.bind)
+        .await?;
     Ok(())
 }

@@ -46,7 +46,23 @@ use serde::{Deserialize, Serialize};
 ///   renders under a stale remote-server row until the user re-picks
 ///   it from the Local group (the existing offline-fallback UX
 ///   already supports this).
-pub const PROJECT_SCHEMA_VERSION: u32 = 5;
+/// - v6 (Phase 13): three binding kinds (ADR 0021 / 0022):
+///   `"remote"` (existing semantics — a `(server, interface)` on a
+///   remote `cannet-server`), `"remote-virtual-bus"` (subscribe to
+///   the factory id of a remote virtual-bus server), and
+///   `"local-virtual-bus"` (instantiate a `SharedBus` in-process, no
+///   sidecar, with an optional list of bridges to remote interfaces).
+///   v5 entries migrate to `kind: "remote"` on parse; the file is
+///   rewritten to v6 on next save.
+/// - v7 (Phase 13): `local-virtual-bus` bindings are addressed via
+///   the same `(server, interface)` pair as every other kind —
+///   `server = "local-vbus://<vbus_id>"`, `interface = "bus"`. The
+///   separate `virtual_bus_id` field is dropped; the URL is the
+///   index, and the host dispatches on the URL scheme when it opens a
+///   session for the binding. No on-disk projects exist with the v6
+///   shape (Phase 13 hasn't shipped yet), so v6 is rejected like any
+///   other unknown version rather than carrying a migrator forward.
+pub const PROJECT_SCHEMA_VERSION: u32 = 7;
 
 /// A logical bus. `id` is a stable, project-local identifier (graph
 /// edges reference it; per-DBC scoping and the filter `bus` predicate
@@ -68,18 +84,100 @@ pub struct Bus {
     pub color: Option<String>,
 }
 
-/// An interface binding: a `(server, interface)` pair routed onto a
-/// logical bus. `server` is an opaque key — either the literal
-/// `"local"` (meaning "the local sidecar at whatever address it's
-/// bound to this session" — the sidecar's port is randomised per
-/// launch, so a literal `host:port` here would break on every
-/// reload) or a `host:port` for a specific remote `cannet-server`.
-/// `interface` is the wire-level `Interface.id` from `ListInterfaces`.
+/// An interface binding routes a project [`Bus`] to an interface.
+/// Each binding is a uniform `(server, interface, bus_id)` triple
+/// regardless of what's on the other end — see ADR 0023. The
+/// optional [`Self::kind`] discriminator hints at which backend the
+/// host should pick when opening a session for the binding, but the
+/// effective dispatch is by the URL scheme on [`Self::server`].
+///
+/// Multiple bindings may target the same `(server, interface)` — the
+/// hardware-server (ADR 0022) and the in-process virtual bus
+/// (ADR 0021) both fan out to N subscribers, so the host stamps each
+/// source frame with every matching binding's `bus_id`.
+///
+/// Address shapes:
+/// - **remote `host:port`** — a `(server, interface)` on a remote
+///   `cannet-server`.
+/// - **`"local"` sentinel** — the local sidecar at whatever address
+///   it's bound to this session; the port is randomised per launch
+///   so the sentinel is what gets persisted.
+/// - **`local-vbus://<vbus_id>`** — an in-process virtual bus owned
+///   by the project ([`Project::local_virtual_buses`]). `interface`
+///   is the canonical `"bus"`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InterfaceBinding {
+    #[serde(default)]
+    pub kind: BindingKind,
     pub server: String,
     pub interface: String,
     pub bus_id: String,
+}
+
+/// URI scheme that identifies an in-process virtual bus owned by the
+/// project. A binding with `server = "local-vbus://<vbus_id>"` opens
+/// an in-process session against the named [`LocalVirtualBusDef`].
+pub const LOCAL_VBUS_URL_SCHEME: &str = "local-vbus://";
+
+/// Canonical wire-interface name used by every `local-vbus://`
+/// binding. A vbus has a single conceptual interface (the bus
+/// itself); multiple project buses bound to the same vbus share this
+/// interface name and rely on the multi-subscriber fan-out
+/// (ADR 0022 §"shared interface").
+pub const LOCAL_VBUS_INTERFACE: &str = "bus";
+
+/// Discriminator for the three binding kinds (Phase 13, v6 schema).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BindingKind {
+    /// A `(server, interface)` on a remote `cannet-server`. This is
+    /// the v5-compatible default.
+    #[default]
+    Remote,
+    /// A factory subscription against a remote virtual-bus server
+    /// (ADR 0021).
+    RemoteVirtualBus,
+    /// A binding to an entry in [`Project::local_virtual_buses`]
+    /// (ADR 0021).
+    LocalVirtualBus,
+}
+
+/// A virtual bus owned by the project (ADR 0021). The host
+/// instantiates one [`cannet_core::SharedBus`] per entry on project
+/// open; bindings with `server = "local-vbus://<id>"` reference it.
+/// Many bindings may reference the same virtual bus — each opens its
+/// own participant on the shared bus when its session is connected.
+///
+/// A vbus has no user-configurable baud rate: it's an in-process
+/// channel, not a model of a real wire, so a configurable bitrate
+/// would just be misleading UI. The host instantiates each vbus
+/// with a fixed default [`cannet_core::BusConfig`] that SharedBus
+/// uses for its internal arbitration timing; the user never sees it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalVirtualBusDef {
+    /// Stable project-local id, used in the binding's
+    /// `local-vbus://<id>` URL and as the host's registry key.
+    pub id: String,
+    /// User-facing label.
+    pub name: String,
+    /// Bridges installed on the virtual bus. Each is re-instantiated
+    /// on project open by opening a `cannet-client` session to its
+    /// `remote_address` and calling `SharedBus::attach_bridge`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bridges: Vec<BridgeSpec>,
+}
+
+/// A persisted bridge installed on a [`LocalVirtualBusDef`].
+/// `remote_address` is a `cannet-server` `host:port` (or the
+/// `"local"` sentinel for the local sidecar). `interface` is the
+/// wire id on that server (or its factory id for a cross-server
+/// virtual-bus bridge). `name` is the user-chosen label.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BridgeSpec {
+    pub remote_address: String,
+    pub interface: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
 }
 
 /// A loaded DBC reference with its bus scoping (Phase 6). Replaces
@@ -119,6 +217,21 @@ pub struct Project {
     /// connects to one.
     #[serde(default)]
     pub remote_address: Option<String>,
+    /// In-process virtual buses owned by the project (ADR 0021).
+    /// Each entry is instantiated once on project open;
+    /// [`InterfaceBinding`]s with `kind = local-virtual-bus`
+    /// reference one by [`LocalVirtualBusDef::id`].
+    #[serde(default)]
+    pub local_virtual_buses: Vec<LocalVirtualBusDef>,
+    /// The TX-message pool (Phase 13 Step 9). A flat, global list of
+    /// transmit messages the project owns; each transmit panel groups
+    /// a subset for display via its element's `frame_ids`. The host
+    /// registry ([`crate::transmit_frames::TransmitFrameRegistry`]) is
+    /// the runtime source of truth — `open_project` loads it from this
+    /// list (all periodics stopped), `save_project` snapshots it back.
+    /// Additive; no schema-version bump.
+    #[serde(default)]
+    pub transmit_frames: Vec<crate::transmit_frames::TransmitFrame>,
 }
 
 /// Parse project JSON. Accepts a v4 file verbatim; migrates v3
@@ -136,17 +249,51 @@ fn parse_project(text: &str) -> Result<Project, String> {
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| "missing schema_version".to_string())?;
     match version {
-        5 => serde_json::from_value(raw).map_err(|e| format!("invalid project JSON: {e}")),
-        4 => migrate_v4(raw),
-        3 => migrate_v3(raw),
-        2 => migrate_v2(raw).map(|mut p| {
-            strip_plot_notes_from_layout(&mut p.layout);
-            p
-        }),
+        7 => serde_json::from_value(raw).map_err(|e| format!("invalid project JSON: {e}")),
+        5 => migrate_v5(raw),
+        4 => migrate_v4(raw).and_then(reapply_v5_to_v6),
+        3 => migrate_v3(raw).and_then(reapply_v5_to_v6),
+        2 => migrate_v2(raw)
+            .map(|mut p| {
+                strip_plot_notes_from_layout(&mut p.layout);
+                p
+            })
+            .and_then(reapply_v5_to_v6),
         v => Err(format!(
             "schema version {v}; this build expects {PROJECT_SCHEMA_VERSION}",
         )),
     }
+}
+
+/// v5 → v6. Adds the `kind` field on each existing binding,
+/// defaulting to [`BindingKind::Remote`] so the old
+/// `(server, interface, bus_id)` shape continues to work. The new
+/// `local-virtual-bus` / `remote-virtual-bus` variants are opt-in:
+/// users create them via the project panel.
+fn migrate_v5(mut raw: serde_json::Value) -> Result<Project, String> {
+    if let Some(obj) = raw.as_object_mut() {
+        if let Some(serde_json::Value::Array(bindings)) = obj.get_mut("interface_bindings") {
+            for binding in bindings.iter_mut() {
+                if let Some(map) = binding.as_object_mut() {
+                    map.entry("kind").or_insert_with(|| "remote".into());
+                }
+            }
+        }
+        obj.insert(
+            "schema_version".into(),
+            serde_json::Value::from(PROJECT_SCHEMA_VERSION),
+        );
+    }
+    serde_json::from_value(raw).map_err(|e| format!("v5 migration failed: {e}"))
+}
+
+/// Re-apply the v5 → v6 binding-kind defaulting once an upstream
+/// migrator (v4 / v3 / v2) has already produced a [`Project`].
+/// Each existing binding ends up as [`BindingKind::Remote`], which
+/// is also the struct's default — no-op in practice today, but
+/// retained as the explicit migration step for clarity.
+fn reapply_v5_to_v6(project: Project) -> Result<Project, String> {
+    Ok(project)
 }
 
 /// v4 → v5. No shape change: v5 only relaxes the meaning of
@@ -234,7 +381,11 @@ fn strip_plot_notes_from_layout(layout: &mut serde_json::Value) {
 /// `error` on any failure.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn open_project(app: tauri::AppHandle, path: String) -> Result<Project, String> {
+pub fn open_project(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::AppState>,
+    path: String,
+) -> Result<Project, String> {
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
         Err(e) => {
@@ -245,6 +396,15 @@ pub fn open_project(app: tauri::AppHandle, path: String) -> Result<Project, Stri
     };
     match parse_project(&text) {
         Ok(p) => {
+            // Phase 13 Step 9: load the host TX-message registry from
+            // the project's pool. All periodics start stopped — reopen
+            // never fires traffic onto a bus the user hasn't
+            // intentionally reconnected.
+            state
+                .transmit_frames
+                .lock()
+                .expect("transmit_frames mutex poisoned")
+                .load(p.transmit_frames.clone());
             crate::sys_info!(&app, "project", "opened project {path}");
             Ok(p)
         }
@@ -264,9 +424,19 @@ pub fn open_project(app: tauri::AppHandle, path: String) -> Result<Project, Stri
 #[allow(clippy::needless_pass_by_value)]
 pub fn save_project(
     app: tauri::AppHandle,
+    state: tauri::State<'_, crate::AppState>,
     path: String,
-    project: Project,
+    mut project: Project,
 ) -> Result<(), String> {
+    // Phase 13 Step 9: the host registry is the source of truth for TX
+    // messages — the thin-view frontend doesn't carry them in the
+    // project it submits. Snapshot the registry into the project before
+    // writing so save captures the current pool + order.
+    project.transmit_frames = state
+        .transmit_frames
+        .lock()
+        .expect("transmit_frames mutex poisoned")
+        .snapshot();
     let text = match serde_json::to_string_pretty(&project) {
         Ok(t) => t,
         Err(e) => {
@@ -305,6 +475,7 @@ mod tests {
                 color: Some("#60a5fa".into()),
             }],
             interface_bindings: vec![InterfaceBinding {
+                kind: BindingKind::Remote,
                 server: "local".into(),
                 interface: "pcan:PCAN_USBBUS1(h:0x51, ch:0)".into(),
                 bus_id: "p".into(),
@@ -314,6 +485,8 @@ mod tests {
                 buses: vec!["p".into()],
             }],
             remote_address: Some("127.0.0.1:50051".into()),
+            local_virtual_buses: Vec::new(),
+            transmit_frames: Vec::new(),
         }
     }
 
@@ -334,13 +507,12 @@ mod tests {
         assert_eq!(p.remote_address, None);
     }
 
-    /// v4 → v5 is shape-compatible: the only change is that v5
-    /// allows `InterfaceBinding.server == "local"` as a sentinel.
-    /// A v4 file with a `127.0.0.1:<port>` binding must parse
-    /// unchanged (the user re-picks it from the live Local group on
-    /// next launch — see the schema-version doc).
+    /// v4 → v5 is shape-compatible. v5 → v6 adds `kind` defaulting
+    /// to `remote`. A v4 file with a `127.0.0.1:<port>` binding must
+    /// parse unchanged (the user re-picks it from the live Local
+    /// group on next launch — see the schema-version doc).
     #[test]
-    fn parse_migrates_a_v4_project_to_v5_preserving_existing_bindings() {
+    fn parse_migrates_a_v4_project_to_v6_preserving_existing_bindings() {
         let v4 = r#"{
             "schema_version": 4,
             "layout": {"grid": {}, "panels": {}},
@@ -358,8 +530,69 @@ mod tests {
         // The legacy host:port is preserved verbatim — no auto-rewrite
         // to the "local" sentinel. The GUI's offline-fallback path
         // surfaces it under a stale remote-server row until re-picked.
+        assert_eq!(p.interface_bindings[0].kind, BindingKind::Remote);
         assert_eq!(p.interface_bindings[0].server, "127.0.0.1:50051");
         assert_eq!(p.interface_bindings[0].interface, "pcan:PCAN_USBBUS1");
+    }
+
+    /// v5 → v6 attaches `kind: "remote"` to each existing binding.
+    /// New `local-virtual-bus` / `remote-virtual-bus` entries are
+    /// opt-in; they don't appear from migration.
+    #[test]
+    fn parse_migrates_a_v5_project_to_v6_marking_bindings_as_remote() {
+        let v5 = r#"{
+            "schema_version": 5,
+            "layout": {"grid": {}, "panels": {}},
+            "interface_bindings": [
+                {"server": "local", "interface": "vector:VN1640A", "bus_id": "p"}
+            ]
+        }"#;
+        let p = parse_project(v5).expect("v5 migrates");
+        assert_eq!(p.schema_version, PROJECT_SCHEMA_VERSION);
+        assert_eq!(p.interface_bindings.len(), 1);
+        assert_eq!(p.interface_bindings[0].kind, BindingKind::Remote);
+        assert_eq!(p.interface_bindings[0].server, "local");
+        assert_eq!(p.interface_bindings[0].interface, "vector:VN1640A");
+    }
+
+    /// A virtual-bus definition + a binding pointing at it round-trip
+    /// through serialize + parse. The vbus owns the config/bridges;
+    /// the binding only references the vbus by id (Phase 13 rework).
+    #[test]
+    fn local_virtual_bus_definition_and_binding_round_trip() {
+        let p = Project {
+            schema_version: PROJECT_SCHEMA_VERSION,
+            layout: serde_json::json!({"grid": {}, "panels": {}}),
+            elements: vec![],
+            buses: vec![Bus {
+                id: "v".into(),
+                name: "Test virtual".into(),
+                speed_bps: Some(500_000),
+                fd: Some(true),
+                color: None,
+            }],
+            interface_bindings: vec![InterfaceBinding {
+                kind: BindingKind::LocalVirtualBus,
+                server: format!("{LOCAL_VBUS_URL_SCHEME}vbus1"),
+                interface: LOCAL_VBUS_INTERFACE.into(),
+                bus_id: "v".into(),
+            }],
+            dbcs: vec![],
+            remote_address: None,
+            local_virtual_buses: vec![LocalVirtualBusDef {
+                id: "vbus1".into(),
+                name: "Bench".into(),
+                bridges: vec![BridgeSpec {
+                    remote_address: "local".into(),
+                    interface: "pcan:PCAN_USBBUS1(h:0x51, ch:0)".into(),
+                    name: "hw".into(),
+                }],
+            }],
+            transmit_frames: Vec::new(),
+        };
+        let text = serde_json::to_string_pretty(&p).unwrap();
+        let parsed = parse_project(&text).unwrap();
+        assert_eq!(parsed, p);
     }
 
     /// v5 round-trips a binding that uses the `"local"` sentinel
@@ -379,12 +612,15 @@ mod tests {
                 color: None,
             }],
             interface_bindings: vec![InterfaceBinding {
+                kind: BindingKind::Remote,
                 server: "local".into(),
                 interface: "pcan:PCAN_USBBUS1(h:0x51, ch:0)".into(),
                 bus_id: "p".into(),
             }],
             dbcs: vec![],
             remote_address: None,
+            local_virtual_buses: Vec::new(),
+            transmit_frames: Vec::new(),
         };
         let text = serde_json::to_string_pretty(&p).unwrap();
         let parsed = parse_project(&text).unwrap();

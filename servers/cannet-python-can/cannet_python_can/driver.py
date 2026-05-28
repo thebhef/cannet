@@ -9,10 +9,10 @@ new module with the same surface and points
 :mod:`cannet_python_can.driver_python_can`.
 
 The driver interface is intentionally narrow: enumerate, open, close,
-receive, send. Bus speed / FD configuration travels through
-:meth:`Driver.open`; the wire-protocol ``Subscribe`` envelope does not
-currently carry these (see ``plans/backlog.md``), so today the GUI
-applies the configuration host-side before subscribing.
+receive, send, and report controller state. Bus speed / FD
+configuration travels through :meth:`Driver.open` (and is refreshed at
+runtime via close+reopen when the wire layer receives a
+``ConfigureBus`` envelope).
 """
 
 from __future__ import annotations
@@ -57,18 +57,38 @@ class Channel:
 class OpenConfig:
     """Per-interface configuration applied when a channel is opened.
 
-    Today the wire ``Subscribe`` envelope only carries
-    ``interface_id``; the GUI applies the per-interface bitrate / FD
-    settings host-side before subscribing, and the host hands those
-    values to :meth:`Driver.open` through this struct. When the
-    backlog item that promotes these to the wire lands, the struct
-    grows but the driver-side surface does not break.
+    The wire ``ConfigureBus`` envelope (ADR 0022) maps onto this
+    struct: ``speed_bps`` → :attr:`bitrate_bps`,
+    ``fd_data_speed_bps`` → :attr:`data_bitrate_bps`,
+    ``fd_enabled`` → :attr:`fd`. ``listen_only`` is not on the wire
+    today; the server passes the default.
     """
 
     bitrate_bps: Optional[int] = None
     data_bitrate_bps: Optional[int] = None
     fd: bool = False
     listen_only: bool = False
+
+
+#: Controller state names returned by :meth:`OpenChannel.state`.
+#: Mapped by the wire layer onto the ``ControllerState`` proto enum.
+STATE_ACTIVE = "active"
+STATE_PASSIVE = "passive"
+STATE_BUS_OFF = "bus_off"
+
+
+@dataclasses.dataclass(frozen=True)
+class ControllerState:
+    """Snapshot of a controller's ISO 11898-1 fault-confinement state.
+
+    ``state`` is one of :data:`STATE_ACTIVE`, :data:`STATE_PASSIVE`,
+    :data:`STATE_BUS_OFF`. ``tec`` / ``rec`` are the current Transmit /
+    Receive Error Counters; backends that don't expose them report 0.
+    """
+
+    state: str = STATE_ACTIVE
+    tec: int = 0
+    rec: int = 0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -129,15 +149,26 @@ class OpenChannel(Protocol):
     def send(self, frame: Frame) -> None:
         """Send ``frame``. Raises :class:`TxRejected` if refused."""
 
+    def state(self) -> ControllerState:
+        """Return the controller's current fault-confinement state.
+
+        Backends that don't expose state report
+        :data:`STATE_ACTIVE` with zero counters.
+        """
+
     def close(self) -> None:
         """Idempotent. Cleans up any vendor resources."""
 
 
 __all__ = [
     "Channel",
+    "ControllerState",
     "Driver",
     "Frame",
     "OpenChannel",
     "OpenConfig",
+    "STATE_ACTIVE",
+    "STATE_BUS_OFF",
+    "STATE_PASSIVE",
     "TxRejected",
 ]
