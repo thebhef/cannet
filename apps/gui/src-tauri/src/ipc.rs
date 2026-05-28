@@ -260,6 +260,62 @@ pub struct ValueTableEntryRecord {
     pub label: String,
 }
 
+/// The full content of one loaded DBC, shaped for the Phase 12 DBC
+/// discovery panel (tree-with-fuzzy-search). One entry per loaded DBC
+/// file; each carries the path so the panel can group by file and a
+/// flat `messages` list whose order is the host's
+/// `(extended, message_id)` sort.
+///
+/// Mirrored on the frontend by `types.ts::DbcContentRecord`. Sent
+/// camel-cased so the JS side reads it as
+/// `{ dbcPath, messages: [...] }` without a wire-name shim.
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct DbcContentRecord {
+    /// Filesystem path of the DBC the host loaded this content from.
+    /// Stable across reloads of the same file — the panel can use it
+    /// as the React key for the file's root tree node.
+    pub dbc_path: String,
+    pub messages: Vec<DbcMessageContentRecord>,
+}
+
+/// One message row in a [`DbcContentRecord`] — fuzzy-search-shaped:
+/// every text field is owned + inlined so the JS-side matcher has
+/// nothing left to fetch.
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct DbcMessageContentRecord {
+    pub message_id: u32,
+    pub extended: bool,
+    pub name: String,
+    /// `CM_ BO_` comment. Empty when absent — empty (not absent) so the
+    /// search has nothing optional to special-case.
+    pub comment: String,
+    /// `BA_ "<name>" BO_ <id> <value>` attribute values, sorted by name.
+    pub attributes: Vec<DbcAttributeRecord>,
+    pub signals: Vec<DbcSignalContentRecord>,
+}
+
+/// One signal row in a [`DbcMessageContentRecord`]. Stays in `SG_`
+/// declared order — preserves the DBC author's bit-layout intent.
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct DbcSignalContentRecord {
+    pub name: String,
+    pub unit: String,
+    pub comment: String,
+    pub attributes: Vec<DbcAttributeRecord>,
+    pub value_table: Vec<ValueTableEntryRecord>,
+}
+
+/// One `BA_ "<name>" … <value>` attribute pair as it travels to the
+/// frontend — both display string and fuzzy-search target.
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct DbcAttributeRecord {
+    pub name: String,
+    pub value: String,
+}
+
 /// One signal edit the transmit panel wants pushed through the encoder:
 /// the DBC signal name and the physical value the user typed. The host
 /// runs every entry through [`cannet_dbc::Database::encode_frame`] in

@@ -276,6 +276,50 @@ export interface ValueTableEntryRecord {
   label: string;
 }
 
+/// One loaded DBC's full discovery-shaped content, as returned by the
+/// `list_dbc_content` Tauri command. The DBC panel (Phase 12) groups
+/// the tree by file using `dbcPath` as the React key. `messages` is
+/// sorted by `(extended, messageId)`; signals within a message stay
+/// in `SG_` declared order. Mirrors `ipc::DbcContentRecord`.
+export interface DbcContentRecord {
+  dbcPath: string;
+  messages: DbcMessageContentRecord[];
+}
+
+/// One message row inside a [`DbcContentRecord`]. Every text field
+/// is inlined so the fuzzy matcher (Phase 12 picks `fzf-for-js`) has
+/// no lookups to do on its own.
+export interface DbcMessageContentRecord {
+  messageId: number;
+  extended: boolean;
+  name: string;
+  /// Empty when the DBC has no `CM_ BO_` comment for this message
+  /// — empty, not absent, so the search has no nil case.
+  comment: string;
+  attributes: DbcAttributeRecord[];
+  signals: DbcSignalContentRecord[];
+}
+
+/// One signal row inside a [`DbcMessageContentRecord`]. Kept in
+/// declared order — matches the DBC author's bit-layout intent.
+export interface DbcSignalContentRecord {
+  name: string;
+  unit: string;
+  comment: string;
+  attributes: DbcAttributeRecord[];
+  /// `VAL_` table rows in raw-ascending order. Empty when the signal
+  /// has no value table.
+  valueTable: ValueTableEntryRecord[];
+}
+
+/// One `BA_ "<name>" … <value>` attribute pair, stringified on the
+/// host so both display and fuzzy search work without per-variant
+/// special-casing on the frontend.
+export interface DbcAttributeRecord {
+  name: string;
+  value: string;
+}
+
 /// One signal edit passed to the `encode_frame` Tauri command: the DBC
 /// signal name and the physical value the user typed. The host walks
 /// the entries in order and partial-encodes each into the supplied

@@ -60,9 +60,10 @@ use cannet_dbc::{Database, DecodedSignal};
 use filter::FilterPredicate;
 
 use ipc::{
-    ByIdSnapshot, DbcInfo, DecodedRecord, FilteredTracePage, InterfaceRecord, LogFinished,
+    ByIdSnapshot, DbcAttributeRecord, DbcContentRecord, DbcInfo, DbcMessageContentRecord,
+    DbcSignalContentRecord, DecodedRecord, FilteredTracePage, InterfaceRecord, LogFinished,
     OpenLogResult, RemoteSessionResult, SampledPoints, SignalDescriptorRecord, SignalQuery,
-    SignalRecord, SignalsSample, TraceFrameRecord, TraceGrew,
+    SignalRecord, SignalsSample, TraceFrameRecord, TraceGrew, ValueTableEntryRecord,
 };
 use notes::{Note, NotesStore};
 use signal_cache::SignalCacheStore;
@@ -204,6 +205,7 @@ pub fn run() {
             project::open_project,
             project::save_project,
             list_signals,
+            list_dbc_content,
             sample_signals,
             transmit_frame,
             list_value_tables,
@@ -1161,6 +1163,75 @@ fn list_signals(
             && a.signal_name == b.signal_name
     });
     out
+}
+
+/// Snapshot every loaded DBC's content for the Phase 12 DBC
+/// discovery panel: one [`DbcContentRecord`] per loaded file, each
+/// carrying the file path plus the tree the panel renders (messages
+/// → signals + comments + attributes + value tables).
+///
+/// Unlike [`list_signals`], this is **not** expanded per bus —
+/// scoping is a panel-side concern (the panel may show the same DBC
+/// once, even when it's scoped to multiple buses) and re-expanding
+/// here would multiply the payload. The DBC file path is the
+/// frontend's grouping key.
+///
+/// Order matches the host's loaded-DBC list (priority order); the
+/// `messages` list inside each record is sorted by
+/// `(extended, message_id)`.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn list_dbc_content(state: State<'_, AppState>) -> Vec<DbcContentRecord> {
+    let dbs = state.databases.lock().expect("databases mutex poisoned");
+    dbs.iter()
+        .map(|loaded| DbcContentRecord {
+            dbc_path: loaded.path.clone(),
+            messages: loaded
+                .db
+                .dbc_content()
+                .into_iter()
+                .map(|m| DbcMessageContentRecord {
+                    message_id: m.message_id,
+                    extended: m.extended,
+                    name: m.name,
+                    comment: m.comment,
+                    attributes: m
+                        .attributes
+                        .into_iter()
+                        .map(|a| DbcAttributeRecord {
+                            name: a.name,
+                            value: a.value,
+                        })
+                        .collect(),
+                    signals: m
+                        .signals
+                        .into_iter()
+                        .map(|s| DbcSignalContentRecord {
+                            name: s.name,
+                            unit: s.unit,
+                            comment: s.comment,
+                            attributes: s
+                                .attributes
+                                .into_iter()
+                                .map(|a| DbcAttributeRecord {
+                                    name: a.name,
+                                    value: a.value,
+                                })
+                                .collect(),
+                            value_table: s
+                                .value_table
+                                .into_iter()
+                                .map(|e| ValueTableEntryRecord {
+                                    raw: e.raw,
+                                    label: e.label,
+                                })
+                                .collect(),
+                        })
+                        .collect(),
+                })
+                .collect(),
+        })
+        .collect()
 }
 
 /// Sample a batch of DBC signals over a slice `[from_index, window_end)`

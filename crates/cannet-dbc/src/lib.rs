@@ -14,7 +14,7 @@ use std::collections::HashMap;
 
 use cannet_core::CanFrame;
 use can_dbc::{
-    AttributeValue, Dbc, MessageId, MultiplexIndicator, NumericValue, Signal,
+    AttributeValue, Comment, Dbc, MessageId, MultiplexIndicator, NumericValue, Signal,
     SignalExtendedValueType, ValueType,
 };
 
@@ -42,6 +42,16 @@ struct MessageEntry {
     /// `true` (the typical real-world setting). Always `false` for
     /// classic messages.
     brs: bool,
+    /// `CM_ BO_ <id> "..."` free-text comment. Empty when absent.
+    /// Captured during parse so the DBC panel's fuzzy search can
+    /// match it without re-walking the AST.
+    comment: String,
+    /// `BA_ "<name>" BO_ <id> <value>` attribute values targeted at
+    /// this message, sorted by attribute name. Values are stringified
+    /// up front because the panel both displays them and searches
+    /// them; sorting up front keeps the tree's per-node attribute
+    /// list stable across runs.
+    attributes: Vec<DbcAttribute>,
     signals: Vec<SignalEntry>,
 }
 
@@ -56,6 +66,11 @@ struct SignalEntry {
     /// Looked up by [`decode_signal`] to populate
     /// [`DecodedSignal::label`].
     value_table: Vec<ValueTableEntry>,
+    /// `CM_ SG_ <id> <name> "..."` comment. Empty when absent.
+    comment: String,
+    /// `BA_ "<name>" SG_ <id> <name> <value>` attribute values
+    /// targeted at this signal, sorted by attribute name.
+    attributes: Vec<DbcAttribute>,
 }
 
 /// One row of a signal's `VAL_` value table: a raw value and its
@@ -96,6 +111,9 @@ impl Database {
             })
             .collect();
 
+        let (message_comments, signal_comments) = collect_comments(&dbc);
+        let (mut message_attributes, mut signal_attributes) = collect_attributes(&dbc);
+
         let mut messages = HashMap::with_capacity(dbc.messages.len());
         for msg in &dbc.messages {
             let expected_len = usize::try_from(msg.size).unwrap_or(usize::MAX);
@@ -130,10 +148,19 @@ impl Database {
                             v
                         })
                         .unwrap_or_default();
+                    let comment = signal_comments
+                        .get(&(msg.id, s.name.clone()))
+                        .cloned()
+                        .unwrap_or_default();
+                    let attributes = signal_attributes
+                        .remove(&(msg.id, s.name.clone()))
+                        .unwrap_or_default();
                     SignalEntry {
                         signal,
                         extended_type,
                         value_table,
+                        comment,
+                        attributes,
                     }
                 })
                 .collect();
@@ -143,11 +170,15 @@ impl Database {
                 .unwrap_or_else(|| msg.name.clone());
             let is_fd = message_is_fd(&dbc, msg.id, expected_len);
             let brs = is_fd && message_brs(&dbc, msg.id);
+            let comment = message_comments.get(&msg.id).cloned().unwrap_or_default();
+            let attributes = message_attributes.remove(&msg.id).unwrap_or_default();
             messages.insert(msg.id, MessageEntry {
                 name,
                 expected_len,
                 is_fd,
                 brs,
+                comment,
+                attributes,
                 signals,
             });
         }
@@ -297,6 +328,60 @@ impl Database {
             uses_extended_mux,
             signals,
         })
+    }
+
+    /// Tree-shaped snapshot of this database for the GUI's DBC panel
+    /// (Phase 12 discovery surface). One entry per message, each
+    /// carrying the text the panel's fuzzy search has to match:
+    /// per-message comment + attributes, per-signal comment +
+    /// attributes + unit + value-table labels.
+    ///
+    /// Distinct in shape from [`Database::signals`] (a flat
+    /// per-signal list for the plot picker) and
+    /// [`Database::describe_message`] (rich numeric metadata for the
+    /// transmit encoder): `dbc_content` is the *tree* the discovery
+    /// panel walks. Messages are sorted by
+    /// `(extended, message_id)` for a stable display order; signals
+    /// within a message are kept in `SG_` declared order so the tree
+    /// reads the way the DBC author wrote it.
+    ///
+    /// `SystemMessageLongSymbol` / `SystemSignalLongSymbol`
+    /// attributes are suppressed — they're an implementation detail
+    /// of the long-name extension, not user-authored metadata. The
+    /// resolved long name lands on `name`.
+    #[must_use]
+    pub fn dbc_content(&self) -> Vec<DbcMessageContent> {
+        let mut out: Vec<DbcMessageContent> = self
+            .messages
+            .iter()
+            .map(|(id, entry)| {
+                let (message_id, extended) = message_id_parts(*id);
+                DbcMessageContent {
+                    message_id,
+                    extended,
+                    name: entry.name.clone(),
+                    comment: entry.comment.clone(),
+                    attributes: entry.attributes.clone(),
+                    signals: entry
+                        .signals
+                        .iter()
+                        .map(|s| DbcSignalContent {
+                            name: s.signal.name.clone(),
+                            unit: s.signal.unit.clone(),
+                            comment: s.comment.clone(),
+                            attributes: s.attributes.clone(),
+                            value_table: s.value_table.clone(),
+                        })
+                        .collect(),
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            a.extended
+                .cmp(&b.extended)
+                .then_with(|| a.message_id.cmp(&b.message_id))
+        });
+        out
     }
 
     /// Partial-encode `signals` into `base`. For each `(name, physical)`
@@ -591,6 +676,96 @@ fn string_value(value: &AttributeValue) -> Option<String> {
     }
 }
 
+/// Stringify an [`AttributeValue`] for the DBC discovery panel — both
+/// for display and as a fuzzy-search target. The textual shape is the
+/// natural one for each variant: integers as plain decimals, floats
+/// via Rust's default `f64` formatter, strings verbatim (unquoted).
+fn attribute_value_to_string(value: &AttributeValue) -> String {
+    match value {
+        AttributeValue::Uint(u) => u.to_string(),
+        AttributeValue::Int(i) => i.to_string(),
+        AttributeValue::Double(d) => d.to_string(),
+        AttributeValue::String(s) => s.clone(),
+    }
+}
+
+/// Per-message comment lookup keyed by `MessageId`.
+type MessageCommentMap = HashMap<MessageId, String>;
+/// Per-signal comment lookup keyed by `(MessageId, short_signal_name)`.
+/// The short name matches `VAL_` / `SIG_VALTYPE_` conventions, before
+/// any long-symbol rename is applied.
+type SignalCommentMap = HashMap<(MessageId, String), String>;
+/// Per-message attribute-value list keyed by `MessageId`; each list
+/// is sorted by attribute name.
+type MessageAttributeMap = HashMap<MessageId, Vec<DbcAttribute>>;
+/// Per-signal attribute-value list keyed by
+/// `(MessageId, short_signal_name)`.
+type SignalAttributeMap = HashMap<(MessageId, String), Vec<DbcAttribute>>;
+
+/// Bucket the parsed comments by their target. Node, env-var, and
+/// plain comments are dropped.
+fn collect_comments(dbc: &Dbc) -> (MessageCommentMap, SignalCommentMap) {
+    let mut message_comments: MessageCommentMap = HashMap::new();
+    let mut signal_comments: SignalCommentMap = HashMap::new();
+    for c in &dbc.comments {
+        match c {
+            Comment::Message { id, comment } => {
+                message_comments.insert(*id, comment.clone());
+            }
+            Comment::Signal {
+                message_id,
+                name,
+                comment,
+            } => {
+                signal_comments.insert((*message_id, name.clone()), comment.clone());
+            }
+            Comment::Node { .. } | Comment::EnvVar { .. } | Comment::Plain { .. } => {}
+        }
+    }
+    (message_comments, signal_comments)
+}
+
+/// Bucket per-message and per-signal `BA_` attribute values by target,
+/// stringifying each value up front. Suppresses the long-symbol
+/// extension attributes — they're not user-authored metadata. Each
+/// bucket's `Vec<DbcAttribute>` is sorted by attribute name so the
+/// downstream tree node lists are stable across runs.
+fn collect_attributes(dbc: &Dbc) -> (MessageAttributeMap, SignalAttributeMap) {
+    let mut message_attributes: MessageAttributeMap = HashMap::new();
+    for av in &dbc.attribute_values_message {
+        if av.name == "SystemMessageLongSymbol" {
+            continue;
+        }
+        message_attributes
+            .entry(av.message_id)
+            .or_default()
+            .push(DbcAttribute {
+                name: av.name.clone(),
+                value: attribute_value_to_string(&av.value),
+            });
+    }
+    let mut signal_attributes: SignalAttributeMap = HashMap::new();
+    for av in &dbc.attribute_values_signal {
+        if av.name == "SystemSignalLongSymbol" {
+            continue;
+        }
+        signal_attributes
+            .entry((av.message_id, av.signal_name.clone()))
+            .or_default()
+            .push(DbcAttribute {
+                name: av.name.clone(),
+                value: attribute_value_to_string(&av.value),
+            });
+    }
+    for attrs in message_attributes.values_mut() {
+        attrs.sort_by(|a, b| a.name.cmp(&b.name));
+    }
+    for attrs in signal_attributes.values_mut() {
+        attrs.sort_by(|a, b| a.name.cmp(&b.name));
+    }
+    (message_attributes, signal_attributes)
+}
+
 /// Split a `can-dbc` [`MessageId`] back into the `(raw id, extended?)`
 /// pair the rest of the codebase uses. The extended variant carries the
 /// 31-bit-flagged form on the wire in some DBCs; mask it to the 29-bit
@@ -749,6 +924,75 @@ pub struct SignalDescriptor {
     /// separate `value_table` round-trip to decide between numeric and
     /// symbolic rendering.
     pub has_value_table: bool,
+}
+
+/// One DBC message as the GUI's DBC panel (Phase 12) renders it: the
+/// message's identity, its free-text comment, its per-message
+/// attributes, and the tree of signals that belong to it. Built by
+/// [`Database::dbc_content`].
+///
+/// Sibling types: [`SignalDescriptor`] (flat plot-picker rows) and
+/// [`MessageDescriptor`] (encoder-shaped per-signal numeric detail).
+/// This one is the *discovery* shape — everything the panel's
+/// fuzzy search has to match against is inlined as plain owned
+/// strings.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DbcMessageContent {
+    /// Raw CAN id of the message (29-bit if `extended`).
+    pub message_id: u32,
+    /// Whether `message_id` is a 29-bit extended id.
+    pub extended: bool,
+    /// Resolved name — the long-symbol name when one is set,
+    /// otherwise the `BO_` declared name.
+    pub name: String,
+    /// `CM_ BO_ <id> "..."` free-text comment. Empty when the DBC
+    /// defines none — empty (not `Option::None`) so the panel's
+    /// search can match against it without a nil check.
+    pub comment: String,
+    /// `BA_ "<name>" BO_ <id> <value>` per-message attribute values
+    /// (excluding the long-symbol attributes — see the rustdoc on
+    /// [`Database::dbc_content`]). Sorted by attribute name.
+    pub attributes: Vec<DbcAttribute>,
+    /// Signals in `SG_` declared order — the same order the DBC
+    /// author wrote them, which matches their mental model of the
+    /// message's bit layout.
+    pub signals: Vec<DbcSignalContent>,
+}
+
+/// One signal inside a [`DbcMessageContent`] — the per-signal half
+/// of the DBC discovery tree. Decoding / encoding still go through
+/// [`Database::decode`] / [`Database::encode_frame`] / the rich
+/// [`Database::describe_message`] view; this one is search-shaped.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DbcSignalContent {
+    /// Resolved name (long-symbol applied).
+    pub name: String,
+    /// Engineering unit from the `SG_` line. Empty when absent.
+    pub unit: String,
+    /// `CM_ SG_ <id> <name> "..."` comment. Empty when absent.
+    pub comment: String,
+    /// `BA_ "<name>" SG_ <id> <name> <value>` attribute values.
+    /// Sorted by attribute name.
+    pub attributes: Vec<DbcAttribute>,
+    /// `VAL_` table rows — same shape (and sort order) as
+    /// [`Database::value_table_for_signal`]. Empty when the signal
+    /// has no value table.
+    pub value_table: Vec<ValueTableEntry>,
+}
+
+/// One `BA_ "<name>" … <value>` attribute pair, stringified for
+/// both display and fuzzy search in the DBC panel.
+///
+/// Numeric attributes (`Uint` / `Int` / `Double` in the DBC AST)
+/// are formatted in their natural source-text shape: integers
+/// without trailing zeroes, floats using Rust's default `f64`
+/// formatter. Round-tripping the textual form is not a goal —
+/// callers that need the original numeric value should read the
+/// underlying DBC AST.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DbcAttribute {
+    pub name: String,
+    pub value: String,
 }
 
 /// Rich descriptor for one DBC message — its identity, its declared
@@ -1596,5 +1840,147 @@ BA_ "GenMsgCANFDBRS" BO_ 400 0;
                 }
             }
         }
+    }
+
+    // --- dbc_content (Phase 12 DBC panel) ---
+
+    /// Fixture covering the kinds of text the discovery panel's fuzzy
+    /// search has to match: per-message comments + attributes, per-signal
+    /// comments + attributes, units, and value tables.
+    const COMMENTED_DBC: &str = r#"VERSION ""
+
+NS_ :
+
+BS_:
+
+BU_: ECU1
+
+BO_ 256 Gear: 8 ECU1
+ SG_ Mode : 0|8@1+ (1,0) [0|0] "" ECU1
+ SG_ Rpm : 16|16@1+ (1,0) [0|0] "rpm" ECU1
+
+BO_ 257 Coolant: 8 ECU1
+ SG_ Temperature : 0|8@1+ (1,-40) [-40|215] "degC" ECU1
+
+CM_ BO_ 256 "Gear shifter state.";
+CM_ SG_ 256 Mode "Selected gear mode.";
+CM_ SG_ 257 Temperature "Engine coolant temperature.";
+
+BA_DEF_ BO_ "GenMsgCycleTime" INT 0 65535;
+BA_DEF_ SG_ "GenSigStartValue" FLOAT 0 1000;
+BA_DEF_DEF_ "GenMsgCycleTime" 0;
+BA_ "GenMsgCycleTime" BO_ 256 100;
+BA_ "GenMsgCycleTime" BO_ 257 20;
+BA_ "GenSigStartValue" SG_ 256 Mode 1;
+
+VAL_ 256 Mode 0 "Park" 1 "Reverse" 2 "Neutral" 3 "Drive" ;
+"#;
+
+    #[test]
+    fn dbc_content_sorts_messages_by_id_and_preserves_signal_order() {
+        let db = Database::parse(COMMENTED_DBC).unwrap();
+        let content = db.dbc_content();
+        assert_eq!(content.len(), 2);
+        // Message 256 (Gear) comes before 257 (Coolant) by id.
+        assert_eq!(content[0].message_id, 256);
+        assert!(!content[0].extended);
+        assert_eq!(content[0].name, "Gear");
+        assert_eq!(content[1].message_id, 257);
+        assert_eq!(content[1].name, "Coolant");
+
+        // Signals in source order (Mode before Rpm — they appear that way
+        // in the fixture).
+        assert_eq!(
+            content[0]
+                .signals
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Mode", "Rpm"],
+        );
+    }
+
+    #[test]
+    fn dbc_content_carries_message_and_signal_comments() {
+        let db = Database::parse(COMMENTED_DBC).unwrap();
+        let content = db.dbc_content();
+        let gear = content.iter().find(|m| m.name == "Gear").unwrap();
+        assert_eq!(gear.comment, "Gear shifter state.");
+        let mode = gear.signals.iter().find(|s| s.name == "Mode").unwrap();
+        assert_eq!(mode.comment, "Selected gear mode.");
+        // Rpm has no signal comment — empty string, not absent.
+        let rpm = gear.signals.iter().find(|s| s.name == "Rpm").unwrap();
+        assert_eq!(rpm.comment, "");
+    }
+
+    #[test]
+    fn dbc_content_carries_message_attributes_stringified() {
+        let db = Database::parse(COMMENTED_DBC).unwrap();
+        let content = db.dbc_content();
+        let gear = content.iter().find(|m| m.message_id == 256).unwrap();
+        let cycle = gear
+            .attributes
+            .iter()
+            .find(|a| a.name == "GenMsgCycleTime")
+            .unwrap();
+        assert_eq!(cycle.value, "100");
+        // Attributes are sorted by name for a stable display order.
+        assert!(gear.attributes.windows(2).all(|w| w[0].name <= w[1].name));
+    }
+
+    #[test]
+    fn dbc_content_carries_signal_attributes() {
+        let db = Database::parse(COMMENTED_DBC).unwrap();
+        let content = db.dbc_content();
+        let gear = content.iter().find(|m| m.name == "Gear").unwrap();
+        let mode = gear.signals.iter().find(|s| s.name == "Mode").unwrap();
+        let start = mode
+            .attributes
+            .iter()
+            .find(|a| a.name == "GenSigStartValue")
+            .unwrap();
+        // The attribute value was `1` (parsed as Uint), so it serialises
+        // back as "1" (no float formatting).
+        assert_eq!(start.value, "1");
+    }
+
+    #[test]
+    fn dbc_content_carries_signal_value_table() {
+        let db = Database::parse(COMMENTED_DBC).unwrap();
+        let content = db.dbc_content();
+        let gear = content.iter().find(|m| m.name == "Gear").unwrap();
+        let mode = gear.signals.iter().find(|s| s.name == "Mode").unwrap();
+        let labels: Vec<&str> = mode.value_table.iter().map(|e| e.label.as_str()).collect();
+        assert_eq!(labels, vec!["Park", "Reverse", "Neutral", "Drive"]);
+        // Signals without a VAL_ table get an empty (not absent) list.
+        let rpm = gear.signals.iter().find(|s| s.name == "Rpm").unwrap();
+        assert!(rpm.value_table.is_empty());
+    }
+
+    #[test]
+    fn dbc_content_includes_extended_id_messages() {
+        let db = Database::parse(SAMPLE_DBC).unwrap();
+        let content = db.dbc_content();
+        let ext = content.iter().find(|m| m.name == "ExtendedMsg").unwrap();
+        assert!(ext.extended);
+        assert_eq!(ext.message_id, 0x98FF_0502 & 0x1FFF_FFFF);
+    }
+
+    #[test]
+    fn dbc_content_uses_long_symbol_names() {
+        // LONG_SYMBOL_DBC is defined for the existing
+        // `resolves_long_symbol_message_and_signal_names` test.
+        let db = Database::parse(LONG_SYMBOL_DBC).unwrap();
+        let content = db.dbc_content();
+        assert_eq!(content.len(), 1);
+        assert_eq!(
+            content[0].name,
+            "AVeryLongMessageNameThatExceedsThirtyTwoChars",
+        );
+        assert_eq!(content[0].signals.len(), 1);
+        assert_eq!(
+            content[0].signals[0].name,
+            "AVeryLongSignalNameThatExceedsThirtyTwoChars",
+        );
     }
 }
