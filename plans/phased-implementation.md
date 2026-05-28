@@ -1542,16 +1542,21 @@ role. This phase is the spatial / search counterpart.
 
 What lands:
 
-- **New `kind: "dbc"` dockview panel.** Tree-with-search: DBC
-  file → messages → signals. Default-rendered as a tree; typing in
-  the search box filters the tree, expanding ancestors of matches
-  and dimming non-matches. The search uses the fuzzy matcher this
-  phase picks (`fzf-for-js` proposed — see below); Phase 15's
-  command palette reuses the same library. Searched fields: signal
-  name, signal comment, message name, message id (hex and
-  decimal), message comment, value-table labels and raw values,
-  units, attribute names and values. Read-only; multiple instances
-  allowed; selection / scroll / expand state is panel-local.
+- **New `kind: "dbc"` dockview panel — singleton.** Tree-with-
+  search: DBC file → messages → signals. Default-rendered as a
+  tree; typing in the search box filters the tree, expanding
+  ancestors of matches and dimming non-matches. The search uses
+  the fuzzy matcher this phase picks (`fzf-for-js` proposed — see
+  below); Phase 15's command palette reuses the same library.
+  Searched fields: signal name, signal comment, message name,
+  message id (hex and decimal), message comment, value-table
+  labels and raw values, units, attribute names and values.
+  Read-only; one instance per workspace (same pattern as the
+  project, graph, and system-messages panels — the panel is a view
+  onto a single host-owned DBC set, so per-instance differentiation
+  would have no semantic content). Selection / scroll / expand /
+  search state lives in the panel's `params` and survives a layout
+  save/restore.
 - **Multi-select in the DBC panel.** Click selects one; Shift-
   click range-extends within the visible tree; Cmd/Ctrl-click
   toggles individual rows. Selection may mix message rows and

@@ -34,6 +34,16 @@ export const PROJECT_GRAPH_PANEL_COMPONENT = "project-graph";
 /// Phase 7: host-side log bus surface. Multiple are allowed (each
 /// carries its own source / min-level filter in `params`).
 export const SYSTEM_MESSAGES_PANEL_COMPONENT = "system-messages";
+/// Phase 12: DBC discovery panel (tree-with-fuzzy-search over every
+/// loaded DBC's messages → signals). Singleton (same pattern as the
+/// project, graph, and system-messages panels) — the loaded-DBC set
+/// lives on the host and there's no per-panel differentiation worth
+/// having. Search query + expand state still live in panel `params`
+/// so a layout save / restore preserves them.
+export const DBC_PANEL_COMPONENT = "dbc";
+/// Singleton id — toolbar's "DBC panel" button uses this to
+/// show-or-focus a single instance.
+export const DBC_PANEL_ID = "dbc";
 
 /// The project graph is a singleton panel — one per workspace — so it
 /// gets a fixed id rather than one keyed on an element.

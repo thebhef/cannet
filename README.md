@@ -221,7 +221,14 @@ panel for it (in by-ID mode — toggle it anytime); the new trace starts
 what's already in the session buffer. The project panel
 lists the elements — closing a panel doesn't destroy its element,
 reopen or remove it from there. **Project panel** toggles the project
-panel itself (it's a show/hide singleton). New panels arrive as a tab
+panel itself (it's a show/hide singleton). **DBC panel** opens (or
+focuses, if it's already open) the discovery panel — a
+tree-with-fuzzy-search over every loaded DBC: type any fragment of a
+signal name, comment, value-table label, message id (hex or decimal),
+or attribute, and the matching rows surface with their ancestors
+auto-expanded and unrelated rows dimmed. Singleton like the project
+panel, and read-only (DBCs are added / removed from the project panel,
+not from here). New panels arrive as a tab
 in the active group — drag a
 panel by its tab and drop it against an edge of the area to split it
 side-by-side, or onto another panel to tab them together. Each trace

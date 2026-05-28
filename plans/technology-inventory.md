@@ -36,16 +36,26 @@ and the license / platform constraints we need to be aware of.
   row index. ~120 lines, no external dep.
 - **`@xyflow/react`** (formerly `react-flow`, MIT) — `adopted` in
   Phase 6 for the project graph view. See [`../docs/adr/0006-xyflow-project-graph.md`](../docs/adr/0006-xyflow-project-graph.md).
-- **`fzf-for-js`** (MIT) — `proposed` for Phase 12 (DBC panel) as the
-  fuzzy / acronym matcher used by the DBC panel's search and reused
-  by Phase 15's command palette (`Cmd/Ctrl+Shift+P`) and go-to-view
-  palette (`Cmd/Ctrl+P`). Port of VS Code / fzf's matcher —
-  camelHump and abbreviation matching ("MyCanMessage" reachable from
-  "mcmess"), ranking. Pending evaluation against `fuse.js` (popular,
-  lower-quality acronym matching) and `kbar`'s built-in matcher;
-  flip to `adopted` once Phase 12's evaluation step confirms parity
-  with the VS Code matcher we're emulating.
-  See [`../docs/adr/0018-command-keybinding-framework.md`](../docs/adr/0018-command-keybinding-framework.md).
+- **`fzf`** (BSD-3-Clause, npm: `fzf`, repo:
+  [`ajitid/fzf-for-js`](https://github.com/ajitid/fzf-for-js)) —
+  `adopted` in Phase 12 (DBC panel) as the fuzzy / acronym matcher
+  used by the DBC panel's search; reused by Phase 15's command
+  palette (`Cmd/Ctrl+Shift+P`) and go-to-view palette
+  (`Cmd/Ctrl+P`). Port of VS Code / fzf's matcher — camelHump and
+  abbreviation matching ("MyCanMessage" reachable from "mcmess"),
+  ranking, scored result ordering. Synchronous `Fzf` constructor +
+  `find(query)` is plenty for the DBC panel's bounded-size
+  candidate list; the async variant is available if the command
+  palette ever needs it. The package's published name is `fzf` (not
+  the `fzf-for-js` from earlier planning notes) — the repo name is
+  `fzf-for-js` but it shipped on npm without the suffix. ~70 kB
+  unpacked, ships its own TypeScript declarations.
+  **Rejected alternatives:** `fuse.js` (popular but Bitap-based —
+  no camelHump / acronym matching, lower-quality ranking for
+  identifier-shaped haystacks); `kbar`'s built-in matcher
+  (only ships as part of `kbar`'s command-palette package and would
+  drag `kbar` in for the search-matcher use). See
+  [`../docs/adr/0018-command-keybinding-framework.md`](../docs/adr/0018-command-keybinding-framework.md).
 
 ### CAN / CANFD Abstraction
 

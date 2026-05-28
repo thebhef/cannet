@@ -1,7 +1,8 @@
 import { memo } from "react";
 
-import type { ByIdSnapshotRecord, TraceFrameRecord } from "./types";
+import type { ByIdSnapshotRecord, SignalRecord, TraceFrameRecord } from "./types";
 import { formatSignalValueWithLabel } from "./format";
+import { setSignalDragData } from "./dragSignals";
 import {
   type BusLookup,
   type ColumnKey,
@@ -129,15 +130,56 @@ const ByIdRow = memo(function ByIdRow({
       {isExpanded && frame.decoded && (
         <div className="signals">
           {frame.decoded.signals.map((sig) => (
-            <div className="signal" key={sig.name}>
-              <span className="signal-name">{sig.name}</span>
-              <span className="signal-value">
-                {formatSignalValueWithLabel(sig.value, sig.unit, sig.label)}
-              </span>
-            </div>
+            <DecodedSignalCell
+              key={sig.name}
+              frame={frame}
+              messageName={frame.decoded!.name}
+              sig={sig}
+            />
           ))}
         </div>
       )}
     </div>
   );
 });
+
+/// One decoded signal cell in a by-id row's expanded grid. Drag
+/// source identical to the chronological trace's version — same
+/// payload shape, same single-ref form, scoped to the frame's
+/// own `bus_id`. Shared component would force a cross-file import
+/// dance for a six-line render; the duplication is cheaper to
+/// maintain than the abstraction.
+function DecodedSignalCell({
+  frame,
+  messageName,
+  sig,
+}: {
+  frame: TraceFrameRecord;
+  messageName: string;
+  sig: SignalRecord;
+}) {
+  return (
+    <div
+      className="signal"
+      draggable
+      onDragStart={(e) => {
+        e.stopPropagation();
+        setSignalDragData(e, [
+          {
+            busId: frame.bus_id ?? null,
+            messageId: frame.id,
+            extended: frame.extended,
+            signalName: sig.name,
+            messageName,
+            unit: sig.unit,
+          },
+        ]);
+      }}
+    >
+      <span className="signal-name">{sig.name}</span>
+      <span className="signal-value">
+        {formatSignalValueWithLabel(sig.value, sig.unit, sig.label)}
+      </span>
+    </div>
+  );
+}

@@ -17,7 +17,10 @@
       "Read(//Users/ben/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/can-dbc-9.0.0/src/**)",
       "Bash(pnpm --dir /Users/ben/repo/cannet/apps/gui exec tsc --noEmit)",
       "Bash(pnpm --dir /Users/ben/repo/cannet/apps/gui test --run)",
-      "Bash(pnpm --dir /Users/ben/repo/cannet/apps/gui build)"
+      "Bash(pnpm --dir /Users/ben/repo/cannet/apps/gui build)",
+      "Bash(pnpm --dir apps/gui exec tsc --noEmit)",
+      "Bash(pnpm --dir apps/gui test --run DbcPanel)",
+      "Bash(pnpm --dir apps/gui test --run)"
     ]
   }
 }

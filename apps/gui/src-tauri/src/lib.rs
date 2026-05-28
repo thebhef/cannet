@@ -214,6 +214,7 @@ pub fn run() {
             decode_frame,
             fetch_system_log,
             clear_system_log,
+            gui_emit_system_log,
             fetch_notes,
             add_note,
             rename_note,
@@ -1028,6 +1029,34 @@ fn fetch_system_log(state: State<'_, AppState>) -> Vec<SystemMessage> {
 #[allow(clippy::needless_pass_by_value)]
 fn clear_system_log(state: State<'_, AppState>) {
     state.system_log.clear();
+}
+
+/// Push a System Messages entry from the frontend. Same plumbing as
+/// the host-side `sys_info!` / `sys_warn!` / `sys_error!` macros: the
+/// host's log bus assigns the `seq`, emits a `system-log-appended`
+/// event, and the frontend mirror picks it up via its existing
+/// listener — no separate channel for GUI-emitted entries.
+///
+/// Phase 12 surfaces this for the filter-defined plot area's
+/// bus-rename invalidation warning (`source = "plot"`). Future
+/// frontend-side warnings reuse the same command; keep `source`
+/// short and stable (it's filterable in the panel).
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn gui_emit_system_log(
+    app: AppHandle,
+    level: String,
+    source: String,
+    message: String,
+) -> Result<(), String> {
+    let lvl = match level.as_str() {
+        "info" => system_log::LogLevel::Info,
+        "warn" => system_log::LogLevel::Warn,
+        "error" => system_log::LogLevel::Error,
+        other => return Err(format!("unknown level: {other}")),
+    };
+    emit_system_log(&app, source.as_str(), lvl, message);
+    Ok(())
 }
 
 /// Phase 9: snapshot of the session-scoped notes, chronological.
