@@ -1633,8 +1633,12 @@ Exit criteria:
   shape and drop onto a plot area as series.
 - Dropping a signal / message payload onto the transmit panel
   creates one new transmit frame per distinct `(canId, extended)`,
-  busId inherited from the dropped ref (with project's first bus
-  as fallback for unscoped DBCs).
+  busId inherited from the dropped ref — which comes from the
+  per-bus tree row the drag originated under (e.g. dropping from
+  the `chassis` bus group produces a frame bound to that bus). The
+  project's first bus is the fallback only when the ref's `busId`
+  is `null` (sentinel groups: no project buses configured, or the
+  `(Unassigned)` group).
 - Drag-source semantics: drops from inside one plot panel = move
   between its areas (preserving colour); drops from a different
   source — DBC panel, trace cell, by-id cell, another plot panel —
