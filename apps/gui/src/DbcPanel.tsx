@@ -13,7 +13,6 @@ import type {
 import { useProjectContext } from "./projectContext";
 import {
   dedupeSignalRefs,
-  fanOutByBus,
   setSignalDragData,
   type DraggableSignalRef,
 } from "./dragSignals";
@@ -183,9 +182,21 @@ interface RenderRow {
   kind:
     | { tag: "bus"; busId: string; label: string; unscopedNote: boolean }
     | { tag: "dbc"; path: string; scopeLabel: string | null }
-    | { tag: "message"; dbcPath: string; message: DbcMessageContentRecord }
+    | {
+        tag: "message";
+        /// Bus context — set from the bus group this row was
+        /// rendered under. `null` for the `(All DBCs)` /
+        /// `(Unassigned)` sentinel groups (no real bus context). A
+        /// drag from this row produces a `SignalRef` carrying this
+        /// `busId`; that's what makes the per-bus tree's visual
+        /// position determine the drag destination.
+        busId: string | null;
+        dbcPath: string;
+        message: DbcMessageContentRecord;
+      }
     | {
         tag: "signal";
+        busId: string | null;
         dbcPath: string;
         messageId: number;
         extended: boolean;
@@ -276,6 +287,12 @@ function buildRows(
   for (const g of groups) {
     const bId = busNodeId(g.busId);
     const bExpanded = effectiveExpanded.has(bId);
+    // `dragBusId` is what message / signal rows under this group
+    // carry as their `busId` — the destination bus a drag from this
+    // visual position should produce. Sentinel groups (no real bus)
+    // contribute `null` (legacy "any bus" path).
+    const dragBusId =
+      g.busId === ALL_BUSES_BUS_ID || g.busId === UNASSIGNED_BUS_ID ? null : g.busId;
     out.push({
       id: bId,
       depth: 0,
@@ -318,7 +335,7 @@ function buildRows(
           hasChildren: m.signals.length > 0,
           dim: filterActive && !matchSet.has(mId),
           selected: selection.has(mId),
-          kind: { tag: "message", dbcPath: dbc.dbcPath, message: m },
+          kind: { tag: "message", busId: dragBusId, dbcPath: dbc.dbcPath, message: m },
         });
         if (!mExpanded) continue;
         for (const s of m.signals) {
@@ -338,6 +355,7 @@ function buildRows(
             selected: selection.has(sId),
             kind: {
               tag: "signal",
+              busId: dragBusId,
               dbcPath: dbc.dbcPath,
               messageId: m.messageId,
               extended: m.extended,
@@ -436,57 +454,58 @@ function initialExpandedRoots(groups: readonly BusGroup[]): Set<string> {
 
 /// Resolve a render row to the draggable signals it contributes.
 /// For message rows that's every signal in the message; for signal
-/// rows it's just the one. Bus fan-out follows `fanOutByBus`: a
-/// scoped DBC's signals fan across the scope buses (one ref per
-/// scope bus); an unscoped DBC's signals drop as a single
-/// `busId: null` ref so the user gets ONE series per signal, not
-/// one per project bus (an unscoped DBC is "the user didn't tell us
-/// which bus" — fabricating N series would be a surprise). Returns
-/// an empty list for DBC rows (those aren't draggable).
+/// rows it's just the one. Returns an empty list for bus / DBC rows
+/// (those aren't draggable).
+///
+/// **Bus context comes from the row's visual position**, not the
+/// DBC's `dbcBuses` scoping. With the per-bus tree (slice 6), the
+/// same unscoped DBC is rendered under each project bus group; a
+/// drag from the bus-a copy of `EngineSpeed` produces a ref with
+/// `busId: "bus-a"` even though the DBC is unscoped. This matches
+/// what the user expects from the visual layout — they explicitly
+/// chose to drag from bus-a's view.
+///
+/// Sentinel groups ("(All DBCs)", "(Unassigned)") carry `busId:
+/// null` on their rows; drag from those produces the legacy
+/// "any bus" ref.
 function rowToSignalRefs(
   row: RenderRow,
   content: readonly DbcContentRecord[],
-  dbcBuses: Readonly<Record<string, string[]>>,
 ): DraggableSignalRef[] {
   if (row.kind.tag === "bus" || row.kind.tag === "dbc") return [];
-  const dbcPath = row.kind.dbcPath;
-  const scopedBuses = dbcBuses[dbcPath] ?? [];
+  const busId = row.kind.busId;
   if (row.kind.tag === "signal") {
     const s = row.kind.signal;
-    return fanOutByBus(
+    return [
       {
+        busId,
         messageId: row.kind.messageId,
         extended: row.kind.extended,
         signalName: s.name,
         messageName: row.kind.messageName,
         unit: s.unit,
       },
-      scopedBuses,
-    );
+    ];
   }
   // Message row → contribute every signal that belongs to it. Find
-  // the message in `content` so the source-order signal list is what
-  // the panel rendered.
+  // the message in `content` so the source-order signal list is
+  // what the panel rendered.
   const messageKind = row.kind; // narrows to the message arm.
-  const dbc = content.find((d) => d.dbcPath === dbcPath);
+  const dbc = content.find((d) => d.dbcPath === messageKind.dbcPath);
   const msg = dbc?.messages.find(
     (m) =>
       m.messageId === messageKind.message.messageId &&
       m.extended === messageKind.message.extended,
   );
   if (!msg) return [];
-  return msg.signals.flatMap((s) =>
-    fanOutByBus(
-      {
-        messageId: msg.messageId,
-        extended: msg.extended,
-        signalName: s.name,
-        messageName: msg.name,
-        unit: s.unit,
-      },
-      scopedBuses,
-    ),
-  );
+  return msg.signals.map((s) => ({
+    busId,
+    messageId: msg.messageId,
+    extended: msg.extended,
+    signalName: s.name,
+    messageName: msg.name,
+    unit: s.unit,
+  }));
 }
 
 /// The set of selectable rows in display order — used by Shift-click
@@ -650,12 +669,12 @@ export function DbcPanel(props: IDockviewPanelProps) {
         ? rows.filter((r) => selection.has(r.id))
         : [row];
       const refs = dedupeSignalRefs(
-        draggedRows.flatMap((r) => rowToSignalRefs(r, content, dbcBuses)),
+        draggedRows.flatMap((r) => rowToSignalRefs(r, content)),
       );
       if (refs.length === 0) return;
       setSignalDragData(e, refs);
     },
-    [selection, rows, content, dbcBuses],
+    [selection, rows, content],
   );
 
   return (

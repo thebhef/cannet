@@ -397,7 +397,12 @@ describe("DbcPanel", () => {
     expect(refs.map((r) => r.signalName)).toEqual(["Mode"]);
   });
 
-  it("scoped DBC fans the drag payload out across each scoped bus", async () => {
+  it("drag from a per-bus tree row carries that bus's id", async () => {
+    // With per-bus tree grouping (slice 6) + slice-7 fix: the
+    // bus context of the *visual* row is what determines the drag
+    // payload's `busId`. A DBC scoped to two buses renders under
+    // each bus group; dragging from bus-a's instance produces one
+    // ref with busId="bus-a" (not a fanned-out pair).
     const buses: Bus[] = [
       { id: "bus-a", name: "A" },
       { id: "bus-b", name: "B" },
@@ -414,11 +419,10 @@ describe("DbcPanel", () => {
         <DbcPanel {...props} />
       </ProjectContext.Provider>,
     );
-    // Per-bus tree grouping: a DBC scoped to two buses appears
-    // under each bus group, so EngineData renders twice — expand
-    // the first one to reveal its signals.
     const allEng = await screen.findAllByText("EngineData");
     expect(allEng.length).toBe(2);
+    // Expand the first EngineData (under bus-a) so we can drag its
+    // signal.
     const chevron = allEng[0]
       .closest(".dbc-row")
       ?.querySelector(".dbc-row-chevron") as HTMLElement;
@@ -428,8 +432,50 @@ describe("DbcPanel", () => {
     const dt = makeFakeDataTransfer();
     fireEvent.dragStart(signalRow, { dataTransfer: dt });
     const refs = parseSignalDragData(dt.getData(SIGNAL_DND_MIME)).signals;
-    expect(refs).toHaveLength(2);
-    expect(refs.map((r) => r.busId).sort()).toEqual(["bus-a", "bus-b"]);
+    expect(refs).toHaveLength(1);
+    expect(refs[0].busId).toBe("bus-a");
+  });
+
+  it("drag from an unscoped DBC's bus-group row carries that bus's id", async () => {
+    // The bug the user hit: an unscoped DBC's signal previously
+    // dropped as `busId: null` (legacy any-bus). With the per-bus
+    // tree the user is dragging from a specific bus group's view —
+    // the drag should carry THAT bus's id, not null.
+    const buses: Bus[] = [
+      { id: "bus-a", name: "powertrain" },
+      { id: "bus-b", name: "chassis" },
+    ];
+    const ctx: ProjectContextValue = {
+      ...projectCtx,
+      buses,
+      // No scoping → unscoped DBC, appears under every bus group.
+      dbcBuses: {},
+    };
+    const api = { updateParameters: vi.fn() };
+    const props = { params: {}, api } as unknown as Parameters<typeof DbcPanel>[0];
+    render(
+      <ProjectContext.Provider value={ctx}>
+        <DbcPanel {...props} />
+      </ProjectContext.Provider>,
+    );
+    const allEng = await screen.findAllByText("EngineData");
+    expect(allEng.length).toBe(2);
+    // Drag from the second one (under bus-b / "chassis"). Bus-b
+    // should be the resulting busId.
+    const chevron = allEng[1]
+      .closest(".dbc-row")
+      ?.querySelector(".dbc-row-chevron") as HTMLElement;
+    fireEvent.click(chevron);
+    // Only bus-b's EngineData was expanded; its signal row is the
+    // only EngineSpeed in the DOM.
+    const signalRow = (await screen.findByText("EngineSpeed")).closest(
+      ".dbc-row",
+    ) as HTMLElement;
+    const dt = makeFakeDataTransfer();
+    fireEvent.dragStart(signalRow, { dataTransfer: dt });
+    const refs = parseSignalDragData(dt.getData(SIGNAL_DND_MIME)).signals;
+    expect(refs).toHaveLength(1);
+    expect(refs[0].busId).toBe("bus-b");
   });
 
   it("'details' toggle reveals bit layout, scale, range, value table for each signal", async () => {
