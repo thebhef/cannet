@@ -2,7 +2,7 @@
 
 Status: accepted (2026-05-26)
 
-Phase 10 Track 4 ([`../../plans/phased-implementation.md`](../../plans/phased-implementation.md))
+Phase 15 ([`../../plans/phased-implementation.md`](../../plans/phased-implementation.md))
 introduces a generalised command and keybinding primitive that every
 later track and phase registers on. This ADR records the shape of
 that primitive and why.
@@ -86,11 +86,11 @@ Inventing a predicate DSL would buy generality nobody needs.
 
 ## Consequences
 
-- Phase 10 Track 3's `f` and `l` hotkeys, and Track 4's lifted
-  toolbar commands, all register on this framework. Tracks /
-  phases after this point register theirs too (Track 5's DBC
-  panel commands, Phase 13's `goto.traceRow` / `goto.timeInTrace`
-  / `plot.setVisibleRange` / `capture.save`, anything later).
+- Phase 14's `f` and `l` plot hotkeys, the lifted toolbar
+  commands, Phase 12's DBC panel commands, and Phase 18's
+  `goto.traceRow` / `goto.timeInTrace` / `plot.setVisibleRange`
+  / `capture.save` all register on this framework. Anything
+  later registers theirs too.
 - Build fails fast on a binding collision; the registry's boot
   step is the integration check.
 - User customisation, command arguments / forms, and a settings

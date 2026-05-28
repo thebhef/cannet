@@ -9,6 +9,27 @@ spec and carries no implementation detail.
 
 ## Language
 
+### Bus and transport
+
+**Bus**:
+A logical CAN bus — one shared medium. Multiple **interfaces** can
+sit on the same bus and see each other's traffic. In the project,
+buses are first-class: a Project Bus carries name and bit-rate,
+and **interface bindings** map a server's interface onto a project
+bus. A virtual-bus server simulates one bus with N interfaces as
+nodes on it.
+
+**Interface**:
+The wire-level endpoint a server exposes — what a client subscribes
+to. One interface represents one node's view of a bus. A server
+publishes an interface set through `ListInterfaces` /
+`WatchInterfaces`; a session subscribes by `interface_id`. On the
+virtual-bus server, a `Subscribe` is also an **exclusive claim** —
+one session at a time owns an interface, mirroring how only one
+node occupies a hardware port.
+_Avoid_: "channel" for an interface (CAN-FD channel numbering is a
+separate, BLF-internal thing).
+
 ### Data and model
 
 **Capture**:

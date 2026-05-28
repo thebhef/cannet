@@ -26,11 +26,11 @@ work or admit it isn't going to happen and delete it.
 
 Near-term work — fold these into a phase before picking up the
 lower-priority follow-ups below. The original "Minimum Usability
-Tasks" list (transmit signals, show points, DBC view, drag/drop,
-hotkey framework) is scheduled as **Phase 10 — Integration Testing
-and Refinement** in `phased-implementation.md`; the
-`ui-architecture-backlog.md` item is left in `ui-architecture-backlog.md`
-and absorbed into Phase 11.
+Tasks" list is split across **Phase 11** (transmit signals,
+shipped), **Phase 12** (DBC view + drag/drop), **Phase 14** (show
+points), and **Phase 15** (hotkey framework) in
+`phased-implementation.md`; the `ui-architecture-backlog.md` item
+is left in `ui-architecture-backlog.md` and absorbed into Phase 16.
 
 #### Other near-term work
 
@@ -47,8 +47,8 @@ and absorbed into Phase 11.
   wipes `current/` on clean shutdown. Other settings will land here
   as they come up; spec the panel itself when picking this up.
 - `[test-fixtures]` **Vendor python-can BLF fixtures under
-  `crates/cannet-blf/tests/fixtures/python-can/`.** Phase 10 (Track 1)
-  Step 1 listed this as the first of four test sources but
+  `crates/cannet-blf/tests/fixtures/python-can/`.** Phase 10 Step 1
+  listed this as the first of four test sources but
   deferred actual vendoring; today the step's coverage is
   synthetic-bytes per-module tests + the vector_blf oracle
   cross-check (gated behind `vector-blf-oracle`). Adding the
@@ -75,6 +75,19 @@ trip over it.
   request: { busId: ... } })` from the frontend so `tsc` rejects the
   wrong-case key. Evaluate properly (and land in
   [technology-inventory.md](technology-inventory.md)) before adopting.
+
+- `[ci]` **Server-implementation conformance check.** Every server
+  that speaks `cannet-wire` (today: `cannet-server`'s BLF replay and
+  virtual-bus modes, `cannet-python-can`; tomorrow: other vendor
+  sidecars) is expected to honour the same envelope semantics —
+  `ConfigureBus` on the bus / interface they own, exhaustive matches
+  on the full envelope set, error-frame round-trip, the response
+  shapes `ListInterfaces` / `WatchInterfaces` promise, etc. Today
+  this is policed by reading code and remembering. Want a single
+  conformance suite (Rust integration test using `cannet-client`)
+  that drives a generic checklist against any server endpoint —
+  spin the suite against each shipping server in CI so a divergence
+  shows up as a test failure rather than at runtime in the GUI.
 
 ### Trace view
 
@@ -168,6 +181,17 @@ trip over it.
 
 ### GUI chrome and cross-cutting
 
+- `[feat]` `cannet-gui` Save Capture: **time-range export.** Phase 9's
+  Save Capture writes the entire session buffer to a `.blf`. Add the
+  ability to pick a start and end time (or start/end frame index) on
+  the Save Capture dialog so the user can export just a slice rather
+  than the whole capture. Cursor pairs in plot or trace panels are a
+  natural source for the range — "Save range as BLF…" alongside the
+  existing "Save Capture…" action. Frames outside the chosen range
+  are skipped; `GLOBAL_MARKER` and `EVENT_COMMENT` records whose
+  timestamps fall inside the range come along; the written
+  `FileStatistics.measurement_start_time` is the chosen start, not
+  the session start.
 - `[ui]` `cannet-gui`: **bus bitrate is not surfaced in the GUI.** A
   user on an unfamiliar bus has no way to see what bitrate (or FD
   data bitrate) a bus is configured at — there's no readout on the
@@ -222,7 +246,7 @@ next pass on this surface can address them as one piece.
 
 - `[perf]` `cannet-core`: revisit `CanFramePayload::Classic`/`Fd` to share
   a fixed-size inline buffer instead of `Vec<u8>` once the trace store /
-  benchmark in Phase 15 shows allocator pressure.
+  benchmark in Phase 20 shows allocator pressure.
 - `[feat]` `cannet-server` (Phase 2+): multi-client support. Phase 2 is
   single-client per server; a second connection is rejected with
   `Error::BUSY`. Lift this when there's a real use case (e.g. a second
