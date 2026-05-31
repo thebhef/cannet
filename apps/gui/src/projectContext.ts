@@ -66,6 +66,23 @@ export interface ProjectContextValue {
   onRenameBus: (id: string, name: string) => void;
   /// Set a bus's graph colour (`#rrggbb`).
   onSetBusColor: (id: string, color: string) => void;
+  /// Set a bus's nominal (arbitration) bitrate in bits/s. Pass `null`
+  /// to clear (reverts the host to the driver default on next connect).
+  onSetBusSpeed: (id: string, speed_bps: number | null) => void;
+  /// Toggle CAN-FD mode on a bus. When turned off, the data-phase
+  /// bitrate is left in place but ignored by the host until FD is
+  /// re-enabled.
+  onSetBusFd: (id: string, fd: boolean | null) => void;
+  /// Set a bus's FD data-phase bitrate in bits/s. Pass `null` to
+  /// clear (the host then falls back to the nominal rate for the data
+  /// phase).
+  onSetBusFdDataSpeed: (id: string, fd_data_speed_bps: number | null) => void;
+  /// Bus ids whose live hardware configuration no longer matches the
+  /// edited project (the user changed speed / FD / data rate after
+  /// connect). Reconnecting applies the change; the title-bar banner
+  /// surfaces this list. Empty when nothing is pending or no session
+  /// is open.
+  busesWithPendingHwConfig: string[];
   /// Phase 6: interface-binding ops. Multiple bindings may target
   /// the same `(server, interface)` — Step-6 multi-client and the
   /// in-process bus both fan out, so the historical

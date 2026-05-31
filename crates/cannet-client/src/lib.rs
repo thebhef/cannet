@@ -52,7 +52,8 @@ use cannet_core::{CanFrame, CanFrameSource};
 use cannet_wire::proto::{
     cannet_server_client::CannetServerClient,
     envelope::Body,
-    Envelope, FrameBatch, ListInterfacesRequest, Subscribe, WatchInterfacesRequest,
+    ConfigureBus, Envelope, FrameBatch, ListInterfacesRequest, Subscribe,
+    WatchInterfacesRequest,
 };
 use cannet_wire::{frame_to_proto, proto_to_frame, ProtoConversionError};
 use tokio::sync::mpsc as tokio_mpsc;
@@ -64,6 +65,23 @@ use tokio_stream::StreamExt;
 /// Subscribes are bursty at startup; this gives them room without
 /// blocking the worker thread before the stream is up.
 const REQUEST_CHANNEL_DEPTH: usize = 16;
+
+/// Hardware configuration the caller wants applied to an interface
+/// *before* the corresponding [`Subscription`] is sent. The server
+/// receives a `ConfigureBus` envelope ahead of the `Subscribe`, so
+/// the underlying controller opens at the requested rate / mode the
+/// first time around — no close+reopen window where frames could be
+/// lost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreSubscribeConfig {
+    /// Nominal (arbitration-phase) bitrate in bits/s.
+    pub speed_bps: u64,
+    /// Whether the interface should be opened in CAN-FD mode.
+    pub fd_enabled: bool,
+    /// FD data-phase bitrate in bits/s (only meaningful when
+    /// `fd_enabled`). `0` means "same as `speed_bps`".
+    pub fd_data_speed_bps: u64,
+}
 
 /// One entry in a [`connect_and_subscribe`] subscription request.
 #[derive(Debug, Clone)]
@@ -81,6 +99,12 @@ pub struct Subscription {
     /// allocated id arrives and surfaces it via the resolved
     /// subscriptions on [`RemoteCanFrameSource`].
     pub allocates: bool,
+    /// Optional `ConfigureBus` to send before this subscribe. Lets
+    /// hardware-server interfaces (PCAN, Vector, Kvaser via the
+    /// python-can sidecar) open at the project-configured rate / FD
+    /// mode from the start; non-sidecar servers (BLF replay, virtual
+    /// bus) accept the envelope and ignore it.
+    pub config: Option<PreSubscribeConfig>,
 }
 
 impl Subscription {
@@ -91,6 +115,7 @@ impl Subscription {
             interface_id: interface_id.into(),
             channel,
             allocates: false,
+            config: None,
         }
     }
 
@@ -101,7 +126,18 @@ impl Subscription {
             interface_id: interface_id.into(),
             channel,
             allocates: true,
+            config: None,
         }
+    }
+
+    /// Attach a pre-subscribe hardware configuration. The server
+    /// receives a `ConfigureBus` envelope ahead of the corresponding
+    /// `Subscribe`, so the underlying controller opens at the
+    /// requested settings the first time round.
+    #[must_use]
+    pub fn with_config(mut self, config: PreSubscribeConfig) -> Self {
+        self.config = Some(config);
+        self
     }
 }
 
@@ -400,6 +436,40 @@ impl SessionTransmitter {
             .blocking_send(envelope)
             .map_err(|_| SessionClosed)
     }
+
+    /// Push a hardware configuration to `interface_id`.
+    ///
+    /// `speed_bps` is the nominal (arbitration-phase) bitrate.
+    /// `fd_enabled` flips the interface into CAN-FD mode; when set,
+    /// `fd_data_speed_bps` is the data-phase bitrate (a value of `0`
+    /// means "same as nominal"). The sidecar reconfigures the channel
+    /// by close+reopen, so live `FrameBatch` flow on this interface
+    /// resumes within a few hundred milliseconds.
+    ///
+    /// Conflict semantics across concurrent clients are whatever the
+    /// underlying driver does on reopen (ADR 0022). Errors come back
+    /// as a wire `LogMessage` (level Error) on this session, not as a
+    /// synchronous response from this call — the caller observes
+    /// success indirectly via subsequent frame flow.
+    pub fn configure_bus(
+        &self,
+        interface_id: &str,
+        speed_bps: u64,
+        fd_enabled: bool,
+        fd_data_speed_bps: u64,
+    ) -> Result<(), SessionClosed> {
+        let envelope = Envelope {
+            body: Some(Body::ConfigureBus(ConfigureBus {
+                interface_id: interface_id.to_string(),
+                speed_bps,
+                fd_data_speed_bps,
+                fd_enabled,
+            })),
+        };
+        self.req_tx
+            .blocking_send(envelope)
+            .map_err(|_| SessionClosed)
+    }
 }
 
 /// Returned by [`SessionTransmitter::transmit`] when the session is
@@ -501,6 +571,22 @@ async fn run_session(
 
     let (req_tx, req_rx) = tokio_mpsc::channel::<Envelope>(REQUEST_CHANNEL_DEPTH);
     for sub in &subscriptions {
+        if let Some(cfg) = sub.config {
+            let envelope = Envelope {
+                body: Some(Body::ConfigureBus(ConfigureBus {
+                    interface_id: sub.interface_id.clone(),
+                    speed_bps: cfg.speed_bps,
+                    fd_data_speed_bps: cfg.fd_data_speed_bps,
+                    fd_enabled: cfg.fd_enabled,
+                })),
+            };
+            if req_tx.send(envelope).await.is_err() {
+                let _ = ready_tx.send(Err(ConnectionError::Session(
+                    "request channel closed before configure was sent".into(),
+                )));
+                return;
+            }
+        }
         let envelope = Envelope {
             body: Some(Body::Subscribe(Subscribe {
                 interface_id: sub.interface_id.clone(),

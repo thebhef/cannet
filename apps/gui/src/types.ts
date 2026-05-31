@@ -72,8 +72,17 @@ export interface DbcInfo {
 export interface Bus {
   id: string;
   name: string;
+  /// Nominal (arbitration-phase) bitrate in bits/s. Pushed to the
+  /// sidecar on connect via `ConfigureBus`. Common values: 125_000,
+  /// 250_000, 500_000, 1_000_000.
   speed_bps?: number | null;
+  /// Whether the underlying controller should be opened in CAN FD
+  /// mode. When unset (or false) the sidecar opens classic-only and
+  /// `fd_data_speed_bps` is ignored.
   fd?: boolean | null;
+  /// FD data-phase bitrate in bits/s (only meaningful when `fd` is
+  /// true). Common values: 1_000_000, 2_000_000, 4_000_000, 5_000_000.
+  fd_data_speed_bps?: number | null;
   /// User-chosen colour (CSS hex, `#rrggbb`) for the bus across the
   /// graph view — its node tint and every wire that carries it.
   /// Optional: a bus saved before the colour field, or never edited,

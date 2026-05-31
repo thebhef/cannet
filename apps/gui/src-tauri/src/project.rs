@@ -67,8 +67,12 @@ pub const PROJECT_SCHEMA_VERSION: u32 = 7;
 /// A logical bus. `id` is a stable, project-local identifier (graph
 /// edges reference it; per-DBC scoping and the filter `bus` predicate
 /// both compare against it). `name` is the user-facing label.
-/// `speed_bps` / `fd` are optional hints used by the graph view and
-/// (in Phase 8) by the hardware-sidecar bus-config flow.
+///
+/// `speed_bps`, `fd`, and `fd_data_speed_bps` are the hardware
+/// configuration the host pushes to the sidecar (via `ConfigureBus`)
+/// every time it opens a session for an interface binding scoped to
+/// this bus. `fd_data_speed_bps` is only meaningful when `fd` is true
+/// (FD's arbitration phase still runs at `speed_bps`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Bus {
     pub id: String,
@@ -77,6 +81,8 @@ pub struct Bus {
     pub speed_bps: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub fd: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub fd_data_speed_bps: Option<u32>,
     /// User-chosen graph colour (`#rrggbb`). The host round-trips it
     /// without interpretation; the GUI falls back to a palette colour
     /// when it's absent.
@@ -472,6 +478,7 @@ mod tests {
                 name: "Powertrain".into(),
                 speed_bps: Some(500_000),
                 fd: Some(false),
+                fd_data_speed_bps: None,
                 color: Some("#60a5fa".into()),
             }],
             interface_bindings: vec![InterfaceBinding {
@@ -569,6 +576,7 @@ mod tests {
                 name: "Test virtual".into(),
                 speed_bps: Some(500_000),
                 fd: Some(true),
+                fd_data_speed_bps: Some(2_000_000),
                 color: None,
             }],
             interface_bindings: vec![InterfaceBinding {
@@ -609,6 +617,7 @@ mod tests {
                 name: "Powertrain".into(),
                 speed_bps: None,
                 fd: None,
+                fd_data_speed_bps: None,
                 color: None,
             }],
             interface_bindings: vec![InterfaceBinding {

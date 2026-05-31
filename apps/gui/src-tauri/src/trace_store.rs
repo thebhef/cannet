@@ -28,14 +28,31 @@
 //!
 //! ## Rate estimation
 //!
-//! The store keeps a rolling window of `(Instant, total_count)`
-//! samples, one taken at most every [`RATE_SAMPLE_INTERVAL`] — a
-//! sample *per appended frame* would balloon the deque at high replay
-//! rates for no extra signal, since [`Self::frames_per_second`] only
-//! reads the window's endpoints. The window is pruned to
-//! [`RATE_WINDOW`] on each touch; the rate is the count delta over the
-//! wall time the surviving samples span, or `0.0` if there isn't yet
-//! enough signal to estimate.
+//! Rates are computed from per-frame `timestamp_ns` (the bus-side
+//! arrival time the driver stamped), not from when the frame was
+//! appended to the store. The rx pump batches frames together — at the
+//! store, every frame in a batch lands within microseconds of every
+//! other one — so a wall-clock inter-arrival would oscillate between
+//! near-zero (within a batch) and the batch cadence (between batches)
+//! for a periodic signal that's actually arriving at a steady rate.
+//! Keying off `timestamp_ns` makes the rate read what the bus is
+//! actually doing.
+//!
+//! Wall-clock is still kept alongside, but only for stall behavior:
+//! when no fresh frames arrive, [`RateEstimate::rate`] decays toward
+//! zero on wall-clock elapsed since the last observation, and
+//! [`Self::frames_per_second`]'s sample deque is pruned by wall time.
+//! Without this, a stalled stream would show its last rate forever
+//! (frame timestamps would have nothing to advance them).
+//!
+//! The store keeps a rolling window of
+//! `(Instant, last_frame_ts_ns, total_count)` samples, one taken at
+//! most every [`RATE_SAMPLE_INTERVAL`] — a sample *per appended frame*
+//! would balloon the deque at high replay rates for no extra signal,
+//! since [`Self::frames_per_second`] only reads the window's endpoints.
+//! The window is pruned to [`RATE_WINDOW`] on each touch; the rate is
+//! the count delta over the frame-time the surviving samples span,
+//! falling back to `0.0` if there isn't yet enough signal to estimate.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
@@ -74,23 +91,31 @@ type FrameKey = (Option<String>, u8, u32, bool);
 /// DBC message id isn't channel-scoped.
 type IdKey = (u32, bool);
 
-/// Per-id message-rate estimate: the time of the last frame for this
-/// key and an exponential moving average of the inter-arrival time
-/// (`<= 0` until a second frame has been seen).
+/// Per-id message-rate estimate. Tracks the EMA of the *frame-time*
+/// inter-arrival (the bus-side cadence) plus the wall-clock time of
+/// the last observation (so a stalled stream visibly decays to zero
+/// even though frame timestamps stop advancing).
 #[derive(Debug, Clone, Copy)]
 struct RateEstimate {
-    last: Instant,
+    last_ts_ns: u64,
+    last_wall: Instant,
     ema_dt_secs: f64,
 }
 
 impl RateEstimate {
-    fn first_seen(now: Instant) -> Self {
-        Self { last: now, ema_dt_secs: 0.0 }
+    fn first_seen(ts_ns: u64, now: Instant) -> Self {
+        Self {
+            last_ts_ns: ts_ns,
+            last_wall: now,
+            ema_dt_secs: 0.0,
+        }
     }
 
-    /// Fold in a new frame at `now`.
-    fn observe(&mut self, now: Instant) {
-        let dt = now.duration_since(self.last).as_secs_f64();
+    /// Fold in a new frame stamped at `ts_ns` and appended at wall-time
+    /// `now`.
+    #[allow(clippy::cast_precision_loss)] // ns diffs fit comfortably in f64's mantissa.
+    fn observe(&mut self, ts_ns: u64, now: Instant) {
+        let dt = ts_ns.saturating_sub(self.last_ts_ns) as f64 / 1e9;
         if self.ema_dt_secs <= 0.0 {
             if dt > 0.0 {
                 self.ema_dt_secs = dt;
@@ -98,17 +123,19 @@ impl RateEstimate {
         } else if dt > 0.0 {
             self.ema_dt_secs = PER_ID_RATE_ALPHA * dt + (1.0 - PER_ID_RATE_ALPHA) * self.ema_dt_secs;
         }
-        self.last = now;
+        self.last_ts_ns = ts_ns;
+        self.last_wall = now;
     }
 
-    /// Messages/second as of `now` — `0.0` until two frames have been
-    /// seen, and decaying toward `0` once frames stop arriving (the
-    /// effective interval grows with the time since the last one).
+    /// Messages/second as of wall-time `now` — `0.0` until two frames
+    /// have been seen, and decaying toward `0` once frames stop
+    /// arriving (the effective interval grows with the wall-time since
+    /// the last one, so a stalled stream visibly drops).
     fn rate(&self, now: Instant) -> f64 {
         if self.ema_dt_secs <= 0.0 {
             return 0.0;
         }
-        let since = now.duration_since(self.last).as_secs_f64();
+        let since = now.duration_since(self.last_wall).as_secs_f64();
         let dt = since.max(self.ema_dt_secs);
         if dt > 0.0 { 1.0 / dt } else { 0.0 }
     }
@@ -162,9 +189,22 @@ pub struct TraceStore {
     inner: Mutex<Inner>,
 }
 
+/// One entry in the trace-wide rate-sample deque. `wall` is the
+/// append's wall-clock time (used to prune the window so a stalled
+/// stream visibly drops to zero); `ts_ns` is the frame's bus-side
+/// timestamp (used to compute the rate, so batching jitter doesn't
+/// bounce the reading); `count` is the running frame total at that
+/// point.
+#[derive(Debug, Clone, Copy)]
+struct RateSample {
+    wall: Instant,
+    ts_ns: u64,
+    count: usize,
+}
+
 struct Inner {
     frames: Vec<RawTraceFrame>,
-    rate_samples: VecDeque<(Instant, usize)>,
+    rate_samples: VecDeque<RateSample>,
     /// Index into `frames` of the most recent frame seen for each
     /// [`FrameKey`] — `O(1)` to maintain on append, and what the
     /// per-message-ID view reads instead of walking the whole buffer.
@@ -198,6 +238,7 @@ impl TraceStore {
     /// rate sample if at least [`RATE_SAMPLE_INTERVAL`] has passed.
     pub fn append(&self, frame: RawTraceFrame) {
         let now = Instant::now();
+        let ts_ns = frame.timestamp_ns;
         let key: FrameKey = (
             frame.bus_id.clone(),
             frame.channel,
@@ -213,14 +254,18 @@ impl TraceStore {
         inner
             .rates
             .entry(key)
-            .or_insert_with(|| RateEstimate::first_seen(now))
-            .observe(now);
+            .or_insert_with(|| RateEstimate::first_seen(ts_ns, now))
+            .observe(ts_ns, now);
         let due = match inner.rate_samples.back() {
-            Some(&(last, _)) => now.duration_since(last) >= RATE_SAMPLE_INTERVAL,
+            Some(last) => now.duration_since(last.wall) >= RATE_SAMPLE_INTERVAL,
             None => true,
         };
         if due {
-            inner.rate_samples.push_back((now, count));
+            inner.rate_samples.push_back(RateSample {
+                wall: now,
+                ts_ns,
+                count,
+            });
             prune_rate_samples(&mut inner.rate_samples, now);
         }
     }
@@ -401,9 +446,9 @@ impl TraceStore {
     }
 }
 
-fn prune_rate_samples(samples: &mut VecDeque<(Instant, usize)>, now: Instant) {
-    while let Some(&(t, _)) = samples.front() {
-        if now.duration_since(t) > RATE_WINDOW {
+fn prune_rate_samples(samples: &mut VecDeque<RateSample>, now: Instant) {
+    while let Some(front) = samples.front() {
+        if now.duration_since(front.wall) > RATE_WINDOW {
             samples.pop_front();
         } else {
             break;
@@ -411,16 +456,16 @@ fn prune_rate_samples(samples: &mut VecDeque<(Instant, usize)>, now: Instant) {
     }
 }
 
-fn rate_from_samples(samples: &VecDeque<(Instant, usize)>) -> f64 {
-    let (Some(&(t0, c0)), Some(&(t1, c1))) = (samples.front(), samples.back()) else {
+#[allow(clippy::cast_precision_loss)] // counts and ns diffs fit in f64's mantissa.
+fn rate_from_samples(samples: &VecDeque<RateSample>) -> f64 {
+    let (Some(first), Some(last)) = (samples.front(), samples.back()) else {
         return 0.0;
     };
-    let dt = t1.duration_since(t0).as_secs_f64();
+    let dt = last.ts_ns.saturating_sub(first.ts_ns) as f64 / 1e9;
     if dt <= 0.0 {
         return 0.0;
     }
-    #[allow(clippy::cast_precision_loss)]
-    let delta = (c1.saturating_sub(c0)) as f64;
+    let delta = (last.count.saturating_sub(first.count)) as f64;
     delta / dt
 }
 
@@ -610,13 +655,40 @@ mod tests {
     #[allow(clippy::float_cmp)] // 0.0 is the exact "no estimate yet" sentinel.
     fn per_id_rate_is_zero_until_two_frames_then_estimates_and_decays() {
         let t0 = Instant::now();
-        let mut r = RateEstimate::first_seen(t0);
+        let mut r = RateEstimate::first_seen(0, t0);
         assert_eq!(r.rate(t0), 0.0); // one frame: no estimate yet
-        let t1 = t0 + Duration::from_millis(100);
-        r.observe(t1);
-        assert!((r.rate(t1) - 10.0).abs() < 1e-6); // 100 ms apart -> ~10 /s
-        // No further frames: a second later the estimate decays toward 1/s.
-        assert!((r.rate(t1 + Duration::from_secs(1)) - 1.0).abs() < 1e-3);
+        // Second frame: 100 ms apart in *frame time*, but the wall clock
+        // hasn't advanced at all (simulates batched arrival). Rate must
+        // reflect the frame-time interval, not the wall-clock one.
+        r.observe(100_000_000, t0);
+        assert!((r.rate(t0) - 10.0).abs() < 1e-6);
+        // No further frames: a second of wall time later the estimate
+        // decays toward 1/s (stall behavior keyed off wall clock so a
+        // dead stream visibly drops to zero).
+        assert!((r.rate(t0 + Duration::from_secs(1)) - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn per_id_rate_uses_frame_timestamp_not_batch_arrival() {
+        // Regression: a periodic 100 Hz message that gets batched on
+        // the rx pump arrives at the store with wall-clock intervals
+        // close to zero (batches land tens of millis apart, each with
+        // many frames inside). The bus-side cadence is 10 ms; the
+        // rate must report that, not the batch shape.
+        let store = TraceStore::new();
+        for i in 0u64..20 {
+            // Frame timestamps step 10 ms apart; wall clock barely
+            // moves between appends (which the real pump does too).
+            store.append(dummy(i * 10_000_000, 0x100));
+        }
+        let rows = store.latest_since(0);
+        let rate = rows.iter().find(|r| r.frame.id == 0x100).unwrap().rate;
+        // Allow a wide tolerance — EMA hasn't fully settled at 20 samples.
+        assert!(
+            (rate - 100.0).abs() < 10.0,
+            "expected ~100/s from 10-ms frame-time gaps, got {rate}",
+        );
     }
 
     #[test]

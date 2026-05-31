@@ -39,6 +39,13 @@ import {
   elementPanelComponent,
 } from "./dockLayout";
 import { defaultBusColor } from "./busColor";
+import {
+  DEFAULT_NOMINAL_BITRATE_BPS,
+  FD_DATA_BITRATE_PRESETS_BPS,
+  NOMINAL_BITRATE_PRESETS_BPS,
+  formatBitrate,
+  parseBitrateInput,
+} from "./busHardwareConfig";
 
 /// Window title for an element's panel, by kind. `filter` has no panel
 /// of its own (see `elementPanelComponent`); the entry is present only
@@ -235,6 +242,12 @@ export function ProjectPanel(props: IDockviewPanelProps) {
         {p.buses.map((bus, i) => {
           const binding = p.interfaceBindings.find((b) => b.bus_id === bus.id);
           const adding = addingForBus === bus.id;
+          const pendingHwConfig = p.busesWithPendingHwConfig.includes(bus.id);
+          // Local virtual buses have no controller behind them (the
+          // host owns their arbitration timing). Hide the hardware
+          // settings row for those bindings so the UI doesn't suggest
+          // a knob that doesn't apply.
+          const isLocalVbus = binding != null && localVbusId(binding) !== null;
           return (
             <div className="project-bus-row" key={bus.id}>
               <div className="project-bus">
@@ -253,6 +266,19 @@ export function ProjectPanel(props: IDockviewPanelProps) {
                   onChange={(e) => p.onRenameBus(bus.id, e.target.value)}
                   aria-label={`bus ${bus.id} name`}
                 />
+                {pendingHwConfig && (
+                  <span
+                    className="project-bus-pending-hw"
+                    title="Hardware configuration changed since connect; reconnect to apply."
+                  >
+                    pending
+                  </span>
+                )}
+                <button type="button" onClick={() => p.onRemoveBus(bus.id)}>
+                  Remove
+                </button>
+              </div>
+              <div className="project-bus-iface">
                 <BusInterfaceCombo
                   bus={bus}
                   binding={binding ?? null}
@@ -269,10 +295,15 @@ export function ProjectPanel(props: IDockviewPanelProps) {
                     setBusInterface(bus, { kind: "local-virtual-bus", virtual_bus_id: id });
                   }}
                 />
-                <button type="button" onClick={() => p.onRemoveBus(bus.id)}>
-                  Remove
-                </button>
               </div>
+              {!isLocalVbus && (
+                <BusHardwareConfig
+                  bus={bus}
+                  onSetSpeed={(v) => p.onSetBusSpeed(bus.id, v)}
+                  onSetFd={(v) => p.onSetBusFd(bus.id, v)}
+                  onSetFdDataSpeed={(v) => p.onSetBusFdDataSpeed(bus.id, v)}
+                />
+              )}
               {adding && (
                 <AddServerInline
                   busLabel={bus.name}
@@ -684,6 +715,88 @@ const COMBO_ADD_VBUS = "__add_vbus__";
 
 function encodeVbusOption(id: string): string {
   return `${COMBO_VBUS_PREFIX}${id}`;
+}
+
+interface BusHardwareConfigProps {
+  bus: Bus;
+  onSetSpeed: (speed_bps: number | null) => void;
+  onSetFd: (fd: boolean | null) => void;
+  onSetFdDataSpeed: (fd_data_speed_bps: number | null) => void;
+}
+
+/// Per-bus hardware configuration controls. Renders the bitrate and
+/// FD-mode pickers on the second line of a logical-bus row; the FD
+/// data-rate picker appears below them when FD is enabled. Sidecar /
+/// hardware-server interfaces receive these values in the
+/// `ConfigureBus` envelope the host sends ahead of `Subscribe`
+/// (Phase 13). Local virtual buses don't render this row — the host
+/// owns their arbitration timing.
+function BusHardwareConfig({
+  bus,
+  onSetSpeed,
+  onSetFd,
+  onSetFdDataSpeed,
+}: BusHardwareConfigProps) {
+  const fd = bus.fd === true;
+  // The bitrate placeholder previews what the host will actually push
+  // when this field is left unset — the same default the sidecar would
+  // resolve from a wire `speed_bps: 0`. The FD data rate's effective
+  // default falls back to the nominal rate (whatever it ends up
+  // being), so its placeholder tracks the live nominal value.
+  const effectiveNominal = bus.speed_bps ?? DEFAULT_NOMINAL_BITRATE_BPS;
+  return (
+    <div className="project-bus-hw">
+      <label className="project-bus-hw-field">
+        <span>Bitrate</span>
+        <input
+          type="text"
+          list={`bitrate-presets-${bus.id}`}
+          className="project-bus-hw-input"
+          value={bus.speed_bps != null ? formatBitrate(bus.speed_bps) : ""}
+          placeholder={formatBitrate(DEFAULT_NOMINAL_BITRATE_BPS)}
+          onChange={(e) => onSetSpeed(parseBitrateInput(e.target.value))}
+          aria-label={`bus ${bus.id} bitrate`}
+        />
+        <datalist id={`bitrate-presets-${bus.id}`}>
+          {NOMINAL_BITRATE_PRESETS_BPS.map((bps) => (
+            <option key={bps} value={formatBitrate(bps)} />
+          ))}
+        </datalist>
+      </label>
+      <label className="project-bus-hw-field">
+        <input
+          type="checkbox"
+          checked={fd}
+          onChange={(e) => onSetFd(e.target.checked || null)}
+          aria-label={`bus ${bus.id} FD mode`}
+        />
+        <span>FD</span>
+      </label>
+      {fd && (
+        <label className="project-bus-hw-field">
+          <span>Data rate</span>
+          <input
+            type="text"
+            list={`fd-data-presets-${bus.id}`}
+            className="project-bus-hw-input"
+            value={
+              bus.fd_data_speed_bps != null
+                ? formatBitrate(bus.fd_data_speed_bps)
+                : ""
+            }
+            placeholder={formatBitrate(effectiveNominal)}
+            onChange={(e) => onSetFdDataSpeed(parseBitrateInput(e.target.value))}
+            aria-label={`bus ${bus.id} FD data rate`}
+          />
+          <datalist id={`fd-data-presets-${bus.id}`}>
+            {FD_DATA_BITRATE_PRESETS_BPS.map((bps) => (
+              <option key={bps} value={formatBitrate(bps)} />
+            ))}
+          </datalist>
+        </label>
+      )}
+    </div>
+  );
 }
 
 interface BusInterfaceComboProps {

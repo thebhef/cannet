@@ -8,7 +8,17 @@ import logoSvg from "./assets/logo.svg?raw";
 
 const win = getCurrentWindow();
 
-export function TitleBar() {
+/// Optional banner content rendered between the app name and the
+/// window controls. Used today by the pending-hardware-config notice
+/// — when the user edits bus.speed/fd while a session is open, the
+/// banner names the affected buses and tells the user to reconnect.
+interface TitleBarProps {
+  /// Bus *names* whose hardware config no longer matches what the
+  /// host pushed at connect. Empty when nothing is pending.
+  pendingHwConfigBusNames?: readonly string[];
+}
+
+export function TitleBar({ pendingHwConfigBusNames = [] }: TitleBarProps = {}) {
   const [maximized, setMaximized] = useState(false);
 
   // Track the maximized state so the middle button's icon stays in sync
@@ -35,6 +45,13 @@ export function TitleBar() {
         dangerouslySetInnerHTML={{ __html: logoSvg }}
       />
       <span className="titlebar-name" data-tauri-drag-region>cannet</span>
+      {pendingHwConfigBusNames.length > 0 && (
+        <span className="titlebar-banner" role="status">
+          Pending hardware config change for{" "}
+          <strong>{pendingHwConfigBusNames.join(", ")}</strong> — reconnect to
+          apply.
+        </span>
+      )}
       <div className="titlebar-spacer" data-tauri-drag-region />
       <button
         className="titlebar-button"

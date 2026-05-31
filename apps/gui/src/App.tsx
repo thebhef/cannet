@@ -176,6 +176,14 @@ export function App() {
   const [remoteSessions, setRemoteSessions] = useState<Map<string, RemoteStatus>>(
     () => new Map(),
   );
+  // Snapshot of the per-bus hardware configuration the host was told
+  // to apply on the most recent connect, keyed by bus id. Captured at
+  // connect time and cleared on disconnect; the banner compares the
+  // live `buses` state against this to flag pending hardware config
+  // changes the user must reconnect to apply.
+  const [busConfigInFlight, setBusConfigInFlight] = useState<
+    Map<string, { speed_bps: number | null; fd: boolean | null; fd_data_speed_bps: number | null }>
+  >(() => new Map());
   // Path of the open project file, or null for an unsaved workspace.
   const [projectPath, setProjectPath] = useState<string | null>(null);
   // True when the workspace has changed since it was last saved/opened.
@@ -751,7 +759,16 @@ export function App() {
     for (const address of servers) {
       const bindings = interfaceBindings
         .filter((b) => resolveServer(b.server, sidecarAddress) === address)
-        .map((b) => ({ interface: b.interface, busId: b.bus_id }));
+        .map((b) => {
+          const bus = buses.find((bb) => bb.id === b.bus_id);
+          return {
+            interface: b.interface,
+            busId: b.bus_id,
+            speedBps: bus?.speed_bps ?? null,
+            fd: bus?.fd ?? null,
+            fdDataSpeedBps: bus?.fd_data_speed_bps ?? null,
+          };
+        });
       try {
         const result = await invoke<RemoteSessionResult>(
           "connect_remote_server",
@@ -762,6 +779,19 @@ export function App() {
           next.set(address, { kind: "running", result });
           return next;
         });
+        // Snapshot the hardware config we just pushed so the pending-
+        // change banner can spot subsequent edits.
+        setBusConfigInFlight((prev) => {
+          const next = new Map(prev);
+          for (const b of bindings) {
+            next.set(b.busId, {
+              speed_bps: b.speedBps ?? null,
+              fd: b.fd ?? null,
+              fd_data_speed_bps: b.fdDataSpeedBps ?? null,
+            });
+          }
+          return next;
+        });
       } catch (err) {
         setRemoteSessions((prev) => {
           const next = new Map(prev);
@@ -770,7 +800,7 @@ export function App() {
         });
       }
     }
-  }, [interfaceBindings, sidecarAddress, invalidateCache, startAllElements]);
+  }, [buses, interfaceBindings, sidecarAddress, invalidateCache, startAllElements]);
 
   // Tear down every active session. The host drains its session map.
   const handleDisconnect = useCallback(async () => {
@@ -780,6 +810,9 @@ export function App() {
       setState({ kind: "error", message: String(err) });
     }
     setRemoteSessions(new Map());
+    // Disconnecting voids the pending-change comparison: there's
+    // nothing in flight to compare against.
+    setBusConfigInFlight(new Map());
   }, []);
 
   // Reset to the seed workspace: one trace element + its panel, plus
@@ -924,6 +957,7 @@ export function App() {
     setLocalVirtualBuses([]);
     void invoke("disconnect_remote_server", { address: null }).catch(() => {});
     setRemoteSessions(new Map());
+    setBusConfigInFlight(new Map());
     // Drop any host-side local virtual buses left from the
     // previous project (ADR 0021).
     void invoke("replay_local_virtual_buses", {
@@ -1099,6 +1133,25 @@ export function App() {
     setBuses((prev) => prev.map((b) => (b.id === id ? { ...b, color } : b)));
     setDirty(true);
   }, []);
+  const handleSetBusSpeed = useCallback((id: string, speed_bps: number | null) => {
+    setBuses((prev) =>
+      prev.map((b) => (b.id === id ? { ...b, speed_bps } : b)),
+    );
+    setDirty(true);
+  }, []);
+  const handleSetBusFd = useCallback((id: string, fd: boolean | null) => {
+    setBuses((prev) => prev.map((b) => (b.id === id ? { ...b, fd } : b)));
+    setDirty(true);
+  }, []);
+  const handleSetBusFdDataSpeed = useCallback(
+    (id: string, fd_data_speed_bps: number | null) => {
+      setBuses((prev) =>
+        prev.map((b) => (b.id === id ? { ...b, fd_data_speed_bps } : b)),
+      );
+      setDirty(true);
+    },
+    [],
+  );
   // Phase 6: interface-binding mutations. Each project bus has at
   // most one binding (key is `bus_id`); multiple bindings may target
   // the same source — Phase 13 Step 6 made the sidecar and the
@@ -1447,6 +1500,31 @@ export function App() {
     return Array.from(set);
   }, [interfaceBindings, sidecarAddress, connectedAddresses]);
 
+  // Buses whose live hardware config (snapshot taken at connect) no
+  // longer matches the edited project. Only buses with an active
+  // session contribute — there's nothing to be "pending against" for
+  // a bus that isn't connected. Reconnect applies the change.
+  const busesWithPendingHwConfig = useMemo(() => {
+    const dirty: string[] = [];
+    const connected = new Set(connectedBusIds);
+    for (const bus of buses) {
+      if (!connected.has(bus.id)) continue;
+      const snapshot = busConfigInFlight.get(bus.id);
+      if (!snapshot) continue;
+      const speed = bus.speed_bps ?? null;
+      const fd = bus.fd ?? null;
+      const dataSpeed = bus.fd_data_speed_bps ?? null;
+      if (
+        snapshot.speed_bps !== speed ||
+        snapshot.fd !== fd ||
+        snapshot.fd_data_speed_bps !== dataSpeed
+      ) {
+        dirty.push(bus.id);
+      }
+    }
+    return dirty;
+  }, [buses, busConfigInFlight, connectedBusIds]);
+
   const blfPath =
     state.kind === "loading" || state.kind === "running" || state.kind === "done"
       ? state.result.blf_path
@@ -1476,6 +1554,10 @@ export function App() {
       onRemoveBus: handleRemoveBus,
       onRenameBus: handleRenameBus,
       onSetBusColor: handleSetBusColor,
+      onSetBusSpeed: handleSetBusSpeed,
+      onSetBusFd: handleSetBusFd,
+      onSetBusFdDataSpeed: handleSetBusFdDataSpeed,
+      busesWithPendingHwConfig,
       onAddBinding: handleAddBinding,
       onRemoveBinding: handleRemoveBinding,
       onConnect: handleConnect,
@@ -1508,6 +1590,10 @@ export function App() {
       handleRemoveBus,
       handleRenameBus,
       handleSetBusColor,
+      handleSetBusSpeed,
+      handleSetBusFd,
+      handleSetBusFdDataSpeed,
+      busesWithPendingHwConfig,
       handleAddBinding,
       handleRemoveBinding,
       handleConnect,
@@ -1519,9 +1605,17 @@ export function App() {
     ],
   );
 
+  const pendingHwConfigBusNames = useMemo(
+    () =>
+      busesWithPendingHwConfig
+        .map((id) => buses.find((b) => b.id === id)?.name)
+        .filter((name): name is string => name != null),
+    [busesWithPendingHwConfig, buses],
+  );
+
   return (
     <main className="app">
-      <TitleBar />
+      <TitleBar pendingHwConfigBusNames={pendingHwConfigBusNames} />
       <header>
         <div className="toolbar">
           <button onClick={handleOpenProject}>Open project…</button>

@@ -58,7 +58,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use cannet_blf::{BlfCanFrameSource, BlfCaptureWriter};
-use cannet_client::{SessionHandle, SessionTransmitter, Subscription};
+use cannet_client::{PreSubscribeConfig, SessionHandle, SessionTransmitter, Subscription};
 use cannet_core::{CanFrame as CoreCanFrame, CanFrameSource, CanId};
 use cannet_dbc::{Database, DecodedSignal};
 use dbc_watcher::DbcWatcher;
@@ -434,11 +434,39 @@ pub struct ChannelBusMapping {
 /// One entry of the remote-server interface → bus map the GUI sends
 /// to `connect_remote_server` (Phase 6). `interface` is the wire
 /// `Interface.id`; `bus_id` is the project's logical bus.
+///
+/// `speed_bps` / `fd` / `fd_data_speed_bps` are the bus's hardware
+/// configuration as held in [`crate::project::Bus`]. When any of
+/// `speed_bps` / `fd` is set, the host pushes a `ConfigureBus`
+/// envelope to the sidecar immediately after subscribe so the
+/// underlying controller is reopened at the requested rate / mode.
+/// Omitting both leaves the sidecar on its driver default
+/// (typically classic, 500 kbps).
 #[derive(serde::Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct InterfaceBusBinding {
     pub interface: String,
     pub bus_id: String,
+    #[serde(default)]
+    pub speed_bps: Option<u32>,
+    #[serde(default)]
+    pub fd: Option<bool>,
+    #[serde(default)]
+    pub fd_data_speed_bps: Option<u32>,
+}
+
+/// Build a [`PreSubscribeConfig`] from a binding's bus hints, or
+/// `None` if neither speed nor FD mode is pinned (the project hasn't
+/// configured this bus, so the sidecar uses its driver default).
+fn presubscribe_config_from(b: &InterfaceBusBinding) -> Option<PreSubscribeConfig> {
+    if b.speed_bps.is_none() && b.fd.is_none() {
+        return None;
+    }
+    Some(PreSubscribeConfig {
+        speed_bps: u64::from(b.speed_bps.unwrap_or(0)),
+        fd_enabled: b.fd.unwrap_or(false),
+        fd_data_speed_bps: u64::from(b.fd_data_speed_bps.unwrap_or(0)),
+    })
 }
 
 #[tauri::command]
@@ -1727,19 +1755,25 @@ async fn connect_remote_server(
 
     // Subscribe only to interfaces named in the project's bindings for
     // this server. Channels are 0..N over the binding list — distinct
-    // per session, not globally unique.
+    // per session, not globally unique. When the binding carries an
+    // explicit bus speed / FD mode, attach it so the worker emits a
+    // `ConfigureBus` ahead of the corresponding `Subscribe` and the
+    // controller opens at the right rate from the start.
     let subscriptions: Vec<Subscription> = binding_lookup
         .iter()
         .enumerate()
         .filter_map(|(i, b)| {
-            if interfaces.iter().any(|iface| iface.id == b.interface) {
-                Some(Subscription::new(
-                    b.interface.clone(),
-                    u8::try_from(i).unwrap_or(u8::MAX),
-                ))
-            } else {
-                None
+            if !interfaces.iter().any(|iface| iface.id == b.interface) {
+                return None;
             }
+            let sub = Subscription::new(
+                b.interface.clone(),
+                u8::try_from(i).unwrap_or(u8::MAX),
+            );
+            Some(match presubscribe_config_from(b) {
+                Some(cfg) => sub.with_config(cfg),
+                None => sub,
+            })
         })
         .collect();
 

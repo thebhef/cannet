@@ -32,7 +32,7 @@ export function formatData(frame: TraceFrameRecord): string {
 
 export function formatTimestamp(seconds: number, base: number | null): string {
   const t = base === null ? seconds : seconds - base;
-  return t.toFixed(6);
+  return t.toFixed(3);
 }
 
 /// A per-id message rate (frames/second) for the by-id "msg/s" column.

@@ -418,3 +418,171 @@ def test_bus_kwargs_for_parses_paren_metadata() -> None:
         "pcan",
         {"channel": 0xFF, "bitrate": 500_000},
     )
+
+
+def test_bus_kwargs_for_fd_routes_through_bit_timing() -> None:
+    """FD configuration is normalised to a ``BitTimingFd`` and passed
+    via ``timing=`` for every backend — PEAK in particular has no
+    ``data_bitrate`` kwarg, so the only uniform path is through a
+    pre-computed timing instance.
+    """
+    from can import BitTimingFd  # type: ignore[import-untyped]
+
+    from cannet_python_can.driver import OpenConfig
+
+    m = _fresh_driver_module()
+    cfg = OpenConfig(
+        bitrate_bps=500_000, fd=True, data_bitrate_bps=2_000_000,
+    )
+
+    for channel_id, expected_backend, expected_extra in (
+        ("vector:VN1630A(SN:12345, ch:0)", "vector", {"serial": 12345, "channel": 0}),
+        ("kvaser:3(SN:67890, ch:1)", "kvaser", {"channel": 3}),
+        ("pcan:PCAN_USBBUS1(h:0x51, ch:0)", "pcan", {"channel": "PCAN_USBBUS1"}),
+    ):
+        backend, kwargs = m._bus_kwargs_for(channel_id, cfg)
+        assert backend == expected_backend
+        # `timing=` carries the FD config — no separate fd / data_bitrate /
+        # bitrate kwargs (they'd be ignored anyway when timing is present
+        # but their absence is what makes PEAK happy).
+        assert "fd" not in kwargs
+        assert "data_bitrate" not in kwargs
+        assert "bitrate" not in kwargs
+        timing = kwargs["timing"]
+        assert isinstance(timing, BitTimingFd)
+        assert timing.nom_bitrate == 500_000
+        assert timing.data_bitrate == 2_000_000
+        # Vendor-specific extras still flow through.
+        for k, v in expected_extra.items():
+            assert kwargs[k] == v
+
+
+def test_bus_kwargs_for_fd_defaults_data_bitrate_to_nominal() -> None:
+    """When FD is enabled but only the nominal bitrate is configured,
+    the data phase falls back to the same rate (matching python-can's
+    own classic ``data_bitrate`` fallback)."""
+    from cannet_python_can.driver import OpenConfig
+
+    m = _fresh_driver_module()
+    cfg = OpenConfig(bitrate_bps=500_000, fd=True)
+    _, kwargs = m._bus_kwargs_for("pcan:PCAN_USBBUS1(h:0x51, ch:0)", cfg)
+    timing = kwargs["timing"]
+    assert timing.nom_bitrate == 500_000
+    assert timing.data_bitrate == 500_000
+
+
+def test_bus_kwargs_for_fd_defaults_nominal_when_unset() -> None:
+    """An FD-enabled bus with no explicit bitrate uses the python-can
+    classic default of 500 kbps so the open path still has *some* rate
+    to compute timing against."""
+    from cannet_python_can.driver import OpenConfig
+
+    m = _fresh_driver_module()
+    cfg = OpenConfig(fd=True)
+    _, kwargs = m._bus_kwargs_for("pcan:PCAN_USBBUS1(h:0x51, ch:0)", cfg)
+    timing = kwargs["timing"]
+    assert timing.nom_bitrate == 500_000
+    assert timing.data_bitrate == 500_000
+
+
+# ---- PCAN status-frame suppression -----------------------------------------
+
+
+def _stub_can_interface_bus(bus_factory):
+    """Monkey-patch ``can.interface.Bus`` to ``bus_factory`` and return
+    the original so the caller can restore it. Used by the open-path
+    tests to substitute a stub bus without involving any real hardware
+    SDK."""
+    import can.interface  # noqa: WPS433 - ensure submodule attribute exists
+
+    original = can.interface.Bus
+    can.interface.Bus = bus_factory
+    return original
+
+
+def _restore_can_interface_bus(original) -> None:
+    import can.interface  # noqa: WPS433
+
+    can.interface.Bus = original
+
+
+def test_open_pcan_disables_status_frames() -> None:
+    """python-can's PCAN backend forwards PCAN-Basic STATUS messages
+    through ``_recv_internal`` unfiltered (the STATUS bit is read off
+    the ``MSGTYPE`` but never branched on), so what should be a
+    side-band notification arrives as a classic CAN frame with
+    ``can_id=1, dlc=4`` and the status code as the 4-byte payload —
+    indistinguishable from real wire traffic. The driver disables the
+    status-frame queue immediately after open via
+    ``PCAN_ALLOW_STATUS_FRAMES`` → ``PCAN_PARAMETER_OFF``. Bus state
+    transitions (passive / bus-off) are still observable through the
+    sidecar's 500 ms ``GetStatus`` poll, so no information is lost."""
+    _install_fake_pcan([_PcanInfo(channel_handle=0x51)])
+    fake_param = object()
+    fake_off = object()
+    mod_basic = sys.modules["can.interfaces.pcan.basic"]
+    mod_basic.PCAN_ALLOW_STATUS_FRAMES = fake_param
+    mod_basic.PCAN_PARAMETER_OFF = fake_off
+
+    setvalue_calls: list[tuple[object, object, object]] = []
+
+    class _PcanApi:
+        def SetValue(self, handle, param, value):  # noqa: N802 - matches PCANBasic
+            setvalue_calls.append((handle, param, value))
+            return 0
+
+    class _FakePcanBus:
+        def __init__(self, **kwargs):
+            self.m_objPCANBasic = _PcanApi()
+            self.m_PcanHandle = "handle-stub"
+
+    def factory(interface, **kwargs):
+        assert interface == "pcan"
+        return _FakePcanBus(**kwargs)
+
+    original = _stub_can_interface_bus(factory)
+    try:
+        m = _fresh_driver_module()
+        from cannet_python_can.driver import OpenConfig
+
+        m.PythonCanDriver().open(
+            "pcan:PCAN_USBBUS1(h:0x51, ch:0)",
+            OpenConfig(bitrate_bps=500_000),
+        )
+    finally:
+        _restore_can_interface_bus(original)
+        _remove_fake_modules("can.interfaces.pcan", "can.interfaces.pcan.basic")
+
+    assert setvalue_calls == [("handle-stub", fake_param, fake_off)]
+
+
+def test_open_non_pcan_does_not_touch_pcan_basic() -> None:
+    """The status-frame suppression is PEAK-only. Vector and Kvaser
+    buses have no ``m_objPCANBasic`` attribute — if the driver ever
+    tried to apply the PCAN setting unconditionally, open() would
+    crash with ``AttributeError`` on those backends. This test pins
+    the vendor gate by opening a Vector bus stub that deliberately
+    lacks every PCAN-specific attribute and asserting open() returns
+    cleanly."""
+    _install_fake_vector([_VectorCfg("Virtual", 0, serial_number=None)])
+
+    class _FakeVectorBus:
+        def __init__(self, **kwargs):
+            pass  # intentionally no m_objPCANBasic / m_PcanHandle
+
+    def factory(interface, **kwargs):
+        assert interface == "vector"
+        return _FakeVectorBus(**kwargs)
+
+    original = _stub_can_interface_bus(factory)
+    try:
+        m = _fresh_driver_module()
+        from cannet_python_can.driver import OpenConfig
+
+        # Would raise AttributeError if the PCAN suppression ran here.
+        m.PythonCanDriver().open(
+            "vector:Virtual(ch:0)", OpenConfig(bitrate_bps=500_000),
+        )
+    finally:
+        _restore_can_interface_bus(original)
+        _uninstall_fake_vector()
