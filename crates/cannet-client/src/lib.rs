@@ -332,7 +332,10 @@ impl CanFrameSource for RemoteCanFrameSource {
 /// Receive half of a remote session. Implements [`CanFrameSource`]
 /// blockingly: `Ok(Some(frame))` per delivered frame, `Ok(None)` once
 /// the worker exits (cleanly or via [`SessionHandle`] drop), `Err(_)`
-/// for an in-band server error or transport failure.
+/// for a fatal in-band server error or transport failure. Per-frame
+/// server errors (`TX_REJECTED`, `NOT_SUBSCRIBED`, `NO_ACKNOWLEDGER`)
+/// are logged via `tracing` and do not interrupt the stream — see
+/// [`is_per_frame_error_code`].
 pub struct FrameReceiver {
     rx: mpsc::Receiver<Result<CanFrame, ConnectionError>>,
     subscriptions: Vec<ResolvedSubscription>,
@@ -371,8 +374,10 @@ impl CanFrameSource for FrameReceiver {
 /// (the user dropped the [`SessionHandle`], the server hung up, or a
 /// transport failure tore the session down). A pending in-band server
 /// error like `Error::TX_REJECTED` does *not* close the session — the
-/// client sees the rejection through [`FrameReceiver::next_frame`]'s
-/// `ConnectionError::Server` variant.
+/// client logs the rejection at `warn` through the `tracing` crate
+/// (target `cannet_client`) and keeps the rx loop running. Fatal codes
+/// (`UNKNOWN_INTERFACE`, `BUSY`, unrecognised) still surface through
+/// [`FrameReceiver::next_frame`]'s `ConnectionError::Server` variant.
 #[derive(Clone)]
 pub struct SessionTransmitter {
     req_tx: tokio_mpsc::Sender<Envelope>,
@@ -436,6 +441,24 @@ impl Drop for SessionHandle {
             let _ = tx.send(());
         }
     }
+}
+
+/// Classify a server-side [`cannet_wire::proto::Error::Code`] as
+/// per-frame (non-fatal) or session-fatal.
+///
+/// Per-frame codes — `NOT_SUBSCRIBED`, `TX_REJECTED`, `NO_ACKNOWLEDGER`
+/// — refer to a single transmit; the session keeps running and the
+/// receiver keeps yielding frames. Fatal codes — `UNKNOWN_INTERFACE`
+/// (subscribe target nonexistent) and `BUSY` (single-client server) —
+/// end the rx loop and surface through [`FrameReceiver::next_frame`].
+/// `UNSPECIFIED` and unrecognised codes are treated as fatal so a
+/// new code variant can't accidentally be silently swallowed.
+fn is_per_frame_error_code(code: i32) -> bool {
+    use cannet_wire::proto::error::Code;
+    matches!(
+        Code::try_from(code),
+        Ok(Code::NotSubscribed | Code::TxRejected | Code::NoAcknowledger),
+    )
 }
 
 fn run_worker(
@@ -634,6 +657,22 @@ async fn run_session(
                             }
                             return;
                         }
+                        // Per-frame errors (a transmit was rejected, a
+                        // FrameBatch hit a non-subscribed interface,
+                        // a virtual-bus transmit reached no listener)
+                        // should not tear the session down. Surface
+                        // them through `tracing` so they're visible to
+                        // an attached subscriber, and continue the rx
+                        // loop. Genuinely fatal codes still bubble out.
+                        if is_per_frame_error_code(err.code) {
+                            tracing::warn!(
+                                target: "cannet_client",
+                                code = err.code,
+                                "server reported per-frame error: {}",
+                                err.message,
+                            );
+                            continue;
+                        }
                         let _ = frame_tx.send(Err(ConnectionError::Server {
                             code: err.code,
                             message: err.message,
@@ -731,5 +770,32 @@ impl std::error::Error for ConnectionError {
             Self::Decode(e) => Some(e),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cannet_wire::proto::error::Code;
+
+    #[test]
+    fn per_frame_codes_do_not_end_the_session() {
+        assert!(is_per_frame_error_code(Code::TxRejected as i32));
+        assert!(is_per_frame_error_code(Code::NotSubscribed as i32));
+        assert!(is_per_frame_error_code(Code::NoAcknowledger as i32));
+    }
+
+    #[test]
+    fn fatal_codes_end_the_session() {
+        assert!(!is_per_frame_error_code(Code::Unspecified as i32));
+        assert!(!is_per_frame_error_code(Code::UnknownInterface as i32));
+        assert!(!is_per_frame_error_code(Code::Busy as i32));
+    }
+
+    #[test]
+    fn unrecognised_codes_are_treated_as_fatal() {
+        // A future code variant the client doesn't know about must
+        // bubble out rather than be silently swallowed.
+        assert!(!is_per_frame_error_code(999));
     }
 }

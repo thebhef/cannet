@@ -93,17 +93,23 @@ class PythonCanDriver:
         except Exception as e:  # noqa: BLE001
             raise OSError(f"open {channel_id}: {e}") from e
         return PythonCanChannel(
-            channel_id=channel_id, bus=bus, listen_only=config.listen_only
+            channel_id=channel_id,
+            bus=bus,
+            listen_only=config.listen_only,
+            fd=config.fd,
         )
 
 
 class PythonCanChannel:
     """One opened ``python-can`` ``Bus`` plus a small recv/send wrapper."""
 
-    def __init__(self, *, channel_id: str, bus: object, listen_only: bool) -> None:
+    def __init__(
+        self, *, channel_id: str, bus: object, listen_only: bool, fd: bool
+    ) -> None:
         self.channel_id = channel_id
         self._bus = bus
         self._listen_only = listen_only
+        self._fd = fd
         self._closed = False
 
     def recv(self, timeout_s: float) -> Optional[Frame]:
@@ -119,11 +125,51 @@ class PythonCanChannel:
             raise TxRejected("channel closed")
         if self._listen_only:
             raise TxRejected("listen-only configuration")
+        self._reject_if_incompatible(frame)
         msg = _frame_to_msg(frame)
         try:
             self._bus.send(msg)  # type: ignore[attr-defined]
         except Exception as e:  # noqa: BLE001
             raise TxRejected(str(e)) from e
+
+    def _reject_if_incompatible(self, frame: Frame) -> None:
+        """Refuse frame shapes that would make python-can raise inside a
+        ctypes slice assignment.
+
+        Backends like PCAN copy the payload into a fixed-size ``c_ubyte``
+        array (8 bytes for classic, 64 for FD) with a slice assignment
+        whose left and right halves must agree in length. When they
+        don't — e.g. an FD frame with >8 bytes on a classic-mode bus, or
+        a frame whose ``dlc`` disagrees with ``len(data)`` — the bus
+        raises a bare ``ValueError("Can only assign sequence of same
+        size")`` that's hard to interpret upstream. Reject here so the
+        caller sees a precise ``TxRejected`` with the actual mismatch.
+        """
+        if frame.is_error:
+            return
+        if frame.fd and not self._fd:
+            raise TxRejected(
+                f"FD frame on classic-mode bus {self.channel_id}"
+            )
+        if frame.is_remote and self._fd:
+            raise TxRejected(
+                f"remote (RTR) frame not supported on FD-mode bus "
+                f"{self.channel_id}"
+            )
+        if frame.is_remote:
+            return
+        max_bytes = 64 if self._fd else 8
+        if len(frame.data) > max_bytes:
+            raise TxRejected(
+                f"payload {len(frame.data)} bytes exceeds {max_bytes}-byte "
+                f"limit ({'FD' if self._fd else 'classic'} bus "
+                f"{self.channel_id})"
+            )
+        if frame.dlc and frame.dlc != len(frame.data):
+            raise TxRejected(
+                f"dlc={frame.dlc} differs from data length "
+                f"{len(frame.data)} (bus {self.channel_id})"
+            )
 
     def state(self) -> ControllerState:
         """Read the controller's fault-confinement state.
