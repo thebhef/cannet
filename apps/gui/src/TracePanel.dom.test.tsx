@@ -40,7 +40,7 @@ class FakeResizeObserver {
 const traceData: TraceData = {
   count: 100,
   version: 1,
-  baseTimestampSeconds: 0,
+  sessionStartSeconds: 0,
   getFrame: () => null,
   ensureVisible: () => {},
 };

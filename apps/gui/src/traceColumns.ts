@@ -23,8 +23,13 @@ export type ColumnKey =
 
 export interface ColumnDef {
   key: ColumnKey;
-  /// Header label.
+  /// Header label used in the chronological view.
   label: string;
+  /// Header label used in the by-id view, if it differs from `label`.
+  /// The `idx` column carries different meanings between views (a
+  /// chronological row's position vs. an id's total frame count), so
+  /// the header changes to match.
+  byIdLabel?: string;
   /// CSS class on the header / cell element (carries colour, alignment).
   className: string;
   /// Default width in px.
@@ -41,7 +46,7 @@ export interface ColumnDef {
 
 /// The columns, in their fixed display order.
 export const COLUMN_DEFS: readonly ColumnDef[] = [
-  { key: "idx", label: "#", className: "col-idx", defaultWidth: 64 },
+  { key: "idx", label: "index", byIdLabel: "count", className: "col-idx", defaultWidth: 64 },
   { key: "time", label: "time (s)", className: "col-time", defaultWidth: 110 },
   { key: "bus", label: "bus", className: "col-bus", defaultWidth: 100 },
   { key: "dir", label: "dir", className: "col-dir", defaultWidth: 40 },

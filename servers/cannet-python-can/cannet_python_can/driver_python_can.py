@@ -566,9 +566,19 @@ def _build_fd_timing(config: OpenConfig):
 
 
 def _msg_to_frame(msg) -> Frame:
-    """python-can ``Message`` → driver ``Frame``."""
+    """python-can ``Message`` → driver ``Frame``.
+
+    The fallback for missing timestamps uses :func:`time.time_ns`
+    (Unix-epoch ns), not :func:`time.monotonic_ns` — python-can's
+    hardware-stamped path produces Unix-epoch ns too (boot epoch +
+    PEAK's µs counter). Mixing those two clocks within one session
+    produced timestamps three orders of magnitude apart, which broke
+    the trace view's "first frame is the zero point" assumption and
+    showed up as wildly-negative deltas the moment a fallback-stamped
+    frame slipped in after a hardware-stamped one.
+    """
     ts_s = float(getattr(msg, "timestamp", 0.0) or 0.0)
-    timestamp_ns = int(ts_s * 1_000_000_000) if ts_s else int(time.monotonic_ns())
+    timestamp_ns = int(ts_s * 1_000_000_000) if ts_s else int(time.time_ns())
     data = bytes(getattr(msg, "data", b"") or b"")
     return Frame(
         timestamp_ns=timestamp_ns,

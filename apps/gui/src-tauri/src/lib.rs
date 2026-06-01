@@ -393,23 +393,31 @@ fn should_emit_trace_grew(last: Option<(u64, f64)>, current: (u64, f64)) -> bool
 fn spawn_trace_grew_emitter(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(TRACE_GREW_TICK);
-        let mut last_emitted: Option<(u64, f64)> = None;
+        let mut last_emitted: Option<(u64, f64, u64)> = None;
         loop {
             interval.tick().await;
             let state: State<'_, AppState> = app.state();
             let count = u64::try_from(state.trace_store.len()).unwrap_or(u64::MAX);
             let frames_per_second = state.trace_store.frames_per_second();
-            if !should_emit_trace_grew(last_emitted, (count, frames_per_second)) {
+            let session_start_ns = state.trace_store.session_start_ns();
+            if !should_emit_trace_grew(
+                last_emitted.map(|(c, fps, _)| (c, fps)),
+                (count, frames_per_second),
+            ) && last_emitted.map(|(_, _, s)| s) == Some(session_start_ns)
+            {
                 continue;
             }
-            last_emitted = Some((count, frames_per_second));
+            last_emitted = Some((count, frames_per_second, session_start_ns));
             let tail =
                 collect_trace_records(state.inner(), count.saturating_sub(TRACE_GREW_TAIL), count);
+            #[allow(clippy::cast_precision_loss)]
+            let session_start_seconds = session_start_ns as f64 / 1_000_000_000.0;
             let _ = app.emit(
                 "trace-grew",
                 TraceGrew {
                     count,
                     frames_per_second,
+                    session_start_seconds,
                     tail,
                 },
             );
@@ -533,6 +541,7 @@ fn open_log(
                 source,
                 Arc::new(AtomicBool::new(false)),
                 channel_to_bus,
+                true, // replay_origin: BLF anchors the session at the first frame's ts
             );
         })
         .map_err(|e| format!("failed to spawn pump thread: {e}"))?;
@@ -1126,7 +1135,7 @@ async fn fetch_latest_by_id(
                     return None;
                 }
             }
-            Some(ByIdSnapshot { frame: record, rate: row.rate })
+            Some(ByIdSnapshot { frame: record, rate: row.rate, count: row.count })
         })
         .collect()
 }
@@ -1194,15 +1203,25 @@ async fn fetch_filtered_trace(
     FilteredTracePage { count, start, rows }
 }
 
-/// Drop every stored frame. The frontend's Clear button is the typical
-/// caller. The next `trace-grew` tick will fire with the new count
-/// (zero), prompting the trace view to drop its row cache. Phase 9:
-/// any session-scoped notes go with the buffer (they reference
-/// timestamps on the now-discarded timeline).
+/// Drop every stored frame and start a fresh session timeline rooted
+/// at wall-clock now. The frontend's Clear button is the typical
+/// caller. Raising the session-start threshold to "now" is what makes
+/// any frames captured before the clear but still in flight through
+/// the recv pipeline (sidecar queue, gRPC stream, packer thread) get
+/// dropped on append rather than land in the new session's buffer with
+/// stale timestamps and show as negative offsets.
+///
+/// The next `trace-grew` tick will fire with the new count (zero),
+/// prompting the trace view to drop its row cache. Phase 9: any
+/// session-scoped notes go with the buffer (they reference timestamps
+/// on the now-discarded timeline).
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 fn clear_trace_store(app: AppHandle, state: State<'_, AppState>) {
-    state.trace_store.clear();
+    let now_ns = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
+    state.trace_store.start_session(now_ns);
     // The decoded-sample caches hold frame indices into the store —
     // wipe them too, otherwise the next `sample_signals` would slice
     // against a buffer that no longer exists.
@@ -1869,7 +1888,7 @@ async fn connect_remote_server(
     std::thread::Builder::new()
         .name(format!("cannet-remote-pump:{address}"))
         .spawn(move || {
-            run_pump(&app_for_thread, receiver, stop, channel_to_bus);
+            run_pump(&app_for_thread, receiver, stop, channel_to_bus, false);
             // Pump exited (server hung up or user disconnected). Drop
             // our entry so the address is free for a fresh connect.
             let state: State<'_, AppState> = app_for_thread.state();
@@ -2007,7 +2026,7 @@ fn connect_local_vbus(
             .name(format!("cannet-vbus-pump:{address_for_cleanup}#{channel}"))
             .spawn(move || {
                 let adapter = LocalSourceFrameSource { source, channel };
-                run_pump(&app_for_thread, adapter, stop, channel_to_bus);
+                run_pump(&app_for_thread, adapter, stop, channel_to_bus, false);
                 // When the *last* participant's pump exits, drop the
                 // session entry so the URL is free for a fresh
                 // connect. Use a guarded check — pumps may exit out
@@ -2148,12 +2167,18 @@ fn run_pump<S>(
     mut source: S,
     stop: Arc<AtomicBool>,
     channel_to_bus: Vec<(u8, Option<String>)>,
+    replay_origin: bool,
 ) where
     S: CanFrameSource,
     S::Error: fmt::Display,
 {
     let state: State<'_, AppState> = app.state();
     let mut total: u64 = 0;
+    // For replay sources (BLF) the session timeline is the file's own
+    // — the first frame's timestamp becomes the session-start. Live
+    // sources keep the wall-clock session-start the GUI set via
+    // `clear_trace_store` before connecting.
+    let mut needs_replay_session_start = replay_origin;
 
     loop {
         if stop.load(Ordering::Relaxed) {
@@ -2165,6 +2190,10 @@ fn run_pump<S>(
                 match route_channel(raw.channel, &channel_to_bus) {
                     Ok(bid) => raw.bus_id = bid,
                     Err(()) => continue, // skip this channel
+                }
+                if needs_replay_session_start {
+                    state.trace_store.start_session(raw.timestamp_ns);
+                    needs_replay_session_start = false;
                 }
                 state.trace_store.append(raw);
                 total = total.saturating_add(1);

@@ -75,7 +75,7 @@ const RATE_SAMPLE_INTERVAL: Duration = Duration::from_millis(20);
 
 /// Smoothing factor for the per-id message-rate estimate (an EMA of the
 /// inter-arrival time). Smaller = steadier, slower to react.
-const PER_ID_RATE_ALPHA: f64 = 0.2;
+const PER_ID_RATE_ALPHA: f64 = 0.6;
 
 /// Identifies a "kind of frame" for the latest-by-id view: the
 /// logical bus (`None` = unassigned, a distinct bucket from any named
@@ -100,6 +100,7 @@ struct RateEstimate {
     last_ts_ns: u64,
     last_wall: Instant,
     ema_dt_secs: f64,
+    count: u64,
 }
 
 impl RateEstimate {
@@ -108,6 +109,7 @@ impl RateEstimate {
             last_ts_ns: ts_ns,
             last_wall: now,
             ema_dt_secs: 0.0,
+            count: 0,
         }
     }
 
@@ -115,6 +117,7 @@ impl RateEstimate {
     /// `now`.
     #[allow(clippy::cast_precision_loss)] // ns diffs fit comfortably in f64's mantissa.
     fn observe(&mut self, ts_ns: u64, now: Instant) {
+        self.count = self.count.saturating_add(1);
         let dt = ts_ns.saturating_sub(self.last_ts_ns) as f64 / 1e9;
         if self.ema_dt_secs <= 0.0 {
             if dt > 0.0 {
@@ -142,12 +145,14 @@ impl RateEstimate {
 }
 
 /// A row of the latest-by-id snapshot: the frame's index in the buffer,
-/// the frame, and the id's current message rate.
+/// the frame, the id's current message rate, and the total number of
+/// frames seen for that id over the session.
 #[derive(Debug, Clone)]
 pub struct LatestById {
     pub index: usize,
     pub frame: RawTraceFrame,
     pub rate: f64,
+    pub count: u64,
 }
 
 /// One row in the trace store. Owned, undecoded.
@@ -203,6 +208,18 @@ struct RateSample {
 }
 
 struct Inner {
+    /// Session-start timestamp in nanoseconds (the same Unix-epoch ns
+    /// axis frames use). The trace UI displays everything relative to
+    /// this — and [`Self::append`] silently drops any frame whose
+    /// timestamp predates it. That drop is what isolates a clear-and-
+    /// restart from frames that were in flight through the recv
+    /// pipeline (sidecar queue, gRPC stream, packer thread) at the
+    /// moment of clear: those frames now arrive with stale timestamps
+    /// and would otherwise display as negative offsets from a base
+    /// captured off the next real frame. Zero means "no session start
+    /// configured yet" — every frame is accepted (used at construction
+    /// and during tests that don't care).
+    session_start_ns: u64,
     frames: Vec<RawTraceFrame>,
     rate_samples: VecDeque<RateSample>,
     /// Index into `frames` of the most recent frame seen for each
@@ -224,6 +241,7 @@ impl TraceStore {
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(Inner {
+                session_start_ns: 0,
                 frames: Vec::new(),
                 rate_samples: VecDeque::new(),
                 latest: HashMap::new(),
@@ -236,6 +254,14 @@ impl TraceStore {
     /// Append a frame to the tail of the trace. Updates the
     /// latest-by-key index and the per-id rate estimate, and records a
     /// rate sample if at least [`RATE_SAMPLE_INTERVAL`] has passed.
+    ///
+    /// Frames whose timestamp predates the current
+    /// [`Self::start_session`] are silently dropped. That handles the
+    /// pipeline-in-flight case after a Clear / new session: the recv
+    /// path (sidecar queue, gRPC, packer thread) can still deliver
+    /// frames captured before the clear; they'd otherwise land in the
+    /// freshly-empty buffer with stale timestamps and show as negative
+    /// offsets in the trace view.
     pub fn append(&self, frame: RawTraceFrame) {
         let now = Instant::now();
         let ts_ns = frame.timestamp_ns;
@@ -246,6 +272,9 @@ impl TraceStore {
             frame.extended,
         );
         let mut inner = self.inner.lock().expect("trace store mutex poisoned");
+        if ts_ns < inner.session_start_ns {
+            return;
+        }
         let id_key = (frame.id, frame.extended);
         inner.frames.push(frame);
         let count = inner.frames.len();
@@ -391,20 +420,41 @@ impl TraceStore {
         (count, window.into())
     }
 
-    /// Drop every stored frame and release the backing allocations.
+    /// Begin a new session: empty the buffer **and** raise the
+    /// session-start threshold to `session_start_ns`. Subsequent
+    /// [`Self::append`] calls drop any frame whose timestamp predates
+    /// `session_start_ns` — the pipeline-drain guard for in-flight
+    /// frames at the moment of clear / connect.
     ///
-    /// `Vec::clear` / `VecDeque::clear` only reset the length — the
-    /// (possibly enormous, after a long replay) buffers would stay
-    /// resident. Replacing them with fresh empties hands the memory
-    /// back to the allocator, so a small session after a large one
-    /// doesn't carry the large session's footprint.
-    pub fn clear(&self) {
+    /// Live capture passes wall-clock now; BLF replay passes the
+    /// first frame's timestamp so the trace is rooted at the file's
+    /// own time origin. Tests that just want an empty buffer with no
+    /// gating pass `0`.
+    ///
+    /// (Why fresh Vec/HashMap allocations instead of `clear()`: those
+    /// only reset length, leaving the — possibly enormous after a long
+    /// replay — backing buffers resident. Replacing the containers
+    /// returns the memory to the allocator so a small session after a
+    /// large one doesn't carry the previous footprint.)
+    pub fn start_session(&self, session_start_ns: u64) {
         let mut inner = self.inner.lock().expect("trace store mutex poisoned");
+        inner.session_start_ns = session_start_ns;
         inner.frames = Vec::new();
         inner.rate_samples = VecDeque::new();
         inner.latest = HashMap::new();
         inner.rates = HashMap::new();
         inner.by_id = HashMap::new();
+    }
+
+    /// Current session-start threshold (Unix-epoch ns). The trace UI
+    /// renders frames relative to this; zero means "no session start
+    /// has been configured yet", and the store accepts every frame.
+    #[must_use]
+    pub fn session_start_ns(&self) -> u64 {
+        self.inner
+            .lock()
+            .expect("trace store mutex poisoned")
+            .session_start_ns
     }
 
     /// For each distinct [`FrameKey`] whose most recent occurrence is at
@@ -428,10 +478,14 @@ impl TraceStore {
         keyed.sort_unstable();
         keyed
             .into_iter()
-            .map(|(key, idx)| LatestById {
-                index: idx,
-                frame: inner.frames[idx].clone(),
-                rate: inner.rates.get(&key).map_or(0.0, |r| r.rate(now)),
+            .map(|(key, idx)| {
+                let est = inner.rates.get(&key);
+                LatestById {
+                    index: idx,
+                    frame: inner.frames[idx].clone(),
+                    rate: est.map_or(0.0, |r| r.rate(now)),
+                    count: est.map_or(0, |r| r.count),
+                }
             })
             .collect()
     }
@@ -542,7 +596,7 @@ mod tests {
         assert!(store.matching_frames_indexed(7, false, 99, 200).is_empty());
         // Extended vs standard are distinct keys.
         assert!(store.matching_frames_indexed(7, true, 0, 6).is_empty());
-        store.clear();
+        store.start_session(0);
         assert!(store.matching_frames_indexed(7, false, 0, 6).is_empty());
     }
 
@@ -610,7 +664,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(4, 2), (3, 3)],
         );
-        store.clear();
+        store.start_session(0);
         assert!(store.latest_since(0).is_empty());
     }
 
@@ -634,6 +688,34 @@ mod tests {
         assert_eq!(
             by_bus,
             vec![(Some("c"), 1_000), (Some("p"), 2_000)],
+        );
+    }
+
+    #[test]
+    fn latest_since_reports_per_id_frame_count() {
+        // Each `FrameKey` (bus, channel, id, extended) accumulates a
+        // total frame count over the session — what the per-id view's
+        // `#` column displays. Distinct buses count independently.
+        let store = TraceStore::new();
+        for _ in 0..3 {
+            store.append(dummy_on_bus(0, 0x100, "a"));
+        }
+        store.append(dummy_on_bus(0, 0x200, "a"));
+        store.append(dummy_on_bus(0, 0x100, "b"));
+        store.append(dummy_on_bus(0, 0x100, "b"));
+        let rows = store.latest_since(0);
+        let mut counts: Vec<(Option<&str>, u32, u64)> = rows
+            .iter()
+            .map(|r| (r.frame.bus_id.as_deref(), r.frame.id, r.count))
+            .collect();
+        counts.sort();
+        assert_eq!(
+            counts,
+            vec![
+                (Some("a"), 0x100, 3),
+                (Some("a"), 0x200, 1),
+                (Some("b"), 0x100, 2),
+            ],
         );
     }
 
@@ -696,7 +778,7 @@ mod tests {
         let store = TraceStore::new();
         store.append(dummy(0, 1));
         store.append(dummy(0, 2));
-        store.clear();
+        store.start_session(0);
         assert_eq!(store.len(), 0);
     }
 
@@ -715,5 +797,43 @@ mod tests {
     fn rate_is_zero_with_no_samples() {
         let store = TraceStore::new();
         assert_eq!(store.frames_per_second(), 0.0);
+    }
+
+    #[test]
+    fn start_session_empties_buffer_and_raises_threshold() {
+        let store = TraceStore::new();
+        store.append(dummy(100, 1));
+        store.append(dummy(200, 2));
+        assert_eq!(store.len(), 2);
+        store.start_session(1_000);
+        assert_eq!(store.len(), 0);
+        assert_eq!(store.session_start_ns(), 1_000);
+    }
+
+    #[test]
+    fn append_drops_frames_stamped_before_session_start() {
+        // Pipeline-in-flight regression: after a Clear, frames captured
+        // before the clear can still arrive via the recv pipeline
+        // (sidecar queue, gRPC stream). They must not land in the new
+        // session's buffer or they'd show as negative offsets relative
+        // to the session-start zero point.
+        let store = TraceStore::new();
+        store.start_session(1_000);
+        store.append(dummy(500, 1)); // stale — before threshold
+        store.append(dummy(999, 2)); // stale — also before
+        store.append(dummy(1_000, 3)); // accepted — at threshold
+        store.append(dummy(2_000, 4)); // accepted — after
+        let ids: Vec<u32> = store.slice(0, store.len()).iter().map(|f| f.id).collect();
+        assert_eq!(ids, vec![3, 4]);
+    }
+
+    #[test]
+    fn pre_session_default_accepts_everything() {
+        // `new()` leaves session_start_ns at 0 — every realistic
+        // timestamp passes (no caller has configured a threshold yet).
+        let store = TraceStore::new();
+        store.append(dummy(1, 1));
+        store.append(dummy(u64::MAX, 2));
+        assert_eq!(store.len(), 2);
     }
 }

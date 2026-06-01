@@ -47,6 +47,11 @@ export interface TraceFrameRecord {
 export interface TraceGrew {
   count: number;
   frames_per_second: number;
+  /// Session-start timestamp (Unix epoch seconds, fractional). The
+  /// trace view subtracts this from frame timestamps to render relative
+  /// time, so every frame in a session shares one stable zero. Zero
+  /// before any session has been configured.
+  session_start_seconds: number;
   tail: TraceFrameRecord[];
 }
 
@@ -267,11 +272,13 @@ export interface RemoteSessionResult {
 }
 
 /// One row of the per-message-ID view (mirrors `ipc.rs::ByIdSnapshot`):
-/// an arbitration id's latest frame plus its current message rate
-/// (frames/second).
+/// an arbitration id's latest frame, its current message rate
+/// (frames/second), and the total number of frames seen for the id over
+/// the session.
 export interface ByIdSnapshotRecord {
   frame: TraceFrameRecord;
   rate: number;
+  count: number;
 }
 
 /// One element of a project: a discriminated-union record with a stable

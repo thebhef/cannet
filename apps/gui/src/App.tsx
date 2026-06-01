@@ -64,7 +64,13 @@ import {
   isProjectElement,
   normalizeElement,
 } from "./projectElements";
-import { type TraceState, clearedTrace, freshTrace, reanchorToSession } from "./trace";
+import {
+  type TraceState,
+  clearTraceStartOffset,
+  clearedTrace,
+  freshTrace,
+  reanchorToSession,
+} from "./trace";
 import { defaultBusColor } from "./busColor";
 import {
   BY_ID_PANEL_COMPONENT,
@@ -230,9 +236,12 @@ export function App() {
   /// every initial warn/error counts as unread.
   const [readHighWater, setReadHighWater] = useState<number>(-1);
 
-  // Captured once: timestamp of absolute row 0. Survives the user
-  // scrolling anywhere in the trace; reset on Clear / new source.
-  const [baseTimestampSeconds, setBaseTimestampSeconds] = useState<number | null>(
+  // Session-start time (Unix epoch seconds) — every trace view renders
+  // frame timestamps relative to this. Driven by the `trace-grew` event,
+  // which is in turn driven by `start_session` on the host. Single zero
+  // point per session; survives panel close/reopen because it's app
+  // state, not panel state. `null` until the first event arrives.
+  const [sessionStartSeconds, setSessionStartSeconds] = useState<number | null>(
     null,
   );
 
@@ -469,14 +478,21 @@ export function App() {
 
     unlistens.push(
       listen<TraceGrew>("trace-grew", (event) => {
-        const { count: newCount, frames_per_second, tail } = event.payload;
+        const {
+          count: newCount,
+          frames_per_second,
+          session_start_seconds,
+          tail,
+        } = event.payload;
         setCount((prev) => {
           if (newCount < prev) {
             invalidateCache();
-            setBaseTimestampSeconds(null);
           }
           return newCount;
         });
+        setSessionStartSeconds(
+          session_start_seconds > 0 ? session_start_seconds : null,
+        );
         setFramesPerSecond(frames_per_second);
         tailFramesRef.current = tail;
         tailStartRef.current = tail.length > 0 ? tail[0].index : newCount;
@@ -525,20 +541,28 @@ export function App() {
     });
   }, [count]);
 
-  // Once row 0 is available, capture its timestamp as the zero-point
-  // for the time column.
+  // Drop every trace view's per-view time-column offset when the
+  // session itself restarts (`sessionStartSeconds` changes). The
+  // offset is in session-relative seconds and stops meaning anything
+  // sensible the moment the session it referenced is gone — left
+  // alone, a stale value from the previous session shifts the next
+  // session's clock and shows negative deltas. The Connect / toolbar-
+  // Clear paths null `sessionStartSeconds` themselves; this effect
+  // also catches the host-initiated re-anchor in BLF replay (first
+  // frame becomes session start) and any other future trigger.
   useEffect(() => {
-    if (baseTimestampSeconds !== null) return;
-    if (count === 0) return;
-    void invoke<TraceFrameRecord[]>("fetch_trace_range", {
-      start: 0,
-      end: 1,
-    }).then((frames) => {
-      if (frames.length > 0) {
-        setBaseTimestampSeconds(frames[0].timestamp_seconds);
-      }
+    setRegistry((prev) => {
+      let changed = false;
+      const next = prev.map((e) => {
+        const t = clearTraceStartOffset(e.trace);
+        if (t === e.trace) return e;
+        changed = true;
+        return { ...e, trace: t };
+      });
+      return changed ? next : prev;
     });
-  }, [count, baseTimestampSeconds]);
+  }, [sessionStartSeconds]);
+
 
   // Phase 6: BLF import gained a channel → bus mapping step. The
   // outer pending state holds the picked BLF path + its distinct
@@ -586,7 +610,7 @@ export function App() {
       try {
         await invoke("clear_trace_store");
         invalidateCache();
-        setBaseTimestampSeconds(null);
+        setSessionStartSeconds(null);
         setCount(0);
         startAllElements();
         const channelBusMapping = channels.map((ch) => ({
@@ -689,7 +713,7 @@ export function App() {
       setState({ kind: "error", message: String(err) });
     }
     invalidateCache();
-    setBaseTimestampSeconds(null);
+    setSessionStartSeconds(null);
     setCount(0);
     startAllElements();
   }, [invalidateCache, startAllElements]);
@@ -741,7 +765,7 @@ export function App() {
     try {
       await invoke("clear_trace_store");
       invalidateCache();
-      setBaseTimestampSeconds(null);
+      setSessionStartSeconds(null);
       setCount(0);
       startAllElements();
     } catch (err) {
@@ -968,7 +992,7 @@ export function App() {
     void invoke("clear_transmit_frames").catch(() => {});
     void invoke("clear_trace_store").catch(() => {});
     invalidateCache();
-    setBaseTimestampSeconds(null);
+    setSessionStartSeconds(null);
     setCount(0);
     setDirty(false);
   }, [seedDefaultLayout, rememberProject, loadDbcSet, invalidateCache]);
@@ -1459,8 +1483,8 @@ export function App() {
   );
 
   const traceData: TraceData = useMemo(
-    () => ({ count, version, baseTimestampSeconds, getFrame, ensureVisible }),
-    [count, version, baseTimestampSeconds, getFrame, ensureVisible],
+    () => ({ count, version, sessionStartSeconds, getFrame, ensureVisible }),
+    [count, version, sessionStartSeconds, getFrame, ensureVisible],
   );
 
   const elementRegistryValue: ElementRegistry = useMemo(

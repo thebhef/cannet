@@ -138,6 +138,13 @@ pub struct TraceGrew {
     /// Estimated current frame rate (frames per second over the last
     /// second of appends).
     pub frames_per_second: f64,
+    /// Session-start timestamp in seconds (Unix epoch, fractional). The
+    /// trace UI displays everything relative to this — a single, stable
+    /// origin for the whole live capture / replay. Live capture sets it
+    /// to wall-clock now on Clear / Connect; BLF replay sets it to the
+    /// first frame's timestamp. Zero before any session has been
+    /// configured.
+    pub session_start_seconds: f64,
     /// The last frames in the store (up to a fixed cap), already decoded
     /// against the currently-attached DBC. The auto-scrolling trace view
     /// paints its live tail straight from this instead of round-tripping
@@ -211,12 +218,14 @@ pub enum TransmitWireStatus {
     Failed { message: String },
 }
 
-/// One row of the per-message-ID view: the id's latest frame plus its
-/// current message rate (frames/second).
+/// One row of the per-message-ID view: the id's latest frame, its
+/// current message rate (frames/second), and the total number of frames
+/// seen for the id over the session.
 #[derive(serde::Serialize, Clone)]
 pub struct ByIdSnapshot {
     pub frame: TraceFrameRecord,
     pub rate: f64,
+    pub count: u64,
 }
 
 /// Emitted when the log finishes (cleanly or with an error).

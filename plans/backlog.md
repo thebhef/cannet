@@ -32,6 +32,8 @@ shipped), **Phase 12** (DBC view + drag/drop, shipped),
 `phased-implementation.md`; the `ui-architecture-backlog.md` item
 is left in `ui-architecture-backlog.md` and absorbed into Phase 16.
 
+- takes a long time to exit gracefully
+
 #### Other near-term work
 
 - `[cleanup]` **Delete unnecessary migrations and "legacy

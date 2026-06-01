@@ -2191,6 +2191,16 @@ are set on the server's CLI).
   `cannet-core::shared_bus`, `cannet-server::virtual_bus`, and
   the new `cannet-wire` envelope variants. ADR 0021 checked in.
 
+## A Round of CAN HW and VBus BugFixes
+
+### Bug Reports
+
+1. broken  timestamp handling:
+
+- it looks like regular CAN messages are ok at 100 msec period, and inconsistent at 10 msec. CAN-FD messages ore inconsistent at 100 msec. The case is TX on a real PEAK-FD interface and recieving on another PEAK-FD interface, 2 logical busses.
+- negative timestamps are still showing up in historical trace views after session clear. It looks like it may only happen with reloaded trace views. New trace views, created since project load, may be unaffected
+
+
 ## Phase 14 — Plot Pinpoints
 
 A small plot-panel ergonomics improvement: a tri-state "show points"

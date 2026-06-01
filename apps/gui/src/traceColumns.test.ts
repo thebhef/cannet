@@ -137,7 +137,7 @@ describe("nextSort / sortRows", () => {
       decoded: null,
       bus_id,
     };
-    return { frame, rate };
+    return { frame, rate, count: 0 };
   }
 
   it("sorts by a column, stable, and is a no-op for null", () => {

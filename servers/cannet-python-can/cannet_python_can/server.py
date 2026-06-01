@@ -226,7 +226,19 @@ class _SharedInterface:
         self._outboxes: list["queue.Queue[Optional[pb.Envelope]]"] = []
         self._stop = threading.Event()
         self._rx_thread: Optional[threading.Thread] = None
+        self._pack_thread: Optional[threading.Thread] = None
         self._state_thread: Optional[threading.Thread] = None
+        # Internal handoff queue between the rx reader thread and the
+        # packager thread. The reader's only job is to call
+        # ``ch.recv`` and ``put`` the raw ``Frame`` here as fast as
+        # possible so PCAN's hardware-bound recv queue stays empty —
+        # python-can / PCAN-Basic stamp each frame at the moment
+        # ``CAN_ReadFD`` is called, so any backlog in the OS-side
+        # queue collapses several real on-wire arrivals into
+        # microsecond-apart timestamps. Doing protobuf encoding and
+        # outbox fan-out on a separate thread is what keeps the reader
+        # in its tight recv loop.
+        self._rx_queue: "queue.Queue[drv.Frame]" = queue.Queue()
         # Last-pushed state, used by the state pump to decide whether
         # to emit a fresh ``InterfaceState`` envelope.
         self._last_state: pb.ControllerState.V = pb.CONTROLLER_STATE_ACTIVE
@@ -333,9 +345,18 @@ class _SharedInterface:
         self._channel = self._driver.open(self._channel_id, self._config)
         self._stop.clear()
         self._reset_state_baseline_locked()
+        # Fresh handoff queue per open — a previous session's residue
+        # would otherwise prepend stale frames to the next one's first
+        # batch.
+        self._rx_queue = queue.Queue()
         self._rx_thread = threading.Thread(
             target=self._rx_pump,
             name=f"rx-{self._channel_id}",
+            daemon=True,
+        )
+        self._pack_thread = threading.Thread(
+            target=self._pack_pump,
+            name=f"pack-{self._channel_id}",
             daemon=True,
         )
         self._state_thread = threading.Thread(
@@ -344,6 +365,7 @@ class _SharedInterface:
             daemon=True,
         )
         self._rx_thread.start()
+        self._pack_thread.start()
         self._state_thread.start()
 
     def _close_locked(self) -> None:
@@ -373,6 +395,10 @@ class _SharedInterface:
             return list(self._outboxes)
 
     def _rx_pump(self) -> None:
+        """Reader thread. Stays minimal so PCAN's recv queue drains as
+        fast as physically possible: block on ``ch.recv``, push the raw
+        ``Frame`` onto ``self._rx_queue``, repeat. Protobuf encoding,
+        batching, and outbox fan-out happen on the packer thread."""
         cid = self._channel_id
         try:
             while not self._stop.is_set():
@@ -390,32 +416,43 @@ class _SharedInterface:
                     continue
                 if frame is None:
                     continue
-                batch_frames = [_frame_to_proto(frame)]
+                self._rx_queue.put(frame)
+        except Exception as e:  # noqa: BLE001
+            _log.warning("rx pump for %s crashed: %s", cid, e)
+            err = _log_envelope(
+                pb.LOG_LEVEL_ERROR, f"rx pump for {cid} crashed: {e}"
+            )
+            for ob in self._outbox_snapshot():
+                ob.put(err)
+
+    def _pack_pump(self) -> None:
+        """Packager thread. Drains the rx handoff queue, batches frames
+        into ``FrameBatch`` envelopes (up to ``_BATCH_FLUSH_NS`` /
+        ``_BATCH_MAX_FRAMES``), and fans them out to each subscriber's
+        outbox. Decoupling this from the reader keeps protobuf encode
+        latency from delaying the next ``ch.recv`` call, which is what
+        was letting PCAN's queue back up and collapse timestamps."""
+        cid = self._channel_id
+        try:
+            while not self._stop.is_set():
+                try:
+                    first = self._rx_queue.get(timeout=0.25)
+                except queue.Empty:
+                    continue
+                batch_frames = [_frame_to_proto(first)]
                 deadline = time.monotonic_ns() + _BATCH_FLUSH_NS
                 while len(batch_frames) < _BATCH_MAX_FRAMES:
                     if self._stop.is_set():
                         break
-                    ch = self._current_channel()
-                    if ch is None:
+                    remaining_ns = deadline - time.monotonic_ns()
+                    if remaining_ns <= 0:
                         break
                     try:
-                        nxt = ch.recv(timeout_s=0.0)
-                    except Exception:  # noqa: BLE001
+                        nxt = self._rx_queue.get(
+                            timeout=remaining_ns / 1_000_000_000
+                        )
+                    except queue.Empty:
                         break
-                    if nxt is None:
-                        if time.monotonic_ns() >= deadline:
-                            break
-                        remaining_s = (
-                            deadline - time.monotonic_ns()
-                        ) / 1_000_000_000
-                        if remaining_s <= 0:
-                            break
-                        try:
-                            nxt = ch.recv(timeout_s=remaining_s)
-                        except Exception:  # noqa: BLE001
-                            break
-                        if nxt is None:
-                            break
                     batch_frames.append(_frame_to_proto(nxt))
                 env = pb.Envelope(
                     frame_batch=pb.FrameBatch(
@@ -425,9 +462,9 @@ class _SharedInterface:
                 for ob in self._outbox_snapshot():
                     ob.put(env)
         except Exception as e:  # noqa: BLE001
-            _log.warning("rx pump for %s crashed: %s", cid, e)
+            _log.warning("pack pump for %s crashed: %s", cid, e)
             err = _log_envelope(
-                pb.LOG_LEVEL_ERROR, f"rx pump for {cid} crashed: {e}"
+                pb.LOG_LEVEL_ERROR, f"pack pump for {cid} crashed: {e}"
             )
             for ob in self._outbox_snapshot():
                 ob.put(err)
