@@ -117,6 +117,11 @@ every new feature:
 - **Frontend state is view-local.** Scroll position, column layout,
   expanded rows, toggles — yes. Capture data, derived model state —
   no.
+- **Trace renderers (the row table and the plot) share one timing
+  model.** A trace is a series of messages with its own start time;
+  the session buffer has the canonical timeline. See
+  [`docs/adr/0024-trace-like-view-timing.md`](docs/adr/0024-trace-like-view-timing.md)
+  for the rules — they govern any new trace renderer too.
 
 **Be on the lookout for drift.** When you touch GUI code, check it
 against these rules. If you find a view that holds too much, computes

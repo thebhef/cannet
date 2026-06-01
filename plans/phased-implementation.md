@@ -2198,7 +2198,100 @@ are set on the server's CLI).
 1. broken  timestamp handling:
 
 - it looks like regular CAN messages are ok at 100 msec period, and inconsistent at 10 msec. CAN-FD messages ore inconsistent at 100 msec. The case is TX on a real PEAK-FD interface and recieving on another PEAK-FD interface, 2 logical busses.
-- negative timestamps are still showing up in historical trace views after session clear. It looks like it may only happen with reloaded trace views. New trace views, created since project load, may be unaffected
+- negative timestamps are still showing up in historical trace views
+  after session clear. Details captured below — pattern not fully
+  pinned down, but enough to point further investigation.
+
+#### Negative-timestamp observations
+
+- **Symptom location.** The negative value shows up in the trace
+  panel's *index* column (the relative-time column the row is keyed
+  by), not a dt/delta column. First-clear sets it to 0 as expected;
+  second-and-subsequent clears within the same connection set it to
+  roughly `-1 * latest_timestamp` — i.e. the new zero appears to land
+  at the *start of the session* rather than at "now", so frames
+  captured before the clear (which should already be gone) render as
+  large negative offsets equal to how far into the session we are.
+
+- **Reproduction.** Open project, connect, start a periodic TX, then
+  click *Clear session buffer*. First clear: trace resets to 0
+  (correct). Second clear and onward: first frame in the new view
+  renders at `~ -session_elapsed_seconds`.
+
+- **Restored-vs-fresh panel pattern.** Negatives appear on
+  panels that came back from the saved project. Creating a *new*
+  trace panel after project load appears to suppress the bug on
+  *all* trace panels — including the restored ones. Removing the
+  newly-created panel makes the restored panels exhibit the bug
+  again. That's surprising — restored panels and newly-created
+  panels both go through `clearedTrace`/`freshTrace` with
+  `traceStartOffsetSeconds=null` and otherwise read from the same
+  `TraceData`, so a per-panel state difference shouldn't matter to
+  the others. Smells like something at the App level — registry
+  identity, a cached value tied to panel count, or an effect's
+  dependency list — rather than a per-panel field.
+
+#### What's been ruled out (code reading)
+
+The bug is reproducible with the **toolbar Clear** (session
+buffer clear), not a per-panel Clear. Given that scope:
+
+- **Stale `useEffect` dep / `countRef`.** The two effects that
+  touch `TraceState` (`reanchorToSession` on `[count]`,
+  `clearTraceStartOffset` on `[sessionStartSeconds]`) don't read
+  the registry — only App state — so panel count can't change
+  whether they fire. `countRef.current` is read only in `create`
+  / `ensure` / `applyProject`, all of which call
+  `clearedTrace(n)` with the default `null` offset.
+- **Stale closure in a `setRegistry` callsite.** All ten
+  `setRegistry` callsites use the `(prev) => ...` updater form,
+  so each is fed the latest registry. The only place a non-null
+  offset is *computed* is `currentSessionOffsetSeconds(data)`
+  inside `useTrace`'s `start` / `clear` callbacks — both depend
+  on `data`, so they re-create on every `data` change rather
+  than capturing a stale one.
+- **Toolbar Clear writing an offset directly.** `handleClear`
+  → `startAllElements()` rewrites every entry to
+  `freshTrace(0)` (offset=`null`), then `trace-grew` re-arrives
+  with the new `session_start_seconds`; the
+  `[sessionStartSeconds]` effect fires and the clear-offset map
+  is a no-op since everything is already `null`. No path between
+  those steps writes a non-null offset.
+- **Stale data through the host pipeline.** `clear_trace_store`
+  empties the trace store *and* raises `session_start_ns`, and
+  `append` drops any subsequent frame whose `timestamp_ns <
+  session_start_ns`. `invalidateCache()` then wipes the
+  frontend chunk LRU and the `tailFramesRef`. So a frame with
+  pre-clear timestamp shouldn't reach `formatTimestamp`.
+
+That covers every path I can construct statically. The observed
+behavior implies one of the rule-outs is wrong somewhere I
+haven't found, or there's a state-update interleaving on the
+toolbar Clear path that produces a non-null offset on existing
+panels while a *fresh* panel resets that state for everyone.
+
+#### Next experiment
+
+Instrument these three sites and reproduce: open project,
+connect, send a periodic, click toolbar *Clear* twice. The log
+of what gets written between the two clears will pin the
+source.
+
+1. The `trace-grew` listener at [App.tsx:478-498](apps/gui/src/App.tsx#L478-L498) —
+   log `{ newCount, prevCount, session_start_seconds,
+   sessionStartBefore }`.
+2. The `[sessionStartSeconds]` effect at [App.tsx:553-564](apps/gui/src/App.tsx#L553-L564) —
+   log `{ sessionStart, per_entry: [{id, offsetBefore, offsetAfter}] }`.
+3. `useTrace`'s computed `baseTimestampSeconds` at
+   [trace.ts:201-204](apps/gui/src/trace.ts#L201-L204) —
+   log `{ elementId, sessionStartSeconds, offset, base }` on
+   every render (or just when `base` changes).
+
+If (3) shows a non-null offset on an existing panel right after
+the second toolbar Clear, work backwards through (2) and (1) to
+the writer. If (3) shows offset=null but a stale `base`, the
+bug is upstream of the offset and we're looking in the wrong
+place.
 
 
 ## Phase 14 — Plot Pinpoints
