@@ -108,6 +108,6 @@ We warn and let the user fix it.
   mode; the area shows the regex and a result count instead of
   the signal list editor.
 - Future surfaces that compose signal collections (the signal
-  view in Phase 19, math channels in Phase 23) face the same
+  view in Phase 20, math channels in Phase 23) face the same
   filter-vs-manual choice; consistency with this ADR is
   preferred unless their UX forces a different shape.

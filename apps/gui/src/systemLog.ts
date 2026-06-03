@@ -1,5 +1,5 @@
-// Frontend mirror + filter helpers for the host-side system log
-// (Phase 7). The host owns the bounded ring of messages
+// Frontend mirror + filter helpers for the host-side system log.
+// The host owns the bounded ring of messages
 // (`src-tauri/src/system_log.rs`); the panel renders a filtered view
 // over it. This module is the pure logic — sorting / filtering —
 // that the panel and unit tests share.
@@ -16,7 +16,7 @@ export const SYSTEM_LOG_LEVEL_RANK: Record<SystemLogLevel, number> = {
 
 /// Filter parameters held in a panel's dockview `params`. `"" |
 /// undefined` for `source` is "all sources". Per-panel state, not
-/// persisted in the project file (Phase 7 spec).
+/// persisted in the project file.
 export interface SystemMessagesPanelParams {
   filterSource?: string;
   minLevel?: SystemLogLevel;

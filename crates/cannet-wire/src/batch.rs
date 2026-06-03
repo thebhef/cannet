@@ -28,7 +28,7 @@ pub struct BatchPolicy {
 }
 
 impl Default for BatchPolicy {
-    /// 256 frames or 5 ms, whichever comes first. Matches the Phase 1
+    /// 256 frames or 5 ms, whichever comes first. Matches the
     /// in-process trace event cadence so batched-rx behaves the same
     /// way under either transport.
     fn default() -> Self {

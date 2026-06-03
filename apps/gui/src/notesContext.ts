@@ -1,5 +1,5 @@
 // Session-scoped React context holding the live notes list and
-// edit dispatchers (Phase 9). One instance per App tree;
+// edit dispatchers. One instance per App tree;
 // initialised in App.tsx; consumed by every PlotPanel.
 
 import { createContext, useContext } from "react";

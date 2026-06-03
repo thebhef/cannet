@@ -1,4 +1,4 @@
-//! In-memory BLF replay source for the Phase-2 server.
+//! In-memory BLF replay source for the server.
 //!
 //! Loads a BLF file completely into memory at startup and exposes the
 //! frames in their original recording order alongside the set of
@@ -6,10 +6,10 @@
 //! the server pump can walk the buffer once per loop and pace
 //! emissions against each frame's recorded timestamp.
 //!
-//! The "in-memory" choice is deliberate for Phase 2: it keeps the
+//! The "in-memory" choice is deliberate: it keeps the
 //! server's hot path completely allocation-free per frame, and it makes
 //! looping trivial (just walk the slice again). For multi-GB BLFs the
-//! tradeoff is wrong — that's a Phase 7 perf concern, not a Phase 2 one.
+//! tradeoff is wrong — that's a future perf concern.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;

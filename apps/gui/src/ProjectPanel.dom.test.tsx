@@ -60,12 +60,11 @@ describe("uniqueRemoteServers", () => {
     ]);
   });
 
-  it("treats a legacy 127.0.0.1:<port> binding as a stale remote, not local", () => {
-    // Pre-v5 projects persisted the live sidecar address as the
-    // `server`. Those bindings now render under a stale remote-server
+  it("treats a 127.0.0.1:<port> binding as a stale remote, not local", () => {
+    // A binding that persisted a concrete sidecar `host:port` (rather
+    // than the `"local"` sentinel) renders under a stale remote-server
     // row (showing as offline) until the user re-picks the interface
-    // from the live Local group — see the v4→v5 doc on
-    // PROJECT_SCHEMA_VERSION.
+    // from the live Local group.
     const bindings: InterfaceBinding[] = [
       { server: "127.0.0.1:43891", interface: "vector:ch0", bus_id: "b1" },
     ];

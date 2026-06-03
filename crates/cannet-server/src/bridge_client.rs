@@ -14,8 +14,8 @@
 //! `Subscribe` reply is `InterfaceAllocated`, and the bridge has to
 //! address its TX `FrameBatch` envelopes to the *allocated* id, not
 //! the factory id it subscribed to. Surfacing that allocated id
-//! through `cannet-client`'s `Subscription` API is Phase-13 step 7's
-//! job; the bridge orchestrator handles it server-side here.
+//! through `cannet-client`'s `Subscription` API is not yet done;
+//! the bridge orchestrator handles it server-side here.
 //!
 //! ## Runtime model
 //!

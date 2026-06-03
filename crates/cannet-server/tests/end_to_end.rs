@@ -1,6 +1,6 @@
 //! End-to-end gRPC tests: spin up `cannet-server` over a real TCP
 //! socket on a random port, connect with the tonic-generated client,
-//! and exercise the protocol the way the real Phase-2 client will.
+//! and exercise the protocol the way the real client will.
 
 use std::path::Path;
 use std::sync::Arc;

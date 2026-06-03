@@ -14,10 +14,10 @@
 //! into place on [`BlfCaptureWriter::finish`] — a mid-write crash
 //! therefore leaves no half-file behind at `<dest>`.
 //!
-//! ## Phase 10 Track 1 — native implementation
+//! ## Native implementation
 //!
 //! Per [ADR 0009](../../../docs/adr/0009-dbc-blf-readers.md), the
-//! Phase-1 `blf_asc` wrapper was retired in Phase 10 Track 1. The native
+//! earlier `blf_asc` wrapper was retired. The native
 //! implementation in [`format`] covers reading and writing of
 //! `CAN_MESSAGE` (1), `CAN_MESSAGE2` (86),
 //! `CAN_FD_MESSAGE` (100), `CAN_FD_MESSAGE_64` (101), and

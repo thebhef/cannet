@@ -34,7 +34,7 @@
 //!
 //! ## Why structured JSON, not a DSL
 //!
-//! See `plans/technology-inventory.md` — a text DSL adds parser and
+//! A text DSL adds parser and
 //! autocomplete problems we don't need yet. The structured editor lives
 //! on the filter node in the project graph view.
 

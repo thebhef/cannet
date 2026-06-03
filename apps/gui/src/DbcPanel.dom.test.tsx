@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// DOM tests for the Phase 12 DBC discovery panel: tree render from a
+// DOM tests for the DBC discovery panel: tree render from a
 // `list_dbc_content` payload, expand-collapse, and fuzzy-search behavior
 // (matched set, auto-expand of ancestors, dimming of non-matches).
 // fzf runs for real here — the panel's interesting behavior is the
@@ -14,7 +14,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import type { DbcContentRecord, Bus, InterfaceBinding } from "./types";
 import { SIGNAL_DND_MIME, parseSignalDragData } from "./dragSignals";
 
-/// Defaults for the Phase-12-polish rich signal fields so the test
+/// Defaults for the rich signal fields so the test
 /// fixtures stay concise while satisfying the full `DbcSignalContentRecord`
 /// shape.
 const SIGNAL_DEFAULTS = {
@@ -210,7 +210,7 @@ describe("DbcPanel", () => {
     renderPanel();
     const msg = await screen.findByText("EngineData");
     // Signals are hidden until the message's chevron is clicked.
-    // Plain row click selects (Phase 12 multi-select), so expand
+    // Plain row click selects (multi-select), so expand
     // requires the chevron specifically.
     expect(screen.queryByText("EngineSpeed")).not.toBeInTheDocument();
     const chevron = msg.closest(".dbc-row")?.querySelector(".dbc-row-chevron") as HTMLElement;

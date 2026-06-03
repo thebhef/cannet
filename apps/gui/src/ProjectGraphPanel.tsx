@@ -47,7 +47,7 @@ interface GraphParams {
 const BUS_WIDTH = 320;
 const NODE_WIDTH = 220;
 
-/// Phase-6 project graph view: gateways (interface bindings), buses,
+/// Project graph view: gateways (interface bindings), buses,
 /// filters, transmit sources, and trace/plot sinks rendered with
 /// kind-specific shapes. Backed by `@xyflow/react`. Viewport and node
 /// positions persist in the panel's `params`; the rest comes from the

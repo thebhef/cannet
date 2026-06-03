@@ -26,30 +26,15 @@ work or admit it isn't going to happen and delete it.
 
 Near-term work — fold these into a phase before picking up the
 lower-priority follow-ups below. The original "Minimum Usability
-Tasks" list is split across **Phase 11** (transmit signals,
-shipped), **Phase 12** (DBC view + drag/drop, shipped),
-**Phase 14** (show points), and **Phase 15** (hotkey framework) in
-`phased-implementation.md`; the `ui-architecture-backlog.md` item
-is left in `ui-architecture-backlog.md` and absorbed into Phase 16.
+Tasks" list is split across **Task 11** (transmit signals,
+shipped), **Task 12** (DBC view + drag/drop, shipped),
+**Task 15** (show points), and **Task 16** (hotkey framework) in
+the [roadmap](tasks/roadmap.md).
 
 - takes a long time to exit gracefully
 
 #### Other near-term work
 
-- `[cleanup]` **Delete unnecessary migrations and "legacy
-  compatibility" shims.** The project parser at
-  [project.rs](apps/gui/src-tauri/src/project.rs) carries a chain of
-  migrators (v2→v3→v4→v5→v6→v7) and the wider codebase has scattered
-  "v5-vintage…" / "v4-and-earlier…" defaulting paths. The repo has
-  no shipping users and no on-disk projects predating the current
-  shape, so the migrators are dead code — they exist for cases that
-  can't happen. Audit the project parser, the schema-version
-  documentation, and the rest of the host + frontend for
-  legacy-compat branches that were added "just in case" and delete
-  the ones that can't be reached. Bump
-  [`PROJECT_SCHEMA_VERSION`] forward whenever the in-memory shape
-  changes and reject older versions with a clear message, instead
-  of carrying a migrator.
 - `[feat]` **Settings panel — first entry: `clear scratch cache on exit`.**
   Per [ADR 0002 DS-7](../docs/adr/0002-disk-spill-store.md), the
   disk-spill scratch (raw store + indexes + pyramids + session-authored
@@ -269,7 +254,7 @@ next pass on this surface can address them as one piece.
 
 - `[perf]` `cannet-core`: revisit `CanFramePayload::Classic`/`Fd` to share
   a fixed-size inline buffer instead of `Vec<u8>` once the trace store /
-  benchmark in Phase 20 shows allocator pressure.
+  benchmark in Task 21 shows allocator pressure.
 - `[feat]` `cannet-server` (Phase 2+): multi-client support. Phase 2 is
   single-client per server; a second connection is rejected with
   `Error::BUSY`. Lift this when there's a real use case (e.g. a second
@@ -298,6 +283,26 @@ next pass on this surface can address them as one piece.
   actual local virtual-bus device on Linux is the honest follow-up to
   the in-process virtual bus. Reconsider alongside future hardware
   work — PEAK's Linux kernel driver path could go via socketcan too.
+
+- `[ui]` `cannet-python-can` sidecar: **demote python-can backend "driver
+  not installed" WARNINGs to INFO.** On startup the sidecar's enumeration
+  triggers python-can's hardware backends to import their native vendor
+  libs; when the lib isn't present each backend emits a `WARNING` via its
+  module logger that the host promotes to a Warn-level System Message
+  (e.g. `can.interfaces.vector.canlib Could not import vxlapi: Vector XL
+  library not found: vxlapi64`; `can.interfaces.kvaser.canlib Kvaser
+  canlib is unavailable.`, confirmed by direct import). Expected on any
+  workstation that doesn't have every CAN vendor installed — not
+  actionable, but trips the panel's default Warn filter. Add a
+  `logging.Filter` in
+  [`__main__.py`](../servers/cannet-python-can/cannet_python_can/__main__.py)
+  installed on the root handler after `basicConfig` that rewrites
+  `levelno=WARNING → INFO` (and `levelname`) for records whose `name`
+  starts with `can.interfaces.vector` or `can.interfaces.kvaser`. Other
+  loggers untouched. Result: line still surfaces at Info level (via
+  `classify_stderr_line` → `LogLevel::Info`), preserving the breadcrumb
+  without raising the panel. Test the filter directly with synthesized
+  `LogRecord`s in a new sidecar test.
 
 - `[bug]` `cannet-python-can` server: **frame timestamps fall back to
   `time.monotonic_ns()`** when `msg.timestamp` is absent

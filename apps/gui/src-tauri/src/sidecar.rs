@@ -1,4 +1,4 @@
-//! Phase 8: vendor-driver sidecar lifecycle.
+//! Vendor-driver sidecar lifecycle.
 //!
 //! At startup the host spawns the `cannet-python-can` sidecar (a
 //! Python process that uses `python-can` to enumerate Vector,
@@ -35,9 +35,9 @@
 //! 1. **Local `uv`** at `tools/uv/<os>-<arch>/uv[.exe]` relative to
 //!    the GUI binary's parent directory. `uv` is fetched, not
 //!    bundled — `scripts/fetch-uv.sh` populates this path for dev
-//!    builds, and a Phase-16 install-time or first-run fetch will
+//!    builds, and an install-time or first-run fetch will
 //!    populate it for end-user builds (see
-//!    `plans/phased-implementation.md` Phase 16). The runtime
+//!    ADR 0015). The runtime
 //!    contract — "look here first" — is stable regardless of who
 //!    wrote the file.
 //! 2. **`uv` on `PATH`** — the developer-machine fallback.
@@ -252,7 +252,7 @@ pub fn parse_listening_address(line: &str) -> Option<&str> {
 ///      layouts — workspace root is somewhere above `target/`), or
 ///    - `<ancestor>/cannet-python-can/` (production layout — the
 ///      sidecar source sits next to the GUI binary inside the
-///      bundle, per Phase-16 packaging plan).
+///      bundle).
 ///
 ///    Capped at 8 ancestors so a misconfigured deployment fails
 ///    loudly instead of crawling the filesystem.

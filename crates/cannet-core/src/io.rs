@@ -1,7 +1,7 @@
 //! Producer / consumer interfaces over `CanFrame`.
 //!
-//! The Phase 1 BLF reader implements `CanFrameSource`; the trace view (and
-//! eventually the Phase 2 server) implement `CanFrameSink`. `pump` drains a
+//! The BLF reader implements `CanFrameSource`; the trace view (and
+//! the server) implement `CanFrameSink`. `pump` drains a
 //! source into a sink until the source signals end-of-stream, so callers
 //! don't reinvent the loop.
 

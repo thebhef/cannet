@@ -8,7 +8,7 @@ import type { Bus, InterfaceBinding, LocalVirtualBusDef } from "./types";
  * child of `App`) can drive them. The toolbar and the project graph
  * view use the same callbacks.
  *
- * Phase 6: a project owns a list of logical {@link Bus}es and a list
+ * A project owns a list of logical {@link Bus}es and a list
  * of {@link InterfaceBinding}s mapping `(server, interface)` pairs to
  * buses. DBCs gain per-bus scoping (`dbcBuses[path]` is the bus ids a
  * DBC decodes for; empty = "all buses"). Server addresses live on
@@ -26,13 +26,13 @@ export interface ProjectContextValue {
   dirty: boolean;
   /// Paths of the loaded DBCs, in priority order (first match wins).
   dbcPaths: string[];
-  /// Phase 6: per-DBC bus scoping. `dbcBuses[path]` is the bus ids
+  /// Per-DBC bus scoping. `dbcBuses[path]` is the bus ids
   /// that DBC decodes for; an empty list / missing entry is "all
   /// buses".
   dbcBuses: Record<string, string[]>;
-  /// Phase 6: logical buses the project owns.
+  /// Logical buses the project owns.
   buses: Bus[];
-  /// Phase 6: interface → bus bindings.
+  /// Interface → bus bindings.
   interfaceBindings: InterfaceBinding[];
   /// Addresses with a currently-running remote session.
   connectedAddresses: string[];
@@ -58,9 +58,9 @@ export interface ProjectContextValue {
   onRemoveDbc: (path: string) => void;
   /// Re-read every loaded DBC from disk (no-op if none are loaded).
   onReloadDbc: () => void;
-  /// Phase 6: set the bus scoping for a single DBC.
+  /// Set the bus scoping for a single DBC.
   onSetDbcBuses: (path: string, buses: string[]) => void;
-  /// Phase 6: bus list ops.
+  /// Bus list ops.
   onAddBus: (bus: Bus) => void;
   onRemoveBus: (id: string) => void;
   onRenameBus: (id: string, name: string) => void;
@@ -83,10 +83,9 @@ export interface ProjectContextValue {
   /// surfaces this list. Empty when nothing is pending or no session
   /// is open.
   busesWithPendingHwConfig: string[];
-  /// Phase 6: interface-binding ops. Multiple bindings may target
-  /// the same `(server, interface)` — Step-6 multi-client and the
-  /// in-process bus both fan out, so the historical
-  /// 1-binding-per-source rule is dropped.
+  /// Interface-binding ops. Multiple bindings may target
+  /// the same `(server, interface)` — multi-client and the in-process
+  /// bus both fan out, so there is no 1-binding-per-source rule.
   onAddBinding: (binding: InterfaceBinding) => void;
   /// Remove the binding currently routing the given project
   /// `bus_id`. Each project bus has at most one binding, so a
@@ -94,7 +93,7 @@ export interface ProjectContextValue {
   onRemoveBinding: (bus_id: string) => void;
   onConnect: () => void;
   onDisconnect: () => void;
-  /// Phase 13: virtual buses (ADR 0021).
+  /// Virtual buses (ADR 0021).
   localVirtualBuses: LocalVirtualBusDef[];
   /// Add a new virtual bus def. The host instantiates it
   /// in-process. Idempotent on `id` collision (no-op).

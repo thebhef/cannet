@@ -1,8 +1,7 @@
 //! Tests against the `vector_blf` C++ live oracle.
 //!
 //! Only compiled when the `vector-blf-oracle` cargo feature is enabled.
-//! See ADR 0009 §"Test coverage strategy" source 4 in
-//! `plans/phased-implementation.md`.
+//! See ADR 0009 §"Test coverage strategy" source 4.
 //!
 //! The harness binary is built by `scripts/build-vector-blf-oracle.sh`,
 //! which clones Technica's `vector_blf` at a pinned commit and links a

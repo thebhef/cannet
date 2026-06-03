@@ -1,4 +1,4 @@
-//! Host-side TX-message model (Phase 13 Step 9).
+//! Host-side TX-message model.
 //!
 //! The transmit panel used to own its frame configs in React state and
 //! run the periodic schedule with `setInterval`. That inverted the
@@ -9,7 +9,7 @@
 //!
 //! This module is the model. A [`TransmitFrameRegistry`] is the single
 //! ordered pool of TX messages; the panel is a view onto it. Four
-//! properties pin the design (Phase 13 Step 9):
+//! properties pin the design:
 //!
 //! 1. **One model object per message** ([`TransmitFrame`]), created /
 //!    destroyed / persisted by the project.

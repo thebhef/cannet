@@ -1,4 +1,4 @@
-// Phase 9 — session-scoped notes (event annotations placed by the
+// Session-scoped notes (event annotations placed by the
 // plot panel's `+ note` cursor). The host owns the canonical list
 // (`apps/gui/src-tauri/src/notes.rs`); this module is the pure-TS
 // helpers + types every consumer (the PlotPanel hook, App.tsx, the

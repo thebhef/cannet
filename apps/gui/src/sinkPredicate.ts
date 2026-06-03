@@ -14,7 +14,7 @@ export type SinkFilter = FilterPredicate | null;
 /// `sink`. `lookupElement` returns project elements by id (for
 /// resolving filter-source chains).
 ///
-/// Rules (mirroring the Phase-6.5 producer-selection model):
+/// Rules (mirroring the producer-selection model):
 ///
 /// - `sources` is `["*"]` and no filter sources → `null` (host
 ///   returns every frame, including unassigned ones — today's

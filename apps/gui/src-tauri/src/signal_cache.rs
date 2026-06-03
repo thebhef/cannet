@@ -16,7 +16,7 @@
 //! the total capture length — which is the whole point. Memory grows
 //! `O(total matches per signal)`; for now we accept that, with the
 //! eventual bound (a min/max decimation tier behind the raw recent
-//! window) tracked in `plans/backlog.md`. Caches are cleared by
+//! window) is deferred. Caches are cleared by
 //! [`SignalCacheStore::clear`] on `clear_trace_store`.
 //!
 //! Concurrency: one global mutex around the (small) `HashMap`. The

@@ -20,7 +20,7 @@ bus load).
 
 ## Glossary
 
-> **Why "participant" rather than "node"?** CANopen (Phase 21) uses
+> **Why "participant" rather than "node"?** CANopen (Phase 22) uses
 > "node" / "node ID" as a first-class protocol concept. Reserving the
 > word for that meaning keeps the language unambiguous; the primitive
 > here uses **participant** for the analogous bus-level thing.

@@ -65,7 +65,7 @@ export function elementNodeId(id: string): string {
 /// order in inputs is preserved in outputs so callers can rely on stable
 /// row order when laying out.
 ///
-/// Edge model (Phase 6.5): every consumer (`trace` / `plot` / `filter`)
+/// Edge model: every consumer (`trace` / `plot` / `filter`)
 /// carries a `sources: string[]` list of producer ids — bus ids,
 /// filter ids, or the wildcard `"*"` meaning "every bus in the project,
 /// including buses added later" (see `types.ts`). For each id in

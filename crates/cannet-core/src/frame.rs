@@ -1,7 +1,7 @@
 //! In-process CAN / CAN FD frame representation.
 //!
-//! Designed to be the single shape used by every Phase-1 consumer (trace,
-//! decode) and the Phase-2 network transport — adapters convert at the
+//! Designed to be the single shape used by every in-process consumer (trace,
+//! decode) and the network transport — adapters convert at the
 //! source, not between consumers.
 
 use core::fmt;

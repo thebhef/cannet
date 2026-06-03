@@ -25,7 +25,7 @@ pub struct TraceFrameRecord {
     pub data: Vec<u8>,
     pub decoded: Option<DecodedRecord>,
     /// Logical bus id this frame was routed onto, or `None` if no
-    /// binding/mapping assigned one (Phase 6). `None` for an unassigned
+    /// binding/mapping assigned one. `None` for an unassigned
     /// frame, which a filter `{bus: ...}` predicate never matches.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bus_id: Option<String>,
@@ -123,7 +123,7 @@ pub struct OpenLogResult {
 pub struct DbcInfo {
     pub dbc_path: String,
     pub message_count: usize,
-    /// Logical bus ids this DBC is scoped to (Phase 6). An empty vec
+    /// Logical bus ids this DBC is scoped to. An empty vec
     /// is the conventional "all buses" default.
     #[serde(default)]
     pub buses: Vec<String>,
@@ -269,7 +269,7 @@ pub struct ValueTableEntryRecord {
     pub label: String,
 }
 
-/// The full content of one loaded DBC, shaped for the Phase 12 DBC
+/// The full content of one loaded DBC, shaped for the DBC
 /// discovery panel (tree-with-fuzzy-search). One entry per loaded DBC
 /// file; each carries the path so the panel can group by file and a
 /// flat `messages` list whose order is the host's

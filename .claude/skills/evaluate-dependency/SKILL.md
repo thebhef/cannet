@@ -18,7 +18,7 @@ sideways.
 
 Before evaluating anything, write down — in your reply to the user — what
 problem the dependency would solve, where it sits in the architecture, and
-which phase from `plans/phased-implementation.md` it belongs to. If the need
+which task from `plans/tasks/roadmap.md` it belongs to. If the need
 isn't on the plan yet, surface that first; the dependency decision shouldn't
 get ahead of the plan.
 

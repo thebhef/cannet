@@ -45,10 +45,9 @@ are not part of this source-of-truth guarantee.
 ## Consequences
 
 - The host accessor contract — `RowPage` and `DecimatedRange`, see
-  [`../../plans/windowed-model-convergence.md`](../../plans/windowed-model-convergence.md)
-  — must be async and paged, and must never assume the capture fits in
-  RAM. The contract is the same whether the underlying store is
-  RAM-only or disk-spilled.
+  [ADR 0025](0025-frontend-windowed-source-contract.md) — must be async
+  and paged, and must never assume the capture fits in RAM. The contract
+  is the same whether the underlying store is RAM-only or disk-spilled.
 - The filtered-trace scan and the decoded-signal cache cannot stay
   O(capture) or unbounded when the capture exceeds RAM. A filter
   index and a decimated decoded-sample tier are the required perf

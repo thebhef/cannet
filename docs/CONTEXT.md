@@ -75,11 +75,64 @@ The keyed snapshot of a capture — one summary row per arbitration id
 (its latest frame plus stats: count, period, last payload). Bounded by
 id-space, not by capture length.
 
+### Plot view
+
+**Plot panel**:
+A dockview panel that plots signals over time. Holds one or more
+**plot areas**, the shared time (x) **scale** across them, and the
+panel toolbar (fit, follow-live, show-points).
+
+**Plot area**:
+A curated group of **series** within a plot panel, plus its **y-axis
+mode**. Its membership is either hand-picked (manual mode) or
+computed from a name regex (filter mode) — see ADR 0020. A plot area
+renders as one or more **axes**.
+_Avoid_: "axis" for a plot area — an area can hold several axes.
+
+**Y-axis mode**:
+A plot-area property choosing how the area's series map to **axes**
+and how each axis's y **scale** derives: **unified** (one axis,
+series grouped by unit on a shared y scale), **per-unit** (one axis
+per unit; each enum series gets its own axis), or **individual** (one
+axis per series). Despite the colloquial name, it tunes the _number
+of axes_ and the _y scale_, not a single "y axis". y scales are
+always auto-derived — there is no fixed-range mode.
+
+**Axis**:
+A single drawing surface: data plotted against one y **scale** and
+the panel's shared x scale. Matplotlib's `Axes`. How many axes a
+plot area has, and which series land on each, is the area's choice.
+An axis renders its series in one of two styles: a normal **line**
+(with optional points), or a **logic-analyzer lane**.
+_Avoid_: "plot area" for a single axis; "axis" for a scale or ruler.
+
+**Logic-analyzer lane**:
+The axis render style for an enum series: the enum is plotted
+numerically (points honour the show-points control) with a
+high-opacity text box overlaid on each constant-value segment
+showing the enum label. Used when an enum series has its own axis
+(per-unit / individual modes); under unified mode an enum plots as a
+plain numeric line with no labels.
+
+**Scale**:
+The value dimension of an axis — its **y scale** (signal values) or
+the shared **x scale** (time). Signals sharing a unit share a y
+scale.
+_Avoid_: "axis" for a scale; the surface is the axis, the dimension
+is the scale.
+
 **Series**:
-One plotted signal in a plot area. Per-signal normalisation and colour
-are per-series.
+One plotted signal on an axis. Colour is per-series; any series can
+be its axis's **primary signal**.
 _Avoid_: "trace" for a plotted signal — the code's current "per-trace"
 naming is this overload, on the list to retire.
+
+**Primary signal**:
+The series whose unit and value range drive an axis's visible y
+**scale** labels. The user selects it by clicking a series; it
+defaults to the first. The labels always show the primary signal's
+real engineering values — never a 0–1 normalised ratio, even when
+other unit groups are overlaid on the same axis.
 
 ## Flagged ambiguities
 
@@ -87,6 +140,12 @@ naming is this overload, on the list to retire.
 chronological view panel, and a plotted signal. Resolved — **Capture**
 for the data, **Trace** only for the chronological view, **Series** for
 a plotted signal.
+
+**"axis"** is the drawing surface (matplotlib's `Axes`), not the y/x
+ruler — that dimension is the **scale**. The **y-axis mode** feature
+keeps its colloquial name but tunes the number of axes and how the y
+scale derives, not a single "y axis". See
+[ADR 0026](adr/0026-plot-areas-compose-axes-configure.md).
 
 ## Example dialogue
 
@@ -97,6 +156,12 @@ a plotted signal.
 — "Yes — the trace is a view. It windows the capture model, fetching
    only the rows on screen. The plot is the same, except a plot area
    shows one or more series, each a decimated window of a signal."
+— "How are several signals with different units drawn together?"
+— "That's the plot area's y-axis mode. In unified mode they share one
+   axis — each unit group auto-scales to fill it, and the ticks show
+   the primary signal's real units. In per-unit mode each unit gets
+   its own axis; an enum gets its own axis too, drawn as a
+   logic-analyzer lane."
 — "Where do the decoded signal values live?"
 — "In a derived projection, the decoded-signal cache. It's rebuildable
    from the raw frames, so it can be bounded — the raw store can't."

@@ -1,14 +1,14 @@
 /// Drag-and-drop plumbing for signals across the GUI. Every panel
-/// that produces a draggable signal (Phase 12: the DBC discovery
-/// panel, the trace expanded-row decoded grid, the by-id panel signal
-/// row; existing: the plot panel's own side-panel signal rows) sets
+/// that produces a draggable signal (the DBC discovery panel, the
+/// trace expanded-row decoded grid, the by-id panel signal row, and
+/// the plot panel's own side-panel signal rows) sets
 /// the same mime type with the same payload shape, so any drop target
 /// reads them through one parser.
 ///
 /// The plot panel's [`PlotPanel`](./PlotPanel.tsx) drop handler is the
 /// canonical sink today. It accepts both shapes the parser produces —
 /// the legacy single-`SignalRef` JSON form that internal panel drags
-/// have always set, and the `{signals: SignalRef[]}` form Phase 12's
+/// have always set, and the `{signals: SignalRef[]}` form the
 /// multi-select / message-row drags require.
 
 /// Mime type carried on the `DataTransfer`. Receiving panels check
@@ -88,8 +88,8 @@ export interface ParsedSignalDrag {
 
 /// Parse a drag payload's mime data into a flat list of valid
 /// `DraggableSignalRef`s + the source panel id (when present).
-/// Accepts both shapes — a single ref (the plot panel's pre-Phase-12
-/// internal drag emitted that) and the Phase-12 array form. Returns
+/// Accepts both shapes — a single ref (the plot panel's legacy
+/// internal drag emitted that) and the array form. Returns
 /// `{ signals: [], sourcePanelId: null }` for any unparseable or
 /// empty payload so call sites can no-op uniformly.
 export function parseSignalDragData(raw: string): ParsedSignalDrag {

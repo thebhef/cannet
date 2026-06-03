@@ -1,4 +1,4 @@
-//! Cannet Tauri host. Wires the Phase-1 BLF / DBC stack and the Phase-2
+//! Cannet Tauri host. Wires the BLF / DBC stack and the
 //! remote-server client to the React frontend.
 //!
 //! Two source modes share one frontend pipeline:
@@ -76,7 +76,7 @@ use system_log::{SystemLog, SystemMessage};
 use trace_store::{RawTraceFrame, TraceStore};
 
 /// A loaded DBC: its source path, the parsed database, and the set of
-/// logical bus ids this DBC is scoped to (Phase 6). Decoders walk the
+/// logical bus ids this DBC is scoped to. Decoders walk the
 /// loaded list in order — the first that decodes a given frame wins —
 /// and skip any DBC whose `buses` set is non-empty and doesn't contain
 /// the frame's `bus_id`. An empty set is "applies to every bus".
@@ -214,7 +214,7 @@ struct AppState {
     /// `clear_trace_store` (the frame indices it holds wouldn't
     /// otherwise survive).
     signal_caches: SignalCacheStore,
-    /// Phase 7 host-side log bus. Append-side: the `sys_info!` /
+    /// Host-side log bus. Append-side: the `sys_info!` /
     /// `sys_warn!` / `sys_error!` macros that wrap call sites in
     /// project / DBC / connection / BLF-import flows. Read-side: the
     /// `fetch_system_log` / `clear_system_log` IPC commands and the
@@ -227,7 +227,7 @@ struct AppState {
     /// them inside the BLF as `GLOBAL_MARKER` records; Open Capture
     /// and project-open migration restore through them.
     notes: NotesStore,
-    /// Phase 12 filesystem watcher for loaded DBC paths. Lazily
+    /// Filesystem watcher for loaded DBC paths. Lazily
     /// initialised in the Tauri `setup` hook (it needs an
     /// `AppHandle` to drive its event callback). `None` only
     /// briefly during startup or if backend construction fails on
@@ -235,15 +235,15 @@ struct AppState {
     /// handle the `None` case as "no auto-reload" rather than
     /// failing.
     dbc_watcher: Mutex<Option<DbcWatcher>>,
-    /// Phase 13: host-side `SharedBus` instances for
+    /// Host-side `SharedBus` instances for
     /// `local-virtual-bus` bindings (ADR 0021). Reconstructed on
     /// every project open; dropped on close.
     local_buses: local_buses::LocalBusRegistry,
-    /// Phase 13 Step 9: the host-side TX-message pool. The transmit
+    /// The host-side TX-message pool. The transmit
     /// panel is a thin view onto this. Populated on project open,
     /// snapshotted on save.
     transmit_frames: Mutex<transmit_frames::TransmitFrameRegistry>,
-    /// Phase 13: handle to the single transmit scheduler thread
+    /// Handle to the single transmit scheduler thread
     /// (`run_transmit_scheduler`) that drives every running periodic.
     /// `start`/`stop_periodic_transmit` push schedule changes through
     /// it; the thread itself is spawned in `run`'s `setup`.
@@ -342,7 +342,7 @@ pub fn run() {
             debug_assert!(app.get_webview_window("main").is_some());
             spawn_trace_grew_emitter(app.handle().clone());
             // The single transmit scheduler thread drives every running
-            // periodic (Phase 13). Takes ownership of the command
+            // periodic. Takes ownership of the command
             // receiver created above.
             if let Some(rx) = transmit_sched_rx
                 .lock()
@@ -353,7 +353,7 @@ pub fn run() {
                 std::thread::spawn(move || run_transmit_scheduler(&handle, &rx));
             }
             sidecar::spawn_sidecar(app.handle());
-            // Phase 12: build the DBC filesystem watcher. Construction
+            // Build the DBC filesystem watcher. Construction
             // is the only step that needs the `AppHandle` (the
             // watcher's event callback emits events / pushes system
             // log entries through it). Stored on `AppState` so the
@@ -372,8 +372,8 @@ pub fn run() {
 /// byte-identical. An idle session settles there: the count is frozen
 /// and [`TraceStore::frames_per_second`] returns exactly `0.0` once a
 /// full second has elapsed since the last append, so after the rate has
-/// finished decaying the tuple stops changing and the emitter goes quiet
-/// (Phase 13 Step 8). During that one-second decay each read differs, so
+/// finished decaying the tuple stops changing and the emitter goes quiet.
+/// During that one-second decay each read differs, so
 /// the status line still slides to zero before the stream falls silent.
 fn should_emit_trace_grew(last: Option<(u64, f64)>, current: (u64, f64)) -> bool {
     match last {
@@ -425,7 +425,7 @@ fn spawn_trace_grew_emitter(app: AppHandle) {
     });
 }
 
-/// Per-channel BLF bus mapping (Phase 6). One entry per channel the
+/// Per-channel BLF bus mapping. One entry per channel the
 /// caller wants to route: `Some(bus_id)` to route it onto that logical
 /// bus, `None` to drop frames on that channel. Channels not listed
 /// stream through unassigned (`bus_id = None` on the raw frame). Camel
@@ -440,7 +440,7 @@ pub struct ChannelBusMapping {
 }
 
 /// One entry of the remote-server interface → bus map the GUI sends
-/// to `connect_remote_server` (Phase 6). `interface` is the wire
+/// to `connect_remote_server`. `interface` is the wire
 /// `Interface.id`; `bus_id` is the project's logical bus.
 ///
 /// `speed_bps` / `fd` / `fd_data_speed_bps` are the bus's hardware
@@ -571,7 +571,7 @@ fn save_capture(
     // RawTraceFrame out under the trace-store lock — that's the
     // simplest correct read; for very long captures it's a single
     // big allocation rather than streaming chunked reads, which
-    // we'll revisit when disk-spill (Phase 10) lands.
+    // we'll revisit when disk-spill lands.
     let frames = state.trace_store.slice(0, state.trace_store.len());
     let notes = state.notes.snapshot();
 
@@ -800,7 +800,7 @@ fn channel_for_save(frame: &trace_store::RawTraceFrame, buses: &[String]) -> u8 
 }
 
 /// Pre-scan a BLF file and return its distinct channel numbers, in
-/// ascending order. Used by the GUI's BLF import flow (Phase 6) to
+/// ascending order. Used by the GUI's BLF import flow to
 /// build the channel → bus mapping step before frames start flowing.
 ///
 /// `async` so Tauri runs it off the main thread — scanning a multi-
@@ -867,7 +867,7 @@ fn dbc_list(state: &AppState) -> Vec<DbcInfo> {
 /// "reload from disk"). Returns the full loaded list on success; on a
 /// read / parse error the set is left unchanged.
 ///
-/// Phase 7: emits `dbc`-tagged messages on the system log — `info` on
+/// Emits `dbc`-tagged messages on the system log — `info` on
 /// success (loaded or reloaded), `error` if the file can't be read or
 /// the DBC can't be parsed.
 #[tauri::command]
@@ -907,7 +907,7 @@ fn add_dbc(
         sys_info!(&app, "dbc", "reloaded DBC {path}");
     } else {
         sys_info!(&app, "dbc", "loaded DBC {path}");
-        // Phase 12: start watching this file's parent dir for FS
+        // Start watching this file's parent dir for FS
         // events (only on first-load — a reload is already watched).
         if let Some(w) = state
             .dbc_watcher
@@ -1015,7 +1015,7 @@ fn collect_trace_records(state: &AppState, start: u64, end: u64) -> Vec<TraceFra
 /// Decode a raw frame against the loaded DBCs, in order — the first
 /// one that recognises the arbitration id wins. Skips any DBC whose
 /// `buses` set is non-empty and doesn't contain the frame's `bus_id`
-/// (Phase 6 per-bus scoping); an empty set is "all buses". `None` if
+/// (per-bus scoping); an empty set is "all buses". `None` if
 /// no DBC decodes.
 fn decode_against(dbs: &[LoadedDbc], frame: &RawTraceFrame) -> Option<DecodedRecord> {
     dbs.iter()
@@ -1038,7 +1038,7 @@ fn dbc_applies_to_frame(dbc: &LoadedDbc, frame: &RawTraceFrame) -> bool {
 /// be the trace view, sizing `end - start` to the visible window plus a
 /// small prefetch pad.
 ///
-/// Phase 6: `filter` is the consumer's optional [`FilterPredicate`]
+/// `filter` is the consumer's optional [`FilterPredicate`]
 /// (a filter element's predicate, evaluated post-decode). Frames that
 /// don't pass are dropped from the returned vec — the consumer sees a
 /// pre-filtered slice. The frontend already keys its row cache on the
@@ -1107,7 +1107,7 @@ fn record_matches(predicate: &FilterPredicate, record: &TraceFrameRecord) -> boo
 /// value of every id in the window". Backs the per-message-ID panel;
 /// `async` so it runs off the main thread, like [`fetch_trace_range`].
 ///
-/// Phase 6: `filter` drops rows whose latest frame doesn't pass the
+/// `filter` drops rows whose latest frame doesn't pass the
 /// predicate. (Note: this filters the *latest* observation; a row a
 /// signal-value filter excludes can re-appear once the id emits a
 /// passing value.)
@@ -1140,7 +1140,7 @@ async fn fetch_latest_by_id(
         .collect()
 }
 
-/// Phase 6.5: a *paged* window into the filtered chronological trace.
+/// A *paged* window into the filtered chronological trace.
 /// Scans `[scan_start, scan_end)` of the trace store, applies `filter`,
 /// and returns the total match count plus the decoded matches at
 /// match-indices `[offset, offset + limit)` — or, when `from_end` is
@@ -1212,7 +1212,7 @@ async fn fetch_filtered_trace(
 /// stale timestamps and show as negative offsets.
 ///
 /// The next `trace-grew` tick will fire with the new count (zero),
-/// prompting the trace view to drop its row cache. Phase 9: any
+/// prompting the trace view to drop its row cache. Any
 /// session-scoped notes go with the buffer (they reference timestamps
 /// on the now-discarded timeline).
 #[tauri::command]
@@ -1231,7 +1231,7 @@ fn clear_trace_store(app: AppHandle, state: State<'_, AppState>) {
     }
 }
 
-/// Snapshot the host-side system log (Phase 7). Returns every message
+/// Snapshot the host-side system log. Returns every message
 /// currently in the ring in chronological order. The frontend keeps
 /// its own copy and merges incremental `system-log-appended` events
 /// into it; this command is the bootstrap (panel opens / page reloads)
@@ -1242,7 +1242,7 @@ fn fetch_system_log(state: State<'_, AppState>) -> Vec<SystemMessage> {
     state.system_log.snapshot()
 }
 
-/// Drop every message from the host-side system log (Phase 7). The
+/// Drop every message from the host-side system log. The
 /// `seq` counter is deliberately *not* reset; the frontend uses `seq`
 /// to deduplicate against in-flight `system-log-appended` events, so
 /// resetting would risk delivering a stale `seq = 0` after a clear.
@@ -1258,7 +1258,7 @@ fn clear_system_log(state: State<'_, AppState>) {
 /// event, and the frontend mirror picks it up via its existing
 /// listener — no separate channel for GUI-emitted entries.
 ///
-/// Phase 12 surfaces this for the filter-defined plot area's
+/// This is surfaced for the filter-defined plot area's
 /// bus-rename invalidation warning (`source = "plot"`). Future
 /// frontend-side warnings reuse the same command; keep `source`
 /// short and stable (it's filterable in the panel).
@@ -1280,7 +1280,7 @@ fn gui_emit_system_log(
     Ok(())
 }
 
-/// Phase 9: snapshot of the session-scoped notes, chronological.
+/// Snapshot of the session-scoped notes, chronological.
 /// Plot panels call this on mount to seed their event list and
 /// reconcile against `notes-changed` events.
 #[tauri::command]
@@ -1289,7 +1289,7 @@ fn fetch_notes(state: State<'_, AppState>) -> Vec<Note> {
     state.notes.snapshot()
 }
 
-/// Phase 9: add a note to the session buffer. Emits `notes-changed`
+/// Add a note to the session buffer. Emits `notes-changed`
 /// with the new chronological snapshot on success. A duplicate `id`
 /// is a no-op (idempotent against an event arriving twice).
 #[tauri::command]
@@ -1301,7 +1301,7 @@ fn add_note(app: AppHandle, note: Note) {
     }
 }
 
-/// Phase 9: rename an existing note.
+/// Rename an existing note.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 fn rename_note(app: AppHandle, id: String, label: String) {
@@ -1311,7 +1311,7 @@ fn rename_note(app: AppHandle, id: String, label: String) {
     }
 }
 
-/// Phase 9: remove a note from the session buffer.
+/// Remove a note from the session buffer.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 fn remove_note(app: AppHandle, id: String) {
@@ -1321,7 +1321,7 @@ fn remove_note(app: AppHandle, id: String) {
     }
 }
 
-/// Phase 9: drop every note from the session buffer. Called by the
+/// Drop every note from the session buffer. Called by the
 /// trace-store clear path so cleared captures lose their notes too.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
@@ -1415,7 +1415,7 @@ fn list_signals(
     out
 }
 
-/// Snapshot every loaded DBC's content for the Phase 12 DBC
+/// Snapshot every loaded DBC's content for the DBC
 /// discovery panel: one [`DbcContentRecord`] per loaded file, each
 /// carrying the file path plus the tree the panel renders (messages
 /// → signals + comments + attributes + value tables).
@@ -1722,14 +1722,14 @@ fn decode_raw_frame(db: &Database, frame: &RawTraceFrame) -> Option<DecodedRecor
 /// address. A second connect to the same address while one is open
 /// returns an error.
 ///
-/// Phase 6: `bindings` is the project's interface → bus mapping for
+/// `bindings` is the project's interface → bus mapping for
 /// this server (a list of `{interface, bus_id}` pairs). The host
 /// subscribes to exactly those interfaces (in binding order) and
 /// translates each into a per-channel mapping the pump uses to stamp
 /// each frame's `bus_id`. An empty `bindings` is an error — there's
 /// nothing to subscribe to.
-// Phase 7 sprinkled structured-log emit sites across this command;
-// it's now slightly over clippy's default function-length cap, but the
+// Structured-log emit sites are sprinkled across this command;
+// it's slightly over clippy's default function-length cap, but the
 // shape is "linear sequence of named failure points" — splitting would
 // just inline-extract a helper that has zero independent meaning.
 #[allow(clippy::too_many_lines)]
@@ -2158,7 +2158,7 @@ fn route_channel(channel: u8, mapping: &[(u8, Option<String>)]) -> Result<Option
 // "pass by reference" suggestion doesn't fit the thread-spawn site.
 //
 // `channel_to_bus` is the source's per-channel logical-bus mapping
-// (Phase 6). On each frame the pump tags it with the bus_id matching
+// On each frame the pump tags it with the bus_id matching
 // its `channel`; a channel with no entry stays `bus_id: None`; a
 // channel mapped to `None` is dropped (the BLF-import "skip" path).
 #[allow(clippy::needless_pass_by_value)]
@@ -2215,7 +2215,7 @@ fn run_pump<S>(
     let _ = app.emit("log-finished", LogFinished::Ok { total });
 }
 
-// ---- Phase 13 Step 9: host-side TX-message registry IPC surface ----
+// ---- host-side TX-message registry IPC surface ----
 //
 // Every transmit panel is a thin view onto the host pool. Mutations go
 // through these commands; each emits `transmit-frames-changed` so open
@@ -2381,7 +2381,7 @@ fn next_tick_deadline(
     if target > now { target } else { now }
 }
 
-/// The single transmit scheduler thread (Phase 13). It owns one
+/// The single transmit scheduler thread. It owns one
 /// [`transmit_scheduler::PeriodicSchedule`] for *all* running periodics
 /// and blocks on the command channel with a timeout equal to the time
 /// until the next deadline — so it wakes either when a `Start` / `Stop`
@@ -2392,7 +2392,7 @@ fn next_tick_deadline(
 /// On each due entry it asks the registry [`fire_info`] what to emit
 /// (re-read every tick, so live payload / period edits land on the next
 /// emission — property 4), skips the actual transmit when the target bus
-/// has no live session (no tx-confirm while disconnected — Phase 11; the
+/// has no live session (no tx-confirm while disconnected; the
 /// schedule keeps ticking and resumes on reconnect), and reschedules on
 /// a fixed-rate grid via [`next_tick_deadline`] (work time absorbed, no
 /// catch-up burst). A `fire_info` of `None` (stopped, parked, or
@@ -2818,7 +2818,7 @@ fn signal_to_wire(sig: &DecodedSignal<'_>) -> SignalRecord {
 }
 
 // ------------------------------------------------------------------
-// Phase 13: local-virtual-bus commands (ADR 0021)
+// local-virtual-bus commands (ADR 0021)
 // ------------------------------------------------------------------
 //
 // Lifecycle: the GUI calls [`replay_local_virtual_buses`] on every
@@ -3816,7 +3816,7 @@ mod tests {
     // Not part of the default suite (they're `#[ignore]`d and loop for a
     // while). They exist to scope the "arbitrarily many 5–10 ms cyclic
     // messages across multiple buses" target with real numbers before we
-    // rearchitect the scheduler (Phase 13). Run both with:
+    // rearchitect the scheduler. Run both with:
     //
     //   cargo test -p cannet-gui -- --ignored --nocapture bench_tx
     //

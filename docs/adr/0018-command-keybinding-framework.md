@@ -2,7 +2,7 @@
 
 Status: accepted (2026-05-26)
 
-Phase 15 ([`../../plans/phased-implementation.md`](../../plans/phased-implementation.md))
+Phase 16 ([`../../plans/phased-implementation.md`](../../plans/phased-implementation.md))
 introduces a generalised command and keybinding primitive that every
 later track and phase registers on. This ADR records the shape of
 that primitive and why.
@@ -86,8 +86,8 @@ Inventing a predicate DSL would buy generality nobody needs.
 
 ## Consequences
 
-- Phase 14's `f` and `l` plot hotkeys, the lifted toolbar
-  commands, Phase 12's DBC panel commands, and Phase 18's
+- Phase 15's `f` and `l` plot hotkeys, the lifted toolbar
+  commands, Phase 12's DBC panel commands, and Phase 19's
   `goto.traceRow` / `goto.timeInTrace` / `plot.setVisibleRange`
   / `capture.save` all register on this framework. Anything
   later registers theirs too.

@@ -1,7 +1,7 @@
 //! Host-side `SharedBus` instances for `local-virtual-bus`
 //! definitions (ADR 0021).
 //!
-//! Phase 13 rework: the *virtual bus* is now a project-scoped
+//! The *virtual bus* is a project-scoped
 //! resource ([`crate::project::LocalVirtualBusDef`]) separate from
 //! the *bindings* that observe it. The registry owns one
 //! [`SharedBus`] per definition and tracks any bridges configured on
@@ -27,8 +27,7 @@
 //!     thin adapter that becomes the bridge's `CanFrameSink`.
 //!   * [`SharedBus::attach_bridge`] returns a [`BridgeHandle`] that we
 //!     hold for the life of the bridge. Dropping it tears the bridge
-//!     down (the ingress / egress threads detach and self-terminate,
-//!     per Phase 13 Step 5).
+//!     down (the ingress / egress threads detach and self-terminate).
 
 use std::collections::HashMap;
 use std::sync::Mutex;

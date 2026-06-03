@@ -10,8 +10,8 @@ export const ROW_HEIGHT = 22;
 
 /// Pixel height of a row whose decoded signals are expanded: the
 /// message line plus a fixed six lines of signal grid (see `.signals`
-/// in `index.css`). Messages with more signals get clipped — tracked
-/// in `plans/backlog.md` (signals-on-their-own-lines).
+/// in `index.css`). Messages with more signals get clipped — the
+/// signals-on-their-own-lines follow-up is deferred.
 export const EXPANDED_ROW_HEIGHT = ROW_HEIGHT + 18 * 6;
 
 /// Cap on the rendered scroll-container height. Browsers cap CSS

@@ -1,4 +1,4 @@
-//! gRPC client for the Phase-2 cannet wire protocol.
+//! gRPC client for the cannet wire protocol.
 //!
 //! The crate adapts the `cannet-wire` gRPC service into the
 //! [`cannet_core::CanFrameSource`] trait the rest of the analyzer is

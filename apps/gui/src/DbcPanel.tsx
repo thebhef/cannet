@@ -18,7 +18,7 @@ import {
 } from "./dragSignals";
 
 /**
- * Phase 12 DBC discovery panel. Tree-with-fuzzy-search over every
+ * DBC discovery panel. Tree-with-fuzzy-search over every
  * loaded DBC's messages and signals — the spatial / search counterpart
  * to the project panel's DBC inventory (ADR 0012 keeps the inventory
  * role on the project panel; this is the discovery role).
@@ -30,12 +30,12 @@ import {
  *
  * The host owns the DBC set; the panel is a pure viewer over
  * [`list_dbc_content`]. Search runs against an
- * [`fzf`](https://github.com/ajitid/fzf-for-js)-backed matcher
- * (technology-inventory.md → fuzzy-search library); the matched set
- * auto-expands ancestors and the rest of the visible tree dims.
+ * [`fzf`](https://github.com/ajitid/fzf-for-js)-backed matcher; the
+ * matched set auto-expands ancestors and the rest of the visible tree
+ * dims.
  *
- * View-only in this slice — drag sources and multi-select land in the
- * next slice of Phase 12.
+ * Rows are drag sources for signals (see {@link setSignalDragData})
+ * and support multi-select.
  */
 
 interface PanelParams {
@@ -45,7 +45,7 @@ interface PanelParams {
   /// Node ids the user has manually expanded (see `nodeId`). Persisted
   /// as an array; loaded back as a Set on mount.
   expanded?: unknown;
-  /// Panel-wide "show details" toggle (Phase 12 polish). When `true`,
+  /// Panel-wide "show details" toggle. When `true`,
   /// each message / signal row renders a detail block underneath
   /// showing bit layout, scale, range, mux, attributes, value table,
   /// etc. — every DBC field we have a frontend representation for.
@@ -574,10 +574,10 @@ export function DbcPanel(props: IDockviewPanelProps) {
   // project context's `dbcPaths` mirrors the host's set so it's the
   // right dependency for add/remove/reload-via-UI; the explicit
   // `dbc-changed` event below covers the auto-reload-on-file-change
-  // path (Phase 12 follow-up: host watches DBC files).
+  // path (the host watches DBC files).
   useEffect(() => refreshContent(), [dbcPaths, refreshContent]);
 
-  // Phase 12 follow-up: when the host's filesystem watcher reports a
+  // When the host's filesystem watcher reports a
   // DBC change, refresh our snapshot so the tree reflects the new
   // content without a manual reload.
   useEffect(() => {
