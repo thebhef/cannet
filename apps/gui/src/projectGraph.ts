@@ -3,6 +3,7 @@
 
 import { bindingKind } from "./types";
 import type { Bus, InterfaceBinding, ProjectElement } from "./types";
+import { elementLabel } from "./elementLabel";
 
 export type GraphNodeKind =
   | "bus"
@@ -119,29 +120,15 @@ export function deriveGraph(
   );
 
   for (const el of elements) {
-    if (el.kind === "filter") {
-      nodes.push({
-        id: elementNodeId(el.id),
-        kind: "filter",
-        label: filterLabel(el),
-        element: el,
-      });
-    } else if (el.kind === "transmit") {
-      nodes.push({
-        id: elementNodeId(el.id),
-        kind: "transmit",
-        label: `Transmit ${shortId(el.id)}`,
-        element: el,
-      });
-    } else {
-      // trace | plot
-      nodes.push({
-        id: elementNodeId(el.id),
-        kind: el.kind,
-        label: `${capitalise(el.kind)} ${shortId(el.id)}`,
-        element: el,
-      });
-    }
+    // Every element node's label resolves through the one shared
+    // `elementLabel` (ADR 0019) — same string as the dockview tab,
+    // the project panel, and the go-to-view palette.
+    nodes.push({
+      id: elementNodeId(el.id),
+      kind: el.kind,
+      label: elementLabel(el),
+      element: el,
+    });
   }
 
   for (const el of elements) {
@@ -219,14 +206,3 @@ function gatewayLabel(b: InterfaceBinding): string {
   return `${b.interface}\n@ ${host || b.server}`;
 }
 
-function filterLabel(el: ProjectElement & { kind: "filter" }): string {
-  return el.name && el.name.length > 0 ? el.name : `Filter ${shortId(el.id)}`;
-}
-
-function shortId(id: string): string {
-  return id.length > 6 ? id.slice(0, 6) : id;
-}
-
-function capitalise(s: string): string {
-  return s.length === 0 ? s : s[0].toUpperCase() + s.slice(1);
-}

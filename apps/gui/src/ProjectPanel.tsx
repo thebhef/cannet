@@ -23,9 +23,9 @@ import type {
   InterfaceRecord,
   LocalVirtualBusDef,
   ProjectElement,
-  ProjectElementKind,
   SidecarStatus,
 } from "./types";
+import { elementKindLabel, elementLabel } from "./elementLabel";
 import {
   LOCAL_SERVER,
   isLocalBinding,
@@ -46,16 +46,6 @@ import {
   formatBitrate,
   parseBitrateInput,
 } from "./busHardwareConfig";
-
-/// Window title for an element's panel, by kind. `filter` has no panel
-/// of its own (see `elementPanelComponent`); the entry is present only
-/// to keep this a total map over `ProjectElementKind`.
-const PANEL_TITLE: Record<ProjectElementKind, string> = {
-  trace: "Trace",
-  plot: "Plot",
-  transmit: "Transmit",
-  filter: "Filter",
-};
 
 /// Tauri event the host fires whenever its per-address interface
 /// cache changes (ADR 0016). Must match
@@ -146,7 +136,7 @@ export function ProjectPanel(props: IDockviewPanelProps) {
     containerApi.addPanel({
       id: `${component}-${el.id}`,
       component,
-      title: PANEL_TITLE[el.kind],
+      title: elementLabel(el),
       params:
         el.kind === "trace"
           ? { elementId: el.id, mode: "by-id" }
@@ -210,30 +200,16 @@ export function ProjectPanel(props: IDockviewPanelProps) {
       <section className="project-section">
         <h3>Elements</h3>
         {reg.entries.length === 0 && <div className="project-empty">No elements.</div>}
-        {reg.entries.map((entry) => {
-          const el = entry.element;
-          const panel = panelFor(el.id);
-          return (
-            <div className="project-element" key={el.id}>
-              <span className="project-element-name">
-                {el.kind}
-                {panel ? ` — ${panel.title}` : " (closed)"}
-              </span>
-              {panel ? (
-                <button type="button" onClick={() => panel.api.setActive()}>
-                  Focus
-                </button>
-              ) : (
-                <button type="button" onClick={() => openElement(el)}>
-                  Open
-                </button>
-              )}
-              <button type="button" onClick={() => reg.remove(el.id)}>
-                Remove
-              </button>
-            </div>
-          );
-        })}
+        {reg.entries.map((entry) => (
+          <ElementRow
+            key={entry.element.id}
+            element={entry.element}
+            panel={panelFor(entry.element.id)}
+            onOpen={() => openElement(entry.element)}
+            onRename={(name) => reg.update(entry.element.id, { name })}
+            onRemove={() => reg.remove(entry.element.id)}
+          />
+        ))}
       </section>
 
       <section className="project-section">
@@ -484,6 +460,49 @@ export function ProjectPanel(props: IDockviewPanelProps) {
 /// Stable in the sense that two buses on the same project never share
 /// an id; not stable across renames (since renaming doesn't change the
 /// id).
+/// One row in the project panel's Elements inventory: the kind, an
+/// inline-rename input bound to the element's model-owned `name`
+/// (the project panel is the canonical edit surface — ADR 0019), and
+/// Open / Focus / Remove.
+export function ElementRow({
+  element,
+  panel,
+  onOpen,
+  onRename,
+  onRemove,
+}: {
+  element: ProjectElement;
+  panel: IDockviewPanel | undefined;
+  onOpen: () => void;
+  onRename: (name: string) => void;
+  onRemove: () => void;
+}) {
+  return (
+    <div className="project-element">
+      <span className="project-element-kind">{elementKindLabel(element.kind)}</span>
+      <input
+        type="text"
+        className="project-bus-name-input"
+        value={element.name ?? ""}
+        onChange={(e) => onRename(e.target.value)}
+        aria-label={`element ${element.id} name`}
+      />
+      {panel ? (
+        <button type="button" onClick={() => panel.api.setActive()}>
+          Focus
+        </button>
+      ) : (
+        <button type="button" onClick={onOpen}>
+          Open
+        </button>
+      )}
+      <button type="button" onClick={onRemove}>
+        Remove
+      </button>
+    </div>
+  );
+}
+
 function newBusId(existing: readonly string[]): string {
   for (let i = 1; ; i++) {
     const candidate = `b${i}`;

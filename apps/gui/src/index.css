@@ -582,11 +582,13 @@ header {
   margin-bottom: 0.3rem;
 }
 
-.project-element-name {
-  flex: 1 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.project-element-kind {
+  flex: 0 0 auto;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #94a3b8;
+  min-width: 4.5rem;
 }
 
 .project-path {

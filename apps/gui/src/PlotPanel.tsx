@@ -13,6 +13,7 @@ import { useTrace } from "./trace";
 import { TraceControls } from "./TraceControls";
 import { useNotes } from "./notesContext";
 import { decodeSignalsSample, enumSegments, groupScaleRanges, mergeSeries, signalKey } from "./plotData";
+import { elementLabel } from "./elementLabel";
 import { SourcesMenuSection } from "./SourcesPicker";
 import {
   DEFAULT_MEASUREMENTS,
@@ -463,11 +464,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     () =>
       registry.entries
         .filter((e) => e.element.kind === "filter")
-        .map((e) => ({
-          id: e.element.id,
-          label:
-            (e.element as { name?: string }).name ?? `Filter ${e.element.id.slice(0, 6)}`,
-        })),
+        .map((e) => ({ id: e.element.id, label: elementLabel(e.element) })),
     [registry.entries],
   );
   const handleSourcesChange = useCallback(

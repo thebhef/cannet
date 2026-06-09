@@ -72,7 +72,7 @@ import {
   reanchorToSession,
 } from "./trace";
 import { defaultBusColor } from "./busColor";
-import { assignDefaultNames, defaultElementName } from "./elementLabel";
+import { assignDefaultNames, defaultElementName, elementLabel } from "./elementLabel";
 import {
   BY_ID_PANEL_COMPONENT,
   DBC_PANEL_COMPONENT,
@@ -248,8 +248,6 @@ export function App() {
 
   // The dockview layout API, populated once `onReady` fires.
   const dockApiRef = useRef<DockviewApi | null>(null);
-  // Monotonic counters for "Trace N" / "Plot N" panel titles.
-  const panelCounterRef = useRef(0);
   // Current `dirty` / `handleSaveProject`, read by the (once-registered)
   // close-on-quit handler. Updated on every render below.
   const dirtyRef = useRef(false);
@@ -339,13 +337,19 @@ export function App() {
   // Shallow patch of an element's persisted fields. Used by the
   // per-sink Sources picker (sets `sources`), the filter predicate
   // editor (sets `predicate`), the transmit panel's sinks picker
-  // (sets `sinks`), and the "Insert filter upstream" flow (sets
-  // multiple at once). Guards are in the pure helper: kind / id
-  // mismatch and filter cycles are silently refused. See
-  // `applyElementPatch`.
+  // (sets `sinks`), the project panel's inline rename (sets `name`),
+  // and the "Insert filter upstream" flow (sets multiple at once).
+  // Guards are in the pure helper: kind / id mismatch and filter
+  // cycles are silently refused. See `applyElementPatch`. A patch
+  // that actually changes a persisted field marks the workspace
+  // dirty (deferred to a microtask — updaters must stay pure).
   const updateElement = useCallback(
     (id: string, patch: Partial<ProjectElement>) => {
-      setRegistry((prev) => applyElementPatch(prev, id, patch) as RegistryEntry[]);
+      setRegistry((prev) => {
+        const next = applyElementPatch(prev, id, patch) as RegistryEntry[];
+        if (next !== prev) queueMicrotask(() => setDirty(true));
+        return next;
+      });
     },
     [],
   );
@@ -379,7 +383,11 @@ export function App() {
     },
     [registry],
   );
-  const plotCounterRef = useRef(0);
+  // Latest registry, mirrored into a ref so the add-panel handlers
+  // can compute the new element's default name (= the tab title)
+  // without taking `registry` as a dependency.
+  const registryRef = useRef<readonly RegistryEntry[]>([]);
+  registryRef.current = registry;
 
   const invalidateCache = useCallback(() => {
     chunkCacheRef.current.clear();
@@ -875,7 +883,6 @@ export function App() {
       title: "Project",
       position: { direction: "left" },
     });
-    panelCounterRef.current = 1;
   }, [create]);
 
   /// Snapshot the current workspace into a `Project` (the elements, not
@@ -941,7 +948,6 @@ export function App() {
       if (api && layout) {
         try {
           api.fromJSON(layout);
-          panelCounterRef.current = api.panels.length;
         } catch {
           /* keep the current layout if the saved one won't load */
         }
@@ -1279,16 +1285,20 @@ export function App() {
     [count, fetchChunk],
   );
 
+  // Tab titles come from the element's model-owned name (ADR 0019):
+  // the handler computes the same `${Kind} ${n}` default `create`
+  // assigns (against the registry the element is joining), and the
+  // title-sync effect below keeps the tab current thereafter.
   const addTracePanel = useCallback(() => {
     const api = dockApiRef.current;
     if (!api) return;
+    const title = defaultElementName("trace", registryRef.current.map((e) => e.element));
     const elementId = create("trace");
-    panelCounterRef.current += 1;
     // A new trace starts in by-id mode (toggle it in the panel toolbar).
     api.addPanel({
       id: `trace-${elementId}`,
       component: TRACE_PANEL_COMPONENT,
-      title: `Trace ${panelCounterRef.current}`,
+      title,
       params: { elementId, mode: "by-id" },
     });
   }, [create]);
@@ -1296,29 +1306,46 @@ export function App() {
   const addPlotPanel = useCallback(() => {
     const api = dockApiRef.current;
     if (!api) return;
+    const title = defaultElementName("plot", registryRef.current.map((e) => e.element));
     const elementId = create("plot");
-    plotCounterRef.current += 1;
     api.addPanel({
       id: `plot-${elementId}`,
       component: PLOT_PANEL_COMPONENT,
-      title: `Plot ${plotCounterRef.current}`,
+      title,
       params: { elementId },
     });
   }, [create]);
 
-  const transmitCounterRef = useRef(0);
   const addTransmitPanel = useCallback(() => {
     const api = dockApiRef.current;
     if (!api) return;
+    const title = defaultElementName("transmit", registryRef.current.map((e) => e.element));
     const elementId = create("transmit");
-    transmitCounterRef.current += 1;
     api.addPanel({
       id: `transmit-${elementId}`,
       component: TRANSMIT_PANEL_COMPONENT,
-      title: `Transmit ${transmitCounterRef.current}`,
+      title,
       params: { elementId },
     });
   }, [create]);
+
+  // Keep every element-backed dockview tab title in lockstep with the
+  // model-owned name (ADR 0019): covers rename from the project
+  // panel, project open (layouts saved with stale titles), and the
+  // self-healing `ensure` path.
+  useEffect(() => {
+    const api = dockApiRef.current;
+    if (!api) return;
+    for (const panel of api.panels) {
+      const elementId = (panel.params as { elementId?: unknown } | undefined)
+        ?.elementId;
+      if (typeof elementId !== "string") continue;
+      const entry = registry.find((e) => e.element.id === elementId);
+      if (!entry) continue;
+      const label = elementLabel(entry.element);
+      if (panel.title !== label) panel.api.setTitle(label);
+    }
+  }, [registry]);
 
 
   // Show-or-focus a singleton panel keyed by its fixed id. Used by the
@@ -1453,10 +1480,7 @@ export function App() {
           restored = false;
         }
       }
-      if (restored) {
-        // Keep numbering past whatever the restored layout already shows.
-        panelCounterRef.current = api.panels.length;
-      } else {
+      if (!restored) {
         seedDefaultLayout();
       }
 

@@ -47,6 +47,26 @@ describe("deriveGraph", () => {
     ]);
   });
 
+  it("element nodes resolve their label through the model-owned name", () => {
+    // ADR 0019: every view goes through `elementLabel` — a named
+    // element shows its name; an unnamed one falls back to
+    // `${Kind} ${shortId}`.
+    const named: ProjectElement = {
+      kind: "trace",
+      id: "abcdef123",
+      name: "Powertrain log",
+      sources: [],
+    };
+    const unnamed: ProjectElement = { kind: "plot", id: "fedcba987", sources: [] };
+    const g = deriveGraph([], [], [named, unnamed]);
+    expect(g.nodes.find((n) => n.id === elementNodeId("abcdef123"))?.label).toBe(
+      "Powertrain log",
+    );
+    expect(g.nodes.find((n) => n.id === elementNodeId("fedcba987"))?.label).toBe(
+      "Plot fedcba",
+    );
+  });
+
   it("a gateway bound to a non-existent bus produces the node but no edge", () => {
     const b = binding("127.0.0.1:50051", "can0", "missing");
     const g = deriveGraph([bus("p")], [b], []);
