@@ -124,7 +124,8 @@ a multi-region renderer uPlot doesn't natively provide.
 
 ## Implementation status
 
-Task 15 ships the model end-to-end with one rough edge to close:
+Task 15 ships the model with the deviations and rough edges noted
+below:
 
 - **Show-points control** (`auto` / `off` / `on`) is on the plot
   toolbar and applies to every series in every axis of the panel.
@@ -132,6 +133,15 @@ Task 15 ships the model end-to-end with one rough edge to close:
   sits in each plot area's signal-panel head. Switching modes
   re-stacks the area's canvases. The per-axis derivation is the pure
   `deriveAxesForArea()` helper (covered by unit tests).
+- **Unit-based y-scale.** Same-unit series on an axis share one y
+  scale — the union of their observed ranges, computed by the pure
+  `groupScaleRanges()` helper in `plotData` — and each unit group
+  auto-scales independently to fill the axis. One refinement on the
+  decision table: **unitless series each keep their own scale**. Two
+  signals that merely both lack a DBC unit are not known to be
+  commensurable, and pinning them to a shared min/max would flatten
+  whichever has the smaller range; "shares a unit" is read as
+  "shares a *declared* unit".
 - **Multi-uPlot per area.** Each derived axis is a stacked uPlot
   instance with its own canvas and signal-list slice; the panel-level
   x-sync registry (`xSyncRef` + `registerInstance`) was already
@@ -151,6 +161,14 @@ Task 15 ships the model end-to-end with one rough edge to close:
 
 What's still rough:
 
+- **Primary signal is per *area*, not per axis.** The decision above
+  gives each axis its own primary signal; the implementation keeps
+  one `primarySignalKey` per plot area, shared by its derived axes.
+  Clicking a series sets the area's primary; a derived axis that
+  doesn't contain that series falls back to its own first non-hidden
+  signal — so in practice each axis labels itself sensibly, but the
+  user can't pin a *different* explicit primary on two axes of the
+  same area. Lift the key onto the derived axis if that ever bites.
 - **Per-unit grouping is unit-based only.** The `deriveAxesForArea`
   helper has an `isEnum` predicate slot to break enum series out
   onto their own axis in per-unit mode, but the panel doesn't
