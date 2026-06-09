@@ -135,3 +135,21 @@ export function dispatchStroke(
   // the stroke wasn't ours.
   return { pending: [], commandId: null, handled: false };
 }
+
+/// Is the keydown target a text-entry surface? Plain-key bindings
+/// are suppressed there (see `dispatchStroke`'s `inEditable`).
+export function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement ||
+    target.isContentEditable
+  );
+}
+
+/// Cmd-as-Mod platform detection for the dispatcher and the palette's
+/// binding hints.
+export function isMacPlatform(): boolean {
+  return typeof navigator !== "undefined" && /mac/i.test(navigator.platform);
+}

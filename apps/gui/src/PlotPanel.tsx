@@ -14,6 +14,7 @@ import { TraceControls } from "./TraceControls";
 import { useNotes } from "./notesContext";
 import { decodeSignalsSample, enumSegments, groupScaleRanges, mergeSeries, signalKey } from "./plotData";
 import { elementLabel } from "./elementLabel";
+import { usePanelCommands } from "./panelCommands";
 import { SourcesMenuSection } from "./SourcesPicker";
 import {
   DEFAULT_MEASUREMENTS,
@@ -649,6 +650,15 @@ export function PlotPanel(props: IDockviewPanelProps) {
     applyXAll(0, ext != null && ext > 0 ? ext : 1, null);
     setResetYEpoch((n) => n + 1);
   }, [sharedExtent, applyXAll]);
+
+  // Hotkey / palette implementations for this panel instance
+  // (ADR 0018): with the panel focused, `f` re-runs fit-data and `l`
+  // re-enters follow-live (enable-only — panning the x axis is how
+  // the user drops out).
+  usePanelCommands(elementId, {
+    "plot.fitXAxis": fitData,
+    "plot.followLive.enable": () => setFollowLive(true),
+  });
 
   /** Wrap the trace's Clear so it also wipes the panel-level overlays
    * (cursors, notes) and the per-area normalisation range — the trace

@@ -11,7 +11,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 vi.mock("uplot", () => {
   class FakeUPlot {
@@ -97,6 +97,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 import { PlotPanel } from "./PlotPanel";
+import { PanelCommandsContext, createPanelCommandRegistry } from "./panelCommands";
 import { TraceDataContext, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { ElementRegistryContext, type ElementRegistry } from "./projectElements";
@@ -437,5 +438,49 @@ describe("PlotPanel", () => {
     expect(lastCall.showPoints).toBe("on");
     fireEvent.change(sel, { target: { value: "off" } });
     expect((screen.getByLabelText("show points") as HTMLSelectElement).value).toBe("off");
+  });
+});
+
+describe("PlotPanel command registration (f / l hotkeys)", () => {
+  function renderWithCommands() {
+    const commands = createPanelCommandRegistry();
+    const api = { updateParameters: vi.fn() };
+    const props = {
+      params: { elementId: "el-test" },
+      api,
+    } as unknown as Parameters<typeof PlotPanel>[0];
+    render(
+      <TraceDataContext.Provider value={traceData}>
+        <ProjectContext.Provider value={projectCtx}>
+          <ElementRegistryContext.Provider value={makeRegistry()}>
+            <PanelCommandsContext.Provider value={commands}>
+              <PlotPanel {...props} />
+            </PanelCommandsContext.Provider>
+          </ElementRegistryContext.Provider>
+        </ProjectContext.Provider>
+      </TraceDataContext.Provider>,
+    );
+    return commands;
+  }
+
+  it("registers plot.fitXAxis for its element", () => {
+    const commands = renderWithCommands();
+    expect(commands.invoke("el-test", "plot.fitXAxis")).toBe(true);
+  });
+
+  it("plot.followLive.enable re-enables follow live (enable-only)", () => {
+    const commands = renderWithCommands();
+    const checkbox = screen.getByRole("checkbox", { name: /follow live/i });
+    fireEvent.click(checkbox);
+    expect(checkbox).not.toBeChecked();
+    act(() => {
+      commands.invoke("el-test", "plot.followLive.enable");
+    });
+    expect(checkbox).toBeChecked();
+    // Enable-only: invoking again must not toggle it back off.
+    act(() => {
+      commands.invoke("el-test", "plot.followLive.enable");
+    });
+    expect(checkbox).toBeChecked();
   });
 });

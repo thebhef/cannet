@@ -1,6 +1,7 @@
 import type { SerializedDockview } from "dockview";
 
 import type { ProjectElementKind } from "./types";
+import type { FocusedPanelKind } from "./commands";
 
 /**
  * `localStorage` key for the persisted panel layout. The `.v1` suffix
@@ -48,6 +49,40 @@ export const DBC_PANEL_ID = "dbc";
 /// The project graph is a singleton panel — one per workspace — so it
 /// gets a fixed id rather than one keyed on an element.
 export const PROJECT_GRAPH_PANEL_ID = "project-graph";
+
+/// The project / system-messages panels are singletons too — fixed
+/// dockview ids so the toolbar button can find the one instance,
+/// focus it, or add it on first click.
+export const PROJECT_PANEL_ID = "project";
+export const SYSTEM_MESSAGES_PANEL_ID = "system-messages";
+
+/// What `CommandContext.focusedPanelKind` should report for the
+/// active dockview panel: element-backed panels report their element
+/// kind (resolved by the caller from `params.elementId`), the
+/// singletons report their fixed id, anything else is `null`. A
+/// `filter` has no panel of its own, so it can never be the focused
+/// kind.
+export function panelKindForFocus(
+  panelId: string,
+  elementKind: ProjectElementKind | null,
+): FocusedPanelKind | null {
+  if (elementKind === "trace" || elementKind === "plot" || elementKind === "transmit") {
+    return elementKind;
+  }
+  if (elementKind != null) return null;
+  switch (panelId) {
+    case PROJECT_PANEL_ID:
+      return "project";
+    case SYSTEM_MESSAGES_PANEL_ID:
+      return "system-messages";
+    case PROJECT_GRAPH_PANEL_ID:
+      return "project-graph";
+    case DBC_PANEL_ID:
+      return "dbc";
+    default:
+      return null;
+  }
+}
 
 /// The dockview component a project element opens into as its own
 /// panel, or `null` for a kind that has no panel of its own.

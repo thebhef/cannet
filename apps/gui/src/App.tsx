@@ -83,12 +83,33 @@ import {
   PROJECT_GRAPH_PANEL_COMPONENT,
   PROJECT_GRAPH_PANEL_ID,
   PROJECT_PANEL_COMPONENT,
+  PROJECT_PANEL_ID,
   SYSTEM_MESSAGES_PANEL_COMPONENT,
+  SYSTEM_MESSAGES_PANEL_ID,
   TRACE_PANEL_COMPONENT,
   TRANSMIT_PANEL_COMPONENT,
+  panelKindForFocus,
   parseSavedLayout,
   validateLayout,
 } from "./dockLayout";
+import {
+  COMMANDS,
+  PARSED_BINDINGS,
+  commandsAvailableIn,
+  type CommandContext,
+} from "./commands";
+import {
+  dispatchStroke,
+  formatChord,
+  isEditableTarget,
+  isMacPlatform,
+  type KeyStroke,
+} from "./keybindings";
+import { PaletteModal, type PaletteItem } from "./PaletteModal";
+import {
+  PanelCommandsContext,
+  createPanelCommandRegistry,
+} from "./panelCommands";
 
 // BLF + global error state. Remote sessions are tracked separately
 // (multi-server: one entry per address in `remoteSessions`).
@@ -128,12 +149,6 @@ const DOCK_COMPONENTS = {
   [SYSTEM_MESSAGES_PANEL_COMPONENT]: SystemMessagesPanel,
   [DBC_PANEL_COMPONENT]: DbcPanel,
 };
-
-/// The project / graph / system-messages panels are singletons — each
-/// uses a fixed dockview id so the toolbar button can find the one
-/// instance, focus it, or add it on first click.
-const PROJECT_PANEL_ID = "project";
-const SYSTEM_MESSAGES_PANEL_ID = "system-messages";
 
 export function App() {
   const [count, setCount] = useState(0);
@@ -388,6 +403,28 @@ export function App() {
   // without taking `registry` as a dependency.
   const registryRef = useRef<readonly RegistryEntry[]>([]);
   registryRef.current = registry;
+
+  // --- command / hotkey framework (ADR 0018) ---
+  // The active dockview panel, tracked via `onDidActivePanelChange`
+  // (subscribed in `handleDockReady`). Feeds the typed command
+  // context's `focusedPanelKind` and routes panel-local commands
+  // (the plot `f` / `l` hotkeys) to the focused panel's element.
+  const [activePanel, setActivePanel] = useState<{
+    id: string;
+    elementId: string | null;
+  } | null>(null);
+  const focusedPanelKind = useMemo(() => {
+    if (!activePanel) return null;
+    const elementKind = activePanel.elementId
+      ? registry.find((e) => e.element.id === activePanel.elementId)?.element.kind ?? null
+      : null;
+    return panelKindForFocus(activePanel.id, elementKind);
+  }, [activePanel, registry]);
+  // Which palette is open: the command palette (Mod+Shift+P) or
+  // go-to-view (Mod+P).
+  const [openPalette, setOpenPalette] = useState<"commands" | "goto" | null>(null);
+  // Panel-local command implementations (plot fit / follow-live).
+  const [panelCommands] = useState(createPanelCommandRegistry);
 
   const invalidateCache = useCallback(() => {
     chunkCacheRef.current.clear();
@@ -1465,10 +1502,145 @@ export function App() {
     [showSingletonPanel],
   );
 
+  // --- command handlers + key dispatch (ADR 0018) ---
+  // Commands wrap the existing toolbar handlers — same behaviour,
+  // second access path. The map is rebuilt every render (cheap) and
+  // read through a ref so the once-registered keydown listener and
+  // the palette always see current closures.
+  const activePanelRef = useRef(activePanel);
+  activePanelRef.current = activePanel;
+  const runFocusedPanelCommand = useCallback(
+    (commandId: string) => {
+      const elementId = activePanelRef.current?.elementId;
+      if (elementId) panelCommands.invoke(elementId, commandId);
+    },
+    [panelCommands],
+  );
+  const commandHandlersRef = useRef<Record<string, () => void>>({});
+  commandHandlersRef.current = {
+    "project.open": () => void handleOpenProject(),
+    "project.save": () => void handleSaveProject(),
+    "project.saveAs": () => void handleSaveProjectAs(),
+    // "Close project" = back to a fresh unsaved workspace — the same
+    // reset the project panel's New button performs.
+    "project.close": handleNewProject,
+    "blf.open": () => void handleOpenLog(),
+    "dbc.add": () => void handleAddDbc(),
+    "connection.connect": () => void handleConnect(),
+    "connection.disconnect": () => void handleDisconnect(),
+    "panel.add.trace": addTracePanel,
+    "panel.add.plot": addPlotPanel,
+    "panel.add.transmit": addTransmitPanel,
+    "panel.show.systemMessages": showSystemMessagesPanel,
+    "panel.show.projectGraph": showProjectGraphPanel,
+    "panel.show.dbc": showDbcPanel,
+    // Renaming happens in the project panel (the canonical edit
+    // surface — ADR 0019); the command surfaces it.
+    "panel.rename": showProjectPanel,
+    "palette.show": () => setOpenPalette("commands"),
+    "goto.view": () => setOpenPalette("goto"),
+    "plot.fitXAxis": () => runFocusedPanelCommand("plot.fitXAxis"),
+    "plot.followLive.enable": () => runFocusedPanelCommand("plot.followLive.enable"),
+  };
+  const runCommand = useCallback((id: string) => {
+    commandHandlersRef.current[id]?.();
+  }, []);
+
+  const commandContext: CommandContext = useMemo(
+    () => ({ focusedPanelKind, hasProjectOpen: projectPath !== null }),
+    [focusedPanelKind, projectPath],
+  );
+  const commandContextRef = useRef(commandContext);
+  commandContextRef.current = commandContext;
+
+  // The global keydown dispatcher: resolve binding → check context →
+  // run, or silently no-op. Registered once, on the capture phase so
+  // a focused panel's own handlers can't shadow the global chords;
+  // plain-key bindings are suppressed while typing (see
+  // `dispatchStroke`). Sequence prefixes expire after a beat.
+  useEffect(() => {
+    const isMac = isMacPlatform();
+    let pending: KeyStroke[] = [];
+    let timer: number | undefined;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
+      if (e.key === "Control" || e.key === "Meta" || e.key === "Shift" || e.key === "Alt") {
+        return;
+      }
+      const available = new Set(
+        commandsAvailableIn(COMMANDS, commandContextRef.current).map((c) => c.id),
+      );
+      const result = dispatchStroke(
+        pending,
+        { key: e.key, ctrl: e.ctrlKey, meta: e.metaKey, shift: e.shiftKey, alt: e.altKey },
+        PARSED_BINDINGS.filter((b) => available.has(b.commandId)),
+        { isMac, inEditable: isEditableTarget(e.target) },
+      );
+      pending = result.pending;
+      window.clearTimeout(timer);
+      if (result.pending.length > 0) {
+        timer = window.setTimeout(() => {
+          pending = [];
+        }, 1500);
+      }
+      if (result.handled) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+      if (result.commandId) runCommand(result.commandId);
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown, true);
+      window.clearTimeout(timer);
+    };
+  }, [runCommand]);
+
+  // Palette items. Commands: everything available in the current
+  // context, hinted with the key binding (or category). Go-to-view:
+  // every open dockview panel by its display name — the tab titles
+  // are kept in lockstep with `elementLabel` above, so this is the
+  // same label everywhere (ADR 0019).
+  const commandPaletteItems: PaletteItem[] = useMemo(() => {
+    if (openPalette !== "commands") return [];
+    const isMac = isMacPlatform();
+    return commandsAvailableIn(COMMANDS, commandContext).map((c) => {
+      const binding = PARSED_BINDINGS.find((b) => b.commandId === c.id);
+      return {
+        id: c.id,
+        label: c.label,
+        hint: binding ? formatChord(binding.chord, isMac) : c.category,
+      };
+    });
+  }, [openPalette, commandContext]);
+  const gotoPaletteItems: PaletteItem[] = useMemo(() => {
+    if (openPalette !== "goto") return [];
+    const api = dockApiRef.current;
+    if (!api) return [];
+    return api.panels.map((p) => ({ id: p.id, label: p.title ?? p.id }));
+  }, [openPalette]);
+  const focusPanelById = useCallback((panelId: string) => {
+    dockApiRef.current?.panels.find((p) => p.id === panelId)?.api.setActive();
+  }, []);
+
   const handleDockReady = useCallback(
     (event: DockviewReadyEvent) => {
       const api = event.api;
       dockApiRef.current = api;
+
+      // Track the focused panel for the command context (ADR 0018).
+      api.onDidActivePanelChange((panel) => {
+        if (!panel) {
+          setActivePanel(null);
+          return;
+        }
+        const elementId = (panel.params as { elementId?: unknown } | undefined)
+          ?.elementId;
+        setActivePanel({
+          id: panel.id,
+          elementId: typeof elementId === "string" ? elementId : null,
+        });
+      });
 
       let restored = false;
       const saved = parseSavedLayout(localStorage.getItem(LAYOUT_STORAGE_KEY));
@@ -1770,21 +1942,45 @@ export function App() {
           <SystemLogContext.Provider value={systemLogValue}>
             <NotesContext.Provider value={notesValue}>
               <TraceDataContext.Provider value={traceData}>
-                {/* dockview drags tabs with the HTML5 drag-and-drop API, which
-                    Tauri's OS-level drag-drop handler breaks on WebView2 — hence
-                    `dragDropEnabled: false` in tauri.conf.json. The GUI takes
-                    files via the dialog plugin, not by drop, so nothing is lost. */}
-                <DockviewReact
-                  className="dock-area"
-                  theme={themeAbyss}
-                  components={DOCK_COMPONENTS}
-                  onReady={handleDockReady}
-                />
+                <PanelCommandsContext.Provider value={panelCommands}>
+                  {/* dockview drags tabs with the HTML5 drag-and-drop API, which
+                      Tauri's OS-level drag-drop handler breaks on WebView2 — hence
+                      `dragDropEnabled: false` in tauri.conf.json. The GUI takes
+                      files via the dialog plugin, not by drop, so nothing is lost. */}
+                  <DockviewReact
+                    className="dock-area"
+                    theme={themeAbyss}
+                    components={DOCK_COMPONENTS}
+                    onReady={handleDockReady}
+                  />
+                </PanelCommandsContext.Provider>
               </TraceDataContext.Provider>
             </NotesContext.Provider>
           </SystemLogContext.Provider>
         </ElementRegistryContext.Provider>
       </ProjectContext.Provider>
+      {openPalette === "commands" && (
+        <PaletteModal
+          placeholder="Run a command…"
+          items={commandPaletteItems}
+          onPick={(item) => {
+            setOpenPalette(null);
+            runCommand(item.id);
+          }}
+          onClose={() => setOpenPalette(null)}
+        />
+      )}
+      {openPalette === "goto" && (
+        <PaletteModal
+          placeholder="Go to view…"
+          items={gotoPaletteItems}
+          onPick={(item) => {
+            setOpenPalette(null);
+            focusPanelById(item.id);
+          }}
+          onClose={() => setOpenPalette(null)}
+        />
+      )}
       {pendingClose && <CloseConfirmModal onChoice={pendingClose.resolve} />}
       {pendingBlf && (
         <BlfChannelMapModal

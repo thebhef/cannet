@@ -6,7 +6,7 @@
 // import time, so a binding collision fails the test suite and the
 // app boot rather than reaching a user's keystroke.
 
-import { parseChord } from "./keybindings";
+import { parseChord, type ParsedBinding } from "./keybindings";
 
 /// What kind of panel currently has dockview focus. Element-backed
 /// panels report their element kind; the singletons report their
@@ -82,6 +82,12 @@ export const BINDINGS: readonly BindingSpec[] = [
   { chord: "f", commandId: "plot.fitXAxis" },
   { chord: "l", commandId: "plot.followLive.enable" },
 ];
+
+/// The binding map, parsed once for the dispatcher.
+export const PARSED_BINDINGS: readonly ParsedBinding[] = BINDINGS.map((b) => ({
+  chord: parseChord(b.chord),
+  commandId: b.commandId,
+}));
 
 /// The commands whose context predicate passes in `ctx` (the palette
 /// listing and the dispatcher's gate share this).
