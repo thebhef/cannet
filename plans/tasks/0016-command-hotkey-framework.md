@@ -37,8 +37,10 @@ What lands:
   graph node, project panel inventory list, and the
   `Cmd/Ctrl+P` palette. Inline-rename in the project panel
   (already in place for buses) extends to every element kind.
-  `PROJECT_SCHEMA_VERSION` bumps additively; v4 elements
-  without a `name` get the default on migration.
+  `name` is additive inside the host-opaque `elements` records,
+  so `PROJECT_SCHEMA_VERSION` does **not** bump (ADR 0011 rejects
+  rather than migrates; a bump would retire every existing file);
+  elements loaded without a `name` get the default on open.
 - **Lifted commands** — every existing toolbar action also
   becomes a palette command (same behaviour, second access
   path):

@@ -89,6 +89,13 @@ describe("normalizeElement", () => {
     expect(out2.kind === "transmit" ? out2.frameIds : null).toEqual(["f1", "f2"]);
   });
 
+  it("preserves a string `name` and drops a malformed one", () => {
+    const named = { kind: "trace", id: "t", sources: ["*"], name: "My trace" } as ProjectElement;
+    expect((normalizeElement(named) as { name?: string }).name).toBe("My trace");
+    const malformed = { kind: "trace", id: "t", sources: ["*"], name: 42 } as unknown as ProjectElement;
+    expect((normalizeElement(malformed) as { name?: string }).name).toBeUndefined();
+  });
+
   it("normalises a filter, preserving its name + predicate", () => {
     const f: ProjectElement = {
       kind: "filter",

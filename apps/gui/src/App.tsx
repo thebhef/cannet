@@ -72,6 +72,7 @@ import {
   reanchorToSession,
 } from "./trace";
 import { defaultBusColor } from "./busColor";
+import { assignDefaultNames, defaultElementName } from "./elementLabel";
 import {
   BY_ID_PANEL_COMPONENT,
   DBC_PANEL_COMPONENT,
@@ -277,36 +278,48 @@ export function App() {
   //   project is a deliberate decision the user makes via the
   //   transmit panel; it does not silently start receiving the
   //   panel's frames.
-  const buildFreshElement = (kind: ProjectElementKind, id: string): ProjectElement => {
+  //
+  // Every fresh element gets a model-owned display `name` (ADR 0019);
+  // callers pass the `${Kind} ${n}` default computed against the
+  // registry the element is joining.
+  const buildFreshElement = (
+    kind: ProjectElementKind,
+    id: string,
+    name: string,
+  ): ProjectElement => {
     switch (kind) {
       case "transmit":
-        return { kind, id, sinks: busesRef.current.map((b) => b.id), frameIds: [] };
+        return { kind, id, name, sinks: busesRef.current.map((b) => b.id), frameIds: [] };
       case "filter":
-        return { kind, id, sources: ["*"] };
+        return { kind, id, name, sources: ["*"] };
       default:
-        return { kind, id, sources: ["*"] };
+        return { kind, id, name, sources: ["*"] };
     }
   };
   const create = useCallback((kind: ProjectElementKind): string => {
     const id = crypto.randomUUID();
-    setRegistry((prev) => [
-      ...prev,
-      { element: buildFreshElement(kind, id), trace: clearedTrace(countRef.current) },
-    ]);
+    setRegistry((prev) => {
+      const name = defaultElementName(kind, prev.map((e) => e.element));
+      return [
+        ...prev,
+        { element: buildFreshElement(kind, id, name), trace: clearedTrace(countRef.current) },
+      ];
+    });
     return id;
   }, []);
   const ensure = useCallback((id: string, kind: ProjectElementKind) => {
     setRegistry((prev) => {
       const i = prev.findIndex((e) => e.element.id === id);
+      const name = defaultElementName(kind, prev.map((e) => e.element));
       if (i < 0) {
         return [
           ...prev,
-          { element: buildFreshElement(kind, id), trace: clearedTrace(countRef.current) },
+          { element: buildFreshElement(kind, id, name), trace: clearedTrace(countRef.current) },
         ];
       }
       if (prev[i].element.kind === kind) return prev;
       const next = prev.slice();
-      next[i] = { ...next[i], element: buildFreshElement(kind, id) };
+      next[i] = { ...next[i], element: buildFreshElement(kind, id, name) };
       return next;
     });
   }, []);
@@ -914,11 +927,14 @@ export function App() {
       // Restore the element registry first so the panels `fromJSON`
       // creates (which reference elements by `params.elementId`) find
       // their entries. (A panel that doesn't still self-heals.)
+      // `assignDefaultNames` backfills `${Kind} ${n}` names onto
+      // elements saved before display names existed (ADR 0019).
       setRegistry(
-        (Array.isArray(project.elements) ? project.elements : [])
-          .filter(isProjectElement)
-          .map(normalizeElement)
-          .map((el) => ({ element: el, trace: clearedTrace(countRef.current) })),
+        assignDefaultNames(
+          (Array.isArray(project.elements) ? project.elements : [])
+            .filter(isProjectElement)
+            .map(normalizeElement),
+        ).map((el) => ({ element: el, trace: clearedTrace(countRef.current) })),
       );
       const api = dockApiRef.current;
       const layout = validateLayout(project.layout);

@@ -2,13 +2,12 @@
 
 Status: accepted (2026-05-26)
 
-Phase 16 ([`../../plans/phased-implementation.md`](../../plans/phased-implementation.md))
-adds `Cmd/Ctrl+P` go-to-view, which lists open dockview panels by
-their display name. Today each view fabricates a label
-independently — the dockview tab shows `Trace 1` (from a monotonic
-counter in a React ref, not persisted), the project graph shows
+The `Cmd/Ctrl+P` go-to-view palette lists open dockview panels by
+their display name. Before this ADR each view fabricated a label
+independently — the dockview tab showed `Trace 1` (from a monotonic
+counter in a React ref, not persisted), the project graph showed
 `Trace a3f2b1` (`${capitalise(el.kind)} ${shortId(el.id)}`), and
-the project panel shows a bare `Trace` (`PANEL_TITLE[el.kind]`).
+the project panel showed a bare `Trace` (`PANEL_TITLE[el.kind]`).
 Three different labels for the same element, none editable. A
 go-to-view palette built on top of that is broken on day one. This
 ADR fixes the convention.
@@ -16,12 +15,15 @@ ADR fixes the convention.
 ## Decision
 
 **Every `ProjectElement` kind carries a model-owned `name: string`
-field.** `bus` and `filter` already do; the rest (`trace`, `plot`,
-`transmit`, `system-messages`, `project-graph`, `dbc`) gain it. The
-default on creation is `${Kind} ${nextIndex}` (matching today's
-dockview behaviour, but stored in the project model rather than a
-React ref). `PROJECT_SCHEMA_VERSION` bumps additively; v4
-elements without a `name` get the default during migration.
+field.** `bus` and `filter` already did; the rest (`trace`, `plot`,
+`transmit`) gain it. The default on creation is
+`${Kind} ${nextIndex}` (matching the old dockview tab behaviour,
+but stored in the project model rather than a React ref). The field
+is additive inside the `elements` records the host round-trips
+without interpretation, so `PROJECT_SCHEMA_VERSION` does **not**
+bump (ADR 0011 rejects mismatched versions rather than migrating —
+a bump would needlessly retire every existing file); elements
+loaded without a `name` get the default on project open.
 
 **One shared resolver, used by every view.** A pure function
 `elementLabel(el: ProjectElement): string` returns the display
@@ -50,8 +52,8 @@ reload, so reopening a project re-orders the same panels'
 numbers. Storing the name in the project model makes it stable.
 
 **One resolver because per-view label code rots in parallel.** A
-new view added in Phase 20 or Phase 23 should not need to invent
-its own naming. The resolver is one line per view.
+view added later should not need to invent its own naming. The
+resolver is one line per view.
 
 **Default on creation, editable everywhere through one path.**
 A name appears immediately (no "untitled" state) and the user can
@@ -77,9 +79,9 @@ user to name elements on creation would slow the common case.
 
 ## Consequences
 
-- `Project` schema gains a `name` field on every element kind that
-  didn't already have one; the schema version increments and the
-  migration is purely additive.
+- Every element kind gains a `name` field inside the project file's
+  (host-opaque) `elements` records; the schema version is unchanged
+  and elements without one are defaulted on open.
 - The React ref panel counters (`panelCounterRef` in `App.tsx`)
   are retired; dockview tab titles call `elementLabel(el)`.
 - The project graph's per-kind label formatter
@@ -88,5 +90,3 @@ user to name elements on creation would slow the common case.
 - A new element kind added later must declare a default-name
   scheme on creation and is otherwise free — the resolver and
   the rename UI work without per-kind code.
-- The "element display names" backlog item (under High Priority →
-  Other near-term work) is closed by Phase 16.

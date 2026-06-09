@@ -80,13 +80,18 @@ export function isProjectElement(v: unknown): v is ProjectElement {
 /// default. `sinks` does not support a wildcard — it's an explicit
 /// list only.
 export function normalizeElement(el: ProjectElement): ProjectElement {
+  // `name` (ADR 0019): keep a string, drop anything else — the
+  // list-level `assignDefaultNames` pass backfills the dropped /
+  // missing ones with `${Kind} ${n}` defaults.
+  const nameRaw = (el as unknown as { name?: unknown }).name;
+  const name = typeof nameRaw === "string" ? nameRaw : undefined;
   if (el.kind === "transmit") {
     const raw = (el as unknown as { sinks?: unknown }).sinks;
     const frameIdsRaw = (el as unknown as { frameIds?: unknown }).frameIds;
-    return { ...el, sinks: stringList(raw, []), frameIds: stringList(frameIdsRaw, []) };
+    return { ...el, name, sinks: stringList(raw, []), frameIds: stringList(frameIdsRaw, []) };
   }
   const raw = (el as unknown as { sources?: unknown }).sources;
-  return { ...el, sources: stringList(raw, ["*"]) } as ProjectElement;
+  return { ...el, name, sources: stringList(raw, ["*"]) } as ProjectElement;
 }
 
 /// Coerce an unknown value to a `string[]`, falling back to
