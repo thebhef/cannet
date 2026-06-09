@@ -337,4 +337,17 @@ describe("PlotPanel", () => {
     expect(document.querySelector(".plot-meas-strip")).not.toBeNull();
     expect(screen.getByText("Δt")).toBeInTheDocument();
   });
+
+  it("show-points tri-state defaults to auto and persists to panel params", () => {
+    const api = renderPanel();
+    const sel = screen.getByLabelText("show points") as HTMLSelectElement;
+    expect(sel.value).toBe("auto");
+    fireEvent.change(sel, { target: { value: "on" } });
+    expect(sel.value).toBe("on");
+    // Last updateParameters call carries the new mode.
+    const lastCall = api.updateParameters.mock.calls.at(-1)?.[0] ?? {};
+    expect(lastCall.showPoints).toBe("on");
+    fireEvent.change(sel, { target: { value: "off" } });
+    expect((screen.getByLabelText("show points") as HTMLSelectElement).value).toBe("off");
+  });
 });

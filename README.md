@@ -309,6 +309,12 @@ the re-sampling), Clear re-anchors what's plotted to "now".
   growing edge while keeping the current visible x-width (it just slides
   right); a manual x pan/zoom turns it off, the same way a manual scroll
   leaves auto-scroll in a trace panel.
+- **Show points.** A tri-state toggle on the toolbar (`auto` / `off` /
+  `on`) that applies to every series on every axis of every area in
+  the panel: `auto` (default) defers to uPlot's density-aware mode
+  (points appear only when the sample-to-pixel ratio is low enough),
+  `off` forces no points, `on` forces points always. Persists in the
+  project file.
 - **Cursors & measurements** (both **off by default**). The toolbar's
   **cursors** selector turns on **X** cursors (left-click places A,
   right-click places B, drawn through every area — a small **Δt** chip

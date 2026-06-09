@@ -187,6 +187,13 @@ interface XCursors {
   b: number | null;
 }
 
+/** Show-points tri-state — applies to every series on every axis of
+ * every plot area in the panel. `auto` defers to uPlot's
+ * density-aware mode (`points: { show: "auto" }`), which only draws
+ * points when there's room between samples; `off` forces no points;
+ * `on` forces points always. See task 15 / ADR 0026. */
+type ShowPointsMode = "auto" | "off" | "on";
+
 interface PlotPanelParams {
   elementId?: unknown;
   areas?: unknown;
@@ -201,6 +208,23 @@ interface PlotPanelParams {
   // store. A tolerant parser ignores the extra field on older blobs.
   maxRateHz?: unknown;
   signalsWidthPx?: unknown;
+  showPoints?: unknown;
+}
+
+function showPointsFromRaw(v: unknown): ShowPointsMode {
+  return v === "off" || v === "on" ? v : "auto";
+}
+
+/** Map the panel's tri-state to a uPlot `Series.points` spec.
+ *
+ * - `auto` → omit `show`, so uPlot's default density-aware filter
+ *   draws points only when the sample-to-pixel ratio is low enough.
+ * - `off` → `show: false`.
+ * - `on` → `show: true`. */
+function showPointsToUplot(mode: ShowPointsMode): { show?: boolean } {
+  if (mode === "off") return { show: false };
+  if (mode === "on") return { show: true };
+  return {};
 }
 
 /** Per-area side-panel width range (pixels). Default and clamps for
@@ -459,6 +483,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
   );
   const [maxRateHz, setMaxRateHz] = useState(() => maxRateFromRaw(params?.maxRateHz));
   const resampleIntervalMs = Math.max(1, Math.round(1000 / maxRateHz));
+  const [showPoints, setShowPoints] = useState<ShowPointsMode>(() => showPointsFromRaw(params?.showPoints));
   /** Pixel width of every area's side panel — user-resizable via a
    * drag handle, persisted in panel params. */
   const [signalsWidth, setSignalsWidth] = useState(() => signalsWidthFromRaw(params?.signalsWidthPx));
@@ -677,6 +702,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
       cursorYByArea,
       maxRateHz,
       signalsWidthPx: signalsWidth,
+      showPoints,
     });
   }, [
     api,
@@ -691,6 +717,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     cursorYByArea,
     maxRateHz,
     signalsWidth,
+    showPoints,
   ]);
 
   const refreshCatalog = useCallback(() => {
@@ -1149,6 +1176,21 @@ export function PlotPanel(props: IDockviewPanelProps) {
           <input type="checkbox" checked={followLive} onChange={(e) => setFollowLive(e.target.checked)} />
           follow live
         </label>
+        <label
+          className="plot-cursor-ctl"
+          title="draw sample points on every series: auto = let uPlot decide based on sample density; off = never draw points; on = always draw points"
+        >
+          points
+          <select
+            value={showPoints}
+            onChange={(e) => setShowPoints(e.target.value as ShowPointsMode)}
+            aria-label="show points"
+          >
+            <option value="auto">auto</option>
+            <option value="off">off</option>
+            <option value="on">on</option>
+          </select>
+        </label>
         <span className="plot-toolbar-sep" />
         <label className="plot-cursor-ctl">
           cursors
@@ -1235,6 +1277,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
               winEnd={winEnd}
               live={live}
               followLive={followLive}
+              showPoints={showPoints}
               resampleIntervalMs={resampleIntervalMs}
               signalsWidth={signalsWidth}
               onResizeSignalsWidth={(w) =>
@@ -1454,6 +1497,9 @@ interface PlotAreaProps {
   winEnd: number;
   live: boolean;
   followLive: boolean;
+  /** Show-points tri-state from the panel toolbar — applied to every
+   * series on this area's axis. See {@link ShowPointsMode}. */
+  showPoints: ShowPointsMode;
   /** Min spacing between live re-samples (ms) — `1000 / maxRateHz`. */
   resampleIntervalMs: number;
   /** Pixel width of this area's right-hand side panel (signal rows
@@ -1582,6 +1628,7 @@ function PlotArea(p: PlotAreaProps) {
     winEnd,
     live,
     followLive,
+    showPoints,
     resampleIntervalMs,
     signalsWidth,
     onResizeSignalsWidth,
@@ -2240,7 +2287,13 @@ function PlotArea(p: PlotAreaProps) {
           label: `${s.messageName}.${s.signalName}`,
           stroke: s.color,
           width: 1,
-          points: { show: false },
+          // `auto` → uPlot's density-aware default (points drawn when
+          // the per-pixel sample count drops below ~0.5); `off`/`on`
+          // are the explicit overrides. uPlot's `points.show` accepts a
+          // boolean *or* the literal `false` to disable, so we map the
+          // tri-state to a per-series boolean (auto = undefined ⇒ uPlot
+          // default).
+          points: showPointsToUplot(showPoints),
           show: !s.hidden,
           ...(enumActiveAtConstruct && uPlot.paths.stepped
             ? { paths: uPlot.paths.stepped({ align: 1 }) }
@@ -2584,7 +2637,7 @@ function PlotArea(p: PlotAreaProps) {
       if (uplotRef.current === u) uplotRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [signalSetKey, areaId, resizeTick, valueTable]);
+  }, [signalSetKey, areaId, resizeTick, valueTable, showPoints]);
 
   // While the trace is running, re-sample on a self-paced loop at the
   // configured rate (each tick scheduled after the previous one
