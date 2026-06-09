@@ -338,6 +338,27 @@ describe("PlotPanel", () => {
     expect(screen.getByText("Δt")).toBeInTheDocument();
   });
 
+  it("seeds a dropped signal's colour from the target area's existing series count", async () => {
+    // Drop two signals onto Area 1 in succession; the second should get
+    // a different colour from the first (target.signals.length grows).
+    renderPanel();
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: /EngineData\.EngineSpeed/ })).toBeInTheDocument(),
+    );
+    const picker = screen.getByLabelText("add signal to focused plot area") as HTMLSelectElement;
+    fireEvent.change(picker, { target: { value: "*|s:256:EngineSpeed" } });
+    await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
+    fireEvent.change(picker, { target: { value: "*|s:256:EngineTemp" } });
+    await waitFor(() => expect(screen.getByText("EngineTemp")).toBeInTheDocument());
+    const swatches = document.querySelectorAll(".plot-signal-swatch");
+    expect(swatches.length).toBe(2);
+    const c1 = (swatches[0] as HTMLElement).style.background;
+    const c2 = (swatches[1] as HTMLElement).style.background;
+    expect(c1).not.toBe("");
+    expect(c2).not.toBe("");
+    expect(c1).not.toBe(c2);
+  });
+
   it("show-points tri-state defaults to auto and persists to panel params", () => {
     const api = renderPanel();
     const sel = screen.getByLabelText("show points") as HTMLSelectElement;

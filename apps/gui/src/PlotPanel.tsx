@@ -95,6 +95,10 @@ import {
  * scale; enum/state signals; triggers; CSV/image export.
  */
 
+/** The colour wheel used to seed a new series' colour. Per ADR 0026
+ * task 15 the wheel is at least 16 colours deep; the index for a
+ * fresh series is `(signals already in that plot area) % len`, so
+ * the first 16 series in any one area get distinct hues. */
 const TRACE_COLORS = [
   "#c6f24e",
   "#4ecbff",
@@ -104,6 +108,14 @@ const TRACE_COLORS = [
   "#ffd93d",
   "#5ddb7c",
   "#e15dcf",
+  "#8ce0d4",
+  "#ff9bd2",
+  "#a0bfff",
+  "#d0ff7a",
+  "#ff6b6b",
+  "#7be3ff",
+  "#ffcf85",
+  "#c39bff",
 ];
 const CURSOR_A_COLOR = "#ffd93d";
 const CURSOR_B_COLOR = "#ff5577";
@@ -819,7 +831,11 @@ export function PlotPanel(props: IDockviewPanelProps) {
         // that might call this.
         const target = prev.find((a) => a.id === targetId);
         if (target?.signalFilter != null) return prev;
-        const total = prev.reduce((n, a) => n + a.signals.length, 0);
+        // Colour-wheel index is the count of signals *already in this
+        // plot area*, per ADR 0026 — so the first 16 series in any
+        // one area get distinct hues regardless of what other areas
+        // hold.
+        const seedIdx = target?.signals.length ?? 0;
         const ref: SignalRef = {
           busId: desc.bus_id,
           messageId: desc.message_id,
@@ -827,7 +843,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
           signalName: desc.signal_name,
           messageName: desc.message_name,
           unit: desc.unit,
-          color: TRACE_COLORS[total % TRACE_COLORS.length],
+          color: TRACE_COLORS[seedIdx % TRACE_COLORS.length],
         };
         const key = signalRefKey(ref);
         if (prev.some((a) => a.signals.some((s) => signalRefKey(s) === key))) return prev;
@@ -895,12 +911,21 @@ export function PlotPanel(props: IDockviewPanelProps) {
         // semantic value to plotting the identical series twice on
         // one axis); duplicates across different areas are fine.
         if (target.signals.some((s) => signalRefKey(s) === key)) return prev;
+        // Re-seed the colour from the *target area's* wheel index, per
+        // ADR 0026: a dragged-in series picks the colour at the
+        // position equal to the count of series already in the area.
+        // Cross-panel drags preserve the source ref's colour
+        // (`parseDroppedSignals` passes it through as-is), which we
+        // discard here so the wheel index is consistent regardless of
+        // where the drag started.
+        const seedIdx = target.signals.length;
+        const seeded: SignalRef = { ...ref, color: TRACE_COLORS[seedIdx % TRACE_COLORS.length] };
         return prev.map((a) => {
           if (a.id !== toAreaId) return a;
-          if (beforeKey == null) return { ...a, signals: [...a.signals, ref] };
+          if (beforeKey == null) return { ...a, signals: [...a.signals, seeded] };
           const idx = a.signals.findIndex((s) => signalRefKey(s) === beforeKey);
-          if (idx < 0) return { ...a, signals: [...a.signals, ref] };
-          return { ...a, signals: [...a.signals.slice(0, idx), ref, ...a.signals.slice(idx)] };
+          if (idx < 0) return { ...a, signals: [...a.signals, seeded] };
+          return { ...a, signals: [...a.signals.slice(0, idx), seeded, ...a.signals.slice(idx)] };
         });
       });
     },
