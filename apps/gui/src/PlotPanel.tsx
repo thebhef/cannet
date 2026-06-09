@@ -2373,8 +2373,17 @@ function PlotArea(p: PlotAreaProps) {
             for (const ev of lr.events) {
               vline(ev.t, EVENT_COLOR, ev.id === "__t0" ? [] : [2, 3], isFirst ? ev.label : null, true);
             }
-            if (lr.cursorXa != null) vline(lr.cursorXa, CURSOR_A_COLOR, [4, 3], isLast ? "A" : null, false);
-            if (lr.cursorXb != null) vline(lr.cursorXb, CURSOR_B_COLOR, [4, 3], isLast ? "B" : null, false);
+            // Task 15 / ADR 0026: the X cursor's time label appears on
+            // every axis (it used to render only on the last area, so
+            // adding a plot area visually hid the labels). Format as
+            // "<letter> <time>" so a glance at any axis tells you both
+            // which cursor and where.
+            if (lr.cursorXa != null) {
+              vline(lr.cursorXa, CURSOR_A_COLOR, [4, 3], `A ${fmtTime(lr.cursorXa)}`, false);
+            }
+            if (lr.cursorXb != null) {
+              vline(lr.cursorXb, CURSOR_B_COLOR, [4, 3], `B ${fmtTime(lr.cursorXb)}`, false);
+            }
             const hline = (yVal: number, color: string, lbl: string) => {
               const yp = u.valToPos(yVal, "y", true);
               if (yp < top - 4 || yp > top + height + 4) return;
