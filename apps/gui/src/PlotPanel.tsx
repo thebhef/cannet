@@ -143,7 +143,7 @@ const DEFAULT_FOLLOW_WIDTH_SECONDS = 10;
 
 type CursorMode = "off" | "x" | "y" | "note";
 
-interface SignalRef {
+export interface SignalRef {
   /** Logical bus this signal is bound to. `null` is the legacy
    * "any bus" path — kept so plots from projects that pre-date
    * per-bus signal binding still sample. New picks always carry a
@@ -165,6 +165,12 @@ interface SignalRef {
 export interface PlotAreaConfig {
   id: string;
   signals: SignalRef[];
+  /** How the area's series lay out across axes (ADR 0026). `unified`
+   * (default) draws one axis with all series overlaid; `per-unit`
+   * stacks one axis per unit (each enum series gets its own); and
+   * `individual` stacks one axis per series. Y scales are always
+   * auto-derived (no fixed-range option). */
+  yAxisMode?: YAxisMode;
   /** Which signal's raw range / unit drives the y-axis labels for this
    * area. `null` falls back to the first non-hidden signal — that's
    * what `primarySignalForArea` resolves it to. Click a signal row in
@@ -337,6 +343,7 @@ function areasFromParams(raw: unknown): PlotAreaConfig[] {
       out.push({
         id,
         signals,
+        yAxisMode: yAxisModeFromRaw(o.yAxisMode),
         primarySignalKey: typeof o.primarySignalKey === "string" ? o.primarySignalKey : null,
         signalFilter: typeof o.signalFilter === "string" ? o.signalFilter : undefined,
       });
@@ -425,6 +432,12 @@ function elementIdFromParams(raw: unknown): string {
 // Filter helpers live in `./plotFilter` so the pure-logic
 // tests can import them without dragging uplot into a jsdom run.
 import { applyAreaFilters } from "./plotFilter";
+import { deriveAxesForArea, type YAxisMode } from "./plotAxisDerivation";
+
+const Y_AXIS_MODES: YAxisMode[] = ["unified", "per-unit", "individual"];
+function yAxisModeFromRaw(v: unknown): YAxisMode {
+  return v === "per-unit" || v === "individual" ? v : "unified";
+}
 
 export function PlotPanel(props: IDockviewPanelProps) {
   const data = useTraceData();
@@ -765,6 +778,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
       return next;
     });
   }, []);
+  const setAreaYAxisMode = useCallback((id: string, mode: YAxisMode) => {
+    setAreas((prev) => prev.map((a) => (a.id === id ? { ...a, yAxisMode: mode } : a)));
+  }, []);
   const setAreaPrimarySignal = useCallback((id: string, key: string | null) => {
     setAreas((prev) => prev.map((a) => (a.id === id ? { ...a, primarySignalKey: key } : a)));
   }, []);
@@ -1044,6 +1060,45 @@ export function PlotPanel(props: IDockviewPanelProps) {
     [areas, catalog, busNameLookup],
   );
 
+  /// Expand each effective area into one or more derived axes, based on
+  /// the area's `yAxisMode` (ADR 0026). Unified produces one entry per
+  /// area (identical to today); per-unit groups signals by unit; and
+  /// individual is one entry per signal. Each derived entry carries
+  /// the parent area so panel-level callbacks (add signal, set primary,
+  /// set mode, remove area) can route to the right place.
+  const derivedAreaConfigs = useMemo(() => {
+    const out: Array<{
+      area: PlotAreaConfig;
+      parentArea: PlotAreaConfig;
+      isFirstOfParent: boolean;
+      subtitle: string | null;
+    }> = [];
+    for (const a of effectiveAreas) {
+      const mode = a.yAxisMode ?? "unified";
+      const axes = deriveAxesForArea(a.id, a.signals, mode);
+      axes.forEach((ax, i) => {
+        // The derived `PlotAreaConfig` carries the axis's slice of
+        // signals. `signalFilter` is preserved only on the first
+        // derived axis so the filter UI / status bar doesn't render N
+        // times for one logical area.
+        const derivedArea: PlotAreaConfig = {
+          id: ax.id,
+          signals: ax.signals,
+          yAxisMode: a.yAxisMode,
+          primarySignalKey: a.primarySignalKey,
+          signalFilter: i === 0 ? a.signalFilter : undefined,
+        };
+        out.push({
+          area: derivedArea,
+          parentArea: a,
+          isFirstOfParent: i === 0,
+          subtitle: ax.subtitle,
+        });
+      });
+    }
+    return out;
+  }, [effectiveAreas]);
+
   /// Bus-rename invalidation (ADR 0020). Track the previous match
   /// count for each filter-mode area; when a buses-list change drops
   /// any area's count from non-zero to zero, emit a System Messages
@@ -1288,17 +1343,31 @@ export function PlotPanel(props: IDockviewPanelProps) {
       )}
 
       <div className="plot-panel-areas">
-        {effectiveAreas.map((area, idx) => {
-          const yc = cursorYByArea[area.id];
+        {derivedAreaConfigs.map((d, idx) => {
+          // Cursor Y is per-derived-axis (so each axis can carry its
+          // own H1/H2). Look it up by the derived id.
+          const yc = cursorYByArea[d.area.id];
+          const parent = d.parentArea;
           return (
             <PlotArea
-              key={area.id}
-              area={area}
-              label={areaLabels.get(area.id) ?? "Area"}
+              key={d.area.id}
+              area={d.area}
+              label={
+                d.subtitle == null
+                  ? areaLabels.get(parent.id) ?? "Area"
+                  : `${areaLabels.get(parent.id) ?? "Area"} · ${d.subtitle}`
+              }
               isFirst={idx === 0}
-              isLast={idx === effectiveAreas.length - 1}
-              focused={area.id === focusedAreaId}
-              removable={effectiveAreas.length > 1}
+              isLast={idx === derivedAreaConfigs.length - 1}
+              focused={parent.id === focusedAreaId}
+              // Removal is parent-area level — only show the X on the
+              // first derived axis of each parent so we don't render N
+              // remove buttons for one logical area.
+              removable={effectiveAreas.length > 1 && d.isFirstOfParent}
+              // Per-axis chrome (y-axis-mode selector, filter editor,
+              // primary-signal click) lives on the first derived axis
+              // of each parent so the user has one source of truth.
+              isParentHead={d.isFirstOfParent}
               winStart={winStart}
               winEnd={winEnd}
               live={live}
@@ -1320,7 +1389,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
               onUserXChange={onUserXChange}
               onAreaResampled={onAreaResampled}
               onPlaceCursorX={placeCursorX}
-              onPlaceCursorY={(which, v) => placeCursorY(area.id, which, v)}
+              onPlaceCursorY={(which, v) => placeCursorY(d.area.id, which, v)}
               onAddNote={addNote}
               onReportSeries={reportSeries}
               onReportPerf={reportPerf}
@@ -1331,17 +1400,18 @@ export function PlotPanel(props: IDockviewPanelProps) {
               resetYEpoch={resetYEpoch}
               fitYEpoch={fitYEpoch}
               showDiag={showDiag}
-              onSetPrimarySignal={(k) => setAreaPrimarySignal(area.id, k)}
-              onFocus={() => setFocusedAreaId(area.id)}
-              onRemoveArea={() => removeArea(area.id)}
-              onRemoveSignal={(key) => removeSignal(area.id, key)}
+              onSetPrimarySignal={(k) => setAreaPrimarySignal(parent.id, k)}
+              onSetYAxisMode={(m) => setAreaYAxisMode(parent.id, m)}
+              onFocus={() => setFocusedAreaId(parent.id)}
+              onRemoveArea={() => removeArea(parent.id)}
+              onRemoveSignal={(key) => removeSignal(parent.id, key)}
               onDropSignal={(ref, beforeKey, isInternalMove) =>
-                placeSignal(ref, area.id, beforeKey, isInternalMove)
+                placeSignal(ref, parent.id, beforeKey, isInternalMove)
               }
-              onToggleHidden={(key) => toggleSignalHidden(area.id, key)}
-              onSetSignalColor={(key, color) => setSignalColor(area.id, key, color)}
-              onSetSignalFilter={(f) => setAreaSignalFilter(area.id, f)}
-              onPromoteFilterToManual={() => promoteFilterToManual(area.id, area.signals)}
+              onToggleHidden={(key) => toggleSignalHidden(parent.id, key)}
+              onSetSignalColor={(key, color) => setSignalColor(parent.id, key, color)}
+              onSetSignalFilter={(f) => setAreaSignalFilter(parent.id, f)}
+              onPromoteFilterToManual={() => promoteFilterToManual(parent.id, parent.signals)}
               busNameLookup={busNameLookup}
               panelElementId={elementId}
             />
@@ -1575,6 +1645,12 @@ interface PlotAreaProps {
   isLast: boolean;
   focused: boolean;
   removable: boolean;
+  /** True when this PlotArea instance is the *first derived axis* of
+   * its parent area (or the only axis, in unified mode). Per-area
+   * chrome (y-axis-mode selector, filter editor + status bar) renders
+   * only on the head so we don't surface N copies of the same control
+   * when an area is in per-unit or individual mode. */
+  isParentHead: boolean;
   winStart: number;
   winEnd: number;
   live: boolean;
@@ -1631,6 +1707,8 @@ interface PlotAreaProps {
   /** Set this area's primary signal (drives y-axis labels/units).
    * `null` reverts to the first-non-hidden default. */
   onSetPrimarySignal: (key: string | null) => void;
+  /** Set the area's y-axis mode (unified / per-unit / individual). */
+  onSetYAxisMode: (mode: YAxisMode) => void;
   onFocus: () => void;
   onRemoveArea: () => void;
   onRemoveSignal: (key: string) => void;
@@ -1708,6 +1786,7 @@ function PlotArea(p: PlotAreaProps) {
     isLast,
     focused,
     removable,
+    isParentHead,
     winStart,
     winEnd,
     live,
@@ -1739,6 +1818,7 @@ function PlotArea(p: PlotAreaProps) {
     fitYEpoch,
     showDiag,
     onSetPrimarySignal,
+    onSetYAxisMode,
     onFocus,
     onRemoveArea,
     onRemoveSignal,
@@ -2984,20 +3064,38 @@ function PlotArea(p: PlotAreaProps) {
           >
             fit y
           </button>
-          <button
-            className="plot-area-filter"
-            title={
-              area.signalFilter == null
-                ? "filter this area's signals by regex"
-                : "edit the regex driving this area"
-            }
-            onClick={(e) => {
-              e.stopPropagation();
-              setFilterEditOpen((v) => !v);
-            }}
-          >
-            {area.signalFilter == null ? "filter…" : "filter ✎"}
-          </button>
+          {isParentHead && (
+            <select
+              className="plot-area-y-mode"
+              title="y-axis mode: unified (one axis), per-unit (one axis per unit), individual (one axis per series)"
+              value={area.yAxisMode ?? "unified"}
+              aria-label="y-axis mode"
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => onSetYAxisMode(e.target.value as YAxisMode)}
+            >
+              {Y_AXIS_MODES.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          )}
+          {isParentHead && (
+            <button
+              className="plot-area-filter"
+              title={
+                area.signalFilter == null
+                  ? "filter this area's signals by regex"
+                  : "edit the regex driving this area"
+              }
+              onClick={(e) => {
+                e.stopPropagation();
+                setFilterEditOpen((v) => !v);
+              }}
+            >
+              {area.signalFilter == null ? "filter…" : "filter ✎"}
+            </button>
+          )}
           {removable && (
             <button
               className="plot-area-remove"

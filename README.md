@@ -282,6 +282,16 @@ signal *values* over time instead of message rows: while running it
 follows the live capture, Pause/Stop freeze the window (which also stops
 the re-sampling), Clear re-anchors what's plotted to "now".
 
+- **Y-axis mode.** Each plot area carries a y-axis-mode selector
+  (next to **fit y**) with three values per ADR 0026: **unified**
+  (one axis; all series overlaid), **per-unit** (one axis per unit;
+  series sharing a unit share a y scale; each enum series gets its
+  own axis), and **individual** (one axis per series). Switching
+  modes re-stacks the area's canvases; the side panel for each
+  derived axis lists only the signals it draws. The area-level
+  chrome (filter editor, y-axis-mode selector itself, remove ×)
+  appears only on the top derived axis so there's one source of
+  truth per logical area.
 - **Plot areas.** A plot panel is a **stack of plot areas** — it starts
   with one; **add plot area** appends more, all sharing one time axis,
   and they flex to fill the panel (one fills it; several split it). Each

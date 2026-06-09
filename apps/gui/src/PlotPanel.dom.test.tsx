@@ -376,6 +376,33 @@ describe("PlotPanel", () => {
     expect(swatch.style.background).toBe("rgb(18, 52, 86)");
   });
 
+  it("y-axis-mode selector switches an area between unified / per-unit / individual; per-unit splits by unit", async () => {
+    renderPanel();
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: /EngineData\.EngineSpeed/ })).toBeInTheDocument(),
+    );
+    const picker = screen.getByLabelText("add signal to focused plot area") as HTMLSelectElement;
+    fireEvent.change(picker, { target: { value: "*|s:256:EngineSpeed" } });
+    await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
+    fireEvent.change(picker, { target: { value: "*|s:256:EngineTemp" } });
+    await waitFor(() => expect(screen.getByText("EngineTemp")).toBeInTheDocument());
+    // One area, two signals, unified mode → one canvas.
+    expect(document.querySelectorAll(".plot-area").length).toBe(1);
+    const modeSel = screen.getByLabelText("y-axis mode") as HTMLSelectElement;
+    expect(modeSel.value).toBe("unified");
+    // Switch to per-unit. The fixture has two distinct units (rpm,
+    // degC) so the derived axes split into two.
+    fireEvent.change(modeSel, { target: { value: "per-unit" } });
+    expect(document.querySelectorAll(".plot-area").length).toBe(2);
+    expect(screen.getByText(/Area 1 · \[rpm\]/)).toBeInTheDocument();
+    expect(screen.getByText(/Area 1 · \[degC\]/)).toBeInTheDocument();
+    // Switch to individual: same as per-unit here (one per signal).
+    // Re-query the selector — react may have re-mounted it.
+    fireEvent.change(screen.getByLabelText("y-axis mode"), { target: { value: "individual" } });
+    expect(document.querySelectorAll(".plot-area").length).toBe(2);
+    expect(screen.getByText(/Area 1 · EngineSpeed/)).toBeInTheDocument();
+  });
+
   it("show-points tri-state defaults to auto and persists to panel params", () => {
     const api = renderPanel();
     const sel = screen.getByLabelText("show points") as HTMLSelectElement;

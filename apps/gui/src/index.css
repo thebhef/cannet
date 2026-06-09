@@ -1771,7 +1771,8 @@ header {
 
 /* Plot panel — per-area Fit Y control. (The old fixed-range editor was
  * dropped in task 15 / ADR 0026: y scales are always auto-derived.) */
-.plot-area-fit-y {
+.plot-area-fit-y,
+.plot-area-y-mode {
   background: #0f141d;
   color: #94a3b8;
   border: 1px solid #2c3444;
@@ -1781,7 +1782,8 @@ header {
   padding: 0 0.2rem;
   cursor: pointer;
 }
-.plot-area-fit-y:hover {
+.plot-area-fit-y:hover,
+.plot-area-y-mode:hover {
   color: #e2e8f0;
 }
 
