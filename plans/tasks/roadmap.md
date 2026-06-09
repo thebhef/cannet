@@ -20,30 +20,28 @@ the order below is the order of work, top first.
 1. [Task 14 — Rest-of-Bus Simulation + CRC / Sequence-Count Fields](0014-rest-of-bus-simulation-crc-sequence.md)
    — **next.** Host-computed signal fields (CRC, sequence counters)
    and the rest-of-bus transmit gridview.
-2. [Task 16 — Command / Hotkey Framework](0016-command-hotkey-framework.md)
-   — the command registry + keybinding primitive (including the `f` /
-   `l` plot hotkeys).
-3. [Task 25 — CAN HW + Virtual-Bus Bug Fixes](0025-can-hw-vbus-bugfixes.md)
+2. [Task 25 — CAN HW + Virtual-Bus Bug Fixes](0025-can-hw-vbus-bugfixes.md)
    — the deferred hardware/virtual-bus verify-and-fix pass (timestamp
    handling, post-clear negative timestamps) plus DBC-view
    performance/search and the plot-colour bug.
-4. [Task 17 — Windowed-Model Convergence](0017-windowed-model-convergence.md)
+3. [Task 17 — Windowed-Model Convergence](0017-windowed-model-convergence.md)
    — converge the four view caches onto one windowed-source contract
    (view-side; freezes the host signatures Task 18 reimplements).
-5. [Task 18 — Indefinite-Length Capture (Disk-Spill)](0018-indefinite-length-capture-disk-spill.md)
+4. [Task 18 — Indefinite-Length Capture (Disk-Spill)](0018-indefinite-length-capture-disk-spill.md)
    — the model-side disk-spill store behind Task 17's frozen contract.
-6. [Task 19 — Command Palette + Goto Framework](0019-command-palette-goto.md)
-   — the specialised, argument-taking commands on top of Task 16.
-7. [Task 20 — Signals, Drag/Drop & Trace Signal Display](0020-signals-drag-drop-trace-signal-display.md)
+5. [Task 19 — Command Palette + Goto Framework](0019-command-palette-goto.md)
+   — the specialised, argument-taking commands on top of the command
+   framework shipped in task 16.
+6. [Task 20 — Signals, Drag/Drop & Trace Signal Display](0020-signals-drag-drop-trace-signal-display.md)
    — the signal-view panel, inline trace signals.
-8. [Task 21 — Performance Profiling Baseline](0021-performance-profiling-baseline.md)
+7. [Task 21 — Performance Profiling Baseline](0021-performance-profiling-baseline.md)
    — three-tier profiling procedure and baseline numbers.
-9. [Task 22 — CANopen](0022-canopen.md)
+8. [Task 22 — CANopen](0022-canopen.md)
    — EDS ingestion and SDO / PDO decoding.
-10. [Task 23 — Plot Measurements and Triggers](0023-plot-measurements-and-triggers.md)
-    — triggers, math channels, manual per-series y, export, drag a
-    plot area.
-11. [Task 24 — Cross-Cutting Polish](0024-cross-cutting-polish.md)
+9. [Task 23 — Plot Measurements and Triggers](0023-plot-measurements-and-triggers.md)
+   — triggers, math channels, manual per-series y, export, drag a
+   plot area.
+10. [Task 24 — Cross-Cutting Polish](0024-cross-cutting-polish.md)
     — the small UX / infrastructure tail and the end-user runtime-tool
     fetch flow.
 

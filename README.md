@@ -88,7 +88,16 @@ apps/
                      The scroll/stacking, column, trace-window, and
                      plot-data arithmetic live in `traceViewport.ts` /
                      `traceColumns.ts` / `trace.ts` / `plotData.ts`
-                     (unit-tested alongside).
+                     (unit-tested alongside). A command / hotkey
+                     framework (`commands.ts`, `keybindings.ts`,
+                     `PaletteModal.tsx` — ADR 0018) lifts every toolbar
+                     action into a `Ctrl/Cmd+Shift+P` command palette,
+                     adds `Ctrl/Cmd+P` go-to-view (open panels by
+                     display name), and the plot-panel hotkeys `f`
+                     (fit x axis) / `l` (follow live). Element display
+                     names are model-owned and resolved everywhere by
+                     `elementLabel.ts` (ADR 0019), editable inline in
+                     the project panel.
     src-tauri/       Rust host (`cannet-gui` crate). Owns the trace
                      model (`trace_store.rs` — the session buffer, plus
                      an O(1)-maintained latest-frame-per-id index and a

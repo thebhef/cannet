@@ -2,10 +2,9 @@
 
 Status: accepted (2026-05-26)
 
-Phase 16 ([`../../plans/phased-implementation.md`](../../plans/phased-implementation.md))
-introduces a generalised command and keybinding primitive that every
-later track and phase registers on. This ADR records the shape of
-that primitive and why.
+A generalised command and keybinding primitive that panels and later
+features register on. This ADR records the shape of that primitive
+and why.
 
 ## Decision
 
@@ -19,8 +18,8 @@ hook.
 **Code-declared bindings.** Bindings are declared in source at the
 point each command is registered. There is no user-editable
 `keybindings.json`, no settings UI surfacing the binding map, and no
-persistence path. Customisation is a deliberate later feature, not a
-Phase-10 deliverable.
+persistence path. Customisation is a deliberate later feature, not
+part of the framework's first cut.
 
 **Typed-context predicates over a small, fixed context object.**
 Each command may declare a `context` predicate over a typed shape —
@@ -33,8 +32,7 @@ binding collisions cannot reach runtime.
 **Two palettes, same matcher.** `Cmd/Ctrl+Shift+P` opens the command
 palette (every available command). `Cmd/Ctrl+P` opens a go-to-view
 palette (every open dockview panel by display name). Both use the
-fuzzy matcher chosen in `plans/technology-inventory.md` (proposed:
-`fzf-for-js`).
+fuzzy matcher adopted in `plans/technology-inventory.md` (`fzf`).
 
 ## Why
 
@@ -86,11 +84,10 @@ Inventing a predicate DSL would buy generality nobody needs.
 
 ## Consequences
 
-- Phase 15's `f` and `l` plot hotkeys, the lifted toolbar
-  commands, Phase 12's DBC panel commands, and Phase 19's
-  `goto.traceRow` / `goto.timeInTrace` / `plot.setVisibleRange`
-  / `capture.save` all register on this framework. Anything
-  later registers theirs too.
+- The `f` and `l` plot hotkeys and the lifted toolbar commands
+  register on this framework; later features — e.g. the
+  argument-taking `goto.traceRow` / `goto.timeInTrace` /
+  `plot.setVisibleRange` / `capture.save` — register theirs too.
 - Build fails fast on a binding collision; the registry's boot
   step is the integration check.
 - User customisation, command arguments / forms, and a settings

@@ -26,10 +26,9 @@ work or admit it isn't going to happen and delete it.
 
 Near-term work — fold these into a phase before picking up the
 lower-priority follow-ups below. The original "Minimum Usability
-Tasks" list is split across **Task 11** (transmit signals,
-shipped), **Task 12** (DBC view + drag/drop, shipped),
-**Task 15** (plot refinements, shipped), and **Task 16** (hotkey
-framework) in the [roadmap](tasks/roadmap.md).
+Tasks" list shipped across **Task 11** (transmit signals),
+**Task 12** (DBC view + drag/drop), **Task 15** (plot
+refinements), and **Task 16** (hotkey framework).
 
 - takes a long time to exit gracefully
 

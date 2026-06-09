@@ -1,7 +1,7 @@
 # Task 19 — Command Palette + Goto Framework
 
 The framework itself (registry, bindings, palette,
-`Cmd/Ctrl+Shift+P`, `Cmd/Ctrl+P` go-to-view, fuzzy matcher) ships
+`Cmd/Ctrl+Shift+P`, `Cmd/Ctrl+P` go-to-view, fuzzy matcher) shipped
 in **Task 16**. What's left for this task is the
 **specialised commands** that need richer UX than zero-arg
 toolbar lifts — commands that prompt for an argument, drive a
