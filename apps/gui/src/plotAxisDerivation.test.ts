@@ -71,6 +71,17 @@ describe("deriveAxesForArea", () => {
     expect(out.find((x) => x.subtitle === "Mode (enum)")?.signals).toHaveLength(1);
   });
 
+  it("a standard and an extended signal with the same id and name get distinct axes", () => {
+    // The axis-id key must include the extended flag (the canonical
+    // signalKey's `x:`/`s:` discriminator) — otherwise the two would
+    // collide into one axis id.
+    const std = s("Status", "");
+    const ext: SignalRef = { ...s("Status", ""), extended: true };
+    const out = deriveAxesForArea("a", [std, ext], "individual");
+    expect(out).toHaveLength(2);
+    expect(out[0].id).not.toBe(out[1].id);
+  });
+
   it("axis ids are stable and unique", () => {
     const sigs = [s("V1", "V"), s("V2", "V")];
     const out = deriveAxesForArea("area-7", sigs, "per-unit");
