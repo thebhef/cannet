@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { decimatePoints, decodeSignalsSample, mergeSeries, signalKey } from "./plotData";
+import { decimatePoints, decodeSignalsSample, groupScaleRanges, mergeSeries, signalKey } from "./plotData";
 
 describe("mergeSeries", () => {
   it("returns an empty data set with no series", () => {
@@ -156,5 +156,81 @@ describe("decodeSignalsSample", () => {
     const buf = new ArrayBuffer(44);
     new DataView(buf).setUint32(0, 0xdeadbeef, true);
     expect(() => decodeSignalsSample(buf)).toThrow(/bad magic/);
+  });
+});
+
+describe("groupScaleRanges", () => {
+  const ranges = (entries: Array<[string, { lo: number; hi: number }]>) => new Map(entries);
+
+  it("same-unit signals share the union of their ranges", () => {
+    const out = groupScaleRanges(
+      [
+        { key: "v1", unit: "V" },
+        { key: "v2", unit: "V" },
+      ],
+      ranges([
+        ["v1", { lo: 0, hi: 5 }],
+        ["v2", { lo: 3, hi: 12 }],
+      ]),
+    );
+    expect(out.get("v1")).toEqual({ lo: 0, hi: 12 });
+    expect(out.get("v2")).toEqual({ lo: 0, hi: 12 });
+  });
+
+  it("different units scale independently", () => {
+    const out = groupScaleRanges(
+      [
+        { key: "v", unit: "V" },
+        { key: "i", unit: "A" },
+      ],
+      ranges([
+        ["v", { lo: 0, hi: 400 }],
+        ["i", { lo: -5, hi: 5 }],
+      ]),
+    );
+    expect(out.get("v")).toEqual({ lo: 0, hi: 400 });
+    expect(out.get("i")).toEqual({ lo: -5, hi: 5 });
+  });
+
+  it("unitless signals do not share a scale with each other", () => {
+    const out = groupScaleRanges(
+      [
+        { key: "a", unit: "" },
+        { key: "b", unit: "" },
+      ],
+      ranges([
+        ["a", { lo: 0, hi: 1 }],
+        ["b", { lo: 0, hi: 1000 }],
+      ]),
+    );
+    expect(out.get("a")).toEqual({ lo: 0, hi: 1 });
+    expect(out.get("b")).toEqual({ lo: 0, hi: 1000 });
+  });
+
+  it("a signal with no observed range gets no entry and doesn't poison its group", () => {
+    const out = groupScaleRanges(
+      [
+        { key: "v1", unit: "V" },
+        { key: "v2", unit: "V" },
+      ],
+      ranges([["v1", { lo: 1, hi: 2 }]]),
+    );
+    expect(out.get("v1")).toEqual({ lo: 1, hi: 2 });
+    expect(out.has("v2")).toBe(false);
+  });
+
+  it("returns copies — mutating an output range does not affect group mates", () => {
+    const out = groupScaleRanges(
+      [
+        { key: "v1", unit: "V" },
+        { key: "v2", unit: "V" },
+      ],
+      ranges([
+        ["v1", { lo: 0, hi: 1 }],
+        ["v2", { lo: 0, hi: 2 }],
+      ]),
+    );
+    out.get("v1")!.hi = 99;
+    expect(out.get("v2")).toEqual({ lo: 0, hi: 2 });
   });
 });

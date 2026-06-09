@@ -135,6 +135,54 @@ export function signalKey(
 }
 
 /**
+ * Unit-based y-scale grouping (ADR 0026): on an axis, series sharing
+ * a unit share one y scale, and each unit group auto-scales
+ * independently to fill the axis.
+ *
+ * Given each signal's own observed value range (the plot area's
+ * per-signal auto-norm latch), returns the range each signal should
+ * actually be *normalised by*: the union (min lo, max hi) of the
+ * latched ranges across every signal in its unit group. Signals with
+ * a non-empty unit group by that unit; **unitless signals each form
+ * their own group** — two signals that merely both lack a unit are
+ * not known to be commensurable, and pinning them to a shared scale
+ * would flatten whichever has the smaller range.
+ *
+ * A signal with no entry in `perSignalRanges` (nothing decoded yet,
+ * or all values equal so far) contributes nothing to its group and
+ * gets no entry in the result — the renderer keeps its midline
+ * fallback for it.
+ */
+export function groupScaleRanges(
+  members: ReadonlyArray<{ key: string; unit: string }>,
+  perSignalRanges: ReadonlyMap<string, { lo: number; hi: number }>,
+): Map<string, { lo: number; hi: number }> {
+  // Pass 1: union each unit group's range.
+  const groupRange = new Map<string, { lo: number; hi: number }>();
+  const groupKeyFor = (m: { key: string; unit: string }) =>
+    m.unit ? `unit:${m.unit}` : `sig:${m.key}`;
+  for (const m of members) {
+    const r = perSignalRanges.get(m.key);
+    if (!r) continue;
+    const gk = groupKeyFor(m);
+    const g = groupRange.get(gk);
+    if (!g) groupRange.set(gk, { lo: r.lo, hi: r.hi });
+    else {
+      if (r.lo < g.lo) g.lo = r.lo;
+      if (r.hi > g.hi) g.hi = r.hi;
+    }
+  }
+  // Pass 2: hand each signal its group's range.
+  const out = new Map<string, { lo: number; hi: number }>();
+  for (const m of members) {
+    if (!perSignalRanges.has(m.key)) continue;
+    const g = groupRange.get(groupKeyFor(m));
+    if (g) out.set(m.key, { lo: g.lo, hi: g.hi });
+  }
+  return out;
+}
+
+/**
  * Min/max-decimate a `(t, v)` series to roughly `maxBuckets` time
  * buckets — keep the min- and max-value point of each bucket (in time
  * order) so peaks/troughs survive. Bucketing is by index (the trace

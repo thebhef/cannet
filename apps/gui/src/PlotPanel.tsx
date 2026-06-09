@@ -12,7 +12,7 @@ import { useElementRegistry } from "./projectElements";
 import { useTrace } from "./trace";
 import { TraceControls } from "./TraceControls";
 import { useNotes } from "./notesContext";
-import { decodeSignalsSample, mergeSeries, signalKey } from "./plotData";
+import { decodeSignalsSample, groupScaleRanges, mergeSeries, signalKey } from "./plotData";
 import { SourcesMenuSection } from "./SourcesPicker";
 import {
   DEFAULT_MEASUREMENTS,
@@ -2204,17 +2204,18 @@ function PlotArea(p: PlotAreaProps) {
       cache.lastWinEnd = lr.winEnd;
 
       const seriesRel: Series[] = signals.map((s) => cache!.byKey.get(signalRefKey(s)) ?? { t: [], v: [] });
-      // Per-trace auto-normalisation: each trace's values are re-mapped
-      // to [0, 1] from its own min/max, so signals with very different
-      // natural ranges (SOC 0–1 vs current ±300) both fill the canvas
-      // height. The side-panel value column still shows the raw value
-      // (`seriesRef` keeps the un-normalised series for that). The
-      // y-axis labels become normalised positions [0, 1] — meaningful
-      // numbers per trace will arrive with the per-trace gain/offset
-      // controls (deferred).
+      // Auto-normalisation: each series is re-mapped to [0, 1] from
+      // its *unit group's* min/max (ADR 0026 — same-unit series share
+      // one y scale; each unit group fills the canvas independently),
+      // so signals with very different natural ranges (SOC 0–1 vs
+      // current ±300) coexist on one axis. The side-panel value column
+      // still shows the raw value (`seriesRef` keeps the un-normalised
+      // series for that); the y-axis tick labels map back through the
+      // primary signal's group range to real engineering values.
       //
-      // Pick a per-signal `(lo, hi)` for normalising each trace to
-      // [0, 1]. Three modes, all backed by `traceRangesRef`:
+      // First latch a per-signal `(lo, hi)` of observed values (group
+      // union happens below, at normalise time). Three modes, all
+      // backed by `traceRangesRef`:
       //
       //  * **Manual override** (Fit Y) — `manualFitYRef.current` is
       //    set, the stored ranges are used as-is until the next Fit
@@ -2253,6 +2254,17 @@ function PlotArea(p: PlotAreaProps) {
           });
         }
       });
+      // Unit-based y-scale (ADR 0026): the per-signal latches above
+      // feed `groupScaleRanges`, which hands every signal the *union*
+      // range of its unit group — so same-unit series share one y
+      // scale and each unit group auto-scales independently to fill
+      // the axis. Unitless signals each keep their own range (two
+      // signals that merely both lack a unit aren't known
+      // commensurable).
+      const scaleRanges = groupScaleRanges(
+        signals.map((s) => ({ key: signalRefKey(s), unit: s.unit })),
+        ranges,
+      );
       // Enum-mode: skip auto-normalisation and pass raw enum codes
       // through. The y scale is pinned to the table's raw-value range
       // below so the trace's discrete codes plot at their natural
@@ -2265,7 +2277,7 @@ function PlotArea(p: PlotAreaProps) {
         : seriesRel.map((s, i) => {
             if (s.v.length === 0) return s;
             const key = signalRefKey(signals[i]);
-            const r = ranges.get(key);
+            const r = scaleRanges.get(key);
             const out = new Array<number>(s.v.length);
             if (r && r.hi > r.lo) {
               effective.set(key, r);
