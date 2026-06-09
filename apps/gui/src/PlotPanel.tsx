@@ -931,6 +931,22 @@ export function PlotPanel(props: IDockviewPanelProps) {
     },
     [],
   );
+  /** Set a series' colour after it's been added (per ADR 0026). Touches
+   * only the named signal's `color` field; everything else (order,
+   * hidden, primary-signal selection) stays put. Filter-mode areas
+   * mutate the *computed* `signals` array — the colour change is
+   * effectively session-only there because the next catalog re-eval
+   * rebuilds the list; that matches the existing hidden-flag behaviour
+   * documented in `toggleSignalHidden`. */
+  const setSignalColor = useCallback((areaId: string, key: string, color: string) => {
+    setAreas((prev) =>
+      prev.map((a) =>
+        a.id === areaId
+          ? { ...a, signals: a.signals.map((s) => (signalRefKey(s) === key ? { ...s, color } : s)) }
+          : a,
+      ),
+    );
+  }, []);
   const toggleSignalHidden = useCallback((areaId: string, key: string) => {
     // Hidden flag toggles even in filter mode — it's display-only
     // and doesn't mutate the set the regex defines. The hidden flag
@@ -1339,6 +1355,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
                 placeSignal(ref, area.id, beforeKey, isInternalMove)
               }
               onToggleHidden={(key) => toggleSignalHidden(area.id, key)}
+              onSetSignalColor={(key, color) => setSignalColor(area.id, key, color)}
               onSetSignalFilter={(f) => setAreaSignalFilter(area.id, f)}
               onPromoteFilterToManual={() => promoteFilterToManual(area.id, area.signals)}
               busNameLookup={busNameLookup}
@@ -1468,6 +1485,62 @@ function EventLogRow({
   );
 }
 
+/** Colour swatch in a plot-area signal row. Left-click toggles hidden
+ * (preserves prior behaviour); right-click opens the browser's native
+ * colour picker so the user can re-skin the series. The picker is a
+ * stacked hidden `<input type="color">` whose value seeds from the
+ * current swatch — committing fires `onPickColor` with the new
+ * `#rrggbb`. (Native picker chosen over a bespoke palette so we
+ * don't paint a custom UI for a one-off control; OSes render their
+ * own with eye-droppers and recently-used swatches.) */
+function SignalSwatch({
+  hidden,
+  color,
+  onToggleHidden,
+  onPickColor,
+}: {
+  hidden: boolean;
+  color: string;
+  onToggleHidden: () => void;
+  onPickColor: (hex: string) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  return (
+    <span className="plot-signal-swatch-wrap">
+      <button
+        type="button"
+        className={`plot-signal-swatch${hidden ? " hidden" : ""}`}
+        style={{ background: color }}
+        title={
+          hidden
+            ? "show this signal · right-click to pick a colour"
+            : "hide this signal · right-click to pick a colour"
+        }
+        onClick={(e) => {
+          e.stopPropagation();
+          onToggleHidden();
+        }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          inputRef.current?.click();
+        }}
+      />
+      <input
+        ref={inputRef}
+        type="color"
+        aria-label="pick series colour"
+        className="plot-signal-swatch-input"
+        value={color}
+        onChange={(e) => onPickColor(e.target.value)}
+        // Keep the row's click handler from interpreting the input
+        // click as "promote to primary".
+        onClick={(e) => e.stopPropagation()}
+      />
+    </span>
+  );
+}
+
 function MeasurementMenu({
   measKeys,
   onChange,
@@ -1587,6 +1660,9 @@ interface PlotAreaProps {
    * cell, by-id cell, another plot panel). */
   onDropSignal: (ref: SignalRef, beforeKey: string | null, isInternalMove: boolean) => void;
   onToggleHidden: (key: string) => void;
+  /** Set a series' colour to the given `#rrggbb` value (ADR 0026
+   * per-series colour picker). */
+  onSetSignalColor: (key: string, color: string) => void;
   /** Set or clear this area's `signalFilter` (ADR 0020). Pass
    * `undefined` to revert the area to manual mode without promoting
    * the computed signals; the parent's `onPromoteFilterToManual`
@@ -1686,6 +1762,7 @@ function PlotArea(p: PlotAreaProps) {
     onRemoveSignal,
     onDropSignal,
     onToggleHidden,
+    onSetSignalColor,
     onSetSignalFilter,
     onPromoteFilterToManual,
     busNameLookup,
@@ -3115,14 +3192,11 @@ function PlotArea(p: PlotAreaProps) {
                   for (const r of refs) onDropSignal(r, key, isInternalMove);
                 }}
               >
-                <button
-                  className={`plot-signal-swatch${s.hidden ? " hidden" : ""}`}
-                  style={{ background: s.color }}
-                  title={s.hidden ? "show this signal" : "hide this signal"}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onToggleHidden(key);
-                  }}
+                <SignalSwatch
+                  hidden={!!s.hidden}
+                  color={s.color}
+                  onToggleHidden={() => onToggleHidden(key)}
+                  onPickColor={(c) => onSetSignalColor(key, c)}
                 />
                 <div className="plot-signal-text">
                   <span

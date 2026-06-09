@@ -323,9 +323,9 @@ describe("PlotPanel", () => {
       target: { value: "*|s:256:EngineSpeed" },
     });
     await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
-    const swatch = screen.getByTitle("hide this signal");
+    const swatch = screen.getByTitle(/^hide this signal/);
     fireEvent.click(swatch);
-    expect(screen.getByTitle("show this signal")).toBeInTheDocument();
+    expect(screen.getByTitle(/^show this signal/)).toBeInTheDocument();
     // The signal's value still renders (it just isn't drawn on the plot).
     expect(screen.getByText("EngineSpeed")).toBeInTheDocument();
   });
@@ -357,6 +357,23 @@ describe("PlotPanel", () => {
     expect(c1).not.toBe("");
     expect(c2).not.toBe("");
     expect(c1).not.toBe(c2);
+  });
+
+  it("changing a series' colour via the swatch picker updates the swatch", async () => {
+    renderPanel();
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: /EngineData\.EngineSpeed/ })).toBeInTheDocument(),
+    );
+    fireEvent.change(screen.getByLabelText("add signal to focused plot area"), {
+      target: { value: "*|s:256:EngineSpeed" },
+    });
+    await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
+    const picker = screen.getByLabelText("pick series colour") as HTMLInputElement;
+    fireEvent.change(picker, { target: { value: "#123456" } });
+    // The swatch's background style should reflect the new colour.
+    // jsdom normalises hex → rgb() in inline styles.
+    const swatch = document.querySelector(".plot-signal-swatch") as HTMLElement;
+    expect(swatch.style.background).toBe("rgb(18, 52, 86)");
   });
 
   it("show-points tri-state defaults to auto and persists to panel params", () => {

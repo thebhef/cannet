@@ -1400,6 +1400,23 @@ header {
 .plot-signal-swatch.hidden {
   opacity: 0.25;
 }
+/* Wrap the swatch + its hidden colour input. The input is positioned
+ * absolutely so the native picker pops up over the swatch (right-click
+ * to open it). */
+.plot-signal-swatch-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.plot-signal-swatch-input {
+  position: absolute;
+  inset: 0;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  pointer-events: none;
+  border: 0;
+  padding: 0;
+}
 
 /* Left text column: signal name on top (large), message name below
  * (small, dimmed). Both ellipsis on overflow so a long signal name
