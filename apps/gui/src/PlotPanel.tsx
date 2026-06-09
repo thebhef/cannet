@@ -162,12 +162,9 @@ interface SignalRef {
   hidden?: boolean;
 }
 
-type YMode = "auto" | { min: number; max: number };
-
 export interface PlotAreaConfig {
   id: string;
   signals: SignalRef[];
-  yMode: YMode;
   /** Which signal's raw range / unit drives the y-axis labels for this
    * area. `null` falls back to the first non-hidden signal — that's
    * what `primarySignalForArea` resolves it to. Click a signal row in
@@ -326,16 +323,6 @@ function parseDroppedSignals(s: string): {
   };
 }
 
-function yModeFromRaw(raw: unknown): YMode {
-  if (typeof raw === "object" && raw !== null) {
-    const o = raw as Record<string, unknown>;
-    if (typeof o.min === "number" && typeof o.max === "number" && o.min < o.max) {
-      return { min: o.min, max: o.max };
-    }
-  }
-  return "auto";
-}
-
 function areasFromParams(raw: unknown): PlotAreaConfig[] {
   if (Array.isArray(raw)) {
     const out: PlotAreaConfig[] = [];
@@ -344,17 +331,19 @@ function areasFromParams(raw: unknown): PlotAreaConfig[] {
       const o = a as Record<string, unknown>;
       const id = typeof o.id === "string" ? o.id : crypto.randomUUID();
       const signals = (Array.isArray(o.signals) ? o.signals.filter(isSignalRefCore) : []).map((s, i) => withColor(s, i));
+      // `yMode` from a v7-and-earlier panel is ignored — y scales are
+      // always auto-derived (ADR 0026). The field is tolerated on
+      // parse so old projects don't reject; saving drops it.
       out.push({
         id,
         signals,
-        yMode: yModeFromRaw(o.yMode),
         primarySignalKey: typeof o.primarySignalKey === "string" ? o.primarySignalKey : null,
         signalFilter: typeof o.signalFilter === "string" ? o.signalFilter : undefined,
       });
     }
     if (out.length > 0) return out;
   }
-  return [{ id: crypto.randomUUID(), signals: [], yMode: "auto", primarySignalKey: null }];
+  return [{ id: crypto.randomUUID(), signals: [], primarySignalKey: null }];
 }
 
 function cursorModeFromRaw(raw: unknown): CursorMode {
@@ -757,7 +746,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
   // --- area ops ---
   const addArea = useCallback(() => {
     setAreas((prev) => {
-      const next: PlotAreaConfig = { id: crypto.randomUUID(), signals: [], yMode: "auto", primarySignalKey: null };
+      const next: PlotAreaConfig = { id: crypto.randomUUID(), signals: [], primarySignalKey: null };
       setFocusedAreaId(next.id);
       return [...prev, next];
     });
@@ -776,10 +765,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
       return next;
     });
   }, []);
-  const setAreaYMode = useCallback((id: string, yMode: YMode) => {
-    setAreas((prev) => prev.map((a) => (a.id === id ? { ...a, yMode } : a)));
-  }, []);
-
   const setAreaPrimarySignal = useCallback((id: string, key: string | null) => {
     setAreas((prev) => prev.map((a) => (a.id === id ? { ...a, primarySignalKey: key } : a)));
   }, []);
@@ -1346,7 +1331,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
               resetYEpoch={resetYEpoch}
               fitYEpoch={fitYEpoch}
               showDiag={showDiag}
-              onSetYMode={(m) => setAreaYMode(area.id, m)}
               onSetPrimarySignal={(k) => setAreaPrimarySignal(area.id, k)}
               onFocus={() => setFocusedAreaId(area.id)}
               onRemoveArea={() => removeArea(area.id)}
@@ -1644,7 +1628,6 @@ interface PlotAreaProps {
   /** Reveal the per-row y-range / cached-t-range diagnostic readout
    * (panel-level "diag" toggle). */
   showDiag: boolean;
-  onSetYMode: (m: YMode) => void;
   /** Set this area's primary signal (drives y-axis labels/units).
    * `null` reverts to the first-non-hidden default. */
   onSetPrimarySignal: (key: string | null) => void;
@@ -1755,7 +1738,6 @@ function PlotArea(p: PlotAreaProps) {
     resetYEpoch,
     fitYEpoch,
     showDiag,
-    onSetYMode,
     onSetPrimarySignal,
     onFocus,
     onRemoveArea,
@@ -1811,7 +1793,6 @@ function PlotArea(p: PlotAreaProps) {
   const hoverRafRef = useRef(0);
   const [hoverX, setHoverX] = useState<number | null>(null);
   const [valueTick, setValueTick] = useState(0); // bump → re-render side panel
-  const [yEditOpen, setYEditOpen] = useState(false);
   /** Filter-editor visibility (ADR 0020). Closed by default;
    * the "filter…" button in the side-panel head toggles it. The
    * editor itself is rendered below the head row when open, so it
@@ -1827,7 +1808,6 @@ function PlotArea(p: PlotAreaProps) {
   const areaId = area.id;
   const signals = area.signals;
   const signalSetKey = signals.map(signalRefKey).join("|");
-  const yMode = area.yMode;
   /** Which signal's raw range / unit drives the y-axis labels. Falls
    * back to the first non-hidden signal if the configured key is no
    * longer present (signal removed). `null` when the area is empty. */
@@ -1907,7 +1887,6 @@ function PlotArea(p: PlotAreaProps) {
   const liveRef = useRef({
     winStart,
     winEnd,
-    yMode,
     followLive,
     cursorMode,
     cursorXa,
@@ -1931,7 +1910,6 @@ function PlotArea(p: PlotAreaProps) {
     liveRef.current = {
       winStart,
       winEnd,
-      yMode,
       followLive,
       cursorMode,
       cursorXa,
@@ -2229,10 +2207,11 @@ function PlotArea(p: PlotAreaProps) {
           const lo = Math.min(...rows.map((r) => r.raw));
           const hi = Math.max(...rows.map((r) => r.raw));
           u.setScale("y", { min: lo - 0.5, max: hi + 0.5 });
-        } else if (lr.yMode === "auto") {
-          u.setScale("y", { min: 0, max: 1 });
         } else {
-          u.setScale("y", { min: lr.yMode.min, max: lr.yMode.max });
+          // y is always auto-derived (ADR 0026): the data was already
+          // normalised to [0, 1] above and the y-axis formatter
+          // converts ticks back into the primary signal's real units.
+          u.setScale("y", { min: 0, max: 1 });
         }
       });
 
@@ -2803,31 +2782,6 @@ function PlotArea(p: PlotAreaProps) {
     void resampleRef.current();
   }, [followLive]);
 
-  // Apply the y-axis range *immediately* when it *changes* — no need to
-  // wait for the next re-sample. (Not on the initial mount: the resample
-  // does the first fit, and uPlot hasn't got real data yet then.)
-  const prevYModeKeyRef = useRef<string | null>(null);
-  const yModeKey = yMode === "auto" ? "auto" : `${yMode.min}:${yMode.max}`;
-  useEffect(() => {
-    const first = prevYModeKeyRef.current == null;
-    prevYModeKeyRef.current = yModeKey;
-    if (first) return;
-    const u = uplotRef.current;
-    if (!u) return;
-    withSuppressed(() => {
-      if (yMode === "auto") {
-        // With `scales.y.auto = false` a `setData(_, true)` no longer
-        // re-fits y; pin explicitly to the normalised [0, 1] range.
-        u.setScale("y", { min: 0, max: 1 });
-        const { xMin, xMax } = xSyncRef.current;
-        if (xMin != null && xMax != null) u.setScale("x", { min: xMin, max: xMax });
-      } else {
-        u.setScale("y", { min: yMode.min, max: yMode.max });
-      }
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [yModeKey]);
-
   // Panel asked us to refit y — drop the per-trace normalisation range
   // (and any manual Fit Y override) so the next tick uses the host
   // extrema fresh.
@@ -2905,7 +2859,6 @@ function PlotArea(p: PlotAreaProps) {
     uplotRef.current?.redraw(false, false);
   }, [cursorXa, cursorXb, cursorYh1, cursorYh2, events, isFirst, isLast]);
 
-  const yLabel = yMode === "auto" ? "y: auto" : `y: ${yMode.min}…${yMode.max}`;
   const dh = cursorYh1 != null && cursorYh2 != null ? cursorYh2 - cursorYh1 : null;
 
   const displayValueFor = (key: string): number | null => {
@@ -3022,16 +2975,6 @@ function PlotArea(p: PlotAreaProps) {
             {label}
           </span>
           <button
-            className="plot-area-y"
-            title="set this area's y-axis range"
-            onClick={(e) => {
-              e.stopPropagation();
-              setYEditOpen((v) => !v);
-            }}
-          >
-            {yLabel}
-          </button>
-          <button
             className="plot-area-fit-y"
             title="fit y to the currently visible data — useful when zoomed in and you want the visible region to fill the canvas height"
             onClick={(e) => {
@@ -3107,16 +3050,6 @@ function PlotArea(p: PlotAreaProps) {
               setFilterEditOpen(false);
             }}
             onCancel={() => setFilterEditOpen(false)}
-          />
-        )}
-        {yEditOpen && (
-          <YRangeEditor
-            yMode={yMode}
-            onApply={(m) => {
-              onSetYMode(m);
-              setYEditOpen(false);
-            }}
-            onCancel={() => setYEditOpen(false)}
           />
         )}
         {(cursorYh1 != null || cursorYh2 != null) && (
@@ -3334,24 +3267,3 @@ function SignalFilterEditor({
   );
 }
 
-function YRangeEditor({ yMode, onApply, onCancel }: { yMode: YMode; onApply: (m: YMode) => void; onCancel: () => void }) {
-  const [min, setMin] = useState(yMode === "auto" ? "" : String(yMode.min));
-  const [max, setMax] = useState(yMode === "auto" ? "" : String(yMode.max));
-  return (
-    <div className="plot-y-editor" onMouseDown={(e) => e.stopPropagation()}>
-      <input type="number" step="any" value={min} placeholder="min" onChange={(e) => setMin(e.target.value)} />
-      <input type="number" step="any" value={max} placeholder="max" onChange={(e) => setMax(e.target.value)} />
-      <button
-        onClick={() => {
-          const lo = parseFloat(min);
-          const hi = parseFloat(max);
-          if (Number.isFinite(lo) && Number.isFinite(hi) && lo < hi) onApply({ min: lo, max: hi });
-        }}
-      >
-        set
-      </button>
-      <button onClick={() => onApply("auto")}>auto</button>
-      <button onClick={onCancel}>×</button>
-    </div>
-  );
-}

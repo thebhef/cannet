@@ -383,7 +383,8 @@ describe("PlotPanel", () => {
     fireEvent.change(sel, { target: { value: "on" } });
     expect(sel.value).toBe("on");
     // Last updateParameters call carries the new mode.
-    const lastCall = api.updateParameters.mock.calls.at(-1)?.[0] ?? {};
+    const calls = api.updateParameters.mock.calls;
+    const lastCall = calls[calls.length - 1]?.[0] ?? {};
     expect(lastCall.showPoints).toBe("on");
     fireEvent.change(sel, { target: { value: "off" } });
     expect((screen.getByLabelText("show points") as HTMLSelectElement).value).toBe("off");

@@ -290,9 +290,10 @@ the re-sampling), Clear re-anchors what's plotted to "now".
   to hide / show the line — the value keeps updating, the swatch dims;
   **right-click** the swatch to pick the series' colour from the
   browser's colour picker), the name, and the value — at cursor A when one is placed, else at the
-  mouse crosshair, else the latest sample. The signal-panel head has an
-  **y: auto / min…max** control to pin that area's y-range, and shows
-  the H1/H2 Y-cursor values + ΔH when those are placed. With a DBC
+  mouse crosshair, else the latest sample. The signal-panel head shows
+  the H1/H2 Y-cursor values + ΔH when those are placed; y scales are
+  always auto-derived (per ADR 0026) and **fit y** refits the
+  auto-norm latch to the visible window. With a DBC
   attached, the toolbar's **add signal…** dropdown lists every
   `(message, signal)` pair the database defines; picking one drops it
   into the *focused* plot area (click an area to focus it). **Drag a
