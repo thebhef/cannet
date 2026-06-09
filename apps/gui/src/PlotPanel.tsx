@@ -766,15 +766,23 @@ export function PlotPanel(props: IDockviewPanelProps) {
   }, []);
   const removeArea = useCallback((id: string) => {
     setAreas((prev) => (prev.length <= 1 ? prev : prev.filter((a) => a.id !== id)));
+    // Per-axis state is keyed by *derived* axis id: the parent's id in
+    // unified mode, `${parentId}/…` per derived axis otherwise. Match
+    // both so a per-unit / individual area doesn't leak its axes'
+    // entries on removal.
+    const belongsToArea = (k: string) => k === id || k.startsWith(`${id}/`);
     setCursorYByArea((prev) => {
-      if (!(id in prev)) return prev;
-      const { [id]: _drop, ...rest } = prev;
+      const keys = Object.keys(prev).filter(belongsToArea);
+      if (keys.length === 0) return prev;
+      const rest = { ...prev };
+      for (const k of keys) delete rest[k];
       return rest;
     });
     setSeriesByArea((prev) => {
-      if (!prev.has(id)) return prev;
+      const keys = [...prev.keys()].filter(belongsToArea);
+      if (keys.length === 0) return prev;
       const next = new Map(prev);
-      next.delete(id);
+      for (const k of keys) next.delete(k);
       return next;
     });
   }, []);
@@ -1153,13 +1161,19 @@ export function PlotPanel(props: IDockviewPanelProps) {
   );
   const areaLabels = useMemo(() => new Map(areas.map((a, i) => [a.id, `Area ${i + 1}`])), [areas]);
 
+  // Iterate the *derived* axes, not the parent areas: `reportSeries`
+  // stores each axis's sampled series under its derived id (which in
+  // per-unit / individual mode differs from the parent's), so the
+  // measurement strip's `seriesFor(areaId, key)` lookups must use the
+  // same ids. Each signal lives in exactly one derived axis of its
+  // parent, so this enumerates every plotted signal exactly once.
   const plottedSignals = useMemo(() => {
     const out: Array<{ key: string; ref: SignalRef; color: string; areaId: string }> = [];
-    for (const a of effectiveAreas) {
-      for (const s of a.signals) out.push({ key: signalRefKey(s), ref: s, color: s.color, areaId: a.id });
+    for (const d of derivedAreaConfigs) {
+      for (const s of d.area.signals) out.push({ key: signalRefKey(s), ref: s, color: s.color, areaId: d.area.id });
     }
     return out;
-  }, [effectiveAreas]);
+  }, [derivedAreaConfigs]);
   const seriesFor = useCallback(
     (areaId: string, key: string): Series | undefined => seriesByArea.get(areaId)?.get(key),
     [seriesByArea],
@@ -1359,6 +1373,10 @@ export function PlotPanel(props: IDockviewPanelProps) {
               }
               isFirst={idx === 0}
               isLast={idx === derivedAreaConfigs.length - 1}
+              // Focus marks the *logical area* the toolbar's "add
+              // signal" targets, so every derived axis of the focused
+              // parent gets the outline — deliberate: the drop target
+              // is the parent area, not one of its axes.
               focused={parent.id === focusedAreaId}
               // Removal is parent-area level — only show the X on the
               // first derived axis of each parent so we don't render N

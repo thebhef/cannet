@@ -403,6 +403,28 @@ describe("PlotPanel", () => {
     expect(screen.getByText(/Area 1 · EngineSpeed/)).toBeInTheDocument();
   });
 
+  it("measurement strip lists each signal exactly once in per-unit mode", async () => {
+    // Regression guard for the derived-axis id mismatch: the strip's
+    // per-trace cells must enumerate the *derived* axes (where
+    // reportSeries stores each axis's series), and each signal lives
+    // in exactly one derived axis, so per-unit mode shows one cell
+    // set per signal — not zero (lookup miss) and not duplicates.
+    renderPanel();
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: /EngineData\.EngineSpeed/ })).toBeInTheDocument(),
+    );
+    const picker = screen.getByLabelText("add signal to focused plot area") as HTMLSelectElement;
+    fireEvent.change(picker, { target: { value: "*|s:256:EngineSpeed" } });
+    await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
+    fireEvent.change(picker, { target: { value: "*|s:256:EngineTemp" } });
+    await waitFor(() => expect(screen.getByText("EngineTemp")).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText("y-axis mode"), { target: { value: "per-unit" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: /measurements/i }));
+    // Default measurement keys include the per-trace value@A cell.
+    expect(screen.getAllByText(/EngineData\.EngineSpeed @A/).length).toBe(1);
+    expect(screen.getAllByText(/EngineData\.EngineTemp @A/).length).toBe(1);
+  });
+
   it("show-points tri-state defaults to auto and persists to panel params", () => {
     const api = renderPanel();
     const sel = screen.getByLabelText("show points") as HTMLSelectElement;
