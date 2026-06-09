@@ -1,6 +1,6 @@
 # ADR 0026 — Plot areas compose signals; axes configure how they're viewed
 
-Status: accepted (2026-06-09)
+Status: accepted (2026-06-09; partially shipped — see "Implementation status")
 
 The plot view grows a level. Until now a plot panel held a flat list
 of plot areas, each rendering as exactly one chart. This ADR records
@@ -121,6 +121,49 @@ a multi-region renderer uPlot doesn't natively provide.
 - **Enum text boxes in unified mode too.** A label per held segment
   across every overlaid enum is visual noise; enums fall back to a
   bare numeric line when sharing an axis.
+
+## Implementation status
+
+Task 15 ships the model end-to-end with one rough edge to close:
+
+- **Show-points control** (`auto` / `off` / `on`) is on the plot
+  toolbar and applies to every series in every axis of the panel.
+- **Y-axis-mode selector** (`unified` / `per-unit` / `individual`)
+  sits in each plot area's signal-panel head. Switching modes
+  re-stacks the area's canvases. The per-axis derivation is the pure
+  `deriveAxesForArea()` helper (covered by unit tests).
+- **Multi-uPlot per area.** Each derived axis is a stacked uPlot
+  instance with its own canvas and signal-list slice; the panel-level
+  x-sync registry (`xSyncRef` + `registerInstance`) was already
+  per-instance, so cursors, zoom, and pan stay coherent across the
+  stack. Area-level chrome (filter editor, y-axis-mode selector,
+  remove ×) renders only on the first derived axis of each parent.
+- **Fixed-range yMode** is gone. The old `yMode: "auto" | {min,max}`
+  field is no longer persisted; old projects parse with the field
+  ignored.
+- **Per-series colour picker** is on each signal-row's swatch
+  (right-click opens the browser's native picker).
+- **16-colour wheel** is the seed; a dragged-in series picks its
+  colour from the wheel index equal to the count of series already
+  in the target area.
+- **X-axis cursor labels** render the cursor's letter + time on every
+  axis (used to only render on the bottom axis).
+
+What's still rough:
+
+- **Per-unit grouping is unit-based only.** The `deriveAxesForArea`
+  helper has an `isEnum` predicate slot to break enum series out
+  onto their own axis in per-unit mode, but the panel doesn't
+  source it yet (each PlotArea queries `list_value_tables` for its
+  signal subset; the panel level doesn't roll up that information).
+  In practice today: an enum series in per-unit mode shares an axis
+  with anything else of the same unit. Switching to `individual`
+  puts each enum on its own axis and the existing per-area
+  enum-mode (stepped paths + symbolic ticks) activates as before.
+- **Logic-analyzer text-box overlays** (a translucent box per
+  constant-value segment showing the enum label) are not drawn yet;
+  the enum axis still uses the symbolic-y-tick rendering shipped
+  earlier. Tracked in `plans/backlog.md` under the plot panel.
 
 ## Consequences
 

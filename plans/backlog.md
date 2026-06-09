@@ -28,8 +28,8 @@ Near-term work — fold these into a phase before picking up the
 lower-priority follow-ups below. The original "Minimum Usability
 Tasks" list is split across **Task 11** (transmit signals,
 shipped), **Task 12** (DBC view + drag/drop, shipped),
-**Task 15** (show points), and **Task 16** (hotkey framework) in
-the [roadmap](tasks/roadmap.md).
+**Task 15** (plot refinements, shipped), and **Task 16** (hotkey
+framework) in the [roadmap](tasks/roadmap.md).
 
 - takes a long time to exit gracefully
 
@@ -119,14 +119,23 @@ trip over it.
 
 ### Plot panel
 
-- `[feat]` `cannet-gui` plot panel: enum rendering for multi-signal /
-  mixed areas. Phase 5 only switches to stepped + symbolic when an
-  area shows exactly one signal with a `VAL_` table — that's the
-  realistic single-state-channel case. Multiple enum signals on one
-  area (each on its own symbolic strip), or one enum + numeric on
-  the same axis, both want a different layout (multiple y-axes /
-  per-signal step overlays). Pick this up alongside the per-trace
-  y offset / gain work, which already needs the same plumbing.
+- `[feat]` `cannet-gui` plot panel: **enum-aware per-unit grouping**.
+  Task 15 added the `yAxisMode` selector (unified / per-unit /
+  individual). `deriveAxesForArea` has an `isEnum` predicate slot to
+  break each enum onto its own axis in per-unit mode, but the panel
+  doesn't source it (today each `PlotArea` resolves enum-ness
+  per-axis via `list_value_tables`; the panel level doesn't roll
+  that up). Add a panel-level enum cache populated from
+  `list_value_tables` so per-unit can give every enum its own axis.
+- `[feat]` `cannet-gui` plot panel: **logic-analyzer text-box
+  overlays** on enum axes. ADR 0026's enum lane spec is the enum
+  plotted numerically with a high-opacity text box overlaid on each
+  constant-value segment showing the label. Today an enum axis
+  renders stepped paths + symbolic y-axis ticks (the pre-task-15
+  shape) — the segment-by-segment label boxes are still to do. The
+  hook is the existing `draw` callback in `PlotArea`'s uPlot opts;
+  walk each rendered segment of the enum series and overlay a
+  rounded box anchored to the segment's midpoint.
 
 ### Transmit panel
 
