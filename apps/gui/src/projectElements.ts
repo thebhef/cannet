@@ -64,7 +64,8 @@ export function isProjectElement(v: unknown): v is ProjectElement {
     (o.kind === "trace" ||
       o.kind === "plot" ||
       o.kind === "transmit" ||
-      o.kind === "filter") &&
+      o.kind === "filter" ||
+      o.kind === "rbs") &&
     typeof o.id === "string"
   );
 }
@@ -89,6 +90,19 @@ export function normalizeElement(el: ProjectElement): ProjectElement {
     const raw = (el as unknown as { sinks?: unknown }).sinks;
     const frameIdsRaw = (el as unknown as { frameIds?: unknown }).frameIds;
     return { ...el, name, sinks: stringList(raw, []), frameIds: stringList(frameIdsRaw, []) };
+  }
+  if (el.kind === "rbs") {
+    // `path` references the `.cannet_rbs` file; `run` is the
+    // project-persisted Run flag (ADR 0028 — default off, so a
+    // malformed flag never auto-transmits).
+    const pathRaw = (el as unknown as { path?: unknown }).path;
+    const runRaw = (el as unknown as { run?: unknown }).run;
+    return {
+      ...el,
+      name,
+      path: typeof pathRaw === "string" ? pathRaw : null,
+      run: runRaw === true,
+    };
   }
   const raw = (el as unknown as { sources?: unknown }).sources;
   return { ...el, name, sources: stringList(raw, ["*"]) } as ProjectElement;

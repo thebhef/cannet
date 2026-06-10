@@ -16,7 +16,7 @@ export function insertFilterUpstream(
   sinkId: string,
 ): string | null {
   const current = registry.get(sinkId)?.element;
-  if (!current || current.kind === "transmit") return null;
+  if (!current || current.kind === "transmit" || current.kind === "rbs") return null;
   const previousSources = current.sources ?? ["*"];
   const filterId = registry.create("filter");
   registry.update(filterId, { sources: previousSources });

@@ -670,6 +670,9 @@ pub fn rbs_set_kill_switch(app: AppHandle, state: State<'_, AppState>, on: bool)
         if on { "ON — all simulation transmit stopped" } else { "off" }
     );
     sync_schedules(&state);
+    // Dedicated event so every surface that mirrors the runtime-only
+    // flag (panel button, palette toggle) tracks the same value.
+    let _ = app.emit("rbs-kill-switch", on);
     let _ = app.emit("rbs-changed", "*");
 }
 

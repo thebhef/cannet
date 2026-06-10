@@ -15,6 +15,7 @@ export type FocusedPanelKind =
   | "trace"
   | "plot"
   | "transmit"
+  | "rbs"
   | "project"
   | "project-graph"
   | "system-messages"
@@ -59,6 +60,13 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "panel.add.trace", label: "Add trace panel", category: "Panels" },
   { id: "panel.add.plot", label: "Add plot panel", category: "Panels" },
   { id: "panel.add.transmit", label: "Add transmit panel", category: "Panels" },
+  { id: "panel.add.rbs", label: "Add RBS panel", category: "Panels" },
+  { id: "project.saveAll", label: "Save all (project + RBS files)", category: "Project" },
+  {
+    id: "rbs.killSwitch",
+    label: "RBS: toggle global kill-switch",
+    category: "Panels",
+  },
   { id: "panel.show.systemMessages", label: "Show system messages", category: "Panels" },
   { id: "panel.show.projectGraph", label: "Show project graph", category: "Panels" },
   { id: "panel.show.dbc", label: "Show DBC panel", category: "Panels" },
@@ -107,6 +115,7 @@ function enumerateContexts(): CommandContext[] {
     "trace",
     "plot",
     "transmit",
+    "rbs",
     "project",
     "project-graph",
     "system-messages",

@@ -290,7 +290,14 @@ const Row = memo(function Row({
   const height = isExpanded ? EXPANDED_ROW_HEIGHT : ROW_HEIGHT;
   return (
     <div
-      className={`trace-row ${isExpanded ? "expanded" : ""} ${frame ? "" : "loading"}`}
+      className={`trace-row ${isExpanded ? "expanded" : ""} ${frame ? "" : "loading"}${
+        frame?.violation ? " trace-row-violation" : ""
+      }`}
+      title={
+        frame?.violation
+          ? `calculated-field check failed: ${frame.violation}`
+          : undefined
+      }
       style={{
         position: "absolute",
         top,

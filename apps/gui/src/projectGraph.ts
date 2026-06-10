@@ -11,7 +11,8 @@ export type GraphNodeKind =
   | "transmit"
   | "trace"
   | "plot"
-  | "filter";
+  | "filter"
+  | "rbs";
 
 export interface GraphNodeBase {
   id: string;
@@ -30,7 +31,7 @@ export interface GatewayGraphNode extends GraphNodeBase {
 }
 
 export interface ElementGraphNode extends GraphNodeBase {
-  kind: "transmit" | "trace" | "plot" | "filter";
+  kind: "transmit" | "trace" | "plot" | "filter" | "rbs";
   element: ProjectElement;
 }
 
@@ -153,6 +154,13 @@ export function deriveGraph(
           kind: "transmit-bus",
         });
       }
+      continue;
+    }
+    if (el.kind === "rbs") {
+      // An RBS element transmits onto the buses its `.cannet_rbs`
+      // names — host-side state the pure graph derivation can't see,
+      // so the node renders unwired (like a transmit with no sinks
+      // would, if that were representable).
       continue;
     }
     const sources = el.sources ?? [];

@@ -458,7 +458,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
   // `normalizeElement` yet — fall back to the wildcard so the picker
   // renders the default-all state instead of crashing.
   const currentSources =
-    plotElement && plotElement.kind !== "transmit"
+    plotElement && plotElement.kind !== "transmit" && plotElement.kind !== "rbs"
       ? plotElement.sources ?? ["*"]
       : ["*"];
   const availableFilters = useMemo(
