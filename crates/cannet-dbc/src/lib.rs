@@ -4,9 +4,16 @@
 //! This crate builds an indexed, decode-friendly view on top of that AST
 //! and runs the bit-extraction maths against `cannet_core::CanFrame` payloads.
 
+mod calc;
+mod crc_named;
 mod decode;
 mod encode;
 
+pub use calc::{
+    named_crc_algorithms, CalcFieldError, CalculatedFieldsConfig, CounterConfig, CrcAlgorithm,
+    CrcConfig, FieldViolation, PayloadTooShort, RawCrcParams, ResolvedCalculatedFields,
+    VerifyOutcome,
+};
 pub use decode::{decode_signal_bits, sign_extend};
 pub use encode::encode_signal_bits;
 
@@ -464,6 +471,23 @@ impl Database {
     /// representable range (`[0, 2^size - 1]` unsigned;
     /// `[-2^(size-1), 2^(size-1) - 1]` signed) before encoding, and
     /// the [`EncodedSignal::saturated`] flag is set.
+    /// Resolve a calculated-fields config against the message addressed
+    /// by `id`: destination signals become bit placements, the CRC
+    /// algorithm becomes a ready-built engine, and every config error
+    /// surfaces here (see [`CalcFieldError`]) so the per-send
+    /// [`ResolvedCalculatedFields::apply`] cannot fail on config.
+    /// See ADR 0027.
+    pub fn resolve_calculated_fields(
+        &self,
+        id: cannet_core::CanId,
+        config: &CalculatedFieldsConfig,
+    ) -> Result<ResolvedCalculatedFields, CalcFieldError> {
+        let entry = canid_to_message_id(id)
+            .and_then(|key| self.messages.get(&key))
+            .ok_or(CalcFieldError::MessageNotFound)?;
+        calc::resolve(entry, config)
+    }
+
     pub fn encode_frame(
         &self,
         id: cannet_core::CanId,

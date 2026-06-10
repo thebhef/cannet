@@ -8,6 +8,7 @@ publish.workspace = true
 [dependencies]
 cannet-core = { path = "../cannet-core" }
 can-dbc = "9"
+crc = "3.4.0"
 
 [dev-dependencies]
 cannet-blf = { path = "../cannet-blf" }
