@@ -39,6 +39,9 @@ export interface TraceFrameRecord {
   /// `undefined` / `null` means "unassigned" — the per-bus DBC scoping
   /// and the filter `{bus}` predicate both reject those.
   bus_id?: string | null;
+  /// Ingest-time verification finding (`"crc"` / `"counter"` /
+  /// `"truncated"`), if any — flagged rows render red (ADR 0027).
+  violation?: string | null;
 }
 
 /// Periodic IPC event carrying the trace store's current size + rate,
@@ -320,6 +323,20 @@ export type ProjectElement =
       name?: string;
       sources: string[];
       predicate?: FilterPredicate | null;
+    }
+  | {
+      kind: "rbs";
+      id: string;
+      name?: string;
+      /// Path of the element's `.cannet_rbs` file. The project
+      /// references the config by path and never embeds the content
+      /// (ADR 0028); `null` until the user picks / creates one.
+      path: string | null;
+      /// The element's Run flag — persisted in the project, default
+      /// off. A project saved with RBS running resumes transmitting
+      /// on open once its bus connects (the global kill-switch is
+      /// the guard rail).
+      run: boolean;
     };
 
 /// Wildcard entry in {@link ProjectElement.sources} / {@link
@@ -376,6 +393,43 @@ export interface TransmitFrameRecord {
   cycleMs: number;
   mode: TransmitMode;
   running: boolean;
+  /// Calculated-field override spec for this message (ADR 0027).
+  /// Absent → the DBC's declared defaults apply per field.
+  calc?: CalcFieldsSpec | null;
+}
+
+/// Calculated-fields spec — mirrors host `ipc::CalcFieldsSpec` and
+/// the `.cannet_rbs` `counter` / `crc` objects (ADR 0028). Field
+/// names stay snake_case: they're part of the human-edited file
+/// format.
+export interface CalcFieldsSpec {
+  counter?: CounterSpec | null;
+  crc?: CrcSpec | null;
+}
+
+export interface CounterSpec {
+  signal: string;
+  increment: number;
+  rollover?: number | null;
+}
+
+/// Exactly one of `algorithm` (catalogue name) or the raw Rocksoft
+/// fields (`width` + `poly` required). `poly` / `init` / `xorout`
+/// accept numbers or `0x…` strings and serialize as hex strings.
+export interface CrcSpec {
+  signal: string;
+  algorithm?: string | null;
+  width?: number | null;
+  poly?: number | string | null;
+  init?: number | string | null;
+  refin?: boolean | null;
+  refout?: boolean | null;
+  xorout?: number | string | null;
+  /// `[start, length]` in bits — byte-aligned.
+  range_bits: [number, number];
+  /// Hex bytes prepended to the ranged data (E2E Data ID). Empty /
+  /// absent = none.
+  prefix?: string;
 }
 
 /// Mirrors `src-tauri/src/project.rs::Project` — the saved workspace.
@@ -556,10 +610,16 @@ export interface MessageDescriptorRecord {
   /// when absent. The transmit panel pre-fills a message's cycle
   /// period from this when the message is added from the DBC.
   genMsgCycleTimeMs: number | null;
+  /// The DBC's `GenMsgSendType` resolved to its label, or `null`.
+  genMsgSendType: string | null;
   /// `true` iff any signal uses nested / extended multiplexing
   /// (`m<N>M`). The transmit panel falls back to bytes-only editing
   /// in that case.
   usesExtendedMux: boolean;
+  /// The DBC-declared calculated-field designation (`CannetCounter` /
+  /// `CannetCrc` — ADR 0027), or `null` when none. The default layer
+  /// under any per-message override.
+  calcFields: CalcFieldsSpec | null;
   signals: SignalDescriptorRichRecord[];
 }
 
@@ -578,6 +638,109 @@ export interface SignalDescriptorRichRecord {
   mux: SignalMuxRecord;
   floatKind: "integer" | "float32" | "float64";
   hasValueTable: boolean;
+  /// The DBC's `GenSigStartValue` (raw units, verbatim), or `null`.
+  /// Physical default = `raw * factor + offset`.
+  startValueRaw?: number | null;
+}
+
+/// One RBS panel's whole tree, as assembled by the host's `rbs_view`
+/// command (ADR 0028): the file's buses overlaid on each resolved
+/// bus's DBC content, grouped per transmitter ECU.
+export interface RbsView {
+  elementId: string;
+  /// `null` until the config is first saved.
+  path: string | null;
+  fillBit: number;
+  dirty: boolean;
+  run: boolean;
+  killSwitch: boolean;
+  buses: RbsBusView[];
+}
+
+export interface RbsBusView {
+  /// The file's key — a project logical-bus *name*.
+  key: string;
+  /// Resolved project bus id; `null` renders the subtree inert.
+  busId: string | null;
+  /// Whether an active session currently routes this bus.
+  connected: boolean;
+  enabled: boolean;
+  ecus: RbsEcuView[];
+}
+
+export interface RbsEcuView {
+  name: string;
+  enabled: boolean;
+  messages: RbsMessageView[];
+}
+
+export interface RbsMessageView {
+  /// The file key form (`0x…`, trailing `x` = extended).
+  key: string;
+  messageId: number;
+  extended: boolean;
+  /// DBC message name; `null` = file-listed but unknown to the DBC.
+  name: string | null;
+  /// Whether the file lists this message.
+  inFile: boolean;
+  enabled: boolean;
+  /// Scheduled right now (run && enables && !kill-switch).
+  running: boolean;
+  /// Effective period (override else `GenMsgCycleTime`); `null` =
+  /// none anywhere, the message can't run.
+  periodMs: number | null;
+  periodOverridden: boolean;
+  isFd: boolean;
+  expectedLen: number;
+  /// Current payload buffer bytes.
+  data: number[];
+  counter: CounterSpec | null;
+  counterOverridden: boolean;
+  crc: CrcSpec | null;
+  crcOverridden: boolean;
+  /// DBC transmitter when it disagrees with the file's ECU placement.
+  transmitterMismatch: string | null;
+  signals: RbsSignalView[];
+}
+
+export interface RbsSignalView {
+  name: string;
+  unit: string;
+  /// Decoded physical value from the current buffer (`null` for an
+  /// inactive multiplexed arm).
+  value: number | null;
+  /// `VAL_` label for the decoded value, if any.
+  label: string | null;
+  overridden: boolean;
+  /// The override as written in the file (number rendered, or the
+  /// raw string).
+  overrideText: string | null;
+  /// `"counter"` / `"crc"` when this signal is a calculated field's
+  /// destination — its value cell renders read-only.
+  calcRole: "counter" | "crc" | null;
+  factor: number;
+  offset: number;
+  min: number;
+  max: number;
+  size: number;
+  signed: boolean;
+  floatKind: "integer" | "float32" | "float64";
+  hasValueTable: boolean;
+}
+
+/// One dirty RBS element (unsaved override edits) — `rbs_dirty`.
+export interface RbsDirtyRecord {
+  elementId: string;
+  /// `null` = never saved; Save All prompts for a path.
+  path: string | null;
+}
+
+/// Per-(bus, id) calculated-field validity — `fetch_field_validity`.
+export interface FieldValidityRecord {
+  busId: string | null;
+  id: number;
+  extended: boolean;
+  valid: boolean;
 }
 
 export type SignalMuxRecord =

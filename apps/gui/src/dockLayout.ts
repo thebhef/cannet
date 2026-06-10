@@ -42,6 +42,10 @@ export const SYSTEM_MESSAGES_PANEL_COMPONENT = "system-messages";
 /// having. Search query + expand state still live in panel `params`
 /// so a layout save / restore preserves them.
 export const DBC_PANEL_COMPONENT = "dbc";
+/// Rest-of-bus-simulation panel (ADR 0028). Element-backed —
+/// multiple named RBS elements per project are allowed, each
+/// referencing its own `.cannet_rbs` file.
+export const RBS_PANEL_COMPONENT = "rbs";
 /// Singleton id — toolbar's "DBC panel" button uses this to
 /// show-or-focus a single instance.
 export const DBC_PANEL_ID = "dbc";
@@ -66,7 +70,12 @@ export function panelKindForFocus(
   panelId: string,
   elementKind: ProjectElementKind | null,
 ): FocusedPanelKind | null {
-  if (elementKind === "trace" || elementKind === "plot" || elementKind === "transmit") {
+  if (
+    elementKind === "trace" ||
+    elementKind === "plot" ||
+    elementKind === "transmit" ||
+    elementKind === "rbs"
+  ) {
     return elementKind;
   }
   if (elementKind != null) return null;
@@ -99,6 +108,8 @@ export function elementPanelComponent(kind: ProjectElementKind): string | null {
       return PLOT_PANEL_COMPONENT;
     case "transmit":
       return TRANSMIT_PANEL_COMPONENT;
+    case "rbs":
+      return RBS_PANEL_COMPONENT;
     case "filter":
       return null;
   }

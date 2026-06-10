@@ -296,6 +296,57 @@ describe("TransmitPanel (thin view over host registry)", () => {
 });
 
 describe("payload sizing helpers", () => {
+  it("carries the calc override through set_transmit_frame via the shared editor", async () => {
+    POOL = [frame("a")];
+    DESCRIBE = {
+      name: "Status",
+      expectedLen: 8,
+      isFd: false,
+      brs: false,
+      genMsgCycleTimeMs: 100,
+      genMsgSendType: null,
+      usesExtendedMux: false,
+      calcFields: {
+        counter: { signal: "AliveCtr", increment: 1, rollover: 15 },
+      },
+      signals: [
+        {
+          name: "AliveCtr",
+          unit: "",
+          factor: 1,
+          offset: 0,
+          min: 0,
+          max: 15,
+          size: 4,
+          signed: false,
+          mux: { kind: "plain" },
+          floatKind: "integer",
+          hasValueTable: false,
+          startValueRaw: null,
+        },
+      ],
+    };
+    renderPanel("el", ["a"]);
+    // Expand the row to reach the calculated-fields strip.
+    const expand = await screen.findByTitle("expand");
+    fireEvent.click(expand);
+    // The strip shows the DBC default designation.
+    expect(await screen.findByText(/counter: AliveCtr/)).toBeInTheDocument();
+    fireEvent.click(screen.getByText("fields…"));
+    // Turn the counter section on (an override) and Apply — the
+    // override rides through set_transmit_frame as `frame.calc`.
+    fireEvent.click(await screen.findByLabelText("counter configured"));
+    fireEvent.click(screen.getByText("Apply"));
+    await waitFor(() => {
+      const call = lastCall("set_transmit_frame");
+      expect(call).toBeDefined();
+      const frameArg = (call?.args as { frame?: { calc?: unknown } }).frame;
+      expect(frameArg?.calc).toMatchObject({
+        counter: { signal: "AliveCtr", increment: 1 },
+      });
+    });
+  });
+
   it("maxDataBytesForKind: 8 classic, 64 FD, 0 remote/error", () => {
     expect(maxDataBytesForKind("classic")).toBe(8);
     expect(maxDataBytesForKind("fd")).toBe(64);

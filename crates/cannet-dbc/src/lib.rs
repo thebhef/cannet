@@ -4,9 +4,16 @@
 //! This crate builds an indexed, decode-friendly view on top of that AST
 //! and runs the bit-extraction maths against `cannet_core::CanFrame` payloads.
 
+mod calc;
+mod crc_named;
 mod decode;
 mod encode;
 
+pub use calc::{
+    named_crc_algorithms, parse_counter_attribute, parse_crc_attribute, CalcFieldError,
+    CalculatedFieldsConfig, CounterConfig, CrcAlgorithm, CrcConfig, FieldViolation,
+    PayloadTooShort, RawCrcParams, ResolvedCalculatedFields, VerifyOutcome,
+};
 pub use decode::{decode_signal_bits, sign_extend};
 pub use encode::encode_signal_bits;
 
@@ -14,13 +21,19 @@ use std::collections::HashMap;
 
 use cannet_core::CanFrame;
 use can_dbc::{
-    AttributeValue, ByteOrder as CanDbcByteOrder, Comment, Dbc, MessageId, MultiplexIndicator,
-    NumericValue, Signal, SignalExtendedValueType, ValueType,
+    AttributeDefinition, AttributeValue, AttributeValueType, ByteOrder as CanDbcByteOrder,
+    Comment, Dbc, MessageId, MultiplexIndicator, NumericValue, Signal, SignalExtendedValueType,
+    Transmitter, ValueType,
 };
 
 /// A parsed DBC database, indexed for fast frame lookup.
 pub struct Database {
     messages: HashMap<MessageKey, MessageEntry>,
+    /// Non-fatal problems found while interpreting cannet-specific
+    /// attributes (`CannetCounter` / `CannetCrc`) — a malformed value
+    /// or a duplicate designation. The file still loads; callers
+    /// surface these on their log.
+    warnings: Vec<String>,
 }
 
 /// Lookup key matching a frame to a DBC message: raw id + addressing mode.
@@ -53,12 +66,27 @@ struct MessageEntry {
     /// Captured during parse so the DBC panel's fuzzy search can
     /// match it without re-walking the AST.
     comment: String,
+    /// The DBC's `GenMsgSendType` attribute resolved to its label —
+    /// for ENUM-typed definitions the integer value is mapped through
+    /// the `BA_DEF_` label list; STRING values pass through verbatim.
+    /// `None` when the attribute is absent.
+    gen_msg_send_type: Option<String>,
+    /// The `BO_` line's transmitting node, or `None` for the
+    /// `Vector__XXX` "no sender" placeholder. The RBS panel groups
+    /// messages per ECU by this.
+    transmitter: Option<String>,
     /// `BA_ "<name>" BO_ <id> <value>` attribute values targeted at
     /// this message, sorted by attribute name. Values are stringified
     /// up front because the panel both displays them and searches
     /// them; sorting up front keeps the tree's per-node attribute
     /// list stable across runs.
     attributes: Vec<DbcAttribute>,
+    /// Calculated-field designation declared in the DBC via the
+    /// cannet `CannetCounter` / `CannetCrc` signal attributes
+    /// (ADR 0027). Empty when none are declared. This is the
+    /// *default* layer — a `.cannet_rbs` file or the GUI may override
+    /// it wholesale per message.
+    calc_fields: calc::CalculatedFieldsConfig,
     signals: Vec<SignalEntry>,
 }
 
@@ -78,6 +106,10 @@ struct SignalEntry {
     /// `BA_ "<name>" SG_ <id> <name> <value>` attribute values
     /// targeted at this signal, sorted by attribute name.
     attributes: Vec<DbcAttribute>,
+    /// The DBC's `GenSigStartValue` attribute, verbatim — the
+    /// signal's initial value in *raw* (pre-scale) units, per the
+    /// attribute's conventional definition. `None` when absent.
+    start_value_raw: Option<f64>,
 }
 
 /// One row of a signal's `VAL_` value table: a raw value and its
@@ -121,10 +153,14 @@ impl Database {
         let (message_comments, signal_comments) = collect_comments(&dbc);
         let (mut message_attributes, mut signal_attributes) = collect_attributes(&dbc);
 
+        let start_values = collect_start_values(&dbc);
+        let send_type_labels = send_type_enum_labels(&dbc);
+
+        let mut warnings = Vec::new();
         let mut messages = HashMap::with_capacity(dbc.messages.len());
         for msg in &dbc.messages {
             let expected_len = usize::try_from(msg.size).unwrap_or(usize::MAX);
-            let signals = msg
+            let signals: Vec<SignalEntry> = msg
                 .signals
                 .iter()
                 .map(|s| {
@@ -162,12 +198,14 @@ impl Database {
                     let attributes = signal_attributes
                         .remove(&(msg.id, s.name.clone()))
                         .unwrap_or_default();
+                    let start_value_raw = start_values.get(&(msg.id, s.name.clone())).copied();
                     SignalEntry {
                         signal,
                         extended_type,
                         value_table,
                         comment,
                         attributes,
+                        start_value_raw,
                     }
                 })
                 .collect();
@@ -178,8 +216,14 @@ impl Database {
             let is_fd = message_is_fd(&dbc, msg.id, expected_len);
             let brs = is_fd && message_brs(&dbc, msg.id);
             let gen_msg_cycle_time_ms = message_cycle_time_ms(&dbc, msg.id);
+            let gen_msg_send_type = message_send_type(&dbc, msg.id, send_type_labels);
+            let transmitter = match &msg.transmitter {
+                Transmitter::NodeName(name) => Some(name.clone()),
+                Transmitter::VectorXXX => None,
+            };
             let comment = message_comments.get(&msg.id).cloned().unwrap_or_default();
             let attributes = message_attributes.remove(&msg.id).unwrap_or_default();
+            let calc_fields = collect_calc_fields(&name, &signals, &mut warnings);
             messages.insert(msg.id, MessageEntry {
                 name,
                 expected_len,
@@ -187,11 +231,38 @@ impl Database {
                 brs,
                 gen_msg_cycle_time_ms,
                 comment,
+                gen_msg_send_type,
+                transmitter,
                 attributes,
+                calc_fields,
                 signals,
             });
         }
-        Ok(Self { messages })
+        Ok(Self { messages, warnings })
+    }
+
+    /// Non-fatal problems found while interpreting cannet attributes
+    /// during [`Database::parse`] (malformed `CannetCounter` /
+    /// `CannetCrc` values, duplicate designations). Empty when the
+    /// file was clean. Callers surface these on their own log.
+    #[must_use]
+    pub fn parse_warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
+    /// The calculated-field designation the DBC itself declares for
+    /// the message addressed by `id` (the `CannetCounter` /
+    /// `CannetCrc` attributes — ADR 0027). The returned config is the
+    /// *default* layer; overrides replace it wholesale per field.
+    /// `None` when no message matches `id`; an empty config when the
+    /// message declares no calculated fields.
+    #[must_use]
+    pub fn dbc_calculated_fields(
+        &self,
+        id: cannet_core::CanId,
+    ) -> Option<&calc::CalculatedFieldsConfig> {
+        let key = canid_to_message_id(id)?;
+        self.messages.get(&key).map(|e| &e.calc_fields)
     }
 
     /// Number of messages defined in this database.
@@ -326,6 +397,7 @@ impl Database {
                     mux,
                     float_kind,
                     has_value_table: !s.value_table.is_empty(),
+                    start_value_raw: s.start_value_raw,
                 }
             })
             .collect();
@@ -335,7 +407,10 @@ impl Database {
             is_fd: entry.is_fd,
             brs: entry.brs,
             gen_msg_cycle_time_ms: entry.gen_msg_cycle_time_ms,
+            gen_msg_send_type: entry.gen_msg_send_type.clone(),
+            transmitter: entry.transmitter.clone(),
             uses_extended_mux,
+            calc_fields: entry.calc_fields.clone(),
             signals,
         })
     }
@@ -464,6 +539,42 @@ impl Database {
     /// representable range (`[0, 2^size - 1]` unsigned;
     /// `[-2^(size-1), 2^(size-1) - 1]` signed) before encoding, and
     /// the [`EncodedSignal::saturated`] flag is set.
+    /// Every message that declares calculated fields via the cannet
+    /// attributes, as `(raw id, extended, config)` — what an
+    /// ingest-time verifier enumerates to build its per-id config
+    /// index. Sorted by `(extended, id)` for stable iteration.
+    #[must_use]
+    pub fn calculated_field_messages(&self) -> Vec<(u32, bool, &CalculatedFieldsConfig)> {
+        let mut out: Vec<(u32, bool, &CalculatedFieldsConfig)> = self
+            .messages
+            .iter()
+            .filter(|(_, e)| !e.calc_fields.is_empty())
+            .map(|(id, e)| {
+                let (raw, extended) = message_id_parts(*id);
+                (raw, extended, &e.calc_fields)
+            })
+            .collect();
+        out.sort_by_key(|(id, ext, _)| (*ext, *id));
+        out
+    }
+
+    /// Resolve a calculated-fields config against the message addressed
+    /// by `id`: destination signals become bit placements, the CRC
+    /// algorithm becomes a ready-built engine, and every config error
+    /// surfaces here (see [`CalcFieldError`]) so the per-send
+    /// [`ResolvedCalculatedFields::apply`] cannot fail on config.
+    /// See ADR 0027.
+    pub fn resolve_calculated_fields(
+        &self,
+        id: cannet_core::CanId,
+        config: &CalculatedFieldsConfig,
+    ) -> Result<ResolvedCalculatedFields, CalcFieldError> {
+        let entry = canid_to_message_id(id)
+            .and_then(|key| self.messages.get(&key))
+            .ok_or(CalcFieldError::MessageNotFound)?;
+        calc::resolve(entry, config)
+    }
+
     pub fn encode_frame(
         &self,
         id: cannet_core::CanId,
@@ -720,6 +831,118 @@ fn message_cycle_time_ms(dbc: &Dbc, msg_id: MessageId) -> Option<u32> {
         }
     }
     None
+}
+
+/// `GenSigStartValue` per signal (raw units, verbatim) — keyed on the
+/// short signal name like every other per-signal lookup.
+fn collect_start_values(dbc: &Dbc) -> HashMap<(MessageId, String), f64> {
+    dbc.attribute_values_signal
+        .iter()
+        .filter(|av| av.name == "GenSigStartValue")
+        .filter_map(|av| {
+            attribute_value_to_f64(&av.value).map(|v| ((av.message_id, av.signal_name.clone()), v))
+        })
+        .collect()
+}
+
+/// `GenMsgSendType`'s `BA_DEF_` enum labels, if the DBC declares it
+/// as an ENUM — integer values resolve through this list.
+fn send_type_enum_labels(dbc: &Dbc) -> Option<&Vec<String>> {
+    dbc.attribute_definitions.iter().find_map(|d| match d {
+        AttributeDefinition::Message(name, AttributeValueType::Enum(labels))
+            if name == "GenMsgSendType" =>
+        {
+            Some(labels)
+        }
+        _ => None,
+    })
+}
+
+/// The message's `GenMsgSendType` attribute resolved to a label.
+/// ENUM-typed definitions map the integer value through the
+/// `BA_DEF_` label list; STRING values pass through verbatim; a
+/// numeric value with no ENUM definition stringifies as-is.
+fn message_send_type(
+    dbc: &Dbc,
+    msg_id: MessageId,
+    labels: Option<&Vec<String>>,
+) -> Option<String> {
+    let av = dbc
+        .attribute_values_message
+        .iter()
+        .find(|av| av.message_id == msg_id && av.name == "GenMsgSendType")?;
+    let index = match &av.value {
+        AttributeValue::String(s) => return Some(s.clone()),
+        AttributeValue::Uint(n) => usize::try_from(*n).ok(),
+        AttributeValue::Int(n) => usize::try_from(*n).ok(),
+        AttributeValue::Double(_) => None,
+    };
+    match (index, labels) {
+        (Some(i), Some(labels)) if i < labels.len() => Some(labels[i].clone()),
+        _ => Some(attribute_value_to_string(&av.value)),
+    }
+}
+
+/// Interpret the `CannetCounter` / `CannetCrc` attributes on a
+/// message's signals (ADR 0027). At most one of each per message —
+/// the first (in `SG_` declared order) wins and any further
+/// designation is reported as a warning, as is a value that fails to
+/// parse. Empty attribute values mean "unconfigured" and are skipped.
+fn collect_calc_fields(
+    message_name: &str,
+    signals: &[SignalEntry],
+    warnings: &mut Vec<String>,
+) -> calc::CalculatedFieldsConfig {
+    let mut config = calc::CalculatedFieldsConfig::default();
+    for sig in signals {
+        let signal_name = &sig.signal.name;
+        for attr in &sig.attributes {
+            let slot = match attr.name.as_str() {
+                "CannetCounter" => true,
+                "CannetCrc" => false,
+                _ => continue,
+            };
+            if attr.value.is_empty() {
+                continue;
+            }
+            if slot {
+                match calc::parse_counter_attribute(signal_name, &attr.value) {
+                    Ok(c) if config.counter.is_none() => config.counter = Some(c),
+                    Ok(_) => warnings.push(format!(
+                        "{message_name}.{signal_name}: second CannetCounter designation ignored"
+                    )),
+                    Err(e) => warnings.push(format!(
+                        "{message_name}.{signal_name}: bad CannetCounter attribute: {e}"
+                    )),
+                }
+            } else {
+                match calc::parse_crc_attribute(signal_name, &attr.value) {
+                    Ok(c) if config.crc.is_none() => config.crc = Some(c),
+                    Ok(_) => warnings.push(format!(
+                        "{message_name}.{signal_name}: second CannetCrc designation ignored"
+                    )),
+                    Err(e) => warnings.push(format!(
+                        "{message_name}.{signal_name}: bad CannetCrc attribute: {e}"
+                    )),
+                }
+            }
+        }
+    }
+    config
+}
+
+/// A numeric DBC attribute value as `f64` (`GenSigStartValue` uses
+/// this). String values that parse as numbers are accepted — some
+/// tools quote numeric attribute values.
+fn attribute_value_to_f64(value: &AttributeValue) -> Option<f64> {
+    match value {
+        #[allow(clippy::cast_precision_loss)]
+        AttributeValue::Uint(u) => Some(*u as f64),
+        #[allow(clippy::cast_precision_loss)]
+        AttributeValue::Int(i) => Some(*i as f64),
+        AttributeValue::Double(d) => Some(*d),
+        AttributeValue::String(s) => s.trim().parse().ok(),
+    }
 }
 
 /// Widen a DBC numeric value to `f64`. The `SG_` min / max fields use
@@ -1146,11 +1369,23 @@ pub struct MessageDescriptor {
     /// The transmit panel pre-fills a newly-added message's cycle
     /// period from this.
     pub gen_msg_cycle_time_ms: Option<u32>,
+    /// The DBC's `GenMsgSendType` attribute resolved to its label
+    /// (ENUM values mapped through the `BA_DEF_` label list, STRING
+    /// values verbatim), or `None` when absent.
+    pub gen_msg_send_type: Option<String>,
+    /// The `BO_` line's transmitting node, or `None` for the
+    /// `Vector__XXX` "no sender" placeholder.
+    pub transmitter: Option<String>,
     /// `true` if any signal in this message is
     /// [`SignalMux::MultiplexorAndMultiplexed`] (a "sub-mux" /
     /// extended multiplexing arm). The transmit panel treats these as
     /// not-supported for signal-level editing.
     pub uses_extended_mux: bool,
+    /// Calculated-field designation declared by the DBC's
+    /// `CannetCounter` / `CannetCrc` attributes (ADR 0027) — the
+    /// default layer overrides replace wholesale. Empty when the
+    /// message declares none.
+    pub calc_fields: CalculatedFieldsConfig,
     pub signals: Vec<SignalDescriptorRich>,
 }
 
@@ -1174,6 +1409,11 @@ pub struct SignalDescriptorRich {
     pub mux: SignalMux,
     pub float_kind: FloatKind,
     pub has_value_table: bool,
+    /// The DBC's `GenSigStartValue` attribute, verbatim — the
+    /// signal's initial value in *raw* (pre-scale) units. Consumers
+    /// reconstructing a default payload convert with
+    /// `raw * factor + offset` before encoding. `None` when absent.
+    pub start_value_raw: Option<f64>,
 }
 
 /// Mux indicator on a DBC signal. Mirrors `can_dbc::MultiplexIndicator`
@@ -2222,5 +2462,142 @@ VAL_ 256 Mode 0 "Park" 1 "Reverse" 2 "Neutral" 3 "Drive" ;
             content[0].signals[0].name,
             "AVeryLongSignalNameThatExceedsThirtyTwoChars",
         );
+    }
+
+    /// Fixture exercising the ADR 0027 attribute surface: cannet
+    /// calculated-field designations plus the Gen* attributes the
+    /// transmit path consumes.
+    const CALC_ATTR_DBC: &str = r#"VERSION ""
+
+NS_ :
+
+BS_:
+
+BU_: ECU1 GW
+
+BO_ 291 Status: 8 ECU1
+ SG_ Mode : 0|8@1+ (1,0) [0|255] "" GW
+ SG_ Volts : 8|16@1+ (0.01,0) [0|655.35] "V" GW
+ SG_ AliveCtr : 48|4@1+ (1,0) [0|15] "" GW
+ SG_ Crc8 : 56|8@1+ (1,0) [0|255] "" GW
+
+BA_DEF_ SG_ "CannetCounter" STRING ;
+BA_DEF_ SG_ "CannetCrc" STRING ;
+BA_DEF_ SG_ "GenSigStartValue" FLOAT 0 100000;
+BA_DEF_ BO_ "GenMsgSendType" ENUM "Cyclic","OnEvent","NoMsgSendType";
+BA_DEF_DEF_ "CannetCounter" "";
+BA_DEF_DEF_ "CannetCrc" "";
+BA_DEF_DEF_ "GenSigStartValue" 0;
+BA_DEF_DEF_ "GenMsgSendType" "NoMsgSendType";
+BA_ "CannetCounter" SG_ 291 AliveCtr "increment=1;rollover=15";
+BA_ "CannetCrc" SG_ 291 Crc8 "alg=CRC-8/SAE-J1850;range=0:56;prefix=A3";
+BA_ "GenMsgSendType" BO_ 291 0;
+BA_ "GenSigStartValue" SG_ 291 Mode 5;
+BA_ "GenSigStartValue" SG_ 291 Volts 1250;
+"#;
+
+    #[test]
+    fn cannet_attributes_become_the_dbc_default_calc_fields() {
+        let db = Database::parse(CALC_ATTR_DBC).unwrap();
+        assert!(db.parse_warnings().is_empty(), "{:?}", db.parse_warnings());
+        let id = CanId::standard(291).unwrap();
+        let config = db.dbc_calculated_fields(id).unwrap();
+        assert_eq!(
+            config.counter,
+            Some(CounterConfig {
+                signal: "AliveCtr".into(),
+                increment: 1,
+                rollover: Some(15),
+            })
+        );
+        assert_eq!(
+            config.crc,
+            Some(CrcConfig {
+                signal: "Crc8".into(),
+                algorithm: CrcAlgorithm::Named("CRC-8/SAE-J1850".into()),
+                range_bits: (0, 56),
+                prefix: vec![0xA3],
+            })
+        );
+        // The declared config resolves and applies cleanly.
+        let resolved = db.resolve_calculated_fields(id, config).unwrap();
+        let mut payload = [0u8; 8];
+        let mut counter = 0;
+        resolved.apply(&mut counter, &mut payload).unwrap();
+        assert_eq!(counter, 1);
+        // No designation on an id without the attributes; unknown id
+        // is None.
+        assert!(db
+            .dbc_calculated_fields(CanId::standard(999).unwrap())
+            .is_none());
+    }
+
+    #[test]
+    fn gen_sig_start_value_and_send_type_have_typed_accessors() {
+        let db = Database::parse(CALC_ATTR_DBC).unwrap();
+        let desc = db.describe_message(CanId::standard(291).unwrap()).unwrap();
+        // ENUM-typed GenMsgSendType value 0 resolves to its label.
+        assert_eq!(desc.gen_msg_send_type.as_deref(), Some("Cyclic"));
+        assert_eq!(desc.calc_fields.counter.as_ref().unwrap().signal, "AliveCtr");
+        let start = |name: &str| {
+            desc.signals
+                .iter()
+                .find(|s| s.name == name)
+                .unwrap()
+                .start_value_raw
+        };
+        // Raw units, verbatim — Volts' physical default is
+        // 1250 * 0.01 = 12.5 V, derived by the consumer.
+        assert_eq!(start("Mode"), Some(5.0));
+        assert_eq!(start("Volts"), Some(1250.0));
+        assert_eq!(start("AliveCtr"), None);
+    }
+
+    #[test]
+    fn malformed_and_duplicate_designations_warn_but_load() {
+        let dbc = CALC_ATTR_DBC.replace(
+            r#"BA_ "CannetCounter" SG_ 291 AliveCtr "increment=1;rollover=15";"#,
+            concat!(
+                r#"BA_ "CannetCounter" SG_ 291 AliveCtr "rolover=15";"#,
+                "\n",
+                r#"BA_ "CannetCounter" SG_ 291 Mode "increment=2";"#,
+                "\n",
+                r#"BA_ "CannetCounter" SG_ 291 Volts "increment=3";"#,
+            ),
+        );
+        let db = Database::parse(&dbc).unwrap();
+        let id = CanId::standard(291).unwrap();
+        let config = db.dbc_calculated_fields(id).unwrap();
+        // The malformed AliveCtr value warns; the first good
+        // designation (Mode, in SG_ declared order) wins; the second
+        // good one (Volts) warns as a duplicate.
+        assert_eq!(config.counter.as_ref().unwrap().signal, "Mode");
+        assert_eq!(config.counter.as_ref().unwrap().increment, 2);
+        let warnings = db.parse_warnings();
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(warnings.iter().any(|w| w.contains("bad CannetCounter")));
+        assert!(warnings.iter().any(|w| w.contains("second CannetCounter")));
+        // CRC unaffected.
+        assert!(config.crc.is_some());
+    }
+
+    /// The shipped demo DBC carries hand-authored calculated-field
+    /// examples (`BmsCommand`) — guard that they stay parseable and
+    /// resolvable.
+    #[test]
+    fn demo_dbc_calculated_field_examples_resolve() {
+        let text = include_str!("../../../examples/cannet-demo.dbc");
+        let db = Database::parse(text).unwrap();
+        assert!(db.parse_warnings().is_empty(), "{:?}", db.parse_warnings());
+        let id = CanId::standard(1042).unwrap();
+        let config = db.dbc_calculated_fields(id).unwrap();
+        assert!(config.counter.is_some() && config.crc.is_some());
+        db.resolve_calculated_fields(id, config).unwrap();
+        let desc = db.describe_message(id).unwrap();
+        assert_eq!(desc.gen_msg_send_type.as_deref(), Some("Cyclic"));
+        assert_eq!(desc.gen_msg_cycle_time_ms, Some(100));
+        assert_eq!(desc.transmitter.as_deref(), Some("ECU2"));
+        let contactor = desc.signals.iter().find(|s| s.name == "ContactorReq").unwrap();
+        assert_eq!(contactor.start_value_raw, Some(2.0));
     }
 }

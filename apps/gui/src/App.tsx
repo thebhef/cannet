@@ -17,6 +17,7 @@ import type {
   Project,
   ProjectElement,
   ProjectElementKind,
+  RbsDirtyRecord,
   RemoteSessionResult,
   TraceFrameRecord,
   TraceGrew,
@@ -34,6 +35,7 @@ import { ProjectPanel } from "./ProjectPanel";
 import { ProjectGraphPanel } from "./ProjectGraphPanel";
 import { PlotPanel } from "./PlotPanel";
 import { TransmitPanel } from "./TransmitPanel";
+import { RbsPanel } from "./RbsPanel";
 import { SystemMessagesPanel } from "./SystemMessagesPanel";
 import { DbcPanel } from "./DbcPanel";
 import { SystemLogContext, type SystemLogContextValue } from "./systemLogContext";
@@ -84,6 +86,7 @@ import {
   PROJECT_GRAPH_PANEL_ID,
   PROJECT_PANEL_COMPONENT,
   PROJECT_PANEL_ID,
+  RBS_PANEL_COMPONENT,
   SYSTEM_MESSAGES_PANEL_COMPONENT,
   SYSTEM_MESSAGES_PANEL_ID,
   TRACE_PANEL_COMPONENT,
@@ -151,6 +154,7 @@ const DOCK_COMPONENTS = {
   [PROJECT_PANEL_COMPONENT]: ProjectPanel,
   [PLOT_PANEL_COMPONENT]: PlotPanel,
   [TRANSMIT_PANEL_COMPONENT]: TransmitPanel,
+  [RBS_PANEL_COMPONENT]: RbsPanel,
   [PROJECT_GRAPH_PANEL_COMPONENT]: ProjectGraphPanel,
   [SYSTEM_MESSAGES_PANEL_COMPONENT]: SystemMessagesPanel,
   [DBC_PANEL_COMPONENT]: DbcPanel,
@@ -311,6 +315,10 @@ export function App() {
         return { kind, id, name, sinks: busesRef.current.map((b) => b.id), frameIds: [] };
       case "filter":
         return { kind, id, name, sources: ["*"] };
+      case "rbs":
+        // Path picked in the panel; Run is off by default (ADR 0028 —
+        // a fresh reference never transmits unasked).
+        return { kind, id, name, path: null, run: false };
       default:
         return { kind, id, name, sources: ["*"] };
     }
@@ -382,6 +390,11 @@ export function App() {
       // message still grouped by another transmit element survives
       // (the pool is shared; only this group is going away).
       const removed = registry.find((e) => e.element.id === id);
+      // Removing an RBS element tears its host rows down (stopping
+      // any running schedule) — the .cannet_rbs file on disk stays.
+      if (removed && removed.element.kind === "rbs") {
+        void invoke("rbs_unload", { elementId: id }).catch(() => {});
+      }
       if (removed && removed.element.kind === "transmit") {
         const stillReferenced = new Set<string>();
         for (const e of registry) {
@@ -1040,7 +1053,13 @@ export function App() {
 
   const handleNewProject = useCallback(() => {
     // Fresh workspace: seed layout, no open project, no DBCs, no
-    // session — disconnect and clear the buffer too.
+    // session — disconnect and clear the buffer too. RBS elements
+    // unload first (stopping their schedules).
+    for (const e of registryRef.current) {
+      if (e.element.kind === "rbs") {
+        void invoke("rbs_unload", { elementId: e.element.id }).catch(() => {});
+      }
+    }
     seedDefaultLayout();
     rememberProject(null);
     void loadDbcSet([], {});
@@ -1069,7 +1088,9 @@ export function App() {
   const handleOpenProject = useCallback(async () => {
     const selected = await open({
       multiple: false,
-      filters: [{ name: "cannet project", extensions: ["json"] }],
+      // `.cannet_prj` is the convention; `.json` (the same content)
+      // stays accepted for projects saved before the extension.
+      filters: [{ name: "cannet project", extensions: ["cannet_prj", "json"] }],
     });
     if (typeof selected !== "string") return;
     try {
@@ -1101,8 +1122,8 @@ export function App() {
 
   const handleSaveProjectAs = useCallback(async (): Promise<boolean> => {
     const path = await save({
-      filters: [{ name: "cannet project", extensions: ["json"] }],
-      defaultPath: projectPath ?? "cannet-project.json",
+      filters: [{ name: "cannet project", extensions: ["cannet_prj"] }],
+      defaultPath: projectPath ?? "cannet-project.cannet_prj",
     });
     if (!path) return false;
     return saveProjectTo(path);
@@ -1112,6 +1133,37 @@ export function App() {
     (): Promise<boolean> => (projectPath ? saveProjectTo(projectPath) : handleSaveProjectAs()),
     [projectPath, saveProjectTo, handleSaveProjectAs],
   );
+
+  // Save All: the project plus every dirty `.cannet_rbs` (ADR 0028 —
+  // Save Project saves the project only; this is the catch-all the
+  // exit prompt uses too). Returns false if any step failed or was
+  // cancelled.
+  const handleSaveAll = useCallback(async (): Promise<boolean> => {
+    const projectOk = await handleSaveProject();
+    if (!projectOk) return false;
+    try {
+      const dirtyRbs = await invoke<RbsDirtyRecord[]>("rbs_dirty");
+      for (const d of dirtyRbs) {
+        if (d.path == null) {
+          // Never-saved config: prompt for its first path.
+          const picked = await save({
+            filters: [{ name: "cannet RBS config", extensions: ["cannet_rbs"] }],
+            defaultPath: "simulation.cannet_rbs",
+          });
+          if (typeof picked !== "string" || picked.length === 0) return false;
+          await invoke("rbs_save_as", { elementId: d.elementId, path: picked });
+          updateElement(d.elementId, { kind: "rbs", path: picked });
+        } else {
+          await invoke("rbs_save", { elementId: d.elementId });
+        }
+      }
+      return true;
+    } catch {
+      return false; // failures land on the system log
+    }
+  }, [handleSaveProject, updateElement]);
+  const handleSaveAllRef = useRef(handleSaveAll);
+  handleSaveAllRef.current = handleSaveAll;
 
   // Save Capture: write the session buffer to a BLF.
   // System Messages handle the user-visible success / failure
@@ -1152,14 +1204,22 @@ export function App() {
     let unlisten: (() => void) | undefined;
     void win
       .onCloseRequested(async (event) => {
-        if (!dirtyRef.current) return; // no unsaved changes — let it close
+        // Unsaved state = a dirty project workspace OR any dirty
+        // `.cannet_rbs` (the exit prompt covers both — ADR 0028).
+        let rbsDirty = false;
+        try {
+          rbsDirty = (await invoke<RbsDirtyRecord[]>("rbs_dirty")).length > 0;
+        } catch {
+          /* host gone — nothing to save */
+        }
+        if (!dirtyRef.current && !rbsDirty) return; // nothing unsaved — let it close
         event.preventDefault();
         const choice = await new Promise<CloseChoice>((resolve) =>
           setPendingClose({ resolve }),
         );
         setPendingClose(null);
         if (choice === "cancel") return;
-        if (choice === "save" && !(await handleSaveProjectRef.current())) return; // picker cancelled
+        if (choice === "save" && !(await handleSaveAllRef.current())) return; // picker cancelled
         void win.destroy();
       })
       .then((u) => {
@@ -1377,6 +1437,105 @@ export function App() {
     });
   }, [create]);
 
+  const addRbsPanel = useCallback(() => {
+    const api = dockApiRef.current;
+    if (!api) return;
+    const title = defaultElementName("rbs", registryRef.current.map((e) => e.element));
+    const elementId = create("rbs");
+    api.addPanel({
+      id: `rbs-${elementId}`,
+      component: RBS_PANEL_COMPONENT,
+      title,
+      params: { elementId },
+    });
+  }, [create]);
+
+  // --- RBS host lifecycle (ADR 0028) ---
+  // The host resolves `.cannet_rbs` bus-name keys against the
+  // project's logical buses; push the (id, name) map on every change.
+  useEffect(() => {
+    void invoke("rbs_sync_project_buses", {
+      buses: buses.map((b) => [b.id, b.name]),
+    }).catch(() => {});
+  }, [buses]);
+  // Reconcile host-loaded RBS elements with the registry: load when a
+  // path appears / changes, unload when the element goes away, and
+  // push the Run flag. Owned here (not by the panel) so an enabled
+  // RBS resumes on project open even when its panel isn't in the
+  // layout.
+  const rbsHostStateRef = useRef<Map<string, { path: string | null; run: boolean }>>(
+    new Map(),
+  );
+  // Per-element op queue: the reconciler fires across renders (a
+  // layout-restored panel ensures a pathless element moments before
+  // the opened project replaces it with the saved path), and the
+  // rbs_* commands run concurrently on the async pool — unserialized,
+  // an early rbs_init's set_run could land after the project's
+  // rbs_load chain. Chaining per element keeps host ops in dispatch
+  // order.
+  const rbsOpsRef = useRef<Map<string, Promise<unknown>>>(new Map());
+  const queueRbsOp = useCallback((id: string, op: () => Promise<unknown>) => {
+    const prev = rbsOpsRef.current.get(id) ?? Promise.resolve();
+    const next = prev.then(op).catch(() => {});
+    rbsOpsRef.current.set(id, next);
+  }, []);
+  useEffect(() => {
+    const current = new Map<string, { path: string | null; run: boolean }>();
+    for (const e of registry) {
+      if (e.element.kind === "rbs") {
+        current.set(e.element.id, { path: e.element.path, run: e.element.run });
+      }
+    }
+    for (const [id, prev] of rbsHostStateRef.current) {
+      const now = current.get(id);
+      if (!now || (prev.path != null && now.path != null && now.path !== prev.path)) {
+        queueRbsOp(id, () => invoke("rbs_unload", { elementId: id }));
+      }
+    }
+    for (const [id, now] of current) {
+      const prev = rbsHostStateRef.current.get(id);
+      if (now.path != null && (!prev || prev.path !== now.path)) {
+        // A path appearing for an element the host already has in
+        // memory (first save) is a no-op host-side: rbs_load re-reads
+        // the file just written.
+        const path = now.path;
+        queueRbsOp(id, () =>
+          invoke("rbs_load", { elementId: id, path }).then(() =>
+            invoke("rbs_set_run", { elementId: id, run: now.run }),
+          ),
+        );
+      } else if (now.path == null && !prev) {
+        // A fresh element needs no file: the host seeds an in-memory
+        // config from the project's current buses (saving is explicit).
+        queueRbsOp(id, () =>
+          invoke("rbs_init", { elementId: id }).then(() =>
+            invoke("rbs_set_run", { elementId: id, run: now.run }),
+          ),
+        );
+      } else if (prev && prev.run !== now.run) {
+        queueRbsOp(id, () => invoke("rbs_set_run", { elementId: id, run: now.run }));
+      }
+    }
+    rbsHostStateRef.current = current;
+  }, [registry, queueRbsOp]);
+  // The global RBS kill-switch is runtime-only host state; mirror it
+  // through its dedicated event so the palette toggle and the panel
+  // button stay in sync.
+  const rbsKillSwitchRef = useRef(false);
+  useEffect(() => {
+    const un = listen<boolean>("rbs-kill-switch", (event) => {
+      rbsKillSwitchRef.current = event.payload;
+    });
+    return () => {
+      void un.then((f) => f());
+    };
+  }, []);
+  const toggleRbsKillSwitch = useCallback(() => {
+    void invoke("rbs_set_kill_switch", { on: !rbsKillSwitchRef.current }).catch(
+      () => {},
+    );
+  }, []);
+
   // Keep every element-backed dockview tab title in lockstep with the
   // model-owned name (ADR 0019): covers rename from the project
   // panel, project open (layouts saved with stale titles), and the
@@ -1540,6 +1699,9 @@ export function App() {
     "panel.add.trace": addTracePanel,
     "panel.add.plot": addPlotPanel,
     "panel.add.transmit": addTransmitPanel,
+    "panel.add.rbs": addRbsPanel,
+    "project.saveAll": () => void handleSaveAllRef.current(),
+    "rbs.killSwitch": toggleRbsKillSwitch,
     "panel.show.systemMessages": showSystemMessagesPanel,
     "panel.show.projectGraph": showProjectGraphPanel,
     "panel.show.dbc": showDbcPanel,
@@ -1938,6 +2100,7 @@ export function App() {
           <button onClick={addTracePanel}>Add trace</button>
           <button onClick={addPlotPanel}>Add plot panel</button>
           <button onClick={addTransmitPanel}>Add transmit panel</button>
+          <button onClick={addRbsPanel}>Add RBS panel</button>
           <button onClick={showDbcPanel}>DBC panel</button>
           <button onClick={showProjectGraphPanel}>Graph panel</button>
           <button onClick={showProjectPanel}>Project panel</button>

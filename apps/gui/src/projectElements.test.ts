@@ -15,6 +15,7 @@ describe("isProjectElement", () => {
     expect(isProjectElement({ kind: "plot", id: "p" })).toBe(true);
     expect(isProjectElement({ kind: "filter", id: "f" })).toBe(true);
     expect(isProjectElement({ kind: "transmit", id: "x" })).toBe(true);
+    expect(isProjectElement({ kind: "rbs", id: "r" })).toBe(true);
   });
 
   it("rejects unknown kinds, non-strings, and primitives", () => {
@@ -27,6 +28,36 @@ describe("isProjectElement", () => {
 });
 
 describe("normalizeElement", () => {
+  it("normalises an rbs element: path string-or-null, run strictly boolean", () => {
+    // A bare element (hand-edited project / older save) gets the
+    // safe defaults: no file, Run off (ADR 0028 — a malformed flag
+    // must never auto-transmit).
+    const bare = { kind: "rbs", id: "r" } as unknown as ProjectElement;
+    expect(normalizeElement(bare)).toMatchObject({
+      kind: "rbs",
+      path: null,
+      run: false,
+    });
+    const full = {
+      kind: "rbs",
+      id: "r",
+      path: "/sims/rig-a.cannet_rbs",
+      run: true,
+    } as unknown as ProjectElement;
+    expect(normalizeElement(full)).toMatchObject({
+      path: "/sims/rig-a.cannet_rbs",
+      run: true,
+    });
+    // Non-boolean run / non-string path are dropped, not coerced.
+    const mangled = {
+      kind: "rbs",
+      id: "r",
+      path: 7,
+      run: "yes",
+    } as unknown as ProjectElement;
+    expect(normalizeElement(mangled)).toMatchObject({ path: null, run: false });
+  });
+
   it("defaults `sources` to ['*'] for a consumer loaded without one (old project)", () => {
     // Cast through unknown to simulate the legacy shape that
     // saved projects on disk still have.

@@ -14,6 +14,7 @@ import { listen } from "@tauri-apps/api/event";
 
 import type {
   Bus,
+  CalcFieldsSpec,
   DecodedFrameRecord,
   EncodeFrameResponse,
   EncodeFrameSignal,
@@ -27,6 +28,7 @@ import type {
   ValueTableEntryRecord,
 } from "./types";
 import { useElementRegistry } from "./projectElements";
+import { CalcFieldEditor } from "./CalcFieldEditor";
 import { useProjectContext } from "./projectContext";
 import { effectiveBusColor } from "./busColor";
 import { SIGNAL_DND_MIME, parseSignalDragData } from "./dragSignals";
@@ -98,6 +100,20 @@ export function TransmitPanel(props: IDockviewPanelProps) {
       void unlisten.then((off) => off());
     };
   }, [refreshPool]);
+
+  // Live calculated fields: the fire path rewrites a running
+  // message's payload buffer (counter step, CRC) on every emission
+  // without emitting `transmit-frames-changed` — that event at frame
+  // rate would storm the IPC. Poll at a display cadence instead while
+  // anything in the pool is running, so the byte cells and decoded
+  // signal values track the live buffer. Draft-in-progress cell edits
+  // are unaffected (cells render `draft ?? committed`).
+  const anyRunning = pool.some((r) => r.running);
+  useEffect(() => {
+    if (!anyRunning) return;
+    const timer = window.setInterval(refreshPool, 500);
+    return () => window.clearInterval(timer);
+  }, [anyRunning, refreshPool]);
 
   const poolById = useMemo(() => {
     const m = new Map<string, TransmitFrameRecord>();
@@ -191,6 +207,7 @@ export function TransmitPanel(props: IDockviewPanelProps) {
       cycleMode: "manual",
       brs: false,
       dlc: 0,
+      calc: null,
     };
     void invoke("set_transmit_frame", { id, frame: configToFrame(cfg) })
       .then(() =>
@@ -254,6 +271,7 @@ export function TransmitPanel(props: IDockviewPanelProps) {
           cycleMode: "manual",
           brs: desc?.brs ?? false,
           dlc: 0,
+          calc: null,
         };
         void invoke("set_transmit_frame", { id, frame: configToFrame(cfg) }).catch(
           () => {},
@@ -608,6 +626,11 @@ function TransmitFrameRow({
               descriptor={descriptor}
               onChange={onChange}
             />
+            <CalcFieldsStrip
+              frame={frame}
+              descriptor={descriptor}
+              onChange={onChange}
+            />
             <SignalsTable
               frame={frame}
               descriptor={descriptor}
@@ -616,6 +639,66 @@ function TransmitFrameRow({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/// Calculated-fields row (ADR 0027): shows the message's effective
+/// counter / CRC designation (the per-message override, else the
+/// DBC's CannetCounter / CannetCrc defaults) and opens the shared
+/// editor. One mechanism with the RBS panel.
+function CalcFieldsStrip({
+  frame,
+  descriptor,
+  onChange,
+}: {
+  frame: TransmitFrameConfig;
+  descriptor: MessageDescriptorRecord | null;
+  onChange: (mut: (f: TransmitFrameConfig) => TransmitFrameConfig) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const dbcDefaults = descriptor?.calcFields ?? null;
+  const counter = frame.calc?.counter ?? dbcDefaults?.counter ?? null;
+  const crc = frame.calc?.crc ?? dbcDefaults?.crc ?? null;
+  const summary = [
+    counter ? `counter: ${counter.signal}` : null,
+    crc ? `crc: ${crc.signal}${crc.algorithm ? ` (${crc.algorithm})` : ""}` : null,
+  ]
+    .filter(Boolean)
+    .join("  ·  ");
+  return (
+    <div className="tx-calc-strip">
+      <span className="tx-calc-label">calculated fields</span>
+      <span className="tx-calc-summary">
+        {summary || "none"}
+        {frame.calc && <em> (override)</em>}
+      </span>
+      <button type="button" onClick={() => setOpen(true)}>
+        fields…
+      </button>
+      {frame.calc && (
+        <button
+          type="button"
+          className="rbs-clear"
+          title="clear override (track the DBC's declared defaults)"
+          onClick={() => onChange((f) => ({ ...f, calc: null }))}
+        >
+          ×
+        </button>
+      )}
+      {open && (
+        <CalcFieldEditor
+          messageLabel={descriptor?.name ?? `0x${frame.canId.toString(16).toUpperCase()}`}
+          signalNames={descriptor?.signals.map((s) => s.name) ?? []}
+          dbcDefaults={dbcDefaults}
+          current={frame.calc}
+          onSave={(spec) => {
+            onChange((f) => ({ ...f, calc: spec }));
+            setOpen(false);
+          }}
+          onCancel={() => setOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -910,6 +993,7 @@ function NumericValueCell({ sig, decoded, onCommit }: NumericValueCellProps) {
       type="text"
       inputMode="decimal"
       value={display}
+      onFocus={(e) => e.currentTarget.select()}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={() => {
         if (draft === null) return;
@@ -990,6 +1074,14 @@ function EnumValueCell({
         type="text"
         list={datalistId}
         value={display}
+        // Clear on focus so the datalist offers *all* labels instead
+        // of filtering on the current one (which locked the picker to
+        // the already-selected value); the placeholder keeps the
+        // committed label visible, and blurring untouched reverts.
+        placeholder={
+          currentLabel ?? (currentRaw != null ? formatPhysical(currentRaw) : "")
+        }
+        onFocus={() => setDraft("")}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={() => {
           if (draft === null) return;
@@ -1423,6 +1515,10 @@ export interface TransmitFrameConfig {
   cycleMode: "manual" | "periodic";
   brs: boolean;
   dlc: number;
+  /// Calculated-field override spec (ADR 0027): `null` means the
+  /// DBC's declared defaults apply per field. Persisted with the
+  /// message (`TransmitFrame.calc`).
+  calc: CalcFieldsSpec | null;
 }
 
 /// Field-wise equality of two working configs (all fields are
@@ -1440,7 +1536,11 @@ function configsEqual(a: TransmitFrameConfig, b: TransmitFrameConfig): boolean {
     a.cycleMs === b.cycleMs &&
     a.cycleMode === b.cycleMode &&
     a.brs === b.brs &&
-    a.dlc === b.dlc
+    a.dlc === b.dlc &&
+    // The calc spec is a small plain-data tree; structural equality
+    // by serialisation keeps `configsEqual` total without a
+    // hand-written deep compare.
+    JSON.stringify(a.calc) === JSON.stringify(b.calc)
   );
 }
 
@@ -1458,6 +1558,7 @@ function recordToConfig(r: TransmitFrameRecord): TransmitFrameConfig {
     cycleMode: r.mode === "periodic" ? "periodic" : "manual",
     brs: r.request.brs,
     dlc: r.request.dlc,
+    calc: r.calc ?? null,
   };
 }
 
@@ -1470,6 +1571,7 @@ function configToFrame(c: TransmitFrameConfig): {
   request: TransmitRequestRecord;
   cycleMs: number;
   mode: TransmitMode;
+  calc: CalcFieldsSpec | null;
 } {
   const max = c.kind === "classic" ? 8 : 64;
   const data =
@@ -1493,6 +1595,7 @@ function configToFrame(c: TransmitFrameConfig): {
     },
     cycleMs: c.cycleMs,
     mode: c.cycleMode === "periodic" ? "periodic" : "manual",
+    calc: c.calc,
   };
 }
 

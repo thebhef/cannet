@@ -142,26 +142,14 @@ trip over it.
   exercise the native dialog — confirm it opens on each shipping
   WebView (WebKitGTK / WKWebView / WebView2) next time the app is
   run by hand.
-### Transmit panel
+### DBC view
 
-- `[feat]` `cannet-dbc`: **parse more of the Vector generic (`Gen*`)
-  attribute family** beyond today's `GenMsgCycleTime` /
-  `GenMsgCANFDBRS` / `VFrameFormat`. The full set is collected into the
-  generic `DbcAttribute` lists already, but these have dedicated
-  meaning for the transmit panel and scheduler and deserve typed
-  accessors like `message_cycle_time_ms`
-  ([lib.rs:707](../crates/cannet-dbc/src/lib.rs#L707)):
-  - **`GenMsgSendType`** (BO_, ENUM: `cyclic`, `triggered`,
-    `cyclicIfActive`, `cyclicAndTriggered`,
-    `cyclicIfActiveAndTriggered`, `none`) — disambiguates whether
-    `GenMsgCycleTime` is actually used; the natural companion to the
-    cycle time we already read.
-  - **`GenSigStartValue`** (SG_, INT/FLOAT) — initial/default raw value
-    until the signal is first received; would let the transmit panel
-    pre-populate signal values from the DBC instead of zeros.
-  Reference: Vector CANdb++ Manual; the values are the standard `Gen*`
-  attribute convention. Pick up when the transmit panel grows
-  send-type-aware scheduling or DBC-seeded default values.
+- `[feat]` `cannet-gui` DBC view: **ECU view mode** — group the message
+  tree by transmitting node (ECU) instead of flat by message, mirroring
+  the per-ECU grouping the RBS panel uses. (Surfaced while designing
+  the RBS `.cannet_rbs` schema.)
+
+### Transmit panel
 
 - `[perf]` `cannet-gui` `run_transmit_scheduler`: per-bus
   `FrameBatch` batching. The scheduler currently fires each due
@@ -359,6 +347,20 @@ next pass on this surface can address them as one piece.
     collapse to one timestamp).
   Fold into the CI server-conformance suite above, or run as a focused
   pass, once a rig is available.
+  - **Observed: periodic message-rate dips under PCAN loopback.**
+    With calculated-field periodics running, the plot view shows the
+    message rate sagging periodically. Suspected loopback / driver
+    queueing rather than the scheduler (the fixed-grid scheduler
+    absorbs work time and never bursts), but confirm against the
+    Task 21 profiling counters during the hardware pass and rule out
+    a fire-path stall (registry lock contention at high aggregate
+    rates).
+  - **Task 14 RBS test matrix, live legs.** The RBS exit criteria's
+    send matrix (Tx rows with fields filled in over `local-virtual-bus`,
+    hardware (sidecar) interfaces, and FD frames) is covered at the
+    model layer by `rbs.rs` / `transmit_frames.rs` unit tests; the
+    hardware-interface leg and an end-to-end FD-on-wire run need the
+    same rig as the rest of this sign-off pass.
 
 ### Packaging and naming
 

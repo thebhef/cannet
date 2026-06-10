@@ -96,7 +96,7 @@ must keep producing the same frame on the wire.
 - The transmit panel's existing "pick enum raw → write one byte"
   hack is retired; enum picks go through the encoder for proper
   multi-byte placement.
-- The "bytes source of truth" rule constrains future transmit-side
-  features (rest-of-bus simulation in Phase 14, math channels in
-  Phase 23) to operate on payloads, not on signal maps, when they
+- The "bytes source of truth" rule constrains transmit-side
+  features (rest-of-bus simulation — ADR 0028 — and future math
+  channels) to operate on payloads, not on signal maps, when they
   need to persist or transmit a frame.

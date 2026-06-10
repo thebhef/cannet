@@ -20,6 +20,8 @@ export function elementKindLabel(kind: ProjectElementKind): string {
       return "Transmit";
     case "filter":
       return "Filter";
+    case "rbs":
+      return "RBS";
   }
 }
 

@@ -547,6 +547,77 @@ add bridges to, or delete each virtual bus the project owns; the
 host applies bus_config edits via `SharedBus::reconfigure` and
 manages bridge teardown.
 
+### Rest-of-bus simulation + calculated fields
+
+**Add RBS panel** opens a rest-of-bus simulation (ADR 0028): cannet
+transmits a configured set of DBC messages on their cadence with
+live, editable signal values — playing every node except the device
+under test.
+
+The configuration is a human-editable **`.cannet_rbs`** JSON
+document of *sparse overrides* nested `bus → ecu → message`, keyed
+by the project's logical bus names and hex CAN ids (trailing `x` =
+extended). A signal absent from the config keeps tracking its DBC
+default (`GenSigStartValue`, else the config's `fill_bit`);
+`period_ms` falls back to `GenMsgCycleTime`. A fresh RBS panel is
+immediately usable — the config starts in memory, pre-seeded with
+the project's current buses — and **Save** prompts for a
+`.cannet_rbs` path the first time. The project then references the
+file **by path** through a nameable RBS element (multiple per
+project), so simulation configs are switched and forked with
+ordinary file operations.
+
+In the panel:
+
+- The tree-grid lists every DBC message on each configured bus,
+  grouped per transmitter ECU, with **ANDed enable checkboxes** at
+  bus / ECU / message level. Messages are **enabled by default**
+  (rest-of-bus: everything plays unless muted — mutes persist as the
+  config's flat `disabled_messages` list). Buses whose name doesn't
+  match a project bus render inert (greyed) rather than failing the
+  load.
+- Signal cells show the live decode of the message's payload buffer;
+  editing partial-encodes into it (enum labels and `0x…` raw hex are
+  accepted), an overridden cell is marked and a light **×** clears
+  it back to DBC-tracking. The fzf filter narrows by message /
+  signal name.
+- **Run** (persisted in the project, default off) starts the enabled
+  messages on the host scheduler; actual transmission gates on
+  per-bus connectivity (a bus that connects starts its messages, a
+  drop stops them). A project saved with RBS running resumes on
+  open; the global **kill-switch** (runtime-only) stops every RBS
+  transmission at once.
+- **Save** writes the override edits back to the file; **Save all**
+  (command palette) saves the project plus every dirty
+  `.cannet_rbs`, and the exit prompt covers both. Save dialogs
+  default to `.cannet_prj` / `.cannet_rbs`; `.json` is still
+  accepted on open.
+
+**Calculated fields** (ADR 0027) are signals recomputed on every
+send: a **sequence counter** (increment + rollover) and/or a **CRC**
+(a `crc-catalog` named algorithm or raw Rocksoft parameters,
+computed over a byte-aligned bit range of the just-encoded payload,
+optionally prefixed with hex bytes — the AUTOSAR E2E Data ID case).
+The designation lives in the DBC as cannet attributes on the
+destination signal:
+
+```text
+BA_DEF_ SG_ "CannetCounter" STRING ;
+BA_DEF_ SG_ "CannetCrc" STRING ;
+BA_ "CannetCounter" SG_ 1042 AliveCtr "increment=1;rollover=15";
+BA_ "CannetCrc" SG_ 1042 Crc8 "alg=CRC-8/SAE-J1850;range=0:56;prefix=A3";
+```
+
+(see `examples/cannet-demo.dbc`'s `BmsCommand` message). Both the
+RBS panel and the transmit panel expose the same configuration
+editor; a per-message override replaces the DBC default wholesale
+per field. On the receive side, frames on a configured `(bus, id)`
+are verified at ingest: a bad CRC or out-of-sequence counter paints
+the trace row red, per-id validity is queryable
+(`fetch_field_validity`), and a valid→invalid transition logs a
+rate-limited Info system message. cannet's own transmissions are
+exempt.
+
 > **Note:** plain `cargo run -p cannet-gui` will build the Rust host on
 > its own but won't bring up a usable window — the host expects either
 > a Vite dev server (which `tauri dev` starts for you) or a built

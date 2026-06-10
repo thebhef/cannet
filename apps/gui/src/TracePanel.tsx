@@ -116,7 +116,7 @@ export function TracePanel(props: IDockviewPanelProps) {
   // element is still being healed or has a legacy shape lacking the
   // field — be defensive so the picker never reads from `undefined`.
   const currentSources =
-    element && element.kind !== "transmit"
+    element && element.kind !== "transmit" && element.kind !== "rbs"
       ? element.sources ?? ["*"]
       : ["*"];
   // Filters available to wire upstream of this trace. Exclude

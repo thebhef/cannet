@@ -22,6 +22,7 @@ import type { GraphNode, GraphNodeKind } from "./projectGraph";
 const LANE_X: Record<GraphNodeKind, number> = {
   gateway: 0,
   transmit: 0,
+  rbs: 0,
   bus: 360,
   filter: 760,
   plot: 1080,
@@ -30,6 +31,7 @@ const LANE_X: Record<GraphNodeKind, number> = {
 const LANE_Y_OFFSET: Record<GraphNodeKind, number> = {
   gateway: 0, // top-left lane
   transmit: 400, // bottom-left lane, below the gateways
+  rbs: 400, // transmit-side: it produces traffic too
   bus: 80,
   filter: 80,
   plot: 0, // sinks stack from the top of the right lane
@@ -43,6 +45,7 @@ const LANE_Y_OFFSET: Record<GraphNodeKind, number> = {
 const LANE_SLOT: Record<GraphNodeKind, string> = {
   gateway: "left-top",
   transmit: "left-bottom",
+  rbs: "left-bottom",
   bus: "middle",
   filter: "middle-right",
   plot: "right",

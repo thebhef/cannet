@@ -29,6 +29,11 @@ pub struct TraceFrameRecord {
     /// frame, which a filter `{bus: ...}` predicate never matches.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bus_id: Option<String>,
+    /// Ingest-time verification finding for this frame (`"crc"` /
+    /// `"counter"` / `"truncated"`), if any — the trace view renders
+    /// flagged rows red (ADR 0027). Absent for clean frames.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub violation: Option<&'static str>,
 }
 
 /// A page of a filtered chronological trace view: the total match
@@ -108,6 +113,7 @@ impl TraceFrameRecord {
             data,
             decoded,
             bus_id: frame.bus_id.clone(),
+            violation: None,
         }
     }
 }
@@ -189,6 +195,225 @@ pub enum TransmitKind {
     Fd,
     Remote,
     Error,
+}
+
+/// Calculated-fields configuration as it travels and persists — on a
+/// TX message (`TransmitFrame::calc`), in a `.cannet_rbs` message
+/// entry, and over IPC. The JSON shape is ADR 0028's: `counter` /
+/// `crc` objects with `signal`, `increment` / `rollover`,
+/// `algorithm` XOR raw Rocksoft fields, `range_bits: [start, length]`
+/// and a hex-string `prefix`. Field names stay `snake_case` (they're
+/// part of the human-edited file format).
+///
+/// This is the *spec* (what the user wrote); resolution against a DBC
+/// produces a `cannet_dbc::ResolvedCalculatedFields` via
+/// [`Self::to_config`] + `Database::resolve_calculated_fields`.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq, Default)]
+pub struct CalcFieldsSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counter: Option<CounterSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crc: Option<CrcSpec>,
+}
+
+impl CalcFieldsSpec {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.counter.is_none() && self.crc.is_none()
+    }
+
+    /// Convert to the `cannet-dbc` config type, validating the
+    /// algorithm form (named XOR raw) and the hex prefix.
+    pub fn to_config(&self) -> Result<cannet_dbc::CalculatedFieldsConfig, String> {
+        let counter = self.counter.as_ref().map(|c| cannet_dbc::CounterConfig {
+            signal: c.signal.clone(),
+            increment: c.increment,
+            rollover: c.rollover,
+        });
+        let crc = self.crc.as_ref().map(CrcSpec::to_config).transpose()?;
+        Ok(cannet_dbc::CalculatedFieldsConfig { counter, crc })
+    }
+
+    /// The spec form of a parsed config — how a DBC-declared default
+    /// is shown to the GUI in the same shape as overrides.
+    #[must_use]
+    pub fn from_config(config: &cannet_dbc::CalculatedFieldsConfig) -> Self {
+        let counter = config.counter.as_ref().map(|c| CounterSpec {
+            signal: c.signal.clone(),
+            increment: c.increment,
+            rollover: c.rollover,
+        });
+        let crc = config.crc.as_ref().map(|c| {
+            let (algorithm, raw) = match &c.algorithm {
+                cannet_dbc::CrcAlgorithm::Named(name) => (Some(name.clone()), None),
+                cannet_dbc::CrcAlgorithm::Raw(p) => (None, Some(*p)),
+            };
+            CrcSpec {
+                signal: c.signal.clone(),
+                algorithm,
+                width: raw.map(|p| p.width),
+                poly: raw.map(|p| p.poly),
+                init: raw.map(|p| p.init),
+                refin: raw.map(|p| p.refin),
+                refout: raw.map(|p| p.refout),
+                xorout: raw.map(|p| p.xorout),
+                range_bits: c.range_bits,
+                prefix: hex_string(&c.prefix),
+            }
+        });
+        Self { counter, crc }
+    }
+}
+
+/// Counter spec — ADR 0028's `"counter"` object.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct CounterSpec {
+    pub signal: String,
+    #[serde(default = "default_increment")]
+    pub increment: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollover: Option<u64>,
+}
+
+fn default_increment() -> u64 {
+    1
+}
+
+/// CRC spec — ADR 0028's `"crc"` object. Exactly one of `algorithm`
+/// (catalogue name) or the raw Rocksoft fields (`width` + `poly`
+/// required; `init` / `xorout` default 0, `refin` / `refout` default
+/// false) — enforced by [`Self::to_config`], not the deserializer, so
+/// a bad file yields a per-message warning instead of a load failure.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct CrcSpec {
+    pub signal: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub algorithm: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "opt_hex_u64")]
+    pub poly: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "opt_hex_u64")]
+    pub init: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refin: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refout: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "opt_hex_u64")]
+    pub xorout: Option<u64>,
+    /// `[start, length]` in bits — byte-aligned (validated at
+    /// resolution).
+    pub range_bits: (u32, u32),
+    /// Hex bytes prepended to the ranged data (E2E Data ID). Empty =
+    /// none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub prefix: String,
+}
+
+impl CrcSpec {
+    fn to_config(&self) -> Result<cannet_dbc::CrcConfig, String> {
+        let raw_given = self.width.is_some()
+            || self.poly.is_some()
+            || self.init.is_some()
+            || self.refin.is_some()
+            || self.refout.is_some()
+            || self.xorout.is_some();
+        let algorithm = match (&self.algorithm, raw_given) {
+            (Some(_), true) => {
+                return Err("algorithm and raw CRC parameters are mutually exclusive".into());
+            }
+            (Some(name), false) => cannet_dbc::CrcAlgorithm::Named(name.clone()),
+            (None, _) => cannet_dbc::CrcAlgorithm::Raw(cannet_dbc::RawCrcParams {
+                width: self.width.ok_or("raw CRC parameters require width")?,
+                poly: self.poly.ok_or("raw CRC parameters require poly")?,
+                init: self.init.unwrap_or(0),
+                refin: self.refin.unwrap_or(false),
+                refout: self.refout.unwrap_or(false),
+                xorout: self.xorout.unwrap_or(0),
+            }),
+        };
+        let prefix = if self.prefix.is_empty() {
+            Vec::new()
+        } else {
+            parse_hex_prefix(&self.prefix)?
+        };
+        Ok(cannet_dbc::CrcConfig {
+            signal: self.signal.clone(),
+            algorithm,
+            range_bits: self.range_bits,
+            prefix,
+        })
+    }
+}
+
+fn hex_string(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    bytes.iter().fold(String::new(), |mut s, b| {
+        let _ = write!(s, "{b:02X}");
+        s
+    })
+}
+
+fn parse_hex_prefix(text: &str) -> Result<Vec<u8>, String> {
+    if !text.len().is_multiple_of(2) {
+        return Err(format!("invalid hex prefix \"{text}\" (need full bytes)"));
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&text[i..i + 2], 16)
+                .map_err(|_| format!("invalid hex prefix \"{text}\""))
+        })
+        .collect()
+}
+
+/// (De)serialize `Option<u64>` accepting either a JSON number or a
+/// `"0x…"` / decimal string, writing the hex-string form — CRC
+/// polynomials read naturally in hex in a hand-edited file.
+mod opt_hex_u64 {
+    // serde `with` modules must take the field type by reference.
+    #[allow(clippy::ref_option)]
+    pub fn serialize<S: serde::Serializer>(
+        value: &Option<u64>,
+        ser: S,
+    ) -> Result<S::Ok, S::Error> {
+        match value {
+            Some(v) => ser.serialize_str(&format!("{v:#X}")),
+            None => ser.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+        de: D,
+    ) -> Result<Option<u64>, D::Error> {
+        use serde::Deserialize;
+
+        #[derive(serde::Deserialize)]
+        #[serde(untagged)]
+        enum NumOrStr {
+            Num(u64),
+            Str(String),
+        }
+        let Some(v) = Option::<NumOrStr>::deserialize(de)? else {
+            return Ok(None);
+        };
+        match v {
+            NumOrStr::Num(n) => Ok(Some(n)),
+            NumOrStr::Str(s) => {
+                let t = s.trim();
+                let parsed = if let Some(hex) =
+                    t.strip_prefix("0x").or_else(|| t.strip_prefix("0X"))
+                {
+                    u64::from_str_radix(hex, 16)
+                } else {
+                    t.parse()
+                };
+                parsed
+                    .map(Some)
+                    .map_err(|_| serde::de::Error::custom(format!("invalid number \"{s}\"")))
+            }
+        }
+    }
 }
 
 /// Returned from `transmit_frame`. The frame *always* lands in the
@@ -412,10 +637,19 @@ pub struct MessageDescriptorRecord {
     /// when absent. The transmit panel pre-fills a newly-added
     /// message's cycle period from this.
     pub gen_msg_cycle_time_ms: Option<u32>,
+    /// The DBC's `GenMsgSendType` attribute resolved to its label
+    /// (ENUM values mapped through the `BA_DEF_` list), or `None`.
+    pub gen_msg_send_type: Option<String>,
     /// `true` iff any signal uses nested / extended multiplexing
     /// (`m<N>M`). The transmit panel falls back to bytes-only editing
     /// in that case.
     pub uses_extended_mux: bool,
+    /// The calculated-field designation the DBC itself declares for
+    /// this message (`CannetCounter` / `CannetCrc` — ADR 0027), in
+    /// the same spec shape overrides use. `None` when the DBC
+    /// declares none. The panels render this as the default layer
+    /// under any per-message override.
+    pub calc_fields: Option<CalcFieldsSpec>,
     pub signals: Vec<SignalDescriptorRichRecord>,
 }
 
@@ -438,6 +672,10 @@ pub struct SignalDescriptorRichRecord {
     /// range; the panel renders a free-form numeric input.
     pub float_kind: &'static str,
     pub has_value_table: bool,
+    /// The DBC's `GenSigStartValue` (raw units, verbatim), or `None`.
+    /// Consumers derive the physical default as
+    /// `raw * factor + offset`.
+    pub start_value_raw: Option<f64>,
 }
 
 #[derive(serde::Serialize, Clone, Debug)]

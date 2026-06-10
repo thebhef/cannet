@@ -41,6 +41,7 @@ mod ipc;
 mod local_buses;
 mod notes;
 mod project;
+mod rbs;
 mod signal_cache;
 mod sidecar;
 mod signal_sampler;
@@ -48,6 +49,7 @@ mod system_log;
 mod trace_store;
 mod transmit_frames;
 mod transmit_scheduler;
+mod verification;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -248,6 +250,16 @@ struct AppState {
     /// `start`/`stop_periodic_transmit` push schedule changes through
     /// it; the thread itself is spawned in `run`'s `setup`.
     transmit_scheduler: transmit_scheduler::TransmitScheduler,
+    /// Rest-of-bus-simulation state (ADR 0028): loaded `.cannet_rbs`
+    /// documents per element, the project's logical-bus name map, and
+    /// the global kill-switch. Lock order: `rbs` before `databases`
+    /// before `transmit_frames` before `remote_sessions`.
+    rbs: Mutex<rbs::RbsRuntime>,
+    /// Ingest-time CRC / counter verification (ADR 0027): the
+    /// per-`(bus, id)` config index, counter continuity, the sparse
+    /// violation index the trace fetch decorates rows from, and the
+    /// validity map. Owns its own lock.
+    verifier: verification::VerificationState,
 }
 
 /// Boot the Tauri runtime.
@@ -280,6 +292,8 @@ pub fn run() {
             local_buses: local_buses::LocalBusRegistry::default(),
             transmit_frames: Mutex::new(transmit_frames::TransmitFrameRegistry::default()),
             transmit_scheduler,
+            rbs: Mutex::new(rbs::RbsRuntime::default()),
+            verifier: verification::VerificationState::default(),
         })
         .manage(sidecar::SidecarState::default())
         .manage(interfaces::InterfacesState::default())
@@ -334,6 +348,22 @@ pub fn run() {
             attach_local_bus_bridge,
             detach_local_bus_bridge,
             list_local_bus_bridges,
+            rbs::rbs_load,
+            rbs::rbs_init,
+            rbs::rbs_save_as,
+            rbs::rbs_unload,
+            rbs::rbs_sync_project_buses,
+            rbs::rbs_set_run,
+            rbs::rbs_set_kill_switch,
+            rbs::rbs_set_enabled,
+            rbs::rbs_set_period,
+            rbs::rbs_set_signal,
+            rbs::rbs_set_calc,
+            rbs::rbs_save,
+            rbs::rbs_dirty,
+            rbs::rbs_view,
+            rbs::rbs_crc_algorithms,
+            fetch_field_validity,
         ])
         .setup(move |app| {
             // Make sure the main window has the id our capabilities expect.
@@ -893,6 +923,11 @@ fn add_dbc(
             return Err(msg);
         }
     };
+    // Non-fatal attribute problems (malformed CannetCounter /
+    // CannetCrc values) surface as warnings; the DBC still loads.
+    for w in db.parse_warnings() {
+        sys_warn!(&app, "dbc", "{path}: {w}");
+    }
     let reloaded = {
         let mut list = state.databases.lock().expect("databases mutex poisoned");
         if let Some(slot) = list.iter_mut().find(|d| d.path == path) {
@@ -918,6 +953,7 @@ fn add_dbc(
             w.watch_dbc(std::path::Path::new(&path));
         }
     }
+    rbs::refresh_all_elements(&app);
     Ok(dbc_list(state.inner()))
 }
 
@@ -929,6 +965,7 @@ fn add_dbc(
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 fn set_dbc_buses(
+    app: AppHandle,
     state: State<'_, AppState>,
     path: String,
     buses: Vec<String>,
@@ -939,6 +976,7 @@ fn set_dbc_buses(
             slot.buses = buses;
         }
     }
+    rbs::refresh_all_elements(&app);
     dbc_list(state.inner())
 }
 
@@ -963,6 +1001,7 @@ fn remove_dbc(app: AppHandle, state: State<'_, AppState>, path: String) -> Vec<D
         {
             w.unwatch_dbc(std::path::Path::new(&path));
         }
+        rbs::refresh_all_elements(&app);
     }
     dbc_list(state.inner())
 }
@@ -980,6 +1019,7 @@ fn clear_dbcs(app: AppHandle, state: State<'_, AppState>) {
     };
     if count > 0 {
         sys_info!(&app, "dbc", "cleared {count} loaded DBC(s)");
+        rbs::refresh_all_elements(&app);
     }
     if let Some(w) = state
         .dbc_watcher
@@ -1001,13 +1041,17 @@ fn collect_trace_records(state: &AppState, start: u64, end: u64) -> Vec<TraceFra
     let end_us = usize::try_from(end).unwrap_or(usize::MAX);
     let raw = state.trace_store.slice(start_us, end_us);
     let dbs = state.databases.lock().expect("databases mutex poisoned");
+    let violations: std::collections::HashMap<u64, &'static str> =
+        state.verifier.violations_in(start, end).into_iter().collect();
     raw.into_iter()
         .enumerate()
         .map(|(i, frame)| {
             #[allow(clippy::cast_possible_truncation)]
             let absolute_index = start + i as u64;
             let decoded = decode_against(&dbs, &frame);
-            TraceFrameRecord::from_raw(absolute_index, &frame, decoded)
+            let mut record = TraceFrameRecord::from_raw(absolute_index, &frame, decoded);
+            record.violation = violations.get(&absolute_index).copied();
+            record
         })
         .collect()
 }
@@ -1197,7 +1241,10 @@ async fn fetch_filtered_trace(
         .into_iter()
         .map(|(i, frame)| {
             let index = u64::try_from(i).unwrap_or(u64::MAX);
-            TraceFrameRecord::from_raw(index, &frame, decode_against(&dbs, &frame))
+            let mut record =
+                TraceFrameRecord::from_raw(index, &frame, decode_against(&dbs, &frame));
+            record.violation = state.verifier.violation_at(index);
+            record
         })
         .collect();
     FilteredTracePage { count, start, rows }
@@ -1224,8 +1271,10 @@ fn clear_trace_store(app: AppHandle, state: State<'_, AppState>) {
     state.trace_store.start_session(now_ns);
     // The decoded-sample caches hold frame indices into the store —
     // wipe them too, otherwise the next `sample_signals` would slice
-    // against a buffer that no longer exists.
+    // against a buffer that no longer exists. Same for the
+    // verification runtime (violation indices + counter continuity).
     state.signal_caches.clear();
+    state.verifier.clear_runtime();
     if let Some(applied) = state.notes.clear() {
         let _ = app.emit("notes-changed", applied.notes);
     }
@@ -2195,7 +2244,16 @@ fn run_pump<S>(
                     state.trace_store.start_session(raw.timestamp_ns);
                     needs_replay_session_start = false;
                 }
-                state.trace_store.append(raw);
+                // Ingest-time verification (ADR 0027): ids with a
+                // calculated-field config get checked against the
+                // appended index. The `wants` probe keeps the
+                // unconfigured fast path clone-free.
+                let checked = state.verifier.wants(&raw).then(|| raw.clone());
+                if let Some(index) = state.trace_store.append(raw) {
+                    if let Some(frame) = checked {
+                        state.verifier.observe(app, &frame, index);
+                    }
+                }
                 total = total.saturating_add(1);
             }
             Ok(None) => break,
@@ -2225,6 +2283,175 @@ fn run_pump<S>(
 /// Notify open transmit views that the pool changed so they re-fetch.
 fn emit_transmit_frames_changed(app: &AppHandle) {
     let _ = app.emit("transmit-frames-changed", ());
+}
+
+/// Resolve the *effective* calculated-fields config for one TX
+/// message (ADR 0027): the DBC-declared defaults (`CannetCounter` /
+/// `CannetCrc` attributes) with the message's override spec layered
+/// on top — an override replaces the DBC default wholesale for that
+/// field. The resolving DBC is the first one scoped to the request's
+/// bus that defines the message id. `Ok(None)` when nothing is
+/// configured for the message.
+fn resolve_effective_calc(
+    dbs: &[LoadedDbc],
+    request: &ipc::TransmitRequest,
+    override_spec: Option<&ipc::CalcFieldsSpec>,
+) -> Result<Option<cannet_dbc::ResolvedCalculatedFields>, String> {
+    let no_override = override_spec.is_none_or(ipc::CalcFieldsSpec::is_empty);
+    let id = if request.extended {
+        CanId::extended(request.id)
+    } else {
+        CanId::standard(request.id)
+    };
+    let Ok(id) = id else {
+        // An unencodable arbitration id can't carry calculated fields;
+        // the transmit path itself will surface the id error.
+        return Ok(None);
+    };
+    let Some(loaded) = dbs
+        .iter()
+        .filter(|d| d.buses.is_empty() || d.buses.iter().any(|b| b == &request.bus_id))
+        .find(|d| d.db.dbc_calculated_fields(id).is_some())
+    else {
+        return if no_override {
+            Ok(None)
+        } else {
+            Err(format!(
+                "no DBC on bus {} defines message 0x{:X}",
+                request.bus_id, request.id
+            ))
+        };
+    };
+    let dbc_default = loaded
+        .db
+        .dbc_calculated_fields(id)
+        .cloned()
+        .unwrap_or_default();
+    let override_config = override_spec
+        .map(ipc::CalcFieldsSpec::to_config)
+        .transpose()?;
+    let (mut counter, mut crc) = (dbc_default.counter, dbc_default.crc);
+    if let Some(o) = override_config {
+        if o.counter.is_some() {
+            counter = o.counter;
+        }
+        if o.crc.is_some() {
+            crc = o.crc;
+        }
+    }
+    let merged = cannet_dbc::CalculatedFieldsConfig { counter, crc };
+    if merged.is_empty() {
+        return Ok(None);
+    }
+    loaded
+        .db
+        .resolve_calculated_fields(id, &merged)
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
+
+/// Current per-`(bus, id)` calculated-field validity, as observed by
+/// the ingest-time verifier. Entries appear once an id with a config
+/// has produced its first violation; absent ids have never failed.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn fetch_field_validity(state: State<'_, AppState>) -> Vec<verification::ValidityRecord> {
+    state.verifier.validity_snapshot()
+}
+
+/// Rebuild the ingest-time verifier's config index from the loaded
+/// DBC set plus every RBS element's per-message overrides (an
+/// override replaces the DBC default per field — ADR 0027). Called
+/// alongside the calc-resolution refresh whenever DBCs, project
+/// buses, or RBS configs change.
+pub(crate) fn rebuild_verification(state: &AppState) {
+    let overrides: Vec<(String, u32, bool, cannet_dbc::CalculatedFieldsConfig)> = {
+        let rbs_guard = state.rbs.lock().expect("rbs mutex poisoned");
+        let dbs = state.databases.lock().expect("databases mutex poisoned");
+        let mut out = Vec::new();
+        for element in rbs_guard.elements.values() {
+            for (bus_key, bus) in &element.file.buses {
+                let Some(bus_id) = rbs_guard
+                    .project_buses
+                    .iter()
+                    .find(|(_, n)| n == bus_key)
+                    .map(|(id, _)| id.clone())
+                else {
+                    continue;
+                };
+                for ecu in bus.ecus.values() {
+                    for (msg_key, msg) in &ecu.messages {
+                        if msg.counter.is_none() && msg.crc.is_none() {
+                            continue;
+                        }
+                        let Ok((id, extended)) = rbs::parse_message_key(msg_key) else {
+                            continue;
+                        };
+                        let can_id = if extended {
+                            CanId::extended(id)
+                        } else {
+                            CanId::standard(id)
+                        };
+                        let Ok(can_id) = can_id else { continue };
+                        let spec = ipc::CalcFieldsSpec {
+                            counter: msg.counter.clone(),
+                            crc: msg.crc.clone(),
+                        };
+                        let Ok(override_config) = spec.to_config() else {
+                            continue;
+                        };
+                        // Per-field layering over the DBC default.
+                        let dbc_default = dbs
+                            .iter()
+                            .filter(|d| {
+                                d.buses.is_empty() || d.buses.iter().any(|b| b == &bus_id)
+                            })
+                            .find_map(|d| d.db.dbc_calculated_fields(can_id))
+                            .cloned()
+                            .unwrap_or_default();
+                        let merged = cannet_dbc::CalculatedFieldsConfig {
+                            counter: override_config.counter.or(dbc_default.counter),
+                            crc: override_config.crc.or(dbc_default.crc),
+                        };
+                        if !merged.is_empty() {
+                            out.push((bus_id.clone(), id, extended, merged));
+                        }
+                    }
+                }
+            }
+        }
+        out
+    };
+    let dbs = state.databases.lock().expect("databases mutex poisoned");
+    state.verifier.rebuild_configs(&dbs, &overrides);
+}
+
+/// Re-resolve every TX-registry entry's calculated fields against the
+/// current DBC set. Called whenever either side changes — a DBC is
+/// added / removed / rescoped / auto-reloaded, a project is opened,
+/// or an entry is edited. A resolution failure clears that entry's
+/// fields (the frame still transmits, without recompute) and warns on
+/// the system log.
+pub(crate) fn refresh_calc_resolutions(app: &AppHandle) {
+    let state: State<'_, AppState> = app.state();
+    let dbs = state.databases.lock().expect("databases mutex poisoned");
+    let mut registry = state
+        .transmit_frames
+        .lock()
+        .expect("transmit_frames mutex poisoned");
+    for (id, request, spec) in registry.resolution_inputs() {
+        match resolve_effective_calc(&dbs, &request, spec.as_ref()) {
+            Ok(resolved) => registry.set_resolved_calc(&id, resolved),
+            Err(e) => {
+                registry.set_resolved_calc(&id, None);
+                sys_warn!(
+                    app,
+                    "transmit",
+                    "calculated fields disabled for TX message {id}: {e}"
+                );
+            }
+        }
+    }
 }
 
 /// Snapshot the TX-message pool (each message + its `running` flag), in
@@ -2264,6 +2491,9 @@ fn set_transmit_frame(
     if parked {
         state.transmit_scheduler.stop(id);
     }
+    // The edit may have changed the calc spec, the payload shape, the
+    // bus, or the id — re-resolve against the DBC set.
+    refresh_calc_resolutions(&app);
     emit_transmit_frames_changed(&app);
 }
 
@@ -2317,8 +2547,7 @@ fn transmit_frame_once(
         .transmit_frames
         .lock()
         .expect("transmit_frames mutex poisoned")
-        .current(&id)
-        .map(|(request, _, _)| request)
+        .send_request(&id)
         .ok_or_else(|| format!("no transmit frame with id {id}"))?;
     transmit_frame_inner(state.inner(), &request)
 }
@@ -2333,11 +2562,19 @@ fn start_periodic_transmit(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
-    let newly_started = state
-        .transmit_frames
-        .lock()
-        .expect("transmit_frames mutex poisoned")
-        .begin_periodic(&id)?;
+    let newly_started = {
+        let mut registry = state
+            .transmit_frames
+            .lock()
+            .expect("transmit_frames mutex poisoned");
+        let newly_started = registry.begin_periodic(&id)?;
+        if newly_started {
+            // The owner is starting to transmit — the sequence counter
+            // seeds at 0 (ADR 0027).
+            registry.reset_counter(&id);
+        }
+        newly_started
+    };
     if newly_started {
         state.transmit_scheduler.start(id);
     }
@@ -2531,8 +2768,7 @@ fn transmit_frame_inner(
     // remote session is actually carrying it.
     let mut raw = RawTraceFrame::from(frame.clone());
     raw.bus_id = Some(request.bus_id.clone());
-    state.trace_store.append(raw);
-    let tx_confirm_index = u64::try_from(state.trace_store.len()).unwrap_or(u64::MAX) - 1;
+    let tx_confirm_index = state.trace_store.append(raw).unwrap_or(u64::MAX);
 
     let wire_status = match routing {
         None if sessions_guard.is_empty() => ipc::TransmitWireStatus::NotConnected,
@@ -2577,7 +2813,7 @@ struct BusRoute {
 /// `channel_to_bus` lists this bus id, and return the resolved
 /// route. The first-match-wins semantics matches the current
 /// project-side rule of "one interface binding per bus".
-fn resolve_bus_route(
+pub(crate) fn resolve_bus_route(
     sessions: &std::collections::HashMap<String, RemoteSession>,
     bus_id: &str,
 ) -> Option<BusRoute> {
@@ -2714,15 +2950,23 @@ fn describe_message_inner(
                         cannet_dbc::FloatKind::Float64 => "float64",
                     },
                     has_value_table: s.has_value_table,
+                    start_value_raw: s.start_value_raw,
                 })
                 .collect();
+            let calc_fields = if desc.calc_fields.is_empty() {
+                None
+            } else {
+                Some(ipc::CalcFieldsSpec::from_config(&desc.calc_fields))
+            };
             return Some(ipc::MessageDescriptorRecord {
                 name: desc.name,
                 expected_len: desc.expected_len,
                 is_fd: desc.is_fd,
                 brs: desc.brs,
                 gen_msg_cycle_time_ms: desc.gen_msg_cycle_time_ms,
+                gen_msg_send_type: desc.gen_msg_send_type,
                 uses_extended_mux: desc.uses_extended_mux,
+                calc_fields,
                 signals,
             });
         }
@@ -2983,7 +3227,7 @@ mod tests {
         )
     }
 
-    fn test_state() -> AppState {
+    pub(crate) fn test_state() -> AppState {
         AppState {
             databases: Mutex::new(Vec::new()),
             remote_sessions: Mutex::new(HashMap::new()),
@@ -2998,10 +3242,12 @@ mod tests {
             // makes `start`/`stop` best-effort no-ops, which is fine —
             // the registry's `running` state is what the tests assert.
             transmit_scheduler: transmit_scheduler::channel().0,
+            rbs: Mutex::new(rbs::RbsRuntime::default()),
+            verifier: verification::VerificationState::default(),
         }
     }
 
-    fn loaded(path: &str, dbc_text: &str) -> LoadedDbc {
+    pub(crate) fn loaded(path: &str, dbc_text: &str) -> LoadedDbc {
         LoadedDbc {
             path: path.into(),
             db: Database::parse(dbc_text).expect("test DBC parses"),
@@ -3009,7 +3255,7 @@ mod tests {
         }
     }
 
-    fn loaded_scoped(path: &str, dbc_text: &str, buses: &[&str]) -> LoadedDbc {
+    pub(crate) fn loaded_scoped(path: &str, dbc_text: &str, buses: &[&str]) -> LoadedDbc {
         LoadedDbc {
             path: path.into(),
             db: Database::parse(dbc_text).expect("test DBC parses"),
@@ -3936,5 +4182,145 @@ mod tests {
         stop.store(true, Ordering::Relaxed);
         drop(state); // closes the bus → pump's next_frame returns
         let _ = pump.join();
+    }
+
+    /// A DBC declaring calculated fields on `Status` via the cannet
+    /// attributes — the DBC-defaults layer for the layering tests.
+    const CALC_ATTR_DBC: &str = "VERSION \"\"\n\nNS_ :\n\nBS_:\n\nBU_: ECU\n\n\
+        BO_ 291 Status: 8 ECU\n\
+        \x20SG_ Mode : 0|8@1+ (1,0) [0|255] \"\" ECU\n\
+        \x20SG_ AliveCtr : 40|4@1+ (1,0) [0|15] \"\" ECU\n\
+        \x20SG_ Ctr2 : 44|4@1+ (1,0) [0|15] \"\" ECU\n\
+        \x20SG_ Crc8 : 56|8@1+ (1,0) [0|255] \"\" ECU\n\n\
+        BA_DEF_ SG_ \"CannetCounter\" STRING ;\n\
+        BA_DEF_ SG_ \"CannetCrc\" STRING ;\n\
+        BA_DEF_DEF_ \"CannetCounter\" \"\";\n\
+        BA_DEF_DEF_ \"CannetCrc\" \"\";\n\
+        BA_ \"CannetCounter\" SG_ 291 AliveCtr \"increment=1;rollover=15\";\n\
+        BA_ \"CannetCrc\" SG_ 291 Crc8 \"alg=CRC-8/SAE-J1850;range=0:56\";\n";
+
+    fn calc_request(bus: &str, id: u32) -> ipc::TransmitRequest {
+        ipc::TransmitRequest {
+            bus_id: bus.into(),
+            id,
+            extended: false,
+            kind: ipc::TransmitKind::Classic,
+            data: vec![0u8; 8],
+            brs: false,
+            esi: false,
+            dlc: 0,
+        }
+    }
+
+    #[test]
+    fn effective_calc_uses_dbc_defaults_when_no_override() {
+        let dbs = vec![loaded("a.dbc", CALC_ATTR_DBC)];
+        let resolved = resolve_effective_calc(&dbs, &calc_request("p", 291), None)
+            .unwrap()
+            .expect("DBC-declared fields resolve");
+        // Counter at bits 40..44 (byte 5 low nibble), CRC in byte 7.
+        let mut payload = [0u8; 8];
+        let mut counter = 0;
+        resolved.apply(&mut counter, &mut payload).unwrap();
+        assert_eq!(payload[5] & 0x0F, 1);
+        assert_ne!(payload[7], 0);
+        // A message without any designation resolves to None.
+        let dbs2 = vec![loaded("b.dbc", &tiny_dbc(291, "Plain", "S"))];
+        assert!(resolve_effective_calc(&dbs2, &calc_request("p", 291), None)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn override_replaces_the_dbc_default_per_field() {
+        let dbs = vec![loaded("a.dbc", CALC_ATTR_DBC)];
+        // Counter override moves the counter to Ctr2; the DBC's CRC
+        // default stays in effect (per-field layering, ADR 0027).
+        let spec = ipc::CalcFieldsSpec {
+            counter: Some(ipc::CounterSpec {
+                signal: "Ctr2".into(),
+                increment: 2,
+                rollover: Some(15),
+            }),
+            crc: None,
+        };
+        let resolved = resolve_effective_calc(&dbs, &calc_request("p", 291), Some(&spec))
+            .unwrap()
+            .unwrap();
+        let mut payload = [0u8; 8];
+        let mut counter = 0;
+        resolved.apply(&mut counter, &mut payload).unwrap();
+        assert_eq!(payload[5] >> 4, 2, "override counter (Ctr2, +2) applied");
+        assert_eq!(payload[5] & 0x0F, 0, "DBC default counter signal untouched");
+        assert_ne!(payload[7], 0, "DBC default CRC still applied");
+    }
+
+    #[test]
+    fn effective_calc_respects_bus_scoping_and_reports_errors() {
+        // The DBC declaring the fields is scoped to bus "q" — a frame
+        // on bus "p" doesn't see it.
+        let dbs = vec![loaded_scoped("a.dbc", CALC_ATTR_DBC, &["q"])];
+        assert!(resolve_effective_calc(&dbs, &calc_request("p", 291), None)
+            .unwrap()
+            .is_none());
+        assert!(resolve_effective_calc(&dbs, &calc_request("q", 291), None)
+            .unwrap()
+            .is_some());
+        // An override naming an unknown signal is an error, not a
+        // silent no-op …
+        let bad = ipc::CalcFieldsSpec {
+            counter: Some(ipc::CounterSpec {
+                signal: "Nope".into(),
+                increment: 1,
+                rollover: None,
+            }),
+            crc: None,
+        };
+        assert!(
+            resolve_effective_calc(&dbs, &calc_request("q", 291), Some(&bad)).is_err()
+        );
+        // … and so is an override on a message no DBC defines.
+        assert!(
+            resolve_effective_calc(&dbs, &calc_request("p", 291), Some(&bad)).is_err()
+        );
+    }
+
+    /// The spec types round-trip through JSON in ADR 0028's file shape
+    /// (snake_case keys, `range_bits` array, hex-string CRC params).
+    #[test]
+    fn calc_spec_serde_matches_the_adr_shapes() {
+        let json = r#"{
+            "counter": { "signal": "AliveCtr", "increment": 1, "rollover": 15 },
+            "crc": { "signal": "Crc8", "algorithm": "CRC-8/SAE-J1850",
+                     "range_bits": [0, 56], "prefix": "A3" }
+        }"#;
+        let spec: ipc::CalcFieldsSpec = serde_json::from_str(json).unwrap();
+        let config = spec.to_config().unwrap();
+        assert_eq!(config.crc.as_ref().unwrap().prefix, vec![0xA3]);
+        assert_eq!(config.crc.as_ref().unwrap().range_bits, (0, 56));
+        let back: ipc::CalcFieldsSpec =
+            serde_json::from_str(&serde_json::to_string(&spec).unwrap()).unwrap();
+        assert_eq!(back, spec);
+
+        // Raw params accept hex strings or numbers and write hex.
+        let raw = r#"{ "crc": { "signal": "C", "width": 8, "poly": "0x1D",
+                       "init": 255, "range_bits": [0, 56] } }"#;
+        let spec: ipc::CalcFieldsSpec = serde_json::from_str(raw).unwrap();
+        let config = spec.to_config().unwrap();
+        match &config.crc.as_ref().unwrap().algorithm {
+            cannet_dbc::CrcAlgorithm::Raw(p) => {
+                assert_eq!(p.poly, 0x1D);
+                assert_eq!(p.init, 0xFF);
+                assert!(!p.refin);
+            }
+            cannet_dbc::CrcAlgorithm::Named(_) => panic!("expected raw params"),
+        }
+        let text = serde_json::to_string(&spec).unwrap();
+        assert!(text.contains("\"0x1D\""), "{text}");
+        // Mixed named + raw is rejected at conversion.
+        let mixed = r#"{ "crc": { "signal": "C", "algorithm": "CRC-8/AUTOSAR",
+                         "width": 8, "range_bits": [0, 56] } }"#;
+        let spec: ipc::CalcFieldsSpec = serde_json::from_str(mixed).unwrap();
+        assert!(spec.to_config().is_err());
     }
 }

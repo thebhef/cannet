@@ -58,6 +58,28 @@ lists them in order, the filtered By-ID view is a keyed snapshot
 recomputed over them. The predicate defines the subset; it is not
 itself a view.
 
+### Transmit
+
+**Calculated field**:
+A signal on a transmitted message whose value the host recomputes on
+every send — a **sequence counter** (incrementing value with a
+rollover) or a **CRC** (computed over a stated byte range of the
+just-encoded payload, optionally prefixed with an E2E Data ID). The
+designation lives in the DBC (`CannetCounter` / `CannetCrc`
+attributes); overrides layer on top per message. Received frames with
+a designation are verified at ingest.
+_Avoid_: "checksum signal" — the mechanism covers counters too.
+
+**Rest-of-bus simulation (RBS)**:
+Transmitting a configured set of DBC messages on a cadence with live,
+editable signal values — cannet plays every node except the device
+under test. The config is a sparse-override `.cannet_rbs` document
+the user owns — in memory until first saved, a file thereafter; the
+project references it by path through an RBS element whose Run flag
+(default off) is project-persisted.
+_Avoid_: "remaining bus simulation" (Vector's term) in code — the
+repo's name is RBS / rest-of-bus.
+
 ### Views
 
 **View**:
