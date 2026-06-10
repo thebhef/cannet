@@ -27,8 +27,8 @@ work or admit it isn't going to happen and delete it.
 Near-term work — fold these into a phase before picking up the
 lower-priority follow-ups below. The original "Minimum Usability
 Tasks" list is split across **Phase 11** (transmit signals,
-shipped), **Phase 12** (DBC view + drag/drop), **Phase 14** (show
-points), and **Phase 15** (hotkey framework) in
+shipped), **Phase 12** (DBC view + drag/drop, shipped),
+**Phase 14** (show points), and **Phase 15** (hotkey framework) in
 `phased-implementation.md`; the `ui-architecture-backlog.md` item
 is left in `ui-architecture-backlog.md` and absorbed into Phase 16.
 

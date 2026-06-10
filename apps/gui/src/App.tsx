@@ -29,6 +29,7 @@ import { ProjectGraphPanel } from "./ProjectGraphPanel";
 import { PlotPanel } from "./PlotPanel";
 import { TransmitPanel } from "./TransmitPanel";
 import { SystemMessagesPanel } from "./SystemMessagesPanel";
+import { DbcPanel } from "./DbcPanel";
 import { SystemLogContext, type SystemLogContextValue } from "./systemLogContext";
 import {
   mergeSystemMessage,
@@ -61,6 +62,8 @@ import { type TraceState, clearedTrace, freshTrace, reanchorToSession } from "./
 import { defaultBusColor } from "./busColor";
 import {
   BY_ID_PANEL_COMPONENT,
+  DBC_PANEL_COMPONENT,
+  DBC_PANEL_ID,
   LAST_PROJECT_KEY,
   LAYOUT_STORAGE_KEY,
   PLOT_PANEL_COMPONENT,
@@ -110,6 +113,7 @@ const DOCK_COMPONENTS = {
   [TRANSMIT_PANEL_COMPONENT]: TransmitPanel,
   [PROJECT_GRAPH_PANEL_COMPONENT]: ProjectGraphPanel,
   [SYSTEM_MESSAGES_PANEL_COMPONENT]: SystemMessagesPanel,
+  [DBC_PANEL_COMPONENT]: DbcPanel,
 };
 
 /// The project / graph / system-messages panels are singletons — each
@@ -1128,6 +1132,7 @@ export function App() {
     });
   }, [create]);
 
+
   // Show-or-focus a singleton panel keyed by its fixed id. Used by the
   // toolbar buttons for Project, Graph, and System messages — clicking
   // brings the panel forward if it's already open, otherwise adds it.
@@ -1158,6 +1163,20 @@ export function App() {
         id: SYSTEM_MESSAGES_PANEL_ID,
         component: SYSTEM_MESSAGES_PANEL_COMPONENT,
         title: "System messages",
+      }),
+    [showSingletonPanel],
+  );
+
+  // Phase 12 DBC discovery panel — singleton (same pattern as project /
+  // graph / system-messages). The host owns the loaded-DBC set; the
+  // panel is purely a viewer. Its search query + expand state survive
+  // a layout save through dockview panel params.
+  const showDbcPanel = useCallback(
+    () =>
+      showSingletonPanel({
+        id: DBC_PANEL_ID,
+        component: DBC_PANEL_COMPONENT,
+        title: "DBC",
       }),
     [showSingletonPanel],
   );
@@ -1463,6 +1482,7 @@ export function App() {
           <button onClick={addTracePanel}>Add trace</button>
           <button onClick={addPlotPanel}>Add plot panel</button>
           <button onClick={addTransmitPanel}>Add transmit panel</button>
+          <button onClick={showDbcPanel}>DBC panel</button>
           <button onClick={showProjectGraphPanel}>Graph panel</button>
           <button onClick={showProjectPanel}>Project panel</button>
           <button

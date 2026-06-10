@@ -89,6 +89,12 @@ vi.mock("@tauri-apps/api/core", () => ({
     return undefined;
   }),
 }));
+// `listen` is hooked up by the filter-defined-areas / file-watcher
+// pathway for `dbc-changed`. The tests don't fire that event, but
+// the mount-time `listen()` call needs a resolved unsubscriber.
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async () => () => {}),
+}));
 
 import { PlotPanel } from "./PlotPanel";
 import { TraceDataContext, type TraceData } from "./traceData";
@@ -227,7 +233,53 @@ describe("PlotPanel", () => {
     expect(screen.getAllByText("EngineSpeed").length).toBe(1);
   });
 
-  it("a picked signal can be dragged to another area", async () => {
+  it("dragging an internal signal-row between areas moves it (sourcePanelId matches)", async () => {
+    // Internal drag = a payload that carries this panel's elementId
+    // as `sourcePanelId`. The drop handler treats it as a move:
+    // signal leaves area 1 and lands in area 2.
+    renderPanel();
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: /EngineData\.EngineSpeed/ })).toBeInTheDocument(),
+    );
+    fireEvent.change(screen.getByLabelText("add signal to focused plot area"), {
+      target: { value: "*|s:256:EngineSpeed" },
+    });
+    await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "add plot area" }));
+    // Pull the panel's elementId off the live signal row that just
+    // emitted it. Easier: read it back from the dragstart by firing
+    // dragstart on the existing row.
+    const sigRow = screen.getByText("EngineSpeed").closest(".plot-signal-row") as HTMLElement;
+    const store: Record<string, string> = {};
+    const dt = {
+      setData: (t: string, v: string) => {
+        store[t] = v;
+      },
+      getData: (t: string) => store[t] ?? "",
+      types: [] as string[],
+      effectAllowed: "" as DataTransfer["effectAllowed"],
+      dropEffect: "" as DataTransfer["dropEffect"],
+    };
+    Object.defineProperty(dt, "types", {
+      get: () => Object.keys(store),
+    });
+    fireEvent.dragStart(sigRow, { dataTransfer: dt });
+    // Drop onto Area 2 — same payload (carrying sourcePanelId).
+    const area2 = screen.getByText("Area 2").closest(".plot-area")!;
+    fireEvent.dragOver(area2, { dataTransfer: dt });
+    fireEvent.drop(area2, { dataTransfer: dt });
+    // Move semantics: signal is gone from Area 1, present in Area 2.
+    expect(screen.getAllByText("EngineSpeed").length).toBe(1);
+  });
+
+  it("dragging a signal to another area copies it (both areas show it)", async () => {
+    // Phase 12 (slice 3 + slice 4 cleanup): drop-on-different-area
+    // is a *copy*, not a move. The user wanted the same signal in
+    // multiple areas, and prior move semantics surprised drag-from-
+    // DBC-panel users who expected each drop to add a fresh series.
+    // Within-area reorder still works (covered by a separate test
+    // below if one exists; the helper logic is tested via the
+    // dragSignals + plotFilter unit suites).
     renderPanel();
     await waitFor(() =>
       expect(screen.getByRole("option", { name: /EngineData\.EngineSpeed/ })).toBeInTheDocument(),
@@ -250,8 +302,8 @@ describe("PlotPanel", () => {
     const area2 = screen.getByText("Area 2").closest(".plot-area")!;
     fireEvent.dragOver(area2, { dataTransfer: dt });
     fireEvent.drop(area2, { dataTransfer: dt });
-    // Still exactly one occurrence of the signal — it just lives in Area 2 now.
-    expect(screen.getAllByText("EngineSpeed").length).toBe(1);
+    // Now the signal appears in BOTH areas — copy, not move.
+    expect(screen.getAllByText("EngineSpeed").length).toBe(2);
   });
 
   it("clicking a signal's swatch toggles it hidden", async () => {

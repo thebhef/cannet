@@ -26,6 +26,7 @@ import type {
 import { useElementRegistry } from "./projectElements";
 import { useProjectContext } from "./projectContext";
 import { effectiveBusColor } from "./busColor";
+import { SIGNAL_DND_MIME, parseSignalDragData } from "./dragSignals";
 
 /**
  * Phase 10 Track 2 transmit panel. Single-column list of collapsible
@@ -121,6 +122,67 @@ export function TransmitPanel(props: IDockviewPanelProps) {
       return [...prev, next];
     });
   }, [project.buses]);
+
+  /// Drop handler for the Phase 12 DBC-to-TX gesture. The drag
+  /// payload is the shared `application/x-cannet-plot-signal` shape
+  /// (one or more signal refs). A transmit frame is per-message,
+  /// not per-signal — so we group by `(canId, extended)` and
+  /// produce one new frame per distinct message. The DBC signals
+  /// inside each frame populate via the existing `describe_message`
+  /// pathway once the row mounts (kind = "classic" is the safe
+  /// default; the panel auto-promotes to `fd` from the DBC's
+  /// `VFrameFormat` attribute when it loads).
+  ///
+  /// The dropped ref's `busId` flows directly onto the new frame:
+  /// scoped-DBC drags set it; an unscoped-DBC drag (busId = null)
+  /// falls back to the project's first bus so the frame has *some*
+  /// destination — the user can re-pick it from the row's bus
+  /// selector if that's wrong.
+  const handleDropSignals = useCallback(
+    (raw: string) => {
+      const { signals: dropped } = parseSignalDragData(raw);
+      if (dropped.length === 0) return;
+      // De-dupe by message; each unique (canId, extended) makes one
+      // frame. First-seen ref's `busId` / `messageName` carry over.
+      const byMessage = new Map<
+        string,
+        { busId: string | null; canId: number; extended: boolean; messageName: string }
+      >();
+      for (const r of dropped) {
+        const k = `${r.extended ? "x" : "s"}:${r.messageId}`;
+        if (byMessage.has(k)) continue;
+        byMessage.set(k, {
+          busId: r.busId,
+          canId: r.messageId,
+          extended: r.extended,
+          messageName: r.messageName,
+        });
+      }
+      const fallbackBus = project.buses[0]?.id ?? null;
+      setFrames((prev) => {
+        const next: TransmitFrameConfig[] = [...prev];
+        let n = prev.length;
+        for (const m of byMessage.values()) {
+          n += 1;
+          next.push({
+            id: crypto.randomUUID(),
+            name: m.messageName || `Frame ${n}`,
+            busId: m.busId ?? fallbackBus,
+            canId: m.canId,
+            extended: m.extended,
+            kind: "classic",
+            dataHex: "00",
+            cycleMs: 100,
+            cycleMode: "manual",
+            brs: false,
+            dlc: 0,
+          });
+        }
+        return next;
+      });
+    },
+    [project.buses],
+  );
 
   const removeFrame = useCallback((id: string) => {
     setFrames((prev) => prev.filter((f) => f.id !== id));
@@ -234,7 +296,25 @@ export function TransmitPanel(props: IDockviewPanelProps) {
   }, [signals]);
 
   return (
-    <div className="tx-panel">
+    <div
+      className="tx-panel"
+      onDragOver={(e) => {
+        // Accept the Phase-12 signal mime as a drop target. The TX
+        // panel turns each dropped signal's parent message into a
+        // new transmit frame (deduped by message). Other DnD mimes
+        // (the panel's own frame-reorder) bubble through to the
+        // row-level handlers below.
+        if (e.dataTransfer.types.includes(SIGNAL_DND_MIME)) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "copy";
+        }
+      }}
+      onDrop={(e) => {
+        if (!e.dataTransfer.types.includes(SIGNAL_DND_MIME)) return;
+        e.preventDefault();
+        handleDropSignals(e.dataTransfer.getData(SIGNAL_DND_MIME));
+      }}
+    >
       <div className="tx-panel-toolbar">
         <button type="button" onClick={addFrame}>
           + frame

@@ -34,6 +34,7 @@
 //! or removing a DBC mid-stream just changes what subsequent fetches
 //! return.
 
+mod dbc_watcher;
 mod filter;
 mod interfaces;
 mod ipc;
@@ -57,12 +58,14 @@ use cannet_blf::{BlfCanFrameSource, BlfCaptureWriter};
 use cannet_client::{SessionHandle, SessionTransmitter, Subscription};
 use cannet_core::{CanFrame as CoreCanFrame, CanFrameSource, CanId};
 use cannet_dbc::{Database, DecodedSignal};
+use dbc_watcher::DbcWatcher;
 use filter::FilterPredicate;
 
 use ipc::{
-    ByIdSnapshot, DbcInfo, DecodedRecord, FilteredTracePage, InterfaceRecord, LogFinished,
+    ByIdSnapshot, DbcAttributeRecord, DbcContentRecord, DbcInfo, DbcMessageContentRecord,
+    DbcSignalContentRecord, DecodedRecord, FilteredTracePage, InterfaceRecord, LogFinished,
     OpenLogResult, RemoteSessionResult, SampledPoints, SignalDescriptorRecord, SignalQuery,
-    SignalRecord, SignalsSample, TraceFrameRecord, TraceGrew,
+    SignalRecord, SignalsSample, TraceFrameRecord, TraceGrew, ValueTableEntryRecord,
 };
 use notes::{Note, NotesStore};
 use signal_cache::SignalCacheStore;
@@ -162,6 +165,14 @@ struct AppState {
     /// them inside the BLF as `GLOBAL_MARKER` records; Open Capture
     /// and project-open migration restore through them.
     notes: NotesStore,
+    /// Phase 12 filesystem watcher for loaded DBC paths. Lazily
+    /// initialised in the Tauri `setup` hook (it needs an
+    /// `AppHandle` to drive its event callback). `None` only
+    /// briefly during startup or if backend construction fails on
+    /// an exotic platform; `add_dbc` / `remove_dbc` / `clear_dbcs`
+    /// handle the `None` case as "no auto-reload" rather than
+    /// failing.
+    dbc_watcher: Mutex<Option<DbcWatcher>>,
 }
 
 /// Boot the Tauri runtime.
@@ -185,6 +196,7 @@ pub fn run() {
             signal_caches: SignalCacheStore::new(),
             system_log: SystemLog::new(),
             notes: NotesStore::new(),
+            dbc_watcher: Mutex::new(None),
         })
         .manage(sidecar::SidecarState::default())
         .manage(interfaces::InterfacesState::default())
@@ -204,6 +216,7 @@ pub fn run() {
             project::open_project,
             project::save_project,
             list_signals,
+            list_dbc_content,
             sample_signals,
             transmit_frame,
             list_value_tables,
@@ -212,6 +225,7 @@ pub fn run() {
             decode_frame,
             fetch_system_log,
             clear_system_log,
+            gui_emit_system_log,
             fetch_notes,
             add_note,
             rename_note,
@@ -232,6 +246,14 @@ pub fn run() {
             debug_assert!(app.get_webview_window("main").is_some());
             spawn_trace_grew_emitter(app.handle().clone());
             sidecar::spawn_sidecar(app.handle());
+            // Phase 12: build the DBC filesystem watcher. Construction
+            // is the only step that needs the `AppHandle` (the
+            // watcher's event callback emits events / pushes system
+            // log entries through it). Stored on `AppState` so the
+            // DBC IPC commands can watch / unwatch paths.
+            let watcher = DbcWatcher::new(app.handle());
+            let state: State<'_, AppState> = app.state();
+            *state.dbc_watcher.lock().expect("dbc_watcher mutex poisoned") = Some(watcher);
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -719,6 +741,16 @@ fn add_dbc(
         sys_info!(&app, "dbc", "reloaded DBC {path}");
     } else {
         sys_info!(&app, "dbc", "loaded DBC {path}");
+        // Phase 12: start watching this file's parent dir for FS
+        // events (only on first-load — a reload is already watched).
+        if let Some(w) = state
+            .dbc_watcher
+            .lock()
+            .expect("dbc_watcher mutex poisoned")
+            .as_mut()
+        {
+            w.watch_dbc(std::path::Path::new(&path));
+        }
     }
     Ok(dbc_list(state.inner()))
 }
@@ -757,6 +789,14 @@ fn remove_dbc(app: AppHandle, state: State<'_, AppState>, path: String) -> Vec<D
     };
     if removed {
         sys_info!(&app, "dbc", "removed DBC {path}");
+        if let Some(w) = state
+            .dbc_watcher
+            .lock()
+            .expect("dbc_watcher mutex poisoned")
+            .as_mut()
+        {
+            w.unwatch_dbc(std::path::Path::new(&path));
+        }
     }
     dbc_list(state.inner())
 }
@@ -774,6 +814,14 @@ fn clear_dbcs(app: AppHandle, state: State<'_, AppState>) {
     };
     if count > 0 {
         sys_info!(&app, "dbc", "cleared {count} loaded DBC(s)");
+    }
+    if let Some(w) = state
+        .dbc_watcher
+        .lock()
+        .expect("dbc_watcher mutex poisoned")
+        .as_mut()
+    {
+        w.unwatch_all();
     }
 }
 
@@ -1028,6 +1076,34 @@ fn clear_system_log(state: State<'_, AppState>) {
     state.system_log.clear();
 }
 
+/// Push a System Messages entry from the frontend. Same plumbing as
+/// the host-side `sys_info!` / `sys_warn!` / `sys_error!` macros: the
+/// host's log bus assigns the `seq`, emits a `system-log-appended`
+/// event, and the frontend mirror picks it up via its existing
+/// listener — no separate channel for GUI-emitted entries.
+///
+/// Phase 12 surfaces this for the filter-defined plot area's
+/// bus-rename invalidation warning (`source = "plot"`). Future
+/// frontend-side warnings reuse the same command; keep `source`
+/// short and stable (it's filterable in the panel).
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn gui_emit_system_log(
+    app: AppHandle,
+    level: String,
+    source: String,
+    message: String,
+) -> Result<(), String> {
+    let lvl = match level.as_str() {
+        "info" => system_log::LogLevel::Info,
+        "warn" => system_log::LogLevel::Warn,
+        "error" => system_log::LogLevel::Error,
+        other => return Err(format!("unknown level: {other}")),
+    };
+    emit_system_log(&app, source.as_str(), lvl, message);
+    Ok(())
+}
+
 /// Phase 9: snapshot of the session-scoped notes, chronological.
 /// Plot panels call this on mount to seed their event list and
 /// reconcile against `notes-changed` events.
@@ -1161,6 +1237,102 @@ fn list_signals(
             && a.signal_name == b.signal_name
     });
     out
+}
+
+/// Snapshot every loaded DBC's content for the Phase 12 DBC
+/// discovery panel: one [`DbcContentRecord`] per loaded file, each
+/// carrying the file path plus the tree the panel renders (messages
+/// → signals + comments + attributes + value tables).
+///
+/// Unlike [`list_signals`], this is **not** expanded per bus —
+/// scoping is a panel-side concern (the panel may show the same DBC
+/// once, even when it's scoped to multiple buses) and re-expanding
+/// here would multiply the payload. The DBC file path is the
+/// frontend's grouping key.
+///
+/// Order matches the host's loaded-DBC list (priority order); the
+/// `messages` list inside each record is sorted by
+/// `(extended, message_id)`.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn list_dbc_content(state: State<'_, AppState>) -> Vec<DbcContentRecord> {
+    let dbs = state.databases.lock().expect("databases mutex poisoned");
+    dbs.iter()
+        .map(|loaded| DbcContentRecord {
+            dbc_path: loaded.path.clone(),
+            messages: loaded
+                .db
+                .dbc_content()
+                .into_iter()
+                .map(message_record)
+                .collect(),
+        })
+        .collect()
+}
+
+fn message_record(m: cannet_dbc::DbcMessageContent) -> DbcMessageContentRecord {
+    DbcMessageContentRecord {
+        message_id: m.message_id,
+        extended: m.extended,
+        name: m.name,
+        comment: m.comment,
+        expected_len: m.expected_len,
+        is_fd: m.is_fd,
+        brs: m.brs,
+        uses_extended_mux: m.uses_extended_mux,
+        attributes: m.attributes.into_iter().map(attribute_record).collect(),
+        signals: m.signals.into_iter().map(signal_record).collect(),
+    }
+}
+
+fn signal_record(s: cannet_dbc::DbcSignalContent) -> DbcSignalContentRecord {
+    DbcSignalContentRecord {
+        name: s.name,
+        unit: s.unit,
+        comment: s.comment,
+        start_bit: s.start_bit,
+        length: s.length,
+        byte_order: match s.byte_order {
+            cannet_dbc::ByteOrder::Little => "little",
+            cannet_dbc::ByteOrder::Big => "big",
+        },
+        signed: s.signed,
+        factor: s.factor,
+        offset: s.offset,
+        min: s.min,
+        max: s.max,
+        mux: match s.mux {
+            cannet_dbc::SignalMux::Plain => ipc::SignalMuxRecord::Plain,
+            cannet_dbc::SignalMux::Multiplexor => ipc::SignalMuxRecord::Multiplexor,
+            cannet_dbc::SignalMux::Multiplexed { selector } => {
+                ipc::SignalMuxRecord::Multiplexed { selector }
+            }
+            cannet_dbc::SignalMux::MultiplexorAndMultiplexed { selector } => {
+                ipc::SignalMuxRecord::MultiplexorAndMultiplexed { selector }
+            }
+        },
+        float_kind: match s.float_kind {
+            cannet_dbc::FloatKind::Integer => "integer",
+            cannet_dbc::FloatKind::Float32 => "float32",
+            cannet_dbc::FloatKind::Float64 => "float64",
+        },
+        attributes: s.attributes.into_iter().map(attribute_record).collect(),
+        value_table: s
+            .value_table
+            .into_iter()
+            .map(|e| ValueTableEntryRecord {
+                raw: e.raw,
+                label: e.label,
+            })
+            .collect(),
+    }
+}
+
+fn attribute_record(a: cannet_dbc::DbcAttribute) -> DbcAttributeRecord {
+    DbcAttributeRecord {
+        name: a.name,
+        value: a.value,
+    }
 }
 
 /// Sample a batch of DBC signals over a slice `[from_index, window_end)`
@@ -2075,6 +2247,7 @@ mod tests {
             signal_caches: SignalCacheStore::new(),
             system_log: SystemLog::new(),
             notes: NotesStore::new(),
+            dbc_watcher: Mutex::new(None),
         }
     }
 

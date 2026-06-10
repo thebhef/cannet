@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 
-import type { SignalDescriptorRecord, ValueTableEntryRecord } from "./types";
+import type { Bus, SignalDescriptorRecord, ValueTableEntryRecord } from "./types";
 import { useTraceData } from "./traceData";
 import { useProjectContext } from "./projectContext";
 import { useElementRegistry } from "./projectElements";
@@ -153,7 +154,7 @@ interface SignalRef {
 
 type YMode = "auto" | { min: number; max: number };
 
-interface PlotAreaConfig {
+export interface PlotAreaConfig {
   id: string;
   signals: SignalRef[];
   yMode: YMode;
@@ -162,6 +163,18 @@ interface PlotAreaConfig {
    * what `primarySignalForArea` resolves it to. Click a signal row in
    * the side panel to promote that signal to primary. */
   primarySignalKey?: string | null;
+  /** Phase 12 filter-defined plot area (ADR 0020): when present, this
+   * area is in **filter mode** — its `signals` list is *computed* from
+   * every catalog signal whose `${busName}.${messageName}.${signalName}`
+   * matches the regex (case-sensitive JS `RegExp`). The persisted
+   * `signals` list is left untouched while in filter mode so toggling
+   * back to manual mode promotes the computed set without losing the
+   * user's last manual selection.
+   *
+   * Mode-exclusive — see ADR 0020. The UI disables "add signal" while
+   * a filter is set, and the regex editor takes the place of the
+   * manual signals list. */
+  signalFilter?: string;
 }
 
 interface NoteEvent {
@@ -251,16 +264,33 @@ function withColor(
 
 /** Drag-and-drop MIME for a `SignalRef` (within or across plot panels —
  * the payload is the full ref so the receiving panel can add it even if
- * it's not one of its own signals). */
-const SIGNAL_DND_MIME = "application/x-cannet-plot-signal";
-function parseDroppedSignal(s: string): SignalRef | null {
-  if (!s) return null;
-  try {
-    const o = JSON.parse(s);
-    return isSignalRefCore(o) ? withColor(o, 0) : null;
-  } catch {
-    return null;
-  }
+ * it's not one of its own signals). Phase 12 hoisted the mime + parser
+ * into [`dragSignals.ts`](./dragSignals.ts) so the DBC panel and the
+ * trace / by-id signal rows can produce the same payload shape. */
+import {
+  SIGNAL_DND_MIME,
+  parseSignalDragData,
+  setSignalDragData,
+} from "./dragSignals";
+
+/** Parse a drop event's mime data into colored `SignalRef`s + the
+ * source panel id (when the payload set one). The plot panel uses
+ * `sourcePanelId` to discriminate:
+ *
+ * - `sourcePanelId === this panel's elementId` → drag started inside
+ *   this panel → **move** semantics (reorder / shift between areas).
+ * - Otherwise (DBC panel, trace cell, by-id cell, a different plot
+ *   panel) → **add** semantics: drop a fresh copy without disturbing
+ *   the source. */
+function parseDroppedSignals(s: string): {
+  refs: SignalRef[];
+  sourcePanelId: string | null;
+} {
+  const parsed = parseSignalDragData(s);
+  return {
+    refs: parsed.signals.map((r, i) => withColor(r, i)),
+    sourcePanelId: parsed.sourcePanelId,
+  };
 }
 
 function yModeFromRaw(raw: unknown): YMode {
@@ -286,6 +316,7 @@ function areasFromParams(raw: unknown): PlotAreaConfig[] {
         signals,
         yMode: yModeFromRaw(o.yMode),
         primarySignalKey: typeof o.primarySignalKey === "string" ? o.primarySignalKey : null,
+        signalFilter: typeof o.signalFilter === "string" ? o.signalFilter : undefined,
       });
     }
     if (out.length > 0) return out;
@@ -368,6 +399,10 @@ function elementIdFromParams(raw: unknown): string {
   const o = raw as { elementId?: unknown } | undefined;
   return typeof o?.elementId === "string" ? o.elementId : crypto.randomUUID();
 }
+
+// Phase 12 filter helpers live in `./plotFilter` so the pure-logic
+// tests can import them without dragging uplot into a jsdom run.
+import { applyAreaFilters } from "./plotFilter";
 
 export function PlotPanel(props: IDockviewPanelProps) {
   const data = useTraceData();
@@ -673,6 +708,18 @@ export function PlotPanel(props: IDockviewPanelProps) {
   }, [buses]);
   useEffect(refreshCatalog, [refreshCatalog, dbcPaths, buses]);
 
+  // Phase 12 follow-up: re-fetch the signal catalog when the host's
+  // filesystem watcher reports a DBC change. Filter-mode plot areas
+  // re-evaluate automatically off the new `catalog`.
+  useEffect(() => {
+    const unlisten = listen<string>("dbc-changed", () => {
+      refreshCatalog();
+    });
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
+  }, [refreshCatalog]);
+
   // --- area ops ---
   const addArea = useCallback(() => {
     setAreas((prev) => {
@@ -703,10 +750,53 @@ export function PlotPanel(props: IDockviewPanelProps) {
     setAreas((prev) => prev.map((a) => (a.id === id ? { ...a, primarySignalKey: key } : a)));
   }, []);
 
+  /// Set or clear an area's regex filter. `undefined` reverts the
+  /// area to manual mode (per ADR 0020, the most recently computed
+  /// signals list becomes the new manual list — the persisted
+  /// `area.signals` is left untouched while in filter mode so the
+  /// user's earlier manual selection survives a filter-on toggle as
+  /// long as they didn't explicitly promote-and-clear). Setting a
+  /// string enters filter mode; the renderer computes the signals
+  /// from the catalog at every change to `catalog`, `buses`, or the
+  /// regex itself.
+  const setAreaSignalFilter = useCallback(
+    (id: string, signalFilter: string | undefined) => {
+      setAreas((prev) =>
+        prev.map((a) => (a.id === id ? { ...a, signalFilter } : a)),
+      );
+    },
+    [],
+  );
+
+  /// Promote a filter-mode area's currently computed signals into
+  /// the persisted manual list, then clear `signalFilter` so the
+  /// area is in manual mode. Called by the "switch to manual" path:
+  /// the user's mental "this is the set I want" survives the mode
+  /// switch instead of vanishing.
+  const promoteFilterToManual = useCallback(
+    (id: string, computed: SignalRef[]) => {
+      setAreas((prev) =>
+        prev.map((a) =>
+          a.id === id
+            ? { ...a, signals: computed, signalFilter: undefined }
+            : a,
+        ),
+      );
+    },
+    [],
+  );
+
   const addSignalToFocused = useCallback(
     (desc: SignalDescriptorRecord) => {
       setAreas((prev) => {
         const targetId = prev.some((a) => a.id === focusedAreaId) ? focusedAreaId : prev[0]?.id;
+        // Filter-mode areas (ADR 0020) manage their signals via the
+        // regex — manual add is a no-op so the regex stays the
+        // source of truth. The toolbar dropdown is already disabled
+        // for this case; the guard is here for any other code path
+        // that might call this.
+        const target = prev.find((a) => a.id === targetId);
+        if (target?.signalFilter != null) return prev;
         const total = prev.reduce((n, a) => n + a.signals.length, 0);
         const ref: SignalRef = {
           busId: desc.bus_id,
@@ -726,32 +816,81 @@ export function PlotPanel(props: IDockviewPanelProps) {
   );
   const removeSignal = useCallback((areaId: string, key: string) => {
     setAreas((prev) =>
-      prev.map((a) => (a.id === areaId ? { ...a, signals: a.signals.filter((s) => signalRefKey(s) !== key) } : a)),
+      prev.map((a) => {
+        if (a.id !== areaId) return a;
+        // Filter-mode area: signals are computed; ignore manual
+        // remove gestures.
+        if (a.signalFilter != null) return a;
+        return { ...a, signals: a.signals.filter((s) => signalRefKey(s) !== key) };
+      }),
     );
   }, []);
-  // A signal was dropped into `toAreaId`. If it already lives in this
-  // panel it's moved (and removed from its old area — keeping its
-  // colour); if not (drag from another panel) a copy is added. Inserted
-  // before `beforeKey`'s row, or appended when `beforeKey` is null.
-  const placeSignal = useCallback((ref: SignalRef, toAreaId: string, beforeKey: string | null) => {
-    const key = signalRefKey(ref);
-    if (beforeKey === key) return; // dropped a row on itself — no-op
-    setAreas((prev) => {
-      // What to insert: the existing ref (preserves its colour) if we
-      // have it, else the dropped one.
-      const existing = prev.flatMap((a) => a.signals).find((s) => signalRefKey(s) === key);
-      const moved = existing ?? ref;
-      const stripped = prev.map((a) => ({ ...a, signals: a.signals.filter((s) => signalRefKey(s) !== key) }));
-      return stripped.map((a) => {
-        if (a.id !== toAreaId) return a;
-        if (beforeKey == null || beforeKey === key) return { ...a, signals: [...a.signals, moved] };
-        const idx = a.signals.findIndex((s) => signalRefKey(s) === beforeKey);
-        if (idx < 0) return { ...a, signals: [...a.signals, moved] };
-        return { ...a, signals: [...a.signals.slice(0, idx), moved, ...a.signals.slice(idx)] };
+  // A signal was dropped into `toAreaId`. Drop semantics depend on
+  // where the drag started (carried as `isInternalMove`):
+  //
+  // - **Internal move** (drag started inside this panel): strip the
+  //   ref from whichever area it was in and re-insert it at the new
+  //   position (preserving colour). Re-orders within a single area,
+  //   or moves between areas of this panel.
+  // - **External add** (drag from DBC panel, trace cell, by-id
+  //   cell, or another plot panel): insert into the target area
+  //   without touching other areas — the same signal can live in
+  //   multiple areas and the source is left alone. If the target
+  //   area already has the same signal, drop is a no-op (no
+  //   duplicates within one area).
+  //
+  // Filter-mode target areas reject the drop (manual signal
+  // management is disabled in filter mode — ADR 0020).
+  const placeSignal = useCallback(
+    (ref: SignalRef, toAreaId: string, beforeKey: string | null, isInternalMove: boolean) => {
+      const key = signalRefKey(ref);
+      if (beforeKey === key) return; // dropped a row on itself — no-op
+      setAreas((prev) => {
+        const target = prev.find((a) => a.id === toAreaId);
+        if (target == null || target.signalFilter != null) return prev;
+        if (isInternalMove) {
+          // Move: the ref already lives in some area of this panel.
+          // Strip it from its origin area (could be the target — that's
+          // a reorder), and insert at the new position. Preserves the
+          // original colour by reusing the in-state ref.
+          const existing = prev.flatMap((a) => a.signals).find((s) => signalRefKey(s) === key);
+          const moved = existing ?? ref;
+          const stripped = prev.map((a) =>
+            a.signalFilter == null
+              ? { ...a, signals: a.signals.filter((s) => signalRefKey(s) !== key) }
+              : a,
+          );
+          return stripped.map((a) => {
+            if (a.id !== toAreaId) return a;
+            if (beforeKey == null) return { ...a, signals: [...a.signals, moved] };
+            const idx = a.signals.findIndex((s) => signalRefKey(s) === beforeKey);
+            if (idx < 0) return { ...a, signals: [...a.signals, moved] };
+            return { ...a, signals: [...a.signals.slice(0, idx), moved, ...a.signals.slice(idx)] };
+          });
+        }
+        // External add: only the target area is touched. Within an
+        // area we do prevent a second copy of the same signal (no
+        // semantic value to plotting the identical series twice on
+        // one axis); duplicates across different areas are fine.
+        if (target.signals.some((s) => signalRefKey(s) === key)) return prev;
+        return prev.map((a) => {
+          if (a.id !== toAreaId) return a;
+          if (beforeKey == null) return { ...a, signals: [...a.signals, ref] };
+          const idx = a.signals.findIndex((s) => signalRefKey(s) === beforeKey);
+          if (idx < 0) return { ...a, signals: [...a.signals, ref] };
+          return { ...a, signals: [...a.signals.slice(0, idx), ref, ...a.signals.slice(idx)] };
+        });
       });
-    });
-  }, []);
+    },
+    [],
+  );
   const toggleSignalHidden = useCallback((areaId: string, key: string) => {
+    // Hidden flag toggles even in filter mode — it's display-only
+    // and doesn't mutate the set the regex defines. The hidden flag
+    // lives on the computed `SignalRef[]`, which is rebuilt on
+    // every catalog change, so toggles only stick for the current
+    // panel session. That's acceptable for a temporary "hide this
+    // line while I look at the others" gesture.
     setAreas((prev) =>
       prev.map((a) =>
         a.id === areaId
@@ -845,6 +984,49 @@ export function PlotPanel(props: IDockviewPanelProps) {
     for (const b of buses) m.set(b.id, b.name);
     return m;
   }, [buses]);
+
+  /// Areas with `signalFilter` resolved into a computed `signals`
+  /// list (ADR 0020). For manual areas this is identical to the
+  /// stored `area`. For filter areas the `signals` field is replaced
+  /// with the regex's match set against the catalog. Storage state
+  /// (`areas`) is unchanged so toggling back to manual restores the
+  /// last manually-managed list.
+  const effectiveAreas = useMemo(
+    () => applyAreaFilters(areas, catalog, busNameLookup),
+    [areas, catalog, busNameLookup],
+  );
+
+  /// Bus-rename invalidation (ADR 0020). Track the previous match
+  /// count for each filter-mode area; when a buses-list change drops
+  /// any area's count from non-zero to zero, emit a System Messages
+  /// warning naming the panel + the broken regex. The warning lands
+  /// via `gui_emit_system_log` — the host's existing log bus picks
+  /// it up and the System Messages panel renders it like any other
+  /// `sys_warn!`.
+  const lastMatchCountsRef = useRef<Map<string, number>>(new Map());
+  const lastBusesRef = useRef<readonly Bus[]>(buses);
+  useEffect(() => {
+    const prev = lastMatchCountsRef.current;
+    const next = new Map<string, number>();
+    const busesChanged = lastBusesRef.current !== buses;
+    for (const a of effectiveAreas) {
+      if (a.signalFilter == null) continue;
+      const count = a.signals.length;
+      next.set(a.id, count);
+      const wasCount = prev.get(a.id);
+      if (busesChanged && wasCount != null && wasCount > 0 && count === 0) {
+        void invoke("gui_emit_system_log", {
+          level: "warn",
+          source: "plot",
+          message: `Plot panel filter "${a.signalFilter}" no longer matches any signal — a bus rename or removal invalidated it.`,
+        }).catch(() => {
+          /* best effort — the panel still renders correctly */
+        });
+      }
+    }
+    lastMatchCountsRef.current = next;
+    lastBusesRef.current = buses;
+  }, [effectiveAreas, buses]);
   const catalogOptions = useMemo(
     () =>
       catalog.map((s) => {
@@ -870,11 +1052,11 @@ export function PlotPanel(props: IDockviewPanelProps) {
 
   const plottedSignals = useMemo(() => {
     const out: Array<{ key: string; ref: SignalRef; color: string; areaId: string }> = [];
-    for (const a of areas) {
+    for (const a of effectiveAreas) {
       for (const s of a.signals) out.push({ key: signalRefKey(s), ref: s, color: s.color, areaId: a.id });
     }
     return out;
-  }, [areas]);
+  }, [effectiveAreas]);
   const seriesFor = useCallback(
     (areaId: string, key: string): Series | undefined => seriesByArea.get(areaId)?.get(key),
     [seriesByArea],
@@ -1043,7 +1225,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
       )}
 
       <div className="plot-panel-areas">
-        {areas.map((area, idx) => {
+        {effectiveAreas.map((area, idx) => {
           const yc = cursorYByArea[area.id];
           return (
             <PlotArea
@@ -1051,9 +1233,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
               area={area}
               label={areaLabels.get(area.id) ?? "Area"}
               isFirst={idx === 0}
-              isLast={idx === areas.length - 1}
+              isLast={idx === effectiveAreas.length - 1}
               focused={area.id === focusedAreaId}
-              removable={areas.length > 1}
+              removable={effectiveAreas.length > 1}
               winStart={winStart}
               winEnd={winEnd}
               live={live}
@@ -1090,9 +1272,14 @@ export function PlotPanel(props: IDockviewPanelProps) {
               onFocus={() => setFocusedAreaId(area.id)}
               onRemoveArea={() => removeArea(area.id)}
               onRemoveSignal={(key) => removeSignal(area.id, key)}
-              onDropSignal={(ref, beforeKey) => placeSignal(ref, area.id, beforeKey)}
+              onDropSignal={(ref, beforeKey, isInternalMove) =>
+                placeSignal(ref, area.id, beforeKey, isInternalMove)
+              }
               onToggleHidden={(key) => toggleSignalHidden(area.id, key)}
+              onSetSignalFilter={(f) => setAreaSignalFilter(area.id, f)}
+              onPromoteFilterToManual={() => promoteFilterToManual(area.id, area.signals)}
               busNameLookup={busNameLookup}
+              panelElementId={elementId}
             />
           );
         })}
@@ -1326,14 +1513,35 @@ interface PlotAreaProps {
   onRemoveArea: () => void;
   onRemoveSignal: (key: string) => void;
   /** A signal was dropped here. `beforeKey` null ⇒ append to this area;
-   * otherwise insert before that row (re-order / move). The ref may be
-   * one this panel doesn't have yet (drag from another panel). */
-  onDropSignal: (ref: SignalRef, beforeKey: string | null) => void;
+   * otherwise insert before that row (re-order / move). `isInternalMove`
+   * is true when the drag started inside this same plot panel
+   * (sourcePanelId in the drag payload matched the panel's elementId);
+   * in that case the parent runs move semantics (strip from origin,
+   * insert at target). Otherwise drop is an add (DBC panel, trace
+   * cell, by-id cell, another plot panel). */
+  onDropSignal: (ref: SignalRef, beforeKey: string | null, isInternalMove: boolean) => void;
   onToggleHidden: (key: string) => void;
+  /** Set or clear this area's `signalFilter` (ADR 0020). Pass
+   * `undefined` to revert the area to manual mode without promoting
+   * the computed signals; the parent's `onPromoteFilterToManual`
+   * does the promote-and-clear variant. */
+  onSetSignalFilter: (filter: string | undefined) => void;
+  /** Move the currently computed filter-mode signals into the
+   * persisted manual list, then clear `signalFilter`. The "switch to
+   * manual" affordance in the side panel calls this so the user
+   * doesn't lose their current set on the mode switch. */
+  onPromoteFilterToManual: () => void;
   /** Bus-id → bus-name resolution for the per-signal side panel.
    * Each signal row displays its bus name so a `(message, signal)`
    * shown on two different buses is unambiguous. */
   busNameLookup: ReadonlyMap<string, string>;
+  /** The owning plot panel's element id. Stamped on this panel's
+   * internal signal-row drags via `setSignalDragData(..., elementId)`
+   * and compared against the dropped payload's `sourcePanelId` so
+   * drops originating inside this same panel are treated as moves;
+   * everything else (DBC panel, trace cell, another plot panel) is
+   * an add. */
+  panelElementId: string;
 }
 
 /** A plot area's sample cache: the data currently shown on the plot,
@@ -1411,7 +1619,10 @@ function PlotArea(p: PlotAreaProps) {
     onRemoveSignal,
     onDropSignal,
     onToggleHidden,
+    onSetSignalFilter,
+    onPromoteFilterToManual,
     busNameLookup,
+    panelElementId,
   } = p;
 
   const canvasRef = useRef<HTMLDivElement | null>(null);
@@ -1457,6 +1668,11 @@ function PlotArea(p: PlotAreaProps) {
   const [hoverX, setHoverX] = useState<number | null>(null);
   const [valueTick, setValueTick] = useState(0); // bump → re-render side panel
   const [yEditOpen, setYEditOpen] = useState(false);
+  /** Phase 12 filter-editor visibility (ADR 0020). Closed by default;
+   * the "filter…" button in the side-panel head toggles it. The
+   * editor itself is rendered below the head row when open, so it
+   * stacks above the signals list. */
+  const [filterEditOpen, setFilterEditOpen] = useState(false);
   // Bumped from the first ResizeObserver tick when the canvas turns
   // out to be a different size than what uPlot was constructed at
   // (typical on initial mount — dockview hasn't laid the panel out
@@ -2588,15 +2804,25 @@ function PlotArea(p: PlotAreaProps) {
       onDragOver={(e) => {
         if (e.dataTransfer.types.includes(SIGNAL_DND_MIME)) {
           e.preventDefault();
-          e.dataTransfer.dropEffect = "move";
+          // `copy` shows the "+" cursor — matches the transmit
+          // panel's drop affordance and is the more useful signal
+          // ("you can drop here"). The actual move-vs-add decision
+          // happens at drop time via `sourcePanelId`, so the cursor
+          // doesn't have to match the post-drop semantics.
+          e.dataTransfer.dropEffect = "copy";
         }
       }}
       onDrop={(e) => {
-        const ref = parseDroppedSignal(e.dataTransfer.getData(SIGNAL_DND_MIME));
-        if (ref) {
-          e.preventDefault();
-          onDropSignal(ref, null); // append to this area
-        }
+        const { refs, sourcePanelId } = parseDroppedSignals(
+          e.dataTransfer.getData(SIGNAL_DND_MIME),
+        );
+        if (refs.length === 0) return;
+        e.preventDefault();
+        const isInternalMove = sourcePanelId === panelElementId;
+        // Append each ref in order. For internal drags this is a
+        // move (strip from origin + insert); for external drags
+        // it's an add.
+        for (const r of refs) onDropSignal(r, null, isInternalMove);
       }}
     >
       <div className="plot-area-canvas" ref={canvasRef} />
@@ -2656,6 +2882,20 @@ function PlotArea(p: PlotAreaProps) {
           >
             fit y
           </button>
+          <button
+            className="plot-area-filter"
+            title={
+              area.signalFilter == null
+                ? "filter this area's signals by regex"
+                : "edit the regex driving this area"
+            }
+            onClick={(e) => {
+              e.stopPropagation();
+              setFilterEditOpen((v) => !v);
+            }}
+          >
+            {area.signalFilter == null ? "filter…" : "filter ✎"}
+          </button>
           {removable && (
             <button
               className="plot-area-remove"
@@ -2669,6 +2909,47 @@ function PlotArea(p: PlotAreaProps) {
             </button>
           )}
         </div>
+        {area.signalFilter != null && (
+          <div className="plot-area-filter-status" title="filter-defined plot area (ADR 0020)">
+            <span className="plot-area-filter-regex">
+              /{area.signalFilter}/
+            </span>
+            <span className="plot-area-filter-count">
+              {signals.length} signal{signals.length === 1 ? "" : "s"}
+            </span>
+            <button
+              className="plot-area-filter-promote"
+              title="convert to manual: keep these signals as a fixed list and clear the regex"
+              onClick={(e) => {
+                e.stopPropagation();
+                onPromoteFilterToManual();
+              }}
+            >
+              ⇨ manual
+            </button>
+            <button
+              className="plot-area-filter-clear"
+              title="discard the regex and revert to manual mode (signals you had before the filter come back)"
+              onClick={(e) => {
+                e.stopPropagation();
+                onSetSignalFilter(undefined);
+              }}
+            >
+              ×
+            </button>
+          </div>
+        )}
+        {filterEditOpen && (
+          <SignalFilterEditor
+            initial={area.signalFilter ?? ""}
+            hasManualSignals={!area.signalFilter && area.signals.length > 0}
+            onApply={(re) => {
+              onSetSignalFilter(re || undefined);
+              setFilterEditOpen(false);
+            }}
+            onCancel={() => setFilterEditOpen(false)}
+          />
+        )}
         {yEditOpen && (
           <YRangeEditor
             yMode={yMode}
@@ -2707,23 +2988,49 @@ function PlotArea(p: PlotAreaProps) {
                 }}
                 draggable
                 onDragStart={(e) => {
-                  e.dataTransfer.setData(SIGNAL_DND_MIME, JSON.stringify(s));
-                  e.dataTransfer.effectAllowed = "move";
+                  // Always emit the array form — the receiving panel
+                  // parses both shapes, but the new shape is one less
+                  // case to maintain downstream. Strip `color` /
+                  // `hidden` so the payload matches the
+                  // `DraggableSignalRef` contract. Stamp the source
+                  // panel id so a same-panel drop is treated as a
+                  // move (across-panel drops fall through to add).
+                  setSignalDragData(
+                    e,
+                    [{
+                      busId: s.busId,
+                      messageId: s.messageId,
+                      extended: s.extended,
+                      signalName: s.signalName,
+                      messageName: s.messageName,
+                      unit: s.unit,
+                    }],
+                    panelElementId,
+                  );
                 }}
                 onDragOver={(e) => {
                   if (e.dataTransfer.types.includes(SIGNAL_DND_MIME)) {
                     e.preventDefault();
                     e.stopPropagation();
-                    e.dataTransfer.dropEffect = "move";
+                    // Same rationale as the area-level dragOver:
+                    // "copy" gives the most legible "yes, drop here"
+                    // cursor across browsers / editors. The real
+                    // move-vs-add decision happens at drop time.
+                    e.dataTransfer.dropEffect = "copy";
                   }
                 }}
                 onDrop={(e) => {
-                  const ref = parseDroppedSignal(e.dataTransfer.getData(SIGNAL_DND_MIME));
-                  if (ref) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    onDropSignal(ref, key); // insert before this row
-                  }
+                  const { refs, sourcePanelId } = parseDroppedSignals(
+                    e.dataTransfer.getData(SIGNAL_DND_MIME),
+                  );
+                  if (refs.length === 0) return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const isInternalMove = sourcePanelId === panelElementId;
+                  // Forward iteration preserves drop-order — each
+                  // `placeSignal(ref, areaId, key)` inserts before
+                  // the same row, so the first ref ends up first.
+                  for (const r of refs) onDropSignal(r, key, isInternalMove);
                 }}
               >
                 <button
@@ -2798,6 +3105,75 @@ function PlotArea(p: PlotAreaProps) {
           })
         )}
       </div>
+    </div>
+  );
+}
+
+/// Inline regex editor for a plot area's `signalFilter` (Phase 12,
+/// ADR 0020). Sits below the area's side-panel head when open. Apply
+/// validates the regex by attempting to construct a `RegExp` and
+/// surfaces a "bad regex" hint on failure; the area's filter is
+/// only set when the regex compiles.
+function SignalFilterEditor({
+  initial,
+  hasManualSignals,
+  onApply,
+  onCancel,
+}: {
+  initial: string;
+  /// True when the area currently has manually-managed signals that
+  /// will be discarded by entering filter mode. Surfaces a small
+  /// hint so the user isn't surprised.
+  hasManualSignals: boolean;
+  /// Apply receives the new regex string. An empty string means
+  /// "clear the filter / stay in manual mode"; otherwise filter
+  /// mode is entered.
+  onApply: (regex: string) => void;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState(initial);
+  const [error, setError] = useState<string | null>(null);
+  const submit = useCallback(() => {
+    if (value === "") {
+      onApply("");
+      return;
+    }
+    try {
+      new RegExp(value);
+      onApply(value);
+    } catch (e) {
+      setError(String(e instanceof Error ? e.message : e));
+    }
+  }, [value, onApply]);
+  return (
+    <div className="plot-filter-editor" onMouseDown={(e) => e.stopPropagation()}>
+      <input
+        type="text"
+        autoFocus
+        value={value}
+        placeholder="^busName\\.MessageName\\..*Speed$"
+        onChange={(e) => {
+          setValue(e.target.value);
+          setError(null);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") submit();
+          else if (e.key === "Escape") onCancel();
+        }}
+        aria-label="signal filter regex"
+      />
+      <button onClick={submit}>apply</button>
+      <button onClick={onCancel}>×</button>
+      {hasManualSignals && (
+        <div className="plot-filter-editor-hint">
+          Applying a filter discards this area's manual signal list.
+        </div>
+      )}
+      {error && (
+        <div className="plot-filter-editor-error" role="alert">
+          {error}
+        </div>
+      )}
     </div>
   );
 }

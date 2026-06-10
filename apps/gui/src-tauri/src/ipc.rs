@@ -260,6 +260,96 @@ pub struct ValueTableEntryRecord {
     pub label: String,
 }
 
+/// The full content of one loaded DBC, shaped for the Phase 12 DBC
+/// discovery panel (tree-with-fuzzy-search). One entry per loaded DBC
+/// file; each carries the path so the panel can group by file and a
+/// flat `messages` list whose order is the host's
+/// `(extended, message_id)` sort.
+///
+/// Mirrored on the frontend by `types.ts::DbcContentRecord`. Sent
+/// camel-cased so the JS side reads it as
+/// `{ dbcPath, messages: [...] }` without a wire-name shim.
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct DbcContentRecord {
+    /// Filesystem path of the DBC the host loaded this content from.
+    /// Stable across reloads of the same file — the panel can use it
+    /// as the React key for the file's root tree node.
+    pub dbc_path: String,
+    pub messages: Vec<DbcMessageContentRecord>,
+}
+
+/// One message row in a [`DbcContentRecord`] — fuzzy-search-shaped:
+/// every text field is owned + inlined so the JS-side matcher has
+/// nothing left to fetch. The bit-layout / FD / mux / encoder
+/// metadata is also present so the discovery panel can show the
+/// full per-message detail without a second `describe_message`
+/// round-trip.
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct DbcMessageContentRecord {
+    pub message_id: u32,
+    pub extended: bool,
+    pub name: String,
+    /// `CM_ BO_` comment. Empty when absent — empty (not absent) so the
+    /// search has nothing optional to special-case.
+    pub comment: String,
+    /// Declared `BO_` payload length in bytes.
+    pub expected_len: usize,
+    /// `true` for CAN-FD messages (`VFrameFormat` 14/15, or
+    /// `expectedLen > 8` fallback).
+    pub is_fd: bool,
+    /// CAN-FD BRS (`GenMsgCANFDBRS`). False on classic frames.
+    pub brs: bool,
+    /// `true` if any signal uses nested / extended multiplexing.
+    pub uses_extended_mux: bool,
+    /// `BA_ "<name>" BO_ <id> <value>` attribute values, sorted by name.
+    pub attributes: Vec<DbcAttributeRecord>,
+    pub signals: Vec<DbcSignalContentRecord>,
+}
+
+/// One signal row in a [`DbcMessageContentRecord`]. Stays in `SG_`
+/// declared order — preserves the DBC author's bit-layout intent.
+/// The bit-layout / scale / range / mux / float-kind fields mirror
+/// the rich-encoder shape so the discovery panel can show the same
+/// detail the transmit panel uses without a separate round-trip.
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct DbcSignalContentRecord {
+    pub name: String,
+    pub unit: String,
+    pub comment: String,
+    /// First bit of the signal in the payload.
+    pub start_bit: u32,
+    /// Width in bits, 1..=64.
+    pub length: u32,
+    /// `little` (Intel / `@1`) or `big` (Motorola / `@0`).
+    pub byte_order: &'static str,
+    /// `+` / `-` flag on the `SG_` line — `true` for signed.
+    pub signed: bool,
+    /// `factor` / `offset` describe `physical = raw * factor + offset`.
+    pub factor: f64,
+    pub offset: f64,
+    /// DBC-declared physical range (`SG_ ... [min|max]`). When
+    /// `min == max` the DBC didn't set a useful range.
+    pub min: f64,
+    pub max: f64,
+    /// Multiplexor / multiplexed-arm marker.
+    pub mux: SignalMuxRecord,
+    /// `integer` / `float32` / `float64` (from `SIG_VALTYPE_`).
+    pub float_kind: &'static str,
+    pub attributes: Vec<DbcAttributeRecord>,
+    pub value_table: Vec<ValueTableEntryRecord>,
+}
+
+/// One `BA_ "<name>" … <value>` attribute pair as it travels to the
+/// frontend — both display string and fuzzy-search target.
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct DbcAttributeRecord {
+    pub name: String,
+    pub value: String,
+}
+
 /// One signal edit the transmit panel wants pushed through the encoder:
 /// the DBC signal name and the physical value the user typed. The host
 /// runs every entry through [`cannet_dbc::Database::encode_frame`] in

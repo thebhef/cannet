@@ -1,7 +1,8 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
-import type { TraceFrameRecord } from "./types";
+import type { SignalRecord, TraceFrameRecord } from "./types";
 import { formatSignalValueWithLabel } from "./format";
+import { setSignalDragData } from "./dragSignals";
 import {
   EXPANDED_ROW_HEIGHT,
   ROW_HEIGHT,
@@ -308,15 +309,63 @@ const Row = memo(function Row({
       {isExpanded && frame?.decoded && (
         <div className="signals">
           {frame.decoded.signals.map((sig) => (
-            <div className="signal" key={sig.name}>
-              <span className="signal-name">{sig.name}</span>
-              <span className="signal-value">
-                {formatSignalValueWithLabel(sig.value, sig.unit, sig.label)}
-              </span>
-            </div>
+            <DecodedSignalCell
+              key={sig.name}
+              frame={frame}
+              messageName={frame.decoded!.name}
+              sig={sig}
+            />
           ))}
         </div>
       )}
     </div>
   );
 });
+
+/// One decoded signal cell inside an expanded trace row. Phase 12
+/// makes it a drag source — dragging onto a plot area adds the
+/// signal as a series. Click events still fall through to the row
+/// (`stopPropagation` would prevent the expand-collapse toggle from
+/// retracting); dragging is initiated by the browser only when the
+/// mouse actually leaves the source, so plain clicks aren't
+/// hijacked.
+function DecodedSignalCell({
+  frame,
+  messageName,
+  sig,
+}: {
+  frame: TraceFrameRecord;
+  messageName: string;
+  sig: SignalRecord;
+}) {
+  return (
+    <div
+      className="signal"
+      draggable
+      onDragStart={(e) => {
+        // Stop the parent row's drag from also firing — there isn't
+        // a row-level drag today, but the convention pre-empts a
+        // surprising one. The drag payload is a single ref; the
+        // bus comes from the frame's own routing decision (the
+        // host's `bus_id`) so a frame on bus A drops as a signal
+        // bound to bus A.
+        e.stopPropagation();
+        setSignalDragData(e, [
+          {
+            busId: frame.bus_id ?? null,
+            messageId: frame.id,
+            extended: frame.extended,
+            signalName: sig.name,
+            messageName,
+            unit: sig.unit,
+          },
+        ]);
+      }}
+    >
+      <span className="signal-name">{sig.name}</span>
+      <span className="signal-value">
+        {formatSignalValueWithLabel(sig.value, sig.unit, sig.label)}
+      </span>
+    </div>
+  );
+}

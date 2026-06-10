@@ -1202,6 +1202,95 @@ header {
   font-style: italic;
 }
 
+/* Phase 12 filter-defined plot area (ADR 0020). */
+.plot-area-filter {
+  background: none;
+  border: 1px solid #334155;
+  color: #cbd5e1;
+  cursor: pointer;
+  font-size: 0.7rem;
+  padding: 0 0.4rem;
+  border-radius: 3px;
+}
+.plot-area-filter:hover {
+  background: #334155;
+}
+.plot-area-filter-status {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  padding: 0.2rem 0.4rem;
+  font-size: 0.7rem;
+  background: rgba(99, 102, 241, 0.15);
+  border-bottom: 1px solid #1e293b;
+}
+.plot-area-filter-regex {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #e2e8f0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1 1 0;
+}
+.plot-area-filter-count {
+  color: #94a3b8;
+}
+.plot-area-filter-promote,
+.plot-area-filter-clear {
+  background: none;
+  border: 1px solid #334155;
+  color: #cbd5e1;
+  cursor: pointer;
+  font-size: 0.7rem;
+  padding: 0 0.3rem;
+  border-radius: 3px;
+}
+.plot-area-filter-promote:hover,
+.plot-area-filter-clear:hover {
+  background: #334155;
+}
+.plot-filter-editor {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  padding: 0.3rem 0.4rem;
+  border-bottom: 1px solid #1e293b;
+  background: #111827;
+}
+.plot-filter-editor input {
+  flex: 1 1 0;
+  min-width: 8rem;
+  background: #1e293b;
+  color: #e2e8f0;
+  border: 1px solid #334155;
+  padding: 0.15rem 0.3rem;
+  border-radius: 3px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+}
+.plot-filter-editor button {
+  background: #1e293b;
+  color: #e2e8f0;
+  border: 1px solid #334155;
+  padding: 0.15rem 0.5rem;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.75rem;
+}
+.plot-filter-editor button:hover {
+  background: #334155;
+}
+.plot-filter-editor-hint {
+  width: 100%;
+  color: #94a3b8;
+  font-size: 0.7rem;
+  font-style: italic;
+}
+.plot-filter-editor-error {
+  width: 100%;
+  color: #f87171;
+  font-size: 0.7rem;
+}
+
 /* Two-row layout per signal: signal name (large) + value on top, message
  * name (small) + delta/diagnostic on the second row. Grid columns: the
  * swatch (auto), the name / message column (flexes), the readout
@@ -2165,4 +2254,151 @@ header {
   vertical-align: middle;
   min-width: 1.1rem;
   text-align: center;
+}
+
+/* Phase 12: DBC discovery panel — tree-with-fuzzy-search over loaded DBCs. */
+.dbc-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-size: 0.85rem;
+}
+.dbc-panel-toolbar {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.3rem 0.5rem;
+  border-bottom: 1px solid #1e293b;
+  background: #111827;
+}
+.dbc-panel-search {
+  flex: 1 1 0;
+  background: #1e293b;
+  color: #e2e8f0;
+  border: 1px solid #334155;
+  padding: 0.2rem 0.5rem;
+  border-radius: 3px;
+  font-size: 0.85rem;
+}
+.dbc-panel-match-count {
+  color: #94a3b8;
+  font-size: 0.78rem;
+}
+.dbc-panel-tree {
+  flex: 1 1 0;
+  overflow-y: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+}
+.dbc-panel-empty {
+  padding: 1rem;
+  color: #64748b;
+  text-align: center;
+}
+.dbc-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.1rem 0.5rem;
+  white-space: nowrap;
+  overflow: hidden;
+  cursor: pointer;
+  user-select: none;
+}
+.dbc-row:hover {
+  background: rgba(51, 65, 85, 0.45);
+}
+.dbc-row-dim {
+  opacity: 0.35;
+}
+.dbc-row-selected {
+  background: rgba(99, 102, 241, 0.35);
+}
+.dbc-row-selected:hover {
+  background: rgba(99, 102, 241, 0.45);
+}
+.dbc-row-chevron {
+  display: inline-block;
+  width: 0.8rem;
+  color: #64748b;
+}
+.dbc-row-bus .dbc-row-label {
+  color: #fbbf24;
+  font-weight: 600;
+}
+.dbc-row-dbc .dbc-row-label {
+  color: #a5b4fc;
+  font-weight: 600;
+}
+.dbc-row-scope {
+  font-style: italic;
+}
+.dbc-row-message .dbc-row-label {
+  color: #cbd5e1;
+}
+.dbc-row-signal .dbc-row-label {
+  color: #e2e8f0;
+}
+.dbc-row-signal {
+  cursor: default;
+}
+.dbc-row-meta {
+  color: #64748b;
+}
+.dbc-row-comment {
+  color: #64748b;
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Phase 12 polish: panel-wide "details" toggle + per-row detail block. */
+.dbc-panel-details-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: #cbd5e1;
+  font-size: 0.78rem;
+  cursor: pointer;
+  user-select: none;
+}
+.dbc-row-details {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+  color: #94a3b8;
+  padding-right: 0.5rem;
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid rgba(30, 41, 59, 0.5);
+}
+.dbc-details-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.15rem 0.7rem;
+  margin: 0;
+}
+.dbc-details-grid dt {
+  color: #64748b;
+  text-align: right;
+}
+.dbc-details-grid dd {
+  margin: 0;
+  color: #cbd5e1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dbc-details-aside {
+  color: #64748b;
+}
+.dbc-details-attr,
+.dbc-details-value {
+  display: inline-block;
+  margin-right: 0.6rem;
+}
+.dbc-details-attr em,
+.dbc-details-value {
+  color: #e2e8f0;
+  font-style: normal;
 }
