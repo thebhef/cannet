@@ -207,6 +207,24 @@ export interface SampledPoints {
   v: number[];
 }
 
+/// Severity of a {@link SystemMessage} (Phase 7). The frontend's
+/// minimum-level filter compares two levels by `SYSTEM_LOG_LEVEL_RANK`
+/// — see `systemLog.ts`.
+export type SystemLogLevel = "info" | "warn" | "error";
+
+/// One entry on the host's structured log bus (Phase 7). Mirrors
+/// `src-tauri/src/system_log.rs::SystemMessage`. `seq` is monotonic
+/// across the session (it does not reset when the ring rolls or is
+/// cleared); the frontend uses it to deduplicate against in-flight
+/// `system-log-appended` events.
+export interface SystemMessage {
+  seq: number;
+  ts_ms: number;
+  source: string;
+  level: SystemLogLevel;
+  message: string;
+}
+
 /// Returned by `sample_signals`: one `SampledPoints` per requested
 /// signal (same order), plus the sampled slice's first/last frame
 /// timestamps (seconds) — `from_seconds` is the x-origin when

@@ -1095,6 +1095,66 @@ Exit criteria:
   records `tracing` / `tracing-subscriber` as adopted (the use is now
   direct, where today they may be transitive).
 
+Realised scope notes:
+
+- **Host-side log bus shipped** in
+  `apps/gui/src-tauri/src/system_log.rs` as a `SystemLog` holding a
+  bounded `VecDeque<SystemMessage>` (cap 4096) plus a per-`(source,
+  template)` rate limiter (5 entries per 1s window; the sixth emits a
+  single suppression note and further duplicates drop silently until
+  the window rolls). The `sys_info!` / `sys_warn!` / `sys_error!`
+  macros emit a `tracing::event!` *and* push into the ring via a
+  small `emit_system_log` helper that also broadcasts a
+  `system-log-appended` Tauri event. `tracing-subscriber` is
+  initialised once in `run()` via the `fmt` layer so stderr keeps
+  working alongside the in-process bus.
+- **IPC**: `fetch_system_log` returns a chronological snapshot; the
+  panel uses it on mount and reconciles incoming events by `seq`
+  (monotonic, not reset on clear) to dedupe a snapshot/event race.
+  `clear_system_log` empties the ring without resetting `seq`.
+- **System Messages panel shipped** as a dockview component
+  (`kind: "system-messages"`, registered in `dockLayout.ts`). The
+  panel is a virtualised list (22 px rows, overscan 6) over the
+  filtered view, with source + min-level dropdowns, copy-all,
+  double-click-to-copy, and clear. Filter state (source + minLevel,
+  default `warn`) rides in dockview `params`; the bus itself is
+  session-scoped — not in the project file.
+- **Initial sources converted**: project open / save, DBC add /
+  remove / clear (load/reload/remove paths, including the read +
+  parse error branches), BLF import (`open_log` + `scan_blf_channels`
+  error paths), connection lifecycle (`connect_remote_server`'s
+  list / subscribe / busy paths, `disconnect_remote_server`, the
+  pump's end-of-stream and source-error branches). The pre-existing
+  `log-finished` event still fires; the structured message is in
+  addition, not in place of, so the existing `LogState` status line
+  is unchanged.
+- **Unread-error indicator** lives on the toolbar's *System messages*
+  button (rather than the title bar) — the title bar holds OS
+  window-control glyphs we don't want to crowd. Clicking the button
+  opens (or focuses) the panel, and the panel's
+  `onDidActiveChange(active=true)` handler marks every current
+  warn+error as read. Pure logic — `unreadWarnOrError` in
+  `systemLog.ts` — is unit-tested alongside the merge / filter
+  helpers.
+- **Wire-level `Log` variant shipped** as `proto::Envelope.body.log`
+  (tag 5) carrying `{ timestamp_ns, level, source, message }` with a
+  three-value `LogLevel` enum. The new variant is exercised by
+  protobuf round-trip tests in `crates/cannet-wire/tests/round_trip.rs`.
+  `system_log::bridge_wire_log` translates a wire `LogMessage` into
+  the local bus, mapping `Unspecified` (and unknown future variants)
+  to `Info`; unit tests cover that and the `Warn` mapping. No live
+  consumer yet — Phase 8's sidecar receive loop is the first.
+- **Server / client exhaustiveness**. Both `cannet-server`'s session
+  and loopback envelope matches and `cannet-client`'s receive loop
+  picked up the new variant for exhaustiveness; all three drop wire-
+  `Log` envelopes today (no log destination on the server side; the
+  client will bridge in Phase 8 once the GUI host hosts the receive
+  loop).
+- **`tracing` + `tracing-subscriber` adopted** in
+  `plans/technology-inventory.md` (status flipped from `proposed` to
+  `adopted`); `tracing` was already a transitive dep, only
+  `tracing-subscriber` is newly direct.
+
 ## Phase 8 — Vendor Drivers (Vector, Kvaser, PEAK)
 
 Replace the BLF-only data path with real hardware sources by way of a
