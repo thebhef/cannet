@@ -893,6 +893,11 @@ fn add_dbc(
             return Err(msg);
         }
     };
+    // Non-fatal attribute problems (malformed CannetCounter /
+    // CannetCrc values) surface as warnings; the DBC still loads.
+    for w in db.parse_warnings() {
+        sys_warn!(&app, "dbc", "{path}: {w}");
+    }
     let reloaded = {
         let mut list = state.databases.lock().expect("databases mutex poisoned");
         if let Some(slot) = list.iter_mut().find(|d| d.path == path) {
@@ -918,6 +923,7 @@ fn add_dbc(
             w.watch_dbc(std::path::Path::new(&path));
         }
     }
+    refresh_calc_resolutions(&app);
     Ok(dbc_list(state.inner()))
 }
 
@@ -929,6 +935,7 @@ fn add_dbc(
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 fn set_dbc_buses(
+    app: AppHandle,
     state: State<'_, AppState>,
     path: String,
     buses: Vec<String>,
@@ -939,6 +946,7 @@ fn set_dbc_buses(
             slot.buses = buses;
         }
     }
+    refresh_calc_resolutions(&app);
     dbc_list(state.inner())
 }
 
@@ -963,6 +971,7 @@ fn remove_dbc(app: AppHandle, state: State<'_, AppState>, path: String) -> Vec<D
         {
             w.unwatch_dbc(std::path::Path::new(&path));
         }
+        refresh_calc_resolutions(&app);
     }
     dbc_list(state.inner())
 }
@@ -980,6 +989,7 @@ fn clear_dbcs(app: AppHandle, state: State<'_, AppState>) {
     };
     if count > 0 {
         sys_info!(&app, "dbc", "cleared {count} loaded DBC(s)");
+        refresh_calc_resolutions(&app);
     }
     if let Some(w) = state
         .dbc_watcher
@@ -2227,6 +2237,99 @@ fn emit_transmit_frames_changed(app: &AppHandle) {
     let _ = app.emit("transmit-frames-changed", ());
 }
 
+/// Resolve the *effective* calculated-fields config for one TX
+/// message (ADR 0027): the DBC-declared defaults (`CannetCounter` /
+/// `CannetCrc` attributes) with the message's override spec layered
+/// on top — an override replaces the DBC default wholesale for that
+/// field. The resolving DBC is the first one scoped to the request's
+/// bus that defines the message id. `Ok(None)` when nothing is
+/// configured for the message.
+fn resolve_effective_calc(
+    dbs: &[LoadedDbc],
+    request: &ipc::TransmitRequest,
+    override_spec: Option<&ipc::CalcFieldsSpec>,
+) -> Result<Option<cannet_dbc::ResolvedCalculatedFields>, String> {
+    let no_override = override_spec.is_none_or(ipc::CalcFieldsSpec::is_empty);
+    let id = if request.extended {
+        CanId::extended(request.id)
+    } else {
+        CanId::standard(request.id)
+    };
+    let Ok(id) = id else {
+        // An unencodable arbitration id can't carry calculated fields;
+        // the transmit path itself will surface the id error.
+        return Ok(None);
+    };
+    let Some(loaded) = dbs
+        .iter()
+        .filter(|d| d.buses.is_empty() || d.buses.iter().any(|b| b == &request.bus_id))
+        .find(|d| d.db.dbc_calculated_fields(id).is_some())
+    else {
+        return if no_override {
+            Ok(None)
+        } else {
+            Err(format!(
+                "no DBC on bus {} defines message 0x{:X}",
+                request.bus_id, request.id
+            ))
+        };
+    };
+    let dbc_default = loaded
+        .db
+        .dbc_calculated_fields(id)
+        .cloned()
+        .unwrap_or_default();
+    let override_config = override_spec
+        .map(ipc::CalcFieldsSpec::to_config)
+        .transpose()?;
+    let (mut counter, mut crc) = (dbc_default.counter, dbc_default.crc);
+    if let Some(o) = override_config {
+        if o.counter.is_some() {
+            counter = o.counter;
+        }
+        if o.crc.is_some() {
+            crc = o.crc;
+        }
+    }
+    let merged = cannet_dbc::CalculatedFieldsConfig { counter, crc };
+    if merged.is_empty() {
+        return Ok(None);
+    }
+    loaded
+        .db
+        .resolve_calculated_fields(id, &merged)
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
+
+/// Re-resolve every TX-registry entry's calculated fields against the
+/// current DBC set. Called whenever either side changes — a DBC is
+/// added / removed / rescoped / auto-reloaded, a project is opened,
+/// or an entry is edited. A resolution failure clears that entry's
+/// fields (the frame still transmits, without recompute) and warns on
+/// the system log.
+pub(crate) fn refresh_calc_resolutions(app: &AppHandle) {
+    let state: State<'_, AppState> = app.state();
+    let dbs = state.databases.lock().expect("databases mutex poisoned");
+    let mut registry = state
+        .transmit_frames
+        .lock()
+        .expect("transmit_frames mutex poisoned");
+    for (id, request, spec) in registry.resolution_inputs() {
+        match resolve_effective_calc(&dbs, &request, spec.as_ref()) {
+            Ok(resolved) => registry.set_resolved_calc(&id, resolved),
+            Err(e) => {
+                registry.set_resolved_calc(&id, None);
+                sys_warn!(
+                    app,
+                    "transmit",
+                    "calculated fields disabled for TX message {id}: {e}"
+                );
+            }
+        }
+    }
+}
+
 /// Snapshot the TX-message pool (each message + its `running` flag), in
 /// pool order.
 #[tauri::command]
@@ -2264,6 +2367,9 @@ fn set_transmit_frame(
     if parked {
         state.transmit_scheduler.stop(id);
     }
+    // The edit may have changed the calc spec, the payload shape, the
+    // bus, or the id — re-resolve against the DBC set.
+    refresh_calc_resolutions(&app);
     emit_transmit_frames_changed(&app);
 }
 
@@ -2317,8 +2423,7 @@ fn transmit_frame_once(
         .transmit_frames
         .lock()
         .expect("transmit_frames mutex poisoned")
-        .current(&id)
-        .map(|(request, _, _)| request)
+        .send_request(&id)
         .ok_or_else(|| format!("no transmit frame with id {id}"))?;
     transmit_frame_inner(state.inner(), &request)
 }
@@ -2333,11 +2438,19 @@ fn start_periodic_transmit(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
-    let newly_started = state
-        .transmit_frames
-        .lock()
-        .expect("transmit_frames mutex poisoned")
-        .begin_periodic(&id)?;
+    let newly_started = {
+        let mut registry = state
+            .transmit_frames
+            .lock()
+            .expect("transmit_frames mutex poisoned");
+        let newly_started = registry.begin_periodic(&id)?;
+        if newly_started {
+            // The owner is starting to transmit — the sequence counter
+            // seeds at 0 (ADR 0027).
+            registry.reset_counter(&id);
+        }
+        newly_started
+    };
     if newly_started {
         state.transmit_scheduler.start(id);
     }
@@ -2714,15 +2827,23 @@ fn describe_message_inner(
                         cannet_dbc::FloatKind::Float64 => "float64",
                     },
                     has_value_table: s.has_value_table,
+                    start_value_raw: s.start_value_raw,
                 })
                 .collect();
+            let calc_fields = if desc.calc_fields.is_empty() {
+                None
+            } else {
+                Some(ipc::CalcFieldsSpec::from_config(&desc.calc_fields))
+            };
             return Some(ipc::MessageDescriptorRecord {
                 name: desc.name,
                 expected_len: desc.expected_len,
                 is_fd: desc.is_fd,
                 brs: desc.brs,
                 gen_msg_cycle_time_ms: desc.gen_msg_cycle_time_ms,
+                gen_msg_send_type: desc.gen_msg_send_type,
                 uses_extended_mux: desc.uses_extended_mux,
+                calc_fields,
                 signals,
             });
         }
@@ -3936,5 +4057,145 @@ mod tests {
         stop.store(true, Ordering::Relaxed);
         drop(state); // closes the bus → pump's next_frame returns
         let _ = pump.join();
+    }
+
+    /// A DBC declaring calculated fields on `Status` via the cannet
+    /// attributes — the DBC-defaults layer for the layering tests.
+    const CALC_ATTR_DBC: &str = "VERSION \"\"\n\nNS_ :\n\nBS_:\n\nBU_: ECU\n\n\
+        BO_ 291 Status: 8 ECU\n\
+        \x20SG_ Mode : 0|8@1+ (1,0) [0|255] \"\" ECU\n\
+        \x20SG_ AliveCtr : 40|4@1+ (1,0) [0|15] \"\" ECU\n\
+        \x20SG_ Ctr2 : 44|4@1+ (1,0) [0|15] \"\" ECU\n\
+        \x20SG_ Crc8 : 56|8@1+ (1,0) [0|255] \"\" ECU\n\n\
+        BA_DEF_ SG_ \"CannetCounter\" STRING ;\n\
+        BA_DEF_ SG_ \"CannetCrc\" STRING ;\n\
+        BA_DEF_DEF_ \"CannetCounter\" \"\";\n\
+        BA_DEF_DEF_ \"CannetCrc\" \"\";\n\
+        BA_ \"CannetCounter\" SG_ 291 AliveCtr \"increment=1;rollover=15\";\n\
+        BA_ \"CannetCrc\" SG_ 291 Crc8 \"alg=CRC-8/SAE-J1850;range=0:56\";\n";
+
+    fn calc_request(bus: &str, id: u32) -> ipc::TransmitRequest {
+        ipc::TransmitRequest {
+            bus_id: bus.into(),
+            id,
+            extended: false,
+            kind: ipc::TransmitKind::Classic,
+            data: vec![0u8; 8],
+            brs: false,
+            esi: false,
+            dlc: 0,
+        }
+    }
+
+    #[test]
+    fn effective_calc_uses_dbc_defaults_when_no_override() {
+        let dbs = vec![loaded("a.dbc", CALC_ATTR_DBC)];
+        let resolved = resolve_effective_calc(&dbs, &calc_request("p", 291), None)
+            .unwrap()
+            .expect("DBC-declared fields resolve");
+        // Counter at bits 40..44 (byte 5 low nibble), CRC in byte 7.
+        let mut payload = [0u8; 8];
+        let mut counter = 0;
+        resolved.apply(&mut counter, &mut payload).unwrap();
+        assert_eq!(payload[5] & 0x0F, 1);
+        assert_ne!(payload[7], 0);
+        // A message without any designation resolves to None.
+        let dbs2 = vec![loaded("b.dbc", &tiny_dbc(291, "Plain", "S"))];
+        assert!(resolve_effective_calc(&dbs2, &calc_request("p", 291), None)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn override_replaces_the_dbc_default_per_field() {
+        let dbs = vec![loaded("a.dbc", CALC_ATTR_DBC)];
+        // Counter override moves the counter to Ctr2; the DBC's CRC
+        // default stays in effect (per-field layering, ADR 0027).
+        let spec = ipc::CalcFieldsSpec {
+            counter: Some(ipc::CounterSpec {
+                signal: "Ctr2".into(),
+                increment: 2,
+                rollover: Some(15),
+            }),
+            crc: None,
+        };
+        let resolved = resolve_effective_calc(&dbs, &calc_request("p", 291), Some(&spec))
+            .unwrap()
+            .unwrap();
+        let mut payload = [0u8; 8];
+        let mut counter = 0;
+        resolved.apply(&mut counter, &mut payload).unwrap();
+        assert_eq!(payload[5] >> 4, 2, "override counter (Ctr2, +2) applied");
+        assert_eq!(payload[5] & 0x0F, 0, "DBC default counter signal untouched");
+        assert_ne!(payload[7], 0, "DBC default CRC still applied");
+    }
+
+    #[test]
+    fn effective_calc_respects_bus_scoping_and_reports_errors() {
+        // The DBC declaring the fields is scoped to bus "q" — a frame
+        // on bus "p" doesn't see it.
+        let dbs = vec![loaded_scoped("a.dbc", CALC_ATTR_DBC, &["q"])];
+        assert!(resolve_effective_calc(&dbs, &calc_request("p", 291), None)
+            .unwrap()
+            .is_none());
+        assert!(resolve_effective_calc(&dbs, &calc_request("q", 291), None)
+            .unwrap()
+            .is_some());
+        // An override naming an unknown signal is an error, not a
+        // silent no-op …
+        let bad = ipc::CalcFieldsSpec {
+            counter: Some(ipc::CounterSpec {
+                signal: "Nope".into(),
+                increment: 1,
+                rollover: None,
+            }),
+            crc: None,
+        };
+        assert!(
+            resolve_effective_calc(&dbs, &calc_request("q", 291), Some(&bad)).is_err()
+        );
+        // … and so is an override on a message no DBC defines.
+        assert!(
+            resolve_effective_calc(&dbs, &calc_request("p", 291), Some(&bad)).is_err()
+        );
+    }
+
+    /// The spec types round-trip through JSON in ADR 0028's file shape
+    /// (snake_case keys, `range_bits` array, hex-string CRC params).
+    #[test]
+    fn calc_spec_serde_matches_the_adr_shapes() {
+        let json = r#"{
+            "counter": { "signal": "AliveCtr", "increment": 1, "rollover": 15 },
+            "crc": { "signal": "Crc8", "algorithm": "CRC-8/SAE-J1850",
+                     "range_bits": [0, 56], "prefix": "A3" }
+        }"#;
+        let spec: ipc::CalcFieldsSpec = serde_json::from_str(json).unwrap();
+        let config = spec.to_config().unwrap();
+        assert_eq!(config.crc.as_ref().unwrap().prefix, vec![0xA3]);
+        assert_eq!(config.crc.as_ref().unwrap().range_bits, (0, 56));
+        let back: ipc::CalcFieldsSpec =
+            serde_json::from_str(&serde_json::to_string(&spec).unwrap()).unwrap();
+        assert_eq!(back, spec);
+
+        // Raw params accept hex strings or numbers and write hex.
+        let raw = r#"{ "crc": { "signal": "C", "width": 8, "poly": "0x1D",
+                       "init": 255, "range_bits": [0, 56] } }"#;
+        let spec: ipc::CalcFieldsSpec = serde_json::from_str(raw).unwrap();
+        let config = spec.to_config().unwrap();
+        match &config.crc.as_ref().unwrap().algorithm {
+            cannet_dbc::CrcAlgorithm::Raw(p) => {
+                assert_eq!(p.poly, 0x1D);
+                assert_eq!(p.init, 0xFF);
+                assert!(!p.refin);
+            }
+            cannet_dbc::CrcAlgorithm::Named(_) => panic!("expected raw params"),
+        }
+        let text = serde_json::to_string(&spec).unwrap();
+        assert!(text.contains("\"0x1D\""), "{text}");
+        // Mixed named + raw is rejected at conversion.
+        let mixed = r#"{ "crc": { "signal": "C", "algorithm": "CRC-8/AUTOSAR",
+                         "width": 8, "range_bits": [0, 56] } }"#;
+        let spec: ipc::CalcFieldsSpec = serde_json::from_str(mixed).unwrap();
+        assert!(spec.to_config().is_err());
     }
 }

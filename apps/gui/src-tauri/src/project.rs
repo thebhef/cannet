@@ -253,6 +253,10 @@ pub fn open_project(
                 .lock()
                 .expect("transmit_frames mutex poisoned")
                 .load(p.transmit_frames.clone());
+            // Usually a no-op here (the frontend re-adds the project's
+            // DBCs after open, each add re-resolving), but covers a
+            // load into an already-populated DBC set.
+            crate::refresh_calc_resolutions(&app);
             crate::sys_info!(&app, "project", "opened project {path}");
             Ok(p)
         }
