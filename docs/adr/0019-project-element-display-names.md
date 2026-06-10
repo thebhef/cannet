@@ -18,12 +18,18 @@ ADR fixes the convention.
 field.** `bus` and `filter` already did; the rest (`trace`, `plot`,
 `transmit`) gain it. The default on creation is
 `${Kind} ${nextIndex}` (matching the old dockview tab behaviour,
-but stored in the project model rather than a React ref). The field
-is additive inside the `elements` records the host round-trips
-without interpretation, so `PROJECT_SCHEMA_VERSION` does **not**
-bump (ADR 0011 rejects mismatched versions rather than migrating —
-a bump would needlessly retire every existing file); elements
-loaded without a `name` get the default on project open.
+but stored in the project model rather than a React ref).
+
+**Additive, defaulted-on-load fields don't roll the schema.**
+`name` is new data inside the `elements` records the host
+round-trips without interpretation; an older file simply lacks it,
+and the loader backfills the default on open. Bumping
+`PROJECT_SCHEMA_VERSION` would needlessly retire every existing
+file (ADR 0011 rejects mismatched versions rather than migrating).
+The same convention already carried `transmit_frames` into the
+project file; any future field the loader can default when absent
+should follow it — the version rolls only when existing data
+changes meaning or shape.
 
 **One shared resolver, used by every view.** A pure function
 `elementLabel(el: ProjectElement): string` returns the display
