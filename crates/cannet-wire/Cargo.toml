@@ -1,0 +1,26 @@
+[package]
+name = "cannet-wire"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+async-stream = "0.3"
+cannet-core = { path = "../cannet-core" }
+futures-core = "0.3"
+prost = "0.13"
+tokio-stream = { version = "0.1", features = ["time"] }
+tonic = "0.12"
+
+[dev-dependencies]
+futures = "0.3"
+tokio = { version = "1", features = ["macros", "rt", "time", "test-util"] }
+tokio-stream = { version = "0.1", features = ["time"] }
+
+[build-dependencies]
+tonic-build = "0.12"
+protoc-bin-vendored = "3"
+
+[lints]
+workspace = true

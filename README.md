@@ -3,7 +3,8 @@
 A CAN-bus analyzer. Phase 1 (alpha0) ships a single-process GUI that
 opens a Vector BLF log, decodes it against a DBC, and streams the
 result into a virtualized trace view. Phase 2 splits the data source
-out behind a network protocol; Phase 3 adds per-vendor hardware
+out behind a network protocol; Phase 3 fills in transmit, multiple
+trace/transmit windows, and docking; Phase 4 adds per-vendor hardware
 adapters. See [`plans/`](plans/) for the detailed roadmap.
 
 ## Repository layout
@@ -21,19 +22,43 @@ crates/
   cannet-dbc/    `Database::parse(text)` + `decode(frame)`.
                  Hand-rolled bit extraction (LE / Motorola sequential
                  BE), sign extension, multiplexed-signal filtering.
+  cannet-wire/   Phase-2 wire protocol: tonic / gRPC service definition
+                 (`proto/cannet.proto`), generated client + server
+                 stubs, conversion helpers between `cannet_core`
+                 frames and the wire types, and a batching adapter
+                 layer so application code stays in `Stream<CanFrame>`.
+  cannet-server/ Phase-2 BLF replay server. Loads a BLF into memory at
+                 startup, exposes its channels as gRPC interfaces, and
+                 streams them on a loop while a client is subscribed.
+                 Single-client per server (multi-client deferred to
+                 backlog); transmit envelopes are rejected. Ships a
+                 `cannet-server` binary; lib is reusable.
+  cannet-client/ Phase-2 gRPC client. `list_interfaces` is a one-shot
+                 async RPC for the connection panel. `connect_and_
+                 subscribe` returns a `RemoteCanFrameSource` (sync
+                 `cannet_core::CanFrameSource`) backed by a worker
+                 thread that owns its own tokio runtime, opens a
+                 `Session`, and pumps incoming frames into a sync
+                 mpsc queue. Drops cleanly on `Drop`.
 
 apps/
   gui/           Tauri 2 + React 18 + Vite trace viewer.
-    src/             React frontend. `TraceView.tsx` virtualizes the
-                     row list with @tanstack/react-virtual; rows expand
-                     to show decoded signals.
-    src-tauri/       Rust host (`cannet-gui` crate). The single Tauri
-                     command `open_log` spawns a worker that pushes
-                     frames at the frontend in 256-frame batches via
-                     a `can-frame-batch` IPC event.
-                     `src/ipc.rs` defines the IPC payload shapes;
-                     `wire` is reserved for the Phase-2 cannet-wire
-                     network protocol.
+    src/             React frontend. `TraceView.tsx` is the hand-rolled
+                     scaled virtualizer — the scroll container caps at
+                     16M px and maps scrollTop to an absolute row
+                     index, so the scrollbar represents the whole trace
+                     regardless of size; rows expand to show decoded
+                     signals. The scroll/stacking arithmetic lives in
+                     `traceViewport.ts` (unit-tested in
+                     `traceViewport.test.ts`).
+    src-tauri/       Rust host (`cannet-gui` crate). Owns the trace
+                     model (`trace_store.rs`); the BLF and remote pumps
+                     append frames, and the frontend pulls slices via
+                     the `fetch_trace_range` command (decoded against
+                     the current DBC at fetch time) plus a `trace-grew`
+                     IPC tick (~10 Hz: count, rate, and a decoded tail
+                     of the newest rows for flicker-free auto-scroll).
+                     `src/ipc.rs` holds the IPC payload shapes.
 
 plans/           Living planning docs (see CLAUDE.md).
 ```
@@ -112,6 +137,50 @@ opening attaches a database for live decoding.
 > a Vite dev server (which `tauri dev` starts for you) or a built
 > frontend at `apps/gui/dist`. Use the `pnpm tauri` commands above.
 
+### Phase-2 client / server demo
+
+Phase 2 splits the data source out behind a gRPC service. The
+`cannet-server` binary loads a BLF and replays it on a loop;
+the GUI's toolbar grew a connection panel that consumes the
+same protocol.
+
+In one terminal, start a server:
+
+```sh
+cargo run -p cannet-server -- examples/cannet-demo.blf
+# → loaded N interface(s) from examples/cannet-demo.blf
+# → listening on 127.0.0.1:50051
+```
+
+It exposes the BLF's channels as gRPC interfaces (`blf:0`,
+`blf:1`, …) and replays them on a loop while a client is
+subscribed.
+
+CLI flags:
+
+- `--bind <addr>` — listen address (default `127.0.0.1:50051`).
+- `--rate <multiplier>` — replay pacing. `1.0` plays the BLF at
+  its recorded cadence (real-time emulation, the closest match
+  to a hardware bus); `100` plays it 100× faster; `0` (the
+  default) disables pacing entirely and emits frames as fast as
+  the consumer drains. The default is intended for development
+  and tests; for a realistic emulation, use `--rate 1`.
+
+The server is single-client per process and rejects client
+transmits with `Error::TX_REJECTED` (BLF is read-only). Stop
+with Ctrl-C.
+
+In another terminal, start the GUI as usual (`pnpm --dir
+apps/gui tauri dev`). The toolbar's `host:port` input defaults
+to `127.0.0.1:50051`; clicking **Connect** subscribes to every
+interface the server lists and starts streaming frames into the
+trace view. **Disconnect** ends the session. The GUI can
+attach a DBC the same way it does for a local BLF — decoding
+runs against whichever frames are currently flowing.
+
+The `Open BLF…` and `Connect` flows share the same trace store,
+so frames from either source render through the same view.
+
 ### Build artifacts
 
 `pnpm --dir apps/gui tauri build` produces a single platform-native
@@ -152,6 +221,7 @@ the matching OS (or via cross-compilation in CI).
 ```sh
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+pnpm --dir apps/gui test           # frontend unit tests (vitest)
 pnpm --dir apps/gui build          # type-checks and bundles the frontend
 ```
 

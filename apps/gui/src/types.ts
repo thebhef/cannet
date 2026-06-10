@@ -1,6 +1,6 @@
 // Mirrors the Rust shapes in src-tauri/src/ipc.rs. Kept manually in sync
 // because the two surfaces are small enough that a code generator would
-// be more friction than benefit at Phase 1.
+// be more friction than benefit at Phase 2.
 
 export type CanFrameKind =
   | { kind: "classic" }
@@ -19,7 +19,11 @@ export interface DecodedRecord {
   signals: SignalRecord[];
 }
 
-export interface CanFrameRecord {
+/// Returned by the `fetch_trace_range` Tauri command, one per row in
+/// the requested range. Decoded against whichever DBC is currently
+/// attached.
+export interface TraceFrameRecord {
+  index: number;
   timestamp_seconds: number;
   channel: number;
   id: number;
@@ -30,8 +34,13 @@ export interface CanFrameRecord {
   decoded: DecodedRecord | null;
 }
 
-export interface CanFrameBatch {
-  frames: CanFrameRecord[];
+/// Periodic IPC event carrying the trace store's current size + rate,
+/// plus a short decoded tail of the newest frames so the auto-scrolling
+/// trace view can paint the live edge without a fetch round-trip.
+export interface TraceGrew {
+  count: number;
+  frames_per_second: number;
+  tail: TraceFrameRecord[];
 }
 
 export type LogFinished =
@@ -47,9 +56,19 @@ export interface DbcInfo {
   message_count: number;
 }
 
-export interface DecodeRequest {
+export interface InterfaceRecord {
+  id: string;
+  display_name: string;
+  fd_capable: boolean;
+}
+
+export interface SubscriptionRecord {
+  interface_id: string;
   channel: number;
-  id: number;
-  extended: boolean;
-  data: number[];
+}
+
+export interface RemoteSessionResult {
+  address: string;
+  interfaces: InterfaceRecord[];
+  subscriptions: SubscriptionRecord[];
 }

@@ -146,6 +146,36 @@ header {
   font-size: 0.85rem;
 }
 
+.toolbar-separator {
+  display: inline-block;
+  width: 1px;
+  height: 1.4em;
+  background: #2c3444;
+  margin: 0 0.2rem;
+}
+
+.toolbar input.remote-address {
+  background: #0f141d;
+  color: #e2e8f0;
+  border: 1px solid #2c3444;
+  border-radius: 4px;
+  padding: 0.2rem 0.4rem;
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  width: 14rem;
+}
+
+.toolbar input.remote-address:disabled {
+  opacity: 0.6;
+}
+
+/* Placeholder rows render only the row index until their chunk
+   loads. They share the normal row color so autoscroll past freshly-
+   appended rows doesn't flash dim → bright. */
+.trace-row.loading .col-idx {
+  opacity: 0.6;
+}
+
 .status {
   font-size: 0.78rem;
   color: #94a3b8;

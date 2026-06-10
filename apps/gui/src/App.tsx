@@ -1,16 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import type {
-  CanFrameBatch,
-  CanFrameRecord,
   DbcInfo,
-  DecodeRequest,
-  DecodedRecord,
   LogFinished,
   OpenLogResult,
+  RemoteSessionResult,
+  TraceFrameRecord,
+  TraceGrew,
 } from "./types";
 import { TitleBar } from "./TitleBar";
 import { TraceView } from "./TraceView";
@@ -18,68 +17,154 @@ import { TraceView } from "./TraceView";
 type LogState =
   | { kind: "idle" }
   | { kind: "loading"; result: OpenLogResult }
-  | { kind: "running"; result: OpenLogResult; received: number }
+  | { kind: "running"; result: OpenLogResult }
   | { kind: "done"; result: OpenLogResult; total: number }
+  | { kind: "remote-connecting"; address: string }
+  | { kind: "remote-running"; result: RemoteSessionResult }
+  | { kind: "remote-done"; result: RemoteSessionResult; total: number }
   | { kind: "error"; message: string };
 
+const DEFAULT_REMOTE_ADDRESS = "127.0.0.1:50051";
+
+/// Number of frames per cache chunk. Each chunk is fetched in one
+/// IPC round-trip; smaller = more fetches but cheaper each, larger =
+/// fewer fetches but each is bigger.
+const CHUNK_SIZE = 500;
+/// LRU budget for the chunk cache. 120 chunks * 500 frames = 60 k
+/// rows cached, plenty to cover the viewport plus scroll prefetch
+/// even at high scroll velocities.
+const CACHE_CHUNKS = 120;
+
 export function App() {
-  // Frames live in a ref so appending a batch doesn't deep-copy the array
-  // back to React. `version` is bumped on each mutation to wake the
-  // virtualizer's measurement.
-  const framesRef = useRef<CanFrameRecord[]>([]);
+  const [count, setCount] = useState(0);
+  const [framesPerSecond, setFramesPerSecond] = useState(0);
+
+  // While `autoScroll` is true the trace view pins to the live tail;
+  // while false it stays where the user scrolled to. A user scroll in
+  // the trace flips this off (via onAutoScrollDisabled below).
+  const [autoScroll, setAutoScroll] = useState(true);
+
+  // Chunked cache of fetched trace rows, keyed by chunk index.
+  const chunkCacheRef = useRef<Map<number, TraceFrameRecord[]>>(new Map());
+  const cacheOrderRef = useRef<number[]>([]);
+  const inflightChunksRef = useRef<Set<number>>(new Set());
+  // The newest frames, as carried by the most recent `trace-grew`
+  // event — a contiguous run ending at the live tail. `getFrame`
+  // consults this when the chunk cache hasn't caught up, which is what
+  // keeps auto-scroll from flashing placeholders. `tailStartRef` is
+  // the absolute index of `tailFramesRef.current[0]`.
+  const tailFramesRef = useRef<TraceFrameRecord[]>([]);
+  const tailStartRef = useRef(0);
   const [version, setVersion] = useState(0);
 
   const [state, setState] = useState<LogState>({ kind: "idle" });
-  const [paused, setPaused] = useState(false);
-  const pausedRef = useRef(false);
-  const pauseBufferRef = useRef<CanFrameRecord[]>([]);
-  useEffect(() => {
-    pausedRef.current = paused;
-    if (!paused && pauseBufferRef.current.length > 0) {
-      framesRef.current.push(...pauseBufferRef.current);
-      pauseBufferRef.current = [];
-      setVersion((v) => v + 1);
-    }
-  }, [paused]);
-
-  const [autoScroll, setAutoScroll] = useState(true);
   const [dbcPath, setDbcPath] = useState<string | null>(null);
+  const [remoteAddress, setRemoteAddress] = useState(DEFAULT_REMOTE_ADDRESS);
 
-  // Wire up Tauri event listeners once.
+  // Captured once: timestamp of absolute row 0. Survives the user
+  // scrolling anywhere in the trace; reset on Clear / new source.
+  const [baseTimestampSeconds, setBaseTimestampSeconds] = useState<number | null>(
+    null,
+  );
+
+  const invalidateCache = useCallback(() => {
+    chunkCacheRef.current.clear();
+    cacheOrderRef.current = [];
+    inflightChunksRef.current.clear();
+    tailFramesRef.current = [];
+    tailStartRef.current = 0;
+    setVersion((v) => v + 1);
+  }, []);
+
+  const resetView = useCallback(() => {
+    setAutoScroll(true);
+    setBaseTimestampSeconds(null);
+  }, []);
+
+  const refreshChunk = useCallback(async (chunkIdx: number) => {
+    if (inflightChunksRef.current.has(chunkIdx)) return;
+    inflightChunksRef.current.add(chunkIdx);
+    try {
+      const start = chunkIdx * CHUNK_SIZE;
+      const end = start + CHUNK_SIZE;
+      const frames = await invoke<TraceFrameRecord[]>("fetch_trace_range", {
+        start,
+        end,
+      });
+      chunkCacheRef.current.set(chunkIdx, frames);
+      cacheOrderRef.current = cacheOrderRef.current.filter((c) => c !== chunkIdx);
+      cacheOrderRef.current.push(chunkIdx);
+      while (cacheOrderRef.current.length > CACHE_CHUNKS) {
+        const evict = cacheOrderRef.current.shift();
+        if (evict !== undefined) chunkCacheRef.current.delete(evict);
+      }
+      setVersion((v) => v + 1);
+    } finally {
+      inflightChunksRef.current.delete(chunkIdx);
+    }
+  }, []);
+
+  const fetchChunk = useCallback(
+    (chunkIdx: number) => {
+      if (chunkCacheRef.current.has(chunkIdx)) return;
+      void refreshChunk(chunkIdx);
+    },
+    [refreshChunk],
+  );
+
+  // A cached chunk goes stale when more frames land in its range after
+  // it was fetched. Re-fetch any such partial chunk so the chunk cache
+  // stays consistent for when the user scrolls back into it. (The live
+  // edge the auto-scrolling view shows is served from the `trace-grew`
+  // tail overlay, not from here.)
+  const refreshStalePartialChunks = useCallback(
+    (newCount: number) => {
+      for (const [chunkIdx, chunk] of chunkCacheRef.current) {
+        const chunkStart = chunkIdx * CHUNK_SIZE;
+        if (chunk.length < CHUNK_SIZE && chunkStart + chunk.length < newCount) {
+          void refreshChunk(chunkIdx);
+        }
+      }
+    },
+    [refreshChunk],
+  );
+
   useEffect(() => {
     const unlistens: Array<Promise<() => void>> = [];
 
     unlistens.push(
-      listen<CanFrameBatch>("can-frame-batch", (event) => {
-        const incoming = event.payload.frames;
-        if (pausedRef.current) {
-          pauseBufferRef.current.push(...incoming);
-        } else {
-          framesRef.current.push(...incoming);
-        }
-        setVersion((v) => v + 1);
-        setState((s) =>
-          s.kind === "loading"
-            ? { kind: "running", result: s.result, received: incoming.length }
-            : s.kind === "running"
-              ? { ...s, received: s.received + incoming.length }
-              : s,
-        );
+      listen<TraceGrew>("trace-grew", (event) => {
+        const { count: newCount, frames_per_second, tail } = event.payload;
+        setCount((prev) => {
+          if (newCount < prev) {
+            invalidateCache();
+            setBaseTimestampSeconds(null);
+          }
+          return newCount;
+        });
+        setFramesPerSecond(frames_per_second);
+        tailFramesRef.current = tail;
+        tailStartRef.current = tail.length > 0 ? tail[0].index : newCount;
+        refreshStalePartialChunks(newCount);
       }),
     );
 
     unlistens.push(
       listen<LogFinished>("log-finished", (event) => {
         if (event.payload.status === "ok") {
-          setState((s) =>
-            s.kind === "running" || s.kind === "loading"
-              ? {
-                  kind: "done",
-                  result: s.kind === "loading" ? s.result : s.result,
-                  total: event.payload.status === "ok" ? event.payload.total : 0,
-                }
-              : s,
-          );
+          const total = event.payload.total;
+          setState((s) => {
+            if (s.kind === "loading" || s.kind === "running") {
+              return { kind: "done", result: s.result, total };
+            }
+            if (s.kind === "remote-connecting") {
+              return { kind: "idle" };
+            }
+            if (s.kind === "remote-running") {
+              return { kind: "remote-done", result: s.result, total };
+            }
+            return s;
+          });
         } else {
           setState({ kind: "error", message: event.payload.message });
         }
@@ -89,7 +174,22 @@ export function App() {
     return () => {
       unlistens.forEach((p) => p.then((fn) => fn()));
     };
-  }, []);
+  }, [invalidateCache, refreshStalePartialChunks]);
+
+  // Once row 0 is available, capture its timestamp as the zero-point
+  // for the time column.
+  useEffect(() => {
+    if (baseTimestampSeconds !== null) return;
+    if (count === 0) return;
+    void invoke<TraceFrameRecord[]>("fetch_trace_range", {
+      start: 0,
+      end: 1,
+    }).then((frames) => {
+      if (frames.length > 0) {
+        setBaseTimestampSeconds(frames[0].timestamp_seconds);
+      }
+    });
+  }, [count, baseTimestampSeconds]);
 
   const handleOpenLog = useCallback(async () => {
     const selected = await open({
@@ -98,11 +198,10 @@ export function App() {
     });
     if (typeof selected !== "string") return;
 
-    framesRef.current = [];
-    pauseBufferRef.current = [];
-    setVersion((v) => v + 1);
-
     try {
+      await invoke("clear_trace_store");
+      invalidateCache();
+      resetView();
       const result = await invoke<OpenLogResult>("open_log", {
         blfPath: selected,
       });
@@ -110,7 +209,7 @@ export function App() {
     } catch (err) {
       setState({ kind: "error", message: String(err) });
     }
-  }, []);
+  }, [invalidateCache, resetView]);
 
   const handleAttachDbc = useCallback(async () => {
     const selected = await open({
@@ -126,25 +225,98 @@ export function App() {
       setState({ kind: "error", message: String(err) });
       return;
     }
+    invalidateCache();
+  }, [invalidateCache]);
 
-    // Retro-decode any frames that arrived before the DBC was attached
-    // (or that were decoded against the previous DBC). New frames keep
-    // arriving with the new DBC's decoded info via the pump, so we only
-    // touch the snapshot of `framesRef.current` taken at this moment.
-    if (framesRef.current.length > 0) {
-      await retroDecode(framesRef.current);
-      setVersion((v) => v + 1);
+  const handleClear = useCallback(async () => {
+    try {
+      await invoke("clear_trace_store");
+    } catch (err) {
+      setState({ kind: "error", message: String(err) });
+    }
+    invalidateCache();
+    resetView();
+    setCount(0);
+  }, [invalidateCache, resetView]);
+
+  const handleConnect = useCallback(async () => {
+    const address = remoteAddress.trim();
+    if (!address) return;
+
+    try {
+      await invoke("clear_trace_store");
+      invalidateCache();
+      resetView();
+      setState({ kind: "remote-connecting", address });
+      const result = await invoke<RemoteSessionResult>("connect_remote_server", {
+        address,
+      });
+      setState({ kind: "remote-running", result });
+    } catch (err) {
+      setState({ kind: "error", message: String(err) });
+    }
+  }, [remoteAddress, invalidateCache, resetView]);
+
+  const handleDisconnect = useCallback(async () => {
+    try {
+      await invoke("disconnect_remote_server");
+    } catch (err) {
+      setState({ kind: "error", message: String(err) });
     }
   }, []);
 
-  const handleClear = useCallback(() => {
-    framesRef.current = [];
-    pauseBufferRef.current = [];
-    setVersion((v) => v + 1);
+  // The trace view calls this when the user scrolls the trace
+  // themselves while live-tailing was on — flip it off so the view
+  // stays where they put it.
+  const handleAutoScrollDisabled = useCallback(() => {
+    setAutoScroll(false);
   }, []);
 
-  const frameCount = framesRef.current.length;
-  const status = renderStatus(state, dbcPath, frameCount);
+  const handleToggleAutoScroll = useCallback((next: boolean) => {
+    setAutoScroll(next);
+  }, []);
+
+  const getFrame = useCallback((index: number): TraceFrameRecord | null => {
+    const chunkIdx = Math.floor(index / CHUNK_SIZE);
+    const chunk = chunkCacheRef.current.get(chunkIdx);
+    const fromChunk = chunk ? chunk[index - chunkIdx * CHUNK_SIZE] : undefined;
+    if (fromChunk) return fromChunk;
+    // Not (yet) in the chunk cache — fall back to the live tail
+    // carried by the most recent `trace-grew`, which covers the newest
+    // rows the auto-scroll window shows.
+    const tail = tailFramesRef.current;
+    const tailOffset = index - tailStartRef.current;
+    if (tailOffset >= 0 && tailOffset < tail.length) return tail[tailOffset];
+    return null;
+  }, []);
+
+  const ensureVisible = useCallback(
+    (startIndex: number, endIndex: number) => {
+      if (count === 0) return;
+      const safeEnd = Math.min(endIndex, count);
+      if (safeEnd <= 0) return;
+      const firstChunk = Math.floor(startIndex / CHUNK_SIZE);
+      const lastChunk = Math.floor((safeEnd - 1) / CHUNK_SIZE);
+      // Prefetch one chunk on either side so brisk scrolling doesn't
+      // bottom out into placeholders at chunk boundaries.
+      const prefetchStart = Math.max(0, firstChunk - 1);
+      const prefetchEnd = lastChunk + 1;
+      for (let c = prefetchStart; c <= prefetchEnd; c++) {
+        if (c < 0) continue;
+        if (c * CHUNK_SIZE >= count) break;
+        fetchChunk(c);
+      }
+    },
+    [count, fetchChunk],
+  );
+
+  const status = useMemo(
+    () => renderStatus(state, dbcPath, count, framesPerSecond),
+    [state, dbcPath, count, framesPerSecond],
+  );
+
+  const remoteConnected =
+    state.kind === "remote-connecting" || state.kind === "remote-running";
 
   return (
     <main className="app">
@@ -155,20 +327,32 @@ export function App() {
           <button onClick={handleAttachDbc}>
             {dbcPath ? "Replace DBC…" : "Attach DBC…"}
           </button>
-          <button
-            onClick={() => setPaused((p) => !p)}
-            disabled={state.kind === "idle"}
-          >
-            {paused ? "Resume" : "Pause"}
-          </button>
-          <button onClick={handleClear} disabled={frameCount === 0}>
+          <span className="toolbar-separator" aria-hidden="true" />
+          <input
+            className="remote-address"
+            type="text"
+            value={remoteAddress}
+            onChange={(e) => setRemoteAddress(e.target.value)}
+            placeholder="host:port"
+            disabled={remoteConnected}
+            aria-label="remote server address"
+          />
+          {remoteConnected ? (
+            <button onClick={handleDisconnect}>Disconnect</button>
+          ) : (
+            <button onClick={handleConnect} disabled={!remoteAddress.trim()}>
+              Connect
+            </button>
+          )}
+          <span className="toolbar-separator" aria-hidden="true" />
+          <button onClick={handleClear} disabled={count === 0}>
             Clear
           </button>
           <label className="checkbox">
             <input
               type="checkbox"
               checked={autoScroll}
-              onChange={(e) => setAutoScroll(e.target.checked)}
+              onChange={(e) => handleToggleAutoScroll(e.target.checked)}
             />
             auto-scroll
           </label>
@@ -176,9 +360,13 @@ export function App() {
         <div className="status">{status}</div>
       </header>
       <TraceView
-        frames={framesRef.current}
+        count={count}
         version={version}
-        autoScroll={autoScroll && !paused}
+        autoScroll={autoScroll}
+        baseTimestampSeconds={baseTimestampSeconds}
+        getFrame={getFrame}
+        ensureVisible={ensureVisible}
+        onAutoScrollDisabled={handleAutoScrollDisabled}
       />
     </main>
   );
@@ -188,49 +376,43 @@ function renderStatus(
   state: LogState,
   dbcPath: string | null,
   frameCount: number,
+  framesPerSecond: number,
 ): string {
-  const dbc = dbcPath
-    ? `DBC: ${shortenPath(dbcPath)}`
-    : "no DBC attached";
+  const dbc = dbcPath ? `DBC: ${shortenPath(dbcPath)}` : "no DBC attached";
+  const fps = framesPerSecond > 0 ? ` · ${formatRate(framesPerSecond)}` : "";
   switch (state.kind) {
     case "idle":
-      return `Open a BLF log to begin. ${dbc}.`;
+      return `Open a BLF log or connect to a server to begin. ${dbc}.`;
     case "loading":
       return `Opening ${shortenPath(state.result.blf_path)} … ${dbc}.`;
     case "running":
-      return `Streaming ${shortenPath(state.result.blf_path)} (${frameCount} frames). ${dbc}.`;
+      return `Streaming ${shortenPath(state.result.blf_path)} (${formatNumber(frameCount)} frames${fps}). ${dbc}.`;
     case "done":
-      return `Done: ${state.total} frames from ${shortenPath(state.result.blf_path)}. ${dbc}.`;
+      return `Done: ${formatNumber(state.total)} frames from ${shortenPath(state.result.blf_path)}. ${dbc}.`;
+    case "remote-connecting":
+      return `Connecting to ${state.address} … ${dbc}.`;
+    case "remote-running": {
+      const ifaces = state.result.interfaces.length;
+      return `Streaming from ${state.result.address} (${ifaces} interface${ifaces === 1 ? "" : "s"}, ${formatNumber(frameCount)} frames${fps}). ${dbc}.`;
+    }
+    case "remote-done":
+      return `Disconnected from ${state.result.address}: ${formatNumber(state.total)} frames received. ${dbc}.`;
     case "error":
       return `Error: ${state.message}`;
   }
 }
 
+function formatRate(fps: number): string {
+  if (fps >= 10_000) return `${(fps / 1000).toFixed(1)}k fps`;
+  if (fps >= 100) return `${Math.round(fps)} fps`;
+  return `${fps.toFixed(1)} fps`;
+}
+
+function formatNumber(n: number): string {
+  return n.toLocaleString();
+}
+
 function shortenPath(path: string): string {
   const slash = path.lastIndexOf("/");
   return slash >= 0 ? path.slice(slash + 1) : path;
-}
-
-const RETRO_DECODE_BATCH = 1000;
-
-/// Re-decode existing trace rows against the currently-attached DBC.
-/// Mutates the frames in place — they're plain objects shared with React
-/// state via framesRef, so updating .decoded is visible after the next
-/// version bump.
-async function retroDecode(frames: CanFrameRecord[]): Promise<void> {
-  for (let i = 0; i < frames.length; i += RETRO_DECODE_BATCH) {
-    const slice = frames.slice(i, i + RETRO_DECODE_BATCH);
-    const requests: DecodeRequest[] = slice.map((f) => ({
-      channel: f.channel,
-      id: f.id,
-      extended: f.extended,
-      data: f.data,
-    }));
-    const decoded = await invoke<(DecodedRecord | null)[]>("decode_frames", {
-      frames: requests,
-    });
-    for (let j = 0; j < slice.length; j++) {
-      slice[j].decoded = decoded[j];
-    }
-  }
 }
