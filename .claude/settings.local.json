@@ -6,7 +6,9 @@
       "Bash(pnpm build *)",
       "Bash(python -m pytest tests/test_enumeration.py -x -q)",
       "Bash(python -m pytest -x -q)",
-      "Bash(python -m pytest tests/test_pump_batching.py tests/test_enumeration.py -x -v)"
+      "Bash(python -m pytest tests/test_pump_batching.py tests/test_enumeration.py -x -v)",
+      "Bash(python -m pytest tests/test_pump_batching.py tests/test_enumeration.py -x -v)",
+      "Bash(cargo test *)"
     ]
   }
 }

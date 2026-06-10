@@ -7,10 +7,24 @@ publish.workspace = true
 
 [dependencies]
 cannet-core = { path = "../cannet-core" }
-blf_asc = "0.2"
+# zlib inflate/deflate for LOG_CONTAINER bodies. `rust_backend`
+# selects `miniz_oxide` (pure Rust, no system zlib needed).
+# Phase 9.5 Step 1 (`plans/technology-inventory.md`).
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 [dev-dependencies]
 tempfile = "3"
+
+[features]
+default = []
+# Enables the vector_blf C++ oracle tests
+# (ADR 0009 §"Test coverage strategy" source 4 — Phase 9.5 Step 0).
+# Off by default so plain `cargo test` doesn't require cmake, a C++
+# toolchain, or git network access. When set, the oracle tests invoke
+# `scripts/build-vector-blf-oracle.sh` to clone+build vector_blf at a
+# pinned upstream commit into `target/vector-blf-oracle/` (idempotent),
+# then run black-box comparisons against our own implementation.
+vector-blf-oracle = []
 
 [lints]
 workspace = true

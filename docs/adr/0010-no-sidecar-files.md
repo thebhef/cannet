@@ -27,18 +27,20 @@ In-format custom attributes are categorically different: the data
 lives in the file, the format spec defines the carriage, and tooling
 reads it for free. Use them.
 
-## Outstanding violation
+## Cautionary example: `<file>.blf.notes.json`
 
-`<file>.blf.notes.json` exists alongside saved captures today. It
-was introduced because the BLF library cannet then used supported
-neither `GLOBAL_MARKER` writes nor reads, so a marker authored by
-cannet would have been invisible and one authored by Vector
-CANalyzer was already invisible. Reaching for a sidecar was the
-wrong response — the correct one is to control the BLF
-implementation enough to use the format's own extension mechanism,
-which is exactly what [ADR 0009](0009-dbc-blf-readers.md) commits
-cannet to doing. Returning to compliance is the highest-priority
-follow-up on this surface; see `plans/backlog.md` § High priority.
+`<file>.blf.notes.json` was a sidecar cannet briefly emitted
+alongside saved captures. It was introduced because the BLF
+library cannet then used supported neither `GLOBAL_MARKER` writes
+nor reads, so a marker authored by cannet would have been
+invisible and one authored by Vector CANalyzer was already
+invisible. Reaching for a sidecar was the wrong response — the
+correct one is to control the BLF implementation enough to use the
+format's own extension mechanism, which is exactly what
+[ADR 0009](0009-dbc-blf-readers.md) committed cannet to doing.
+Notes now live inside the BLF as `GLOBAL_MARKER` records; the
+sidecar code path is gone and any files of that shape are ignored
+— they predate this rule and have no standing under it.
 
 ## Consequences
 
@@ -52,10 +54,3 @@ follow-up on this surface; see `plans/backlog.md` § High priority.
   this rule into a recurring contribution burden, or forces the
   kind of own-implementation decision recorded in
   [ADR 0009](0009-dbc-blf-readers.md) for BLF.
-- The return-to-compliance path for `<file>.blf.notes.json` is:
-  `cannet-blf` gains `GLOBAL_MARKER` read+write per
-  [ADR 0009](0009-dbc-blf-readers.md); migrate `cannet-blf`'s
-  `BlfCaptureWriter` to write markers; one-shot read-and-promote
-  of any legacy `.notes.json` on `open_log`; delete the sidecar
-  code path; scrub residual mentions of the sidecar from active
-  project docs as the cleanup lands.

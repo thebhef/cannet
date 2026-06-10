@@ -1415,18 +1415,6 @@ Realised scope notes:
   `<dest>.part` temp file and renames into place on `finish()` so
   a mid-write crash leaves no half-file behind. Round-tripped in
   `cannet-blf` unit tests against `BlfCanFrameSource`.
-- **Markers ride beside the BLF, not inside it (deferred upstream
-  contribution).** Upstream `blf_asc` (0.2) doesn't expose the
-  `GLOBAL_MARKER` object surface — its `BlfWriter` carries a private
-  `add_object` and no marker types. Re-implementing the BLF container
-  + compression layer in `cannet-blf` to emit one marker type is
-  phase-sized on its own, so Phase 9 ships marker round-trip via a
-  sidecar `<file>.blf.notes.json` written and renamed atomically
-  alongside the BLF. Open Capture loads both. The third-party-reader
-  visibility of markers is **deferred** to a follow-up that
-  contributes `GLOBAL_MARKER` write + read upstream; tracked in
-  `plans/backlog.md` and recorded in `plans/technology-inventory.md`
-  alongside the existing `blf_asc` entry.
 - **Notes on the host, not in plot params**. A new
   `crate::trace_store` neighbour module owns a session-scoped notes
   list (`{id, timestamp_ns, label}`); Tauri commands let the
@@ -1454,6 +1442,155 @@ Realised scope notes:
   tagged `capture`. `open_capture` emits info (`frame_count`,
   `marker_count`) and error / warn on decode anomalies tagged
   `blf-import`. Recent BLFs replay through the same path.
+
+## Phase 9.5 — `cannet-blf` Own Implementation
+
+Replace `cannet-blf`'s `blf_asc` wrapper with our own focused BLF
+reader / writer per [ADR 0009](../docs/adr/0009-dbc-blf-readers.md).
+Retires the third-party Rust BLF crate from the dep tree, unlocks
+`GLOBAL_MARKER` write so notes can live inside the BLF per
+[ADR 0010](../docs/adr/0010-no-sidecar-files.md), and gives us the
+typed-write surface for the rest of the desired BLF object catalogue
+([feature support matrix](../docs/blf-feature-support.md)).
+
+Inserted between shipped Phase 9 and pending Phase 10 because it's the
+highest-priority usability follow-up out of Phase 9 (third-party
+visibility of notes) and is independent of Phase 10's view-cache
+refactor — the two can be scheduled in either order.
+
+Scope (four sets of changes plus a Step 0 oracle preamble; each
+landed as its own working slice in the order below):
+
+- **Step 0 — `vector_blf` test oracle.** ✅ **Complete.** A build
+  script clones Technica's
+  [`vector_blf`](https://github.com/Technica-Engineering/vector_blf)
+  at a pinned upstream ref into `target/` (never vendored), cmake-
+  builds it, and compiles a small C++ test harness that reads and
+  writes BLFs through it. Harness sources live test-only under
+  `crates/cannet-blf/tests/oracle/`; the clone, the cmake build,
+  and the resulting binary all sit in `target/` and never ship in
+  cannet's runtime binary. Gated behind a cargo feature
+  (`vector-blf-oracle`) so default CI doesn't require a C++
+  toolchain.
+- **Step 1 — Parity.** ✅ **Complete.** Native read+write for
+  `LOG_CONTAINER` (10), `CAN_MESSAGE` (1), `CAN_MESSAGE2` (86),
+  `CAN_FD_MESSAGE` (100), `CAN_FD_MESSAGE_64` (101),
+  `CAN_ERROR_EXT` (73). The public `BlfCanFrameSource` /
+  `BlfCaptureWriter` surface is unchanged. `blf_asc` is removed
+  from the dep tree. Oracle test (vector_blf cross-check) green.
+  Notes from implementation:
+  - The on-disk inter-object padding rule is `object_size % 4`,
+    not `(4 - object_size % 4) % 4` — matches Vector's reference
+    `LogContainer.cpp` (`is.seekg(objectSize % 4, ...)`) and
+    `blf_asc`. The padding therefore doesn't 4-align the next
+    object's start; it's a vestigial formula but every BLF
+    implementation in the wild follows it.
+  - `blf_asc` wrote `CAN_FD_MESSAGE` bodies missing the trailing
+    `reservedCanFdMessage3` (82 bytes vs Vector's spec 86). The
+    decoder accepts both forms; the encoder always emits the
+    spec-compliant 86-byte form. Any `blf_asc`-written files
+    still read correctly.
+  - The native writer emits `CAN_MESSAGE2` for classic CAN frames
+    and `CAN_FD_MESSAGE_64` for CAN FD (the modern types Vector's
+    tools emit). The reader handles all five frame types in
+    either direction.
+  - `FileStatistics.measurement_start_time` is a SYSTEMTIME
+    (ms granularity). The writer floors the first event's
+    timestamp to the ms boundary so per-event relative timestamps
+    carry the sub-ms tail losslessly. End-to-end timestamp
+    round-trip is ns-exact (previously ~10–100 ns drift via
+    `blf_asc`'s f64 seconds).
+  - python-can fixture vendoring (test source #1, planned for
+    this step) deferred to a follow-up; synthetic tests + oracle
+    cross-check provide the step's coverage today. Tracked in
+    `plans/backlog.md`.
+- **Step 2 — `GLOBAL_MARKER`.** ✅ **Complete.** Read + write
+  for object type 96 in `cannet-blf::format::marker`. `BlfReader`
+  exposes the marker variant on `BlfObject` for callers walking
+  the inflated stream; `BlfFileWriter::append_object` accepts the
+  encoded bytes from `marker::encode`, so writers can intersperse
+  markers with CAN frames in chronological order. `BlfCanFrameSource`
+  (the `CanFrameSource` adapter) skips markers — they're not CAN
+  frames; consumers that want them walk `BlfReader` directly.
+  Oracle test (`oracle_lists_global_marker_written_by_our_writer`)
+  green: Vector's reference `vector_blf` library reads our marker
+  bytes back. Notes now live inside the BLF per ADR 0010.
+- **Step 3 — Annotation round-trip.** ✅ **Complete.** Read +
+  write for `EVENT_COMMENT` (92) and `APP_TEXT` (65) in
+  `cannet-blf::format::text`. Preserves third-party annotations
+  when reading captures from Vector tooling — `BlfReader` exposes
+  both as `BlfObject::EventComment(_)` / `BlfObject::AppText(_)`
+  variants. `pack_db_channel_info(version, channel, bus_type,
+  is_can_fd)` helper covers the `APP_TEXT.source == DB_CHANNEL_INFO`
+  packing of `reserved_app_text1`. Oracle test
+  (`oracle_lists_text_annotations_written_by_our_writer`) green:
+  Vector's reference library reads both types back.
+- **Step 4 — Capture integrity.** ✅ **Complete.** Read +
+  write for `CAN_STATISTIC` (4), `DATA_LOST_BEGIN` (125),
+  `DATA_LOST_END` (126) in `cannet-blf::format::diagnostics`.
+  `BlfReader` exposes all three as new `BlfObject` variants so
+  third-party captures' bus-load and gap-bracket info surfaces
+  to consumers walking the inflated stream. `CanStatistic`
+  exposes a `bus_load_percent() -> f32` convenience for the
+  hundredths-of-a-percent on-disk encoding; queue-identifier
+  constants (`QUEUE_RT` / `QUEUE_ANALYZER` / `QUEUE_RT_AND_ANALYZER`)
+  cover Vector's three values. Oracle test
+  (`oracle_lists_diagnostics_written_by_our_writer`) green:
+  Vector's reference library reads all three back.
+
+**Phase 9.5 complete.** Four steps landed: parity, marker,
+annotation, capture-integrity. The native BLF codec covers every
+object type listed in `plans/features.md` as `required` or
+`desired`. Object types listed `nice` (e.g. `CAN_OVERLOAD`,
+`CAN_FD_ERROR_64`, FlexRay events) remain undecoded; the reader
+surfaces them via `BlfObject::Other` so they can be skipped or
+logged. Future phases that need them can add per-type decoders
+incrementally using the established pattern.
+
+Test sources (cumulative, per ADR 0009):
+
+1. **python-can BLF fixtures** (Apache-2.0) — scheduled for
+   `crates/cannet-blf/tests/fixtures/python-can/`. Deferred during
+   Phase 9.5; tracked in `plans/backlog.md`.
+2. **Vector CANalyzer round-trips** — fixtures the user generates
+   from CANalyzer, vendored under
+   `crates/cannet-blf/tests/fixtures/canalyzer/` as needed.
+3. **`vector_blf` live oracle** — the Step-0 harness, used as a
+   black-box comparator. Behind the `vector-blf-oracle` cargo
+   feature so it isn't a default-CI requirement.
+
+Out of scope (deferred):
+
+- Any of the `oos` rows in the feature-support matrix (LIN, MOST,
+  FlexRay, Ethernet, J1708, WLAN, AFDX, A429, K-Line). Cannet
+  doesn't address these bus types and the matrix records that intent.
+- Post-2018-v8 object types (`CAN_SETTING_CHANGED` and later). Out
+  of scope until a capture from a modern CANalyzer needs them; the
+  feature-support matrix's "Post-2018-v8 additions" section covers
+  the lookup if that day comes.
+
+Exit criteria (all met):
+
+- `crates/cannet-blf` parses + writes every in-scope object type
+  natively; the public `BlfCanFrameSource` / `BlfCaptureWriter`
+  surface is preserved across the swap (consumers in `apps/gui` and
+  `cannet-server` didn't need to change).
+- `blf_asc` is removed from `crates/cannet-blf/Cargo.toml` and from
+  the workspace's `Cargo.lock`.
+- The `cannet` column of every row in
+  [`docs/blf-feature-support.md`](../docs/blf-feature-support.md)
+  matches reality.
+- The `vector_blf` oracle harness is reachable from `cargo test -p
+  cannet-blf --features vector-blf-oracle`; default `cargo test`
+  passes without the feature, with no C++ toolchain on the
+  developer's path.
+- Rustdoc on the `cannet_blf` crate root explains the module
+  layout and the per-object-type support; `BlfCanFrameSource` and
+  `BlfCaptureWriter` rustdoc reflects the native implementation.
+- `plans/technology-inventory.md` marks `blf_asc` `retired` with a
+  link to ADR 0009.
+
+Realised scope notes: captured under each step above.
 
 ## Phase 10 — Windowed-Model Convergence
 

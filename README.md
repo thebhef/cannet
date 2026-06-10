@@ -10,8 +10,9 @@ adds transmit, the `--loopback` server, and DBC value-table rendering
 across views; Phase 6 introduces logical buses, per-bus DBC scoping,
 a structured filter element, and a project graph panel showing the
 project's wiring; Phase 8 adds per-vendor hardware adapters; Phase 9
-makes captures persistable through Save Capture (a BLF writer plus a
-notes sidecar), and offers a Recent BLFs list in the toolbar. See
+makes captures persistable through Save Capture (notes ride inside
+the BLF as `GLOBAL_MARKER` records — no sidecar files per ADR 0010),
+and offers a Recent BLFs list in the toolbar. See
 [`plans/`](plans/) for the detailed roadmap.
 
 ## Repository layout
@@ -323,11 +324,11 @@ assignments, y-ranges, follow-live, cursor mode, and measurement
 selection round-trip through the project file (the play state, like a
 trace panel's window, is session-only). Notes are session-scoped (the
 plot panels read and write a shared host store) and persist to disk
-via Save Capture's sidecar JSON — see the Phase-9 section below.
-(Still pending — see `plans/phased-implementation.md` Phase 4 and
-`plans/backlog.md`: per-trace y offset/gain and log scale, triggers,
-math channels, CSV/image export, native BLF `GLOBAL_MARKER`
-round-trip.)
+inside the BLF as `GLOBAL_MARKER` records (no sidecar — ADR 0010) —
+see the Phase-9 section below. (Still pending — see
+`plans/phased-implementation.md` Phase 4 and `plans/backlog.md`:
+per-trace y offset/gain and log scale, triggers, math channels,
+CSV/image export.)
 
 ### Phase-5 transmit + enum signals
 
@@ -701,27 +702,11 @@ commands; the host broadcasts the updated chronological list via
 the `notes-changed` event. Clearing the trace store wipes the
 notes with it.
 
-Save Capture writes notes as a sibling JSON sidecar
-`<file>.blf.notes.json` (atomic via the same `.part` + rename
-pattern). Open BLF loads the sidecar when it's present, restoring
-notes into the session-scoped store; a missing sidecar is the
-normal case for a BLF saved by some other tool, and a malformed
-sidecar logs a warn-level System Message and proceeds without
-notes.
-
-**Why a sidecar and not BLF `GLOBAL_MARKER` records?** Vector's
-native annotation type is BLF's `GLOBAL_MARKER` object, which would
-let third-party BLF tools see the notes too. The upstream
-[`blf_asc`](https://crates.io/crates/blf_asc) crate (0.2)
-covers frame object types only — it has no `GLOBAL_MARKER` types
-and exposes no public hook on `BlfWriter` for arbitrary object
-emission. Re-implementing the BLF container + compression layer
-to support one marker type is its own phase-sized job, so Phase 9
-ships note round-trip through the sidecar and tracks the
-upstream `GLOBAL_MARKER` contribution as a backlog item in
-[`plans/backlog.md`](plans/backlog.md). Once that lands,
-`BlfCaptureWriter` will fold markers into the BLF itself and the
-sidecar path retires — the host-side notes API doesn't change.
+Save Capture writes notes inside the BLF as `GLOBAL_MARKER`
+records (BLF object type 96 — Vector's native annotation type, so
+third-party tools like CANalyzer see them too). Open BLF reads
+those markers back into the session-scoped store. No sidecar
+file is written, per [ADR 0010](docs/adr/0010-no-sidecar-files.md).
 
 **Recent BLFs**. The toolbar grows a **Recent** dropdown next to
 **Open BLF…** that lists the last 8 opened BLF paths, persisted
