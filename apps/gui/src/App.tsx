@@ -1521,9 +1521,6 @@ export function App() {
     "project.open": () => void handleOpenProject(),
     "project.save": () => void handleSaveProject(),
     "project.saveAs": () => void handleSaveProjectAs(),
-    // "Close project" = back to a fresh unsaved workspace — the same
-    // reset the project panel's New button performs.
-    "project.close": handleNewProject,
     "blf.open": () => void handleOpenLog(),
     "dbc.add": () => void handleAddDbc(),
     "connection.connect": () => void handleConnect(),

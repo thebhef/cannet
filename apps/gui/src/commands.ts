@@ -51,7 +51,6 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "project.open", label: "Open project…", category: "Project" },
   { id: "project.save", label: "Save project", category: "Project" },
   { id: "project.saveAs", label: "Save project as…", category: "Project" },
-  { id: "project.close", label: "Close project", category: "Project" },
   { id: "blf.open", label: "Open BLF…", category: "File" },
   { id: "dbc.add", label: "Add DBC…", category: "File" },
   { id: "connection.connect", label: "Connect", category: "Connection" },
