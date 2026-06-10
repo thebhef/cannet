@@ -1,0 +1,120 @@
+name: Release
+
+# Cuts a release on demand. Trigger it from the Actions tab ("Run
+# workflow") and supply the version, e.g. `0.1.0`. The workflow:
+#   1. runs the full CI suite as a gate (no publish if it fails),
+#   2. tags the commit `vX.Y.Z` (so the binary's vergen `git describe`
+#      version matches), injects the version into the bundle, and
+#   3. builds unsigned bundles on native runners (Tauri cannot
+#      cross-compile) — macOS Apple Silicon (aarch64) and Windows x64 —
+#      publishing them to a draft pre-release for review.
+#
+# CI builds on every push to main are cheap (Linux); the expensive
+# cross-platform bundle build runs only here, when you actually release.
+# The committed version stays 0.0.0.
+#
+# Signing / notarization is a deliberate follow-up — see
+# plans/tasks/0026-distribution-and-ci.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, e.g. 0.1.0 (no leading v)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  # Gate: run the full CI suite (test + clippy + frontend) first. The
+  # bundle jobs depend on this, so a release never publishes from a
+  # commit whose checks fail.
+  verify:
+    name: CI checks
+    uses: ./.github/workflows/ci.yml
+
+  bundle:
+    name: Bundle (${{ matrix.label }})
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            label: macOS arm64
+            rust-target: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin
+          - platform: windows-latest
+            label: Windows x64
+            rust-target: x86_64-pc-windows-msvc
+            args: ""
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history + tags so vergen's `git describe` resolves the
+          # tag created below.
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          VERSION="${{ inputs.version }}"
+          VERSION="${VERSION#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Tag the commit (local, for vergen)
+        shell: bash
+        run: git tag "${{ steps.ver.outputs.tag }}"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.2
+
+      - uses: actions/setup-node@v4
+        with:
+          # Exact Node version pinned in .node-version (read by local
+          # version managers too), so CI and local match.
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: apps/gui/pnpm-lock.yaml
+
+      # rust-toolchain.toml pins the version; add the per-platform target.
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          rustup show
+          rustup target add ${{ matrix.rust-target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The installer/bundle version comes from the input; the committed
+      # tauri.conf.json stays 0.0.0.
+      - name: Set bundle version
+        shell: bash
+        run: |
+          node -e "const fs=require('fs'),p='apps/gui/src-tauri/tauri.conf.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.version='${{ steps.ver.outputs.version }}';fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n')"
+
+      - run: pnpm --dir apps/gui install --frozen-lockfile
+
+      - name: Build and publish bundle
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: apps/gui
+          # Creates the remote tag + draft pre-release on first matrix
+          # job; the second uploads its bundle to the same release.
+          tagName: ${{ steps.ver.outputs.tag }}
+          releaseName: cannet ${{ steps.ver.outputs.tag }}
+          releaseDraft: true
+          prerelease: true
+          args: ${{ matrix.args }}

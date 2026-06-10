@@ -37,6 +37,8 @@ dependencies = [
 dev = [
     "grpcio-tools>=1.80",
     "pytest>=9",
+    "ruff>=0.9",
+    "mypy>=1.15",
 ]
 
 [project.scripts]
@@ -48,3 +50,29 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["cannet_python_can"]
+
+# Generated gRPC/protobuf stubs live in `_proto/` and are excluded from
+# linting, formatting, and type-checking — they're machine-emitted and
+# regenerated, not hand-maintained.
+[tool.ruff]
+target-version = "py313"
+extend-exclude = ["cannet_python_can/_proto"]
+
+[tool.mypy]
+python_version = "3.13"
+files = ["cannet_python_can"]
+# Don't type-check the generated gRPC/protobuf stubs.
+exclude = ["cannet_python_can/_proto/"]
+# Third-party runtime deps (python-can, grpc) ship without type stubs;
+# the sidecar treats them dynamically already.
+ignore_missing_imports = true
+
+# The protobuf gencode is dynamically populated, so mypy can't see its
+# attributes — treat it as untyped rather than annotate generated code.
+[[tool.mypy.overrides]]
+module = "cannet_python_can._proto.*"
+follow_imports = "skip"
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -78,6 +78,13 @@ main.app {
   color: #94a3b8;
 }
 
+.titlebar-version {
+  margin-left: 0.4rem;
+  font-size: 11px;
+  color: #475569;
+  font-variant-numeric: tabular-nums;
+}
+
 .titlebar-banner {
   margin-left: 0.8rem;
   padding: 0.15rem 0.5rem;

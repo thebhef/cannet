@@ -178,7 +178,33 @@ crate retained long-term).
 
 ### Build / Packaging / CI
 
-_TBD — populated as we set up cross-platform builds._
+- **GitHub Actions** — `adopted` for CI and releases. `ci.yml` runs the
+  test + lint suite on pull requests and pushes to main (Linux);
+  `release.yml` is dispatched manually and builds bundles on
+  `macos-latest` (Apple Silicon) and `windows-latest` (x64). Tauri
+  cannot cross-compile, so each target builds on its native runner.
+- **Pinned toolchains** — `adopted` so local and CI run identical
+  versions (the workspace opts into `clippy::pedantic`, so a floating
+  stable would keep breaking the `-D warnings` gate as new lints land).
+  Rust is pinned in [`../rust-toolchain.toml`](../rust-toolchain.toml)
+  (rustup auto-installs it); pnpm via the `packageManager` field in
+  `apps/gui/package.json` (Corepack / `pnpm/action-setup` honour it).
+  Bump either deliberately, fixing any new lints in the same change.
+- **`tauri-apps/tauri-action`** (`v0`) — `adopted` to drive
+  `tauri build` and upload the resulting bundles to a GitHub Release in
+  the release workflow. MIT.
+- **`vergen`** (v8, `git` + `gitcl` features; build-dependency in
+  `cannet-gui`) — `adopted` to stamp the binary with
+  `git describe --tags` at build time so a packaged build reports the
+  exact tag/commit it was cut from. The committed version stays `0.0.0`;
+  the installer/bundle version is injected from the release tag in CI.
+  `gitcl` shells out to the `git` already required to build. MIT /
+  Apache-2.0.
+- **Code signing / notarization** — `proposed` (deferred). First alpha
+  bundles ship **unsigned**; macOS Gatekeeper / Windows SmartScreen warn
+  on first run. Signing needs external accounts (Apple Developer Program;
+  a Windows OV/EV cert or Azure Trusted Signing) and is wired through
+  `tauri-action`'s signing env vars once those exist.
 
 ### Testing / Profiling
 
@@ -201,5 +227,15 @@ _TBD — populated as we set up cross-platform builds._
   `// @vitest-environment jsdom` docblock. MIT. Kept lightweight — the
   pixel-level overlay drawing and canvas event wiring stay untested at
   this layer; their maths live in tested pure modules.
+
+- **ruff** + **mypy** (dev-dependencies in `servers/cannet-python-can`,
+  pinned via its `uv.lock`) — `adopted` for the Python sidecar. ruff
+  does both linting and black-compatible formatting in one tool;
+  mypy type-checks the `cannet_python_can` package (the generated
+  `_proto/` gRPC stubs are excluded — machine-emitted, not
+  hand-maintained — and the dynamically-populated protobuf module is
+  treated as untyped). pytest already covered the test suite. All four
+  run in the CI `python` job. ruff is from Astral, like the `uv` already
+  in use. MIT / (mypy) MIT.
 
 _Profiling instrumentation TBD — populated in Phase 7._

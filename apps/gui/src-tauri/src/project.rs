@@ -118,7 +118,7 @@ pub enum BindingKind {
 /// A vbus has no user-configurable baud rate: it's an in-process
 /// channel, not a model of a real wire, so a configurable bitrate
 /// would just be misleading UI. The host instantiates each vbus
-/// with a fixed default [`cannet_core::BusConfig`] that SharedBus
+/// with a fixed default [`cannet_core::BusConfig`] that `SharedBus`
 /// uses for its internal arbitration timing; the user never sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalVirtualBusDef {

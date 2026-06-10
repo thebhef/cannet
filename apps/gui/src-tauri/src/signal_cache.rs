@@ -272,11 +272,11 @@ mod tests {
         let dbs: &[&Database] = &[&db];
         let cache = SignalCacheStore::new();
         let on_p = cache.slice(Some("p"), 256, false, "X", 0.0, 10.0, &store, dbs);
-        assert_eq!(on_p.iter().map(|p| p.value as u32).collect::<Vec<_>>(), vec![1, 3]);
+        assert_eq!(on_p.iter().map(|p| p.value).collect::<Vec<_>>(), vec![1.0, 3.0]);
         let on_c = cache.slice(Some("c"), 256, false, "X", 0.0, 10.0, &store, dbs);
-        assert_eq!(on_c.iter().map(|p| p.value as u32).collect::<Vec<_>>(), vec![2]);
+        assert_eq!(on_c.iter().map(|p| p.value).collect::<Vec<_>>(), vec![2.0]);
         // Legacy "any bus" path: takes every frame regardless of tag.
         let any = cache.slice(None, 256, false, "X", 0.0, 10.0, &store, dbs);
-        assert_eq!(any.iter().map(|p| p.value as u32).collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert_eq!(any.iter().map(|p| p.value).collect::<Vec<_>>(), vec![1.0, 2.0, 3.0]);
     }
 }

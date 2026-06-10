@@ -333,15 +333,12 @@ async fn factory_subscribe_surfaces_allocated_id_and_round_trips_tx() {
     // Session B should receive it (as Rx) tagged with channel 9 — the
     // mapping its subscription requested.
     let frame = tokio::task::spawn_blocking(move || {
-        // Generous timeout: wire round-trip on loopback in CI.
-        for _ in 0..200 {
-            match session_b.next_frame() {
-                Ok(Some(f)) => return f,
-                Ok(None) => panic!("session B ended before frame arrived"),
-                Err(e) => panic!("session B errored: {e}"),
-            }
+        // `next_frame` blocks for the wire round-trip on loopback.
+        match session_b.next_frame() {
+            Ok(Some(f)) => f,
+            Ok(None) => panic!("session B ended before frame arrived"),
+            Err(e) => panic!("session B errored: {e}"),
         }
-        panic!("session B never observed the transmitted frame");
     })
     .await
     .unwrap();

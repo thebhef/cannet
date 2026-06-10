@@ -198,6 +198,9 @@ impl SharedBus {
     /// Construct a fresh bus. Spawns one background worker thread that
     /// runs the arbitration loop; the thread exits when this
     /// [`SharedBus`] is dropped.
+    ///
+    /// # Panics
+    /// Panics if the OS refuses to spawn the bus worker thread.
     #[must_use]
     pub fn new(config: BusConfig) -> Self {
         let inner = Arc::new(BusInner {
@@ -223,6 +226,9 @@ impl SharedBus {
 
     /// Attach a fresh virtual participant. Dropping the returned [`LocalSink`]
     /// detaches the participant.
+    ///
+    /// # Panics
+    /// Panics if the bus state mutex is poisoned.
     #[must_use]
     pub fn attach_participant(&self) -> (LocalSink, LocalSource) {
         let (events_tx, events_rx) = mpsc::channel();
@@ -269,6 +275,9 @@ impl SharedBus {
     /// Dropping a `BridgeHandle` is therefore safe from any context
     /// including a tokio worker; callers that need a synchronous
     /// guarantee should drive their source to end-of-stream first.
+    ///
+    /// # Panics
+    /// Panics if the bus state mutex is poisoned.
     pub fn attach_bridge<S, R>(
         &self,
         name: &str,
@@ -353,6 +362,9 @@ impl SharedBus {
     /// Reconfigure the bus's bitrate / FD mode. Takes effect on the
     /// next arbitration round; the current `busy_until` is preserved
     /// so an in-flight frame is not retimed mid-transmission.
+    ///
+    /// # Panics
+    /// Panics if the bus state mutex is poisoned.
     pub fn reconfigure(&self, config: BusConfig) {
         let mut state = self.inner.state.lock().expect("bus state poisoned");
         state.config = config;
@@ -388,6 +400,9 @@ impl LocalSink {
     /// this whenever frames need to be considered together (e.g. when
     /// the wire's `FrameBatch` envelope carries several frames meant to
     /// arbitrate together against another participant's batch).
+    ///
+    /// # Panics
+    /// Panics if the bus state mutex is poisoned.
     pub fn submit_batch(&mut self, frames: Vec<CanFrame>) -> Result<(), BusClosed> {
         if frames.is_empty() {
             return Ok(());

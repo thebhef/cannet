@@ -173,7 +173,7 @@ fn batch_to_proto_tags_interface_id() {
 async fn batch_frames_flushes_when_count_cap_is_reached() {
     let policy = BatchPolicy {
         max_frames_per_batch: 4,
-        max_batch_latency: Duration::from_secs(60),
+        max_batch_latency: Duration::from_mins(1),
     };
     let frames: Vec<CanFrame> = (0u32..10)
         .map(|i| classic(u64::from(i), 0, 0x100 + i, Direction::Rx, vec![i.try_into().unwrap()]))
@@ -227,7 +227,7 @@ async fn batch_frames_flushes_when_latency_cap_elapses() {
 async fn batch_frames_flushes_remaining_at_end_of_input() {
     let policy = BatchPolicy {
         max_frames_per_batch: 100,
-        max_batch_latency: Duration::from_secs(60),
+        max_batch_latency: Duration::from_mins(1),
     };
     let frames: Vec<CanFrame> = (0u32..3)
         .map(|i| classic(u64::from(i), 0, 0x10, Direction::Rx, vec![i.try_into().unwrap()]))

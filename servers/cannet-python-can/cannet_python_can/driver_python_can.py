@@ -43,7 +43,6 @@ from .driver import (
     Channel,
     ControllerState,
     Frame,
-    OpenChannel,
     OpenConfig,
     STATE_ACTIVE,
     STATE_BUS_OFF,
@@ -150,13 +149,10 @@ class PythonCanChannel:
         if frame.is_error:
             return
         if frame.fd and not self._fd:
-            raise TxRejected(
-                f"FD frame on classic-mode bus {self.channel_id}"
-            )
+            raise TxRejected(f"FD frame on classic-mode bus {self.channel_id}")
         if frame.is_remote and self._fd:
             raise TxRejected(
-                f"remote (RTR) frame not supported on FD-mode bus "
-                f"{self.channel_id}"
+                f"remote (RTR) frame not supported on FD-mode bus {self.channel_id}"
             )
         if frame.is_remote:
             return
@@ -240,9 +236,15 @@ def _list_vector() -> List[Channel]:
         from can.interfaces.vector import xldefine  # type: ignore[import-untyped]
 
         fd_mask = int(
-            getattr(xldefine.XL_ChannelCapabilities, "XL_CHANNEL_FLAG_CANFD_BOSCH_SUPPORT", 0)
+            getattr(
+                xldefine.XL_ChannelCapabilities,
+                "XL_CHANNEL_FLAG_CANFD_BOSCH_SUPPORT",
+                0,
+            )
         ) | int(
-            getattr(xldefine.XL_ChannelCapabilities, "XL_CHANNEL_FLAG_CANFD_ISO_SUPPORT", 0)
+            getattr(
+                xldefine.XL_ChannelCapabilities, "XL_CHANNEL_FLAG_CANFD_ISO_SUPPORT", 0
+            )
         )
     except Exception:  # noqa: BLE001
         fd_mask = 0
@@ -408,9 +410,7 @@ def _list_pcan() -> List[Channel]:
         # user sees both "which port" (slot) and the underlying handle
         # integer / controller in one paren group. When there's no
         # named slot, the hex handle in `h:` already covers it.
-        display_meta = (
-            f"{handle_name}, {meta_str}" if handle_name else meta_str
-        )
+        display_meta = f"{handle_name}, {meta_str}" if handle_name else meta_str
 
         cid = f"pcan:{body}({meta_str})"
         label = f"PEAK {model} ({display_meta})"
@@ -540,7 +540,9 @@ def _disable_pcan_status_frames(bus) -> None:
     )
 
     bus.m_objPCANBasic.SetValue(
-        bus.m_PcanHandle, PCAN_ALLOW_STATUS_FRAMES, PCAN_PARAMETER_OFF,
+        bus.m_PcanHandle,
+        PCAN_ALLOW_STATUS_FRAMES,
+        PCAN_PARAMETER_OFF,
     )
 
 

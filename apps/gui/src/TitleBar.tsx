@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { invoke } from "@tauri-apps/api/core";
 
 // Import the SVG source so we can inline it into the DOM. Inlining is
 // what lets the title-bar CSS reach into the logo and override colors;
@@ -20,6 +21,19 @@ interface TitleBarProps {
 
 export function TitleBar({ pendingHwConfigBusNames = [] }: TitleBarProps = {}) {
   const [maximized, setMaximized] = useState(false);
+  const [version, setVersion] = useState("");
+
+  // The host stamps the binary with `git describe` at build time; show
+  // it next to the app name so an alpha build is identifiable on sight.
+  useEffect(() => {
+    let cancelled = false;
+    invoke<string>("app_version")
+      .then((v) => !cancelled && setVersion(v))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Track the maximized state so the middle button's icon stays in sync
   // with the actual window state, including when the user double-clicks
@@ -45,6 +59,11 @@ export function TitleBar({ pendingHwConfigBusNames = [] }: TitleBarProps = {}) {
         dangerouslySetInnerHTML={{ __html: logoSvg }}
       />
       <span className="titlebar-name" data-tauri-drag-region>cannet</span>
+      {version && (
+        <span className="titlebar-version" data-tauri-drag-region>
+          {version}
+        </span>
+      )}
       {pendingHwConfigBusNames.length > 0 && (
         <span className="titlebar-banner" role="status">
           Pending hardware config change for{" "}

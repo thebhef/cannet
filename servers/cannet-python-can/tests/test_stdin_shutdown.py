@@ -30,9 +30,7 @@ def _spawn_sidecar() -> subprocess.Popen[bytes]:
     deps (grpc, protobuf) are guaranteed to be importable.
     """
     env = os.environ.copy()
-    env["PYTHONPATH"] = (
-        str(_PKG_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
-    )
+    env["PYTHONPATH"] = str(_PKG_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
     return subprocess.Popen(
         [sys.executable, "-m", "cannet_python_can", "--bind", "127.0.0.1:0"],
         stdin=subprocess.PIPE,

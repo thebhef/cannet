@@ -15,6 +15,29 @@ the BLF as `GLOBAL_MARKER` records — no sidecar files per ADR 0010),
 and offers a Recent BLFs list in the toolbar. See
 [`plans/`](plans/) for the detailed roadmap.
 
+## Downloads
+
+Prebuilt **alpha** bundles are published to
+[GitHub Releases](https://github.com/thebhef/cannet/releases):
+
+| Platform                      | Artifact                      |
+|-------------------------------|-------------------------------|
+| macOS (Apple Silicon / arm64) | `.dmg` — drag to Applications |
+| Windows (x64)                 | `.msi` or NSIS `-setup.exe`   |
+
+These bundles are **unsigned**. On first launch:
+
+- **macOS:** Gatekeeper blocks an unsigned, un-notarized app — right-click
+  the app → **Open**, then confirm. (Or `xattr -dr com.apple.quarantine
+  /Applications/cannet.app`.)
+- **Windows:** SmartScreen shows a warning — click **More info → Run
+  anyway**.
+
+Signing/notarization is a planned follow-up. Building from source (below)
+avoids the warnings entirely. Live hardware / virtual-bus capture also
+needs `uv` present at runtime (see § `uv` resolution); BLF/file workflows
+work without it.
+
 ## Repository layout
 
 ```
@@ -130,16 +153,25 @@ plans/           Living planning docs (see CLAUDE.md).
 
 All platforms need:
 
-- **Rust** stable. Install via [rustup](https://rustup.rs/).
-- **Node.js** 20+. Recommended: install [Node.js 24 LTS](https://nodejs.org/en/download)
-  via the official installer or your platform's package manager.
-- **pnpm** 9+. Once Node is installed, the simplest install is
-  `npm install -g pnpm`. Alternatives:
-  [Corepack](https://nodejs.org/api/corepack.html) (`corepack enable && corepack prepare pnpm@latest --activate`),
-  the [standalone pnpm installers](https://pnpm.io/installation) (`curl -fsSL https://get.pnpm.io/install.sh | sh -`
+- **Rust**, installed via [rustup](https://rustup.rs/). The exact
+  toolchain is pinned in [`rust-toolchain.toml`](rust-toolchain.toml);
+  rustup reads it and auto-installs that version (and the `clippy` /
+  `rustfmt` components) the first time you run `cargo` in the repo, so
+  local builds and CI use the same compiler.
+- **Node.js**, version pinned in [`.node-version`](.node-version)
+  (currently 24.x; pnpm 11 requires ≥ 22.13). Version managers like
+  `fnm` / `nvm` / `asdf` read that file; otherwise install the matching
+  [Node.js](https://nodejs.org/en/download) release yourself. CI reads
+  the same file, so local and CI match.
+- **pnpm**, pinned via the `packageManager` field in
+  [`apps/gui/package.json`](apps/gui/package.json). The simplest way to
+  get the matching version is [Corepack](https://nodejs.org/api/corepack.html)
+  (`corepack enable`), which reads that field. Otherwise install pnpm
+  10+ manually via the
+  [standalone pnpm installers](https://pnpm.io/installation) (`curl -fsSL https://get.pnpm.io/install.sh | sh -`
   on macOS/Linux, `iwr https://get.pnpm.io/install.ps1 -useb | iex` on Windows PowerShell),
-  or your OS package manager (`brew install pnpm`, `winget install pnpm`, etc.).
-  Verify with `pnpm --version`.
+  `npm install -g pnpm`, or your OS package manager (`brew install pnpm`,
+  `winget install pnpm`, etc.). Verify with `pnpm --version`.
 
 **Optional, for Phase 8 vendor drivers (Vector / Kvaser / PEAK):**
 
@@ -1015,16 +1047,39 @@ The bare `cannet-gui` binary is **not** statically self-contained:
   and current Win10 ship it; older systems install it once.
 - **macOS:** uses the system WebKit framework; no extra runtime.
 
-Cross-platform builds aren't a thing today — produce each target on
-the matching OS (or via cross-compilation in CI).
+Tauri can't cross-compile — each target is built on the matching OS.
+The release workflow does this automatically: pushing a `vX.Y.Z` tag
+first runs the full CI suite, then (only if it passes) builds the macOS
+arm64 and Windows x64 bundles on native GitHub Actions runners and
+publishes them to a draft pre-release (see § Downloads and
+[`.github/workflows/release.yml`](.github/workflows/release.yml)). The
+committed version stays `0.0.0`; the binary stamps its own
+`git describe` version (shown in the title bar) and the installer takes
+its version from the tag.
 
 ## Tests and lint
+
+These run automatically on every pull request and push to main via
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml); run them locally
+with:
 
 ```sh
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 pnpm --dir apps/gui test           # frontend unit tests (vitest)
 pnpm --dir apps/gui build          # type-checks and bundles the frontend
+```
+
+The Python sidecar ([`servers/cannet-python-can`](servers/cannet-python-can))
+is checked with [ruff](https://docs.astral.sh/ruff/) (lint + format),
+[mypy](https://mypy-lang.org/), and pytest — run from that directory:
+
+```sh
+uv sync --extra dev
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy
+uv run pytest
 ```
 
 ## License
