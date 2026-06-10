@@ -37,6 +37,24 @@ struct SignalEntry {
     /// declared; `IEEEfloat32Bit` / `IEEEdouble64bit` switch the bit
     /// pattern from "scaled integer" to a real IEEE float.
     extended_type: SignalExtendedValueType,
+    /// `VAL_` table for this signal: pairs of `(raw_value, label)`,
+    /// sorted by raw value. Empty if the DBC defines no value table.
+    /// Looked up by [`decode_signal`] to populate
+    /// [`DecodedSignal::label`].
+    value_table: Vec<ValueTableEntry>,
+}
+
+/// One row of a signal's `VAL_` value table: a raw value and its
+/// symbolic label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValueTableEntry {
+    /// Raw value (the same domain as
+    /// [`DecodedSignal::raw_unsigned`] / [`DecodedSignal::raw_signed`]).
+    /// Stored as `i64` to match `can-dbc`'s API; signed signals use
+    /// negative entries, unsigned signals re-cast at the call site.
+    pub raw: i64,
+    /// Symbolic name for `raw`. Quoted in the DBC; stripped on parse.
+    pub label: String,
 }
 
 impl Database {
@@ -82,9 +100,26 @@ impl Database {
                     if let Some(full) = long_signal_names.get(&(msg.id, s.name.clone())) {
                         signal.name.clone_from(full);
                     }
+                    // `VAL_` lookups in `can-dbc` key on the original
+                    // (short) signal name, the same as `SIG_VALTYPE_`.
+                    let value_table = dbc
+                        .value_descriptions_for_signal(msg.id, &s.name)
+                        .map(|entries| {
+                            let mut v: Vec<ValueTableEntry> = entries
+                                .iter()
+                                .map(|e| ValueTableEntry {
+                                    raw: e.id,
+                                    label: e.description.clone(),
+                                })
+                                .collect();
+                            v.sort_by_key(|e| e.raw);
+                            v
+                        })
+                        .unwrap_or_default();
                     SignalEntry {
                         signal,
                         extended_type,
+                        value_table,
                     }
                 })
                 .collect();
@@ -127,6 +162,7 @@ impl Database {
                     message_name: entry.name.clone(),
                     signal_name: sig.signal.name.clone(),
                     unit: sig.signal.unit.clone(),
+                    has_value_table: !sig.value_table.is_empty(),
                 })
             })
             .collect();
@@ -136,6 +172,35 @@ impl Database {
                 .then_with(|| a.signal_name.cmp(&b.signal_name))
         });
         out
+    }
+
+    /// Look up the `VAL_` table for one `(message_id, extended,
+    /// signal_name)`. Returns `None` if no such signal exists or it has
+    /// no value table. Rows are sorted by raw value.
+    ///
+    /// Used by the plot panel's axis-tick rendering and the transmit
+    /// panel's enum-signal dropdown — a separate call once per signal,
+    /// because the same table doesn't have to ride along on every
+    /// decoded frame.
+    #[must_use]
+    pub fn value_table_for_signal(
+        &self,
+        message_id: u32,
+        extended: bool,
+        signal_name: &str,
+    ) -> Option<&[ValueTableEntry]> {
+        let key = canid_to_message_id(if extended {
+            cannet_core::CanId::extended(message_id).ok()?
+        } else {
+            cannet_core::CanId::standard(message_id).ok()?
+        })?;
+        let entry = self.messages.get(&key)?;
+        let sig = entry.signals.iter().find(|s| s.signal.name == signal_name)?;
+        if sig.value_table.is_empty() {
+            None
+        } else {
+            Some(&sig.value_table)
+        }
     }
 
     /// Decode `frame` against this database. Returns `None` if no message
@@ -255,12 +320,29 @@ fn decode_signal<'a>(entry: &'a SignalEntry, data: &[u8]) -> Option<DecodedSigna
         _ => (raw_unsigned as f64).mul_add(sig.factor, sig.offset),
     };
 
+    // Resolve the value-table label, if any. Signed signals compare
+    // against `raw_signed`; unsigned against `raw_unsigned` widened to
+    // `i64` (signal sizes are <=64 bits; values above `i64::MAX` would
+    // never match a DBC `VAL_` row anyway since `can-dbc` parses them
+    // as `i64`).
+    let lookup_key: i64 = if sig.value_type == ValueType::Signed {
+        raw_signed
+    } else {
+        i64::try_from(raw_unsigned).unwrap_or(i64::MAX)
+    };
+    let label = entry
+        .value_table
+        .iter()
+        .find(|e| e.raw == lookup_key)
+        .map(|e| e.label.as_str());
+
     Some(DecodedSignal {
         name: &sig.name,
         unit: &sig.unit,
         raw_unsigned,
         raw_signed,
         value: physical,
+        label,
     })
 }
 
@@ -276,6 +358,12 @@ pub struct DecodedMessage<'a> {
 
 /// A decoded signal value with both its raw bit-pattern and its physical
 /// value (raw * factor + offset).
+///
+/// `label` is `Some(&str)` only if the DBC's `VAL_` table for this
+/// signal has a row matching the decoded raw value (signed vs.
+/// unsigned chosen by the signal's `@…+` / `@…-` flag); otherwise
+/// `None`. The trace view and transmit panel use `label` to render
+/// enum signals symbolically.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DecodedSignal<'a> {
     pub name: &'a str,
@@ -283,6 +371,7 @@ pub struct DecodedSignal<'a> {
     pub raw_unsigned: u64,
     pub raw_signed: i64,
     pub value: f64,
+    pub label: Option<&'a str>,
 }
 
 /// A `(message, signal)` pair available for plotting / picking.
@@ -295,6 +384,12 @@ pub struct SignalDescriptor {
     pub message_name: String,
     pub signal_name: String,
     pub unit: String,
+    /// True if the DBC defines a `VAL_` table for this signal — i.e.
+    /// it's an enum / state signal whose decoded value should be
+    /// rendered symbolically. A picker / plotter can use this without a
+    /// separate `value_table` round-trip to decide between numeric and
+    /// symbolic rendering.
+    pub has_value_table: bool,
 }
 
 #[derive(Debug)]
@@ -573,6 +668,81 @@ BA_ "SystemSignalLongSymbol" SG_ 256 ShortSig "AVeryLongSignalNameThatExceedsThi
             decoded.signals.iter().map(|s| s.name).collect::<Vec<_>>(),
             vec!["AVeryLongSignalNameThatExceedsThirtyTwoChars"],
         );
+    }
+
+    const VAL_DBC: &str = r#"VERSION ""
+
+NS_ :
+
+BS_:
+
+BU_: ECU1
+
+BO_ 256 Gear: 8 ECU1
+ SG_ Mode : 0|8@1+ (1,0) [0|0] "" ECU1
+ SG_ Direction : 8|8@1- (1,0) [-1|1] "" ECU1
+ SG_ Rpm : 16|16@1+ (1,0) [0|0] "rpm" ECU1
+
+VAL_ 256 Mode 0 "Park" 1 "Reverse" 2 "Neutral" 3 "Drive" ;
+VAL_ 256 Direction -1 "Backward" 0 "Stopped" 1 "Forward" ;
+"#;
+
+    #[test]
+    fn decoded_signal_carries_value_table_label_for_unsigned() {
+        let db = Database::parse(VAL_DBC).unwrap();
+        // Mode = byte 0 = 3 -> "Drive"
+        let frame = make_frame(256, false, vec![3, 0, 0, 0, 0, 0, 0, 0]);
+        let decoded = db.decode(&frame).unwrap();
+        let mode = signal_by_name(&decoded, "Mode");
+        assert_eq!(mode.label, Some("Drive"));
+        let rpm = signal_by_name(&decoded, "Rpm");
+        assert_eq!(rpm.label, None, "no value table -> no label");
+    }
+
+    #[test]
+    fn decoded_signal_carries_value_table_label_for_signed_negative() {
+        let db = Database::parse(VAL_DBC).unwrap();
+        // Direction = byte 1 = 0xFF -> -1 -> "Backward"
+        let frame = make_frame(256, false, vec![0, 0xFF, 0, 0, 0, 0, 0, 0]);
+        let decoded = db.decode(&frame).unwrap();
+        let dir = signal_by_name(&decoded, "Direction");
+        assert_eq!(dir.label, Some("Backward"));
+    }
+
+    #[test]
+    fn decoded_signal_label_is_none_for_unmapped_value() {
+        let db = Database::parse(VAL_DBC).unwrap();
+        // Mode = 99 -> no VAL_ row -> no label
+        let frame = make_frame(256, false, vec![99, 0, 0, 0, 0, 0, 0, 0]);
+        let decoded = db.decode(&frame).unwrap();
+        assert_eq!(signal_by_name(&decoded, "Mode").label, None);
+    }
+
+    #[test]
+    fn signals_descriptor_marks_value_table_presence() {
+        let db = Database::parse(VAL_DBC).unwrap();
+        let sigs = db.signals();
+        let mode = sigs.iter().find(|s| s.signal_name == "Mode").unwrap();
+        assert!(mode.has_value_table);
+        let rpm = sigs.iter().find(|s| s.signal_name == "Rpm").unwrap();
+        assert!(!rpm.has_value_table);
+    }
+
+    #[test]
+    fn value_table_for_signal_returns_sorted_rows() {
+        let db = Database::parse(VAL_DBC).unwrap();
+        let rows = db.value_table_for_signal(256, false, "Mode").unwrap();
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0].raw, 0);
+        assert_eq!(rows[0].label, "Park");
+        assert_eq!(rows[3].raw, 3);
+        assert_eq!(rows[3].label, "Drive");
+        // Signed table: rows sorted ascending, including the negative one.
+        let signed = db.value_table_for_signal(256, false, "Direction").unwrap();
+        assert_eq!(signed.iter().map(|e| e.raw).collect::<Vec<_>>(), vec![-1, 0, 1]);
+        // No table -> None.
+        assert!(db.value_table_for_signal(256, false, "Rpm").is_none());
+        assert!(db.value_table_for_signal(999, false, "Mode").is_none());
     }
 
     #[test]

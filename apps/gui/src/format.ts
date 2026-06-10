@@ -50,3 +50,17 @@ export function formatSignalValue(value: number, unit: string): string {
     : value.toFixed(3).replace(/\.?0+$/, "");
   return unit ? `${formatted} ${unit}` : formatted;
 }
+
+/// Render a decoded signal with its `VAL_` label suffix when one is
+/// present: `<value> "<label>"`. Mirrors what a typical CAN analyzer
+/// shows for enum signals, leaving the numeric value visible alongside
+/// the symbolic name so a user can still see "this raw value happens
+/// to be 3" while reading "Drive".
+export function formatSignalValueWithLabel(
+  value: number,
+  unit: string,
+  label: string | null | undefined,
+): string {
+  const numeric = formatSignalValue(value, unit);
+  return label ? `${numeric} "${label}"` : numeric;
+}

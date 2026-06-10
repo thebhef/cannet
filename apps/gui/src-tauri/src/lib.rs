@@ -48,7 +48,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use cannet_blf::BlfCanFrameSource;
-use cannet_client::{SessionHandle, Subscription};
+use cannet_client::{SessionHandle, SessionTransmitter, Subscription};
 use cannet_core::{CanFrameSource, CanId};
 use cannet_dbc::{Database, DecodedSignal};
 
@@ -65,6 +65,25 @@ use trace_store::{RawTraceFrame, TraceStore};
 struct LoadedDbc {
     path: String,
     db: Database,
+}
+
+/// State for an active remote session — see
+/// [`AppState::remote_session`] for the full role.
+#[allow(dead_code)]
+struct RemoteSession {
+    /// Drop-to-disconnect handle. Read by `disconnect_remote_server`
+    /// only; the rest of the file just keeps it alive in the slot.
+    handle: SessionHandle,
+    /// Submitting end of the session — what the `transmit_frame`
+    /// command pushes onto. Populated in this commit; consumed in
+    /// the next.
+    transmitter: SessionTransmitter,
+    /// `channel -> wire interface_id` for every subscription opened
+    /// when the session was established. The transmit-panel command
+    /// uses this to translate a frame's `channel` to the wire id the
+    /// `FrameBatch` envelope must carry.
+    channel_to_interface: Vec<(u8, String)>,
+    stop: Arc<AtomicBool>,
 }
 
 /// How often the host pushes a `trace-grew` IPC event with the latest
@@ -86,13 +105,17 @@ struct AppState {
     /// by `add_dbc` / `remove_dbc` / `clear_dbcs`. (Only one interface
     /// exists for now, so every loaded DBC applies to it.)
     databases: Mutex<Vec<LoadedDbc>>,
-    /// Active remote session, if any: the gRPC [`SessionHandle`] plus a
-    /// stop flag the pump thread watches. `disconnect_remote_server`
-    /// takes both out, sets the flag, and drops the handle — the flag
-    /// makes the pump exit promptly instead of first draining whatever
-    /// frames the gRPC task already buffered, and dropping the handle
-    /// closes the stream. The pump thread clears this slot on exit.
-    remote_session: Mutex<Option<(SessionHandle, Arc<AtomicBool>)>>,
+    /// Active remote session, if any: the gRPC [`SessionHandle`] (drop
+    /// to disconnect), a [`SessionTransmitter`] the transmit panel
+    /// uses to push frames over the wire, the interfaces the session
+    /// is subscribed to (so the transmit-panel command can pick the
+    /// right `interface_id` for a chosen channel), and a stop flag the
+    /// pump thread watches. `disconnect_remote_server` takes everything
+    /// out, sets the flag, and drops the handle — the flag makes the
+    /// pump exit promptly instead of first draining whatever frames the
+    /// gRPC task already buffered, and dropping the handle closes the
+    /// stream. The pump thread clears this slot on exit.
+    remote_session: Mutex<Option<RemoteSession>>,
     /// The trace model — the single source of truth for the captured
     /// stream. Pump threads append; `fetch_trace_range` reads slices
     /// out for the trace view to render.
@@ -136,6 +159,8 @@ pub fn run() {
             project::save_project,
             list_signals,
             sample_signals,
+            transmit_frame,
+            list_value_tables,
         ])
         .setup(|app| {
             // Make sure the main window has the id our capabilities expect.
@@ -620,7 +645,7 @@ async fn connect_remote_server(
     .map_err(|e| format!("subscribe task panicked: {e}"))?
     .map_err(|e| e.to_string())?;
 
-    let (handle, receiver) = source.into_parts();
+    let (handle, receiver, transmitter) = source.into_parts();
     let stop = Arc::new(AtomicBool::new(false));
 
     {
@@ -634,7 +659,15 @@ async fn connect_remote_server(
             // just spawned. Subsequent pump-thread spawn is skipped.
             return Err("already connected to a remote server".into());
         }
-        *guard = Some((handle, Arc::clone(&stop)));
+        *guard = Some(RemoteSession {
+            handle,
+            transmitter,
+            channel_to_interface: subscriptions
+                .iter()
+                .map(|s| (s.channel, s.interface_id.clone()))
+                .collect(),
+            stop: Arc::clone(&stop),
+        });
     }
 
     let app_for_thread = app.clone();
@@ -680,9 +713,12 @@ fn disconnect_remote_server(state: State<'_, AppState>) {
         .lock()
         .expect("remote_session mutex poisoned")
         .take();
-    if let Some((handle, stop)) = session {
-        stop.store(true, Ordering::Relaxed);
-        drop(handle);
+    if let Some(session) = session {
+        session.stop.store(true, Ordering::Relaxed);
+        // Dropping the handle signals the worker to disconnect; the
+        // transmitter goes with it, so subsequent transmit_frame calls
+        // see SessionClosed.
+        drop(session);
     }
 }
 
@@ -722,11 +758,147 @@ where
     let _ = app.emit("log-finished", LogFinished::Ok { total });
 }
 
+/// Compose a frame from the transmit panel, append it to the trace as
+/// a `Tx`-direction tx-confirm row (always, even with no remote
+/// session — that's what a real analyzer shows for its own
+/// transmits), and — if a remote session is open — forward it onto
+/// the wire too. Server-side rejection (e.g. the BLF replay
+/// server's `Error::TX_REJECTED`) surfaces inline through the receive
+/// pump as a `ConnectionError::Server`; this command's
+/// `wire_status` only reports the *enqueue* outcome.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn transmit_frame(
+    state: State<'_, AppState>,
+    request: ipc::TransmitRequest,
+) -> Result<ipc::TransmitResult, String> {
+    transmit_frame_inner(state.inner(), &request)
+}
+
+fn transmit_frame_inner(
+    state: &AppState,
+    request: &ipc::TransmitRequest,
+) -> Result<ipc::TransmitResult, String> {
+    let id = if request.extended {
+        CanId::extended(request.id).map_err(|e| format!("invalid extended id: {e}"))?
+    } else {
+        CanId::standard(request.id).map_err(|e| format!("invalid standard id: {e}"))?
+    };
+    // Best-effort monotonic timestamp tied to the host's clock — for a
+    // tx-confirm the analyzer's wall-time stamp is what we want.
+    let timestamp_ns = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
+        .unwrap_or(0);
+    let frame = match request.kind {
+        ipc::TransmitKind::Classic => cannet_core::CanFrame::classic(
+            timestamp_ns,
+            request.channel,
+            id,
+            cannet_core::Direction::Tx,
+            request.data.clone(),
+        )
+        .map_err(|e| format!("invalid classic frame: {e}"))?,
+        ipc::TransmitKind::Fd => cannet_core::CanFrame::fd(
+            timestamp_ns,
+            request.channel,
+            id,
+            cannet_core::Direction::Tx,
+            request.data.clone(),
+            cannet_core::CanFdFlags {
+                bitrate_switch: request.brs,
+                error_state_indicator: request.esi,
+            },
+        )
+        .map_err(|e| format!("invalid FD frame: {e}"))?,
+        ipc::TransmitKind::Remote => cannet_core::CanFrame::remote(
+            timestamp_ns,
+            request.channel,
+            id,
+            cannet_core::Direction::Tx,
+            request.dlc,
+        ),
+        ipc::TransmitKind::Error => {
+            cannet_core::CanFrame::error(timestamp_ns, request.channel, id, cannet_core::Direction::Tx)
+        }
+    };
+
+    // Append the tx-confirm. The next `trace-grew` tick carries the
+    // updated count and (a tail including) this row to the frontend.
+    state.trace_store.append(RawTraceFrame::from(frame.clone()));
+    let tx_confirm_index = u64::try_from(state.trace_store.len()).unwrap_or(u64::MAX) - 1;
+
+    // Forward to the remote session, if any.
+    let session_guard = state
+        .remote_session
+        .lock()
+        .expect("remote_session mutex poisoned");
+    let wire_status = match session_guard.as_ref() {
+        None => ipc::TransmitWireStatus::NotConnected,
+        Some(session) => 'wire: {
+            let Some((_, interface_id)) = session
+                .channel_to_interface
+                .iter()
+                .find(|(ch, _)| *ch == request.channel)
+            else {
+                break 'wire ipc::TransmitWireStatus::Failed {
+                    message: format!(
+                        "channel {} is not bound to any wire interface",
+                        request.channel
+                    ),
+                };
+            };
+            let interface_id = interface_id.clone();
+            match session.transmitter.transmit(&interface_id, &frame) {
+                Ok(()) => ipc::TransmitWireStatus::Sent { interface_id },
+                Err(e) => ipc::TransmitWireStatus::Failed {
+                    message: e.to_string(),
+                },
+            }
+        }
+    };
+
+    Ok(ipc::TransmitResult {
+        tx_confirm_index,
+        wire_status,
+    })
+}
+
+/// Look up the full `VAL_` table for one DBC signal across every
+/// loaded DBC, first-match-wins. Returns an empty vec if no DBC has
+/// a value table for the requested signal. The plot panel's symbolic
+/// y-axis ticks and the transmit panel's enum dropdown call this
+/// once per signal — the table doesn't have to ride along on every
+/// decoded frame.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn list_value_tables(
+    state: State<'_, AppState>,
+    message_id: u32,
+    extended: bool,
+    signal_name: String,
+) -> Vec<ipc::ValueTableEntryRecord> {
+    let dbs = state.databases.lock().expect("databases mutex poisoned");
+    for loaded in dbs.iter() {
+        if let Some(rows) = loaded.db.value_table_for_signal(message_id, extended, &signal_name) {
+            return rows
+                .iter()
+                .map(|e| ipc::ValueTableEntryRecord {
+                    raw: e.raw,
+                    label: e.label.clone(),
+                })
+                .collect();
+        }
+    }
+    Vec::new()
+}
+
 fn signal_to_wire(sig: &DecodedSignal<'_>) -> SignalRecord {
     SignalRecord {
         name: sig.name.to_string(),
         value: sig.value,
         unit: sig.unit.to_string(),
+        label: sig.label.map(str::to_string),
     }
 }
 
@@ -839,5 +1011,52 @@ mod tests {
         assert_eq!(tail.last().map(|r| r.index), Some(9));
         // Entirely past the end -> empty.
         assert!(collect_trace_records(&state, 20, 30).is_empty());
+    }
+
+    #[test]
+    fn transmit_frame_inner_appends_tx_confirm_when_not_connected() {
+        let state = test_state();
+        let req = ipc::TransmitRequest {
+            channel: 0,
+            id: 0x123,
+            extended: false,
+            kind: ipc::TransmitKind::Classic,
+            data: vec![1, 2, 3, 4],
+            brs: false,
+            esi: false,
+            dlc: 0,
+        };
+        let result = transmit_frame_inner(&state, &req).unwrap();
+        assert_eq!(result.tx_confirm_index, 0);
+        assert!(
+            matches!(result.wire_status, ipc::TransmitWireStatus::NotConnected),
+            "expected NotConnected, got {:?}",
+            result.wire_status,
+        );
+        // The trace store now has exactly one frame, with Direction::Tx
+        // and the payload we asked for.
+        assert_eq!(state.trace_store.len(), 1);
+        let only = state.trace_store.slice(0, 1).pop().unwrap();
+        assert_eq!(only.direction, Direction::Tx);
+        assert_eq!(only.id, 0x123);
+        assert!(matches!(&only.payload, CanFramePayload::Classic(d) if d == &[1, 2, 3, 4]));
+    }
+
+    #[test]
+    fn transmit_frame_inner_rejects_invalid_id() {
+        let state = test_state();
+        let req = ipc::TransmitRequest {
+            channel: 0,
+            id: 0xFFFF,
+            extended: false,
+            kind: ipc::TransmitKind::Classic,
+            data: vec![],
+            brs: false,
+            esi: false,
+            dlc: 0,
+        };
+        assert!(transmit_frame_inner(&state, &req).is_err());
+        // And the trace store was not appended to.
+        assert_eq!(state.trace_store.len(), 0);
     }
 }
