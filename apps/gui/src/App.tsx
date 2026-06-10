@@ -11,6 +11,7 @@ import type {
   LogFinished,
   OpenLogResult,
   Project,
+  ProjectElementKind,
   RemoteSessionResult,
   TraceFrameRecord,
   TraceGrew,
@@ -19,6 +20,7 @@ import { PROJECT_SCHEMA_VERSION } from "./types";
 import { TitleBar } from "./TitleBar";
 import { TracePanel } from "./TracePanel";
 import { ProjectPanel } from "./ProjectPanel";
+import { PlotPanel } from "./PlotPanel";
 import { TraceDataContext, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { CloseConfirmModal, type CloseChoice } from "./CloseConfirmModal";
@@ -28,11 +30,12 @@ import {
   type RegistryEntry,
   isProjectElement,
 } from "./projectElements";
-import { type TraceState, clearedTrace, reanchorToSession } from "./trace";
+import { type TraceState, clearedTrace, freshTrace, reanchorToSession } from "./trace";
 import {
   BY_ID_PANEL_COMPONENT,
   LAST_PROJECT_KEY,
   LAYOUT_STORAGE_KEY,
+  PLOT_PANEL_COMPONENT,
   PROJECT_PANEL_COMPONENT,
   TRACE_PANEL_COMPONENT,
   parseSavedLayout,
@@ -69,6 +72,7 @@ const DOCK_COMPONENTS = {
   [TRACE_PANEL_COMPONENT]: TracePanel,
   [BY_ID_PANEL_COMPONENT]: TracePanel,
   [PROJECT_PANEL_COMPONENT]: ProjectPanel,
+  [PLOT_PANEL_COMPONENT]: PlotPanel,
 };
 
 /// The project panel is a show/hide singleton — a fixed dockview id so
@@ -122,33 +126,36 @@ export function App() {
 
   // The dockview layout API, populated once `onReady` fires.
   const dockApiRef = useRef<DockviewApi | null>(null);
-  // Monotonic counter for "Trace N" panel titles.
+  // Monotonic counters for "Trace N" / "Plot N" panel titles.
   const panelCounterRef = useRef(0);
   // Current `dirty` / `handleSaveProject`, read by the (once-registered)
   // close-on-quit handler. Updated on every render below.
   const dirtyRef = useRef(false);
   const handleSaveProjectRef = useRef<() => Promise<boolean>>(() => Promise.resolve(false));
-  // Current session frame count, mirrored into a ref so `createTrace` /
-  // `ensureTrace` can anchor a new (empty, stopped) trace at *now*
+  // Current session frame count, mirrored into a ref so `create` /
+  // `ensure` can anchor a new (empty, stopped) trace at *now*
   // without taking `count` as a dependency (it changes every tick).
   const countRef = useRef(0);
   countRef.current = count;
 
   // --- element registry ops ---
-  const createTrace = useCallback((): string => {
+  const create = useCallback((kind: ProjectElementKind): string => {
     const id = crypto.randomUUID();
     setRegistry((prev) => [
       ...prev,
-      { element: { kind: "trace", id }, trace: clearedTrace(countRef.current) },
+      { element: { kind, id }, trace: clearedTrace(countRef.current) },
     ]);
     return id;
   }, []);
-  const ensureTrace = useCallback((id: string) => {
-    setRegistry((prev) =>
-      prev.some((e) => e.element.id === id)
-        ? prev
-        : [...prev, { element: { kind: "trace", id }, trace: clearedTrace(countRef.current) }],
-    );
+  const ensure = useCallback((id: string, kind: ProjectElementKind) => {
+    setRegistry((prev) => {
+      const i = prev.findIndex((e) => e.element.id === id);
+      if (i < 0) return [...prev, { element: { kind, id }, trace: clearedTrace(countRef.current) }];
+      if (prev[i].element.kind === kind) return prev;
+      const next = prev.slice();
+      next[i] = { ...next[i], element: { kind, id } };
+      return next;
+    });
   }, []);
   const updateTrace = useCallback((id: string, updater: (s: TraceState) => TraceState) => {
     setRegistry((prev) => {
@@ -171,6 +178,7 @@ export function App() {
     );
     if (api && panel) api.removePanel(panel);
   }, []);
+  const plotCounterRef = useRef(0);
 
   const invalidateCache = useCallback(() => {
     chunkCacheRef.current.clear();
@@ -179,6 +187,16 @@ export function App() {
     tailFramesRef.current = [];
     tailStartRef.current = 0;
     setVersion((v) => v + 1);
+  }, []);
+
+  // (Re)starting the session buffer — opening a BLF, connecting to a
+  // server, or Clear — also (re)starts every trace / plot element:
+  // they all anchor at 0 and run, following the new capture from its
+  // start. (A trace/plot *created* mid-session still starts stopped —
+  // see `create` — so it doesn't retroactively span the buffer; this is
+  // about the session-start event itself.)
+  const startAllElements = useCallback(() => {
+    setRegistry((prev) => prev.map((e) => ({ ...e, trace: freshTrace(0) })));
   }, []);
 
   const refreshChunk = useCallback(async (chunkIdx: number) => {
@@ -317,6 +335,8 @@ export function App() {
       await invoke("clear_trace_store");
       invalidateCache();
       setBaseTimestampSeconds(null);
+      setCount(0);
+      startAllElements();
       const result = await invoke<OpenLogResult>("open_log", {
         blfPath: selected,
       });
@@ -324,7 +344,7 @@ export function App() {
     } catch (err) {
       setState({ kind: "error", message: String(err) });
     }
-  }, [invalidateCache]);
+  }, [invalidateCache, startAllElements]);
 
   // Add one or more DBCs to the loaded set (each goes through the host's
   // `add_dbc`, which appends — or reloads in place if the path is
@@ -401,7 +421,8 @@ export function App() {
     invalidateCache();
     setBaseTimestampSeconds(null);
     setCount(0);
-  }, [invalidateCache]);
+    startAllElements();
+  }, [invalidateCache, startAllElements]);
 
   const handleConnect = useCallback(async () => {
     const address = remoteAddress.trim();
@@ -411,6 +432,8 @@ export function App() {
       await invoke("clear_trace_store");
       invalidateCache();
       setBaseTimestampSeconds(null);
+      setCount(0);
+      startAllElements();
       setState({ kind: "remote-connecting", address });
       const result = await invoke<RemoteSessionResult>("connect_remote_server", {
         address,
@@ -419,7 +442,7 @@ export function App() {
     } catch (err) {
       setState({ kind: "error", message: String(err) });
     }
-  }, [remoteAddress, invalidateCache]);
+  }, [remoteAddress, invalidateCache, startAllElements]);
 
   const handleDisconnect = useCallback(async () => {
     try {
@@ -437,7 +460,7 @@ export function App() {
     const api = dockApiRef.current;
     if (!api) return;
     setRegistry([]);
-    const elementId = createTrace();
+    const elementId = create("trace");
     api.clear();
     api.addPanel({
       id: `trace-${elementId}`,
@@ -454,7 +477,7 @@ export function App() {
       position: { direction: "left" },
     });
     panelCounterRef.current = 1;
-  }, [createTrace]);
+  }, [create]);
 
   /// Snapshot the current workspace into a `Project` (the elements, not
   /// their runtime state — that re-anchors on reload).
@@ -642,7 +665,7 @@ export function App() {
   const addTracePanel = useCallback(() => {
     const api = dockApiRef.current;
     if (!api) return;
-    const elementId = createTrace();
+    const elementId = create("trace");
     panelCounterRef.current += 1;
     // A new trace starts in by-id mode (toggle it in the panel toolbar).
     api.addPanel({
@@ -651,7 +674,20 @@ export function App() {
       title: `Trace ${panelCounterRef.current}`,
       params: { elementId, mode: "by-id" },
     });
-  }, [createTrace]);
+  }, [create]);
+
+  const addPlotPanel = useCallback(() => {
+    const api = dockApiRef.current;
+    if (!api) return;
+    const elementId = create("plot");
+    plotCounterRef.current += 1;
+    api.addPanel({
+      id: `plot-${elementId}`,
+      component: PLOT_PANEL_COMPONENT,
+      title: `Plot ${plotCounterRef.current}`,
+      params: { elementId },
+    });
+  }, [create]);
 
   const toggleProjectPanel = useCallback(() => {
     const api = dockApiRef.current;
@@ -737,12 +773,12 @@ export function App() {
     () => ({
       entries: registry,
       get: (id) => registry.find((e) => e.element.id === id),
-      createTrace,
-      ensureTrace,
+      create,
+      ensure,
       updateTrace,
       remove: removeElement,
     }),
-    [registry, createTrace, ensureTrace, updateTrace, removeElement],
+    [registry, create, ensure, updateTrace, removeElement],
   );
 
   const remoteConnected =
@@ -826,6 +862,7 @@ export function App() {
           </button>
           <span className="toolbar-separator" aria-hidden="true" />
           <button onClick={addTracePanel}>Add trace</button>
+          <button onClick={addPlotPanel}>Add plot panel</button>
           <button onClick={toggleProjectPanel}>Project panel</button>
         </div>
         <div className="status">{status}</div>

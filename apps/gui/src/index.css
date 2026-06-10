@@ -583,3 +583,512 @@ header {
 .signal-value {
   color: #fde68a;
 }
+
+/* Plot panel ------------------------------------------------------------*/
+.plot-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.plot-panel-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.6rem;
+  flex: 0 0 auto;
+  border-bottom: 1px solid #1f2630;
+  /* The readout on the right changes width as numbers fluctuate; if
+   * the toolbar were allowed to wrap, the wrap toggle would resize the
+   * plot area underneath every tick — visible as a vertical "wiggle"
+   * on the plot. Keep one row; if it doesn't fit horizontally, let the
+   * readout clip rather than push controls to a second row. */
+  flex-wrap: nowrap;
+  overflow-x: hidden;
+}
+
+.plot-panel-toolbar select,
+.plot-panel-toolbar button {
+  background: #0f141d;
+  color: #e2e8f0;
+  border: 1px solid #2c3444;
+  border-radius: 4px;
+  padding: 0.15rem 0.4rem;
+  font: inherit;
+  font-size: 0.82rem;
+}
+
+.plot-panel-toolbar label.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  user-select: none;
+  font-size: 0.85rem;
+}
+
+/* The stack of plot areas fills the rest of the panel; if there are
+   more areas than fit at their minimum height it scrolls. */
+.plot-panel-areas {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+/* One plot area: a uPlot canvas on the left, a side signal panel on
+   the right. One area fills the stack; N areas split it evenly, each
+   clamped to a usable minimum. The canvas's ResizeObserver follows
+   whatever height it gets. */
+.plot-area {
+  display: flex;
+  flex: 1 1 0;
+  min-height: 90px;
+  border-bottom: 1px solid #1f2630;
+}
+.plot-area:last-child {
+  border-bottom: none;
+}
+
+.plot-area-ycursors {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.1rem 0.4rem;
+  border-bottom: 1px dotted #1c252b;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  color: #94a3b8;
+}
+.plot-area-ycursors .gold {
+  color: #ffd93d;
+}
+.plot-area-ycursors .pink {
+  color: #ff5577;
+}
+
+.plot-event-edit {
+  flex: 1 1 auto;
+  background: #0f141d;
+  color: #e2e8f0;
+  border: 1px solid #2c3444;
+  border-radius: 3px;
+  font: inherit;
+  font-size: 0.74rem;
+  padding: 0 0.2rem;
+}
+
+.plot-area.focused {
+  box-shadow: inset 2px 0 0 #4ecbff;
+}
+
+.plot-area-canvas {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  /* Isolate layout: uPlot's setSize on every redraw changes the
+   * inner canvas's CSS dimensions; without containment the browser
+   * can re-flow the flex parents on each tick and the plot area
+   * twitches by a pixel or two. */
+  contain: layout;
+}
+
+.plot-area-signals {
+  /* `flex-basis` is set inline from the user-resized pixel width. */
+  flex: 0 0 220px;
+  border-left: 1px solid #1f2630;
+  background: #0d1114;
+  overflow-y: auto;
+  font-size: 0.78rem;
+}
+
+/* Drag handle between the canvas and the side panel — narrow column
+ * the user grabs to widen the side panel (useful when the per-signal
+ * diagnostic readouts overflow). */
+.plot-area-resizer {
+  flex: 0 0 4px;
+  cursor: col-resize;
+  background: transparent;
+  /* Catch hovers a few pixels either side of the actual handle so it's
+   * easier to grab without precise aiming. */
+  margin: 0 -2px;
+  z-index: 1;
+}
+.plot-area-resizer:hover,
+.plot-area-resizer:active {
+  background: #2c3444;
+}
+
+.plot-area-signals-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.2rem 0.4rem;
+  border-bottom: 1px solid #1f2630;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.66rem;
+}
+
+.plot-area-remove,
+.plot-signal-remove {
+  background: none;
+  border: none;
+  color: #64748b;
+  cursor: pointer;
+  font-size: 0.9rem;
+  line-height: 1;
+  padding: 0 0.1rem;
+}
+
+.plot-area-remove:hover,
+.plot-signal-remove:hover {
+  color: #ff5577;
+}
+
+.plot-area-empty {
+  padding: 0.4rem;
+  color: #64748b;
+  font-style: italic;
+}
+
+/* Two-row layout per signal: signal name (large) + value on top, message
+ * name (small) + delta/diagnostic on the second row. Grid columns: the
+ * swatch (auto), the name / message column (flexes), the readout
+ * column (auto, right-aligned), and the remove × (auto). The swatch
+ * and × span both rows so the text and readout columns can stack
+ * independently. */
+.plot-signal-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: start;
+  column-gap: 0.4rem;
+  row-gap: 0.05rem;
+  padding: 0.25rem 0.4rem;
+  border-bottom: 1px dotted #1c252b;
+  cursor: grab;
+}
+.plot-signal-row:active {
+  cursor: grabbing;
+}
+/* Highlights the signal whose raw range / unit drives the y-axis
+ * labels for this plot area. Click a non-primary row to promote it. */
+.plot-signal-row.primary {
+  background: #131e29;
+  box-shadow: inset 2px 0 0 #4ecbff;
+}
+
+/* The swatch doubles as the show/hide toggle. Pinned to the top row
+ * (aligns with the signal name) so it doesn't drift down on rows that
+ * grow a diagnostic line. */
+.plot-signal-swatch {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  padding: 0;
+  cursor: pointer;
+  margin-top: 0.25rem;
+}
+.plot-signal-swatch.hidden {
+  opacity: 0.25;
+}
+
+/* Left text column: signal name on top (large), message name below
+ * (small, dimmed). Both ellipsis on overflow so a long signal name
+ * doesn't push the value off the side. */
+.plot-signal-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.plot-signal-name {
+  font-size: 0.92rem;
+  color: #e2e8f0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plot-signal-message {
+  font-size: 0.7rem;
+  color: #64748b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plot-signal-row.hidden .plot-signal-name,
+.plot-signal-row.hidden .plot-signal-message {
+  opacity: 0.45;
+  font-style: italic;
+}
+
+/* Right readout column: value on top, optional Δ and diagnostic
+ * stacked underneath, all right-aligned. */
+.plot-signal-readout {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  min-width: 0;
+}
+.plot-signal-value {
+  color: #fde68a;
+  font-variant-numeric: tabular-nums;
+}
+.plot-signal-delta {
+  color: #94a3b8;
+  font-size: 0.78em;
+  font-variant-numeric: tabular-nums;
+}
+/* Third row of the row grid: the diagnostic readout spans the text +
+ * readout columns so it has the full width to itself (the value
+ * column is too narrow to show `y[…] t[…]` comfortably). */
+.plot-signal-range {
+  grid-column: 2 / 4;
+  color: #64748b;
+  font-size: 0.7em;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Remove × spans both rows, vertically centred. */
+.plot-signal-remove {
+  align-self: center;
+}
+
+/* uPlot renders on a dark ground; nudge its chrome to match the app. */
+.plot-area-canvas .u-legend {
+  font-size: 0.78rem;
+  color: #94a3b8;
+}
+
+/* Plot panel — toolbar extras */
+.plot-toolbar-sep {
+  display: inline-block;
+  width: 1px;
+  align-self: stretch;
+  background: #2c3444;
+  margin: 0 0.15rem;
+}
+.plot-window-ctl,
+.plot-cursor-ctl {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  color: #94a3b8;
+}
+.plot-window-ctl input {
+  width: 4.5rem;
+  background: #0f141d;
+  color: #e2e8f0;
+  border: 1px solid #2c3444;
+  border-radius: 4px;
+  padding: 0.1rem 0.3rem;
+  font: inherit;
+  font-size: 0.8rem;
+}
+.plot-perf {
+  margin-left: auto;
+  font-size: 0.72rem;
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
+  /* Absorb width changes so adjacent controls don't shift. */
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Plot panel — measurement-quantity menu */
+.plot-meas-menu {
+  position: relative;
+}
+.plot-meas-menu-pop {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 20;
+  margin-top: 2px;
+  background: #0d1114;
+  border: 1px solid #2c3444;
+  border-radius: 4px;
+  padding: 0.3rem 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  white-space: nowrap;
+}
+/* Plot panel — right-click context menu on the toolbar. Positioned in
+ * viewport coords by the `style` attr, so `position: fixed`. */
+.plot-toolbar-menu {
+  position: fixed;
+  z-index: 30;
+  background: #0d1114;
+  border: 1px solid #2c3444;
+  border-radius: 4px;
+  padding: 0.3rem 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  white-space: nowrap;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+/* Menu items are flat buttons with a leading checkmark slot — the
+ * slot is always rendered (fixed width) so the labels line up whether
+ * an item is checked or not. */
+.plot-toolbar-menu button {
+  appearance: none;
+  background: none;
+  border: none;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  padding: 0.25rem 0.4rem;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.plot-toolbar-menu button:hover,
+.plot-toolbar-menu button:focus-visible {
+  background: #1c2530;
+  outline: none;
+}
+.plot-toolbar-menu-mark {
+  display: inline-block;
+  width: 0.9em;
+  text-align: center;
+}
+
+.plot-meas-menu-pop .checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.78rem;
+}
+
+/* Plot panel — measurement strip */
+.plot-meas-strip {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  border-top: 1px solid #1f2630;
+  background: #0d1114;
+}
+.plot-meas-cell {
+  padding: 0.25rem 0.5rem;
+  border-right: 1px solid #1f2630;
+  font-size: 0.72rem;
+}
+.plot-meas-k {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.62rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plot-meas-v {
+  color: #cbd5e1;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8rem;
+  margin-top: 0.1rem;
+}
+.plot-meas-v.gold {
+  color: #ffd93d;
+}
+.plot-meas-v.pink {
+  color: #ff5577;
+}
+
+/* Plot panel — event log (user notes) */
+.plot-events-log {
+  flex: 0 0 auto;
+  max-height: 5.5rem;
+  overflow-y: auto;
+  border-top: 1px solid #1f2630;
+  background: #0e1316;
+  font-size: 0.74rem;
+}
+.plot-event-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.1rem 0.5rem;
+  border-bottom: 1px dotted #1c252b;
+}
+.plot-event-t {
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 6rem;
+}
+.plot-event-label {
+  color: #cbd5e1;
+  flex: 1 1 auto;
+}
+.plot-event-row button {
+  background: none;
+  border: none;
+  color: #64748b;
+  cursor: pointer;
+  font-size: 0.9rem;
+  line-height: 1;
+}
+.plot-event-row button:hover {
+  color: #ff5577;
+}
+
+/* Plot panel — per-area y-range control */
+.plot-area-y,
+.plot-area-fit-y {
+  background: #0f141d;
+  color: #94a3b8;
+  border: 1px solid #2c3444;
+  border-radius: 3px;
+  font: inherit;
+  font-size: 0.62rem;
+  padding: 0 0.2rem;
+  cursor: pointer;
+}
+.plot-area-y:hover,
+.plot-area-fit-y:hover {
+  color: #e2e8f0;
+}
+.plot-y-editor {
+  display: flex;
+  gap: 0.2rem;
+  padding: 0.2rem 0.4rem;
+  border-bottom: 1px solid #1f2630;
+  background: #11161a;
+}
+.plot-y-editor input {
+  width: 3.5rem;
+  background: #0f141d;
+  color: #e2e8f0;
+  border: 1px solid #2c3444;
+  border-radius: 3px;
+  font: inherit;
+  font-size: 0.72rem;
+  padding: 0 0.2rem;
+}
+.plot-y-editor button {
+  background: #0f141d;
+  color: #94a3b8;
+  border: 1px solid #2c3444;
+  border-radius: 3px;
+  font: inherit;
+  font-size: 0.72rem;
+  padding: 0 0.25rem;
+  cursor: pointer;
+}

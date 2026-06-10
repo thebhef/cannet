@@ -478,59 +478,269 @@ Exit criteria:
 
 ## Phase 4 — Signal Plotting
 
-A plotting view in the spirit of vSignalyzer / TSMaster: pick decoded
-signals and watch them over time — live and historical — in one or more
-plot panels docked alongside the trace panels in the Phase 3 layout.
+A plotting view in the spirit of vSignalyzer / CANape — and, more
+loosely, a software oscilloscope: pick decoded signals and watch them
+over time, live and historical, in one or more plot panels docked
+alongside the trace panels in the Phase 3 layout. The "oscilloscope"
+framing is deliberate: there's effectively no ceiling on features here
+(time-base controls, multiple y-axes, cursors and delta measurement,
+triggers, math channels, export, …), so the scope below is split into a
+**Phase 4 MVP** that has to land and a **later passes** list the MVP
+must not paint into a corner.
 
-Scope:
+Land it in small, independently demoable steps. The realised order so
+far: the host-side data path (signal sampler + `list_signals` /
+`sample_signals` commands) first, then the plot panel itself (uPlot in a
+dockview panel), then the interaction polish, then project-file
+persistence (which is gated on the rest of Phase 3 — see below).
 
-- **Plot panel.** A new panel type in the Phase 3 layout system. A plot
-  panel hosts one or more signal traces on a shared time axis; the user
-  adds a trace by picking a (message, signal) pair from the attached DBC.
-  Multiple plot panels can be open, each with its own signal set and axis
-  configuration.
-- **Signal sampling over the trace store.** The data-path work: a sampler
-  that walks the trace store for frames matching a signal's message id,
-  decodes the signal, and yields a `(timestamp, value)` series for a
-  requested time range — the plotting analogue of the trace view's
-  decode-on-fetch slice. Live plots extend as the trace grows (driven by
-  the same `trace-grew` tick); a paused or finished capture is queried
-  over a fixed range.
-- **Plot interaction.** Pan / zoom on the time axis, per-trace or shared
-  y-axis with auto and manual scaling, a movable cursor that reads out
-  each trace's value at that instant, and a "follow live edge" toggle
-  mirroring the trace view's auto-scroll. Enum-valued signals (DBC value
-  tables) render as a stepped state plot.
-- **Plot panels in the project file.** A plot panel's signal set and axis
-  config round-trip through the Phase 3 project file like any other
-  panel's config.
-- **Plotting library.** Selected here (see `technology-inventory.md`): it
-  has to handle high-rate streaming time-series (tens of thousands of
-  points, growing live) without choking the WebView, support multiple
-  independent plots, and carry a permissive license. A candidate
-  shortlist is recorded in the inventory now; the pick and the rejected
-  alternatives get written up when this phase starts.
+### Phase 4 MVP scope
 
-Out of scope (deferred to later phases / backlog):
+- **Plot panel.** A new panel type in the Phase 3 dockview layout —
+  `apps/gui/src/PlotPanel.tsx`, registered under `PLOT_PANEL_COMPONENT`
+  in `dockLayout.ts`, with an "Add plot panel" toolbar action in
+  `App.tsx`. A plot panel is a **stack of plot areas** (starts with one;
+  "add plot area" appends more), all sharing one time axis; each area is
+  a uPlot canvas plus a side signal panel (colour swatch / name /
+  present value), and a signal can be moved between areas. Picking a
+  `(message, signal)` pair from the toolbar drops it into the focused
+  area. The plot-area list and the signal→area assignment round-trip
+  through the project file via the panel's dockview `params` (same
+  mechanism trace panels use for their columns). Multiple plot panels
+  can be open, each independent. (This is the "Reference design" shape
+  below, minus the cursor / measurement / sync / event layers, which
+  are the later steps.)
+- **Signal sampling over the trace store.** The data-path work: a
+  sampler that, given a `(message id, signal)` pair and a time window,
+  pulls the matching frames out of the trace store, decodes the signal,
+  and yields a `(timestamp, value)` series — the plotting analogue of
+  the trace view's decode-on-fetch slice. Live plots re-sample as the
+  trace grows (driven by the same `trace-grew` tick); a paused or
+  finished capture is queried over a fixed range. Realised as
+  `apps/gui/src-tauri/src/signal_sampler.rs` plus a per-id frame
+  index in `TraceStore` (`slice_matching_many` — one lock, one signal's
+  frames each, `O(Σ matches)`); surfaced to the frontend as the
+  `list_signals` (DBC → pickable signals) and `sample_signals` (batched
+  `(t, v)` series for a `[from_index, window_end)` slice + that slice's
+  time bounds) Tauri commands. Independently-sampled
+  series are stitched onto one timeline (sorted-union x-axis,
+  sample-and-hold per series) by `apps/gui/src/plotData.ts` before being
+  handed to the renderer.
+- **Window-bounded sampling + decimation, not an optimisation.** ✅ Done
+  — the trace store can hold **hundreds of thousands to millions** of
+  frames, so the plot must not pay `O(capture)` per re-sample, nor ship
+  (or ask uPlot to draw) a point per frame. The live plot re-samples
+  **incrementally**: each tick `sample_signals` is asked only for the
+  frames appended since the previous tick (decoded against the DBC, no
+  decimation), and the plot appends them to a bounded per-signal cache
+  (`PlotPanel.tsx::AreaCache` — re-built from one min/max-decimated full
+  `sample_signals` fetch only when raw increments overflow it). So a
+  tick's host cost is `O(increment)`, not `O(window)`, and the trace
+  store lock is held only to clone the increment — even at thousands of
+  frames/s the pump isn't starved. The loop is self-paced (the next tick
+  scheduled after the previous finishes — decoupled from React
+  re-renders, which lurch at high rates) at a toolbar-configurable rate
+  (default 15 Hz); the toolbar also shows the actual update rate. Pause/Stop freeze the window so the loop
+  stops; a cursor / measurement query re-samples that signal over the
+  (narrower) cursor span. (`signal_sampler::decimate_min_max` —
+  per-bucket extrema so spikes survive — unit-tested.)
+- **Plot interaction (MVP).** Pan / zoom on the time axis (uPlot's
+  built-in drag-zoom), a readout cursor / legend showing each trace's
+  value at the hovered instant (uPlot's built-in cursor + live legend),
+  and a "follow live edge" toggle that re-fits the x-range to the
+  capture's edge on every `trace-grew` tick — a user pan / zoom switches
+  it off, the plot analogue of the trace view's auto-scroll. Realised
+  (first cut) in `apps/gui/src/PlotPanel.tsx`; see "Reference design"
+  below for where it's headed.
+- **Plotting library.** uPlot — chosen and written up in
+  `technology-inventory.md` (with the rejected alternatives and the
+  confirmed criteria weighting). The data feeding it comes from the
+  signal sampler; the library only renders.
 
-- **XY / scatter plots, gauges, and bitfield / flag panels** —
-  `features.md` lists "bitfield views, with flag indicators per signal"
-  and arbitrary plotting; Phase 4's MVP is time-series line / step plots.
-  The bitfield view and non-time-series plot types are a later GUI pass.
-- **Math channels** — derived signals computed from other signals.
+### Reference design
 
-Exit criteria:
+`plans/plot-panel-reference.html` is a standalone prototype and is
+**normative for Phase 4** — the plot panel should end up with all of its
+features and behaviours, not a subset. (Its dark "scope" visual language
+is approved; applying a similar look across the rest of the GUI is a
+separate, larger restyle — noted in `plans/backlog.md`.)
+
+A plot panel is a vertical stack of **plot areas**:
+
+- **Starts with one plot area.** A freshly-added plot panel has exactly
+  one plot area; **"add plot area"** appends another below it. All plot
+  areas in the panel share one x (time) axis.
+- **Each plot area = a uPlot canvas + a signal panel beside it.** The
+  signal panel (to the side of the canvas, not a header strip) lists the
+  area's signals with, per row: signal name, colour swatch, and the
+  present value (last sample, or value-at-cursor when a cursor is up) in
+  the signal's unit. It's also where you remove a signal from the area
+  or move it to another.
+- **Signals move between plot areas.** Drag a signal row (or use a
+  menu) to reassign it from one plot area to another; an empty plot area
+  can be removed. Default on picking a new signal: drop it into the
+  currently-focused plot area. Each area has its own y-scale and unit
+  label.
+- **Synced x-zoom** — `⌘/ctrl`+wheel or drag-select on any plot area
+  zooms the time axis on *all* areas together; `shift`+wheel y-zooms
+  only the hovered area; reset-zoom restores full extent.
+- **Cursors (off by default, toggled from the panel toolbar).** When
+  enabled: global vertical X cursors (A / B) that run through every plot
+  area; per-area horizontal Y cursors (H1 / H2); left-click places A/H1,
+  right-click places B/H2. The cursor set is **configurable** — how many
+  cursors, which axis each is, and which traces it reads out — and the
+  config round-trips through the project file. With cursors off the plot
+  is just the traces; nothing is drawn and clicks do nothing special.
+- **A measurement strip (off by default, toggled from the panel
+  toolbar).** When enabled it shows a **configurable** set of quantities
+  — choose from A, B, Δt, 1/Δt, per-trace value-at-A, value-at-B, Δ,
+  min / max / mean over the cursor span, visible-window extent, sample
+  count, etc. — and which subset is shown is part of the panel config.
+  (Most cursor-derived quantities only have a value once cursors are
+  enabled and placed; the strip shows "—" until then.)
+- **Per-panel toolbar.** A slim toolbar on the plot panel carries the
+  cross-cutting toggles — "follow live", "cursors", "measurements", "add
+  plot area", reset-zoom — plus the cursor / measurement configuration
+  affordances. Both "cursors" and "measurements" start **off**; nothing
+  cursor- or measurement-related renders until the user turns it on.
+- **Event markers + notes** — vertical lines drawn from a shared event
+  list (in cannet: trigger / fault / warn / info markers derived from
+  the trace and, later, from triggers and other panels, plus
+  user-placed notes), labelled sparingly to keep the stack readable.
+- **A perf badge strip** — init time, per-area render time, x-sync
+  redraw time, cursor redraw time, DPR — so regressions are visible
+  during development.
+
+Mechanically it's all uPlot's `plugins` hook (a custom `draw` overlay
+for cursors and event lines, a `ready` hook for wheel / click handlers)
+plus N uPlot instances with cross-instance `setScale("x", …)` — nothing
+needs a different renderer. The shipped single-plot-area `PlotPanel.tsx`
+is step one; reaching the reference is a substantial rework of that file
+(the plot-area stack, the side signal panels, the overlay plugin, the
+cross-area sync, the measurement strip).
+
+### After the MVP, toward the reference design
+
+In rough order, each step leaving the panel runnable:
+
+- **Plot-area stack + side signal panels.** ✅ Done — `PlotPanel.tsx`
+  owns a list of plot areas (starts with one) with "add plot area" /
+  per-area remove; the areas flex to fill the panel (one area = full
+  height; N split it; a tall stack scrolls), each a uPlot instance with
+  its time axis at the bottom plus a side signal panel: per row a
+  clickable colour swatch (toggles the line's visibility — hidden = not
+  drawn, swatch dimmed, value still updates), the name, and the value.
+  Picking a signal adds it to the focused area; **dragging a signal row**
+  onto another plot area moves it there. The plot-area list, the
+  signal→area assignment, and the per-signal `hidden` flag persist via
+  the panel's dockview `params`.
+- **It's a trace-style element.** ✅ Done — the plot panel is backed by
+  a `useTrace` window, exactly like the trace panels: Start / Stop /
+  Pause / Clear (the shared `TraceControls`) over the session buffer.
+  It's a distinct project-element `kind` (`plot`, alongside `trace`), so
+  the project view and panel-reopen treat it as a plot, not a trace; it
+  persists in the project's element list and survives a panel close. It renders signal *values* over time instead
+  of message rows. While "running" it follows the live capture; pause /
+  stop freeze the window (the re-sample loop stops, which also keeps a
+  fast / unlimited-rate stream from piling up `sample_signals` calls);
+  Clear re-anchors the window to "now". The element's window indices are
+  what `sample_signals` is given (see the window-bounded-sampling bullet
+  above).
+- **Synced x zoom + pan; per-area y zoom; fit data.** ✅ Done — plain
+  **wheel** on any area zooms x on all areas (and leaves follow-live);
+  **right-drag** box-zooms x; `shift`+wheel pans x (synced);
+  `⌘/ctrl`+wheel zooms y on the hovered area only (buried under a
+  modifier — y is usually set with the per-area range control); "fit
+  data" refits x to the full signal extent and y to the data.
+  (uPlot's built-in left-drag zoom is disabled so left-clicks are free
+  for placing cursors / notes.) Implemented with a shared x-sync ref +
+  a per-area `setScale` hook (cross-instance `setScale`, guarded so
+  programmatic changes don't echo), and a per-area re-entrancy guard on
+  the resample.
+- **Follow live.** ✅ Done — a toggle that keeps every area pinned to
+  the capture's growing edge while preserving the *current* visible
+  x-width (so it just slides right); a manual x pan/zoom turns it off.
+  The span shown is the whole capture (the longest-running trace) up to
+  `capture_end`, not auto-fit to the picked signal — so adding a signal
+  late shows it over the existing span. (There's no separate "window
+  seconds" setting — the visible width *is* the window.)
+- **Cursors & measurement strip.** ✅ Done — both **off by default**,
+  turned on from the panel toolbar (the prototype ships them on; cannet
+  doesn't). A cursor-mode selector: "X" (left-click places cursor A,
+  right-click cursor B, drawn through every area), "Y" (places this
+  area's H1 / H2), "+ note" (drops an event note); a "clear cursors"
+  button removes them all. Cursors are a uPlot `draw`-hook overlay. The
+  side signal panel shows the value at cursor A when placed, else the
+  value at the mouse crosshair (throttled), else the latest sample; the
+  H1/H2 Y-cursor values and ΔH show in the area's signal-panel head, and
+  small Δt / ΔH chips draw on the plot between the cursor pair so the
+  delta is visible without turning the measurement strip on. A
+  "measurements" toggle reveals a strip whose quantity set is
+  **configurable** from a checklist — A, B, Δt, 1/Δt, and per-trace
+  value@A / value@B / Δ / min / max / mean over [A, B]. Cursor mode, the
+  measurement toggle/selection, and (best-effort) the cursor positions
+  persist via the panel's dockview `params`. The pure cursor/measurement
+  maths (`indexAtOrBefore` / `valueAt` / `statsOver`) live in
+  `apps/gui/src/plotCursors.ts` with unit tests.
+- **Event markers + notes.** ✅ Done — a shared event list (the implicit
+  capture-start "T0" plus user notes) drawn as vertical lines across the
+  areas (labelled on the first area only); "+ note" cursor mode places a
+  note at the clicked time; an event-log list under the panel renames
+  (click the label) and removes notes. Notes persist in `params`.
+  (Persisting notes *against a BLF* — annotate-and-save-back — is a
+  separate backlog item.)
+- **Per-area y range.** ✅ Done — each plot area has an "y: auto" /
+  "y: min…max" control; manual mode pins the area's y-scale and persists
+  in the area config. (Per-*trace* offset / gain and log scale are
+  deferred — see below.)
+- **Perf badge.** ✅ Done — the panel toolbar shows the worst recent
+  plot-area resample time and the device-pixel ratio, so a regression in
+  the plot path is visible during development.
+
+### Out of scope (deferred to later phases / backlog)
+
+- **Per-trace y offset / gain and log scale.** Per-*area* manual y-range
+  shipped; per-trace transforms (so unrelated signals can share an area
+  without one swamping the others) and log scaling are a later
+  refinement (`plans/backlog.md`).
+- **Enum / state signals.** Signals backed by DBC value tables rendered
+  as a stepped state plot with symbolic axis labels rather than bare
+  numbers. Needs value-table data threaded out of `cannet-dbc` first
+  (`plans/backlog.md`); until then enum signals plot as their raw codes.
+- **Triggers.** Edge / level / value-match triggers on a chosen signal
+  that freeze the view and emit a marker (into the plot's event list,
+  and later the trace) — the oscilloscope trigger proper. The event-line
+  rendering above is the half of this that's cheap; the trigger engine
+  is a later add (`plans/backlog.md`).
+- **Math channels.** Derived signals computed from other signals (sum,
+  diff, scale, filter, …) — also useful to the transmit panel and a
+  future scripting surface, so it may outgrow plotting; tracked
+  separately (`plans/backlog.md`).
+- **Export.** Copy / save the visible window (or the cursor span) as CSV
+  or an image (`plans/backlog.md`).
+- **Non-time-series views.** XY / scatter plots, gauges, and the
+  bitfield / flag panel `features.md` calls for — likely separate panel
+  types, a later GUI pass.
+
+### Exit criteria
 
 - A plot panel can be added to the layout, populated with several signals
   from the attached DBC, and shows them updating live while a BLF replays
-  (or a remote server streams) — with pan / zoom, a readout cursor, and a
-  follow-live toggle — alongside an open trace panel, with no regressions
-  vs. Phase 3.
-- A historical range can be inspected on a paused or finished capture.
-- Plot panels save and restore through the project file.
-- README documents how to add a plot panel and pick signals; rustdoc
-  covers the signal-sampler surface; `plans/technology-inventory.md`
-  records the chosen plotting library and the rejected alternatives.
+  (or a remote server streams) — with pan / zoom, an opt-in readout
+  cursor + measurement strip, and a follow-live toggle — alongside an
+  open trace panel, with no regressions vs. Phase 3. ✅
+- A historical range can be inspected on a paused or finished capture. ✅
+  (zoom in / out of follow-live; the series is re-sampled and decimated
+  over the visible window.)
+- Plot panels save and restore through the project file. ✅ (the
+  plot-area list, signal→area assignment, y-ranges, follow-live, cursor
+  mode, measurement selection, and notes all round-trip via the dockview
+  `params` the project file carries; the play state and the post-Clear
+  anchor are session-only, like a trace panel's window.)
+- README documents how to add a plot panel, pick signals, and use the
+  cursors / measurements / notes; rustdoc covers the signal-sampler +
+  decimation surface; `plans/technology-inventory.md` records the chosen
+  plotting library and the rejected alternatives. ✅
 
 ## Phase 5 — Transmit
 

@@ -63,6 +63,115 @@ work or admit it isn't going to happen and delete it.
   captured trace and the streaming-client path is a stopgap, so a
   recent-items list fits better than persisting "the project's BLF" in
   the project file.
+- `[ui]` trace view (`TraceView.tsx`): under a fast (unlimited-rate)
+  stream, scrolling up doesn't reliably leave auto-scroll and a parked
+  panel can be yanked back to the live tail — the auto-scroll re-pin
+  effect races the async `onAutoScrollDisabled`. Fix: a synchronous
+  "user took control" ref that gates the re-pin / pin-to-tail effects
+  until the parent's `autoScroll` flips. (Surfaced during Windows
+  stress testing; macOS at moderate rates is fine.)
+- `[ui]` trace panel (`TracePanel.tsx` / `TraceView.tsx`): the
+  scaled-scrollbar virtualizer's interaction model needs a rework — the
+  per-pixel resolution gets coarse on huge traces, the wheel-notch
+  handling is fiddly, and the auto-scroll re-pin race (separate entry
+  above) is a symptom. Decide between a real windowed virtualizer with a
+  synthetic-height spacer vs. the current scaled approach, and settle the
+  scroll/auto-scroll ownership story, before piling more on it. (Flagged
+  while planning Phase 4; doesn't block plotting.)
+- `[ui]` `cannet-gui`: a global UI frame-rate / responsiveness readout
+  (rAF-based FPS, maybe long-task / dropped-frame counts) — the plot
+  panel shows its own re-sample rate now; generalise that to a small
+  always-available indicator so other panels' costs are visible too.
+  Useful while tuning the trace virtualizer and any future heavy view.
+- `[feat]` `cannet-gui` plot panel: **manual** per-*trace* y controls —
+  offset / gain (so the user can override the per-trace auto-normalise
+  that ships today) and log scaling. The auto-norm is implemented as a
+  per-trace gain/offset applied just before draw, so the UI plumbing is
+  "expose those numbers"; uPlot also supports multiple stacked y-axes
+  if that turns out to be the better UX for "I want to read absolute
+  values off the axis" instead of normalised positions.
+- `[perf]` `cannet-gui` plot panel: time-to-frame mapping for the
+  visible-range fetch. The zoom-aware refetch converts the shared x
+  range (relative seconds) to frame indices via a uniform-fps estimate
+  carried in the cache. That's accurate for uniform streams but
+  imprecise for bursty traffic — the fetched range can land slightly
+  off the visible one. A precise mapping wants either a small
+  per-second timestamp→index index in `TraceStore` (and a `time_range`
+  variant of `slice_matching_many`), or a binary-search lookup
+  exposed as a Tauri command. Until then, the fps approximation is
+  close enough to draw correctly.
+- `[perf]` `cannet-gui`: binary IPC for `sample_signals`. Today the
+  command returns JSON-encoded `Vec<f64>` arrays — at high rate the
+  serialise / parse cost is one of the visible terms in the
+  per-resample wall clock. Tauri v2 supports `tauri::ipc::Response`
+  with raw bytes; encode the response as `[u32 lens..., f64 ts..., f64
+  vs...]` and decode in JS via a `DataView`. Probably 5-10× cheaper
+  IPC under load; the plot toolbar already shows `host` vs total ms
+  so the win is measurable.
+- `[perf]` `cannet-gui`: bound the host-side decoded-sample cache.
+  `signal_cache::SignalCacheStore` is append-only — `O(matches per
+  signal)` memory, fine for typical real-world rates but unbounded for
+  a 60 kHz-stream-of-one-signal-style torture test (gigabytes). The
+  right shape is a two-tier per-signal buffer: raw recent (last N
+  samples) plus a min/max-decimated tier behind it that's extended in
+  chunks as the raw tier overflows. The cache layout (samples +
+  parallel frame indices) is already what a tier would need; just
+  add the demotion step and an "older-tier slice" path in
+  `SignalCacheStore::slice`.
+- `[feat]` `cannet-gui` plot panel: triggers — edge / level /
+  value-match on a chosen signal that freeze the view and emit an event
+  marker (into the plot's event list, and later the trace). The
+  event-line rendering already exists; the trigger engine doesn't.
+- `[feat]` `cannet-gui` plot panel: CSV / image export of the visible
+  window or the cursor span.
+- `[feat]` `cannet-gui`: drag a decoded signal *into* a plot from
+  elsewhere — a trace panel's expanded-row signal grid, the by-ID
+  table. Make those rows `draggable` carrying the same
+  `application/x-cannet-plot-signal` payload (a `SignalRef`) the plot
+  panel's signal rows use; a plot area is already a drop target. (Today
+  you add signals only via the plot's "add signal…" dropdown or by
+  dragging between plot panels.)
+- `[feat]` `cannet-gui` plot panel: drag a *plot area* (not just a
+  signal) between plot panels — re-order areas within a panel and move /
+  copy a whole area (its signals + y-range) to another plot panel.
+  Today only individual signal rows are draggable; the area's
+  drag-handle would carry the area config the same way.
+- `[ui]` `cannet-gui`: dragging the divider to resize a plot panel vs.
+  an adjacent trace panel — confirm dockview's split-resize works for
+  the plot panel (it's a normal dockview panel, so it should once they
+  sit in separate groups rather than tabbed together); if a plot-panel
+  CSS rule (`min-height` chains, the flex-filled areas) is fighting it,
+  fix that. (Reported as not working; not yet reproduced here.)
+- `[feat]` `cannet-gui`: BLF annotation round-trip — open a BLF, place
+  notes (the plot panel's "+ note" cursor mode), and save the BLF back
+  out with the annotations embedded. Needs a place to persist notes
+  against a capture (BLF has no native annotation record — likely a
+  sidecar or a custom object kind), plus the "Save Capture…" path
+  (separate backlog entry) to write it. Today notes live only in the
+  plot panel's params (per project), not against the BLF.
+- `[feat]` `cannet-gui` math channels — derived signals computed from
+  other signals (sum, diff, scale, filter, …). Useful to the plot panel,
+  the transmit panel, and a future scripting surface, so it may outgrow
+  plotting; scope it on its own when picked up.
+- `[ui]` `cannet-gui` plot panel: pick a trace's plot colour from a
+  colour dialog on right-click of its swatch (today the swatch toggles
+  hidden on left-click and colours are assigned round-robin from a fixed
+  palette on add). Right-click → a small swatch-grid / `<input
+  type="color">` popover; the chosen colour is sticky like the
+  auto-assigned one.
+- `[ui]` `cannet-gui` trace panels: enum values — for a signal whose DBC
+  entry carries value descriptions (`VAL_` / value tables), show the
+  named value (e.g. `2 "Reverse"`) instead of the bare number in the
+  decoded-signal grid (and the by-ID expansion). Needs the DBC layer to
+  surface value tables (`cannet-dbc` currently exposes name/unit/scaling
+  only); also feeds the plot panel's enum/state-signal rendering.
+- `[ui]` GUI-wide visual restyle: adopt the dark "scope" visual
+  language from `plans/plot-panel-reference.html` (the prototype's colour
+  variables, monospace type scale, panel chrome, control styling) across
+  the toolbar, trace panels, project panel, etc. — currently each panel
+  has its own ad-hoc styling in `apps/gui/src/index.css`. Approved in
+  principle; do it as one deliberate pass once the plot panel's own
+  styling has settled, not piecemeal.
 - `[feat]` real in-process writable CAN source — a local virtual bus
   (Linux `vcan` via socketcan) and/or an in-memory loopback-bus type in
   `cannet-core` (a `CanFrameSink` paired with a `CanFrameSource`). Phase

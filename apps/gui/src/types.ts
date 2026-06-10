@@ -82,14 +82,19 @@ export interface ByIdSnapshotRecord {
 }
 
 /// One element of a project: a discriminated-union record with a stable
-/// `id`. Now only traces; plots, transmit messages, filters etc. become
-/// new `kind`s. A trace element carries no extra config — the panel
-/// showing it owns its mode (chronological / by-id) and column layout
-/// in the dockview panel `params`.
-export type ProjectElement = {
-  kind: "trace";
-  id: string;
-};
+/// `id`. `trace` = a trace panel; `plot` = a signal-plot panel (also
+/// backed by a trace-style session window, but a distinct kind so the
+/// project view and panel-reopen treat it as a plot, not a trace).
+/// Transmit messages, filters etc. become further `kind`s. Neither kind
+/// carries extra config — the panel showing it owns its layout (a
+/// trace's mode + columns, a plot's areas / cursors / …) in the
+/// dockview panel `params`.
+export type ProjectElement =
+  | { kind: "trace"; id: string }
+  | { kind: "plot"; id: string };
+
+/// The discriminant of a {@link ProjectElement}.
+export type ProjectElementKind = ProjectElement["kind"];
 
 /// Mirrors `src-tauri/src/project.rs::Project` — the saved workspace.
 /// `layout` (dockview's `SerializedDockview`) and `elements` are stored
@@ -107,3 +112,35 @@ export interface Project {
 }
 
 export const PROJECT_SCHEMA_VERSION = 2;
+
+/// One `(message, signal)` pair the attached DBC defines, returned by
+/// the `list_signals` command for a plot panel's signal picker.
+export interface SignalDescriptorRecord {
+  message_id: number;
+  extended: boolean;
+  message_name: string;
+  signal_name: string;
+  unit: string;
+}
+
+/// One signal's freshly-decoded points from `sample_signals`: parallel
+/// `(t, v)` arrays, `t` in absolute seconds.
+export interface SampledPoints {
+  t: number[];
+  v: number[];
+}
+
+/// Returned by `sample_signals`: one `SampledPoints` per requested
+/// signal (same order), plus the sampled slice's first/last frame
+/// timestamps (seconds) — `from_seconds` is the x-origin when
+/// `from_index` is the trace window's start; both `null` when the
+/// window is empty.
+export interface SignalsSample {
+  from_seconds: number | null;
+  last_seconds: number | null;
+  series: SampledPoints[];
+  /** Host wall-clock spent in the lock-held trace-store slice (ms). */
+  slice_ms: number;
+  /** Host wall-clock spent decoding + decimating off the lock (ms). */
+  decode_ms: number;
+}

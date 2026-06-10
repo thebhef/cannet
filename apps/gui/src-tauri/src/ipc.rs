@@ -134,6 +134,71 @@ pub enum LogFinished {
     Error { message: String },
 }
 
+/// One `(message, signal)` pair the attached DBC defines, returned by
+/// `list_signals` to populate a plot panel's signal picker.
+#[derive(serde::Serialize, Clone)]
+pub struct SignalDescriptorRecord {
+    pub message_id: u32,
+    pub extended: bool,
+    pub message_name: String,
+    pub signal_name: String,
+    pub unit: String,
+}
+
+impl From<cannet_dbc::SignalDescriptor> for SignalDescriptorRecord {
+    fn from(d: cannet_dbc::SignalDescriptor) -> Self {
+        Self {
+            message_id: d.message_id,
+            extended: d.extended,
+            message_name: d.message_name,
+            signal_name: d.signal_name,
+            unit: d.unit,
+        }
+    }
+}
+
+/// One `(message, signal)` a plot panel wants sampled — the query side
+/// of [`sample_signals`](crate::sample_signals). `camelCase` on the wire
+/// (Tauri only renames *top-level* command args, not nested fields).
+#[derive(serde::Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SignalQuery {
+    pub message_id: u32,
+    pub extended: bool,
+    pub signal_name: String,
+}
+
+/// One signal's freshly-decoded points, parallel arrays (`t[i]` is the
+/// source time in seconds of `v[i]`), shaped for a uPlot `[xs, ys]`
+/// column.
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct SampledPoints {
+    pub t: Vec<f64>,
+    pub v: Vec<f64>,
+}
+
+/// Return of [`sample_signals`](crate::sample_signals): one
+/// [`SampledPoints`] per requested signal (same order), plus the
+/// window's anchor timestamps so a live plot can place its x-origin and
+/// "follow live" edge without a second round-trip. `from_seconds` is the
+/// timestamp of the frame at the requested `from_index` — the x-axis
+/// origin when `from_index` is the trace window's start; `last_seconds`
+/// is the last frame before `window_end`. Both are `null` when the
+/// window is empty.
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct SignalsSample {
+    pub from_seconds: Option<f64>,
+    pub last_seconds: Option<f64>,
+    pub series: Vec<SampledPoints>,
+    /// Wall-clock time the host spent in the lock-held slice
+    /// (`slice_matching_many`), milliseconds — how much of the per-call
+    /// cost is store-lock contention with the pump.
+    pub slice_ms: f64,
+    /// Wall-clock time the host spent decoding + decimating off the
+    /// store lock, milliseconds.
+    pub decode_ms: f64,
+}
+
 /// One CAN interface as exposed by a remote `cannet-server`. Mirrors
 /// `cannet_client::Interface`, kept here so the React side has a stable
 /// `snake_case` payload to deserialize against.
