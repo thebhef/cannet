@@ -347,6 +347,12 @@ next pass on this surface can address them as one piece.
     collapse to one timestamp).
   Fold into the CI server-conformance suite above, or run as a focused
   pass, once a rig is available.
+  - **Task 14 RBS test matrix, live legs.** The RBS exit criteria's
+    send matrix (Tx rows with fields filled in over `local-virtual-bus`,
+    hardware (sidecar) interfaces, and FD frames) is covered at the
+    model layer by `rbs.rs` / `transmit_frames.rs` unit tests; the
+    hardware-interface leg and an end-to-end FD-on-wire run need the
+    same rig as the rest of this sign-off pass.
 
 ### Packaging and naming
 
