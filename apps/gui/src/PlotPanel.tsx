@@ -2663,9 +2663,12 @@ function PlotArea(p: PlotAreaProps) {
                 // and spans the segment's full *visible* width
                 // horizontally, so a 5-second held value paints a
                 // 5-second-wide box rather than a text-width chip.
-                // A small inter-lane gap keeps adjacent values'
-                // boxes visually distinct.
-                const lanePad = 1 * ratio;
+                // A half-CSS-pixel inter-lane gap (1 CSS pixel between
+                // adjacent boxes) keeps the rows visually distinct
+                // without sacrificing fill — the user feedback was
+                // "more vertical space", so we go right up to the
+                // edge of the next lane.
+                const lanePad = 0.5 * ratio;
                 for (const seg of segments) {
                   const x0 = u.valToPos(seg.t0, "x", true);
                   const x1 = u.valToPos(seg.tN, "x", true);
@@ -2679,26 +2682,25 @@ function PlotArea(p: PlotAreaProps) {
                   if (segW <= 0) continue;
                   const lbl = labelFor(seg.v);
                   const tw = ctx.measureText(lbl).width;
-                  // Skip a segment that the label wouldn't fit
-                  // into — overlaying a clipped label is worse than
-                  // none. The user can zoom in to see narrow ones.
-                  if (segW < tw + padX * 2) continue;
+                  // Skip only when the *label* literally won't fit —
+                  // a thin lane still gets a coloured band so the
+                  // held interval is visible even if the text can't
+                  // be drawn. (Previously a `boxH < 8 * ratio` skip
+                  // ate every segment on a small panel because lane
+                  // height there fell below the 16-device-pixel
+                  // threshold — the user reported no labels at all
+                  // post-vertical-fill change.)
+                  const labelFits = segW >= tw + padX * 2;
                   // Lane bounds in canvas pixels. Note `valToPos`
                   // grows downward for canvas y, so `+0.5` data ⇒
                   // smaller pixel y (top of the lane).
                   const laneTop = u.valToPos(seg.v + 0.5, "y", true);
                   const laneBot = u.valToPos(seg.v - 0.5, "y", true);
-                  // Clamp into the plot region and apply a small
-                  // padding so the top/bottom enum lanes don't kiss
-                  // the canvas edge.
+                  // Clamp into the plot region.
                   const boxTop = Math.max(top + lanePad, laneTop + lanePad);
                   const boxBot = Math.min(top + height - lanePad, laneBot - lanePad);
                   const boxH = boxBot - boxTop;
-                  // A lane that's been clamped down to near nothing
-                  // (very dense table on a short canvas) can't carry
-                  // a legible label — skip rather than paint a
-                  // squashed strip.
-                  if (boxH < 8 * ratio) continue;
+                  if (boxH <= 0) continue;
                   // Opaque fill so the stepped line underneath is
                   // visually replaced by the labelled row; coloured
                   // border + centred text in the series colour.
@@ -2706,10 +2708,12 @@ function PlotArea(p: PlotAreaProps) {
                   ctx.fillRect(visStart, boxTop, segW, boxH);
                   ctx.strokeStyle = boxColor;
                   ctx.strokeRect(visStart + 0.5, boxTop + 0.5, segW - 1, boxH - 1);
-                  ctx.fillStyle = boxColor;
-                  ctx.textAlign = "center";
-                  ctx.textBaseline = "middle";
-                  ctx.fillText(lbl, visStart + segW / 2, boxTop + boxH / 2);
+                  if (labelFits) {
+                    ctx.fillStyle = boxColor;
+                    ctx.textAlign = "center";
+                    ctx.textBaseline = "middle";
+                    ctx.fillText(lbl, visStart + segW / 2, boxTop + boxH / 2);
+                  }
                 }
               }
             }
