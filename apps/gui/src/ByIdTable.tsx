@@ -3,6 +3,7 @@ import { memo } from "react";
 import type { ByIdSnapshotRecord, TraceFrameRecord } from "./types";
 import { formatSignalValueWithLabel } from "./format";
 import {
+  type BusLookup,
   type ColumnKey,
   type ColumnState,
   type SortState,
@@ -13,9 +14,12 @@ import {
 } from "./traceColumns";
 import { TraceHeader, cellContent } from "./traceTable";
 
-/// Stable key for a by-id row — channel + arbitration id + std/ext.
+/// Stable key for a by-id row — bus + arbitration id + std/ext. Bus is
+/// part of the key so two frames sharing the same `(id, extended)`
+/// across different buses get distinct rows (otherwise multi-bus
+/// captures collapse them into one).
 export function byIdRowKey(f: TraceFrameRecord): string {
-  return `${f.channel}:${f.id}:${f.extended ? "x" : "s"}`;
+  return `${f.bus_id ?? "_"}:${f.id}:${f.extended ? "x" : "s"}`;
 }
 
 interface ByIdTableProps {
@@ -29,6 +33,7 @@ interface ByIdTableProps {
   sort: SortState;
   onSortColumn: (key: ColumnKey) => void;
   baseTimestamp: number | null;
+  busLookup: BusLookup;
   expanded: ReadonlySet<string>;
   onToggleExpand: (rowKey: string) => void;
 }
@@ -43,12 +48,13 @@ export function ByIdTable({
   sort,
   onSortColumn,
   baseTimestamp,
+  busLookup,
   expanded,
   onToggleExpand,
 }: ByIdTableProps) {
   const visible = visibleColumns(columns);
   const gridTemplate = gridTemplateColumns(columns);
-  const sorted = sortRows(rows, sort);
+  const sorted = sortRows(rows, sort, busLookup);
 
   return (
     <div className="trace">
@@ -75,6 +81,7 @@ export function ByIdTable({
               columns={visible}
               gridTemplate={gridTemplate}
               baseTimestamp={baseTimestamp}
+              busLookup={busLookup}
               isExpanded={expanded.has(key)}
               onToggle={onToggleExpand}
             />
@@ -92,6 +99,7 @@ interface ByIdRowProps {
   columns: readonly ColumnState[];
   gridTemplate: string;
   baseTimestamp: number | null;
+  busLookup: BusLookup;
   isExpanded: boolean;
   onToggle: (rowKey: string) => void;
 }
@@ -103,6 +111,7 @@ const ByIdRow = memo(function ByIdRow({
   columns,
   gridTemplate,
   baseTimestamp,
+  busLookup,
   isExpanded,
   onToggle,
 }: ByIdRowProps) {
@@ -114,7 +123,7 @@ const ByIdRow = memo(function ByIdRow({
     >
       {columns.map((c) => (
         <span key={c.key} className={columnDef(c.key).className}>
-          {cellContent(c.key, frame, frame.index, baseTimestamp, isExpanded, rate)}
+          {cellContent(c.key, frame, frame.index, baseTimestamp, isExpanded, busLookup, rate)}
         </span>
       ))}
       {isExpanded && frame.decoded && (

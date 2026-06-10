@@ -19,6 +19,56 @@ work or admit it isn't going to happen and delete it.
 
 ## Items
 
+### Graph-and-bus integration fixes
+
+Items surfaced during the Phase-6.5 bus fan-out / graph-view follow-up
+work that haven't been closed out yet. Group them together so the
+next pass on this surface can address them as one piece.
+
+- `[ui]` **Bus-like graph topology layout.** Same-lane stacking
+  (plot/trace sharing a row counter) is fixed, but the lane scheme
+  isn't the bus-rail layout the user wants — gateway at one end of
+  each bus, the bus running long horizontally, consumers branching
+  off alongside. Reach for a real auto-layout (dagre / elkjs) or a
+  hand-rolled "rail per bus" pass; today's `LANE_X`/`LANE_Y_OFFSET`
+  in [graphNodeLayout.ts](apps/gui/src/graphNodeLayout.ts)
+  is a workable pipeline layout but doesn't read as a bus topology.
+- `[perf]` **Index the filtered trace scan.** `fetch_filtered_trace`
+  scans the trace window by reference (`TraceStore::scan_window_filtered`
+  — only the page's frames are cloned, never the whole window) and the
+  refresh is throttled, so the UI no longer stalls. Two host costs
+  remain: (1) every call still walks the whole `[scan_start, scan_end)`
+  window O(window) — off the UI thread, but real host CPU, and it
+  holds the trace-store lock for the scan; a per-`filter` index of
+  matching raw indices, extended on append and dropped on filter
+  change, would make it O(page); (2) a `name_regex` / `signal_equals`
+  filter decodes every scanned frame under that lock — the index would
+  let it decode only the page. The `from_end` tail still walks the
+  whole window; a backward scan would cut it. (`fetch_trace_range`
+  also carries an unused `filter` arg now — remove in the same pass.)
+- `[ui]` **Plot panel signal catalog scoped by `sources`.** The
+  per-bus signal model and the message picker work end-to-end, but
+  the catalog dropdown still shows every signal from every loaded
+  DBC across every bus — even ones the plot's `sources` exclude.
+  Filter `catalogOptions` in PlotPanel.tsx by the consumer's
+  effective `sources` so the picker only offers signals it can
+  actually sample.
+- `[ui]` **Drag-to-wire from anywhere on a node body.** Drag-from-
+  handle works (xyflow `onConnect` is wired to `addEdgeToRegistry`),
+  but the user has to land on the small handle dots. Long-term,
+  dragging from a producer node anywhere onto a consumer (no need
+  to land on a handle) would be more discoverable.
+
+### Other follow-ups
+
+- `[refactor]` `cannet-blf` + `cannet-gui` (`save_capture`, `open_log`):
+  remove the notes sidecar (`<blf>.notes.json`) and store notes as
+  marker frames inside the BLF itself. The BLF format already supports
+  marker entries, and CLAUDE.md § File formats forbids new sidecars —
+  this one is legacy. Migration: existing `.notes.json` files are
+  read once on `open_log` (best effort), promoted to BLF markers on
+  the next `save_capture`, then deleted. After this lands, the
+  sidecar load path can be removed entirely.
 - `[perf]` `cannet-core`: revisit `CanFramePayload::Classic`/`Fd` to share
   a fixed-size inline buffer instead of `Vec<u8>` once the trace store /
   benchmark in Phase 10 shows allocator pressure.
@@ -65,16 +115,6 @@ work or admit it isn't going to happen and delete it.
   "expose those numbers"; uPlot also supports multiple stacked y-axes
   if that turns out to be the better UX for "I want to read absolute
   values off the axis" instead of normalised positions.
-- `[perf]` `cannet-gui` plot panel: time-to-frame mapping for the
-  visible-range fetch. The zoom-aware refetch converts the shared x
-  range (relative seconds) to frame indices via a uniform-fps estimate
-  carried in the cache. That's accurate for uniform streams but
-  imprecise for bursty traffic — the fetched range can land slightly
-  off the visible one. A precise mapping wants either a small
-  per-second timestamp→index index in `TraceStore` (and a `time_range`
-  variant of `slice_matching_many`), or a binary-search lookup
-  exposed as a Tauri command. Until then, the fps approximation is
-  close enough to draw correctly.
 - `[perf]` `cannet-gui`: bound the host-side decoded-sample cache.
   `signal_cache::SignalCacheStore` is append-only — `O(matches per
   signal)` memory, fine for typical real-world rates but unbounded for
@@ -184,33 +224,6 @@ work or admit it isn't going to happen and delete it.
   the same axis, both want a different layout (multiple y-axes /
   per-signal step overlays). Pick this up alongside the per-trace
   y offset / gain work, which already needs the same plumbing.
-- `[ui]` `cannet-gui` project panel: there's no UI to **create**
-  filter elements yet. The graph view now renders 1-input / N-output
-  filter nodes correctly when they exist (predicate via JSON in
-  `project.elements`), but a user can't add one through the project
-  panel. Add a "New filter" affordance + a filter-config side panel
-  that builds the structured predicate
-  (`{all | any | bus | id_range | id_list | name_regex |
-  signal_equals}`).
-- `[ui]` `cannet-gui` graph panel: **drag-to-wire**. Today the
-  `source` pointer on a trace / plot / filter element is set
-  indirectly via the consuming panel; surface it as a drag from a
-  bus / filter handle to a sink in the graph.
-- `[ui]` `cannet-gui` graph panel: **transmit → bus edge**.
-  `transmit` elements render as source nodes but draw no edge to a
-  bus today — frames inside a transmit panel each pick a `channel`
-  number that the active session maps to an interface, so there's no
-  per-element bus pointer to read. Either grow a `bus_id` on the
-  transmit element (and have the host route via bindings instead of
-  channel index) or surface an inferred edge per frame target.
-- `[feat]` `cannet-gui` transmit panel: route by `bus_id` rather
-  than session channel. Today `transmit_frame` picks the wire
-  interface from whichever session has the requested channel — with
-  multi-server connect, channel 0 exists on every session. Carry a
-  `bus_id` on `TransmitFrameConfig`, translate to `(server,
-  interface)` via the project's bindings, and forward through the
-  matching session. Resolves the ambiguity called out in the
-  `transmit_frame` host code.
 - `[ui]` `cannet-gui`: **bitfield message visualizer**. Render a CAN
   message as its raw bits laid out as a grid (8×N cells, one per bit),
   coloured / lit by current value, with DBC-derived signal overlays

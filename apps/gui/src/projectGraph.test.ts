@@ -50,71 +50,139 @@ describe("deriveGraph", () => {
   it("a gateway bound to a non-existent bus produces the node but no edge", () => {
     const b = binding("127.0.0.1:50051", "can0", "missing");
     const g = deriveGraph([bus("p")], [b], []);
-    // Two nodes (bus + gateway), no edge — the gateway hangs free until
-    // the bus exists.
     expect(g.nodes).toHaveLength(2);
     expect(g.edges).toEqual([]);
   });
 
-  it("a trace whose source points at a bus draws bus→trace", () => {
-    const trace: ProjectElement = { kind: "trace", id: "t1", source: "p" };
+  it("a sink with sources=['*'] draws an edge from every bus", () => {
+    const trace: ProjectElement = { kind: "trace", id: "t1", sources: ["*"] };
+    const g = deriveGraph([bus("p"), bus("c"), bus("b")], [], [trace]);
+    const targets = g.edges
+      .filter((e) => e.target === elementNodeId("t1"))
+      .map((e) => e.source)
+      .sort();
+    expect(targets).toEqual(
+      [busNodeId("b"), busNodeId("c"), busNodeId("p")].sort(),
+    );
+    expect(g.edges.every((e) => e.kind === "bus-consumer")).toBe(true);
+  });
+
+  it("a sink with an explicit bus list draws one edge per listed bus", () => {
+    const trace: ProjectElement = {
+      kind: "trace",
+      id: "t1",
+      sources: ["p", "c"],
+    };
+    const g = deriveGraph([bus("p"), bus("c"), bus("b")], [], [trace]);
+    const fromB = g.edges.filter((e) => e.source === busNodeId("b"));
+    expect(fromB).toEqual([]); // unlisted bus doesn't feed the sink
+    const targeted = g.edges
+      .filter((e) => e.target === elementNodeId("t1"))
+      .map((e) => e.source)
+      .sort();
+    expect(targeted).toEqual([busNodeId("c"), busNodeId("p")].sort());
+  });
+
+  it("sources=['*', filter] draws every-bus edges plus the filter edge", () => {
+    const filter: ProjectElement = {
+      kind: "filter",
+      id: "f1",
+      sources: ["*"],
+    };
+    const trace: ProjectElement = {
+      kind: "trace",
+      id: "t1",
+      sources: ["*", "f1"],
+    };
+    const g = deriveGraph([bus("p"), bus("c")], [], [filter, trace]);
+    const intoTrace = g.edges
+      .filter((e) => e.target === elementNodeId("t1"))
+      .map((e) => ({ src: e.source, kind: e.kind }))
+      .sort((a, b) => a.src.localeCompare(b.src));
+    expect(intoTrace).toEqual(
+      [
+        { src: busNodeId("c"), kind: "bus-consumer" as const },
+        { src: busNodeId("p"), kind: "bus-consumer" as const },
+        { src: elementNodeId("f1"), kind: "filter-consumer" as const },
+      ].sort((a, b) => a.src.localeCompare(b.src)),
+    );
+  });
+
+  it("a sink with sources=[] (the 'matches nothing' shape) draws no edges", () => {
+    const trace: ProjectElement = { kind: "trace", id: "t1", sources: [] };
     const g = deriveGraph([bus("p")], [], [trace]);
-    expect(g.edges).toEqual([
-      {
-        id: `e:bus->trace:${busNodeId("p")}->${elementNodeId("t1")}`,
-        source: busNodeId("p"),
-        target: elementNodeId("t1"),
-        kind: "bus-sink",
-      },
-    ]);
+    expect(g.edges.filter((e) => e.target === elementNodeId("t1"))).toEqual([]);
   });
 
-  it("a plot whose source points at a bus draws bus→plot", () => {
-    const plot: ProjectElement = { kind: "plot", id: "pl1", source: "p" };
-    const g = deriveGraph([bus("p")], [], [plot]);
-    expect(g.edges).toHaveLength(1);
-    expect(g.edges[0]).toMatchObject({ kind: "bus-sink" });
-  });
-
-  it("a filter with a bus source draws bus→filter", () => {
-    const filter: ProjectElement = { kind: "filter", id: "f1", source: "p" };
-    const g = deriveGraph([bus("p")], [], [filter]);
-    expect(g.edges).toEqual([
-      {
-        id: `e:bus->filter:${busNodeId("p")}->${elementNodeId("f1")}`,
-        source: busNodeId("p"),
-        target: elementNodeId("f1"),
-        kind: "bus-filter",
-      },
-    ]);
+  it("a sink whose source id matches nothing dangles silently", () => {
+    const trace: ProjectElement = {
+      kind: "trace",
+      id: "t1",
+      sources: ["deleted-bus"],
+    };
+    const g = deriveGraph([bus("p")], [], [trace]);
+    expect(g.nodes).toHaveLength(2);
+    expect(g.edges).toEqual([]);
   });
 
   it("a filter feeding two sinks renders 1-in / 2-out as the user expects", () => {
-    const filter: ProjectElement = { kind: "filter", id: "f1", source: "p" };
-    const traceA: ProjectElement = { kind: "trace", id: "tA", source: "f1" };
-    const traceB: ProjectElement = { kind: "trace", id: "tB", source: "f1" };
-    const g = deriveGraph([bus("p")], [], [filter, traceA, traceB]);
-    expect(g.edges).toHaveLength(3);
-    // bus → filter, filter → traceA, filter → traceB
-    expect(g.edges.filter((e) => e.kind === "bus-filter")).toHaveLength(1);
-    expect(g.edges.filter((e) => e.kind === "filter-out")).toHaveLength(2);
+    // Filter F absorbs all buses; two traces each consume only F.
+    const filter: ProjectElement = {
+      kind: "filter",
+      id: "f1",
+      sources: ["*"],
+    };
+    const traceA: ProjectElement = { kind: "trace", id: "tA", sources: ["f1"] };
+    const traceB: ProjectElement = { kind: "trace", id: "tB", sources: ["f1"] };
+    const g = deriveGraph([bus("p"), bus("c")], [], [filter, traceA, traceB]);
+    expect(
+      g.edges.filter((e) => e.kind === "bus-consumer" && e.target === elementNodeId("f1")),
+    ).toHaveLength(2);
+    expect(
+      g.edges.filter(
+        (e) => e.kind === "filter-consumer" && e.source === elementNodeId("f1"),
+      ),
+    ).toHaveLength(2);
   });
 
-  it("a transmit element renders as a node with no auto-edge to any bus", () => {
-    const tx: ProjectElement = { kind: "transmit", id: "tx1" };
-    const g = deriveGraph([bus("p")], [], [tx]);
-    expect(g.nodes).toHaveLength(2);
-    expect(g.nodes.find((n) => n.id === elementNodeId("tx1"))?.kind).toBe(
-      "transmit",
+  it("a transmit with sinks=[] (unset / default) fans out to every project bus", () => {
+    // Empty sinks is the "I haven't picked anything yet" state — the
+    // transmit panel treats it as "every bus" and so does the
+    // graph, so a newly created transmit element doesn't render as
+    // a disconnected node.
+    const tx: ProjectElement = { kind: "transmit", id: "tx1", sinks: [] };
+    const g = deriveGraph([bus("p"), bus("c")], [], [tx]);
+    const outgoing = g.edges.filter((e) => e.source === elementNodeId("tx1"));
+    expect(outgoing.map((e) => e.target).sort()).toEqual(
+      [busNodeId("c"), busNodeId("p")].sort(),
     );
-    expect(g.edges).toEqual([]);
   });
 
-  it("a consumer whose source points at a deleted bus dangles silently", () => {
-    const trace: ProjectElement = { kind: "trace", id: "t1", source: "gone" };
-    const g = deriveGraph([bus("p")], [], [trace]);
-    // Trace renders; no edge to a phantom bus.
-    expect(g.nodes).toHaveLength(2);
+  it("a transmit with explicit sinks draws one transmit→bus edge per listed bus", () => {
+    const tx: ProjectElement = {
+      kind: "transmit",
+      id: "tx1",
+      sinks: ["p", "c"],
+    };
+    const g = deriveGraph([bus("p"), bus("c"), bus("b")], [], [tx]);
+    const outgoing = g.edges.filter((e) => e.source === elementNodeId("tx1"));
+    expect(outgoing.map((e) => e.target).sort()).toEqual(
+      [busNodeId("c"), busNodeId("p")].sort(),
+    );
+    expect(outgoing.every((e) => e.kind === "transmit-bus")).toBe(true);
+    // Bus "b" wasn't in sinks — no edge.
+    expect(
+      g.edges.find((e) => e.target === busNodeId("b") && e.source === elementNodeId("tx1")),
+    ).toBeUndefined();
+  });
+
+  it("a transmit pointing at a deleted bus dangles silently", () => {
+    const tx: ProjectElement = {
+      kind: "transmit",
+      id: "tx1",
+      sinks: ["gone"],
+    };
+    const g = deriveGraph([bus("p")], [], [tx]);
     expect(g.edges).toEqual([]);
   });
 });

@@ -12,6 +12,7 @@ import { useTrace } from "./trace";
 import { TraceControls } from "./TraceControls";
 import { useNotes } from "./notesContext";
 import { decodeSignalsSample, mergeSeries, signalKey } from "./plotData";
+import { SourcesMenuSection } from "./SourcesPicker";
 import {
   DEFAULT_MEASUREMENTS,
   MEASUREMENT_QUANTITIES,
@@ -54,10 +55,9 @@ import {
  *
  * Data: while running, each area re-samples on a self-paced loop at a
  * configurable rate (toolbar; decoupled from React re-renders; Pause/Stop
- * ends it). Each tick computes the *visible* frame range (from the
- * shared x window plus an fps estimate carried in the cache), asks
- * `sample_signals` for just that range with `max_points` matched to
- * canvas width, and replaces the area's cache with the response
+ * ends it). Each tick asks `sample_signals` for the *visible* x-range
+ * (as absolute-seconds bounds) with `max_points` matched to canvas
+ * width, and replaces the area's cache with the response
  * (memoised by fetch-key so paused / un-zoomed ticks skip the
  * round-trip). So a zoomed-in panel gets full-detail decimation over
  * the narrow slice it shows, a show-all panel gets the whole capture
@@ -133,6 +133,11 @@ const DEFAULT_FOLLOW_WIDTH_SECONDS = 10;
 type CursorMode = "off" | "x" | "y" | "note";
 
 interface SignalRef {
+  /** Logical bus this signal is bound to. `null` is the legacy
+   * "any bus" path — kept so plots from projects that pre-date
+   * per-bus signal binding still sample. New picks always carry a
+   * concrete `busId`. */
+  busId: string | null;
   messageId: number;
   extended: boolean;
   signalName: string;
@@ -215,22 +220,33 @@ interface XSync {
 }
 
 function signalRefKey(s: SignalRef): string {
-  return signalKey(s.messageId, s.extended, s.signalName);
+  return signalKey(s.busId, s.messageId, s.extended, s.signalName);
 }
 
 function isSignalRefCore(v: unknown): v is Omit<SignalRef, "color"> {
   if (typeof v !== "object" || v === null) return false;
   const o = v as Record<string, unknown>;
+  // `busId` is the new field. Old saved layouts (no `busId`) load
+  // with `busId: null`, the legacy "any bus" path.
   return (
     typeof o.messageId === "number" &&
     typeof o.extended === "boolean" &&
     typeof o.signalName === "string" &&
     typeof o.messageName === "string" &&
-    typeof o.unit === "string"
+    typeof o.unit === "string" &&
+    (o.busId == null || typeof o.busId === "string")
   );
 }
-function withColor(s: Omit<SignalRef, "color"> & { color?: unknown }, fallbackIdx: number): SignalRef {
-  return { ...s, color: typeof s.color === "string" ? s.color : TRACE_COLORS[fallbackIdx % TRACE_COLORS.length] };
+function withColor(
+  s: Omit<SignalRef, "color"> & { color?: unknown; busId?: unknown },
+  fallbackIdx: number,
+): SignalRef {
+  return {
+    ...s,
+    busId: typeof s.busId === "string" ? s.busId : null,
+    color:
+      typeof s.color === "string" ? s.color : TRACE_COLORS[fallbackIdx % TRACE_COLORS.length],
+  };
 }
 
 /** Drag-and-drop MIME for a `SignalRef` (within or across plot panels —
@@ -355,14 +371,39 @@ function elementIdFromParams(raw: unknown): string {
 
 export function PlotPanel(props: IDockviewPanelProps) {
   const data = useTraceData();
-  const { dbcPaths } = useProjectContext();
-  const { ensure } = useElementRegistry();
+  const { dbcPaths, buses } = useProjectContext();
+  const registry = useElementRegistry();
+  const { ensure } = registry;
 
   const params = props.params as PlotPanelParams | undefined;
   const [elementId] = useState(() => elementIdFromParams(params));
   useEffect(() => {
     ensure(elementId, "plot");
   }, [ensure, elementId]);
+  const plotElement = registry.get(elementId)?.element;
+  // `sources` may be missing on a legacy mocked element (test
+  // fixture) or an old project that hasn't gone through
+  // `normalizeElement` yet — fall back to the wildcard so the picker
+  // renders the default-all state instead of crashing.
+  const currentSources =
+    plotElement && plotElement.kind !== "transmit"
+      ? plotElement.sources ?? ["*"]
+      : ["*"];
+  const availableFilters = useMemo(
+    () =>
+      registry.entries
+        .filter((e) => e.element.kind === "filter")
+        .map((e) => ({
+          id: e.element.id,
+          label:
+            (e.element as { name?: string }).name ?? `Filter ${e.element.id.slice(0, 6)}`,
+        })),
+    [registry.entries],
+  );
+  const handleSourcesChange = useCallback(
+    (next: string[]) => registry.update(elementId, { sources: next }),
+    [registry, elementId],
+  );
   const trace = useTrace(data, elementId);
   const live = trace.status === "running";
   const winStart = trace.offset;
@@ -623,9 +664,14 @@ export function PlotPanel(props: IDockviewPanelProps) {
   ]);
 
   const refreshCatalog = useCallback(() => {
-    void invoke<SignalDescriptorRecord[]>("list_signals").then(setCatalog);
-  }, []);
-  useEffect(refreshCatalog, [refreshCatalog, dbcPaths]);
+    void invoke<SignalDescriptorRecord[]>("list_signals", {
+      // The host expands unscoped DBCs to one record per project
+      // bus, so the picker can offer the same signal on each bus the
+      // DBC applies to.
+      projectBuses: buses.map((b) => b.id),
+    }).then(setCatalog);
+  }, [buses]);
+  useEffect(refreshCatalog, [refreshCatalog, dbcPaths, buses]);
 
   // --- area ops ---
   const addArea = useCallback(() => {
@@ -663,6 +709,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
         const targetId = prev.some((a) => a.id === focusedAreaId) ? focusedAreaId : prev[0]?.id;
         const total = prev.reduce((n, a) => n + a.signals.length, 0);
         const ref: SignalRef = {
+          busId: desc.bus_id,
           messageId: desc.message_id,
           extended: desc.extended,
           signalName: desc.signal_name,
@@ -793,14 +840,31 @@ export function PlotPanel(props: IDockviewPanelProps) {
     [],
   );
 
+  const busNameLookup = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const b of buses) m.set(b.id, b.name);
+    return m;
+  }, [buses]);
   const catalogOptions = useMemo(
     () =>
-      catalog.map((s) => ({
-        key: signalKey(s.message_id, s.extended, s.signal_name),
-        label: `${s.message_name}.${s.signal_name}${s.unit ? ` [${s.unit}]` : ""}`,
-        desc: s,
-      })),
-    [catalog],
+      catalog.map((s) => {
+        const busLabel =
+          s.bus_id == null
+            ? null
+            : busNameLookup.get(s.bus_id) ?? s.bus_id;
+        return {
+          key: signalKey(s.bus_id, s.message_id, s.extended, s.signal_name),
+          // Include the bus prefix so two signals named the same on
+          // different buses are pickable separately, and the message
+          // name explicitly groups its signals. Example:
+          //   "Powertrain · EngineData.RPM [rpm]"
+          label: `${busLabel ? `${busLabel} · ` : ""}${s.message_name}.${s.signal_name}${
+            s.unit ? ` [${s.unit}]` : ""
+          }`,
+          desc: s,
+        };
+      }),
+    [catalog, busNameLookup],
   );
   const areaLabels = useMemo(() => new Map(areas.map((a, i) => [a.id, `Area ${i + 1}`])), [areas]);
 
@@ -861,9 +925,12 @@ export function PlotPanel(props: IDockviewPanelProps) {
       <div
         className="plot-panel-toolbar"
         onContextMenu={(e) => {
-          // Native context menus would obscure (and override) ours, so
-          // suppress them on toolbar right-click and show the in-app
-          // menu at the cursor instead.
+          // Right-click the *toolbar* to open the panel menu (the
+          // `plot-toolbar-menu` shell hosts the diagnostics toggle and
+          // the sources picker). Deliberately not bound to the whole
+          // panel: right-click + drag over a plot area is uPlot's
+          // zoom gesture, and a plain right-click places cursor B —
+          // a panel-wide handler stole both.
           e.preventDefault();
           setToolbarMenuAt({ x: e.clientX, y: e.clientY });
         }}
@@ -966,6 +1033,12 @@ export function PlotPanel(props: IDockviewPanelProps) {
             </span>
             show diagnostics
           </button>
+          <SourcesMenuSection
+            value={currentSources}
+            buses={buses}
+            filters={availableFilters}
+            onChange={handleSourcesChange}
+          />
         </div>
       )}
 
@@ -1019,6 +1092,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
               onRemoveSignal={(key) => removeSignal(area.id, key)}
               onDropSignal={(ref, beforeKey) => placeSignal(ref, area.id, beforeKey)}
               onToggleHidden={(key) => toggleSignalHidden(area.id, key)}
+              busNameLookup={busNameLookup}
             />
           );
         })}
@@ -1256,13 +1330,16 @@ interface PlotAreaProps {
    * one this panel doesn't have yet (drag from another panel). */
   onDropSignal: (ref: SignalRef, beforeKey: string | null) => void;
   onToggleHidden: (key: string) => void;
+  /** Bus-id → bus-name resolution for the per-signal side panel.
+   * Each signal row displays its bus name so a `(message, signal)`
+   * shown on two different buses is unambiguous. */
+  busNameLookup: ReadonlyMap<string, string>;
 }
 
 /** A plot area's sample cache: the data currently shown on the plot,
  * as a snapshot of the *visible* x-range from the host. Each resample
- * computes the visible frame range (from the shared x window plus an
- * fps estimate carried in this cache), asks `sample_signals` for that
- * range with `max_points` matched to canvas width, and replaces
+ * asks `sample_signals` for the visible x-range (as absolute-seconds
+ * bounds) with `max_points` matched to canvas width, and replaces
  * {@link byKey} with the response. Memoised by {@link fetchKey} so
  * follow-live ticks where nothing changed (window paused, no zoom)
  * skip the host round-trip. Times in {@link byKey} are relative to
@@ -1275,14 +1352,12 @@ interface AreaCache {
   /** ts(frame at `anchorStart`), set on the first fetch (which always
    * starts at `anchorStart` so the origin is unambiguous). */
   base: number | null;
-  /** Relative time (seconds since `base`) of the last fetch's last
-   * frame — the right edge for follow-live. */
+  /** Relative time (seconds since `base`) of the trace window's last
+   * frame — the live edge for follow-live and Fit Data. Set from the
+   * host's `last_seconds`, the window's last-frame timestamp (not the
+   * fetched slice's edge), so it stays accurate on a zoomed panel.
+   * `null` until the first non-empty fetch lands. */
   lastT: number | null;
-  /** Estimated frames-per-second of the trace, carried from the last
-   * fetch's response (`(visEnd - visStart) / (res.last - res.from)`).
-   * Used to convert the visible x range to frame indices for the next
-   * fetch; `null` until the first non-empty fetch completes. */
-  fps: number | null;
   byKey: Map<string, { t: number[]; v: number[] }>;
   /** `${visStart}:${visEnd}:${maxPoints}` — skip the fetch if it
    * matches what we last asked for. */
@@ -1336,6 +1411,7 @@ function PlotArea(p: PlotAreaProps) {
     onRemoveSignal,
     onDropSignal,
     onToggleHidden,
+    busNameLookup,
   } = p;
 
   const canvasRef = useRef<HTMLDivElement | null>(null);
@@ -1579,7 +1655,6 @@ function PlotArea(p: PlotAreaProps) {
           anchorStart: lr.winStart,
           base: null,
           lastT: null,
-          fps: null,
           byKey: new Map(),
           fetchKey: "",
           lastWinEnd: lr.winEnd,
@@ -1616,9 +1691,7 @@ function PlotArea(p: PlotAreaProps) {
       for (const c of cache.byKey.values()) if (c.t.length > biggestCache) biggestCache = c.t.length;
       lr.onReportCache(areaId, biggestCache);
       if (cache.fetchKey === fetchKey && cache.byKey.size > 0) {
-        const wf = lr.winEnd - lr.winStart;
-        const liveT = cache.fps != null && cache.fps > 0 ? wf / cache.fps : cache.lastT;
-        lr.onAreaResampled(areaId, liveT);
+        lr.onAreaResampled(areaId, cache.lastT);
         recordRate();
         lr.onReportRate(areaId, rateEmaRef.current);
         return;
@@ -1647,6 +1720,7 @@ function PlotArea(p: PlotAreaProps) {
         fromSeconds,
         toSeconds,
         signals: signals.map((s) => ({
+          busId: s.busId,
           messageId: s.messageId,
           extended: s.extended,
           signalName: s.signalName,
@@ -1686,24 +1760,10 @@ function PlotArea(p: PlotAreaProps) {
       // this is the slice's right edge — but follow-live's "extent"
       // logic uses it just to slide the shared window, so that's
       // correct: we still see new data on the right.
+      // `res.last_seconds` is the *window's* last-frame timestamp
+      // (`frame_timestamps(from_index, window_end)`, host-side) — the
+      // true live edge, independent of any zoomed-in fetch slice.
       if (res.last_seconds != null) cache.lastT = res.last_seconds - base;
-
-      // Update the fps estimate once — `(visEnd - visStart) /
-      // (res.last_seconds - res.from_seconds)` jitters by tiny amounts
-      // every fetch, which jitters `visStart` / `visEnd` in the next
-      // call, which jitters the host's decimation bucket boundaries,
-      // which the user sees as points popping in / out near the
-      // edges. Latch fps to the first non-empty fetch's value (which
-      // came from a full-window scan, so it reflects the whole trace's
-      // rate); resets on cache anchor change.
-      if (
-        cache.fps == null &&
-        res.from_seconds != null &&
-        res.last_seconds != null &&
-        res.last_seconds > res.from_seconds
-      ) {
-        cache.fps = (visEnd - visStart) / (res.last_seconds - res.from_seconds);
-      }
       cache.fetchKey = fetchKey;
       cache.lastWinEnd = lr.winEnd;
 
@@ -1787,15 +1847,12 @@ function PlotArea(p: PlotAreaProps) {
           });
       const merged = mergeSeries(displaySeries) as uPlot.AlignedData;
       const xs = merged[0] as number[];
-      // Live-edge time for follow-live: when the fetch was scoped to a
-      // zoomed-in slice, `cache.lastT` is the slice's right edge, *not*
-      // the live edge — extrapolate from the window's frame count and
-      // the fps estimate so follow-live keeps sliding to the real edge.
-      const winFrames = lr.winEnd - lr.winStart;
+      // Live edge for follow-live / Fit Data: the trace window's true
+      // last-frame time (`cache.lastT`, from the host's `last_seconds`).
+      // The `xs` fallback covers the very first fetch, before
+      // `last_seconds` has landed.
       const liveEdgeT =
-        cache.fps != null && cache.fps > 0
-          ? winFrames / cache.fps
-          : (cache.lastT ?? (xs.length > 0 ? xs[xs.length - 1] : null));
+        cache.lastT ?? (xs.length > 0 ? xs[xs.length - 1] : null);
 
       withSuppressed(() => {
         // `setData(data, false)` keeps the current scales — we set
@@ -2679,11 +2736,16 @@ function PlotArea(p: PlotAreaProps) {
                   }}
                 />
                 <div className="plot-signal-text">
-                  <span className="plot-signal-name" title={`${s.messageName}.${s.signalName} — drag to another plot area`}>
+                  <span
+                    className="plot-signal-name"
+                    title={`${s.messageName}.${s.signalName} — drag to another plot area`}
+                  >
                     {s.signalName}
                   </span>
                   <span className="plot-signal-message" title={s.messageName}>
-                    {s.messageName}
+                    {s.busId
+                      ? `${busNameLookup.get(s.busId) ?? s.busId} · ${s.messageName}`
+                      : s.messageName}
                   </span>
                 </div>
                 <div className="plot-signal-readout">

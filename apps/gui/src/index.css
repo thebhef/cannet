@@ -326,6 +326,26 @@ header {
   color: #cbd5e1;
 }
 
+.graph-panel {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+}
+.graph-panel-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.5rem;
+  border-bottom: 1px solid #2c3444;
+  background: #1f2532;
+}
+.graph-panel-canvas {
+  flex: 1 1 auto;
+  position: relative;
+  min-height: 0;
+}
+
 .graph-empty {
   display: flex;
   flex-direction: column;
@@ -423,6 +443,93 @@ header {
 .graph-node-filter {
   background: #3f3f46;
   border-color: #a1a1aa;
+  /* `.graph-node` is a flex row; let the inline predicate editor wrap
+     onto its own line below the glyph + label instead of flowing off
+     the node's right edge. */
+  flex-wrap: wrap;
+}
+.graph-node.expanded {
+  height: auto;
+}
+.graph-node-expand,
+.graph-node-insert-filter {
+  margin-left: auto;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: #cbd5e1;
+  font: inherit;
+  cursor: pointer;
+  padding: 0 0.25rem;
+}
+.graph-node-expand:hover,
+.graph-node-insert-filter:hover {
+  color: #fff;
+}
+.graph-node-insert-filter {
+  font-size: 0.75rem;
+  border-radius: 3px;
+}
+.graph-node-insert-filter:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* Right-click edge menu in the project graph view. Same surface as
+ * the other context menus for visual consistency. Positioned in
+ * viewport coords (matching `event.clientX/Y` from the handler),
+ * so `position: fixed` rather than `absolute`. */
+.graph-edge-menu {
+  position: fixed;
+  z-index: 200;
+  background: #0d1114;
+  border: 1px solid #2c3444;
+  border-radius: 4px;
+  padding: 0.3rem 0.5rem;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+.graph-edge-menu > button {
+  display: block;
+  width: 100%;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.78rem;
+  text-align: left;
+  padding: 0.25rem 0.4rem;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.graph-edge-menu > button:hover {
+  background: #1c2530;
+}
+.filter-predicate-editor {
+  margin-top: 0.4rem;
+  padding: 0.3rem;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 3px;
+  display: grid;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  /* Take the full node width on its own wrapped flex line, and allow
+     the grid to shrink to it rather than overflow. */
+  flex-basis: 100%;
+  min-width: 0;
+}
+.filter-predicate-row {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.filter-predicate-row > span:first-child {
+  flex: 0 0 6.5rem;
+  color: #94a3b8;
+}
+.filter-predicate-row > input,
+.filter-predicate-row > select {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 /* Project panel: a few stacked sections (the project file, the
@@ -511,6 +618,17 @@ header {
   border: 1px solid #1e293b;
   border-radius: 0.2rem;
   padding: 0.15rem 0.35rem;
+}
+
+.project-bus-color {
+  flex: 0 0 auto;
+  width: 1.6rem;
+  height: 1.6rem;
+  padding: 0;
+  border: 1px solid #1e293b;
+  border-radius: 0.2rem;
+  background: #0f172a;
+  cursor: pointer;
 }
 
 .project-binding-form {
@@ -1121,6 +1239,99 @@ header {
   background: #2c3444;
   margin: 0 0.15rem;
 }
+
+/* ─── Context menus (shared shell) ─────────────────────────────────
+ * The plot/trace/transmit panels all share the same look for their
+ * right-click context menus: dark surface, thin border, flat
+ * menu-item buttons + checkbox rows. Three entry points use the
+ * same shell:
+ *
+ * - `.plot-toolbar-menu` — the plot panel's existing menu (now also
+ *   hosts the sources section).
+ * - `.sources-context-menu` — the standalone trace / transmit menu
+ *   (a positioned popover with just the sources checklist).
+ * - `.graph-edge-menu` — the project-graph view's edge action menu.
+ *
+ * `.sources-picker-popover` is the headless checklist body; it
+ * adopts whichever shell wraps it. */
+.sources-picker-popover {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 14rem;
+}
+.sources-picker-header {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #94a3b8;
+  padding: 0.1rem 0.4rem 0.2rem;
+  border-bottom: 1px solid #2c3444;
+  margin-bottom: 0.15rem;
+}
+.sources-picker-subheader {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #94a3b8;
+  padding: 0.1rem 0.4rem;
+  margin-top: 0.15rem;
+}
+.sources-picker-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.sources-picker-group-filters {
+  border-top: 1px solid #2c3444;
+  margin-top: 0.15rem;
+  padding-top: 0.15rem;
+}
+.sources-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
+  padding: 0.25rem 0.4rem;
+  border-radius: 3px;
+  font-size: 0.78rem;
+}
+.sources-picker-row:hover {
+  background: #1c2530;
+}
+.sources-picker-row > input[type="checkbox"] {
+  margin: 0;
+}
+
+/* Standalone (trace / transmit) right-click menu — positioned at
+ * the cursor, uses the same surface as `plot-toolbar-menu`. */
+.sources-context-menu {
+  position: fixed;
+  z-index: 200;
+  background: #0d1114;
+  border: 1px solid #2c3444;
+  border-radius: 4px;
+  padding: 0.3rem 0.5rem;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+.sources-context-menu-action {
+  display: block;
+  width: 100%;
+  margin-top: 0.2rem;
+  padding: 0.25rem 0.4rem;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid #2c3444;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.sources-context-menu-action:hover {
+  background: #1c2530;
+}
 .plot-window-ctl,
 .plot-cursor-ctl {
   display: flex;
@@ -1455,6 +1666,9 @@ header {
 }
 .transmit-editor-row label.grow input {
   width: 100%;
+}
+.transmit-editor-warning {
+  outline: 1px solid #d97706;
 }
 .transmit-editor-row input,
 .transmit-editor-row select {

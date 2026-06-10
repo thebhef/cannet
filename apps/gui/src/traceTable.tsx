@@ -3,9 +3,11 @@ import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 
 import type { TraceFrameRecord } from "./types";
 import {
+  type BusLookup,
   type ColumnKey,
   type ColumnState,
   type SortState,
+  busDisplayName,
   columnDef,
   gridTemplateColumns,
   visibleColumns,
@@ -16,14 +18,16 @@ import { formatData, formatId, formatKind, formatMsgRate, formatTimestamp } from
 /// the row's 1-based index and is shown even for a not-yet-loaded row;
 /// every other column is blank until the frame arrives. `rate` is only
 /// meaningful in by-id mode (the "msg/s" column); elsewhere it's
-/// omitted. Shared by the chronological rows (`TraceView`) and the
-/// by-id rows (`ByIdTable`).
+/// omitted. `busLookup` resolves a frame's `bus_id` to the project's
+/// bus name for the "bus" column. Shared by the chronological rows
+/// (`TraceView`) and the by-id rows (`ByIdTable`).
 export function cellContent(
   key: ColumnKey,
   frame: TraceFrameRecord | null,
   absoluteIndex: number,
   baseTimestamp: number | null,
   isExpanded: boolean,
+  busLookup: BusLookup,
   rate?: number,
 ): ReactNode {
   if (key === "idx") return (absoluteIndex + 1).toLocaleString();
@@ -32,8 +36,8 @@ export function cellContent(
   switch (key) {
     case "time":
       return formatTimestamp(frame.timestamp_seconds, baseTimestamp);
-    case "ch":
-      return frame.channel;
+    case "bus":
+      return busDisplayName(frame.bus_id, busLookup);
     case "dir":
       return frame.direction;
     case "id":

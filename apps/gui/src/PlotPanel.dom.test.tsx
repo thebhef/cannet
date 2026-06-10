@@ -160,6 +160,7 @@ const projectCtx: ProjectContextValue = {
   onAddBus: () => {},
   onRemoveBus: () => {},
   onRenameBus: () => {},
+  onSetBusColor: () => {},
   onAddBinding: () => {},
   onRemoveBinding: () => {},
   onConnect: () => {},
@@ -219,9 +220,9 @@ describe("PlotPanel", () => {
       expect(screen.getByRole("option", { name: /EngineData\.EngineSpeed/ })).toBeInTheDocument(),
     );
     const picker = screen.getByLabelText("add signal to focused plot area") as HTMLSelectElement;
-    fireEvent.change(picker, { target: { value: "s:256:EngineSpeed" } });
+    fireEvent.change(picker, { target: { value: "*|s:256:EngineSpeed" } });
     await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
-    fireEvent.change(picker, { target: { value: "s:256:EngineSpeed" } });
+    fireEvent.change(picker, { target: { value: "*|s:256:EngineSpeed" } });
     expect(screen.getAllByText("EngineSpeed").length).toBe(1);
   });
 
@@ -231,7 +232,7 @@ describe("PlotPanel", () => {
       expect(screen.getByRole("option", { name: /EngineData\.EngineSpeed/ })).toBeInTheDocument(),
     );
     fireEvent.change(screen.getByLabelText("add signal to focused plot area"), {
-      target: { value: "s:256:EngineSpeed" },
+      target: { value: "*|s:256:EngineSpeed" },
     });
     await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "add plot area" }));
@@ -258,7 +259,7 @@ describe("PlotPanel", () => {
       expect(screen.getByRole("option", { name: /EngineData\.EngineSpeed/ })).toBeInTheDocument(),
     );
     fireEvent.change(screen.getByLabelText("add signal to focused plot area"), {
-      target: { value: "s:256:EngineSpeed" },
+      target: { value: "*|s:256:EngineSpeed" },
     });
     await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
     const swatch = screen.getByTitle("hide this signal");

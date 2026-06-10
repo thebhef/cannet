@@ -10,9 +10,12 @@ import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
 
 import type {
+  Bus,
   SignalDescriptorRecord,
   ValueTableEntryRecord,
 } from "./types";
+import { useElementRegistry } from "./projectElements";
+import { useProjectContext } from "./projectContext";
 
 /**
  * Phase-5 transmit panel: compose a CAN / CAN FD frame, optionally
@@ -49,8 +52,16 @@ import type {
 export function TransmitPanel(props: IDockviewPanelProps) {
   const { api } = props;
   const params = props.params as
-    | { frames?: unknown }
+    | { elementId?: unknown; frames?: unknown }
     | undefined;
+  const registry = useElementRegistry();
+  const project = useProjectContext();
+  const [elementId] = useState(() =>
+    typeof params?.elementId === "string" ? params.elementId : crypto.randomUUID(),
+  );
+  useEffect(() => {
+    registry.ensure(elementId, "transmit");
+  }, [registry, elementId]);
   const [frames, setFrames] = useState<TransmitFrameConfig[]>(() =>
     parseFramesParam(params?.frames),
   );
@@ -61,17 +72,38 @@ export function TransmitPanel(props: IDockviewPanelProps) {
   // Persist back to dockview panel params so it round-trips through
   // the project file. The host doesn't interpret `frames`.
   useEffect(() => {
-    api.updateParameters({ frames });
-  }, [api, frames]);
+    api.updateParameters({ elementId, frames });
+  }, [api, elementId, frames]);
+
+  // Keep the transmit *element's* `sinks` in sync with the union of
+  // its frames' bus picks. The graph view reads `sinks` to draw
+  // transmit→bus edges; the panel's UI is per-frame so we derive
+  // sinks from the frames rather than letting it drift on its own.
+  useEffect(() => {
+    const union = Array.from(
+      new Set(frames.map((f) => f.busId).filter((b): b is string => !!b)),
+    );
+    // Preserve project bus order so the edges read consistently.
+    const ordered = project.buses
+      .map((b) => b.id)
+      .filter((id) => union.includes(id));
+    registry.update(elementId, { sinks: ordered });
+  }, [frames, project.buses, registry, elementId]);
 
   // The DBC's `(message, signal)` list — used to populate the
-  // signals-mode picker and detect enum signals.
+  // signals-mode picker, the per-frame message picker, and enum
+  // detection. Per-bus list_signals returns one record per bus;
+  // we dedupe by `(message_id, extended)` so the message picker
+  // shows one entry per DBC message regardless of how many buses
+  // a DBC is scoped to.
   const [signals, setSignals] = useState<SignalDescriptorRecord[]>([]);
   const refreshSignals = useCallback(() => {
-    void invoke<SignalDescriptorRecord[]>("list_signals")
+    void invoke<SignalDescriptorRecord[]>("list_signals", {
+      projectBuses: project.buses.map((b) => b.id),
+    })
       .then(setSignals)
       .catch(() => setSignals([]));
-  }, []);
+  }, [project.buses]);
   useEffect(() => {
     refreshSignals();
   }, [refreshSignals]);
@@ -92,7 +124,11 @@ export function TransmitPanel(props: IDockviewPanelProps) {
     const next: TransmitFrameConfig = {
       id,
       name: `Frame ${frames.length + 1}`,
-      channel: 0,
+      // Default the new frame's destination to the project's first
+      // bus — same intent as today's "transmits fan out by default"
+      // but now per-frame (and explicit, since `sinks` doesn't
+      // support a wildcard).
+      busId: project.buses[0]?.id ?? null,
       canId: 0x100,
       extended: false,
       kind: "classic",
@@ -104,7 +140,7 @@ export function TransmitPanel(props: IDockviewPanelProps) {
     };
     setFrames((prev) => [...prev, next]);
     setActiveId(id);
-  }, [frames.length]);
+  }, [frames.length, project.buses]);
 
   const removeFrame = useCallback(
     (id: string) => {
@@ -133,7 +169,17 @@ export function TransmitPanel(props: IDockviewPanelProps) {
       setCyclicTick((t) => t + 1);
     }
   }, []);
+  // Mirror the project bus list into a ref so the cyclic scheduler's
+  // captured closure sees the current names when it builds status
+  // text. (`frame` itself is also passed in fresh per tick — see
+  // `startCyclic`.)
+  const busesRef = useRef<readonly Bus[]>(project.buses);
+  busesRef.current = project.buses;
   const sendOnce = useCallback(async (frame: TransmitFrameConfig) => {
+    if (!frame.busId) {
+      setLastStatus(`${frame.name}: no destination bus`);
+      return;
+    }
     const parsed = parseFrame(frame);
     if (parsed.kind === "err") {
       setLastStatus(`${frame.name}: ${parsed.message}`);
@@ -141,15 +187,17 @@ export function TransmitPanel(props: IDockviewPanelProps) {
     }
     try {
       const result = await invoke<TransmitResult>("transmit_frame", {
-        request: parsed.request,
+        request: { busId: frame.busId, ...parsed.request },
       });
       const wire = result.wire_status;
+      const busName =
+        busesRef.current.find((b) => b.id === frame.busId)?.name ?? frame.busId;
       setLastStatus(
-        wire.kind === "not_connected"
-          ? `${frame.name}: Tx-confirm @ #${result.tx_confirm_index + 1} (not connected)`
-          : wire.kind === "sent"
-            ? `${frame.name}: sent → ${wire.interface_id} (Tx-confirm @ #${result.tx_confirm_index + 1})`
-            : `${frame.name}: ${wire.message} (Tx-confirm @ #${result.tx_confirm_index + 1})`,
+        wire.kind === "sent"
+          ? `${frame.name}: ${busName} → ${wire.interface_id} (Tx-confirm @ #${result.tx_confirm_index + 1})`
+          : wire.kind === "not_connected"
+            ? `${frame.name}: ${busName} not connected (Tx-confirm @ #${result.tx_confirm_index + 1})`
+            : `${frame.name}: ${busName}: ${wire.message} (Tx-confirm @ #${result.tx_confirm_index + 1})`,
       );
     } catch (err) {
       setLastStatus(`${frame.name}: ${String(err)}`);
@@ -205,6 +253,30 @@ export function TransmitPanel(props: IDockviewPanelProps) {
     );
   }, [message, signals]);
 
+  // Distinct messages defined by any loaded DBC, for the per-frame
+  // "pick a message" dropdown. `list_signals` returns one record per
+  // (bus, signal) pair; dedupe to `(message_id, extended, name)` so
+  // each DBC message shows once regardless of how many buses it
+  // applies to and how many signals it has.
+  const messageCatalog: MessageCatalogEntry[] = useMemo(() => {
+    const seen = new Map<string, MessageCatalogEntry>();
+    for (const s of signals) {
+      const key = `${s.extended ? "x" : "s"}:${s.message_id}:${s.message_name}`;
+      if (!seen.has(key)) {
+        seen.set(key, {
+          messageId: s.message_id,
+          extended: s.extended,
+          messageName: s.message_name,
+        });
+      }
+    }
+    return [...seen.values()].sort((a, b) =>
+      a.messageId === b.messageId
+        ? a.messageName.localeCompare(b.messageName)
+        : a.messageId - b.messageId,
+    );
+  }, [signals]);
+
   return (
     <div className="transmit-panel">
       <div className="transmit-panel-toolbar">
@@ -256,6 +328,8 @@ export function TransmitPanel(props: IDockviewPanelProps) {
           {active && (
             <TransmitFrameEditor
               frame={active}
+              buses={project.buses}
+              messageCatalog={messageCatalog}
               messageSignals={messageSignals}
               messageName={message?.message_name ?? null}
               onChange={updateActive}
@@ -273,8 +347,16 @@ export function TransmitPanel(props: IDockviewPanelProps) {
   );
 }
 
+interface MessageCatalogEntry {
+  messageId: number;
+  extended: boolean;
+  messageName: string;
+}
+
 interface FrameEditorProps {
   frame: TransmitFrameConfig;
+  buses: readonly Bus[];
+  messageCatalog: readonly MessageCatalogEntry[];
   messageSignals: SignalDescriptorRecord[];
   messageName: string | null;
   onChange: (mut: (f: TransmitFrameConfig) => TransmitFrameConfig) => void;
@@ -288,6 +370,8 @@ interface FrameEditorProps {
 
 function TransmitFrameEditor({
   frame,
+  buses,
+  messageCatalog,
   messageSignals,
   messageName,
   onChange,
@@ -300,6 +384,12 @@ function TransmitFrameEditor({
   const set = <K extends keyof TransmitFrameConfig>(key: K, value: TransmitFrameConfig[K]) =>
     onChange((f) => ({ ...f, [key]: value }));
 
+  // Catalog key the message <select> uses. The empty option means
+  // "no DBC message picked" — the user can still hand-type a hex id.
+  const messageKey = (m: MessageCatalogEntry) =>
+    `${m.extended ? "x" : "s"}:${m.messageId}`;
+  const currentMessageKey = `${frame.extended ? "x" : "s"}:${frame.canId}`;
+
   return (
     <div className="transmit-editor">
       <div className="transmit-editor-row">
@@ -311,20 +401,64 @@ function TransmitFrameEditor({
             onChange={(e) => set("name", e.target.value)}
           />
         </label>
+        <label>
+          bus
+          <select
+            value={frame.busId ?? ""}
+            onChange={(e) => set("busId", e.target.value || null)}
+            aria-label="destination bus"
+            // Highlight the unset state — until the user picks a
+            // bus, `sendOnce` refuses to fire.
+            className={frame.busId ? undefined : "transmit-editor-warning"}
+          >
+            {!frame.busId && (
+              <option value="">{buses.length === 0 ? "(no buses configured)" : "(pick a bus)"}</option>
+            )}
+            {buses.map((b) => (
+              <option value={b.id} key={b.id}>
+                {b.name}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
       <div className="transmit-editor-row">
-        <label>
-          channel
-          <input
-            type="number"
-            min={0}
-            max={255}
-            value={frame.channel}
-            onChange={(e) =>
-              set("channel", clampUInt(e.target.valueAsNumber, 255, 0))
+        <label className="grow">
+          message (from DBC)
+          <select
+            value={
+              messageCatalog.some((m) => messageKey(m) === currentMessageKey)
+                ? currentMessageKey
+                : ""
             }
-          />
+            onChange={(e) => {
+              const picked = messageCatalog.find(
+                (m) => messageKey(m) === e.target.value,
+              );
+              if (!picked) return;
+              onChange((f) => ({
+                ...f,
+                canId: picked.messageId,
+                extended: picked.extended,
+              }));
+            }}
+            aria-label="pick DBC message"
+            disabled={messageCatalog.length === 0}
+          >
+            <option value="">
+              {messageCatalog.length === 0
+                ? "(no DBC attached)"
+                : "(pick a message…)"}
+            </option>
+            {messageCatalog.map((m) => (
+              <option key={messageKey(m)} value={messageKey(m)}>
+                {m.messageName} — {m.extended ? "x" : "s"}:0x{m.messageId.toString(16).toUpperCase()}
+              </option>
+            ))}
+          </select>
         </label>
+      </div>
+      <div className="transmit-editor-row">
         <label>
           id (hex)
           <input
@@ -560,10 +694,18 @@ function SignalsByMessage({ signals, onPickLabel }: SignalsByMessageProps) {
 
 /// Persisted shape for one transmit frame. Lives in the dockview
 /// panel `params.frames` array; the host doesn't interpret it.
+///
+/// The destination bus is **per-frame** (`busId`) — the panel
+/// auto-syncs the transmit element's `sinks` to the union of its
+/// frames' bus picks so the graph view still shows which buses this
+/// panel is wired to.
 export interface TransmitFrameConfig {
   id: string;
   name: string;
-  channel: number;
+  /// Logical bus this frame transmits onto. `null` only on a freshly
+  /// added frame in a project with no buses yet — the panel
+  /// surfaces a warning until the user picks one.
+  busId: string | null;
   canId: number;
   extended: boolean;
   kind: "classic" | "fd" | "remote" | "error";
@@ -586,8 +728,10 @@ interface TransmitResult {
 type ParseResult =
   | {
       kind: "ok";
+      /// Frame fields shared across every destination bus. The
+      /// caller folds each `bus_id` in on the way out the door so
+      /// the host gets one `TransmitRequest` per bus.
       request: {
-        channel: number;
         id: number;
         extended: boolean;
         kind: TransmitFrameConfig["kind"];
@@ -624,7 +768,6 @@ function parseFrame(frame: TransmitFrameConfig): ParseResult {
   return {
     kind: "ok",
     request: {
-      channel: frame.channel,
       id: frame.canId,
       extended: frame.extended,
       kind: frame.kind,
@@ -646,10 +789,13 @@ function parseFramesParam(value: unknown): TransmitFrameConfig[] {
 function isTransmitFrameConfig(v: unknown): v is TransmitFrameConfig {
   if (v == null || typeof v !== "object") return false;
   const o = v as Record<string, unknown>;
+  // `busId` is the new per-frame field. Old saved frames (pre-bus
+  // model) load with `busId: null` and the panel surfaces a warning
+  // until the user picks a bus.
   return (
     typeof o.id === "string" &&
     typeof o.name === "string" &&
-    typeof o.channel === "number" &&
+    (o.busId == null || typeof o.busId === "string") &&
     typeof o.canId === "number" &&
     typeof o.extended === "boolean" &&
     (o.kind === "classic" || o.kind === "fd" || o.kind === "remote" || o.kind === "error") &&
@@ -671,3 +817,4 @@ function clampUInt(n: number, max: number, fallback: number): number {
   if (!Number.isFinite(n)) return fallback;
   return Math.min(max, Math.max(0, Math.floor(n)));
 }
+

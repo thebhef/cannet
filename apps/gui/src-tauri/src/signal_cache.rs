@@ -49,9 +49,17 @@ impl SignalCache {
     }
 }
 
+/// Cache key — one bucket per `(bus, message, signal)` triple, so
+/// the same arbitration id on two different buses (with different
+/// DBC scopes) decodes into two independent series. `bus_id = None`
+/// is the legacy "any bus" path: it matches every frame regardless
+/// of its bus tag, used by old plot panels that pre-date per-bus
+/// signal binding.
+type SignalKey = (Option<String>, u32, bool, String);
+
 /// Process-wide collection of per-signal caches.
 pub struct SignalCacheStore {
-    caches: Mutex<HashMap<(u32, bool, String), SignalCache>>,
+    caches: Mutex<HashMap<SignalKey, SignalCache>>,
 }
 
 impl SignalCacheStore {
@@ -82,10 +90,13 @@ impl SignalCacheStore {
     /// The catch-up is `O(new matches since last call)` — fast in
     /// steady state; only the first call on a fresh cache pays for the
     /// backlog. Loaded-DBC iteration mirrors the rest of the host's
-    /// "first DBC that decodes wins" semantics.
+    /// "first DBC that decodes wins" semantics. `bus_id` scopes the
+    /// catch-up to frames tagged with that bus; pass `None` for the
+    /// legacy "any bus" path.
     #[allow(clippy::too_many_arguments)]
     pub fn slice(
         &self,
+        bus_id: Option<&str>,
         message_id: u32,
         extended: bool,
         signal_name: &str,
@@ -95,7 +106,12 @@ impl SignalCacheStore {
         dbs: &[&Database],
     ) -> Vec<SamplePoint> {
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
-        let key = (message_id, extended, signal_name.to_string());
+        let key: SignalKey = (
+            bus_id.map(str::to_owned),
+            message_id,
+            extended,
+            signal_name.to_string(),
+        );
         let cache = caches.entry(key).or_insert_with(SignalCache::new);
 
         // Catch up: decode any matching frames in `[next_index, len)`.
@@ -104,6 +120,15 @@ impl SignalCacheStore {
             let new_matches =
                 store.matching_frames_indexed(message_id, extended, cache.next_index, store_len);
             for (_idx, frame) in new_matches {
+                // Bus filter: when the query is scoped to a bus,
+                // drop frames whose `bus_id` doesn't match. `None` on
+                // the query is the legacy "any bus" path that takes
+                // every frame.
+                if let Some(want) = bus_id {
+                    if frame.bus_id.as_deref() != Some(want) {
+                        continue;
+                    }
+                }
                 // Try each loaded DBC in priority order, first decode
                 // wins (matches `sample_signals`' existing semantics).
                 for db in dbs {
@@ -187,7 +212,7 @@ mod tests {
         let cache = SignalCacheStore::new();
 
         // Full time range — all four id-256 samples.
-        let all = cache.slice(256, false, "X", 0.0, 10.0, &store, dbs);
+        let all = cache.slice(None, 256, false, "X", 0.0, 10.0, &store, dbs);
         assert_eq!(all.iter().map(|p| p.value as u32).collect::<Vec<_>>(), vec![1, 2, 3, 4]);
 
         // Narrow time range [2.5, 4.5): only the id-256 sample at t = 3
@@ -195,23 +220,23 @@ mod tests {
         // at t = 0 / 2 (just before) and t = 5 (just after), giving
         // uPlot the last-known-coming-in value and the next-going-out
         // value to draw a line across.
-        let mid = cache.slice(256, false, "X", 2.5, 4.5, &store, dbs);
+        let mid = cache.slice(None, 256, false, "X", 2.5, 4.5, &store, dbs);
         assert_eq!(mid.iter().map(|p| p.value as u32).collect::<Vec<_>>(), vec![1, 2, 3, 4]);
 
         // Very narrow zoom that contains zero matches: the slice still
         // returns the boundary samples on each side, so the plot draws
         // a line across the canvas instead of going blank.
-        let narrow = cache.slice(256, false, "X", 0.5, 1.5, &store, dbs);
+        let narrow = cache.slice(None, 256, false, "X", 0.5, 1.5, &store, dbs);
         assert_eq!(narrow.iter().map(|p| p.value as u32).collect::<Vec<_>>(), vec![1, 2, 3]);
 
         // Append a new sample — catch-up extends the cached vector.
         store.append(dummy(6 * S, 256, vec![5, 0, 0, 0, 0, 0, 0, 0]));
-        let all2 = cache.slice(256, false, "X", 0.0, 10.0, &store, dbs);
+        let all2 = cache.slice(None, 256, false, "X", 0.0, 10.0, &store, dbs);
         assert_eq!(all2.iter().map(|p| p.value as u32).collect::<Vec<_>>(), vec![1, 2, 3, 4, 5]);
 
         // Clear drops the cache; the next slice rebuilds it.
         cache.clear();
-        let after = cache.slice(256, false, "X", 0.0, 10.0, &store, dbs);
+        let after = cache.slice(None, 256, false, "X", 0.0, 10.0, &store, dbs);
         assert_eq!(after.len(), 5);
     }
 
@@ -222,9 +247,36 @@ mod tests {
         let db = load_dbc();
         let dbs: &[&Database] = &[&db];
         let cache = SignalCacheStore::new();
-        let nope = cache.slice(256, false, "Nope", 0.0, 1.0, &store, dbs);
+        let nope = cache.slice(None, 256, false, "Nope", 0.0, 1.0, &store, dbs);
         assert!(nope.is_empty());
-        let no_id = cache.slice(42, false, "X", 0.0, 1.0, &store, dbs);
+        let no_id = cache.slice(None, 42, false, "X", 0.0, 1.0, &store, dbs);
         assert!(no_id.is_empty());
+    }
+
+    #[test]
+    fn bus_id_scoping_keeps_per_bus_series_independent() {
+        // Two frames sharing wire channel 0 and the same arbitration
+        // id but tagged with different buses get sliced into two
+        // independent cached series.
+        let store = TraceStore::new();
+        let mut a = dummy(0, 256, vec![1, 0, 0, 0, 0, 0, 0, 0]);
+        a.bus_id = Some("p".into());
+        let mut b = dummy(S, 256, vec![2, 0, 0, 0, 0, 0, 0, 0]);
+        b.bus_id = Some("c".into());
+        let mut c2 = dummy(2 * S, 256, vec![3, 0, 0, 0, 0, 0, 0, 0]);
+        c2.bus_id = Some("p".into());
+        store.append(a);
+        store.append(b);
+        store.append(c2);
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let cache = SignalCacheStore::new();
+        let on_p = cache.slice(Some("p"), 256, false, "X", 0.0, 10.0, &store, dbs);
+        assert_eq!(on_p.iter().map(|p| p.value as u32).collect::<Vec<_>>(), vec![1, 3]);
+        let on_c = cache.slice(Some("c"), 256, false, "X", 0.0, 10.0, &store, dbs);
+        assert_eq!(on_c.iter().map(|p| p.value as u32).collect::<Vec<_>>(), vec![2]);
+        // Legacy "any bus" path: takes every frame regardless of tag.
+        let any = cache.slice(None, 256, false, "X", 0.0, 10.0, &store, dbs);
+        assert_eq!(any.iter().map(|p| p.value as u32).collect::<Vec<_>>(), vec![1, 2, 3]);
     }
 }

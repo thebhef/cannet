@@ -36,9 +36,9 @@ export type GraphNode = BusGraphNode | GatewayGraphNode | ElementGraphNode;
 
 export type GraphEdgeKind =
   | "gateway-bus" // interface binding ↔ bus (bidirectional)
-  | "bus-sink" // bus → trace / plot
-  | "bus-filter" // bus → filter
-  | "filter-out"; // filter → downstream (trace / plot / another filter)
+  | "bus-consumer" // bus → any consumer (trace / plot / filter)
+  | "filter-consumer" // filter → any downstream consumer
+  | "transmit-bus"; // transmit element → bus (one per `sinks` entry)
 
 export interface GraphEdge {
   id: string;
@@ -63,6 +63,16 @@ export function elementNodeId(id: string): string {
 /// produce the same nodes and edges (independent of positions). Element
 /// order in inputs is preserved in outputs so callers can rely on stable
 /// row order when laying out.
+///
+/// Edge model (Phase 6.5): every consumer (`trace` / `plot` / `filter`)
+/// carries a `sources: string[]` list of producer ids — bus ids,
+/// filter ids, or the wildcard `"*"` meaning "every bus in the project,
+/// including buses added later" (see `types.ts`). For each id in
+/// `sources`, an edge is drawn from the resolved producer to the
+/// consumer; ids that match nothing are silently dropped, letting the
+/// consumer dangle in the graph (the truth of the data). A consumer
+/// with `sources=[]` matches nothing at all and gets no incoming
+/// edges.
 export function deriveGraph(
   buses: readonly Bus[],
   bindings: readonly InterfaceBinding[],
@@ -116,10 +126,6 @@ export function deriveGraph(
         label: `Transmit ${shortId(el.id)}`,
         element: el,
       });
-      // Transmit elements don't yet carry a target bus on the element
-      // (frames inside the panel each pick a channel that the active
-      // session maps to an interface). No edge until that's modeled —
-      // see backlog.
     } else {
       // trace | plot
       nodes.push({
@@ -132,27 +138,67 @@ export function deriveGraph(
   }
 
   for (const el of elements) {
-    if (el.kind === "transmit") continue;
-    const src = el.source ?? null;
-    if (!src) continue;
-    if (busIds.has(src)) {
-      edges.push({
-        id: `e:bus->${el.kind}:${busNodeId(src)}->${elementNodeId(el.id)}`,
-        source: busNodeId(src),
-        target: elementNodeId(el.id),
-        kind: el.kind === "filter" ? "bus-filter" : "bus-sink",
-      });
-    } else if (filterIds.has(src)) {
-      edges.push({
-        id: `e:filter-out:${elementNodeId(src)}->${elementNodeId(el.id)}`,
-        source: elementNodeId(src),
-        target: elementNodeId(el.id),
-        kind: "filter-out",
-      });
+    if (el.kind === "transmit") {
+      // Producer-side wiring: one edge per explicit bus in `sinks`.
+      // No wildcard support — `sinks` is always a literal list
+      // (see types.ts). An *empty* sinks list is treated as "every
+      // bus in the project", matching the transmit-panel default —
+      // the user shouldn't see a disconnected transmit node just
+      // because they haven't pruned the destination list.
+      const source = elementNodeId(el.id);
+      const effective: readonly string[] =
+        el.sinks.length > 0 ? el.sinks : buses.map((b) => b.id);
+      const seen = new Set<string>();
+      for (const busId of effective) {
+        if (!busIds.has(busId) || seen.has(busId)) continue;
+        seen.add(busId);
+        edges.push({
+          id: `e:transmit-bus:${source}->${busNodeId(busId)}`,
+          source,
+          target: busNodeId(busId),
+          kind: "transmit-bus",
+        });
+      }
+      continue;
     }
-    // Sources that match nothing (a stale id from a deleted bus /
-    // filter) are silently dropped — the graph just shows the consumer
-    // dangling, which is the truth of the data.
+    const sources = el.sources ?? [];
+    const target = elementNodeId(el.id);
+    // Track buses already wired (the `"*"` wildcard + an explicit bus
+    // id pointing at the same bus shouldn't draw a duplicate edge).
+    const seenBuses = new Set<string>();
+    for (const src of sources) {
+      if (src === "*") {
+        for (const bus of buses) {
+          if (seenBuses.has(bus.id)) continue;
+          seenBuses.add(bus.id);
+          edges.push({
+            id: `e:bus-consumer:${busNodeId(bus.id)}->${target}`,
+            source: busNodeId(bus.id),
+            target,
+            kind: "bus-consumer",
+          });
+        }
+      } else if (busIds.has(src)) {
+        if (seenBuses.has(src)) continue;
+        seenBuses.add(src);
+        edges.push({
+          id: `e:bus-consumer:${busNodeId(src)}->${target}`,
+          source: busNodeId(src),
+          target,
+          kind: "bus-consumer",
+        });
+      } else if (filterIds.has(src)) {
+        edges.push({
+          id: `e:filter-consumer:${elementNodeId(src)}->${target}`,
+          source: elementNodeId(src),
+          target,
+          kind: "filter-consumer",
+        });
+      }
+      // Anything else (stale id pointing at a deleted bus or filter,
+      // unknown future kind) is silently dropped — the consumer's
+      // node renders, but the edge doesn't.
+    }
   }
 
   return { nodes, edges };

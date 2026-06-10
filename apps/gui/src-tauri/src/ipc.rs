@@ -31,6 +31,20 @@ pub struct TraceFrameRecord {
     pub bus_id: Option<String>,
 }
 
+/// A page of a filtered chronological trace view: the total match
+/// count over the scanned range, the match-index of `rows[0]`, and the
+/// decoded matches themselves. Returned by `fetch_filtered_trace` — the
+/// frontend pages this, holding only the visible slice and never the
+/// whole filtered set.
+#[derive(serde::Serialize, Clone)]
+pub struct FilteredTracePage {
+    /// Total matches in the scanned `[scan_start, scan_end)` range.
+    pub count: u64,
+    /// Match-index of `rows[0]` (0 when `rows` is empty).
+    pub start: u64,
+    pub rows: Vec<TraceFrameRecord>,
+}
+
 #[derive(serde::Serialize, Clone)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CanFrameKind {
@@ -141,7 +155,11 @@ pub struct TraceGrew {
 #[derive(serde::Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct TransmitRequest {
-    pub channel: u8,
+    /// Destination bus id (one of the project's logical buses). The
+    /// host resolves this to the matching session's wire channel via
+    /// `RemoteSession.channel_to_bus`. Replaces the old per-frame
+    /// `channel: u8` field; channels are a host-side detail now.
+    pub bus_id: String,
     pub id: u32,
     pub extended: bool,
     pub kind: TransmitKind,
@@ -209,10 +227,19 @@ pub enum LogFinished {
     Error { message: String },
 }
 
-/// One `(message, signal)` pair the attached DBC defines, returned by
-/// `list_signals` to populate a plot panel's signal picker.
+/// One `(bus, message, signal)` triple the loaded DBCs define,
+/// returned by `list_signals` to populate a plot panel's signal
+/// picker. The same signal name on two different buses is two
+/// separate records, so a plot picker can bind one signal to one
+/// `(bus_id, message_id)` pair unambiguously. Snake-case on the
+/// wire — the response side is what the frontend's
+/// `types.ts::SignalDescriptorRecord` mirrors.
 #[derive(serde::Serialize, Clone)]
 pub struct SignalDescriptorRecord {
+    /// Logical bus this descriptor applies to. `None` only when no
+    /// project bus is configured *and* the DBC is unscoped — a
+    /// degenerate state the plot picker treats as "any frame".
+    pub bus_id: Option<String>,
     pub message_id: u32,
     pub extended: bool,
     pub message_name: String,
@@ -225,19 +252,6 @@ pub struct SignalDescriptorRecord {
     pub has_value_table: bool,
 }
 
-impl From<cannet_dbc::SignalDescriptor> for SignalDescriptorRecord {
-    fn from(d: cannet_dbc::SignalDescriptor) -> Self {
-        Self {
-            message_id: d.message_id,
-            extended: d.extended,
-            message_name: d.message_name,
-            signal_name: d.signal_name,
-            unit: d.unit,
-            has_value_table: d.has_value_table,
-        }
-    }
-}
-
 /// One row of a signal's `VAL_` table — mirrors
 /// [`cannet_dbc::ValueTableEntry`] for the wire.
 #[derive(serde::Serialize, Clone, Debug)]
@@ -246,12 +260,19 @@ pub struct ValueTableEntryRecord {
     pub label: String,
 }
 
-/// One `(message, signal)` a plot panel wants sampled — the query side
-/// of [`sample_signals`](crate::sample_signals). `camelCase` on the wire
-/// (Tauri only renames *top-level* command args, not nested fields).
+/// One `(bus, message, signal)` triple a plot panel wants sampled —
+/// the query side of [`sample_signals`](crate::sample_signals).
+/// `bus_id` scopes the slice to frames from that bus, so the same
+/// arbitration id on two different buses (with different DBCs) gives
+/// two independent series. `camelCase` on the wire (Tauri only
+/// renames *top-level* command args, not nested fields).
 #[derive(serde::Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct SignalQuery {
+    /// Bus the signal is bound to. `None` is the legacy "any bus"
+    /// path — kept so a plot from a project that pre-dates per-bus
+    /// signal binding still samples.
+    pub bus_id: Option<String>,
     pub message_id: u32,
     pub extended: bool,
     pub signal_name: String,
