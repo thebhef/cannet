@@ -853,6 +853,10 @@ Realised scope notes:
 
 ## Phase 6 — Logical Buses, Filtering & Project Graph
 
+Status: **in progress** — see "Realised scope notes" at the end of the
+phase for what shipped versus what was narrowed and folded into
+[`backlog.md`](backlog.md).
+
 Introduce logical buses as the first-class abstraction frames belong to,
 turn filtering into a project element placed upstream of trace-style
 windows, and render the project's elements as a graph the user can wire
@@ -936,6 +940,104 @@ Exit criteria:
   surface on the bus model, project schema, and filter predicate;
   `plans/technology-inventory.md` records `@xyflow/react` (and its
   rejected alternatives).
+
+Realised scope notes:
+
+- **Logical buses + interface bindings shipped** in the project schema
+  (`Project.buses`, `Project.interface_bindings`). A bus carries
+  `{id, name, speed_bps?, fd?}`; an interface binding maps a
+  `(server, interface)` pair onto a `bus_id`. The project panel surfaces
+  both as lists with add/edit/remove. Routing live remote-server frames
+  through their bound bus is wired through the trace store (each frame
+  carries an optional `bus_id`).
+- **BLF import gained a channel→bus mapping step.** Opening a BLF
+  pre-scans the file for distinct channels and shows a small in-app
+  modal where each channel is bound to an existing bus (or skipped).
+  Frames replay with the chosen `bus_id`. Channels mapped to "skip" are
+  dropped on append, so the project panel and trace consumers don't see
+  them.
+- **Per-bus DBC scoping shipped.** Each loaded DBC carries a
+  `buses: [bus_id…]` set; the host's decode walk filters by frame
+  `bus_id` before trying each DBC. An empty set is the "all buses"
+  default (and the migration target for v2 projects). The project panel
+  renders a checkbox group per DBC.
+- **Filter element shipped** as a project element `kind: "filter"`. The
+  predicate is `{ all: [Predicate] } | { any: [Predicate] } |
+  { bus: bus_id } | { id_range: [lo, hi] } | { id_list: [u32] } |
+  { name_regex: String } | { signal_equals: { name, value } }`. Filters
+  reference an upstream source (`bus_id` or another filter id) and are
+  consumed by trace/by-ID/plot panels through their `source` parameter.
+  An empty / unset predicate passes everything.
+- **Project graph view shipped** as a dockview panel
+  (`kind: "project-graph"`) using `@xyflow/react`. Nodes for interface
+  bindings, logical buses, filters, and consumer panels (trace, plot,
+  transmit) render with edges showing data flow. The user can add a bus
+  / filter from the panel toolbar, drag-connect a source onto a
+  consumer, and remove a node to delete the underlying element. Node
+  positions and viewport persist in the panel's dockview `params`.
+- **Project panel design note** lives at
+  [`plans/project-panel-design.md`](project-panel-design.md): the
+  project panel keeps file-IO + inventory roles (project actions, bus /
+  binding / DBC lists, scoping checkboxes); the graph view owns the
+  spatial wiring story (which filter feeds which trace, etc.). The two
+  surfaces share the same underlying `Project` state through the
+  element registry and context.
+- **Schema migration**: `PROJECT_SCHEMA_VERSION = 3`. v2 projects open
+  via an in-memory migration step that defaults `buses` and
+  `interface_bindings` to empty and treats every existing DBC as
+  unscoped — effectively "one implicit bus, every DBC unscoped". The
+  on-disk version is rewritten to 3 the next time the project is
+  saved. The README's project section calls this out.
+- **Consumer-side filter evaluation**. The host fetch path
+  (`fetch_trace_range`, `fetch_latest_by_id`, `sample_signals`) accepts
+  an optional `filter` argument and, when present, applies the
+  evaluated predicate over the slice. This keeps the trace store
+  itself filter-agnostic (one shared session buffer) while letting each
+  consumer scope what it renders.
+- **Wire-level bus state stayed out of scope.** The plan's "Phase 6
+  grows the surface with bus-config and bus-state RPCs" hint
+  (tech-inventory tonic entry) is *not* taken in this phase — bus
+  config is GUI-side only against the existing `Subscribe` surface.
+  Tracked in [`backlog.md`](backlog.md) for whenever the hardware-side
+  bus-config story actually needs it.
+- **Backlog cleanup**: the Phase-3 "Interface selection is deferred"
+  paragraph (above) is left in place as historical context for what
+  Phase 3 shipped; its forward-looking sentence ("the first step there
+  is likely…filter element") has materialised in this phase. The
+  previously-mentioned DBC↔logical-bus / logical-buses-+-physical-mapping
+  backlog entries were not standalone bullets in `backlog.md` at Phase 6
+  start (they were referenced inline in this plan); the in-plan
+  references are now satisfied.
+- **Late additions to Phase 6's surface** (backfilled after the initial
+  Phase-6 commits shipped, then restacked through Phases 7–9):
+  - **Add-binding UI** in the project panel. The initial Phase-6 panel
+    only allowed re-targeting an existing binding's bus via a dropdown
+    — there was no flow to *create* a binding from the UI, so users
+    had to hand-edit project JSON. Added an inline form: server input,
+    *Discover* button that calls `list_remote_interfaces`, interface
+    picker, and bus picker. The bus picker enforces "each bus has at
+    most one interface" by hiding buses that already have a binding.
+  - **Toolbar address input removed; Connect iterates bindings.** The
+    initial Phase-6 toolbar still carried a `host:port` text field
+    (legacy quick-connect) and Connect targeted a single server.
+    Removed: server addresses now live per-binding. Connect groups
+    `interface_bindings` by `server`, opens one gRPC session per
+    server, and subscribes only to the bound interfaces. The host's
+    `remote_session: Mutex<Option<…>>` became
+    `remote_sessions: Mutex<HashMap<String, RemoteSession>>`;
+    `disconnect_remote_server(address: Option<String>)` either
+    disconnects one or drains all. `transmit_frame` currently picks
+    the first session whose channel set matches the requested
+    channel — see backlog for routing transmit by `bus_id`.
+  - **Graph view reshape.** The initial Phase-6 panel rendered every
+    element as a uniform "default" xyflow node. Reshaped with custom
+    `nodeTypes`: buses render as a wide horizontal rail (the logical
+    aggregator), gateways / transmits / traces / plots / filters each
+    have a distinct shape and inline-SVG glyph. Edge derivation was
+    pulled into a pure `projectGraph::deriveGraph` module with unit
+    tests covering bus-only, gateway↔bus, bus→sink, bus→filter, the
+    1-in/N-out filter case, transmit-as-source (no auto-edge yet),
+    and dangling-source elements.
 
 ## Phase 7 — System Messages
 

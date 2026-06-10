@@ -155,21 +155,6 @@ header {
   margin: 0 0.2rem;
 }
 
-.toolbar input.remote-address {
-  background: #0f141d;
-  color: #e2e8f0;
-  border: 1px solid #2c3444;
-  border-radius: 4px;
-  padding: 0.2rem 0.4rem;
-  font: inherit;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  width: 14rem;
-}
-
-.toolbar input.remote-address:disabled {
-  opacity: 0.6;
-}
-
 /* Placeholder rows render only the row index until their chunk
    loads. They share the normal row color so autoscroll past freshly-
    appended rows doesn't flash dim → bright. */
@@ -240,6 +225,149 @@ header {
 
 .modal-buttons button:hover {
   background: #1a212b;
+}
+
+/* Phase-6 modal overlay variant (BLF channel-map). Same look as
+   `.modal-backdrop` but the modal is wider and the rows scroll. */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgb(0 0 0 / 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.modal-subtitle {
+  color: #94a3b8;
+  font-size: 0.85rem;
+  margin: 0.1rem 0 0.6rem;
+}
+
+.modal-empty {
+  color: #fbbf24;
+  font-size: 0.85rem;
+  margin: 0 0 0.6rem;
+}
+
+.blf-map-rows {
+  max-height: 18rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-bottom: 0.8rem;
+}
+
+.blf-map-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.blf-map-channel {
+  flex: 0 0 7rem;
+  color: #cbd5e1;
+}
+
+.graph-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #94a3b8;
+  text-align: center;
+  padding: 1rem;
+  gap: 0.5rem;
+}
+
+/* Tweak xyflow's defaults to fit the abyss theme. */
+.react-flow {
+  background: #0b1220;
+}
+
+/* Custom node shapes used by ProjectGraphPanel — each kind gets a
+   distinct look so the graph reads at a glance. Shared box with a
+   leading glyph + a stacked label (kind / title / sub). */
+.graph-node {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 0.75rem;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  color: #e2e8f0;
+  background: #1f2937;
+  border: 1px solid #334155;
+}
+.graph-node-glyph {
+  flex: 0 0 24px;
+  color: #cbd5e1;
+}
+.graph-node-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  line-height: 1.2;
+  overflow: hidden;
+}
+.graph-node-kind {
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #94a3b8;
+}
+.graph-node-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.graph-node-sub {
+  font-size: 0.7rem;
+  color: #94a3b8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Bus: a wide horizontal rail. Logical aggregator, not a node-shape
+   sink. The leading "rail" element draws the bus literal so readers
+   see a wire that other nodes tap into. */
+.graph-node-bus {
+  position: relative;
+  background: #1e3a8a;
+  border: 1px solid #3b82f6;
+  padding-left: 1.1rem;
+}
+.graph-bus-bar {
+  flex: 0 0 6px;
+  height: 60%;
+  background: #60a5fa;
+  border-radius: 3px;
+  box-shadow: 0 0 6px rgba(96, 165, 250, 0.45);
+}
+.graph-node-gateway {
+  background: #1f2937;
+  border-color: #475569;
+}
+.graph-node-transmit {
+  background: #3b1d3a;
+  border-color: #7c3aed;
+}
+.graph-node-trace {
+  background: #064e3b;
+  border-color: #10b981;
+}
+.graph-node-plot {
+  background: #134e4a;
+  border-color: #14b8a6;
+}
+.graph-node-filter {
+  background: #3f3f46;
+  border-color: #a1a1aa;
 }
 
 /* Project panel: a few stacked sections (the project file, the
@@ -317,6 +445,71 @@ header {
 .project-empty {
   color: #64748b;
   font-style: italic;
+}
+
+.project-bus-name-input {
+  flex: 1 1 auto;
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: #0f172a;
+  color: #e2e8f0;
+  border: 1px solid #1e293b;
+  border-radius: 0.2rem;
+  padding: 0.15rem 0.35rem;
+}
+
+.project-binding-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-top: 0.4rem;
+  padding: 0.4rem;
+  background: #0f172a;
+  border: 1px solid #1e293b;
+  border-radius: 0.3rem;
+}
+.project-binding-form-row {
+  display: flex;
+  gap: 0.3rem;
+  align-items: center;
+}
+.project-binding-server {
+  flex: 1 1 auto;
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: #0b1220;
+  color: #e2e8f0;
+  border: 1px solid #1e293b;
+  border-radius: 0.2rem;
+  padding: 0.15rem 0.35rem;
+}
+.project-binding-form-error {
+  color: #f87171;
+  font-size: 0.72rem;
+}
+
+.project-dbc {
+  flex-wrap: wrap;
+}
+
+.project-dbc-scoping {
+  flex: 1 0 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  margin-top: 0.2rem;
+  color: #94a3b8;
+}
+
+.project-dbc-scoping-label {
+  color: #64748b;
+}
+
+.project-dbc-scoping-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
 }
 
 .project-buttons {

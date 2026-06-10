@@ -34,12 +34,14 @@
 //! or removing a DBC mid-stream just changes what subsequent fetches
 //! return.
 
+mod filter;
 mod ipc;
 mod project;
 mod signal_cache;
 mod signal_sampler;
 mod trace_store;
 
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -51,6 +53,7 @@ use cannet_blf::BlfCanFrameSource;
 use cannet_client::{SessionHandle, SessionTransmitter, Subscription};
 use cannet_core::{CanFrameSource, CanId};
 use cannet_dbc::{Database, DecodedSignal};
+use filter::FilterPredicate;
 
 use ipc::{
     ByIdSnapshot, DbcInfo, DecodedRecord, InterfaceRecord, LogFinished, OpenLogResult,
@@ -60,11 +63,16 @@ use ipc::{
 use signal_cache::SignalCacheStore;
 use trace_store::{RawTraceFrame, TraceStore};
 
-/// A loaded DBC: its source path and the parsed database. Decoders walk
-/// the loaded list in order — the first that decodes a given frame wins.
+/// A loaded DBC: its source path, the parsed database, and the set of
+/// logical bus ids this DBC is scoped to (Phase 6). Decoders walk the
+/// loaded list in order — the first that decodes a given frame wins —
+/// and skip any DBC whose `buses` set is non-empty and doesn't contain
+/// the frame's `bus_id`. An empty set is "applies to every bus".
 struct LoadedDbc {
     path: String,
     db: Database,
+    /// Scoped bus ids; empty = unscoped (applies to all buses).
+    buses: Vec<String>,
 }
 
 /// State for an active remote session — see
@@ -105,17 +113,18 @@ struct AppState {
     /// by `add_dbc` / `remove_dbc` / `clear_dbcs`. (Only one interface
     /// exists for now, so every loaded DBC applies to it.)
     databases: Mutex<Vec<LoadedDbc>>,
-    /// Active remote session, if any: the gRPC [`SessionHandle`] (drop
-    /// to disconnect), a [`SessionTransmitter`] the transmit panel
-    /// uses to push frames over the wire, the interfaces the session
-    /// is subscribed to (so the transmit-panel command can pick the
-    /// right `interface_id` for a chosen channel), and a stop flag the
-    /// pump thread watches. `disconnect_remote_server` takes everything
-    /// out, sets the flag, and drops the handle — the flag makes the
-    /// pump exit promptly instead of first draining whatever frames the
-    /// gRPC task already buffered, and dropping the handle closes the
-    /// stream. The pump thread clears this slot on exit.
-    remote_session: Mutex<Option<RemoteSession>>,
+    /// Active remote sessions, keyed by server address. Each value is
+    /// the gRPC [`SessionHandle`] (drop to disconnect), a
+    /// [`SessionTransmitter`] the transmit panel uses to push frames
+    /// over the wire, the interfaces the session is subscribed to (so
+    /// the transmit-panel command can pick the right `interface_id` for
+    /// a chosen channel), and a stop flag the pump thread watches.
+    /// `disconnect_remote_server` takes one or all entries out, sets
+    /// the flag, and drops the handle — the flag makes the pump exit
+    /// promptly instead of first draining whatever frames the gRPC
+    /// task already buffered, and dropping the handle closes the
+    /// stream. The pump thread removes its own entry on exit.
+    remote_sessions: Mutex<HashMap<String, RemoteSession>>,
     /// The trace model — the single source of truth for the captured
     /// stream. Pump threads append; `fetch_trace_range` reads slices
     /// out for the trace view to render.
@@ -140,15 +149,17 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             databases: Mutex::new(Vec::new()),
-            remote_session: Mutex::new(None),
+            remote_sessions: Mutex::new(HashMap::new()),
             trace_store: TraceStore::new(),
             signal_caches: SignalCacheStore::new(),
         })
         .invoke_handler(tauri::generate_handler![
             open_log,
+            scan_blf_channels,
             add_dbc,
             remove_dbc,
             clear_dbcs,
+            set_dbc_buses,
             fetch_trace_range,
             fetch_latest_by_id,
             clear_trace_store,
@@ -202,9 +213,37 @@ fn spawn_trace_grew_emitter(app: AppHandle) {
     });
 }
 
+/// Per-channel BLF bus mapping (Phase 6). One entry per channel the
+/// caller wants to route: `Some(bus_id)` to route it onto that logical
+/// bus, `None` to drop frames on that channel. Channels not listed
+/// stream through unassigned (`bus_id = None` on the raw frame). Camel
+/// case at the wire because Tauri only renames top-level command args.
+#[derive(serde::Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelBusMapping {
+    pub channel: u8,
+    /// `None` here means "skip this channel"; the frontend sends a
+    /// JSON `null` for skipped entries.
+    pub bus_id: Option<String>,
+}
+
+/// One entry of the remote-server interface → bus map the GUI sends
+/// to `connect_remote_server` (Phase 6). `interface` is the wire
+/// `Interface.id`; `bus_id` is the project's logical bus.
+#[derive(serde::Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct InterfaceBusBinding {
+    pub interface: String,
+    pub bus_id: String,
+}
+
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-fn open_log(app: AppHandle, blf_path: String) -> Result<OpenLogResult, String> {
+fn open_log(
+    app: AppHandle,
+    blf_path: String,
+    #[allow(non_snake_case)] channel_bus_mapping: Option<Vec<ChannelBusMapping>>,
+) -> Result<OpenLogResult, String> {
     // Open the BLF synchronously so the user gets immediate feedback if
     // the path is wrong.
     let source = BlfCanFrameSource::open(&blf_path).map_err(|e| e.to_string())?;
@@ -213,22 +252,68 @@ fn open_log(app: AppHandle, blf_path: String) -> Result<OpenLogResult, String> {
         blf_path: blf_path.clone(),
     };
 
+    let channel_to_bus: Vec<(u8, Option<String>)> = channel_bus_mapping
+        .unwrap_or_default()
+        .into_iter()
+        .map(|m| (m.channel, m.bus_id))
+        .collect();
+
     let app_for_thread = app.clone();
     std::thread::Builder::new()
         .name("cannet-blf-pump".into())
         .spawn(move || {
             // The BLF pump ends at end-of-file; nothing signals it to
             // stop early, so the flag is just a never-set placeholder.
-            run_pump(&app_for_thread, source, Arc::new(AtomicBool::new(false)));
+            run_pump(
+                &app_for_thread,
+                source,
+                Arc::new(AtomicBool::new(false)),
+                channel_to_bus,
+            );
         })
         .map_err(|e| format!("failed to spawn pump thread: {e}"))?;
 
     Ok(result)
 }
 
-/// The loaded-DBC list as IPC records (each one's path + message count),
-/// in priority order. Returned from `add_dbc` / `remove_dbc` so the
-/// frontend always gets the authoritative set after a change.
+/// Pre-scan a BLF file and return its distinct channel numbers, in
+/// ascending order. Used by the GUI's BLF import flow (Phase 6) to
+/// build the channel → bus mapping step before frames start flowing.
+///
+/// `async` so Tauri runs it off the main thread — scanning a multi-
+/// gigabyte BLF can take a few seconds and we don't want to freeze the
+/// UI. The implementation pulls every frame's `channel` from the BLF
+/// (we don't have a "list channels" shortcut in `cannet-blf` today)
+/// but stops early once the set stops changing for a comfortable
+/// window of frames.
+#[tauri::command]
+#[allow(clippy::unused_async)]
+async fn scan_blf_channels(blf_path: String) -> Result<Vec<u8>, String> {
+    use std::collections::BTreeSet;
+    // Cap the scan: most BLFs have <16 channels, all visible in their
+    // first few thousand frames. The cap keeps a huge BLF from blocking
+    // import for a minute; if a project legitimately has a 17th channel
+    // that doesn't appear until frame 100k, the channel just streams
+    // through unassigned and the user can edit the mapping afterwards.
+    const MAX_SCAN_FRAMES: usize = 200_000;
+    let mut source = BlfCanFrameSource::open(&blf_path).map_err(|e| e.to_string())?;
+    let mut seen: BTreeSet<u8> = BTreeSet::new();
+    for _ in 0..MAX_SCAN_FRAMES {
+        match source.next_frame() {
+            Ok(Some(frame)) => {
+                seen.insert(frame.channel);
+            }
+            Ok(None) => break,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Ok(seen.into_iter().collect())
+}
+
+/// The loaded-DBC list as IPC records (each one's path + message
+/// count + bus scoping), in priority order. Returned from `add_dbc` /
+/// `remove_dbc` / `set_dbc_buses` so the frontend always gets the
+/// authoritative set after a change.
 fn dbc_list(state: &AppState) -> Vec<DbcInfo> {
     state
         .databases
@@ -238,6 +323,7 @@ fn dbc_list(state: &AppState) -> Vec<DbcInfo> {
         .map(|d| DbcInfo {
             dbc_path: d.path.clone(),
             message_count: d.db.message_count(),
+            buses: d.buses.clone(),
         })
         .collect()
 }
@@ -256,10 +342,31 @@ fn add_dbc(state: State<'_, AppState>, path: String) -> Result<Vec<DbcInfo>, Str
         let mut list = state.databases.lock().expect("databases mutex poisoned");
         match list.iter_mut().find(|d| d.path == path) {
             Some(slot) => slot.db = db,
-            None => list.push(LoadedDbc { path, db }),
+            None => list.push(LoadedDbc { path, db, buses: Vec::new() }),
         }
     }
     Ok(dbc_list(state.inner()))
+}
+
+/// Replace the bus-scoping set for a loaded DBC. An empty `buses` is
+/// the "applies to all buses" default. Unknown path is a no-op (returns
+/// the unchanged list); the frontend's project state can drift if a DBC
+/// is removed between the user clicking a checkbox and this command
+/// firing.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn set_dbc_buses(
+    state: State<'_, AppState>,
+    path: String,
+    buses: Vec<String>,
+) -> Vec<DbcInfo> {
+    {
+        let mut list = state.databases.lock().expect("databases mutex poisoned");
+        if let Some(slot) = list.iter_mut().find(|d| d.path == path) {
+            slot.buses = buses;
+        }
+    }
+    dbc_list(state.inner())
 }
 
 /// Remove the loaded DBC with this path (no-op if it isn't loaded).
@@ -308,10 +415,25 @@ fn collect_trace_records(state: &AppState, start: u64, end: u64) -> Vec<TraceFra
         .collect()
 }
 
-/// Decode a raw frame against the loaded DBCs, in order — the first one
-/// that recognises the arbitration id wins. `None` if no DBC does.
+/// Decode a raw frame against the loaded DBCs, in order — the first
+/// one that recognises the arbitration id wins. Skips any DBC whose
+/// `buses` set is non-empty and doesn't contain the frame's `bus_id`
+/// (Phase 6 per-bus scoping); an empty set is "all buses". `None` if
+/// no DBC decodes.
 fn decode_against(dbs: &[LoadedDbc], frame: &RawTraceFrame) -> Option<DecodedRecord> {
-    dbs.iter().find_map(|d| decode_raw_frame(&d.db, frame))
+    dbs.iter()
+        .filter(|d| dbc_applies_to_frame(d, frame))
+        .find_map(|d| decode_raw_frame(&d.db, frame))
+}
+
+fn dbc_applies_to_frame(dbc: &LoadedDbc, frame: &RawTraceFrame) -> bool {
+    if dbc.buses.is_empty() {
+        return true; // unscoped: every frame
+    }
+    match &frame.bus_id {
+        Some(bid) => dbc.buses.iter().any(|b| b == bid),
+        None => false, // scoped DBCs ignore unassigned frames
+    }
 }
 
 /// Pull a `[start, end)` slice out of the trace store and decode each
@@ -319,15 +441,65 @@ fn decode_against(dbs: &[LoadedDbc], frame: &RawTraceFrame) -> Option<DecodedRec
 /// be the trace view, sizing `end - start` to the visible window plus a
 /// small prefetch pad.
 ///
+/// Phase 6: `filter` is the consumer's optional [`FilterPredicate`]
+/// (a filter element's predicate, evaluated post-decode). Frames that
+/// don't pass are dropped from the returned vec — the consumer sees a
+/// pre-filtered slice. The frontend already keys its row cache on the
+/// raw absolute index, so a filtered slice is just a denser stream of
+/// rows over the same window.
+///
 /// `async` so Tauri runs it off the main thread: under a fast replay
 /// the pump thread takes the trace-store lock thousands of times a
 /// second, so the clone-and-decode here can stall briefly — keeping it
 /// off the UI thread keeps the window (and `disconnect`) responsive.
 #[tauri::command]
 #[allow(clippy::unused_async)] // `async` is what makes Tauri run it off the main thread
-async fn fetch_trace_range(app: AppHandle, start: u64, end: u64) -> Vec<TraceFrameRecord> {
+async fn fetch_trace_range(
+    app: AppHandle,
+    start: u64,
+    end: u64,
+    filter: Option<FilterPredicate>,
+) -> Vec<TraceFrameRecord> {
     let state: State<'_, AppState> = app.state();
-    collect_trace_records(state.inner(), start, end)
+    let records = collect_trace_records(state.inner(), start, end);
+    apply_filter_records(records, filter.as_ref())
+}
+
+/// Drop the records that don't pass `predicate`. The `Option` shape is
+/// the "no filter wired" path; this just returns the vec unchanged.
+fn apply_filter_records(
+    records: Vec<TraceFrameRecord>,
+    predicate: Option<&FilterPredicate>,
+) -> Vec<TraceFrameRecord> {
+    let Some(p) = predicate else { return records };
+    // The fetch-path's decoded `TraceFrameRecord` doesn't carry a raw
+    // `RawTraceFrame`; build a thin facade so the predicate's `matches`
+    // can read the fields it needs (id / bus_id / decoded).
+    records
+        .into_iter()
+        .filter(|r| record_matches(p, r))
+        .collect()
+}
+
+/// Evaluate a predicate against an already-decoded record. Mirrors
+/// [`FilterPredicate::matches`] but reads off `TraceFrameRecord`
+/// rather than re-creating a `RawTraceFrame`.
+fn record_matches(predicate: &FilterPredicate, record: &TraceFrameRecord) -> bool {
+    use crate::trace_store::RawTraceFrame;
+    use cannet_core::CanFramePayload;
+    // Synthesise just enough of a `RawTraceFrame` for the evaluator;
+    // the predicate only touches `id`, `bus_id`, and the decoded
+    // record's name + signals.
+    let raw = RawTraceFrame {
+        timestamp_ns: 0,
+        channel: record.channel,
+        id: record.id,
+        extended: record.extended,
+        direction: cannet_core::Direction::Rx,
+        payload: CanFramePayload::Classic(Vec::new()),
+        bus_id: record.bus_id.clone(),
+    };
+    predicate.matches(&raw, record.decoded.as_ref())
 }
 
 /// Latest frame seen for each distinct (channel, id, extended-flag)
@@ -337,24 +509,36 @@ async fn fetch_trace_range(app: AppHandle, start: u64, end: u64) -> Vec<TraceFra
 /// trace window's start, so for a *running* trace this is "the latest
 /// value of every id in the window". Backs the per-message-ID panel;
 /// `async` so it runs off the main thread, like [`fetch_trace_range`].
+///
+/// Phase 6: `filter` drops rows whose latest frame doesn't pass the
+/// predicate. (Note: this filters the *latest* observation; a row a
+/// signal-value filter excludes can re-appear once the id emits a
+/// passing value.)
 #[tauri::command]
 #[allow(clippy::unused_async)] // `async` is what makes Tauri run it off the main thread
-async fn fetch_latest_by_id(app: AppHandle, since: u64) -> Vec<ByIdSnapshot> {
+async fn fetch_latest_by_id(
+    app: AppHandle,
+    since: u64,
+    filter: Option<FilterPredicate>,
+) -> Vec<ByIdSnapshot> {
     let state: State<'_, AppState> = app.state();
     let since = usize::try_from(since).unwrap_or(usize::MAX);
     let rows = state.trace_store.latest_since(since);
     let dbs = state.databases.lock().expect("databases mutex poisoned");
     rows.into_iter()
-        .map(|row| {
+        .filter_map(|row| {
             let decoded = decode_against(&dbs, &row.frame);
-            ByIdSnapshot {
-                frame: TraceFrameRecord::from_raw(
-                    u64::try_from(row.index).unwrap_or(u64::MAX),
-                    &row.frame,
-                    decoded,
-                ),
-                rate: row.rate,
+            let record = TraceFrameRecord::from_raw(
+                u64::try_from(row.index).unwrap_or(u64::MAX),
+                &row.frame,
+                decoded,
+            );
+            if let Some(p) = filter.as_ref() {
+                if !record_matches(p, &record) {
+                    return None;
+                }
             }
+            Some(ByIdSnapshot { frame: record, rate: row.rate })
         })
         .collect()
 }
@@ -608,17 +792,33 @@ async fn list_remote_interfaces(address: String) -> Result<Vec<InterfaceRecord>,
     Ok(interfaces.into_iter().map(InterfaceRecord::from).collect())
 }
 
-/// Connect to a `cannet-server`, list its interfaces, subscribe to all
-/// of them (each gets `channel = its index in the list`), and spawn a
-/// pump thread to push frames at the frontend.
+/// Connect to a `cannet-server`, list its interfaces, subscribe only
+/// to the interfaces named by `bindings`, and spawn a pump thread to
+/// push frames at the frontend.
 ///
-/// At most one remote session may be active at a time — second call
-/// while one is open returns an error.
+/// Multiple remote sessions may be active at a time — one per server
+/// address. A second connect to the same address while one is open
+/// returns an error.
+///
+/// Phase 6: `bindings` is the project's interface → bus mapping for
+/// this server (a list of `{interface, bus_id}` pairs). The host
+/// subscribes to exactly those interfaces (in binding order) and
+/// translates each into a per-channel mapping the pump uses to stamp
+/// each frame's `bus_id`. An empty `bindings` is an error — there's
+/// nothing to subscribe to.
 #[tauri::command]
 async fn connect_remote_server(
     app: AppHandle,
     address: String,
+    bindings: Option<Vec<InterfaceBusBinding>>,
 ) -> Result<RemoteSessionResult, String> {
+    let binding_lookup = bindings.unwrap_or_default();
+    if binding_lookup.is_empty() {
+        return Err(format!(
+            "no interface bindings configured for {address}; add bindings in the project panel first"
+        ));
+    }
+
     let interfaces = cannet_client::list_interfaces(&address)
         .await
         .map_err(|e| e.to_string())?;
@@ -627,14 +827,29 @@ async fn connect_remote_server(
         return Err(format!("server at {address} exposes no interfaces"));
     }
 
-    let subscriptions: Vec<Subscription> = interfaces
+    // Subscribe only to interfaces named in the project's bindings for
+    // this server. Channels are 0..N over the binding list — distinct
+    // per session, not globally unique.
+    let subscriptions: Vec<Subscription> = binding_lookup
         .iter()
         .enumerate()
-        .map(|(i, iface)| Subscription {
-            interface_id: iface.id.clone(),
-            channel: u8::try_from(i).unwrap_or(u8::MAX),
+        .filter_map(|(i, b)| {
+            if interfaces.iter().any(|iface| iface.id == b.interface) {
+                Some(Subscription {
+                    interface_id: b.interface.clone(),
+                    channel: u8::try_from(i).unwrap_or(u8::MAX),
+                })
+            } else {
+                None
+            }
         })
         .collect();
+
+    if subscriptions.is_empty() {
+        return Err(format!(
+            "no bound interface matches what {address} exposes"
+        ));
+    }
 
     let address_for_thread = address.clone();
     let subs_for_thread = subscriptions.clone();
@@ -651,38 +866,55 @@ async fn connect_remote_server(
     {
         let state: State<'_, AppState> = app.state();
         let mut guard = state
-            .remote_session
+            .remote_sessions
             .lock()
-            .expect("remote_session mutex poisoned");
-        if guard.is_some() {
+            .expect("remote_sessions mutex poisoned");
+        if guard.contains_key(&address) {
             // Drop `handle` here, which sends shutdown to the worker we
-            // just spawned. Subsequent pump-thread spawn is skipped.
-            return Err("already connected to a remote server".into());
+            // just spawned. The existing entry stays untouched.
+            return Err(format!("already connected to {address}"));
         }
-        *guard = Some(RemoteSession {
-            handle,
-            transmitter,
-            channel_to_interface: subscriptions
-                .iter()
-                .map(|s| (s.channel, s.interface_id.clone()))
-                .collect(),
-            stop: Arc::clone(&stop),
-        });
+        guard.insert(
+            address.clone(),
+            RemoteSession {
+                handle,
+                transmitter,
+                channel_to_interface: subscriptions
+                    .iter()
+                    .map(|s| (s.channel, s.interface_id.clone()))
+                    .collect(),
+                stop: Arc::clone(&stop),
+            },
+        );
     }
 
+    // Build the channel-to-bus mapping from the per-server bindings.
+    // We subscribed to exactly the bindings' interfaces above, so each
+    // subscription has a matching binding by interface id.
+    let channel_to_bus: Vec<(u8, Option<String>)> = subscriptions
+        .iter()
+        .filter_map(|sub| {
+            binding_lookup
+                .iter()
+                .find(|b| b.interface == sub.interface_id)
+                .map(|b| (sub.channel, Some(b.bus_id.clone())))
+        })
+        .collect();
+
     let app_for_thread = app.clone();
+    let address_for_cleanup = address.clone();
     std::thread::Builder::new()
-        .name("cannet-remote-pump".into())
+        .name(format!("cannet-remote-pump:{address}"))
         .spawn(move || {
-            run_pump(&app_for_thread, receiver, stop);
-            // The pump exited (server hung up or user disconnected).
-            // Clear the stashed session so a fresh connect can start.
+            run_pump(&app_for_thread, receiver, stop, channel_to_bus);
+            // Pump exited (server hung up or user disconnected). Drop
+            // our entry so the address is free for a fresh connect.
             let state: State<'_, AppState> = app_for_thread.state();
-            let _ = state
-                .remote_session
+            state
+                .remote_sessions
                 .lock()
-                .expect("remote_session mutex poisoned")
-                .take();
+                .expect("remote_sessions mutex poisoned")
+                .remove(&address_for_cleanup);
         })
         .map_err(|e| format!("failed to spawn remote pump thread: {e}"))?;
 
@@ -699,21 +931,28 @@ async fn connect_remote_server(
     })
 }
 
-/// End the active remote session: set the pump's stop flag and drop the
-/// [`SessionHandle`]. The flag makes the pump break out of its loop on
-/// the next iteration — without first replaying whatever frames the
-/// gRPC task already buffered, which under a fast replay can be a large
-/// backlog — and dropping the handle closes the stream. The pump then
-/// emits `log-finished` and clears the session slot.
+/// End remote sessions: set their pumps' stop flags and drop their
+/// [`SessionHandle`]s. The flags make pumps break out of their loops
+/// on the next iteration — without first replaying whatever frames the
+/// gRPC tasks already buffered — and dropping the handles closes the
+/// streams. Each pump removes its own entry on exit.
+///
+/// `address = None` disconnects every active session; `Some(addr)`
+/// disconnects only that one.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-fn disconnect_remote_server(state: State<'_, AppState>) {
-    let session = state
-        .remote_session
-        .lock()
-        .expect("remote_session mutex poisoned")
-        .take();
-    if let Some(session) = session {
+fn disconnect_remote_server(state: State<'_, AppState>, address: Option<String>) {
+    let sessions: Vec<RemoteSession> = {
+        let mut guard = state
+            .remote_sessions
+            .lock()
+            .expect("remote_sessions mutex poisoned");
+        match address {
+            Some(addr) => guard.remove(&addr).into_iter().collect(),
+            None => guard.drain().map(|(_, s)| s).collect(),
+        }
+    };
+    for session in sessions {
         session.stop.store(true, Ordering::Relaxed);
         // Dropping the handle signals the worker to disconnect; the
         // transmitter goes with it, so subsequent transmit_frame calls
@@ -722,11 +961,35 @@ fn disconnect_remote_server(state: State<'_, AppState>) {
     }
 }
 
+/// Decide how to route an incoming frame given the per-channel bus
+/// mapping. Returns `Some(bus_id)` to stamp the frame with that bus,
+/// `None` to leave it unassigned, or `Err(())` to drop the frame
+/// (the "skip this channel" path from the BLF mapping step).
+///
+/// Pure helper so the pump's routing decision is unit-testable without
+/// spinning up a Tauri runtime.
+fn route_channel(channel: u8, mapping: &[(u8, Option<String>)]) -> Result<Option<String>, ()> {
+    match mapping.iter().find(|(ch, _)| *ch == channel) {
+        Some((_, Some(bid))) => Ok(Some(bid.clone())),
+        Some((_, None)) => Err(()),
+        None => Ok(None),
+    }
+}
+
 // `source` is owned by this thread for its lifetime; clippy's
 // "pass by reference" suggestion doesn't fit the thread-spawn site.
+//
+// `channel_to_bus` is the source's per-channel logical-bus mapping
+// (Phase 6). On each frame the pump tags it with the bus_id matching
+// its `channel`; a channel with no entry stays `bus_id: None`; a
+// channel mapped to `None` is dropped (the BLF-import "skip" path).
 #[allow(clippy::needless_pass_by_value)]
-fn run_pump<S>(app: &AppHandle, mut source: S, stop: Arc<AtomicBool>)
-where
+fn run_pump<S>(
+    app: &AppHandle,
+    mut source: S,
+    stop: Arc<AtomicBool>,
+    channel_to_bus: Vec<(u8, Option<String>)>,
+) where
     S: CanFrameSource,
     S::Error: fmt::Display,
 {
@@ -739,7 +1002,12 @@ where
         }
         match source.next_frame() {
             Ok(Some(frame)) => {
-                state.trace_store.append(RawTraceFrame::from(frame));
+                let mut raw = RawTraceFrame::from(frame);
+                match route_channel(raw.channel, &channel_to_bus) {
+                    Ok(bid) => raw.bus_id = bid,
+                    Err(()) => continue, // skip this channel
+                }
+                state.trace_store.append(raw);
                 total = total.saturating_add(1);
             }
             Ok(None) => break,
@@ -828,35 +1096,44 @@ fn transmit_frame_inner(
     state.trace_store.append(RawTraceFrame::from(frame.clone()));
     let tx_confirm_index = u64::try_from(state.trace_store.len()).unwrap_or(u64::MAX) - 1;
 
-    // Forward to the remote session, if any.
-    let session_guard = state
-        .remote_session
+    // Forward to a remote session that knows this channel. Multi-
+    // server sessions all start counting channels at 0; the first
+    // session with a matching channel wins. This is a known limitation
+    // of the channel-based transmit model — see backlog: routing
+    // transmit by `bus_id` would let the host pick the session
+    // unambiguously.
+    let sessions_guard = state
+        .remote_sessions
         .lock()
-        .expect("remote_session mutex poisoned");
-    let wire_status = match session_guard.as_ref() {
-        None => ipc::TransmitWireStatus::NotConnected,
-        Some(session) => 'wire: {
-            let Some((_, interface_id)) = session
+        .expect("remote_sessions mutex poisoned");
+    let wire_status = if sessions_guard.is_empty() {
+        ipc::TransmitWireStatus::NotConnected
+    } else {
+        let found = sessions_guard.values().find_map(|session| {
+            session
                 .channel_to_interface
                 .iter()
                 .find(|(ch, _)| *ch == request.channel)
-            else {
-                break 'wire ipc::TransmitWireStatus::Failed {
-                    message: format!(
-                        "channel {} is not bound to any wire interface",
-                        request.channel
-                    ),
-                };
-            };
-            let interface_id = interface_id.clone();
-            match session.transmitter.transmit(&interface_id, &frame) {
-                Ok(()) => ipc::TransmitWireStatus::Sent { interface_id },
-                Err(e) => ipc::TransmitWireStatus::Failed {
-                    message: e.to_string(),
-                },
+                .map(|(_, iid)| (iid.clone(), session))
+        });
+        match found {
+            None => ipc::TransmitWireStatus::Failed {
+                message: format!(
+                    "channel {} is not bound on any active server",
+                    request.channel
+                ),
+            },
+            Some((interface_id, session)) => {
+                match session.transmitter.transmit(&interface_id, &frame) {
+                    Ok(()) => ipc::TransmitWireStatus::Sent { interface_id },
+                    Err(e) => ipc::TransmitWireStatus::Failed {
+                        message: e.to_string(),
+                    },
+                }
             }
         }
     };
+    drop(sessions_guard);
 
     Ok(ipc::TransmitResult {
         tx_confirm_index,
@@ -915,6 +1192,7 @@ mod tests {
             extended: false,
             direction: Direction::Rx,
             payload: CanFramePayload::Classic(vec![]),
+            bus_id: None,
         }
     }
 
@@ -940,7 +1218,7 @@ mod tests {
     fn test_state() -> AppState {
         AppState {
             databases: Mutex::new(Vec::new()),
-            remote_session: Mutex::new(None),
+            remote_sessions: Mutex::new(HashMap::new()),
             trace_store: TraceStore::new(),
             signal_caches: SignalCacheStore::new(),
         }
@@ -950,6 +1228,15 @@ mod tests {
         LoadedDbc {
             path: path.into(),
             db: Database::parse(dbc_text).expect("test DBC parses"),
+            buses: Vec::new(),
+        }
+    }
+
+    fn loaded_scoped(path: &str, dbc_text: &str, buses: &[&str]) -> LoadedDbc {
+        LoadedDbc {
+            path: path.into(),
+            db: Database::parse(dbc_text).expect("test DBC parses"),
+            buses: buses.iter().map(|s| (*s).into()).collect(),
         }
     }
 
@@ -995,6 +1282,95 @@ mod tests {
             Some("FromA"),
         );
         assert!(r[3].decoded.is_none()); // no DBC knows id 999
+    }
+
+    #[test]
+    fn per_bus_dbc_scoping_filters_decode() {
+        let state = test_state();
+        // DBC A scoped to bus "p" (powertrain), DBC B scoped to bus "c"
+        // (chassis). Same arbitration id 256, different message names so
+        // we can tell which DBC decoded each frame.
+        let dbc_a = tiny_dbc(256, "FromBusP", "Sa");
+        let dbc_b = tiny_dbc(256, "FromBusC", "Sb");
+        *state.databases.lock().unwrap() = vec![
+            loaded_scoped("a.dbc", &dbc_a, &["p"]),
+            loaded_scoped("b.dbc", &dbc_b, &["c"]),
+        ];
+        // Three frames, same id, different routing.
+        let mut on_p = frame_with_data(256);
+        on_p.bus_id = Some("p".into());
+        let mut on_c = frame_with_data(256);
+        on_c.bus_id = Some("c".into());
+        let unassigned = frame_with_data(256); // bus_id: None
+        state.trace_store.append(on_p);
+        state.trace_store.append(on_c);
+        state.trace_store.append(unassigned);
+
+        let r = collect_trace_records(&state, 0, 3);
+        let name = |i: usize| r[i].decoded.as_ref().map(|d| d.name.clone());
+        assert_eq!(name(0).as_deref(), Some("FromBusP"));
+        assert_eq!(name(1).as_deref(), Some("FromBusC"));
+        // An unassigned frame doesn't match any scoped DBC.
+        assert_eq!(name(2), None);
+    }
+
+    #[test]
+    fn apply_filter_drops_records_that_dont_pass() {
+        // Two records, same id, different buses. A `{bus: "p"}` filter
+        // keeps the first only.
+        let mut r1 = TraceFrameRecord::from_raw(0, &frame_with_data(256), None);
+        r1.bus_id = Some("p".into());
+        let mut r2 = TraceFrameRecord::from_raw(1, &frame_with_data(256), None);
+        r2.bus_id = Some("c".into());
+        let predicate: FilterPredicate =
+            serde_json::from_str(r#"{"bus": "p"}"#).unwrap();
+        let filtered = apply_filter_records(vec![r1.clone(), r2], Some(&predicate));
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].bus_id.as_deref(), Some("p"));
+    }
+
+    #[test]
+    fn apply_filter_none_returns_input_unchanged() {
+        let r1 = TraceFrameRecord::from_raw(0, &frame_with_data(1), None);
+        let r2 = TraceFrameRecord::from_raw(1, &frame_with_data(2), None);
+        let v = apply_filter_records(vec![r1, r2], None);
+        assert_eq!(v.len(), 2);
+    }
+
+    #[test]
+    fn route_channel_translates_via_mapping() {
+        let m = vec![
+            (0u8, Some("p".to_string())),
+            (1, None), // explicit skip
+            (2, Some("c".into())),
+        ];
+        assert_eq!(route_channel(0, &m), Ok(Some("p".into())));
+        assert_eq!(route_channel(2, &m), Ok(Some("c".into())));
+        assert_eq!(route_channel(1, &m), Err(()));
+        // Channel without an entry: unassigned.
+        assert_eq!(route_channel(7, &m), Ok(None));
+    }
+
+    #[test]
+    fn unscoped_dbc_decodes_every_bus() {
+        let state = test_state();
+        let dbc = tiny_dbc(256, "Anywhere", "Sig");
+        *state.databases.lock().unwrap() = vec![loaded("any.dbc", &dbc)];
+        let mut on_p = frame_with_data(256);
+        on_p.bus_id = Some("p".into());
+        let unassigned = frame_with_data(256);
+        state.trace_store.append(on_p);
+        state.trace_store.append(unassigned);
+        let r = collect_trace_records(&state, 0, 2);
+        // Both decode against the unscoped DBC.
+        assert_eq!(
+            r[0].decoded.as_ref().map(|d| d.name.clone()).as_deref(),
+            Some("Anywhere"),
+        );
+        assert_eq!(
+            r[1].decoded.as_ref().map(|d| d.name.clone()).as_deref(),
+            Some("Anywhere"),
+        );
     }
 
     #[test]
