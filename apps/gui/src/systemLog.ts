@@ -22,8 +22,13 @@ export interface SystemMessagesPanelParams {
   minLevel?: SystemLogLevel;
 }
 
-/// The default minimum level. Spec: panel defaults to `warn` so an
-/// informational stream doesn't bury a real error.
+/// The default minimum level. Panel defaults to `warn` so an
+/// informational stream doesn't bury a real error; drop the filter
+/// to `info` in the panel toolbar when debugging — the breadcrumb
+/// context (sidecar `exec:` / `cwd:` lines, etc.) is emitted at
+/// `info` and becomes visible the moment the filter is loosened.
+/// Error-level messages still bundle their key context inline so
+/// they remain actionable at the default filter.
 export const DEFAULT_MIN_LEVEL: SystemLogLevel = "warn";
 
 /// Apply the per-panel filter to a chronological message list. Pure
