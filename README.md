@@ -129,6 +129,20 @@ All platforms need:
   or your OS package manager (`brew install pnpm`, `winget install pnpm`, etc.).
   Verify with `pnpm --version`.
 
+**Optional, for Phase 8 vendor drivers (Vector / Kvaser / PEAK):**
+
+- [`uv`](https://docs.astral.sh/uv/) — manages the
+  [`cannet-python-can`](servers/cannet-python-can/) sidecar's Python
+  environment and installs Python on the fly. The packaged GUI ships
+  a bundled copy under `tools/uv/`; for local development install it
+  per the upstream instructions or run
+  [`scripts/fetch-uv.sh`](scripts/fetch-uv.sh) to drop the binary
+  into `tools/uv/` for the host to find.
+- A vendor SDK (only if you have the matching hardware): Vector XL
+  Driver Library, Kvaser CANlib, or PEAK PCAN-Basic. None of these
+  are bundled; see the Phase-8 section below for links.
+
+
 Plus platform-specific build tooling for Tauri's WebView host:
 
 ### Linux (Ubuntu / Debian 24.04+)
@@ -494,6 +508,72 @@ variant — `LogMessage { ts, level, source, message }` — alongside
 `Log` is informational and the session continues. The host's
 `system_log::bridge_wire_log` translates an incoming wire log into
 the local bus; Phase 8's vendor sidecar is the first real producer.
+
+### Phase-8 vendor drivers (Vector / Kvaser / PEAK)
+
+Phase 8 plugs in real hardware sources by way of a single auto-launched
+[`python-can`](https://python-can.readthedocs.io/) sidecar that lives at
+[`servers/cannet-python-can/`](servers/cannet-python-can/). The sidecar
+speaks the same `cannet-wire` gRPC protocol as `cannet-server`, so the
+host pipeline is unchanged — interfaces show up in the project graph
+view the same way the BLF replay fixture's do, just under
+vendor-prefixed names (`vector:VN1640A/ch0`, `kvaser:0`,
+`pcan:PCAN_USBBUS1`).
+
+**Auto-launch**. The GUI's Tauri host spawns the sidecar at startup
+(`apps/gui/src-tauri/src/sidecar.rs`); the user does not run anything
+in `servers/cannet-python-can/` by hand. The sidecar's stdout / stderr
+and exit code feed the **System Messages** panel tagged
+`sidecar:python-can`. A crashing sidecar gets up to three auto-restart
+attempts per session; once the budget is exhausted, the **Restart
+sidecar** Tauri command clears it.
+
+**`uv` bundling**. The host launcher resolves `uv` in this order:
+
+1. **Bundled** `tools/uv/uv[.exe]` next to the GUI executable — the
+   target the Phase-16 packaging tail will fill. Today,
+   [`scripts/fetch-uv.sh`](scripts/fetch-uv.sh) downloads the right
+   binary for the current OS / arch into `tools/uv/` for local dev.
+2. **`uv` on `PATH`** — install via
+   [`https://docs.astral.sh/uv/`](https://docs.astral.sh/uv/).
+3. **`python3 -m cannet_python_can`** — last-resort fallback when
+   neither is available. The host logs a warn-level System Message
+   asking the user to install `uv` for the supported flow.
+
+`uv` materialises the sidecar's venv lazily on first launch and
+installs Python itself if missing, so there is no pre-installed-Python
+prerequisite.
+
+**Per-vendor prerequisites**. None of the vendor SDKs are bundled —
+they are runtime, user-installed dependencies:
+
+| Vendor | SDK | OS                    | python-can backend |
+|--------|-----|-----------------------|--------------------|
+| Vector | [XL Driver Library](https://www.vector.com/int/en/download/vector-driver-disk/) | Windows (full), Linux (partial) | `vector` |
+| Kvaser | [CANlib SDK](https://www.kvaser.com/downloads/) | Windows, Linux, macOS (partial) | `kvaser` |
+| PEAK   | [PCAN-Basic API](https://www.peak-system.com/PCAN-Basic.239.0.html) | Windows, Linux, macOS | `pcan` |
+
+A vendor with no SDK installed contributes zero channels and does not
+break the others. The full per-vendor smoke-test procedure lives in
+[`servers/cannet-python-can/SMOKE.md`](servers/cannet-python-can/SMOKE.md);
+CI cannot run it.
+
+**Swapping the driver library**. The sidecar's
+[`driver.py`](servers/cannet-python-can/cannet_python_can/driver.py)
+defines a small adapter protocol (`list_channels`, `open`, `recv`,
+`send`, `close`). To replace `python-can`:
+
+1. `uv pip install <your-driver>` into the sidecar venv (or edit
+   [`servers/cannet-python-can/pyproject.toml`](servers/cannet-python-can/pyproject.toml)
+   and re-run `uv sync`).
+2. Write a module exposing a top-level `Driver` callable returning a
+   matching object.
+3. Set `CANNET_DRIVER_MODULE=<your_module>` in the environment the
+   GUI launches with.
+
+The wire-level code does not change. See
+[`servers/cannet-python-can/LICENSING.md`](servers/cannet-python-can/LICENSING.md)
+for the LGPL analysis that motivates this layout.
 
 ### Phase-2 client / server demo
 
