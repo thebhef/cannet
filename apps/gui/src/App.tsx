@@ -2062,6 +2062,7 @@ export function App() {
           <button onClick={addTracePanel}>Add trace</button>
           <button onClick={addPlotPanel}>Add plot panel</button>
           <button onClick={addTransmitPanel}>Add transmit panel</button>
+          <button onClick={addRbsPanel}>Add RBS panel</button>
           <button onClick={showDbcPanel}>DBC panel</button>
           <button onClick={showProjectGraphPanel}>Graph panel</button>
           <button onClick={showProjectPanel}>Project panel</button>
