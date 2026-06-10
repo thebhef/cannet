@@ -10,28 +10,31 @@
 //! (ADR 0027). Bus keys are the project's *logical bus names*; message
 //! keys are hex CAN ids with a trailing `x` marking extended ids.
 //!
-//! At runtime each file-listed, DBC-resolvable message becomes a
+//! At runtime **every DBC message on each configured bus** becomes a
 //! provenance-tagged entry in the one
 //! [`crate::transmit_frames::TransmitFrameRegistry`] (`rbs:<element>` —
 //! excluded from the transmit panel and the project snapshot), with a
 //! payload buffer reconstructed **fill bit → DBC defaults →
-//! overrides**. Whether an entry is *scheduled* is the AND of the
-//! element's Run flag, the three `enabled` levels, and the global
-//! kill-switch; actual wire transmission additionally gates on per-bus
-//! connectivity inside the scheduler (a disconnected bus keeps
-//! ticking and resumes on reconnect). Reconciliation is idempotent:
-//! [`sync_schedules`] recomputes desired-running for every row and
-//! starts / stops the difference.
+//! overrides** (a message needs a file entry only to carry
+//! overrides). Messages are **enabled by default** — rest-of-bus:
+//! everything plays unless muted via the flat `disabled_messages`
+//! list. Whether an entry is *scheduled* is the AND of the element's
+//! Run flag, the bus / ECU enables, the message not being muted, and
+//! the global kill-switch; actual wire transmission additionally
+//! gates on per-bus connectivity inside the scheduler (a disconnected
+//! bus keeps ticking and resumes on reconnect). Reconciliation is
+//! idempotent: [`sync_schedules`] recomputes desired-running for
+//! every row (from the row keys the provenance tag carries — no DBC
+//! walk) and starts / stops the difference.
 
-use std::collections::BTreeMap;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::ipc::{CalcFieldsSpec, CounterSpec, CrcSpec, TransmitKind, TransmitRequest};
 use crate::transmit_frames::{TransmitFrame, TransmitMode, TransmitSource};
-use crate::{sys_info, sys_warn, AppState, LoadedDbc};
+use crate::{sys_info, sys_warn, AppState};
 
 /// Current `.cannet_rbs` schema version — current-only, no migrators
 /// (ADR 0011 semantics).
@@ -50,8 +53,18 @@ pub struct RbsFile {
     /// no default: `0` or `1` (whole-byte fill `0x00` / `0xFF`).
     #[serde(default)]
     pub fill_bit: u8,
+    /// Muted messages, flat `"<bus key>/<message key>"` entries.
+    /// Everything not listed is enabled — rest-of-bus: every message
+    /// plays unless muted. Combined (AND) with the bus / ECU enables.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub disabled_messages: BTreeSet<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub buses: BTreeMap<String, RbsBus>,
+}
+
+/// The `disabled_messages` key for one message.
+fn disabled_key(bus: &str, message: &str) -> String {
+    format!("{bus}/{message}")
 }
 
 impl RbsFile {
@@ -61,8 +74,27 @@ impl RbsFile {
         Self {
             schema_version: RBS_SCHEMA_VERSION,
             fill_bit: 0,
+            disabled_messages: BTreeSet::new(),
             buses: BTreeMap::new(),
         }
+    }
+
+    /// Whether a message is enabled (not muted). Default true — a
+    /// message needs no file presence to play.
+    #[must_use]
+    pub fn is_message_enabled(&self, bus: &str, message: &str) -> bool {
+        !self.disabled_messages.contains(&disabled_key(bus, message))
+    }
+
+    /// The file entry carrying a message's overrides, wherever the
+    /// author placed it (the DBC's transmitter grouping wins for
+    /// display; a mismatched placement warns).
+    fn entry_for(&self, bus: &str, message: &str) -> Option<(&str, &RbsMessage)> {
+        self.buses.get(bus).and_then(|b| {
+            b.ecus
+                .iter()
+                .find_map(|(ek, e)| e.messages.get(message).map(|m| (ek.as_str(), m)))
+        })
     }
 
     /// Parse a `.cannet_rbs` document. Only the current
@@ -79,11 +111,26 @@ impl RbsFile {
                 "schema version {version}; this build expects {RBS_SCHEMA_VERSION}"
             ));
         }
-        let file: Self =
+        let mut file: Self =
             serde_json::from_value(raw).map_err(|e| format!("invalid RBS JSON: {e}"))?;
         if file.fill_bit > 1 {
             return Err(format!("fill_bit must be 0 or 1, got {}", file.fill_bit));
         }
+        // The format's first revision carried a per-entry `enabled`
+        // flag; fold any `false` into the flat mute list (the field
+        // is read but never written now).
+        let mut legacy: Vec<String> = Vec::new();
+        for (bus_key, bus) in &mut file.buses {
+            for ecu in bus.ecus.values_mut() {
+                for (msg_key, msg) in &mut ecu.messages {
+                    if !msg.enabled {
+                        legacy.push(disabled_key(bus_key, msg_key));
+                        msg.enabled = true;
+                    }
+                }
+            }
+        }
+        file.disabled_messages.extend(legacy);
         Ok(file)
     }
 }
@@ -110,12 +157,14 @@ pub struct RbsEcu {
     pub messages: BTreeMap<String, RbsMessage>,
 }
 
-/// One message entry. Presence in the file means "part of the
-/// simulation set" — a DBC message with no entry renders in the panel
-/// but is disabled and carries no overrides.
+/// One message entry — it exists to carry *overrides* (period,
+/// signal values, counter / CRC designations). Enabled-ness lives in
+/// the file's flat `disabled_messages` list, not here.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RbsMessage {
-    #[serde(default = "default_true")]
+    /// Legacy per-entry mute from the format's first revision: read
+    /// and folded into `disabled_messages` on parse, never written.
+    #[serde(default = "default_true", skip_serializing)]
     pub enabled: bool,
     /// Send period override; absent → the DBC's `GenMsgCycleTime`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -334,23 +383,15 @@ fn reconstruct_payload(
 // Registration and schedule reconciliation
 // ---------------------------------------------------------------------
 
-/// Find the first DBC scoped to `bus_id` that defines `id`.
-fn dbc_for<'a>(
-    dbs: &'a [LoadedDbc],
-    bus_id: &str,
-    id: cannet_core::CanId,
-) -> Option<(&'a cannet_dbc::Database, cannet_dbc::MessageDescriptor)> {
-    dbs.iter()
-        .filter(|d| d.buses.is_empty() || d.buses.iter().any(|b| b == bus_id))
-        .find_map(|d| d.db.describe_message(id).map(|desc| (&d.db, desc)))
-}
-
-/// Rebuild one element's registry rows from its file: every
-/// file-listed message that resolves (known bus, known DBC message)
-/// gets a provenance-tagged registry entry with a freshly
-/// reconstructed buffer; rows that no longer resolve are removed.
-/// Returns warnings to surface (unknown message ids,
-/// transmitter mismatches, bad overrides).
+/// Rebuild one element's registry rows: **every DBC message on each
+/// resolved file bus** gets a provenance-tagged registry entry with a
+/// freshly reconstructed buffer (overrides applied where the file has
+/// an entry); rows that no longer resolve are removed. Returns
+/// warnings to surface (file entries no DBC defines, transmitter
+/// mismatches, bad overrides).
+// One pass over the DBC tree with per-row assembly inline — splitting
+// it would thread eight locals through a helper for no clarity gain.
+#[allow(clippy::too_many_lines)]
 fn rebuild_element_rows(state: &AppState, element_id: &str) -> Vec<String> {
     let rbs = state.rbs.lock().expect("rbs mutex poisoned");
     let Some(element) = rbs.elements.get(element_id) else {
@@ -358,75 +399,96 @@ fn rebuild_element_rows(state: &AppState, element_id: &str) -> Vec<String> {
     };
     let mut warnings = Vec::new();
     let mut desired: Vec<TransmitFrame> = Vec::new();
+    let no_overrides = RbsMessage::new();
 
     let dbs = state.databases.lock().expect("databases mutex poisoned");
-    for (bus_key, bus) in &element.file.buses {
+    for bus_key in element.file.buses.keys() {
         let Some(bus_id) = rbs.resolve_bus(bus_key) else {
             // Unresolved logical bus: rows render inert in the panel,
             // never a load failure (ADR 0028).
             continue;
         };
-        for (ecu_key, ecu) in &bus.ecus {
-            for (msg_key, msg) in &ecu.messages {
-                let (raw_id, extended) = match parse_message_key(msg_key) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        warnings.push(format!("{bus_key}/{ecu_key}: {e}"));
-                        continue;
-                    }
-                };
-                let id = if extended {
-                    cannet_core::CanId::extended(raw_id)
-                } else {
-                    cannet_core::CanId::standard(raw_id)
-                };
-                let Ok(id) = id else {
-                    warnings.push(format!("{bus_key}/{ecu_key}/{msg_key}: invalid CAN id"));
-                    continue;
-                };
-                let Some((db, desc)) = dbc_for(&dbs, &bus_id, id) else {
-                    // Not loaded into the backend; warned (ADR 0028).
+        // One bus simulates one DBC's tree (the first scoped to it).
+        let Some(loaded) = dbs
+            .iter()
+            .find(|d| d.buses.is_empty() || d.buses.iter().any(|b| b == &bus_id))
+        else {
+            continue;
+        };
+        let mut covered: HashSet<String> = HashSet::new();
+        for content in loaded.db.dbc_content() {
+            let msg_key = format_message_key(content.message_id, content.extended);
+            let id = if content.extended {
+                cannet_core::CanId::extended(content.message_id)
+            } else {
+                cannet_core::CanId::standard(content.message_id)
+            };
+            let Ok(id) = id else { continue };
+            let Some(desc) = loaded.db.describe_message(id) else {
+                continue;
+            };
+            covered.insert(msg_key.clone());
+            let ecu_name = desc
+                .transmitter
+                .clone()
+                .unwrap_or_else(|| "(no transmitter)".to_string());
+            let entry = element.file.entry_for(bus_key, &msg_key);
+            if let Some((file_ecu, _)) = entry {
+                if file_ecu != ecu_name {
                     warnings.push(format!(
-                        "{bus_key}/{ecu_key}/{msg_key}: no DBC on this bus defines the message — not loaded"
+                        "{bus_key}/{file_ecu}/{msg_key}: DBC says {ecu_name} transmits {} — using the DBC grouping",
+                        desc.name
                     ));
-                    continue;
-                };
-                if let Some(t) = &desc.transmitter {
-                    if t != ecu_key {
+                }
+            }
+            let msg = entry.map_or(&no_overrides, |(_, m)| m);
+            let (data, mut w) =
+                reconstruct_payload(&loaded.db, id, &desc, msg, element.file.fill_bit);
+            warnings
+                .extend(w.drain(..).map(|w| format!("{bus_key}/{ecu_name}/{msg_key}: {w}")));
+            let calc = if msg.counter.is_some() || msg.crc.is_some() {
+                Some(CalcFieldsSpec {
+                    counter: msg.counter.clone(),
+                    crc: msg.crc.clone(),
+                })
+            } else {
+                None
+            };
+            desired.push(TransmitFrame {
+                id: row_id(element_id, bus_key, &msg_key),
+                description: String::new(),
+                request: TransmitRequest {
+                    bus_id: bus_id.clone(),
+                    id: content.message_id,
+                    extended: content.extended,
+                    kind: if desc.is_fd { TransmitKind::Fd } else { TransmitKind::Classic },
+                    data,
+                    brs: desc.brs,
+                    esi: false,
+                    dlc: 0,
+                },
+                cycle_ms: msg.period_ms.or(desc.gen_msg_cycle_time_ms).unwrap_or(0),
+                mode: TransmitMode::Periodic,
+                source: TransmitSource::Rbs {
+                    element: element_id.to_string(),
+                    bus: bus_key.clone(),
+                    ecu: ecu_name,
+                    message: msg_key,
+                },
+                calc,
+            });
+        }
+        // File entries the DBC doesn't define: carried (the overrides
+        // are the user's), warned, no row (ADR 0028).
+        if let Some(bus) = element.file.buses.get(bus_key) {
+            for (ecu_key, ecu) in &bus.ecus {
+                for msg_key in ecu.messages.keys() {
+                    if !covered.contains(msg_key) {
                         warnings.push(format!(
-                            "{bus_key}/{ecu_key}/{msg_key}: DBC says {} transmits {} — loaded anyway",
-                            t, desc.name
+                            "{bus_key}/{ecu_key}/{msg_key}: no DBC on this bus defines the message — not loaded"
                         ));
                     }
                 }
-                let (data, mut w) = reconstruct_payload(db, id, &desc, msg, element.file.fill_bit);
-                warnings.extend(w.drain(..).map(|w| format!("{bus_key}/{ecu_key}/{msg_key}: {w}")));
-                let calc = if msg.counter.is_some() || msg.crc.is_some() {
-                    Some(CalcFieldsSpec {
-                        counter: msg.counter.clone(),
-                        crc: msg.crc.clone(),
-                    })
-                } else {
-                    None
-                };
-                desired.push(TransmitFrame {
-                    id: row_id(element_id, bus_key, msg_key),
-                    description: String::new(),
-                    request: TransmitRequest {
-                        bus_id: bus_id.clone(),
-                        id: raw_id,
-                        extended,
-                        kind: if desc.is_fd { TransmitKind::Fd } else { TransmitKind::Classic },
-                        data,
-                        brs: desc.brs,
-                        esi: false,
-                        dlc: 0,
-                    },
-                    cycle_ms: msg.period_ms.or(desc.gen_msg_cycle_time_ms).unwrap_or(0),
-                    mode: TransmitMode::Periodic,
-                    source: TransmitSource::Rbs(element_id.to_string()),
-                    calc,
-                });
             }
         }
     }
@@ -437,9 +499,9 @@ fn rebuild_element_rows(state: &AppState, element_id: &str) -> Vec<String> {
         .transmit_frames
         .lock()
         .expect("transmit_frames mutex poisoned");
-    let desired_ids: Vec<String> = desired.iter().map(|f| f.id.clone()).collect();
+    let desired_ids: HashSet<&str> = desired.iter().map(|f| f.id.as_str()).collect();
     for stale in registry.rbs_row_ids(element_id) {
-        if !desired_ids.contains(&stale) {
+        if !desired_ids.contains(stale.as_str()) {
             registry.remove(&stale);
             state.transmit_scheduler.stop(stale);
         }
@@ -452,36 +514,45 @@ fn rebuild_element_rows(state: &AppState, element_id: &str) -> Vec<String> {
 
 /// Reconcile every RBS row's scheduled state with what the model says
 /// it should be: `element.run && bus.enabled && ecu.enabled &&
-/// message.enabled && !kill_switch` (per-bus *connectivity* gates
-/// inside the scheduler, not here — a disconnected bus keeps its
-/// schedule ticking and resumes on reconnect). Idempotent.
+/// !muted && !kill_switch` (per-bus *connectivity* gates inside the
+/// scheduler, not here — a disconnected bus keeps its schedule
+/// ticking and resumes on reconnect). Derives desired-state from the
+/// row keys the registry's provenance carries — no DBC lock, so the
+/// hot enable / run / kill-switch paths stay light. Idempotent.
 fn sync_schedules(state: &AppState) {
     let rbs = state.rbs.lock().expect("rbs mutex poisoned");
     let mut registry = state
         .transmit_frames
         .lock()
         .expect("transmit_frames mutex poisoned");
-    for (element_id, element) in &rbs.elements {
-        for (bus_key, bus) in &element.file.buses {
-            for ecu in bus.ecus.values() {
-                for (msg_key, msg) in &ecu.messages {
-                    let id = row_id(element_id, bus_key, msg_key);
-                    let want = element.run
-                        && !rbs.kill_switch
-                        && bus.enabled
-                        && ecu.enabled
-                        && msg.enabled;
-                    if want {
-                        if registry.begin_periodic(&id) == Ok(true) {
-                            state.transmit_scheduler.start(id);
-                        }
-                    } else if registry.stop_periodic(&id) {
-                        state.transmit_scheduler.stop(id);
-                    }
-                }
+    for row in registry.rbs_rows() {
+        let want = !rbs.kill_switch
+            && rbs.elements.get(&row.element).is_some_and(|element| {
+                element.run
+                    && element.file.buses.get(&row.bus).is_some_and(|bus| {
+                        bus.enabled && bus.ecus.get(&row.ecu).is_none_or(|e| e.enabled)
+                    })
+                    && element.file.is_message_enabled(&row.bus, &row.message)
+            });
+        if want {
+            if registry.begin_periodic(&row.id) == Ok(true) {
+                state.transmit_scheduler.start(row.id);
             }
+        } else if registry.stop_periodic(&row.id) {
+            state.transmit_scheduler.stop(row.id);
         }
     }
+}
+
+/// The light mutation tail for edits that only change *scheduling*
+/// (enable toggles, run flag, kill-switch): reconcile and notify —
+/// no row rebuild, no calc re-resolution, no verification rebuild.
+/// Keeps the interactive toggle path off the heavy locks while the
+/// scheduler is firing.
+fn notify_schedule_change(app: &AppHandle, element_id: &str) {
+    let state: State<'_, AppState> = app.state();
+    sync_schedules(&state);
+    let _ = app.emit("rbs-changed", element_id);
 }
 
 /// Rebuild rows + re-resolve calculated fields + rebuild the
@@ -532,8 +603,8 @@ pub(crate) fn refresh_all_elements(app: &AppHandle) {
 /// frontend pushes the project-persisted Run flag separately via
 /// [`rbs_set_run`].
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn rbs_load(
+#[allow(clippy::needless_pass_by_value, clippy::unused_async)]
+pub async fn rbs_load(
     app: AppHandle,
     state: State<'_, AppState>,
     element_id: String,
@@ -579,12 +650,16 @@ fn seeded_file(project_buses: &[(String, String)]) -> RbsFile {
 /// user saves (`rbs_save` / Save All prompt for a path). A no-op for
 /// an element that's already loaded.
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn rbs_init(app: AppHandle, state: State<'_, AppState>, element_id: String) {
+#[allow(clippy::needless_pass_by_value, clippy::unused_async)]
+pub async fn rbs_init(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    element_id: String,
+) -> Result<(), String> {
     {
         let mut rbs = state.rbs.lock().expect("rbs mutex poisoned");
         if rbs.elements.contains_key(&element_id) {
-            return;
+            return Ok(());
         }
         let file = seeded_file(&rbs.project_buses);
         rbs.elements.insert(
@@ -593,12 +668,17 @@ pub fn rbs_init(app: AppHandle, state: State<'_, AppState>, element_id: String) 
         );
     }
     refresh_element(&app, &element_id);
+    Ok(())
 }
 
 /// Tear down an element's rows (element removed / project closing).
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn rbs_unload(app: AppHandle, state: State<'_, AppState>, element_id: String) {
+#[allow(clippy::needless_pass_by_value, clippy::unused_async)]
+pub async fn rbs_unload(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    element_id: String,
+) -> Result<(), String> {
     {
         let mut rbs = state.rbs.lock().expect("rbs mutex poisoned");
         rbs.elements.remove(&element_id);
@@ -613,35 +693,42 @@ pub fn rbs_unload(app: AppHandle, state: State<'_, AppState>, element_id: String
     }
     drop(registry);
     let _ = app.emit("rbs-changed", element_id);
+    Ok(())
 }
 
 /// Push the project's logical-bus list (id, name pairs). RBS bus keys
 /// resolve against the *names*; the frontend (which owns the project)
 /// calls this on open and on any bus add / rename / remove.
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn rbs_sync_project_buses(
+#[allow(clippy::needless_pass_by_value, clippy::unused_async)]
+pub async fn rbs_sync_project_buses(
     app: AppHandle,
     state: State<'_, AppState>,
     buses: Vec<(String, String)>,
-) {
+) -> Result<(), String> {
     {
         let mut rbs = state.rbs.lock().expect("rbs mutex poisoned");
         rbs.project_buses = buses;
     }
     refresh_all_elements(&app);
+    Ok(())
 }
 
 /// Set an element's Run flag (the project persists it; default off).
 /// false→true seeds every row's counter at 0 (ADR 0028: counters seed
 /// when the element starts running) before scheduling.
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn rbs_set_run(app: AppHandle, state: State<'_, AppState>, element_id: String, run: bool) {
+#[allow(clippy::needless_pass_by_value, clippy::unused_async)]
+pub async fn rbs_set_run(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    element_id: String,
+    run: bool,
+) -> Result<(), String> {
     let started = {
         let mut rbs = state.rbs.lock().expect("rbs mutex poisoned");
         let Some(element) = rbs.elements.get_mut(&element_id) else {
-            return;
+            return Ok(());
         };
         let started = run && !element.run;
         element.run = run;
@@ -658,14 +745,19 @@ pub fn rbs_set_run(app: AppHandle, state: State<'_, AppState>, element_id: Strin
     }
     sync_schedules(&state);
     let _ = app.emit("rbs-changed", element_id);
+    Ok(())
 }
 
 /// The global RBS kill-switch (runtime-only, never persisted): on
 /// stops every RBS row everywhere; off resumes whatever the model
 /// says should run.
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn rbs_set_kill_switch(app: AppHandle, state: State<'_, AppState>, on: bool) {
+#[allow(clippy::needless_pass_by_value, clippy::unused_async)]
+pub async fn rbs_set_kill_switch(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    on: bool,
+) -> Result<(), String> {
     {
         let mut rbs = state.rbs.lock().expect("rbs mutex poisoned");
         rbs.kill_switch = on;
@@ -681,6 +773,7 @@ pub fn rbs_set_kill_switch(app: AppHandle, state: State<'_, AppState>, on: bool)
     // flag (panel button, palette toggle) tracks the same value.
     let _ = app.emit("rbs-kill-switch", on);
     let _ = app.emit("rbs-changed", "*");
+    Ok(())
 }
 
 /// Mutate one element's file document in place, mark it dirty, and
@@ -728,12 +821,17 @@ fn entry_mut<'a>(
 }
 
 /// Set an `enabled` flag. `ecu` / `message` absent address the outer
-/// levels; entries are created as needed (enabling a message not yet
-/// in the file adds it to the simulation set). Toggling an outer
-/// level preserves the inner flags (ADR 0028).
+/// levels. A message toggle edits the flat `disabled_messages` list
+/// (messages are enabled by default); bus / ECU toggles edit their
+/// entries (created as needed — adding a missing bus brings its DBC
+/// tree into the simulation). Toggling an outer level preserves the
+/// inner state (ADR 0028).
+///
+/// Pure-scheduling edits skip the row rebuild: only a *new bus*
+/// changes what rows exist.
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn rbs_set_enabled(
+#[allow(clippy::needless_pass_by_value, clippy::unused_async)]
+pub async fn rbs_set_enabled(
     app: AppHandle,
     state: State<'_, AppState>,
     element_id: String,
@@ -742,13 +840,21 @@ pub fn rbs_set_enabled(
     message: Option<String>,
     enabled: bool,
 ) -> Result<(), String> {
-    edit_file(&app, state.inner(), &element_id, |file| {
+    let new_bus = {
+        let mut rbs = state.rbs.lock().expect("rbs mutex poisoned");
+        let element = rbs
+            .elements
+            .get_mut(&element_id)
+            .ok_or_else(|| format!("no RBS element {element_id}"))?;
+        let new_bus = !element.file.buses.contains_key(&bus);
         match (&ecu, &message) {
             (None, _) => {
-                file.buses.entry(bus).or_insert_with(RbsBus::new).enabled = enabled;
+                element.file.buses.entry(bus).or_insert_with(RbsBus::new).enabled = enabled;
             }
             (Some(ecu), None) => {
-                file.buses
+                element
+                    .file
+                    .buses
                     .entry(bus)
                     .or_insert_with(RbsBus::new)
                     .ecus
@@ -756,12 +862,24 @@ pub fn rbs_set_enabled(
                     .or_insert_with(RbsEcu::new)
                     .enabled = enabled;
             }
-            (Some(ecu), Some(message)) => {
-                entry_mut(file, &bus, ecu, message).enabled = enabled;
+            (Some(_), Some(message)) => {
+                let key = disabled_key(&bus, message);
+                if enabled {
+                    element.file.disabled_messages.remove(&key);
+                } else {
+                    element.file.disabled_messages.insert(key);
+                }
             }
         }
-        Ok(())
-    })
+        element.dirty = true;
+        new_bus
+    };
+    if new_bus {
+        refresh_element(&app, &element_id);
+    } else {
+        notify_schedule_change(&app, &element_id);
+    }
+    Ok(())
 }
 
 /// Addresses one message entry in an element's file — the `bus →
@@ -775,8 +893,8 @@ pub struct RbsTarget {
 
 /// Set or clear a message's period override.
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn rbs_set_period(
+#[allow(clippy::needless_pass_by_value, clippy::unused_async)]
+pub async fn rbs_set_period(
     app: AppHandle,
     state: State<'_, AppState>,
     element_id: String,
@@ -793,8 +911,8 @@ pub fn rbs_set_period(
 /// or a `0x…` hex string), or clear it with `None` — the signal goes
 /// back to tracking its DBC default.
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn rbs_set_signal(
+#[allow(clippy::needless_pass_by_value, clippy::unused_async)]
+pub async fn rbs_set_signal(
     app: AppHandle,
     state: State<'_, AppState>,
     element_id: String,
@@ -819,8 +937,8 @@ pub fn rbs_set_signal(
 /// Set or clear a message's calculated-field overrides (each replaces
 /// the DBC default wholesale for that field — ADR 0027).
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn rbs_set_calc(
+#[allow(clippy::needless_pass_by_value, clippy::unused_async)]
+pub async fn rbs_set_calc(
     app: AppHandle,
     state: State<'_, AppState>,
     element_id: String,
@@ -841,8 +959,8 @@ pub fn rbs_set_calc(
 /// saved — the caller routes through [`rbs_save_as`] with a
 /// user-picked path in that case.
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn rbs_save(
+#[allow(clippy::needless_pass_by_value, clippy::unused_async)]
+pub async fn rbs_save(
     app: AppHandle,
     state: State<'_, AppState>,
     element_id: String,
@@ -862,8 +980,8 @@ pub fn rbs_save(
 /// First save of a file-less config (or an explicit re-point): set
 /// the element's path and write.
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn rbs_save_as(
+#[allow(clippy::needless_pass_by_value, clippy::unused_async)]
+pub async fn rbs_save_as(
     app: AppHandle,
     state: State<'_, AppState>,
     element_id: String,
@@ -921,8 +1039,8 @@ pub struct RbsDirtyRecord {
 
 /// Every element with unsaved override edits.
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn rbs_dirty(state: State<'_, AppState>) -> Vec<RbsDirtyRecord> {
+#[allow(clippy::needless_pass_by_value, clippy::unused_async)]
+pub async fn rbs_dirty(state: State<'_, AppState>) -> Result<Vec<RbsDirtyRecord>, String> {
     let rbs = state.rbs.lock().expect("rbs mutex poisoned");
     let mut out: Vec<RbsDirtyRecord> = rbs
         .elements
@@ -934,7 +1052,7 @@ pub fn rbs_dirty(state: State<'_, AppState>) -> Vec<RbsDirtyRecord> {
         })
         .collect();
     out.sort_by(|a, b| a.element_id.cmp(&b.element_id));
-    out
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------
@@ -1051,10 +1169,15 @@ pub struct RbsSignalView {
 /// Assemble the panel view for one element. `None` if the element
 /// isn't loaded.
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
-pub fn rbs_view(state: State<'_, AppState>, element_id: String) -> Option<RbsView> {
+#[allow(clippy::needless_pass_by_value, clippy::too_many_lines, clippy::unused_async)]
+pub async fn rbs_view(
+    state: State<'_, AppState>,
+    element_id: String,
+) -> Result<Option<RbsView>, String> {
     let rbs = state.rbs.lock().expect("rbs mutex poisoned");
-    let element = rbs.elements.get(&element_id)?;
+    let Some(element) = rbs.elements.get(&element_id) else {
+        return Ok(None);
+    };
     let dbs = state.databases.lock().expect("databases mutex poisoned");
     let registry = state
         .transmit_frames
@@ -1110,6 +1233,7 @@ pub fn rbs_view(state: State<'_, AppState>, element_id: String) -> Option<RbsVie
                             element_id: &element_id,
                             bus_key,
                             key: &key,
+                            enabled: element.file.is_message_enabled(bus_key, &key),
                             id,
                             db: &loaded.db,
                             desc: &desc,
@@ -1141,7 +1265,7 @@ pub fn rbs_view(state: State<'_, AppState>, element_id: String) -> Option<RbsVie
                     extended,
                     name: None,
                     in_file: true,
-                    enabled: msg.enabled,
+                    enabled: element.file.is_message_enabled(bus_key, msg_key),
                     running: false,
                     period_ms: msg.period_ms,
                     period_overridden: msg.period_ms.is_some(),
@@ -1175,7 +1299,7 @@ pub fn rbs_view(state: State<'_, AppState>, element_id: String) -> Option<RbsVie
         });
     }
 
-    Some(RbsView {
+    Ok(Some(RbsView {
         element_id: element_id.clone(),
         path: element.path.clone(),
         fill_bit: element.file.fill_bit,
@@ -1183,7 +1307,7 @@ pub fn rbs_view(state: State<'_, AppState>, element_id: String) -> Option<RbsVie
         run: element.run,
         kill_switch: rbs.kill_switch,
         buses,
-    })
+    }))
 }
 
 /// Inputs for one message row's view assembly — bundled so the
@@ -1193,6 +1317,8 @@ struct MessageViewInputs<'a> {
     element_id: &'a str,
     bus_key: &'a str,
     key: &'a str,
+    /// From the file's `disabled_messages` (default enabled).
+    enabled: bool,
     id: cannet_core::CanId,
     db: &'a cannet_dbc::Database,
     desc: &'a cannet_dbc::MessageDescriptor,
@@ -1209,6 +1335,7 @@ fn build_message_view(
         element_id,
         bus_key,
         key,
+        enabled,
         id,
         db,
         desc,
@@ -1289,7 +1416,7 @@ fn build_message_view(
         extended: id.is_extended(),
         name: Some(desc.name.clone()),
         in_file,
-        enabled: msg.enabled,
+        enabled,
         running,
         period_ms: msg.period_ms.or(desc.gen_msg_cycle_time_ms),
         period_overridden: msg.period_ms.is_some(),
@@ -1372,7 +1499,11 @@ mod tests {
         }"#;
         let file = RbsFile::parse(text).unwrap();
         let msg = &file.buses["Powertrain"].ecus["BMS"].messages["0x123"];
-        assert!(!msg.enabled);
+        // The first revision's per-entry `enabled: false` folds into
+        // the flat mute list on parse (and the field normalises true).
+        assert!(msg.enabled);
+        assert!(!file.is_message_enabled("Powertrain", "0x123"));
+        assert!(file.disabled_messages.contains("Powertrain/0x123"));
         assert_eq!(msg.period_ms, Some(10));
         assert_eq!(msg.signals["PackVoltage"], RbsValue::Number(403.2));
         assert_eq!(msg.signals["TargetMode"], RbsValue::Text("Standby".into()));
@@ -1394,6 +1525,9 @@ mod tests {
         let text = serde_json::to_string(&minimal).unwrap();
         assert!(!text.contains("period_ms"), "{text}");
         assert!(!text.contains("signals"), "{text}");
+        // The legacy per-entry flag is read-only: never written back.
+        let msg_json = serde_json::to_string(&RbsMessage::new()).unwrap();
+        assert!(!msg_json.contains("enabled"), "{msg_json}");
     }
 
     #[test]
@@ -1599,7 +1733,26 @@ VAL_ 291 TargetMode 0 "Off" 1 "Standby" 2 "Active";
             assert_ne!(fired.data[7], 0, "CRC computed on fire");
         }
 
-        // Removing the message from the file removes its row.
+        // Message-level mute: the flat disabled list (messages are
+        // enabled by default — rest-of-bus plays everything).
+        {
+            let mut rbs = state.rbs.lock().unwrap();
+            let el = rbs.elements.get_mut("el1").unwrap();
+            el.file.disabled_messages.insert("Powertrain/0x123".into());
+        }
+        sync_schedules(&state);
+        assert!(!state.transmit_frames.lock().unwrap().is_running(&status_id));
+        {
+            let mut rbs = state.rbs.lock().unwrap();
+            let el = rbs.elements.get_mut("el1").unwrap();
+            el.file.disabled_messages.remove("Powertrain/0x123");
+        }
+        sync_schedules(&state);
+        assert!(state.transmit_frames.lock().unwrap().is_running(&status_id));
+
+        // Removing a message's file entry only drops its *overrides* —
+        // the row is DBC-derived and stays. Removing the bus entry
+        // removes the bus's rows.
         {
             let mut rbs = state.rbs.lock().unwrap();
             let el = rbs.elements.get_mut("el1").unwrap();
@@ -1614,19 +1767,27 @@ VAL_ 291 TargetMode 0 "Off" 1 "Standby" 2 "Active";
                 .remove("0x123");
         }
         rebuild_element_rows(&state, "el1");
-        assert!(!state
+        assert!(state
             .transmit_frames
             .lock()
             .unwrap()
             .rbs_row_ids("el1")
             .contains(&status_id));
+        {
+            let mut rbs = state.rbs.lock().unwrap();
+            let el = rbs.elements.get_mut("el1").unwrap();
+            el.file.buses.remove("Powertrain");
+        }
+        rebuild_element_rows(&state, "el1");
+        assert!(state.transmit_frames.lock().unwrap().rbs_row_ids("el1").is_empty());
     }
 
     /// A fresh element's default config pre-adds every project bus
-    /// (nothing enabled, no overrides) so the panel immediately shows
-    /// each bus's DBC tree without touching disk.
+    /// (no overrides) so the panel immediately shows each bus's DBC
+    /// tree — and, messages being enabled by default, Run plays the
+    /// whole bus.
     #[test]
-    fn seeded_default_lists_the_project_buses() {
+    fn seeded_default_lists_the_project_buses_and_run_plays_them() {
         let file = seeded_file(&[
             ("p1".into(), "Powertrain".into()),
             ("c1".into(), "Chassis".into()),
@@ -1636,8 +1797,8 @@ VAL_ 291 TargetMode 0 "Off" 1 "Standby" 2 "Active";
             vec!["Chassis", "Powertrain"]
         );
         assert!(file.buses.values().all(|b| b.enabled && b.ecus.is_empty()));
-        // Nothing transmits from a seed: no message entries exist.
         let state = crate::tests::test_state();
+        state.databases.lock().unwrap().push(crate::tests::loaded("a.dbc", RBS_DBC));
         {
             let mut rbs = state.rbs.lock().unwrap();
             rbs.project_buses = vec![("p1".into(), "Powertrain".into())];
@@ -1648,7 +1809,14 @@ VAL_ 291 TargetMode 0 "Off" 1 "Standby" 2 "Active";
         }
         rebuild_element_rows(&state, "el1");
         sync_schedules(&state);
-        assert!(state.transmit_frames.lock().unwrap().rbs_row_ids("el1").is_empty());
+        let registry = state.transmit_frames.lock().unwrap();
+        // Every DBC message on the resolved bus is a row.
+        assert_eq!(registry.rbs_row_ids("el1").len(), 2);
+        // Enabled by default + Run on → the periodic-capable message
+        // schedules with no file entry at all.
+        assert!(registry.is_running(&row_id("el1", "Powertrain", "0x123")));
+        // No period anywhere → can't schedule (but isn't an error).
+        assert!(!registry.is_running(&row_id("el1", "Powertrain", "0x200")));
     }
 
     #[test]
@@ -1677,10 +1845,11 @@ VAL_ 291 TargetMode 0 "Off" 1 "Standby" 2 "Active";
         let warnings = rebuild_element_rows(&state, "el1");
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].contains("BMS transmits"), "{warnings:?}");
-        // Loaded anyway.
+        // Loaded anyway (the DBC grouping wins); rows cover the
+        // whole DBC tree.
         assert_eq!(
             state.transmit_frames.lock().unwrap().rbs_row_ids("el1").len(),
-            1
+            2
         );
     }
 }

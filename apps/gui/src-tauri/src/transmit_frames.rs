@@ -63,9 +63,16 @@ pub enum TransmitSource {
     /// A transmit-panel message, persisted in the project.
     #[default]
     Project,
-    /// A rest-of-bus-simulation row; the payload names the owning
-    /// RBS element id.
-    Rbs(String),
+    /// A rest-of-bus-simulation row. Carries the owning element and
+    /// the row's `bus → ecu → message` keys so schedule
+    /// reconciliation can derive desired-state from the registry
+    /// alone, without re-walking the DBC.
+    Rbs {
+        element: String,
+        bus: String,
+        ecu: String,
+        message: String,
+    },
 }
 
 impl TransmitSource {
@@ -167,6 +174,17 @@ impl Entry {
         }
         self.frame.request.clone()
     }
+}
+
+/// One RBS row's identity in the pool: the registry id plus the
+/// `element / bus / ecu / message` keys its provenance carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RbsRowKey {
+    pub id: String,
+    pub element: String,
+    pub bus: String,
+    pub ecu: String,
+    pub message: String,
 }
 
 /// The ordered, id-keyed pool of TX messages. Order is the pool order
@@ -278,8 +296,30 @@ impl TransmitFrameRegistry {
     pub fn rbs_row_ids(&self, element: &str) -> Vec<String> {
         self.entries
             .iter()
-            .filter(|e| matches!(&e.frame.source, TransmitSource::Rbs(el) if el == element))
+            .filter(
+                |e| matches!(&e.frame.source, TransmitSource::Rbs { element: el, .. } if el == element),
+            )
             .map(|e| e.frame.id.clone())
+            .collect()
+    }
+
+    /// Every RBS row's key tuple, across all elements — what schedule
+    /// reconciliation iterates (the keys carry enough to derive
+    /// desired-state from the RBS model without a DBC walk).
+    #[must_use]
+    pub fn rbs_rows(&self) -> Vec<RbsRowKey> {
+        self.entries
+            .iter()
+            .filter_map(|e| match &e.frame.source {
+                TransmitSource::Rbs { element, bus, ecu, message } => Some(RbsRowKey {
+                    id: e.frame.id.clone(),
+                    element: element.clone(),
+                    bus: bus.clone(),
+                    ecu: ecu.clone(),
+                    message: message.clone(),
+                }),
+                TransmitSource::Project => None,
+            })
             .collect()
     }
 
@@ -590,7 +630,12 @@ mod tests {
         let mut reg = TransmitFrameRegistry::default();
         reg.set(frame("a", "p", 0x100, TransmitMode::Manual, 0));
         reg.set(TransmitFrame {
-            source: TransmitSource::Rbs("element-1".into()),
+            source: TransmitSource::Rbs {
+                element: "element-1".into(),
+                bus: "Powertrain".into(),
+                ecu: "BMS".into(),
+                message: "0x200".into(),
+            },
             ..frame("rbs:element-1:x", "p", 0x200, TransmitMode::Periodic, 10)
         });
         // The panel list and the project snapshot see only the

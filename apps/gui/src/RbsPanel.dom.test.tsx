@@ -287,6 +287,23 @@ describe("RbsPanel (thin view over the host RBS model)", () => {
     );
   });
 
+  it("clears enum cells on focus so the datalist offers every label", async () => {
+    VIEW = sampleView();
+    renderPanel("/tmp/sim.cannet_rbs");
+    fireEvent.click(await screen.findByLabelText("toggle 0x123"));
+    const input = await screen.findByLabelText("TargetMode value");
+    expect(input).toHaveValue("Standby");
+    // Focus empties the draft (so the datalist isn't filtered by the
+    // committed label) while the placeholder keeps it visible…
+    fireEvent.focus(input);
+    expect(input).toHaveValue("");
+    expect(input).toHaveAttribute("placeholder", "Standby");
+    // …and blurring without typing reverts instead of committing.
+    fireEvent.blur(input);
+    expect(input).toHaveValue("Standby");
+    expect(lastCall("rbs_set_signal")).toBeUndefined();
+  });
+
   it("renders calculated-field destinations read-only", async () => {
     VIEW = sampleView();
     renderPanel("/tmp/sim.cannet_rbs");

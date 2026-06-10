@@ -450,6 +450,7 @@ function BusSection({
         <button
           type="button"
           className="rbs-caret"
+          tabIndex={-1}
           onClick={onToggleCollapse}
           aria-label={`toggle ${bus.key}`}
         >
@@ -481,6 +482,7 @@ function BusSection({
               <button
                 type="button"
                 className="rbs-caret"
+          tabIndex={-1}
                 onClick={() => setCollapsed((s) => toggleSet2(s, `e:${bus.key}/${ecu.name}`))}
                 aria-label={`toggle ${ecu.name}`}
               >
@@ -565,6 +567,7 @@ function MessageRow({
         <button
           type="button"
           className="rbs-caret"
+          tabIndex={-1}
           onClick={onToggleExpand}
           aria-label={`toggle ${m.key}`}
         >
@@ -572,13 +575,8 @@ function MessageRow({
         </button>
         <input
           type="checkbox"
-          checked={m.enabled && m.inFile}
-          disabled={inert || unknown || (m.periodMs == null && !m.enabled)}
-          title={
-            m.periodMs == null
-              ? "No period anywhere (no override, no GenMsgCycleTime) — can't be enabled"
-              : undefined
-          }
+          checked={m.enabled}
+          disabled={inert || unknown}
           onChange={(e) => onEnable(e.target.checked)}
           aria-label={`${m.key} enabled`}
         />
@@ -600,6 +598,8 @@ function MessageRow({
           <ValidatedInput
             value={m.periodMs != null ? String(m.periodMs) : ""}
             parse={parsePositiveInt}
+            focusBehavior="select"
+            
             onCommit={(ms) =>
               void invoke("rbs_set_period", {
                 elementId,
@@ -618,6 +618,7 @@ function MessageRow({
             <button
               type="button"
               className="rbs-clear"
+                tabIndex={-1}
               title="clear override (track GenMsgCycleTime)"
               onClick={() =>
                 void invoke("rbs_set_period", {
@@ -637,6 +638,7 @@ function MessageRow({
         <button
           type="button"
           className="rbs-configure"
+          tabIndex={-1}
           disabled={inert || unknown}
           onClick={() => onConfigure(null)}
         >
@@ -744,6 +746,7 @@ function SignalRow({ elementId, target, message, signal: s, inert, onMenu }: Sig
           <>
             <ValidatedInput
               value={display === "—" ? "" : display}
+              focusBehavior={s.hasValueTable ? "clear" : "select"}
               parse={(text) => {
                 if (text === "") return null;
                 const labelMatch = labels.find((l) => l.label === text);
@@ -773,6 +776,7 @@ function SignalRow({ elementId, target, message, signal: s, inert, onMenu }: Sig
               <button
                 type="button"
                 className="rbs-clear"
+                tabIndex={-1}
                 title={`clear override (track DBC default)${s.overrideText ? ` — currently ${s.overrideText}` : ""}`}
                 onClick={() =>
                   void invoke("rbs_set_signal", {

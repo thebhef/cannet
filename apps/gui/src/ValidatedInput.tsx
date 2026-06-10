@@ -19,6 +19,12 @@ export interface ValidatedInputProps<T> {
   list?: string;
   disabled?: boolean;
   title?: string;
+  /// What focusing does to the committed text: `"select"` selects it
+  /// (type-to-replace); `"clear"` empties the draft so a datalist
+  /// shows *all* its options instead of filtering on the current
+  /// value (the combobox lock-in fix) — blurring without typing
+  /// reverts. Default: leave the caret where clicked.
+  focusBehavior?: "select" | "clear";
 }
 
 export function ValidatedInput<T>({
@@ -31,6 +37,7 @@ export function ValidatedInput<T>({
   list,
   disabled,
   title,
+  focusBehavior,
 }: ValidatedInputProps<T>) {
   const [draft, setDraft] = useState<string | null>(null);
   return (
@@ -38,10 +45,14 @@ export function ValidatedInput<T>({
       type="text"
       className={className}
       value={draft ?? value}
-      placeholder={placeholder}
+      placeholder={placeholder ?? (focusBehavior === "clear" ? value : undefined)}
       list={list}
       disabled={disabled}
       title={title}
+      onFocus={(e) => {
+        if (focusBehavior === "clear") setDraft("");
+        else if (focusBehavior === "select") e.currentTarget.select();
+      }}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={() => {
         if (draft === null) return;

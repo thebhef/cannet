@@ -571,9 +571,11 @@ In the panel:
 
 - The tree-grid lists every DBC message on each configured bus,
   grouped per transmitter ECU, with **ANDed enable checkboxes** at
-  bus / ECU / message level. Messages not yet in the file render
-  disabled; enabling adds them. Buses whose name doesn't match a
-  project bus render inert (greyed) rather than failing the load.
+  bus / ECU / message level. Messages are **enabled by default**
+  (rest-of-bus: everything plays unless muted — mutes persist as the
+  config's flat `disabled_messages` list). Buses whose name doesn't
+  match a project bus render inert (greyed) rather than failing the
+  load.
 - Signal cells show the live decode of the message's payload buffer;
   editing partial-encodes into it (enum labels and `0x…` raw hex are
   accepted), an overridden cell is marked and a light **×** clears

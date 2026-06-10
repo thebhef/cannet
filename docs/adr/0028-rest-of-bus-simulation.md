@@ -25,6 +25,7 @@ bus, and it persists **sparse overrides**, never derived data.
 {
   "schema_version": 1,
   "fill_bit": 0,
+  "disabled_messages": ["Powertrain/0x456"],  // flat mute list
   "buses": {
     "Powertrain": {                  // project logical-bus name
       "enabled": true,
@@ -33,7 +34,6 @@ bus, and it persists **sparse overrides**, never derived data.
           "enabled": true,
           "messages": {
             "0x123": {               // hex CAN id; trailing "x" = extended
-              "enabled": false,
               "period_ms": 10,       // absent → DBC GenMsgCycleTime
               "signals": {           // sparse: only overrides
                 "TargetMode": "Standby",   // enums by label
@@ -67,9 +67,16 @@ bus, and it persists **sparse overrides**, never derived data.
   labels as strings; `0x` hex strings accepted anywhere and written
   for unity-scaled integer signals). A signal's placement, type,
   scale, and unit always come from the DBC.
-- **`enabled` at all three levels**, ANDed: a message transmits iff
-  bus && ecu && message are enabled. Toggling an outer level off and
-  on preserves the inner flags.
+- **Messages are enabled by default** — rest-of-bus: every DBC
+  message on a configured bus plays unless muted. Mutes live in the
+  flat top-level `disabled_messages` list
+  (`"<bus key>/<message key>"` entries); a message needs a `messages`
+  entry only to carry overrides. Bus and ECU levels keep `enabled`
+  flags; the three levels AND: a message transmits iff bus && ecu
+  enabled and it isn't muted. Toggling an outer level off and on
+  preserves the inner state. (The format's first revision carried a
+  per-entry `enabled` flag; it is still read — `false` folds into
+  `disabled_messages` on load — but never written.)
 
 ### Loading and resolution
 
@@ -96,9 +103,11 @@ grid edits partial-encode into it; the grid displays its decode;
 the fire path partial-encodes the calculated fields into it on each
 send. Per-send work is two field writes, never a full re-encode.
 
-RBS rows register with the existing `TransmitFrameRegistry` as
-**provenance-tagged entries** (`source: rbs:<element>` vs
-`project`), driven by the existing host scheduler thread. Provenance
+Every DBC message on each resolved bus registers with the existing
+`TransmitFrameRegistry` as a **provenance-tagged entry**
+(`source: rbs:<element>` vs `project`, the tag carrying the row's
+bus/ECU/message keys so schedule reconciliation needs no DBC walk),
+driven by the existing host scheduler thread. Provenance
 excludes them from the project's `transmit_frames` persistence and
 from the transmit panel's list; everything else — live edit
 semantics, the fire path, scheduling — is shared. RBS is just

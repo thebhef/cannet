@@ -993,6 +993,7 @@ function NumericValueCell({ sig, decoded, onCommit }: NumericValueCellProps) {
       type="text"
       inputMode="decimal"
       value={display}
+      onFocus={(e) => e.currentTarget.select()}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={() => {
         if (draft === null) return;
@@ -1073,6 +1074,14 @@ function EnumValueCell({
         type="text"
         list={datalistId}
         value={display}
+        // Clear on focus so the datalist offers *all* labels instead
+        // of filtering on the current one (which locked the picker to
+        // the already-selected value); the placeholder keeps the
+        // committed label visible, and blurring untouched reverts.
+        placeholder={
+          currentLabel ?? (currentRaw != null ? formatPhysical(currentRaw) : "")
+        }
+        onFocus={() => setDraft("")}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={() => {
           if (draft === null) return;
