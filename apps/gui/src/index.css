@@ -604,6 +604,10 @@ header {
   color: #4ade80;
 }
 
+.project-bus-state.errored {
+  color: #f87171;
+}
+
 .project-empty {
   color: #64748b;
   font-style: italic;
@@ -641,6 +645,16 @@ header {
   border: 1px solid #1e293b;
   border-radius: 0.3rem;
 }
+.project-binding-form-source {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.project-binding-form-or {
+  font-size: 0.72rem;
+  color: #94a3b8;
+}
 .project-binding-form-row {
   display: flex;
   gap: 0.3rem;
@@ -659,6 +673,74 @@ header {
 .project-binding-form-error {
   color: #f87171;
   font-size: 0.72rem;
+}
+
+.project-bus-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-bottom: 0.3rem;
+}
+
+.project-bus-row > .project-bus {
+  margin-bottom: 0;
+}
+
+.project-bus-iface-combo {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+  background: #0f172a;
+  color: #e2e8f0;
+  border: 1px solid #1e293b;
+  border-radius: 0.2rem;
+  padding: 0.1rem 0.25rem;
+}
+
+.project-server {
+  margin-bottom: 0.4rem;
+}
+
+.project-server-bindings {
+  list-style: none;
+  margin: 0.1rem 0 0;
+  padding-left: 1.4rem;
+  font-size: 0.78rem;
+  color: #cbd5e1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.project-server-bindings li {
+  display: flex;
+  gap: 0.2rem;
+  align-items: baseline;
+}
+
+.project-server-arrow {
+  color: #64748b;
+}
+
+.project-server-bus {
+  color: #94a3b8;
+}
+
+.project-server-bus.unassigned {
+  color: #64748b;
+  font-style: italic;
+}
+
+.project-server-orphan {
+  color: #64748b;
+  font-style: italic;
+}
+
+.project-server-empty {
+  padding-left: 1.4rem;
+  font-size: 0.75rem;
+  color: #64748b;
+  font-style: italic;
 }
 
 .project-dbc {

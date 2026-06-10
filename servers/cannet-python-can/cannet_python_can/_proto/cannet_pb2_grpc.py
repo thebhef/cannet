@@ -28,13 +28,21 @@ if _version_not_supported:
 class CannetServerStub(object):
     """CAN frame transport between cannet clients and servers.
 
-    Two RPCs: `ListInterfaces` for on-demand discovery of the interfaces
-    a server provides, and `Session` for a single bidirectional Envelope
-    stream. Frame movement is symmetric — either side sends frames on a
-    subscribed interface using the same wire shape.
+    Three RPCs: `ListInterfaces` for an on-demand snapshot of the
+    interfaces a server provides, `WatchInterfaces` for a long-lived
+    subscription to changes in that set, and `Session` for a single
+    bidirectional Envelope stream. Frame movement is symmetric — either
+    side sends frames on a subscribed interface using the same wire
+    shape.
 
     Cyclic / scheduled emission is not modelled at the wire layer.
     Sending on a cadence is a feature of the client transmit UI.
+
+    Discovery: see ADR 0016. `ListInterfaces` and `WatchInterfaces`
+    are deliberately redundant in the steady state — pull vs. push of
+    the same underlying server-side cache. The server owns the polling
+    cadence and the change-detection rule; clients either ask once or
+    subscribe.
     """
 
     def __init__(self, channel):
@@ -48,6 +56,11 @@ class CannetServerStub(object):
                 request_serializer=cannet__pb2.ListInterfacesRequest.SerializeToString,
                 response_deserializer=cannet__pb2.InterfaceList.FromString,
                 _registered_method=True)
+        self.WatchInterfaces = channel.unary_stream(
+                '/cannet.v1.CannetServer/WatchInterfaces',
+                request_serializer=cannet__pb2.WatchInterfacesRequest.SerializeToString,
+                response_deserializer=cannet__pb2.InterfaceList.FromString,
+                _registered_method=True)
         self.Session = channel.stream_stream(
                 '/cannet.v1.CannetServer/Session',
                 request_serializer=cannet__pb2.Envelope.SerializeToString,
@@ -58,17 +71,35 @@ class CannetServerStub(object):
 class CannetServerServicer(object):
     """CAN frame transport between cannet clients and servers.
 
-    Two RPCs: `ListInterfaces` for on-demand discovery of the interfaces
-    a server provides, and `Session` for a single bidirectional Envelope
-    stream. Frame movement is symmetric — either side sends frames on a
-    subscribed interface using the same wire shape.
+    Three RPCs: `ListInterfaces` for an on-demand snapshot of the
+    interfaces a server provides, `WatchInterfaces` for a long-lived
+    subscription to changes in that set, and `Session` for a single
+    bidirectional Envelope stream. Frame movement is symmetric — either
+    side sends frames on a subscribed interface using the same wire
+    shape.
 
     Cyclic / scheduled emission is not modelled at the wire layer.
     Sending on a cadence is a feature of the client transmit UI.
+
+    Discovery: see ADR 0016. `ListInterfaces` and `WatchInterfaces`
+    are deliberately redundant in the steady state — pull vs. push of
+    the same underlying server-side cache. The server owns the polling
+    cadence and the change-detection rule; clients either ask once or
+    subscribe.
     """
 
     def ListInterfaces(self, request, context):
         """Stateless query: what CAN interfaces does this server expose?
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def WatchInterfaces(self, request, context):
+        """Long-lived subscription: emits a snapshot on subscribe, then a
+        fresh snapshot every time the server's view of its interfaces
+        changes. The server decides when its view changed; the client
+        just receives. Closing the stream ends the subscription.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -90,6 +121,11 @@ def add_CannetServerServicer_to_server(servicer, server):
                     request_deserializer=cannet__pb2.ListInterfacesRequest.FromString,
                     response_serializer=cannet__pb2.InterfaceList.SerializeToString,
             ),
+            'WatchInterfaces': grpc.unary_stream_rpc_method_handler(
+                    servicer.WatchInterfaces,
+                    request_deserializer=cannet__pb2.WatchInterfacesRequest.FromString,
+                    response_serializer=cannet__pb2.InterfaceList.SerializeToString,
+            ),
             'Session': grpc.stream_stream_rpc_method_handler(
                     servicer.Session,
                     request_deserializer=cannet__pb2.Envelope.FromString,
@@ -106,13 +142,21 @@ def add_CannetServerServicer_to_server(servicer, server):
 class CannetServer(object):
     """CAN frame transport between cannet clients and servers.
 
-    Two RPCs: `ListInterfaces` for on-demand discovery of the interfaces
-    a server provides, and `Session` for a single bidirectional Envelope
-    stream. Frame movement is symmetric — either side sends frames on a
-    subscribed interface using the same wire shape.
+    Three RPCs: `ListInterfaces` for an on-demand snapshot of the
+    interfaces a server provides, `WatchInterfaces` for a long-lived
+    subscription to changes in that set, and `Session` for a single
+    bidirectional Envelope stream. Frame movement is symmetric — either
+    side sends frames on a subscribed interface using the same wire
+    shape.
 
     Cyclic / scheduled emission is not modelled at the wire layer.
     Sending on a cadence is a feature of the client transmit UI.
+
+    Discovery: see ADR 0016. `ListInterfaces` and `WatchInterfaces`
+    are deliberately redundant in the steady state — pull vs. push of
+    the same underlying server-side cache. The server owns the polling
+    cadence and the change-detection rule; clients either ask once or
+    subscribe.
     """
 
     @staticmethod
@@ -131,6 +175,33 @@ class CannetServer(object):
             target,
             '/cannet.v1.CannetServer/ListInterfaces',
             cannet__pb2.ListInterfacesRequest.SerializeToString,
+            cannet__pb2.InterfaceList.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def WatchInterfaces(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/cannet.v1.CannetServer/WatchInterfaces',
+            cannet__pb2.WatchInterfacesRequest.SerializeToString,
             cannet__pb2.InterfaceList.FromString,
             options,
             channel_credentials,

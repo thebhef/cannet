@@ -26,9 +26,26 @@ class Channel:
     """One enumerable hardware channel.
 
     ``id`` is the wire-level ``Interface.id`` reported by
-    ``ListInterfaces``; the wire convention is a vendor-prefixed name
-    such as ``vector:VN1640A/ch0``, ``kvaser:0``, or
-    ``pcan:PCAN_USBBUS1``. ``display_name`` is the user-facing label.
+    ``ListInterfaces``. The grammar is
+    ``<vendor>:<body>(<key:value>, <key:value>, …)`` — the body is the
+    vendor-specific routing key python-can needs, and the parens
+    carry identity metadata the host persists. Examples:
+
+    - ``vector:VN1640A(SN:12345, ch:0)``
+    - ``kvaser:1(SN:67890, ch:0)``
+    - ``pcan:PCAN_USBBUS1(h:0x51, ch:0)``
+    - ``pcan:PCAN_USBBUS1(h:0x51, ch:0, uid:42)`` (user set a PCAN-View
+      device id)
+
+    For Vector, the paren ``SN:`` field is the open-path key:
+    :func:`_bus_kwargs_for` passes ``serial=`` + ``channel=`` to
+    python-can so the driver resolves the physical channel directly
+    via ``get_channel_configs`` and never calls ``xlGetApplConfig``.
+    For other vendors the body alone is enough to open the channel —
+    the paren metadata is identity-only.
+
+    ``display_name`` is the user-facing label, e.g.
+    ``"Vector VN1640A (SN:12345) ch0"``.
     """
 
     id: str

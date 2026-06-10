@@ -81,13 +81,41 @@ export interface Bus {
   color?: string | null;
 }
 
-/// An interface → bus binding (Phase 6). `server` is the remote
-/// address (or a sidecar prefix later); `interface` matches the
+/// An interface → bus binding (Phase 6). `server` is either the
+/// literal {@link LOCAL_SERVER} sentinel — meaning "the local sidecar
+/// at whatever address it's bound to this session" — or a `host:port`
+/// for a specific remote `cannet-server`. `interface` matches the
 /// wire-level `Interface.id`.
 export interface InterfaceBinding {
   server: string;
   interface: string;
   bus_id: string;
+}
+
+/// Sentinel `server` value for a binding routed through the local
+/// sidecar. The sidecar's listen port is randomised per launch, so
+/// persisting a literal `host:port` would orphan the binding on every
+/// project reload; persisting this sentinel decouples it from the
+/// session's port. Code paths that need to actually reach the sidecar
+/// (discovery polling, Tauri commands) resolve the sentinel to the
+/// live address via {@link resolveServer}.
+export const LOCAL_SERVER = "local";
+
+/// True if the binding points at the local sidecar (regardless of
+/// what port the sidecar is on this session).
+export function isLocalBinding(b: InterfaceBinding): boolean {
+  return b.server === LOCAL_SERVER;
+}
+
+/// Resolve a binding's `server` to the address discovery / Tauri
+/// commands should use. {@link LOCAL_SERVER} becomes the live sidecar
+/// address (or `null` if the sidecar isn't ready); any other value is
+/// already a concrete address and passes through unchanged.
+export function resolveServer(
+  server: string,
+  sidecarAddress: string | null,
+): string | null {
+  return server === LOCAL_SERVER ? sidecarAddress : server;
 }
 
 /// A loaded DBC reference + its bus scoping (Phase 6). Replaces the v2
@@ -103,6 +131,28 @@ export interface InterfaceRecord {
   display_name: string;
   fd_capable: boolean;
 }
+
+/// Coarse lifecycle of the auto-launched python-can sidecar. Mirrors
+/// `src-tauri/src/sidecar.rs::SidecarPhase`. The connection panel
+/// uses this to label its "Local sidecar" row — "Starting…",
+/// "Listening on 127.0.0.1:43891", "Offline" — and decide whether
+/// the user can bind interfaces against it without typing an address.
+export type SidecarPhase = "offline" | "starting" | "ready";
+
+/// Snapshot of the sidecar's state — see {@link SidecarPhase}.
+/// Returned by the `get_sidecar_status` Tauri command and the payload
+/// of the `sidecar-status-changed` event. `address` is the bound
+/// `host:port` once the sidecar reports `listening`; `null` otherwise.
+export interface SidecarStatus {
+  phase: SidecarPhase;
+  address: string | null;
+}
+
+/// Event name the Tauri host emits whenever the sidecar's phase or
+/// bound address changes. Frontend subscribers re-fetch with
+/// `get_sidecar_status` and re-render. Must match
+/// `sidecar.rs::STATUS_EVENT`.
+export const SIDECAR_STATUS_EVENT = "sidecar-status-changed";
 
 export interface SubscriptionRecord {
   interface_id: string;
@@ -197,7 +247,7 @@ export interface Project {
   remote_address: string | null;
 }
 
-export const PROJECT_SCHEMA_VERSION = 3;
+export const PROJECT_SCHEMA_VERSION = 5;
 
 /// One `(bus, message, signal)` triple the attached DBCs define,
 /// returned by the `list_signals` command for a plot panel's signal

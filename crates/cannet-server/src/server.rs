@@ -47,7 +47,7 @@ use cannet_wire::{
         envelope::Body,
         error::Code,
         Envelope, Error as ErrorMsg, FrameBatch, Interface as ProtoInterface, InterfaceList,
-        ListInterfacesRequest, Subscribe, Unsubscribe,
+        ListInterfacesRequest, Subscribe, Unsubscribe, WatchInterfacesRequest,
     },
 };
 use tokio::sync::mpsc;
@@ -89,6 +89,23 @@ impl CannetServerImpl {
     pub fn into_service(self) -> CannetServerServer<Self> {
         CannetServerServer::new(self)
     }
+
+    /// Build the proto `InterfaceList` snapshot from the replay's
+    /// channel set. Shared by `list_interfaces` (pull) and
+    /// `watch_interfaces` (push on subscribe).
+    fn snapshot_interfaces(&self) -> InterfaceList {
+        let interfaces = self
+            .replay
+            .interfaces()
+            .iter()
+            .map(|iface| ProtoInterface {
+                id: iface.id.clone(),
+                display_name: iface.display_name.clone(),
+                fd_capable: iface.fd_capable,
+            })
+            .collect();
+        InterfaceList { interfaces }
+    }
 }
 
 /// Releases the busy flag when dropped — including on task panic.
@@ -106,17 +123,36 @@ impl CannetServerTrait for CannetServerImpl {
         &self,
         _request: Request<ListInterfacesRequest>,
     ) -> Result<Response<InterfaceList>, Status> {
-        let interfaces = self
-            .replay
-            .interfaces()
-            .iter()
-            .map(|iface| ProtoInterface {
-                id: iface.id.clone(),
-                display_name: iface.display_name.clone(),
-                fd_capable: iface.fd_capable,
-            })
-            .collect();
-        Ok(Response::new(InterfaceList { interfaces }))
+        Ok(Response::new(self.snapshot_interfaces()))
+    }
+
+    type WatchInterfacesStream = ReceiverStream<Result<InterfaceList, Status>>;
+
+    /// BLF replay's interface set is fixed for the session: emit one
+    /// snapshot on subscribe, then keep the stream open until the
+    /// client drops. There's nothing to push afterwards because the
+    /// BLF file's channel list can't change underneath us. (Per ADR
+    /// 0016, the *server* decides when its view changed; here, never.)
+    async fn watch_interfaces(
+        &self,
+        _request: Request<WatchInterfacesRequest>,
+    ) -> Result<Response<Self::WatchInterfacesStream>, Status> {
+        let (tx, rx) = mpsc::channel(1);
+        let snapshot = self.snapshot_interfaces();
+        // Best-effort send: a buffer-of-1 means the snapshot lands as
+        // long as the client polls the stream at all. If the client
+        // drops before polling, the send errors and we just drop the
+        // sender — the stream closes for them.
+        let _ = tx.send(Ok(snapshot)).await;
+        // We deliberately keep `tx` alive in the task so the client
+        // can hold the subscription open. Drop it the moment the
+        // client disconnects — `ReceiverStream` notices and ends.
+        tokio::spawn(async move {
+            // Park forever; only client drop ends this.
+            let _hold = tx;
+            std::future::pending::<()>().await;
+        });
+        Ok(Response::new(ReceiverStream::new(rx)))
     }
 
     type SessionStream = ReceiverStream<Result<Envelope, Status>>;

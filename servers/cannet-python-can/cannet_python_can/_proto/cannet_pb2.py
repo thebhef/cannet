@@ -24,41 +24,43 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0c\x63\x61nnet.proto\x12\tcannet.v1\"\x17\n\x15ListInterfacesRequest\"9\n\rInterfaceList\x12(\n\ninterfaces\x18\x01 \x03(\x0b\x32\x14.cannet.v1.Interface\"A\n\tInterface\x12\n\n\x02id\x18\x01 \x01(\t\x12\x14\n\x0c\x64isplay_name\x18\x02 \x01(\t\x12\x12\n\nfd_capable\x18\x03 \x01(\x08\"\xe3\x01\n\x08\x45nvelope\x12)\n\tsubscribe\x18\x01 \x01(\x0b\x32\x14.cannet.v1.SubscribeH\x00\x12-\n\x0bunsubscribe\x18\x02 \x01(\x0b\x32\x16.cannet.v1.UnsubscribeH\x00\x12,\n\x0b\x66rame_batch\x18\x03 \x01(\x0b\x32\x15.cannet.v1.FrameBatchH\x00\x12!\n\x05\x65rror\x18\x04 \x01(\x0b\x32\x10.cannet.v1.ErrorH\x00\x12$\n\x03log\x18\x05 \x01(\x0b\x32\x15.cannet.v1.LogMessageH\x00\x42\x06\n\x04\x62ody\"!\n\tSubscribe\x12\x14\n\x0cinterface_id\x18\x01 \x01(\t\"#\n\x0bUnsubscribe\x12\x14\n\x0cinterface_id\x18\x01 \x01(\t\"D\n\nFrameBatch\x12\x14\n\x0cinterface_id\x18\x01 \x01(\t\x12 \n\x06\x66rames\x18\x02 \x03(\x0b\x32\x10.cannet.v1.Frame\"\xc1\x01\n\x05\x46rame\x12\x14\n\x0ctimestamp_ns\x18\x01 \x01(\x04\x12\x0e\n\x06\x63\x61n_id\x18\x02 \x01(\r\x12\x10\n\x08\x65xtended\x18\x03 \x01(\x08\x12\'\n\tdirection\x18\x04 \x01(\x0e\x32\x14.cannet.v1.Direction\x12\"\n\x04kind\x18\x05 \x01(\x0e\x32\x14.cannet.v1.FrameKind\x12\x0c\n\x04\x64\x61ta\x18\x06 \x01(\x0c\x12\x0b\n\x03\x62rs\x18\x07 \x01(\x08\x12\x0b\n\x03\x65si\x18\x08 \x01(\x08\x12\x0b\n\x03\x64lc\x18\t \x01(\r\"g\n\nLogMessage\x12\x14\n\x0ctimestamp_ns\x18\x01 \x01(\x04\x12\"\n\x05level\x18\x02 \x01(\x0e\x32\x13.cannet.v1.LogLevel\x12\x0e\n\x06source\x18\x03 \x01(\t\x12\x0f\n\x07message\x18\x04 \x01(\t\"\xb5\x01\n\x05\x45rror\x12#\n\x04\x63ode\x18\x01 \x01(\x0e\x32\x15.cannet.v1.Error.Code\x12\x0f\n\x07message\x18\x02 \x01(\t\"v\n\x04\x43ode\x12\x14\n\x10\x43ODE_UNSPECIFIED\x10\x00\x12\x1a\n\x16\x43ODE_UNKNOWN_INTERFACE\x10\x01\x12\x17\n\x13\x43ODE_NOT_SUBSCRIBED\x10\x02\x12\x14\n\x10\x43ODE_TX_REJECTED\x10\x03\x12\r\n\tCODE_BUSY\x10\x04*J\n\tDirection\x12\x19\n\x15\x44IRECTION_UNSPECIFIED\x10\x00\x12\x10\n\x0c\x44IRECTION_RX\x10\x01\x12\x10\n\x0c\x44IRECTION_TX\x10\x02*\x7f\n\tFrameKind\x12\x1a\n\x16\x46RAME_KIND_UNSPECIFIED\x10\x00\x12\x16\n\x12\x46RAME_KIND_CLASSIC\x10\x01\x12\x11\n\rFRAME_KIND_FD\x10\x02\x12\x15\n\x11\x46RAME_KIND_REMOTE\x10\x03\x12\x14\n\x10\x46RAME_KIND_ERROR\x10\x04*b\n\x08LogLevel\x12\x19\n\x15LOG_LEVEL_UNSPECIFIED\x10\x00\x12\x12\n\x0eLOG_LEVEL_INFO\x10\x01\x12\x12\n\x0eLOG_LEVEL_WARN\x10\x02\x12\x13\n\x0fLOG_LEVEL_ERROR\x10\x03\x32\x95\x01\n\x0c\x43\x61nnetServer\x12L\n\x0eListInterfaces\x12 .cannet.v1.ListInterfacesRequest\x1a\x18.cannet.v1.InterfaceList\x12\x37\n\x07Session\x12\x13.cannet.v1.Envelope\x1a\x13.cannet.v1.Envelope(\x01\x30\x01\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0c\x63\x61nnet.proto\x12\tcannet.v1\"\x17\n\x15ListInterfacesRequest\"\x18\n\x16WatchInterfacesRequest\"9\n\rInterfaceList\x12(\n\ninterfaces\x18\x01 \x03(\x0b\x32\x14.cannet.v1.Interface\"A\n\tInterface\x12\n\n\x02id\x18\x01 \x01(\t\x12\x14\n\x0c\x64isplay_name\x18\x02 \x01(\t\x12\x12\n\nfd_capable\x18\x03 \x01(\x08\"\xe3\x01\n\x08\x45nvelope\x12)\n\tsubscribe\x18\x01 \x01(\x0b\x32\x14.cannet.v1.SubscribeH\x00\x12-\n\x0bunsubscribe\x18\x02 \x01(\x0b\x32\x16.cannet.v1.UnsubscribeH\x00\x12,\n\x0b\x66rame_batch\x18\x03 \x01(\x0b\x32\x15.cannet.v1.FrameBatchH\x00\x12!\n\x05\x65rror\x18\x04 \x01(\x0b\x32\x10.cannet.v1.ErrorH\x00\x12$\n\x03log\x18\x05 \x01(\x0b\x32\x15.cannet.v1.LogMessageH\x00\x42\x06\n\x04\x62ody\"!\n\tSubscribe\x12\x14\n\x0cinterface_id\x18\x01 \x01(\t\"#\n\x0bUnsubscribe\x12\x14\n\x0cinterface_id\x18\x01 \x01(\t\"D\n\nFrameBatch\x12\x14\n\x0cinterface_id\x18\x01 \x01(\t\x12 \n\x06\x66rames\x18\x02 \x03(\x0b\x32\x10.cannet.v1.Frame\"\xc1\x01\n\x05\x46rame\x12\x14\n\x0ctimestamp_ns\x18\x01 \x01(\x04\x12\x0e\n\x06\x63\x61n_id\x18\x02 \x01(\r\x12\x10\n\x08\x65xtended\x18\x03 \x01(\x08\x12\'\n\tdirection\x18\x04 \x01(\x0e\x32\x14.cannet.v1.Direction\x12\"\n\x04kind\x18\x05 \x01(\x0e\x32\x14.cannet.v1.FrameKind\x12\x0c\n\x04\x64\x61ta\x18\x06 \x01(\x0c\x12\x0b\n\x03\x62rs\x18\x07 \x01(\x08\x12\x0b\n\x03\x65si\x18\x08 \x01(\x08\x12\x0b\n\x03\x64lc\x18\t \x01(\r\"g\n\nLogMessage\x12\x14\n\x0ctimestamp_ns\x18\x01 \x01(\x04\x12\"\n\x05level\x18\x02 \x01(\x0e\x32\x13.cannet.v1.LogLevel\x12\x0e\n\x06source\x18\x03 \x01(\t\x12\x0f\n\x07message\x18\x04 \x01(\t\"\xb5\x01\n\x05\x45rror\x12#\n\x04\x63ode\x18\x01 \x01(\x0e\x32\x15.cannet.v1.Error.Code\x12\x0f\n\x07message\x18\x02 \x01(\t\"v\n\x04\x43ode\x12\x14\n\x10\x43ODE_UNSPECIFIED\x10\x00\x12\x1a\n\x16\x43ODE_UNKNOWN_INTERFACE\x10\x01\x12\x17\n\x13\x43ODE_NOT_SUBSCRIBED\x10\x02\x12\x14\n\x10\x43ODE_TX_REJECTED\x10\x03\x12\r\n\tCODE_BUSY\x10\x04*J\n\tDirection\x12\x19\n\x15\x44IRECTION_UNSPECIFIED\x10\x00\x12\x10\n\x0c\x44IRECTION_RX\x10\x01\x12\x10\n\x0c\x44IRECTION_TX\x10\x02*\x7f\n\tFrameKind\x12\x1a\n\x16\x46RAME_KIND_UNSPECIFIED\x10\x00\x12\x16\n\x12\x46RAME_KIND_CLASSIC\x10\x01\x12\x11\n\rFRAME_KIND_FD\x10\x02\x12\x15\n\x11\x46RAME_KIND_REMOTE\x10\x03\x12\x14\n\x10\x46RAME_KIND_ERROR\x10\x04*b\n\x08LogLevel\x12\x19\n\x15LOG_LEVEL_UNSPECIFIED\x10\x00\x12\x12\n\x0eLOG_LEVEL_INFO\x10\x01\x12\x12\n\x0eLOG_LEVEL_WARN\x10\x02\x12\x13\n\x0fLOG_LEVEL_ERROR\x10\x03\x32\xe7\x01\n\x0c\x43\x61nnetServer\x12L\n\x0eListInterfaces\x12 .cannet.v1.ListInterfacesRequest\x1a\x18.cannet.v1.InterfaceList\x12P\n\x0fWatchInterfaces\x12!.cannet.v1.WatchInterfacesRequest\x1a\x18.cannet.v1.InterfaceList0\x01\x12\x37\n\x07Session\x12\x13.cannet.v1.Envelope\x1a\x13.cannet.v1.Envelope(\x01\x30\x01\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'cannet_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_DIRECTION']._serialized_start=1035
-  _globals['_DIRECTION']._serialized_end=1109
-  _globals['_FRAMEKIND']._serialized_start=1111
-  _globals['_FRAMEKIND']._serialized_end=1238
-  _globals['_LOGLEVEL']._serialized_start=1240
-  _globals['_LOGLEVEL']._serialized_end=1338
+  _globals['_DIRECTION']._serialized_start=1061
+  _globals['_DIRECTION']._serialized_end=1135
+  _globals['_FRAMEKIND']._serialized_start=1137
+  _globals['_FRAMEKIND']._serialized_end=1264
+  _globals['_LOGLEVEL']._serialized_start=1266
+  _globals['_LOGLEVEL']._serialized_end=1364
   _globals['_LISTINTERFACESREQUEST']._serialized_start=27
   _globals['_LISTINTERFACESREQUEST']._serialized_end=50
-  _globals['_INTERFACELIST']._serialized_start=52
-  _globals['_INTERFACELIST']._serialized_end=109
-  _globals['_INTERFACE']._serialized_start=111
-  _globals['_INTERFACE']._serialized_end=176
-  _globals['_ENVELOPE']._serialized_start=179
-  _globals['_ENVELOPE']._serialized_end=406
-  _globals['_SUBSCRIBE']._serialized_start=408
-  _globals['_SUBSCRIBE']._serialized_end=441
-  _globals['_UNSUBSCRIBE']._serialized_start=443
-  _globals['_UNSUBSCRIBE']._serialized_end=478
-  _globals['_FRAMEBATCH']._serialized_start=480
-  _globals['_FRAMEBATCH']._serialized_end=548
-  _globals['_FRAME']._serialized_start=551
-  _globals['_FRAME']._serialized_end=744
-  _globals['_LOGMESSAGE']._serialized_start=746
-  _globals['_LOGMESSAGE']._serialized_end=849
-  _globals['_ERROR']._serialized_start=852
-  _globals['_ERROR']._serialized_end=1033
-  _globals['_ERROR_CODE']._serialized_start=915
-  _globals['_ERROR_CODE']._serialized_end=1033
-  _globals['_CANNETSERVER']._serialized_start=1341
-  _globals['_CANNETSERVER']._serialized_end=1490
+  _globals['_WATCHINTERFACESREQUEST']._serialized_start=52
+  _globals['_WATCHINTERFACESREQUEST']._serialized_end=76
+  _globals['_INTERFACELIST']._serialized_start=78
+  _globals['_INTERFACELIST']._serialized_end=135
+  _globals['_INTERFACE']._serialized_start=137
+  _globals['_INTERFACE']._serialized_end=202
+  _globals['_ENVELOPE']._serialized_start=205
+  _globals['_ENVELOPE']._serialized_end=432
+  _globals['_SUBSCRIBE']._serialized_start=434
+  _globals['_SUBSCRIBE']._serialized_end=467
+  _globals['_UNSUBSCRIBE']._serialized_start=469
+  _globals['_UNSUBSCRIBE']._serialized_end=504
+  _globals['_FRAMEBATCH']._serialized_start=506
+  _globals['_FRAMEBATCH']._serialized_end=574
+  _globals['_FRAME']._serialized_start=577
+  _globals['_FRAME']._serialized_end=770
+  _globals['_LOGMESSAGE']._serialized_start=772
+  _globals['_LOGMESSAGE']._serialized_end=875
+  _globals['_ERROR']._serialized_start=878
+  _globals['_ERROR']._serialized_end=1059
+  _globals['_ERROR_CODE']._serialized_start=941
+  _globals['_ERROR_CODE']._serialized_end=1059
+  _globals['_CANNETSERVER']._serialized_start=1367
+  _globals['_CANNETSERVER']._serialized_end=1598
 # @@protoc_insertion_point(module_scope)

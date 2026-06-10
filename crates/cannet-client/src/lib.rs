@@ -44,7 +44,7 @@ use cannet_core::{CanFrame, CanFrameSource};
 use cannet_wire::proto::{
     cannet_server_client::CannetServerClient,
     envelope::Body,
-    Envelope, FrameBatch, ListInterfacesRequest, Subscribe,
+    Envelope, FrameBatch, ListInterfacesRequest, Subscribe, WatchInterfacesRequest,
 };
 use cannet_wire::{frame_to_proto, proto_to_frame, ProtoConversionError};
 use tokio::sync::mpsc as tokio_mpsc;
@@ -106,6 +106,56 @@ pub async fn list_interfaces(address: &str) -> Result<Vec<Interface>, Connection
         .into_iter()
         .map(Interface::from)
         .collect())
+}
+
+/// Long-lived subscription to a server's interface set (ADR 0016).
+/// Connects, opens `WatchInterfaces`, and returns the streaming
+/// response. Each message yielded by the stream is a fresh complete
+/// snapshot — there's no diff format — so the consumer just replaces
+/// its cache and re-renders.
+///
+/// The transport stays open for the lifetime of the returned stream;
+/// dropping the stream ends the subscription. Reconnect-on-disconnect
+/// is the caller's job — for the GUI host that's the subscription
+/// manager in `sidecar.rs` (and the analogous remote manager).
+pub async fn watch_interfaces(
+    address: &str,
+) -> Result<InterfaceWatchStream, ConnectionError> {
+    let endpoint = format!("http://{address}");
+    let mut client = CannetServerClient::connect(endpoint)
+        .await
+        .map_err(|e| ConnectionError::Connect(e.to_string()))?;
+    let response = client
+        .watch_interfaces(WatchInterfacesRequest {})
+        .await
+        .map_err(|s| ConnectionError::Status(s.message().into()))?;
+    Ok(InterfaceWatchStream {
+        inner: response.into_inner(),
+    })
+}
+
+/// Streaming response from [`watch_interfaces`]. Yields a fresh
+/// interface-list snapshot every time the server's view changes, plus
+/// one on initial subscribe.
+pub struct InterfaceWatchStream {
+    inner: tonic::Streaming<cannet_wire::proto::InterfaceList>,
+}
+
+impl InterfaceWatchStream {
+    /// Wait for the next snapshot. Returns:
+    ///
+    /// - `Ok(Some(interfaces))` for each pushed snapshot.
+    /// - `Ok(None)` once the server closes the stream cleanly.
+    /// - `Err(_)` on transport failure.
+    pub async fn next(&mut self) -> Result<Option<Vec<Interface>>, ConnectionError> {
+        match self.inner.message().await {
+            Ok(Some(list)) => Ok(Some(
+                list.interfaces.into_iter().map(Interface::from).collect(),
+            )),
+            Ok(None) => Ok(None),
+            Err(s) => Err(ConnectionError::Status(s.message().into())),
+        }
+    }
 }
 
 /// Open a long-lived `Session` against `address`, subscribe to every

@@ -992,7 +992,8 @@ Realised scope notes:
     only allowed re-targeting an existing binding's bus via a dropdown
     — there was no flow to *create* a binding from the UI, so users
     had to hand-edit project JSON. Added an inline form: server input,
-    *Discover* button that calls `list_remote_interfaces`, interface
+    *Discover* button that calls `refresh_interfaces` (per ADR 0016
+    superseding the original `list_remote_interfaces`), interface
     picker, and bus picker. The bus picker enforces "each bus has at
     most one interface" by hiding buses that already have a binding.
   - **Toolbar address input removed; Connect iterates bindings.** The
