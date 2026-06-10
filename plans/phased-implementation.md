@@ -706,7 +706,7 @@ In rough order, each step leaving the panel runnable:
 - **Enum / state signals.** Signals backed by DBC value tables rendered
   as a stepped state plot with symbolic axis labels rather than bare
   numbers. Needs value-table data threaded out of `cannet-dbc` first
-  (`plans/backlog.md`); until then enum signals plot as their raw codes.
+  (Phase 5); until then enum signals plot as their raw codes.
 - **Triggers.** Edge / level / value-match triggers on a chosen signal
   that freeze the view and emit a marker (into the plot's event list,
   and later the trace) — the oscilloscope trigger proper. The event-line
@@ -742,110 +742,473 @@ In rough order, each step leaving the panel runnable:
   decimation surface; `plans/technology-inventory.md` records the chosen
   plotting library and the rejected alternatives. ✅
 
-## Phase 5 — Transmit
+## Phase 5 — Transmit + DBC Value Tables
 
-Compose and send CAN / CAN FD frames from the GUI. This is the other
-half of "round out the GUI" — split out of Phase 3 once the
-writable-target question got sorted. It sits after plotting and before
-hardware drivers: it needs the Phase 3 docking layout and project file
-to host and persist a transmit panel, but nothing from the vendor
-adapters.
+Compose and send CAN / CAN FD frames from the GUI, and complete the DBC
+value-table story so enum-valued signals render symbolically across the
+trace and plot views. Sits before vendor drivers: needs the Phase 3
+docking layout and project file (to host and persist a transmit panel)
+and the Phase 4 plot panel (to grow the enum / state-signal rendering),
+but nothing from the vendor adapters.
 
 Scope:
 
 - **Transmit panel.** A dockview panel (alongside trace and plot panels)
   that composes CAN / CAN FD frames — id, type, channel, payload,
-  optional cycle time. When a DBC is attached, the panel offers
-  signal-by-signal entry for any matching message id (factor / offset /
-  endianness applied during encode); raw byte entry is always available
-  as the fallback for ids the DBC doesn't cover. A transmit panel's
-  frame definitions are per-panel config and round-trip through the
-  Phase 3 project file.
+  optional cycle time. When a loaded DBC matches the id, the panel offers
+  signal-by-signal entry (factor / offset / endianness applied during
+  encode); raw byte entry is always available as the fallback. A transmit
+  panel's frame definitions are per-panel config and round-trip through
+  the project file as a new project element `kind: "transmit"`.
 - **Where a sent frame goes:**
   - It always appears in the trace as a `Tx`-direction row (a tx-confirm)
-    — what a real analyzer shows for your own transmits — so the
-    compose / encode path is observable with no writable source at all.
+    — what a real analyzer shows for your own transmits — so the compose
+    / encode path is observable with no writable source at all.
   - If a remote session is open, it's also sent over the wire. The
     `cannet-core` / wire abstraction grows the transmit direction — the
-    client emits frame envelopes, not just `Subscribe` (the wire already
-    carries `FrameBatch` symmetrically; Phase 2 just never sent one from
-    the client). The Phase-2 BLF replay server is read-only and answers
-    `Error::TX_REJECTED`, which the UI surfaces.
+    client emits frame envelopes (`cannet-client::transmit`); the wire
+    already carries `FrameBatch` symmetrically. The Phase-2 BLF replay
+    server is read-only and answers `Error::TX_REJECTED`, surfaced inline
+    on the transmit panel.
   - A new `cannet-server --loopback` mode exposes a writable interface
-    that echoes received transmits back, so the wire transmit path can be
-    demonstrated succeeding end to end without hardware.
-- **Cyclic transmit** is a client-side feature — the panel schedules the
-  resend — not a wire feature; the wire stays one-frame-at-a-time, as
-  Phase 2 fixed.
+    that echoes received transmits back, so the wire transmit path can
+    be demonstrated end-to-end without hardware. The in-process building
+    block is a new loopback bus type in `cannet-core` (a paired
+    `CanFrameSink` / `CanFrameSource`).
+- **Cyclic transmit** is a client-side scheduler in the Tauri host —
+  per-frame cycle time, the panel schedules the resend — not a wire
+  feature; the wire stays one-frame-at-a-time.
+- **DBC value tables.** `cannet-dbc` learns to surface `VAL_` records on
+  `DecodedSignal` (a `label` field populated when a value table matches,
+  alongside today's name / unit / scaling). The trace view's
+  decoded-signal grid and the by-ID expansion render labelled values as
+  `<code> "<label>"` instead of the bare number; the transmit panel's
+  signal-by-signal mode offers a dropdown of labelled values for enum
+  signals; the plot panel renders signals with a value table as a
+  **stepped** line with symbolic y-axis tick labels (a separate
+  `list_value_tables` command supplies the full table once per signal).
+  Signals without a value table render unchanged.
 
 Out of scope (deferred to later phases / backlog):
 
-- **A real in-process writable CAN bus** — Linux `vcan` / socketcan, or
-  an in-memory loopback-bus type in `cannet-core`. The tx-confirm row +
-  `cannet-server --loopback` cover demo and test; an actual local
+- **A real in-process writable CAN bus on Linux** — `vcan` / socketcan
+  is not adopted in this phase; the tx-confirm row plus `--loopback` and
+  the in-memory loopback bus cover demo and test. An actual local
   virtual-bus device is a later add. Tracked in `plans/backlog.md`.
-- **Transmit to real hardware** — Phase 6 (the vendor adapters make the
-  server's interfaces writable).
+- **Transmit to real hardware** — Phase 8 (the vendor sidecar makes the
+  server's interfaces writable through `python-can`).
 
 Exit criteria:
 
 - Sending a frame from a transmit panel shows it in the trace as a `Tx`
-  row, and — when a remote session is open — delivers it over the wire:
-  the read-only BLF server answers `Error::TX_REJECTED` (surfaced in the
-  UI), and a `cannet-server --loopback` accepts the transmit and echoes
-  it back into the trace. Works in both raw-byte mode and (with a DBC
-  attached) signal-by-signal encoded mode.
+  row; with a remote session open, the BLF replay server returns
+  `Error::TX_REJECTED` (surfaced in the UI) and a `cannet-server
+  --loopback` accepts the transmit and echoes it back into the trace.
+  Works in both raw-byte and (with a DBC attached) signal-by-signal
+  encoded modes.
 - Cyclic send: a frame with a cycle time resends on that cadence until
-  stopped.
-- A transmit panel's frame definitions persist through the project file.
-- README documents the transmit workflow (compose, DBC encode, cyclic
-  send, the `--loopback` server); rustdoc covers the new public surface
-  on the CAN abstraction (the transmit direction) and the
-  `cannet-client` transmit API.
+  stopped; cancelling or removing the frame stops the loop.
+- A transmit panel's frame definitions persist through the project file
+  (project element + dockview `params`).
+- `cannet-dbc::DecodedSignal` carries value-table labels when the DBC
+  defines one; the trace view, by-ID expansion, transmit panel, and
+  plot panel all render enum signals symbolically.
+- An in-memory loopback bus type lives in `cannet-core` and is what
+  `cannet-server --loopback` wraps; both have rustdoc and a smoke test.
+- Backlog items removed: `cannet-dbc` value tables, trace-panel enum
+  values, real in-process writable CAN source (the in-memory portion).
+- README documents the transmit workflow (compose, DBC encode + value-
+  table pick, cyclic send, the `--loopback` server) and the enum
+  rendering behaviour; rustdoc covers the new public surface on
+  `cannet-core` (transmit direction + loopback bus), `cannet-dbc` (value
+  tables), `cannet-wire` / `cannet-client` (client TX).
 
-## Phase 6 — Vector, Kvaser, and PEAK CAN Driver Support
+## Phase 6 — Logical Buses, Filtering & Project Graph
 
-Replace the BLF-only server with real hardware sources.
-
-Scope:
-
-- Add server-side adapters for Vector, Kvaser, and PEAK hardware that feed the
-  CAN abstraction.
-- Per-vendor support may ship as **separate client/server processes** so we can
-  reuse existing vendor or community drivers (e.g. `python-can`) without
-  forcing the GUI process into a lower-performance language. The GUI talks to
-  all of them via the same wire protocol from Phase 2.
-- BLF replay server from Phase 2 continues to work alongside hardware servers.
-
-Exit criteria:
-
-- For each of Vector, Kvaser, and PEAK: a documented way to start a server
-  bound to real hardware and have the GUI receive live traffic from it.
-- Vendor-specific code is isolated to its own server / adapter; nothing
-  vendor-specific leaks into the GUI.
-- README lists each vendor's prerequisites (drivers, SDK, OS support
-  matrix) and the command to launch its server.
-
-## Phase 7 — Performance Profiling Baseline
-
-Make performance measurable before we keep piling features on.
+Introduce logical buses as the first-class abstraction frames belong to,
+turn filtering into a project element placed upstream of trace-style
+windows, and render the project's elements as a graph the user can wire
+and edit. Includes a deliberate design iteration on the project panel:
+what stays as lists, what moves into the graph view, and how the two
+surfaces relate.
 
 Scope:
 
-- Define a profiling strategy that covers all three tiers — client (GUI),
-  server, and the wire between them. Identify the metrics we care about
-  (frame throughput, end-to-end latency from server ingest to GUI render,
-  per-frame CPU cost on each side, memory growth under sustained replay,
-  dropped-frame counts).
-- Pick instrumentation: in-process counters/timers, sampling profiler hooks,
-  and a reproducible workload (likely a standard BLF replay at a known rate).
-- Capture an initial baseline against the Phase 6 build for each supported
-  source (BLF replay + at least one hardware vendor) and check it in so future
-  changes can be compared against it.
+- **Logical buses + interfaces (live).** A project owns a list of
+  logical buses with stable ids and display names (plus optional speed /
+  FD hints). An interface is a binding of a remote source (server name +
+  interface name) onto a logical bus, recorded in the project.
+  Connecting to a server populates the picker via `ListInterfaces`; the
+  user binds an interface to a bus through the graph view or the project
+  panel.
+- **BLF as a client-side import feature.** Loading a BLF in the GUI runs
+  a per-channel mapping step (channel → logical bus or "skip"); frames
+  flow into the session buffer tagged with their assigned bus. This is
+  independent of `cannet-server`'s BLF replay mode, which stays as it is
+  — a wire-protocol test fixture, not the canonical way the GUI consumes
+  a BLF.
+- **Per-bus DBC scoping.** Each DBC entry gains a `buses: [bus_id…]`
+  selection; a DBC decodes a frame only if the frame's bus is in scope.
+  Unscoped is the convenient "all buses" default. The project panel
+  surfaces the per-bus picker on each DBC.
+- **Filter element.** A new project element `kind: "filter"` carrying a
+  structured predicate (bus, id range / list, decoded-name regex,
+  signal-value match, AND / OR composition). A filter has an input (a
+  bus or another filter) and an output consumed by trace / by-ID / plot
+  elements; views with a filter ref render only frames the predicate
+  passes. The predicate is JSON; no expression DSL in this phase.
+- **Project graph view.** A dockview panel that renders the project's
+  elements as a graph — interface, logical bus, filter, trace / by-ID /
+  plot nodes — with edges showing data flow. Adding a node creates the
+  underlying element / binding; removing a node removes it; wiring an
+  edge sets a consumer's source or a filter's input. The graph is one
+  surface on the project, not the primary one: the project panel keeps
+  its existing role (project file actions, inventory lists, DBC list +
+  per-bus scoping); the graph is the spatial view.
+- **Project panel design iteration.** Review the current panel and
+  decide what stays as lists, what moves into the graph, and how the
+  two surfaces relate. Output is a short design note in `plans/`
+  alongside the implementation changes.
+
+Out of scope:
+
+- **An expression DSL for filter predicates** — structured JSON predicate
+  stays the only shape this phase. A text DSL on top is a later option
+  if the structured editor turns out to be clunky.
+- **socketcan / vcan** — still deferred (see Phase 5).
+- **Multiple vendor sidecars** — Phase 8 ships a single one; multi-
+  sidecar is preserved as a wire-compatible future option.
 
 Exit criteria:
 
-- Documented, repeatable profiling procedure.
-- Baseline numbers committed for the current build, with enough detail that a
-  later contributor can reproduce them and notice regressions.
-- README points at the profiling doc and the baseline file.
+- Project owns a `buses` list; connecting to a server lets the user bind
+  interfaces to buses; a wired interface routes frames into the session
+  buffer tagged with its bus.
+- Loading a BLF runs a channel → bus mapping step; replayed frames carry
+  their assigned bus through to consumers.
+- Per-DBC bus scoping works: a DBC scoped to bus A produces no decoded
+  signals for a bus B frame; unscoped behaves as today.
+- A filter element can be created and wired between a bus (or another
+  filter) and a trace / by-ID / plot consumer; the consumer renders only
+  frames the predicate passes; clearing the wiring returns to
+  unfiltered.
+- The graph view renders the project's elements with their wiring and
+  supports adding, removing, and re-wiring nodes; viewport and node
+  positions persist in dockview `params`. The project panel remains the
+  primary surface for project-file actions and inventory.
+- The design note is checked into `plans/`; its description of what each
+  surface covers matches what the code does.
+- `PROJECT_SCHEMA_VERSION` is bumped; existing projects migrate cleanly
+  (today's single-interface DBC scoping becomes unscoped = all buses).
+- Backlog items removed: DBC-↔-logical-bus, logical-buses + physical
+  mapping. The Phase-3 "Interface selection is deferred" sentence is
+  updated to reflect what shipped.
+- README documents bus mapping, BLF import, per-bus DBC scoping, the
+  graph view, and the filter workflow; rustdoc covers the new public
+  surface on the bus model, project schema, and filter predicate;
+  `plans/technology-inventory.md` records `@xyflow/react` (and its
+  rejected alternatives).
+
+## Phase 7 — System Messages
+
+Plumb a structured log bus and a panel that surfaces it, before later
+phases add sources (vendor sidecars, capture writer, perf events) that
+all want a uniform place to talk to the user. Small, focused, and
+exactly the kind of plumbing every phase from 8 onward leans on.
+
+Scope:
+
+- **Host-side log bus.** A bounded ring of structured messages
+  (`{ ts, source, level, message, optional_payload }`) in the Tauri
+  host. Sources are tagged (`project`, `dbc`, `connection`,
+  `blf-import`, `plot`, …; `sidecar:<vendor>` arrives in Phase 8);
+  levels are `info` / `warn` / `error`. A small `system_log` module
+  exposes `info!` / `warn!` / `error!` macros that fan out to the ring
+  **and** to `tracing`'s normal subscriber (so dev logs to stderr still
+  work). Includes a simple per-`(source, template)` rate-limiter as
+  insurance against floods.
+- **System Messages panel.** A new dockview panel
+  `kind: "system-messages"`, registered in the toolbar's panel-add set.
+  Renders the buffer as a virtualised list (timestamp, source, level,
+  message), filterable by source and minimum level (defaulting to
+  `warn`), with copy-entry / copy-all / clear actions. Per-panel filter
+  state in dockview `params`. Session-scoped, not persisted in the
+  project file.
+- **Initial message sources.** Convert the existing ad-hoc `eprintln!`
+  / `console.error` paths in project open / save, DBC parse / reload,
+  connection lifecycle, and BLF import to structured `tracing` events
+  feeding the bus.
+- **Unread-error indicator.** A count badge in the titlebar / toolbar
+  for unread `warn` + `error` entries since the panel was last focused;
+  clicking it focuses the panel and clears the badge.
+- **Wire-level surface for sidecar messages.** A new envelope variant
+  on `cannet-wire`'s `Session` stream — `Log { ts, level, source,
+  message }` — distinct from `Error` (which still ends the session).
+  Defined here, consumed in Phase 8.
+
+Exit criteria:
+
+- A System Messages panel can be added to the layout and shows live
+  messages from the host. Filter-by-source and filter-by-level work;
+  clear empties the panel's view; copy-entry / copy-all populate the
+  clipboard.
+- Each of project open/save, DBC parse/reload, connection lifecycle,
+  and BLF import emits structured messages at appropriate levels; the
+  host's previous ad-hoc paths in those flows are converted.
+- An unread-error indicator surfaces in the title / toolbar and clears
+  on panel focus.
+- `cannet-wire`'s `Session` carries a `Log` envelope variant ready for
+  Phase 8 sidecars; the host bridge that maps a wire-`Log` into the
+  local bus is in place (no consumer yet, but tested).
+- README documents the panel; rustdoc covers the `system_log` module
+  and the new wire envelope variant; `plans/technology-inventory.md`
+  records `tracing` / `tracing-subscriber` as adopted (the use is now
+  direct, where today they may be transitive).
+
+## Phase 8 — Vendor Drivers (Vector, Kvaser, PEAK)
+
+Replace the BLF-only data path with real hardware sources by way of a
+single `python-can`-backed sidecar process, auto-launched and managed
+by the GUI. The wire protocol is the universal driver contract; the
+sidecar speaks the same `.proto` the BLF replay server does.
+
+Scope:
+
+- **One vendor sidecar, auto-launched.** `cannet-python-can` is a small
+  Python process that uses `python-can` to enumerate Vector, Kvaser,
+  and PEAK channels available on the local machine and reports them
+  through `ListInterfaces` with vendor-prefixed names
+  (`vector:VN1640A/ch0`, `kvaser:0`, `pcan:PCAN_USBBUS1`). One process,
+  one wire connection. The GUI spawns it eager-but-deferred at startup
+  (background task, "discovering interfaces…" indicator) so the
+  interface picker is populated by the time the user looks at it. A
+  vendor with no matching hardware contributes zero interfaces.
+- **`uv`-managed Python environment.** The sidecar lives in
+  `servers/cannet-python-can/` with its own `pyproject.toml`. The GUI
+  bundles the `uv` binary per supported OS; `uv sync` materialises the
+  venv lazily on first launch, `uv run` starts the sidecar. `uv` also
+  installs Python itself if missing, so there is no pre-installed-
+  Python prerequisite.
+- **User-replaceable driver layer.** The venv is editable. A user with
+  LGPL concerns about `python-can` (or who wants a different driver)
+  can `uv pip install` a replacement; the sidecar adapter exposes a
+  small internal driver interface (open device, list channels, rx, tx)
+  so swaps don't reach the wire-level code. The procedure is documented
+  in the README, alongside a `servers/LICENSING.md` recording the LGPL
+  analysis.
+- **Hardware channels → interfaces → buses.** Sidecar channels appear
+  in the Phase-6 graph view; the user binds them to logical buses the
+  same way as the BLF replay test fixture. Bus speed / FD config per
+  interface flows through `Subscribe` (small `.proto` extension if
+  today's envelope is too narrow).
+- **Transmit on hardware.** Phase 5's wire TX path is unchanged: GUI
+  sends `FrameBatch` envelopes, sidecar hands them to the driver
+  library. Listen-only configurations surface `TX_REJECTED`.
+- **Sidecar lifecycle + log integration.** The sidecar emits over
+  Phase 7's `Log` envelope variant; the host bridges into the System
+  Messages bus tagged `sidecar:python-can` so vendor errors show up in
+  the panel. A sidecar crash takes all hardware-bound interfaces
+  "offline" in the project graph, emits an error-level message, and
+  surfaces a one-click relaunch with a capped retry budget per session.
+- **Coexists with the BLF replay test fixture.** A project can mix
+  hardware buses with the BLF replay server in the same graph; no
+  special-casing.
+
+Out of scope (deferred / backlog):
+
+- **Multiple vendor sidecars.** Phase 8 ships one. Adding a second
+  sidecar (e.g. a Rust-native Vector adapter, or splitting one vendor
+  out for a different driver) is a wire-protocol-compatible follow-up
+  if Phase 10 profiling shows the python-can path is the bottleneck.
+- **socketcan / vcan.** PEAK's Linux kernel driver path could go via
+  socketcan; not adopted in this phase.
+- **Native Rust FFI per vendor.** Rejected for Phase 8; revisit only
+  if profiling justifies it.
+
+Exit criteria:
+
+- Launching the GUI auto-starts the python-can sidecar; the user does
+  not run any sidecar process manually.
+- For each of Vector, Kvaser, PEAK: a documented way to plug in
+  hardware, see the channels appear in the interface picker, bind one
+  to a logical bus, see live traffic in a trace; and a documented way
+  to send a frame from the transmit panel and observe it on the bus
+  (or a documented loopback / listen-back equivalent where a second
+  device isn't available).
+- Per-vendor smoke-test procedure is checked in; hardware-required
+  steps are clearly marked (CI cannot run them).
+- A user can replace `python-can` in the sidecar's venv with an
+  alternative driver library by editing `pyproject.toml` and the
+  adapter; the procedure is documented.
+- Sidecar `info` / `warn` / `error` events appear in the System
+  Messages panel tagged `sidecar:python-can`; a sidecar crash surfaces
+  as error-level and is recoverable from the GUI.
+- Vendor-specific code is contained to the sidecar; `cannet-gui`,
+  `cannet-core`, `cannet-wire`, `cannet-client`, and `cannet-server`
+  carry no vendor symbols.
+- `uv` is bundled per supported OS; bundling is documented per-OS in
+  the README.
+- README documents per-vendor prerequisites (vendor SDK / driver
+  install, OS support matrix), the bundled `uv` flow, and how to swap
+  the driver library; `plans/technology-inventory.md` records `uv`,
+  `python-can`, `grpcio` / `grpcio-tools`, the per-vendor SDKs (as
+  runtime, user-installed), and the rejected alternatives (native FFI
+  per vendor, socketcan-only, multiple sidecars for Phase 8).
+
+## Phase 9 — Trace Capture Persistence
+
+Make captures persistable to disk and re-loadable, with user-placed
+notes round-tripping through native BLF event records so captures stay
+a single self-contained file readable by other BLF tools.
+
+Scope:
+
+- **Save Capture (BLF writer).** A top-level toolbar / project-panel
+  action writes the **entire session buffer** to a single `.blf` file
+  via `blf_asc`'s writer. Every frame on every bus, full capture, no
+  per-trace slicing. Each logical bus becomes a numbered BLF channel;
+  on re-import the Phase-6 channel → bus mapping step binds them back.
+  Supports classic CAN, CAN FD, and error frames (the types `blf_asc`
+  already covers). Written via temp-file + atomic rename so a
+  mid-write crash leaves no half-file behind.
+- **Notes as BLF global markers.** Notes (the plot panel's `+ note`
+  cursor) move from plot-panel `params` (where Phase 4 put them) to
+  the session buffer, so they're part of the capture rather than
+  per-panel state. Plot panels render notes from the session buffer;
+  the `+ note` cursor writes there. A note placed in panel A is
+  visible in panel B over the same timeline. Save Capture emits notes
+  as BLF `GLOBAL_MARKER` records — Vector's native annotation type,
+  readable by other BLF-aware tools. Open BLF reads `GLOBAL_MARKER`
+  records into the session buffer's notes list.
+- **Recent BLFs.** The few most-recent BLF paths persisted in
+  `localStorage`, offered in the Open BLF flow and the project panel's
+  BLF import affordance.
+- **System Messages integration.** Save Capture (frame count, byte
+  size, marker count) and Open BLF (frame count, marker count, any
+  decode anomalies) log at info / warn / error as appropriate.
+
+Out of scope (deferred / backlog):
+
+- **Disk-spill for long sessions** — the session buffer staying in RAM
+  and overflowing to an append-only file is Phase 10, not the
+  save-the-capture feature this phase delivers.
+- **Capture import filtering** beyond the channel → bus mapping — no
+  time-range or content selection at import; the user gets the whole
+  file.
+
+Exit criteria:
+
+- Save Capture writes a BLF that round-trips: a freshly-saved capture
+  re-opens in `cannet-gui` with frames and notes matching the session
+  buffer, and reads cleanly in third-party BLF tools (validated
+  against Vector's reference reader or an equivalent), markers visible
+  there too.
+- Notes are session-buffer-scoped: any plot panel's `+ note` cursor
+  writes there; every plot panel covering that timeline sees them;
+  Save Capture writes them as `GLOBAL_MARKER` records; Open BLF reads
+  them back with timestamps and labels preserved.
+- A Phase-4-vintage project (with notes in dockview `params`) opens
+  cleanly with its notes migrated to the session buffer;
+  `PROJECT_SCHEMA_VERSION` is bumped accordingly.
+- The Recent BLFs list shows the last N opened files; clicking one
+  opens the BLF through the standard Open BLF flow.
+- Save Capture, Open BLF, and Recent BLFs all surface their results in
+  the System Messages panel at appropriate levels.
+- Backlog items removed: "Save Capture…" toolbar action, BLF
+  annotation round-trip, recent BLF files, the f64-timestamp `[docs]`
+  note (the precision caveat folds into Phase 9's docs, including a
+  warn-level System Messages note on save when precision is measurably
+  degraded vs. the in-memory timeline).
+- README documents Save Capture, the marker round-trip, and the Recent
+  BLFs list; rustdoc covers the new public surface (the BLF writer
+  wrapper, the session-buffer notes API);
+  `plans/technology-inventory.md` records any `blf_asc` upstream
+  contribution needed for marker write support.
+
+## Phase 10 — Command Palette + Goto Framework
+
+A generalised command model plus a VS Code-style command palette
+(Cmd/Ctrl+Shift+P) that surfaces it. Commands carry an id, a label, an
+optional category, and an optional context-requirement (e.g. "focused
+panel is a plot"); built-in commands include go-to-panel-instance, go
+to a specific time in a trace, set a plot's visible time range, import
+a DBC, connect / disconnect, Save Capture, and so on. Part of the
+phase is the explicit decision on what belongs in the palette (broad,
+project-wide, keyboard-accessible) vs. what stays local-only
+(right-click menus, panel toolbars) — the model has to be deliberate
+about that boundary. The "Go to row…" backlog item folds in as a
+single `goto.traceRow` command.
+
+## Phase 11 — Signals, Drag/Drop & Trace Signal Display
+
+Make individual signals first-class objects you can grab and move
+around. A new **signal view** panel hosts a user-chosen set of signals
+with their latest values. **Drag / drop** of signals is enabled across
+the GUI: trace ↔ plot, trace ↔ trace, plot ↔ signal view, DBC panel →
+anywhere. A new **DBC panel** replaces today's project-panel DBC list
+(which doesn't scale past a few large databases) and is where signals
+are discovered and dragged from. The plot panel grows a **per-trace
+colour picker** (right-click swatch → colour dialog). The trace view's
+expanded-row decoded signals render as **inline lines under the
+message row** rather than the expand-to-show grid — the trace-side
+counterpart to "signals are first-class".
+
+## Phase 12 — Performance Profiling Baseline
+
+Profiling procedure that covers all three tiers — client (GUI),
+server, and the wire between them. Metrics (frame throughput,
+end-to-end latency from server ingest to GUI render, per-frame CPU
+cost on each side, memory growth under sustained replay,
+dropped-frame counts), instrumentation (in-process counters / timers,
+sampling profiler hooks), and a reproducible workload (likely a
+standard BLF replay at a known rate). Baseline numbers checked in
+against the Phase 8 build for each supported source (BLF replay + at
+least one hardware vendor). Pulls in the perf backlog items the
+baseline tends to motivate: `CanFramePayload` inline buffer, two-tier
+per-signal sample cache, precise time → frame-index mapping for the
+plot visible-range fetch, `TraceStore` disk-spill for long sessions.
+
+## Phase 13 — CANopen
+
+EDS ingestion (CANopen Electronic Data Sheet — library TBD when this
+phase becomes current) and SDO / PDO decoding on top of the Phase 5
+value-table machinery.
+
+## Phase 14 — Rest-of-Bus Simulation + CRC / Sequence
+
+**Rest-of-bus simulation**: a gridview that holds a configurable set
+of ids with live signal values and transmits them on a cadence — the
+client side of "simulate the rest of the network", the TX counterpart
+of the by-ID panel. **CRC + sequence-count calculation in arbitrary
+fields** of a CAN message — transmit-side helper for messages that
+carry their own integrity fields (and decode-side verification
+where useful).
+
+## Phase 15 — Plot Panel Refinements
+
+The plot-panel feature tail that didn't need the bigger architectural
+lifts of Phase 11. **Triggers** (edge / level / value-match on a
+chosen signal that freeze the view and emit an event marker —
+oscilloscope trigger proper; the event-line rendering already exists,
+the trigger engine doesn't). **Math channels** (derived signals
+computed from other signals — also useful to the transmit panel and a
+future scripting surface, so it may outgrow plotting). **Manual
+per-trace y** (offset / gain / log scale, overriding the auto-norm
+that ships today). **CSV / image export** of the visible window or
+cursor span. **Drag a whole plot area** (not just a signal) between
+plot panels.
+
+## Phase 16 — Cross-Cutting Polish
+
+The remaining small UX and infrastructure items that don't deserve
+their own phase: the **trace virtualizer rework** (real windowed
+virtualizer with a synthetic-height spacer vs. the current scaled
+approach), the **auto-scroll re-pin race** under fast streams, the
+**by-ID paused-snapshot tighten** (return latest of each id within
+`[since, end)` rather than reading the global latest index), a
+**GUI-wide dark "scope" restyle**, **dock / undock** a panel as a
+separate OS window, a **global UI FPS / responsiveness readout**,
+**`cannet-server` multi-client** support, the **plot vs trace divider
+drag** fix, and the **BLF f64-timestamp precision** documentation note
+(if it hasn't already been folded into a user-facing surface message
+by then).
