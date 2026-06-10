@@ -33,6 +33,15 @@ import {
   reconcileSnapshot,
   unreadWarnOrError,
 } from "./systemLog";
+import { NotesContext, type NotesContextValue } from "./notesContext";
+import type { Note } from "./notes";
+import { sortNotesChronologically } from "./notes";
+import {
+  loadRecentBlfs,
+  recordRecentBlf,
+  forgetRecentBlf,
+  saveRecentBlfs,
+} from "./recentBlfs";
 import type { SystemMessage } from "./types";
 import { TraceDataContext, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
@@ -160,6 +169,28 @@ export function App() {
   // `fetch_system_log` and kept current by `system-log-appended`
   // events. Session-scoped, not persisted.
   const [systemMessages, setSystemMessages] = useState<SystemMessage[]>([]);
+  // Phase 9 session-scoped notes mirror (host owns the canonical
+  // list at `src-tauri/src/notes.rs`). Bootstrapped by
+  // `fetch_notes` and kept current by `notes-changed` events.
+  const [notes, setNotes] = useState<Note[]>([]);
+  // Phase 9 Recent BLFs (the N most-recent opened BLF paths,
+  // persisted in localStorage). Offered in the Open BLF flow and
+  // the project panel's BLF import affordance.
+  const [recentBlfs, setRecentBlfs] = useState<string[]>(() => loadRecentBlfs(localStorage));
+  const rememberRecentBlf = useCallback((path: string) => {
+    setRecentBlfs((current) => {
+      const next = recordRecentBlf(current, path);
+      saveRecentBlfs(localStorage, next);
+      return next;
+    });
+  }, []);
+  const dropRecentBlf = useCallback((path: string) => {
+    setRecentBlfs((current) => {
+      const next = forgetRecentBlf(current, path);
+      saveRecentBlfs(localStorage, next);
+      return next;
+    });
+  }, []);
   /// High-water seq the user has acknowledged. The unread badge counts
   /// warn/error entries with `seq > readHighWater`. Starts at -1 so
   /// every initial warn/error counts as unread.
@@ -313,6 +344,24 @@ export function App() {
     };
   }, []);
 
+  // Phase 9: bootstrap + live-update the notes mirror. The host's
+  // `notes-changed` event payload is the full, chronologically
+  // sorted list — there's no merge step to do.
+  useEffect(() => {
+    let cancelled = false;
+    void invoke<Note[]>("fetch_notes").then((snap) => {
+      if (cancelled) return;
+      setNotes(sortNotesChronologically(snap));
+    });
+    const unlisten = listen<Note[]>("notes-changed", (event) => {
+      setNotes(sortNotesChronologically(event.payload));
+    });
+    return () => {
+      cancelled = true;
+      void unlisten.then((fn) => fn());
+    };
+  }, []);
+
   useEffect(() => {
     const unlistens: Array<Promise<() => void>> = [];
 
@@ -398,22 +447,32 @@ export function App() {
     channels: number[];
   } | null>(null);
 
-  const handleOpenLog = useCallback(async () => {
-    const selected = await open({
-      multiple: false,
-      filters: [{ name: "Vector BLF", extensions: ["blf"] }],
-    });
-    if (typeof selected !== "string") return;
+  const handleOpenLog = useCallback(
+    async (presetPath?: string) => {
+      const selected =
+        typeof presetPath === "string" && presetPath.length > 0
+          ? presetPath
+          : await open({
+              multiple: false,
+              filters: [{ name: "Vector BLF", extensions: ["blf"] }],
+            });
+      if (typeof selected !== "string") return;
 
-    try {
-      const channels = await invoke<number[]>("scan_blf_channels", {
-        blfPath: selected,
-      });
-      setPendingBlf({ blfPath: selected, channels });
-    } catch (err) {
-      setState({ kind: "error", message: String(err) });
-    }
-  }, []);
+      try {
+        const channels = await invoke<number[]>("scan_blf_channels", {
+          blfPath: selected,
+        });
+        setPendingBlf({ blfPath: selected, channels });
+      } catch (err) {
+        setState({ kind: "error", message: String(err) });
+        // If we tried to open a recent file and it failed (path
+        // moved, file deleted), drop it from the recents list so
+        // it doesn't keep being offered.
+        if (presetPath) dropRecentBlf(presetPath);
+      }
+    },
+    [dropRecentBlf],
+  );
 
   // Confirm the BLF channel mapping and actually start the pump.
   // `choices[ch] === ""` means "skip this channel".
@@ -437,11 +496,16 @@ export function App() {
           channelBusMapping,
         });
         setState({ kind: "loading", result });
+        // Phase 9: record on a successful open. Failures don't
+        // promote a path — `handleOpenLog` drops it on the
+        // recents-launch path.
+        rememberRecentBlf(blfPath);
       } catch (err) {
         setState({ kind: "error", message: String(err) });
+        dropRecentBlf(blfPath);
       }
     },
-    [pendingBlf, invalidateCache, startAllElements],
+    [pendingBlf, invalidateCache, startAllElements, rememberRecentBlf, dropRecentBlf],
   );
 
   // Add one or more DBCs to the loaded set (each goes through the host's
@@ -775,6 +839,29 @@ export function App() {
     [projectPath, saveProjectTo, handleSaveProjectAs],
   );
 
+  // Phase 9 Save Capture: write the session buffer to a BLF (with
+  // notes as a sidecar JSON). System Messages handle the
+  // user-visible success / failure feedback; this just routes
+  // through the host command.
+  const handleSaveCapture = useCallback(async () => {
+    if (count === 0) return;
+    const path = await save({
+      defaultPath: "capture.blf",
+      filters: [{ name: "Vector BLF", extensions: ["blf"] }],
+    });
+    if (typeof path !== "string" || path.length === 0) return;
+    try {
+      await invoke("save_capture", { blfPath: path });
+      // Newly-saved captures are reasonable Recent BLF candidates
+      // (the user just produced this file; re-opening it is the
+      // archetypal "what did I just save?" gesture).
+      rememberRecentBlf(path);
+    } catch {
+      // Failure surfaces in the System Messages panel via the
+      // host's `capture`-tagged error log; nothing more to do here.
+    }
+  }, [count, rememberRecentBlf]);
+
   // The close-on-quit handler is registered once; give it refs to the
   // current values rather than re-registering on every change.
   dirtyRef.current = dirty;
@@ -1002,6 +1089,34 @@ export function App() {
     [systemMessages, unread, clearSystemLog, markSystemLogRead],
   );
 
+  // Phase 9 notes context: dispatchers forward to the host; the
+  // mirror updates from the `notes-changed` event, not from
+  // optimistic local state, so a panel-A add shows up on panel B
+  // through the same code path.
+  const addNoteRemote = useCallback(
+    (id: string, timestampNs: number, label: string) => {
+      void invoke("add_note", { note: { id, timestampNs, label } }).catch(() => {
+        /* best effort — error surfaces in System Messages */
+      });
+    },
+    [],
+  );
+  const renameNoteRemote = useCallback((id: string, label: string) => {
+    void invoke("rename_note", { id, label }).catch(() => { /* best effort */ });
+  }, []);
+  const removeNoteRemote = useCallback((id: string) => {
+    void invoke("remove_note", { id }).catch(() => { /* best effort */ });
+  }, []);
+  const notesValue: NotesContextValue = useMemo(
+    () => ({
+      notes,
+      addNote: addNoteRemote,
+      renameNote: renameNoteRemote,
+      removeNote: removeNoteRemote,
+    }),
+    [notes, addNoteRemote, renameNoteRemote, removeNoteRemote],
+  );
+
   const showProjectPanel = useCallback(
     () =>
       showSingletonPanel({
@@ -1168,7 +1283,37 @@ export function App() {
           <button onClick={handleOpenProject}>Open project…</button>
           <button onClick={handleSaveProject}>Save project</button>
           <span className="toolbar-separator" aria-hidden="true" />
-          <button onClick={handleOpenLog}>Open BLF…</button>
+          <button onClick={() => void handleOpenLog()}>Open BLF…</button>
+          {recentBlfs.length > 0 && (
+            <details className="recent-blfs">
+              <summary
+                role="button"
+                aria-label={`Recent BLFs (${recentBlfs.length})`}
+                title="Recent BLFs"
+              >
+                Recent
+              </summary>
+              <ul role="menu" className="recent-blfs-menu">
+                {recentBlfs.map((p) => (
+                  <li key={p} role="menuitem">
+                    <button
+                      onClick={(e) => {
+                        // Close the <details> panel; React state
+                        // drives the rest of the click.
+                        const el = (e.currentTarget as HTMLElement)
+                          .closest("details");
+                        if (el instanceof HTMLDetailsElement) el.open = false;
+                        void handleOpenLog(p);
+                      }}
+                      title={p}
+                    >
+                      {p}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
           <button onClick={handleAddDbc}>Add DBC…</button>
           <span className="toolbar-separator" aria-hidden="true" />
           {remoteConnected ? (
@@ -1189,6 +1334,9 @@ export function App() {
           <span className="toolbar-separator" aria-hidden="true" />
           <button onClick={handleClear} disabled={count === 0}>
             Clear
+          </button>
+          <button onClick={handleSaveCapture} disabled={count === 0}>
+            Save capture…
           </button>
           <span className="toolbar-separator" aria-hidden="true" />
           <button onClick={addTracePanel}>Add trace</button>
@@ -1218,18 +1366,20 @@ export function App() {
       <ProjectContext.Provider value={projectContextValue}>
         <ElementRegistryContext.Provider value={elementRegistryValue}>
           <SystemLogContext.Provider value={systemLogValue}>
-            <TraceDataContext.Provider value={traceData}>
-              {/* dockview drags tabs with the HTML5 drag-and-drop API, which
-                  Tauri's OS-level drag-drop handler breaks on WebView2 — hence
-                  `dragDropEnabled: false` in tauri.conf.json. The GUI takes
-                  files via the dialog plugin, not by drop, so nothing is lost. */}
-              <DockviewReact
-                className="dock-area"
-                theme={themeAbyss}
-                components={DOCK_COMPONENTS}
-                onReady={handleDockReady}
-              />
-            </TraceDataContext.Provider>
+            <NotesContext.Provider value={notesValue}>
+              <TraceDataContext.Provider value={traceData}>
+                {/* dockview drags tabs with the HTML5 drag-and-drop API, which
+                    Tauri's OS-level drag-drop handler breaks on WebView2 — hence
+                    `dragDropEnabled: false` in tauri.conf.json. The GUI takes
+                    files via the dialog plugin, not by drop, so nothing is lost. */}
+                <DockviewReact
+                  className="dock-area"
+                  theme={themeAbyss}
+                  components={DOCK_COMPONENTS}
+                  onReady={handleDockReady}
+                />
+              </TraceDataContext.Provider>
+            </NotesContext.Provider>
           </SystemLogContext.Provider>
         </ElementRegistryContext.Provider>
       </ProjectContext.Provider>

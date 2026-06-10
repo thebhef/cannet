@@ -37,6 +37,11 @@ tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "registry"] }
 
+[dev-dependencies]
+# Phase 9: round-trip the Save Capture writer through real files
+# under a per-test tempdir.
+tempfile = "3"
+
 [features]
 # `pnpm tauri build` enables `custom-protocol` for production bundles,
 # which has Tauri embed the built frontend into the binary. Plain

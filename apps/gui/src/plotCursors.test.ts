@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_MEASUREMENTS,
   MEASUREMENT_QUANTITIES,
+  centerWindowOn,
   indexAtOrBefore,
   isMeasurementKey,
   statsOver,
@@ -57,6 +58,21 @@ describe("statsOver", () => {
   it("returns empty stats when the span contains no samples", () => {
     expect(statsOver(s, 10, 20)).toEqual({ count: 0, min: null, max: null, mean: null });
     expect(statsOver(s, 1.1, 1.9)).toEqual({ count: 0, min: null, max: null, mean: null });
+  });
+});
+
+describe("centerWindowOn", () => {
+  it("preserves the current window width and centres on t", () => {
+    expect(centerWindowOn(50, { min: 40, max: 60 }, 5)).toEqual([40, 60]);
+    expect(centerWindowOn(100, { min: 10, max: 30 }, 5)).toEqual([90, 110]);
+  });
+  it("falls back to defaultWidth when current window is unset/degenerate", () => {
+    expect(centerWindowOn(10, { min: null, max: null }, 4)).toEqual([8, 12]);
+    expect(centerWindowOn(10, { min: 5, max: 5 }, 4)).toEqual([8, 12]);
+  });
+  it("clamps the left edge to >= 0 (preserves width by sliding right)", () => {
+    expect(centerWindowOn(1, { min: 0, max: 10 }, 5)).toEqual([0, 10]);
+    expect(centerWindowOn(-2, { min: 0, max: 4 }, 5)).toEqual([0, 4]);
   });
 });
 

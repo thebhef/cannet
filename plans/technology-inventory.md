@@ -283,13 +283,21 @@ without reshaping callers.
   - **`ablf`** — `rejected` (Phase 1 evaluation). Cleanly scoped pure-Rust
     BLF reader, but only decodes classic CAN messages — no CAN FD support,
     which our Phase 1 scope requires.
-  - **`blf_asc` writer + `GLOBAL_MARKER`** — `proposed-with-caveat`
-    (Phase 9). The Phase-9 capture writer needs `blf_asc` to expose
-    sequential frame append (classic CAN, CAN FD, error frames) and
-    read+write for `GLOBAL_MARKER` records (Vector's native annotation
-    object type). If any of that surface is missing, contribute it
-    upstream rather than vendoring — the crate is small and
-    MIT/Apache. Confirm before committing to the phase budget.
+  - **`blf_asc` writer (frames only)** — `adopted` (Phase 9). The
+    Phase-9 capture writer uses `blf_asc::BlfWriter` directly for
+    classic CAN, CAN FD, error, and remote-frame append; `cannet-blf`
+    wraps it as `BlfCaptureWriter` with atomic temp-file + rename.
+  - **`blf_asc` `GLOBAL_MARKER` write + read** — `deferred upstream
+    contribution` (Phase 9). Upstream `blf_asc` 0.2 exposes no
+    marker type and no public hook on `BlfWriter` for adding
+    arbitrary object types, so Phase 9 ships note round-trip via a
+    sidecar `<file>.blf.notes.json` written alongside the BLF
+    instead of native `GLOBAL_MARKER` records. The third-party-
+    reader visibility of notes is the deferred piece; a follow-up
+    contributes `GLOBAL_MARKER` write + read upstream (the crate is
+    1.6 kloc, MIT / Apache) and the host swaps the sidecar layer
+    for native markers without changing the session-buffer notes
+    API. Tracked in `plans/backlog.md`.
 
 ### Protocols
 

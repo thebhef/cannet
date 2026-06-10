@@ -10,12 +10,14 @@ import { useProjectContext } from "./projectContext";
 import { useElementRegistry } from "./projectElements";
 import { useTrace } from "./trace";
 import { TraceControls } from "./TraceControls";
+import { useNotes } from "./notesContext";
 import { decodeSignalsSample, mergeSeries, signalKey } from "./plotData";
 import {
   DEFAULT_MEASUREMENTS,
   MEASUREMENT_QUANTITIES,
   type MeasurementKey,
   type Series,
+  centerWindowOn,
   isMeasurementKey,
   statsOver,
   valueAt,
@@ -179,7 +181,9 @@ interface PlotPanelParams {
   showDiag?: unknown;
   cursorX?: unknown;
   cursorYByArea?: unknown;
-  notes?: unknown;
+  // Phase 9: `notes` retired from panel params — see the
+  // session-scoped notes store. v3 → v4 project migration strips
+  // the field, but a tolerant parser ignores extras anyway.
   maxRateHz?: unknown;
   signalsWidthPx?: unknown;
 }
@@ -283,19 +287,6 @@ function measKeysFromRaw(raw: unknown): MeasurementKey[] {
     if (ks.length > 0) return ks;
   }
   return [...DEFAULT_MEASUREMENTS];
-}
-
-function notesFromRaw(raw: unknown): NoteEvent[] {
-  if (!Array.isArray(raw)) return [];
-  const out: NoteEvent[] = [];
-  for (const n of raw) {
-    if (typeof n !== "object" || n === null) continue;
-    const o = n as Record<string, unknown>;
-    if (typeof o.t === "number" && typeof o.label === "string") {
-      out.push({ id: typeof o.id === "string" ? o.id : crypto.randomUUID(), t: o.t, label: o.label });
-    }
-  }
-  return out;
 }
 
 function fmtTime(s: number | null | undefined): string {
@@ -420,7 +411,16 @@ export function PlotPanel(props: IDockviewPanelProps) {
       return out;
     },
   );
-  const [notes, setNotes] = useState<NoteEvent[]>(() => notesFromRaw(params?.notes));
+  // Phase 9: notes live in the session-scoped host store. The
+  // panel reads `notes` through `useNotes()` (absolute trace ns)
+  // and converts to/from display-relative seconds against
+  // `cacheRef.current?.base` (the panel's x-axis origin in
+  // absolute seconds). Edits go through the same context's
+  // dispatchers, which forward to the host's `add_note` /
+  // `rename_note` / `remove_note` Tauri commands — the
+  // `notes-changed` event broadcasts the new list to every plot
+  // panel.
+  const { notes: sessionNotes, addNote: dispatchAddNote, renameNote: dispatchRenameNote, removeNote: dispatchRemoveNote } = useNotes();
 
   // Per-area last-sampled series (only kept while the measurement strip
   // is on — it's the only consumer; the side-panel values come from the
@@ -546,10 +546,12 @@ export function PlotPanel(props: IDockviewPanelProps) {
    * state alone re-anchors the window, but everything visually layered
    * on top would otherwise keep its old positions. */
   const handlePlotClear = useCallback(() => {
+    // The trace clear cascades to the host, which clears the
+    // session-scoped notes store and emits `notes-changed` — no
+    // per-panel `setNotes` to do here.
     trace.clear();
     setCursorX({ a: null, b: null });
     setCursorYByArea({});
-    setNotes([]);
     setResetYEpoch((n) => n + 1);
   }, [trace]);
 
@@ -569,13 +571,15 @@ export function PlotPanel(props: IDockviewPanelProps) {
     prevWinStartRef.current = winStart;
   }, [winStart]);
 
-  // Clear cursors / notes when the capture itself resets.
+  // Clear cursors when the capture itself resets. Notes are
+  // session-scoped (the host clears them in `clear_trace_store`
+  // and emits `notes-changed`), so nothing for this panel to
+  // wipe locally.
   const prevCountRef = useRef(data.count);
   useEffect(() => {
     if (prevCountRef.current > 0 && data.count === 0) {
       setCursorX({ a: null, b: null });
       setCursorYByArea({});
-      setNotes([]);
     }
     prevCountRef.current = data.count;
   }, [data.count]);
@@ -586,6 +590,10 @@ export function PlotPanel(props: IDockviewPanelProps) {
 
   const { api } = props;
   useEffect(() => {
+    // Phase 9: `notes` is no longer persisted on the panel —
+    // it's session-scoped in the host. The project-open v3 → v4
+    // migration strips any leftover `notes` from older project
+    // files.
     api.updateParameters({
       elementId,
       areas,
@@ -596,7 +604,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
       showDiag,
       cursorX,
       cursorYByArea,
-      notes,
       maxRateHz,
       signalsWidthPx: signalsWidth,
     });
@@ -611,7 +618,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
     showDiag,
     cursorX,
     cursorYByArea,
-    notes,
     maxRateHz,
     signalsWidth,
   ]);
@@ -720,13 +726,52 @@ export function PlotPanel(props: IDockviewPanelProps) {
     setCursorX({ a: null, b: null });
     setCursorYByArea({});
   }, []);
-  const addNote = useCallback((t: number) => {
-    setNotes((p) => [...p, { id: crypto.randomUUID(), t, label: `note ${p.length + 1}` }]);
-  }, []);
-  const renameNote = useCallback((id: string, label: string) => {
-    setNotes((p) => p.map((n) => (n.id === id ? { ...n, label } : n)));
-  }, []);
-  const removeNote = useCallback((id: string) => setNotes((p) => p.filter((n) => n.id !== id)), []);
+  // Phase 9: panel-level cache base — set by whichever PlotArea
+  // reports it first. Areas share the same x scale, so any one is
+  // representative; later reports overwrite it (a re-anchor after
+  // Clear flows through the same callback). `null` when no area
+  // has anchored yet (e.g. no frames in the window).
+  const [baseSeconds, setBaseSeconds] = useState<number | null>(null);
+  // Display-relative `t` (seconds, panel x-axis units) → absolute
+  // trace ns: the host's note store works in
+  // `RawTraceFrame::timestamp_ns` units so a note placed in panel
+  // A lands on the same timeline in panel B even if their
+  // x-axis bases drift. If the cache hasn't anchored yet (no
+  // frames in the window) there's no sensible ns to write —
+  // silently drop.
+  const addNote = useCallback(
+    (t: number) => {
+      if (baseSeconds == null || !Number.isFinite(baseSeconds)) return;
+      const timestampNs = Math.round((baseSeconds + t) * 1e9);
+      dispatchAddNote(crypto.randomUUID(), timestampNs, `note ${sessionNotes.length + 1}`);
+    },
+    [baseSeconds, dispatchAddNote, sessionNotes.length],
+  );
+  const renameNote = useCallback(
+    (id: string, label: string) => dispatchRenameNote(id, label),
+    [dispatchRenameNote],
+  );
+  const removeNote = useCallback(
+    (id: string) => dispatchRemoveNote(id),
+    [dispatchRemoveNote],
+  );
+  // Jump the panel's x-window so the note at display-relative time
+  // `t` is centred. Preserves the current zoom width; drops out of
+  // follow-live (otherwise the next resample would slide the view
+  // straight back to the live edge).
+  const gotoNote = useCallback(
+    (t: number) => {
+      const sync = xSyncRef.current;
+      const [min, max] = centerWindowOn(
+        t,
+        { min: sync.xMin, max: sync.xMax },
+        DEFAULT_FOLLOW_WIDTH_SECONDS,
+      );
+      applyXAll(min, max, null);
+      setFollowLive(false);
+    },
+    [applyXAll],
+  );
 
   const reportSeries = useCallback(
     (areaId: string, series: Map<string, Series>) => {
@@ -743,6 +788,10 @@ export function PlotPanel(props: IDockviewPanelProps) {
   const reportHostMs = useCallback((_areaId: string, ms: number) => setHostMs((p) => Math.max(p * 0.6, ms)), []);
   const reportRate = useCallback((_areaId: string, hz: number) => setRateHz((p) => Math.max(p * 0.7, hz)), []);
   const reportCache = useCallback((_areaId: string, n: number) => setCachePts(n), []);
+  const reportBase = useCallback(
+    (_areaId: string, secs: number | null) => setBaseSeconds(secs),
+    [],
+  );
 
   const catalogOptions = useMemo(
     () =>
@@ -766,6 +815,18 @@ export function PlotPanel(props: IDockviewPanelProps) {
     (areaId: string, key: string): Series | undefined => seriesByArea.get(areaId)?.get(key),
     [seriesByArea],
   );
+  // Project session-scoped notes onto this panel's display-relative
+  // x axis. When the cache hasn't anchored yet (`baseSeconds`
+  // null — no frames yet), notes don't render; an area reports a
+  // base on its first non-empty fetch.
+  const notes = useMemo<NoteEvent[]>(() => {
+    if (baseSeconds == null || !Number.isFinite(baseSeconds)) return [];
+    return sessionNotes.map((n) => ({
+      id: n.id,
+      t: n.timestampNs / 1e9 - baseSeconds,
+      label: n.label,
+    }));
+  }, [sessionNotes, baseSeconds]);
   const events = useMemo(() => [{ id: "__t0", t: 0, label: "T0" }, ...notes], [notes]);
   const dt = cursorX.a != null && cursorX.b != null ? cursorX.b - cursorX.a : null;
 
@@ -947,6 +1008,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
               onReportHostMs={reportHostMs}
               onReportRate={reportRate}
               onReportCache={reportCache}
+              onReportBase={reportBase}
               resetYEpoch={resetYEpoch}
               fitYEpoch={fitYEpoch}
               showDiag={showDiag}
@@ -1000,6 +1062,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
                 key={n.id}
                 t={fmtTime(n.t)}
                 label={n.label}
+                onGoto={() => gotoNote(n.t)}
                 onRename={(l) => renameNote(n.id, l)}
                 onRemove={() => removeNote(n.id)}
               />
@@ -1025,11 +1088,13 @@ function MeasCell({ k, v, cls, swatch }: { k: string; v: string; cls?: string; s
 function EventLogRow({
   t,
   label,
+  onGoto,
   onRename,
   onRemove,
 }: {
   t: string;
   label: string;
+  onGoto: () => void;
   onRename: (l: string) => void;
   onRemove: () => void;
 }) {
@@ -1041,6 +1106,9 @@ function EventLogRow({
   };
   return (
     <div className="plot-event-row">
+      <button className="plot-event-goto" onClick={onGoto} title="jump x-axis to this note">
+        ⇥
+      </button>
       <span className="plot-event-t">{t}</span>
       {editing ? (
         <input
@@ -1159,6 +1227,14 @@ interface PlotAreaProps {
   onReportRate: (areaId: string, hz: number) => void;
   /** Largest per-signal cache size (display + diagnostic). */
   onReportCache: (areaId: string, points: number) => void;
+  /** Phase 9: report the area's cache base (x-axis origin, in
+   * absolute seconds since the unix epoch — `res.from_seconds` from
+   * the host's `sample_signals` reply). The panel uses this to
+   * convert session-scoped notes' absolute ns to display-relative
+   * seconds and back. Areas share the same x scale, so a single
+   * panel-level base is fine — the panel takes whichever area
+   * reports first. */
+  onReportBase: (areaId: string, baseSeconds: number | null) => void;
   /** Panel-level bump → invalidate the per-trace auto-normalise range
    * (Fit Data / Clear use this so y rescales fresh on the next tick). */
   resetYEpoch: number;
@@ -1249,6 +1325,7 @@ function PlotArea(p: PlotAreaProps) {
     onReportHostMs,
     onReportRate,
     onReportCache,
+    onReportBase,
     resetYEpoch,
     fitYEpoch,
     showDiag,
@@ -1412,6 +1489,7 @@ function PlotArea(p: PlotAreaProps) {
     onReportHostMs,
     onReportRate,
     onReportCache,
+    onReportBase,
   });
   useEffect(() => {
     liveRef.current = {
@@ -1435,6 +1513,7 @@ function PlotArea(p: PlotAreaProps) {
       onReportHostMs,
       onReportRate,
       onReportCache,
+      onReportBase,
     };
   });
 
@@ -1462,6 +1541,7 @@ function PlotArea(p: PlotAreaProps) {
         presentRef.current = new Map();
         lr.onReportSeries(areaId, new Map());
         lr.onAreaResampled(areaId, null);
+        lr.onReportBase(areaId, null);
         lr.onReportCache(areaId, 0);
         recordRate();
         lr.onReportRate(areaId, rateEmaRef.current);
@@ -1583,6 +1663,10 @@ function PlotArea(p: PlotAreaProps) {
         // ts(winStart) — the x-axis origin.
         if (res.from_seconds == null) return; // nothing real yet — try again next tick
         cache.base = res.from_seconds;
+        // Phase 9: tell the panel so session-scoped notes can be
+        // projected onto this panel's x-axis. Areas share x, so a
+        // panel-level base from any area is fine.
+        lr.onReportBase(area.id, res.from_seconds);
       }
       const base = cache.base;
 
