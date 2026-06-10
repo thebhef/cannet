@@ -142,26 +142,14 @@ trip over it.
   exercise the native dialog — confirm it opens on each shipping
   WebView (WebKitGTK / WKWebView / WebView2) next time the app is
   run by hand.
-### Transmit panel
+### DBC view
 
-- `[feat]` `cannet-dbc`: **parse more of the Vector generic (`Gen*`)
-  attribute family** beyond today's `GenMsgCycleTime` /
-  `GenMsgCANFDBRS` / `VFrameFormat`. The full set is collected into the
-  generic `DbcAttribute` lists already, but these have dedicated
-  meaning for the transmit panel and scheduler and deserve typed
-  accessors like `message_cycle_time_ms`
-  ([lib.rs:707](../crates/cannet-dbc/src/lib.rs#L707)):
-  - **`GenMsgSendType`** (BO_, ENUM: `cyclic`, `triggered`,
-    `cyclicIfActive`, `cyclicAndTriggered`,
-    `cyclicIfActiveAndTriggered`, `none`) — disambiguates whether
-    `GenMsgCycleTime` is actually used; the natural companion to the
-    cycle time we already read.
-  - **`GenSigStartValue`** (SG_, INT/FLOAT) — initial/default raw value
-    until the signal is first received; would let the transmit panel
-    pre-populate signal values from the DBC instead of zeros.
-  Reference: Vector CANdb++ Manual; the values are the standard `Gen*`
-  attribute convention. Pick up when the transmit panel grows
-  send-type-aware scheduling or DBC-seeded default values.
+- `[feat]` `cannet-gui` DBC view: **ECU view mode** — group the message
+  tree by transmitting node (ECU) instead of flat by message, mirroring
+  the per-ECU grouping the RBS panel uses. (Surfaced while designing
+  the RBS `.cannet_rbs` schema.)
+
+### Transmit panel
 
 - `[perf]` `cannet-gui` `run_transmit_scheduler`: per-bus
   `FrameBatch` batching. The scheduler currently fires each due

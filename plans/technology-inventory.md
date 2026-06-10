@@ -78,6 +78,18 @@ without reshaping callers.
   Phase 7. `tracing` was already a transitive dep via tonic / tokio;
   `tracing-subscriber` is newly direct. Used by the host system log
   bus — see [ADR 0014](../docs/adr/0014-host-system-log.md).
+- **`crc`** crate (+ its `crc-catalog` companion; Rust, MIT /
+  Apache-2.0) — `adopted` in Task 14 for calculated CRC fields on
+  transmitted messages and decode-side verification
+  ([ADR 0027](../docs/adr/0027-calculated-fields-counter-crc.md)).
+  Table-driven, `no_std`, the de-facto Rust CRC implementation;
+  `crc-catalog` supplies the named-algorithm catalogue
+  (`CRC-8/SAE-J1850`, `CRC-8/AUTOSAR`, …) that cannet exposes
+  directly, so the "which named configs ship" question costs zero
+  curation. Custom Rocksoft parameter sets use the same
+  `Algorithm` struct. **Rejected alternative:** a hand-rolled
+  table — the crate is small, vetted, and parameterizable; rolling
+  our own is review surface with no upside.
 
 ### Hardware Drivers
 

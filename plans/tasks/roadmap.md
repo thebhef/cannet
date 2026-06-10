@@ -17,9 +17,10 @@ the order below is the order of work, top first.
 
 ## Implementation order
 
-1. [Task 14 — Rest-of-Bus Simulation + CRC / Sequence-Count Fields](0014-rest-of-bus-simulation-crc-sequence.md)
-   — **next.** Host-computed signal fields (CRC, sequence counters)
-   and the rest-of-bus transmit gridview.
+1. [Task 14 — Rest-of-Bus Simulation + Calculated Fields](0014-rest-of-bus-simulation-crc-sequence.md)
+   — **next.** Calculated fields (CRC, sequence counters) on
+   transmitted messages and the rest-of-bus transmit gridview.
+   Design settled in ADRs 0027 / 0028.
 2. [Task 25 — CAN HW + Virtual-Bus Bug Fixes](0025-can-hw-vbus-bugfixes.md)
    — the deferred hardware/virtual-bus verify-and-fix pass (timestamp
    handling, post-clear negative timestamps) plus DBC-view

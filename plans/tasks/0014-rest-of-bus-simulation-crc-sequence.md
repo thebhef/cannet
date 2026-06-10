@@ -1,108 +1,127 @@
-# Task 14 — Rest-of-Bus Simulation + CRC / Sequence-Count Fields
+# Task 14 — Rest-of-Bus Simulation + Calculated Fields (CRC / Sequence Counter)
 
-Two transmit-side features that share one mechanism: **host-computed
-signal fields on messages this GUI sends.** Rest-of-bus simulation
-(RBS) is the surface that sends a configured set of messages on a
-cadence with live, editable signal values; CRC and sequence-count are
-*auto-fields* layered onto those messages — signals whose value the
-host recomputes on every send (a counter that increments and rolls
-over; a CRC computed over a data range of the just-encoded payload).
-Both build on the transmit encoder from Tasks 5 / 11
-(`cannet_dbc::Database::encode_frame`, [ADR 0017](../../docs/adr/0017-transmit-signal-encoder-and-bytes-source-of-truth.md)
-— the encoder is the inverse of `decode` and lives in `cannet-dbc`)
-and ride the virtual / hardware buses from Task 13. RBS is, in
-effect, the bulk + cadence counterpart of the by-ID panel: by-ID
-shows one row per id *received*; RBS holds one row per id
-*transmitted*.
+Two transmit-side features that share one mechanism: **calculated
+fields** — signals the host recomputes on every send (a rolling
+counter; a CRC over a range of the just-encoded payload) — and
+**rest-of-bus simulation (RBS)**, the bulk + cadence transmit surface
+that consumes them. Both build on the transmit encoder
+([ADR 0017](../../docs/adr/0017-transmit-signal-encoder-and-bytes-source-of-truth.md)),
+the host transmit registry/scheduler (`transmit_frames.rs` /
+`transmit_scheduler.rs`), and the Task-13 buses.
 
-Why together: an RBS message that carries a rolling counter and a CRC
-is the common real-world case (AUTOSAR E2E-protected frames). Build
-the auto-field machinery once — computed in `cannet-dbc` alongside the
-encoder, not in the GUI — and have RBS consume it, so the hand-written
-surface stays small.
+The design was settled in a grilling session (2026-06-09) and is
+recorded in two ADRs — the task implements them:
 
-## Captured requirements (from the feature owner)
+- **[ADR 0027 — Calculated fields](../../docs/adr/0027-calculated-fields-counter-crc.md):**
+  one transmitter construct; fields resolved to bit placements at
+  registration and applied in the scheduler fire path
+  (counter → CRC → send); config = catalogue name XOR raw Rocksoft
+  params + byte-aligned `range_bits` + optional `prefix` (E2E Data
+  ID); persisted as cannet `BA_` attributes in the DBC
+  (`CannetCounter` / `CannetCrc`, `key=value;` one-liners) with
+  wholesale per-message overrides layered on top; DBC *writing*
+  deferred — cannet reads the attributes, the GUI configures via the
+  override layer; ingest-time decode-side verification (red trace
+  rows, queryable validity, rate-limited Info transitions).
+- **[ADR 0028 — RBS](../../docs/adr/0028-rest-of-bus-simulation.md):**
+  human-editable `.cannet_rbs` JSON (sparse overrides; `fill_bit`;
+  nested `bus → ecu → message` with ANDed enables; logical-bus-name
+  keys; values-only overrides, hex iff unity-scaled, enums by
+  label); per-message payload buffer reconstructed fill → DBC
+  defaults → overrides, registered as provenance-tagged
+  `TransmitFrameRegistry` entries; project element `kind: "rbs"`
+  referencing the file by path with a project-persisted Run flag
+  (default off) + global runtime kill-switch; per-bus connectivity
+  gating; Save Project / Save All / exit-prompt split; `.cannet_prj`
+  / `.cannet_rbs` extensions with `.json` still accepted.
 
-**CRC / sequence-count fields** — designated per (message, signal):
+## Work items
 
-- **Select the signal** that holds the field: one signal as the CRC
-  field, one as the sequence counter, per message.
-- **CRC:** either a **named algorithm config** (e.g. CRC-CCITT,
-  CRC-8 — the catalogue is TBD) *or* explicit algorithm parameters
-  (the "typical properties": width, polynomial, init, reflect-in /
-  reflect-out, xor-out), plus the **data range within the message**
-  the CRC is computed over.
-- **Sequence counter:** an **increment** (default 1) and a
-  **rollover** value.
+1. **`cannet-dbc`: calculated-field engine.** Counter step + CRC
+   compute (via the `crc` crate — see
+   [technology-inventory.md](../technology-inventory.md)) as partial
+   encodes into a payload buffer; config types; resolution to bit
+   placements; validation (byte-aligned range, range/destination
+   overlap). Verified against independent reference vectors
+   (crc-catalog check values; an E2E-profile example).
+2. **`cannet-dbc`: attribute parsing.** `CannetCounter` /
+   `CannetCrc` (`key=value;` syntax) plus typed accessors for
+   `GenSigStartValue` and `GenMsgSendType` (absorbed from the
+   backlog's Gen\* item). Demo DBC gains hand-authored examples.
+3. **Host: registry + fire path.** Provenance tag on
+   `TransmitFrameRegistry` entries (excluded from project snapshot
+   and transmit-panel list); optional calculated-fields config per
+   entry applied in the scheduler driver; counter runtime state.
+4. **Host: `.cannet_rbs` model.** Load/validate/save (sparse-
+   override round-trip), buffer reconstruction, logical-bus
+   resolution, skip-with-warning semantics, registration/teardown,
+   Run flag + per-bus connectivity gating + global kill-switch.
+5. **Host: decode-side verification.** Ingest-time CRC/counter
+   checks for configured `(bus, id)`s; sparse violation index;
+   per-`(bus, id)` validity query; Info system message on
+   valid→invalid (1/s rate limit per id); own-Tx exemption.
+6. **GUI: RBS element + panel.** `kind: "rbs"` element (nameable,
+   path-referenced); tree-grid (bus → ECU → message → signal) with
+   ANDed enable checkboxes, effective-value display (override marked,
+   light **×** to clear), period column, fzf filter (reuse the DBC
+   panel's), inert rows for unresolved buses; calculated-field cells
+   read-only with algorithm combo + attribute editor; right-click
+   any signal → configure as CRC / counter.
+7. **GUI: shared components.** Extract the validated input
+   (commit-on-blur/Enter, revert-on-Escape/invalid — pattern already
+   in `TransmitPanel.tsx`) and the calculated-field config editor;
+   use both in the transmit panel too (its messages gain the same
+   counter/CRC configuration).
+8. **GUI: trace red rows** for verification violations (visible-
+   window query against the violation index).
+9. **GUI: save flow + extensions.** Save All action (project +
+   dirty RBS files); exit prompt covers all dirty state; save
+   dialogs default `.cannet_prj` / `.cannet_rbs`, open accepts
+   `.json` too.
 
-**Rest-of-bus simulation** — a **gridview of the DBC's signals,
-grouped per ECU (transmitting node)**, with live, editable signal
-values, transmitted on a cadence.
+## Deferred / out of scope
 
-## Open design questions (the feature owner flagged design work; these are the forks that change the implementation)
+- **DBC writing** (surgical `BA_` line editor) — read-only this
+  task; overrides cover unwritable DBCs.
+- **E2E profiles as first-class config** — `prefix` covers the Data
+  ID; revisit if profile-specific semantics are needed.
+- **Non-byte-aligned CRC ranges** — config error for now; the bits
+  format keeps the file forward-compatible.
+- **1 ms cadence validation** — the scheduler targets 5–10 ms
+  periods today; sub-5 ms timing (Windows timer resolution) is
+  re-deferred pending the real-hardware performance pass (Task 25
+  territory). RBS must not regress the current scheduler.
+- **Duplicate-config affordance** — forking is a file op + path
+  re-point.
 
-1. **Where the auto-field designation persists.** "On arbitrary
-   signals in the DBC" suggests DBC custom attributes (`BA_`),
-   consistent with the no-sidecar rule
-   ([ADR 0010](../../docs/adr/0010-no-sidecar-files.md)) — but these
-   would be *cannet-defined* attributes written into a third-party
-   DBC, with round-trip and reload-from-disk implications. The
-   alternative is project-file config keyed by `(bus, message id,
-   signal name)`, leaving the DBC untouched. Pick one and ADR it.
-2. **CRC data-range specification.** Bit range vs. byte range;
-   whether it implicitly excludes the CRC field and the counter;
-   byte order of the stored CRC. The realistic target is **AUTOSAR
-   E2E** profiles — decide whether to model E2E profiles directly,
-   expose the raw CRC parameter set, or both.
-3. **CRC algorithm catalogue + library.** Which named configs ship,
-   and whether to adopt a vetted CRC crate (`crc`) vs. a small
-   hand-rolled table — a `plans/technology-inventory.md` decision.
-4. **Decode-side verification (scope).** Beyond transmit-side
-   *calculation*, optionally **verify** received frames — flag a bad
-   CRC or an out-of-sequence counter in the trace / system messages.
-   In or out for this task?
-5. **RBS panel shape and reuse.** RBS as a new project-element /
-   panel `kind: "rbs"` that, given a node, auto-populates a transmit
-   entry per message that node sends (DBC transmitter / `BO_TX_BU_`),
-   reusing the Tasks 5 / 11 transmit machinery — vs. an extension of
-   the existing transmit panel. The grid: one row per message (expand
-   to its signals) or one row per signal. "Per ECU" = the DBC
-   transmitter node; the user picks which node(s) cannet simulates
-   (the rest of the bus = everything except the device under test).
-6. **Host-side periodic scheduler.** RBS needs a real host-side
-   cadence scheduler (a timer per message), not the per-UI-tick
-   `setInterval` the transmit panel uses today — this task absorbs
-   the "host-side periodic scheduler" deferral from the transmit-
-   usability work (and the 1 ms-cyclic-transmit `plans/backlog.md`
-   item).
-7. **FD / which buses.** Confirm RBS + auto-fields work over
-   `local-virtual-bus`, hardware (sidecar) interfaces, and FD frames.
+## Exit criteria
 
-## Exit criteria (provisional — firm up once the questions above are settled)
-
-- A message can be configured so a chosen signal is a **sequence
-  counter** (increment, rollover) and another is a **CRC** (named
-  config or explicit params, over a stated data range); each
-  transmit recomputes both, verified against an independent reference
-  (e.g. an E2E test vector) by a round-trip test in `cannet-dbc`.
-- An **RBS panel** lists the messages a selected node transmits as a
-  grid of live, editable signal values and sends them on their
-  configured cadence onto the bus; sent frames appear as `Tx` rows
-  (and over the wire to a writable bus) with the auto-fields filled
-  in.
-- The cadence is driven by a host-side scheduler (not the UI tick);
-  cyclic RBS sends keep timing under load.
-- The configuration round-trips through whichever persistence
-  design question (1) settles on.
-- ADR(s) for the auto-field mechanism and the persistence choice are
-  checked in; `plans/technology-inventory.md` records any CRC library
-  decision; the README documents the RBS workflow and the CRC /
-  sequence configuration; rustdoc covers the new `cannet-dbc`
-  surface.
+- A message can be configured (DBC attributes or GUI/`.cannet_rbs`
+  overrides) so one signal is a sequence counter and another a CRC;
+  every transmit recomputes both; `cannet-dbc` tests verify against
+  independent reference vectors and round-trip through `decode`.
+- The transmit panel exposes the same calculated-field configuration
+  on its messages.
+- An RBS panel lists a DBC's messages grouped per ECU as a grid of
+  live, editable signal values and sends enabled messages on their
+  cadence via the host scheduler; sent frames appear as `Tx` rows
+  with the fields filled in, over `local-virtual-bus`, hardware
+  (sidecar) interfaces, and FD frames (test matrix).
+- `.cannet_rbs` round-trips: load → edit → save preserves sparse
+  semantics (non-overridden values keep tracking the DBC); unknown
+  bus / unknown message / transmitter-mismatch behaviors match
+  ADR 0028.
+- Received frames with configured fields are verified at ingest:
+  bad CRC / out-of-sequence counter paints the trace row red,
+  validity is queryable, and valid→invalid logs a rate-limited Info
+  system message.
+- Run flag persists in the project (default off); enabled RBS
+  resumes on open once its bus connects; the global kill-switch
+  stops everything; per-bus connect/disconnect gates sends live.
+- ADRs 0027 / 0028 are checked in; `technology-inventory.md` records
+  the `crc` decision; the README documents the RBS workflow and
+  calculated-field configuration; rustdoc covers the new
+  `cannet-dbc` surface.
 - **ADR cleanup:** scrub task-number references out of
   [ADR 0017](../../docs/adr/0017-transmit-signal-encoder-and-bytes-source-of-truth.md)
-  (its rest-of-bus mention) — ADRs describe what *is*; task tracking
-  lives here, not in the ADR.
-- Deferral cleanup: the transmit-usability "host-side periodic
-  scheduler" follow-up and the "1 ms cyclic transmit" backlog item
-  are resolved (or explicitly re-deferred).
+  (its rest-of-bus mention) — ADRs describe what *is*.
