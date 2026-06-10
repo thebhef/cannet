@@ -49,21 +49,44 @@ message Interface {
   string display_name = 2;
   // Whether this interface accepts CAN FD frames.
   bool fd_capable = 3;
-  // Phase 4 will add: bitrate, sample point, current bus state, ...
 }
 
 // A multiplexed message exchanged on the Session stream. Either peer
-// may send any variant.
+// may send any variant; envelope direction is by convention
+// (see ADR 0021 § Wire-protocol additions for the virtual-bus
+// envelopes).
 message Envelope {
   oneof body {
     Subscribe subscribe = 1;
     Unsubscribe unsubscribe = 2;
     FrameBatch frame_batch = 3;
     Error error = 4;
-    // Phase 7: out-of-band structured log message — distinct from
+    // Out-of-band structured log message (ADR 0014) — distinct from
     // Error (Error still ends the session). The host bridges these
-    // into its local log bus; consumed by vendor sidecars in Phase 8.
+    // into its local log bus; vendor sidecars consume them.
     LogMessage log = 5;
+
+    // ---- Virtual-bus additions (ADR 0021) ----
+
+    // client → server. Set / change the bus configuration of the
+    // named interface. Applied to a virtual-bus factory it
+    // reconfigures the bus; applied to a bridge or physical
+    // interface it reconfigures the underlying controller.
+    ConfigureBus configure_bus = 6;
+    // server → client. Returned in response to a Subscribe against
+    // a virtual-bus factory: tells the client which allocated
+    // participant id was created for it.
+    InterfaceAllocated interface_allocated = 7;
+    // server → client. Controller fault-confinement state change
+    // (Active / Passive / Bus-off transitions per ISO 11898-1, plus
+    // TEC/REC), delivered by a hardware server to its subscribers.
+    InterfaceState interface_state = 8;
+    // client → server. Install a bridge from the named local
+    // interface to a remote (address, interface_id) endpoint.
+    AttachBridge attach_bridge = 10;
+    // client → server. Tear down a previously installed bridge by
+    // name.
+    DetachBridge detach_bridge = 11;
   }
 }
 
@@ -122,11 +145,11 @@ enum FrameKind {
   FRAME_KIND_ERROR = 4;
 }
 
-// Phase 7: out-of-band structured log message reported by either peer
-// on the Session stream. Distinct from Error — Error still ends the
-// session; a LogMessage is informational / advisory and the session
-// continues normally. The host bridges incoming wire log messages
-// into its local System Messages bus.
+// Out-of-band structured log message (ADR 0014) reported by either
+// peer on the Session stream. Distinct from Error — Error still ends
+// the session; a LogMessage is informational / advisory and the
+// session continues normally. The host bridges incoming wire log
+// messages into its local System Messages bus.
 message LogMessage {
   // Sender's monotonic timestamp in nanoseconds. The receiver maps
   // this to its own clock for display.
@@ -163,8 +186,69 @@ message Error {
     CODE_NOT_SUBSCRIBED = 2;
     // A transmit was rejected — read-only source, bus-off, etc.
     CODE_TX_REJECTED = 3;
-    // Server already has a connected client (Phase 2 single-client
+    // Server already has a connected client (single-client server
     // restriction).
     CODE_BUSY = 4;
+    // A transmit on a virtual-bus participant reached zero recipients
+    // (no other subscriber acknowledged the frame). See ADR 0021.
+    CODE_NO_ACKNOWLEDGER = 5;
   }
+}
+
+// Bus configuration set/change envelope (ADR 0021). Applies to a
+// virtual-bus factory, a bridge id, or a physical interface id; the
+// addressed server routes accordingly.
+message ConfigureBus {
+  // Which interface the configuration applies to. May be a
+  // virtual-bus factory id (reconfigures the bus), a bridge id
+  // (reconfigures the underlying controller), or a physical
+  // interface id (reconfigures the controller).
+  string interface_id = 1;
+  // Arbitration-phase bit rate, in bits per second.
+  uint64 speed_bps = 2;
+  // Data-phase bit rate for CAN FD frames with BRS set, in bits per
+  // second. 0 means "unset" (classic-only buses).
+  uint64 fd_data_speed_bps = 3;
+  // Whether the interface accepts CAN FD frames.
+  bool fd_enabled = 4;
+}
+
+// Server's response to a Subscribe against a virtual-bus factory: the
+// freshly allocated participant id (ADR 0021).
+message InterfaceAllocated {
+  string interface_id = 1;
+}
+
+// Bridge controller-state change. Pushed by the server to every
+// session subscribed to the bridge id; mirrors the underlying
+// controller's ISO 11898-1 fault-confinement state.
+message InterfaceState {
+  string interface_id = 1;
+  ControllerState state = 2;
+  // ISO 11898-1 Transmit Error Counter.
+  uint32 tec = 3;
+  // ISO 11898-1 Receive Error Counter.
+  uint32 rec = 4;
+}
+
+enum ControllerState {
+  CONTROLLER_STATE_UNSPECIFIED = 0;
+  CONTROLLER_STATE_ACTIVE = 1;
+  CONTROLLER_STATE_PASSIVE = 2;
+  CONTROLLER_STATE_BUS_OFF = 3;
+}
+
+// Install a bridge whose RX feeds from, and TX forwards to, an
+// interface on a remote wire endpoint (ADR 0021). `name` is an
+// optional stable label used by `DetachBridge` and to derive the
+// bridge's listed interface id; if empty the server picks one.
+message AttachBridge {
+  string remote_address = 1;
+  string interface_id = 2;
+  string name = 3;
+}
+
+// Tear down a previously installed bridge by name (ADR 0021).
+message DetachBridge {
+  string name = 1;
 }

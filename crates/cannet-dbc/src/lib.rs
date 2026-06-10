@@ -42,6 +42,13 @@ struct MessageEntry {
     /// `true` (the typical real-world setting). Always `false` for
     /// classic messages.
     brs: bool,
+    /// The DBC's `GenMsgCycleTime` per-message attribute, in
+    /// milliseconds — the message's intended cyclic send period.
+    /// `Some(n)` when the attribute is present (the value verbatim,
+    /// including `0`); `None` when absent. The transmit panel uses it
+    /// to pre-fill the cycle period when a message is added from the
+    /// DBC.
+    gen_msg_cycle_time_ms: Option<u32>,
     /// `CM_ BO_ <id> "..."` free-text comment. Empty when absent.
     /// Captured during parse so the DBC panel's fuzzy search can
     /// match it without re-walking the AST.
@@ -170,6 +177,7 @@ impl Database {
                 .unwrap_or_else(|| msg.name.clone());
             let is_fd = message_is_fd(&dbc, msg.id, expected_len);
             let brs = is_fd && message_brs(&dbc, msg.id);
+            let gen_msg_cycle_time_ms = message_cycle_time_ms(&dbc, msg.id);
             let comment = message_comments.get(&msg.id).cloned().unwrap_or_default();
             let attributes = message_attributes.remove(&msg.id).unwrap_or_default();
             messages.insert(msg.id, MessageEntry {
@@ -177,6 +185,7 @@ impl Database {
                 expected_len,
                 is_fd,
                 brs,
+                gen_msg_cycle_time_ms,
                 comment,
                 attributes,
                 signals,
@@ -325,6 +334,7 @@ impl Database {
             expected_len: entry.expected_len,
             is_fd: entry.is_fd,
             brs: entry.brs,
+            gen_msg_cycle_time_ms: entry.gen_msg_cycle_time_ms,
             uses_extended_mux,
             signals,
         })
@@ -692,6 +702,24 @@ fn message_brs(dbc: &Dbc, msg_id: MessageId) -> bool {
         }
     }
     true
+}
+
+/// The message's `GenMsgCycleTime` attribute in milliseconds, or
+/// `None` when the attribute isn't set for this message. The value is
+/// reported verbatim (including `0`, which DBCs use for "not cyclic");
+/// callers decide whether a zero period is meaningful.
+fn message_cycle_time_ms(dbc: &Dbc, msg_id: MessageId) -> Option<u32> {
+    for av in &dbc.attribute_values_message {
+        if av.message_id == msg_id && av.name == "GenMsgCycleTime" {
+            if let AttributeValue::Uint(n) = av.value {
+                return u32::try_from(n).ok();
+            }
+            if let AttributeValue::Int(n) = av.value {
+                return u32::try_from(n).ok();
+            }
+        }
+    }
+    None
 }
 
 /// Widen a DBC numeric value to `f64`. The `SG_` min / max fields use
@@ -1113,6 +1141,11 @@ pub struct MessageDescriptor {
     /// attribute. Defaults to `true` for FD messages with no
     /// attribute. Always `false` for classic messages.
     pub brs: bool,
+    /// The DBC's `GenMsgCycleTime` attribute in milliseconds (the
+    /// message's intended cyclic send period), or `None` when absent.
+    /// The transmit panel pre-fills a newly-added message's cycle
+    /// period from this.
+    pub gen_msg_cycle_time_ms: Option<u32>,
     /// `true` if any signal in this message is
     /// [`SignalMux::MultiplexorAndMultiplexed`] (a "sub-mux" /
     /// extended multiplexing arm). The transmit panel treats these as
@@ -1802,6 +1835,35 @@ VAL_ 256 Direction -1 "Backward" 0 "Stopped" 1 "Forward" ;
         assert!(!speed.signed);
         assert!(matches!(speed.float_kind, FloatKind::Integer));
         assert!((speed.factor - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn describe_message_reports_gen_msg_cycle_time() {
+        // A DBC that sets GenMsgCycleTime on one message (100 ms) and
+        // leaves another with the default (0). The first reports the
+        // value; the second — only the default, no per-message BA_ —
+        // reports None (the value isn't carried on the message).
+        let dbc = r#"VERSION ""
+NS_ :
+BS_:
+BU_: ECU
+BO_ 256 Cyclic: 8 ECU
+ SG_ A : 0|8@1+ (1,0) [0|255] "" ECU
+BO_ 257 OnDemand: 8 ECU
+ SG_ B : 0|8@1+ (1,0) [0|255] "" ECU
+BA_DEF_ BO_ "GenMsgCycleTime" INT 0 65535;
+BA_DEF_DEF_ "GenMsgCycleTime" 0;
+BA_ "GenMsgCycleTime" BO_ 256 100;
+"#;
+        let db = Database::parse(dbc).unwrap();
+        assert_eq!(
+            db.describe_message(std_id(256)).unwrap().gen_msg_cycle_time_ms,
+            Some(100),
+        );
+        assert_eq!(
+            db.describe_message(std_id(257)).unwrap().gen_msg_cycle_time_ms,
+            None,
+        );
     }
 
     #[test]

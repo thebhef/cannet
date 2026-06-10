@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use cannet_blf::{BlfCanFrameSource, BlfSourceError};
-use cannet_core::{CanFrame, CanFrameSource, CanFramePayload};
+use cannet_core::{CanFrame, CanFramePayload, CanFrameSource};
 
 /// One CAN interface exposed by a [`LoopingBlfReplay`].
 #[derive(Debug, Clone)]
@@ -100,7 +100,9 @@ impl LoopingBlfReplay {
     /// Look up the interface metadata by wire `interface_id`.
     #[must_use]
     pub fn interface_by_id(&self, interface_id: &str) -> Option<&Interface> {
-        self.interfaces.iter().find(|iface| iface.id == interface_id)
+        self.interfaces
+            .iter()
+            .find(|iface| iface.id == interface_id)
     }
 }
 

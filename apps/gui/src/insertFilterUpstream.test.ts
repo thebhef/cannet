@@ -16,7 +16,7 @@ function fakeRegistry(initial: ProjectElement[]) {
     const id = `created-${kind}-${map.size}`;
     const fresh =
       kind === "transmit"
-        ? ({ kind, id, sinks: [] } as ProjectElement)
+        ? ({ kind, id, sinks: [], frameIds: [] } as ProjectElement)
         : kind === "filter"
           ? ({ kind, id, sources: ["*"] } as ProjectElement)
           : ({ kind, id, sources: ["*"] } as ProjectElement);
@@ -85,7 +85,7 @@ describe("insertFilterUpstream", () => {
 
   it("is a no-op when targeting a transmit element (transmits aren't consumers)", () => {
     const { registry, create } = fakeRegistry([
-      { kind: "transmit", id: "tx1", sinks: ["b1"] },
+      { kind: "transmit", id: "tx1", sinks: ["b1"], frameIds: [] },
     ]);
     expect(insertFilterUpstream(registry, "tx1")).toBeNull();
     expect(create).not.toHaveBeenCalled();

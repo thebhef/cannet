@@ -1,5 +1,4 @@
 import {
-  type ChangeEvent,
   type DragEvent,
   type KeyboardEvent,
   type MouseEvent,
@@ -11,6 +10,7 @@ import {
 } from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 import type {
   Bus,
@@ -21,6 +21,9 @@ import type {
   SignalDescriptorRecord,
   SignalDescriptorRichRecord,
   SignalRecord,
+  TransmitFrameRecord,
+  TransmitMode,
+  TransmitRequestRecord,
   ValueTableEntryRecord,
 } from "./types";
 import { useElementRegistry } from "./projectElements";
@@ -29,22 +32,29 @@ import { effectiveBusColor } from "./busColor";
 import { SIGNAL_DND_MIME, parseSignalDragData } from "./dragSignals";
 
 /**
- * Phase 10 Track 2 transmit panel. Single-column list of collapsible
- * frame-tiles. Each tile carries its own send / cyclic controls,
- * identity (name, bus, id, DBC message name), and byte editor — all
- * visible in the collapsed face. Expanding a tile reveals the frame-
- * shape strip and (when the id binds to a DBC message) a signals
- * table; until that lands, expanded is empty.
+ * Transmit panel (Phase 13 Step 9 — thin view over the host model).
+ *
+ * Single-column list of collapsible frame-tiles. Each tile carries its
+ * own send / cyclic controls, identity (description, bus, id, DBC
+ * message name), and byte editor in the collapsed face; expanding
+ * reveals the frame-shape strip and a DBC signals table.
+ *
+ * The TX messages are **not** owned here. The host
+ * (`transmit_frames::TransmitFrameRegistry`) holds the pool; this panel
+ * lists it (`list_transmit_frames`), renders the subset named by its
+ * element's `frameIds` group (in that order), and routes every edit /
+ * send / start / stop through the matching Tauri command. The host
+ * emits `transmit-frames-changed` on every mutation, which re-fetches
+ * the pool. Periodic schedules run on host threads — there is no
+ * client-side `setInterval`. See ADR 0003 and the plan's Phase 13
+ * Step 9.
  *
  * Reorderable: drag the bus-tinted handle on the left of a row to
- * insert that frame before another. Persisted state per frame stays
- * `dataHex` (bytes are the source of truth — see ADR 0017).
+ * insert that frame before another (rewrites the element's `frameIds`).
  */
 export function TransmitPanel(props: IDockviewPanelProps) {
   const { api } = props;
-  const params = props.params as
-    | { elementId?: unknown; frames?: unknown }
-    | undefined;
+  const params = props.params as { elementId?: unknown } | undefined;
   const registry = useElementRegistry();
   const project = useProjectContext();
   const [elementId] = useState(() =>
@@ -56,20 +66,60 @@ export function TransmitPanel(props: IDockviewPanelProps) {
     registry.ensure(elementId, "transmit");
   }, [registry, elementId]);
 
-  const [frames, setFrames] = useState<TransmitFrameConfig[]>(() =>
-    parseFramesParam(params?.frames),
-  );
-
-  // Persist back to dockview panel params so it round-trips through
-  // the project file. The host doesn't interpret `frames`.
+  // Persist just the elementId in panel params — the frame model is
+  // host-owned now (no `frames` blob).
   useEffect(() => {
-    api.updateParameters({ elementId, frames });
-  }, [api, elementId, frames]);
+    api.updateParameters({ elementId });
+  }, [api, elementId]);
+
+  // This panel's group + display order: the transmit element's
+  // `frameIds`. Mirrored into a ref so event-driven handlers read the
+  // latest without re-binding.
+  const element = registry.get(elementId)?.element;
+  const frameIds = useMemo<readonly string[]>(
+    () => (element && element.kind === "transmit" ? element.frameIds : []),
+    [element],
+  );
+  const frameIdsRef = useRef<readonly string[]>(frameIds);
+  frameIdsRef.current = frameIds;
+
+  // The host TX-message pool, re-fetched whenever the host signals a
+  // change. This panel renders only the entries in its `frameIds`
+  // group, in that order.
+  const [pool, setPool] = useState<TransmitFrameRecord[]>([]);
+  const refreshPool = useCallback(() => {
+    void invoke<TransmitFrameRecord[]>("list_transmit_frames")
+      .then(setPool)
+      .catch(() => setPool([]));
+  }, []);
+  useEffect(() => {
+    refreshPool();
+    const unlisten = listen("transmit-frames-changed", refreshPool);
+    return () => {
+      void unlisten.then((off) => off());
+    };
+  }, [refreshPool]);
+
+  const poolById = useMemo(() => {
+    const m = new Map<string, TransmitFrameRecord>();
+    for (const r of pool) m.set(r.id, r);
+    return m;
+  }, [pool]);
+
+  const frames = useMemo<TransmitFrameConfig[]>(
+    () =>
+      frameIds
+        .map((id) => poolById.get(id))
+        .filter((r): r is TransmitFrameRecord => r !== undefined)
+        .map(recordToConfig),
+    [frameIds, poolById],
+  );
+  const framesRef = useRef<readonly TransmitFrameConfig[]>(frames);
+  framesRef.current = frames;
 
   // Keep the transmit *element's* `sinks` in sync with the union of
   // its frames' bus picks. The graph view reads `sinks` to draw
-  // transmit→bus edges; the panel's UI is per-frame so we derive
-  // sinks from the frames rather than letting it drift on its own.
+  // transmit→bus edges.
   useEffect(() => {
     const union = Array.from(
       new Set(frames.map((f) => f.busId).filter((b): b is string => !!b)),
@@ -81,9 +131,8 @@ export function TransmitPanel(props: IDockviewPanelProps) {
   }, [frames, project.buses, registry, elementId]);
 
   // The DBC's `(message, signal)` list — used to look up the DBC
-  // message name on a collapsed row and (later) to populate the
-  // signals table. One record per (bus, signal); we filter by frame's
-  // (bus_id, message_id, extended) at the row level.
+  // message name on a collapsed row. One record per (bus, signal); we
+  // filter by frame's (bus_id, message_id, extended) at the row level.
   const [signals, setSignals] = useState<SignalDescriptorRecord[]>([]);
   const refreshSignals = useCallback(() => {
     void invoke<SignalDescriptorRecord[]>("list_signals", {
@@ -96,57 +145,75 @@ export function TransmitPanel(props: IDockviewPanelProps) {
     refreshSignals();
   }, [refreshSignals]);
 
+  // Persist one message to the host. Every cell edit lands here; the
+  // host's `transmit-frames-changed` event re-fetches the pool, which
+  // re-renders the row. For a running periodic, the host's schedule
+  // thread picks up the edit on its next tick (no stop/start).
+  const writeFrame = useCallback((cfg: TransmitFrameConfig) => {
+    void invoke("set_transmit_frame", {
+      id: cfg.id,
+      frame: configToFrame(cfg),
+    }).catch(() => {});
+  }, []);
+
   const updateFrame = useCallback(
     (id: string, mut: (f: TransmitFrameConfig) => TransmitFrameConfig) => {
-      setFrames((prev) => prev.map((f) => (f.id === id ? mut(f) : f)));
+      const current = framesRef.current.find((f) => f.id === id);
+      if (!current) return;
+      const next = mut(current);
+      // Skip no-op writes. The row's DBC-derived effect re-invokes
+      // `onChange` on every render (its `onChange` dep is a fresh
+      // closure each time) but returns the frame unchanged once `kind`
+      // / `brs` already match the DBC. Without this guard each such
+      // call round-trips `set_transmit_frame` → `transmit-frames-
+      // changed` → re-fetch → re-render → … a feedback loop that
+      // storms the host and clobbers in-flight edits (e.g. the period
+      // field) with the stale snapshot it captured.
+      if (configsEqual(next, current)) return;
+      writeFrame(next);
     },
-    [],
+    [writeFrame],
   );
 
   const addFrame = useCallback(() => {
     const id = crypto.randomUUID();
-    setFrames((prev) => {
-      const next: TransmitFrameConfig = {
-        id,
-        name: `Frame ${prev.length + 1}`,
-        busId: project.buses[0]?.id ?? null,
-        canId: 0x100,
-        extended: false,
-        kind: "classic",
-        dataHex: "00",
-        cycleMs: 100,
-        cycleMode: "manual",
-        brs: false,
-        dlc: 0,
-      };
-      return [...prev, next];
-    });
-  }, [project.buses]);
+    const cfg: TransmitFrameConfig = {
+      id,
+      description: "",
+      busId: project.buses[0]?.id ?? null,
+      canId: 0x100,
+      extended: false,
+      kind: "classic",
+      // Default to a full-length zero payload for the kind. If the id
+      // happens to bind a DBC message, the row's descriptor effect
+      // re-fits it to that message's declared length.
+      dataHex: zeroDataHex(maxDataBytesForKind("classic")),
+      cycleMs: 100,
+      cycleMode: "manual",
+      brs: false,
+      dlc: 0,
+    };
+    void invoke("set_transmit_frame", { id, frame: configToFrame(cfg) })
+      .then(() =>
+        registry.update(elementId, { frameIds: [...frameIdsRef.current, id] }),
+      )
+      .catch(() => {});
+  }, [project.buses, registry, elementId]);
 
   /// Drop handler for the Phase 12 DBC-to-TX gesture. The drag
   /// payload is the shared `application/x-cannet-plot-signal` shape
-  /// (one or more signal refs). A transmit frame is per-message,
-  /// not per-signal — so we group by `(canId, extended)` and
-  /// produce one new frame per distinct message. The DBC signals
-  /// inside each frame populate via the existing `describe_message`
-  /// pathway once the row mounts (kind = "classic" is the safe
-  /// default; the panel auto-promotes to `fd` from the DBC's
-  /// `VFrameFormat` attribute when it loads).
-  ///
-  /// The dropped ref's `busId` flows directly onto the new frame:
-  /// scoped-DBC drags set it; an unscoped-DBC drag (busId = null)
-  /// falls back to the project's first bus so the frame has *some*
-  /// destination — the user can re-pick it from the row's bus
-  /// selector if that's wrong.
+  /// (one or more signal refs). A transmit frame is per-message, not
+  /// per-signal — so we group by `(canId, extended)` and produce one
+  /// new frame per distinct message. The dropped ref's `busId` flows
+  /// onto the new frame; an unscoped drag (busId = null) falls back to
+  /// the project's first bus.
   const handleDropSignals = useCallback(
-    (raw: string) => {
+    async (raw: string) => {
       const { signals: dropped } = parseSignalDragData(raw);
       if (dropped.length === 0) return;
-      // De-dupe by message; each unique (canId, extended) makes one
-      // frame. First-seen ref's `busId` / `messageName` carry over.
       const byMessage = new Map<
         string,
-        { busId: string | null; canId: number; extended: boolean; messageName: string }
+        { busId: string | null; canId: number; extended: boolean }
       >();
       for (const r of dropped) {
         const k = `${r.extended ? "x" : "s"}:${r.messageId}`;
@@ -155,134 +222,104 @@ export function TransmitPanel(props: IDockviewPanelProps) {
           busId: r.busId,
           canId: r.messageId,
           extended: r.extended,
-          messageName: r.messageName,
         });
       }
       const fallbackBus = project.buses[0]?.id ?? null;
-      setFrames((prev) => {
-        const next: TransmitFrameConfig[] = [...prev];
-        let n = prev.length;
-        for (const m of byMessage.values()) {
-          n += 1;
-          next.push({
-            id: crypto.randomUUID(),
-            name: m.messageName || `Frame ${n}`,
-            busId: m.busId ?? fallbackBus,
-            canId: m.canId,
-            extended: m.extended,
-            kind: "classic",
-            dataHex: "00",
-            cycleMs: 100,
-            cycleMode: "manual",
-            brs: false,
-            dlc: 0,
-          });
-        }
-        return next;
-      });
+      const newIds: string[] = [];
+      for (const m of byMessage.values()) {
+        const id = crypto.randomUUID();
+        newIds.push(id);
+        // Adding from the DBC: derive kind / BRS / payload length from
+        // the message, and pre-fill the cycle period from its
+        // GenMsgCycleTime attribute when present. (Hand-editing an id
+        // to match a message does NOT touch the period — see the row's
+        // descriptor effect.)
+        const desc = await invoke<MessageDescriptorRecord | null>(
+          "describe_message",
+          { messageId: m.canId, extended: m.extended },
+        ).catch(() => null);
+        const kind: TransmitFrameConfig["kind"] = desc?.isFd ? "fd" : "classic";
+        const len = desc ? desc.expectedLen : maxDataBytesForKind(kind);
+        const cfg: TransmitFrameConfig = {
+          id,
+          description: "",
+          busId: m.busId ?? fallbackBus,
+          canId: m.canId,
+          extended: m.extended,
+          kind,
+          dataHex: zeroDataHex(Math.min(len, maxDataBytesForKind(kind))),
+          cycleMs:
+            desc?.genMsgCycleTimeMs && desc.genMsgCycleTimeMs > 0
+              ? desc.genMsgCycleTimeMs
+              : 100,
+          cycleMode: "manual",
+          brs: desc?.brs ?? false,
+          dlc: 0,
+        };
+        void invoke("set_transmit_frame", { id, frame: configToFrame(cfg) }).catch(
+          () => {},
+        );
+      }
+      if (newIds.length > 0) {
+        registry.update(elementId, {
+          frameIds: [...frameIdsRef.current, ...newIds],
+        });
+      }
     },
-    [project.buses],
+    [project.buses, registry, elementId],
   );
 
-  const removeFrame = useCallback((id: string) => {
-    setFrames((prev) => prev.filter((f) => f.id !== id));
-  }, []);
+  const removeFrame = useCallback(
+    (id: string) => {
+      void invoke("remove_transmit_frame", { id }).catch(() => {});
+      registry.update(elementId, {
+        frameIds: frameIdsRef.current.filter((x) => x !== id),
+      });
+    },
+    [registry, elementId],
+  );
 
-  const reorderFrames = useCallback((draggedId: string, beforeId: string | null) => {
-    setFrames((prev) => {
-      const dragged = prev.find((f) => f.id === draggedId);
-      if (!dragged) return prev;
-      const without = prev.filter((f) => f.id !== draggedId);
+  const reorderFrames = useCallback(
+    (draggedId: string, beforeId: string | null) => {
+      const ids = frameIdsRef.current;
+      if (!ids.includes(draggedId)) return;
+      const without = ids.filter((x) => x !== draggedId);
+      let next: string[];
       if (beforeId === null) {
-        return [...without, dragged];
+        next = [...without, draggedId];
+      } else {
+        const idx = without.indexOf(beforeId);
+        next =
+          idx < 0
+            ? [...without, draggedId]
+            : [...without.slice(0, idx), draggedId, ...without.slice(idx)];
       }
-      const idx = without.findIndex((f) => f.id === beforeId);
-      if (idx < 0) return [...without, dragged];
-      return [...without.slice(0, idx), dragged, ...without.slice(idx)];
-    });
-  }, []);
-
-  // Client-side cyclic scheduler. One handle per frame id while its
-  // periodic mode is "started." Cleared on unmount, panel close,
-  // frame removal, period change, or mode flip back to manual.
-  const cyclicTimersRef = useRef<Map<string, number>>(new Map());
-  const [cyclicTick, setCyclicTick] = useState(0);
-
-  const stopCyclic = useCallback((id: string) => {
-    const handle = cyclicTimersRef.current.get(id);
-    if (handle !== undefined) {
-      window.clearInterval(handle);
-      cyclicTimersRef.current.delete(id);
-      setCyclicTick((t) => t + 1);
-    }
-  }, []);
-
-  // Mirror the project bus list into a ref so the cyclic scheduler's
-  // captured closure sees the current names when it builds status
-  // text. Frame itself is passed fresh per tick by `startCyclic`.
-  const busesRef = useRef<readonly Bus[]>(project.buses);
-  busesRef.current = project.buses;
-
-  // Track the latest "connected bus ids" in a ref so the cyclic
-  // scheduler's captured closure can skip ticks against a bus whose
-  // session goes down mid-cycle, without restarting the interval.
-  const connectedBusIdsRef = useRef<readonly string[]>(project.connectedBusIds);
-  connectedBusIdsRef.current = project.connectedBusIds;
-
-  const sendOnce = useCallback(async (frame: TransmitFrameConfig) => {
-    if (!frame.busId) return;
-    // No-op when the bus's session isn't up. Per-frame "is this bus
-    // connected" is the projectContext's job; the transmit panel just
-    // gates on the answer.
-    if (!connectedBusIdsRef.current.includes(frame.busId)) return;
-    const parsed = parseFrameForTransmit(frame);
-    if (parsed.kind === "err") return;
-    try {
-      await invoke("transmit_frame", {
-        request: { busId: frame.busId, ...parsed.request },
-      });
-    } catch {
-      // Errors land in the system log via the host; nothing to surface
-      // here. (Frontend-only validation errors are caught up-front in
-      // `parseFrameForTransmit` and the input cells refuse bad chars.)
-    }
-  }, []);
-
-  const startCyclic = useCallback(
-    (frame: TransmitFrameConfig) => {
-      stopCyclic(frame.id);
-      if (frame.cycleMs <= 0) return;
-      const handle = window.setInterval(() => {
-        void sendOnce(frame);
-      }, frame.cycleMs);
-      cyclicTimersRef.current.set(frame.id, handle);
-      void sendOnce(frame);
-      setCyclicTick((t) => t + 1);
+      registry.update(elementId, { frameIds: next });
+      // Keep the host pool order aligned with the displayed group order
+      // (single-panel common case); other panels' display order is
+      // still governed by their own `frameIds`.
+      void invoke("reorder_transmit_frames", { ids: next }).catch(() => {});
     },
-    [sendOnce, stopCyclic],
+    [registry, elementId],
   );
 
-  // Stop all schedules on unmount.
-  useEffect(() => {
-    return () => {
-      for (const handle of cyclicTimersRef.current.values()) {
-        window.clearInterval(handle);
-      }
-      cyclicTimersRef.current.clear();
-    };
-  }, []);
+  // Running state per id comes from the host (a live periodic thread),
+  // not a client timer map.
+  const runningById = useMemo(() => {
+    const m = new Map<string, boolean>();
+    for (const r of pool) m.set(r.id, r.running);
+    return m;
+  }, [pool]);
 
-  // If a frame is removed or its period changed mid-schedule, kill its
-  // timer so the running closure can't keep firing against stale data.
-  useEffect(() => {
-    const live = new Set(frames.map((f) => f.id));
-    for (const id of [...cyclicTimersRef.current.keys()]) {
-      if (!live.has(id)) {
-        window.clearInterval(cyclicTimersRef.current.get(id)!);
-        cyclicTimersRef.current.delete(id);
-      }
-    }
-  }, [frames]);
+  const sendOnce = useCallback((id: string) => {
+    void invoke("transmit_frame_once", { id }).catch(() => {});
+  }, []);
+  const startCyclic = useCallback((id: string) => {
+    void invoke("start_periodic_transmit", { id }).catch(() => {});
+  }, []);
+  const stopCyclic = useCallback((id: string) => {
+    void invoke("stop_periodic_transmit", { id }).catch(() => {});
+  }, []);
 
   // Build the unique-by-(message_id, extended) catalog of DBC message
   // names so each row can resolve its id → message name.
@@ -340,14 +377,10 @@ export function TransmitPanel(props: IDockviewPanelProps) {
             onChange={(mut) => updateFrame(f.id, mut)}
             onRemove={() => removeFrame(f.id)}
             onReorder={reorderFrames}
-            onSend={() => sendOnce(f)}
-            onStartCyclic={() => startCyclic(f)}
+            onSend={() => sendOnce(f.id)}
+            onStartCyclic={() => startCyclic(f.id)}
             onStopCyclic={() => stopCyclic(f.id)}
-            cyclicActive={cyclicTimersRef.current.has(f.id)}
-            // Reading `cyclicTick` here in the parent keeps the child
-            // re-rendering each time the timers map mutates without
-            // having to thread the ref deeper.
-            cyclicTick={cyclicTick}
+            cyclicActive={runningById.get(f.id) ?? false}
           />
         ))}
         {frames.length > 0 && (
@@ -374,7 +407,6 @@ interface FrameRowProps {
   onStartCyclic: () => void;
   onStopCyclic: () => void;
   cyclicActive: boolean;
-  cyclicTick: number;
 }
 
 function TransmitFrameRow({
@@ -419,18 +451,25 @@ function TransmitFrameRow({
     };
   }, [frame.canId, frame.extended]);
 
-  // DBC drives FD / BRS. When the id binds to a DBC message, mirror
-  // the DBC's `isFd` onto the frame's `kind` and `brs`. If the DBC
-  // ever updates the answer for the same id, the next descriptor
+  // DBC drives FD / BRS / payload length. When the id binds to a DBC
+  // message, mirror the DBC's `isFd` onto the frame's `kind` / `brs`
+  // and re-fit the payload to the message's declared byte length
+  // (preserving the bytes the user already set — see
+  // `resizeDataHexPreserving`). This is what makes a frame decodable
+  // (and plottable) as soon as its id matches a message, instead of
+  // staying truncated until a value is hand-edited. The cycle period
+  // and manual/periodic mode are deliberately left untouched here —
+  // those are only seeded when a frame is first added from the DBC. If
+  // the DBC updates the answer for the same id, the next descriptor
   // fetch reapplies. Unbinding (changing id away from a DBC message)
-  // leaves the most recent DBC-derived values in place — the user
-  // can then change them manually.
+  // leaves the most recent DBC-derived values in place.
   useEffect(() => {
     if (!descriptor) return;
     const target: TransmitFrameConfig["kind"] = descriptor.isFd
       ? "fd"
       : "classic";
     const targetBrs = descriptor.brs;
+    const targetLen = Math.min(descriptor.expectedLen, maxDataBytesForKind(target));
     onChange((f) => {
       if (f.kind === "remote" || f.kind === "error") {
         // Don't yank a deliberately remote/error frame into a regular
@@ -439,8 +478,11 @@ function TransmitFrameRow({
         // space; if the user picked one of these kinds, they meant it.)
         return f;
       }
-      if (f.kind === target && f.brs === targetBrs) return f;
-      return { ...f, kind: target, brs: targetBrs };
+      const targetDataHex = resizeDataHexPreserving(f.dataHex, targetLen);
+      if (f.kind === target && f.brs === targetBrs && f.dataHex === targetDataHex) {
+        return f;
+      }
+      return { ...f, kind: target, brs: targetBrs, dataHex: targetDataHex };
     });
   }, [descriptor, onChange]);
 
@@ -501,9 +543,10 @@ function TransmitFrameRow({
           <input
             className="tx-name"
             type="text"
-            value={frame.name}
-            onChange={(e) => set("name", e.target.value)}
-            aria-label="frame name"
+            value={frame.description}
+            onChange={(e) => set("description", e.target.value)}
+            placeholder="description"
+            aria-label="frame description"
           />
           <select
             className={`tx-bus ${frame.busId ? "" : "tx-warn"}`}
@@ -526,6 +569,7 @@ function TransmitFrameRow({
             canId={frame.canId}
             extended={frame.extended}
             onChange={(canId) => set("canId", canId)}
+            onExtendedChange={(ext) => set("extended", ext)}
           />
           {messageName && (
             <span className="tx-dbc-name" title="DBC message name">
@@ -583,10 +627,12 @@ interface FrameShapeStripProps {
   onChange: (mut: (f: TransmitFrameConfig) => TransmitFrameConfig) => void;
 }
 
-/// Frame-shape strip — kind, extended, BRS (FD only), DLC (remote only).
-/// `kind` and `brs` come from the DBC when the id binds to a message;
-/// the controls are read-only in that case ("from DBC"). For
-/// unbound frames the user picks both directly.
+/// Frame-shape strip — kind, BRS (FD only), DLC (remote only). The
+/// standard/extended toggle lives on the identity line next to the
+/// CAN id (see `CanIdInput`), not here. `kind` and `brs` come from the
+/// DBC when the id binds to a message; the controls are read-only in
+/// that case ("from DBC"). For unbound frames the user picks both
+/// directly.
 function FrameShapeStrip({ frame, descriptor, onChange }: FrameShapeStripProps) {
   const set = <K extends keyof TransmitFrameConfig>(
     key: K,
@@ -619,14 +665,6 @@ function FrameShapeStrip({ frame, descriptor, onChange }: FrameShapeStripProps) 
           <option value="remote">remote</option>
           <option value="error">error</option>
         </select>
-      </label>
-      <label className="tx-shape-field tx-shape-checkbox">
-        <input
-          type="checkbox"
-          checked={frame.extended}
-          onChange={(e) => set("extended", e.target.checked)}
-        />
-        <span>extended id</span>
       </label>
       {frame.kind === "fd" && (
         <label className="tx-shape-field tx-shape-checkbox">
@@ -1113,22 +1151,9 @@ function CycleControls({
         </button>
       ) : (
         <>
-          <input
-            type="number"
-            className="tx-period"
-            min={1}
-            value={frame.cycleMs}
-            onChange={(e: ChangeEvent<HTMLInputElement>) => {
-              const ms = Math.max(0, e.target.valueAsNumber || 0);
-              onChange((f) => ({ ...f, cycleMs: ms }));
-              if (cyclicActive) {
-                // Period change while running: restart so the new
-                // interval takes effect immediately.
-                onStopCyclic();
-              }
-            }}
-            aria-label="cycle period (ms)"
-            title="period in milliseconds"
+          <PeriodInput
+            cycleMs={frame.cycleMs}
+            onCommit={(ms) => onChange((f) => ({ ...f, cycleMs: ms }))}
           />
           <span className="tx-period-unit">ms</span>
           {cyclicActive ? (
@@ -1152,20 +1177,71 @@ function CycleControls({
   );
 }
 
+/// Period (ms) input with revert-on-blur. The user can type freely
+/// (including a transient empty / invalid value); blurring commits a
+/// positive integer, but a non-positive / empty value reverts to the
+/// last valid `cycleMs` **without dispatching** — so clearing the
+/// field mid-edit never sends `cycle_ms = 0` to the host (which would
+/// stop a running periodic). The committed value flows through
+/// `set_transmit_frame`; a running periodic re-pitches on its next
+/// host-side tick.
+function PeriodInput({
+  cycleMs,
+  onCommit,
+}: {
+  cycleMs: number;
+  onCommit: (ms: number) => void;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  return (
+    <input
+      type="number"
+      className="tx-period"
+      min={1}
+      value={draft ?? String(cycleMs)}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => {
+        if (draft === null) return;
+        const ms = Math.floor(Number(draft));
+        setDraft(null);
+        if (Number.isFinite(ms) && ms > 0) onCommit(ms);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();
+      }}
+      aria-label="cycle period (ms)"
+      title="period in milliseconds"
+    />
+  );
+}
+
 interface CanIdInputProps {
   canId: number;
   extended: boolean;
   onChange: (canId: number) => void;
+  onExtendedChange: (extended: boolean) => void;
 }
 
-/// Hex CAN id input. Editing the field accepts only hex digits;
-/// invalid input is rejected at the keypress level.
-function CanIdInput({ canId, extended, onChange }: CanIdInputProps) {
+/// Hex CAN id input with an inline standard/extended toggle. The
+/// `s:`/`x:` prefix is a button that flips the addressing mode in
+/// place — the toggle lives right next to the id (top level) rather
+/// than buried in the expanded frame-shape strip. Editing the field
+/// accepts only hex digits; invalid input is rejected at the keypress
+/// level.
+function CanIdInput({ canId, extended, onChange, onExtendedChange }: CanIdInputProps) {
   const width = extended ? 8 : 3;
   const text = canId.toString(16).toUpperCase().padStart(width, "0");
   return (
     <div className="tx-canid">
-      <span className="tx-canid-prefix">{extended ? "x" : "s"}:0x</span>
+      <button
+        type="button"
+        className="tx-canid-prefix"
+        onClick={() => onExtendedChange(!extended)}
+        title={extended ? "extended (29-bit) id — click for standard" : "standard (11-bit) id — click for extended"}
+        aria-label={extended ? "extended id (click to switch to standard)" : "standard id (click to switch to extended)"}
+      >
+        {extended ? "x" : "s"}:0x
+      </button>
       <input
         type="text"
         className="tx-canid-input"
@@ -1320,19 +1396,23 @@ function onFrameRowDrop(
   onReorder(draggedId, rowFrameId);
 }
 
-/// Persisted shape for one transmit frame. Lives in the dockview
-/// panel `params.frames` array; the host doesn't interpret it.
+/// The panel's per-row working shape — a UI-friendly view of one host
+/// [`TransmitFrameRecord`](./types). `dataHex` is the editable bytes
+/// string (the host model carries `request.data` as a byte array);
+/// `cycleMode` mirrors the host `mode`. `description` is the optional
+/// user annotation — the displayed *name* is the DBC message name
+/// resolved from `canId`, not a field here.
 ///
-/// The destination bus is **per-frame** (`busId`) — the panel
-/// auto-syncs the transmit element's `sinks` to the union of its
-/// frames' bus picks so the graph view still shows which buses this
-/// panel is wired to.
+/// The destination bus is **per-frame** (`busId`); the panel auto-syncs
+/// the transmit element's `sinks` to the union of its frames' bus picks
+/// so the graph view shows which buses this panel is wired to.
 export interface TransmitFrameConfig {
   id: string;
-  name: string;
+  description: string;
   /// Logical bus this frame transmits onto. `null` only on a freshly
   /// added frame in a project with no buses yet — the panel surfaces
-  /// a warning until the user picks one.
+  /// a warning until the user picks one. Maps to the host's
+  /// `request.busId` (empty string when null).
   busId: string | null;
   canId: number;
   extended: boolean;
@@ -1347,37 +1427,74 @@ export interface TransmitFrameConfig {
   dlc: number;
 }
 
-type ParseResult =
-  | {
-      kind: "ok";
-      request: {
-        id: number;
-        extended: boolean;
-        kind: TransmitFrameConfig["kind"];
-        data: number[];
-        brs: boolean;
-        esi: boolean;
-        dlc: number;
-      };
-    }
-  | { kind: "err"; message: string };
+/// Field-wise equality of two working configs (all fields are
+/// primitives — `dataHex` carries the payload as a string), used to
+/// drop no-op `set_transmit_frame` writes.
+function configsEqual(a: TransmitFrameConfig, b: TransmitFrameConfig): boolean {
+  return (
+    a.id === b.id &&
+    a.description === b.description &&
+    a.busId === b.busId &&
+    a.canId === b.canId &&
+    a.extended === b.extended &&
+    a.kind === b.kind &&
+    a.dataHex === b.dataHex &&
+    a.cycleMs === b.cycleMs &&
+    a.cycleMode === b.cycleMode &&
+    a.brs === b.brs &&
+    a.dlc === b.dlc
+  );
+}
 
-function parseFrameForTransmit(frame: TransmitFrameConfig): ParseResult {
-  const max = frame.kind === "classic" ? 8 : 64;
-  const data = parseHexBytes(frame.dataHex, max);
+/// Map a host TX-message record into the panel's working shape.
+function recordToConfig(r: TransmitFrameRecord): TransmitFrameConfig {
   return {
-    kind: "ok",
+    id: r.id,
+    description: r.description,
+    busId: r.request.busId === "" ? null : r.request.busId,
+    canId: r.request.id,
+    extended: r.request.extended,
+    kind: r.request.kind,
+    dataHex: bytesToHexString(r.request.data),
+    cycleMs: r.cycleMs,
+    cycleMode: r.mode === "periodic" ? "periodic" : "manual",
+    brs: r.request.brs,
+    dlc: r.request.dlc,
+  };
+}
+
+/// Map the panel's working shape back to the host `set_transmit_frame`
+/// payload. Carries `id` (the host re-stamps it from the command arg)
+/// so the registry round-trips the same entry.
+function configToFrame(c: TransmitFrameConfig): {
+  id: string;
+  description: string;
+  request: TransmitRequestRecord;
+  cycleMs: number;
+  mode: TransmitMode;
+} {
+  const max = c.kind === "classic" ? 8 : 64;
+  const data =
+    c.kind === "remote" || c.kind === "error"
+      ? []
+      : parseHexBytes(c.dataHex, max);
+  return {
+    id: c.id,
+    description: c.description,
     request: {
-      id: frame.canId,
-      extended: frame.extended,
-      kind: frame.kind,
+      busId: c.busId ?? "",
+      id: c.canId,
+      extended: c.extended,
+      kind: c.kind,
       data,
-      brs: frame.brs,
+      brs: c.brs,
       // ESI is dropped from the UI; host still accepts the field for
       // wire compatibility.
       esi: false,
-      dlc: frame.dlc,
+      dlc: c.dlc,
     },
+    cycleMs: c.cycleMs,
+    mode: c.cycleMode === "periodic" ? "periodic" : "manual",
   };
 }
 
@@ -1397,39 +1514,28 @@ function bytesToHexString(bytes: number[]): string {
     .join("");
 }
 
-function parseFramesParam(value: unknown): TransmitFrameConfig[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter(isTransmitFrameConfig).map((f) => ({ ...f }));
+/// Maximum payload bytes a frame of this kind can carry: 8 for classic,
+/// 64 for FD, 0 for remote / error (no payload). Used to size a fresh
+/// frame's default payload when no DBC message constrains the length.
+export function maxDataBytesForKind(kind: TransmitFrameConfig["kind"]): number {
+  return kind === "classic" ? 8 : kind === "fd" ? 64 : 0;
 }
 
-function isTransmitFrameConfig(v: unknown): v is TransmitFrameConfig {
-  if (v == null || typeof v !== "object") return false;
-  const o = v as Record<string, unknown>;
-  if (
-    typeof o.id !== "string" ||
-    typeof o.name !== "string" ||
-    (o.busId != null && typeof o.busId !== "string") ||
-    typeof o.canId !== "number" ||
-    typeof o.extended !== "boolean" ||
-    !(o.kind === "classic" || o.kind === "fd" || o.kind === "remote" || o.kind === "error") ||
-    typeof o.dataHex !== "string" ||
-    typeof o.cycleMs !== "number" ||
-    typeof o.brs !== "boolean" ||
-    typeof o.dlc !== "number"
-  ) {
-    return false;
-  }
-  // `cycleMode` was added with the panel rewrite; old saved frames
-  // are coerced to "manual" so the user explicitly opts back in to
-  // periodic transmit on first edit.
-  if (
-    o.cycleMode !== undefined &&
-    o.cycleMode !== "manual" &&
-    o.cycleMode !== "periodic"
-  ) {
-    return false;
-  }
-  // Pre-rewrite frames carry `esi: boolean` — ignored, not required.
-  (o as { cycleMode?: TransmitFrameConfig["cycleMode"] }).cycleMode ??= "manual";
-  return true;
+/// A zero-filled payload of `len` bytes as a hex string — the default
+/// payload for a freshly-created frame so it decodes (and plots)
+/// immediately instead of being silently dropped for being too short.
+export function zeroDataHex(len: number): string {
+  return bytesToHexString(new Array(Math.max(0, len)).fill(0));
 }
+
+/// Resize `hex` to exactly `len` bytes, preserving the leading bytes
+/// the user already set: pad with `0x00` when growing, drop trailing
+/// bytes when shrinking. Used to re-fit a frame's payload to its DBC
+/// message's declared length on an id match without clobbering the
+/// meaningful bytes.
+export function resizeDataHexPreserving(hex: string, len: number): string {
+  const bytes = parseHexBytes(hex, 64).slice(0, Math.max(0, len));
+  while (bytes.length < len) bytes.push(0);
+  return bytesToHexString(bytes);
+}
+

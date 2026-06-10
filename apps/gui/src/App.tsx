@@ -11,6 +11,7 @@ import type {
   DbcInfo,
   DbcRef,
   InterfaceBinding,
+  LocalVirtualBusDef,
   LogFinished,
   OpenLogResult,
   Project,
@@ -20,7 +21,12 @@ import type {
   TraceFrameRecord,
   TraceGrew,
 } from "./types";
-import { PROJECT_SCHEMA_VERSION, isLocalBinding, resolveServer } from "./types";
+import {
+  PROJECT_SCHEMA_VERSION,
+  isLocalBinding,
+  localVbusId,
+  resolveServer,
+} from "./types";
 import { useSidecarStatus } from "./sidecarStatus";
 import { TitleBar } from "./TitleBar";
 import { TracePanel } from "./TracePanel";
@@ -58,7 +64,13 @@ import {
   isProjectElement,
   normalizeElement,
 } from "./projectElements";
-import { type TraceState, clearedTrace, freshTrace, reanchorToSession } from "./trace";
+import {
+  type TraceState,
+  clearTraceStartOffset,
+  clearedTrace,
+  freshTrace,
+  reanchorToSession,
+} from "./trace";
 import { defaultBusColor } from "./busColor";
 import {
   BY_ID_PANEL_COMPONENT,
@@ -159,6 +171,10 @@ export function App() {
   // Phase 6: logical buses + interface bindings. Project-owned state.
   const [buses, setBuses] = useState<Bus[]>([]);
   const [interfaceBindings, setInterfaceBindings] = useState<InterfaceBinding[]>([]);
+  // Phase 13: virtual buses owned by the project (ADR 0021).
+  const [localVirtualBuses, setLocalVirtualBuses] = useState<LocalVirtualBusDef[]>(
+    [],
+  );
   // Multi-server remote-session tracking, keyed by address. Connect/
   // Disconnect drives this; entries clear on a server-side hang up via
   // `log-finished` (which doesn't carry an address — we treat it as
@@ -166,6 +182,14 @@ export function App() {
   const [remoteSessions, setRemoteSessions] = useState<Map<string, RemoteStatus>>(
     () => new Map(),
   );
+  // Snapshot of the per-bus hardware configuration the host was told
+  // to apply on the most recent connect, keyed by bus id. Captured at
+  // connect time and cleared on disconnect; the banner compares the
+  // live `buses` state against this to flag pending hardware config
+  // changes the user must reconnect to apply.
+  const [busConfigInFlight, setBusConfigInFlight] = useState<
+    Map<string, { speed_bps: number | null; fd: boolean | null; fd_data_speed_bps: number | null }>
+  >(() => new Map());
   // Path of the open project file, or null for an unsaved workspace.
   const [projectPath, setProjectPath] = useState<string | null>(null);
   // True when the workspace has changed since it was last saved/opened.
@@ -212,9 +236,12 @@ export function App() {
   /// every initial warn/error counts as unread.
   const [readHighWater, setReadHighWater] = useState<number>(-1);
 
-  // Captured once: timestamp of absolute row 0. Survives the user
-  // scrolling anywhere in the trace; reset on Clear / new source.
-  const [baseTimestampSeconds, setBaseTimestampSeconds] = useState<number | null>(
+  // Session-start time (Unix epoch seconds) — every trace view renders
+  // frame timestamps relative to this. Driven by the `trace-grew` event,
+  // which is in turn driven by `start_session` on the host. Single zero
+  // point per session; survives panel close/reopen because it's app
+  // state, not panel state. `null` until the first event arrives.
+  const [sessionStartSeconds, setSessionStartSeconds] = useState<number | null>(
     null,
   );
 
@@ -253,7 +280,7 @@ export function App() {
   const buildFreshElement = (kind: ProjectElementKind, id: string): ProjectElement => {
     switch (kind) {
       case "transmit":
-        return { kind, id, sinks: busesRef.current.map((b) => b.id) };
+        return { kind, id, sinks: busesRef.current.map((b) => b.id), frameIds: [] };
       case "filter":
         return { kind, id, sources: ["*"] };
       default:
@@ -309,14 +336,37 @@ export function App() {
     },
     [],
   );
-  const removeElement = useCallback((id: string) => {
-    setRegistry((prev) => prev.filter((e) => e.element.id !== id));
-    const api = dockApiRef.current;
-    const panel = api?.panels.find(
-      (p) => (p.params as { elementId?: unknown } | undefined)?.elementId === id,
-    );
-    if (api && panel) api.removePanel(panel);
-  }, []);
+  const removeElement = useCallback(
+    (id: string) => {
+      // Removing a *transmit* element (the explicit "Remove element"
+      // action — not closing its panel) deletes its TX messages from
+      // the host pool too, which also stops any running periodic. A
+      // message still grouped by another transmit element survives
+      // (the pool is shared; only this group is going away). Phase 13
+      // Step 9.
+      const removed = registry.find((e) => e.element.id === id);
+      if (removed && removed.element.kind === "transmit") {
+        const stillReferenced = new Set<string>();
+        for (const e of registry) {
+          if (e.element.id !== id && e.element.kind === "transmit") {
+            for (const fid of e.element.frameIds) stillReferenced.add(fid);
+          }
+        }
+        for (const fid of removed.element.frameIds) {
+          if (!stillReferenced.has(fid)) {
+            void invoke("remove_transmit_frame", { id: fid }).catch(() => {});
+          }
+        }
+      }
+      setRegistry((prev) => prev.filter((e) => e.element.id !== id));
+      const api = dockApiRef.current;
+      const panel = api?.panels.find(
+        (p) => (p.params as { elementId?: unknown } | undefined)?.elementId === id,
+      );
+      if (api && panel) api.removePanel(panel);
+    },
+    [registry],
+  );
   const plotCounterRef = useRef(0);
 
   const invalidateCache = useCallback(() => {
@@ -428,14 +478,21 @@ export function App() {
 
     unlistens.push(
       listen<TraceGrew>("trace-grew", (event) => {
-        const { count: newCount, frames_per_second, tail } = event.payload;
+        const {
+          count: newCount,
+          frames_per_second,
+          session_start_seconds,
+          tail,
+        } = event.payload;
         setCount((prev) => {
           if (newCount < prev) {
             invalidateCache();
-            setBaseTimestampSeconds(null);
           }
           return newCount;
         });
+        setSessionStartSeconds(
+          session_start_seconds > 0 ? session_start_seconds : null,
+        );
         setFramesPerSecond(frames_per_second);
         tailFramesRef.current = tail;
         tailStartRef.current = tail.length > 0 ? tail[0].index : newCount;
@@ -484,20 +541,28 @@ export function App() {
     });
   }, [count]);
 
-  // Once row 0 is available, capture its timestamp as the zero-point
-  // for the time column.
+  // Drop every trace view's per-view time-column offset when the
+  // session itself restarts (`sessionStartSeconds` changes). The
+  // offset is in session-relative seconds and stops meaning anything
+  // sensible the moment the session it referenced is gone — left
+  // alone, a stale value from the previous session shifts the next
+  // session's clock and shows negative deltas. The Connect / toolbar-
+  // Clear paths null `sessionStartSeconds` themselves; this effect
+  // also catches the host-initiated re-anchor in BLF replay (first
+  // frame becomes session start) and any other future trigger.
   useEffect(() => {
-    if (baseTimestampSeconds !== null) return;
-    if (count === 0) return;
-    void invoke<TraceFrameRecord[]>("fetch_trace_range", {
-      start: 0,
-      end: 1,
-    }).then((frames) => {
-      if (frames.length > 0) {
-        setBaseTimestampSeconds(frames[0].timestamp_seconds);
-      }
+    setRegistry((prev) => {
+      let changed = false;
+      const next = prev.map((e) => {
+        const t = clearTraceStartOffset(e.trace);
+        if (t === e.trace) return e;
+        changed = true;
+        return { ...e, trace: t };
+      });
+      return changed ? next : prev;
     });
-  }, [count, baseTimestampSeconds]);
+  }, [sessionStartSeconds]);
+
 
   // Phase 6: BLF import gained a channel → bus mapping step. The
   // outer pending state holds the picked BLF path + its distinct
@@ -545,7 +610,7 @@ export function App() {
       try {
         await invoke("clear_trace_store");
         invalidateCache();
-        setBaseTimestampSeconds(null);
+        setSessionStartSeconds(null);
         setCount(0);
         startAllElements();
         const channelBusMapping = channels.map((ch) => ({
@@ -648,7 +713,7 @@ export function App() {
       setState({ kind: "error", message: String(err) });
     }
     invalidateCache();
-    setBaseTimestampSeconds(null);
+    setSessionStartSeconds(null);
     setCount(0);
     startAllElements();
   }, [invalidateCache, startAllElements]);
@@ -659,7 +724,10 @@ export function App() {
   // bound interfaces on that server. Bindings with the `"local"`
   // sentinel are resolved to the live sidecar address — if the
   // sidecar isn't ready yet they're dropped from this attempt with a
-  // System Message rather than failing the whole connect.
+  // System Message rather than failing the whole connect. Bindings
+  // with the `local-vbus://` scheme open an in-process session
+  // against the named virtual bus (ADR 0021) — the host dispatches on
+  // the binding's `kind`; the frontend treats every binding the same.
   const handleConnect = useCallback(async () => {
     if (interfaceBindings.length === 0) {
       setState({
@@ -697,7 +765,7 @@ export function App() {
     try {
       await invoke("clear_trace_store");
       invalidateCache();
-      setBaseTimestampSeconds(null);
+      setSessionStartSeconds(null);
       setCount(0);
       startAllElements();
     } catch (err) {
@@ -715,7 +783,16 @@ export function App() {
     for (const address of servers) {
       const bindings = interfaceBindings
         .filter((b) => resolveServer(b.server, sidecarAddress) === address)
-        .map((b) => ({ interface: b.interface, busId: b.bus_id }));
+        .map((b) => {
+          const bus = buses.find((bb) => bb.id === b.bus_id);
+          return {
+            interface: b.interface,
+            busId: b.bus_id,
+            speedBps: bus?.speed_bps ?? null,
+            fd: bus?.fd ?? null,
+            fdDataSpeedBps: bus?.fd_data_speed_bps ?? null,
+          };
+        });
       try {
         const result = await invoke<RemoteSessionResult>(
           "connect_remote_server",
@@ -726,6 +803,19 @@ export function App() {
           next.set(address, { kind: "running", result });
           return next;
         });
+        // Snapshot the hardware config we just pushed so the pending-
+        // change banner can spot subsequent edits.
+        setBusConfigInFlight((prev) => {
+          const next = new Map(prev);
+          for (const b of bindings) {
+            next.set(b.busId, {
+              speed_bps: b.speedBps ?? null,
+              fd: b.fd ?? null,
+              fd_data_speed_bps: b.fdDataSpeedBps ?? null,
+            });
+          }
+          return next;
+        });
       } catch (err) {
         setRemoteSessions((prev) => {
           const next = new Map(prev);
@@ -734,7 +824,7 @@ export function App() {
         });
       }
     }
-  }, [interfaceBindings, sidecarAddress, invalidateCache, startAllElements]);
+  }, [buses, interfaceBindings, sidecarAddress, invalidateCache, startAllElements]);
 
   // Tear down every active session. The host drains its session map.
   const handleDisconnect = useCallback(async () => {
@@ -744,6 +834,9 @@ export function App() {
       setState({ kind: "error", message: String(err) });
     }
     setRemoteSessions(new Map());
+    // Disconnecting voids the pending-change comparison: there's
+    // nothing in flight to compare against.
+    setBusConfigInFlight(new Map());
   }, []);
 
   // Reset to the seed workspace: one trace element + its panel, plus
@@ -793,9 +886,10 @@ export function App() {
         // addresses now live per-binding on `interface_bindings`. Kept
         // null for v3 schema compatibility.
         remote_address: null,
+        local_virtual_buses: localVirtualBuses,
       };
     },
-    [registry, dbcPaths, dbcBuses, buses, interfaceBindings],
+    [registry, dbcPaths, dbcBuses, buses, interfaceBindings, localVirtualBuses],
   );
 
   // Record which project is "open" — both the React state and the
@@ -848,8 +942,14 @@ export function App() {
         ? project.interface_bindings
         : [];
       const incomingDbcs: DbcRef[] = Array.isArray(project.dbcs) ? project.dbcs : [];
+      const incomingVbuses: LocalVirtualBusDef[] = Array.isArray(
+        project.local_virtual_buses,
+      )
+        ? project.local_virtual_buses
+        : [];
       setBuses(incomingBuses);
       setInterfaceBindings(incomingBindings);
+      setLocalVirtualBuses(incomingVbuses);
       const scoping: Record<string, string[]> = {};
       for (const d of incomingDbcs) scoping[d.path] = d.buses ?? [];
       setDbcBuses(scoping);
@@ -857,6 +957,14 @@ export function App() {
         incomingDbcs.map((d) => d.path),
         scoping,
       );
+      // Phase 13: rebuild host-side virtual buses from project defs
+      // (ADR 0021). Per-binding session participants are opened on
+      // Connect, not here.
+      void invoke("replay_local_virtual_buses", {
+        defs: incomingVbuses,
+      }).catch((err) => {
+        console.error("replay_local_virtual_buses failed", err);
+      });
     },
     [loadDbcSet],
   );
@@ -870,11 +978,21 @@ export function App() {
     setDbcBuses({});
     setBuses([]);
     setInterfaceBindings([]);
+    setLocalVirtualBuses([]);
     void invoke("disconnect_remote_server", { address: null }).catch(() => {});
     setRemoteSessions(new Map());
+    setBusConfigInFlight(new Map());
+    // Drop any host-side local virtual buses left from the
+    // previous project (ADR 0021).
+    void invoke("replay_local_virtual_buses", {
+      defs: [],
+    }).catch(() => {});
+    // Phase 13 Step 9: drop the host TX-message pool too, so a New
+    // project starts with no transmit frames.
+    void invoke("clear_transmit_frames").catch(() => {});
     void invoke("clear_trace_store").catch(() => {});
     invalidateCache();
-    setBaseTimestampSeconds(null);
+    setSessionStartSeconds(null);
     setCount(0);
     setDirty(false);
   }, [seedDefaultLayout, rememberProject, loadDbcSet, invalidateCache]);
@@ -1039,23 +1157,78 @@ export function App() {
     setBuses((prev) => prev.map((b) => (b.id === id ? { ...b, color } : b)));
     setDirty(true);
   }, []);
-  // Phase 6: interface-binding mutations.
+  const handleSetBusSpeed = useCallback((id: string, speed_bps: number | null) => {
+    setBuses((prev) =>
+      prev.map((b) => (b.id === id ? { ...b, speed_bps } : b)),
+    );
+    setDirty(true);
+  }, []);
+  const handleSetBusFd = useCallback((id: string, fd: boolean | null) => {
+    setBuses((prev) => prev.map((b) => (b.id === id ? { ...b, fd } : b)));
+    setDirty(true);
+  }, []);
+  const handleSetBusFdDataSpeed = useCallback(
+    (id: string, fd_data_speed_bps: number | null) => {
+      setBuses((prev) =>
+        prev.map((b) => (b.id === id ? { ...b, fd_data_speed_bps } : b)),
+      );
+      setDirty(true);
+    },
+    [],
+  );
+  // Phase 6: interface-binding mutations. Each project bus has at
+  // most one binding (key is `bus_id`); multiple bindings may target
+  // the same source — Phase 13 Step 6 made the sidecar and the
+  // in-process bus both fan out to N subscribers. Binding mutations
+  // are pure project state — the host-side session for the binding
+  // is opened on Connect, not on bind.
   const handleAddBinding = useCallback((binding: InterfaceBinding) => {
     setInterfaceBindings((prev) => {
-      // Last-write-wins on (server, interface).
-      const filtered = prev.filter(
-        (b) => !(b.server === binding.server && b.interface === binding.interface),
-      );
+      const filtered = prev.filter((b) => b.bus_id !== binding.bus_id);
       return [...filtered, binding];
     });
     setDirty(true);
   }, []);
-  const handleRemoveBinding = useCallback((server: string, iface: string) => {
-    setInterfaceBindings((prev) =>
-      prev.filter((b) => !(b.server === server && b.interface === iface)),
-    );
+  const handleRemoveBinding = useCallback((bus_id: string) => {
+    setInterfaceBindings((prev) => prev.filter((b) => b.bus_id !== bus_id));
     setDirty(true);
   }, []);
+
+  // Phase 13: virtual-bus mutations (ADR 0021).
+  const handleAddVirtualBus = useCallback((def: LocalVirtualBusDef) => {
+    setLocalVirtualBuses((prev) => {
+      if (prev.some((v) => v.id === def.id)) return prev;
+      return [...prev, def];
+    });
+    setDirty(true);
+    void invoke("create_local_virtual_bus", {
+      id: def.id,
+      name: def.name,
+    }).catch((err) => {
+      console.error("create_local_virtual_bus failed", err);
+    });
+  }, []);
+
+  const handleRemoveVirtualBus = useCallback((id: string) => {
+    setLocalVirtualBuses((prev) => prev.filter((v) => v.id !== id));
+    setInterfaceBindings((prev) =>
+      prev.filter((b) => localVbusId(b) !== id),
+    );
+    setDirty(true);
+    void invoke("drop_local_virtual_bus", { id }).catch((err) => {
+      console.error("drop_local_virtual_bus failed", err);
+    });
+  }, []);
+
+  const handleUpdateVirtualBus = useCallback(
+    (id: string, patch: Partial<LocalVirtualBusDef>) => {
+      setLocalVirtualBuses((prev) =>
+        prev.map((v) => (v.id === id ? { ...v, ...patch } : v)),
+      );
+      setDirty(true);
+    },
+    [],
+  );
 
   const getFrame = useCallback((index: number): TraceFrameRecord | null => {
     const chunkIdx = Math.floor(index / CHUNK_SIZE);
@@ -1128,7 +1301,7 @@ export function App() {
       id: `transmit-${elementId}`,
       component: TRANSMIT_PANEL_COMPONENT,
       title: `Transmit ${transmitCounterRef.current}`,
-      params: { elementId, frames: [] },
+      params: { elementId },
     });
   }, [create]);
 
@@ -1310,8 +1483,8 @@ export function App() {
   );
 
   const traceData: TraceData = useMemo(
-    () => ({ count, version, baseTimestampSeconds, getFrame, ensureVisible }),
-    [count, version, baseTimestampSeconds, getFrame, ensureVisible],
+    () => ({ count, version, sessionStartSeconds, getFrame, ensureVisible }),
+    [count, version, sessionStartSeconds, getFrame, ensureVisible],
   );
 
   const elementRegistryValue: ElementRegistry = useMemo(
@@ -1351,6 +1524,31 @@ export function App() {
     return Array.from(set);
   }, [interfaceBindings, sidecarAddress, connectedAddresses]);
 
+  // Buses whose live hardware config (snapshot taken at connect) no
+  // longer matches the edited project. Only buses with an active
+  // session contribute — there's nothing to be "pending against" for
+  // a bus that isn't connected. Reconnect applies the change.
+  const busesWithPendingHwConfig = useMemo(() => {
+    const dirty: string[] = [];
+    const connected = new Set(connectedBusIds);
+    for (const bus of buses) {
+      if (!connected.has(bus.id)) continue;
+      const snapshot = busConfigInFlight.get(bus.id);
+      if (!snapshot) continue;
+      const speed = bus.speed_bps ?? null;
+      const fd = bus.fd ?? null;
+      const dataSpeed = bus.fd_data_speed_bps ?? null;
+      if (
+        snapshot.speed_bps !== speed ||
+        snapshot.fd !== fd ||
+        snapshot.fd_data_speed_bps !== dataSpeed
+      ) {
+        dirty.push(bus.id);
+      }
+    }
+    return dirty;
+  }, [buses, busConfigInFlight, connectedBusIds]);
+
   const blfPath =
     state.kind === "loading" || state.kind === "running" || state.kind === "done"
       ? state.result.blf_path
@@ -1380,10 +1578,18 @@ export function App() {
       onRemoveBus: handleRemoveBus,
       onRenameBus: handleRenameBus,
       onSetBusColor: handleSetBusColor,
+      onSetBusSpeed: handleSetBusSpeed,
+      onSetBusFd: handleSetBusFd,
+      onSetBusFdDataSpeed: handleSetBusFdDataSpeed,
+      busesWithPendingHwConfig,
       onAddBinding: handleAddBinding,
       onRemoveBinding: handleRemoveBinding,
       onConnect: handleConnect,
       onDisconnect: handleDisconnect,
+      localVirtualBuses,
+      onAddVirtualBus: handleAddVirtualBus,
+      onRemoveVirtualBus: handleRemoveVirtualBus,
+      onUpdateVirtualBus: handleUpdateVirtualBus,
     }),
     [
       projectPath,
@@ -1408,16 +1614,32 @@ export function App() {
       handleRemoveBus,
       handleRenameBus,
       handleSetBusColor,
+      handleSetBusSpeed,
+      handleSetBusFd,
+      handleSetBusFdDataSpeed,
+      busesWithPendingHwConfig,
       handleAddBinding,
       handleRemoveBinding,
       handleConnect,
       handleDisconnect,
+      localVirtualBuses,
+      handleAddVirtualBus,
+      handleRemoveVirtualBus,
+      handleUpdateVirtualBus,
     ],
+  );
+
+  const pendingHwConfigBusNames = useMemo(
+    () =>
+      busesWithPendingHwConfig
+        .map((id) => buses.find((b) => b.id === id)?.name)
+        .filter((name): name is string => name != null),
+    [busesWithPendingHwConfig, buses],
   );
 
   return (
     <main className="app">
-      <TitleBar />
+      <TitleBar pendingHwConfigBusNames={pendingHwConfigBusNames} />
       <header>
         <div className="toolbar">
           <button onClick={handleOpenProject}>Open project…</button>

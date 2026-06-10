@@ -136,10 +136,7 @@ async fn subscribe_one_interface_yields_frames_with_chosen_channel() {
     let mut source = tokio::task::spawn_blocking(move || {
         connect_and_subscribe(
             &address,
-            vec![Subscription {
-                interface_id: "blf:0".into(),
-                channel: 7,
-            }],
+            vec![Subscription::new("blf:0", 7)],
         )
     })
     .await
@@ -169,10 +166,7 @@ async fn subscribing_to_unknown_interface_surfaces_server_error() {
     let mut source = tokio::task::spawn_blocking(move || {
         connect_and_subscribe(
             &address,
-            vec![Subscription {
-                interface_id: "blf:99".into(),
-                channel: 0,
-            }],
+            vec![Subscription::new("blf:99", 0)],
         )
     })
     .await
@@ -202,10 +196,7 @@ async fn into_parts_lets_handle_and_receiver_live_in_different_threads() {
         tokio::task::spawn_blocking(move || {
             let source = connect_and_subscribe(
                 &address,
-                vec![Subscription {
-                    interface_id: "blf:0".into(),
-                    channel: 0,
-                }],
+                vec![Subscription::new("blf:0", 0)],
             )
             .unwrap();
             source.into_parts()
@@ -248,15 +239,16 @@ async fn into_parts_lets_handle_and_receiver_live_in_different_threads() {
     server.abort();
 }
 
-async fn spawn_loopback_server() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    use cannet_server::LoopbackServerImpl;
-    use tokio::net::TcpListener;
-    use tokio_stream::wrappers::TcpListenerStream;
-    use tonic::transport::Server;
+/// Spin up a virtual-bus server (ADR 0021) — the wire-level transmit
+/// round-trip target now that loopback is retired (Phase 13 Step 4).
+async fn spawn_virtual_bus_server(
+) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    use cannet_core::BusConfig;
+    use cannet_server::VirtualBusServerImpl;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let stream = TcpListenerStream::new(listener);
-    let svc = LoopbackServerImpl::new().into_service();
+    let svc = VirtualBusServerImpl::new(BusConfig::classic_500k()).into_service();
     let handle = tokio::spawn(async move {
         Server::builder()
             .add_service(svc)
@@ -268,58 +260,96 @@ async fn spawn_loopback_server() -> (std::net::SocketAddr, tokio::task::JoinHand
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[allow(clippy::similar_names)] // receiver / received in this test
-async fn transmit_through_session_round_trips_via_loopback() {
-    use cannet_core::{CanFrame, CanId, Direction};
+async fn factory_subscribe_surfaces_allocated_id_and_round_trips_tx() {
+    // Two sessions to the same virtual-bus server. Each subscribes
+    // to the factory and gets a participant. Session A transmits;
+    // session B receives the frame as Rx.
+    let (addr, server) = spawn_virtual_bus_server().await;
 
-    let (addr, server) = spawn_loopback_server().await;
-    let address = addr.to_string();
-
-    let (handle, mut receiver, transmitter) = tokio::task::spawn_blocking(move || {
-        let source = connect_and_subscribe(
-            &address,
-            vec![Subscription {
-                interface_id: "loopback:0".into(),
-                channel: 0,
-            }],
+    let address_a = addr.to_string();
+    let session_a = tokio::task::spawn_blocking(move || {
+        connect_and_subscribe(
+            &address_a,
+            vec![Subscription::factory(
+                cannet_server::VIRTUAL_BUS_FACTORY_ID,
+                0,
+            )],
         )
-        .unwrap();
-        source.into_parts()
     })
     .await
+    .unwrap()
     .unwrap();
 
-    // Build a frame with `Direction::Tx` and shove it through the
-    // transmitter — the loopback server should echo it back as Rx.
-    let frame = CanFrame::classic(
+    let address_b = addr.to_string();
+    let mut session_b = tokio::task::spawn_blocking(move || {
+        connect_and_subscribe(
+            &address_b,
+            vec![Subscription::factory(
+                cannet_server::VIRTUAL_BUS_FACTORY_ID,
+                9,
+            )],
+        )
+    })
+    .await
+    .unwrap()
+    .unwrap();
+
+    // Both sessions should have an allocated id surfaced.
+    let allocated_a = session_a
+        .subscriptions()
+        .first()
+        .and_then(|s| s.allocated_id.clone())
+        .expect("session A: expected allocated id from InterfaceAllocated");
+    let allocated_b = session_b
+        .subscriptions()
+        .first()
+        .and_then(|s| s.allocated_id.clone())
+        .expect("session B: expected allocated id from InterfaceAllocated");
+    assert_ne!(
+        allocated_a, allocated_b,
+        "the server must allocate distinct ids per subscriber",
+    );
+
+    let (handle_a, _recv_a, tx_a) = session_a.into_parts();
+    let frame_to_send = cannet_core::CanFrame::classic(
         0,
         0,
-        CanId::standard(0x321).unwrap(),
-        Direction::Tx,
-        vec![0xAB, 0xCD],
+        cannet_core::CanId::standard(0x321).unwrap(),
+        cannet_core::Direction::Tx,
+        vec![0xDE, 0xAD, 0xBE, 0xEF],
     )
     .unwrap();
-    let transmit_addr = "loopback:0".to_string();
-    let frame_for_tx = frame.clone();
+    // `SessionTransmitter::transmit` blocks on a tokio channel; the
+    // test runtime is multi-threaded but the call must still leave
+    // the executor thread to `blocking_send`.
+    let allocated_a_for_tx = allocated_a.clone();
+    let frame_for_tx = frame_to_send.clone();
     tokio::task::spawn_blocking(move || {
-        transmitter.transmit(&transmit_addr, &frame_for_tx).unwrap();
+        tx_a.transmit(&allocated_a_for_tx, &frame_for_tx).unwrap();
     })
     .await
     .unwrap();
 
-    // Receive it back.
-    let received = tokio::task::spawn_blocking(move || {
-        use cannet_core::CanFrameSource;
-        receiver.next_frame()
+    // Session B should receive it (as Rx) tagged with channel 9 — the
+    // mapping its subscription requested.
+    let frame = tokio::task::spawn_blocking(move || {
+        // Generous timeout: wire round-trip on loopback in CI.
+        for _ in 0..200 {
+            match session_b.next_frame() {
+                Ok(Some(f)) => return f,
+                Ok(None) => panic!("session B ended before frame arrived"),
+                Err(e) => panic!("session B errored: {e}"),
+            }
+        }
+        panic!("session B never observed the transmitted frame");
     })
     .await
     .unwrap();
-    let echoed = received.unwrap().expect("expected mirrored frame");
-    assert_eq!(echoed.id, frame.id);
-    assert_eq!(echoed.payload, frame.payload);
-    assert_eq!(echoed.direction, Direction::Rx);
+    assert_eq!(frame.id.raw(), 0x321);
+    assert_eq!(frame.channel, 9);
+    assert_eq!(frame.payload.data(), &[0xDE, 0xAD, 0xBE, 0xEF]);
 
-    drop(handle);
+    drop(handle_a);
     server.abort();
 }
 
@@ -334,10 +364,7 @@ async fn dropping_source_disconnects_cleanly() {
     tokio::task::spawn_blocking(move || {
         let source = connect_and_subscribe(
             &address,
-            vec![Subscription {
-                interface_id: "blf:0".into(),
-                channel: 0,
-            }],
+            vec![Subscription::new("blf:0", 0)],
         )
         .unwrap();
         drop(source);
@@ -360,10 +387,7 @@ async fn dropping_source_disconnects_cleanly() {
         match tokio::task::spawn_blocking(move || {
             connect_and_subscribe(
                 &address,
-                vec![Subscription {
-                    interface_id: "blf:0".into(),
-                    channel: 0,
-                }],
+                vec![Subscription::new("blf:0", 0)],
             )
         })
         .await

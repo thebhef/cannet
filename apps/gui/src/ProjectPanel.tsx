@@ -18,19 +18,34 @@ import {
 } from "./sidecarStatus";
 import type {
   Bus,
+  BridgeSpec,
   InterfaceBinding,
   InterfaceRecord,
+  LocalVirtualBusDef,
   ProjectElement,
   ProjectElementKind,
   SidecarStatus,
 } from "./types";
-import { LOCAL_SERVER, isLocalBinding, resolveServer } from "./types";
+import {
+  LOCAL_SERVER,
+  isLocalBinding,
+  localVbusBinding,
+  localVbusId,
+  resolveServer,
+} from "./types";
 import {
   PROJECT_GRAPH_PANEL_COMPONENT,
   PROJECT_GRAPH_PANEL_ID,
   elementPanelComponent,
 } from "./dockLayout";
 import { defaultBusColor } from "./busColor";
+import {
+  DEFAULT_NOMINAL_BITRATE_BPS,
+  FD_DATA_BITRATE_PRESETS_BPS,
+  NOMINAL_BITRATE_PRESETS_BPS,
+  formatBitrate,
+  parseBitrateInput,
+} from "./busHardwareConfig";
 
 /// Window title for an element's panel, by kind. `filter` has no panel
 /// of its own (see `elementPanelComponent`); the entry is present only
@@ -81,12 +96,16 @@ export function ProjectPanel(props: IDockviewPanelProps) {
   // A binding with `server: "local"` is resolved to the live sidecar
   // address before subscribing — the host's `WatchInterfaces` cache
   // is keyed by concrete host:port pairs (ADR 0016).
+  // `local-vbus://` URLs are in-process indices, not gRPC addresses,
+  // so they're excluded from discovery (the host's `WatchInterfaces`
+  // would otherwise loop trying to connect to a non-existent server).
   const sidecarAddress =
     sidecar.phase === "ready" ? sidecar.address : null;
   const knownServers = useMemo(() => {
     const set = new Set<string>();
     if (sidecarAddress) set.add(sidecarAddress);
     for (const b of p.interfaceBindings) {
+      if (localVbusId(b) !== null) continue;
       const resolved = resolveServer(b.server, sidecarAddress);
       if (resolved) set.add(resolved);
     }
@@ -131,36 +150,29 @@ export function ProjectPanel(props: IDockviewPanelProps) {
       params:
         el.kind === "trace"
           ? { elementId: el.id, mode: "by-id" }
-          : el.kind === "transmit"
-            ? { elementId: el.id, frames: [] }
-            : { elementId: el.id },
+          : { elementId: el.id },
     });
   };
 
   // Switch (or clear) the binding for `bus`. Bindings are keyed by
-  // `(server, interface)` host-side (last-write-wins), so changing a
-  // bus's interface is "remove the bus's current binding, then add
-  // the new one" — otherwise the old binding would still point at
-  // this bus.
+  // `bus_id` (each project bus has at most one binding), so changing
+  // a bus's source is "remove the bus's current binding, then add
+  // the new one." A `null` pick clears the binding.
   const setBusInterface = useCallback(
-    (bus: Bus, pick: { server: string; iface: string } | null) => {
+    (bus: Bus, pick: ComboPick | null) => {
       const current = p.interfaceBindings.find((b) => b.bus_id === bus.id);
-      if (current) {
-        if (
-          pick &&
-          pick.server === current.server &&
-          pick.iface === current.interface
-        ) {
-          return; // no-op
-        }
-        p.onRemoveBinding(current.server, current.interface);
-      }
-      if (pick) {
+      if (pick && current && samePick(pick, current)) return;
+      if (current) p.onRemoveBinding(current.bus_id);
+      if (!pick) return;
+      if (pick.kind === "remote") {
         p.onAddBinding({
+          kind: "remote",
           server: pick.server,
           interface: pick.iface,
           bus_id: bus.id,
         });
+      } else {
+        p.onAddBinding(localVbusBinding(pick.virtual_bus_id, bus.id));
       }
     },
     [p],
@@ -225,6 +237,140 @@ export function ProjectPanel(props: IDockviewPanelProps) {
       </section>
 
       <section className="project-section">
+        <h3>Logical buses</h3>
+        {p.buses.length === 0 && <div className="project-empty">No buses.</div>}
+        {p.buses.map((bus, i) => {
+          const binding = p.interfaceBindings.find((b) => b.bus_id === bus.id);
+          const adding = addingForBus === bus.id;
+          const pendingHwConfig = p.busesWithPendingHwConfig.includes(bus.id);
+          // Local virtual buses have no controller behind them (the
+          // host owns their arbitration timing). Hide the hardware
+          // settings row for those bindings so the UI doesn't suggest
+          // a knob that doesn't apply.
+          const isLocalVbus = binding != null && localVbusId(binding) !== null;
+          return (
+            <div className="project-bus-row" key={bus.id}>
+              <div className="project-bus">
+                <input
+                  type="color"
+                  className="project-bus-color"
+                  value={bus.color ?? defaultBusColor(i)}
+                  onChange={(e) => p.onSetBusColor(bus.id, e.target.value)}
+                  aria-label={`bus ${bus.id} colour`}
+                  title="Graph colour for this bus"
+                />
+                <input
+                  type="text"
+                  className="project-bus-name-input"
+                  value={bus.name}
+                  onChange={(e) => p.onRenameBus(bus.id, e.target.value)}
+                  aria-label={`bus ${bus.id} name`}
+                />
+                {pendingHwConfig && (
+                  <span
+                    className="project-bus-pending-hw"
+                    title="Hardware configuration changed since connect; reconnect to apply."
+                  >
+                    pending
+                  </span>
+                )}
+                <button type="button" onClick={() => p.onRemoveBus(bus.id)}>
+                  Remove
+                </button>
+              </div>
+              <div className="project-bus-iface">
+                <BusInterfaceCombo
+                  bus={bus}
+                  binding={binding ?? null}
+                  sidecarAddress={sidecarAddress}
+                  discoveries={discovery.entries}
+                  localVirtualBuses={p.localVirtualBuses}
+                  onPick={(pick) => setBusInterface(bus, pick)}
+                  onAddServer={() => setAddingForBus(bus.id)}
+                  onAddVirtualBus={() => {
+                    const id = newVbusId(p.localVirtualBuses.map((v) => v.id));
+                    const name = `Virtual ${p.localVirtualBuses.length + 1}`;
+                    p.onAddVirtualBus({ id, name });
+                    // Bind this bus to the freshly-created vbus.
+                    setBusInterface(bus, { kind: "local-virtual-bus", virtual_bus_id: id });
+                  }}
+                />
+              </div>
+              {!isLocalVbus && (
+                <BusHardwareConfig
+                  bus={bus}
+                  onSetSpeed={(v) => p.onSetBusSpeed(bus.id, v)}
+                  onSetFd={(v) => p.onSetBusFd(bus.id, v)}
+                  onSetFdDataSpeed={(v) => p.onSetBusFdDataSpeed(bus.id, v)}
+                />
+              )}
+              {adding && (
+                <AddServerInline
+                  busLabel={bus.name}
+                  onCancel={() => setAddingForBus(null)}
+                  onPick={(pick) => {
+                    setBusInterface(bus, {
+                      kind: "remote",
+                      server: pick.server,
+                      iface: pick.iface,
+                    });
+                    setAddingForBus(null);
+                  }}
+                />
+              )}
+            </div>
+          );
+        })}
+        <div className="project-buttons">
+          <button
+            type="button"
+            onClick={() => {
+              const id = newBusId(p.buses.map((b) => b.id));
+              p.onAddBus({ id, name: `Bus ${p.buses.length + 1}` });
+            }}
+          >
+            Add bus
+          </button>
+        </div>
+      </section>
+
+      <section className="project-section">
+        <h3>Virtual buses</h3>
+        {p.localVirtualBuses.length === 0 && (
+          <div className="project-empty">
+            No virtual buses. Add one from a logical-bus combo, or here.
+          </div>
+        )}
+        {p.localVirtualBuses.map((v) => (
+          <VirtualBusRow
+            key={v.id}
+            def={v}
+            bindings={p.interfaceBindings}
+            buses={p.buses}
+            onRename={(name) => p.onUpdateVirtualBus(v.id, { name })}
+            onRemove={() => p.onRemoveVirtualBus(v.id)}
+            onSetBridges={(bridges) =>
+              p.onUpdateVirtualBus(v.id, { bridges })
+            }
+          />
+        ))}
+        <div className="project-buttons">
+          <button
+            type="button"
+            onClick={() => {
+              const id = newVbusId(p.localVirtualBuses.map((v) => v.id));
+              p.onAddVirtualBus({
+                id,
+                name: `Virtual ${p.localVirtualBuses.length + 1}`,
+              });
+            }}
+          >
+            Add virtual bus
+          </button>
+        </div>
+      </section>
+
+      <section className="project-section">
         <h3>Connection</h3>
         {p.blfPath && (
           <div className="project-bus">
@@ -260,7 +406,7 @@ export function ProjectPanel(props: IDockviewPanelProps) {
         })}
         {p.interfaceBindings.length === 0 ? (
           <div className="project-empty">
-            No interfaces selected. Pick one on a logical bus below to enable
+            No interfaces selected. Pick one on a logical bus above to enable
             Connect.
           </div>
         ) : (
@@ -276,69 +422,6 @@ export function ProjectPanel(props: IDockviewPanelProps) {
             )}
           </div>
         )}
-      </section>
-
-      <section className="project-section">
-        <h3>Logical buses</h3>
-        {p.buses.length === 0 && <div className="project-empty">No buses.</div>}
-        {p.buses.map((bus, i) => {
-          const binding = p.interfaceBindings.find((b) => b.bus_id === bus.id);
-          const adding = addingForBus === bus.id;
-          return (
-            <div className="project-bus-row" key={bus.id}>
-              <div className="project-bus">
-                <input
-                  type="color"
-                  className="project-bus-color"
-                  value={bus.color ?? defaultBusColor(i)}
-                  onChange={(e) => p.onSetBusColor(bus.id, e.target.value)}
-                  aria-label={`bus ${bus.id} colour`}
-                  title="Graph colour for this bus"
-                />
-                <input
-                  type="text"
-                  className="project-bus-name-input"
-                  value={bus.name}
-                  onChange={(e) => p.onRenameBus(bus.id, e.target.value)}
-                  aria-label={`bus ${bus.id} name`}
-                />
-                <BusInterfaceCombo
-                  bus={bus}
-                  binding={binding ?? null}
-                  bindings={p.interfaceBindings}
-                  sidecarAddress={sidecarAddress}
-                  discoveries={discovery.entries}
-                  onPick={(pick) => setBusInterface(bus, pick)}
-                  onAddServer={() => setAddingForBus(bus.id)}
-                />
-                <button type="button" onClick={() => p.onRemoveBus(bus.id)}>
-                  Remove
-                </button>
-              </div>
-              {adding && (
-                <AddServerInline
-                  busLabel={bus.name}
-                  onCancel={() => setAddingForBus(null)}
-                  onPick={(pick) => {
-                    setBusInterface(bus, pick);
-                    setAddingForBus(null);
-                  }}
-                />
-              )}
-            </div>
-          );
-        })}
-        <div className="project-buttons">
-          <button
-            type="button"
-            onClick={() => {
-              const id = newBusId(p.buses.map((b) => b.id));
-              p.onAddBus({ id, name: `Bus ${p.buses.length + 1}` });
-            }}
-          >
-            Add bus
-          </button>
-        </div>
       </section>
 
       <section className="project-section">
@@ -408,6 +491,13 @@ function newBusId(existing: readonly string[]): string {
   }
 }
 
+function newVbusId(existing: readonly string[]): string {
+  for (let i = 1; ; i++) {
+    const candidate = `vbus${i}`;
+    if (!existing.includes(candidate)) return candidate;
+  }
+}
+
 function basename(path: string): string {
   const i = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
   return i >= 0 ? path.slice(i + 1) : path;
@@ -417,9 +507,11 @@ function basename(path: string): string {
 /// binding, in first-seen order. The local sidecar gets its own
 /// dedicated row in the Connection section (always present, with its
 /// own status text), so listing it again here would double-count it.
-/// The `sidecarAddress` parameter is unused today (kept for callers
-/// passing it positionally) — locality is decided by the `"local"`
-/// sentinel on the binding itself, not by address comparison.
+/// `local-vbus://` URLs index an in-process virtual bus
+/// ([`LocalVirtualBusDef`]) and are surfaced under the *Virtual
+/// buses* section, so they're excluded here too. The
+/// `sidecarAddress` parameter is unused today (kept for callers
+/// passing it positionally).
 export function uniqueRemoteServers(
   bindings: readonly InterfaceBinding[],
   _sidecarAddress: string | null,
@@ -428,6 +520,7 @@ export function uniqueRemoteServers(
   const out: string[] = [];
   for (const b of bindings) {
     if (isLocalBinding(b)) continue;
+    if (localVbusId(b) !== null) continue;
     if (seen.has(b.server)) continue;
     seen.add(b.server);
     out.push(b.server);
@@ -602,46 +695,151 @@ function useInterfaceDiscovery(addresses: readonly string[]): DiscoveryRegistry 
 
 // ---- Per-bus interface combo ---------------------------------------------
 
+/// A selection from the bus combo. Either a remote `(server, iface)`
+/// pair (hardware interface or remote-virtual-bus factory) or a
+/// reference to one of the project's virtual buses.
+export type ComboPick =
+  | { kind: "remote"; server: string; iface: string }
+  | { kind: "local-virtual-bus"; virtual_bus_id: string };
+
+/// True when `pick` selects the same source as `binding`.
+function samePick(pick: ComboPick, binding: InterfaceBinding): boolean {
+  if (pick.kind === "remote") {
+    return pick.server === binding.server && pick.iface === binding.interface;
+  }
+  return pick.virtual_bus_id === (localVbusId(binding) ?? "");
+}
+
+const COMBO_VBUS_PREFIX = "vbus\x00";
+const COMBO_ADD_VBUS = "__add_vbus__";
+
+function encodeVbusOption(id: string): string {
+  return `${COMBO_VBUS_PREFIX}${id}`;
+}
+
+interface BusHardwareConfigProps {
+  bus: Bus;
+  onSetSpeed: (speed_bps: number | null) => void;
+  onSetFd: (fd: boolean | null) => void;
+  onSetFdDataSpeed: (fd_data_speed_bps: number | null) => void;
+}
+
+/// Per-bus hardware configuration controls. Renders the bitrate and
+/// FD-mode pickers on the second line of a logical-bus row; the FD
+/// data-rate picker appears below them when FD is enabled. Sidecar /
+/// hardware-server interfaces receive these values in the
+/// `ConfigureBus` envelope the host sends ahead of `Subscribe`
+/// (Phase 13). Local virtual buses don't render this row — the host
+/// owns their arbitration timing.
+function BusHardwareConfig({
+  bus,
+  onSetSpeed,
+  onSetFd,
+  onSetFdDataSpeed,
+}: BusHardwareConfigProps) {
+  const fd = bus.fd === true;
+  // The bitrate placeholder previews what the host will actually push
+  // when this field is left unset — the same default the sidecar would
+  // resolve from a wire `speed_bps: 0`. The FD data rate's effective
+  // default falls back to the nominal rate (whatever it ends up
+  // being), so its placeholder tracks the live nominal value.
+  const effectiveNominal = bus.speed_bps ?? DEFAULT_NOMINAL_BITRATE_BPS;
+  return (
+    <div className="project-bus-hw">
+      <label className="project-bus-hw-field">
+        <span>Bitrate</span>
+        <input
+          type="text"
+          list={`bitrate-presets-${bus.id}`}
+          className="project-bus-hw-input"
+          value={bus.speed_bps != null ? formatBitrate(bus.speed_bps) : ""}
+          placeholder={formatBitrate(DEFAULT_NOMINAL_BITRATE_BPS)}
+          onChange={(e) => onSetSpeed(parseBitrateInput(e.target.value))}
+          aria-label={`bus ${bus.id} bitrate`}
+        />
+        <datalist id={`bitrate-presets-${bus.id}`}>
+          {NOMINAL_BITRATE_PRESETS_BPS.map((bps) => (
+            <option key={bps} value={formatBitrate(bps)} />
+          ))}
+        </datalist>
+      </label>
+      <label className="project-bus-hw-field">
+        <input
+          type="checkbox"
+          checked={fd}
+          onChange={(e) => onSetFd(e.target.checked || null)}
+          aria-label={`bus ${bus.id} FD mode`}
+        />
+        <span>FD</span>
+      </label>
+      {fd && (
+        <label className="project-bus-hw-field">
+          <span>Data rate</span>
+          <input
+            type="text"
+            list={`fd-data-presets-${bus.id}`}
+            className="project-bus-hw-input"
+            value={
+              bus.fd_data_speed_bps != null
+                ? formatBitrate(bus.fd_data_speed_bps)
+                : ""
+            }
+            placeholder={formatBitrate(effectiveNominal)}
+            onChange={(e) => onSetFdDataSpeed(parseBitrateInput(e.target.value))}
+            aria-label={`bus ${bus.id} FD data rate`}
+          />
+          <datalist id={`fd-data-presets-${bus.id}`}>
+            {FD_DATA_BITRATE_PRESETS_BPS.map((bps) => (
+              <option key={bps} value={formatBitrate(bps)} />
+            ))}
+          </datalist>
+        </label>
+      )}
+    </div>
+  );
+}
+
 interface BusInterfaceComboProps {
   bus: Bus;
   binding: InterfaceBinding | null;
-  bindings: readonly InterfaceBinding[];
   sidecarAddress: string | null;
   discoveries: Record<string, DiscoveryState>;
-  onPick: (pick: { server: string; iface: string } | null) => void;
+  localVirtualBuses: readonly LocalVirtualBusDef[];
+  onPick: (pick: ComboPick | null) => void;
   onAddServer: () => void;
+  onAddVirtualBus: () => void;
 }
 
-/// Combo box on a logical-bus row that lets the user pick which
-/// interface that bus subscribes to. Local sidecar interfaces are
-/// listed at the top level; remote servers (any address referenced by
-/// an existing binding) are grouped beneath. "+ Add server…" opens an
-/// inline form to bind a server that isn't in the bindings yet.
+/// Combo box on a logical-bus row that lets the user pick the source
+/// for that bus. Sources are symmetrical: a local sidecar / remote
+/// hardware interface, or one of the project's in-process virtual
+/// buses (ADR 0021). "+ Add server…" / "+ Add virtual bus" open the
+/// respective creation flows. The combo no longer disables an option
+/// because another bus already references it — Step 6's multi-client
+/// fan-out makes that pattern fine.
 export function BusInterfaceCombo({
   bus,
   binding,
-  bindings,
   sidecarAddress,
   discoveries,
+  localVirtualBuses,
   onPick,
   onAddServer,
+  onAddVirtualBus,
 }: BusInterfaceComboProps) {
-  // Selected option's `value`. When the binding's `(server, iface)` is
-  // not currently in any discovery snapshot (server unreachable,
-  // sidecar still starting), we still show it as the selection so the
-  // user can see what the bus is bound to.
-  const selectedValue = binding
-    ? encodeOption(binding.server, binding.interface)
-    : COMBO_NONE;
-
-  // Which `(server, iface)` are already bound to a *different* bus.
-  // The combo greys those out — last-write-wins on (server, iface)
-  // means picking one would silently steal it from the other bus, and
-  // that's almost never what the user wants.
-  const takenByOtherBus = new Set<string>();
-  for (const b of bindings) {
-    if (b.bus_id === bus.id) continue;
-    takenByOtherBus.add(encodeOption(b.server, b.interface));
+  // Selected option's `value`. When the binding's interface isn't
+  // currently in any discovery snapshot (server unreachable, sidecar
+  // still starting), the selection is still shown so the user can
+  // see what the bus is bound to.
+  let selectedValue: string;
+  if (!binding) {
+    selectedValue = COMBO_NONE;
+  } else {
+    const vbusId = localVbusId(binding);
+    selectedValue =
+      vbusId !== null
+        ? encodeVbusOption(vbusId)
+        : encodeOption(binding.server, binding.interface);
   }
 
   const localList: InterfaceRecord[] =
@@ -651,10 +849,6 @@ export function BusInterfaceCombo({
           .interfaces
       : [];
 
-  // Remote servers we have *some* state for (pending / ok / err),
-  // excluding the sidecar (which is rendered top-level above). We
-  // include `pending` and `err` so the user can see the group is
-  // there even before its first successful discovery.
   const remoteAddrs = Object.keys(discoveries)
     .filter((a) => a !== sidecarAddress)
     .sort();
@@ -662,17 +856,26 @@ export function BusInterfaceCombo({
   const handleChange = (e: ChangeEvent<HTMLSelectElement>) => {
     const v = e.target.value;
     if (v === COMBO_ADD_SERVER) {
-      // Don't change the binding — open the inline form. The select
-      // jumps back to the previous selection on the next render.
       onAddServer();
+      return;
+    }
+    if (v === COMBO_ADD_VBUS) {
+      onAddVirtualBus();
       return;
     }
     if (v === COMBO_NONE) {
       onPick(null);
       return;
     }
+    if (v.startsWith(COMBO_VBUS_PREFIX)) {
+      onPick({
+        kind: "local-virtual-bus",
+        virtual_bus_id: v.slice(COMBO_VBUS_PREFIX.length),
+      });
+      return;
+    }
     const decoded = decodeOption(v);
-    if (decoded) onPick(decoded);
+    if (decoded) onPick({ kind: "remote", server: decoded.server, iface: decoded.iface });
   };
 
   return (
@@ -683,17 +886,9 @@ export function BusInterfaceCombo({
       aria-label={`bus ${bus.id} interface`}
     >
       <option value={COMBO_NONE}>— no interface —</option>
-      {/* Local interfaces are intentionally NOT under an <optgroup> —
-          they're the default surface, so they live at the top level of
-          the combo rather than nested under a "Local" group. */}
+      {/* Local interfaces (sidecar). */}
       {localList.map((r) =>
-        renderInterfaceOption(
-          LOCAL_SERVER,
-          r,
-          "Local",
-          takenByOtherBus,
-          binding,
-        ),
+        renderInterfaceOption(LOCAL_SERVER, r, "Local", binding),
       )}
       {remoteAddrs.map((addr) => {
         const state = discoveries[addr];
@@ -706,7 +901,7 @@ export function BusInterfaceCombo({
                 </option>
               ) : (
                 state.interfaces.map((r) =>
-                  renderInterfaceOption(addr, r, addr, takenByOtherBus, binding),
+                  renderInterfaceOption(addr, r, addr, binding),
                 )
               )}
             </optgroup>
@@ -722,17 +917,41 @@ export function BusInterfaceCombo({
           </optgroup>
         );
       })}
-      {/* If the currently-selected interface isn't in any discovery
-          snapshot — server unreachable, or hasn't been polled yet —
-          surface a synthetic option so `value=` still resolves to a
-          known `<option>` and the combo doesn't look empty. */}
+      {/* Virtual buses are a peer source, listed under their own
+          group. "+ Add virtual bus" creates a fresh one and binds
+          this bus to it. */}
+      <optgroup label="Virtual buses">
+        {localVirtualBuses.length === 0 && (
+          <option value="vbus::empty" disabled>
+            (none)
+          </option>
+        )}
+        {localVirtualBuses.map((v) => (
+          <option value={encodeVbusOption(v.id)} key={v.id}>
+            {v.name}
+          </option>
+        ))}
+        <option value={COMBO_ADD_VBUS}>+ Add virtual bus</option>
+      </optgroup>
+      {/* Currently-selected interface not in any discovery snapshot
+          — surface a synthetic option so `value=` still resolves. */}
       {binding &&
+        (binding.kind ?? "remote") === "remote" &&
         !optionInDiscoveries(binding, sidecarAddress, discoveries) && (
           <option value={selectedValue}>
             {labelFor(binding.server, binding.interface, sidecarAddress)}{" "}
             (offline)
           </option>
         )}
+      {(() => {
+        if (!binding) return null;
+        const vbusId = localVbusId(binding);
+        if (vbusId === null) return null;
+        if (localVirtualBuses.some((v) => v.id === vbusId)) return null;
+        return (
+          <option value={selectedValue}>(missing vbus {vbusId})</option>
+        );
+      })()}
       <option value={COMBO_ADD_SERVER}>+ Add server…</option>
     </select>
   );
@@ -742,24 +961,13 @@ function renderInterfaceOption(
   server: string,
   rec: InterfaceRecord,
   serverLabel: string,
-  takenByOtherBus: ReadonlySet<string>,
-  selectedBinding: InterfaceBinding | null,
+  _selectedBinding: InterfaceBinding | null,
 ) {
   const value = encodeOption(server, rec.id);
-  const isSelected =
-    selectedBinding !== null &&
-    selectedBinding.server === server &&
-    selectedBinding.interface === rec.id;
-  // An option already bound to another bus is disabled UNLESS it's
-  // this bus's current selection — leaving the current selection
-  // disabled would make it impossible to navigate the combo with the
-  // keyboard.
-  const disabled = takenByOtherBus.has(value) && !isSelected;
   const name = rec.display_name || rec.id;
   return (
-    <option value={value} key={value} disabled={disabled}>
+    <option value={value} key={value}>
       {serverLabel} / {name}
-      {disabled ? " (in use)" : ""}
     </option>
   );
 }
@@ -1186,3 +1394,191 @@ function labelForBinding(
   }
   return `${head} / ${b.interface}`;
 }
+
+interface VirtualBusRowProps {
+  def: LocalVirtualBusDef;
+  bindings: readonly InterfaceBinding[];
+  buses: readonly Bus[];
+  onRename: (name: string) => void;
+  onSetBridges: (bridges: BridgeSpec[]) => void;
+  onRemove: () => void;
+}
+
+/// One row in the *Virtual buses* section. Lets the user edit the
+/// vbus's name + bridges, and shows which project buses are currently
+/// bound to it. The host commands for create / drop / attach / detach
+/// bridges are wired through App's virtual-bus handlers (so the JSON
+/// and the host stay in sync). The vbus has no user-configurable
+/// bitrate — it's in-process, not a model of a real wire.
+function VirtualBusRow({
+  def,
+  bindings,
+  buses,
+  onRename,
+  onSetBridges,
+  onRemove,
+}: VirtualBusRowProps) {
+  const [addingBridge, setAddingBridge] = useState(false);
+  const bridges = def.bridges ?? [];
+  const consumers = bindings.filter((b) => localVbusId(b) === def.id);
+  return (
+    <div className="project-bus-row">
+      <div className="project-bus">
+        <input
+          type="text"
+          className="project-bus-name-input"
+          value={def.name}
+          onChange={(e) => onRename(e.target.value)}
+          aria-label={`virtual bus ${def.id} name`}
+        />
+        <span className="project-bus-kind-badge" title="In-process virtual bus (ADR 0021)">
+          virtual
+        </span>
+        <button type="button" onClick={onRemove}>
+          Remove
+        </button>
+      </div>
+      <div className="project-binding-form-row">
+        <span className="project-binding-form-label">used by</span>
+        <span>
+          {consumers.length === 0
+            ? "(no buses bound)"
+            : consumers
+                .map(
+                  (b) =>
+                    buses.find((x) => x.id === b.bus_id)?.name ?? b.bus_id,
+                )
+                .join(", ")}
+        </span>
+      </div>
+      {bridges.length > 0 && (
+        <div className="project-binding-form-row">
+          <span className="project-binding-form-label">bridges</span>
+          <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+            {bridges.map((b) => (
+              <li key={b.name}>
+                {b.name || b.interface} → {b.remote_address}:{b.interface}{" "}
+                <button
+                  type="button"
+                  onClick={() => {
+                    onSetBridges(bridges.filter((x) => x.name !== b.name));
+                    void invoke("detach_local_bus_bridge", {
+                      virtualBusId: def.id,
+                      name: b.name,
+                    }).catch((err) => {
+                      console.error("detach_local_bus_bridge failed", err);
+                    });
+                  }}
+                >
+                  Remove
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {addingBridge ? (
+        <AddBridgeForm
+          onCancel={() => setAddingBridge(false)}
+          onAdd={(spec, allocates) => {
+            onSetBridges([...bridges, spec]);
+            setAddingBridge(false);
+            void invoke("attach_local_bus_bridge", {
+              virtualBusId: def.id,
+              spec,
+              allocates,
+            }).catch((err) => {
+              console.error("attach_local_bus_bridge failed", err);
+            });
+          }}
+        />
+      ) : (
+        <div className="project-buttons">
+          <button type="button" onClick={() => setAddingBridge(true)}>
+            Add bridge
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface AddBridgeFormProps {
+  onCancel: () => void;
+  onAdd: (spec: {
+    remote_address: string;
+    interface: string;
+    name: string;
+  }, allocates: boolean) => void;
+}
+
+/// Minimal inline form for capturing a bridge spec — remote address,
+/// remote interface id, friendly name, and an "is a virtual-bus
+/// factory" checkbox. Deliberately bare: full discovery /
+/// auto-completion against the bridged server is a follow-up.
+function AddBridgeForm({ onCancel, onAdd }: AddBridgeFormProps) {
+  const [server, setServer] = useState("127.0.0.1:50051");
+  const [iface, setIface] = useState("");
+  const [name, setName] = useState("");
+  const [allocates, setAllocates] = useState(false);
+  return (
+    <div className="project-binding-form">
+      <div className="project-binding-form-row">
+        <label>
+          Remote{" "}
+          <input
+            type="text"
+            value={server}
+            onChange={(e) => setServer(e.target.value)}
+            placeholder="host:port or local"
+          />
+        </label>
+      </div>
+      <div className="project-binding-form-row">
+        <label>
+          Interface{" "}
+          <input
+            type="text"
+            value={iface}
+            onChange={(e) => setIface(e.target.value)}
+            placeholder="virtual:bus0 or vector:VN1640A(...)"
+          />
+        </label>
+      </div>
+      <div className="project-binding-form-row">
+        <label>
+          Name{" "}
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="bridge-1"
+          />
+        </label>
+      </div>
+      <div className="project-binding-form-row">
+        <label>
+          <input
+            type="checkbox"
+            checked={allocates}
+            onChange={(e) => setAllocates(e.target.checked)}
+          />{" "}
+          Factory subscribe (virtual-bus target)
+        </label>
+      </div>
+      <div className="project-buttons">
+        <button
+          type="button"
+          disabled={!iface || !name}
+          onClick={() => onAdd({ remote_address: server, interface: iface, name }, allocates)}
+        >
+          Add
+        </button>
+        <button type="button" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+

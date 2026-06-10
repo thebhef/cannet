@@ -38,6 +38,7 @@ mod dbc_watcher;
 mod filter;
 mod interfaces;
 mod ipc;
+mod local_buses;
 mod notes;
 mod project;
 mod signal_cache;
@@ -45,6 +46,8 @@ mod sidecar;
 mod signal_sampler;
 mod system_log;
 mod trace_store;
+mod transmit_frames;
+mod transmit_scheduler;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -55,7 +58,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use cannet_blf::{BlfCanFrameSource, BlfCaptureWriter};
-use cannet_client::{SessionHandle, SessionTransmitter, Subscription};
+use cannet_client::{PreSubscribeConfig, SessionHandle, SessionTransmitter, Subscription};
 use cannet_core::{CanFrame as CoreCanFrame, CanFrameSource, CanId};
 use cannet_dbc::{Database, DecodedSignal};
 use dbc_watcher::DbcWatcher;
@@ -84,21 +87,29 @@ struct LoadedDbc {
     buses: Vec<String>,
 }
 
-/// State for an active remote session — see
-/// [`AppState::remote_session`] for the full role.
+/// State for an active session — remote (over `cannet-client`) or
+/// in-process (an `local-vbus://` URL). The two share the same
+/// channel→interface / channel→bus maps and the same stop flag; the
+/// backend split lives inside [`SessionTx`].
 #[allow(dead_code)]
 struct RemoteSession {
-    /// Drop-to-disconnect handle. Read by `disconnect_remote_server`
-    /// only; the rest of the file just keeps it alive in the slot.
-    handle: SessionHandle,
+    /// Drop-to-disconnect handle for a remote session. `None` for an
+    /// in-process session — teardown there happens by dropping the
+    /// participant sinks held inside [`Self::tx`], which detaches the
+    /// participants and lets the per-channel pumps see
+    /// `LocalSource::next_event() -> None` and exit.
+    handle: Option<SessionHandle>,
     /// Submitting end of the session — what the `transmit_frame`
-    /// command pushes onto. Populated in this commit; consumed in
-    /// the next.
-    transmitter: SessionTransmitter,
+    /// command pushes onto. Variants reflect the backend; both
+    /// answer to a uniform `transmit(channel, interface_id, frame)`
+    /// call (see [`SessionTx::transmit`]).
+    tx: SessionTx,
     /// `channel -> wire interface_id` for every subscription opened
     /// when the session was established. The transmit-panel command
     /// uses this to translate a frame's `channel` to the wire id the
-    /// `FrameBatch` envelope must carry.
+    /// `FrameBatch` envelope must carry (remote backend) or to the
+    /// canonical `"bus"` string the vbus backend stamps on `Sent`
+    /// status responses.
     channel_to_interface: Vec<(u8, String)>,
     /// `channel -> logical bus id` derived from the project's
     /// interface bindings. The pump uses it to stamp incoming frames'
@@ -109,6 +120,54 @@ struct RemoteSession {
     /// destinations.
     channel_to_bus: Vec<(u8, Option<String>)>,
     stop: Arc<AtomicBool>,
+}
+
+/// Backend-specific transmit machinery for a [`RemoteSession`].
+/// Both arms expose the same `transmit(channel, interface_id, frame)`
+/// surface so the upstream transmit path (`transmit_frame_inner`,
+/// `resolve_bus_route`) is uniform.
+enum SessionTx {
+    /// Remote backend — `transmit` hands off to the `cannet-client`
+    /// session's `SessionTransmitter`, addressed by `interface_id`.
+    Remote(SessionTransmitter),
+    /// In-process backend — one `LocalSink` per opened binding,
+    /// keyed by the binding's channel. `transmit` looks up the sink
+    /// by channel and submits the frame on it; the SharedBus fans
+    /// the frame out to every other participant on the bus, who
+    /// receive it as `Direction::Rx`.
+    Vbus(Vec<(u8, std::sync::Arc<std::sync::Mutex<cannet_core::LocalSink>>)>),
+}
+
+impl SessionTx {
+    fn transmit(
+        &self,
+        channel: u8,
+        interface_id: &str,
+        frame: &cannet_core::CanFrame,
+    ) -> Result<(), String> {
+        match self {
+            SessionTx::Remote(t) => {
+                t.transmit(interface_id, frame).map_err(|e| e.to_string())
+            }
+            SessionTx::Vbus(participants) => {
+                let sink = participants
+                    .iter()
+                    .find(|(c, _)| *c == channel)
+                    .ok_or_else(|| {
+                        format!("vbus session has no participant on channel {channel}")
+                    })?
+                    .1
+                    .clone();
+                let mut guard = sink
+                    .lock()
+                    .expect("vbus participant sink mutex poisoned");
+                use cannet_core::CanFrameSink;
+                guard
+                    .submit(frame.clone())
+                    .map_err(|e| e.to_string())
+            }
+        }
+    }
 }
 
 /// How often the host pushes a `trace-grew` IPC event with the latest
@@ -144,8 +203,11 @@ struct AppState {
     remote_sessions: Mutex<HashMap<String, RemoteSession>>,
     /// The trace model — the single source of truth for the captured
     /// stream. Pump threads append; `fetch_trace_range` reads slices
-    /// out for the trace view to render.
-    trace_store: TraceStore,
+    /// out for the trace view to render. `Arc`-wrapped so background
+    /// threads spawned outside an `AppHandle` context (e.g. the local
+    /// virtual-bus observer pumps in [`local_buses`]) can hold their
+    /// own clone of the store across their lifetime.
+    trace_store: Arc<TraceStore>,
     /// Per-`(message, signal)` decoded-sample caches, extended
     /// incrementally by `sample_signals` so a plot doesn't re-decode
     /// the same matching frames every tick. Cleared on
@@ -173,6 +235,19 @@ struct AppState {
     /// handle the `None` case as "no auto-reload" rather than
     /// failing.
     dbc_watcher: Mutex<Option<DbcWatcher>>,
+    /// Phase 13: host-side `SharedBus` instances for
+    /// `local-virtual-bus` bindings (ADR 0021). Reconstructed on
+    /// every project open; dropped on close.
+    local_buses: local_buses::LocalBusRegistry,
+    /// Phase 13 Step 9: the host-side TX-message pool. The transmit
+    /// panel is a thin view onto this. Populated on project open,
+    /// snapshotted on save.
+    transmit_frames: Mutex<transmit_frames::TransmitFrameRegistry>,
+    /// Phase 13: handle to the single transmit scheduler thread
+    /// (`run_transmit_scheduler`) that drives every running periodic.
+    /// `start`/`stop_periodic_transmit` push schedule changes through
+    /// it; the thread itself is spawned in `run`'s `setup`.
+    transmit_scheduler: transmit_scheduler::TransmitScheduler,
 }
 
 /// Boot the Tauri runtime.
@@ -187,16 +262,24 @@ pub fn run() {
     // up alongside the in-process ring the System Messages panel
     // renders. Idempotent — safe to call again from tests.
     system_log::init_tracing_subscriber();
+    // The transmit scheduler thread owns the receiver; the handle lives
+    // on `AppState` so the IPC commands can push schedule changes. The
+    // thread is spawned in `setup` (it needs the `AppHandle`).
+    let (transmit_scheduler, transmit_sched_rx) = transmit_scheduler::channel();
+    let transmit_sched_rx = std::sync::Mutex::new(Some(transmit_sched_rx));
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             databases: Mutex::new(Vec::new()),
             remote_sessions: Mutex::new(HashMap::new()),
-            trace_store: TraceStore::new(),
+            trace_store: Arc::new(TraceStore::new()),
             signal_caches: SignalCacheStore::new(),
             system_log: SystemLog::new(),
             notes: NotesStore::new(),
             dbc_watcher: Mutex::new(None),
+            local_buses: local_buses::LocalBusRegistry::default(),
+            transmit_frames: Mutex::new(transmit_frames::TransmitFrameRegistry::default()),
+            transmit_scheduler,
         })
         .manage(sidecar::SidecarState::default())
         .manage(interfaces::InterfacesState::default())
@@ -218,7 +301,14 @@ pub fn run() {
             list_signals,
             list_dbc_content,
             sample_signals,
-            transmit_frame,
+            list_transmit_frames,
+            set_transmit_frame,
+            remove_transmit_frame,
+            reorder_transmit_frames,
+            clear_transmit_frames,
+            transmit_frame_once,
+            start_periodic_transmit,
+            stop_periodic_transmit,
             list_value_tables,
             encode_frame,
             describe_message,
@@ -238,13 +328,30 @@ pub fn run() {
             interfaces::watch_interfaces,
             interfaces::unwatch_interfaces,
             interfaces::refresh_interfaces,
+            replay_local_virtual_buses,
+            create_local_virtual_bus,
+            drop_local_virtual_bus,
+            attach_local_bus_bridge,
+            detach_local_bus_bridge,
+            list_local_bus_bridges,
         ])
-        .setup(|app| {
+        .setup(move |app| {
             // Make sure the main window has the id our capabilities expect.
             // Tauri assigns "main" by default for the first window in the
             // config; we rely on that here.
             debug_assert!(app.get_webview_window("main").is_some());
             spawn_trace_grew_emitter(app.handle().clone());
+            // The single transmit scheduler thread drives every running
+            // periodic (Phase 13). Takes ownership of the command
+            // receiver created above.
+            if let Some(rx) = transmit_sched_rx
+                .lock()
+                .expect("transmit scheduler rx mutex poisoned")
+                .take()
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || run_transmit_scheduler(&handle, &rx));
+            }
             sidecar::spawn_sidecar(app.handle());
             // Phase 12: build the DBC filesystem watcher. Construction
             // is the only step that needs the `AppHandle` (the
@@ -260,27 +367,57 @@ pub fn run() {
         .expect("error while running cannet");
 }
 
+/// Whether a `trace-grew` tick should emit, given the `(count, fps)` it
+/// last emitted and the values this tick. Skips only when both are
+/// byte-identical. An idle session settles there: the count is frozen
+/// and [`TraceStore::frames_per_second`] returns exactly `0.0` once a
+/// full second has elapsed since the last append, so after the rate has
+/// finished decaying the tuple stops changing and the emitter goes quiet
+/// (Phase 13 Step 8). During that one-second decay each read differs, so
+/// the status line still slides to zero before the stream falls silent.
+fn should_emit_trace_grew(last: Option<(u64, f64)>, current: (u64, f64)) -> bool {
+    match last {
+        Some((count, fps)) => count != current.0 || fps.to_bits() != current.1.to_bits(),
+        None => true,
+    }
+}
+
 /// Periodic emitter that fires `trace-grew` events on a fixed cadence.
 /// Runs on Tauri's tokio runtime; doesn't own or block any worker
-/// thread. The unconditional emit is intentional — the rate must be
-/// able to fall to zero promptly when streaming stops, and at 10 Hz
-/// with a small payload the IPC cost is negligible compared to the
-/// frame traffic itself.
+/// thread. Each tick reads the cheap `(len, frames_per_second)` pair and
+/// emits only when [`should_emit_trace_grew`] says something moved — so a
+/// connected but idle session stops collecting a tail, serializing it,
+/// and waking the WebView listener at 10 Hz for data that hasn't changed.
+/// The `collect_trace_records` tail decode (the expensive part) runs only
+/// on a tick that actually emits.
 fn spawn_trace_grew_emitter(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(TRACE_GREW_TICK);
+        let mut last_emitted: Option<(u64, f64, u64)> = None;
         loop {
             interval.tick().await;
             let state: State<'_, AppState> = app.state();
             let count = u64::try_from(state.trace_store.len()).unwrap_or(u64::MAX);
             let frames_per_second = state.trace_store.frames_per_second();
+            let session_start_ns = state.trace_store.session_start_ns();
+            if !should_emit_trace_grew(
+                last_emitted.map(|(c, fps, _)| (c, fps)),
+                (count, frames_per_second),
+            ) && last_emitted.map(|(_, _, s)| s) == Some(session_start_ns)
+            {
+                continue;
+            }
+            last_emitted = Some((count, frames_per_second, session_start_ns));
             let tail =
                 collect_trace_records(state.inner(), count.saturating_sub(TRACE_GREW_TAIL), count);
+            #[allow(clippy::cast_precision_loss)]
+            let session_start_seconds = session_start_ns as f64 / 1_000_000_000.0;
             let _ = app.emit(
                 "trace-grew",
                 TraceGrew {
                     count,
                     frames_per_second,
+                    session_start_seconds,
                     tail,
                 },
             );
@@ -305,11 +442,39 @@ pub struct ChannelBusMapping {
 /// One entry of the remote-server interface → bus map the GUI sends
 /// to `connect_remote_server` (Phase 6). `interface` is the wire
 /// `Interface.id`; `bus_id` is the project's logical bus.
+///
+/// `speed_bps` / `fd` / `fd_data_speed_bps` are the bus's hardware
+/// configuration as held in [`crate::project::Bus`]. When any of
+/// `speed_bps` / `fd` is set, the host pushes a `ConfigureBus`
+/// envelope to the sidecar immediately after subscribe so the
+/// underlying controller is reopened at the requested rate / mode.
+/// Omitting both leaves the sidecar on its driver default
+/// (typically classic, 500 kbps).
 #[derive(serde::Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct InterfaceBusBinding {
     pub interface: String,
     pub bus_id: String,
+    #[serde(default)]
+    pub speed_bps: Option<u32>,
+    #[serde(default)]
+    pub fd: Option<bool>,
+    #[serde(default)]
+    pub fd_data_speed_bps: Option<u32>,
+}
+
+/// Build a [`PreSubscribeConfig`] from a binding's bus hints, or
+/// `None` if neither speed nor FD mode is pinned (the project hasn't
+/// configured this bus, so the sidecar uses its driver default).
+fn presubscribe_config_from(b: &InterfaceBusBinding) -> Option<PreSubscribeConfig> {
+    if b.speed_bps.is_none() && b.fd.is_none() {
+        return None;
+    }
+    Some(PreSubscribeConfig {
+        speed_bps: u64::from(b.speed_bps.unwrap_or(0)),
+        fd_enabled: b.fd.unwrap_or(false),
+        fd_data_speed_bps: u64::from(b.fd_data_speed_bps.unwrap_or(0)),
+    })
 }
 
 #[tauri::command]
@@ -376,6 +541,7 @@ fn open_log(
                 source,
                 Arc::new(AtomicBool::new(false)),
                 channel_to_bus,
+                true, // replay_origin: BLF anchors the session at the first frame's ts
             );
         })
         .map_err(|e| format!("failed to spawn pump thread: {e}"))?;
@@ -969,7 +1135,7 @@ async fn fetch_latest_by_id(
                     return None;
                 }
             }
-            Some(ByIdSnapshot { frame: record, rate: row.rate })
+            Some(ByIdSnapshot { frame: record, rate: row.rate, count: row.count })
         })
         .collect()
 }
@@ -1037,15 +1203,25 @@ async fn fetch_filtered_trace(
     FilteredTracePage { count, start, rows }
 }
 
-/// Drop every stored frame. The frontend's Clear button is the typical
-/// caller. The next `trace-grew` tick will fire with the new count
-/// (zero), prompting the trace view to drop its row cache. Phase 9:
-/// any session-scoped notes go with the buffer (they reference
-/// timestamps on the now-discarded timeline).
+/// Drop every stored frame and start a fresh session timeline rooted
+/// at wall-clock now. The frontend's Clear button is the typical
+/// caller. Raising the session-start threshold to "now" is what makes
+/// any frames captured before the clear but still in flight through
+/// the recv pipeline (sidecar queue, gRPC stream, packer thread) get
+/// dropped on append rather than land in the new session's buffer with
+/// stale timestamps and show as negative offsets.
+///
+/// The next `trace-grew` tick will fire with the new count (zero),
+/// prompting the trace view to drop its row cache. Phase 9: any
+/// session-scoped notes go with the buffer (they reference timestamps
+/// on the now-discarded timeline).
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 fn clear_trace_store(app: AppHandle, state: State<'_, AppState>) {
-    state.trace_store.clear();
+    let now_ns = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
+    state.trace_store.start_session(now_ns);
     // The decoded-sample caches hold frame indices into the store —
     // wipe them too, otherwise the next `sample_signals` would slice
     // against a buffer that no longer exists.
@@ -1572,6 +1748,14 @@ async fn connect_remote_server(
         return Err(msg);
     }
 
+    // ADR 0023 dispatch: a `local-vbus://<id>` address opens an
+    // in-process session against the named virtual bus instead of
+    // going over `cannet-client`. Same RemoteSession shape; same
+    // entry in the session map; same transmit / disconnect paths.
+    if let Some(vbus_id) = address.strip_prefix(project::LOCAL_VBUS_URL_SCHEME) {
+        return connect_local_vbus(&app, address.clone(), vbus_id, &binding_lookup);
+    }
+
     sys_info!(&app, "connection", "connecting to {address}");
     let interfaces = match cannet_client::list_interfaces(&address).await {
         Ok(v) => v,
@@ -1590,19 +1774,25 @@ async fn connect_remote_server(
 
     // Subscribe only to interfaces named in the project's bindings for
     // this server. Channels are 0..N over the binding list — distinct
-    // per session, not globally unique.
+    // per session, not globally unique. When the binding carries an
+    // explicit bus speed / FD mode, attach it so the worker emits a
+    // `ConfigureBus` ahead of the corresponding `Subscribe` and the
+    // controller opens at the right rate from the start.
     let subscriptions: Vec<Subscription> = binding_lookup
         .iter()
         .enumerate()
         .filter_map(|(i, b)| {
-            if interfaces.iter().any(|iface| iface.id == b.interface) {
-                Some(Subscription {
-                    interface_id: b.interface.clone(),
-                    channel: u8::try_from(i).unwrap_or(u8::MAX),
-                })
-            } else {
-                None
+            if !interfaces.iter().any(|iface| iface.id == b.interface) {
+                return None;
             }
+            let sub = Subscription::new(
+                b.interface.clone(),
+                u8::try_from(i).unwrap_or(u8::MAX),
+            );
+            Some(match presubscribe_config_from(b) {
+                Some(cfg) => sub.with_config(cfg),
+                None => sub,
+            })
         })
         .collect();
 
@@ -1666,8 +1856,8 @@ async fn connect_remote_server(
         guard.insert(
             address.clone(),
             RemoteSession {
-                handle,
-                transmitter,
+                handle: Some(handle),
+                tx: SessionTx::Remote(transmitter),
                 channel_to_interface: subscriptions
                     .iter()
                     .map(|s| (s.channel, s.interface_id.clone()))
@@ -1698,7 +1888,7 @@ async fn connect_remote_server(
     std::thread::Builder::new()
         .name(format!("cannet-remote-pump:{address}"))
         .spawn(move || {
-            run_pump(&app_for_thread, receiver, stop, channel_to_bus);
+            run_pump(&app_for_thread, receiver, stop, channel_to_bus, false);
             // Pump exited (server hung up or user disconnected). Drop
             // our entry so the address is free for a fresh connect.
             let state: State<'_, AppState> = app_for_thread.state();
@@ -1728,6 +1918,190 @@ async fn connect_remote_server(
             .collect(),
         interfaces: interfaces.into_iter().map(InterfaceRecord::from).collect(),
     })
+}
+
+/// Open an in-process session against a `local-vbus://<id>` address.
+/// Attaches one participant per binding on the named virtual bus;
+/// each participant's read half is pumped into the trace store by a
+/// dedicated thread (mirroring how the remote pump drains a
+/// `cannet-client` `FrameReceiver`), and the write halves are stored
+/// in the session's [`SessionTx::Vbus`] for transmits.
+///
+/// The session lands in the same `remote_sessions` map as a remote
+/// session and is keyed by the full `local-vbus://<id>` URL, so the
+/// rest of the host (`transmit_frame`, `connectedBusIds`, Disconnect)
+/// treats it uniformly.
+fn connect_local_vbus(
+    app: &AppHandle,
+    address: String,
+    vbus_id: &str,
+    binding_lookup: &[InterfaceBusBinding],
+) -> Result<RemoteSessionResult, String> {
+    sys_info!(&app, "connection", "opening in-process session against {address}");
+
+    let state: State<'_, AppState> = app.state();
+
+    // Attach one participant per binding while we still hold the
+    // registry's view of the vbus. We collect (channel, sink,
+    // source, bus_id) tuples; sinks become the session's transmit
+    // handles, sources are pumped on per-channel threads.
+    let mut participants: Vec<(u8, cannet_core::LocalSink, cannet_core::LocalSource, String)> =
+        Vec::with_capacity(binding_lookup.len());
+    for (i, binding) in binding_lookup.iter().enumerate() {
+        let channel = u8::try_from(i).unwrap_or(u8::MAX);
+        match state.local_buses.attach_participant(vbus_id) {
+            Ok((sink, source)) => {
+                participants.push((channel, sink, source, binding.bus_id.clone()));
+            }
+            Err(e) => {
+                let msg = format!("failed to open in-process session against {address}: {e}");
+                sys_error!(&app, "connection", "{msg}");
+                return Err(msg);
+            }
+        }
+    }
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let channel_to_interface: Vec<(u8, String)> = participants
+        .iter()
+        .map(|(c, _, _, _)| (*c, project::LOCAL_VBUS_INTERFACE.to_string()))
+        .collect();
+    let channel_to_bus: Vec<(u8, Option<String>)> = participants
+        .iter()
+        .map(|(c, _, _, bid)| (*c, Some(bid.clone())))
+        .collect();
+    let subscriptions: Vec<ipc::SubscriptionRecord> = participants
+        .iter()
+        .map(|(c, _, _, _)| ipc::SubscriptionRecord {
+            interface_id: project::LOCAL_VBUS_INTERFACE.to_string(),
+            channel: *c,
+        })
+        .collect();
+
+    // Move the participants into (sinks, sources). Sinks go into the
+    // session map under `SessionTx::Vbus`; sources are handed off to
+    // per-channel pumps.
+    let mut sinks: Vec<(u8, std::sync::Arc<std::sync::Mutex<cannet_core::LocalSink>>)> =
+        Vec::with_capacity(participants.len());
+    let mut pumps: Vec<(u8, String, cannet_core::LocalSource)> =
+        Vec::with_capacity(participants.len());
+    for (channel, sink, source, bus_id) in participants {
+        sinks.push((channel, std::sync::Arc::new(std::sync::Mutex::new(sink))));
+        pumps.push((channel, bus_id, source));
+    }
+
+    {
+        let mut guard = state
+            .remote_sessions
+            .lock()
+            .expect("remote_sessions mutex poisoned");
+        if guard.contains_key(&address) {
+            let msg = format!("already connected to {address}");
+            sys_warn!(&app, "connection", "{msg}");
+            return Err(msg);
+        }
+        guard.insert(
+            address.clone(),
+            RemoteSession {
+                handle: None,
+                tx: SessionTx::Vbus(sinks),
+                channel_to_interface,
+                channel_to_bus: channel_to_bus.clone(),
+                stop: Arc::clone(&stop),
+            },
+        );
+    }
+
+    // Spawn one pump per participant. Each pump exits when the
+    // session-wide stop flag is set or when its `LocalSource`
+    // returns `None` (which happens when the matching `LocalSink` is
+    // dropped — that's how Disconnect tears participants down).
+    for (channel, bus_id, source) in pumps {
+        let app_for_thread = app.clone();
+        let stop = Arc::clone(&stop);
+        let address_for_cleanup = address.clone();
+        let cleanup_addr_for_log = address.clone();
+        let channel_to_bus = vec![(channel, Some(bus_id.clone()))];
+        std::thread::Builder::new()
+            .name(format!("cannet-vbus-pump:{address_for_cleanup}#{channel}"))
+            .spawn(move || {
+                let adapter = LocalSourceFrameSource { source, channel };
+                run_pump(&app_for_thread, adapter, stop, channel_to_bus, false);
+                // When the *last* participant's pump exits, drop the
+                // session entry so the URL is free for a fresh
+                // connect. Use a guarded check — pumps may exit out
+                // of order; the first one shouldn't tear the whole
+                // session down.
+                let state: State<'_, AppState> = app_for_thread.state();
+                let mut guard = state
+                    .remote_sessions
+                    .lock()
+                    .expect("remote_sessions mutex poisoned");
+                let session_dead = guard
+                    .get(&address_for_cleanup)
+                    .map(|s| match &s.tx {
+                        SessionTx::Vbus(sinks) => sinks.is_empty(),
+                        SessionTx::Remote(_) => false,
+                    })
+                    .unwrap_or(true);
+                if session_dead {
+                    guard.remove(&address_for_cleanup);
+                    drop(guard);
+                    sys_info!(
+                        &app_for_thread,
+                        "connection",
+                        "in-process session {cleanup_addr_for_log} closed",
+                    );
+                }
+            })
+            .map_err(|e| format!("failed to spawn vbus pump thread: {e}"))?;
+    }
+
+    sys_info!(
+        &app,
+        "connection",
+        "opened in-process session against {address} ({n} participant(s))",
+        n = subscriptions.len(),
+    );
+
+    Ok(RemoteSessionResult {
+        address,
+        subscriptions,
+        interfaces: Vec::new(),
+    })
+}
+
+/// Adapter: a [`cannet_core::LocalSource`] satisfies
+/// [`cannet_core::CanFrameSource`] by waiting for the next
+/// `ParticipantEvent::Frame` and stamping the configured channel on
+/// the frame before passing it up. Frame events from the source
+/// arrive with `Direction::Rx` (the bus already flipped direction on
+/// fan-out — see `SharedBus::deliver_to_others`); the trace store
+/// records them as the receiving project bus's `Rx` row.
+struct LocalSourceFrameSource {
+    source: cannet_core::LocalSource,
+    channel: u8,
+}
+
+impl cannet_core::CanFrameSource for LocalSourceFrameSource {
+    type Error = std::convert::Infallible;
+
+    fn next_frame(&mut self) -> Result<Option<cannet_core::CanFrame>, Self::Error> {
+        loop {
+            match self.source.next_event() {
+                Some(cannet_core::ParticipantEvent::Frame { mut frame, sender: _ }) => {
+                    frame.channel = self.channel;
+                    return Ok(Some(frame));
+                }
+                Some(cannet_core::ParticipantEvent::NoAcknowledger(_)) => {
+                    // Host-side participants don't currently surface
+                    // NACKs to the trace; spin to the next event.
+                    continue;
+                }
+                None => return Ok(None),
+            }
+        }
+    }
 }
 
 /// End remote sessions: set their pumps' stop flags and drop their
@@ -1793,12 +2167,18 @@ fn run_pump<S>(
     mut source: S,
     stop: Arc<AtomicBool>,
     channel_to_bus: Vec<(u8, Option<String>)>,
+    replay_origin: bool,
 ) where
     S: CanFrameSource,
     S::Error: fmt::Display,
 {
     let state: State<'_, AppState> = app.state();
     let mut total: u64 = 0;
+    // For replay sources (BLF) the session timeline is the file's own
+    // — the first frame's timestamp becomes the session-start. Live
+    // sources keep the wall-clock session-start the GUI set via
+    // `clear_trace_store` before connecting.
+    let mut needs_replay_session_start = replay_origin;
 
     loop {
         if stop.load(Ordering::Relaxed) {
@@ -1810,6 +2190,10 @@ fn run_pump<S>(
                 match route_channel(raw.channel, &channel_to_bus) {
                     Ok(bid) => raw.bus_id = bid,
                     Err(()) => continue, // skip this channel
+                }
+                if needs_replay_session_start {
+                    state.trace_store.start_session(raw.timestamp_ns);
+                    needs_replay_session_start = false;
                 }
                 state.trace_store.append(raw);
                 total = total.saturating_add(1);
@@ -1831,23 +2215,254 @@ fn run_pump<S>(
     let _ = app.emit("log-finished", LogFinished::Ok { total });
 }
 
-/// Compose a frame from the transmit panel, append it to the trace as
-/// a `Tx`-direction tx-confirm row (always, even with no remote
-/// session — that's what a real analyzer shows for its own
-/// transmits), and — if a remote session is open — forward it onto
-/// the wire too. Server-side rejection (e.g. the BLF replay
-/// server's `Error::TX_REJECTED`) surfaces inline through the receive
-/// pump as a `ConnectionError::Server`; this command's
-/// `wire_status` only reports the *enqueue* outcome.
+// ---- Phase 13 Step 9: host-side TX-message registry IPC surface ----
+//
+// Every transmit panel is a thin view onto the host pool. Mutations go
+// through these commands; each emits `transmit-frames-changed` so open
+// views re-fetch. Periodic schedules run on host threads
+// (`spawn_periodic_transmit`), not a JS `setInterval`.
+
+/// Notify open transmit views that the pool changed so they re-fetch.
+fn emit_transmit_frames_changed(app: &AppHandle) {
+    let _ = app.emit("transmit-frames-changed", ());
+}
+
+/// Snapshot the TX-message pool (each message + its `running` flag), in
+/// pool order.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-fn transmit_frame(
+fn list_transmit_frames(state: State<'_, AppState>) -> Vec<transmit_frames::TransmitFrameView> {
+    state
+        .transmit_frames
+        .lock()
+        .expect("transmit_frames mutex poisoned")
+        .list()
+}
+
+/// Insert a new TX message or update an existing one in place. The
+/// command arg `id` is authoritative (it overrides any id carried on
+/// `frame`). Parking the message (`manual` mode or `cycle_ms == 0`)
+/// marks it stopped and unschedules it from the scheduler; a non-parking
+/// edit to a running periodic (e.g. a payload change) leaves it running,
+/// and the scheduler picks the new value up on its next tick.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn set_transmit_frame(
+    app: AppHandle,
     state: State<'_, AppState>,
-    request: ipc::TransmitRequest,
+    id: String,
+    mut frame: transmit_frames::TransmitFrame,
+) {
+    frame.id = id.clone();
+    let parked =
+        frame.mode != transmit_frames::TransmitMode::Periodic || frame.cycle_ms == 0;
+    state
+        .transmit_frames
+        .lock()
+        .expect("transmit_frames mutex poisoned")
+        .set(frame);
+    if parked {
+        state.transmit_scheduler.stop(id);
+    }
+    emit_transmit_frames_changed(&app);
+}
+
+/// Remove a TX message, unscheduling its periodic first.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn remove_transmit_frame(app: AppHandle, state: State<'_, AppState>, id: String) {
+    state
+        .transmit_frames
+        .lock()
+        .expect("transmit_frames mutex poisoned")
+        .remove(&id);
+    state.transmit_scheduler.stop(id);
+    emit_transmit_frames_changed(&app);
+}
+
+/// Rewrite the pool order to match `ids`.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn reorder_transmit_frames(app: AppHandle, state: State<'_, AppState>, ids: Vec<String>) {
+    state
+        .transmit_frames
+        .lock()
+        .expect("transmit_frames mutex poisoned")
+        .reorder(&ids);
+    emit_transmit_frames_changed(&app);
+}
+
+/// Stop every periodic and drop all TX messages (used by New project).
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn clear_transmit_frames(app: AppHandle, state: State<'_, AppState>) {
+    state
+        .transmit_frames
+        .lock()
+        .expect("transmit_frames mutex poisoned")
+        .clear();
+    emit_transmit_frames_changed(&app);
+}
+
+/// Send one TX message now (the manual-send path). Looks the request up
+/// by id and routes it through the same `transmit_frame_inner` the
+/// scheduler uses — one transmit primitive, no special-casing.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn transmit_frame_once(
+    state: State<'_, AppState>,
+    id: String,
 ) -> Result<ipc::TransmitResult, String> {
+    let request = state
+        .transmit_frames
+        .lock()
+        .expect("transmit_frames mutex poisoned")
+        .current(&id)
+        .map(|(request, _, _)| request)
+        .ok_or_else(|| format!("no transmit frame with id {id}"))?;
     transmit_frame_inner(state.inner(), &request)
 }
 
+/// Start a message's periodic schedule. Rejects non-periodic messages
+/// and a zero period; a no-op if it's already running. Adds the message
+/// to the single scheduler thread rather than spawning one of its own.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn start_periodic_transmit(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    let newly_started = state
+        .transmit_frames
+        .lock()
+        .expect("transmit_frames mutex poisoned")
+        .begin_periodic(&id)?;
+    if newly_started {
+        state.transmit_scheduler.start(id);
+    }
+    emit_transmit_frames_changed(&app);
+    Ok(())
+}
+
+/// Stop a message's periodic schedule. A no-op if it isn't running.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn stop_periodic_transmit(app: AppHandle, state: State<'_, AppState>, id: String) {
+    state
+        .transmit_frames
+        .lock()
+        .expect("transmit_frames mutex poisoned")
+        .stop_periodic(&id);
+    state.transmit_scheduler.stop(id);
+    emit_transmit_frames_changed(&app);
+}
+
+/// The next fixed-rate deadline. The schedule advances `prev` by one
+/// `period` each tick, so the time spent doing the transmit work (and
+/// any sleep overshoot) is absorbed instead of being added on top of
+/// the period — the bug behind the observed rate shortfall (a 100 ms
+/// period that measured ~104 ms because ~4 ms of per-tick work was
+/// being tacked onto every sleep).
+///
+/// If the schedule has fallen behind — a tick ran longer than its
+/// period, or the period was just shortened — the target is in the
+/// past; we realign to `now` rather than firing a catch-up *burst*
+/// (back-to-back frames to "make up" lost ticks), which is never what
+/// a CAN cyclic transmit wants. The effect is that a message whose
+/// per-tick work exceeds its period simply runs as fast as it can,
+/// with no growing backlog.
+fn next_tick_deadline(
+    prev: std::time::Instant,
+    now: std::time::Instant,
+    period: Duration,
+) -> std::time::Instant {
+    let target = prev + period;
+    if target > now { target } else { now }
+}
+
+/// The single transmit scheduler thread (Phase 13). It owns one
+/// [`transmit_scheduler::PeriodicSchedule`] for *all* running periodics
+/// and blocks on the command channel with a timeout equal to the time
+/// until the next deadline — so it wakes either when a `Start` / `Stop`
+/// arrives or when a message is due, and never busy-waits. One thread
+/// scales to arbitrarily many low-rate messages across buses without the
+/// per-thread wake-up jitter the old thread-per-message model had.
+///
+/// On each due entry it asks the registry [`fire_info`] what to emit
+/// (re-read every tick, so live payload / period edits land on the next
+/// emission — property 4), skips the actual transmit when the target bus
+/// has no live session (no tx-confirm while disconnected — Phase 11; the
+/// schedule keeps ticking and resumes on reconnect), and reschedules on
+/// a fixed-rate grid via [`next_tick_deadline`] (work time absorbed, no
+/// catch-up burst). A `fire_info` of `None` (stopped, parked, or
+/// removed) drops the entry from the schedule. The thread exits when
+/// every [`transmit_scheduler::TransmitScheduler`] sender is dropped
+/// (app shutdown).
+fn run_transmit_scheduler(
+    app: &AppHandle,
+    rx: &std::sync::mpsc::Receiver<transmit_scheduler::SchedulerCmd>,
+) {
+    use std::sync::mpsc::RecvTimeoutError;
+    use transmit_scheduler::SchedulerCmd;
+
+    let mut schedule = transmit_scheduler::PeriodicSchedule::new();
+    // Idle wait when nothing is scheduled — long, but bounded so the
+    // thread stays responsive to a spurious wake and re-checks cleanly.
+    let idle = Duration::from_secs(3600);
+    loop {
+        let wait = schedule
+            .next_deadline()
+            .map_or(idle, |d| d.saturating_duration_since(std::time::Instant::now()));
+        match rx.recv_timeout(wait) {
+            Ok(SchedulerCmd::Start(id)) => schedule.schedule(id, std::time::Instant::now()),
+            Ok(SchedulerCmd::Stop(id)) => schedule.unschedule(&id),
+            Err(RecvTimeoutError::Timeout) => {}
+            // All senders dropped — the app is shutting down.
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+
+        let now = std::time::Instant::now();
+        let state: State<'_, AppState> = app.state();
+        for (id, fired_at) in schedule.take_due(now) {
+            let Some((request, cycle_ms)) = state
+                .transmit_frames
+                .lock()
+                .expect("transmit_frames mutex poisoned")
+                .fire_info(&id)
+            else {
+                // Stopped, parked, or removed — drop it from the schedule.
+                schedule.unschedule(&id);
+                continue;
+            };
+            let connected = {
+                let sessions = state
+                    .remote_sessions
+                    .lock()
+                    .expect("remote_sessions mutex poisoned");
+                resolve_bus_route(&sessions, &request.bus_id).is_some()
+            };
+            if connected {
+                let _ = transmit_frame_inner(state.inner(), &request);
+            }
+            let period = Duration::from_millis(u64::from(cycle_ms));
+            let next = next_tick_deadline(fired_at, std::time::Instant::now(), period);
+            schedule.reschedule(&id, next);
+        }
+    }
+}
+
+/// The one transmit primitive: compose a frame from a request, append
+/// it to the trace as a `Tx`-direction tx-confirm row (always, even
+/// with no remote session — that's what a real analyzer shows for its
+/// own transmits), and — if a remote session is open — forward it onto
+/// the wire too. Both the manual `transmit_frame_once` command and the
+/// scheduler thread (`run_transmit_scheduler`) route through here, so
+/// there's no special-casing for the periodic case.
+/// Server-side rejection (e.g. the BLF replay server's
+/// `Error::TX_REJECTED`) surfaces inline through the receive pump as a
+/// `ConnectionError::Server`; the returned `wire_status` only reports
+/// the *enqueue* outcome.
 fn transmit_frame_inner(
     state: &AppState,
     request: &ipc::TransmitRequest,
@@ -1927,17 +2542,15 @@ fn transmit_frame_inner(
                 request.bus_id
             ),
         },
-        Some(BusRoute { address, interface_id, .. }) => {
+        Some(BusRoute { address, channel, interface_id }) => {
             // Re-borrow the session for the actual transmit; `routing`
             // dropped its borrow when it returned.
             let session = sessions_guard
                 .get(&address)
                 .expect("session for resolved route disappeared mid-transmit");
-            match session.transmitter.transmit(&interface_id, &frame) {
+            match session.tx.transmit(channel, &interface_id, &frame) {
                 Ok(()) => ipc::TransmitWireStatus::Sent { interface_id },
-                Err(e) => ipc::TransmitWireStatus::Failed {
-                    message: e.to_string(),
-                },
+                Err(message) => ipc::TransmitWireStatus::Failed { message },
             }
         }
     };
@@ -2108,6 +2721,7 @@ fn describe_message_inner(
                 expected_len: desc.expected_len,
                 is_fd: desc.is_fd,
                 brs: desc.brs,
+                gen_msg_cycle_time_ms: desc.gen_msg_cycle_time_ms,
                 uses_extended_mux: desc.uses_extended_mux,
                 signals,
             });
@@ -2203,6 +2817,136 @@ fn signal_to_wire(sig: &DecodedSignal<'_>) -> SignalRecord {
     }
 }
 
+// ------------------------------------------------------------------
+// Phase 13: local-virtual-bus commands (ADR 0021)
+// ------------------------------------------------------------------
+//
+// Lifecycle: the GUI calls [`replay_local_virtual_buses`] on every
+// project open / new / close. Mid-session edits go through the
+// `create_local_virtual_bus` / `drop_local_virtual_bus` /
+// `attach_*` / `detach_*` commands for live updates.
+
+/// Rebuild every host-side virtual-bus instance from the project's
+/// definitions, and attach observers for each
+/// `local-virtual-bus` binding (ADR 0021). Existing instances are
+/// dropped first.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn replay_local_virtual_buses(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    defs: Vec<project::LocalVirtualBusDef>,
+) -> Result<Vec<String>, String> {
+    let errors = local_buses::replay(&state.local_buses, &defs);
+    for err in &errors {
+        sys_warn!(&app, "virtual-bus", "{err}");
+    }
+    let ids = state.local_buses.bus_ids();
+    sys_info!(
+        &app,
+        "virtual-bus",
+        "replayed {} local virtual bus(es)",
+        ids.len(),
+    );
+    Ok(ids)
+}
+
+/// Create a virtual bus. The GUI calls this from the project
+/// panel's *Add virtual bus* action. The vbus has no user-
+/// configurable bitrate (see `LocalVirtualBusDef`); the host applies
+/// a fixed default to SharedBus internally.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn create_local_virtual_bus(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    name: String,
+) -> Result<(), String> {
+    state
+        .local_buses
+        .create(&id, &name, local_buses::default_vbus_config())?;
+    sys_info!(&app, "virtual-bus", "created virtual bus {id} ({name})");
+    Ok(())
+}
+
+/// Drop a virtual bus by id. Every observer and bridge attached to
+/// it tears down with it.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn drop_local_virtual_bus(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    if state.local_buses.drop_bus(&id) {
+        sys_info!(&app, "virtual-bus", "dropped virtual bus {id}");
+        Ok(())
+    } else {
+        Err(format!("no virtual bus {id:?}"))
+    }
+}
+
+/// Attach a bridge to a virtual bus. The bridge opens a
+/// `cannet-client` session against `spec.remote_address`. `allocates`
+/// signals that the bridged interface is a virtual-bus factory id
+/// (the client will wait for `InterfaceAllocated`).
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn attach_local_bus_bridge(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    virtual_bus_id: String,
+    spec: project::BridgeSpec,
+    allocates: Option<bool>,
+) -> Result<(), String> {
+    state.local_buses.attach_bridge(
+        &virtual_bus_id,
+        &spec,
+        allocates.unwrap_or(false),
+    )?;
+    sys_info!(
+        &app,
+        "virtual-bus",
+        "attached bridge {} on vbus {virtual_bus_id}",
+        spec.name,
+    );
+    Ok(())
+}
+
+/// Detach a bridge from a virtual bus.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn detach_local_bus_bridge(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    virtual_bus_id: String,
+    name: String,
+) -> Result<bool, String> {
+    let removed = state
+        .local_buses
+        .detach_bridge(&virtual_bus_id, &name)?;
+    if removed {
+        sys_info!(
+            &app,
+            "virtual-bus",
+            "detached bridge {name} from vbus {virtual_bus_id}",
+        );
+    }
+    Ok(removed)
+}
+
+/// Snapshot of every virtual bus's installed bridge names — the
+/// GUI's project panel uses it as a readout.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn list_local_bus_bridges(
+    state: State<'_, AppState>,
+    virtual_bus_id: String,
+) -> Vec<String> {
+    state.local_buses.bridge_names(&virtual_bus_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2243,11 +2987,17 @@ mod tests {
         AppState {
             databases: Mutex::new(Vec::new()),
             remote_sessions: Mutex::new(HashMap::new()),
-            trace_store: TraceStore::new(),
+            trace_store: Arc::new(TraceStore::new()),
             signal_caches: SignalCacheStore::new(),
             system_log: SystemLog::new(),
             notes: NotesStore::new(),
             dbc_watcher: Mutex::new(None),
+            local_buses: local_buses::LocalBusRegistry::default(),
+            transmit_frames: Mutex::new(transmit_frames::TransmitFrameRegistry::default()),
+            // Tests don't run the scheduler thread; the dropped receiver
+            // makes `start`/`stop` best-effort no-ops, which is fine —
+            // the registry's `running` state is what the tests assert.
+            transmit_scheduler: transmit_scheduler::channel().0,
         }
     }
 
@@ -2379,6 +3129,20 @@ mod tests {
     }
 
     #[test]
+    fn trace_grew_skips_only_when_count_and_rate_are_unchanged() {
+        // First tick (nothing emitted yet) always emits.
+        assert!(should_emit_trace_grew(None, (0, 0.0)));
+        // Idle: count frozen and the rate has fully decayed to 0.0 — skip.
+        assert!(!should_emit_trace_grew(Some((10, 0.0)), (10, 0.0)));
+        // New frames landed — emit.
+        assert!(should_emit_trace_grew(Some((10, 0.0)), (11, 0.0)));
+        // Count steady but the rate is still decaying (a different read) — emit.
+        assert!(should_emit_trace_grew(Some((10, 5.0)), (10, 4.5)));
+        // Capture cleared (count dropped) — emit.
+        assert!(should_emit_trace_grew(Some((10, 5.0)), (0, 0.0)));
+    }
+
+    #[test]
     fn unscoped_dbc_decodes_every_bus() {
         let state = test_state();
         let dbc = tiny_dbc(256, "Anywhere", "Sig");
@@ -2501,6 +3265,289 @@ mod tests {
         assert_eq!(only.direction, Direction::Tx);
         assert_eq!(only.id, 0x123);
         assert!(matches!(&only.payload, CanFramePayload::Classic(d) if d == &[1, 2, 3, 4]));
+    }
+
+    #[test]
+    fn transmit_frame_inner_routes_through_local_virtual_bus_session() {
+        // Two project buses ("p", "q") bound to the same vbus, with
+        // an in-process session open against `local-vbus://vbus`.
+        // Transmit on "p"; the tx-confirm appends to "p"'s trace
+        // immediately, and the SharedBus fans the frame out to "q"'s
+        // participant as a Direction::Rx copy. We don't spawn the
+        // pump threads here — we drain the LocalSource manually to
+        // assert the routing without depending on thread timing.
+        let state = test_state();
+        state
+            .local_buses
+            .create("vbus", "v", cannet_core::BusConfig::classic_500k())
+            .unwrap();
+        let (sink_p, _source_p) = state
+            .local_buses
+            .attach_participant("vbus")
+            .unwrap();
+        let (_sink_q, mut source_q) = state
+            .local_buses
+            .attach_participant("vbus")
+            .unwrap();
+
+        let session = RemoteSession {
+            handle: None,
+            tx: SessionTx::Vbus(vec![
+                (0, std::sync::Arc::new(std::sync::Mutex::new(sink_p))),
+            ]),
+            channel_to_interface: vec![(0, project::LOCAL_VBUS_INTERFACE.into())],
+            channel_to_bus: vec![(0, Some("p".into()))],
+            stop: Arc::new(AtomicBool::new(false)),
+        };
+        state
+            .remote_sessions
+            .lock()
+            .unwrap()
+            .insert(format!("{}vbus", project::LOCAL_VBUS_URL_SCHEME), session);
+
+        let req = ipc::TransmitRequest {
+            bus_id: "p".into(),
+            id: 0x321,
+            extended: false,
+            kind: ipc::TransmitKind::Classic,
+            data: vec![9, 8, 7],
+            brs: false,
+            esi: false,
+            dlc: 0,
+        };
+        let result = transmit_frame_inner(&state, &req).unwrap();
+        assert!(
+            matches!(result.wire_status, ipc::TransmitWireStatus::Sent { .. }),
+            "expected Sent, got {:?}",
+            result.wire_status,
+        );
+
+        // Tx-confirm landed in the trace store for bus "p".
+        assert_eq!(state.trace_store.len(), 1, "expected tx-confirm row");
+        let confirm = state.trace_store.slice(0, 1).pop().unwrap();
+        assert_eq!(confirm.bus_id.as_deref(), Some("p"));
+        assert_eq!(confirm.direction, Direction::Tx);
+        assert_eq!(confirm.id, 0x321);
+
+        // The fan-out is delivered to "q"'s LocalSource. Wait briefly
+        // for the SharedBus's arbitration worker to run.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let frame_q = loop {
+            match source_q.try_next() {
+                Ok(Some(cannet_core::ParticipantEvent::Frame { frame, .. })) => break frame,
+                Ok(_) => {}
+                Err(_) => panic!("q's participant detached unexpectedly"),
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!("vbus fan-out never arrived on q");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert_eq!(frame_q.direction, Direction::Rx);
+        assert_eq!(frame_q.id.raw(), 0x321);
+    }
+
+    /// A frame sent through the transmit panel should land in the
+    /// signal cache for a plot panel scoped to the same bus — the
+    /// tx-confirm is the only record on the sending bus (the wire
+    /// fan-out goes elsewhere), so a plot of "what I just sent on
+    /// bus X" must include Direction::Tx rows.
+    #[test]
+    fn tx_confirm_is_visible_via_sample_signals_signal_cache() {
+        use cannet_dbc::Database;
+        let state = test_state();
+
+        // One-message DBC: id 0x123, 8-bit signal "Sig" at byte 0.
+        let dbc_text = tiny_dbc(0x123, "Msg", "Sig");
+        state.databases.lock().unwrap().push(loaded("test.dbc", &dbc_text));
+
+        // Transmit a frame on bus "p" with payload [42, ...]. No
+        // session is required for the tx-confirm row to land.
+        let req = ipc::TransmitRequest {
+            bus_id: "p".into(),
+            id: 0x123,
+            extended: false,
+            kind: ipc::TransmitKind::Classic,
+            data: vec![42, 0, 0, 0, 0, 0, 0, 0],
+            brs: false,
+            esi: false,
+            dlc: 0,
+        };
+        transmit_frame_inner(&state, &req).unwrap();
+
+        // One tx-confirm row, Direction::Tx, bus_id "p".
+        assert_eq!(state.trace_store.len(), 1);
+        let row = state.trace_store.slice(0, 1).pop().unwrap();
+        assert_eq!(row.direction, Direction::Tx);
+        assert_eq!(row.bus_id.as_deref(), Some("p"));
+
+        // The signal cache for `(bus=p, id=0x123, "Sig")` must include
+        // the tx-confirm's decoded value (42).
+        let dbs_guard = state.databases.lock().unwrap();
+        let db_refs: Vec<&Database> = dbs_guard.iter().map(|l| &l.db).collect();
+        let samples = state.signal_caches.slice(
+            Some("p"),
+            0x123,
+            false,
+            "Sig",
+            0.0,
+            f64::MAX,
+            &state.trace_store,
+            &db_refs,
+        );
+        assert!(
+            samples.iter().any(|p| (p.value - 42.0).abs() < 1e-9),
+            "expected tx-confirm decoded as Sig=42 in signal cache; got {samples:?}",
+        );
+    }
+
+    /// The user's actual scenario: two project buses ("p", "q") both
+    /// bound to the same vbus. Transmit a frame on "p" through the
+    /// host's transmit-frame command (so the tx-confirm appends to
+    /// the trace store as Direction::Tx with bus_id "p", and the
+    /// SharedBus fans the frame out to "q"'s participant; a pump
+    /// stamps the fan-out copy with bus_id "q" and Direction::Rx).
+    /// A plot scoped to *either* bus must then find the decoded
+    /// signal in its signal cache — Tx for "p", Rx for "q".
+    #[test]
+    fn full_vbus_session_tx_decodes_for_sender_and_receiver_plots() {
+        use cannet_dbc::Database;
+        let state = test_state();
+
+        let dbc_text = tiny_dbc(0x456, "Msg", "Sig");
+        state.databases.lock().unwrap().push(loaded("test.dbc", &dbc_text));
+
+        // Set up the vbus and two participants the way
+        // `connect_local_vbus` does — one per project bus.
+        state
+            .local_buses
+            .create("vbus", "v", cannet_core::BusConfig::classic_500k())
+            .unwrap();
+        let (sink_p, _source_p) = state
+            .local_buses
+            .attach_participant("vbus")
+            .unwrap();
+        let (_sink_q, source_q) = state
+            .local_buses
+            .attach_participant("vbus")
+            .unwrap();
+
+        // Spawn the rx pump for "q" — mirrors the per-participant
+        // pump `connect_local_vbus` spawns. `LocalSourceFrameSource`
+        // forces frame.channel = self.channel; `run_pump` then
+        // stamps `bus_id` via `route_channel`. We splice both in
+        // manually here so the test doesn't need an `AppHandle`.
+        let store_for_pump = state.trace_store.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_for_pump = stop.clone();
+        let pump = std::thread::spawn(move || {
+            let mut adapter = LocalSourceFrameSource { source: source_q, channel: 1 };
+            let channel_to_bus = vec![(1u8, Some("q".to_string()))];
+            while !stop_for_pump.load(Ordering::Relaxed) {
+                let Ok(opt) = cannet_core::CanFrameSource::next_frame(&mut adapter) else {
+                    break;
+                };
+                let Some(frame) = opt else { break };
+                let mut raw = RawTraceFrame::from(frame);
+                if let Ok(bid) = route_channel(raw.channel, &channel_to_bus) {
+                    raw.bus_id = bid;
+                    store_for_pump.append(raw);
+                }
+            }
+        });
+
+        // Register a vbus session with `p` on channel 0 (the only
+        // sink the transmit path uses).
+        let session = RemoteSession {
+            handle: None,
+            tx: SessionTx::Vbus(vec![
+                (0, std::sync::Arc::new(std::sync::Mutex::new(sink_p))),
+            ]),
+            channel_to_interface: vec![
+                (0, project::LOCAL_VBUS_INTERFACE.into()),
+                (1, project::LOCAL_VBUS_INTERFACE.into()),
+            ],
+            channel_to_bus: vec![
+                (0, Some("p".into())),
+                (1, Some("q".into())),
+            ],
+            stop: Arc::new(AtomicBool::new(false)),
+        };
+        state
+            .remote_sessions
+            .lock()
+            .unwrap()
+            .insert(format!("{}vbus", project::LOCAL_VBUS_URL_SCHEME), session);
+
+        // Transmit on bus "p" — payload [7, …] decodes as Sig = 7.
+        let req = ipc::TransmitRequest {
+            bus_id: "p".into(),
+            id: 0x456,
+            extended: false,
+            kind: ipc::TransmitKind::Classic,
+            data: vec![7, 0, 0, 0, 0, 0, 0, 0],
+            brs: false,
+            esi: false,
+            dlc: 0,
+        };
+        transmit_frame_inner(&state, &req).unwrap();
+
+        // Wait for the pump to absorb the fan-out and the trace store
+        // to grow to two rows (tx-confirm + Rx fan-out).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline && state.trace_store.len() < 2 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(
+            state.trace_store.len(),
+            2,
+            "expected tx-confirm + fan-out; got {} rows",
+            state.trace_store.len(),
+        );
+
+        // The tx-confirm and the fan-out must share one clock. The plot
+        // anchors its x-axis on the window's first-frame timestamp
+        // (`frame_timestamps`); if the two rows sit on different clocks
+        // the receiver's samples land ~decades off that anchor and the
+        // plot stays empty even though both rows appear in the trace.
+        // Guard the invariant directly: the rows fall within one
+        // coherent span, not wall-clock vs bus-relative.
+        let (first_ns, last_ns) = state.trace_store.frame_timestamps(0, 2);
+        let spread = last_ns.unwrap().abs_diff(first_ns.unwrap());
+        assert!(
+            spread < 1_000_000_000,
+            "tx-confirm and fan-out are {spread} ns apart — two clocks in one buffer",
+        );
+
+        let dbs_guard = state.databases.lock().unwrap();
+        let db_refs: Vec<&Database> = dbs_guard.iter().map(|l| &l.db).collect();
+
+        // Plot scoped to "p" sees the tx-confirm.
+        let samples_p = state.signal_caches.slice(
+            Some("p"), 0x456, false, "Sig",
+            0.0, f64::MAX, &state.trace_store, &db_refs,
+        );
+        assert!(
+            samples_p.iter().any(|p| (p.value - 7.0).abs() < 1e-9),
+            "plot on sender bus 'p' missed the tx-confirm; got {samples_p:?}",
+        );
+
+        // Plot scoped to "q" sees the fan-out.
+        let samples_q = state.signal_caches.slice(
+            Some("q"), 0x456, false, "Sig",
+            0.0, f64::MAX, &state.trace_store, &db_refs,
+        );
+        assert!(
+            samples_q.iter().any(|p| (p.value - 7.0).abs() < 1e-9),
+            "plot on receiver bus 'q' missed the fan-out; got {samples_q:?}",
+        );
+
+        // Tear down the pump cleanly so the test doesn't leak the
+        // participant (drop sink → source returns None → pump exits).
+        stop.store(true, Ordering::Relaxed);
+        drop(dbs_guard);
+        assert!(state.local_buses.drop_bus("vbus"));
+        let _ = pump.join();
     }
 
     /// Round-trip: write the trace-store contents + notes via
@@ -2743,5 +3790,151 @@ mod tests {
         assert!(transmit_frame_inner(&state, &req).is_err());
         // And the trace store was not appended to.
         assert_eq!(state.trace_store.len(), 0);
+    }
+
+    #[test]
+    fn next_tick_deadline_is_fixed_rate_not_fixed_delay() {
+        let base = std::time::Instant::now();
+        let period = Duration::from_millis(100);
+
+        // On-time tick: work finished 4 ms in; the next deadline is
+        // still base + 100 ms (the 4 ms of work is absorbed, not added),
+        // so the wait is only ~96 ms — the message holds 10 Hz.
+        let now = base + Duration::from_millis(4);
+        assert_eq!(next_tick_deadline(base, now, period), base + period);
+
+        // Behind schedule: this tick's work overran the period (110 ms).
+        // We realign to `now` rather than scheduling in the past (which
+        // would fire a catch-up burst). The next deadline is `now`, so
+        // the wait is zero and there is no accumulating backlog.
+        let now = base + Duration::from_millis(110);
+        assert_eq!(next_tick_deadline(base, now, period), now);
+    }
+
+    // ---- Transmit-throughput benchmarks --------------------------------
+    //
+    // Not part of the default suite (they're `#[ignore]`d and loop for a
+    // while). They exist to scope the "arbitrarily many 5–10 ms cyclic
+    // messages across multiple buses" target with real numbers before we
+    // rearchitect the scheduler (Phase 13). Run both with:
+    //
+    //   cargo test -p cannet-gui -- --ignored --nocapture bench_tx
+    //
+    // `bench_tx_model_only` is the model-side ceiling (build a frame +
+    // append a tx-confirm, no session). `bench_tx_vbus_real_path` is the
+    // real per-tick cost the scheduler pays: `transmit_frame_inner` over a
+    // live virtual-bus session, with the loopback pump appending the
+    // fan-out concurrently (so it captures `trace_store` lock contention).
+    // Comparing the two tells us whether a slow real tick is the core
+    // pipeline or the vbus/transport path.
+
+    #[test]
+    #[ignore = "throughput benchmark; run with --ignored --nocapture"]
+    fn bench_tx_model_only() {
+        let state = test_state();
+        let id = cannet_core::CanId::standard(0x123).unwrap();
+        let n: u64 = 500_000;
+        let start = std::time::Instant::now();
+        for i in 0..n {
+            let frame = cannet_core::CanFrame::classic(
+                i,
+                0,
+                id,
+                cannet_core::Direction::Tx,
+                vec![0, 1, 2, 3, 4, 5, 6, 7],
+            )
+            .unwrap();
+            let mut raw = RawTraceFrame::from(frame);
+            raw.bus_id = Some("p".into());
+            state.trace_store.append(raw);
+        }
+        let secs = start.elapsed().as_secs_f64();
+        println!(
+            "[bench] model-only: {n} frames in {:.1} ms = {:.0} frames/s ({:.3} us/frame)",
+            secs * 1e3,
+            n as f64 / secs,
+            secs * 1e6 / n as f64,
+        );
+    }
+
+    #[test]
+    #[ignore = "throughput benchmark; run with --ignored --nocapture"]
+    fn bench_tx_vbus_real_path() {
+        let state = test_state();
+        state
+            .local_buses
+            .create("vbus", "v", cannet_core::BusConfig::classic_500k())
+            .unwrap();
+        let (sink_p, _source_p) = state.local_buses.attach_participant("vbus").unwrap();
+        let (_sink_q, source_q) = state.local_buses.attach_participant("vbus").unwrap();
+
+        // Loopback pump for "q" — mirrors `connect_local_vbus`; drains the
+        // fan-out into the trace store, so the benchmark sees the same
+        // `trace_store` contention the real scheduler does.
+        let store_for_pump = state.trace_store.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_for_pump = stop.clone();
+        let pump = std::thread::spawn(move || {
+            let mut adapter = LocalSourceFrameSource { source: source_q, channel: 1 };
+            let channel_to_bus = vec![(1u8, Some("q".to_string()))];
+            while !stop_for_pump.load(Ordering::Relaxed) {
+                let Ok(opt) = cannet_core::CanFrameSource::next_frame(&mut adapter) else {
+                    break;
+                };
+                let Some(frame) = opt else { break };
+                let mut raw = RawTraceFrame::from(frame);
+                if let Ok(bid) = route_channel(raw.channel, &channel_to_bus) {
+                    raw.bus_id = bid;
+                    store_for_pump.append(raw);
+                }
+            }
+        });
+
+        let session = RemoteSession {
+            handle: None,
+            tx: SessionTx::Vbus(vec![(
+                0,
+                std::sync::Arc::new(std::sync::Mutex::new(sink_p)),
+            )]),
+            channel_to_interface: vec![
+                (0, project::LOCAL_VBUS_INTERFACE.into()),
+                (1, project::LOCAL_VBUS_INTERFACE.into()),
+            ],
+            channel_to_bus: vec![(0, Some("p".into())), (1, Some("q".into()))],
+            stop: Arc::new(AtomicBool::new(false)),
+        };
+        state
+            .remote_sessions
+            .lock()
+            .unwrap()
+            .insert(format!("{}vbus", project::LOCAL_VBUS_URL_SCHEME), session);
+
+        let req = ipc::TransmitRequest {
+            bus_id: "p".into(),
+            id: 0x123,
+            extended: false,
+            kind: ipc::TransmitKind::Classic,
+            data: vec![0, 1, 2, 3, 4, 5, 6, 7],
+            brs: false,
+            esi: false,
+            dlc: 0,
+        };
+
+        let n: u64 = 200_000;
+        let start = std::time::Instant::now();
+        for _ in 0..n {
+            transmit_frame_inner(&state, &req).unwrap();
+        }
+        let secs = start.elapsed().as_secs_f64();
+        println!(
+            "[bench] vbus real path: {n} transmits in {:.1} ms = {:.0} frames/s ({:.3} us/transmit)",
+            secs * 1e3,
+            n as f64 / secs,
+            secs * 1e6 / n as f64,
+        );
+
+        stop.store(true, Ordering::Relaxed);
+        drop(state); // closes the bus → pump's next_frame returns
+        let _ = pump.join();
     }
 }

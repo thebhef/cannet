@@ -70,6 +70,7 @@ export function ByIdTable({
           onColumnToggle={onColumnToggle}
           sort={sort}
           onSortColumn={onSortColumn}
+          byId
         />
         {sorted.map((s) => {
           const key = byIdRowKey(s.frame);
@@ -79,6 +80,7 @@ export function ByIdTable({
               rowKeyId={key}
               frame={s.frame}
               rate={s.rate}
+              count={s.count}
               columns={visible}
               gridTemplate={gridTemplate}
               baseTimestamp={baseTimestamp}
@@ -97,6 +99,7 @@ interface ByIdRowProps {
   rowKeyId: string;
   frame: TraceFrameRecord;
   rate: number;
+  count: number;
   columns: readonly ColumnState[];
   gridTemplate: string;
   baseTimestamp: number | null;
@@ -109,6 +112,7 @@ const ByIdRow = memo(function ByIdRow({
   rowKeyId,
   frame,
   rate,
+  count,
   columns,
   gridTemplate,
   baseTimestamp,
@@ -124,7 +128,7 @@ const ByIdRow = memo(function ByIdRow({
     >
       {columns.map((c) => (
         <span key={c.key} className={columnDef(c.key).className}>
-          {cellContent(c.key, frame, frame.index, baseTimestamp, isExpanded, busLookup, rate)}
+          {cellContent(c.key, frame, frame.index, baseTimestamp, isExpanded, busLookup, rate, count)}
         </span>
       ))}
       {isExpanded && frame.decoded && (

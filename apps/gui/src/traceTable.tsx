@@ -15,12 +15,14 @@ import {
 import { formatData, formatId, formatKind, formatMsgRate, formatTimestamp } from "./format";
 
 /// The content for one trace cell, given the column. The `#` column is
-/// the row's 1-based index and is shown even for a not-yet-loaded row;
-/// every other column is blank until the frame arrives. `rate` is only
-/// meaningful in by-id mode (the "msg/s" column); elsewhere it's
-/// omitted. `busLookup` resolves a frame's `bus_id` to the project's
-/// bus name for the "bus" column. Shared by the chronological rows
-/// (`TraceView`) and the by-id rows (`ByIdTable`).
+/// the row's 1-based index in the chronological view, and the total
+/// frame count for the id in the by-id view (passed as `count`); it's
+/// shown even for a not-yet-loaded row. Every other column is blank
+/// until the frame arrives. `rate` and `count` are only meaningful in
+/// by-id mode (the "msg/s" column and the per-id frame total);
+/// elsewhere they're omitted. `busLookup` resolves a frame's `bus_id`
+/// to the project's bus name for the "bus" column. Shared by the
+/// chronological rows (`TraceView`) and the by-id rows (`ByIdTable`).
 export function cellContent(
   key: ColumnKey,
   frame: TraceFrameRecord | null,
@@ -29,8 +31,11 @@ export function cellContent(
   isExpanded: boolean,
   busLookup: BusLookup,
   rate?: number,
+  count?: number,
 ): ReactNode {
-  if (key === "idx") return (absoluteIndex + 1).toLocaleString();
+  if (key === "idx") {
+    return (count ?? absoluteIndex + 1).toLocaleString();
+  }
   if (key === "rate") return rate != null ? formatMsgRate(rate) : null;
   if (!frame) return null;
   switch (key) {
@@ -68,6 +73,10 @@ interface TraceHeaderProps {
   /// caller via `onSortColumn`) and the active one shows ▲ / ▼.
   sort?: SortState;
   onSortColumn?: (key: ColumnKey) => void;
+  /// Render the by-id variant of each column's label where one exists
+  /// (e.g. `idx` shows "count" instead of "index"). Defaults to the
+  /// chronological labels.
+  byId?: boolean;
 }
 
 /// The trace-table header row: column labels, drag-to-resize dividers,
@@ -79,6 +88,7 @@ export function TraceHeader({
   onColumnToggle,
   sort,
   onSortColumn,
+  byId,
 }: TraceHeaderProps) {
   const visible = visibleColumns(columns);
   const gridTemplate = gridTemplateColumns(columns);
@@ -134,6 +144,7 @@ export function TraceHeader({
     >
       {visible.map((c) => {
         const def = columnDef(c.key);
+        const label = byId ? def.byIdLabel ?? def.label : def.label;
         const sortable = !!onSortColumn;
         const active = sort?.key === c.key;
         return (
@@ -142,7 +153,7 @@ export function TraceHeader({
             className={`${def.className}${sortable ? " col-sortable" : ""}`}
             onClick={sortable ? () => onSortColumn?.(c.key) : undefined}
           >
-            {def.label}
+            {label}
             {active && <span className="sort-marker">{sort?.dir === "asc" ? " ▲" : " ▼"}</span>}
             <span
               className="col-resize-handle"
@@ -160,16 +171,19 @@ export function TraceHeader({
           style={{ left: menu.x, top: menu.y }}
           onMouseDown={(e) => e.stopPropagation()}
         >
-          {columns.map((c) => (
-            <label key={c.key} className="checkbox">
-              <input
-                type="checkbox"
-                checked={c.visible}
-                onChange={() => onColumnToggle(c.key)}
-              />
-              {columnDef(c.key).label}
-            </label>
-          ))}
+          {columns.map((c) => {
+            const def = columnDef(c.key);
+            return (
+              <label key={c.key} className="checkbox">
+                <input
+                  type="checkbox"
+                  checked={c.visible}
+                  onChange={() => onColumnToggle(c.key)}
+                />
+                {byId ? def.byIdLabel ?? def.label : def.label}
+              </label>
+            );
+          })}
         </div>
       )}
     </div>

@@ -95,3 +95,12 @@ vendor's, not cannet's.
   today; the wire's universal-driver-contract property
   (ADR 0004) means a multi-sidecar future is a packaging change,
   not a protocol change.
+
+## See also
+
+The wire-level contract this sidecar implements — session-gated
+lifecycle, multi-client behavior, `ConfigureBus`, `InterfaceState`
+— is specified in
+[ADR 0022](0022-hardware-server-model.md). This ADR covers the
+*process*, *language*, and *driver-library* choices; ADR 0022
+covers what the sidecar does on the wire.

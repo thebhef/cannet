@@ -1,6 +1,7 @@
 // Pure project → graph derivation, split out of `ProjectGraphPanel.tsx`
 // so the wiring logic is testable without React or `@xyflow/react`.
 
+import { bindingKind } from "./types";
 import type { Bus, InterfaceBinding, ProjectElement } from "./types";
 
 export type GraphNodeKind =
@@ -86,6 +87,12 @@ export function deriveGraph(
   }
 
   for (const b of bindings) {
+    // A `local-virtual-bus` binding IS the bus (no remote endpoint
+    // it gateways to), so we skip the gateway node entirely — the
+    // bus node carries the local-virtual-bus identity. ADR 0021.
+    if (bindingKind(b) === "local-virtual-bus") {
+      continue;
+    }
     nodes.push({
       id: gatewayNodeId(b),
       kind: "gateway",
@@ -206,6 +213,9 @@ export function deriveGraph(
 
 function gatewayLabel(b: InterfaceBinding): string {
   const host = b.server.replace(/^.*[:/]/, "");
+  if (bindingKind(b) === "remote-virtual-bus") {
+    return `vbus factory\n@ ${host || b.server}`;
+  }
   return `${b.interface}\n@ ${host || b.server}`;
 }
 

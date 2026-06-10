@@ -18,7 +18,12 @@ import type { TraceFrameRecord } from "./types";
 export interface TraceData {
   count: number;
   version: number;
-  baseTimestampSeconds: number | null;
+  /// Unix-epoch seconds of the session's zero point. Set by the host's
+  /// `start_session` (via the `trace-grew` event); `null` until the
+  /// first session-grow tick after a Clear / Connect. Every trace view
+  /// renders relative to this, optionally shifted further by its own
+  /// per-view `traceStartOffsetSeconds` (panel Clear / Stop+Start).
+  sessionStartSeconds: number | null;
   getFrame: (absoluteIndex: number) => TraceFrameRecord | null;
   ensureVisible: (start: number, end: number) => void;
 }

@@ -1,6 +1,6 @@
 import { createContext, useContext } from "react";
 
-import type { Bus, InterfaceBinding } from "./types";
+import type { Bus, InterfaceBinding, LocalVirtualBusDef } from "./types";
 
 /**
  * The current project + bus/DBC configuration and the actions that
@@ -66,11 +66,43 @@ export interface ProjectContextValue {
   onRenameBus: (id: string, name: string) => void;
   /// Set a bus's graph colour (`#rrggbb`).
   onSetBusColor: (id: string, color: string) => void;
-  /// Phase 6: interface-binding ops.
+  /// Set a bus's nominal (arbitration) bitrate in bits/s. Pass `null`
+  /// to clear (reverts the host to the driver default on next connect).
+  onSetBusSpeed: (id: string, speed_bps: number | null) => void;
+  /// Toggle CAN-FD mode on a bus. When turned off, the data-phase
+  /// bitrate is left in place but ignored by the host until FD is
+  /// re-enabled.
+  onSetBusFd: (id: string, fd: boolean | null) => void;
+  /// Set a bus's FD data-phase bitrate in bits/s. Pass `null` to
+  /// clear (the host then falls back to the nominal rate for the data
+  /// phase).
+  onSetBusFdDataSpeed: (id: string, fd_data_speed_bps: number | null) => void;
+  /// Bus ids whose live hardware configuration no longer matches the
+  /// edited project (the user changed speed / FD / data rate after
+  /// connect). Reconnecting applies the change; the title-bar banner
+  /// surfaces this list. Empty when nothing is pending or no session
+  /// is open.
+  busesWithPendingHwConfig: string[];
+  /// Phase 6: interface-binding ops. Multiple bindings may target
+  /// the same `(server, interface)` — Step-6 multi-client and the
+  /// in-process bus both fan out, so the historical
+  /// 1-binding-per-source rule is dropped.
   onAddBinding: (binding: InterfaceBinding) => void;
-  onRemoveBinding: (server: string, iface: string) => void;
+  /// Remove the binding currently routing the given project
+  /// `bus_id`. Each project bus has at most one binding, so a
+  /// single id is enough to address it.
+  onRemoveBinding: (bus_id: string) => void;
   onConnect: () => void;
   onDisconnect: () => void;
+  /// Phase 13: virtual buses (ADR 0021).
+  localVirtualBuses: LocalVirtualBusDef[];
+  /// Add a new virtual bus def. The host instantiates it
+  /// in-process. Idempotent on `id` collision (no-op).
+  onAddVirtualBus: (def: LocalVirtualBusDef) => void;
+  /// Drop a virtual bus and detach any bindings that referenced it.
+  onRemoveVirtualBus: (id: string) => void;
+  /// Rename / re-configure / replace bridges on a virtual bus.
+  onUpdateVirtualBus: (id: string, patch: Partial<LocalVirtualBusDef>) => void;
 }
 
 export const ProjectContext = createContext<ProjectContextValue | null>(null);

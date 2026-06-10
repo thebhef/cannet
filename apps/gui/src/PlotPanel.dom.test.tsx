@@ -141,7 +141,7 @@ function makeRegistry(): ElementRegistry {
 const traceData: TraceData = {
   count: 100,
   version: 1,
-  baseTimestampSeconds: 0,
+  sessionStartSeconds: 0,
   getFrame: () => null,
   ensureVisible: () => {},
 };
@@ -168,10 +168,18 @@ const projectCtx: ProjectContextValue = {
   onRemoveBus: () => {},
   onRenameBus: () => {},
   onSetBusColor: () => {},
+  onSetBusSpeed: () => {},
+  onSetBusFd: () => {},
+  onSetBusFdDataSpeed: () => {},
+  busesWithPendingHwConfig: [],
   onAddBinding: () => {},
   onRemoveBinding: () => {},
   onConnect: () => {},
   onDisconnect: () => {},
+  localVirtualBuses: [],
+  onAddVirtualBus: () => {},
+  onRemoveVirtualBus: () => {},
+  onUpdateVirtualBus: () => {},
 };
 
 function renderPanel() {

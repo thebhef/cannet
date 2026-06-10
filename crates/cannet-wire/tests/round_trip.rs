@@ -297,7 +297,7 @@ async fn batch_then_unbatch_preserves_frames_in_order() {
     assert_eq!(recovered, originals);
 }
 
-// ---------- Phase 7: LogMessage envelope ----------
+// ---------- LogMessage envelope (ADR 0014) ----------
 
 #[test]
 fn log_message_round_trips_through_protobuf() {
@@ -324,6 +324,159 @@ fn log_message_round_trips_through_protobuf() {
         }
         other => panic!("expected Log envelope, got {other:?}"),
     }
+}
+
+// ---------- Virtual-bus envelopes (ADR 0021) ----------
+
+#[test]
+fn configure_bus_envelope_round_trips() {
+    use prost::Message;
+    let cfg = proto::ConfigureBus {
+        interface_id: "virtual:bus0".into(),
+        speed_bps: 500_000,
+        fd_data_speed_bps: 2_000_000,
+        fd_enabled: true,
+    };
+    let envelope = proto::Envelope {
+        body: Some(proto::envelope::Body::ConfigureBus(cfg.clone())),
+    };
+    let bytes = envelope.encode_to_vec();
+    let decoded = proto::Envelope::decode(bytes.as_slice()).unwrap();
+    match decoded.body.expect("body present") {
+        proto::envelope::Body::ConfigureBus(c) => assert_eq!(c, cfg),
+        other => panic!("expected ConfigureBus, got {other:?}"),
+    }
+}
+
+#[test]
+fn interface_allocated_envelope_round_trips() {
+    use prost::Message;
+    let alloc = proto::InterfaceAllocated {
+        interface_id: "virtual:bus0/p0".into(),
+    };
+    let envelope = proto::Envelope {
+        body: Some(proto::envelope::Body::InterfaceAllocated(alloc.clone())),
+    };
+    let bytes = envelope.encode_to_vec();
+    let decoded = proto::Envelope::decode(bytes.as_slice()).unwrap();
+    match decoded.body.expect("body present") {
+        proto::envelope::Body::InterfaceAllocated(a) => assert_eq!(a, alloc),
+        other => panic!("expected InterfaceAllocated, got {other:?}"),
+    }
+}
+
+#[test]
+fn interface_state_envelope_round_trips_active_passive_busoff() {
+    use prost::Message;
+    for state in [
+        proto::ControllerState::Active,
+        proto::ControllerState::Passive,
+        proto::ControllerState::BusOff,
+    ] {
+        let s = proto::InterfaceState {
+            interface_id: "virtual:bus0/bridge-can0".into(),
+            state: state.into(),
+            tec: 0x80,
+            rec: 0x40,
+        };
+        let envelope = proto::Envelope {
+            body: Some(proto::envelope::Body::InterfaceState(s.clone())),
+        };
+        let bytes = envelope.encode_to_vec();
+        let decoded = proto::Envelope::decode(bytes.as_slice()).unwrap();
+        match decoded.body.expect("body present") {
+            proto::envelope::Body::InterfaceState(d) => assert_eq!(d, s),
+            other => panic!("expected InterfaceState, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn attach_bridge_envelope_round_trips_with_optional_name() {
+    use prost::Message;
+    let attach = proto::AttachBridge {
+        remote_address: "127.0.0.1:7000".into(),
+        interface_id: "kvaser:0".into(),
+        name: "can0".into(),
+    };
+    let envelope = proto::Envelope {
+        body: Some(proto::envelope::Body::AttachBridge(attach.clone())),
+    };
+    let bytes = envelope.encode_to_vec();
+    let decoded = proto::Envelope::decode(bytes.as_slice()).unwrap();
+    match decoded.body.expect("body present") {
+        proto::envelope::Body::AttachBridge(a) => assert_eq!(a, attach),
+        other => panic!("expected AttachBridge, got {other:?}"),
+    }
+}
+
+#[test]
+fn detach_bridge_envelope_round_trips() {
+    use prost::Message;
+    let detach = proto::DetachBridge {
+        name: "can0".into(),
+    };
+    let envelope = proto::Envelope {
+        body: Some(proto::envelope::Body::DetachBridge(detach.clone())),
+    };
+    let bytes = envelope.encode_to_vec();
+    let decoded = proto::Envelope::decode(bytes.as_slice()).unwrap();
+    match decoded.body.expect("body present") {
+        proto::envelope::Body::DetachBridge(d) => assert_eq!(d, detach),
+        other => panic!("expected DetachBridge, got {other:?}"),
+    }
+}
+
+#[test]
+fn no_acknowledger_error_code_round_trips() {
+    use prost::Message;
+    let err = proto::Error {
+        code: proto::error::Code::NoAcknowledger as i32,
+        message: "tx reached zero recipients".into(),
+    };
+    let envelope = proto::Envelope {
+        body: Some(proto::envelope::Body::Error(err.clone())),
+    };
+    let bytes = envelope.encode_to_vec();
+    let decoded = proto::Envelope::decode(bytes.as_slice()).unwrap();
+    match decoded.body.expect("body present") {
+        proto::envelope::Body::Error(d) => {
+            assert_eq!(d.code, proto::error::Code::NoAcknowledger as i32);
+            assert_eq!(d.message, err.message);
+        }
+        other => panic!("expected Error, got {other:?}"),
+    }
+}
+
+#[test]
+fn error_frame_protobuf_round_trips_through_envelope() {
+    // The conversion-layer error-frame round-trip is already covered
+    // by `error_frame_round_trips`; this test confirms a CanFrame
+    // error-frame survives encoding inside a FrameBatch envelope too
+    // (bridges forward controller-emitted error frames as ordinary
+    // frame batches — ADR 0021).
+    use prost::Message;
+    let original = CanFrame::error(
+        12_345,
+        2,
+        CanId::extended(0x1234_5678).unwrap(),
+        Direction::Rx,
+    );
+    let envelope = proto::Envelope {
+        body: Some(proto::envelope::Body::FrameBatch(proto::FrameBatch {
+            interface_id: "virtual:bus0/bridge-can0".into(),
+            frames: vec![frame_to_proto(&original)],
+        })),
+    };
+    let bytes = envelope.encode_to_vec();
+    let decoded = proto::Envelope::decode(bytes.as_slice()).unwrap();
+    let batch = match decoded.body.expect("body present") {
+        proto::envelope::Body::FrameBatch(b) => b,
+        other => panic!("expected FrameBatch, got {other:?}"),
+    };
+    assert_eq!(batch.frames.len(), 1);
+    let decoded_frame = proto_to_frame(&batch.frames[0], original.channel).unwrap();
+    assert_eq!(decoded_frame, original);
 }
 
 #[test]

@@ -9,10 +9,8 @@ use std::time::Duration;
 use blf_asc::{ArbitrationId, BlfWriter, DataBytes, Message};
 use cannet_server::{CannetServerImpl, LoopingBlfReplay};
 use cannet_wire::proto::{
-    cannet_server_client::CannetServerClient,
-    envelope::Body,
-    error::Code,
-    Envelope, FrameBatch, ListInterfacesRequest, Subscribe, Unsubscribe,
+    cannet_server_client::CannetServerClient, envelope::Body, error::Code, Envelope, FrameBatch,
+    ListInterfacesRequest, Subscribe, Unsubscribe,
 };
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
@@ -123,7 +121,10 @@ async fn list_interfaces_returns_replay_channels() {
     let (addr, server_handle) = spawn_server().await;
     let mut client = connect(addr).await;
 
-    let response = client.list_interfaces(ListInterfacesRequest {}).await.unwrap();
+    let response = client
+        .list_interfaces(ListInterfacesRequest {})
+        .await
+        .unwrap();
     let interfaces = response.into_inner().interfaces;
 
     assert_eq!(interfaces.len(), 2);
@@ -159,7 +160,10 @@ async fn session_streams_subscribed_interface_frames() {
     assert_eq!(batch.interface_id, "blf:0");
     assert!(!batch.frames.is_empty());
     assert!(
-        batch.frames.iter().all(|f| f.can_id == 0x100 || f.can_id == 0x101),
+        batch
+            .frames
+            .iter()
+            .all(|f| f.can_id == 0x100 || f.can_id == 0x101),
         "received unexpected frame ids: {:?}",
         batch.frames.iter().map(|f| f.can_id).collect::<Vec<_>>(),
     );
@@ -182,7 +186,9 @@ async fn unsubscribe_stops_the_per_interface_pump() {
         .into_inner();
 
     // Wait for at least one batch so we know the pump is running.
-    timeout(Duration::from_secs(2), stream.next()).await.unwrap();
+    timeout(Duration::from_secs(2), stream.next())
+        .await
+        .unwrap();
 
     tx.send(unsubscribe_envelope("blf:0")).await.unwrap();
 
@@ -270,7 +276,9 @@ async fn second_concurrent_client_is_rejected_with_busy() {
         .await
         .unwrap()
         .into_inner();
-    timeout(Duration::from_secs(2), stream_a.next()).await.unwrap();
+    timeout(Duration::from_secs(2), stream_a.next())
+        .await
+        .unwrap();
 
     // Second session should be greeted with BUSY.
     let (_tx_b, rx_b) = mpsc::channel(8);

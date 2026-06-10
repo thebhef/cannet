@@ -32,8 +32,24 @@ shipped), **Phase 12** (DBC view + drag/drop, shipped),
 `phased-implementation.md`; the `ui-architecture-backlog.md` item
 is left in `ui-architecture-backlog.md` and absorbed into Phase 16.
 
+- takes a long time to exit gracefully
+
 #### Other near-term work
 
+- `[cleanup]` **Delete unnecessary migrations and "legacy
+  compatibility" shims.** The project parser at
+  [project.rs](apps/gui/src-tauri/src/project.rs) carries a chain of
+  migrators (v2→v3→v4→v5→v6→v7) and the wider codebase has scattered
+  "v5-vintage…" / "v4-and-earlier…" defaulting paths. The repo has
+  no shipping users and no on-disk projects predating the current
+  shape, so the migrators are dead code — they exist for cases that
+  can't happen. Audit the project parser, the schema-version
+  documentation, and the rest of the host + frontend for
+  legacy-compat branches that were added "just in case" and delete
+  the ones that can't be reached. Bump
+  [`PROJECT_SCHEMA_VERSION`] forward whenever the in-memory shape
+  changes and reject older versions with a clear message, instead
+  of carrying a migrator.
 - `[feat]` **Settings panel — first entry: `clear scratch cache on exit`.**
   Per [ADR 0002 DS-7](../docs/adr/0002-disk-spill-store.md), the
   disk-spill scratch (raw store + indexes + pyramids + session-authored
@@ -129,29 +145,37 @@ trip over it.
 
 ### Transmit panel
 
-- `[bug]` `cannet-gui` transmit panel / host TX path: a periodic
-  transmit configured at a 1 ms tick is observed at ~20–40 msg/s on
-  both the sending and receiving interfaces, not the requested
-  ~1000 msg/s. The cap looks like roughly one transmit per UI tick /
-  event-loop turn rather than a true 1 kHz scheduler. Investigate
-  where the rate is being throttled — JS-side `setInterval` / rAF in
-  [TransmitPanel.tsx](apps/gui/src/TransmitPanel.tsx), the Tauri
-  command round-trip, or the host-side scheduler — and move the
-  periodic loop fully host-side so the requested tick is honoured
-  independent of UI frame rate. Reproduced with TX on one interface,
-  RX on a second; both show the same ~20–40 msg/s ceiling.
-- `[bug]` `cannet-gui` transmit panel: edits to a periodic message
-  (payload, signal values, period, …) don't take effect on the
-  in-flight transmit — the user has to Stop and Start the periodic
-  for the new values to be sent. Apply edits live to the running
-  periodic instead. Likely lands as part of the host-side periodic
-  scheduler work in the TX-rate bug above.
-- `[bug]` `cannet-gui` transmit panel: the signals view inside the
-  panel doesn't refresh reliably when the underlying message / DBC
-  state changes. May be obviated by the planned transmit-panel
-  refactor (host-side periodic scheduler + signal-to-bytes encoding
-  in `cannet-dbc`); revisit after that lands and drop this item if
-  the refactor covers it.
+- `[feat]` `cannet-dbc`: **parse more of the Vector generic (`Gen*`)
+  attribute family** beyond today's `GenMsgCycleTime` /
+  `GenMsgCANFDBRS` / `VFrameFormat`. The full set is collected into the
+  generic `DbcAttribute` lists already, but these have dedicated
+  meaning for the transmit panel and scheduler and deserve typed
+  accessors like `message_cycle_time_ms`
+  ([lib.rs:707](../crates/cannet-dbc/src/lib.rs#L707)):
+  - **`GenMsgSendType`** (BO_, ENUM: `cyclic`, `triggered`,
+    `cyclicIfActive`, `cyclicAndTriggered`,
+    `cyclicIfActiveAndTriggered`, `none`) — disambiguates whether
+    `GenMsgCycleTime` is actually used; the natural companion to the
+    cycle time we already read.
+  - **`GenSigStartValue`** (SG_, INT/FLOAT) — initial/default raw value
+    until the signal is first received; would let the transmit panel
+    pre-populate signal values from the DBC instead of zeros.
+  Reference: Vector CANdb++ Manual; the values are the standard `Gen*`
+  attribute convention. Pick up when the transmit panel grows
+  send-type-aware scheduling or DBC-seeded default values.
+
+- `[perf]` `cannet-gui` `run_transmit_scheduler`: per-bus
+  `FrameBatch` batching. The scheduler currently fires each due
+  message through `transmit_frame_inner` individually (one
+  trace-append + one wire `FrameBatch` of one frame each). When many
+  messages on the same bus come due in the same tick they could be
+  coalesced into one `FrameBatch` (the wire protocol's
+  `FrameBatch.frames` is already a `Vec`) and one bulk trace append —
+  cutting per-frame gRPC encode/framing overhead at high aggregate
+  rates. Deferred: the `bench_tx_*` numbers (≈828k frames/s
+  single-threaded) show this isn't needed to hit the current target
+  (arbitrarily many 5–10 ms messages across buses). Pick up if a
+  future use case pushes aggregate rates toward bus saturation.
 
 ### Cursors and markers
 
@@ -192,16 +216,6 @@ trip over it.
   timestamps fall inside the range come along; the written
   `FileStatistics.measurement_start_time` is the chosen start, not
   the session start.
-- `[ui]` `cannet-gui`: **bus bitrate is not surfaced in the GUI.** A
-  user on an unfamiliar bus has no way to see what bitrate (or FD
-  data bitrate) a bus is configured at — there's no readout on the
-  bus node in the project / graph view, nor in any panel. Today the
-  bus speed lives in host-side per-interface config and travels with
-  subscribe calls (see the related `[wire]` `Subscribe`
-  per-interface bitrate item below); expose the configured
-  `bitrate_bps` / `data_bitrate_bps` / `fd` on the bus element so it
-  reads in the project panel and graph node, and once it's editable
-  from the GUI, make it settable there too.
 - `[ui]` `cannet-gui`: a global UI frame-rate / responsiveness readout
   (rAF-based FPS, maybe long-task / dropped-frame counts) — the plot
   panel shows its own re-sample rate now; generalise that to a small
@@ -214,6 +228,15 @@ trip over it.
   has its own ad-hoc styling in `apps/gui/src/index.css`. Approved in
   principle; do it as one deliberate pass once the plot panel's own
   styling has settled, not piecemeal.
+- `[ui]` `cannet-gui` project panel: **DBC-to-bus association should
+  read as an include list.** Today an empty `DbcRef.buses` means "all
+  buses" — the row shows "all buses" with no checkboxes ticked, which
+  reads as "this DBC is assigned to nothing." Surface it as an
+  explicit include list (all checkboxes ticked = all buses; tick a
+  subset to scope down; untick all = decode for no bus). Note: this
+  is specific to DBC scoping; it does **not** imply changing the
+  other surfaces that default to "every bus" via a wildcard
+  (sink/source selectors, transmit fan-out, etc.).
 
 ### Graph view (and bus topology)
 
@@ -271,12 +294,43 @@ next pass on this surface can address them as one piece.
   forward in-band `LogMessage` envelopes through the same tag so a
   vendor SDK warning surfaced mid-session reaches the user without
   the sidecar having to also `print` it.
-- `[feat]` Linux `vcan` via socketcan as a writable CAN source. Phase 5
-  ships an in-memory loopback bus in `cannet-core` and a
-  `cannet-server --loopback` mode that covers demo and test; an actual
-  local virtual-bus device on Linux is the honest follow-up. Reconsider
-  alongside or after Phase 8 hardware work — PEAK's Linux kernel driver
-  path could go via socketcan too.
+- `[feat]` Linux `vcan` via socketcan as a writable CAN source. An
+  actual local virtual-bus device on Linux is the honest follow-up to
+  the in-process virtual bus. Reconsider alongside future hardware
+  work — PEAK's Linux kernel driver path could go via socketcan too.
+
+- `[bug]` `cannet-python-can` server: **frame timestamps fall back to
+  `time.monotonic_ns()`** when `msg.timestamp` is absent
+  ([driver_python_can.py:444](servers/cannet-python-can/cannet_python_can/driver_python_can.py#L444),
+  and `_now_ns()` for TX echoes / synthesized frames at
+  [server.py:79](servers/cannet-python-can/cannet_python_can/server.py#L79)).
+  `monotonic_ns` is a third clock alongside wall-clock `msg.timestamp`
+  and the GUI's wall-clock stamps — a capture that mixes them
+  reproduces the same "trace shows rows, plot is empty" bug the vbus
+  had (the plot anchors its x-axis on the first frame's timestamp, so a
+  series on a divergent clock lands off-canvas). The vbus was fixed by
+  stamping wall clock everywhere; the server should do the same
+  (prefer wall clock, only fall back to monotonic when truly nothing
+  else is available — and if so, normalize it host-side).
+
+- `[test]` **Phase 13 live / hardware sign-off (deferred from the Phase 13
+  exit criteria).** The virtual-bus + bridge surface is code-complete and
+  covered by unit / integration tests, but three exit criteria need a live
+  run and were deferred here for an ad-hoc verify-and-bugfix pass rather
+  than blocking the phase:
+  - **Bridge configs end-to-end** via
+    [`servers/cannet-python-can/SMOKE.md`](../servers/cannet-python-can/SMOKE.md):
+    passive monitor (physical Rx on allocated participants, allocated TX
+    not forwarded), full bidirectional bridge against real hardware, and
+    the cross-server / CAN-over-IP gateway (Server A bridges Server B's
+    `virtual:bus0` factory).
+  - **Two GUIs, one virtual-bus server**: each subscribes, receives a
+    distinct allocated id, and sees the other's transmissions as Rx.
+  - **Frame timing**: a 500 kbps bus measurably staggers sustained
+    fan-out by the computed frame duration (back-to-back frames don't
+    collapse to one timestamp).
+  Fold into the CI server-conformance suite above, or run as a focused
+  pass, once a rig is available.
 
 ### Packaging and naming
 

@@ -14,7 +14,14 @@
 //! - `Session`: a single bidirectional stream of [`proto::Envelope`]
 //!   messages for the lifetime of the client session. The envelope
 //!   variants — `Subscribe`, `Unsubscribe`, `FrameBatch`, `Error`,
-//!   `LogMessage` — flow symmetrically in either direction.
+//!   `LogMessage`, `ConfigureBus`, `InterfaceAllocated`,
+//!   `InterfaceState`, `AttachBridge`, `DetachBridge`, and
+//!   `Error::Code::NoAcknowledger` — flow on the same stream.
+//!   Direction conventions (client→server vs server→client) and the
+//!   virtual-bus / hardware-server responsibility split are
+//!   documented in [ADR 0021].
+//!
+//! [ADR 0021]: ../../../docs/adr/0021-virtual-bus-server.md
 //!
 //! [`proto::LogMessage`] is the Phase-7 out-of-band log channel: a
 //! sender (vendor sidecar, server, peer client) emits structured

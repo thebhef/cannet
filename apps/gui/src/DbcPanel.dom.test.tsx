@@ -133,10 +133,18 @@ const projectCtx: ProjectContextValue = {
   onRemoveBus: () => {},
   onRenameBus: () => {},
   onSetBusColor: () => {},
+  onSetBusSpeed: () => {},
+  onSetBusFd: () => {},
+  onSetBusFdDataSpeed: () => {},
+  busesWithPendingHwConfig: [],
   onAddBinding: () => {},
   onRemoveBinding: () => {},
   onConnect: () => {},
   onDisconnect: () => {},
+  localVirtualBuses: [],
+  onAddVirtualBus: () => {},
+  onRemoveVirtualBus: () => {},
+  onUpdateVirtualBus: () => {},
 };
 
 function renderPanel() {

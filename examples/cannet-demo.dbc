@@ -80,6 +80,11 @@ CM_ SG_ 512 SensorId "Multiplexor selector. 0=Temp, 1=Pressure, 2=Humidity, 3=Ac
 CM_ SG_ 2566876178 Latitude "IEEE-754 32-bit float, degrees.";
 CM_ SG_ 2566876178 Longitude "IEEE-754 32-bit float, degrees.";
 
+BA_DEF_ BO_ "GenMsgCycleTime" INT 0 100000;
+BA_DEF_DEF_ "GenMsgCycleTime" 0;
+BA_ "GenMsgCycleTime" BO_ 256 50;
+BA_ "GenMsgCycleTime" BO_ 768 10;
+
 VAL_ 256 GearLever 0 "P" 1 "R" 2 "N" 3 "D" 4 "S" 5 "L" 6 "Manual" 7 "Reserved";
 VAL_ 512 SensorId 0 "Temp" 1 "Pressure" 2 "Humidity" 3 "Accel";
 

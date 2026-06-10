@@ -73,6 +73,30 @@ describe("uniqueRemoteServers", () => {
       "127.0.0.1:43891",
     ]);
   });
+
+  it("excludes local-virtual-bus bindings (URL scheme — in-process)", () => {
+    // Vbus bindings store `local-vbus://<id>` in `server`; that URL
+    // is the host's session-map index, not a remote address, so it
+    // mustn't surface in the Connection panel's remote-server list.
+    const bindings: InterfaceBinding[] = [
+      {
+        kind: "local-virtual-bus",
+        server: "local-vbus://vbus1",
+        interface: "bus",
+        bus_id: "b1",
+      },
+      {
+        kind: "local-virtual-bus",
+        server: "local-vbus://vbus1",
+        interface: "bus",
+        bus_id: "b2",
+      },
+      { server: "10.0.0.1:50051", interface: "can0", bus_id: "b3" },
+    ];
+    expect(uniqueRemoteServers(bindings, null)).toEqual([
+      "10.0.0.1:50051",
+    ]);
+  });
 });
 
 const REMOTE = "10.0.0.5:50051";
@@ -88,20 +112,25 @@ const REC_VCAN0: InterfaceRecord = {
   fd_capable: false,
 };
 
+const NO_OPS = {
+  onPick: () => {},
+  onAddServer: () => {},
+  onAddVirtualBus: () => {},
+};
+
 describe("BusInterfaceCombo", () => {
   it("renders '— no interface —', local options, server optgroups, and '+ Add server…'", () => {
     render(
       <BusInterfaceCombo
         bus={BUS1}
         binding={null}
-        bindings={[]}
         sidecarAddress={LIVE_LOCAL}
         discoveries={{
           [LIVE_LOCAL]: { status: "ok", interfaces: [REC_CAN0, REC_VCAN0] },
           [REMOTE]: { status: "ok", interfaces: [REC_CAN0] },
         }}
-        onPick={() => {}}
-        onAddServer={() => {}}
+        localVirtualBuses={[]}
+        {...NO_OPS}
       />,
     );
     const combo = screen.getByLabelText("bus b1 interface") as HTMLSelectElement;
@@ -115,27 +144,76 @@ describe("BusInterfaceCombo", () => {
     expect(optionTexts).toContain("+ Add server…");
   });
 
-  it("calls onPick with the decoded (server, iface) on selection", () => {
+  it("calls onPick with kind:remote on a hardware-interface selection", () => {
     const onPick = vi.fn();
     render(
       <BusInterfaceCombo
         bus={BUS1}
         binding={null}
-        bindings={[]}
         sidecarAddress={LIVE_LOCAL}
         discoveries={{
           [LIVE_LOCAL]: { status: "ok", interfaces: [REC_CAN0] },
         }}
+        localVirtualBuses={[]}
         onPick={onPick}
         onAddServer={() => {}}
+        onAddVirtualBus={() => {}}
       />,
     );
     const combo = screen.getByLabelText("bus b1 interface") as HTMLSelectElement;
-    // Local options encode `LOCAL_SERVER` ("local"), NOT the live
-    // sidecar address — so the persisted binding survives a port
-    // re-roll. The decode is symmetric.
     fireEvent.change(combo, { target: { value: `${LOCAL_SERVER}\x00can0` } });
-    expect(onPick).toHaveBeenCalledWith({ server: LOCAL_SERVER, iface: "can0" });
+    expect(onPick).toHaveBeenCalledWith({
+      kind: "remote",
+      server: LOCAL_SERVER,
+      iface: "can0",
+    });
+  });
+
+  it("lists virtual buses as a peer source and reports the right pick", () => {
+    const onPick = vi.fn();
+    render(
+      <BusInterfaceCombo
+        bus={BUS1}
+        binding={null}
+        sidecarAddress={LIVE_LOCAL}
+        discoveries={{ [LIVE_LOCAL]: { status: "ok", interfaces: [] } }}
+        localVirtualBuses={[{ id: "vbus1", name: "Bench" }]}
+        onPick={onPick}
+        onAddServer={() => {}}
+        onAddVirtualBus={() => {}}
+      />,
+    );
+    const combo = screen.getByLabelText("bus b1 interface") as HTMLSelectElement;
+    const labels = Array.from(combo.querySelectorAll("option")).map(
+      (o) => o.textContent ?? "",
+    );
+    expect(labels).toContain("Bench");
+    expect(labels).toContain("+ Add virtual bus");
+    fireEvent.change(combo, { target: { value: "vbus\x00vbus1" } });
+    expect(onPick).toHaveBeenCalledWith({
+      kind: "local-virtual-bus",
+      virtual_bus_id: "vbus1",
+    });
+  });
+
+  it("calls onAddVirtualBus when '+ Add virtual bus' is chosen", () => {
+    const onAddVirtualBus = vi.fn();
+    render(
+      <BusInterfaceCombo
+        bus={BUS1}
+        binding={null}
+        sidecarAddress={LIVE_LOCAL}
+        discoveries={{ [LIVE_LOCAL]: { status: "ok", interfaces: [] } }}
+        localVirtualBuses={[]}
+        onPick={() => {}}
+        onAddServer={() => {}}
+        onAddVirtualBus={onAddVirtualBus}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("bus b1 interface"), {
+      target: { value: "__add_vbus__" },
+    });
+    expect(onAddVirtualBus).toHaveBeenCalledTimes(1);
   });
 
   it("calls onAddServer (not onPick) when '+ Add server…' is chosen", () => {
@@ -145,11 +223,12 @@ describe("BusInterfaceCombo", () => {
       <BusInterfaceCombo
         bus={BUS1}
         binding={null}
-        bindings={[]}
         sidecarAddress={LIVE_LOCAL}
         discoveries={{ [LIVE_LOCAL]: { status: "ok", interfaces: [REC_CAN0] } }}
+        localVirtualBuses={[]}
         onPick={onPick}
         onAddServer={onAddServer}
+        onAddVirtualBus={() => {}}
       />,
     );
     const combo = screen.getByLabelText("bus b1 interface");
@@ -163,12 +242,18 @@ describe("BusInterfaceCombo", () => {
     render(
       <BusInterfaceCombo
         bus={BUS1}
-        binding={{ server: LOCAL_SERVER, interface: "can0", bus_id: "b1" }}
-        bindings={[{ server: LOCAL_SERVER, interface: "can0", bus_id: "b1" }]}
+        binding={{
+          kind: "remote",
+          server: LOCAL_SERVER,
+          interface: "can0",
+          bus_id: "b1",
+        }}
         sidecarAddress={LIVE_LOCAL}
         discoveries={{ [LIVE_LOCAL]: { status: "ok", interfaces: [REC_CAN0] } }}
+        localVirtualBuses={[]}
         onPick={onPick}
         onAddServer={() => {}}
+        onAddVirtualBus={() => {}}
       />,
     );
     fireEvent.change(screen.getByLabelText("bus b1 interface"), {
@@ -177,68 +262,43 @@ describe("BusInterfaceCombo", () => {
     expect(onPick).toHaveBeenCalledWith(null);
   });
 
-  it("disables interfaces already bound to a different bus", () => {
-    render(
-      <BusInterfaceCombo
-        bus={BUS1}
-        binding={null}
-        bindings={[{ server: LOCAL_SERVER, interface: "vcan0", bus_id: "b2" }]}
-        sidecarAddress={LIVE_LOCAL}
-        discoveries={{
-          [LIVE_LOCAL]: { status: "ok", interfaces: [REC_CAN0, REC_VCAN0] },
-        }}
-        onPick={() => {}}
-        onAddServer={() => {}}
-      />,
-    );
-    const taken = screen.getByRole("option", {
-      name: /Local \/ vcan0 \(in use\)/,
-    }) as HTMLOptionElement;
-    expect(taken).toBeDisabled();
-    const free = screen.getByRole("option", { name: "Local / can0" }) as HTMLOptionElement;
-    expect(free).not.toBeDisabled();
-  });
-
   it("shows a (discovering…) placeholder when a server has no discovery yet", () => {
     render(
       <BusInterfaceCombo
         bus={BUS1}
         binding={null}
-        bindings={[{ server: REMOTE, interface: "can0", bus_id: "b2" }]}
         sidecarAddress={LIVE_LOCAL}
         discoveries={{
           [LIVE_LOCAL]: { status: "ok", interfaces: [] },
           [REMOTE]: { status: "pending" },
         }}
-        onPick={() => {}}
-        onAddServer={() => {}}
+        localVirtualBuses={[]}
+        {...NO_OPS}
       />,
     );
     expect(screen.getByText("(discovering…)")).toBeInTheDocument();
   });
 
   it("a 'local' binding still resolves to the live sidecar address even after a port change", () => {
-    // Reload scenario: the user previously bound on port 43891; the
-    // sidecar restarted and is now on a different port. The binding
-    // still has `server: "local"` and must find `can0` in the live
-    // sidecar's discovery snapshot — i.e. it should NOT produce an
-    // (offline) fallback option.
     const NEW_LIVE = "127.0.0.1:55321";
     render(
       <BusInterfaceCombo
         bus={BUS1}
-        binding={{ server: LOCAL_SERVER, interface: "can0", bus_id: "b1" }}
-        bindings={[{ server: LOCAL_SERVER, interface: "can0", bus_id: "b1" }]}
+        binding={{
+          kind: "remote",
+          server: LOCAL_SERVER,
+          interface: "can0",
+          bus_id: "b1",
+        }}
         sidecarAddress={NEW_LIVE}
         discoveries={{ [NEW_LIVE]: { status: "ok", interfaces: [REC_CAN0] } }}
-        onPick={() => {}}
-        onAddServer={() => {}}
+        localVirtualBuses={[]}
+        {...NO_OPS}
       />,
     );
     expect(
       screen.queryByRole("option", { name: /\(offline\)/ }),
     ).not.toBeInTheDocument();
-    // And the binding is shown as the selected local option.
     const combo = screen.getByLabelText("bus b1 interface") as HTMLSelectElement;
     expect(combo.value).toBe(`${LOCAL_SERVER}\x00can0`);
   });
@@ -247,18 +307,21 @@ describe("BusInterfaceCombo", () => {
     render(
       <BusInterfaceCombo
         bus={BUS1}
-        binding={{ server: REMOTE, interface: "can0", bus_id: "b1" }}
-        bindings={[{ server: REMOTE, interface: "can0", bus_id: "b1" }]}
+        binding={{
+          kind: "remote",
+          server: REMOTE,
+          interface: "can0",
+          bus_id: "b1",
+        }}
         sidecarAddress={LIVE_LOCAL}
         discoveries={{
           [LIVE_LOCAL]: { status: "ok", interfaces: [] },
           [REMOTE]: { status: "err", error: "connection refused" },
         }}
-        onPick={() => {}}
-        onAddServer={() => {}}
+        localVirtualBuses={[]}
+        {...NO_OPS}
       />,
     );
-    // Fallback so `<select value=...>` still maps to a real option.
     expect(
       screen.getByRole("option", { name: `${REMOTE} / can0 (offline)` }),
     ).toBeInTheDocument();

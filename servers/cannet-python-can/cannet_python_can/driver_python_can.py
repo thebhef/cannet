@@ -39,7 +39,17 @@ import logging
 import time
 from typing import Iterable, List, Optional
 
-from .driver import Channel, Frame, OpenChannel, OpenConfig, TxRejected
+from .driver import (
+    Channel,
+    ControllerState,
+    Frame,
+    OpenChannel,
+    OpenConfig,
+    STATE_ACTIVE,
+    STATE_BUS_OFF,
+    STATE_PASSIVE,
+    TxRejected,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -82,18 +92,26 @@ class PythonCanDriver:
             bus = can.interface.Bus(interface=interface, **kwargs)  # type: ignore[union-attr]
         except Exception as e:  # noqa: BLE001
             raise OSError(f"open {channel_id}: {e}") from e
+        if interface == "pcan":
+            _disable_pcan_status_frames(bus)
         return PythonCanChannel(
-            channel_id=channel_id, bus=bus, listen_only=config.listen_only
+            channel_id=channel_id,
+            bus=bus,
+            listen_only=config.listen_only,
+            fd=config.fd,
         )
 
 
 class PythonCanChannel:
     """One opened ``python-can`` ``Bus`` plus a small recv/send wrapper."""
 
-    def __init__(self, *, channel_id: str, bus: object, listen_only: bool) -> None:
+    def __init__(
+        self, *, channel_id: str, bus: object, listen_only: bool, fd: bool
+    ) -> None:
         self.channel_id = channel_id
         self._bus = bus
         self._listen_only = listen_only
+        self._fd = fd
         self._closed = False
 
     def recv(self, timeout_s: float) -> Optional[Frame]:
@@ -109,11 +127,73 @@ class PythonCanChannel:
             raise TxRejected("channel closed")
         if self._listen_only:
             raise TxRejected("listen-only configuration")
+        self._reject_if_incompatible(frame)
         msg = _frame_to_msg(frame)
         try:
             self._bus.send(msg)  # type: ignore[attr-defined]
         except Exception as e:  # noqa: BLE001
             raise TxRejected(str(e)) from e
+
+    def _reject_if_incompatible(self, frame: Frame) -> None:
+        """Refuse frame shapes that would make python-can raise inside a
+        ctypes slice assignment.
+
+        Backends like PCAN copy the payload into a fixed-size ``c_ubyte``
+        array (8 bytes for classic, 64 for FD) with a slice assignment
+        whose left and right halves must agree in length. When they
+        don't — e.g. an FD frame with >8 bytes on a classic-mode bus, or
+        a frame whose ``dlc`` disagrees with ``len(data)`` — the bus
+        raises a bare ``ValueError("Can only assign sequence of same
+        size")`` that's hard to interpret upstream. Reject here so the
+        caller sees a precise ``TxRejected`` with the actual mismatch.
+        """
+        if frame.is_error:
+            return
+        if frame.fd and not self._fd:
+            raise TxRejected(
+                f"FD frame on classic-mode bus {self.channel_id}"
+            )
+        if frame.is_remote and self._fd:
+            raise TxRejected(
+                f"remote (RTR) frame not supported on FD-mode bus "
+                f"{self.channel_id}"
+            )
+        if frame.is_remote:
+            return
+        max_bytes = 64 if self._fd else 8
+        if len(frame.data) > max_bytes:
+            raise TxRejected(
+                f"payload {len(frame.data)} bytes exceeds {max_bytes}-byte "
+                f"limit ({'FD' if self._fd else 'classic'} bus "
+                f"{self.channel_id})"
+            )
+        if frame.dlc and frame.dlc != len(frame.data):
+            raise TxRejected(
+                f"dlc={frame.dlc} differs from data length "
+                f"{len(frame.data)} (bus {self.channel_id})"
+            )
+
+    def state(self) -> ControllerState:
+        """Read the controller's fault-confinement state.
+
+        python-can exposes ``Bus.state`` (``BusState.ACTIVE`` /
+        ``PASSIVE`` / ``ERROR``); we map ``ERROR`` to ``bus_off`` since
+        that's the closest analog of an ISO 11898-1 fault state in
+        python-can's three-value enum. TEC / REC aren't exposed
+        uniformly across backends; reported as 0.
+        """
+        if self._closed or can is None:
+            return ControllerState()
+        try:
+            raw = self._bus.state  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            return ControllerState()
+        name = getattr(raw, "name", str(raw)).upper()
+        if name == "PASSIVE":
+            return ControllerState(state=STATE_PASSIVE)
+        if name in ("ERROR", "BUS_OFF", "BUSOFF"):
+            return ControllerState(state=STATE_BUS_OFF)
+        return ControllerState(state=STATE_ACTIVE)
 
     def close(self) -> None:
         if self._closed:
@@ -356,6 +436,29 @@ def _split_meta(rest: str) -> tuple[str, dict]:
     return body, meta
 
 
+#: ``f_clock`` value passed to :meth:`BitTimingFd.from_sample_point`.
+#: 80 MHz is the only value accepted by every FD-capable backend we
+#: support (PEAK, Kvaser, Vector all advertise 80 MHz as a valid
+#: CAN-FD reference clock).
+_FD_F_CLOCK_HZ = 80_000_000
+
+#: Default sample point percentage for the nominal (arbitration) phase
+#: when the user hasn't pinned bit-level timing. 80 % matches the
+#: CiA-recommended midpoint for 500 kbps – 1 Mbps and is the value
+#: python-can's own ``Bus`` constructor implicitly aims for.
+_FD_NOM_SAMPLE_POINT_PCT = 80
+
+#: Default data-phase sample point percentage. 70 % is a CiA-recommended
+#: value for the faster data phase where ringing matters more.
+_FD_DATA_SAMPLE_POINT_PCT = 70
+
+#: Nominal bitrate used when FD is enabled but no ``bitrate_bps`` is
+#: configured. Pinned to 500 kbps (the python-can default for classic
+#: buses) so an FD-enabled bus opened from a project with no explicit
+#: bitrate still has *some* sensible value to compute timing against.
+_FD_DEFAULT_NOMINAL_BITRATE_BPS = 500_000
+
+
 def _bus_kwargs_for(channel_id: str, config: OpenConfig):
     """Translate ``vendor:<body>(<meta>)`` + ``OpenConfig`` into the
     arguments python-can's ``Bus`` constructor takes.
@@ -364,16 +467,21 @@ def _bus_kwargs_for(channel_id: str, config: OpenConfig):
     path only needs the body plus, for Vector, the ``ch:`` field from
     the parens (since python-can's ``vector`` backend wants ``app_name``
     and ``channel`` as separate kwargs).
+
+    FD configuration is normalised to a :class:`can.BitTimingFd` via
+    :meth:`BitTimingFd.from_sample_point`. Routing through ``timing=``
+    rather than ``fd=True`` + ``data_bitrate=N`` matters for PEAK: its
+    python-can backend has no ``data_bitrate`` kwarg, so the only way
+    to pick a data-phase rate uniformly across PEAK, Kvaser, and
+    Vector is to hand all three a fully-computed BitTimingFd instance.
     """
     vendor, _, rest = channel_id.partition(":")
     body, meta = _split_meta(rest)
     common = {}
-    if config.bitrate_bps is not None:
-        common["bitrate"] = config.bitrate_bps
     if config.fd:
-        common["fd"] = True
-        if config.data_bitrate_bps is not None:
-            common["data_bitrate"] = config.data_bitrate_bps
+        common["timing"] = _build_fd_timing(config)
+    elif config.bitrate_bps is not None:
+        common["bitrate"] = config.bitrate_bps
     if config.listen_only:
         common["receive_own_messages"] = False
     if vendor == "vector":
@@ -406,10 +514,71 @@ def _bus_kwargs_for(channel_id: str, config: OpenConfig):
     raise KeyError(channel_id)
 
 
+def _disable_pcan_status_frames(bus) -> None:
+    """Turn off PCAN-Basic's status-frame queue immediately after open.
+
+    PCAN-Basic emits side-band notifications (channel initialised,
+    bus-light, bus-heavy, bus-passive, ...) as queued "status frames"
+    whose ``MSGTYPE`` has the ``PCAN_MESSAGE_STATUS`` bit set. python-can's
+    PCAN backend reads ``MSGTYPE`` for the bits it knows about
+    (``EXTENDED`` / ``RTR`` / ``FD`` / ``ECHO`` / ``BRS`` / ``ESI`` /
+    ``ERRFRAME``) but never branches on ``STATUS``, so the status frame
+    is built into a regular :class:`can.Message` with ``arbitration_id =
+    pcan_msg.ID`` (a small status code, typically 1), ``dlc = 4``, and
+    the 4-byte status word as payload. The result is indistinguishable
+    from a real ``can_id=1, dlc=4`` wire frame.
+
+    PCAN-Basic exposes the same fault-confinement information through
+    ``CAN_GetStatus``, which the sidecar already polls every 500 ms (see
+    :class:`cannet_python_can.server._SharedInterface._state_pump`), so
+    disabling the queued status frames loses no observable signal — it
+    only stops the synthetic frame.
+    """
+    from can.interfaces.pcan.basic import (  # type: ignore[import-untyped]
+        PCAN_ALLOW_STATUS_FRAMES,
+        PCAN_PARAMETER_OFF,
+    )
+
+    bus.m_objPCANBasic.SetValue(
+        bus.m_PcanHandle, PCAN_ALLOW_STATUS_FRAMES, PCAN_PARAMETER_OFF,
+    )
+
+
+def _build_fd_timing(config: OpenConfig):
+    """Build a :class:`can.BitTimingFd` from an FD-enabled
+    :class:`OpenConfig`. The data-phase rate defaults to the nominal
+    rate when unset (matching python-can's classic ``data_bitrate``
+    fallback). Nominal defaults to :data:`_FD_DEFAULT_NOMINAL_BITRATE_BPS`
+    when unset so the FD-mode open path always has *some* value to
+    compute timing against.
+    """
+    from can import BitTimingFd  # type: ignore[import-untyped]
+
+    nom_bps = config.bitrate_bps or _FD_DEFAULT_NOMINAL_BITRATE_BPS
+    data_bps = config.data_bitrate_bps or nom_bps
+    return BitTimingFd.from_sample_point(
+        f_clock=_FD_F_CLOCK_HZ,
+        nom_bitrate=int(nom_bps),
+        nom_sample_point=_FD_NOM_SAMPLE_POINT_PCT,
+        data_bitrate=int(data_bps),
+        data_sample_point=_FD_DATA_SAMPLE_POINT_PCT,
+    )
+
+
 def _msg_to_frame(msg) -> Frame:
-    """python-can ``Message`` → driver ``Frame``."""
+    """python-can ``Message`` → driver ``Frame``.
+
+    The fallback for missing timestamps uses :func:`time.time_ns`
+    (Unix-epoch ns), not :func:`time.monotonic_ns` — python-can's
+    hardware-stamped path produces Unix-epoch ns too (boot epoch +
+    PEAK's µs counter). Mixing those two clocks within one session
+    produced timestamps three orders of magnitude apart, which broke
+    the trace view's "first frame is the zero point" assumption and
+    showed up as wildly-negative deltas the moment a fallback-stamped
+    frame slipped in after a hardware-stamped one.
+    """
     ts_s = float(getattr(msg, "timestamp", 0.0) or 0.0)
-    timestamp_ns = int(ts_s * 1_000_000_000) if ts_s else int(time.monotonic_ns())
+    timestamp_ns = int(ts_s * 1_000_000_000) if ts_s else int(time.time_ns())
     data = bytes(getattr(msg, "data", b"") or b"")
     return Frame(
         timestamp_ns=timestamp_ns,

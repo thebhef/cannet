@@ -138,6 +138,13 @@ pub struct TraceGrew {
     /// Estimated current frame rate (frames per second over the last
     /// second of appends).
     pub frames_per_second: f64,
+    /// Session-start timestamp in seconds (Unix epoch, fractional). The
+    /// trace UI displays everything relative to this — a single, stable
+    /// origin for the whole live capture / replay. Live capture sets it
+    /// to wall-clock now on Clear / Connect; BLF replay sets it to the
+    /// first frame's timestamp. Zero before any session has been
+    /// configured.
+    pub session_start_seconds: f64,
     /// The last frames in the store (up to a fixed cap), already decoded
     /// against the currently-attached DBC. The auto-scrolling trace view
     /// paints its live tail straight from this instead of round-tripping
@@ -152,7 +159,7 @@ pub struct TraceGrew {
 /// fields). `data` is the raw payload (empty for `remote` / `error`).
 /// `brs` / `esi` are only meaningful for `fd` kinds; `dlc` only for
 /// `remote`.
-#[derive(serde::Deserialize, Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TransmitRequest {
     /// Destination bus id (one of the project's logical buses). The
@@ -175,7 +182,7 @@ pub struct TransmitRequest {
 
 /// Frame kind the transmit panel picks. Lower-case on the wire so the
 /// frontend's discriminated union matches.
-#[derive(serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TransmitKind {
     Classic,
@@ -211,12 +218,14 @@ pub enum TransmitWireStatus {
     Failed { message: String },
 }
 
-/// One row of the per-message-ID view: the id's latest frame plus its
-/// current message rate (frames/second).
+/// One row of the per-message-ID view: the id's latest frame, its
+/// current message rate (frames/second), and the total number of frames
+/// seen for the id over the session.
 #[derive(serde::Serialize, Clone)]
 pub struct ByIdSnapshot {
     pub frame: TraceFrameRecord,
     pub rate: f64,
+    pub count: u64,
 }
 
 /// Emitted when the log finishes (cleanly or with an error).
@@ -399,6 +408,10 @@ pub struct MessageDescriptorRecord {
     /// CAN-FD BRS from the `GenMsgCANFDBRS` attribute (default `true`
     /// on FD messages with no attribute). Always `false` on classic.
     pub brs: bool,
+    /// The DBC's `GenMsgCycleTime` attribute in milliseconds, or `None`
+    /// when absent. The transmit panel pre-fills a newly-added
+    /// message's cycle period from this.
+    pub gen_msg_cycle_time_ms: Option<u32>,
     /// `true` iff any signal uses nested / extended multiplexing
     /// (`m<N>M`). The transmit panel falls back to bytes-only editing
     /// in that case.

@@ -28,14 +28,31 @@
 //!
 //! ## Rate estimation
 //!
-//! The store keeps a rolling window of `(Instant, total_count)`
-//! samples, one taken at most every [`RATE_SAMPLE_INTERVAL`] — a
-//! sample *per appended frame* would balloon the deque at high replay
-//! rates for no extra signal, since [`Self::frames_per_second`] only
-//! reads the window's endpoints. The window is pruned to
-//! [`RATE_WINDOW`] on each touch; the rate is the count delta over the
-//! wall time the surviving samples span, or `0.0` if there isn't yet
-//! enough signal to estimate.
+//! Rates are computed from per-frame `timestamp_ns` (the bus-side
+//! arrival time the driver stamped), not from when the frame was
+//! appended to the store. The rx pump batches frames together — at the
+//! store, every frame in a batch lands within microseconds of every
+//! other one — so a wall-clock inter-arrival would oscillate between
+//! near-zero (within a batch) and the batch cadence (between batches)
+//! for a periodic signal that's actually arriving at a steady rate.
+//! Keying off `timestamp_ns` makes the rate read what the bus is
+//! actually doing.
+//!
+//! Wall-clock is still kept alongside, but only for stall behavior:
+//! when no fresh frames arrive, [`RateEstimate::rate`] decays toward
+//! zero on wall-clock elapsed since the last observation, and
+//! [`Self::frames_per_second`]'s sample deque is pruned by wall time.
+//! Without this, a stalled stream would show its last rate forever
+//! (frame timestamps would have nothing to advance them).
+//!
+//! The store keeps a rolling window of
+//! `(Instant, last_frame_ts_ns, total_count)` samples, one taken at
+//! most every [`RATE_SAMPLE_INTERVAL`] — a sample *per appended frame*
+//! would balloon the deque at high replay rates for no extra signal,
+//! since [`Self::frames_per_second`] only reads the window's endpoints.
+//! The window is pruned to [`RATE_WINDOW`] on each touch; the rate is
+//! the count delta over the frame-time the surviving samples span,
+//! falling back to `0.0` if there isn't yet enough signal to estimate.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
@@ -58,7 +75,7 @@ const RATE_SAMPLE_INTERVAL: Duration = Duration::from_millis(20);
 
 /// Smoothing factor for the per-id message-rate estimate (an EMA of the
 /// inter-arrival time). Smaller = steadier, slower to react.
-const PER_ID_RATE_ALPHA: f64 = 0.2;
+const PER_ID_RATE_ALPHA: f64 = 0.6;
 
 /// Identifies a "kind of frame" for the latest-by-id view: the
 /// logical bus (`None` = unassigned, a distinct bucket from any named
@@ -74,23 +91,34 @@ type FrameKey = (Option<String>, u8, u32, bool);
 /// DBC message id isn't channel-scoped.
 type IdKey = (u32, bool);
 
-/// Per-id message-rate estimate: the time of the last frame for this
-/// key and an exponential moving average of the inter-arrival time
-/// (`<= 0` until a second frame has been seen).
+/// Per-id message-rate estimate. Tracks the EMA of the *frame-time*
+/// inter-arrival (the bus-side cadence) plus the wall-clock time of
+/// the last observation (so a stalled stream visibly decays to zero
+/// even though frame timestamps stop advancing).
 #[derive(Debug, Clone, Copy)]
 struct RateEstimate {
-    last: Instant,
+    last_ts_ns: u64,
+    last_wall: Instant,
     ema_dt_secs: f64,
+    count: u64,
 }
 
 impl RateEstimate {
-    fn first_seen(now: Instant) -> Self {
-        Self { last: now, ema_dt_secs: 0.0 }
+    fn first_seen(ts_ns: u64, now: Instant) -> Self {
+        Self {
+            last_ts_ns: ts_ns,
+            last_wall: now,
+            ema_dt_secs: 0.0,
+            count: 0,
+        }
     }
 
-    /// Fold in a new frame at `now`.
-    fn observe(&mut self, now: Instant) {
-        let dt = now.duration_since(self.last).as_secs_f64();
+    /// Fold in a new frame stamped at `ts_ns` and appended at wall-time
+    /// `now`.
+    #[allow(clippy::cast_precision_loss)] // ns diffs fit comfortably in f64's mantissa.
+    fn observe(&mut self, ts_ns: u64, now: Instant) {
+        self.count = self.count.saturating_add(1);
+        let dt = ts_ns.saturating_sub(self.last_ts_ns) as f64 / 1e9;
         if self.ema_dt_secs <= 0.0 {
             if dt > 0.0 {
                 self.ema_dt_secs = dt;
@@ -98,29 +126,33 @@ impl RateEstimate {
         } else if dt > 0.0 {
             self.ema_dt_secs = PER_ID_RATE_ALPHA * dt + (1.0 - PER_ID_RATE_ALPHA) * self.ema_dt_secs;
         }
-        self.last = now;
+        self.last_ts_ns = ts_ns;
+        self.last_wall = now;
     }
 
-    /// Messages/second as of `now` — `0.0` until two frames have been
-    /// seen, and decaying toward `0` once frames stop arriving (the
-    /// effective interval grows with the time since the last one).
+    /// Messages/second as of wall-time `now` — `0.0` until two frames
+    /// have been seen, and decaying toward `0` once frames stop
+    /// arriving (the effective interval grows with the wall-time since
+    /// the last one, so a stalled stream visibly drops).
     fn rate(&self, now: Instant) -> f64 {
         if self.ema_dt_secs <= 0.0 {
             return 0.0;
         }
-        let since = now.duration_since(self.last).as_secs_f64();
+        let since = now.duration_since(self.last_wall).as_secs_f64();
         let dt = since.max(self.ema_dt_secs);
         if dt > 0.0 { 1.0 / dt } else { 0.0 }
     }
 }
 
 /// A row of the latest-by-id snapshot: the frame's index in the buffer,
-/// the frame, and the id's current message rate.
+/// the frame, the id's current message rate, and the total number of
+/// frames seen for that id over the session.
 #[derive(Debug, Clone)]
 pub struct LatestById {
     pub index: usize,
     pub frame: RawTraceFrame,
     pub rate: f64,
+    pub count: u64,
 }
 
 /// One row in the trace store. Owned, undecoded.
@@ -162,9 +194,34 @@ pub struct TraceStore {
     inner: Mutex<Inner>,
 }
 
+/// One entry in the trace-wide rate-sample deque. `wall` is the
+/// append's wall-clock time (used to prune the window so a stalled
+/// stream visibly drops to zero); `ts_ns` is the frame's bus-side
+/// timestamp (used to compute the rate, so batching jitter doesn't
+/// bounce the reading); `count` is the running frame total at that
+/// point.
+#[derive(Debug, Clone, Copy)]
+struct RateSample {
+    wall: Instant,
+    ts_ns: u64,
+    count: usize,
+}
+
 struct Inner {
+    /// Session-start timestamp in nanoseconds (the same Unix-epoch ns
+    /// axis frames use). The trace UI displays everything relative to
+    /// this — and [`Self::append`] silently drops any frame whose
+    /// timestamp predates it. That drop is what isolates a clear-and-
+    /// restart from frames that were in flight through the recv
+    /// pipeline (sidecar queue, gRPC stream, packer thread) at the
+    /// moment of clear: those frames now arrive with stale timestamps
+    /// and would otherwise display as negative offsets from a base
+    /// captured off the next real frame. Zero means "no session start
+    /// configured yet" — every frame is accepted (used at construction
+    /// and during tests that don't care).
+    session_start_ns: u64,
     frames: Vec<RawTraceFrame>,
-    rate_samples: VecDeque<(Instant, usize)>,
+    rate_samples: VecDeque<RateSample>,
     /// Index into `frames` of the most recent frame seen for each
     /// [`FrameKey`] — `O(1)` to maintain on append, and what the
     /// per-message-ID view reads instead of walking the whole buffer.
@@ -184,6 +241,7 @@ impl TraceStore {
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(Inner {
+                session_start_ns: 0,
                 frames: Vec::new(),
                 rate_samples: VecDeque::new(),
                 latest: HashMap::new(),
@@ -196,8 +254,17 @@ impl TraceStore {
     /// Append a frame to the tail of the trace. Updates the
     /// latest-by-key index and the per-id rate estimate, and records a
     /// rate sample if at least [`RATE_SAMPLE_INTERVAL`] has passed.
+    ///
+    /// Frames whose timestamp predates the current
+    /// [`Self::start_session`] are silently dropped. That handles the
+    /// pipeline-in-flight case after a Clear / new session: the recv
+    /// path (sidecar queue, gRPC, packer thread) can still deliver
+    /// frames captured before the clear; they'd otherwise land in the
+    /// freshly-empty buffer with stale timestamps and show as negative
+    /// offsets in the trace view.
     pub fn append(&self, frame: RawTraceFrame) {
         let now = Instant::now();
+        let ts_ns = frame.timestamp_ns;
         let key: FrameKey = (
             frame.bus_id.clone(),
             frame.channel,
@@ -205,6 +272,9 @@ impl TraceStore {
             frame.extended,
         );
         let mut inner = self.inner.lock().expect("trace store mutex poisoned");
+        if ts_ns < inner.session_start_ns {
+            return;
+        }
         let id_key = (frame.id, frame.extended);
         inner.frames.push(frame);
         let count = inner.frames.len();
@@ -213,14 +283,18 @@ impl TraceStore {
         inner
             .rates
             .entry(key)
-            .or_insert_with(|| RateEstimate::first_seen(now))
-            .observe(now);
+            .or_insert_with(|| RateEstimate::first_seen(ts_ns, now))
+            .observe(ts_ns, now);
         let due = match inner.rate_samples.back() {
-            Some(&(last, _)) => now.duration_since(last) >= RATE_SAMPLE_INTERVAL,
+            Some(last) => now.duration_since(last.wall) >= RATE_SAMPLE_INTERVAL,
             None => true,
         };
         if due {
-            inner.rate_samples.push_back((now, count));
+            inner.rate_samples.push_back(RateSample {
+                wall: now,
+                ts_ns,
+                count,
+            });
             prune_rate_samples(&mut inner.rate_samples, now);
         }
     }
@@ -346,20 +420,41 @@ impl TraceStore {
         (count, window.into())
     }
 
-    /// Drop every stored frame and release the backing allocations.
+    /// Begin a new session: empty the buffer **and** raise the
+    /// session-start threshold to `session_start_ns`. Subsequent
+    /// [`Self::append`] calls drop any frame whose timestamp predates
+    /// `session_start_ns` — the pipeline-drain guard for in-flight
+    /// frames at the moment of clear / connect.
     ///
-    /// `Vec::clear` / `VecDeque::clear` only reset the length — the
-    /// (possibly enormous, after a long replay) buffers would stay
-    /// resident. Replacing them with fresh empties hands the memory
-    /// back to the allocator, so a small session after a large one
-    /// doesn't carry the large session's footprint.
-    pub fn clear(&self) {
+    /// Live capture passes wall-clock now; BLF replay passes the
+    /// first frame's timestamp so the trace is rooted at the file's
+    /// own time origin. Tests that just want an empty buffer with no
+    /// gating pass `0`.
+    ///
+    /// (Why fresh Vec/HashMap allocations instead of `clear()`: those
+    /// only reset length, leaving the — possibly enormous after a long
+    /// replay — backing buffers resident. Replacing the containers
+    /// returns the memory to the allocator so a small session after a
+    /// large one doesn't carry the previous footprint.)
+    pub fn start_session(&self, session_start_ns: u64) {
         let mut inner = self.inner.lock().expect("trace store mutex poisoned");
+        inner.session_start_ns = session_start_ns;
         inner.frames = Vec::new();
         inner.rate_samples = VecDeque::new();
         inner.latest = HashMap::new();
         inner.rates = HashMap::new();
         inner.by_id = HashMap::new();
+    }
+
+    /// Current session-start threshold (Unix-epoch ns). The trace UI
+    /// renders frames relative to this; zero means "no session start
+    /// has been configured yet", and the store accepts every frame.
+    #[must_use]
+    pub fn session_start_ns(&self) -> u64 {
+        self.inner
+            .lock()
+            .expect("trace store mutex poisoned")
+            .session_start_ns
     }
 
     /// For each distinct [`FrameKey`] whose most recent occurrence is at
@@ -383,10 +478,14 @@ impl TraceStore {
         keyed.sort_unstable();
         keyed
             .into_iter()
-            .map(|(key, idx)| LatestById {
-                index: idx,
-                frame: inner.frames[idx].clone(),
-                rate: inner.rates.get(&key).map_or(0.0, |r| r.rate(now)),
+            .map(|(key, idx)| {
+                let est = inner.rates.get(&key);
+                LatestById {
+                    index: idx,
+                    frame: inner.frames[idx].clone(),
+                    rate: est.map_or(0.0, |r| r.rate(now)),
+                    count: est.map_or(0, |r| r.count),
+                }
             })
             .collect()
     }
@@ -401,9 +500,9 @@ impl TraceStore {
     }
 }
 
-fn prune_rate_samples(samples: &mut VecDeque<(Instant, usize)>, now: Instant) {
-    while let Some(&(t, _)) = samples.front() {
-        if now.duration_since(t) > RATE_WINDOW {
+fn prune_rate_samples(samples: &mut VecDeque<RateSample>, now: Instant) {
+    while let Some(front) = samples.front() {
+        if now.duration_since(front.wall) > RATE_WINDOW {
             samples.pop_front();
         } else {
             break;
@@ -411,16 +510,16 @@ fn prune_rate_samples(samples: &mut VecDeque<(Instant, usize)>, now: Instant) {
     }
 }
 
-fn rate_from_samples(samples: &VecDeque<(Instant, usize)>) -> f64 {
-    let (Some(&(t0, c0)), Some(&(t1, c1))) = (samples.front(), samples.back()) else {
+#[allow(clippy::cast_precision_loss)] // counts and ns diffs fit in f64's mantissa.
+fn rate_from_samples(samples: &VecDeque<RateSample>) -> f64 {
+    let (Some(first), Some(last)) = (samples.front(), samples.back()) else {
         return 0.0;
     };
-    let dt = t1.duration_since(t0).as_secs_f64();
+    let dt = last.ts_ns.saturating_sub(first.ts_ns) as f64 / 1e9;
     if dt <= 0.0 {
         return 0.0;
     }
-    #[allow(clippy::cast_precision_loss)]
-    let delta = (c1.saturating_sub(c0)) as f64;
+    let delta = (last.count.saturating_sub(first.count)) as f64;
     delta / dt
 }
 
@@ -497,7 +596,7 @@ mod tests {
         assert!(store.matching_frames_indexed(7, false, 99, 200).is_empty());
         // Extended vs standard are distinct keys.
         assert!(store.matching_frames_indexed(7, true, 0, 6).is_empty());
-        store.clear();
+        store.start_session(0);
         assert!(store.matching_frames_indexed(7, false, 0, 6).is_empty());
     }
 
@@ -565,7 +664,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(4, 2), (3, 3)],
         );
-        store.clear();
+        store.start_session(0);
         assert!(store.latest_since(0).is_empty());
     }
 
@@ -593,6 +692,34 @@ mod tests {
     }
 
     #[test]
+    fn latest_since_reports_per_id_frame_count() {
+        // Each `FrameKey` (bus, channel, id, extended) accumulates a
+        // total frame count over the session — what the per-id view's
+        // `#` column displays. Distinct buses count independently.
+        let store = TraceStore::new();
+        for _ in 0..3 {
+            store.append(dummy_on_bus(0, 0x100, "a"));
+        }
+        store.append(dummy_on_bus(0, 0x200, "a"));
+        store.append(dummy_on_bus(0, 0x100, "b"));
+        store.append(dummy_on_bus(0, 0x100, "b"));
+        let rows = store.latest_since(0);
+        let mut counts: Vec<(Option<&str>, u32, u64)> = rows
+            .iter()
+            .map(|r| (r.frame.bus_id.as_deref(), r.frame.id, r.count))
+            .collect();
+        counts.sort();
+        assert_eq!(
+            counts,
+            vec![
+                (Some("a"), 0x100, 3),
+                (Some("a"), 0x200, 1),
+                (Some("b"), 0x100, 2),
+            ],
+        );
+    }
+
+    #[test]
     fn latest_since_keeps_unassigned_distinct_from_a_named_bus() {
         // Edge case: an unassigned (`bus_id = None`) frame with the
         // same wire channel + id as a bus-tagged frame must not be
@@ -610,13 +737,40 @@ mod tests {
     #[allow(clippy::float_cmp)] // 0.0 is the exact "no estimate yet" sentinel.
     fn per_id_rate_is_zero_until_two_frames_then_estimates_and_decays() {
         let t0 = Instant::now();
-        let mut r = RateEstimate::first_seen(t0);
+        let mut r = RateEstimate::first_seen(0, t0);
         assert_eq!(r.rate(t0), 0.0); // one frame: no estimate yet
-        let t1 = t0 + Duration::from_millis(100);
-        r.observe(t1);
-        assert!((r.rate(t1) - 10.0).abs() < 1e-6); // 100 ms apart -> ~10 /s
-        // No further frames: a second later the estimate decays toward 1/s.
-        assert!((r.rate(t1 + Duration::from_secs(1)) - 1.0).abs() < 1e-3);
+        // Second frame: 100 ms apart in *frame time*, but the wall clock
+        // hasn't advanced at all (simulates batched arrival). Rate must
+        // reflect the frame-time interval, not the wall-clock one.
+        r.observe(100_000_000, t0);
+        assert!((r.rate(t0) - 10.0).abs() < 1e-6);
+        // No further frames: a second of wall time later the estimate
+        // decays toward 1/s (stall behavior keyed off wall clock so a
+        // dead stream visibly drops to zero).
+        assert!((r.rate(t0 + Duration::from_secs(1)) - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn per_id_rate_uses_frame_timestamp_not_batch_arrival() {
+        // Regression: a periodic 100 Hz message that gets batched on
+        // the rx pump arrives at the store with wall-clock intervals
+        // close to zero (batches land tens of millis apart, each with
+        // many frames inside). The bus-side cadence is 10 ms; the
+        // rate must report that, not the batch shape.
+        let store = TraceStore::new();
+        for i in 0u64..20 {
+            // Frame timestamps step 10 ms apart; wall clock barely
+            // moves between appends (which the real pump does too).
+            store.append(dummy(i * 10_000_000, 0x100));
+        }
+        let rows = store.latest_since(0);
+        let rate = rows.iter().find(|r| r.frame.id == 0x100).unwrap().rate;
+        // Allow a wide tolerance — EMA hasn't fully settled at 20 samples.
+        assert!(
+            (rate - 100.0).abs() < 10.0,
+            "expected ~100/s from 10-ms frame-time gaps, got {rate}",
+        );
     }
 
     #[test]
@@ -624,7 +778,7 @@ mod tests {
         let store = TraceStore::new();
         store.append(dummy(0, 1));
         store.append(dummy(0, 2));
-        store.clear();
+        store.start_session(0);
         assert_eq!(store.len(), 0);
     }
 
@@ -643,5 +797,43 @@ mod tests {
     fn rate_is_zero_with_no_samples() {
         let store = TraceStore::new();
         assert_eq!(store.frames_per_second(), 0.0);
+    }
+
+    #[test]
+    fn start_session_empties_buffer_and_raises_threshold() {
+        let store = TraceStore::new();
+        store.append(dummy(100, 1));
+        store.append(dummy(200, 2));
+        assert_eq!(store.len(), 2);
+        store.start_session(1_000);
+        assert_eq!(store.len(), 0);
+        assert_eq!(store.session_start_ns(), 1_000);
+    }
+
+    #[test]
+    fn append_drops_frames_stamped_before_session_start() {
+        // Pipeline-in-flight regression: after a Clear, frames captured
+        // before the clear can still arrive via the recv pipeline
+        // (sidecar queue, gRPC stream). They must not land in the new
+        // session's buffer or they'd show as negative offsets relative
+        // to the session-start zero point.
+        let store = TraceStore::new();
+        store.start_session(1_000);
+        store.append(dummy(500, 1)); // stale — before threshold
+        store.append(dummy(999, 2)); // stale — also before
+        store.append(dummy(1_000, 3)); // accepted — at threshold
+        store.append(dummy(2_000, 4)); // accepted — after
+        let ids: Vec<u32> = store.slice(0, store.len()).iter().map(|f| f.id).collect();
+        assert_eq!(ids, vec![3, 4]);
+    }
+
+    #[test]
+    fn pre_session_default_accepts_everything() {
+        // `new()` leaves session_start_ns at 0 — every realistic
+        // timestamp passes (no caller has configured a threshold yet).
+        let store = TraceStore::new();
+        store.append(dummy(1, 1));
+        store.append(dummy(u64::MAX, 2));
+        assert_eq!(store.len(), 2);
     }
 }

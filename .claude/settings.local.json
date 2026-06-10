@@ -20,7 +20,31 @@
       "Bash(pnpm --dir /Users/ben/repo/cannet/apps/gui build)",
       "Bash(pnpm --dir apps/gui exec tsc --noEmit)",
       "Bash(pnpm --dir apps/gui test --run DbcPanel)",
-      "Bash(pnpm --dir apps/gui test --run)"
+      "Bash(pnpm --dir apps/gui test --run)",
+      "Bash(uv --extra dev run bash scripts/regen_proto.sh)",
+      "Bash(uv --directory servers/cannet-python-can run --extra dev bash servers/cannet-python-can/scripts/regen_proto.sh)",
+      "Bash(uv --directory servers/cannet-python-can run --extra dev bash scripts/regen_proto.sh)",
+      "Bash(uv --directory servers/cannet-python-can run --extra dev pytest tests/ -x)",
+      "Bash(uv --directory servers/cannet-python-can run --extra dev pytest tests/)",
+      "Bash(pnpm --dir apps/gui test projectGraph)",
+      "Bash(uv --directory servers/cannet-python-can run --extra dev pytest tests/ -q)",
+      "Bash(git log:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git show:*)",
+      "Bash(grep:*)",
+      "Bash(rg:*)",
+      "Bash(find:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(cargo build:*)",
+      "Bash(pnpm test:*)",
+      "Bash(pnpm build:*)",
+      "Bash(pnpm exec vitest:*)",
+      "Bash(pnpm --dir apps/gui test:*)",
+      "Bash(pnpm --dir apps/gui build:*)"
     ]
   }
 }

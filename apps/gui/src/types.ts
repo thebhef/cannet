@@ -47,6 +47,11 @@ export interface TraceFrameRecord {
 export interface TraceGrew {
   count: number;
   frames_per_second: number;
+  /// Session-start timestamp (Unix epoch seconds, fractional). The
+  /// trace view subtracts this from frame timestamps to render relative
+  /// time, so every frame in a session shares one stable zero. Zero
+  /// before any session has been configured.
+  session_start_seconds: number;
   tail: TraceFrameRecord[];
 }
 
@@ -72,8 +77,17 @@ export interface DbcInfo {
 export interface Bus {
   id: string;
   name: string;
+  /// Nominal (arbitration-phase) bitrate in bits/s. Pushed to the
+  /// sidecar on connect via `ConfigureBus`. Common values: 125_000,
+  /// 250_000, 500_000, 1_000_000.
   speed_bps?: number | null;
+  /// Whether the underlying controller should be opened in CAN FD
+  /// mode. When unset (or false) the sidecar opens classic-only and
+  /// `fd_data_speed_bps` is ignored.
   fd?: boolean | null;
+  /// FD data-phase bitrate in bits/s (only meaningful when `fd` is
+  /// true). Common values: 1_000_000, 2_000_000, 4_000_000, 5_000_000.
+  fd_data_speed_bps?: number | null;
   /// User-chosen colour (CSS hex, `#rrggbb`) for the bus across the
   /// graph view — its node tint and every wire that carries it.
   /// Optional: a bus saved before the colour field, or never edited,
@@ -81,15 +95,107 @@ export interface Bus {
   color?: string | null;
 }
 
-/// An interface → bus binding (Phase 6). `server` is either the
-/// literal {@link LOCAL_SERVER} sentinel — meaning "the local sidecar
-/// at whatever address it's bound to this session" — or a `host:port`
-/// for a specific remote `cannet-server`. `interface` matches the
-/// wire-level `Interface.id`.
+/// One of the three binding kinds introduced in Phase 13 (ADR
+/// 0021 / 0022):
+///
+/// - **`"remote"`** — a `(server, interface)` pair on a remote
+///   `cannet-server` (or the local sidecar via the
+///   {@link LOCAL_SERVER} sentinel). v5 entries default to this on
+///   migration.
+/// - **`"remote-virtual-bus"`** — subscribe to the factory id of a
+///   remote virtual-bus server. The server allocates a participant
+///   on `Subscribe`; the host uses the allocated id for tx.
+/// - **`"local-virtual-bus"`** — bind to a virtual bus defined in
+///   {@link Project.local_virtual_buses}. `server` carries the
+///   `local-vbus://<vbus_id>` URL; `interface` is the canonical
+///   {@link LOCAL_VBUS_INTERFACE}.
+export type BindingKind =
+  | "remote"
+  | "remote-virtual-bus"
+  | "local-virtual-bus";
+
+/// URL scheme stored in {@link InterfaceBinding.server} for
+/// `local-virtual-bus` bindings. The id following the scheme
+/// references a {@link LocalVirtualBusDef.id}.
+export const LOCAL_VBUS_URL_SCHEME = "local-vbus://";
+
+/// Canonical {@link InterfaceBinding.interface} value for every
+/// `local-virtual-bus` binding. A vbus has one conceptual interface
+/// (the bus itself); multiple project buses bound to one vbus share
+/// this interface name and rely on multi-subscriber fan-out.
+export const LOCAL_VBUS_INTERFACE = "bus";
+
+/// `vbus_id` extracted from a binding's `server` field if it carries
+/// the `local-vbus://` URL scheme; `null` otherwise.
+export function localVbusId(b: InterfaceBinding): string | null {
+  return b.server.startsWith(LOCAL_VBUS_URL_SCHEME)
+    ? b.server.slice(LOCAL_VBUS_URL_SCHEME.length)
+    : null;
+}
+
+/// Construct a `local-virtual-bus` binding.
+export function localVbusBinding(
+  vbus_id: string,
+  bus_id: string,
+): InterfaceBinding {
+  return {
+    kind: "local-virtual-bus",
+    server: `${LOCAL_VBUS_URL_SCHEME}${vbus_id}`,
+    interface: LOCAL_VBUS_INTERFACE,
+    bus_id,
+  };
+}
+
+/// One bridge installed on a virtual bus. `remote_address` is the
+/// bridged `cannet-server` ({@link LOCAL_SERVER} for the local
+/// sidecar). `interface` is the wire id (or the factory id for a
+/// virtual-bus target).
+export interface BridgeSpec {
+  remote_address: string;
+  interface: string;
+  name?: string;
+}
+
+/// A virtual bus owned by the project. Selectable as a binding
+/// source in the project panel's interface combo. The host
+/// instantiates one `SharedBus` per def on project open; bindings
+/// reference it via the `local-vbus://<id>` URL stored in
+/// {@link InterfaceBinding.server}. A vbus has no user-configurable
+/// bitrate — it's in-process, not a model of a real wire.
+export interface LocalVirtualBusDef {
+  /// Stable project-local id, used in the binding's
+  /// `local-vbus://<id>` URL and as the host's registry key.
+  id: string;
+  /// User-facing label.
+  name: string;
+  /// Bridges installed on the virtual bus.
+  bridges?: BridgeSpec[];
+}
+
+/// An interface → bus binding (ADR 0023). Every binding is a uniform
+/// `(server, interface, bus_id)` triple regardless of what's on the
+/// other end. The {@link kind} discriminator is a hint about which
+/// backend the host should pick; the effective dispatch is by the
+/// URL scheme on {@link server}:
+///
+/// - `host:port` / {@link LOCAL_SERVER} → remote `cannet-server`
+///   (`kind: "remote"` or `"remote-virtual-bus"`).
+/// - `local-vbus://<vbus_id>` → in-process virtual bus
+///   ({@link LocalVirtualBusDef}; `kind: "local-virtual-bus"`).
 export interface InterfaceBinding {
+  /// Discriminator. Absent on v5 files; the host defaults it to
+  /// `"remote"` during the v5 → v6 migration. Always present on
+  /// files saved by a Phase-13+ build.
+  kind?: BindingKind;
   server: string;
   interface: string;
   bus_id: string;
+}
+
+/// Convenience: read the binding's effective kind, treating
+/// `undefined` as `"remote"` (the v5 → v6 default).
+export function bindingKind(b: InterfaceBinding): BindingKind {
+  return b.kind ?? "remote";
 }
 
 /// Sentinel `server` value for a binding routed through the local
@@ -166,11 +272,13 @@ export interface RemoteSessionResult {
 }
 
 /// One row of the per-message-ID view (mirrors `ipc.rs::ByIdSnapshot`):
-/// an arbitration id's latest frame plus its current message rate
-/// (frames/second).
+/// an arbitration id's latest frame, its current message rate
+/// (frames/second), and the total number of frames seen for the id over
+/// the session.
 export interface ByIdSnapshotRecord {
   frame: TraceFrameRecord;
   rate: number;
+  count: number;
 }
 
 /// One element of a project: a discriminated-union record with a stable
@@ -195,7 +303,7 @@ export interface ByIdSnapshotRecord {
 export type ProjectElement =
   | { kind: "trace"; id: string; sources: string[] }
   | { kind: "plot"; id: string; sources: string[] }
-  | { kind: "transmit"; id: string; sinks: string[] }
+  | { kind: "transmit"; id: string; sinks: string[]; frameIds: string[] }
   | {
       kind: "filter";
       id: string;
@@ -225,6 +333,41 @@ export type FilterPredicate =
 /// The discriminant of a {@link ProjectElement}.
 export type ProjectElementKind = ProjectElement["kind"];
 
+/// Manual (send-on-demand) vs periodic (cyclic) send mode for a TX
+/// message. Mirrors host `transmit_frames::TransmitMode`. Persisted with
+/// the message — distinct from whether a periodic is *running*.
+export type TransmitMode = "manual" | "periodic";
+
+/// The frame definition carried by a TX message. Mirrors host
+/// `ipc::TransmitRequest` (camelCase on the wire). `busId` is the
+/// destination logical bus (empty string when no bus is picked yet);
+/// `data` is the raw payload (empty for `remote` / `error`).
+export interface TransmitRequestRecord {
+  busId: string;
+  id: number;
+  extended: boolean;
+  kind: "classic" | "fd" | "remote" | "error";
+  data: number[];
+  brs: boolean;
+  esi: boolean;
+  dlc: number;
+}
+
+/// One TX message in the host pool, returned by `list_transmit_frames`.
+/// Mirrors host `transmit_frames::TransmitFrameView`. `running` is
+/// runtime-only (a live periodic thread); everything else persists in
+/// `Project.transmit_frames`. The displayed *name* is the DBC message
+/// name resolved from `request.id`; `description` is an optional user
+/// annotation.
+export interface TransmitFrameRecord {
+  id: string;
+  description: string;
+  request: TransmitRequestRecord;
+  cycleMs: number;
+  mode: TransmitMode;
+  running: boolean;
+}
+
 /// Mirrors `src-tauri/src/project.rs::Project` — the saved workspace.
 /// `layout` (dockview's `SerializedDockview`) and `elements` are stored
 /// by the host without interpretation, so they're typed loosely here
@@ -245,9 +388,12 @@ export interface Project {
   /// scoping. Replaces the v2 `dbc_paths` list.
   dbcs: DbcRef[];
   remote_address: string | null;
+  /// Phase 13: in-process virtual buses (ADR 0021). Bindings with
+  /// `kind = local-virtual-bus` reference one by id.
+  local_virtual_buses?: LocalVirtualBusDef[];
 }
 
-export const PROJECT_SCHEMA_VERSION = 5;
+export const PROJECT_SCHEMA_VERSION = 7;
 
 /// One `(bus, message, signal)` triple the attached DBCs define,
 /// returned by the `list_signals` command for a plot panel's signal
@@ -400,6 +546,10 @@ export interface MessageDescriptorRecord {
   /// `GenMsgCANFDBRS` attribute sets it to 0. Always `false` on
   /// classic messages.
   brs: boolean;
+  /// The DBC's `GenMsgCycleTime` attribute in milliseconds, or `null`
+  /// when absent. The transmit panel pre-fills a message's cycle
+  /// period from this when the message is added from the DBC.
+  genMsgCycleTimeMs: number | null;
   /// `true` iff any signal uses nested / extended multiplexing
   /// (`m<N>M`). The transmit panel falls back to bytes-only editing
   /// in that case.

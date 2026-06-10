@@ -70,10 +70,18 @@ const projectCtx: ProjectContextValue = {
   onRemoveBus: noop,
   onRenameBus: noop,
   onSetBusColor: noop,
+  onSetBusSpeed: noop,
+  onSetBusFd: noop,
+  onSetBusFdDataSpeed: noop,
+  busesWithPendingHwConfig: [],
   onAddBinding: noop,
   onRemoveBinding: noop,
   onConnect: noop,
   onDisconnect: noop,
+  localVirtualBuses: [],
+  onAddVirtualBus: noop,
+  onRemoveVirtualBus: noop,
+  onUpdateVirtualBus: noop,
 };
 
 function makeRegistry(create: ReturnType<typeof vi.fn>): ElementRegistry {

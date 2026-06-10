@@ -11,6 +11,7 @@ cannet-wire = { path = "../cannet-wire" }
 tokio = { version = "1", features = ["macros", "rt", "sync"] }
 tokio-stream = "0.1"
 tonic = "0.12"
+tracing = "0.1"
 
 [dev-dependencies]
 blf_asc = "0.2"
