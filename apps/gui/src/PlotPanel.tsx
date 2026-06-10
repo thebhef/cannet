@@ -2708,13 +2708,13 @@ function PlotArea(p: PlotAreaProps) {
                   // held interval is visible even if the label text
                   // can't fit.
                   const labelFits = segW >= tw + padX * 2;
-                  // Near-opaque fill (~90%) so the stepped line under
-                  // the band remains faintly visible — the user can
-                  // still trace the signal shape through the ribbon
-                  // while the labels stay readable; coloured border +
+                  // ~65% fill so the stepped line under the band
+                  // remains clearly visible — the user can still
+                  // trace the signal shape through the ribbon while
+                  // the labels stay readable; coloured border +
                   // centred text in the series colour stay fully
                   // opaque so legibility isn't compromised.
-                  ctx.fillStyle = "rgba(10, 13, 15, 0.9)";
+                  ctx.fillStyle = "rgba(10, 13, 15, 0.65)";
                   ctx.fillRect(visStart, bandTop, segW, bandH);
                   ctx.strokeStyle = boxColor;
                   ctx.strokeRect(visStart + 0.5, bandTop + 0.5, segW - 1, bandH - 1);
