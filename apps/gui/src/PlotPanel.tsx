@@ -1934,31 +1934,43 @@ function PlotArea(p: PlotAreaProps) {
   // bypassed (the values are discrete enum codes, no rescaling),
   // the series is rendered stepped (not linearly interpolated
   // between codes), and the y-axis ticks become symbolic labels
-  // from the table. Multi-signal areas keep current behaviour —
-  // their value-table follow-up (per-signal stepped overlays,
-  // multiple symbolic axes) is deferred.
-  const [valueTable, setValueTable] = useState<ValueTableEntryRecord[] | null>(null);
+  // from the table. Multi-signal areas keep current behaviour for
+  // the axis itself; the per-signal table cache below feeds the
+  // side panel so an enum value reads as `<label> (<raw>)` for
+  // every signal regardless of axis mode.
+  const [valueTables, setValueTables] = useState<Map<string, ValueTableEntryRecord[]>>(new Map());
   useEffect(() => {
-    setValueTable(null);
-    if (signals.length !== 1) return;
-    const s = signals[0];
     let cancelled = false;
-    void invoke<ValueTableEntryRecord[]>("list_value_tables", {
-      messageId: s.messageId,
-      extended: s.extended,
-      signalName: s.signalName,
-    })
-      .then((rows) => {
-        if (cancelled) return;
-        setValueTable(rows.length > 0 ? rows : null);
-      })
-      .catch(() => {
-        /* leave numeric mode on failure */
-      });
+    const accum = new Map<string, ValueTableEntryRecord[]>();
+    Promise.all(
+      signals.map(async (s) => {
+        try {
+          const rows = await invoke<ValueTableEntryRecord[]>("list_value_tables", {
+            messageId: s.messageId,
+            extended: s.extended,
+            signalName: s.signalName,
+          });
+          if (rows.length > 0) accum.set(signalRefKey(s), rows);
+        } catch {
+          /* signal stays numeric */
+        }
+      }),
+    ).then(() => {
+      if (cancelled) return;
+      setValueTables(accum);
+    });
     return () => {
       cancelled = true;
     };
   }, [signals]);
+  // Axis-level enum mode is still gated on `signals.length === 1`
+  // (the stepped path + symbolic y-axis ticks + label band only
+  // make sense on a single-enum axis); derive that from the
+  // per-signal map.
+  const valueTable = useMemo<ValueTableEntryRecord[] | null>(() => {
+    if (signals.length !== 1) return null;
+    return valueTables.get(signalRefKey(signals[0])) ?? null;
+  }, [signals, valueTables]);
   const enumMode = valueTable != null && valueTable.length > 0 && signals.length === 1;
   // Ref mirrors so the resample callback (closure over the initial
   // signal set) sees the up-to-date enum-mode state without being
@@ -2696,10 +2708,13 @@ function PlotArea(p: PlotAreaProps) {
                   // held interval is visible even if the label text
                   // can't fit.
                   const labelFits = segW >= tw + padX * 2;
-                  // Opaque fill so the stepped line underneath is
-                  // visually replaced by the labelled row; coloured
-                  // border + centred text in the series colour.
-                  ctx.fillStyle = "#0a0d0f";
+                  // Near-opaque fill (~90%) so the stepped line under
+                  // the band remains faintly visible — the user can
+                  // still trace the signal shape through the ribbon
+                  // while the labels stay readable; coloured border +
+                  // centred text in the series colour stay fully
+                  // opaque so legibility isn't compromised.
+                  ctx.fillStyle = "rgba(10, 13, 15, 0.9)";
                   ctx.fillRect(visStart, bandTop, segW, bandH);
                   ctx.strokeStyle = boxColor;
                   ctx.strokeRect(visStart + 0.5, bandTop + 0.5, segW - 1, bandH - 1);
@@ -3090,6 +3105,21 @@ function PlotArea(p: PlotAreaProps) {
     if (!s || s.t.length === 0) return null;
     return { first: s.t[0], last: s.t[s.t.length - 1] };
   };
+  /** Format a current value for the side panel. If the signal has a
+   * value table, render as `<label> (<raw>)` for enum-style readout;
+   * otherwise fall through to numeric. The raw is shown rounded —
+   * enum codes are integers, and `Math.round` matches the lane's
+   * `labelFor` lookup. */
+  const formatValueFor = (key: string, v: number | null): string => {
+    if (v == null || !Number.isFinite(v)) return "—";
+    const table = valueTables.get(key);
+    if (table) {
+      const raw = Math.round(v);
+      const label = table.find((r) => r.raw === raw)?.label;
+      if (label) return `${label} (${raw})`;
+    }
+    return fmtVal(v);
+  };
   const valueTitle = cursorXa != null ? "value at cursor A" : hoverX != null ? "value at crosshair" : "latest value";
   // With both X cursors placed: Δ value (A − B), shown as a second line
   // under the per-signal value.
@@ -3359,13 +3389,17 @@ function PlotArea(p: PlotAreaProps) {
                 </div>
                 <div className="plot-signal-readout">
                   <span className="plot-signal-value" title={valueTitle}>
-                    {fmtVal(v)}
-                    {s.unit ? ` ${s.unit}` : ""}
+                    {formatValueFor(key, v)}
+                    {/* Unit suffix is only meaningful for numeric
+                     * readouts — an enum row already self-labels via
+                     * `<label> (<raw>)` and tacking on a unit string
+                     * (often the empty string anyway) reads as noise. */}
+                    {!valueTables.has(key) && s.unit ? ` ${s.unit}` : ""}
                   </span>
                   {showAbDelta && (
                     <small className="plot-signal-delta" title="Δ value (cursor A − cursor B)">
                       Δ {fmtVal(deltaAbFor(key))}
-                      {s.unit ? ` ${s.unit}` : ""}
+                      {!valueTables.has(key) && s.unit ? ` ${s.unit}` : ""}
                     </small>
                   )}
                 </div>
