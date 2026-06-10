@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { decimatePoints, decodeSignalsSample, groupScaleRanges, mergeSeries, signalKey } from "./plotData";
+import {
+  decimatePoints,
+  decodeSignalsSample,
+  enumSegments,
+  groupScaleRanges,
+  mergeSeries,
+  signalKey,
+} from "./plotData";
 
 describe("mergeSeries", () => {
   it("returns an empty data set with no series", () => {
@@ -232,5 +239,48 @@ describe("groupScaleRanges", () => {
     );
     out.get("v1")!.hi = 99;
     expect(out.get("v2")).toEqual({ lo: 0, hi: 2 });
+  });
+});
+
+describe("enumSegments", () => {
+  it("returns empty for empty input", () => {
+    expect(enumSegments([], [])).toEqual([]);
+  });
+
+  it("collapses a constant series into one segment spanning t0..tN", () => {
+    expect(enumSegments([0, 1, 2, 3], [1, 1, 1, 1])).toEqual([
+      { t0: 0, tN: 3, v: 1 },
+    ]);
+  });
+
+  it("a transition starts a new segment", () => {
+    // 1@0..3, then 2@4..6
+    expect(enumSegments([0, 1, 2, 3, 4, 5, 6], [1, 1, 1, 1, 2, 2, 2])).toEqual([
+      { t0: 0, tN: 3, v: 1 },
+      { t0: 4, tN: 6, v: 2 },
+    ]);
+  });
+
+  it("a single-sample segment is preserved", () => {
+    expect(enumSegments([0, 1, 2], [1, 2, 1])).toEqual([
+      { t0: 0, tN: 0, v: 1 },
+      { t0: 1, tN: 1, v: 2 },
+      { t0: 2, tN: 2, v: 1 },
+    ]);
+  });
+
+  it("null samples break the run without emitting a label", () => {
+    // A gap should not get a labelled box; segments on either side
+    // do.
+    expect(enumSegments([0, 1, 2, 3], [1, null, null, 2])).toEqual([
+      { t0: 0, tN: 0, v: 1 },
+      { t0: 3, tN: 3, v: 2 },
+    ]);
+  });
+
+  it("tolerates mismatched array lengths by walking the shorter one", () => {
+    // Defensive: the renderer reads u.data[0] and u.data[1] which
+    // should always align, but a corrupt frame shouldn't crash.
+    expect(enumSegments([0, 1, 2, 3], [1, 1])).toEqual([{ t0: 0, tN: 1, v: 1 }]);
   });
 });

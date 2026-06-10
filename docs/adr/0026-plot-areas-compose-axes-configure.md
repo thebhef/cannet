@@ -158,6 +158,12 @@ below:
   in the target area.
 - **X-axis cursor labels** render the cursor's letter + time on every
   axis (used to only render on the bottom axis).
+- **Logic-analyzer lane overlays.** On an enum-only axis the stepped
+  line carries an opaque label box on each constant-value segment,
+  centred on the held value and tinted by the series colour. Pure
+  `enumSegments()` walks the (t, v) arrays; the draw hook then
+  reuses the cursor-label box style. Segments narrower than the
+  label width are skipped (the user can zoom in for those).
 
 What's still rough:
 
@@ -175,13 +181,11 @@ What's still rough:
   source it yet (each PlotArea queries `list_value_tables` for its
   signal subset; the panel level doesn't roll up that information).
   In practice today: an enum series in per-unit mode shares an axis
-  with anything else of the same unit. Switching to `individual`
-  puts each enum on its own axis and the existing per-area
-  enum-mode (stepped paths + symbolic ticks) activates as before.
-- **Logic-analyzer text-box overlays** (a translucent box per
-  constant-value segment showing the enum label) are not drawn yet;
-  the enum axis still uses the symbolic-y-tick rendering shipped
-  earlier. Tracked in `plans/backlog.md` under the plot panel.
+  with anything else of the same unit, so the logic-analyzer lane
+  overlay only activates in `individual` mode (or in a manual area
+  that holds a single enum signal). The fix is panel-level
+  enum-awareness fed into `deriveAxesForArea`'s `isEnum` slot —
+  tracked in `plans/backlog.md`.
 
 ## Consequences
 

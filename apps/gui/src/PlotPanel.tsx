@@ -12,7 +12,7 @@ import { useElementRegistry } from "./projectElements";
 import { useTrace } from "./trace";
 import { TraceControls } from "./TraceControls";
 import { useNotes } from "./notesContext";
-import { decodeSignalsSample, groupScaleRanges, mergeSeries, signalKey } from "./plotData";
+import { decodeSignalsSample, enumSegments, groupScaleRanges, mergeSeries, signalKey } from "./plotData";
 import { SourcesMenuSection } from "./SourcesPicker";
 import {
   DEFAULT_MEASUREMENTS,
@@ -2625,6 +2625,63 @@ function PlotArea(p: PlotAreaProps) {
               const yp = u.valToPos((lr.cursorYh1 + lr.cursorYh2) / 2, "y", true);
               if (yp > top && yp < top + height) {
                 chip(left + 40 * ratio, yp, `ΔH ${fmtVal(Math.abs(lr.cursorYh2 - lr.cursorYh1))}`, "#cbd5e1");
+              }
+            }
+            // Logic-analyzer lane (ADR 0026): on an enum-only axis,
+            // overlay an opaque label box on each constant-value
+            // segment of the (stepped) line. The line + symbolic
+            // y-axis ticks are still there; the boxes sit *in front*
+            // of the line so a glance reads "Idle ── Running ──"
+            // rather than just a step pattern. Only runs on the
+            // enum-mode uPlot (the construction effect rebuilds the
+            // instance when the value table resolves), so the cost
+            // on numeric axes is zero.
+            if (enumActiveAtConstruct && valueTableRef.current) {
+              const table = valueTableRef.current;
+              const labelFor = (raw: number): string => {
+                const found = table.find((r) => r.raw === Math.round(raw));
+                return found ? found.label : String(raw);
+              };
+              // Enum-mode areas hold exactly one signal, so its
+              // series sits at uPlot index 1. `u.data` is the
+              // AlignedData we just set — `setData(_, false)` keeps
+              // it stable.
+              const seriesIdx = 1;
+              const seriesOpt = u.series[seriesIdx];
+              const ts = u.data[0] as number[] | undefined;
+              const vs = u.data[seriesIdx] as (number | null)[] | undefined;
+              if (ts && vs && seriesOpt?.show !== false) {
+                const boxColor = primaryColorRef.current ?? AXIS_STROKE;
+                const segments = enumSegments(ts, vs);
+                const padX = 4 * ratio;
+                const h = 13 * ratio;
+                for (const seg of segments) {
+                  const x0 = u.valToPos(seg.t0, "x", true);
+                  const x1 = u.valToPos(seg.tN, "x", true);
+                  // Clip-trim against the visible plot region first:
+                  // a segment that extends beyond the canvas still
+                  // labels the visible portion, centred on what's on
+                  // screen rather than off-canvas.
+                  const visStart = Math.max(x0, left);
+                  const visEnd = Math.min(x1, left + width);
+                  if (visEnd <= visStart) continue;
+                  const lbl = labelFor(seg.v);
+                  const tw = ctx.measureText(lbl).width;
+                  // Skip a segment that the label wouldn't fit
+                  // into — overlaying a clipped label is worse than
+                  // none. The user can zoom in to see narrow ones.
+                  if (visEnd - visStart < tw + padX * 2) continue;
+                  const cx = (visStart + visEnd) / 2;
+                  // Vertically center on the held value, then clamp
+                  // into the plot region so a box near the canvas
+                  // edge doesn't half-clip off.
+                  const yRaw = u.valToPos(seg.v, "y", true);
+                  const cy = Math.min(
+                    top + height - h / 2 - 2 * ratio,
+                    Math.max(top + h / 2 + 2 * ratio, yRaw),
+                  );
+                  chip(cx, cy, lbl, boxColor);
+                }
               }
             }
             ctx.restore();

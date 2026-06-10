@@ -295,8 +295,14 @@ the re-sampling), Clear re-anchors what's plotted to "now".
   the signals it draws. The area-level chrome (filter editor,
   y-axis-mode selector itself, remove ×) appears only on the top
   derived axis so there's one source of truth per logical area.
-  (Enum break-out onto its own per-unit axis and the logic-analyzer
-  lane overlays are still pending — see `plans/backlog.md`.)
+  An enum-only axis renders as a **logic-analyzer lane**: the line
+  is stepped, the y-tick labels are symbolic (`<raw> "<label>"`),
+  and each held segment carries an opaque label box overlaid on
+  it (`Idle ── Running ──`). The lane activates whenever a single
+  enum signal sits on its own axis — i.e. an area with one enum
+  signal in any mode, or any enum that ends up alone under
+  `individual`. Enum break-out onto its own axis under `per-unit`
+  is still pending — see `plans/backlog.md`.
 - **Plot areas.** A plot panel is a **stack of plot areas** — it starts
   with one; **add plot area** appends more, all sharing one time axis,
   and they flex to fill the panel (one fills it; several split it). Each

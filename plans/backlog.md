@@ -143,16 +143,6 @@ trip over it.
   exercise the native dialog — confirm it opens on each shipping
   WebView (WebKitGTK / WKWebView / WebView2) next time the app is
   run by hand.
-- `[feat]` `cannet-gui` plot panel: **logic-analyzer text-box
-  overlays** on enum axes. ADR 0026's enum lane spec is the enum
-  plotted numerically with a high-opacity text box overlaid on each
-  constant-value segment showing the label. Today an enum axis
-  renders stepped paths + symbolic y-axis ticks (the pre-task-15
-  shape) — the segment-by-segment label boxes are still to do. The
-  hook is the existing `draw` callback in `PlotArea`'s uPlot opts;
-  walk each rendered segment of the enum series and overlay a
-  rounded box anchored to the segment's midpoint.
-
 ### Transmit panel
 
 - `[feat]` `cannet-dbc`: **parse more of the Vector generic (`Gen*`)

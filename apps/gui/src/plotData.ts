@@ -135,6 +135,34 @@ export function signalKey(
 }
 
 /**
+ * Walk a stepped enum series and return its constant-value segments,
+ * each as `(t0, tN, v)` — the first and last sample timestamps the
+ * value covers. Used by the plot panel's logic-analyzer lane (ADR
+ * 0026) to overlay a label box on each held segment.
+ *
+ * A `null` sample ends the current segment without starting a new
+ * one: when the source is sparse (e.g. a frame that didn't fire) the
+ * gap should not get a label.
+ */
+export function enumSegments(
+  ts: ReadonlyArray<number>,
+  vs: ReadonlyArray<number | null>,
+): Array<{ t0: number; tN: number; v: number }> {
+  const out: Array<{ t0: number; tN: number; v: number }> = [];
+  const n = Math.min(ts.length, vs.length);
+  if (n === 0) return out;
+  let runStart = 0;
+  for (let i = 1; i <= n; i++) {
+    const sameAsRun = i < n && vs[i] === vs[runStart];
+    if (sameAsRun) continue;
+    const v = vs[runStart];
+    if (v != null) out.push({ t0: ts[runStart], tN: ts[i - 1], v });
+    runStart = i;
+  }
+  return out;
+}
+
+/**
  * Unit-based y-scale grouping (ADR 0026): on an axis, series sharing
  * a unit share one y scale, and each unit group auto-scales
  * independently to fill the axis.
