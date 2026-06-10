@@ -107,6 +107,12 @@ import {
 } from "./keybindings";
 import { PaletteModal, type PaletteItem } from "./PaletteModal";
 import {
+  loadRecentCommands,
+  recordRecentCommand,
+  saveRecentCommands,
+  sortRecentFirst,
+} from "./recentCommands";
+import {
   PanelCommandsContext,
   createPanelCommandRegistry,
 } from "./panelCommands";
@@ -423,6 +429,11 @@ export function App() {
   // Which palette is open: the command palette (Mod+Shift+P) or
   // go-to-view (Mod+P).
   const [openPalette, setOpenPalette] = useState<"commands" | "goto" | null>(null);
+  // The last few commands run (MRU, capped — see recentCommands.ts);
+  // the command palette floats them to the top, VS Code-style.
+  const [recentCommands, setRecentCommands] = useState<string[]>(() =>
+    loadRecentCommands(localStorage),
+  );
   // Panel-local command implementations (plot fit / follow-live).
   const [panelCommands] = useState(createPanelCommandRegistry);
 
@@ -1525,6 +1536,7 @@ export function App() {
     "dbc.add": () => void handleAddDbc(),
     "connection.connect": () => void handleConnect(),
     "connection.disconnect": () => void handleDisconnect(),
+    "capture.clear": () => void handleClear(),
     "panel.add.trace": addTracePanel,
     "panel.add.plot": addPlotPanel,
     "panel.add.transmit": addTransmitPanel,
@@ -1540,7 +1552,18 @@ export function App() {
     "plot.followLive.enable": () => runFocusedPanelCommand("plot.followLive.enable"),
   };
   const runCommand = useCallback((id: string) => {
-    commandHandlersRef.current[id]?.();
+    const handler = commandHandlersRef.current[id];
+    if (!handler) return;
+    // The palette-opening commands aren't worth resurfacing at the
+    // top of the palette they open; everything else is remembered.
+    if (id !== "palette.show" && id !== "goto.view") {
+      setRecentCommands((current) => {
+        const next = recordRecentCommand(current, id);
+        saveRecentCommands(localStorage, next);
+        return next;
+      });
+    }
+    handler();
   }, []);
 
   const commandContext: CommandContext = useMemo(
@@ -1601,7 +1624,7 @@ export function App() {
   const commandPaletteItems: PaletteItem[] = useMemo(() => {
     if (openPalette !== "commands") return [];
     const isMac = isMacPlatform();
-    return commandsAvailableIn(COMMANDS, commandContext).map((c) => {
+    const items = commandsAvailableIn(COMMANDS, commandContext).map((c) => {
       const binding = PARSED_BINDINGS.find((b) => b.commandId === c.id);
       return {
         id: c.id,
@@ -1609,7 +1632,10 @@ export function App() {
         hint: binding ? formatChord(binding.chord, isMac) : c.category,
       };
     });
-  }, [openPalette, commandContext]);
+    // Recently-used first (the fzf ranking takes over once the user
+    // types — this orders only the unfiltered list).
+    return sortRecentFirst(items, recentCommands);
+  }, [openPalette, commandContext, recentCommands]);
   const gotoPaletteItems: PaletteItem[] = useMemo(() => {
     if (openPalette !== "goto") return [];
     const api = dockApiRef.current;

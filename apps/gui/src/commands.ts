@@ -55,6 +55,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "dbc.add", label: "Add DBC…", category: "File" },
   { id: "connection.connect", label: "Connect", category: "Connection" },
   { id: "connection.disconnect", label: "Disconnect", category: "Connection" },
+  { id: "capture.clear", label: "Clear capture", category: "Capture" },
   { id: "panel.add.trace", label: "Add trace panel", category: "Panels" },
   { id: "panel.add.plot", label: "Add plot panel", category: "Panels" },
   { id: "panel.add.transmit", label: "Add transmit panel", category: "Panels" },

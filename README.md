@@ -91,7 +91,8 @@ apps/
                      (unit-tested alongside). A command / hotkey
                      framework (`commands.ts`, `keybindings.ts`,
                      `PaletteModal.tsx` — ADR 0018) lifts every toolbar
-                     action into a `Ctrl/Cmd+Shift+P` command palette,
+                     action into a `Ctrl/Cmd+Shift+P` command palette
+                     (recently used commands float to the top),
                      adds `Ctrl/Cmd+P` go-to-view (open panels by
                      display name), and the plot-panel hotkeys `f`
                      (fit x axis) / `l` (follow live). Element display
