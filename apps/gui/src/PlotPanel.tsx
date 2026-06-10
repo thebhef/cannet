@@ -2677,7 +2677,11 @@ function PlotArea(p: PlotAreaProps) {
                 const bandBot = bandTop + bandH;
                 for (const seg of segments) {
                   const x0 = u.valToPos(seg.t0, "x", true);
-                  const x1 = u.valToPos(seg.tN, "x", true);
+                  // `tEnd` is the next-sample timestamp (where the
+                  // value changes), matching the stepped line's hold —
+                  // so the box reaches the visual transition instead
+                  // of cutting off at the last same-value sample.
+                  const x1 = u.valToPos(seg.tEnd, "x", true);
                   // Clip-trim against the visible plot region first:
                   // a segment extending past the canvas still labels
                   // the visible portion, centred on what's on screen

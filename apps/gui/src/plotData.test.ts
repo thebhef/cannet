@@ -247,40 +247,43 @@ describe("enumSegments", () => {
     expect(enumSegments([], [])).toEqual([]);
   });
 
-  it("collapses a constant series into one segment spanning t0..tN", () => {
+  it("a single-segment series ends at its last sample (no next sample to step to)", () => {
     expect(enumSegments([0, 1, 2, 3], [1, 1, 1, 1])).toEqual([
-      { t0: 0, tN: 3, v: 1 },
+      { t0: 0, tEnd: 3, v: 1 },
     ]);
   });
 
-  it("a transition starts a new segment", () => {
-    // 1@0..3, then 2@4..6
+  it("a transition extends the prior segment's tEnd to the transition timestamp", () => {
+    // 1 holds samples 0..3 (t=0..3); the value visibly switches at t=4
+    // so the box reaches t=4, not t=3. Then 2 holds samples 4..6 and
+    // ends at its last sample (no further transition).
     expect(enumSegments([0, 1, 2, 3, 4, 5, 6], [1, 1, 1, 1, 2, 2, 2])).toEqual([
-      { t0: 0, tN: 3, v: 1 },
-      { t0: 4, tN: 6, v: 2 },
+      { t0: 0, tEnd: 4, v: 1 },
+      { t0: 4, tEnd: 6, v: 2 },
     ]);
   });
 
-  it("a single-sample segment is preserved", () => {
+  it("single-sample segments still mark the next transition as tEnd", () => {
     expect(enumSegments([0, 1, 2], [1, 2, 1])).toEqual([
-      { t0: 0, tN: 0, v: 1 },
-      { t0: 1, tN: 1, v: 2 },
-      { t0: 2, tN: 2, v: 1 },
+      { t0: 0, tEnd: 1, v: 1 },
+      { t0: 1, tEnd: 2, v: 2 },
+      { t0: 2, tEnd: 2, v: 1 }, // last segment has no successor
     ]);
   });
 
   it("null samples break the run without emitting a label", () => {
-    // A gap should not get a labelled box; segments on either side
-    // do.
+    // A gap should not get a labelled box; the segments on either side
+    // do. The held value's tEnd reaches the gap's first timestamp
+    // (where the held value visually stops).
     expect(enumSegments([0, 1, 2, 3], [1, null, null, 2])).toEqual([
-      { t0: 0, tN: 0, v: 1 },
-      { t0: 3, tN: 3, v: 2 },
+      { t0: 0, tEnd: 1, v: 1 },
+      { t0: 3, tEnd: 3, v: 2 },
     ]);
   });
 
   it("tolerates mismatched array lengths by walking the shorter one", () => {
     // Defensive: the renderer reads u.data[0] and u.data[1] which
     // should always align, but a corrupt frame shouldn't crash.
-    expect(enumSegments([0, 1, 2, 3], [1, 1])).toEqual([{ t0: 0, tN: 1, v: 1 }]);
+    expect(enumSegments([0, 1, 2, 3], [1, 1])).toEqual([{ t0: 0, tEnd: 1, v: 1 }]);
   });
 });

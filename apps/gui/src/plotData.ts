@@ -136,9 +136,20 @@ export function signalKey(
 
 /**
  * Walk a stepped enum series and return its constant-value segments,
- * each as `(t0, tN, v)` — the first and last sample timestamps the
- * value covers. Used by the plot panel's logic-analyzer lane (ADR
- * 0026) to overlay a label box on each held segment.
+ * each as `(t0, tEnd, v)`:
+ *
+ * - `t0` is the timestamp of the first sample holding `v`.
+ * - `tEnd` is the timestamp at which the held value visually *ends*,
+ *   matching uPlot's stepped-line rendering — i.e. the timestamp of
+ *   the *next* sample (which is where the value changes), not the
+ *   last sample of the run. A stepped line holds a sample's value
+ *   forward until the next sample, so a box drawn `[t0, tEnd]` covers
+ *   exactly the visible held interval.
+ * - For the very last segment of the series there's no next sample;
+ *   `tEnd` falls back to the last sample's own timestamp.
+ *
+ * Used by the plot panel's logic-analyzer lane (ADR 0026) to overlay
+ * a label box on each held segment.
  *
  * A `null` sample ends the current segment without starting a new
  * one: when the source is sparse (e.g. a frame that didn't fire) the
@@ -147,8 +158,8 @@ export function signalKey(
 export function enumSegments(
   ts: ReadonlyArray<number>,
   vs: ReadonlyArray<number | null>,
-): Array<{ t0: number; tN: number; v: number }> {
-  const out: Array<{ t0: number; tN: number; v: number }> = [];
+): Array<{ t0: number; tEnd: number; v: number }> {
+  const out: Array<{ t0: number; tEnd: number; v: number }> = [];
   const n = Math.min(ts.length, vs.length);
   if (n === 0) return out;
   let runStart = 0;
@@ -156,7 +167,13 @@ export function enumSegments(
     const sameAsRun = i < n && vs[i] === vs[runStart];
     if (sameAsRun) continue;
     const v = vs[runStart];
-    if (v != null) out.push({ t0: ts[runStart], tN: ts[i - 1], v });
+    if (v != null) {
+      // Box extends to the next sample's timestamp (where the value
+      // actually changes) — matches the stepped line. Fall back to
+      // the last sample's own timestamp on the final segment.
+      const tEnd = i < n ? ts[i] : ts[i - 1];
+      out.push({ t0: ts[runStart], tEnd, v });
+    }
     runStart = i;
   }
   return out;
