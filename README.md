@@ -297,12 +297,17 @@ the re-sampling), Clear re-anchors what's plotted to "now".
   derived axis so there's one source of truth per logical area.
   An enum-only axis renders as a **logic-analyzer lane**: the line
   is stepped, the y-tick labels are symbolic (`<raw> "<label>"`),
-  and each held segment carries an opaque label box overlaid on
-  it (`Idle ── Running ──`). The lane activates whenever a single
-  enum signal sits on its own axis — i.e. an area with one enum
-  signal in any mode, or any enum that ends up alone under
-  `individual`. Enum break-out onto its own axis under `per-unit`
-  is still pending — see `plans/backlog.md`.
+  and each held segment carries an opaque label box, all sat in a
+  centered horizontal band down the middle of the plot
+  (`│ Idle │ Running │`). Decoupling the label band from the
+  value's y position means a value table with many entries still
+  gets readable labels rather than collapsing each label to a few
+  pixels — the line shows the held value, the ribbon shows the
+  label. The lane activates whenever a single enum signal sits on
+  its own axis — i.e. an area with one enum signal in any mode, or
+  any enum that ends up alone under `individual`. Enum break-out
+  onto its own axis under `per-unit` is still pending — see
+  `plans/backlog.md`.
 - **Plot areas.** A plot panel is a **stack of plot areas** — it starts
   with one; **add plot area** appends more, all sharing one time axis,
   and they flex to fill the panel (one fills it; several split it). Each

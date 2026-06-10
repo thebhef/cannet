@@ -50,11 +50,18 @@ auto behaviour). There is no fixed user-set `{min,max}` range; the old
 
 **Enum series render as a logic-analyzer lane when they have their own
 axis** (per-unit / individual): the enum is still plotted numerically
-— points honour the show-points control — with a high-opacity text box
-overlaid on each constant-value segment showing the enum label. Under
-unified mode an enum plots as a plain numeric line with no labels (a
-text box per overlaid enum would be noise). "Lane" is an axis *render
-style*, not a new structural level.
+— points honour the show-points control — with a high-opacity label
+box overlaid on each constant-value segment showing the enum label.
+The boxes sit in a **centered horizontal band** down the middle of
+the plot rather than tracking the held value's y position. A value
+table with many entries collapses per-value lanes to a few pixels;
+decoupling the label band from the value gives the labels all the
+room they need, while the stepped line still draws at the actual
+value so the user reads "what value" from line height and "which
+label" from the centered ribbon. Under unified mode an enum plots as
+a plain numeric line with no labels (a text box per overlaid enum
+would be noise). "Lane" is an axis *render style*, not a new
+structural level.
 
 **Each axis maps to one uPlot instance.** This keeps us consistent
 with [ADR 0007](0007-uplot-plot-renderer.md):

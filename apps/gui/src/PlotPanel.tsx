@@ -2654,21 +2654,27 @@ function PlotArea(p: PlotAreaProps) {
                 const boxColor = primaryColorRef.current ?? AXIS_STROKE;
                 const segments = enumSegments(ts, vs);
                 const padX = 4 * ratio;
-                // The enum y-scale is `[min(raw) - 0.5, max(raw) + 0.5]`
-                // (set in the resample's `setScale("y", …)`), so each
-                // raw value sits in a 1-unit *lane*: `v - 0.5` to
-                // `v + 0.5`. The label box fills that lane vertically
-                // — so it reads as the held row in a logic-analyzer
-                // strip, not as a small chip floating on the line —
-                // and spans the segment's full *visible* width
-                // horizontally, so a 5-second held value paints a
-                // 5-second-wide box rather than a text-width chip.
-                // A half-CSS-pixel inter-lane gap (1 CSS pixel between
-                // adjacent boxes) keeps the rows visually distinct
-                // without sacrificing fill — the user feedback was
-                // "more vertical space", so we go right up to the
-                // edge of the next lane.
-                const lanePad = 0.5 * ratio;
+                // All label boxes sit in one **centered horizontal
+                // band** down the middle of the plot, regardless of
+                // the held value. Tracking each value's y-position
+                // (the per-value lane scheme) collapsed under tall
+                // value tables — twelve enum values on a small canvas
+                // left each lane a few pixels tall. Decoupling label
+                // position from value gives the labels all the room
+                // they need; the stepped line still draws at the
+                // actual value, so the user reads "what" from the
+                // line height and "which value name" from the
+                // centered ribbon. (The line is visible above and
+                // below the ribbon and obscured under it — same
+                // logic-analyzer style.)
+                //
+                // Band sized at the larger of ~22 CSS px and 55% of
+                // the plot height, centered. The minimum keeps very
+                // small panels legible; the fraction lets a tall
+                // panel breathe.
+                const bandH = Math.max(22 * ratio, height * 0.55);
+                const bandTop = top + (height - bandH) / 2;
+                const bandBot = bandTop + bandH;
                 for (const seg of segments) {
                   const x0 = u.valToPos(seg.t0, "x", true);
                   const x1 = u.valToPos(seg.tN, "x", true);
@@ -2682,37 +2688,22 @@ function PlotArea(p: PlotAreaProps) {
                   if (segW <= 0) continue;
                   const lbl = labelFor(seg.v);
                   const tw = ctx.measureText(lbl).width;
-                  // Skip only when the *label* literally won't fit —
-                  // a thin lane still gets a coloured band so the
-                  // held interval is visible even if the text can't
-                  // be drawn. (Previously a `boxH < 8 * ratio` skip
-                  // ate every segment on a small panel because lane
-                  // height there fell below the 16-device-pixel
-                  // threshold — the user reported no labels at all
-                  // post-vertical-fill change.)
+                  // A thin segment still gets a coloured band so the
+                  // held interval is visible even if the label text
+                  // can't fit.
                   const labelFits = segW >= tw + padX * 2;
-                  // Lane bounds in canvas pixels. Note `valToPos`
-                  // grows downward for canvas y, so `+0.5` data ⇒
-                  // smaller pixel y (top of the lane).
-                  const laneTop = u.valToPos(seg.v + 0.5, "y", true);
-                  const laneBot = u.valToPos(seg.v - 0.5, "y", true);
-                  // Clamp into the plot region.
-                  const boxTop = Math.max(top + lanePad, laneTop + lanePad);
-                  const boxBot = Math.min(top + height - lanePad, laneBot - lanePad);
-                  const boxH = boxBot - boxTop;
-                  if (boxH <= 0) continue;
                   // Opaque fill so the stepped line underneath is
                   // visually replaced by the labelled row; coloured
                   // border + centred text in the series colour.
                   ctx.fillStyle = "#0a0d0f";
-                  ctx.fillRect(visStart, boxTop, segW, boxH);
+                  ctx.fillRect(visStart, bandTop, segW, bandH);
                   ctx.strokeStyle = boxColor;
-                  ctx.strokeRect(visStart + 0.5, boxTop + 0.5, segW - 1, boxH - 1);
+                  ctx.strokeRect(visStart + 0.5, bandTop + 0.5, segW - 1, bandH - 1);
                   if (labelFits) {
                     ctx.fillStyle = boxColor;
                     ctx.textAlign = "center";
                     ctx.textBaseline = "middle";
-                    ctx.fillText(lbl, visStart + segW / 2, boxTop + boxH / 2);
+                    ctx.fillText(lbl, visStart + segW / 2, (bandTop + bandBot) / 2);
                   }
                 }
               }

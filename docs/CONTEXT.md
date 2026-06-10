@@ -109,10 +109,14 @@ _Avoid_: "plot area" for a single axis; "axis" for a scale or ruler.
 **Logic-analyzer lane**:
 The axis render style for an enum series: the enum is plotted
 numerically (points honour the show-points control) with a
-high-opacity text box overlaid on each constant-value segment
-showing the enum label. Used when an enum series has its own axis
-(per-unit / individual modes); under unified mode an enum plots as a
-plain numeric line with no labels.
+high-opacity label box overlaid on each constant-value segment
+showing the enum label. The boxes sit in a centered horizontal band
+down the middle of the plot (decoupled from the held value's y
+position so a value table with many entries doesn't collapse the
+labels to a few pixels); the stepped line still draws at the actual
+value. Used when an enum series has its own axis (per-unit /
+individual modes); under unified mode an enum plots as a plain
+numeric line with no labels.
 
 **Scale**:
 The value dimension of an axis — its **y scale** (signal values) or
