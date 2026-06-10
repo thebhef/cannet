@@ -41,6 +41,7 @@ mod ipc;
 mod local_buses;
 mod notes;
 mod project;
+mod rbs;
 mod signal_cache;
 mod sidecar;
 mod signal_sampler;
@@ -248,6 +249,11 @@ struct AppState {
     /// `start`/`stop_periodic_transmit` push schedule changes through
     /// it; the thread itself is spawned in `run`'s `setup`.
     transmit_scheduler: transmit_scheduler::TransmitScheduler,
+    /// Rest-of-bus-simulation state (ADR 0028): loaded `.cannet_rbs`
+    /// documents per element, the project's logical-bus name map, and
+    /// the global kill-switch. Lock order: `rbs` before `databases`
+    /// before `transmit_frames` before `remote_sessions`.
+    rbs: Mutex<rbs::RbsRuntime>,
 }
 
 /// Boot the Tauri runtime.
@@ -280,6 +286,7 @@ pub fn run() {
             local_buses: local_buses::LocalBusRegistry::default(),
             transmit_frames: Mutex::new(transmit_frames::TransmitFrameRegistry::default()),
             transmit_scheduler,
+            rbs: Mutex::new(rbs::RbsRuntime::default()),
         })
         .manage(sidecar::SidecarState::default())
         .manage(interfaces::InterfacesState::default())
@@ -334,6 +341,20 @@ pub fn run() {
             attach_local_bus_bridge,
             detach_local_bus_bridge,
             list_local_bus_bridges,
+            rbs::rbs_load,
+            rbs::rbs_new,
+            rbs::rbs_unload,
+            rbs::rbs_sync_project_buses,
+            rbs::rbs_set_run,
+            rbs::rbs_set_kill_switch,
+            rbs::rbs_set_enabled,
+            rbs::rbs_set_period,
+            rbs::rbs_set_signal,
+            rbs::rbs_set_calc,
+            rbs::rbs_save,
+            rbs::rbs_dirty,
+            rbs::rbs_view,
+            rbs::rbs_crc_algorithms,
         ])
         .setup(move |app| {
             // Make sure the main window has the id our capabilities expect.
@@ -923,7 +944,7 @@ fn add_dbc(
             w.watch_dbc(std::path::Path::new(&path));
         }
     }
-    refresh_calc_resolutions(&app);
+    rbs::refresh_all_elements(&app);
     Ok(dbc_list(state.inner()))
 }
 
@@ -946,7 +967,7 @@ fn set_dbc_buses(
             slot.buses = buses;
         }
     }
-    refresh_calc_resolutions(&app);
+    rbs::refresh_all_elements(&app);
     dbc_list(state.inner())
 }
 
@@ -971,7 +992,7 @@ fn remove_dbc(app: AppHandle, state: State<'_, AppState>, path: String) -> Vec<D
         {
             w.unwatch_dbc(std::path::Path::new(&path));
         }
-        refresh_calc_resolutions(&app);
+        rbs::refresh_all_elements(&app);
     }
     dbc_list(state.inner())
 }
@@ -989,7 +1010,7 @@ fn clear_dbcs(app: AppHandle, state: State<'_, AppState>) {
     };
     if count > 0 {
         sys_info!(&app, "dbc", "cleared {count} loaded DBC(s)");
-        refresh_calc_resolutions(&app);
+        rbs::refresh_all_elements(&app);
     }
     if let Some(w) = state
         .dbc_watcher
@@ -2690,7 +2711,7 @@ struct BusRoute {
 /// `channel_to_bus` lists this bus id, and return the resolved
 /// route. The first-match-wins semantics matches the current
 /// project-side rule of "one interface binding per bus".
-fn resolve_bus_route(
+pub(crate) fn resolve_bus_route(
     sessions: &std::collections::HashMap<String, RemoteSession>,
     bus_id: &str,
 ) -> Option<BusRoute> {
@@ -3104,7 +3125,7 @@ mod tests {
         )
     }
 
-    fn test_state() -> AppState {
+    pub(crate) fn test_state() -> AppState {
         AppState {
             databases: Mutex::new(Vec::new()),
             remote_sessions: Mutex::new(HashMap::new()),
@@ -3119,10 +3140,11 @@ mod tests {
             // makes `start`/`stop` best-effort no-ops, which is fine —
             // the registry's `running` state is what the tests assert.
             transmit_scheduler: transmit_scheduler::channel().0,
+            rbs: Mutex::new(rbs::RbsRuntime::default()),
         }
     }
 
-    fn loaded(path: &str, dbc_text: &str) -> LoadedDbc {
+    pub(crate) fn loaded(path: &str, dbc_text: &str) -> LoadedDbc {
         LoadedDbc {
             path: path.into(),
             db: Database::parse(dbc_text).expect("test DBC parses"),

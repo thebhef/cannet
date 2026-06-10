@@ -272,6 +272,31 @@ impl TransmitFrameRegistry {
             .collect()
     }
 
+    /// Ids of every entry owned by RBS element `element`, in pool
+    /// order — the element's teardown / reconciliation set.
+    #[must_use]
+    pub fn rbs_row_ids(&self, element: &str) -> Vec<String> {
+        self.entries
+            .iter()
+            .filter(|e| matches!(&e.frame.source, TransmitSource::Rbs(el) if el == element))
+            .map(|e| e.frame.id.clone())
+            .collect()
+    }
+
+    /// The current payload buffer of `id` (any provenance) — what the
+    /// RBS view renders as the live bytes.
+    #[must_use]
+    pub fn request_data(&self, id: &str) -> Option<Vec<u8>> {
+        self.position(id)
+            .map(|i| self.entries[i].frame.request.data.clone())
+    }
+
+    /// Whether `id` is currently marked running (scheduled).
+    #[must_use]
+    pub fn is_running(&self, id: &str) -> bool {
+        self.position(id).is_some_and(|i| self.entries[i].running)
+    }
+
     /// Insert a new message or update an existing one in place. If the
     /// update parks the message (`Manual` mode or `cycle_ms == 0`), it
     /// is marked stopped; the scheduler drops it on its next tick (the

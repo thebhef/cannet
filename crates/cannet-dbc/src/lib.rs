@@ -23,7 +23,7 @@ use cannet_core::CanFrame;
 use can_dbc::{
     AttributeDefinition, AttributeValue, AttributeValueType, ByteOrder as CanDbcByteOrder,
     Comment, Dbc, MessageId, MultiplexIndicator, NumericValue, Signal, SignalExtendedValueType,
-    ValueType,
+    Transmitter, ValueType,
 };
 
 /// A parsed DBC database, indexed for fast frame lookup.
@@ -71,6 +71,10 @@ struct MessageEntry {
     /// the `BA_DEF_` label list; STRING values pass through verbatim.
     /// `None` when the attribute is absent.
     gen_msg_send_type: Option<String>,
+    /// The `BO_` line's transmitting node, or `None` for the
+    /// `Vector__XXX` "no sender" placeholder. The RBS panel groups
+    /// messages per ECU by this.
+    transmitter: Option<String>,
     /// `BA_ "<name>" BO_ <id> <value>` attribute values targeted at
     /// this message, sorted by attribute name. Values are stringified
     /// up front because the panel both displays them and searches
@@ -213,6 +217,10 @@ impl Database {
             let brs = is_fd && message_brs(&dbc, msg.id);
             let gen_msg_cycle_time_ms = message_cycle_time_ms(&dbc, msg.id);
             let gen_msg_send_type = message_send_type(&dbc, msg.id, send_type_labels);
+            let transmitter = match &msg.transmitter {
+                Transmitter::NodeName(name) => Some(name.clone()),
+                Transmitter::VectorXXX => None,
+            };
             let comment = message_comments.get(&msg.id).cloned().unwrap_or_default();
             let attributes = message_attributes.remove(&msg.id).unwrap_or_default();
             let calc_fields = collect_calc_fields(&name, &signals, &mut warnings);
@@ -224,6 +232,7 @@ impl Database {
                 gen_msg_cycle_time_ms,
                 comment,
                 gen_msg_send_type,
+                transmitter,
                 attributes,
                 calc_fields,
                 signals,
@@ -399,6 +408,7 @@ impl Database {
             brs: entry.brs,
             gen_msg_cycle_time_ms: entry.gen_msg_cycle_time_ms,
             gen_msg_send_type: entry.gen_msg_send_type.clone(),
+            transmitter: entry.transmitter.clone(),
             uses_extended_mux,
             calc_fields: entry.calc_fields.clone(),
             signals,
@@ -1344,6 +1354,9 @@ pub struct MessageDescriptor {
     /// (ENUM values mapped through the `BA_DEF_` label list, STRING
     /// values verbatim), or `None` when absent.
     pub gen_msg_send_type: Option<String>,
+    /// The `BO_` line's transmitting node, or `None` for the
+    /// `Vector__XXX` "no sender" placeholder.
+    pub transmitter: Option<String>,
     /// `true` if any signal in this message is
     /// [`SignalMux::MultiplexorAndMultiplexed`] (a "sub-mux" /
     /// extended multiplexing arm). The transmit panel treats these as
@@ -2564,6 +2577,7 @@ BA_ "GenSigStartValue" SG_ 291 Volts 1250;
         let desc = db.describe_message(id).unwrap();
         assert_eq!(desc.gen_msg_send_type.as_deref(), Some("Cyclic"));
         assert_eq!(desc.gen_msg_cycle_time_ms, Some(100));
+        assert_eq!(desc.transmitter.as_deref(), Some("ECU2"));
         let contactor = desc.signals.iter().find(|s| s.name == "ContactorReq").unwrap();
         assert_eq!(contactor.start_value_raw, Some(2.0));
     }
