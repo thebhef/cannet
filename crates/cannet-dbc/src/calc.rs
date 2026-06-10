@@ -429,6 +429,173 @@ impl ResolvedCalculatedFields {
     }
 }
 
+/// Parse a `CannetCounter` DBC attribute value — a `key=value;`
+/// one-liner, e.g. `increment=1;rollover=15` (ADR 0027). The attribute
+/// sits *on* its destination signal, so `signal` is the carrying
+/// signal's name. Both keys are optional (defaults: increment 1,
+/// rollover at the signal's width); unknown or duplicate keys are
+/// errors so a typo doesn't silently misconfigure.
+pub fn parse_counter_attribute(signal: &str, text: &str) -> Result<CounterConfig, String> {
+    let mut config = CounterConfig::new(signal);
+    for (key, value) in key_value_pairs(text)? {
+        match key {
+            "increment" => config.increment = parse_number(value)?,
+            "rollover" => config.rollover = Some(parse_number(value)?),
+            other => return Err(format!("unknown CannetCounter key \"{other}\"")),
+        }
+    }
+    Ok(config)
+}
+
+/// Parse a `CannetCrc` DBC attribute value (ADR 0027). Two forms,
+/// mutually exclusive:
+///
+/// - named: `alg=CRC-8/SAE-J1850;range=0:56;prefix=A3`
+/// - raw Rocksoft: `width=8;poly=0x1D;init=0xFF;refin=0;refout=0;xorout=0xFF;range=0:56`
+///
+/// `range` (bits, `start:length`) is required. `prefix` is hex bytes.
+/// Raw form requires `width` and `poly`; `init` / `xorout` default 0,
+/// `refin` / `refout` default false.
+pub fn parse_crc_attribute(signal: &str, text: &str) -> Result<CrcConfig, String> {
+    let mut alg: Option<String> = None;
+    let mut width: Option<u64> = None;
+    let mut poly: Option<u64> = None;
+    let mut init: u64 = 0;
+    let mut refin = false;
+    let mut refout = false;
+    let mut xorout: u64 = 0;
+    let mut range: Option<(u32, u32)> = None;
+    let mut prefix: Vec<u8> = Vec::new();
+    let mut raw_keys_seen = false;
+
+    for (key, value) in key_value_pairs(text)? {
+        match key {
+            "alg" => alg = Some(value.to_string()),
+            "width" => {
+                width = Some(parse_number(value)?);
+                raw_keys_seen = true;
+            }
+            "poly" => {
+                poly = Some(parse_number(value)?);
+                raw_keys_seen = true;
+            }
+            "init" => {
+                init = parse_number(value)?;
+                raw_keys_seen = true;
+            }
+            "refin" => {
+                refin = parse_bool(value)?;
+                raw_keys_seen = true;
+            }
+            "refout" => {
+                refout = parse_bool(value)?;
+                raw_keys_seen = true;
+            }
+            "xorout" => {
+                xorout = parse_number(value)?;
+                raw_keys_seen = true;
+            }
+            "range" => range = Some(parse_range(value)?),
+            "prefix" => prefix = parse_hex_bytes(value)?,
+            other => return Err(format!("unknown CannetCrc key \"{other}\"")),
+        }
+    }
+
+    let algorithm = match (alg, raw_keys_seen) {
+        (Some(_), true) => {
+            return Err("alg and raw CRC parameters are mutually exclusive".into());
+        }
+        (Some(name), false) => CrcAlgorithm::Named(name),
+        (None, _) => {
+            let width = width.ok_or("raw CRC parameters require width")?;
+            let width =
+                u8::try_from(width).map_err(|_| format!("width {width} out of range"))?;
+            let poly = poly.ok_or("raw CRC parameters require poly")?;
+            CrcAlgorithm::Raw(RawCrcParams {
+                width,
+                poly,
+                init,
+                refin,
+                refout,
+                xorout,
+            })
+        }
+    };
+    let range_bits = range.ok_or("CannetCrc requires range=start:length")?;
+    Ok(CrcConfig {
+        signal: signal.to_string(),
+        algorithm,
+        range_bits,
+        prefix,
+    })
+}
+
+/// Split a `key=value;key=value` one-liner. Trailing `;` and
+/// whitespace around keys / values are tolerated; duplicate keys are
+/// an error.
+fn key_value_pairs(text: &str) -> Result<Vec<(&str, &str)>, String> {
+    let mut pairs: Vec<(&str, &str)> = Vec::new();
+    for segment in text.split(';') {
+        let segment = segment.trim();
+        if segment.is_empty() {
+            continue;
+        }
+        let (key, value) = segment
+            .split_once('=')
+            .ok_or_else(|| format!("expected key=value, got \"{segment}\""))?;
+        let (key, value) = (key.trim(), value.trim());
+        if pairs.iter().any(|(k, _)| *k == key) {
+            return Err(format!("duplicate key \"{key}\""));
+        }
+        pairs.push((key, value));
+    }
+    Ok(pairs)
+}
+
+/// Parse an unsigned number, decimal or `0x` hex.
+fn parse_number<T>(text: &str) -> Result<T, String>
+where
+    T: TryFrom<u64>,
+{
+    let parsed = if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+        u64::from_str_radix(hex, 16)
+    } else {
+        text.parse::<u64>()
+    }
+    .map_err(|_| format!("invalid number \"{text}\""))?;
+    T::try_from(parsed).map_err(|_| format!("number {parsed} out of range"))
+}
+
+fn parse_bool(text: &str) -> Result<bool, String> {
+    match text {
+        "0" | "false" => Ok(false),
+        "1" | "true" => Ok(true),
+        other => Err(format!("invalid boolean \"{other}\" (use 0/1)")),
+    }
+}
+
+/// `start:length`, both in bits.
+fn parse_range(text: &str) -> Result<(u32, u32), String> {
+    let (start, length) = text
+        .split_once(':')
+        .ok_or_else(|| format!("invalid range \"{text}\" (use start:length)"))?;
+    Ok((parse_number(start.trim())?, parse_number(length.trim())?))
+}
+
+/// An even-length hex string as bytes, e.g. `0FA3` → `[0x0F, 0xA3]`.
+fn parse_hex_bytes(text: &str) -> Result<Vec<u8>, String> {
+    if text.is_empty() || !text.len().is_multiple_of(2) {
+        return Err(format!("invalid hex prefix \"{text}\" (need full bytes)"));
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&text[i..i + 2], 16)
+                .map_err(|_| format!("invalid hex prefix \"{text}\""))
+        })
+        .collect()
+}
+
 /// Intern a raw parameter set as a `&'static Algorithm<u64>` (the
 /// `crc` crate's constructors require `'static`). Each *distinct*
 /// parameter set is leaked exactly once and reused thereafter, so
@@ -970,6 +1137,100 @@ BO_ 293 Wide: 8 ECU1
                 .unwrap_err(),
             CalcFieldError::MessageNotFound
         );
+    }
+
+    #[test]
+    fn counter_attribute_parses_with_defaults_and_rejects_typos() {
+        assert_eq!(
+            parse_counter_attribute("AliveCtr", "increment=1;rollover=15"),
+            Ok(CounterConfig {
+                signal: "AliveCtr".into(),
+                increment: 1,
+                rollover: Some(15),
+            })
+        );
+        // Empty segments / trailing semicolon / whitespace tolerated;
+        // omitted keys keep their defaults.
+        assert_eq!(
+            parse_counter_attribute("A", " rollover = 7 ; "),
+            Ok(CounterConfig {
+                signal: "A".into(),
+                increment: 1,
+                rollover: Some(7),
+            })
+        );
+        assert_eq!(parse_counter_attribute("A", ""), Ok(CounterConfig::new("A")));
+        assert!(parse_counter_attribute("A", "increment=1;increment=2").is_err());
+        assert!(parse_counter_attribute("A", "rolover=15").is_err());
+        assert!(parse_counter_attribute("A", "increment=banana").is_err());
+        assert!(parse_counter_attribute("A", "increment").is_err());
+    }
+
+    #[test]
+    fn crc_attribute_parses_named_and_raw_forms() {
+        assert_eq!(
+            parse_crc_attribute("Crc8", "alg=CRC-8/SAE-J1850;range=0:56;prefix=A3"),
+            Ok(CrcConfig {
+                signal: "Crc8".into(),
+                algorithm: CrcAlgorithm::Named("CRC-8/SAE-J1850".into()),
+                range_bits: (0, 56),
+                prefix: vec![0xA3],
+            })
+        );
+        assert_eq!(
+            parse_crc_attribute(
+                "Crc8",
+                "width=8;poly=0x1D;init=0xFF;refin=0;refout=0;xorout=0xFF;range=0:56"
+            ),
+            Ok(CrcConfig {
+                signal: "Crc8".into(),
+                algorithm: CrcAlgorithm::Raw(RawCrcParams {
+                    width: 8,
+                    poly: 0x1D,
+                    init: 0xFF,
+                    refin: false,
+                    refout: false,
+                    xorout: 0xFF,
+                }),
+                range_bits: (0, 56),
+                prefix: vec![],
+            })
+        );
+        // Raw defaults: init/xorout 0, refin/refout false.
+        assert_eq!(
+            parse_crc_attribute("C", "width=16;poly=0x1021;range=8:16;prefix=0FA3"),
+            Ok(CrcConfig {
+                signal: "C".into(),
+                algorithm: CrcAlgorithm::Raw(RawCrcParams {
+                    width: 16,
+                    poly: 0x1021,
+                    init: 0,
+                    refin: false,
+                    refout: false,
+                    xorout: 0,
+                }),
+                range_bits: (8, 16),
+                prefix: vec![0x0F, 0xA3],
+            })
+        );
+    }
+
+    #[test]
+    fn crc_attribute_rejects_mixed_missing_and_malformed() {
+        // alg XOR raw params.
+        assert!(parse_crc_attribute("C", "alg=CRC-8/AUTOSAR;width=8;range=0:56").is_err());
+        // range is required.
+        assert!(parse_crc_attribute("C", "alg=CRC-8/AUTOSAR").is_err());
+        // Raw form requires width and poly.
+        assert!(parse_crc_attribute("C", "width=8;range=0:56").is_err());
+        assert!(parse_crc_attribute("C", "poly=0x1D;range=0:56").is_err());
+        // Malformed range / prefix / bool.
+        assert!(parse_crc_attribute("C", "alg=X;range=0-56").is_err());
+        assert!(parse_crc_attribute("C", "alg=X;range=0:56;prefix=A").is_err());
+        assert!(parse_crc_attribute("C", "alg=X;range=0:56;prefix=ZZ").is_err());
+        assert!(parse_crc_attribute("C", "width=8;poly=1;refin=yes;range=0:56").is_err());
+        // Unknown key.
+        assert!(parse_crc_attribute("C", "alg=X;range=0:56;pfx=A3").is_err());
     }
 
     /// A big-endian destination's occupied bytes are walked Motorola-

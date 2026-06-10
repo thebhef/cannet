@@ -69,6 +69,13 @@ BO_ 768 AdasState: 32 ECU2
  SG_ TargetDistance6 : 104|16@1- (0.01,0) [-327.68|327.67] "m" GW
  SG_ TargetDistance7 : 120|16@1- (0.01,0) [-327.68|327.67] "m" GW
 
+BO_ 1042 BmsCommand: 8 ECU2
+ SG_ CmdMode : 0|8@1+ (1,0) [0|255] "" GW
+ SG_ TargetCurrent : 8|16@1- (0.05,0) [-1638.4|1638.35] "A" GW
+ SG_ ContactorReq : 24|2@1+ (1,0) [0|3] "" GW
+ SG_ AliveCtr : 48|4@1+ (1,0) [0|15] "" GW
+ SG_ Crc8 : 56|8@1+ (1,0) [0|255] "" GW
+
 CM_ BO_ 256 "Periodic vehicle dynamics, 50 ms cadence on classic CAN, standard 11-bit ID.";
 CM_ BO_ 2566865125 "Battery diagnostic block, 100 ms cadence on classic CAN, extended 29-bit ID.";
 CM_ BO_ 512 "Multiplexed sensor block, 20 ms cadence on classic CAN, four selectable signal sets.";
@@ -79,14 +86,30 @@ CM_ SG_ 256 GearLever "Discrete gear position. Decode via VAL_ table.";
 CM_ SG_ 512 SensorId "Multiplexor selector. 0=Temp, 1=Pressure, 2=Humidity, 3=Accel.";
 CM_ SG_ 2566876178 Latitude "IEEE-754 32-bit float, degrees.";
 CM_ SG_ 2566876178 Longitude "IEEE-754 32-bit float, degrees.";
+CM_ BO_ 1042 "E2E-protected command frame: AliveCtr rolls 0-15 each send, Crc8 is CRC-8/SAE-J1850 over bytes 0-6 prefixed with Data ID 0xA3 (ADR 0027 calculated fields).";
 
 BA_DEF_ BO_ "GenMsgCycleTime" INT 0 100000;
+BA_DEF_ BO_ "GenMsgSendType" ENUM "Cyclic","OnEvent","CyclicIfActive","NoMsgSendType";
+BA_DEF_ SG_ "GenSigStartValue" FLOAT 0 100000;
+BA_DEF_ SG_ "CannetCounter" STRING ;
+BA_DEF_ SG_ "CannetCrc" STRING ;
 BA_DEF_DEF_ "GenMsgCycleTime" 0;
+BA_DEF_DEF_ "GenMsgSendType" "NoMsgSendType";
+BA_DEF_DEF_ "GenSigStartValue" 0;
+BA_DEF_DEF_ "CannetCounter" "";
+BA_DEF_DEF_ "CannetCrc" "";
 BA_ "GenMsgCycleTime" BO_ 256 50;
 BA_ "GenMsgCycleTime" BO_ 768 10;
+BA_ "GenMsgCycleTime" BO_ 1042 100;
+BA_ "GenMsgSendType" BO_ 1042 0;
+BA_ "GenSigStartValue" SG_ 1042 CmdMode 1;
+BA_ "GenSigStartValue" SG_ 1042 ContactorReq 2;
+BA_ "CannetCounter" SG_ 1042 AliveCtr "increment=1;rollover=15";
+BA_ "CannetCrc" SG_ 1042 Crc8 "alg=CRC-8/SAE-J1850;range=0:56;prefix=A3";
 
 VAL_ 256 GearLever 0 "P" 1 "R" 2 "N" 3 "D" 4 "S" 5 "L" 6 "Manual" 7 "Reserved";
 VAL_ 512 SensorId 0 "Temp" 1 "Pressure" 2 "Humidity" 3 "Accel";
+VAL_ 1042 ContactorReq 0 "Open" 1 "Precharge" 2 "Closed" 3 "Fault";
 
 SIG_VALTYPE_ 2566876178 Latitude : 1;
 SIG_VALTYPE_ 2566876178 Longitude : 1;
