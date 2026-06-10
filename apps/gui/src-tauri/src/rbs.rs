@@ -209,12 +209,14 @@ pub fn format_message_key(id: u32, extended: bool) -> String {
 // Runtime state
 // ---------------------------------------------------------------------
 
-/// One loaded RBS element's host state: the file path, the in-memory
-/// document (the override source of truth), the dirty flag, and the
-/// element's Run flag (mirrored from the project element so the host
-/// can schedule without the frontend awake).
+/// One loaded RBS element's host state: the file path (`None` until
+/// the config is first saved — a fresh element lives entirely in
+/// memory), the in-memory document (the override source of truth),
+/// the dirty flag, and the element's Run flag (mirrored from the
+/// project element so the host can schedule without the frontend
+/// awake).
 pub struct RbsElementState {
-    pub path: String,
+    pub path: Option<String>,
     pub file: RbsFile,
     pub dirty: bool,
     pub run: bool,
@@ -552,7 +554,7 @@ pub fn rbs_load(
         let run = rbs.elements.get(&element_id).is_some_and(|e| e.run);
         rbs.elements.insert(
             element_id.clone(),
-            RbsElementState { path: path.clone(), file, dirty: false, run },
+            RbsElementState { path: Some(path.clone()), file, dirty: false, run },
         );
     }
     sys_info!(&app, "rbs", "loaded RBS config {path}");
@@ -560,32 +562,37 @@ pub fn rbs_load(
     Ok(())
 }
 
-/// Create a fresh, empty `.cannet_rbs` at `path` and load it for the
-/// element. Fails if the file already exists (open it instead).
+/// A fresh, file-less default config: every current project bus is
+/// pre-added (the panel then lists each bus's DBC tree), nothing is
+/// enabled, no overrides. What [`rbs_init`] seeds.
+fn seeded_file(project_buses: &[(String, String)]) -> RbsFile {
+    let mut file = RbsFile::new();
+    for (_, name) in project_buses {
+        file.buses.insert(name.clone(), RbsBus::new());
+    }
+    file
+}
+
+/// Ensure an element has host state. A fresh RBS element needs no
+/// file: it starts as an in-memory config pre-seeded with the
+/// project's current logical buses, and only touches disk when the
+/// user saves (`rbs_save` / Save All prompt for a path). A no-op for
+/// an element that's already loaded.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn rbs_new(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    element_id: String,
-    path: String,
-) -> Result<(), String> {
-    if std::path::Path::new(&path).exists() {
-        return Err(format!("{path} already exists"));
-    }
-    let file = RbsFile::new();
-    let text = serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?;
-    std::fs::write(&path, text).map_err(|e| format!("failed to write {path}: {e}"))?;
+pub fn rbs_init(app: AppHandle, state: State<'_, AppState>, element_id: String) {
     {
         let mut rbs = state.rbs.lock().expect("rbs mutex poisoned");
+        if rbs.elements.contains_key(&element_id) {
+            return;
+        }
+        let file = seeded_file(&rbs.project_buses);
         rbs.elements.insert(
             element_id.clone(),
-            RbsElementState { path: path.clone(), file, dirty: false, run: false },
+            RbsElementState { path: None, file, dirty: false, run: false },
         );
     }
-    sys_info!(&app, "rbs", "created RBS config {path}");
     refresh_element(&app, &element_id);
-    Ok(())
 }
 
 /// Tear down an element's rows (element removed / project closing).
@@ -830,7 +837,9 @@ pub fn rbs_set_calc(
 }
 
 /// Write an element's document back to its file (pretty-printed) and
-/// clear the dirty flag.
+/// clear the dirty flag. Errors when the element has never been
+/// saved — the caller routes through [`rbs_save_as`] with a
+/// user-picked path in that case.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub fn rbs_save(
@@ -838,28 +847,66 @@ pub fn rbs_save(
     state: State<'_, AppState>,
     element_id: String,
 ) -> Result<(), String> {
-    let (path, text) = {
+    let path = {
+        let rbs = state.rbs.lock().expect("rbs mutex poisoned");
+        rbs.elements
+            .get(&element_id)
+            .ok_or_else(|| format!("no RBS element {element_id}"))?
+            .path
+            .clone()
+            .ok_or("RBS config has no file yet — pick a path (Save As)")?
+    };
+    write_element(&app, state.inner(), &element_id, &path)
+}
+
+/// First save of a file-less config (or an explicit re-point): set
+/// the element's path and write.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn rbs_save_as(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    element_id: String,
+    path: String,
+) -> Result<(), String> {
+    {
+        let mut rbs = state.rbs.lock().expect("rbs mutex poisoned");
+        let element = rbs
+            .elements
+            .get_mut(&element_id)
+            .ok_or_else(|| format!("no RBS element {element_id}"))?;
+        element.path = Some(path.clone());
+    }
+    write_element(&app, state.inner(), &element_id, &path)
+}
+
+fn write_element(
+    app: &AppHandle,
+    state: &AppState,
+    element_id: &str,
+    path: &str,
+) -> Result<(), String> {
+    let text = {
         let rbs = state.rbs.lock().expect("rbs mutex poisoned");
         let element = rbs
             .elements
-            .get(&element_id)
+            .get(element_id)
             .ok_or_else(|| format!("no RBS element {element_id}"))?;
-        let text = serde_json::to_string_pretty(&element.file).map_err(|e| e.to_string())?;
-        (element.path.clone(), text)
+        serde_json::to_string_pretty(&element.file).map_err(|e| e.to_string())?
     };
-    std::fs::write(&path, text).map_err(|e| {
+    std::fs::write(path, text).map_err(|e| {
         let msg = format!("failed to write RBS file to {path}: {e}");
-        crate::sys_error!(&app, "rbs", "{msg}");
+        crate::sys_error!(app, "rbs", "{msg}");
         msg
     })?;
     {
         let mut rbs = state.rbs.lock().expect("rbs mutex poisoned");
-        if let Some(element) = rbs.elements.get_mut(&element_id) {
+        if let Some(element) = rbs.elements.get_mut(element_id) {
             element.dirty = false;
         }
     }
-    sys_info!(&app, "rbs", "saved RBS config {path}");
-    let _ = app.emit("rbs-changed", element_id);
+    sys_info!(app, "rbs", "saved RBS config {path}");
+    let _ = app.emit("rbs-changed", element_id.to_string());
     Ok(())
 }
 
@@ -868,7 +915,8 @@ pub fn rbs_save(
 #[serde(rename_all = "camelCase")]
 pub struct RbsDirtyRecord {
     pub element_id: String,
-    pub path: String,
+    /// `None` = never saved; Save All prompts for a path.
+    pub path: Option<String>,
 }
 
 /// Every element with unsaved override edits.
@@ -902,7 +950,8 @@ pub fn rbs_dirty(state: State<'_, AppState>) -> Vec<RbsDirtyRecord> {
 #[serde(rename_all = "camelCase")]
 pub struct RbsView {
     pub element_id: String,
-    pub path: String,
+    /// `None` until the config is first saved.
+    pub path: Option<String>,
     pub fill_bit: u8,
     pub dirty: bool,
     pub run: bool,
@@ -1458,7 +1507,7 @@ VAL_ 291 TargetMode 0 "Off" 1 "Standby" 2 "Active";
             rbs.elements.insert(
                 "el1".into(),
                 RbsElementState {
-                    path: "/tmp/x.cannet_rbs".into(),
+                    path: Some("/tmp/x.cannet_rbs".into()),
                     file,
                     dirty: false,
                     run: false,
@@ -1573,6 +1622,35 @@ VAL_ 291 TargetMode 0 "Off" 1 "Standby" 2 "Active";
             .contains(&status_id));
     }
 
+    /// A fresh element's default config pre-adds every project bus
+    /// (nothing enabled, no overrides) so the panel immediately shows
+    /// each bus's DBC tree without touching disk.
+    #[test]
+    fn seeded_default_lists_the_project_buses() {
+        let file = seeded_file(&[
+            ("p1".into(), "Powertrain".into()),
+            ("c1".into(), "Chassis".into()),
+        ]);
+        assert_eq!(
+            file.buses.keys().collect::<Vec<_>>(),
+            vec!["Chassis", "Powertrain"]
+        );
+        assert!(file.buses.values().all(|b| b.enabled && b.ecus.is_empty()));
+        // Nothing transmits from a seed: no message entries exist.
+        let state = crate::tests::test_state();
+        {
+            let mut rbs = state.rbs.lock().unwrap();
+            rbs.project_buses = vec![("p1".into(), "Powertrain".into())];
+            rbs.elements.insert(
+                "el1".into(),
+                RbsElementState { path: None, file, dirty: false, run: true },
+            );
+        }
+        rebuild_element_rows(&state, "el1");
+        sync_schedules(&state);
+        assert!(state.transmit_frames.lock().unwrap().rbs_row_ids("el1").is_empty());
+    }
+
     #[test]
     fn transmitter_mismatch_loads_with_a_warning() {
         let state = crate::tests::test_state();
@@ -1589,7 +1667,7 @@ VAL_ 291 TargetMode 0 "Off" 1 "Standby" 2 "Active";
             rbs.elements.insert(
                 "el1".into(),
                 RbsElementState {
-                    path: "/tmp/x.cannet_rbs".into(),
+                    path: Some("/tmp/x.cannet_rbs".into()),
                     file,
                     dirty: false,
                     run: false,

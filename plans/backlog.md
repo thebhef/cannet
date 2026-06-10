@@ -347,6 +347,14 @@ next pass on this surface can address them as one piece.
     collapse to one timestamp).
   Fold into the CI server-conformance suite above, or run as a focused
   pass, once a rig is available.
+  - **Observed: periodic message-rate dips under PCAN loopback.**
+    With calculated-field periodics running, the plot view shows the
+    message rate sagging periodically. Suspected loopback / driver
+    queueing rather than the scheduler (the fixed-grid scheduler
+    absorbs work time and never bursts), but confirm against the
+    Task 21 profiling counters during the hardware pass and rule out
+    a fire-path stall (registry lock contention at high aggregate
+    rates).
   - **Task 14 RBS test matrix, live legs.** The RBS exit criteria's
     send matrix (Tx rows with fields filled in over `local-virtual-bus`,
     hardware (sidecar) interfaces, and FD frames) is covered at the

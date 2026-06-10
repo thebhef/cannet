@@ -109,7 +109,12 @@ another client of the one transmitter construct.
 - New project element `kind: "rbs"` — nameable
   ([ADR 0019](0019-project-element-display-names.md)), multiple
   allowed, referencing its `.cannet_rbs` **by path** (the project
-  never embeds the content, same as DBC references).
+  never embeds the content, same as DBC references). A fresh element
+  needs no file: it starts as an **in-memory config pre-seeded with
+  the project's current logical buses** and only touches disk on the
+  first explicit save (which sets the path). Until then the element's
+  path is null; the dirty-tracking and exit prompt cover the unsaved
+  in-memory state.
 - The element carries a **Run flag, persisted in the project,
   default off**. The `.cannet_rbs` file stays portable config; the
   project records "this RBS is live here." A project saved with RBS
@@ -126,8 +131,9 @@ another client of the one transmitter construct.
 
 - RBS override edits accumulate in memory; saving is explicit.
   **Save Project** saves the project only; a **Save All** action
-  saves the project plus every dirty `.cannet_rbs`; the exit prompt
-  covers all unsaved state. No duplicate-config affordance — forking
+  saves the project plus every dirty `.cannet_rbs` (prompting for a
+  path for configs never saved); the exit prompt covers all unsaved
+  state. No duplicate-config affordance — forking
   a config is a file operation plus re-pointing the element's path.
 - File extensions: projects default to **`.cannet_prj`**, RBS files
   to **`.cannet_rbs`**; open dialogs also accept `.json` for both.

@@ -101,6 +101,20 @@ export function TransmitPanel(props: IDockviewPanelProps) {
     };
   }, [refreshPool]);
 
+  // Live calculated fields: the fire path rewrites a running
+  // message's payload buffer (counter step, CRC) on every emission
+  // without emitting `transmit-frames-changed` — that event at frame
+  // rate would storm the IPC. Poll at a display cadence instead while
+  // anything in the pool is running, so the byte cells and decoded
+  // signal values track the live buffer. Draft-in-progress cell edits
+  // are unaffected (cells render `draft ?? committed`).
+  const anyRunning = pool.some((r) => r.running);
+  useEffect(() => {
+    if (!anyRunning) return;
+    const timer = window.setInterval(refreshPool, 500);
+    return () => window.clearInterval(timer);
+  }, [anyRunning, refreshPool]);
+
   const poolById = useMemo(() => {
     const m = new Map<string, TransmitFrameRecord>();
     for (const r of pool) m.set(r.id, r);

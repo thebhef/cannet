@@ -1144,13 +1144,24 @@ export function App() {
     try {
       const dirtyRbs = await invoke<RbsDirtyRecord[]>("rbs_dirty");
       for (const d of dirtyRbs) {
-        await invoke("rbs_save", { elementId: d.elementId });
+        if (d.path == null) {
+          // Never-saved config: prompt for its first path.
+          const picked = await save({
+            filters: [{ name: "cannet RBS config", extensions: ["cannet_rbs"] }],
+            defaultPath: "simulation.cannet_rbs",
+          });
+          if (typeof picked !== "string" || picked.length === 0) return false;
+          await invoke("rbs_save_as", { elementId: d.elementId, path: picked });
+          updateElement(d.elementId, { kind: "rbs", path: picked });
+        } else {
+          await invoke("rbs_save", { elementId: d.elementId });
+        }
       }
       return true;
     } catch {
       return false; // failures land on the system log
     }
-  }, [handleSaveProject]);
+  }, [handleSaveProject, updateElement]);
   const handleSaveAllRef = useRef(handleSaveAll);
   handleSaveAllRef.current = handleSaveAll;
 
@@ -1464,14 +1475,23 @@ export function App() {
     }
     for (const [id, prev] of rbsHostStateRef.current) {
       const now = current.get(id);
-      if (!now || (prev.path != null && now.path !== prev.path)) {
+      if (!now || (prev.path != null && now.path != null && now.path !== prev.path)) {
         void invoke("rbs_unload", { elementId: id }).catch(() => {});
       }
     }
     for (const [id, now] of current) {
       const prev = rbsHostStateRef.current.get(id);
       if (now.path != null && (!prev || prev.path !== now.path)) {
+        // A path appearing for an element the host already has in
+        // memory (first save) is a no-op host-side: rbs_load re-reads
+        // the file just written.
         void invoke("rbs_load", { elementId: id, path: now.path })
+          .then(() => invoke("rbs_set_run", { elementId: id, run: now.run }))
+          .catch(() => {});
+      } else if (now.path == null && !prev) {
+        // A fresh element needs no file: the host seeds an in-memory
+        // config from the project's current buses (saving is explicit).
+        void invoke("rbs_init", { elementId: id })
           .then(() => invoke("rbs_set_run", { elementId: id, run: now.run }))
           .catch(() => {});
       } else if (prev && prev.run !== now.run) {

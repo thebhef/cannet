@@ -206,11 +206,23 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("RbsPanel (thin view over the host RBS model)", () => {
-  it("renders the file-picking empty state when the element has no path", async () => {
+  it("renders the host-seeded tree for a pathless element and saves via Save As", async () => {
+    // A fresh element needs no file: the host (rbs_init, driven by
+    // App) already holds a seeded in-memory config; the panel just
+    // views it. Dirty + pathless → Save prompts for the first path.
+    VIEW = { ...sampleView(), path: null };
     renderPanel(null);
-    expect(await screen.findByText("Open .cannet_rbs…")).toBeInTheDocument();
-    // No view fetch without a path.
-    expect(lastCall("rbs_view")).toBeUndefined();
+    expect(await screen.findByText("Powertrain")).toBeInTheDocument();
+    expect(screen.getByText("(unsaved)")).toBeInTheDocument();
+    const dialog = await import("@tauri-apps/plugin-dialog");
+    vi.mocked(dialog.save).mockResolvedValueOnce("/tmp/picked.cannet_rbs");
+    fireEvent.click(screen.getByText("Save •"));
+    await waitFor(() =>
+      expect(lastCall("rbs_save_as")?.args).toMatchObject({
+        elementId: "el",
+        path: "/tmp/picked.cannet_rbs",
+      }),
+    );
   });
 
   it("renders the host tree: bus → ECU → message, with inert unresolved buses", async () => {

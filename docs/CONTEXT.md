@@ -73,9 +73,10 @@ _Avoid_: "checksum signal" — the mechanism covers counters too.
 **Rest-of-bus simulation (RBS)**:
 Transmitting a configured set of DBC messages on a cadence with live,
 editable signal values — cannet plays every node except the device
-under test. The config is a sparse-override `.cannet_rbs` file the
-user owns; a project references it by path through an RBS element
-whose Run flag (default off) is project-persisted.
+under test. The config is a sparse-override `.cannet_rbs` document
+the user owns — in memory until first saved, a file thereafter; the
+project references it by path through an RBS element whose Run flag
+(default off) is project-persisted.
 _Avoid_: "remaining bus simulation" (Vector's term) in code — the
 repo's name is RBS / rest-of-bus.
 

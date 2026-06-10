@@ -648,7 +648,8 @@ export interface SignalDescriptorRichRecord {
 /// bus's DBC content, grouped per transmitter ECU.
 export interface RbsView {
   elementId: string;
-  path: string;
+  /// `null` until the config is first saved.
+  path: string | null;
   fillBit: number;
   dirty: boolean;
   run: boolean;
@@ -730,7 +731,8 @@ export interface RbsSignalView {
 /// One dirty RBS element (unsaved override edits) — `rbs_dirty`.
 export interface RbsDirtyRecord {
   elementId: string;
-  path: string;
+  /// `null` = never saved; Save All prompts for a path.
+  path: string | null;
 }
 
 /// Per-(bus, id) calculated-field validity — `fetch_field_validity`.

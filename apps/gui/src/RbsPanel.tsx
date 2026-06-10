@@ -14,6 +14,10 @@
 // marked and carry a light × to clear back to DBC-tracking. Counter /
 // CRC destination cells are read-only — their values are recomputed
 // on every send — and configured through the shared editor.
+//
+// A fresh element needs no file: the host seeds an in-memory config
+// from the project's current buses, and Save prompts for a
+// `.cannet_rbs` path the first time (the element then references it).
 
 import {
   type MouseEvent,
@@ -84,17 +88,14 @@ export function RbsPanel(props: IDockviewPanelProps) {
   const path = element?.kind === "rbs" ? element.path : null;
   const run = element?.kind === "rbs" ? element.run : false;
 
-  // The assembled tree. `null` until the element has a loaded file.
+  // The assembled tree. `null` only until the host's `rbs_init` /
+  // `rbs_load` (driven by App's lifecycle effect) lands.
   const [view, setView] = useState<RbsView | null>(null);
   const refresh = useCallback(() => {
-    if (!path) {
-      setView(null);
-      return;
-    }
     void invoke<RbsView | null>("rbs_view", { elementId })
       .then(setView)
       .catch(() => setView(null));
-  }, [elementId, path]);
+  }, [elementId]);
 
   useEffect(() => {
     refresh();
@@ -106,6 +107,18 @@ export function RbsPanel(props: IDockviewPanelProps) {
     };
   }, [refresh, elementId]);
 
+  // Live calculated fields: while the simulation runs, the fire path
+  // rewrites payload buffers (counter / CRC) without an `rbs-changed`
+  // per send. Poll at a display cadence so value cells track.
+  const anyRunning =
+    view?.run === true &&
+    view.buses.some((b) => b.ecus.some((e) => e.messages.some((m) => m.running)));
+  useEffect(() => {
+    if (!anyRunning) return;
+    const timer = window.setInterval(refresh, 500);
+    return () => window.clearInterval(timer);
+  }, [anyRunning, refresh]);
+
   // ---- file picking ----
   const handleOpenFile = useCallback(async () => {
     const selected = await open({
@@ -116,23 +129,24 @@ export function RbsPanel(props: IDockviewPanelProps) {
     registry.update(elementId, { kind: "rbs", path: selected });
   }, [registry, elementId]);
 
-  const handleNewFile = useCallback(async () => {
+  const handleSave = useCallback(async () => {
+    if (path != null) {
+      void invoke("rbs_save", { elementId }).catch(() => {});
+      return;
+    }
+    // Never saved: pick the first path.
     const target = await save({
       filters: [{ name: "cannet RBS config", extensions: ["cannet_rbs"] }],
       defaultPath: "simulation.cannet_rbs",
     });
     if (typeof target !== "string" || target.length === 0) return;
     try {
-      await invoke("rbs_new", { elementId, path: target });
+      await invoke("rbs_save_as", { elementId, path: target });
       registry.update(elementId, { kind: "rbs", path: target });
     } catch {
-      // rbs_new errors land on the system log.
+      // errors land on the system log
     }
-  }, [registry, elementId]);
-
-  const handleSave = useCallback(() => {
-    void invoke("rbs_save", { elementId }).catch(() => {});
-  }, [elementId]);
+  }, [elementId, path, registry]);
 
   const setRun = useCallback(
     (value: boolean) => {
@@ -218,25 +232,6 @@ export function RbsPanel(props: IDockviewPanelProps) {
     setBusToAdd("");
   }, [busToAdd, addableBuses, elementId]);
 
-  if (!path) {
-    return (
-      <div className="rbs-panel rbs-empty">
-        <p>
-          A rest-of-bus simulation transmits a configured set of DBC messages on
-          their cadence with live, editable signal values.
-        </p>
-        <div className="rbs-empty-actions">
-          <button type="button" onClick={() => void handleOpenFile()}>
-            Open .cannet_rbs…
-          </button>
-          <button type="button" onClick={() => void handleNewFile()}>
-            New…
-          </button>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="rbs-panel">
       <div className="rbs-toolbar">
@@ -259,9 +254,13 @@ export function RbsPanel(props: IDockviewPanelProps) {
         </button>
         <button
           type="button"
-          onClick={handleSave}
+          onClick={() => void handleSave()}
           disabled={!view?.dirty}
-          title="Write override edits back to the .cannet_rbs file"
+          title={
+            path == null
+              ? "Pick a .cannet_rbs path and write the config"
+              : "Write override edits back to the .cannet_rbs file"
+          }
         >
           Save{view?.dirty ? " •" : ""}
         </button>
@@ -273,8 +272,8 @@ export function RbsPanel(props: IDockviewPanelProps) {
           onChange={(e) => setQuery(e.target.value)}
           aria-label="filter"
         />
-        <span className="rbs-path" title={path}>
-          {path.split(/[/\\]/).pop()}
+        <span className="rbs-path" title={path ?? "not saved to a file yet"}>
+          {path == null ? "(unsaved)" : path.split(/[/\\]/).pop()}
         </span>
         <button type="button" onClick={() => void handleOpenFile()}>
           Open…

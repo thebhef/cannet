@@ -554,13 +554,16 @@ transmits a configured set of DBC messages on their cadence with
 live, editable signal values — playing every node except the device
 under test.
 
-The configuration is a human-editable **`.cannet_rbs`** JSON file of
-*sparse overrides* nested `bus → ecu → message`, keyed by the
-project's logical bus names and hex CAN ids (trailing `x` =
-extended). A signal absent from the file keeps tracking its DBC
-default (`GenSigStartValue`, else the file's `fill_bit`);
-`period_ms` falls back to `GenMsgCycleTime`. The project references
-the file **by path** through a nameable RBS element (multiple per
+The configuration is a human-editable **`.cannet_rbs`** JSON
+document of *sparse overrides* nested `bus → ecu → message`, keyed
+by the project's logical bus names and hex CAN ids (trailing `x` =
+extended). A signal absent from the config keeps tracking its DBC
+default (`GenSigStartValue`, else the config's `fill_bit`);
+`period_ms` falls back to `GenMsgCycleTime`. A fresh RBS panel is
+immediately usable — the config starts in memory, pre-seeded with
+the project's current buses — and **Save** prompts for a
+`.cannet_rbs` path the first time. The project then references the
+file **by path** through a nameable RBS element (multiple per
 project), so simulation configs are switched and forked with
 ordinary file operations.
 
