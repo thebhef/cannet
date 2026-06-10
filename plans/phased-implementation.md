@@ -103,42 +103,27 @@ into.
 
 Scope:
 
-- Define the wire protocol as a tonic / gRPC service in a new
-  `crates/cannet-wire` crate. The service exposes `ListInterfaces` (unary
-  discovery — what CAN interfaces does this server provide?) and `Session`
-  (a single bidirectional stream of `Envelope` messages with `Subscribe`,
-  `Unsubscribe`, `FrameBatch`, and `Error` variants). Frame movement is
-  symmetric: either side sends frames on a subscribed interface using the
-  same wire shape. The protocol does not model cyclic / scheduled emission
-  — sending on a cadence is a feature of the client transmit UI in
-  Phase 5, not the wire.
-- The wire protocol is the universal driver contract. A server can run
-  in-process (Phase 2's BLF replay), as a sidecar (Phase 6 wrappers around
-  `python-can`), or on the network. The same `.proto` covers all three;
-  only the transport varies.
-- `cannet-wire` provides batching adapters between `Stream<CanFrame>` and
-  `Stream<FrameBatch>` so the application code on either side speaks the
-  Phase 1 `cannet-core` types and never deals with batching directly.
-  `FrameBatch` is the only frame-carrying envelope variant — single
-  frames are batches of size one, emitted by the latency-flush rule.
-- New `crates/cannet-server` runs the gRPC service. Phase 2's only
-  supported input is BLF: the server loads a file at startup and streams
-  it on a loop while clients are subscribed to its interfaces. Looping is
-  a server-CLI concern, not a wire concern. BLF is read-only, so the
-  server rejects client transmits with `Error::TX_REJECTED`.
-- Phase 2 is **single-client per server**: a second connection is
+- **Wire protocol in a new `crates/cannet-wire`.** Decisions
+  (transport, encoding, service surface, envelope variants):
+  see [`../docs/adr/0004-grpc-wire-protocol.md`](../docs/adr/0004-grpc-wire-protocol.md).
+- **`crates/cannet-server`** — Phase 2's only supported input is BLF:
+  the server loads a file at startup and streams it on a loop while
+  clients are subscribed to its interfaces. Looping is a server-CLI
+  concern, not a wire concern. BLF is read-only, so the server
+  rejects client transmits with `Error::TX_REJECTED`.
+- **Single-client per server** for Phase 2: a second connection is
   rejected with `Error::BUSY`. Multi-client fanout is in
   `plans/backlog.md`.
-- New `crates/cannet-client` implements `cannet_core::CanFrameSource` over
-  a tonic client, so the GUI's existing trace + decode pipeline consumes a
-  remote server with no changes to its consumer code. The GUI grows a
-  connection panel (host:port + interface picker driven by
-  `ListInterfaces`) alongside the in-process BLF path.
+- **`crates/cannet-client`** implements `cannet_core::CanFrameSource`
+  over a tonic client, so the GUI's existing trace + decode pipeline
+  consumes a remote server with no changes to its consumer code.
+  The GUI grows a connection panel (host:port + interface picker
+  driven by `ListInterfaces`) alongside the in-process BLF path.
 - Server is addressable by host:port. Discovery is **not** in scope.
-- TLS via tonic's `tls` feature (rustls) is configurable but **off by
-  default**; plaintext on loopback is the dev / demo flow. Cert UX
-  (fingerprint pinning, project-file persistence) is deferred until the
-  project-file feature lands.
+- TLS is configurable but off by default (per ADR 0004); plaintext
+  on loopback is the dev / demo flow. Cert UX (fingerprint pinning,
+  project-file persistence) is deferred until the project-file
+  feature lands.
 
 Refinements that landed during implementation:
 
@@ -264,19 +249,14 @@ Scope:
   trace, same as a chronological panel. (Folds in the `[ui]` "by ID
   mode" item from `plans/backlog.md`; the rest-of-bus *transmit*
   gridview from `features.md` is the TX counterpart and stays Phase 5+.)
-- **Project panel + project file.** A project is a JSON file
-  (`features.md`: "projects — includes window layouts, bus configs,
-  references DBCs … DBC should be reloadable from disk at any time").
-  Opening a project restores the panel layout (which panels exist, their
-  dock positions, their per-panel config), the bus / connection
-  configuration (in-process BLF path and/or remote server host:port plus
-  subscribed interfaces), and the DBC reference(s) by path. The project
-  panel is the UI for New / Open / Save / Save As, lists the configured
-  buses, and shows the referenced DBC(s) with a "reload from disk" action
-  — a project's DBC reference is a path, not an embedded copy, so reload
-  re-reads the file. The most-recently-opened project is reopened on
-  launch, so panel layout survives an app restart by virtue of living in
-  the project file rather than in a separate layout blob.
+- **Project panel + project file.** Phase 3 ships the project file
+  ([ADR 0011](../docs/adr/0011-project-file-format.md) — single JSON
+  document holding the panel layout, bus/connection config, project
+  elements, and DBC references) and its project panel UI: New / Open /
+  Save / Save As, the configured-buses list, and the referenced DBC(s)
+  with a "reload from disk" action (DBCs are referenced by path, never
+  embedded). The most-recently-opened project is reopened on launch,
+  so panel layout survives an app restart.
 
 Out of scope (deferred to later phases / backlog):
 
@@ -975,13 +955,11 @@ Realised scope notes:
   / filter from the panel toolbar, drag-connect a source onto a
   consumer, and remove a node to delete the underlying element. Node
   positions and viewport persist in the panel's dockview `params`.
-- **Project panel design note** lives at
-  [`plans/project-panel-design.md`](project-panel-design.md): the
-  project panel keeps file-IO + inventory roles (project actions, bus /
-  binding / DBC lists, scoping checkboxes); the graph view owns the
-  spatial wiring story (which filter feeds which trace, etc.). The two
-  surfaces share the same underlying `Project` state through the
-  element registry and context.
+- **Project panel / project graph surface-role split** —
+  see [ADR 0012](../docs/adr/0012-project-panel-graph-split.md).
+  The project panel keeps file-IO + inventory roles; the graph view
+  owns the spatial wiring story. Both surfaces are views over the
+  same `Project` state.
 - **Schema migration**: `PROJECT_SCHEMA_VERSION = 3`. v2 projects open
   via an in-memory migration step that defaults `buses` and
   `interface_bindings` to empty and treats every existing DBC as
@@ -1039,60 +1017,38 @@ Realised scope notes:
     1-in/N-out filter case, transmit-as-source (no auto-edge yet),
     and dangling-source elements.
 
-### Phase 6.5 — fan-out by default, edge edits, transmit by bus
+### Phase 6.5 — default-receive-all consumers, edge edits, transmit by bus
 
 A follow-up pass after Phase 6 shipped, addressing the consumer-side
-wiring gaps the original Phase-6 plan deferred. The headline shift is
-that the original explicit `source?: string` model was replaced by a
-default-fan-out shape — every consumer wires to every bus unless the
-user prunes it. Realised:
+wiring gaps the original Phase-6 plan deferred. The three coordinated
+decisions — consumers receive from every bus by default
+(`sources: string[]` with `"*"` wildcard), user-editable graph edges,
+transmit binding to project `bus_id`s instead of raw wire channels —
+are recorded in
+[ADR 0013](../docs/adr/0013-default-receive-all-edge-edits-transmit-by-bus.md).
+Schema change was purely additive; `PROJECT_SCHEMA_VERSION` stayed at 4.
 
-- **`sources: string[]` on every consumer** (trace / plot / filter)
-  with the wildcard `"*"` meaning "every bus, current and future."
-  Default for a freshly created consumer is `["*"]`, so a brand-new
-  trace/plot already reads from every bus. The old `source?: string`
-  is gone; legacy projects normalise it into `sources: ["*"]` on load.
-- **`sinks: string[]` on transmit elements** (no wildcard — `sinks`
-  is an explicit list to avoid silently picking up a newly-added
-  bus). The transmit panel composes one frame per bus in `sinks` and
-  the host resolves each `bus_id → (server, interface)` via the
-  project's interface bindings. The per-frame `channel: u8` field is
-  gone end-to-end (`TransmitRequest.bus_id` is the wire form).
-- **By-id collision fix**: `TraceStore::FrameKey` now includes the
-  frame's `bus_id`, so two servers sharing wire channel 0 no longer
-  collapse their per-id snapshots.
-- **Trace column "bus"** instead of "ch": looks up `bus_id` against
-  the project's buses and renders the bus *name* (or "unassigned").
-- **BLF save/load round-trips bus assignment** via the project's
-  ordered bus list (channel `N` ↔ `project.buses[N]`). No sidecar —
-  the BLF is the serialization (CLAUDE.md § File formats). The
-  open-BLF modal pre-seeds bus matches from this ordering.
-- **Filter UI**: a "+ filter" button on the project graph panel's
-  toolbar creates a free-standing filter (fans in from every bus,
-  no downstream until wired). Each filter node has an inline
-  predicate editor (caret-expand) for the structured leaf variants
-  (`bus | id_range | id_list | name_regex | signal_equals`).
-  Composition variants (`all | any`) stay JSON-only.
-- **Sources / sinks picker** lives in right-click context menus on
-  the trace, plot, and transmit panels — checkboxes for every project
-  bus + filter, with an "All" toggle that re-collapses to `["*"]`.
-  Plot panel embeds it in the existing toolbar context menu shell.
-- **Insert filter upstream** lives on each consumer node in the
-  graph (a `+ filter` button on the trace/plot node). Creates a
-  fresh filter, transfers the consumer's `sources` to it, then
-  re-routes the consumer through the filter.
-- **Edge deletion**: right-click an edge in the graph view to drop
-  the matching bus / filter id from the consumer's `sources` (or
-  from the transmit's `sinks`). The wildcard `"*"` expands into the
-  explicit "every bus except this one" list on first deletion. The
-  gateway↔bus edges are not user-deletable here — they're project-
-  panel bindings.
-- **Filter cycle prevention** at the registry layer: patching a
-  filter's `sources` to a value that would close a filter→filter
-  cycle is silently refused by `applyElementPatch`.
-- **Schema is purely additive** — no migration step. Old projects
-  load with `sources` defaulted to `["*"]`. The `PROJECT_SCHEMA_VERSION`
-  stayed at 4.
+Implementation specifics that landed in the same pass:
+
+- **Graph affordances**: right-click an edge → delete; right-click a
+  trace / plot / transmit panel → sources / sinks picker (checkboxes
+  for every project bus + filter, with an "All" toggle that
+  re-collapses to `["*"]`); `+ filter` button on each consumer node
+  in the graph (creates a fresh filter, transfers the consumer's
+  `sources` to it, re-routes through the filter); `+ filter` button
+  on the graph panel toolbar (free-standing filter, fans in from
+  every bus, no downstream until wired). Cycle prevention is
+  enforced in `applyElementPatch`.
+- **Filter predicate editor**: inline (caret-expand) on each filter
+  node for the structured leaf variants
+  (`bus | id_range | id_list | name_regex | signal_equals`);
+  composition variants (`all | any`) stay JSON-only.
+- **Sources picker on plot panel** is embedded in the existing
+  toolbar context-menu shell.
+- **Open-BLF modal** pre-seeds bus matches from the project's
+  ordered bus list (channel `N` ↔ `project.buses[N]`).
+- **Trace view column rename**: `ch` → `bus`, rendering the bus
+  *name* (or "unassigned").
 
 Out of scope (tracked in `plans/backlog.md`):
 
@@ -1113,35 +1069,31 @@ phases add sources (vendor sidecars, capture writer, perf events) that
 all want a uniform place to talk to the user. Small, focused, and
 exactly the kind of plumbing every phase from 8 onward leans on.
 
+The architectural shape of the bus — bounded, session-scoped,
+flood-protected, tee'd to `tracing`, plus the sidecar wire `Log`
+envelope distinct from `Error` — is recorded in
+[ADR 0014](../docs/adr/0014-host-system-log.md). Phase 7's scope
+is the panel, the initial-source conversion, the unread indicator,
+and the wire envelope's definition (consumer arrives in Phase 8).
+
 Scope:
 
-- **Host-side log bus.** A bounded ring of structured messages
-  (`{ ts, source, level, message, optional_payload }`) in the Tauri
-  host. Sources are tagged (`project`, `dbc`, `connection`,
-  `blf-import`, `plot`, …; `sidecar:<vendor>` arrives in Phase 8);
-  levels are `info` / `warn` / `error`. A small `system_log` module
-  exposes `info!` / `warn!` / `error!` macros that fan out to the ring
-  **and** to `tracing`'s normal subscriber (so dev logs to stderr still
-  work). Includes a simple per-`(source, template)` rate-limiter as
-  insurance against floods.
 - **System Messages panel.** A new dockview panel
   `kind: "system-messages"`, registered in the toolbar's panel-add set.
   Renders the buffer as a virtualised list (timestamp, source, level,
   message), filterable by source and minimum level (defaulting to
   `warn`), with copy-entry / copy-all / clear actions. Per-panel filter
-  state in dockview `params`. Session-scoped, not persisted in the
-  project file.
+  state in dockview `params`.
 - **Initial message sources.** Convert the existing ad-hoc `eprintln!`
   / `console.error` paths in project open / save, DBC parse / reload,
-  connection lifecycle, and BLF import to structured `tracing` events
-  feeding the bus.
-- **Unread-error indicator.** A count badge in the titlebar / toolbar
-  for unread `warn` + `error` entries since the panel was last focused;
-  clicking it focuses the panel and clears the badge.
-- **Wire-level surface for sidecar messages.** A new envelope variant
-  on `cannet-wire`'s `Session` stream — `Log { ts, level, source,
-  message }` — distinct from `Error` (which still ends the session).
-  Defined here, consumed in Phase 8.
+  connection lifecycle, and BLF import to structured events feeding
+  the bus.
+- **Unread-error indicator.** A count badge on the toolbar's *System
+  messages* button for unread `warn` + `error` entries since the panel
+  was last focused; clicking it focuses the panel and clears the
+  badge.
+- **Wire `Log` envelope** on `cannet-wire`'s `Session` stream
+  (per ADR 0014). Defined here, consumed in Phase 8.
 
 Exit criteria:
 
@@ -1280,7 +1232,7 @@ Out of scope (deferred / backlog):
 - **Multiple vendor sidecars.** Phase 8 ships one. Adding a second
   sidecar (e.g. a Rust-native Vector adapter, or splitting one vendor
   out for a different driver) is a wire-protocol-compatible follow-up
-  if Phase 10 profiling shows the python-can path is the bottleneck.
+  if Phase 14 profiling shows the python-can path is the bottleneck.
 - **socketcan / vcan.** PEAK's Linux kernel driver path could go via
   socketcan; not adopted in this phase.
 - **Native Rust FFI per vendor.** Rejected for Phase 8; revisit only
@@ -1310,7 +1262,7 @@ Exit criteria:
 - `uv` is fetched per supported OS — not committed to the repo, not
   packed into the installer artefact. The dev-side fetch
   (`scripts/fetch-uv.sh`) and the planned end-user fetch are
-  documented per-OS in the README. See Phase 16 "third-party runtime
+  documented per-OS in the README. See Phase 18 "third-party runtime
   tool fetching strategy" for the rationale.
 - README documents per-vendor prerequisites (vendor SDK / driver
   install, OS support matrix), the `uv` fetch flow, and how to swap
@@ -1350,18 +1302,16 @@ Realised scope notes:
   events appear tagged `sidecar:python-can`" exit criterion. The
   wire-level `LogMessage` bridge has a unit test on the sidecar side;
   the GUI host consumer is tracked in `backlog.md`.
-- **`uv` is fetched, not bundled.** `scripts/fetch-uv.sh` produces a
-  per-OS `uv` binary under `tools/uv/` at build time; the host
-  discovers it at runtime alongside its executable, falls back to a
-  `uv` already on `PATH`, and failing that logs a warn-level System
-  Message with the install instructions. The dev-side fetch ships
-  today; the end-user-side fetch (installer post-step vs. first-run
-  host downloader) is a Phase-16 deliverable. We deliberately do
-  **not** commit `uv` binaries into the repo or bake them into the
-  Tauri bundle artefact — see the Phase-16 "third-party runtime tool
-  fetching strategy" note for the rationale. The README documents
-  the dev-side path today and will document the end-user path when
-  the Phase-16 mechanism lands.
+- **`uv` is fetched, not bundled** — per
+  [ADR 0015](../docs/adr/0015-fetched-runtime-binaries.md).
+  `scripts/fetch-uv.sh` produces a per-OS `uv` binary under
+  `tools/uv/` at build time; the host discovers it at runtime
+  alongside its executable, falls back to a `uv` already on `PATH`,
+  and failing that logs a warn-level System Message with the install
+  instructions. Dev-side fetch ships today; the end-user-side fetch
+  (installer post-step vs first-run host downloader) is a Phase-18
+  deliverable. README documents the dev-side path today and gains
+  the end-user path when the Phase-18 mechanism lands.
 - **Hardware-specific paths are documented procedures, not executable
   tests.** Per-vendor smoke procedures live in
   `servers/cannet-python-can/SMOKE.md` with clearly marked
@@ -1420,7 +1370,7 @@ Scope:
 Out of scope (deferred / backlog):
 
 - **Disk-spill for long sessions** — the session buffer staying in RAM
-  and overflowing to an append-only file is Phase 10, not the
+  and overflowing to an append-only file is Phase 11, not the
   save-the-capture feature this phase delivers.
 - **Capture import filtering** beyond the channel → bus mapping — no
   time-range or content selection at import; the user gets the whole
@@ -1504,7 +1454,143 @@ Realised scope notes:
   `marker_count`) and error / warn on decode anomalies tagged
   `blf-import`. Recent BLFs replay through the same path.
 
-## Phase 10 — Command Palette + Goto Framework
+## Phase 10 — Windowed-Model Convergence
+
+Converge the GUI's four hand-rolled view caches — chrono trace,
+filtered trace, by-ID, plot — onto one windowed-source contract with
+two accessors. [`windowed-model-convergence.md`](windowed-model-convergence.md)
+is **normative for this phase**: it carries the principle, the Layer-A
+contract, the two accessors, and the four slices (Slice 0 already
+shipped). Domain terms are defined in [`../docs/CONTEXT.md`](../docs/CONTEXT.md).
+
+This is a **view-side** refactor — it lands against the current in-RAM
+`TraceStore` `Vec`. Slice 1 freezes the host accessor signatures
+disk-spill-ready so Phase 11 is a second implementation behind them,
+not a redesign.
+
+Scope: Slices 1-4 of `windowed-model-convergence.md`.
+
+- **Slice 1** — extract the shared `useWindowedQuery` lifecycle
+  primitive (raw chrono as first consumer); freeze `RowPage` and
+  `DecimatedRange` as disk-spill-ready host signatures.
+- **Slice 2** — filtered chrono onto the contract; `fetch_trace_range`
+  gains a `FilterPredicate`; `FILTERED_CAP` removed.
+- **Slice 3** — by-ID onto the contract; `fetch_by_id_page` pages and
+  sorts host-side and is filterable; client-side re-sort removed.
+- **Slice 4** — plot onto the shared primitive via `DecimatedRange`;
+  `traceRangesRef` moves host-side.
+
+Exit criteria:
+
+- all four data views render through the shared primitive; the bespoke
+  per-view caches (`chunkCache`/`refreshChunk`, `chronoFiltered` +
+  `FILTERED_CAP`, the client-side by-ID re-sort, `PlotArea`'s
+  `cacheRef`/`traceRangesRef`) are gone;
+- `RowPage` and `DecimatedRange` exist as frozen, disk-spill-ready
+  host signatures, implemented over the in-RAM `Vec`;
+- filtered chrono pages the full match history; by-ID pages, sorts
+  host-side, and is filterable; the plot's per-signal extent is a host
+  query;
+- each slice's acceptance list in `windowed-model-convergence.md` is
+  met; `pnpm --dir apps/gui test` and `cargo test -p cannet-gui` green;
+- `plans/ui-architecture-backlog.md`'s deviations are resolved and the
+  filtered-trace / by-ID items in `plans/backlog.md` removed;
+- README and rustdoc reflect the windowed-source contract.
+
+## Phase 11 — Indefinite-Length Capture (Disk-Spill)
+
+Make a capture indefinite-length — 10^7 to 10^9 frames, multi-hour to
+multi-day — by spilling the raw frame store to disk while keeping
+every historical row addressable. [`../docs/adr/0001-indefinite-length-capture.md`](../docs/adr/0001-indefinite-length-capture.md)
+fixes the requirement (random-access, loss-free);
+[`../docs/adr/0002-disk-spill-store.md`](../docs/adr/0002-disk-spill-store.md) fixes
+the on-disk format and I/O architecture and is **normative for this
+phase**.
+
+This is the **model-side** counterpart to Phase 10: it provides a
+second implementation of the `RowPage` / `DecimatedRange` accessor
+signatures Phase 10 Slice 1 froze — no contract change, no view
+change. (Explicit `.blf` "Save Capture" stays a separate feature; the
+disk-spill store is the live working store — ephemeral scratch, not an
+export format.)
+
+ADR 0002 in brief: the raw store is two append-only files — fixed-size
+~26 B metadata records giving arithmetic random access, plus a packed
+payload blob (DS-1); writes are write-through and readers `mmap`, with
+the kernel page cache as the hot tier and a RAM ring bridging the
+un-flushed tail (DS-2); `by-id` and per-filter indexes are
+materialized mmap'd files, every predicate id-narrowable against the
+DBC so no index build is an O(capture) scan (DS-3); every file family
+is fixed-size pre-allocated segments mapped whole with a valid-length
+watermark (DS-4); the decoded-signal cache gains a per-signal min/max
+resolution pyramid (DS-5); and the disk store is the only production
+path, the in-RAM `Vec` retiring to a test double (DS-6).
+
+Steps — each lands independently, leaves the app working and tested
+(`cargo test -p cannet-gui`, `pnpm --dir apps/gui test`), and keeps
+rustdoc and the README current for what it ships:
+
+- **Step 1 — `TraceStore` trait + disk-backed raw store (DS-1, DS-2,
+  DS-4).** Extract `TraceStore` as a trait from the current `Vec`
+  implementation. Add the disk-backed raw store: the two append-only
+  segmented files, write-through buffered append, mmap'd reads, and the
+  RAM ring for the un-flushed tail. `fetch_trace_range` with no
+  predicate is served from it. Verify: frames round-trip through the
+  disk store; a capture larger than the RAM ring reads back every row
+  correctly; segment rollover is exercised.
+- **Step 2 — Always-on `by-id` index (DS-3 backbone).** Add the per-id
+  append-only mmap'd index files, maintained on every append.
+  `fetch_by_id_page` with no predicate is served from it. Verify:
+  by-id paging is O(page); a capture spanning many ids pages and sorts
+  correctly.
+- **Step 3 — Materialized filter index (DS-3).** Add per-filter index
+  files. `bus` / `id_range` / `id_list` / `name_regex` predicates
+  build by merging `by-id` lists with no frame decode; `signal_equals`
+  builds by decoding only its DBC-resolved candidate ids' frames;
+  `all` / `any` compose id sets. Indexes drop on predicate change.
+  `fetch_trace_range(predicate)` and `fetch_by_id_page(predicate)` are
+  O(page). Verify: filtered paging is O(page); `name_regex` builds
+  with zero frame decode; `signal_equals` decodes only candidate-id
+  frames; a predicate change drops and rebuilds the index.
+- **Step 4 — Decimated decoded-sample tier (DS-5).** Give
+  `signal_cache::SignalCacheStore` the per-signal min/max resolution
+  pyramid; `DecimatedRange` reads the coarsest level above
+  `maxPoints`. Pyramids build lazily per signal on first plot,
+  by-id-accelerated. Verify: a plot "fit data" over a 10^8-frame
+  capture does not re-decode the whole capture; min/max spikes survive
+  decimation.
+- **Step 5 — Retire the in-RAM `Vec` store (DS-6).** The disk-backed
+  store becomes the only production path; the `Vec` implementation
+  moves to a test double behind the `TraceStore` trait. Verify: the
+  production path constructs only the disk store; the suite stays
+  green through the test double.
+- **Step 6 — Benchmark.** A documented benchmark covering scroll /
+  filter / plot of deep history, confirming GUI interactions stay
+  < 100 ms / 60 fps with a 10^8+-frame capture open.
+
+Exit criteria:
+
+- a capture runs past available RAM with no row becoming unreachable;
+  scroll / filter / plot of deep history all work;
+- the `RowPage` / `DecimatedRange` signatures from Phase 10 are
+  unchanged — only their host implementation is swapped;
+- `fetch_trace_range` / `fetch_by_id_page` with a predicate are
+  O(page) via the filter index, with no O(capture) scan in any filter
+  index build;
+- a plot "fit data" over a 10^9-frame capture does not re-decode the
+  whole capture;
+- the disk-backed store is the only production `TraceStore`; the `Vec`
+  store is a test double;
+- a documented benchmark shows GUI interactions stay < 100 ms / 60 fps
+  with a 10^8+-frame capture open;
+- backlog items removed: `TraceStore` disk-spill, index the filtered
+  trace scan, bound the host-side decoded-sample cache;
+- README documents indefinite-length capture and its limits; rustdoc
+  covers the `TraceStore` trait and the disk-backed implementation;
+  ADR 0002 and the `memmap2` entry in
+  `plans/technology-inventory.md` reflect the shipped design.
+
+## Phase 12 — Command Palette + Goto Framework
 
 A generalised command model plus a VS Code-style command palette
 (Cmd/Ctrl+Shift+P) that surfaces it. Commands carry an id, a label, an
@@ -1518,7 +1604,7 @@ project-wide, keyboard-accessible) vs. what stays local-only
 about that boundary. The "Go to row…" backlog item folds in as a
 single `goto.traceRow` command.
 
-## Phase 11 — Signals, Drag/Drop & Trace Signal Display
+## Phase 13 — Signals, Drag/Drop & Trace Signal Display
 
 Make individual signals first-class objects you can grab and move
 around. A new **signal view** panel hosts a user-chosen set of signals
@@ -1532,7 +1618,7 @@ expanded-row decoded signals render as **inline lines under the
 message row** rather than the expand-to-show grid — the trace-side
 counterpart to "signals are first-class".
 
-## Phase 12 — Performance Profiling Baseline
+## Phase 14 — Performance Profiling Baseline
 
 Profiling procedure that covers all three tiers — client (GUI),
 server, and the wire between them. Metrics (frame throughput,
@@ -1543,17 +1629,19 @@ sampling profiler hooks), and a reproducible workload (likely a
 standard BLF replay at a known rate). Baseline numbers checked in
 against the Phase 8 build for each supported source (BLF replay + at
 least one hardware vendor). Pulls in the perf backlog items the
-baseline tends to motivate: `CanFramePayload` inline buffer, two-tier
-per-signal sample cache, precise time → frame-index mapping for the
-plot visible-range fetch, `TraceStore` disk-spill for long sessions.
+baseline tends to motivate: `CanFramePayload` inline buffer and
+precise time → frame-index mapping for the plot visible-range fetch.
+(The two-tier per-signal sample cache and `TraceStore` disk-spill are
+Phase 11, not pulled in here — Phase 11 owns the indefinite-length
+model.)
 
-## Phase 13 — CANopen
+## Phase 15 — CANopen
 
 EDS ingestion (CANopen Electronic Data Sheet — library TBD when this
 phase becomes current) and SDO / PDO decoding on top of the Phase 5
 value-table machinery.
 
-## Phase 14 — Rest-of-Bus Simulation + CRC / Sequence
+## Phase 16 — Rest-of-Bus Simulation + CRC / Sequence
 
 **Rest-of-bus simulation**: a gridview that holds a configurable set
 of ids with live signal values and transmits them on a cadence — the
@@ -1563,10 +1651,10 @@ fields** of a CAN message — transmit-side helper for messages that
 carry their own integrity fields (and decode-side verification
 where useful).
 
-## Phase 15 — Plot Panel Refinements
+## Phase 17 — Plot Panel Refinements
 
 The plot-panel feature tail that didn't need the bigger architectural
-lifts of Phase 11. **Triggers** (edge / level / value-match on a
+lifts of Phase 13. **Triggers** (edge / level / value-match on a
 chosen signal that freeze the view and emit an event marker —
 oscilloscope trigger proper; the event-line rendering already exists,
 the trigger engine doesn't). **Math channels** (derived signals
@@ -1577,7 +1665,7 @@ that ships today). **CSV / image export** of the visible window or
 cursor span. **Drag a whole plot area** (not just a signal) between
 plot panels.
 
-## Phase 16 — Cross-Cutting Polish
+## Phase 18 — Cross-Cutting Polish
 
 The remaining small UX and infrastructure items that don't deserve
 their own phase: the **trace virtualizer rework** (real windowed
@@ -1592,21 +1680,12 @@ drag** fix, and the **BLF f64-timestamp precision** documentation note
 (if it hasn't already been folded into a user-facing surface message
 by then).
 
-**Third-party runtime tool fetching strategy.** External runtime
-binaries we depend on (today: `uv`; potentially others later) are
-**fetched, not committed to the repo and not packed into the
-installer artefact**. First-party code we maintain (the sidecar
-package, the GUI, the Rust crates) is bundled; tools we do *not*
-maintain are pulled from their upstream release channel at the
-pinned version. This keeps the distributable small, keeps the
-supply chain auditable against upstream releases instead of a
-snapshot we'd have to re-cut on every upstream version bump, and
-gives us one place to revisit the pin.
-
-The dev-side fetch already exists ([`scripts/fetch-uv.sh`](../scripts/fetch-uv.sh)
-drops `uv` into `tools/uv/` next to the GUI binary, which the host
-discovers at runtime). The Phase-16 deliverable is the **end-user**
-fetch — choose between:
+**Third-party runtime tool fetching strategy.** The architectural
+decision is recorded in
+[ADR 0015](../docs/adr/0015-fetched-runtime-binaries.md): external
+runtime binaries are fetched from upstream at a pinned version, not
+committed or bundled. Phase 18's deliverable is the **end-user**
+fetch flow — pick between:
 
 1. **Installer post-step** — the installer (Tauri's per-OS bundler
    target, or a thin wrapper around it) downloads `uv` at install
@@ -1618,5 +1697,6 @@ fetch — choose between:
 
 Both keep the runtime lookup chain in `sidecar.rs` unchanged
 (`tools/uv/uv` → `PATH` `uv` → `python3` fallback). The pin
-(`UV_VERSION` in `scripts/fetch-uv.sh`) is the single source of
-truth in either flow.
+(`UV_VERSION` in [`scripts/fetch-uv.sh`](../scripts/fetch-uv.sh),
+already in use on the dev side) is the single source of truth in
+either flow.
