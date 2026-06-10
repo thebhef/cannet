@@ -2654,33 +2654,62 @@ function PlotArea(p: PlotAreaProps) {
                 const boxColor = primaryColorRef.current ?? AXIS_STROKE;
                 const segments = enumSegments(ts, vs);
                 const padX = 4 * ratio;
-                const h = 13 * ratio;
+                // The enum y-scale is `[min(raw) - 0.5, max(raw) + 0.5]`
+                // (set in the resample's `setScale("y", …)`), so each
+                // raw value sits in a 1-unit *lane*: `v - 0.5` to
+                // `v + 0.5`. The label box fills that lane vertically
+                // — so it reads as the held row in a logic-analyzer
+                // strip, not as a small chip floating on the line —
+                // and spans the segment's full *visible* width
+                // horizontally, so a 5-second held value paints a
+                // 5-second-wide box rather than a text-width chip.
+                // A small inter-lane gap keeps adjacent values'
+                // boxes visually distinct.
+                const lanePad = 1 * ratio;
                 for (const seg of segments) {
                   const x0 = u.valToPos(seg.t0, "x", true);
                   const x1 = u.valToPos(seg.tN, "x", true);
                   // Clip-trim against the visible plot region first:
-                  // a segment that extends beyond the canvas still
-                  // labels the visible portion, centred on what's on
-                  // screen rather than off-canvas.
+                  // a segment extending past the canvas still labels
+                  // the visible portion, centred on what's on screen
+                  // rather than off-canvas.
                   const visStart = Math.max(x0, left);
                   const visEnd = Math.min(x1, left + width);
-                  if (visEnd <= visStart) continue;
+                  const segW = visEnd - visStart;
+                  if (segW <= 0) continue;
                   const lbl = labelFor(seg.v);
                   const tw = ctx.measureText(lbl).width;
                   // Skip a segment that the label wouldn't fit
                   // into — overlaying a clipped label is worse than
                   // none. The user can zoom in to see narrow ones.
-                  if (visEnd - visStart < tw + padX * 2) continue;
-                  const cx = (visStart + visEnd) / 2;
-                  // Vertically center on the held value, then clamp
-                  // into the plot region so a box near the canvas
-                  // edge doesn't half-clip off.
-                  const yRaw = u.valToPos(seg.v, "y", true);
-                  const cy = Math.min(
-                    top + height - h / 2 - 2 * ratio,
-                    Math.max(top + h / 2 + 2 * ratio, yRaw),
-                  );
-                  chip(cx, cy, lbl, boxColor);
+                  if (segW < tw + padX * 2) continue;
+                  // Lane bounds in canvas pixels. Note `valToPos`
+                  // grows downward for canvas y, so `+0.5` data ⇒
+                  // smaller pixel y (top of the lane).
+                  const laneTop = u.valToPos(seg.v + 0.5, "y", true);
+                  const laneBot = u.valToPos(seg.v - 0.5, "y", true);
+                  // Clamp into the plot region and apply a small
+                  // padding so the top/bottom enum lanes don't kiss
+                  // the canvas edge.
+                  const boxTop = Math.max(top + lanePad, laneTop + lanePad);
+                  const boxBot = Math.min(top + height - lanePad, laneBot - lanePad);
+                  const boxH = boxBot - boxTop;
+                  // A lane that's been clamped down to near nothing
+                  // (very dense table on a short canvas) can't carry
+                  // a legible label — skip rather than paint a
+                  // squashed strip.
+                  if (boxH < 8 * ratio) continue;
+                  // Opaque fill so the stepped line underneath is
+                  // visually replaced by the labelled row; coloured
+                  // border + centred text in the series colour.
+                  ctx.fillStyle = "#0a0d0f";
+                  ctx.fillRect(visStart, boxTop, segW, boxH);
+                  ctx.strokeStyle = boxColor;
+                  ctx.strokeRect(visStart + 0.5, boxTop + 0.5, segW - 1, boxH - 1);
+                  ctx.fillStyle = boxColor;
+                  ctx.textAlign = "center";
+                  ctx.textBaseline = "middle";
+                  ctx.fillText(lbl, visStart + segW / 2, boxTop + boxH / 2);
                 }
               }
             }
