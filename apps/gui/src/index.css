@@ -1400,6 +1400,23 @@ header {
 .plot-signal-swatch.hidden {
   opacity: 0.25;
 }
+/* Wrap the swatch + its hidden colour input. The input is positioned
+ * absolutely so the native picker pops up over the swatch (right-click
+ * to open it). */
+.plot-signal-swatch-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.plot-signal-swatch-input {
+  position: absolute;
+  inset: 0;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  pointer-events: none;
+  border: 0;
+  padding: 0;
+}
 
 /* Left text column: signal name on top (large), message name below
  * (small, dimmed). Both ellipsis on overflow so a long signal name
@@ -1752,9 +1769,10 @@ header {
   color: #cbd5e1;
 }
 
-/* Plot panel — per-area y-range control */
-.plot-area-y,
-.plot-area-fit-y {
+/* Plot panel — per-area Fit Y control. (The old fixed-range editor was
+ * dropped in task 15 / ADR 0026: y scales are always auto-derived.) */
+.plot-area-fit-y,
+.plot-area-y-mode {
   background: #0f141d;
   color: #94a3b8;
   border: 1px solid #2c3444;
@@ -1764,36 +1782,9 @@ header {
   padding: 0 0.2rem;
   cursor: pointer;
 }
-.plot-area-y:hover,
-.plot-area-fit-y:hover {
+.plot-area-fit-y:hover,
+.plot-area-y-mode:hover {
   color: #e2e8f0;
-}
-.plot-y-editor {
-  display: flex;
-  gap: 0.2rem;
-  padding: 0.2rem 0.4rem;
-  border-bottom: 1px solid #1f2630;
-  background: #11161a;
-}
-.plot-y-editor input {
-  width: 3.5rem;
-  background: #0f141d;
-  color: #e2e8f0;
-  border: 1px solid #2c3444;
-  border-radius: 3px;
-  font: inherit;
-  font-size: 0.72rem;
-  padding: 0 0.2rem;
-}
-.plot-y-editor button {
-  background: #0f141d;
-  color: #94a3b8;
-  border: 1px solid #2c3444;
-  border-radius: 3px;
-  font: inherit;
-  font-size: 0.72rem;
-  padding: 0 0.25rem;
-  cursor: pointer;
 }
 
 /* Phase 10 Track 2 transmit panel. Single column of collapsible

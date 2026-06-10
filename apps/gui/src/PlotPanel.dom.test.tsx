@@ -323,9 +323,9 @@ describe("PlotPanel", () => {
       target: { value: "*|s:256:EngineSpeed" },
     });
     await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
-    const swatch = screen.getByTitle("hide this signal");
+    const swatch = screen.getByTitle(/^hide this signal/);
     fireEvent.click(swatch);
-    expect(screen.getByTitle("show this signal")).toBeInTheDocument();
+    expect(screen.getByTitle(/^show this signal/)).toBeInTheDocument();
     // The signal's value still renders (it just isn't drawn on the plot).
     expect(screen.getByText("EngineSpeed")).toBeInTheDocument();
   });
@@ -336,5 +336,106 @@ describe("PlotPanel", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: /measurements/i }));
     expect(document.querySelector(".plot-meas-strip")).not.toBeNull();
     expect(screen.getByText("Δt")).toBeInTheDocument();
+  });
+
+  it("seeds a dropped signal's colour from the target area's existing series count", async () => {
+    // Drop two signals onto Area 1 in succession; the second should get
+    // a different colour from the first (target.signals.length grows).
+    renderPanel();
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: /EngineData\.EngineSpeed/ })).toBeInTheDocument(),
+    );
+    const picker = screen.getByLabelText("add signal to focused plot area") as HTMLSelectElement;
+    fireEvent.change(picker, { target: { value: "*|s:256:EngineSpeed" } });
+    await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
+    fireEvent.change(picker, { target: { value: "*|s:256:EngineTemp" } });
+    await waitFor(() => expect(screen.getByText("EngineTemp")).toBeInTheDocument());
+    const swatches = document.querySelectorAll(".plot-signal-swatch");
+    expect(swatches.length).toBe(2);
+    const c1 = (swatches[0] as HTMLElement).style.background;
+    const c2 = (swatches[1] as HTMLElement).style.background;
+    expect(c1).not.toBe("");
+    expect(c2).not.toBe("");
+    expect(c1).not.toBe(c2);
+  });
+
+  it("changing a series' colour via the swatch picker updates the swatch", async () => {
+    renderPanel();
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: /EngineData\.EngineSpeed/ })).toBeInTheDocument(),
+    );
+    fireEvent.change(screen.getByLabelText("add signal to focused plot area"), {
+      target: { value: "*|s:256:EngineSpeed" },
+    });
+    await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
+    const picker = screen.getByLabelText("pick series colour") as HTMLInputElement;
+    fireEvent.change(picker, { target: { value: "#123456" } });
+    // The swatch's background style should reflect the new colour.
+    // jsdom normalises hex → rgb() in inline styles.
+    const swatch = document.querySelector(".plot-signal-swatch") as HTMLElement;
+    expect(swatch.style.background).toBe("rgb(18, 52, 86)");
+  });
+
+  it("y-axis-mode selector switches an area between unified / per-unit / individual; per-unit splits by unit", async () => {
+    renderPanel();
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: /EngineData\.EngineSpeed/ })).toBeInTheDocument(),
+    );
+    const picker = screen.getByLabelText("add signal to focused plot area") as HTMLSelectElement;
+    fireEvent.change(picker, { target: { value: "*|s:256:EngineSpeed" } });
+    await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
+    fireEvent.change(picker, { target: { value: "*|s:256:EngineTemp" } });
+    await waitFor(() => expect(screen.getByText("EngineTemp")).toBeInTheDocument());
+    // One area, two signals, unified mode → one canvas.
+    expect(document.querySelectorAll(".plot-area").length).toBe(1);
+    const modeSel = screen.getByLabelText("y-axis mode") as HTMLSelectElement;
+    expect(modeSel.value).toBe("unified");
+    // Switch to per-unit. The fixture has two distinct units (rpm,
+    // degC) so the derived axes split into two.
+    fireEvent.change(modeSel, { target: { value: "per-unit" } });
+    expect(document.querySelectorAll(".plot-area").length).toBe(2);
+    expect(screen.getByText(/Area 1 · \[rpm\]/)).toBeInTheDocument();
+    expect(screen.getByText(/Area 1 · \[degC\]/)).toBeInTheDocument();
+    // Switch to individual: same as per-unit here (one per signal).
+    // Re-query the selector — react may have re-mounted it.
+    fireEvent.change(screen.getByLabelText("y-axis mode"), { target: { value: "individual" } });
+    expect(document.querySelectorAll(".plot-area").length).toBe(2);
+    expect(screen.getByText(/Area 1 · EngineSpeed/)).toBeInTheDocument();
+  });
+
+  it("measurement strip lists each signal exactly once in per-unit mode", async () => {
+    // Regression guard for the derived-axis id mismatch: the strip's
+    // per-trace cells must enumerate the *derived* axes (where
+    // reportSeries stores each axis's series), and each signal lives
+    // in exactly one derived axis, so per-unit mode shows one cell
+    // set per signal — not zero (lookup miss) and not duplicates.
+    renderPanel();
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: /EngineData\.EngineSpeed/ })).toBeInTheDocument(),
+    );
+    const picker = screen.getByLabelText("add signal to focused plot area") as HTMLSelectElement;
+    fireEvent.change(picker, { target: { value: "*|s:256:EngineSpeed" } });
+    await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
+    fireEvent.change(picker, { target: { value: "*|s:256:EngineTemp" } });
+    await waitFor(() => expect(screen.getByText("EngineTemp")).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText("y-axis mode"), { target: { value: "per-unit" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: /measurements/i }));
+    // Default measurement keys include the per-trace value@A cell.
+    expect(screen.getAllByText(/EngineData\.EngineSpeed @A/).length).toBe(1);
+    expect(screen.getAllByText(/EngineData\.EngineTemp @A/).length).toBe(1);
+  });
+
+  it("show-points tri-state defaults to auto and persists to panel params", () => {
+    const api = renderPanel();
+    const sel = screen.getByLabelText("show points") as HTMLSelectElement;
+    expect(sel.value).toBe("auto");
+    fireEvent.change(sel, { target: { value: "on" } });
+    expect(sel.value).toBe("on");
+    // Last updateParameters call carries the new mode.
+    const calls = api.updateParameters.mock.calls;
+    const lastCall = calls[calls.length - 1]?.[0] ?? {};
+    expect(lastCall.showPoints).toBe("on");
+    fireEvent.change(sel, { target: { value: "off" } });
+    expect((screen.getByLabelText("show points") as HTMLSelectElement).value).toBe("off");
   });
 });

@@ -1,6 +1,6 @@
 # ADR 0026 — Plot areas compose signals; axes configure how they're viewed
 
-Status: accepted (2026-06-09)
+Status: accepted (2026-06-09; partially shipped — see "Implementation status")
 
 The plot view grows a level. Until now a plot panel held a flat list
 of plot areas, each rendering as exactly one chart. This ADR records
@@ -50,11 +50,18 @@ auto behaviour). There is no fixed user-set `{min,max}` range; the old
 
 **Enum series render as a logic-analyzer lane when they have their own
 axis** (per-unit / individual): the enum is still plotted numerically
-— points honour the show-points control — with a high-opacity text box
-overlaid on each constant-value segment showing the enum label. Under
-unified mode an enum plots as a plain numeric line with no labels (a
-text box per overlaid enum would be noise). "Lane" is an axis *render
-style*, not a new structural level.
+— points honour the show-points control — with a high-opacity label
+box overlaid on each constant-value segment showing the enum label.
+The boxes sit in a **centered horizontal band** down the middle of
+the plot rather than tracking the held value's y position. A value
+table with many entries collapses per-value lanes to a few pixels;
+decoupling the label band from the value gives the labels all the
+room they need, while the stepped line still draws at the actual
+value so the user reads "what value" from line height and "which
+label" from the centered ribbon. Under unified mode an enum plots as
+a plain numeric line with no labels (a text box per overlaid enum
+would be noise). "Lane" is an axis *render style*, not a new
+structural level.
 
 **Each axis maps to one uPlot instance.** This keeps us consistent
 with [ADR 0007](0007-uplot-plot-renderer.md):
@@ -121,6 +128,71 @@ a multi-region renderer uPlot doesn't natively provide.
 - **Enum text boxes in unified mode too.** A label per held segment
   across every overlaid enum is visual noise; enums fall back to a
   bare numeric line when sharing an axis.
+
+## Implementation status
+
+Task 15 ships the model with the deviations and rough edges noted
+below:
+
+- **Show-points control** (`auto` / `off` / `on`) is on the plot
+  toolbar and applies to every series in every axis of the panel.
+- **Y-axis-mode selector** (`unified` / `per-unit` / `individual`)
+  sits in each plot area's signal-panel head. Switching modes
+  re-stacks the area's canvases. The per-axis derivation is the pure
+  `deriveAxesForArea()` helper (covered by unit tests).
+- **Unit-based y-scale.** Same-unit series on an axis share one y
+  scale — the union of their observed ranges, computed by the pure
+  `groupScaleRanges()` helper in `plotData` — and each unit group
+  auto-scales independently to fill the axis. One refinement on the
+  decision table: **unitless series each keep their own scale**. Two
+  signals that merely both lack a DBC unit are not known to be
+  commensurable, and pinning them to a shared min/max would flatten
+  whichever has the smaller range; "shares a unit" is read as
+  "shares a *declared* unit".
+- **Multi-uPlot per area.** Each derived axis is a stacked uPlot
+  instance with its own canvas and signal-list slice; the panel-level
+  x-sync registry (`xSyncRef` + `registerInstance`) was already
+  per-instance, so cursors, zoom, and pan stay coherent across the
+  stack. Area-level chrome (filter editor, y-axis-mode selector,
+  remove ×) renders only on the first derived axis of each parent.
+- **Fixed-range yMode** is gone. The old `yMode: "auto" | {min,max}`
+  field is no longer persisted; old projects parse with the field
+  ignored.
+- **Per-series colour picker** is on each signal-row's swatch
+  (right-click opens the browser's native picker).
+- **16-colour wheel** is the seed; a dragged-in series picks its
+  colour from the wheel index equal to the count of series already
+  in the target area.
+- **X-axis cursor labels** render the cursor's letter + time on every
+  axis (used to only render on the bottom axis).
+- **Logic-analyzer lane overlays.** On an enum-only axis the stepped
+  line carries an opaque label box on each constant-value segment,
+  centred on the held value and tinted by the series colour. Pure
+  `enumSegments()` walks the (t, v) arrays; the draw hook then
+  reuses the cursor-label box style. Segments narrower than the
+  label width are skipped (the user can zoom in for those).
+
+What's still rough:
+
+- **Primary signal is per *area*, not per axis.** The decision above
+  gives each axis its own primary signal; the implementation keeps
+  one `primarySignalKey` per plot area, shared by its derived axes.
+  Clicking a series sets the area's primary; a derived axis that
+  doesn't contain that series falls back to its own first non-hidden
+  signal — so in practice each axis labels itself sensibly, but the
+  user can't pin a *different* explicit primary on two axes of the
+  same area. Lift the key onto the derived axis if that ever bites.
+- **Per-unit grouping is unit-based only.** The `deriveAxesForArea`
+  helper has an `isEnum` predicate slot to break enum series out
+  onto their own axis in per-unit mode, but the panel doesn't
+  source it yet (each PlotArea queries `list_value_tables` for its
+  signal subset; the panel level doesn't roll up that information).
+  In practice today: an enum series in per-unit mode shares an axis
+  with anything else of the same unit, so the logic-analyzer lane
+  overlay only activates in `individual` mode (or in a manual area
+  that holds a single enum signal). The fix is panel-level
+  enum-awareness fed into `deriveAxesForArea`'s `isEnum` slot —
+  tracked in `plans/backlog.md`.
 
 ## Consequences
 

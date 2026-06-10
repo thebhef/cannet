@@ -135,6 +135,99 @@ export function signalKey(
 }
 
 /**
+ * Walk a stepped enum series and return its constant-value segments,
+ * each as `(t0, tEnd, v)`:
+ *
+ * - `t0` is the timestamp of the first sample holding `v`.
+ * - `tEnd` is the timestamp at which the held value visually *ends*,
+ *   matching uPlot's stepped-line rendering — i.e. the timestamp of
+ *   the *next* sample (which is where the value changes), not the
+ *   last sample of the run. A stepped line holds a sample's value
+ *   forward until the next sample, so a box drawn `[t0, tEnd]` covers
+ *   exactly the visible held interval.
+ * - For the very last segment of the series there's no next sample;
+ *   `tEnd` falls back to the last sample's own timestamp.
+ *
+ * Used by the plot panel's logic-analyzer lane (ADR 0026) to overlay
+ * a label box on each held segment.
+ *
+ * A `null` sample ends the current segment without starting a new
+ * one: when the source is sparse (e.g. a frame that didn't fire) the
+ * gap should not get a label.
+ */
+export function enumSegments(
+  ts: ReadonlyArray<number>,
+  vs: ReadonlyArray<number | null>,
+): Array<{ t0: number; tEnd: number; v: number }> {
+  const out: Array<{ t0: number; tEnd: number; v: number }> = [];
+  const n = Math.min(ts.length, vs.length);
+  if (n === 0) return out;
+  let runStart = 0;
+  for (let i = 1; i <= n; i++) {
+    const sameAsRun = i < n && vs[i] === vs[runStart];
+    if (sameAsRun) continue;
+    const v = vs[runStart];
+    if (v != null) {
+      // Box extends to the next sample's timestamp (where the value
+      // actually changes) — matches the stepped line. Fall back to
+      // the last sample's own timestamp on the final segment.
+      const tEnd = i < n ? ts[i] : ts[i - 1];
+      out.push({ t0: ts[runStart], tEnd, v });
+    }
+    runStart = i;
+  }
+  return out;
+}
+
+/**
+ * Unit-based y-scale grouping (ADR 0026): on an axis, series sharing
+ * a unit share one y scale, and each unit group auto-scales
+ * independently to fill the axis.
+ *
+ * Given each signal's own observed value range (the plot area's
+ * per-signal auto-norm latch), returns the range each signal should
+ * actually be *normalised by*: the union (min lo, max hi) of the
+ * latched ranges across every signal in its unit group. Signals with
+ * a non-empty unit group by that unit; **unitless signals each form
+ * their own group** — two signals that merely both lack a unit are
+ * not known to be commensurable, and pinning them to a shared scale
+ * would flatten whichever has the smaller range.
+ *
+ * A signal with no entry in `perSignalRanges` (nothing decoded yet,
+ * or all values equal so far) contributes nothing to its group and
+ * gets no entry in the result — the renderer keeps its midline
+ * fallback for it.
+ */
+export function groupScaleRanges(
+  members: ReadonlyArray<{ key: string; unit: string }>,
+  perSignalRanges: ReadonlyMap<string, { lo: number; hi: number }>,
+): Map<string, { lo: number; hi: number }> {
+  // Pass 1: union each unit group's range.
+  const groupRange = new Map<string, { lo: number; hi: number }>();
+  const groupKeyFor = (m: { key: string; unit: string }) =>
+    m.unit ? `unit:${m.unit}` : `sig:${m.key}`;
+  for (const m of members) {
+    const r = perSignalRanges.get(m.key);
+    if (!r) continue;
+    const gk = groupKeyFor(m);
+    const g = groupRange.get(gk);
+    if (!g) groupRange.set(gk, { lo: r.lo, hi: r.hi });
+    else {
+      if (r.lo < g.lo) g.lo = r.lo;
+      if (r.hi > g.hi) g.hi = r.hi;
+    }
+  }
+  // Pass 2: hand each signal its group's range.
+  const out = new Map<string, { lo: number; hi: number }>();
+  for (const m of members) {
+    if (!perSignalRanges.has(m.key)) continue;
+    const g = groupRange.get(groupKeyFor(m));
+    if (g) out.set(m.key, { lo: g.lo, hi: g.hi });
+  }
+  return out;
+}
+
+/**
  * Min/max-decimate a `(t, v)` series to roughly `maxBuckets` time
  * buckets — keep the min- and max-value point of each bucket (in time
  * order) so peaks/troughs survive. Bucketing is by index (the trace

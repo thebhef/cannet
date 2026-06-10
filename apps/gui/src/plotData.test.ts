@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { decimatePoints, decodeSignalsSample, mergeSeries, signalKey } from "./plotData";
+import {
+  decimatePoints,
+  decodeSignalsSample,
+  enumSegments,
+  groupScaleRanges,
+  mergeSeries,
+  signalKey,
+} from "./plotData";
 
 describe("mergeSeries", () => {
   it("returns an empty data set with no series", () => {
@@ -156,5 +163,127 @@ describe("decodeSignalsSample", () => {
     const buf = new ArrayBuffer(44);
     new DataView(buf).setUint32(0, 0xdeadbeef, true);
     expect(() => decodeSignalsSample(buf)).toThrow(/bad magic/);
+  });
+});
+
+describe("groupScaleRanges", () => {
+  const ranges = (entries: Array<[string, { lo: number; hi: number }]>) => new Map(entries);
+
+  it("same-unit signals share the union of their ranges", () => {
+    const out = groupScaleRanges(
+      [
+        { key: "v1", unit: "V" },
+        { key: "v2", unit: "V" },
+      ],
+      ranges([
+        ["v1", { lo: 0, hi: 5 }],
+        ["v2", { lo: 3, hi: 12 }],
+      ]),
+    );
+    expect(out.get("v1")).toEqual({ lo: 0, hi: 12 });
+    expect(out.get("v2")).toEqual({ lo: 0, hi: 12 });
+  });
+
+  it("different units scale independently", () => {
+    const out = groupScaleRanges(
+      [
+        { key: "v", unit: "V" },
+        { key: "i", unit: "A" },
+      ],
+      ranges([
+        ["v", { lo: 0, hi: 400 }],
+        ["i", { lo: -5, hi: 5 }],
+      ]),
+    );
+    expect(out.get("v")).toEqual({ lo: 0, hi: 400 });
+    expect(out.get("i")).toEqual({ lo: -5, hi: 5 });
+  });
+
+  it("unitless signals do not share a scale with each other", () => {
+    const out = groupScaleRanges(
+      [
+        { key: "a", unit: "" },
+        { key: "b", unit: "" },
+      ],
+      ranges([
+        ["a", { lo: 0, hi: 1 }],
+        ["b", { lo: 0, hi: 1000 }],
+      ]),
+    );
+    expect(out.get("a")).toEqual({ lo: 0, hi: 1 });
+    expect(out.get("b")).toEqual({ lo: 0, hi: 1000 });
+  });
+
+  it("a signal with no observed range gets no entry and doesn't poison its group", () => {
+    const out = groupScaleRanges(
+      [
+        { key: "v1", unit: "V" },
+        { key: "v2", unit: "V" },
+      ],
+      ranges([["v1", { lo: 1, hi: 2 }]]),
+    );
+    expect(out.get("v1")).toEqual({ lo: 1, hi: 2 });
+    expect(out.has("v2")).toBe(false);
+  });
+
+  it("returns copies — mutating an output range does not affect group mates", () => {
+    const out = groupScaleRanges(
+      [
+        { key: "v1", unit: "V" },
+        { key: "v2", unit: "V" },
+      ],
+      ranges([
+        ["v1", { lo: 0, hi: 1 }],
+        ["v2", { lo: 0, hi: 2 }],
+      ]),
+    );
+    out.get("v1")!.hi = 99;
+    expect(out.get("v2")).toEqual({ lo: 0, hi: 2 });
+  });
+});
+
+describe("enumSegments", () => {
+  it("returns empty for empty input", () => {
+    expect(enumSegments([], [])).toEqual([]);
+  });
+
+  it("a single-segment series ends at its last sample (no next sample to step to)", () => {
+    expect(enumSegments([0, 1, 2, 3], [1, 1, 1, 1])).toEqual([
+      { t0: 0, tEnd: 3, v: 1 },
+    ]);
+  });
+
+  it("a transition extends the prior segment's tEnd to the transition timestamp", () => {
+    // 1 holds samples 0..3 (t=0..3); the value visibly switches at t=4
+    // so the box reaches t=4, not t=3. Then 2 holds samples 4..6 and
+    // ends at its last sample (no further transition).
+    expect(enumSegments([0, 1, 2, 3, 4, 5, 6], [1, 1, 1, 1, 2, 2, 2])).toEqual([
+      { t0: 0, tEnd: 4, v: 1 },
+      { t0: 4, tEnd: 6, v: 2 },
+    ]);
+  });
+
+  it("single-sample segments still mark the next transition as tEnd", () => {
+    expect(enumSegments([0, 1, 2], [1, 2, 1])).toEqual([
+      { t0: 0, tEnd: 1, v: 1 },
+      { t0: 1, tEnd: 2, v: 2 },
+      { t0: 2, tEnd: 2, v: 1 }, // last segment has no successor
+    ]);
+  });
+
+  it("null samples break the run without emitting a label", () => {
+    // A gap should not get a labelled box; the segments on either side
+    // do. The held value's tEnd reaches the gap's first timestamp
+    // (where the held value visually stops).
+    expect(enumSegments([0, 1, 2, 3], [1, null, null, 2])).toEqual([
+      { t0: 0, tEnd: 1, v: 1 },
+      { t0: 3, tEnd: 3, v: 2 },
+    ]);
+  });
+
+  it("tolerates mismatched array lengths by walking the shorter one", () => {
+    // Defensive: the renderer reads u.data[0] and u.data[1] which
+    // should always align, but a corrupt frame shouldn't crash.
+    expect(enumSegments([0, 1, 2, 3], [1, 1])).toEqual([{ t0: 0, tEnd: 1, v: 1 }]);
   });
 });

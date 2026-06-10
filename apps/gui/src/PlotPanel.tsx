@@ -12,7 +12,7 @@ import { useElementRegistry } from "./projectElements";
 import { useTrace } from "./trace";
 import { TraceControls } from "./TraceControls";
 import { useNotes } from "./notesContext";
-import { decodeSignalsSample, mergeSeries, signalKey } from "./plotData";
+import { decodeSignalsSample, enumSegments, groupScaleRanges, mergeSeries, signalKey } from "./plotData";
 import { SourcesMenuSection } from "./SourcesPicker";
 import {
   DEFAULT_MEASUREMENTS,
@@ -95,6 +95,10 @@ import {
  * scale; enum/state signals; triggers; CSV/image export.
  */
 
+/** The colour wheel used to seed a new series' colour. Per ADR 0026
+ * task 15 the wheel is at least 16 colours deep; the index for a
+ * fresh series is `(signals already in that plot area) % len`, so
+ * the first 16 series in any one area get distinct hues. */
 const TRACE_COLORS = [
   "#c6f24e",
   "#4ecbff",
@@ -104,6 +108,14 @@ const TRACE_COLORS = [
   "#ffd93d",
   "#5ddb7c",
   "#e15dcf",
+  "#8ce0d4",
+  "#ff9bd2",
+  "#a0bfff",
+  "#d0ff7a",
+  "#ff6b6b",
+  "#7be3ff",
+  "#ffcf85",
+  "#c39bff",
 ];
 const CURSOR_A_COLOR = "#ffd93d";
 const CURSOR_B_COLOR = "#ff5577";
@@ -131,7 +143,7 @@ const DEFAULT_FOLLOW_WIDTH_SECONDS = 10;
 
 type CursorMode = "off" | "x" | "y" | "note";
 
-interface SignalRef {
+export interface SignalRef {
   /** Logical bus this signal is bound to. `null` is the legacy
    * "any bus" path — kept so plots from projects that pre-date
    * per-bus signal binding still sample. New picks always carry a
@@ -150,12 +162,15 @@ interface SignalRef {
   hidden?: boolean;
 }
 
-type YMode = "auto" | { min: number; max: number };
-
 export interface PlotAreaConfig {
   id: string;
   signals: SignalRef[];
-  yMode: YMode;
+  /** How the area's series lay out across axes (ADR 0026). `unified`
+   * (default) draws one axis with all series overlaid; `per-unit`
+   * stacks one axis per unit (each enum series gets its own); and
+   * `individual` stacks one axis per series. Y scales are always
+   * auto-derived (no fixed-range option). */
+  yAxisMode?: YAxisMode;
   /** Which signal's raw range / unit drives the y-axis labels for this
    * area. `null` falls back to the first non-hidden signal — that's
    * what `primarySignalForArea` resolves it to. Click a signal row in
@@ -187,6 +202,13 @@ interface XCursors {
   b: number | null;
 }
 
+/** Show-points tri-state — applies to every series on every axis of
+ * every plot area in the panel. `auto` defers to uPlot's
+ * density-aware mode (`points: { show: "auto" }`), which only draws
+ * points when there's room between samples; `off` forces no points;
+ * `on` forces points always. See task 15 / ADR 0026. */
+type ShowPointsMode = "auto" | "off" | "on";
+
 interface PlotPanelParams {
   elementId?: unknown;
   areas?: unknown;
@@ -201,6 +223,23 @@ interface PlotPanelParams {
   // store. A tolerant parser ignores the extra field on older blobs.
   maxRateHz?: unknown;
   signalsWidthPx?: unknown;
+  showPoints?: unknown;
+}
+
+function showPointsFromRaw(v: unknown): ShowPointsMode {
+  return v === "off" || v === "on" ? v : "auto";
+}
+
+/** Map the panel's tri-state to a uPlot `Series.points` spec.
+ *
+ * - `auto` → omit `show`, so uPlot's default density-aware filter
+ *   draws points only when the sample-to-pixel ratio is low enough.
+ * - `off` → `show: false`.
+ * - `on` → `show: true`. */
+function showPointsToUplot(mode: ShowPointsMode): { show?: boolean } {
+  if (mode === "off") return { show: false };
+  if (mode === "on") return { show: true };
+  return {};
 }
 
 /** Per-area side-panel width range (pixels). Default and clamps for
@@ -290,16 +329,6 @@ function parseDroppedSignals(s: string): {
   };
 }
 
-function yModeFromRaw(raw: unknown): YMode {
-  if (typeof raw === "object" && raw !== null) {
-    const o = raw as Record<string, unknown>;
-    if (typeof o.min === "number" && typeof o.max === "number" && o.min < o.max) {
-      return { min: o.min, max: o.max };
-    }
-  }
-  return "auto";
-}
-
 function areasFromParams(raw: unknown): PlotAreaConfig[] {
   if (Array.isArray(raw)) {
     const out: PlotAreaConfig[] = [];
@@ -308,17 +337,20 @@ function areasFromParams(raw: unknown): PlotAreaConfig[] {
       const o = a as Record<string, unknown>;
       const id = typeof o.id === "string" ? o.id : crypto.randomUUID();
       const signals = (Array.isArray(o.signals) ? o.signals.filter(isSignalRefCore) : []).map((s, i) => withColor(s, i));
+      // `yMode` from a v7-and-earlier panel is ignored — y scales are
+      // always auto-derived (ADR 0026). The field is tolerated on
+      // parse so old projects don't reject; saving drops it.
       out.push({
         id,
         signals,
-        yMode: yModeFromRaw(o.yMode),
+        yAxisMode: yAxisModeFromRaw(o.yAxisMode),
         primarySignalKey: typeof o.primarySignalKey === "string" ? o.primarySignalKey : null,
         signalFilter: typeof o.signalFilter === "string" ? o.signalFilter : undefined,
       });
     }
     if (out.length > 0) return out;
   }
-  return [{ id: crypto.randomUUID(), signals: [], yMode: "auto", primarySignalKey: null }];
+  return [{ id: crypto.randomUUID(), signals: [], primarySignalKey: null }];
 }
 
 function cursorModeFromRaw(raw: unknown): CursorMode {
@@ -400,6 +432,12 @@ function elementIdFromParams(raw: unknown): string {
 // Filter helpers live in `./plotFilter` so the pure-logic
 // tests can import them without dragging uplot into a jsdom run.
 import { applyAreaFilters } from "./plotFilter";
+import { deriveAxesForArea, type YAxisMode } from "./plotAxisDerivation";
+
+const Y_AXIS_MODES: YAxisMode[] = ["unified", "per-unit", "individual"];
+function yAxisModeFromRaw(v: unknown): YAxisMode {
+  return v === "per-unit" || v === "individual" ? v : "unified";
+}
 
 export function PlotPanel(props: IDockviewPanelProps) {
   const data = useTraceData();
@@ -459,6 +497,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
   );
   const [maxRateHz, setMaxRateHz] = useState(() => maxRateFromRaw(params?.maxRateHz));
   const resampleIntervalMs = Math.max(1, Math.round(1000 / maxRateHz));
+  const [showPoints, setShowPoints] = useState<ShowPointsMode>(() => showPointsFromRaw(params?.showPoints));
   /** Pixel width of every area's side panel — user-resizable via a
    * drag handle, persisted in panel params. */
   const [signalsWidth, setSignalsWidth] = useState(() => signalsWidthFromRaw(params?.signalsWidthPx));
@@ -677,6 +716,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
       cursorYByArea,
       maxRateHz,
       signalsWidthPx: signalsWidth,
+      showPoints,
     });
   }, [
     api,
@@ -691,6 +731,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     cursorYByArea,
     maxRateHz,
     signalsWidth,
+    showPoints,
   ]);
 
   const refreshCatalog = useCallback(() => {
@@ -718,29 +759,36 @@ export function PlotPanel(props: IDockviewPanelProps) {
   // --- area ops ---
   const addArea = useCallback(() => {
     setAreas((prev) => {
-      const next: PlotAreaConfig = { id: crypto.randomUUID(), signals: [], yMode: "auto", primarySignalKey: null };
+      const next: PlotAreaConfig = { id: crypto.randomUUID(), signals: [], primarySignalKey: null };
       setFocusedAreaId(next.id);
       return [...prev, next];
     });
   }, []);
   const removeArea = useCallback((id: string) => {
     setAreas((prev) => (prev.length <= 1 ? prev : prev.filter((a) => a.id !== id)));
+    // Per-axis state is keyed by *derived* axis id: the parent's id in
+    // unified mode, `${parentId}/…` per derived axis otherwise. Match
+    // both so a per-unit / individual area doesn't leak its axes'
+    // entries on removal.
+    const belongsToArea = (k: string) => k === id || k.startsWith(`${id}/`);
     setCursorYByArea((prev) => {
-      if (!(id in prev)) return prev;
-      const { [id]: _drop, ...rest } = prev;
+      const keys = Object.keys(prev).filter(belongsToArea);
+      if (keys.length === 0) return prev;
+      const rest = { ...prev };
+      for (const k of keys) delete rest[k];
       return rest;
     });
     setSeriesByArea((prev) => {
-      if (!prev.has(id)) return prev;
+      const keys = [...prev.keys()].filter(belongsToArea);
+      if (keys.length === 0) return prev;
       const next = new Map(prev);
-      next.delete(id);
+      for (const k of keys) next.delete(k);
       return next;
     });
   }, []);
-  const setAreaYMode = useCallback((id: string, yMode: YMode) => {
-    setAreas((prev) => prev.map((a) => (a.id === id ? { ...a, yMode } : a)));
+  const setAreaYAxisMode = useCallback((id: string, mode: YAxisMode) => {
+    setAreas((prev) => prev.map((a) => (a.id === id ? { ...a, yAxisMode: mode } : a)));
   }, []);
-
   const setAreaPrimarySignal = useCallback((id: string, key: string | null) => {
     setAreas((prev) => prev.map((a) => (a.id === id ? { ...a, primarySignalKey: key } : a)));
   }, []);
@@ -792,7 +840,11 @@ export function PlotPanel(props: IDockviewPanelProps) {
         // that might call this.
         const target = prev.find((a) => a.id === targetId);
         if (target?.signalFilter != null) return prev;
-        const total = prev.reduce((n, a) => n + a.signals.length, 0);
+        // Colour-wheel index is the count of signals *already in this
+        // plot area*, per ADR 0026 — so the first 16 series in any
+        // one area get distinct hues regardless of what other areas
+        // hold.
+        const seedIdx = target?.signals.length ?? 0;
         const ref: SignalRef = {
           busId: desc.bus_id,
           messageId: desc.message_id,
@@ -800,7 +852,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
           signalName: desc.signal_name,
           messageName: desc.message_name,
           unit: desc.unit,
-          color: TRACE_COLORS[total % TRACE_COLORS.length],
+          color: TRACE_COLORS[seedIdx % TRACE_COLORS.length],
         };
         const key = signalRefKey(ref);
         if (prev.some((a) => a.signals.some((s) => signalRefKey(s) === key))) return prev;
@@ -868,17 +920,42 @@ export function PlotPanel(props: IDockviewPanelProps) {
         // semantic value to plotting the identical series twice on
         // one axis); duplicates across different areas are fine.
         if (target.signals.some((s) => signalRefKey(s) === key)) return prev;
+        // Re-seed the colour from the *target area's* wheel index, per
+        // ADR 0026: a dragged-in series picks the colour at the
+        // position equal to the count of series already in the area.
+        // Cross-panel drags preserve the source ref's colour
+        // (`parseDroppedSignals` passes it through as-is), which we
+        // discard here so the wheel index is consistent regardless of
+        // where the drag started.
+        const seedIdx = target.signals.length;
+        const seeded: SignalRef = { ...ref, color: TRACE_COLORS[seedIdx % TRACE_COLORS.length] };
         return prev.map((a) => {
           if (a.id !== toAreaId) return a;
-          if (beforeKey == null) return { ...a, signals: [...a.signals, ref] };
+          if (beforeKey == null) return { ...a, signals: [...a.signals, seeded] };
           const idx = a.signals.findIndex((s) => signalRefKey(s) === beforeKey);
-          if (idx < 0) return { ...a, signals: [...a.signals, ref] };
-          return { ...a, signals: [...a.signals.slice(0, idx), ref, ...a.signals.slice(idx)] };
+          if (idx < 0) return { ...a, signals: [...a.signals, seeded] };
+          return { ...a, signals: [...a.signals.slice(0, idx), seeded, ...a.signals.slice(idx)] };
         });
       });
     },
     [],
   );
+  /** Set a series' colour after it's been added (per ADR 0026). Touches
+   * only the named signal's `color` field; everything else (order,
+   * hidden, primary-signal selection) stays put. Filter-mode areas
+   * mutate the *computed* `signals` array — the colour change is
+   * effectively session-only there because the next catalog re-eval
+   * rebuilds the list; that matches the existing hidden-flag behaviour
+   * documented in `toggleSignalHidden`. */
+  const setSignalColor = useCallback((areaId: string, key: string, color: string) => {
+    setAreas((prev) =>
+      prev.map((a) =>
+        a.id === areaId
+          ? { ...a, signals: a.signals.map((s) => (signalRefKey(s) === key ? { ...s, color } : s)) }
+          : a,
+      ),
+    );
+  }, []);
   const toggleSignalHidden = useCallback((areaId: string, key: string) => {
     // Hidden flag toggles even in filter mode — it's display-only
     // and doesn't mutate the set the regex defines. The hidden flag
@@ -991,6 +1068,45 @@ export function PlotPanel(props: IDockviewPanelProps) {
     [areas, catalog, busNameLookup],
   );
 
+  /// Expand each effective area into one or more derived axes, based on
+  /// the area's `yAxisMode` (ADR 0026). Unified produces one entry per
+  /// area (identical to today); per-unit groups signals by unit; and
+  /// individual is one entry per signal. Each derived entry carries
+  /// the parent area so panel-level callbacks (add signal, set primary,
+  /// set mode, remove area) can route to the right place.
+  const derivedAreaConfigs = useMemo(() => {
+    const out: Array<{
+      area: PlotAreaConfig;
+      parentArea: PlotAreaConfig;
+      isFirstOfParent: boolean;
+      subtitle: string | null;
+    }> = [];
+    for (const a of effectiveAreas) {
+      const mode = a.yAxisMode ?? "unified";
+      const axes = deriveAxesForArea(a.id, a.signals, mode);
+      axes.forEach((ax, i) => {
+        // The derived `PlotAreaConfig` carries the axis's slice of
+        // signals. `signalFilter` is preserved only on the first
+        // derived axis so the filter UI / status bar doesn't render N
+        // times for one logical area.
+        const derivedArea: PlotAreaConfig = {
+          id: ax.id,
+          signals: ax.signals,
+          yAxisMode: a.yAxisMode,
+          primarySignalKey: a.primarySignalKey,
+          signalFilter: i === 0 ? a.signalFilter : undefined,
+        };
+        out.push({
+          area: derivedArea,
+          parentArea: a,
+          isFirstOfParent: i === 0,
+          subtitle: ax.subtitle,
+        });
+      });
+    }
+    return out;
+  }, [effectiveAreas]);
+
   /// Bus-rename invalidation (ADR 0020). Track the previous match
   /// count for each filter-mode area; when a buses-list change drops
   /// any area's count from non-zero to zero, emit a System Messages
@@ -1045,13 +1161,19 @@ export function PlotPanel(props: IDockviewPanelProps) {
   );
   const areaLabels = useMemo(() => new Map(areas.map((a, i) => [a.id, `Area ${i + 1}`])), [areas]);
 
+  // Iterate the *derived* axes, not the parent areas: `reportSeries`
+  // stores each axis's sampled series under its derived id (which in
+  // per-unit / individual mode differs from the parent's), so the
+  // measurement strip's `seriesFor(areaId, key)` lookups must use the
+  // same ids. Each signal lives in exactly one derived axis of its
+  // parent, so this enumerates every plotted signal exactly once.
   const plottedSignals = useMemo(() => {
     const out: Array<{ key: string; ref: SignalRef; color: string; areaId: string }> = [];
-    for (const a of effectiveAreas) {
-      for (const s of a.signals) out.push({ key: signalRefKey(s), ref: s, color: s.color, areaId: a.id });
+    for (const d of derivedAreaConfigs) {
+      for (const s of d.area.signals) out.push({ key: signalRefKey(s), ref: s, color: s.color, areaId: d.area.id });
     }
     return out;
-  }, [effectiveAreas]);
+  }, [derivedAreaConfigs]);
   const seriesFor = useCallback(
     (areaId: string, key: string): Series | undefined => seriesByArea.get(areaId)?.get(key),
     [seriesByArea],
@@ -1149,6 +1271,21 @@ export function PlotPanel(props: IDockviewPanelProps) {
           <input type="checkbox" checked={followLive} onChange={(e) => setFollowLive(e.target.checked)} />
           follow live
         </label>
+        <label
+          className="plot-cursor-ctl"
+          title="draw sample points on every series: auto = let uPlot decide based on sample density; off = never draw points; on = always draw points"
+        >
+          points
+          <select
+            value={showPoints}
+            onChange={(e) => setShowPoints(e.target.value as ShowPointsMode)}
+            aria-label="show points"
+          >
+            <option value="auto">auto</option>
+            <option value="off">off</option>
+            <option value="on">on</option>
+          </select>
+        </label>
         <span className="plot-toolbar-sep" />
         <label className="plot-cursor-ctl">
           cursors
@@ -1220,21 +1357,40 @@ export function PlotPanel(props: IDockviewPanelProps) {
       )}
 
       <div className="plot-panel-areas">
-        {effectiveAreas.map((area, idx) => {
-          const yc = cursorYByArea[area.id];
+        {derivedAreaConfigs.map((d, idx) => {
+          // Cursor Y is per-derived-axis (so each axis can carry its
+          // own H1/H2). Look it up by the derived id.
+          const yc = cursorYByArea[d.area.id];
+          const parent = d.parentArea;
           return (
             <PlotArea
-              key={area.id}
-              area={area}
-              label={areaLabels.get(area.id) ?? "Area"}
+              key={d.area.id}
+              area={d.area}
+              label={
+                d.subtitle == null
+                  ? areaLabels.get(parent.id) ?? "Area"
+                  : `${areaLabels.get(parent.id) ?? "Area"} · ${d.subtitle}`
+              }
               isFirst={idx === 0}
-              isLast={idx === effectiveAreas.length - 1}
-              focused={area.id === focusedAreaId}
-              removable={effectiveAreas.length > 1}
+              isLast={idx === derivedAreaConfigs.length - 1}
+              // Focus marks the *logical area* the toolbar's "add
+              // signal" targets, so every derived axis of the focused
+              // parent gets the outline — deliberate: the drop target
+              // is the parent area, not one of its axes.
+              focused={parent.id === focusedAreaId}
+              // Removal is parent-area level — only show the X on the
+              // first derived axis of each parent so we don't render N
+              // remove buttons for one logical area.
+              removable={effectiveAreas.length > 1 && d.isFirstOfParent}
+              // Per-axis chrome (y-axis-mode selector, filter editor,
+              // primary-signal click) lives on the first derived axis
+              // of each parent so the user has one source of truth.
+              isParentHead={d.isFirstOfParent}
               winStart={winStart}
               winEnd={winEnd}
               live={live}
               followLive={followLive}
+              showPoints={showPoints}
               resampleIntervalMs={resampleIntervalMs}
               signalsWidth={signalsWidth}
               onResizeSignalsWidth={(w) =>
@@ -1251,7 +1407,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
               onUserXChange={onUserXChange}
               onAreaResampled={onAreaResampled}
               onPlaceCursorX={placeCursorX}
-              onPlaceCursorY={(which, v) => placeCursorY(area.id, which, v)}
+              onPlaceCursorY={(which, v) => placeCursorY(d.area.id, which, v)}
               onAddNote={addNote}
               onReportSeries={reportSeries}
               onReportPerf={reportPerf}
@@ -1262,17 +1418,18 @@ export function PlotPanel(props: IDockviewPanelProps) {
               resetYEpoch={resetYEpoch}
               fitYEpoch={fitYEpoch}
               showDiag={showDiag}
-              onSetYMode={(m) => setAreaYMode(area.id, m)}
-              onSetPrimarySignal={(k) => setAreaPrimarySignal(area.id, k)}
-              onFocus={() => setFocusedAreaId(area.id)}
-              onRemoveArea={() => removeArea(area.id)}
-              onRemoveSignal={(key) => removeSignal(area.id, key)}
+              onSetPrimarySignal={(k) => setAreaPrimarySignal(parent.id, k)}
+              onSetYAxisMode={(m) => setAreaYAxisMode(parent.id, m)}
+              onFocus={() => setFocusedAreaId(parent.id)}
+              onRemoveArea={() => removeArea(parent.id)}
+              onRemoveSignal={(key) => removeSignal(parent.id, key)}
               onDropSignal={(ref, beforeKey, isInternalMove) =>
-                placeSignal(ref, area.id, beforeKey, isInternalMove)
+                placeSignal(ref, parent.id, beforeKey, isInternalMove)
               }
-              onToggleHidden={(key) => toggleSignalHidden(area.id, key)}
-              onSetSignalFilter={(f) => setAreaSignalFilter(area.id, f)}
-              onPromoteFilterToManual={() => promoteFilterToManual(area.id, area.signals)}
+              onToggleHidden={(key) => toggleSignalHidden(parent.id, key)}
+              onSetSignalColor={(key, color) => setSignalColor(parent.id, key, color)}
+              onSetSignalFilter={(f) => setAreaSignalFilter(parent.id, f)}
+              onPromoteFilterToManual={() => promoteFilterToManual(parent.id, parent.signals)}
               busNameLookup={busNameLookup}
               panelElementId={elementId}
             />
@@ -1400,6 +1557,62 @@ function EventLogRow({
   );
 }
 
+/** Colour swatch in a plot-area signal row. Left-click toggles hidden
+ * (preserves prior behaviour); right-click opens the browser's native
+ * colour picker so the user can re-skin the series. The picker is a
+ * stacked hidden `<input type="color">` whose value seeds from the
+ * current swatch — committing fires `onPickColor` with the new
+ * `#rrggbb`. (Native picker chosen over a bespoke palette so we
+ * don't paint a custom UI for a one-off control; OSes render their
+ * own with eye-droppers and recently-used swatches.) */
+function SignalSwatch({
+  hidden,
+  color,
+  onToggleHidden,
+  onPickColor,
+}: {
+  hidden: boolean;
+  color: string;
+  onToggleHidden: () => void;
+  onPickColor: (hex: string) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  return (
+    <span className="plot-signal-swatch-wrap">
+      <button
+        type="button"
+        className={`plot-signal-swatch${hidden ? " hidden" : ""}`}
+        style={{ background: color }}
+        title={
+          hidden
+            ? "show this signal · right-click to pick a colour"
+            : "hide this signal · right-click to pick a colour"
+        }
+        onClick={(e) => {
+          e.stopPropagation();
+          onToggleHidden();
+        }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          inputRef.current?.click();
+        }}
+      />
+      <input
+        ref={inputRef}
+        type="color"
+        aria-label="pick series colour"
+        className="plot-signal-swatch-input"
+        value={color}
+        onChange={(e) => onPickColor(e.target.value)}
+        // Keep the row's click handler from interpreting the input
+        // click as "promote to primary".
+        onClick={(e) => e.stopPropagation()}
+      />
+    </span>
+  );
+}
+
 function MeasurementMenu({
   measKeys,
   onChange,
@@ -1450,10 +1663,19 @@ interface PlotAreaProps {
   isLast: boolean;
   focused: boolean;
   removable: boolean;
+  /** True when this PlotArea instance is the *first derived axis* of
+   * its parent area (or the only axis, in unified mode). Per-area
+   * chrome (y-axis-mode selector, filter editor + status bar) renders
+   * only on the head so we don't surface N copies of the same control
+   * when an area is in per-unit or individual mode. */
+  isParentHead: boolean;
   winStart: number;
   winEnd: number;
   live: boolean;
   followLive: boolean;
+  /** Show-points tri-state from the panel toolbar — applied to every
+   * series on this area's axis. See {@link ShowPointsMode}. */
+  showPoints: ShowPointsMode;
   /** Min spacing between live re-samples (ms) — `1000 / maxRateHz`. */
   resampleIntervalMs: number;
   /** Pixel width of this area's right-hand side panel (signal rows
@@ -1500,10 +1722,11 @@ interface PlotAreaProps {
   /** Reveal the per-row y-range / cached-t-range diagnostic readout
    * (panel-level "diag" toggle). */
   showDiag: boolean;
-  onSetYMode: (m: YMode) => void;
   /** Set this area's primary signal (drives y-axis labels/units).
    * `null` reverts to the first-non-hidden default. */
   onSetPrimarySignal: (key: string | null) => void;
+  /** Set the area's y-axis mode (unified / per-unit / individual). */
+  onSetYAxisMode: (mode: YAxisMode) => void;
   onFocus: () => void;
   onRemoveArea: () => void;
   onRemoveSignal: (key: string) => void;
@@ -1516,6 +1739,9 @@ interface PlotAreaProps {
    * cell, by-id cell, another plot panel). */
   onDropSignal: (ref: SignalRef, beforeKey: string | null, isInternalMove: boolean) => void;
   onToggleHidden: (key: string) => void;
+  /** Set a series' colour to the given `#rrggbb` value (ADR 0026
+   * per-series colour picker). */
+  onSetSignalColor: (key: string, color: string) => void;
   /** Set or clear this area's `signalFilter` (ADR 0020). Pass
    * `undefined` to revert the area to manual mode without promoting
    * the computed signals; the parent's `onPromoteFilterToManual`
@@ -1578,10 +1804,12 @@ function PlotArea(p: PlotAreaProps) {
     isLast,
     focused,
     removable,
+    isParentHead,
     winStart,
     winEnd,
     live,
     followLive,
+    showPoints,
     resampleIntervalMs,
     signalsWidth,
     onResizeSignalsWidth,
@@ -1607,13 +1835,14 @@ function PlotArea(p: PlotAreaProps) {
     resetYEpoch,
     fitYEpoch,
     showDiag,
-    onSetYMode,
     onSetPrimarySignal,
+    onSetYAxisMode,
     onFocus,
     onRemoveArea,
     onRemoveSignal,
     onDropSignal,
     onToggleHidden,
+    onSetSignalColor,
     onSetSignalFilter,
     onPromoteFilterToManual,
     busNameLookup,
@@ -1662,7 +1891,6 @@ function PlotArea(p: PlotAreaProps) {
   const hoverRafRef = useRef(0);
   const [hoverX, setHoverX] = useState<number | null>(null);
   const [valueTick, setValueTick] = useState(0); // bump → re-render side panel
-  const [yEditOpen, setYEditOpen] = useState(false);
   /** Filter-editor visibility (ADR 0020). Closed by default;
    * the "filter…" button in the side-panel head toggles it. The
    * editor itself is rendered below the head row when open, so it
@@ -1678,7 +1906,6 @@ function PlotArea(p: PlotAreaProps) {
   const areaId = area.id;
   const signals = area.signals;
   const signalSetKey = signals.map(signalRefKey).join("|");
-  const yMode = area.yMode;
   /** Which signal's raw range / unit drives the y-axis labels. Falls
    * back to the first non-hidden signal if the configured key is no
    * longer present (signal removed). `null` when the area is empty. */
@@ -1707,31 +1934,43 @@ function PlotArea(p: PlotAreaProps) {
   // bypassed (the values are discrete enum codes, no rescaling),
   // the series is rendered stepped (not linearly interpolated
   // between codes), and the y-axis ticks become symbolic labels
-  // from the table. Multi-signal areas keep current behaviour —
-  // their value-table follow-up (per-signal stepped overlays,
-  // multiple symbolic axes) is deferred.
-  const [valueTable, setValueTable] = useState<ValueTableEntryRecord[] | null>(null);
+  // from the table. Multi-signal areas keep current behaviour for
+  // the axis itself; the per-signal table cache below feeds the
+  // side panel so an enum value reads as `<label> (<raw>)` for
+  // every signal regardless of axis mode.
+  const [valueTables, setValueTables] = useState<Map<string, ValueTableEntryRecord[]>>(new Map());
   useEffect(() => {
-    setValueTable(null);
-    if (signals.length !== 1) return;
-    const s = signals[0];
     let cancelled = false;
-    void invoke<ValueTableEntryRecord[]>("list_value_tables", {
-      messageId: s.messageId,
-      extended: s.extended,
-      signalName: s.signalName,
-    })
-      .then((rows) => {
-        if (cancelled) return;
-        setValueTable(rows.length > 0 ? rows : null);
-      })
-      .catch(() => {
-        /* leave numeric mode on failure */
-      });
+    const accum = new Map<string, ValueTableEntryRecord[]>();
+    Promise.all(
+      signals.map(async (s) => {
+        try {
+          const rows = await invoke<ValueTableEntryRecord[]>("list_value_tables", {
+            messageId: s.messageId,
+            extended: s.extended,
+            signalName: s.signalName,
+          });
+          if (rows.length > 0) accum.set(signalRefKey(s), rows);
+        } catch {
+          /* signal stays numeric */
+        }
+      }),
+    ).then(() => {
+      if (cancelled) return;
+      setValueTables(accum);
+    });
     return () => {
       cancelled = true;
     };
   }, [signals]);
+  // Axis-level enum mode is still gated on `signals.length === 1`
+  // (the stepped path + symbolic y-axis ticks + label band only
+  // make sense on a single-enum axis); derive that from the
+  // per-signal map.
+  const valueTable = useMemo<ValueTableEntryRecord[] | null>(() => {
+    if (signals.length !== 1) return null;
+    return valueTables.get(signalRefKey(signals[0])) ?? null;
+  }, [signals, valueTables]);
   const enumMode = valueTable != null && valueTable.length > 0 && signals.length === 1;
   // Ref mirrors so the resample callback (closure over the initial
   // signal set) sees the up-to-date enum-mode state without being
@@ -1758,7 +1997,6 @@ function PlotArea(p: PlotAreaProps) {
   const liveRef = useRef({
     winStart,
     winEnd,
-    yMode,
     followLive,
     cursorMode,
     cursorXa,
@@ -1782,7 +2020,6 @@ function PlotArea(p: PlotAreaProps) {
     liveRef.current = {
       winStart,
       winEnd,
-      yMode,
       followLive,
       cursorMode,
       cursorXa,
@@ -1979,17 +2216,18 @@ function PlotArea(p: PlotAreaProps) {
       cache.lastWinEnd = lr.winEnd;
 
       const seriesRel: Series[] = signals.map((s) => cache!.byKey.get(signalRefKey(s)) ?? { t: [], v: [] });
-      // Per-trace auto-normalisation: each trace's values are re-mapped
-      // to [0, 1] from its own min/max, so signals with very different
-      // natural ranges (SOC 0–1 vs current ±300) both fill the canvas
-      // height. The side-panel value column still shows the raw value
-      // (`seriesRef` keeps the un-normalised series for that). The
-      // y-axis labels become normalised positions [0, 1] — meaningful
-      // numbers per trace will arrive with the per-trace gain/offset
-      // controls (deferred).
+      // Auto-normalisation: each series is re-mapped to [0, 1] from
+      // its *unit group's* min/max (ADR 0026 — same-unit series share
+      // one y scale; each unit group fills the canvas independently),
+      // so signals with very different natural ranges (SOC 0–1 vs
+      // current ±300) coexist on one axis. The side-panel value column
+      // still shows the raw value (`seriesRef` keeps the un-normalised
+      // series for that); the y-axis tick labels map back through the
+      // primary signal's group range to real engineering values.
       //
-      // Pick a per-signal `(lo, hi)` for normalising each trace to
-      // [0, 1]. Three modes, all backed by `traceRangesRef`:
+      // First latch a per-signal `(lo, hi)` of observed values (group
+      // union happens below, at normalise time). Three modes, all
+      // backed by `traceRangesRef`:
       //
       //  * **Manual override** (Fit Y) — `manualFitYRef.current` is
       //    set, the stored ranges are used as-is until the next Fit
@@ -2028,6 +2266,17 @@ function PlotArea(p: PlotAreaProps) {
           });
         }
       });
+      // Unit-based y-scale (ADR 0026): the per-signal latches above
+      // feed `groupScaleRanges`, which hands every signal the *union*
+      // range of its unit group — so same-unit series share one y
+      // scale and each unit group auto-scales independently to fill
+      // the axis. Unitless signals each keep their own range (two
+      // signals that merely both lack a unit aren't known
+      // commensurable).
+      const scaleRanges = groupScaleRanges(
+        signals.map((s) => ({ key: signalRefKey(s), unit: s.unit })),
+        ranges,
+      );
       // Enum-mode: skip auto-normalisation and pass raw enum codes
       // through. The y scale is pinned to the table's raw-value range
       // below so the trace's discrete codes plot at their natural
@@ -2040,7 +2289,7 @@ function PlotArea(p: PlotAreaProps) {
         : seriesRel.map((s, i) => {
             if (s.v.length === 0) return s;
             const key = signalRefKey(signals[i]);
-            const r = ranges.get(key);
+            const r = scaleRanges.get(key);
             const out = new Array<number>(s.v.length);
             if (r && r.hi > r.lo) {
               effective.set(key, r);
@@ -2080,10 +2329,11 @@ function PlotArea(p: PlotAreaProps) {
           const lo = Math.min(...rows.map((r) => r.raw));
           const hi = Math.max(...rows.map((r) => r.raw));
           u.setScale("y", { min: lo - 0.5, max: hi + 0.5 });
-        } else if (lr.yMode === "auto") {
-          u.setScale("y", { min: 0, max: 1 });
         } else {
-          u.setScale("y", { min: lr.yMode.min, max: lr.yMode.max });
+          // y is always auto-derived (ADR 0026): the data was already
+          // normalised to [0, 1] above and the y-axis formatter
+          // converts ticks back into the primary signal's real units.
+          u.setScale("y", { min: 0, max: 1 });
         }
       });
 
@@ -2240,7 +2490,13 @@ function PlotArea(p: PlotAreaProps) {
           label: `${s.messageName}.${s.signalName}`,
           stroke: s.color,
           width: 1,
-          points: { show: false },
+          // `auto` → uPlot's density-aware default (points drawn when
+          // the per-pixel sample count drops below ~0.5); `off`/`on`
+          // are the explicit overrides. uPlot's `points.show` accepts a
+          // boolean *or* the literal `false` to disable, so we map the
+          // tri-state to a per-series boolean (auto = undefined ⇒ uPlot
+          // default).
+          points: showPointsToUplot(showPoints),
           show: !s.hidden,
           ...(enumActiveAtConstruct && uPlot.paths.stepped
             ? { paths: uPlot.paths.stepped({ align: 1 }) }
@@ -2320,8 +2576,17 @@ function PlotArea(p: PlotAreaProps) {
             for (const ev of lr.events) {
               vline(ev.t, EVENT_COLOR, ev.id === "__t0" ? [] : [2, 3], isFirst ? ev.label : null, true);
             }
-            if (lr.cursorXa != null) vline(lr.cursorXa, CURSOR_A_COLOR, [4, 3], isLast ? "A" : null, false);
-            if (lr.cursorXb != null) vline(lr.cursorXb, CURSOR_B_COLOR, [4, 3], isLast ? "B" : null, false);
+            // Task 15 / ADR 0026: the X cursor's time label appears on
+            // every axis (it used to render only on the last area, so
+            // adding a plot area visually hid the labels). Format as
+            // "<letter> <time>" so a glance at any axis tells you both
+            // which cursor and where.
+            if (lr.cursorXa != null) {
+              vline(lr.cursorXa, CURSOR_A_COLOR, [4, 3], `A ${fmtTime(lr.cursorXa)}`, false);
+            }
+            if (lr.cursorXb != null) {
+              vline(lr.cursorXb, CURSOR_B_COLOR, [4, 3], `B ${fmtTime(lr.cursorXb)}`, false);
+            }
             const hline = (yVal: number, color: string, lbl: string) => {
               const yp = u.valToPos(yVal, "y", true);
               if (yp < top - 4 || yp > top + height + 4) return;
@@ -2372,6 +2637,94 @@ function PlotArea(p: PlotAreaProps) {
               const yp = u.valToPos((lr.cursorYh1 + lr.cursorYh2) / 2, "y", true);
               if (yp > top && yp < top + height) {
                 chip(left + 40 * ratio, yp, `ΔH ${fmtVal(Math.abs(lr.cursorYh2 - lr.cursorYh1))}`, "#cbd5e1");
+              }
+            }
+            // Logic-analyzer lane (ADR 0026): on an enum-only axis,
+            // overlay an opaque label box on each constant-value
+            // segment of the (stepped) line. The line + symbolic
+            // y-axis ticks are still there; the boxes sit *in front*
+            // of the line so a glance reads "Idle ── Running ──"
+            // rather than just a step pattern. Only runs on the
+            // enum-mode uPlot (the construction effect rebuilds the
+            // instance when the value table resolves), so the cost
+            // on numeric axes is zero.
+            if (enumActiveAtConstruct && valueTableRef.current) {
+              const table = valueTableRef.current;
+              const labelFor = (raw: number): string => {
+                const found = table.find((r) => r.raw === Math.round(raw));
+                return found ? found.label : String(raw);
+              };
+              // Enum-mode areas hold exactly one signal, so its
+              // series sits at uPlot index 1. `u.data` is the
+              // AlignedData we just set — `setData(_, false)` keeps
+              // it stable.
+              const seriesIdx = 1;
+              const seriesOpt = u.series[seriesIdx];
+              const ts = u.data[0] as number[] | undefined;
+              const vs = u.data[seriesIdx] as (number | null)[] | undefined;
+              if (ts && vs && seriesOpt?.show !== false) {
+                const boxColor = primaryColorRef.current ?? AXIS_STROKE;
+                const segments = enumSegments(ts, vs);
+                const padX = 4 * ratio;
+                // All label boxes sit in one **centered horizontal
+                // band** down the middle of the plot, regardless of
+                // the held value. Tracking each value's y-position
+                // (the per-value lane scheme) collapsed under tall
+                // value tables — twelve enum values on a small canvas
+                // left each lane a few pixels tall. Decoupling label
+                // position from value gives the labels all the room
+                // they need; the stepped line still draws at the
+                // actual value, so the user reads "what" from the
+                // line height and "which value name" from the
+                // centered ribbon. (The line is visible above and
+                // below the ribbon and obscured under it — same
+                // logic-analyzer style.)
+                //
+                // Band sized at the larger of ~22 CSS px and 55% of
+                // the plot height, centered. The minimum keeps very
+                // small panels legible; the fraction lets a tall
+                // panel breathe.
+                const bandH = Math.max(22 * ratio, height * 0.55);
+                const bandTop = top + (height - bandH) / 2;
+                const bandBot = bandTop + bandH;
+                for (const seg of segments) {
+                  const x0 = u.valToPos(seg.t0, "x", true);
+                  // `tEnd` is the next-sample timestamp (where the
+                  // value changes), matching the stepped line's hold —
+                  // so the box reaches the visual transition instead
+                  // of cutting off at the last same-value sample.
+                  const x1 = u.valToPos(seg.tEnd, "x", true);
+                  // Clip-trim against the visible plot region first:
+                  // a segment extending past the canvas still labels
+                  // the visible portion, centred on what's on screen
+                  // rather than off-canvas.
+                  const visStart = Math.max(x0, left);
+                  const visEnd = Math.min(x1, left + width);
+                  const segW = visEnd - visStart;
+                  if (segW <= 0) continue;
+                  const lbl = labelFor(seg.v);
+                  const tw = ctx.measureText(lbl).width;
+                  // A thin segment still gets a coloured band so the
+                  // held interval is visible even if the label text
+                  // can't fit.
+                  const labelFits = segW >= tw + padX * 2;
+                  // ~65% fill so the stepped line under the band
+                  // remains clearly visible — the user can still
+                  // trace the signal shape through the ribbon while
+                  // the labels stay readable; coloured border +
+                  // centred text in the series colour stay fully
+                  // opaque so legibility isn't compromised.
+                  ctx.fillStyle = "rgba(10, 13, 15, 0.65)";
+                  ctx.fillRect(visStart, bandTop, segW, bandH);
+                  ctx.strokeStyle = boxColor;
+                  ctx.strokeRect(visStart + 0.5, bandTop + 0.5, segW - 1, bandH - 1);
+                  if (labelFits) {
+                    ctx.fillStyle = boxColor;
+                    ctx.textAlign = "center";
+                    ctx.textBaseline = "middle";
+                    ctx.fillText(lbl, visStart + segW / 2, (bandTop + bandBot) / 2);
+                  }
+                }
               }
             }
             ctx.restore();
@@ -2584,7 +2937,7 @@ function PlotArea(p: PlotAreaProps) {
       if (uplotRef.current === u) uplotRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [signalSetKey, areaId, resizeTick, valueTable]);
+  }, [signalSetKey, areaId, resizeTick, valueTable, showPoints]);
 
   // While the trace is running, re-sample on a self-paced loop at the
   // configured rate (each tick scheduled after the previous one
@@ -2638,31 +2991,6 @@ function PlotArea(p: PlotAreaProps) {
   useEffect(() => {
     void resampleRef.current();
   }, [followLive]);
-
-  // Apply the y-axis range *immediately* when it *changes* — no need to
-  // wait for the next re-sample. (Not on the initial mount: the resample
-  // does the first fit, and uPlot hasn't got real data yet then.)
-  const prevYModeKeyRef = useRef<string | null>(null);
-  const yModeKey = yMode === "auto" ? "auto" : `${yMode.min}:${yMode.max}`;
-  useEffect(() => {
-    const first = prevYModeKeyRef.current == null;
-    prevYModeKeyRef.current = yModeKey;
-    if (first) return;
-    const u = uplotRef.current;
-    if (!u) return;
-    withSuppressed(() => {
-      if (yMode === "auto") {
-        // With `scales.y.auto = false` a `setData(_, true)` no longer
-        // re-fits y; pin explicitly to the normalised [0, 1] range.
-        u.setScale("y", { min: 0, max: 1 });
-        const { xMin, xMax } = xSyncRef.current;
-        if (xMin != null && xMax != null) u.setScale("x", { min: xMin, max: xMax });
-      } else {
-        u.setScale("y", { min: yMode.min, max: yMode.max });
-      }
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [yModeKey]);
 
   // Panel asked us to refit y — drop the per-trace normalisation range
   // (and any manual Fit Y override) so the next tick uses the host
@@ -2741,7 +3069,6 @@ function PlotArea(p: PlotAreaProps) {
     uplotRef.current?.redraw(false, false);
   }, [cursorXa, cursorXb, cursorYh1, cursorYh2, events, isFirst, isLast]);
 
-  const yLabel = yMode === "auto" ? "y: auto" : `y: ${yMode.min}…${yMode.max}`;
   const dh = cursorYh1 != null && cursorYh2 != null ? cursorYh2 - cursorYh1 : null;
 
   const displayValueFor = (key: string): number | null => {
@@ -2777,6 +3104,21 @@ function PlotArea(p: PlotAreaProps) {
     const s = cacheRef.current?.byKey.get(key);
     if (!s || s.t.length === 0) return null;
     return { first: s.t[0], last: s.t[s.t.length - 1] };
+  };
+  /** Format a current value for the side panel. If the signal has a
+   * value table, render as `<label> (<raw>)` for enum-style readout;
+   * otherwise fall through to numeric. The raw is shown rounded —
+   * enum codes are integers, and `Math.round` matches the lane's
+   * `labelFor` lookup. */
+  const formatValueFor = (key: string, v: number | null): string => {
+    if (v == null || !Number.isFinite(v)) return "—";
+    const table = valueTables.get(key);
+    if (table) {
+      const raw = Math.round(v);
+      const label = table.find((r) => r.raw === raw)?.label;
+      if (label) return `${label} (${raw})`;
+    }
+    return fmtVal(v);
   };
   const valueTitle = cursorXa != null ? "value at cursor A" : hoverX != null ? "value at crosshair" : "latest value";
   // With both X cursors placed: Δ value (A − B), shown as a second line
@@ -2858,16 +3200,6 @@ function PlotArea(p: PlotAreaProps) {
             {label}
           </span>
           <button
-            className="plot-area-y"
-            title="set this area's y-axis range"
-            onClick={(e) => {
-              e.stopPropagation();
-              setYEditOpen((v) => !v);
-            }}
-          >
-            {yLabel}
-          </button>
-          <button
             className="plot-area-fit-y"
             title="fit y to the currently visible data — useful when zoomed in and you want the visible region to fill the canvas height"
             onClick={(e) => {
@@ -2877,20 +3209,38 @@ function PlotArea(p: PlotAreaProps) {
           >
             fit y
           </button>
-          <button
-            className="plot-area-filter"
-            title={
-              area.signalFilter == null
-                ? "filter this area's signals by regex"
-                : "edit the regex driving this area"
-            }
-            onClick={(e) => {
-              e.stopPropagation();
-              setFilterEditOpen((v) => !v);
-            }}
-          >
-            {area.signalFilter == null ? "filter…" : "filter ✎"}
-          </button>
+          {isParentHead && (
+            <select
+              className="plot-area-y-mode"
+              title="y-axis mode: unified (one axis), per-unit (one axis per unit), individual (one axis per series)"
+              value={area.yAxisMode ?? "unified"}
+              aria-label="y-axis mode"
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => onSetYAxisMode(e.target.value as YAxisMode)}
+            >
+              {Y_AXIS_MODES.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          )}
+          {isParentHead && (
+            <button
+              className="plot-area-filter"
+              title={
+                area.signalFilter == null
+                  ? "filter this area's signals by regex"
+                  : "edit the regex driving this area"
+              }
+              onClick={(e) => {
+                e.stopPropagation();
+                setFilterEditOpen((v) => !v);
+              }}
+            >
+              {area.signalFilter == null ? "filter…" : "filter ✎"}
+            </button>
+          )}
           {removable && (
             <button
               className="plot-area-remove"
@@ -2943,16 +3293,6 @@ function PlotArea(p: PlotAreaProps) {
               setFilterEditOpen(false);
             }}
             onCancel={() => setFilterEditOpen(false)}
-          />
-        )}
-        {yEditOpen && (
-          <YRangeEditor
-            yMode={yMode}
-            onApply={(m) => {
-              onSetYMode(m);
-              setYEditOpen(false);
-            }}
-            onCancel={() => setYEditOpen(false)}
           />
         )}
         {(cursorYh1 != null || cursorYh2 != null) && (
@@ -3028,14 +3368,11 @@ function PlotArea(p: PlotAreaProps) {
                   for (const r of refs) onDropSignal(r, key, isInternalMove);
                 }}
               >
-                <button
-                  className={`plot-signal-swatch${s.hidden ? " hidden" : ""}`}
-                  style={{ background: s.color }}
-                  title={s.hidden ? "show this signal" : "hide this signal"}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onToggleHidden(key);
-                  }}
+                <SignalSwatch
+                  hidden={!!s.hidden}
+                  color={s.color}
+                  onToggleHidden={() => onToggleHidden(key)}
+                  onPickColor={(c) => onSetSignalColor(key, c)}
                 />
                 <div className="plot-signal-text">
                   <span
@@ -3052,13 +3389,17 @@ function PlotArea(p: PlotAreaProps) {
                 </div>
                 <div className="plot-signal-readout">
                   <span className="plot-signal-value" title={valueTitle}>
-                    {fmtVal(v)}
-                    {s.unit ? ` ${s.unit}` : ""}
+                    {formatValueFor(key, v)}
+                    {/* Unit suffix is only meaningful for numeric
+                     * readouts — an enum row already self-labels via
+                     * `<label> (<raw>)` and tacking on a unit string
+                     * (often the empty string anyway) reads as noise. */}
+                    {!valueTables.has(key) && s.unit ? ` ${s.unit}` : ""}
                   </span>
                   {showAbDelta && (
                     <small className="plot-signal-delta" title="Δ value (cursor A − cursor B)">
                       Δ {fmtVal(deltaAbFor(key))}
-                      {s.unit ? ` ${s.unit}` : ""}
+                      {!valueTables.has(key) && s.unit ? ` ${s.unit}` : ""}
                     </small>
                   )}
                 </div>
@@ -3173,24 +3514,3 @@ function SignalFilterEditor({
   );
 }
 
-function YRangeEditor({ yMode, onApply, onCancel }: { yMode: YMode; onApply: (m: YMode) => void; onCancel: () => void }) {
-  const [min, setMin] = useState(yMode === "auto" ? "" : String(yMode.min));
-  const [max, setMax] = useState(yMode === "auto" ? "" : String(yMode.max));
-  return (
-    <div className="plot-y-editor" onMouseDown={(e) => e.stopPropagation()}>
-      <input type="number" step="any" value={min} placeholder="min" onChange={(e) => setMin(e.target.value)} />
-      <input type="number" step="any" value={max} placeholder="max" onChange={(e) => setMax(e.target.value)} />
-      <button
-        onClick={() => {
-          const lo = parseFloat(min);
-          const hi = parseFloat(max);
-          if (Number.isFinite(lo) && Number.isFinite(hi) && lo < hi) onApply({ min: lo, max: hi });
-        }}
-      >
-        set
-      </button>
-      <button onClick={() => onApply("auto")}>auto</button>
-      <button onClick={onCancel}>×</button>
-    </div>
-  );
-}

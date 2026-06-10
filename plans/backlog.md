@@ -28,8 +28,8 @@ Near-term work — fold these into a phase before picking up the
 lower-priority follow-ups below. The original "Minimum Usability
 Tasks" list is split across **Task 11** (transmit signals,
 shipped), **Task 12** (DBC view + drag/drop, shipped),
-**Task 15** (show points), and **Task 16** (hotkey framework) in
-the [roadmap](tasks/roadmap.md).
+**Task 15** (plot refinements, shipped), and **Task 16** (hotkey
+framework) in the [roadmap](tasks/roadmap.md).
 
 - takes a long time to exit gracefully
 
@@ -119,15 +119,30 @@ trip over it.
 
 ### Plot panel
 
-- `[feat]` `cannet-gui` plot panel: enum rendering for multi-signal /
-  mixed areas. Phase 5 only switches to stepped + symbolic when an
-  area shows exactly one signal with a `VAL_` table — that's the
-  realistic single-state-channel case. Multiple enum signals on one
-  area (each on its own symbolic strip), or one enum + numeric on
-  the same axis, both want a different layout (multiple y-axes /
-  per-signal step overlays). Pick this up alongside the per-trace
-  y offset / gain work, which already needs the same plumbing.
-
+- `[feat]` `cannet-gui` plot panel: **enum-aware per-unit grouping**.
+  Task 15 added the `yAxisMode` selector (unified / per-unit /
+  individual). `deriveAxesForArea` has an `isEnum` predicate slot to
+  break each enum onto its own axis in per-unit mode, but the panel
+  doesn't source it (today each `PlotArea` resolves enum-ness
+  per-axis via `list_value_tables`; the panel level doesn't roll
+  that up). Add a panel-level enum cache populated from
+  `list_value_tables` so per-unit can give every enum its own axis.
+- `[perf]` `cannet-gui` plot panel: **coalesce per-axis resamples.**
+  In per-unit / individual mode each derived axis runs its own
+  resample loop, so an area with N axes makes N `sample_signals`
+  round-trips per tick where unified makes one. Each fetch is
+  correctly scoped to its own signal subset and visible range, so
+  this is bounded — but a panel-level shared fetch split per axis
+  would cut the IPC. Pick up if the Task 21 profiling baseline
+  flags it.
+- `[verify]` `cannet-gui` plot panel: **colour picker on the real
+  WebView.** The per-series picker opens a visually hidden
+  `<input type="color">` via programmatic `.click()` from the
+  swatch's contextmenu handler (`SignalSwatch` in `PlotPanel.tsx`).
+  Works in Chromium and generally in WebKitGTK, but jsdom can't
+  exercise the native dialog — confirm it opens on each shipping
+  WebView (WebKitGTK / WKWebView / WebView2) next time the app is
+  run by hand.
 ### Transmit panel
 
 - `[feat]` `cannet-dbc`: **parse more of the Vector generic (`Gen*`)

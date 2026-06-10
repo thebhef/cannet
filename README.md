@@ -282,16 +282,44 @@ signal *values* over time instead of message rows: while running it
 follows the live capture, Pause/Stop freeze the window (which also stops
 the re-sampling), Clear re-anchors what's plotted to "now".
 
+- **Y-axis mode.** Each plot area carries a y-axis-mode selector
+  (next to **fit y**) with three values per ADR 0026: **unified**
+  (one axis; all series overlaid), **per-unit** (one axis per
+  declared unit; unitless series share an axis), and **individual**
+  (one axis per series). On any axis, series sharing a declared unit
+  share one y scale (the union of their observed ranges) and each
+  unit group auto-scales independently to fill the axis; the y-tick
+  labels always show the primary signal's real engineering values
+  (click a series row to promote it). Switching modes re-stacks the
+  area's canvases; the side panel for each derived axis lists only
+  the signals it draws. The area-level chrome (filter editor,
+  y-axis-mode selector itself, remove ×) appears only on the top
+  derived axis so there's one source of truth per logical area.
+  An enum-only axis renders as a **logic-analyzer lane**: the line
+  is stepped, the y-tick labels are symbolic (`<raw> "<label>"`),
+  and each held segment carries an opaque label box, all sat in a
+  centered horizontal band down the middle of the plot
+  (`│ Idle │ Running │`). Decoupling the label band from the
+  value's y position means a value table with many entries still
+  gets readable labels rather than collapsing each label to a few
+  pixels — the line shows the held value, the ribbon shows the
+  label. The lane activates whenever a single enum signal sits on
+  its own axis — i.e. an area with one enum signal in any mode, or
+  any enum that ends up alone under `individual`. Enum break-out
+  onto its own axis under `per-unit` is still pending — see
+  `plans/backlog.md`.
 - **Plot areas.** A plot panel is a **stack of plot areas** — it starts
   with one; **add plot area** appends more, all sharing one time axis,
   and they flex to fill the panel (one fills it; several split it). Each
   plot area has a uPlot canvas (time axis at the bottom) plus a **signal
   panel** beside it listing that area's signals: a colour swatch (click
-  to hide / show the line — the value keeps updating, the swatch dims),
-  the name, and the value — at cursor A when one is placed, else at the
-  mouse crosshair, else the latest sample. The signal-panel head has an
-  **y: auto / min…max** control to pin that area's y-range, and shows
-  the H1/H2 Y-cursor values + ΔH when those are placed. With a DBC
+  to hide / show the line — the value keeps updating, the swatch dims;
+  **right-click** the swatch to pick the series' colour from the
+  browser's colour picker), the name, and the value — at cursor A when one is placed, else at the
+  mouse crosshair, else the latest sample. The signal-panel head shows
+  the H1/H2 Y-cursor values + ΔH when those are placed; y scales are
+  always auto-derived (per ADR 0026) and **fit y** refits the
+  auto-norm latch to the visible window. With a DBC
   attached, the toolbar's **add signal…** dropdown lists every
   `(message, signal)` pair the database defines; picking one drops it
   into the *focused* plot area (click an area to focus it). **Drag a
@@ -309,6 +337,12 @@ the re-sampling), Clear re-anchors what's plotted to "now".
   growing edge while keeping the current visible x-width (it just slides
   right); a manual x pan/zoom turns it off, the same way a manual scroll
   leaves auto-scroll in a trace panel.
+- **Show points.** A tri-state toggle on the toolbar (`auto` / `off` /
+  `on`) that applies to every series on every axis of every area in
+  the panel: `auto` (default) defers to uPlot's density-aware mode
+  (points appear only when the sample-to-pixel ratio is low enough),
+  `off` forces no points, `on` forces points always. Persists in the
+  project file.
 - **Cursors & measurements** (both **off by default**). The toolbar's
   **cursors** selector turns on **X** cursors (left-click places A,
   right-click places B, drawn through every area — a small **Δt** chip
