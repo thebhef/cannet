@@ -39,7 +39,7 @@ and the license / platform constraints we need to be aware of.
 - **`fzf`** (BSD-3-Clause, npm: `fzf`, repo:
   [`ajitid/fzf-for-js`](https://github.com/ajitid/fzf-for-js)) —
   `adopted` in Phase 12 (DBC panel) as the fuzzy / acronym matcher
-  used by the DBC panel's search; reused by Phase 15's command
+  used by the DBC panel's search; reused by Task 16's command
   palette (`Cmd/Ctrl+Shift+P`) and go-to-view palette
   (`Cmd/Ctrl+P`). Port of VS Code / fzf's matcher — camelHump and
   abbreviation matching ("MyCanMessage" reachable from "mcmess"),
@@ -132,7 +132,7 @@ crate retained long-term).
 ### Storage
 
 - **`memmap2`** crate (Rust, MIT / Apache-2.0) — `proposed` for
-  Phase 17. Cross-platform `mmap` syscall abstraction for the
+  Task 18. Cross-platform `mmap` syscall abstraction for the
   disk-spill raw store. See [`../docs/adr/0002-disk-spill-store.md`](../docs/adr/0002-disk-spill-store.md).
 - **`notify`** crate (Rust, CC0-1.0 / Apache-2.0) — `adopted` in
   Phase 12 follow-up for the GUI host's DBC file watcher

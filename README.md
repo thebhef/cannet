@@ -341,7 +341,7 @@ trace panel's window, is session-only). Notes are session-scoped (the
 plot panels read and write a shared host store) and persist to disk
 inside the BLF as `GLOBAL_MARKER` records (no sidecar — ADR 0010) —
 see the Phase-9 section below. (Still pending — see
-`plans/phased-implementation.md` Phase 4 and `plans/backlog.md`:
+[`plans/tasks/0023-plot-measurements-and-triggers.md`](plans/tasks/0023-plot-measurements-and-triggers.md) and `plans/backlog.md`:
 per-trace y offset/gain and log scale, triggers, math channels,
 CSV/image export.)
 

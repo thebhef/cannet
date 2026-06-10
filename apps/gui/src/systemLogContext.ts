@@ -1,5 +1,5 @@
 // Session-scoped React context holding the live system-log buffer and
-// the unread-badge bookkeeping (Phase 7). One instance per App tree,
+// the unread-badge bookkeeping. One instance per App tree,
 // initialised in App.tsx; consumed by the panel and the toolbar badge.
 
 import { createContext, useContext } from "react";

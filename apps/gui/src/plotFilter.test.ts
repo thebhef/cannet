@@ -1,4 +1,4 @@
-// Pure-logic tests for the Phase 12 filter-defined plot area helpers
+// Pure-logic tests for the filter-defined plot area helpers
 // (ADR 0020). Verifies the regex target shape `${busName}.${messageName}.${signalName}`,
 // the `(unassigned)` prefix for null-bus signals, and that applying a
 // filter to an area produces the computed signal list without mutating

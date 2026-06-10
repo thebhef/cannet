@@ -1,6 +1,6 @@
 //! End-to-end tests: spin up cannet-server in-process, drive it via
 //! cannet-client. Validates that the client-side `CanFrameSource`
-//! adapter behaves exactly like a Phase-1 in-process source from the
+//! adapter behaves exactly like an in-process source from the
 //! consumer's perspective.
 
 use std::path::Path;
@@ -240,7 +240,7 @@ async fn into_parts_lets_handle_and_receiver_live_in_different_threads() {
 }
 
 /// Spin up a virtual-bus server (ADR 0021) — the wire-level transmit
-/// round-trip target now that loopback is retired (Phase 13 Step 4).
+/// round-trip target now that loopback is retired.
 async fn spawn_virtual_bus_server(
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     use cannet_core::BusConfig;

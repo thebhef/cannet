@@ -6,7 +6,7 @@ import type { Bus } from "./types";
 /// picked for a given BLF channel. `""` means "skip this channel".
 export type ChannelChoice = string;
 
-/// Phase-6 BLF channel → bus mapping step. Shown after the user picks
+/// BLF channel → bus mapping step. Shown after the user picks
 /// a BLF and before frames start flowing. The user maps each distinct
 /// channel observed in the file to a project bus (or to "skip"). The
 /// host applies the mapping by tagging each frame with the chosen

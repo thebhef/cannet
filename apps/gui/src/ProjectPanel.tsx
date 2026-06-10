@@ -728,8 +728,8 @@ interface BusHardwareConfigProps {
 /// FD-mode pickers on the second line of a logical-bus row; the FD
 /// data-rate picker appears below them when FD is enabled. Sidecar /
 /// hardware-server interfaces receive these values in the
-/// `ConfigureBus` envelope the host sends ahead of `Subscribe`
-/// (Phase 13). Local virtual buses don't render this row — the host
+/// `ConfigureBus` envelope the host sends ahead of `Subscribe`.
+/// Local virtual buses don't render this row — the host
 /// owns their arbitration timing.
 function BusHardwareConfig({
   bus,
@@ -815,8 +815,8 @@ interface BusInterfaceComboProps {
 /// hardware interface, or one of the project's in-process virtual
 /// buses (ADR 0021). "+ Add server…" / "+ Add virtual bus" open the
 /// respective creation flows. The combo no longer disables an option
-/// because another bus already references it — Step 6's multi-client
-/// fan-out makes that pattern fine.
+/// because another bus already references it — multi-client fan-out
+/// makes that pattern fine.
 export function BusInterfaceCombo({
   bus,
   binding,
@@ -1218,8 +1218,8 @@ export function LocalInterfaceList({
     state && state.status === "ok" ? state.interfaces : [];
 
   // Bindings whose interface id no longer appears in the live
-  // enumeration (sidecar restarted with different hardware, a legacy
-  // v4 binding now stranded — see PROJECT_SCHEMA_VERSION v5 doc).
+  // enumeration (e.g. the sidecar restarted with different hardware,
+  // or a saved binding references an interface that's now offline).
   // Render them as a tail with the raw id so the user can see what
   // their project still references.
   const discoveredIds = new Set(discovered.map((r) => r.id));

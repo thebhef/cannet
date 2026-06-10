@@ -322,8 +322,8 @@ const Row = memo(function Row({
   );
 });
 
-/// One decoded signal cell inside an expanded trace row. Phase 12
-/// makes it a drag source — dragging onto a plot area adds the
+/// One decoded signal cell inside an expanded trace row. It is
+/// a drag source — dragging onto a plot area adds the
 /// signal as a series. Click events still fall through to the row
 /// (`stopPropagation` would prevent the expand-collapse toggle from
 /// retracting); dragging is initiated by the browser only when the

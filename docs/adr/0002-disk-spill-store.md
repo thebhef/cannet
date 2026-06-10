@@ -16,7 +16,8 @@ The constraints they answer to:
 - **Scale.** 10^7 to 10^9 frames, multi-hour to multi-day sessions.
   The raw store and any per-frame projection exceed RAM.
 - **Responsiveness.** GUI interactions stay < 100 ms / 60 fps,
-  decoupled from the ingest rate (`windowed-model-convergence.md`).
+  decoupled from the ingest rate
+  ([ADR 0025](0025-frontend-windowed-source-contract.md)).
 - **Loss-free addressability.** Every historical row stays addressable
   for the life of the capture (ADR 0001).
 - **Reviewability.** Keep the hand-written surface small and lean
@@ -268,8 +269,8 @@ panel, not in the always-on cleanup policy.
   on Unix, `CreateFileMapping` / `MapViewOfFile` on Windows;
   MIT/Apache-2.0). Recorded in `plans/technology-inventory.md`.
 - The `RowPage` / `DecimatedRange` host accessor signatures from
-  [ADR 0001](0001-indefinite-length-capture.md) are unchanged; only
-  their implementation swaps.
+  [ADR 0025](0025-frontend-windowed-source-contract.md) are unchanged;
+  only their implementation swaps.
 - The disk-spill store is **scratch, not a serialization format** —
   "Save Capture" to `.blf` remains the separate export and the
   canonical durable form. No new `.blf` sidecar is introduced

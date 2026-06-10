@@ -19,9 +19,9 @@
 //!
 //! ## Bounds and the future
 //!
-//! The Phase-2 store is `Vec<RawTraceFrame>`. For a long-running
-//! session this grows unbounded — see `plans/backlog.md` for the
-//! disk-spill follow-up. The interface here is shaped so that
+//! The store is `Vec<RawTraceFrame>`. For a long-running
+//! session this grows unbounded; the disk-spill follow-up is
+//! deferred. The interface here is shaped so that
 //! evolution (windowed in-memory tail + on-disk overflow) can land
 //! behind the same `append` / `len` / `slice` surface without
 //! reshaping callers.
@@ -158,7 +158,7 @@ pub struct LatestById {
 /// One row in the trace store. Owned, undecoded.
 ///
 /// `bus_id` is the project's logical bus this frame was routed onto
-/// (Phase 6) — `None` if no binding/mapping assigned one. Pump threads
+/// — `None` if no binding/mapping assigned one. Pump threads
 /// stamp it before appending; per-bus DBC scoping and the filter
 /// predicate both read it. `channel` keeps its meaning (the source's
 /// 0-based channel number) and is what the user maps onto a `bus_id`

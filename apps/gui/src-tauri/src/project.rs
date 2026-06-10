@@ -4,64 +4,25 @@
 //! The host owns the project model. The two fields it *doesn't*
 //! interpret are `layout` (`dockview`'s serialized layout blob) and
 //! `elements` (the project's elements — `trace` / `plot` / `transmit`
-//! / `filter` (Phase 6), each an opaque `{kind, id, …}` record the
-//! frontend defines); the host just round-trips both.
+//! / `filter`, each an opaque `{kind, id, …}` record the frontend
+//! defines); the host just round-trips both.
 //!
-//! Carries today: the panel layout, the project elements, the loaded
-//! DBCs + per-DBC bus scoping, the logical-bus list, the interface →
-//! bus bindings, and the remote-server address. Phase 6 grew the
-//! schema with the buses + bindings + per-DBC scoping fields, so
-//! [`PROJECT_SCHEMA_VERSION`] bumped 2 → 3. Phase 9 bumped it 3 → 4
-//! to lift per-plot-panel `params.notes` out of the dockview layout
-//! into the session-scoped host store. v2 and v3 files migrate on
-//! parse: the new lists default empty, `dbc_paths` is lifted into
-//! `dbcs[].path` with no scoping (= unscoped = "all buses"), and any
-//! `notes` field on a plot panel's `params` is stripped.
+//! Carries: the panel layout, the project elements, the loaded DBCs +
+//! per-DBC bus scoping, the logical-bus list, the interface → bus
+//! bindings, the in-process virtual buses, the transmit-message pool,
+//! and the remote-server address.
+//!
+//! The file carries an explicit [`PROJECT_SCHEMA_VERSION`]. Only the
+//! current version is accepted — see ADR 0011; older and newer
+//! versions are rejected with a user-facing message rather than
+//! migrated.
 
 use serde::{Deserialize, Serialize};
 
-/// Current project-file schema version. Bumped if the shape changes
-/// incompatibly so a stale file is rejected rather than misread.
-///
-/// History:
-/// - v1: single `dbc_path`.
-/// - v2: `dbc_paths` list, `elements`, `remote_address`.
-/// - v3 (Phase 6): `buses`, `interface_bindings`, `dbcs` (per-DBC bus
-///   scoping; replaces the bare `dbc_paths` list). The on-disk
-///   `schema_version` is rewritten to 3 the next time a migrated v2
-///   project is saved.
-/// - v4 (Phase 9): notes lifted out of per-plot-panel dockview
-///   `params` into the session-scoped host store. The project file
-///   no longer stores notes (they're session-scoped — saved to a
-///   BLF sidecar when the user runs Save Capture). The migration
-///   strips any `notes` field from plot-panel `params` blocks in
-///   the dockview layout so a Phase-4-vintage project opens
-///   cleanly. The on-disk `schema_version` is rewritten to 4 the
-///   next time a migrated project is saved.
-/// - v5: `InterfaceBinding.server` may be the literal `"local"`
-///   sentinel, meaning "the local sidecar at whatever address it's
-///   bound to in the current session". This decouples the persisted
-///   binding from the sidecar's random per-launch port. v4 files
-///   parse unchanged; any pre-existing `127.0.0.1:<port>` binding
-///   renders under a stale remote-server row until the user re-picks
-///   it from the Local group (the existing offline-fallback UX
-///   already supports this).
-/// - v6 (Phase 13): three binding kinds (ADR 0021 / 0022):
-///   `"remote"` (existing semantics — a `(server, interface)` on a
-///   remote `cannet-server`), `"remote-virtual-bus"` (subscribe to
-///   the factory id of a remote virtual-bus server), and
-///   `"local-virtual-bus"` (instantiate a `SharedBus` in-process, no
-///   sidecar, with an optional list of bridges to remote interfaces).
-///   v5 entries migrate to `kind: "remote"` on parse; the file is
-///   rewritten to v6 on next save.
-/// - v7 (Phase 13): `local-virtual-bus` bindings are addressed via
-///   the same `(server, interface)` pair as every other kind —
-///   `server = "local-vbus://<vbus_id>"`, `interface = "bus"`. The
-///   separate `virtual_bus_id` field is dropped; the URL is the
-///   index, and the host dispatches on the URL scheme when it opens a
-///   session for the binding. No on-disk projects exist with the v6
-///   shape (Phase 13 hasn't shipped yet), so v6 is rejected like any
-///   other unknown version rather than carrying a migrator forward.
+/// Current project-file schema version. A file is accepted only if its
+/// `schema_version` matches exactly; any other value is rejected with a
+/// user-facing message rather than migrated (ADR 0011). Bump this
+/// whenever the in-memory shape changes.
 pub const PROJECT_SCHEMA_VERSION: u32 = 7;
 
 /// A logical bus. `id` is a stable, project-local identifier (graph
@@ -132,12 +93,12 @@ pub const LOCAL_VBUS_URL_SCHEME: &str = "local-vbus://";
 /// (ADR 0022 §"shared interface").
 pub const LOCAL_VBUS_INTERFACE: &str = "bus";
 
-/// Discriminator for the three binding kinds (Phase 13, v6 schema).
+/// Discriminator for the three binding kinds (v6 schema).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum BindingKind {
-    /// A `(server, interface)` on a remote `cannet-server`. This is
-    /// the v5-compatible default.
+    /// A `(server, interface)` on a remote `cannet-server`. The
+    /// default kind.
     #[default]
     Remote,
     /// A factory subscription against a remote virtual-bus server
@@ -186,9 +147,8 @@ pub struct BridgeSpec {
     pub name: String,
 }
 
-/// A loaded DBC reference with its bus scoping (Phase 6). Replaces
-/// the v2 `dbc_paths` entry; an empty `buses` is the conventional
-/// "all buses" default and is what a migrated v2 project carries.
+/// A loaded DBC reference with its bus scoping. An empty `buses` is
+/// the conventional "all buses" default.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DbcRef {
     pub path: String,
@@ -209,13 +169,13 @@ pub struct Project {
     /// doesn't read these; the frontend owns the shape.
     #[serde(default)]
     pub elements: Vec<serde_json::Value>,
-    /// Logical buses the project knows about (Phase 6).
+    /// Logical buses the project knows about.
     #[serde(default)]
     pub buses: Vec<Bus>,
-    /// Interface → bus bindings (Phase 6).
+    /// Interface → bus bindings.
     #[serde(default)]
     pub interface_bindings: Vec<InterfaceBinding>,
-    /// Loaded DBCs + per-DBC bus scoping (Phase 6). An empty `buses`
+    /// Loaded DBCs + per-DBC bus scoping. An empty `buses`
     /// on a `DbcRef` is the "all buses" default.
     #[serde(default)]
     pub dbcs: Vec<DbcRef>,
@@ -229,7 +189,7 @@ pub struct Project {
     /// reference one by [`LocalVirtualBusDef::id`].
     #[serde(default)]
     pub local_virtual_buses: Vec<LocalVirtualBusDef>,
-    /// The TX-message pool (Phase 13 Step 9). A flat, global list of
+    /// The TX-message pool. A flat, global list of
     /// transmit messages the project owns; each transmit panel groups
     /// a subset for display via its element's `frame_ids`. The host
     /// registry ([`crate::transmit_frames::TransmitFrameRegistry`]) is
@@ -240,13 +200,11 @@ pub struct Project {
     pub transmit_frames: Vec<crate::transmit_frames::TransmitFrame>,
 }
 
-/// Parse project JSON. Accepts a v4 file verbatim; migrates v3
-/// (Phase 9: lifts plot-panel `params.notes` out of the dockview
-/// layout — they're session-scoped now) and v2 (Phase 6:
-/// `dbc_paths` → `dbcs`, plus default Phase-6 fields) in memory.
-/// v1 and anything else are rejected with a user-facing message.
-/// Split from [`open_project`] so the parse + migration is
-/// testable without touching the filesystem.
+/// Parse project JSON. Accepts only a file whose `schema_version`
+/// matches [`PROJECT_SCHEMA_VERSION`]; any other version (or a missing
+/// version) is rejected with a user-facing message (ADR 0011). Split
+/// from [`open_project`] so the parse is testable without touching the
+/// filesystem.
 fn parse_project(text: &str) -> Result<Project, String> {
     let raw: serde_json::Value =
         serde_json::from_str(text).map_err(|e| format!("invalid project JSON: {e}"))?;
@@ -254,137 +212,21 @@ fn parse_project(text: &str) -> Result<Project, String> {
         .get("schema_version")
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| "missing schema_version".to_string())?;
-    match version {
-        7 => serde_json::from_value(raw).map_err(|e| format!("invalid project JSON: {e}")),
-        5 => migrate_v5(raw),
-        4 => migrate_v4(raw).and_then(reapply_v5_to_v6),
-        3 => migrate_v3(raw).and_then(reapply_v5_to_v6),
-        2 => migrate_v2(raw)
-            .map(|mut p| {
-                strip_plot_notes_from_layout(&mut p.layout);
-                p
-            })
-            .and_then(reapply_v5_to_v6),
-        v => Err(format!(
-            "schema version {v}; this build expects {PROJECT_SCHEMA_VERSION}",
-        )),
-    }
-}
-
-/// v5 → v6. Adds the `kind` field on each existing binding,
-/// defaulting to [`BindingKind::Remote`] so the old
-/// `(server, interface, bus_id)` shape continues to work. The new
-/// `local-virtual-bus` / `remote-virtual-bus` variants are opt-in:
-/// users create them via the project panel.
-fn migrate_v5(mut raw: serde_json::Value) -> Result<Project, String> {
-    if let Some(obj) = raw.as_object_mut() {
-        if let Some(serde_json::Value::Array(bindings)) = obj.get_mut("interface_bindings") {
-            for binding in bindings.iter_mut() {
-                if let Some(map) = binding.as_object_mut() {
-                    map.entry("kind").or_insert_with(|| "remote".into());
-                }
-            }
-        }
-        obj.insert(
-            "schema_version".into(),
-            serde_json::Value::from(PROJECT_SCHEMA_VERSION),
-        );
-    }
-    serde_json::from_value(raw).map_err(|e| format!("v5 migration failed: {e}"))
-}
-
-/// Re-apply the v5 → v6 binding-kind defaulting once an upstream
-/// migrator (v4 / v3 / v2) has already produced a [`Project`].
-/// Each existing binding ends up as [`BindingKind::Remote`], which
-/// is also the struct's default — no-op in practice today, but
-/// retained as the explicit migration step for clarity.
-fn reapply_v5_to_v6(project: Project) -> Result<Project, String> {
-    Ok(project)
-}
-
-/// v4 → v5. No shape change: v5 only relaxes the meaning of
-/// `InterfaceBinding.server` to allow the literal `"local"` sentinel.
-/// Per the approved plan we do not auto-rewrite existing
-/// `127.0.0.1:<port>` bindings — the user re-picks them once from
-/// the live Local group, and the offline-fallback UI handles the
-/// transition.
-fn migrate_v4(mut raw: serde_json::Value) -> Result<Project, String> {
-    if let Some(obj) = raw.as_object_mut() {
-        obj.insert(
-            "schema_version".into(),
-            serde_json::Value::from(PROJECT_SCHEMA_VERSION),
-        );
-    }
-    serde_json::from_value(raw).map_err(|e| format!("v4 migration failed: {e}"))
-}
-
-/// v3 → v4. Walks the `dockview` layout and removes the per-plot-
-/// panel `params.notes` field; Phase 9 stores notes in the
-/// session-scoped host store rather than the project file.
-fn migrate_v3(mut raw: serde_json::Value) -> Result<Project, String> {
-    if let Some(obj) = raw.as_object_mut() {
-        if let Some(layout) = obj.get_mut("layout") {
-            strip_plot_notes_from_layout(layout);
-        }
-        obj.insert(
-            "schema_version".into(),
-            serde_json::Value::from(PROJECT_SCHEMA_VERSION),
-        );
-    }
-    serde_json::from_value(raw).map_err(|e| format!("v3 migration failed: {e}"))
-}
-
-fn migrate_v2(mut raw: serde_json::Value) -> Result<Project, String> {
-    // Lift `dbc_paths: [string]` into `dbcs: [{path, buses: []}]`.
-    let dbc_paths: Vec<String> = raw
-        .get("dbc_paths")
-        .cloned()
-        .map(serde_json::from_value)
-        .transpose()
-        .map_err(|e| format!("invalid v2 dbc_paths: {e}"))?
-        .unwrap_or_default();
-    let dbcs: Vec<DbcRef> = dbc_paths
-        .into_iter()
-        .map(|path| DbcRef { path, buses: Vec::new() })
-        .collect();
-    if let Some(obj) = raw.as_object_mut() {
-        obj.remove("dbc_paths");
-        obj.insert(
-            "dbcs".into(),
-            serde_json::to_value(dbcs).map_err(|e| format!("migrate dbcs: {e}"))?,
-        );
-        obj.insert(
-            "schema_version".into(),
-            serde_json::Value::from(PROJECT_SCHEMA_VERSION),
-        );
-    }
-    serde_json::from_value(raw).map_err(|e| format!("v2 migration failed: {e}"))
-}
-
-/// Walk a `dockview` layout JSON blob and strip `notes` from any
-/// plot panel's `params`. The shape `dockview` serialises is
-/// `{ panels: { <id>: { params: { … }, … }, … }, … }`; we don't
-/// hard-code anything else about it. Anything that isn't a JSON
-/// object at the expected key just gets left alone.
-fn strip_plot_notes_from_layout(layout: &mut serde_json::Value) {
-    let Some(panels) = layout.get_mut("panels").and_then(|v| v.as_object_mut()) else {
-        return;
-    };
-    for panel in panels.values_mut() {
-        let Some(params) = panel.get_mut("params").and_then(|v| v.as_object_mut()) else {
-            continue;
-        };
-        params.remove("notes");
+    if version == u64::from(PROJECT_SCHEMA_VERSION) {
+        serde_json::from_value(raw).map_err(|e| format!("invalid project JSON: {e}"))
+    } else {
+        Err(format!(
+            "schema version {version}; this build expects {PROJECT_SCHEMA_VERSION}",
+        ))
     }
 }
 
 /// Read and parse a project file. Errors (with a user-facing message)
 /// if it can't be read, isn't valid JSON, or has an unsupported schema
-/// version. v2 files migrate on parse (see [`parse_project`]).
+/// version (see [`parse_project`]).
 ///
-/// Phase 7: emits `project`-tagged messages on the system log —
-/// `info` on success (with a short note when a v2→v3 migration ran),
-/// `error` on any failure.
+/// Emits `project`-tagged messages on the system log — `info` on
+/// success, `error` on any failure.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub fn open_project(
@@ -402,7 +244,7 @@ pub fn open_project(
     };
     match parse_project(&text) {
         Ok(p) => {
-            // Phase 13 Step 9: load the host TX-message registry from
+            // Load the host TX-message registry from
             // the project's pool. All periodics start stopped — reopen
             // never fires traffic onto a bus the user hasn't
             // intentionally reconnected.
@@ -424,7 +266,7 @@ pub fn open_project(
 
 /// Serialize `project` (pretty-printed) and write it to `path`.
 ///
-/// Phase 7: emits `project`-tagged messages on the system log —
+/// Emits `project`-tagged messages on the system log —
 /// `info` on success, `error` on serialise / write failure.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
@@ -434,7 +276,7 @@ pub fn save_project(
     path: String,
     mut project: Project,
 ) -> Result<(), String> {
-    // Phase 13 Step 9: the host registry is the source of truth for TX
+    // The host registry is the source of truth for TX
     // messages — the thin-view frontend doesn't carry them in the
     // project it submits. Snapshot the registry into the project before
     // writing so save captures the current pool + order.
@@ -505,8 +347,10 @@ mod tests {
 
     #[test]
     fn parse_defaults_the_optional_fields() {
-        let p = parse_project(r#"{"schema_version": 5, "layout": {"grid": {}, "panels": {}}}"#)
-            .unwrap();
+        let p = parse_project(
+            r#"{"schema_version": 7, "layout": {"grid": {}, "panels": {}}}"#,
+        )
+        .unwrap();
         assert!(p.elements.is_empty());
         assert!(p.dbcs.is_empty());
         assert!(p.buses.is_empty());
@@ -514,57 +358,9 @@ mod tests {
         assert_eq!(p.remote_address, None);
     }
 
-    /// v4 → v5 is shape-compatible. v5 → v6 adds `kind` defaulting
-    /// to `remote`. A v4 file with a `127.0.0.1:<port>` binding must
-    /// parse unchanged (the user re-picks it from the live Local
-    /// group on next launch — see the schema-version doc).
-    #[test]
-    fn parse_migrates_a_v4_project_to_v6_preserving_existing_bindings() {
-        let v4 = r#"{
-            "schema_version": 4,
-            "layout": {"grid": {}, "panels": {}},
-            "interface_bindings": [
-                {
-                    "server": "127.0.0.1:50051",
-                    "interface": "pcan:PCAN_USBBUS1",
-                    "bus_id": "p"
-                }
-            ]
-        }"#;
-        let p = parse_project(v4).expect("v4 migrates");
-        assert_eq!(p.schema_version, PROJECT_SCHEMA_VERSION);
-        assert_eq!(p.interface_bindings.len(), 1);
-        // The legacy host:port is preserved verbatim — no auto-rewrite
-        // to the "local" sentinel. The GUI's offline-fallback path
-        // surfaces it under a stale remote-server row until re-picked.
-        assert_eq!(p.interface_bindings[0].kind, BindingKind::Remote);
-        assert_eq!(p.interface_bindings[0].server, "127.0.0.1:50051");
-        assert_eq!(p.interface_bindings[0].interface, "pcan:PCAN_USBBUS1");
-    }
-
-    /// v5 → v6 attaches `kind: "remote"` to each existing binding.
-    /// New `local-virtual-bus` / `remote-virtual-bus` entries are
-    /// opt-in; they don't appear from migration.
-    #[test]
-    fn parse_migrates_a_v5_project_to_v6_marking_bindings_as_remote() {
-        let v5 = r#"{
-            "schema_version": 5,
-            "layout": {"grid": {}, "panels": {}},
-            "interface_bindings": [
-                {"server": "local", "interface": "vector:VN1640A", "bus_id": "p"}
-            ]
-        }"#;
-        let p = parse_project(v5).expect("v5 migrates");
-        assert_eq!(p.schema_version, PROJECT_SCHEMA_VERSION);
-        assert_eq!(p.interface_bindings.len(), 1);
-        assert_eq!(p.interface_bindings[0].kind, BindingKind::Remote);
-        assert_eq!(p.interface_bindings[0].server, "local");
-        assert_eq!(p.interface_bindings[0].interface, "vector:VN1640A");
-    }
-
     /// A virtual-bus definition + a binding pointing at it round-trip
     /// through serialize + parse. The vbus owns the config/bridges;
-    /// the binding only references the vbus by id (Phase 13 rework).
+    /// the binding only references the vbus by id.
     #[test]
     fn local_virtual_bus_definition_and_binding_round_trip() {
         let p = Project {
@@ -639,141 +435,23 @@ mod tests {
 
     #[test]
     fn parse_rejects_an_unsupported_schema_version() {
-        // A future version, and the long-since-superseded v1.
+        // A future version, the long-since-superseded v1, and the
+        // pre-current versions that used to migrate (v2–v6) — all are
+        // rejected now that the migrators are gone (ADR 0011).
         assert!(parse_project(r#"{"schema_version": 999, "layout": {}}"#).is_err());
         assert!(parse_project(r#"{"schema_version": 1, "layout": {}}"#).is_err());
+        for v in 2..=6 {
+            assert!(
+                parse_project(&format!(r#"{{"schema_version": {v}, "layout": {{}}}}"#)).is_err(),
+                "schema version {v} should be rejected, not migrated"
+            );
+        }
+        assert!(parse_project(r#"{"layout": {}}"#).is_err(), "missing version");
         assert!(parse_project("not json").is_err());
     }
 
-    /// Phase-4-vintage project: notes lived in a plot panel's
-    /// dockview `params`. Phase 9 strips them from the layout
-    /// (notes are session-scoped now) and bumps the version.
-    #[test]
-    fn parse_migrates_a_v3_project_stripping_plot_notes_from_layout() {
-        let v3 = r#"{
-            "schema_version": 3,
-            "layout": {
-                "grid": {},
-                "panels": {
-                    "p1": {
-                        "params": {
-                            "elementId": "abc",
-                            "notes": [
-                                {"id": "n1", "t": 1.5, "label": "look here"},
-                                {"id": "n2", "t": 2.0, "label": "and here"}
-                            ],
-                            "areas": []
-                        }
-                    },
-                    "p2": {
-                        "params": {
-                            "elementId": "other"
-                        }
-                    }
-                }
-            },
-            "elements": [{"kind": "plot", "id": "abc"}]
-        }"#;
-        let p = parse_project(v3).expect("v3 migrates");
-        assert_eq!(p.schema_version, PROJECT_SCHEMA_VERSION);
-
-        // The plot panel's `notes` field is gone, but the rest of
-        // `params` survives.
-        let panels = p
-            .layout
-            .get("panels")
-            .and_then(serde_json::Value::as_object)
-            .unwrap();
-        let p1 = panels
-            .get("p1")
-            .unwrap()
-            .get("params")
-            .and_then(serde_json::Value::as_object)
-            .unwrap();
-        assert!(!p1.contains_key("notes"), "notes should be stripped");
-        assert_eq!(p1.get("elementId").and_then(|v| v.as_str()), Some("abc"));
-        assert!(p1.contains_key("areas"));
-
-        // A panel without notes is left untouched.
-        let p2 = panels
-            .get("p2")
-            .unwrap()
-            .get("params")
-            .and_then(serde_json::Value::as_object)
-            .unwrap();
-        assert_eq!(p2.get("elementId").and_then(|v| v.as_str()), Some("other"));
-    }
-
-    /// A v2 migration also strips Phase-4 notes if they happen to
-    /// be present (they would be in any project that opened in
-    /// Phase 4–8). The migration cascades v2 → v3 → v4 logic in
-    /// one step.
-    #[test]
-    fn parse_migrates_v2_strips_phase4_notes_too() {
-        let v2 = r#"{
-            "schema_version": 2,
-            "layout": {
-                "panels": {
-                    "p1": {"params": {"notes": [{"id":"n","t":1.0,"label":"x"}]}}
-                }
-            },
-            "elements": [],
-            "dbc_paths": []
-        }"#;
-        let p = parse_project(v2).expect("v2 migrates");
-        assert_eq!(p.schema_version, PROJECT_SCHEMA_VERSION);
-        let p1 = p
-            .layout
-            .get("panels")
-            .and_then(|v| v.get("p1"))
-            .and_then(|v| v.get("params"))
-            .and_then(serde_json::Value::as_object)
-            .unwrap();
-        assert!(!p1.contains_key("notes"));
-    }
-
-    /// `strip_plot_notes_from_layout` is safe to call on layouts
-    /// without `panels` or with non-object panels — it's a pure
-    /// best-effort scrub and shouldn't panic if a future schema
-    /// reshapes the dockview blob.
-    #[test]
-    fn strip_plot_notes_tolerates_unexpected_shapes() {
-        let mut v1: serde_json::Value = serde_json::json!({});
-        strip_plot_notes_from_layout(&mut v1);
-        let mut v2: serde_json::Value = serde_json::json!({ "panels": "not-an-object" });
-        strip_plot_notes_from_layout(&mut v2);
-        let mut v3: serde_json::Value =
-            serde_json::json!({ "panels": { "p": { "params": "not-an-object" } } });
-        strip_plot_notes_from_layout(&mut v3);
-    }
-
-    #[test]
-    fn parse_migrates_a_v2_project_unscoping_every_dbc() {
-        let v2 = r#"{
-            "schema_version": 2,
-            "layout": {"grid": {}, "panels": {}},
-            "elements": [{"kind": "trace", "id": "x"}],
-            "dbc_paths": ["/a.dbc", "/b.dbc"],
-            "remote_address": "host:1234"
-        }"#;
-        let p = parse_project(v2).expect("v2 project migrates");
-        assert_eq!(p.schema_version, PROJECT_SCHEMA_VERSION);
-        // Migration default: every DBC unscoped.
-        assert_eq!(
-            p.dbcs,
-            vec![
-                DbcRef { path: "/a.dbc".into(), buses: Vec::new() },
-                DbcRef { path: "/b.dbc".into(), buses: Vec::new() },
-            ],
-        );
-        assert!(p.buses.is_empty());
-        assert!(p.interface_bindings.is_empty());
-        assert_eq!(p.remote_address.as_deref(), Some("host:1234"));
-        assert_eq!(p.elements.len(), 1);
-    }
-
-    /// `open_project` itself takes a `tauri::AppHandle` (Phase 7
-    /// system-log fanout), so the "missing file" path is exercised
+    /// `open_project` itself takes a `tauri::AppHandle` (system-log
+    /// fanout), so the "missing file" path is exercised
     /// here against the underlying helper: a missing path yields a
     /// `std::io::Error` that the command then wraps with a
     /// user-facing prefix. The wrapping is trivial; this test guards

@@ -32,10 +32,14 @@ The `plans/` directory is the source of truth for what we're building and in
 what order. Treat it as living documentation, not historical record.
 
 - **`plans/features.md`** — the target feature set. Edit when scope changes.
-- **`plans/phased-implementation.md`** — the ordered plan. Each phase has a
-  scope and exit criteria. Don't start a later phase before the current one
-  meets its exit criteria, and don't quietly expand a phase's scope — if
-  something needs to move, update the document first.
+- **`plans/tasks/roadmap.md`** — the ordered list of outstanding work and
+  the canonical implementation order. Each item is a **task** whose detail
+  lives in its own file under **`plans/tasks/`** (`NNNN-description.md`:
+  scope, design questions, exit criteria). Don't start a later task before
+  the current one meets its exit criteria, and don't quietly expand a
+  task's scope — if something needs to move, update the roadmap (and the
+  task file) first. Completed tasks are removed from the roadmap (the
+  detail stays in git history), so it lists only outstanding work.
 - **`plans/technology-inventory.md`** — running list of third-party libraries,
   protocols, file formats, and drivers. **Update it whenever a dependency
   decision is made**, even if the decision is "rejected." Mark each entry as
@@ -127,8 +131,8 @@ every new feature:
 against these rules. If you find a view that holds too much, computes
 what the model should, or accumulates unboundedly, fix it as part of
 your change if it is in scope — otherwise add it to
-`plans/ui-architecture-backlog.md` (the running list of known and
-suspected deviations). Treat a code-vs-principle mismatch the same way
+`plans/backlog.md` (the running list of things noticed in passing).
+Treat a code-vs-principle mismatch the same way
 this document treats a doc-vs-code mismatch: don't leave it silently
 inconsistent.
 
@@ -165,6 +169,13 @@ Rules:
 
 - Keep doc updates in the same commit as the code change they describe.
   A behavioral change without a corresponding doc update is incomplete.
+- **Source code references ADRs only — never plan docs.** Comments and
+  rustdoc may cite an ADR (the durable decision) but must not point at
+  anything under `plans/` (the roadmap, task files, backlog,
+  technology-inventory) or name a task number. The roadmap and tasks
+  track state and churn, so a code reference to them rots; ADRs record
+  what _is_. When a comment needs rationale, cite the ADR or state the
+  reason inline.
 - Every phase has a documentation deliverable as part of its exit
   criteria: the README reflects what now ships, `plans/` records what
   changed and why, and rustdoc covers any new public API. A phase is
@@ -174,10 +185,11 @@ Rules:
 
 ## Completing the plan as documented
 
-Follow the phased plan in order. When reality forces a change:
+Follow the roadmap, in order. When reality forces a change:
 
-1. Update `plans/phased-implementation.md` (and any other affected planning
-   doc) **before** writing code that diverges from it.
+1. Update `plans/tasks/roadmap.md` and the relevant `plans/tasks/NNNN-*.md`
+   file (and any other affected planning doc) **before** writing code that
+   diverges from it.
 2. Note why the change was needed in the commit message.
 3. If a dependency was added, removed, or swapped, update
    `plans/technology-inventory.md` in the same change.

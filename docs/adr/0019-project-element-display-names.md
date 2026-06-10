@@ -2,7 +2,7 @@
 
 Status: accepted (2026-05-26)
 
-Phase 15 ([`../../plans/phased-implementation.md`](../../plans/phased-implementation.md))
+Phase 16 ([`../../plans/phased-implementation.md`](../../plans/phased-implementation.md))
 adds `Cmd/Ctrl+P` go-to-view, which lists open dockview panels by
 their display name. Today each view fabricates a label
 independently — the dockview tab shows `Trace 1` (from a monotonic
@@ -50,7 +50,7 @@ reload, so reopening a project re-orders the same panels'
 numbers. Storing the name in the project model makes it stable.
 
 **One resolver because per-view label code rots in parallel.** A
-new view added in Phase 19 or Phase 23 should not need to invent
+new view added in Phase 20 or Phase 23 should not need to invent
 its own naming. The resolver is one line per view.
 
 **Default on creation, editable everywhere through one path.**
@@ -89,4 +89,4 @@ user to name elements on creation would slow the common case.
   scheme on creation and is otherwise free — the resolver and
   the rename UI work without per-kind code.
 - The "element display names" backlog item (under High Priority →
-  Other near-term work) is closed by Phase 15.
+  Other near-term work) is closed by Phase 16.

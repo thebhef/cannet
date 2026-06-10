@@ -5,8 +5,8 @@ import type { ProjectElementKind } from "./types";
 /**
  * `localStorage` key for the persisted panel layout. The `.v1` suffix
  * is bumped if the serialized shape changes incompatibly. This is a
- * placeholder until project files land (Phase 3): a project file will
- * carry the layout, and this key becomes the "no project open" default.
+ * placeholder for the case where no project file is open: a project
+ * file carries the layout, and this key is the "no project open" default.
  */
 export const LAYOUT_STORAGE_KEY = "cannet.layout.v1";
 
@@ -28,13 +28,13 @@ export const BY_ID_PANEL_COMPONENT = "by-id";
 export const PROJECT_PANEL_COMPONENT = "project";
 export const PLOT_PANEL_COMPONENT = "plot";
 export const TRANSMIT_PANEL_COMPONENT = "transmit";
-/// Phase 6: spatial / wiring view onto the project state. Distinct
+/// Spatial / wiring view onto the project state. Distinct
 /// from the list-oriented `PROJECT_PANEL_COMPONENT`.
 export const PROJECT_GRAPH_PANEL_COMPONENT = "project-graph";
-/// Phase 7: host-side log bus surface. Multiple are allowed (each
+/// Host-side log bus surface. Multiple are allowed (each
 /// carries its own source / min-level filter in `params`).
 export const SYSTEM_MESSAGES_PANEL_COMPONENT = "system-messages";
-/// Phase 12: DBC discovery panel (tree-with-fuzzy-search over every
+/// DBC discovery panel (tree-with-fuzzy-search over every
 /// loaded DBC's messages → signals). Singleton (same pattern as the
 /// project, graph, and system-messages panels) — the loaded-DBC set
 /// lives on the host and there's no per-panel differentiation worth

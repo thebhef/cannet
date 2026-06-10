@@ -1,9 +1,8 @@
 // @vitest-environment jsdom
 //
 // Smoke-tests for the project-graph panel's toolbar. The toolbar is
-// the entry point for creating filter elements (Step 8 of the bus
-// fan-out work); deeper graph rendering is covered by the pure
-// `projectGraph.test.ts`.
+// the entry point for creating filter elements; deeper graph rendering
+// is covered by the pure `projectGraph.test.ts`.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";

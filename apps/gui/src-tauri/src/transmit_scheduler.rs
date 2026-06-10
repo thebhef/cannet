@@ -1,4 +1,4 @@
-//! The host-side transmit scheduler (Phase 13).
+//! The host-side transmit scheduler.
 //!
 //! Every running periodic message is driven by a **single** host thread
 //! (`run_transmit_scheduler` in `lib.rs`) instead of one OS thread per

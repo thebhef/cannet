@@ -1,4 +1,4 @@
-//! Host-side structured log bus (Phase 7).
+//! Host-side structured log bus.
 //!
 //! A single in-process [`SystemLog`] holds a bounded ring of
 //! [`SystemMessage`]s — `{ ts_ms, source, level, message }` — that the
@@ -14,7 +14,7 @@
 //!
 //! Sources are short stable strings (`"project"`, `"dbc"`,
 //! `"connection"`, `"blf-import"`, `"plot"`; vendor sidecars will use
-//! `"sidecar:<vendor>"` from Phase 8). Levels are
+//! `"sidecar:<vendor>"`). Levels are
 //! [`LogLevel::Info`] / `Warn` / `Error`.
 //!
 //! The ring is bounded — the oldest message is dropped when capacity is
@@ -226,7 +226,7 @@ fn current_unix_ms() -> u64 {
 }
 
 /// Bridge a wire-level [`cannet_wire::proto::LogMessage`] into the
-/// local host log bus (Phase 7). `Unspecified` levels default to
+/// local host log bus. `Unspecified` levels default to
 /// `Info`. The wire timestamp is recorded by `push`'s own wall-clock
 /// stamping — the wire `timestamp_ns` is intentionally **not** trusted
 /// as a host clock value; if a future revision wants to preserve the
@@ -235,12 +235,12 @@ fn current_unix_ms() -> u64 {
 ///
 /// Returns the pushed entry — or `None` if the rate-limiter dropped
 /// it. The bridge does not emit a Tauri event by itself; the call site
-/// (a future wire-receive loop in Phase 8) is the right place for
+/// (a future wire-receive loop) is the right place for
 /// that, where the `AppHandle` is in hand.
 //
 // The bridge is exercised by unit tests in this module but not yet
-// called from the binary — Phase 8 wires it into the session-receive
-// loop. Until then, allow the dead-code lint rather than removing the
+// called from the binary — a future session-receive loop will wire it
+// in. Until then, allow the dead-code lint rather than removing the
 // definition.
 #[allow(dead_code)]
 pub fn bridge_wire_log(

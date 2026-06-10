@@ -81,7 +81,7 @@ must keep producing the same frame on the wire.
   partially unmapped.
 - **Encoder in the GUI host (Rust) without a `cannet-dbc` API.**
   Splits the DBC-walking logic across two crates. Future callers
-  (server-side simulation in Phase 22, CANopen SDO/PDO in Phase 21)
+  (server-side simulation in Phase 14, CANopen SDO/PDO in Phase 22)
   would each have to reach into the GUI host or copy the walk.
 - **Encoder in TypeScript on the frontend.** Reimplements decode-
   semantics on the wrong side of the model/view boundary, in a
@@ -97,6 +97,6 @@ must keep producing the same frame on the wire.
   hack is retired; enum picks go through the encoder for proper
   multi-byte placement.
 - The "bytes source of truth" rule constrains future transmit-side
-  features (rest-of-bus simulation in Phase 22, math channels in
+  features (rest-of-bus simulation in Phase 14, math channels in
   Phase 23) to operate on payloads, not on signal maps, when they
   need to persist or transmit a frame.

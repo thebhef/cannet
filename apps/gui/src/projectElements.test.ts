@@ -28,7 +28,7 @@ describe("isProjectElement", () => {
 
 describe("normalizeElement", () => {
   it("defaults `sources` to ['*'] for a consumer loaded without one (old project)", () => {
-    // Cast through unknown to simulate the pre-Phase-6 shape that
+    // Cast through unknown to simulate the legacy shape that
     // saved projects on disk still have.
     const stored = { kind: "trace", id: "t", source: "p" } as unknown as ProjectElement;
     const out = normalizeElement(stored);

@@ -1,4 +1,4 @@
-/// Phase 12 filter-defined plot area helpers (ADR 0020). Kept in
+/// Filter-defined plot area helpers (ADR 0020). Kept in
 /// their own module so the pure-logic tests can import them without
 /// pulling in `PlotPanel.tsx`'s uplot dependency (uplot needs a real
 /// canvas, which jsdom doesn't provide).

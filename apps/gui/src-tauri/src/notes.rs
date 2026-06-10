@@ -1,9 +1,9 @@
 //! Session-buffer notes — the host home for the plot panel's
 //! event-marker annotations.
 //!
-//! Phase 4 put notes in each plot panel's dockview `params`, which
-//! meant a note placed in panel A wasn't visible in panel B even
-//! over the same timeline. Phase 9 lifted them out: a single
+//! Notes are not owned by individual plot panels — a note placed
+//! over a timeline must be visible in every panel over that same
+//! timeline. They live in a single
 //! session-scoped list, edited through Tauri commands, observed by
 //! every plot panel via `notes-changed` IPC events. The session
 //! buffer (the trace store) is the source of truth for the data; a

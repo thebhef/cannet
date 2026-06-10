@@ -24,7 +24,7 @@ describe("dragSignals", () => {
   });
 
   describe("parseSignalDragData", () => {
-    it("parses the array form a Phase-12 multi-signal drag emits", () => {
+    it("parses the array form a multi-signal drag emits", () => {
       const raw = JSON.stringify({ signals: [SAMPLE, { ...SAMPLE, signalName: "EngineTemp" }] });
       const out = parseSignalDragData(raw);
       expect(out.signals).toHaveLength(2);

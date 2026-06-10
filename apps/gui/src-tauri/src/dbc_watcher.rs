@@ -1,4 +1,4 @@
-//! Filesystem watcher for loaded DBC files (Phase 12 follow-up).
+//! Filesystem watcher for loaded DBC files.
 //!
 //! When the user has a DBC loaded and then edits / re-exports it from
 //! another tool, we'd like the GUI to pick up the change automatically

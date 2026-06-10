@@ -23,7 +23,7 @@
 //!
 //! [ADR 0021]: ../../../docs/adr/0021-virtual-bus-server.md
 //!
-//! [`proto::LogMessage`] is the Phase-7 out-of-band log channel: a
+//! [`proto::LogMessage`] is the out-of-band log channel: a
 //! sender (vendor sidecar, server, peer client) emits structured
 //! advisory messages on the same stream. Unlike [`proto::Error`] it
 //! does **not** end the session — receivers route it into their local

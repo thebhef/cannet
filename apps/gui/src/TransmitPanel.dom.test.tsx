@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
 // Component tests for the transmit panel as a thin view over the
-// host-side TX-message registry (Phase 13 Step 9). The Tauri `invoke`
+// host-side TX-message registry. The Tauri `invoke`
 // bridge is mocked, so this asserts the *contract*: the panel renders
 // only the messages named by its element's `frameIds` group and routes
 // every user action through the matching host command — it holds no

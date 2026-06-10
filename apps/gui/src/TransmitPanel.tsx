@@ -32,7 +32,7 @@ import { effectiveBusColor } from "./busColor";
 import { SIGNAL_DND_MIME, parseSignalDragData } from "./dragSignals";
 
 /**
- * Transmit panel (Phase 13 Step 9 — thin view over the host model).
+ * Transmit panel (thin view over the host model).
  *
  * Single-column list of collapsible frame-tiles. Each tile carries its
  * own send / cyclic controls, identity (description, bus, id, DBC
@@ -46,8 +46,7 @@ import { SIGNAL_DND_MIME, parseSignalDragData } from "./dragSignals";
  * send / start / stop through the matching Tauri command. The host
  * emits `transmit-frames-changed` on every mutation, which re-fetches
  * the pool. Periodic schedules run on host threads — there is no
- * client-side `setInterval`. See ADR 0003 and the plan's Phase 13
- * Step 9.
+ * client-side `setInterval`. See ADR 0003.
  *
  * Reorderable: drag the bus-tinted handle on the left of a row to
  * insert that frame before another (rewrites the element's `frameIds`).
@@ -200,7 +199,7 @@ export function TransmitPanel(props: IDockviewPanelProps) {
       .catch(() => {});
   }, [project.buses, registry, elementId]);
 
-  /// Drop handler for the Phase 12 DBC-to-TX gesture. The drag
+  /// Drop handler for the DBC-to-TX gesture. The drag
   /// payload is the shared `application/x-cannet-plot-signal` shape
   /// (one or more signal refs). A transmit frame is per-message, not
   /// per-signal — so we group by `(canId, extended)` and produce one
@@ -336,7 +335,7 @@ export function TransmitPanel(props: IDockviewPanelProps) {
     <div
       className="tx-panel"
       onDragOver={(e) => {
-        // Accept the Phase-12 signal mime as a drop target. The TX
+        // Accept the signal mime as a drop target. The TX
         // panel turns each dropped signal's parent message into a
         // new transmit frame (deduped by message). Other DnD mimes
         // (the panel's own frame-reorder) bubble through to the
@@ -802,8 +801,8 @@ function SignalsTable({ frame, descriptor, onChange }: SignalsTableProps) {
   if (descriptor.usesExtendedMux) {
     // Nested / extended multiplexing (`m<N>M` indicators). Not
     // supported for signal-level editing yet — the user can still
-    // edit the raw bytes above. See plans/phased-implementation.md
-    // Track 2 deferred follow-ups and ADR 0017.
+    // edit the raw bytes above. See ADR 0017 for the
+    // deferred signal-level-edit follow-ups.
     return (
       <div className="tx-signals tx-signals-extmux">
         <span>
@@ -833,9 +832,8 @@ function SignalsTable({ frame, descriptor, onChange }: SignalsTableProps) {
     if (s.mux.kind === "multiplexed") {
       return activeSelector !== null && s.mux.selector === activeSelector;
     }
-    // `multiplexor_and_multiplexed` (sub-mux): not handled here.
-    // Step 8 swaps the table out for a note when the message has any
-    // of these; until then they're hidden.
+    // `multiplexor_and_multiplexed` (sub-mux): not handled here —
+    // these signals are hidden for now.
     return false;
   });
   if (rows.length === 0) {

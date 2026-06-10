@@ -1,4 +1,4 @@
-// Phase 9 — Recent BLFs (localStorage).
+// Recent BLFs (localStorage).
 //
 // The N most-recently-opened BLF paths, offered in the Open BLF flow
 // and the project panel's BLF import affordance. Persisted across

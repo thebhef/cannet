@@ -164,14 +164,14 @@ export function App() {
   // Paths of the loaded DBCs, in priority order (mirrors the host's set
   // — it owns the parsed databases; this is just what the UI shows).
   const [dbcPaths, setDbcPaths] = useState<string[]>([]);
-  // Phase 6: per-DBC bus scoping (path → bus ids). Empty list = unscoped.
+  // Per-DBC bus scoping (path → bus ids). Empty list = unscoped.
   // Mirrors the host's `LoadedDbc.buses`; the project file carries the
   // canonical `dbcs: DbcRef[]` shape.
   const [dbcBuses, setDbcBuses] = useState<Record<string, string[]>>({});
-  // Phase 6: logical buses + interface bindings. Project-owned state.
+  // Logical buses + interface bindings. Project-owned state.
   const [buses, setBuses] = useState<Bus[]>([]);
   const [interfaceBindings, setInterfaceBindings] = useState<InterfaceBinding[]>([]);
-  // Phase 13: virtual buses owned by the project (ADR 0021).
+  // Virtual buses owned by the project (ADR 0021).
   const [localVirtualBuses, setLocalVirtualBuses] = useState<LocalVirtualBusDef[]>(
     [],
   );
@@ -205,15 +205,15 @@ export function App() {
   // on Save. Starts empty; `seedDefaultLayout` (called below) fills it.
   const [registry, setRegistry] = useState<RegistryEntry[]>([]);
 
-  // Phase 7 host-side log bus mirror. Bootstrapped by
+  // Host-side log bus mirror. Bootstrapped by
   // `fetch_system_log` and kept current by `system-log-appended`
   // events. Session-scoped, not persisted.
   const [systemMessages, setSystemMessages] = useState<SystemMessage[]>([]);
-  // Phase 9 session-scoped notes mirror (host owns the canonical
+  // Session-scoped notes mirror (host owns the canonical
   // list at `src-tauri/src/notes.rs`). Bootstrapped by
   // `fetch_notes` and kept current by `notes-changed` events.
   const [notes, setNotes] = useState<Note[]>([]);
-  // Phase 9 Recent BLFs (the N most-recent opened BLF paths,
+  // Recent BLFs (the N most-recent opened BLF paths,
   // persisted in localStorage). Offered in the Open BLF flow and
   // the project panel's BLF import affordance.
   const [recentBlfs, setRecentBlfs] = useState<string[]>(() => loadRecentBlfs(localStorage));
@@ -342,8 +342,7 @@ export function App() {
       // action — not closing its panel) deletes its TX messages from
       // the host pool too, which also stops any running periodic. A
       // message still grouped by another transmit element survives
-      // (the pool is shared; only this group is going away). Phase 13
-      // Step 9.
+      // (the pool is shared; only this group is going away).
       const removed = registry.find((e) => e.element.id === id);
       if (removed && removed.element.kind === "transmit") {
         const stillReferenced = new Set<string>();
@@ -436,7 +435,7 @@ export function App() {
     [refreshChunk],
   );
 
-  // Phase 7: bootstrap + live-update the system-log mirror. The
+  // Bootstrap + live-update the system-log mirror. The
   // snapshot is the source of truth on mount; thereafter the host's
   // `system-log-appended` event delivers each new entry. The merge
   // helpers dedupe by `seq` so a snapshot/event race is harmless.
@@ -455,7 +454,7 @@ export function App() {
     };
   }, []);
 
-  // Phase 9: bootstrap + live-update the notes mirror. The host's
+  // Bootstrap + live-update the notes mirror. The host's
   // `notes-changed` event payload is the full, chronologically
   // sorted list — there's no merge step to do.
   useEffect(() => {
@@ -564,7 +563,7 @@ export function App() {
   }, [sessionStartSeconds]);
 
 
-  // Phase 6: BLF import gained a channel → bus mapping step. The
+  // BLF import has a channel → bus mapping step. The
   // outer pending state holds the picked BLF path + its distinct
   // channel list while the modal is open; clicking "Open" in the
   // modal commits and the host pump starts.
@@ -622,7 +621,7 @@ export function App() {
           channelBusMapping,
         });
         setState({ kind: "loading", result });
-        // Phase 9: record on a successful open. Failures don't
+        // Record on a successful open. Failures don't
         // promote a path — `handleOpenLog` drops it on the
         // recents-launch path.
         rememberRecentBlf(blfPath);
@@ -676,7 +675,7 @@ export function App() {
   // Replace the loaded-DBC set with exactly `paths` (clear, then re-add
   // each in order). Used by "open project", "new project" (empty list),
   // and "reload all from disk". Paths that fail to read / parse are
-  // dropped and reported together. Phase 6: `scoping` (path → bus_id[])
+  // dropped and reported together. `scoping` (path → bus_id[])
   // is committed to the host after each add so per-bus DBC scoping
   // survives an open-project round-trip.
   const loadDbcSet = useCallback(
@@ -867,7 +866,7 @@ export function App() {
   }, [create]);
 
   /// Snapshot the current workspace into a `Project` (the elements, not
-  /// their runtime state — that re-anchors on reload). Phase 6 emits
+  /// their runtime state — that re-anchors on reload). Emits
   /// `buses`, `interface_bindings`, and `dbcs` (per-DBC bus scoping).
   const gatherProject = useCallback(
     (): Project => {
@@ -934,7 +933,7 @@ export function App() {
       // `project.remote_address` is ignored — addresses now live per-
       // binding (see `gatherProject`); reading a v3 file's value would
       // re-introduce the toolbar-level address we removed.
-      // Phase 6: pull bus / binding state, then load DBCs with their
+      // Pull bus / binding state, then load DBCs with their
       // bus scoping. `loadDbcSet` takes the scoping map so each DBC
       // is committed to the host with the right `buses`.
       const incomingBuses = Array.isArray(project.buses) ? project.buses : [];
@@ -957,7 +956,7 @@ export function App() {
         incomingDbcs.map((d) => d.path),
         scoping,
       );
-      // Phase 13: rebuild host-side virtual buses from project defs
+      // Rebuild host-side virtual buses from project defs
       // (ADR 0021). Per-binding session participants are opened on
       // Connect, not here.
       void invoke("replay_local_virtual_buses", {
@@ -987,7 +986,7 @@ export function App() {
     void invoke("replay_local_virtual_buses", {
       defs: [],
     }).catch(() => {});
-    // Phase 13 Step 9: drop the host TX-message pool too, so a New
+    // Drop the host TX-message pool too, so a New
     // project starts with no transmit frames.
     void invoke("clear_transmit_frames").catch(() => {});
     void invoke("clear_trace_store").catch(() => {});
@@ -1044,7 +1043,7 @@ export function App() {
     [projectPath, saveProjectTo, handleSaveProjectAs],
   );
 
-  // Phase 9 Save Capture: write the session buffer to a BLF.
+  // Save Capture: write the session buffer to a BLF.
   // System Messages handle the user-visible success / failure
   // feedback; this just routes through the host command.
   //
@@ -1101,12 +1100,12 @@ export function App() {
 
   // Re-read every loaded DBC from disk (a file that's gone or no longer
   // parses drops out, with an error). No-op when none are loaded.
-  // Phase 6: preserve per-DBC bus scoping across the reload.
+  // Preserve per-DBC bus scoping across the reload.
   const handleReloadDbc = useCallback(() => {
     if (dbcPaths.length > 0) void loadDbcSet(dbcPaths, dbcBuses);
   }, [dbcPaths, dbcBuses, loadDbcSet]);
 
-  // Phase 6: update a single DBC's bus scoping and push it to the host.
+  // Update a single DBC's bus scoping and push it to the host.
   const handleSetDbcBuses = useCallback(
     (path: string, scopedBuses: string[]) => {
       setDbcBuses((prev) => ({ ...prev, [path]: scopedBuses }));
@@ -1119,7 +1118,7 @@ export function App() {
     [invalidateCache],
   );
 
-  // Phase 6: bus list mutations (add / rename / remove). Pure project
+  // Bus list mutations (add / rename / remove). Pure project
   // state; the host doesn't need a separate command (the buses ride
   // through the project file, and the per-DBC scoping refresh below
   // re-publishes the canonical set when a rename / remove changes ids).
@@ -1176,9 +1175,9 @@ export function App() {
     },
     [],
   );
-  // Phase 6: interface-binding mutations. Each project bus has at
+  // Interface-binding mutations. Each project bus has at
   // most one binding (key is `bus_id`); multiple bindings may target
-  // the same source — Phase 13 Step 6 made the sidecar and the
+  // the same source — the sidecar and the
   // in-process bus both fan out to N subscribers. Binding mutations
   // are pure project state — the host-side session for the binding
   // is opened on Connect, not on bind.
@@ -1194,7 +1193,7 @@ export function App() {
     setDirty(true);
   }, []);
 
-  // Phase 13: virtual-bus mutations (ADR 0021).
+  // Virtual-bus mutations (ADR 0021).
   const handleAddVirtualBus = useCallback((def: LocalVirtualBusDef) => {
     setLocalVirtualBuses((prev) => {
       if (prev.some((v) => v.id === def.id)) return prev;
@@ -1340,7 +1339,7 @@ export function App() {
     [showSingletonPanel],
   );
 
-  // Phase 12 DBC discovery panel — singleton (same pattern as project /
+  // DBC discovery panel — singleton (same pattern as project /
   // graph / system-messages). The host owns the loaded-DBC set; the
   // panel is purely a viewer. Its search query + expand state survive
   // a layout save through dockview panel params.
@@ -1354,7 +1353,7 @@ export function App() {
     [showSingletonPanel],
   );
 
-  // Phase 7 system-log context: mirror + clear + markRead. `clear`
+  // System-log context: mirror + clear + markRead. `clear`
   // empties both the host's ring and the frontend's mirror; the host
   // does *not* reset its seq counter (callers rely on monotonicity),
   // so we don't reset `readHighWater` either.
@@ -1384,7 +1383,7 @@ export function App() {
     [systemMessages, unread, clearSystemLog, markSystemLogRead],
   );
 
-  // Phase 9 notes context: dispatchers forward to the host; the
+  // Notes context: dispatchers forward to the host; the
   // mirror updates from the `notes-changed` event, not from
   // optimistic local state, so a panel-A add shows up on panel B
   // through the same code path.

@@ -341,7 +341,7 @@ impl Database {
     }
 
     /// Tree-shaped snapshot of this database for the GUI's DBC panel
-    /// (Phase 12 discovery surface). One entry per message, each
+    /// (discovery surface). One entry per message, each
     /// carrying the text the panel's fuzzy search has to match:
     /// per-message comment + attributes, per-signal comment +
     /// attributes + unit + value-table labels.
@@ -994,7 +994,7 @@ pub struct SignalDescriptor {
     pub has_value_table: bool,
 }
 
-/// One DBC message as the GUI's DBC panel (Phase 12) renders it: the
+/// One DBC message as the GUI's DBC panel renders it: the
 /// message's identity, its free-text comment, its per-message
 /// attributes, and the tree of signals that belong to it. Built by
 /// [`Database::dbc_content`].
@@ -1052,7 +1052,7 @@ pub struct DbcMessageContent {
 /// [`Database::decode`] / [`Database::encode_frame`] / the rich
 /// [`Database::describe_message`] view; this one is search-shaped.
 ///
-/// Phase 12 polish surfaces every per-signal field the DBC declares
+/// Surfaces every per-signal field the DBC declares
 /// so the discovery panel can show bit positions, scale, range, mux
 /// indicator, float kind, and signedness alongside the comments /
 /// attributes / value-table entries. The fields mirror
@@ -2004,7 +2004,7 @@ BA_ "GenMsgCANFDBRS" BO_ 400 0;
         }
     }
 
-    // --- dbc_content (Phase 12 DBC panel) ---
+    // --- dbc_content (DBC panel) ---
 
     /// Fixture covering the kinds of text the discovery panel's fuzzy
     /// search has to match: per-message comments + attributes, per-signal

@@ -281,7 +281,7 @@ describe("PlotPanel", () => {
   });
 
   it("dragging a signal to another area copies it (both areas show it)", async () => {
-    // Phase 12 (slice 3 + slice 4 cleanup): drop-on-different-area
+    // Drop-on-different-area
     // is a *copy*, not a move. The user wanted the same signal in
     // multiple areas, and prior move semantics surprised drag-from-
     // DBC-panel users who expected each drop to add a fresh series.

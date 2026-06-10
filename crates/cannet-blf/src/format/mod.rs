@@ -1,5 +1,4 @@
-//! Native Vector BLF format codec (Phase 10 Track 1; see
-//! `plans/phased-implementation.md`).
+//! Native Vector BLF format codec.
 //!
 //! This module is the on-disk format surface — it parses and emits
 //! the byte sequences described in Vector's "Read Write BLF API 2018

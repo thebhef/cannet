@@ -26,10 +26,8 @@ import {
 } from "./plotCursors";
 
 /**
- * The Phase-4 signal-plotting panel — a software oscilloscope for
- * decoded CAN signals, in the spirit of vSignalyzer / CANape. See
- * `plans/phased-implementation.md` Phase 4 and
- * `plans/plot-panel-reference.html` for the target design.
+ * The signal-plotting panel — a software oscilloscope for
+ * decoded CAN signals, in the spirit of vSignalyzer / CANape.
  *
  * It's backed by a **trace element** (`useTrace`), exactly like the
  * trace panels — a window over the host-side session buffer with
@@ -93,7 +91,7 @@ import {
  * canvas event wiring aren't unit-tested; the cursor/measurement maths
  * (`plotCursors.ts`) and the decimation (`signal_sampler`) are.
  *
- * Not built yet (`plans/backlog.md`): per-*trace* y offset/gain & log
+ * Not built yet: per-*trace* y offset/gain & log
  * scale; enum/state signals; triggers; CSV/image export.
  */
 
@@ -163,7 +161,7 @@ export interface PlotAreaConfig {
    * what `primarySignalForArea` resolves it to. Click a signal row in
    * the side panel to promote that signal to primary. */
   primarySignalKey?: string | null;
-  /** Phase 12 filter-defined plot area (ADR 0020): when present, this
+  /** Filter-defined plot area (ADR 0020): when present, this
    * area is in **filter mode** — its `signals` list is *computed* from
    * every catalog signal whose `${busName}.${messageName}.${signalName}`
    * matches the regex (case-sensitive JS `RegExp`). The persisted
@@ -199,9 +197,8 @@ interface PlotPanelParams {
   showDiag?: unknown;
   cursorX?: unknown;
   cursorYByArea?: unknown;
-  // Phase 9: `notes` retired from panel params — see the
-  // session-scoped notes store. v3 → v4 project migration strips
-  // the field, but a tolerant parser ignores extras anyway.
+  // `notes` retired from panel params — see the session-scoped notes
+  // store. A tolerant parser ignores the extra field on older blobs.
   maxRateHz?: unknown;
   signalsWidthPx?: unknown;
 }
@@ -264,7 +261,7 @@ function withColor(
 
 /** Drag-and-drop MIME for a `SignalRef` (within or across plot panels —
  * the payload is the full ref so the receiving panel can add it even if
- * it's not one of its own signals). Phase 12 hoisted the mime + parser
+ * it's not one of its own signals). The mime + parser are hoisted
  * into [`dragSignals.ts`](./dragSignals.ts) so the DBC panel and the
  * trace / by-id signal rows can produce the same payload shape. */
 import {
@@ -400,7 +397,7 @@ function elementIdFromParams(raw: unknown): string {
   return typeof o?.elementId === "string" ? o.elementId : crypto.randomUUID();
 }
 
-// Phase 12 filter helpers live in `./plotFilter` so the pure-logic
+// Filter helpers live in `./plotFilter` so the pure-logic
 // tests can import them without dragging uplot into a jsdom run.
 import { applyAreaFilters } from "./plotFilter";
 
@@ -487,7 +484,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
       return out;
     },
   );
-  // Phase 9: notes live in the session-scoped host store. The
+  // Notes live in the session-scoped host store. The
   // panel reads `notes` through `useNotes()` (absolute trace ns)
   // and converts to/from display-relative seconds against
   // `cacheRef.current?.base` (the panel's x-axis origin in
@@ -666,10 +663,8 @@ export function PlotPanel(props: IDockviewPanelProps) {
 
   const { api } = props;
   useEffect(() => {
-    // Phase 9: `notes` is no longer persisted on the panel —
-    // it's session-scoped in the host. The project-open v3 → v4
-    // migration strips any leftover `notes` from older project
-    // files.
+    // `notes` is no longer persisted on the panel — it's
+    // session-scoped in the host.
     api.updateParameters({
       elementId,
       areas,
@@ -708,7 +703,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
   }, [buses]);
   useEffect(refreshCatalog, [refreshCatalog, dbcPaths, buses]);
 
-  // Phase 12 follow-up: re-fetch the signal catalog when the host's
+  // Re-fetch the signal catalog when the host's
   // filesystem watcher reports a DBC change. Filter-mode plot areas
   // re-evaluate automatically off the new `catalog`.
   useEffect(() => {
@@ -912,7 +907,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     setCursorX({ a: null, b: null });
     setCursorYByArea({});
   }, []);
-  // Phase 9: panel-level cache base — set by whichever PlotArea
+  // Panel-level cache base — set by whichever PlotArea
   // reports it first. Areas share the same x scale, so any one is
   // representative; later reports overwrite it (a re-anchor after
   // Clear flows through the same callback). `null` when no area
@@ -1488,7 +1483,7 @@ interface PlotAreaProps {
   onReportRate: (areaId: string, hz: number) => void;
   /** Largest per-signal cache size (display + diagnostic). */
   onReportCache: (areaId: string, points: number) => void;
-  /** Phase 9: report the area's cache base (x-axis origin, in
+  /** Report the area's cache base (x-axis origin, in
    * absolute seconds since the unix epoch — `res.from_seconds` from
    * the host's `sample_signals` reply). The panel uses this to
    * convert session-scoped notes' absolute ns to display-relative
@@ -1668,7 +1663,7 @@ function PlotArea(p: PlotAreaProps) {
   const [hoverX, setHoverX] = useState<number | null>(null);
   const [valueTick, setValueTick] = useState(0); // bump → re-render side panel
   const [yEditOpen, setYEditOpen] = useState(false);
-  /** Phase 12 filter-editor visibility (ADR 0020). Closed by default;
+  /** Filter-editor visibility (ADR 0020). Closed by default;
    * the "filter…" button in the side-panel head toggles it. The
    * editor itself is rendered below the head row when open, so it
    * stacks above the signals list. */
@@ -1706,7 +1701,7 @@ function PlotArea(p: PlotAreaProps) {
   const primaryColorRef = useRef<string | null>(primarySignal?.color ?? null);
   primaryColorRef.current = primarySignal?.color ?? null;
 
-  // Phase-5: value-table support for enum / state signals. When the
+  // Value-table support for enum / state signals. When the
   // area shows *exactly one* signal *and* that signal has a `VAL_`
   // table, the area switches to "enum mode": auto-normalisation is
   // bypassed (the values are discrete enum codes, no rescaling),
@@ -1714,7 +1709,7 @@ function PlotArea(p: PlotAreaProps) {
   // between codes), and the y-axis ticks become symbolic labels
   // from the table. Multi-signal areas keep current behaviour —
   // their value-table follow-up (per-signal stepped overlays,
-  // multiple symbolic axes) is in plans/backlog.md.
+  // multiple symbolic axes) is deferred.
   const [valueTable, setValueTable] = useState<ValueTableEntryRecord[] | null>(null);
   useEffect(() => {
     setValueTable(null);
@@ -1953,7 +1948,7 @@ function PlotArea(p: PlotAreaProps) {
         // ts(winStart) — the x-axis origin.
         if (res.from_seconds == null) return; // nothing real yet — try again next tick
         cache.base = res.from_seconds;
-        // Phase 9: tell the panel so session-scoped notes can be
+        // Tell the panel so session-scoped notes can be
         // projected onto this panel's x-axis. Areas share x, so a
         // panel-level base from any area is fine.
         lr.onReportBase(area.id, res.from_seconds);
@@ -1991,7 +1986,7 @@ function PlotArea(p: PlotAreaProps) {
       // (`seriesRef` keeps the un-normalised series for that). The
       // y-axis labels become normalised positions [0, 1] — meaningful
       // numbers per trace will arrive with the per-trace gain/offset
-      // controls (`plans/backlog.md`).
+      // controls (deferred).
       //
       // Pick a per-signal `(lo, hi)` for normalising each trace to
       // [0, 1]. Three modes, all backed by `traceRangesRef`:
@@ -2168,7 +2163,7 @@ function PlotArea(p: PlotAreaProps) {
       ticks: { stroke: AXIS_TICKS, width: 1 },
       font: "10px ui-monospace, SFMono-Regular, Menlo, monospace",
     };
-    // Phase-5 enum-mode hook-up: stepped paths + symbolic y-axis
+    // Enum-mode hook-up: stepped paths + symbolic y-axis
     // ticks. The construction effect closes over `valueTable` so a
     // table-fetch resolution (which re-renders + triggers rebuild
     // through the `signalSetKey` dep on this effect) installs the
@@ -3109,8 +3104,8 @@ function PlotArea(p: PlotAreaProps) {
   );
 }
 
-/// Inline regex editor for a plot area's `signalFilter` (Phase 12,
-/// ADR 0020). Sits below the area's side-panel head when open. Apply
+/// Inline regex editor for a plot area's `signalFilter` (ADR 0020).
+/// Sits below the area's side-panel head when open. Apply
 /// validates the regex by attempting to construct a `RegExp` and
 /// surfaces a "bad regex" hint on failure; the area's filter is
 /// only set when the regex compiles.

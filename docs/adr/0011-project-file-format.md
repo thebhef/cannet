@@ -19,10 +19,13 @@ lives in dockview's `params` (trace column layout, plot cursors and
 measurements, sort/scroll, panel mode toggle, etc.) rides along inside
 that blob.
 
-The file carries an explicit `schema_version`. When the shape changes
-incompatibly the version bumps and a migration runs on parse; the
-next save rewrites the file at the new version. A file from a newer
-build is rejected rather than misread.
+The file carries an explicit `schema_version`. Only the current
+version is accepted; any other value — older or newer — is rejected
+with a user-facing message rather than misread. When the in-memory
+shape changes the version bumps, which retires every file written by
+an earlier build. We do not carry migrators: the tool has no shipping
+users and no on-disk projects predating the current shape, so a
+migration path would only ever exercise cases that cannot occur.
 
 ## Why
 
@@ -50,15 +53,14 @@ file is in a different category.
 
 ## Consequences
 
-- Adding fields means bumping the schema version and adding a
-  migration step. Version history is documented in place.
-- The "host doesn't interpret the layout" rule has one documented
-  exception: schema migrations that need to reach into the dockview
-  blob walk it deliberately and locally. That is the only time the
-  host parses the blob's shape.
+- A shape change means bumping the schema version; older files are
+  then rejected, not migrated. If a migration path is ever needed
+  (e.g. once the tool has real users with saved projects), it is added
+  deliberately at that point.
+- The "host doesn't interpret the layout" rule holds without
+  exception: the host never parses the dockview blob's shape.
 - The schema version is defined in both TypeScript and Rust; they
-  must stay in lockstep. They currently do not — see
-  `plans/backlog.md`.
+  must stay in lockstep.
 - When dockview is one day swapped (it sits behind a thin adapter —
   see [ADR 0005](0005-dockview-panel-layout.md)), the on-disk
   `layout` field can either migrate forward or be re-derived from

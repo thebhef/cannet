@@ -23,7 +23,7 @@ interface PanelParams {
 }
 
 /**
- * System Messages panel (Phase 7). Renders the host's structured log
+ * System Messages panel. Renders the host's structured log
  * bus as a virtualised list with timestamp, source, level, and message
  * columns. Filterable by source and by minimum level (default `warn`;
  * drop to `info` in the toolbar to see breadcrumb context).

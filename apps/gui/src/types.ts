@@ -1,6 +1,6 @@
 // Mirrors the Rust shapes in src-tauri/src/ipc.rs. Kept manually in sync
 // because the two surfaces are small enough that a code generator would
-// be more friction than benefit at Phase 2.
+// be more friction than benefit at this scale.
 
 export type CanFrameKind =
   | { kind: "classic" }
@@ -35,7 +35,7 @@ export interface TraceFrameRecord {
   kind: CanFrameKind;
   data: number[];
   decoded: DecodedRecord | null;
-  /// Logical bus id this frame was routed onto (Phase 6), if any.
+  /// Logical bus id this frame was routed onto, if any.
   /// `undefined` / `null` means "unassigned" — the per-bus DBC scoping
   /// and the filter `{bus}` predicate both reject those.
   bus_id?: string | null;
@@ -66,12 +66,12 @@ export interface OpenLogResult {
 export interface DbcInfo {
   dbc_path: string;
   message_count: number;
-  /// Logical bus ids this DBC is scoped to (Phase 6). Empty / absent =
+  /// Logical bus ids this DBC is scoped to. Empty / absent =
   /// unscoped (applies to all buses).
   buses?: string[];
 }
 
-/// One logical bus the project owns (Phase 6). `id` is stable across
+/// One logical bus the project owns. `id` is stable across
 /// renames and what the graph view / per-DBC scoping / filter
 /// predicates reference. Mirrors `src-tauri/src/project.rs::Bus`.
 export interface Bus {
@@ -95,13 +95,11 @@ export interface Bus {
   color?: string | null;
 }
 
-/// One of the three binding kinds introduced in Phase 13 (ADR
-/// 0021 / 0022):
+/// One of the three binding kinds (ADR 0021 / 0022):
 ///
 /// - **`"remote"`** — a `(server, interface)` pair on a remote
 ///   `cannet-server` (or the local sidecar via the
-///   {@link LOCAL_SERVER} sentinel). v5 entries default to this on
-///   migration.
+///   {@link LOCAL_SERVER} sentinel). The default kind.
 /// - **`"remote-virtual-bus"`** — subscribe to the factory id of a
 ///   remote virtual-bus server. The server allocates a participant
 ///   on `Subscribe`; the host uses the allocated id for tx.
@@ -183,9 +181,8 @@ export interface LocalVirtualBusDef {
 /// - `local-vbus://<vbus_id>` → in-process virtual bus
 ///   ({@link LocalVirtualBusDef}; `kind: "local-virtual-bus"`).
 export interface InterfaceBinding {
-  /// Discriminator. Absent on v5 files; the host defaults it to
-  /// `"remote"` during the v5 → v6 migration. Always present on
-  /// files saved by a Phase-13+ build.
+  /// Discriminator. Always written by the current build; defaults to
+  /// `"remote"` when absent.
   kind?: BindingKind;
   server: string;
   interface: string;
@@ -193,7 +190,7 @@ export interface InterfaceBinding {
 }
 
 /// Convenience: read the binding's effective kind, treating
-/// `undefined` as `"remote"` (the v5 → v6 default).
+/// `undefined` as `"remote"` (the default kind).
 export function bindingKind(b: InterfaceBinding): BindingKind {
   return b.kind ?? "remote";
 }
@@ -224,9 +221,8 @@ export function resolveServer(
   return server === LOCAL_SERVER ? sidecarAddress : server;
 }
 
-/// A loaded DBC reference + its bus scoping (Phase 6). Replaces the v2
-/// `dbc_paths` entry on `Project`; an empty `buses` is the "all buses"
-/// default.
+/// A loaded DBC reference + its bus scoping. An empty `buses` is the
+/// "all buses" default.
 export interface DbcRef {
   path: string;
   buses: string[];
@@ -285,8 +281,8 @@ export interface ByIdSnapshotRecord {
 /// `id`. `trace` = a trace panel; `plot` = a signal-plot panel (also
 /// backed by a trace-style session window, but a distinct kind so the
 /// project view and panel-reopen treat it as a plot, not a trace);
-/// `transmit` = a Phase-5 transmit panel composing CAN frames;
-/// `filter` = a Phase-6 filter element (structured predicate +
+/// `transmit` = a transmit panel composing CAN frames;
+/// `filter` = a filter element (structured predicate +
 /// upstream sources). The element itself carries no extra config beyond
 /// what's listed below — the panel showing it owns its config (a
 /// trace's mode + columns, a plot's areas / cursors, a transmit
@@ -318,7 +314,7 @@ export type ProjectElement =
 /// (`sources`) and for a freshly created transmit (`sinks`).
 export const ALL_BUSES_WILDCARD = "*";
 
-/// Structured filter predicate (Phase 6). Mirrors
+/// Structured filter predicate. Mirrors
 /// `src-tauri/src/filter.rs::FilterPredicate`. The frontend's filter-
 /// node UI builds this directly; the host evaluates it.
 export type FilterPredicate =
@@ -372,23 +368,19 @@ export interface TransmitFrameRecord {
 /// `layout` (dockview's `SerializedDockview`) and `elements` are stored
 /// by the host without interpretation, so they're typed loosely here
 /// and validated before use (`dockLayout.ts::validateLayout`,
-/// `projectElements.ts::isProjectElement`). Phase 6 grew the schema
-/// with `buses`, `interface_bindings`, and per-DBC `dbcs` scoping
-/// (the v2 `dbc_paths` list is migrated host-side on parse — see
-/// `project.rs::migrate_v2`).
+/// `projectElements.ts::isProjectElement`).
 export interface Project {
   schema_version: number;
   layout: unknown;
   elements: unknown[];
-  /// Phase 6: logical buses. Empty for a freshly-created or migrated v2 project.
+  /// Logical buses. Empty for a freshly-created project.
   buses: Bus[];
-  /// Phase 6: interface → bus bindings (per remote server / sidecar).
+  /// Interface → bus bindings (per remote server / sidecar).
   interface_bindings: InterfaceBinding[];
-  /// Phase 6: loaded DBCs in priority order, each with its bus
-  /// scoping. Replaces the v2 `dbc_paths` list.
+  /// Loaded DBCs in priority order, each with its bus scoping.
   dbcs: DbcRef[];
   remote_address: string | null;
-  /// Phase 13: in-process virtual buses (ADR 0021). Bindings with
+  /// In-process virtual buses (ADR 0021). Bindings with
   /// `kind = local-virtual-bus` reference one by id.
   local_virtual_buses?: LocalVirtualBusDef[];
 }
@@ -423,7 +415,7 @@ export interface ValueTableEntryRecord {
 }
 
 /// One loaded DBC's full discovery-shaped content, as returned by the
-/// `list_dbc_content` Tauri command. The DBC panel (Phase 12) groups
+/// `list_dbc_content` Tauri command. The DBC panel groups
 /// the tree by file using `dbcPath` as the React key. `messages` is
 /// sorted by `(extended, messageId)`; signals within a message stay
 /// in `SG_` declared order. Mirrors `ipc::DbcContentRecord`.
@@ -433,7 +425,7 @@ export interface DbcContentRecord {
 }
 
 /// One message row inside a [`DbcContentRecord`]. Every text field
-/// is inlined so the fuzzy matcher (Phase 12 picks `fzf-for-js`) has
+/// is inlined so the fuzzy matcher (`fzf-for-js`) has
 /// no lookups to do on its own. The layout / FD / mux metadata
 /// powers the discovery panel's per-message detail view.
 export interface DbcMessageContentRecord {
@@ -594,12 +586,12 @@ export interface SampledPoints {
   v: number[];
 }
 
-/// Severity of a {@link SystemMessage} (Phase 7). The frontend's
+/// Severity of a {@link SystemMessage}. The frontend's
 /// minimum-level filter compares two levels by `SYSTEM_LOG_LEVEL_RANK`
 /// — see `systemLog.ts`.
 export type SystemLogLevel = "info" | "warn" | "error";
 
-/// One entry on the host's structured log bus (Phase 7). Mirrors
+/// One entry on the host's structured log bus. Mirrors
 /// `src-tauri/src/system_log.rs::SystemMessage`. `seq` is monotonic
 /// across the session (it does not reset when the ring rolls or is
 /// cleared); the frontend uses it to deduplicate against in-flight
