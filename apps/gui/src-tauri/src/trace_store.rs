@@ -29,14 +29,15 @@
 //! ## Rate estimation
 //!
 //! The store keeps a rolling window of `(Instant, total_count)`
-//! samples — one per append, pruned to a fixed window
-//! ([`RATE_WINDOW`]) on each touch. [`Self::frames_per_second`] is the
-//! count delta over the wall time spanned by the surviving samples,
-//! returning `0.0` if there's not yet enough signal to estimate.
-//! Bounded memory: at any instantaneous append rate `R` we hold
-//! `R × RATE_WINDOW.as_secs()` entries.
+//! samples, one taken at most every [`RATE_SAMPLE_INTERVAL`] — a
+//! sample *per appended frame* would balloon the deque at high replay
+//! rates for no extra signal, since [`Self::frames_per_second`] only
+//! reads the window's endpoints. The window is pruned to
+//! [`RATE_WINDOW`] on each touch; the rate is the count delta over the
+//! wall time the surviving samples span, or `0.0` if there isn't yet
+//! enough signal to estimate.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -47,6 +48,72 @@ use cannet_core::{CanFrame, CanFramePayload, Direction};
 /// per-batch jitter (256-frame batches at 60+ fps) doesn't bounce the
 /// reading around.
 const RATE_WINDOW: Duration = Duration::from_secs(1);
+
+/// Minimum spacing between rate samples. At a multi-thousand-frame/s
+/// replay a per-frame sample would pile up tens of thousands of deque
+/// entries each second; bounding the cadence caps the deque at roughly
+/// `RATE_WINDOW / RATE_SAMPLE_INTERVAL` entries while still tracking
+/// the rate closely enough for a status line.
+const RATE_SAMPLE_INTERVAL: Duration = Duration::from_millis(20);
+
+/// Smoothing factor for the per-id message-rate estimate (an EMA of the
+/// inter-arrival time). Smaller = steadier, slower to react.
+const PER_ID_RATE_ALPHA: f64 = 0.2;
+
+/// Identifies a "kind of frame" for the latest-by-id view: the
+/// channel, the arbitration id, and whether it's an extended id (a
+/// standard and an extended id with the same numeric value are
+/// distinct frames).
+type FrameKey = (u8, u32, bool);
+
+/// Per-id message-rate estimate: the time of the last frame for this
+/// key and an exponential moving average of the inter-arrival time
+/// (`<= 0` until a second frame has been seen).
+#[derive(Debug, Clone, Copy)]
+struct RateEstimate {
+    last: Instant,
+    ema_dt_secs: f64,
+}
+
+impl RateEstimate {
+    fn first_seen(now: Instant) -> Self {
+        Self { last: now, ema_dt_secs: 0.0 }
+    }
+
+    /// Fold in a new frame at `now`.
+    fn observe(&mut self, now: Instant) {
+        let dt = now.duration_since(self.last).as_secs_f64();
+        if self.ema_dt_secs <= 0.0 {
+            if dt > 0.0 {
+                self.ema_dt_secs = dt;
+            }
+        } else if dt > 0.0 {
+            self.ema_dt_secs = PER_ID_RATE_ALPHA * dt + (1.0 - PER_ID_RATE_ALPHA) * self.ema_dt_secs;
+        }
+        self.last = now;
+    }
+
+    /// Messages/second as of `now` — `0.0` until two frames have been
+    /// seen, and decaying toward `0` once frames stop arriving (the
+    /// effective interval grows with the time since the last one).
+    fn rate(&self, now: Instant) -> f64 {
+        if self.ema_dt_secs <= 0.0 {
+            return 0.0;
+        }
+        let since = now.duration_since(self.last).as_secs_f64();
+        let dt = since.max(self.ema_dt_secs);
+        if dt > 0.0 { 1.0 / dt } else { 0.0 }
+    }
+}
+
+/// A row of the latest-by-id snapshot: the frame's index in the buffer,
+/// the frame, and the id's current message rate.
+#[derive(Debug, Clone)]
+pub struct LatestById {
+    pub index: usize,
+    pub frame: RawTraceFrame,
+    pub rate: f64,
+}
 
 /// One row in the trace store. Owned, undecoded.
 #[derive(Debug, Clone)]
@@ -81,6 +148,12 @@ pub struct TraceStore {
 struct Inner {
     frames: Vec<RawTraceFrame>,
     rate_samples: VecDeque<(Instant, usize)>,
+    /// Index into `frames` of the most recent frame seen for each
+    /// [`FrameKey`] — `O(1)` to maintain on append, and what the
+    /// per-message-ID view reads instead of walking the whole buffer.
+    latest: HashMap<FrameKey, usize>,
+    /// Per-id message-rate estimate, also maintained `O(1)` on append.
+    rates: HashMap<FrameKey, RateEstimate>,
 }
 
 impl TraceStore {
@@ -89,18 +162,35 @@ impl TraceStore {
             inner: Mutex::new(Inner {
                 frames: Vec::new(),
                 rate_samples: VecDeque::new(),
+                latest: HashMap::new(),
+                rates: HashMap::new(),
             }),
         }
     }
 
-    /// Append a frame to the tail of the trace. Records a rate sample.
+    /// Append a frame to the tail of the trace. Updates the
+    /// latest-by-key index and the per-id rate estimate, and records a
+    /// rate sample if at least [`RATE_SAMPLE_INTERVAL`] has passed.
     pub fn append(&self, frame: RawTraceFrame) {
         let now = Instant::now();
+        let key = (frame.channel, frame.id, frame.extended);
         let mut inner = self.inner.lock().expect("trace store mutex poisoned");
         inner.frames.push(frame);
         let count = inner.frames.len();
-        inner.rate_samples.push_back((now, count));
-        prune_rate_samples(&mut inner.rate_samples, now);
+        inner.latest.insert(key, count - 1);
+        inner
+            .rates
+            .entry(key)
+            .or_insert_with(|| RateEstimate::first_seen(now))
+            .observe(now);
+        let due = match inner.rate_samples.back() {
+            Some(&(last, _)) => now.duration_since(last) >= RATE_SAMPLE_INTERVAL,
+            None => true,
+        };
+        if due {
+            inner.rate_samples.push_back((now, count));
+            prune_rate_samples(&mut inner.rate_samples, now);
+        }
     }
 
     /// Number of frames currently stored.
@@ -139,6 +229,36 @@ impl TraceStore {
         let mut inner = self.inner.lock().expect("trace store mutex poisoned");
         inner.frames = Vec::new();
         inner.rate_samples = VecDeque::new();
+        inner.latest = HashMap::new();
+        inner.rates = HashMap::new();
+    }
+
+    /// For each distinct [`FrameKey`] whose most recent occurrence is at
+    /// index `>= since`: that index, a clone of the frame, and the id's
+    /// current message rate — sorted by key (channel, then id, then
+    /// standard-before-extended). `since` is a trace window's start: for
+    /// a *running* trace this is exactly "the latest frame of each id
+    /// within the window"; for a paused/stopped trace whose end is below
+    /// the buffer's tip it can include an id's later occurrence (fine
+    /// for a live-values view).
+    #[must_use]
+    pub fn latest_since(&self, since: usize) -> Vec<LatestById> {
+        let now = Instant::now();
+        let inner = self.inner.lock().expect("trace store mutex poisoned");
+        let mut keyed: Vec<(FrameKey, usize)> = inner
+            .latest
+            .iter()
+            .filter_map(|(&key, &idx)| (idx >= since).then_some((key, idx)))
+            .collect();
+        keyed.sort_unstable();
+        keyed
+            .into_iter()
+            .map(|(key, idx)| LatestById {
+                index: idx,
+                frame: inner.frames[idx].clone(),
+                rate: inner.rates.get(&key).map_or(0.0, |r| r.rate(now)),
+            })
+            .collect()
     }
 
     /// Estimated current append rate in frames per second.
@@ -228,6 +348,47 @@ mod tests {
         let store = TraceStore::new();
         store.append(dummy(0, 1));
         assert!(store.slice(10, 20).is_empty());
+    }
+
+    #[test]
+    fn latest_since_keeps_one_frame_per_id_above_the_cutoff() {
+        let store = TraceStore::new();
+        for id in [1u32, 2, 1, 3, 2] {
+            store.append(dummy(0, id)); // indices 0..5
+        }
+        // From the start, sorted by id: 1@2, 2@4, 3@3.
+        assert_eq!(
+            store
+                .latest_since(0)
+                .iter()
+                .map(|l| (l.index, l.frame.id))
+                .collect::<Vec<_>>(),
+            vec![(2, 1), (4, 2), (3, 3)],
+        );
+        // Cutoff at index 3 drops id 1 (its latest is at index 2).
+        assert_eq!(
+            store
+                .latest_since(3)
+                .iter()
+                .map(|l| (l.index, l.frame.id))
+                .collect::<Vec<_>>(),
+            vec![(4, 2), (3, 3)],
+        );
+        store.clear();
+        assert!(store.latest_since(0).is_empty());
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)] // 0.0 is the exact "no estimate yet" sentinel.
+    fn per_id_rate_is_zero_until_two_frames_then_estimates_and_decays() {
+        let t0 = Instant::now();
+        let mut r = RateEstimate::first_seen(t0);
+        assert_eq!(r.rate(t0), 0.0); // one frame: no estimate yet
+        let t1 = t0 + Duration::from_millis(100);
+        r.observe(t1);
+        assert!((r.rate(t1) - 10.0).abs() < 1e-6); // 100 ms apart -> ~10 /s
+        // No further frames: a second later the estimate decays toward 1/s.
+        assert!((r.rate(t1 + Duration::from_secs(1)) - 1.0).abs() < 1e-3);
     }
 
     #[test]

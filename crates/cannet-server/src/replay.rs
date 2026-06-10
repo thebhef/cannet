@@ -9,7 +9,7 @@
 //! The "in-memory" choice is deliberate for Phase 2: it keeps the
 //! server's hot path completely allocation-free per frame, and it makes
 //! looping trivial (just walk the slice again). For multi-GB BLFs the
-//! tradeoff is wrong — that's a Phase 5 perf concern, not a Phase 2 one.
+//! tradeoff is wrong — that's a Phase 7 perf concern, not a Phase 2 one.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;

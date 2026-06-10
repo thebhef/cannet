@@ -11,7 +11,9 @@ pub use decode::{decode_signal_bits, sign_extend};
 use std::collections::HashMap;
 
 use cannet_core::CanFrame;
-use can_dbc::{Dbc, MessageId, MultiplexIndicator, Signal, SignalExtendedValueType, ValueType};
+use can_dbc::{
+    AttributeValue, Dbc, MessageId, MultiplexIndicator, Signal, SignalExtendedValueType, ValueType,
+};
 
 /// A parsed DBC database, indexed for fast frame lookup.
 pub struct Database {
@@ -41,26 +43,60 @@ impl Database {
     /// Parse a DBC file from text.
     pub fn parse(text: &str) -> Result<Self, DbcError> {
         let dbc = Dbc::try_from(text).map_err(|e| DbcError::Parse(e.to_string()))?;
+
+        // Long-name extension: the classic DBC format caps `BO_` / `SG_`
+        // identifiers at 32 chars, so longer names appear truncated on
+        // those lines plus a `BA_ "System{Message,Signal}LongSymbol" …`
+        // attribute carrying the full one. Build the lookups up front so
+        // the rest of the code (and our callers) see the real names.
+        let long_message_names: HashMap<MessageId, String> = dbc
+            .attribute_values_message
+            .iter()
+            .filter(|av| av.name == "SystemMessageLongSymbol")
+            .filter_map(|av| string_value(&av.value).map(|s| (av.message_id, s)))
+            .collect();
+        let long_signal_names: HashMap<(MessageId, String), String> = dbc
+            .attribute_values_signal
+            .iter()
+            .filter(|av| av.name == "SystemSignalLongSymbol")
+            .filter_map(|av| {
+                string_value(&av.value).map(|s| ((av.message_id, av.signal_name.clone()), s))
+            })
+            .collect();
+
         let mut messages = HashMap::with_capacity(dbc.messages.len());
         for msg in &dbc.messages {
             let expected_len = usize::try_from(msg.size).unwrap_or(usize::MAX);
             let signals = msg
                 .signals
                 .iter()
-                .map(|s| SignalEntry {
-                    extended_type: dbc
+                .map(|s| {
+                    // `SIG_VALTYPE_` references the signal by the name on
+                    // its `SG_` line — the short one — so look it up
+                    // before applying any long-symbol rename.
+                    let extended_type = dbc
                         .extended_value_type_for_signal(msg.id, &s.name)
                         .copied()
-                        .unwrap_or(SignalExtendedValueType::SignedOrUnsignedInteger),
-                    signal: s.clone(),
+                        .unwrap_or(SignalExtendedValueType::SignedOrUnsignedInteger);
+                    let mut signal = s.clone();
+                    if let Some(full) = long_signal_names.get(&(msg.id, s.name.clone())) {
+                        signal.name.clone_from(full);
+                    }
+                    SignalEntry {
+                        signal,
+                        extended_type,
+                    }
                 })
                 .collect();
-            let entry = MessageEntry {
-                name: msg.name.clone(),
+            let name = long_message_names
+                .get(&msg.id)
+                .cloned()
+                .unwrap_or_else(|| msg.name.clone());
+            messages.insert(msg.id, MessageEntry {
+                name,
                 expected_len,
                 signals,
-            };
-            messages.insert(msg.id, entry);
+            });
         }
         Ok(Self { messages })
     }
@@ -87,6 +123,15 @@ impl Database {
         let key = canid_to_message_id(id)?;
         let entry = self.messages.get(&key)?;
         Some(decode_message(entry, data))
+    }
+}
+
+/// The string payload of an attribute value, or `None` for the numeric
+/// variants — the `System…LongSymbol` attributes are always strings.
+fn string_value(value: &AttributeValue) -> Option<String> {
+    match value {
+        AttributeValue::String(s) => Some(s.clone()),
+        AttributeValue::Uint(_) | AttributeValue::Int(_) | AttributeValue::Double(_) => None,
     }
 }
 
@@ -412,6 +457,38 @@ SIG_VALTYPE_ 513 Lat : 1;
 
         let alt_sig = signal_by_name(&decoded, "Alt");
         assert!((alt_sig.value - (f64::from(alt_raw_i32) * 0.01)).abs() < 1e-9);
+    }
+
+    // The long-name extension: a truncated name on the `BO_` / `SG_`
+    // line plus a `BA_ "System…LongSymbol"` attribute with the real one.
+    const LONG_SYMBOL_DBC: &str = r#"VERSION ""
+
+NS_ :
+
+BS_:
+
+BU_: ECU1 ECU2
+
+BO_ 256 ShortMsg: 8 ECU1
+ SG_ ShortSig : 0|8@1+ (1,0) [0|0] "" ECU2
+
+BA_DEF_ BO_ "SystemMessageLongSymbol" STRING ;
+BA_DEF_ SG_ "SystemSignalLongSymbol" STRING ;
+BA_DEF_DEF_ "SystemMessageLongSymbol" "";
+BA_DEF_DEF_ "SystemSignalLongSymbol" "";
+BA_ "SystemMessageLongSymbol" BO_ 256 "AVeryLongMessageNameThatExceedsThirtyTwoChars";
+BA_ "SystemSignalLongSymbol" SG_ 256 ShortSig "AVeryLongSignalNameThatExceedsThirtyTwoChars";
+"#;
+
+    #[test]
+    fn resolves_long_symbol_message_and_signal_names() {
+        let db = Database::parse(LONG_SYMBOL_DBC).unwrap();
+        let decoded = db.decode(&make_frame(256, false, vec![7u8; 8])).unwrap();
+        assert_eq!(decoded.name, "AVeryLongMessageNameThatExceedsThirtyTwoChars");
+        assert_eq!(
+            decoded.signals.iter().map(|s| s.name).collect::<Vec<_>>(),
+            vec!["AVeryLongSignalNameThatExceedsThirtyTwoChars"],
+        );
     }
 
     #[test]

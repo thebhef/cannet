@@ -6,10 +6,12 @@ import {
   ROW_HEIGHT,
   buildPlacements,
   maxAnchorRow,
+  maxWheelRows,
   rowFromScroll,
   scaledHeight,
   scrollForRow,
   visibleRowCount,
+  wheelDeltaPx,
 } from "./traceViewport";
 
 const VH = 660; // 30 rows tall; visibleRowCount === 32
@@ -75,6 +77,26 @@ describe("rowFromScroll / scrollForRow", () => {
       for (const row of [0, 1, 42, Math.floor(anchorMax / 3), anchorMax - 1, anchorMax]) {
         expect(rowFromScroll(scrollForRow(row, count, VH), count, VH)).toBe(row);
       }
+    }
+  });
+});
+
+describe("wheelDeltaPx / maxWheelRows", () => {
+  it("passes pixel deltas through unchanged", () => {
+    expect(wheelDeltaPx(100, 0, VH)).toBe(100);
+    expect(wheelDeltaPx(-37, 0, VH)).toBe(-37);
+  });
+
+  it("reads line deltas as a row each and page deltas as a viewport", () => {
+    expect(wheelDeltaPx(3, 1, VH)).toBe(3 * ROW_HEIGHT);
+    expect(wheelDeltaPx(1, 2, VH)).toBe(VH);
+    expect(wheelDeltaPx(-2, 2, VH)).toBe(-2 * VH);
+  });
+
+  it("caps a stepped wheel move below a screenful so a notch can't skip a window", () => {
+    for (const vh of [120, VH, 1200]) {
+      expect(maxWheelRows(vh)).toBeGreaterThanOrEqual(1);
+      expect(maxWheelRows(vh)).toBeLessThan(visibleRowCount(vh));
     }
   });
 });

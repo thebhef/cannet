@@ -26,6 +26,43 @@ and the license / platform constraints we need to be aware of.
 - **React 18 + Vite + TypeScript** — `adopted` in Phase 1 as the frontend
   stack inside the Tauri WebView. Mainstream ecosystem, strong virtualized
   grid options. MIT-licensed.
+- **`dockview`** (v6, MIT) — `adopted` in Phase 3 for the multi-panel
+  shell: arbitrary split / tab / drag / resize layouts of trace and
+  project panels (and the plot / transmit panels that arrive in
+  Phases 4–5) inside the single app window. A dock manager is exactly
+  the "lean on a vetted library for the failure-mode-rich parts" call
+  from `CLAUDE.md` — hand-rolling
+  drag-and-drop docking is a lot of fiddly UI state to get right.
+  Chosen for: TypeScript-native with a first-class React package
+  (`dockview`), a serialisable layout model (`api.toJSON()` /
+  `fromJSON()`) that drops straight into the project file, no jQuery /
+  legacy baggage, and good docs. Panel content stays plain React
+  components behind a thin adapter (`TracePanel.tsx`, the `TraceData`
+  context) so the blast radius of swapping it later is small. Risk:
+  small bus factor (≈one primary maintainer) — mitigated by that
+  adapter boundary. Cost note: ships one ≈100 KB CSS bundle covering
+  all built-in themes (≈9 KB gzipped); fine for a desktop app.
+  Alternatives considered (all permissive, all cover the must-haves):
+  - **`flexlayout-react`** (Apache-2.0) — `rejected`. Strong runner-up;
+    mature, persistent JSON model, built-in popout windows. Edged out
+    by dockview's cleaner TS/React story; the popout feature is
+    deferred Phase-3 scope anyway.
+  - **`rc-dock`** (MIT) — `rejected`. Works, but an older-feeling API
+    next to dockview with no offsetting advantage.
+  - **`react-mosaic`** (Apache-2.0) — `rejected`. Tiling only — no
+    tabs — which doesn't fit a panel-heavy analyzer UI.
+  - **`golden-layout`** v2 (MIT) — `rejected`. Capable and mature, but
+    framework-agnostic with no React bindings, so adopting it means
+    writing and maintaining the React glue ourselves.
+- **`serde_json`** (Rust) / native JSON (frontend) — `adopted` (Phase 3)
+  for the project file (`features.md`: window layouts + bus configs + DBC
+  references, JSON, reloadable from disk). `serde` / `serde_json` were
+  already in the dependency graph via Tauri's IPC; the project format adds
+  no new crate, just schema types in the GUI host (`src-tauri/src/project.rs`:
+  the `Project` struct, `open_project` / `save_project`) and matching TS
+  types. The schema is our own, versioned (`PROJECT_SCHEMA_VERSION`) — no
+  external project-file format is adopted. The `dockview` layout blob is
+  stored verbatim as a `serde_json::Value` (the host doesn't interpret it).
 - **`@tanstack/react-virtual`** — `adopted` in Phase 1, `removed` in
   Phase 2. The library's count-based virtualizer doesn't handle the
   browser's CSS dimension cap (≈17M-33M px depending on the engine):
@@ -69,7 +106,7 @@ without reshaping callers.
   variant; the wire crate exposes batching adapters so application
   code consumes `Stream<CanFrame>` and never sees the batch. Cyclic /
   scheduled emission is **not** part of the wire — sending on a
-  cadence is a feature of the client transmit UI. Phase 4 grows the
+  cadence is a feature of the client transmit UI. Phase 6 grows the
   surface with bus-config and bus-state RPCs. Optional TLS via the
   `tls` feature (rustls) for non-loopback connections; plaintext
   loopback is the dev default.
@@ -78,13 +115,13 @@ without reshaping callers.
   request/response correlation, stream lifecycle, cancellation, flow
   control — handled by the runtime rather than hand-rolled, trivial
   cross-language client support (gRPC has runtimes for every
-  mainstream language) which directly serves the Phase 4 affordance
+  mainstream language) which directly serves the Phase 6 affordance
   for Python servers wrapping `python-can`, and a service shape that
   doubles as the universal driver contract — in-process drivers,
   sidecar processes, and remote test rigs all implement the same
   `.proto`. Hot-path overhead vs. raw TCP framing is sub-percent for
   our payload sizes (256-frame batches ≈ 10–15 KB) and gets
-  re-validated in Phase 5.
+  re-validated in Phase 7.
 - Network transport (alternatives considered):
   - **Raw TCP with length-prefixed framing + `prost`** — `rejected`
     (Phase 2 evaluation). Lowest possible framing overhead, but the
@@ -92,7 +129,7 @@ without reshaping callers.
     RPC layer ourselves: request/response correlation, server-streaming
     semantics, cancellation, sink multiplexing, half-close, backpressure.
     Subtle async-networking failure modes are easy to ship broken and
-    hard to catch in review. Cross-language clients (e.g. Phase 4
+    hard to catch in review. Cross-language clients (e.g. Phase 6
     Python hardware servers) would each need our envelope reimplemented
     rather than picking up an off-the-shelf gRPC runtime.
   - **Raw TCP with length-prefixed framing + `bincode` / `postcard`** —
@@ -138,7 +175,10 @@ and/or community wrappers (e.g. `python-can`) depending on the client._
   - **`can-dbc`** crate (v9, MIT/Apache) — `adopted` in Phase 1 for parsing
     DBC files into an AST. Decoding signals from raw frames is implemented
     in our own thin runtime on top of the AST (the crate intentionally
-    stops at parsing).
+    stops at parsing). The runtime also resolves the long-name extension
+    (`BA_ "System{Message,Signal}LongSymbol" …`) from the AST's
+    attribute-value lists, so names truncated to the classic 32-char
+    limit on the `BO_` / `SG_` lines come back full.
 - **EDS** — CANopen Electronic Data Sheet, used for SDO/PDO decoding. Library
   TBD; not in scope until CANopen work begins.
 - **BLF** — Vector binary log format, source for replay in early phases.
@@ -158,7 +198,21 @@ and/or community wrappers (e.g. `python-can`) depending on the client._
 
 ### Plotting / Visualization
 
-_TBD — selected when the plotting feature is implemented._
+- **Streaming time-series plot library** — `proposed` (Phase 4). The
+  Phase 4 plot panel (vSignalyzer / TSMaster-style signal-over-time view)
+  needs a charting library that can hold tens of thousands of points per
+  trace, append to them live without re-laying-out the world, draw
+  several independent plots at once, and ship under a permissive license.
+  Candidate shortlist to evaluate when Phase 4 starts: `uPlot` (MIT, tiny,
+  canvas, built for exactly this — large fast-updating time-series),
+  `dygraphs` (MIT, canvas, mature, good live-append story), `Chart.js`
+  with the streaming/zoom plugins (MIT, but DOM/canvas perf at our point
+  counts needs checking), `lightweight-charts` (Apache-2.0, very fast,
+  but finance-chart-shaped — adapting it to arbitrary signals may fight
+  the API), and WebGL options (`regl-plot`-style) if canvas can't keep
+  up. Whichever wins, the data feeding it comes from the trace store's
+  signal sampler, not the library — the library only renders. Final pick
+  + rejected alternatives get written up here when the phase lands.
 
 ### Build / Packaging / CI
 
@@ -175,4 +229,4 @@ _TBD — populated as we set up cross-platform builds._
   because v3+ requires Vite 6+ while the app is on Vite 5. MIT. Run via
   `pnpm --dir apps/gui test`.
 
-_Profiling instrumentation TBD — populated in Phase 5._
+_Profiling instrumentation TBD — populated in Phase 7._

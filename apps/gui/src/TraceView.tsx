@@ -1,23 +1,27 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { TraceFrameRecord } from "./types";
-import {
-  formatData,
-  formatId,
-  formatKind,
-  formatSignalValue,
-  formatTimestamp,
-} from "./format";
+import { formatSignalValue } from "./format";
 import {
   EXPANDED_ROW_HEIGHT,
   ROW_HEIGHT,
   buildPlacements,
   maxAnchorRow,
+  maxWheelRows,
   rowFromScroll,
   scaledHeight,
   scrollForRow,
   visibleRowCount,
+  wheelDeltaPx,
 } from "./traceViewport";
+import {
+  type ColumnKey,
+  type ColumnState,
+  columnDef,
+  gridTemplateColumns,
+  visibleColumns,
+} from "./traceColumns";
+import { TraceHeader, cellContent } from "./traceTable";
 
 interface TraceViewProps {
   count: number;
@@ -29,6 +33,12 @@ interface TraceViewProps {
   /// on the row the user scrolled to, even as `count` grows.
   autoScroll: boolean;
   baseTimestampSeconds: number | null;
+  /// Per-panel column state (which columns show, in what order, how
+  /// wide). Owned by the panel; this view renders the table from it and
+  /// reports drag-resizes / show-hides back.
+  columns: readonly ColumnState[];
+  onColumnResize: (key: ColumnKey, width: number) => void;
+  onColumnToggle: (key: ColumnKey) => void;
   getFrame: (absoluteIndex: number) => TraceFrameRecord | null;
   ensureVisible: (start: number, end: number) => void;
   /// Called when the user scrolls the view themselves while
@@ -46,6 +56,9 @@ export function TraceView({
   count,
   autoScroll,
   baseTimestampSeconds,
+  columns,
+  onColumnResize,
+  onColumnToggle,
   getFrame,
   ensureVisible,
   onAutoScrollDisabled,
@@ -95,12 +108,16 @@ export function TraceView({
     return () => ro.disconnect();
   }, []);
 
-  // Tell the parent which absolute rows are visible so it can fetch
-  // the covering chunks.
+  // Tell the parent which absolute rows are visible so it can prefetch
+  // the covering chunks — but skip this while auto-scrolling: the
+  // `trace-grew` overlay already carries enough trailing frames to
+  // cover every visible row, so prefetching there would just churn the
+  // shared chunk cache (at a high frame rate the live edge moves many
+  // chunks per tick, evicting other panels' rows from the LRU).
   useEffect(() => {
-    if (count === 0) return;
+    if (count === 0 || autoScroll) return;
     ensureVisible(firstVisibleRow, lastVisibleRow);
-  }, [firstVisibleRow, lastVisibleRow, count, ensureVisible]);
+  }, [autoScroll, firstVisibleRow, lastVisibleRow, count, ensureVisible]);
 
   // While auto-scrolling, keep the anchor glued to the live tail. This
   // is also what makes turning auto-scroll off (toolbar checkbox) a
@@ -125,6 +142,40 @@ export function TraceView({
     }
   }, [targetScrollTop]);
 
+  // The wheel: let the browser's native (compositor-smooth) scroll
+  // handle a normal notch, and only step in when it would overshoot —
+  // a "scroll one screen at a time" mouse, a page-granular deltaMode,
+  // or the compressed scaled-scrollbar regime at huge `count`, where a
+  // fixed-pixel notch maps onto a jump of many rows. In those cases,
+  // preventDefault and move the anchor by a bounded number of rows
+  // instead; the re-pin layout effect drags the scrollbar to follow.
+  // Attached imperatively so the listener can be non-passive.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (e.ctrlKey) return; // ctrl+wheel is zoom — leave it alone
+      if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return; // horizontal scroll
+      const px = wheelDeltaPx(e.deltaY, e.deltaMode, viewportHeight);
+      const fromRow = rowFromScroll(el.scrollTop, count, viewportHeight);
+      const toRow = rowFromScroll(el.scrollTop + px, count, viewportHeight);
+      const max = maxWheelRows(viewportHeight);
+      if (Math.abs(toRow - fromRow) <= max) return; // small enough — native scroll
+      e.preventDefault();
+      const step = px > 0 ? max : -max;
+      if (autoScroll) {
+        if (step > 0) return; // already pinned to the tail
+        onAutoScrollDisabled(); // wheel-up: release the pin to look back
+      }
+      setAnchoredRow((r) => {
+        const base = autoScroll ? anchorMax : Math.min(anchorMax, Math.max(0, r));
+        return Math.min(anchorMax, Math.max(0, base + step));
+      });
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [viewportHeight, autoScroll, anchorMax, count, onAutoScrollDisabled]);
+
   // Reset transient view state when the trace is cleared.
   useEffect(() => {
     if (count === 0) {
@@ -140,7 +191,12 @@ export function TraceView({
       programmaticScrollRef.current = false;
       return;
     }
-    if (autoScroll) onAutoScrollDisabled();
+    // A geometry change (window resize) can nudge `scrollTop` and fire
+    // a scroll event that isn't a user scroll. While auto-scrolling,
+    // only treat it as one if it actually moved us off the live edge —
+    // otherwise the re-pin effect snaps us back next render anyway.
+    const offBottom = el.scrollHeight - el.clientHeight - el.scrollTop;
+    if (autoScroll && offBottom > REPIN_THRESHOLD_PX) onAutoScrollDisabled();
     setAnchoredRow(rowFromScroll(el.scrollTop, count, viewportHeight));
   }, [autoScroll, onAutoScrollDisabled, count, viewportHeight]);
 
@@ -153,21 +209,20 @@ export function TraceView({
     });
   }, []);
 
+  // The chronological view drops by-id-only columns (e.g. "msg/s" — a
+  // single frame has no rate). Memoised so a `trace-grew` re-render
+  // (which leaves `columns` untouched) doesn't hand every `Row` a fresh
+  // array and force the whole window to re-render; they only change on
+  // a resize / toggle.
+  const shown = useMemo(() => columns.filter((c) => !columnDef(c.key).byIdOnly), [columns]);
+  const visible = useMemo(() => visibleColumns(shown), [shown]);
+  const gridTemplate = useMemo(() => gridTemplateColumns(shown), [shown]);
+
   const placements = buildPlacements(firstVisibleRow, count, rows, expanded);
 
   return (
     <div className="trace">
-      <div className="trace-header">
-        <span className="col-idx">#</span>
-        <span className="col-time">time (s)</span>
-        <span className="col-ch">ch</span>
-        <span className="col-dir">dir</span>
-        <span className="col-id">id</span>
-        <span className="col-kind">type</span>
-        <span className="col-len">len</span>
-        <span className="col-data">data</span>
-        <span className="col-msg">message</span>
-      </div>
+      <TraceHeader columns={shown} onColumnResize={onColumnResize} onColumnToggle={onColumnToggle} />
       <div ref={containerRef} className="trace-rows" onScroll={handleScroll}>
         {/* Spacer: gives the scrollbar the trace's full (scaled) extent. */}
         <div style={{ height: spacerHeight, position: "relative" }}>
@@ -190,6 +245,8 @@ export function TraceView({
                 isExpanded={isExpanded}
                 frame={getFrame(absIdx)}
                 baseTimestamp={baseTimestampSeconds}
+                columns={visible}
+                gridTemplate={gridTemplate}
                 onToggle={toggleExpanded}
               />
             ))}
@@ -206,6 +263,8 @@ interface RowProps {
   isExpanded: boolean;
   frame: TraceFrameRecord | null;
   baseTimestamp: number | null;
+  columns: readonly ColumnState[];
+  gridTemplate: string;
   onToggle: (absoluteIndex: number) => void;
 }
 
@@ -215,46 +274,38 @@ const Row = memo(function Row({
   isExpanded,
   frame,
   baseTimestamp,
+  columns,
+  gridTemplate,
   onToggle,
 }: RowProps) {
   const height = isExpanded ? EXPANDED_ROW_HEIGHT : ROW_HEIGHT;
   return (
     <div
       className={`trace-row ${isExpanded ? "expanded" : ""} ${frame ? "" : "loading"}`}
-      style={{ position: "absolute", top, left: 0, right: 0, height }}
+      style={{
+        position: "absolute",
+        top,
+        left: 0,
+        right: 0,
+        height,
+        gridTemplateColumns: gridTemplate,
+      }}
       onClick={() => frame?.decoded && onToggle(absoluteIndex)}
     >
-      <span className="col-idx">{(absoluteIndex + 1).toLocaleString()}</span>
-      {frame && (
-        <>
-          <span className="col-time">
-            {formatTimestamp(frame.timestamp_seconds, baseTimestamp)}
-          </span>
-          <span className="col-ch">{frame.channel}</span>
-          <span className="col-dir">{frame.direction}</span>
-          <span className="col-id">{formatId(frame)}</span>
-          <span className="col-kind">{formatKind(frame)}</span>
-          <span className="col-len">{frame.data.length}</span>
-          <span className="col-data">{formatData(frame)}</span>
-          <span className="col-msg">
-            {frame.decoded ? frame.decoded.name : ""}
-            {frame.decoded ? (
-              <span className="hint">{isExpanded ? " ▾" : " ▸"}</span>
-            ) : null}
-          </span>
-          {isExpanded && frame.decoded && (
-            <div className="signals">
-              {frame.decoded.signals.map((sig) => (
-                <div className="signal" key={sig.name}>
-                  <span className="signal-name">{sig.name}</span>
-                  <span className="signal-value">
-                    {formatSignalValue(sig.value, sig.unit)}
-                  </span>
-                </div>
-              ))}
+      {columns.map((c) => (
+        <span key={c.key} className={columnDef(c.key).className}>
+          {cellContent(c.key, frame, absoluteIndex, baseTimestamp, isExpanded)}
+        </span>
+      ))}
+      {isExpanded && frame?.decoded && (
+        <div className="signals">
+          {frame.decoded.signals.map((sig) => (
+            <div className="signal" key={sig.name}>
+              <span className="signal-name">{sig.name}</span>
+              <span className="signal-value">{formatSignalValue(sig.value, sig.unit)}</span>
             </div>
-          )}
-        </>
+          ))}
+        </div>
       )}
     </div>
   );

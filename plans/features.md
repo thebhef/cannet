@@ -5,7 +5,9 @@ High-performance CAN traffic analyzer.
 ## GUI elements
 
 - arbitrary plotting, ability to create multiple plots
-- trace windows
+- trace windows — chronological (one row per frame, in arrival order)
+  and a by-id view (one row per arbitration id holding just its latest
+  frame); both are *views* over a trace (see "trace capture" below)
 - filtering, which can be inserted into trace views
 - bitfield views, with flag indicators per signal
 - ability to dock and consistently size/resize
@@ -26,7 +28,17 @@ High-performance CAN traffic analyzer.
 - projects - includes window layouts, bus configs, references DBCs. Should be json file. DBC should be reloadable from disk at any time.
 - virtual CAN bus layer: allow mapping CAN channels to logical project channels
 - reading from .blf logs (should just stream messages through our CAN abstraction)
-- trace capture: explicit start / stop recording across all subscribed
-  channels, with the captured frames persistable to .blf. The trace
-  view stays a *view* over a capture (live or finished), not the
-  source of truth for the data — that lives in the capture itself.
+- trace capture: a session-wide buffer holds every frame received since
+  the current connection (replaced on a new connection; lost on app
+  exit). On top of it a *trace* is a capture window — a start point and
+  a running / paused / stopped state — with controls start / stop
+  (stop→start clears the view), pause / resume (resume continues,
+  including frames received while paused), clear (empties the window,
+  keeping the run state — clear doesn't imply stop or pause). Each
+  trace-style window (a chronological trace and a per-id view, switched
+  with a mode toggle; plus plot windows) has its own trace; the
+  controls are a common toolbar component, the state is per-window.
+  Traces live in the project (closing a window doesn't destroy its
+  trace; reopen it from the project panel). The views stay *views* over
+  the trace, not the source of truth for the data — that lives in the
+  session buffer. A finished trace's frames are persistable to .blf.

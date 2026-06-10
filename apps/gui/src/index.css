@@ -138,7 +138,8 @@ header {
   cursor: not-allowed;
 }
 
-.toolbar label.checkbox {
+.toolbar label.checkbox,
+.trace-panel-toolbar label.checkbox {
   display: flex;
   align-items: center;
   gap: 0.3rem;
@@ -181,6 +182,279 @@ header {
   color: #94a3b8;
 }
 
+/* Dock layout -----------------------------------------------------------*/
+.dock-area {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* One trace panel inside the dock layout: a slim per-panel toolbar on
+   top, the trace table filling the rest. */
+.trace-panel,
+.by-id-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* Modal dialog (currently just the unsaved-changes-on-close prompt). */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgb(0 0 0 / 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.modal {
+  background: #131923;
+  border: 1px solid #1f2630;
+  border-radius: 6px;
+  padding: 1rem 1.2rem;
+  max-width: 28rem;
+  box-shadow: 0 8px 28px rgb(0 0 0 / 0.5);
+}
+
+.modal-message {
+  margin: 0 0 0.9rem;
+  color: #e2e8f0;
+}
+
+.modal-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.modal-buttons button {
+  font: inherit;
+  background: transparent;
+  border: 1px solid #2c3444;
+  color: #cbd5e1;
+  padding: 0.2rem 0.7rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.modal-buttons button:hover {
+  background: #1a212b;
+}
+
+/* Project panel: a few stacked sections (the project file, the
+   configured bus(es), the attached DBC) with their actions. */
+.project-panel {
+  padding: 0.6rem 0.8rem;
+  overflow: auto;
+  font-size: 0.85rem;
+  color: #cbd5e1;
+}
+
+.project-section {
+  margin-bottom: 1rem;
+}
+
+.project-section h3 {
+  margin: 0 0 0.35rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #64748b;
+}
+
+.project-path,
+.project-bus,
+.project-dbc,
+.project-element {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.3rem;
+}
+
+.project-element-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-dirty {
+  color: #fbbf24;
+  margin-right: 0.3rem;
+  font-size: 0.7rem;
+}
+
+.project-bus-name,
+.project-dbc-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.project-bus-state {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #94a3b8;
+}
+
+.project-bus-state.connected {
+  color: #4ade80;
+}
+
+.project-empty {
+  color: #64748b;
+  font-style: italic;
+}
+
+.project-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.project-panel button {
+  font: inherit;
+  font-size: 0.8rem;
+  background: transparent;
+  border: 1px solid #1f2630;
+  color: #cbd5e1;
+  padding: 0.05rem 0.45rem;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.project-panel button:hover:not(:disabled) {
+  background: #1a212b;
+}
+
+.project-panel button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Per-message-ID panel: like a trace table, but the rows are one per
+   arbitration id (latest frame), not virtualized. */
+.by-id-rows {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.by-id-count {
+  font-size: 0.75rem;
+  color: #64748b;
+}
+
+.trace-panel-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.6rem;
+  flex: 0 0 auto;
+  border-bottom: 1px solid #1f2630;
+}
+
+/* Start / Stop / Pause / Resume / Clear controls in a trace panel's
+   toolbar (the shared `TraceControls` component). */
+.trace-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.trace-controls button {
+  font: inherit;
+  font-size: 0.85rem;
+  background: transparent;
+  border: 1px solid #1f2630;
+  color: #cbd5e1;
+  padding: 0.05rem 0.45rem;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.trace-controls button:hover {
+  background: #1a212b;
+}
+
+.trace-status {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #64748b;
+}
+
+.trace-status-running {
+  color: #4ade80;
+}
+
+.trace-status-paused {
+  color: #fbbf24;
+}
+
+.trace-status-stopped {
+  color: #94a3b8;
+}
+
+/* Chronological / by-ID mode toggle in a trace panel's toolbar. */
+.mode-toggle {
+  display: inline-flex;
+  border: 1px solid #1f2630;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.mode-toggle button {
+  font: inherit;
+  font-size: 0.85rem;
+  background: transparent;
+  border: 0;
+  color: #94a3b8;
+  padding: 0.05rem 0.5rem;
+  cursor: pointer;
+}
+
+.mode-toggle button + button {
+  border-left: 1px solid #1f2630;
+}
+
+.mode-toggle button:hover {
+  background: #1a212b;
+}
+
+.mode-toggle button.active {
+  background: #2a3340;
+  color: #e2e8f0;
+}
+
+/* Right-click-the-header column show/hide menu (positioned at the
+   cursor). */
+.column-context-menu {
+  position: fixed;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  background: #131923;
+  border: 1px solid #1f2630;
+  border-radius: 4px;
+  padding: 0.35rem 0.5rem;
+  box-shadow: 0 4px 12px rgb(0 0 0 / 0.4);
+}
+
 /* Trace table -----------------------------------------------------------*/
 .trace {
   display: flex;
@@ -196,9 +470,8 @@ header {
 .trace-header,
 .trace-row {
   display: grid;
-  grid-template-columns:
-    [idx] 60px [time] 110px [ch] 36px [dir] 36px [id] 96px
-    [kind] 110px [len] 40px [data] 1fr [msg] 220px;
+  /* `grid-template-columns` is set inline from the panel's column
+     state (see `traceColumns.ts`). */
   align-items: start;
   padding: 0 0.6rem;
   white-space: nowrap;
@@ -211,6 +484,43 @@ header {
   position: sticky;
   top: 0;
   z-index: 1;
+}
+
+.trace-header > span {
+  position: relative;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Draggable strip at the right edge of each header cell — resizes that
+   column. Takes pointer capture; `touch-action: none` so a pen / touch
+   drag isn't hijacked as a scroll. */
+.col-resize-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 7px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.col-resize-handle:hover {
+  background: rgb(148 163 184 / 0.25);
+}
+
+/* Header cells are click-to-sort in per-id mode. */
+.trace-header > span.col-sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.trace-header > span.col-sortable:hover {
+  color: #cbd5e1;
+}
+
+.sort-marker {
+  color: #93c5fd;
 }
 
 .trace-rows {
@@ -243,13 +553,17 @@ header {
   color: #93c5fd;
 }
 
+.col-rate {
+  color: #94a3b8;
+}
+
 .hint {
   color: #475569;
 }
 
 .signals {
   grid-column: 1 / -1;
-  padding: 0.25rem 0 0.4rem 60px;
+  padding: 0.25rem 0 0.4rem 1rem;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 2px 18px;

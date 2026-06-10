@@ -13,8 +13,10 @@
 //!
 //! Both worker threads run [`run_pump`], which is generic over
 //! `CanFrameSource` — it doesn't know or care which source it's
-//! draining; it just appends each frame to the shared
-//! [`TraceStore`].
+//! draining; it just appends each frame to the shared [`TraceStore`]
+//! until the source ends or a stop flag is set (the latter is how
+//! `disconnect_remote_server` halts a session without first draining
+//! the gRPC task's frame backlog).
 //!
 //! The trace UI is a *view* over [`TraceStore`]: it asks for slices via
 //! `fetch_trace_range` and renders virtualized rows around the current
@@ -24,16 +26,21 @@
 //! tail lets the auto-scrolling view paint the live edge without a
 //! fetch round-trip — so the host never has to push every frame.
 //!
-//! The current DBC lives in shared backend state (`AppState::database`)
-//! so that the per-fetch decoder always uses the most recently
-//! attached database. There is no retro-decode walk; attaching a DBC
-//! mid-stream just changes what subsequent fetches return.
+//! The loaded DBCs live in shared backend state (`AppState::databases`)
+//! so that the per-fetch decoder always uses the current set — frames
+//! are decoded against each in order, first match wins. (There's only
+//! one interface for now, so every DBC applies to it; per-bus DBC
+//! association is a later step.) There is no retro-decode walk; adding
+//! or removing a DBC mid-stream just changes what subsequent fetches
+//! return.
 
 mod ipc;
+mod project;
 mod trace_store;
 
 use std::fmt;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -44,10 +51,17 @@ use cannet_core::{CanFrameSource, CanId};
 use cannet_dbc::{Database, DecodedSignal};
 
 use ipc::{
-    DbcInfo, DecodedRecord, InterfaceRecord, LogFinished, OpenLogResult,
+    ByIdSnapshot, DbcInfo, DecodedRecord, InterfaceRecord, LogFinished, OpenLogResult,
     RemoteSessionResult, SignalRecord, TraceFrameRecord, TraceGrew,
 };
 use trace_store::{RawTraceFrame, TraceStore};
+
+/// A loaded DBC: its source path and the parsed database. Decoders walk
+/// the loaded list in order — the first that decodes a given frame wins.
+struct LoadedDbc {
+    path: String,
+    db: Database,
+}
 
 /// How often the host pushes a `trace-grew` IPC event with the latest
 /// count + rate. Slow enough to not flood the frontend, fast enough that
@@ -63,16 +77,18 @@ const TRACE_GREW_TAIL: u64 = 256;
 
 /// Process-wide state shared between commands and pump threads.
 struct AppState {
-    /// Currently-attached DBC, if any. Mutated by `attach_dbc` /
-    /// `detach_dbc`; read by `fetch_trace_range` to decode the slice
-    /// against whatever DBC is current at fetch time.
-    database: Mutex<Option<Database>>,
-    /// Active remote session, if any. The handle is stashed here while
-    /// the corresponding pump thread drains frames from the
-    /// `FrameReceiver`. `disconnect_remote_server` takes the handle out
-    /// and drops it, signalling the worker to close the gRPC stream;
-    /// the pump thread then sees `Ok(None)` and exits cleanly.
-    remote_session: Mutex<Option<SessionHandle>>,
+    /// The loaded DBCs, in priority order — when decoding a frame the
+    /// fetch commands try each in turn and take the first match. Mutated
+    /// by `add_dbc` / `remove_dbc` / `clear_dbcs`. (Only one interface
+    /// exists for now, so every loaded DBC applies to it.)
+    databases: Mutex<Vec<LoadedDbc>>,
+    /// Active remote session, if any: the gRPC [`SessionHandle`] plus a
+    /// stop flag the pump thread watches. `disconnect_remote_server`
+    /// takes both out, sets the flag, and drops the handle — the flag
+    /// makes the pump exit promptly instead of first draining whatever
+    /// frames the gRPC task already buffered, and dropping the handle
+    /// closes the stream. The pump thread clears this slot on exit.
+    remote_session: Mutex<Option<(SessionHandle, Arc<AtomicBool>)>>,
     /// The trace model — the single source of truth for the captured
     /// stream. Pump threads append; `fetch_trace_range` reads slices
     /// out for the trace view to render.
@@ -90,19 +106,23 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
-            database: Mutex::new(None),
+            databases: Mutex::new(Vec::new()),
             remote_session: Mutex::new(None),
             trace_store: TraceStore::new(),
         })
         .invoke_handler(tauri::generate_handler![
             open_log,
-            attach_dbc,
-            detach_dbc,
+            add_dbc,
+            remove_dbc,
+            clear_dbcs,
             fetch_trace_range,
+            fetch_latest_by_id,
             clear_trace_store,
             list_remote_interfaces,
             connect_remote_server,
             disconnect_remote_server,
+            project::open_project,
+            project::save_project,
         ])
         .setup(|app| {
             // Make sure the main window has the id our capabilities expect.
@@ -159,67 +179,146 @@ fn open_log(app: AppHandle, blf_path: String) -> Result<OpenLogResult, String> {
     std::thread::Builder::new()
         .name("cannet-blf-pump".into())
         .spawn(move || {
-            run_pump(&app_for_thread, source);
+            // The BLF pump ends at end-of-file; nothing signals it to
+            // stop early, so the flag is just a never-set placeholder.
+            run_pump(&app_for_thread, source, Arc::new(AtomicBool::new(false)));
         })
         .map_err(|e| format!("failed to spawn pump thread: {e}"))?;
 
     Ok(result)
 }
 
+/// The loaded-DBC list as IPC records (each one's path + message count),
+/// in priority order. Returned from `add_dbc` / `remove_dbc` so the
+/// frontend always gets the authoritative set after a change.
+fn dbc_list(state: &AppState) -> Vec<DbcInfo> {
+    state
+        .databases
+        .lock()
+        .expect("databases mutex poisoned")
+        .iter()
+        .map(|d| DbcInfo {
+            dbc_path: d.path.clone(),
+            message_count: d.db.message_count(),
+        })
+        .collect()
+}
+
+/// Load a DBC file and add it to the set (or, if a DBC with the same
+/// path is already loaded, reload it in place — same effect as a
+/// "reload from disk"). Returns the full loaded list on success; on a
+/// read / parse error the set is left unchanged.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-fn attach_dbc(state: State<'_, AppState>, path: String) -> Result<DbcInfo, String> {
+fn add_dbc(state: State<'_, AppState>, path: String) -> Result<Vec<DbcInfo>, String> {
     let text = std::fs::read_to_string(&path)
         .map_err(|e| format!("failed to read DBC at {path}: {e}"))?;
     let db = Database::parse(&text).map_err(|e| format!("failed to parse DBC at {path}: {e}"))?;
-    let message_count = db.message_count();
-    *state.database.lock().expect("database mutex poisoned") = Some(db);
-    Ok(DbcInfo {
-        dbc_path: path,
-        message_count,
-    })
+    {
+        let mut list = state.databases.lock().expect("databases mutex poisoned");
+        match list.iter_mut().find(|d| d.path == path) {
+            Some(slot) => slot.db = db,
+            None => list.push(LoadedDbc { path, db }),
+        }
+    }
+    Ok(dbc_list(state.inner()))
 }
 
+/// Remove the loaded DBC with this path (no-op if it isn't loaded).
+/// Returns the remaining loaded list.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-fn detach_dbc(state: State<'_, AppState>) {
-    *state.database.lock().expect("database mutex poisoned") = None;
+fn remove_dbc(state: State<'_, AppState>, path: String) -> Vec<DbcInfo> {
+    state
+        .databases
+        .lock()
+        .expect("databases mutex poisoned")
+        .retain(|d| d.path != path);
+    dbc_list(state.inner())
+}
+
+/// Unload every DBC (the "New project" reset, and the first half of an
+/// "open project" — the project's DBCs are then re-added one by one).
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn clear_dbcs(state: State<'_, AppState>) {
+    state
+        .databases
+        .lock()
+        .expect("databases mutex poisoned")
+        .clear();
 }
 
 /// Pull a `[start, end)` slice out of the trace store and decode each
-/// frame against the currently-attached DBC. Shared by the
-/// `fetch_trace_range` command (trace-view scrolling) and the
+/// frame against the loaded DBCs (first that matches wins). Shared by
+/// the `fetch_trace_range` command (trace-view scrolling) and the
 /// `trace-grew` tail (auto-scroll live tail). Out-of-range or
 /// oversized ranges clamp to what's stored, matching [`TraceStore::slice`].
 fn collect_trace_records(state: &AppState, start: u64, end: u64) -> Vec<TraceFrameRecord> {
     let start_us = usize::try_from(start).unwrap_or(usize::MAX);
     let end_us = usize::try_from(end).unwrap_or(usize::MAX);
     let raw = state.trace_store.slice(start_us, end_us);
-    let guard = state.database.lock().expect("database mutex poisoned");
-    let db = guard.as_ref();
+    let dbs = state.databases.lock().expect("databases mutex poisoned");
     raw.into_iter()
         .enumerate()
         .map(|(i, frame)| {
             #[allow(clippy::cast_possible_truncation)]
             let absolute_index = start + i as u64;
-            let decoded = db.and_then(|db| decode_raw_frame(db, &frame));
+            let decoded = decode_against(&dbs, &frame);
             TraceFrameRecord::from_raw(absolute_index, &frame, decoded)
         })
         .collect()
+}
+
+/// Decode a raw frame against the loaded DBCs, in order — the first one
+/// that recognises the arbitration id wins. `None` if no DBC does.
+fn decode_against(dbs: &[LoadedDbc], frame: &RawTraceFrame) -> Option<DecodedRecord> {
+    dbs.iter().find_map(|d| decode_raw_frame(&d.db, frame))
 }
 
 /// Pull a `[start, end)` slice out of the trace store and decode each
 /// frame against the currently-attached DBC. The caller is expected to
 /// be the trace view, sizing `end - start` to the visible window plus a
 /// small prefetch pad.
+///
+/// `async` so Tauri runs it off the main thread: under a fast replay
+/// the pump thread takes the trace-store lock thousands of times a
+/// second, so the clone-and-decode here can stall briefly — keeping it
+/// off the UI thread keeps the window (and `disconnect`) responsive.
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-fn fetch_trace_range(
-    state: State<'_, AppState>,
-    start: u64,
-    end: u64,
-) -> Vec<TraceFrameRecord> {
+#[allow(clippy::unused_async)] // `async` is what makes Tauri run it off the main thread
+async fn fetch_trace_range(app: AppHandle, start: u64, end: u64) -> Vec<TraceFrameRecord> {
+    let state: State<'_, AppState> = app.state();
     collect_trace_records(state.inner(), start, end)
+}
+
+/// Latest frame seen for each distinct (channel, id, extended-flag)
+/// whose most recent occurrence is at or after session count `since` —
+/// one per id, sorted by channel then id, decoded against the loaded
+/// DBCs, each paired with the id's current message rate. `since` is a
+/// trace window's start, so for a *running* trace this is "the latest
+/// value of every id in the window". Backs the per-message-ID panel;
+/// `async` so it runs off the main thread, like [`fetch_trace_range`].
+#[tauri::command]
+#[allow(clippy::unused_async)] // `async` is what makes Tauri run it off the main thread
+async fn fetch_latest_by_id(app: AppHandle, since: u64) -> Vec<ByIdSnapshot> {
+    let state: State<'_, AppState> = app.state();
+    let since = usize::try_from(since).unwrap_or(usize::MAX);
+    let rows = state.trace_store.latest_since(since);
+    let dbs = state.databases.lock().expect("databases mutex poisoned");
+    rows.into_iter()
+        .map(|row| {
+            let decoded = decode_against(&dbs, &row.frame);
+            ByIdSnapshot {
+                frame: TraceFrameRecord::from_raw(
+                    u64::try_from(row.index).unwrap_or(u64::MAX),
+                    &row.frame,
+                    decoded,
+                ),
+                rate: row.rate,
+            }
+        })
+        .collect()
 }
 
 /// Drop every stored frame. The frontend's Clear button is the typical
@@ -292,6 +391,7 @@ async fn connect_remote_server(
     .map_err(|e| e.to_string())?;
 
     let (handle, receiver) = source.into_parts();
+    let stop = Arc::new(AtomicBool::new(false));
 
     {
         let state: State<'_, AppState> = app.state();
@@ -304,16 +404,16 @@ async fn connect_remote_server(
             // just spawned. Subsequent pump-thread spawn is skipped.
             return Err("already connected to a remote server".into());
         }
-        *guard = Some(handle);
+        *guard = Some((handle, Arc::clone(&stop)));
     }
 
     let app_for_thread = app.clone();
     std::thread::Builder::new()
         .name("cannet-remote-pump".into())
         .spawn(move || {
-            run_pump(&app_for_thread, receiver);
+            run_pump(&app_for_thread, receiver, stop);
             // The pump exited (server hung up or user disconnected).
-            // Clear the stashed handle so a fresh connect can start.
+            // Clear the stashed session so a fresh connect can start.
             let state: State<'_, AppState> = app_for_thread.state();
             let _ = state
                 .remote_session
@@ -336,23 +436,30 @@ async fn connect_remote_server(
     })
 }
 
-/// Drop the active remote session's [`SessionHandle`]. The pump thread
-/// notices via `Ok(None)` from its next `next_frame` call and exits.
+/// End the active remote session: set the pump's stop flag and drop the
+/// [`SessionHandle`]. The flag makes the pump break out of its loop on
+/// the next iteration — without first replaying whatever frames the
+/// gRPC task already buffered, which under a fast replay can be a large
+/// backlog — and dropping the handle closes the stream. The pump then
+/// emits `log-finished` and clears the session slot.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 fn disconnect_remote_server(state: State<'_, AppState>) {
-    let handle = state
+    let session = state
         .remote_session
         .lock()
         .expect("remote_session mutex poisoned")
         .take();
-    drop(handle);
+    if let Some((handle, stop)) = session {
+        stop.store(true, Ordering::Relaxed);
+        drop(handle);
+    }
 }
 
 // `source` is owned by this thread for its lifetime; clippy's
 // "pass by reference" suggestion doesn't fit the thread-spawn site.
 #[allow(clippy::needless_pass_by_value)]
-fn run_pump<S>(app: &AppHandle, mut source: S)
+fn run_pump<S>(app: &AppHandle, mut source: S, stop: Arc<AtomicBool>)
 where
     S: CanFrameSource,
     S::Error: fmt::Display,
@@ -361,6 +468,9 @@ where
     let mut total: u64 = 0;
 
     loop {
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
         match source.next_frame() {
             Ok(Some(frame)) => {
                 state.trace_store.append(RawTraceFrame::from(frame));
@@ -406,11 +516,37 @@ mod tests {
         }
     }
 
+    /// A classic frame with a full 8-byte payload — enough that an
+    /// 8-bit signal at byte 0 actually decodes (an empty payload would
+    /// be skipped as "outside the payload").
+    fn frame_with_data(id: u32) -> RawTraceFrame {
+        RawTraceFrame {
+            payload: CanFramePayload::Classic(vec![0u8; 8]),
+            ..dummy_frame(0, id)
+        }
+    }
+
+    /// A minimal one-message DBC: arbitration id `id`, message name
+    /// `name`, one 8-bit signal `sig` at byte 0.
+    fn tiny_dbc(id: u32, name: &str, sig: &str) -> String {
+        format!(
+            "VERSION \"\"\n\nNS_ :\n\nBS_:\n\nBU_: ECU\n\n\
+             BO_ {id} {name}: 8 ECU\n SG_ {sig} : 0|8@1+ (1,0) [0|0] \"\" ECU\n"
+        )
+    }
+
     fn test_state() -> AppState {
         AppState {
-            database: Mutex::new(None),
+            databases: Mutex::new(Vec::new()),
             remote_session: Mutex::new(None),
             trace_store: TraceStore::new(),
+        }
+    }
+
+    fn loaded(path: &str, dbc_text: &str) -> LoadedDbc {
+        LoadedDbc {
+            path: path.into(),
+            db: Database::parse(dbc_text).expect("test DBC parses"),
         }
     }
 
@@ -425,6 +561,37 @@ mod tests {
         assert_eq!(mid.iter().map(|r| r.id).collect::<Vec<_>>(), vec![3, 4, 5]);
         // No DBC attached -> nothing decoded.
         assert!(mid.iter().all(|r| r.decoded.is_none()));
+    }
+
+    #[test]
+    fn decodes_against_the_loaded_dbcs_first_match_wins() {
+        let state = test_state();
+        // Two DBCs: each owns one unique id (256 / 512) and both define
+        // id 768 — with different message names — so we can see "first
+        // loaded wins" on the overlap.
+        let dbc_a = format!(
+            "{}\nBO_ 768 SharedMsg: 8 ECU\n SG_ FromA : 0|8@1+ (1,0) [0|0] \"\" ECU\n",
+            tiny_dbc(256, "OnlyInA", "Sa"),
+        );
+        let dbc_b = format!(
+            "{}\nBO_ 768 SharedMsg: 8 ECU\n SG_ FromB : 0|8@1+ (1,0) [0|0] \"\" ECU\n",
+            tiny_dbc(512, "OnlyInB", "Sb"),
+        );
+        *state.databases.lock().unwrap() = vec![loaded("a.dbc", &dbc_a), loaded("b.dbc", &dbc_b)];
+
+        for id in [256u32, 512, 768, 999] {
+            state.trace_store.append(frame_with_data(id));
+        }
+        let r = collect_trace_records(&state, 0, 4);
+        let name = |i: usize| r[i].decoded.as_ref().map(|d| d.name.clone());
+        assert_eq!(name(0).as_deref(), Some("OnlyInA")); // only DBC A has it
+        assert_eq!(name(1).as_deref(), Some("OnlyInB")); // only DBC B has it
+        assert_eq!(name(2).as_deref(), Some("SharedMsg")); // both — A first
+        assert_eq!(
+            r[2].decoded.as_ref().map(|d| d.signals[0].name.clone()).as_deref(),
+            Some("FromA"),
+        );
+        assert!(r[3].decoded.is_none()); // no DBC knows id 999
     }
 
     #[test]

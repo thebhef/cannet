@@ -1,18 +1,43 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { open, save } from "@tauri-apps/plugin-dialog";
+import { DockviewReact, themeAbyss } from "dockview";
+import type { DockviewApi, DockviewReadyEvent } from "dockview";
 
 import type {
   DbcInfo,
   LogFinished,
   OpenLogResult,
+  Project,
   RemoteSessionResult,
   TraceFrameRecord,
   TraceGrew,
 } from "./types";
+import { PROJECT_SCHEMA_VERSION } from "./types";
 import { TitleBar } from "./TitleBar";
-import { TraceView } from "./TraceView";
+import { TracePanel } from "./TracePanel";
+import { ProjectPanel } from "./ProjectPanel";
+import { TraceDataContext, type TraceData } from "./traceData";
+import { ProjectContext, type ProjectContextValue } from "./projectContext";
+import { CloseConfirmModal, type CloseChoice } from "./CloseConfirmModal";
+import {
+  ElementRegistryContext,
+  type ElementRegistry,
+  type RegistryEntry,
+  isProjectElement,
+} from "./projectElements";
+import { type TraceState, clearedTrace, reanchorToSession } from "./trace";
+import {
+  BY_ID_PANEL_COMPONENT,
+  LAST_PROJECT_KEY,
+  LAYOUT_STORAGE_KEY,
+  PROJECT_PANEL_COMPONENT,
+  TRACE_PANEL_COMPONENT,
+  parseSavedLayout,
+  validateLayout,
+} from "./dockLayout";
 
 type LogState =
   | { kind: "idle" }
@@ -35,16 +60,28 @@ const CHUNK_SIZE = 500;
 /// even at high scroll velocities.
 const CACHE_CHUNKS = 120;
 
+/// Dockview panel-component registry, defined at module scope so
+/// dockview never sees a fresh object and re-registers. The
+/// chronological and per-id views are one component now (`TracePanel`,
+/// mode is the trace element's `view`); the old `"by-id"` name maps to
+/// it too so layouts saved before the merge still restore.
+const DOCK_COMPONENTS = {
+  [TRACE_PANEL_COMPONENT]: TracePanel,
+  [BY_ID_PANEL_COMPONENT]: TracePanel,
+  [PROJECT_PANEL_COMPONENT]: ProjectPanel,
+};
+
+/// The project panel is a show/hide singleton — a fixed dockview id so
+/// there's structurally only one.
+const PROJECT_PANEL_ID = "project";
+
 export function App() {
   const [count, setCount] = useState(0);
   const [framesPerSecond, setFramesPerSecond] = useState(0);
 
-  // While `autoScroll` is true the trace view pins to the live tail;
-  // while false it stays where the user scrolled to. A user scroll in
-  // the trace flips this off (via onAutoScrollDisabled below).
-  const [autoScroll, setAutoScroll] = useState(true);
-
-  // Chunked cache of fetched trace rows, keyed by chunk index.
+  // Chunked cache of fetched trace rows, keyed by chunk index. Shared by
+  // every trace panel — they all view the one host-side capture; only
+  // their scroll position and auto-scroll toggle are per panel.
   const chunkCacheRef = useRef<Map<number, TraceFrameRecord[]>>(new Map());
   const cacheOrderRef = useRef<number[]>([]);
   const inflightChunksRef = useRef<Set<number>>(new Set());
@@ -58,14 +95,82 @@ export function App() {
   const [version, setVersion] = useState(0);
 
   const [state, setState] = useState<LogState>({ kind: "idle" });
-  const [dbcPath, setDbcPath] = useState<string | null>(null);
+  // Paths of the loaded DBCs, in priority order (mirrors the host's set
+  // — it owns the parsed databases; this is just what the UI shows).
+  const [dbcPaths, setDbcPaths] = useState<string[]>([]);
   const [remoteAddress, setRemoteAddress] = useState(DEFAULT_REMOTE_ADDRESS);
+  // Path of the open project file, or null for an unsaved workspace.
+  const [projectPath, setProjectPath] = useState<string | null>(null);
+  // True when the workspace has changed since it was last saved/opened.
+  const [dirty, setDirty] = useState(false);
+  // Set while the "unsaved changes — Save / Discard / Cancel?" modal is
+  // up (the window-close handler awaits the choice via `resolve`).
+  const [pendingClose, setPendingClose] = useState<{
+    resolve: (choice: CloseChoice) => void;
+  } | null>(null);
+  // The project's elements + their runtime state (the element registry,
+  // handed down via ElementRegistryContext). Restored from
+  // `project.elements`, seeded on first launch / New, serialized back
+  // on Save. Starts empty; `seedDefaultLayout` (called below) fills it.
+  const [registry, setRegistry] = useState<RegistryEntry[]>([]);
 
   // Captured once: timestamp of absolute row 0. Survives the user
   // scrolling anywhere in the trace; reset on Clear / new source.
   const [baseTimestampSeconds, setBaseTimestampSeconds] = useState<number | null>(
     null,
   );
+
+  // The dockview layout API, populated once `onReady` fires.
+  const dockApiRef = useRef<DockviewApi | null>(null);
+  // Monotonic counter for "Trace N" panel titles.
+  const panelCounterRef = useRef(0);
+  // Current `dirty` / `handleSaveProject`, read by the (once-registered)
+  // close-on-quit handler. Updated on every render below.
+  const dirtyRef = useRef(false);
+  const handleSaveProjectRef = useRef<() => Promise<boolean>>(() => Promise.resolve(false));
+  // Current session frame count, mirrored into a ref so `createTrace` /
+  // `ensureTrace` can anchor a new (empty, stopped) trace at *now*
+  // without taking `count` as a dependency (it changes every tick).
+  const countRef = useRef(0);
+  countRef.current = count;
+
+  // --- element registry ops ---
+  const createTrace = useCallback((): string => {
+    const id = crypto.randomUUID();
+    setRegistry((prev) => [
+      ...prev,
+      { element: { kind: "trace", id }, trace: clearedTrace(countRef.current) },
+    ]);
+    return id;
+  }, []);
+  const ensureTrace = useCallback((id: string) => {
+    setRegistry((prev) =>
+      prev.some((e) => e.element.id === id)
+        ? prev
+        : [...prev, { element: { kind: "trace", id }, trace: clearedTrace(countRef.current) }],
+    );
+  }, []);
+  const updateTrace = useCallback((id: string, updater: (s: TraceState) => TraceState) => {
+    setRegistry((prev) => {
+      let changed = false;
+      const next = prev.map((e) => {
+        if (e.element.id !== id) return e;
+        const t = updater(e.trace);
+        if (t === e.trace) return e;
+        changed = true;
+        return { ...e, trace: t };
+      });
+      return changed ? next : prev;
+    });
+  }, []);
+  const removeElement = useCallback((id: string) => {
+    setRegistry((prev) => prev.filter((e) => e.element.id !== id));
+    const api = dockApiRef.current;
+    const panel = api?.panels.find(
+      (p) => (p.params as { elementId?: unknown } | undefined)?.elementId === id,
+    );
+    if (api && panel) api.removePanel(panel);
+  }, []);
 
   const invalidateCache = useCallback(() => {
     chunkCacheRef.current.clear();
@@ -74,11 +179,6 @@ export function App() {
     tailFramesRef.current = [];
     tailStartRef.current = 0;
     setVersion((v) => v + 1);
-  }, []);
-
-  const resetView = useCallback(() => {
-    setAutoScroll(true);
-    setBaseTimestampSeconds(null);
   }, []);
 
   const refreshChunk = useCallback(async (chunkIdx: number) => {
@@ -176,6 +276,21 @@ export function App() {
     };
   }, [invalidateCache, refreshStalePartialChunks]);
 
+  // Re-anchor every trace window when the session buffer shrinks (a new
+  // connection cleared it) — a no-op on every other tick.
+  useEffect(() => {
+    setRegistry((prev) => {
+      let changed = false;
+      const next = prev.map((e) => {
+        const t = reanchorToSession(e.trace, count);
+        if (t === e.trace) return e;
+        changed = true;
+        return { ...e, trace: t };
+      });
+      return changed ? next : prev;
+    });
+  }, [count]);
+
   // Once row 0 is available, capture its timestamp as the zero-point
   // for the time column.
   useEffect(() => {
@@ -201,7 +316,7 @@ export function App() {
     try {
       await invoke("clear_trace_store");
       invalidateCache();
-      resetView();
+      setBaseTimestampSeconds(null);
       const result = await invoke<OpenLogResult>("open_log", {
         blfPath: selected,
       });
@@ -209,24 +324,73 @@ export function App() {
     } catch (err) {
       setState({ kind: "error", message: String(err) });
     }
-  }, [invalidateCache, resetView]);
+  }, [invalidateCache]);
 
-  const handleAttachDbc = useCallback(async () => {
+  // Add one or more DBCs to the loaded set (each goes through the host's
+  // `add_dbc`, which appends — or reloads in place if the path is
+  // already loaded — and hands back the authoritative list).
+  const handleAddDbc = useCallback(async () => {
     const selected = await open({
-      multiple: false,
+      multiple: true,
       filters: [{ name: "DBC", extensions: ["dbc"] }],
     });
-    if (typeof selected !== "string") return;
+    const paths = Array.isArray(selected) ? selected : typeof selected === "string" ? [selected] : [];
+    if (paths.length === 0) return;
 
-    try {
-      const info = await invoke<DbcInfo>("attach_dbc", { path: selected });
-      setDbcPath(info.dbc_path);
-    } catch (err) {
-      setState({ kind: "error", message: String(err) });
-      return;
+    let list = dbcPaths;
+    const errors: string[] = [];
+    for (const path of paths) {
+      try {
+        list = (await invoke<DbcInfo[]>("add_dbc", { path })).map((d) => d.dbc_path);
+      } catch (err) {
+        errors.push(`${path}: ${String(err)}`);
+      }
     }
+    setDbcPaths(list);
+    setDirty(true);
     invalidateCache();
-  }, [invalidateCache]);
+    if (errors.length > 0) setState({ kind: "error", message: `DBC: ${errors.join("; ")}` });
+  }, [dbcPaths, invalidateCache]);
+
+  const handleRemoveDbc = useCallback(
+    (path: string) => {
+      void invoke<DbcInfo[]>("remove_dbc", { path })
+        .then((list) => {
+          setDbcPaths(list.map((d) => d.dbc_path));
+          setDirty(true);
+          invalidateCache();
+        })
+        .catch((err) => setState({ kind: "error", message: String(err) }));
+    },
+    [invalidateCache],
+  );
+
+  // Replace the loaded-DBC set with exactly `paths` (clear, then re-add
+  // each in order). Used by "open project", "new project" (empty list),
+  // and "reload all from disk". Paths that fail to read / parse are
+  // dropped and reported together.
+  const loadDbcSet = useCallback(
+    async (paths: readonly string[]) => {
+      try {
+        await invoke("clear_dbcs");
+      } catch {
+        /* unreachable in practice; the next add_dbc would surface real trouble */
+      }
+      let list: string[] = [];
+      const errors: string[] = [];
+      for (const path of paths) {
+        try {
+          list = (await invoke<DbcInfo[]>("add_dbc", { path })).map((d) => d.dbc_path);
+        } catch (err) {
+          errors.push(`${path}: ${String(err)}`);
+        }
+      }
+      setDbcPaths(list);
+      invalidateCache();
+      if (errors.length > 0) setState({ kind: "error", message: `DBC: ${errors.join("; ")}` });
+    },
+    [invalidateCache],
+  );
 
   const handleClear = useCallback(async () => {
     try {
@@ -235,9 +399,9 @@ export function App() {
       setState({ kind: "error", message: String(err) });
     }
     invalidateCache();
-    resetView();
+    setBaseTimestampSeconds(null);
     setCount(0);
-  }, [invalidateCache, resetView]);
+  }, [invalidateCache]);
 
   const handleConnect = useCallback(async () => {
     const address = remoteAddress.trim();
@@ -246,7 +410,7 @@ export function App() {
     try {
       await invoke("clear_trace_store");
       invalidateCache();
-      resetView();
+      setBaseTimestampSeconds(null);
       setState({ kind: "remote-connecting", address });
       const result = await invoke<RemoteSessionResult>("connect_remote_server", {
         address,
@@ -255,7 +419,7 @@ export function App() {
     } catch (err) {
       setState({ kind: "error", message: String(err) });
     }
-  }, [remoteAddress, invalidateCache, resetView]);
+  }, [remoteAddress, invalidateCache]);
 
   const handleDisconnect = useCallback(async () => {
     try {
@@ -265,16 +429,181 @@ export function App() {
     }
   }, []);
 
-  // The trace view calls this when the user scrolls the trace
-  // themselves while live-tailing was on — flip it off so the view
-  // stays where they put it.
-  const handleAutoScrollDisabled = useCallback(() => {
-    setAutoScroll(false);
+  // Reset to the seed workspace: one trace element + its panel, plus
+  // the project panel. Shared by first launch (no saved layout) and
+  // "New project". Reads `dockApiRef.current`, so call it after
+  // `onReady` has populated it.
+  const seedDefaultLayout = useCallback(() => {
+    const api = dockApiRef.current;
+    if (!api) return;
+    setRegistry([]);
+    const elementId = createTrace();
+    api.clear();
+    api.addPanel({
+      id: `trace-${elementId}`,
+      component: TRACE_PANEL_COMPONENT,
+      title: "Trace 1",
+      params: { elementId, mode: "by-id" },
+    });
+    api.addPanel({
+      // Fixed id — there's only ever one project panel; the toolbar's
+      // "Project panel" button toggles it (show/hide).
+      id: PROJECT_PANEL_ID,
+      component: PROJECT_PANEL_COMPONENT,
+      title: "Project",
+      position: { direction: "left" },
+    });
+    panelCounterRef.current = 1;
+  }, [createTrace]);
+
+  /// Snapshot the current workspace into a `Project` (the elements, not
+  /// their runtime state — that re-anchors on reload).
+  const gatherProject = useCallback(
+    (): Project => ({
+      schema_version: PROJECT_SCHEMA_VERSION,
+      layout: dockApiRef.current?.toJSON() ?? { grid: {}, panels: {} },
+      elements: registry.map((e) => e.element),
+      dbc_paths: dbcPaths,
+      remote_address: remoteAddress.trim() || null,
+    }),
+    [registry, dbcPaths, remoteAddress],
+  );
+
+  // Record which project is "open" — both the React state and the
+  // `localStorage` pointer that reopens it on the next launch. `null`
+  // means an unsaved workspace.
+  const rememberProject = useCallback((path: string | null) => {
+    setProjectPath(path);
+    try {
+      if (path) localStorage.setItem(LAST_PROJECT_KEY, path);
+      else localStorage.removeItem(LAST_PROJECT_KEY);
+    } catch {
+      /* best effort */
+    }
   }, []);
 
-  const handleToggleAutoScroll = useCallback((next: boolean) => {
-    setAutoScroll(next);
+  // Apply an opened project: restore the panel layout (incl. per-panel
+  // config in the panel params), the remote-address field, and the
+  // loaded DBC set (replaces whatever's loaded with the project's list).
+  // Doesn't touch a live connection: the project's bus is configured
+  // into the fields; hit Connect to switch.
+  const applyProject = useCallback(
+    (project: Project) => {
+      // Restore the element registry first so the panels `fromJSON`
+      // creates (which reference elements by `params.elementId`) find
+      // their entries. (A panel that doesn't still self-heals.)
+      setRegistry(
+        (Array.isArray(project.elements) ? project.elements : [])
+          .filter(isProjectElement)
+          .map((el) => ({ element: el, trace: clearedTrace(countRef.current) })),
+      );
+      const api = dockApiRef.current;
+      const layout = validateLayout(project.layout);
+      if (api && layout) {
+        try {
+          api.fromJSON(layout);
+          panelCounterRef.current = api.panels.length;
+        } catch {
+          /* keep the current layout if the saved one won't load */
+        }
+      }
+      setRemoteAddress(project.remote_address ?? DEFAULT_REMOTE_ADDRESS);
+      void loadDbcSet(Array.isArray(project.dbc_paths) ? project.dbc_paths : []);
+    },
+    [loadDbcSet],
+  );
+
+  const handleNewProject = useCallback(() => {
+    // Fresh workspace: seed layout, no open project, no DBCs, no
+    // session — disconnect and clear the buffer too.
+    seedDefaultLayout();
+    rememberProject(null);
+    void loadDbcSet([]);
+    void invoke("disconnect_remote_server").catch(() => {});
+    void invoke("clear_trace_store").catch(() => {});
+    invalidateCache();
+    setBaseTimestampSeconds(null);
+    setCount(0);
+    setDirty(false);
+  }, [seedDefaultLayout, rememberProject, loadDbcSet, invalidateCache]);
+
+  const handleOpenProject = useCallback(async () => {
+    const selected = await open({
+      multiple: false,
+      filters: [{ name: "cannet project", extensions: ["json"] }],
+    });
+    if (typeof selected !== "string") return;
+    try {
+      const project = await invoke<Project>("open_project", { path: selected });
+      applyProject(project);
+      rememberProject(selected);
+      setDirty(false);
+    } catch (err) {
+      setState({ kind: "error", message: String(err) });
+    }
+  }, [applyProject, rememberProject]);
+
+  // Returns true if the project was written, false if it wasn't (e.g.
+  // the user cancelled the file picker, or the write failed).
+  const saveProjectTo = useCallback(
+    async (path: string): Promise<boolean> => {
+      try {
+        await invoke("save_project", { path, project: gatherProject() });
+        rememberProject(path);
+        setDirty(false);
+        return true;
+      } catch (err) {
+        setState({ kind: "error", message: String(err) });
+        return false;
+      }
+    },
+    [gatherProject, rememberProject],
+  );
+
+  const handleSaveProjectAs = useCallback(async (): Promise<boolean> => {
+    const path = await save({
+      filters: [{ name: "cannet project", extensions: ["json"] }],
+      defaultPath: projectPath ?? "cannet-project.json",
+    });
+    if (!path) return false;
+    return saveProjectTo(path);
+  }, [projectPath, saveProjectTo]);
+
+  const handleSaveProject = useCallback(
+    (): Promise<boolean> => (projectPath ? saveProjectTo(projectPath) : handleSaveProjectAs()),
+    [projectPath, saveProjectTo, handleSaveProjectAs],
+  );
+
+  // The close-on-quit handler is registered once; give it refs to the
+  // current values rather than re-registering on every change.
+  dirtyRef.current = dirty;
+  handleSaveProjectRef.current = handleSaveProject;
+  useEffect(() => {
+    const win = getCurrentWindow();
+    let unlisten: (() => void) | undefined;
+    void win
+      .onCloseRequested(async (event) => {
+        if (!dirtyRef.current) return; // no unsaved changes — let it close
+        event.preventDefault();
+        const choice = await new Promise<CloseChoice>((resolve) =>
+          setPendingClose({ resolve }),
+        );
+        setPendingClose(null);
+        if (choice === "cancel") return;
+        if (choice === "save" && !(await handleSaveProjectRef.current())) return; // picker cancelled
+        void win.destroy();
+      })
+      .then((u) => {
+        unlisten = u;
+      });
+    return () => unlisten?.();
   }, []);
+
+  // Re-read every loaded DBC from disk (a file that's gone or no longer
+  // parses drops out, with an error). No-op when none are loaded.
+  const handleReloadDbc = useCallback(() => {
+    if (dbcPaths.length > 0) void loadDbcSet(dbcPaths);
+  }, [dbcPaths, loadDbcSet]);
 
   const getFrame = useCallback((index: number): TraceFrameRecord | null => {
     const chunkIdx = Math.floor(index / CHUNK_SIZE);
@@ -310,29 +639,176 @@ export function App() {
     [count, fetchChunk],
   );
 
+  const addTracePanel = useCallback(() => {
+    const api = dockApiRef.current;
+    if (!api) return;
+    const elementId = createTrace();
+    panelCounterRef.current += 1;
+    // A new trace starts in by-id mode (toggle it in the panel toolbar).
+    api.addPanel({
+      id: `trace-${elementId}`,
+      component: TRACE_PANEL_COMPONENT,
+      title: `Trace ${panelCounterRef.current}`,
+      params: { elementId, mode: "by-id" },
+    });
+  }, [createTrace]);
+
+  const toggleProjectPanel = useCallback(() => {
+    const api = dockApiRef.current;
+    if (!api) return;
+    const existing = api.panels.find((p) => p.id === PROJECT_PANEL_ID);
+    if (existing) {
+      api.removePanel(existing);
+    } else {
+      api.addPanel({
+        id: PROJECT_PANEL_ID,
+        component: PROJECT_PANEL_COMPONENT,
+        title: "Project",
+        position: { direction: "left" },
+      });
+    }
+  }, []);
+
+  const handleDockReady = useCallback(
+    (event: DockviewReadyEvent) => {
+      const api = event.api;
+      dockApiRef.current = api;
+
+      let restored = false;
+      const saved = parseSavedLayout(localStorage.getItem(LAYOUT_STORAGE_KEY));
+      if (saved) {
+        try {
+          api.fromJSON(saved);
+          restored = api.panels.length > 0;
+        } catch {
+          restored = false;
+        }
+      }
+      if (restored) {
+        // Keep numbering past whatever the restored layout already shows.
+        panelCounterRef.current = api.panels.length;
+      } else {
+        seedDefaultLayout();
+      }
+
+      // Persist after the initial restore/seed so we never write an
+      // empty or half-built layout. Best-effort: localStorage can be
+      // unavailable or full. This is the "no project open" layout — a
+      // reopened named project (below) overwrites it. Any layout change
+      // (panels added / dragged / closed, columns resized) also marks
+      // the workspace dirty.
+      api.onDidLayoutChange(() => {
+        try {
+          localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(api.toJSON()));
+        } catch {
+          /* layout persistence is best-effort */
+        }
+        setDirty(true);
+      });
+
+      // Reopen the last named project, if any — it replaces the layout
+      // restored above (and re-applies the bus/DBC config). A stale
+      // pointer (file moved/deleted) is cleared so it stops failing.
+      const lastProject = localStorage.getItem(LAST_PROJECT_KEY);
+      if (lastProject) {
+        void invoke<Project>("open_project", { path: lastProject })
+          .then((p) => {
+            applyProject(p);
+            rememberProject(lastProject);
+            setDirty(false);
+          })
+          .catch(() => rememberProject(null));
+      }
+    },
+    [seedDefaultLayout, applyProject, rememberProject],
+  );
+
   const status = useMemo(
-    () => renderStatus(state, dbcPath, count, framesPerSecond),
-    [state, dbcPath, count, framesPerSecond],
+    () => renderStatus(state, dbcPaths, count, framesPerSecond),
+    [state, dbcPaths, count, framesPerSecond],
+  );
+
+  const traceData: TraceData = useMemo(
+    () => ({ count, version, baseTimestampSeconds, getFrame, ensureVisible }),
+    [count, version, baseTimestampSeconds, getFrame, ensureVisible],
+  );
+
+  const elementRegistryValue: ElementRegistry = useMemo(
+    () => ({
+      entries: registry,
+      get: (id) => registry.find((e) => e.element.id === id),
+      createTrace,
+      ensureTrace,
+      updateTrace,
+      remove: removeElement,
+    }),
+    [registry, createTrace, ensureTrace, updateTrace, removeElement],
   );
 
   const remoteConnected =
     state.kind === "remote-connecting" || state.kind === "remote-running";
+
+  const blfPath =
+    state.kind === "loading" || state.kind === "running" || state.kind === "done"
+      ? state.result.blf_path
+      : null;
+
+  const projectContextValue: ProjectContextValue = useMemo(
+    () => ({
+      projectPath,
+      dirty,
+      dbcPaths,
+      remoteAddress,
+      remoteConnected,
+      blfPath,
+      onNewProject: handleNewProject,
+      onOpenProject: handleOpenProject,
+      onSaveProject: handleSaveProject,
+      onSaveProjectAs: handleSaveProjectAs,
+      onAddDbc: handleAddDbc,
+      onRemoveDbc: handleRemoveDbc,
+      onReloadDbc: handleReloadDbc,
+      onConnect: handleConnect,
+      onDisconnect: handleDisconnect,
+    }),
+    [
+      projectPath,
+      dirty,
+      dbcPaths,
+      remoteAddress,
+      remoteConnected,
+      blfPath,
+      handleNewProject,
+      handleOpenProject,
+      handleSaveProject,
+      handleSaveProjectAs,
+      handleAddDbc,
+      handleRemoveDbc,
+      handleReloadDbc,
+      handleConnect,
+      handleDisconnect,
+    ],
+  );
 
   return (
     <main className="app">
       <TitleBar />
       <header>
         <div className="toolbar">
+          <button onClick={handleOpenProject}>Open project…</button>
+          <button onClick={handleSaveProject}>Save project</button>
+          <span className="toolbar-separator" aria-hidden="true" />
           <button onClick={handleOpenLog}>Open BLF…</button>
-          <button onClick={handleAttachDbc}>
-            {dbcPath ? "Replace DBC…" : "Attach DBC…"}
-          </button>
+          <button onClick={handleAddDbc}>Add DBC…</button>
           <span className="toolbar-separator" aria-hidden="true" />
           <input
             className="remote-address"
             type="text"
             value={remoteAddress}
-            onChange={(e) => setRemoteAddress(e.target.value)}
+            onChange={(e) => {
+              setRemoteAddress(e.target.value);
+              setDirty(true);
+            }}
             placeholder="host:port"
             disabled={remoteConnected}
             aria-label="remote server address"
@@ -348,37 +824,45 @@ export function App() {
           <button onClick={handleClear} disabled={count === 0}>
             Clear
           </button>
-          <label className="checkbox">
-            <input
-              type="checkbox"
-              checked={autoScroll}
-              onChange={(e) => handleToggleAutoScroll(e.target.checked)}
-            />
-            auto-scroll
-          </label>
+          <span className="toolbar-separator" aria-hidden="true" />
+          <button onClick={addTracePanel}>Add trace</button>
+          <button onClick={toggleProjectPanel}>Project panel</button>
         </div>
         <div className="status">{status}</div>
       </header>
-      <TraceView
-        count={count}
-        version={version}
-        autoScroll={autoScroll}
-        baseTimestampSeconds={baseTimestampSeconds}
-        getFrame={getFrame}
-        ensureVisible={ensureVisible}
-        onAutoScrollDisabled={handleAutoScrollDisabled}
-      />
+      <ProjectContext.Provider value={projectContextValue}>
+        <ElementRegistryContext.Provider value={elementRegistryValue}>
+          <TraceDataContext.Provider value={traceData}>
+            {/* dockview drags tabs with the HTML5 drag-and-drop API, which
+                Tauri's OS-level drag-drop handler breaks on WebView2 — hence
+                `dragDropEnabled: false` in tauri.conf.json. The GUI takes
+                files via the dialog plugin, not by drop, so nothing is lost. */}
+            <DockviewReact
+              className="dock-area"
+              theme={themeAbyss}
+              components={DOCK_COMPONENTS}
+              onReady={handleDockReady}
+            />
+          </TraceDataContext.Provider>
+        </ElementRegistryContext.Provider>
+      </ProjectContext.Provider>
+      {pendingClose && <CloseConfirmModal onChoice={pendingClose.resolve} />}
     </main>
   );
 }
 
 function renderStatus(
   state: LogState,
-  dbcPath: string | null,
+  dbcPaths: readonly string[],
   frameCount: number,
   framesPerSecond: number,
 ): string {
-  const dbc = dbcPath ? `DBC: ${shortenPath(dbcPath)}` : "no DBC attached";
+  const dbc =
+    dbcPaths.length === 0
+      ? "no DBC attached"
+      : dbcPaths.length === 1
+        ? `DBC: ${shortenPath(dbcPaths[0])}`
+        : `${dbcPaths.length} DBCs`;
   const fps = framesPerSecond > 0 ? ` · ${formatRate(framesPerSecond)}` : "";
   switch (state.kind) {
     case "idle":

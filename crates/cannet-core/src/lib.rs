@@ -46,7 +46,10 @@
 //! - **Phase 2** (client/server): a network client implements
 //!   `CanFrameSource`; the server bridges its own input to a `CanFrameSink`.
 //!   `CanFrame` does not change; only adapters are added.
-//! - **Phase 3** (hardware): per-vendor server processes implement
+//! - **Phase 5** (transmit): the abstraction grows a transmit direction
+//!   so a GUI transmit panel can send through a remote server (or a
+//!   `cannet-server --loopback`); `CanFrameSink` is the seam.
+//! - **Phase 6** (hardware): per-vendor server processes implement
 //!   `CanFrameSource` against vendor SDKs / `python-can`. The GUI sees
 //!   only the network transport.
 //!

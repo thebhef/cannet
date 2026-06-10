@@ -3,9 +3,11 @@
 A CAN-bus analyzer. Phase 1 (alpha0) ships a single-process GUI that
 opens a Vector BLF log, decodes it against a DBC, and streams the
 result into a virtualized trace view. Phase 2 splits the data source
-out behind a network protocol; Phase 3 fills in transmit, multiple
-trace/transmit windows, and docking; Phase 4 adds per-vendor hardware
-adapters. See [`plans/`](plans/) for the detailed roadmap.
+out behind a network protocol; Phase 3 fills in a multi-panel docking
+layout (dockable trace and project panels in arbitrary arrangements)
+and JSON project files; Phase 4 adds a signal-plotting view; Phase 5
+adds transmit; Phase 6 adds per-vendor hardware adapters. See
+[`plans/`](plans/) for the detailed roadmap.
 
 ## Repository layout
 
@@ -43,22 +45,45 @@ crates/
 
 apps/
   gui/           Tauri 2 + React 18 + Vite trace viewer.
-    src/             React frontend. `TraceView.tsx` is the hand-rolled
-                     scaled virtualizer — the scroll container caps at
-                     16M px and maps scrollTop to an absolute row
-                     index, so the scrollbar represents the whole trace
-                     regardless of size; rows expand to show decoded
-                     signals. The scroll/stacking arithmetic lives in
-                     `traceViewport.ts` (unit-tested in
-                     `traceViewport.test.ts`).
+    src/             React frontend. `TracePanel.tsx` is a trace-style
+                     panel with a chronological / by-ID mode toggle:
+                     chronological is `TraceView.tsx`, a hand-rolled
+                     scaled virtualizer (the scroll container caps at
+                     16M px and maps scrollTop to an absolute row index,
+                     so the scrollbar represents the whole trace
+                     regardless of size; the wheel scrolls natively but
+                     falls back to row-stepped scrolling when a notch
+                     would skip a screenful in the compressed regime);
+                     by-ID is `ByIdTable.tsx`. Shared table bits — the
+                     header (drag-resize, right-click show/hide,
+                     click-to-sort) and the cell renderer — are in
+                     `traceTable.tsx`; the column model + sort in
+                     `traceColumns.ts`. `ProjectPanel.tsx` is the
+                     project / elements / bus / DBC panel. Each panel
+                     shows one *trace element* — a window over the
+                     host-side session buffer with pause / stop / clear;
+                     the elements live in an in-memory registry
+                     (`projectElements.ts`), persisted in the project,
+                     so closing a panel doesn't destroy its element
+                     (`trace.ts`, `TraceControls.tsx`). The
+                     scroll/stacking, column, and trace-window
+                     arithmetic live in `traceViewport.ts` /
+                     `traceColumns.ts` / `trace.ts` (unit-tested
+                     alongside).
     src-tauri/       Rust host (`cannet-gui` crate). Owns the trace
-                     model (`trace_store.rs`); the BLF and remote pumps
-                     append frames, and the frontend pulls slices via
-                     the `fetch_trace_range` command (decoded against
-                     the current DBC at fetch time) plus a `trace-grew`
-                     IPC tick (~10 Hz: count, rate, and a decoded tail
-                     of the newest rows for flicker-free auto-scroll).
-                     `src/ipc.rs` holds the IPC payload shapes.
+                     model (`trace_store.rs` — the session buffer, plus
+                     an O(1)-maintained latest-frame-per-id index and a
+                     per-id message-rate estimate); the BLF and remote
+                     pumps append frames, and the frontend pulls slices
+                     via the `fetch_trace_range` command and the
+                     latest-by-id snapshot (each id's latest frame + its
+                     rate) via `fetch_latest_by_id` (both decoded against the
+                     loaded DBCs — first match wins — at fetch time, both
+                     off the main thread), plus a `trace-grew` IPC tick (~10 Hz:
+                     count, rate, and a decoded tail of the newest rows
+                     for flicker-free auto-scroll). `src/ipc.rs` holds
+                     the IPC payload shapes; `src/project.rs` the
+                     project-file model + `open_project` / `save_project`.
 
 plans/           Living planning docs (see CLAUDE.md).
 ```
@@ -129,8 +154,62 @@ pnpm --dir apps/gui tauri build    # release bundle
 ```
 
 `pnpm tauri dev` boots Vite, compiles the Rust host, and launches the
-cannet window. Use **Open BLF…** to pick a log; **Attach DBC…** before
-opening attaches a database for live decoding.
+cannet window. Use **Open BLF…** to pick a log; **Add DBC…** loads a
+database for live decoding — load more than one and frames decode
+against each in order, first match wins (every loaded DBC applies to
+the one interface for now).
+
+The window below the toolbar is a dockable panel area. The default
+layout has a **trace panel** and a **project panel** (the project's
+*elements*, the configured bus(es), the loaded DBCs). A trace panel
+has a **trace / by ID** mode toggle: *by ID* (the default) shows one
+row per arbitration id with its latest frame and its current message
+rate (the **msg/s** column, by-id only) — click a column header to
+sort by it (click again to reverse, again to clear — ▲ / ▼ marks the
+sorted column); *trace* is the chronological view (one row per frame,
+follows the live edge). **Add trace** creates a new trace element and a
+panel for it (in by-ID mode — toggle it anytime); the new trace starts
+**empty and stopped** (hit **Start** to begin capturing), regardless of
+what's already in the session buffer. The project panel
+lists the elements — closing a panel doesn't destroy its element,
+reopen or remove it from there. **Project panel** toggles the project
+panel itself (it's a show/hide singleton). New panels arrive as a tab
+in the active group — drag a
+panel by its tab and drop it against an edge of the area to split it
+side-by-side, or onto another panel to tab them together. Each trace
+panel keeps its own scroll position, auto-scroll toggle (trace mode),
+and column layout — drag the divider at a column header's right edge to
+resize, and **right-click the header** to show / hide columns. Trace
+panels carry the trace controls: the data lives in a session buffer
+that fills while connected (lost when you disconnect / reconnect or
+quit), and a *trace* is each panel's own window over it — **Pause**
+freezes the view (**Resume** continues, including frames received while
+paused), **Stop** freezes it (**Start** then begins a fresh, growing
+trace), and **Clear** empties the window keeping whatever state it's in
+(Clear doesn't imply Stop or Pause — a running trace stays running).
+The session buffer keeps filling underneath regardless.
+(Tearing a panel out into a separate OS window isn't supported yet —
+docking is within the one window; the tear-out item is in
+`plans/backlog.md`.)
+
+A `.json` *project* file holds the panel layout (including each trace
+panel's column layout and auto-scroll toggle), the project's elements
+(traces — and later plots, transmit messages, …), the loaded DBC
+paths, and the remote-server address. The **project panel** (or the
+toolbar's **Open project…** / **Save project**) drives it: **Save** /
+**Save As…** write one, **Open…** restores it (configures the remote
+address and re-loads the DBCs by path — hit **Connect** to switch),
+**New** starts a fresh workspace (default layout, no DBCs, disconnected,
+buffer cleared). The panel also lists the configured bus(es) with
+**Connect** / **Disconnect** and the loaded DBCs with **Add…** /
+**Remove** / **Reload all from disk**. The
+last opened/saved project is reopened on launch (with no project, the
+layout is restored from local storage). Unsaved changes show a `●` in
+the project panel, and closing the window with unsaved changes prompts
+you (Save & close / Discard & close / Cancel). Not carried in the project: a trace's window
+position (it re-anchors to the session buffer on each launch anyway),
+the BLF replay path, the per-interface subscription set, and per-bus
+DBC association (every loaded DBC applies to the one interface for now).
 
 > **Note:** plain `cargo run -p cannet-gui` will build the Rust host on
 > its own but won't bring up a usable window — the host expects either
