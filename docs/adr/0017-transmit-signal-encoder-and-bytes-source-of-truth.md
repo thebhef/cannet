@@ -2,7 +2,7 @@
 
 Status: accepted (2026-05-26)
 
-Phase 10 Track 2 ([`../../plans/phased-implementation.md`](../../plans/phased-implementation.md))
+Phase 11 ([`../../plans/phased-implementation.md`](../../plans/phased-implementation.md))
 introduces real per-signal editing in the transmit panel — until now
 the panel only let the user type raw hex into `dataHex` or pick an
 enum signal's raw value from a dropdown that copied one byte into the
@@ -81,7 +81,7 @@ must keep producing the same frame on the wire.
   partially unmapped.
 - **Encoder in the GUI host (Rust) without a `cannet-dbc` API.**
   Splits the DBC-walking logic across two crates. Future callers
-  (server-side simulation in Phase 17, CANopen SDO/PDO in Phase 16)
+  (server-side simulation in Phase 22, CANopen SDO/PDO in Phase 21)
   would each have to reach into the GUI host or copy the walk.
 - **Encoder in TypeScript on the frontend.** Reimplements decode-
   semantics on the wrong side of the model/view boundary, in a
@@ -97,6 +97,6 @@ must keep producing the same frame on the wire.
   hack is retired; enum picks go through the encoder for proper
   multi-byte placement.
 - The "bytes source of truth" rule constrains future transmit-side
-  features (rest-of-bus simulation in Phase 17, math channels in
-  Phase 18) to operate on payloads, not on signal maps, when they
+  features (rest-of-bus simulation in Phase 22, math channels in
+  Phase 23) to operate on payloads, not on signal maps, when they
   need to persist or transmit a frame.

@@ -972,7 +972,7 @@ Deferred follow-ups:
 
 - Per-panel **chronological** trace filtering and per-panel **plot
   sampling** filtering — Phase 6.5 only wired the predicate into the
-  per-panel by-id fetch. Absorbed into **Phase 11 Slice 2** (chrono)
+  per-panel by-id fetch. Absorbed into **Phase 16 Slice 2** (chrono)
   and **Slice 4** (plot sampling) of the windowed-model convergence.
 - **Drag-to-wire** in the graph (literal drag from a producer
   handle onto a consumer) — tracked in `plans/backlog.md`; the
@@ -1156,7 +1156,7 @@ Deferred follow-ups:
   `plans/backlog.md`.
 - **End-user `uv` fetch mechanism.** Dev-side fetch ships today; the
   end-user-side fetch (installer post-step vs first-run host
-  downloader) is the **Phase 19** deliverable per ADR 0015.
+  downloader) is the **Phase 24** deliverable per ADR 0015.
   Tracked in `plans/backlog.md`.
 - **`Subscribe` carrying bus speed / FD config + listen-only
   `TX_REJECTED` wire surfacing.** Adapter trait exposes the
@@ -1166,7 +1166,7 @@ Deferred follow-ups:
 - **Multiple vendor sidecars / socketcan / native Rust FFI per
   vendor** — Phase 8 ships a single python-can sidecar; alternatives
   are wire-protocol-compatible follow-ups that wait for profiling
-  (**Phase 15**) or a real driver-fragmentation use case.
+  (**Phase 20**) or a real driver-fragmentation use case.
 
 ## Phase 9 — Trace Capture Persistence
 
@@ -1203,7 +1203,7 @@ Scope:
 Out of scope (deferred / backlog):
 
 - **Disk-spill for long sessions** — the session buffer staying in RAM
-  and overflowing to an append-only file is Phase 12, not the
+  and overflowing to an append-only file is Phase 17, not the
   save-the-capture feature this phase delivers.
 - **Capture import filtering** beyond the channel → bus mapping — no
   time-range or content selection at import; the user gets the whole
@@ -1275,33 +1275,7 @@ Realised scope notes:
   `marker_count`) and error / warn on decode anomalies tagged
   `blf-import`. Recent BLFs replay through the same path.
 
-## Phase 10 — Integration Testing and Refinement
-
-Refine and integrate the work between Phase 9 and the windowed-source
-convergence (Phase 11). Five tracks: a shipped BLF-format own-
-implementation track (Track 1) plus four user-visible usability tracks
-surfaced from real use of the app — transmit signals can't be edited
-(Track 2), the plot can't show data points and has no fit / follow
-hotkeys (Track 3), there is no command-palette / hotkey primitive
-(Track 4), and the DBC inventory doesn't scale or surface signals as
-drag sources (Track 5).
-
-Tracks 2-5 were lifts from later phases: the encoder follow-up out of
-Phase 5 (Track 2), plot refinements out of Phase 18 (Track 3), the
-command-palette framework out of Phase 13 (Track 4), the DBC panel +
-drag/drop out of Phase 14 (Track 5). Lifting them forward unblocks
-day-to-day use of the app and gives Phase 11's view-side convergence
-a stable hotkey/command surface from day one. Phases 13, 14, and 18
-keep what's left of their original scope.
-
-Track order: Track 1 (shipped), Track 2 (shipped). Then 4 → 3 → 5:
-the command/hotkey framework lands next because Tracks 3 and 5
-register commands on it; plot pinpoints land third (its hotkeys
-ride the framework); DBC view + drag/drop lands fourth (its
-palette commands ride the framework, its search reuses the
-framework's fuzzy matcher).
-
-### Track 1 — `cannet-blf` Own Implementation
+## Phase 10 — `cannet-blf` Own Implementation
 
 Status: **shipped.** Replaced `cannet-blf`'s `blf_asc` wrapper with
 our own focused BLF reader / writer per
@@ -1385,7 +1359,7 @@ Deferred follow-ups:
   (`CAN_SETTING_CHANGED` and later) — out of cannet's scope; the
   matrix records the intent.
 
-### Track 2 — Transmit Usability
+## Phase 11 — Transmit Usability
 
 Status: **shipped.** Made the transmit panel's signal editing
 actually work and reshaped the panel around the real workflow
@@ -1508,7 +1482,7 @@ Deferred follow-ups:
 
 - **Nested / extended multiplexing** in the signals table — wants
   a recursive mux-picker UI; out of scope here.
-- **CRC + sequence-count fields** stays a **Phase 17** feature.
+- **CRC + sequence-count fields** stays a **Phase 22** feature.
 - **Host-side periodic scheduler** — today's per-tick `setInterval`
   in the panel is rate-limited by the UI tick (see backlog: 1 ms
   cyclic transmit observed at ~20-40 msg/s). Moving the cycle loop
@@ -1558,142 +1532,22 @@ Exit criteria:
   `Database::describe_message` covers the partial-encode contract
   and the DBC-derived FD / BRS rules; the ADR is checked in.
 
-### Track 3 — Plot Pinpoints
-
-Two small ergonomics in the plot panel. Track 3 lands after
-Track 4 so its hotkeys register on the framework.
-
-What lands:
-
-- **Show-points control** — a tri-state toggle on the plot panel
-  toolbar (next to "fit data" / "fit y" / "follow live"):
-  `auto` (default) / `off` / `on`. `auto` uses uPlot's
-  density-aware mode (`points: { show: "auto" }`); `off` forces
-  no points; `on` forces points always. Applies to every series
-  in the panel.
-- **`f` — fit x to data** — registered as command
-  `plot.fitXAxis` in the Track 4 framework, context-required
-  `panel.kind === "plot"`. Bound to `f`. Calls the existing
-  `fitData` handler.
-- **`l` — enable follow-live** — registered as command
-  `plot.followLive.enable`, context-required
-  `panel.kind === "plot"`. Bound to `l`. Sets `followLive` to
-  true (enable-only — the user drops out by panning the x axis).
-
-Exit criteria:
-
-- The plot toolbar surfaces the tri-state control; switching
-  to `on` shows points on every series; switching to `off`
-  hides them; `auto` defers to uPlot.
-- With a plot panel focused, `f` re-runs fit-data and `l`
-  enters follow-live. Both no-op when a non-plot panel is
-  focused.
-- Backlog items removed: "show points in plot"; the `f` / `l`
-  bullets under "Minimum Usability Tasks".
-
-### Track 4 — Command / Hotkey Framework
-
-A generalised command + keybinding primitive that future tracks,
-phases, and panels register on. Lifted from old Phase 12; what's
-left of that phase (specialised commands like `goto.traceRow`,
-`goto.timeInTrace`, `set-visible-time-range`) stays in **Phase 13**.
-
-What lands:
-
-- **Command registry.** Each command:
-  `{id, label, category?, context?, run()}`. `context` is a
-  predicate over a small typed context object
-  (`focusedPanelKind`, `hasProjectOpen`, …); a missing `context`
-  means always-available. Two commands bound to the same key in
-  overlapping contexts is a build-time assertion.
-- **Binding map.** `keyChord → commandId`. Single keys (`f`),
-  modifiers (`Cmd+Shift+P`), simple chord sequences (`g r`).
-  Bindings declared in code only; user customisation is out of
-  scope here.
-- **Dispatcher.** Key event → resolve binding → check context
-  predicate → run, or silently no-op. Frontend-only React
-  context; commands wrap existing Tauri commands where they
-  need host work, no new IPC.
-- **Palette.** `Cmd/Ctrl+Shift+P` opens a modal; types-to-filter
-  through the fuzzy matcher (see below); arrow keys + enter;
-  Esc closes.
-- **Go-to-view.** `Cmd/Ctrl+P` opens a sibling palette listing
-  every open dockview panel by its display name; selecting one
-  focuses that panel. Same fuzzy matcher.
-- **Element display names (prerequisite for go-to-view).**
-  Every `ProjectElement` kind carries a model-owned `name:
-  string`. Default on creation is `${Kind} ${nextIndex}`
-  (matching today's dockview tab behaviour, but model-owned and
-  stable across reloads). A shared resolver `elementLabel(el):
-  string` is used by every view: dockview title bar, project
-  graph node, project panel inventory list, and the
-  `Cmd/Ctrl+P` palette. Inline-rename in the project panel
-  (already in place for buses) extends to every element kind.
-  `PROJECT_SCHEMA_VERSION` bumps additively; v4 elements
-  without a `name` get the default on migration.
-- **Fuzzy-search library.** Evaluate `fzf-for-js` (port of the
-  VS Code / fzf matcher — MIT, camelHump + abbreviation
-  matching), `fuse.js` (popular but lower-quality acronym
-  matching), and `kbar`'s built-in matcher. Recommendation
-  unless evaluation disqualifies it: **`fzf-for-js`**, used by
-  both the command palette and Track 5's DBC search. The
-  evaluation is a step in this track and updates
-  `plans/technology-inventory.md`.
-- **Lifted commands** — every existing toolbar action also
-  becomes a palette command (same behaviour, second access
-  path):
-  - `project.open`, `project.save`, `project.saveAs`,
-    `project.close`
-  - `blf.open`, `dbc.add`
-  - `connection.connect`, `connection.disconnect`
-  - `panel.add.trace`, `panel.add.plot`, `panel.add.transmit`,
-    `panel.add.systemMessages`, `panel.add.projectGraph`
-  - `palette.show` (bound `Cmd/Ctrl+Shift+P`),
-    `goto.view` (bound `Cmd/Ctrl+P`)
-
-ADRs:
-
-- [`docs/adr/0018-command-keybinding-framework.md`](../docs/adr/0018-command-keybinding-framework.md)
-  — frontend-only React-context registry, code-declared bindings
-  (no user persistence), typed-context predicates, build-time
-  conflict assertion, two palettes sharing one matcher.
-- [`docs/adr/0019-project-element-display-names.md`](../docs/adr/0019-project-element-display-names.md)
-  — every `ProjectElement` carries a model-owned `name`; views
-  resolve through one shared `elementLabel(el)` resolver; the
-  project panel is the canonical edit surface.
-- **Fuzzy-search library choice** — captured as a
-  `technology-inventory.md` entry rather than a standalone ADR
-  (the decision is a library pick, not architecture).
-
-Exit criteria:
-
-- The palette opens on `Cmd/Ctrl+Shift+P`, lists all registered
-  commands, filters live as the user types, and runs the
-  selected command on enter.
-- `Cmd/Ctrl+P` opens go-to-view; selecting a panel focuses it.
-- Every element kind carries a model-owned `name`; the dockview
-  tab, project graph, project panel, and go-to-view show the
-  same label; inline-rename works from the project panel.
-- The fuzzy library is in `plans/technology-inventory.md` with
-  its evaluation rationale; both ADRs are checked in (or the
-  fuzzy-lib one is explicitly declined with a one-line note).
-- Backlog item removed: "hotkey framework + new hotkeys".
-
-### Track 5 — DBC View, Drag/Drop, Filter-Defined Plot Areas
+## Phase 12 — DBC View, Drag/Drop, Filter-Defined Plot Areas
 
 Make the DBC database first-class as a *discovery* surface and let
 the user move signals around the GUI by dragging. The project
 panel's existing DBC inventory section stays untouched — that's
 the add / remove / per-bus-scope list, an ADR-0012 file-IO+inventory
-role. Track 5 is the spatial / search counterpart.
+role. This phase is the spatial / search counterpart.
 
 What lands:
 
 - **New `kind: "dbc"` dockview panel.** Tree-with-search: DBC
   file → messages → signals. Default-rendered as a tree; typing in
   the search box filters the tree, expanding ancestors of matches
-  and dimming non-matches. The search is the same fuzzy matcher
-  Track 4 picks (`fzf-for-js` proposed). Searched fields: signal
+  and dimming non-matches. The search uses the fuzzy matcher this
+  phase picks (`fzf-for-js` proposed — see below); Phase 15's
+  command palette reuses the same library. Searched fields: signal
   name, signal comment, message name, message id (hex and
   decimal), message comment, value-table labels and raw values,
   units, attribute names and values. Read-only; multiple instances
@@ -1717,7 +1571,7 @@ What lands:
   `signals: SignalRef[]` shape. Dropping a message adds every
   signal as a series, each round-robin-coloured.
 - **Drag between plot panels** is verified-working today via the
-  same mime and not new code. Track 5 confirms parity.
+  same mime and not new code. This phase confirms parity.
 
 - **Filter-defined plot areas.** Each plot area gains an optional
   `signalFilter: string` (regex). When set, the area is **filter
@@ -1732,6 +1586,15 @@ What lands:
   render as `(unassigned)`. A bus rename invalidates a regex that
   referenced the old name — surfaced as a System Messages warning.
 
+- **Fuzzy-search library.** Evaluate `fzf-for-js` (port of the
+  VS Code / fzf matcher — MIT, camelHump + abbreviation matching),
+  `fuse.js` (popular but lower-quality acronym matching), and
+  `kbar`'s built-in matcher. Recommendation unless evaluation
+  disqualifies it: **`fzf-for-js`**, used by the DBC panel's
+  search now and reused by Phase 15's command palette. The
+  evaluation is a step in this phase and updates
+  `plans/technology-inventory.md`.
+
 ADRs:
 
 - **DBC panel as standalone discovery surface** — already covered
@@ -1742,6 +1605,9 @@ ADRs:
   is `${busName}.${messageName}.${signalName}`; re-evaluation on
   DBC change, `sources` change, and app launch; bus renames warn
   rather than rewrite.
+- **Fuzzy-search library choice** — captured as a
+  `technology-inventory.md` entry rather than a standalone ADR
+  (the decision is a library pick, not architecture).
 
 Exit criteria:
 
@@ -1770,7 +1636,277 @@ Exit criteria:
   panel — likely an extension of `list_signals`); ADR 0020 checked
   in; `plans/technology-inventory.md` records `fzf-for-js`.
 
-## Phase 11 — Windowed-Model Convergence
+## Phase 13 — Virtual Bus
+
+`cannet-core` grows a `shared_bus` primitive — one CAN bus shared
+by N nodes with configurable bitrate, ISO 11898-style arbitration,
+and bridge nodes that front a physical interface on a remote wire
+endpoint. `cannet-server --virtual-bus` wraps it as a gRPC service;
+the GUI host uses the same primitive in-process (the foundation
+the eventual rest-of-bus simulation will sit on). The existing
+`--loopback` server mode and `cannet-core::loopback_bus` are
+retired in the same change — virtual-bus is a strict superset.
+
+Architectural decisions live in
+[ADR 0021](../docs/adr/0021-virtual-bus-server.md); the ADR is
+the normative reference. The summary below is what changes in the
+codebase and how it gets demonstrated.
+
+**`cannet-core`** gains `shared_bus`: `SharedBus::new(BusConfig)`,
+`attach_node() -> (LocalSink, LocalSource)`,
+`attach_bridge(name, remote_sink, remote_source) -> BridgeHandle`,
+`reconfigure(BusConfig)`. `BusConfig` carries `speed_bps`,
+optional `fd_data_speed_bps`, classic-vs-FD enable flag. Drop
+sink/source to detach. `loopback_bus` is deleted; no callers
+preserved.
+
+**`cannet-server`** gains `virtual_bus` (a `--virtual-bus` mode
+with `--speed-bps` / `--fd-data-speed-bps` initial config); the
+existing `loopback` module and `--loopback` CLI flag are removed
+along with `LoopbackServerImpl` exports.
+
+**`cannet-wire`** gains the envelopes / codes listed in ADR 0021
+§ *Wire-protocol additions*, plus a fix to round-trip
+`CanFramePayload::Error` through `frame_to_proto` /
+`proto_to_frame` (audit; the proto may or may not already cover
+it — the audit is part of this phase).
+
+**`cannet-python-can` sidecar** implements `Body::ConfigureBus`
+against its physical interfaces — same envelope, same semantics
+as the virtual-bus server. `ConfigureBus` is the server-API
+contract for bus configuration; servers diverging on this is a
+bug in either implementation. The sidecar's `proto/cannet.proto`
+stays in sync (regenerated via
+`servers/cannet-python-can/scripts/regen_proto.sh`) and tests
+exercise the round-trip.
+
+**`cannet-client`** picks up exhaustive matches on the new wire
+variants and surfaces them through its existing event shape.
+
+**Project schema** gains three binding kinds (additive,
+`PROJECT_SCHEMA_VERSION` bumps; existing remote bindings
+migrate to `"remote"`):
+
+- `{ kind: "remote", address }` — connect on load; don't spawn.
+- `{ kind: "remote-virtual-bus", address }` — same as `remote`,
+  marked so the GUI rehydrates by subscribing to the factory.
+- `{ kind: "local-virtual-bus", bus_config, bridges }` — on
+  load, construct an in-process `SharedBus` with `bus_config`,
+  install the recorded `bridges` by opening client sessions to
+  their remote endpoints. No sidecar, no port.
+
+**GUI host** instantiates local virtual buses in-process — the
+`SharedBus` primitive from `cannet-core` lives directly in the
+Tauri host. The trace store ingests fan-out from local nodes the
+same way it ingests frames from a remote session. For bridges
+on a local bus, the host opens a `cannet-client` session to the
+bridge target (typically a python-can sidecar) and wires those
+streams into `SharedBus::attach_bridge`. `cannet-server
+--virtual-bus` is built from the same workspace but is not
+bundled with the GUI for in-process use; it exists for the
+remote case (a `cannet-server` on a test-rig machine with
+hardware bridges, accessed across the network). Project panel
+grows "Create virtual bus" (creates a `local-virtual-bus`
+binding, instantiates the bus in-process) and per-binding
+"Add bridge" (for a local bus, opens the client session and
+calls `attach_bridge`; for a remote-virtual-bus, sends
+`AttachBridge` over the wire).
+
+**Out of scope (deferred):**
+
+- **Bit-level arbitration** — preempting a mid-transmission
+  frame; identical steady-state ordering at frame boundaries
+  for the virtual side, controller-delegated for bridges.
+- **Multi-client on BLF replay** — existing backlog item.
+
+**Exit criteria:**
+
+- `cannet-server --virtual-bus` runs and exposes the factory
+  `virtual:bus0` via `ListInterfaces`. Subscribing returns
+  `InterfaceAllocated` naming the allocated node id. Allocated
+  ids are monotonic per server lifetime, never re-used; a
+  session may subscribe multiple times to operate as multiple
+  nodes; session end disposes that session's nodes.
+- Two cannet GUIs against the same virtual-bus server each
+  subscribe and receive distinct allocated ids; each sees the
+  other's transmissions as Rx (tagged with the sender's id) on
+  its own session.
+- A session whose node has zero recipients receives
+  `Code::NoAcknowledger` per TX. Allocated nodes carry no
+  further error state (no TEC/REC tracking, no Bus-off
+  progression — that machinery lives only on bridges).
+- Per-node TX queues arbitrate correctly: Node A's batch
+  `[0x000, 0x000, 0x500]` against Node B's `[0x100]` plays
+  out 0x000, 0x000, 0x100, 0x500 at the bus.
+- Frame timing honours the bus's `speed_bps`: a 500-kbps bus
+  measurably staggers fan-out of a sustained transmit by the
+  computed frame duration; back-to-back frames do not collapse
+  to one timestamp.
+- `Body::ConfigureBus` from any session reconfigures the
+  virtual bus at runtime without re-subscribe; the same
+  envelope, sent to a python-can sidecar's physical interface,
+  configures bitrate / FD mode on the controller.
+- `AttachBridge { remote_address, interface_id }` installs a
+  bridge whose Rx fans into the virtual bus and whose TX queue
+  forwards to the remote interface; `WatchInterfaces` pushes
+  the updated list. Bridge `InterfaceState` envelopes deliver
+  the controller's actual TEC/REC and Active/Passive/Bus-off
+  transitions to every subscriber of the bridge id.
+- Error frames (`CanFramePayload::Error`) round-trip through
+  the wire and through a bridge node (a bridge's controller
+  emitting an error frame appears on the virtual bus as
+  fan-out content).
+- Three bridge configurations work end-to-end:
+  - **Passive monitor**: physical traffic appears as Rx on
+    allocated nodes; allocated TX is not forwarded.
+  - **Full bidirectional bridge**: allocated TX appears on the
+    physical bus and vice-versa, against real hardware (smoke
+    procedure in `servers/cannet-python-can/SMOKE.md`).
+  - **Cross-server bridge / CAN-over-IP gateway**: Server A
+    bridges against Server B's `virtual:bus0` factory; B
+    treats A's connection as an ordinary session and allocates
+    it a node; both servers continue to act as full virtual
+    buses for other clients. Extended to two physical-fronted
+    servers, the shape connects two real buses across a
+    network.
+- "Create virtual bus" in the project panel creates a
+  `local-virtual-bus` binding and instantiates the bus
+  in-process; the trace store ingests its fan-out. "Add bridge"
+  on a local bus lists available remote interfaces (e.g., from
+  a python-can sidecar's `ListInterfaces`) and wires the
+  selected one into `SharedBus::attach_bridge` via an in-process
+  client session. Closing the project drops its local virtual
+  buses; reopening reconstructs them from the persisted
+  `bus_config` and re-attaches the persisted bridges.
+- A pre-existing project opens cleanly: every existing binding
+  migrates to `{ kind: "remote" }`; the version is rewritten on
+  next save.
+- `--loopback` and `LoopbackServerImpl` are removed; tests and
+  docs that referenced them are updated to virtual-bus
+  equivalents.
+- Backlog items removed: "[feat] Linux `vcan` via socketcan as
+  a writable CAN source" (covered); "Subscribe carrying bus
+  speed / FD config + listen-only TX_REJECTED wire surfacing"
+  (subsumed by `ConfigureBus`).
+- README documents `--virtual-bus`, its CLI knobs, the
+  multi-node demo flow, the bridge attach/detach flow, the
+  cross-server bridging shape, and the in-process local-bus
+  GUI action. Rustdoc covers the new public surface on
+  `cannet-core::shared_bus`, `cannet-server::virtual_bus`, and
+  the new `cannet-wire` envelope variants. ADR 0021 checked in.
+
+## Phase 14 — Plot Pinpoints
+
+A small plot-panel ergonomics improvement: a tri-state "show points"
+toggle on the plot panel toolbar. The companion `f` ("fit x to data")
+and `l` ("enable follow-live") hotkey bindings land alongside the
+command/hotkey framework in Phase 15 — they're trivial registrations
+on the framework's binding map, so deferring them lets this phase
+ship without a framework dependency.
+
+What lands:
+
+- **Show-points control** — a tri-state toggle on the plot panel
+  toolbar (next to "fit data" / "fit y" / "follow live"):
+  `auto` (default) / `off` / `on`. `auto` uses uPlot's
+  density-aware mode (`points: { show: "auto" }`); `off` forces
+  no points; `on` forces points always. Applies to every series
+  in the panel.
+
+Exit criteria:
+
+- The plot toolbar surfaces the tri-state control; switching
+  to `on` shows points on every series; switching to `off`
+  hides them; `auto` defers to uPlot.
+- Backlog item removed: "show points in plot".
+
+## Phase 15 — Command / Hotkey Framework
+
+A generalised command + keybinding primitive that future phases and
+panels register on. Lifted forward from the original command-palette
+phase; what's left of that phase (specialised commands like
+`goto.traceRow`, `goto.timeInTrace`, `set-visible-time-range`) stays
+in **Phase 18**. Reuses the fuzzy-search library Phase 12 picked for
+the DBC panel.
+
+What lands:
+
+- **Command registry.** Each command:
+  `{id, label, category?, context?, run()}`. `context` is a
+  predicate over a small typed context object
+  (`focusedPanelKind`, `hasProjectOpen`, …); a missing `context`
+  means always-available. Two commands bound to the same key in
+  overlapping contexts is a build-time assertion.
+- **Binding map.** `keyChord → commandId`. Single keys (`f`),
+  modifiers (`Cmd+Shift+P`), simple chord sequences (`g r`).
+  Bindings declared in code only; user customisation is out of
+  scope here.
+- **Dispatcher.** Key event → resolve binding → check context
+  predicate → run, or silently no-op. Frontend-only React
+  context; commands wrap existing Tauri commands where they
+  need host work, no new IPC.
+- **Palette.** `Cmd/Ctrl+Shift+P` opens a modal; types-to-filter
+  through Phase 12's fuzzy matcher; arrow keys + enter; Esc closes.
+- **Go-to-view.** `Cmd/Ctrl+P` opens a sibling palette listing
+  every open dockview panel by its display name; selecting one
+  focuses that panel. Same fuzzy matcher.
+- **Element display names (prerequisite for go-to-view).**
+  Every `ProjectElement` kind carries a model-owned `name:
+  string`. Default on creation is `${Kind} ${nextIndex}`
+  (matching today's dockview tab behaviour, but model-owned and
+  stable across reloads). A shared resolver `elementLabel(el):
+  string` is used by every view: dockview title bar, project
+  graph node, project panel inventory list, and the
+  `Cmd/Ctrl+P` palette. Inline-rename in the project panel
+  (already in place for buses) extends to every element kind.
+  `PROJECT_SCHEMA_VERSION` bumps additively; v4 elements
+  without a `name` get the default on migration.
+- **Lifted commands** — every existing toolbar action also
+  becomes a palette command (same behaviour, second access
+  path):
+  - `project.open`, `project.save`, `project.saveAs`,
+    `project.close`
+  - `blf.open`, `dbc.add`
+  - `connection.connect`, `connection.disconnect`
+  - `panel.add.trace`, `panel.add.plot`, `panel.add.transmit`,
+    `panel.add.systemMessages`, `panel.add.projectGraph`,
+    `panel.add.dbc`
+  - `palette.show` (bound `Cmd/Ctrl+Shift+P`),
+    `goto.view` (bound `Cmd/Ctrl+P`)
+- **Plot hotkeys** — `f` registered as `plot.fitXAxis`
+  (context-required `panel.kind === "plot"`, calls the existing
+  `fitData` handler); `l` registered as `plot.followLive.enable`
+  (same context, sets `followLive=true` — enable-only; the user
+  drops out by panning the x axis).
+
+ADRs:
+
+- [`docs/adr/0018-command-keybinding-framework.md`](../docs/adr/0018-command-keybinding-framework.md)
+  — frontend-only React-context registry, code-declared bindings
+  (no user persistence), typed-context predicates, build-time
+  conflict assertion, two palettes sharing one matcher.
+- [`docs/adr/0019-project-element-display-names.md`](../docs/adr/0019-project-element-display-names.md)
+  — every `ProjectElement` carries a model-owned `name`; views
+  resolve through one shared `elementLabel(el)` resolver; the
+  project panel is the canonical edit surface.
+
+Exit criteria:
+
+- The palette opens on `Cmd/Ctrl+Shift+P`, lists all registered
+  commands, filters live as the user types, and runs the
+  selected command on enter.
+- `Cmd/Ctrl+P` opens go-to-view; selecting a panel focuses it.
+- Every element kind carries a model-owned `name`; the dockview
+  tab, project graph, project panel, and go-to-view show the
+  same label; inline-rename works from the project panel.
+- With a plot panel focused, `f` re-runs fit-data and `l` enters
+  follow-live; both no-op when a non-plot panel is focused.
+  Backlog items removed: the `f` / `l` bullets under "Minimum
+  Usability Tasks".
+- Both ADRs are checked in.
+- Backlog item removed: "hotkey framework + new hotkeys".
+
+## Phase 16 — Windowed-Model Convergence
 
 Converge the GUI's four hand-rolled view caches — chrono trace,
 filtered trace, by-ID, plot — onto one windowed-source contract with
@@ -1781,7 +1917,7 @@ shipped). Domain terms are defined in [`../docs/CONTEXT.md`](../docs/CONTEXT.md)
 
 This is a **view-side** refactor — it lands against the current in-RAM
 `TraceStore` `Vec`. Slice 1 freezes the host accessor signatures
-disk-spill-ready so Phase 12 is a second implementation behind them,
+disk-spill-ready so Phase 17 is a second implementation behind them,
 not a redesign.
 
 Scope: Slices 1-4 of `windowed-model-convergence.md`.
@@ -1813,7 +1949,7 @@ Exit criteria:
   filtered-trace / by-ID items in `plans/backlog.md` removed;
 - README and rustdoc reflect the windowed-source contract.
 
-## Phase 12 — Indefinite-Length Capture (Disk-Spill)
+## Phase 17 — Indefinite-Length Capture (Disk-Spill)
 
 Make a capture indefinite-length — 10^7 to 10^9 frames, multi-hour to
 multi-day — by spilling the raw frame store to disk while keeping
@@ -1823,9 +1959,9 @@ fixes the requirement (random-access, loss-free);
 the on-disk format and I/O architecture and is **normative for this
 phase**.
 
-This is the **model-side** counterpart to Phase 11: it provides a
+This is the **model-side** counterpart to Phase 16: it provides a
 second implementation of the `RowPage` / `DecimatedRange` accessor
-signatures Phase 11 Slice 1 froze — no contract change, no view
+signatures Phase 16 Slice 1 froze — no contract change, no view
 change. (Explicit `.blf` "Save Capture" stays a separate feature; the
 disk-spill store is the live working store — ephemeral scratch, not an
 export format.)
@@ -1885,7 +2021,20 @@ rustdoc and the README current for what it ships:
   moves to a test double behind the `TraceStore` trait. Verify: the
   production path constructs only the disk store; the suite stays
   green through the test double.
-- **Step 6 — Benchmark.** A documented benchmark covering scroll /
+- **Step 6 — Configurable scratch cap.** A user-set maximum on the
+  disk-spill scratch size (configured in bytes; default off /
+  unbounded). Exposed through the same settings panel the High-
+  Priority backlog's `clear scratch cache on exit` toggle lives in.
+  Over-limit behaviour is the design question this step settles —
+  either *stop capture* (with a System Messages warning naming the
+  cap) or *drop oldest* (turn the raw store into a windowed ring,
+  invalidating any historical row reference below the new low-water
+  mark). Both have implications for the DS-1 random-access contract;
+  the chosen behaviour lands as an update to ADR 0002. Verify:
+  capturing past the cap behaves per the chosen contract; the cap
+  setting round-trips through the settings panel; the System
+  Messages surface explains the boundary.
+- **Step 7 — Benchmark.** A documented benchmark covering scroll /
   filter / plot of deep history, confirming GUI interactions stay
   < 100 ms / 60 fps with a 10^8+-frame capture open.
 
@@ -1893,7 +2042,7 @@ Exit criteria:
 
 - a capture runs past available RAM with no row becoming unreachable;
   scroll / filter / plot of deep history all work;
-- the `RowPage` / `DecimatedRange` signatures from Phase 11 are
+- the `RowPage` / `DecimatedRange` signatures from Phase 16 are
   unchanged — only their host implementation is swapped;
 - `fetch_trace_range` / `fetch_by_id_page` with a predicate are
   O(page) via the filter index, with no O(capture) scan in any filter
@@ -1904,6 +2053,9 @@ Exit criteria:
   store is a test double;
 - a documented benchmark shows GUI interactions stay < 100 ms / 60 fps
   with a 10^8+-frame capture open;
+- the user-configurable scratch-size cap is wired through the
+  settings panel, with the over-limit behaviour documented in an
+  ADR-0002 update and surfaced in System Messages when reached;
 - backlog items removed: `TraceStore` disk-spill, index the filtered
   trace scan, bound the host-side decoded-sample cache;
 - README documents indefinite-length capture and its limits; rustdoc
@@ -1911,11 +2063,11 @@ Exit criteria:
   ADR 0002 and the `memmap2` entry in
   `plans/technology-inventory.md` reflect the shipped design.
 
-## Phase 13 — Command Palette + Goto Framework
+## Phase 18 — Command Palette + Goto Framework
 
 The framework itself (registry, bindings, palette,
 `Cmd/Ctrl+Shift+P`, `Cmd/Ctrl+P` go-to-view, fuzzy matcher) ships
-in **Phase 10 Track 4**. What's left for this phase is the
+in **Phase 15**. What's left for this phase is the
 **specialised commands** that need richer UX than zero-arg
 toolbar lifts — commands that prompt for an argument, drive a
 view to a target, or compose a multi-step action: `goto.traceRow`
@@ -1928,10 +2080,10 @@ keyboard-accessible) vs. what stays local-only (right-click menus,
 panel toolbars) — the model has to be deliberate about that
 boundary.
 
-## Phase 14 — Signals, Drag/Drop & Trace Signal Display
+## Phase 19 — Signals, Drag/Drop & Trace Signal Display
 
-The DBC panel + signal drag/drop across the GUI ship in **Phase 10
-Track 5**. What's left for this phase is the **signal view** panel
+The DBC panel + signal drag/drop across the GUI ship in **Phase 12**.
+What's left for this phase is the **signal view** panel
 (a user-chosen set of signals with their latest values — distinct
 from the DBC panel, which is a database navigator), the **trace
 view's expanded-row decoded signals as inline lines under the
@@ -1940,7 +2092,7 @@ side counterpart to "signals are first-class"), and the
 **per-series colour picker** on the plot panel (right-click swatch
 → colour dialog).
 
-## Phase 15 — Performance Profiling Baseline
+## Phase 20 — Performance Profiling Baseline
 
 Profiling procedure that covers all three tiers — client (GUI),
 server, and the wire between them. Metrics (frame throughput,
@@ -1954,16 +2106,16 @@ least one hardware vendor). Pulls in the perf backlog items the
 baseline tends to motivate: `CanFramePayload` inline buffer and
 precise time → frame-index mapping for the plot visible-range fetch.
 (The two-tier per-signal sample cache and `TraceStore` disk-spill are
-Phase 12, not pulled in here — Phase 12 owns the indefinite-length
+Phase 17, not pulled in here — Phase 17 owns the indefinite-length
 model.)
 
-## Phase 16 — CANopen
+## Phase 21 — CANopen
 
 EDS ingestion (CANopen Electronic Data Sheet — library TBD when this
 phase becomes current) and SDO / PDO decoding on top of the Phase 5
 value-table machinery.
 
-## Phase 17 — Rest-of-Bus Simulation + CRC / Sequence
+## Phase 22 — Rest-of-Bus Simulation + CRC / Sequence
 
 **Rest-of-bus simulation**: a gridview that holds a configurable set
 of ids with live signal values and transmits them on a cadence — the
@@ -1973,11 +2125,12 @@ fields** of a CAN message — transmit-side helper for messages that
 carry their own integrity fields (and decode-side verification
 where useful).
 
-## Phase 18 — Plot Panel Refinements
+## Phase 23 — Plot Panel Refinements
 
-The plot-panel feature tail. The "show points" tri-state and the
-`f` / `l` hotkeys already shipped in **Phase 10 Track 3**. What's
-left for this phase: **Triggers** (edge / level / value-match on a
+The plot-panel feature tail. The "show points" tri-state shipped in
+**Phase 14** and the `f` / `l` hotkeys shipped in **Phase 15**.
+What's left for this phase: **Triggers** (edge / level / value-match
+on a
 chosen signal that freeze the view and emit an event marker —
 oscilloscope trigger proper; the event-line rendering already
 exists, the trigger engine doesn't). **Math channels** (derived
@@ -1988,7 +2141,7 @@ auto-norm that ships today). **CSV / image export** of the visible
 window or cursor span. **Drag a whole plot area** (not just a
 signal) between plot panels.
 
-## Phase 19 — Cross-Cutting Polish
+## Phase 24 — Cross-Cutting Polish
 
 The remaining small UX and infrastructure items that don't deserve
 their own phase: the **trace virtualizer rework** (real windowed
@@ -2007,7 +2160,7 @@ by then).
 decision is recorded in
 [ADR 0015](../docs/adr/0015-fetched-runtime-binaries.md): external
 runtime binaries are fetched from upstream at a pinned version, not
-committed or bundled. Phase 19's deliverable is the **end-user**
+committed or bundled. Phase 24's deliverable is the **end-user**
 fetch flow — pick between:
 
 1. **Installer post-step** — the installer (Tauri's per-OS bundler

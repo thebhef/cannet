@@ -2,7 +2,7 @@
 
 Status: accepted (2026-05-26)
 
-Phase 10 Track 5 ([`../../plans/phased-implementation.md`](../../plans/phased-implementation.md))
+Phase 12 ([`../../plans/phased-implementation.md`](../../plans/phased-implementation.md))
 introduces a way to define a plot area's contents by regex over
 signal names rather than by adding signals one at a time. The
 backlog phrasing was a "dict of `plot area`: `filter string`"; this
@@ -108,6 +108,6 @@ We warn and let the user fix it.
   mode; the area shows the regex and a result count instead of
   the signal list editor.
 - Future surfaces that compose signal collections (the signal
-  view in Phase 14, math channels in Phase 18) face the same
+  view in Phase 19, math channels in Phase 23) face the same
   filter-vs-manual choice; consistency with this ADR is
   preferred unless their UX forces a different shape.
