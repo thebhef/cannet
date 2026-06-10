@@ -1466,6 +1466,19 @@ export function App() {
   const rbsHostStateRef = useRef<Map<string, { path: string | null; run: boolean }>>(
     new Map(),
   );
+  // Per-element op queue: the reconciler fires across renders (a
+  // layout-restored panel ensures a pathless element moments before
+  // the opened project replaces it with the saved path), and the
+  // rbs_* commands run concurrently on the async pool — unserialized,
+  // an early rbs_init's set_run could land after the project's
+  // rbs_load chain. Chaining per element keeps host ops in dispatch
+  // order.
+  const rbsOpsRef = useRef<Map<string, Promise<unknown>>>(new Map());
+  const queueRbsOp = useCallback((id: string, op: () => Promise<unknown>) => {
+    const prev = rbsOpsRef.current.get(id) ?? Promise.resolve();
+    const next = prev.then(op).catch(() => {});
+    rbsOpsRef.current.set(id, next);
+  }, []);
   useEffect(() => {
     const current = new Map<string, { path: string | null; run: boolean }>();
     for (const e of registry) {
@@ -1476,7 +1489,7 @@ export function App() {
     for (const [id, prev] of rbsHostStateRef.current) {
       const now = current.get(id);
       if (!now || (prev.path != null && now.path != null && now.path !== prev.path)) {
-        void invoke("rbs_unload", { elementId: id }).catch(() => {});
+        queueRbsOp(id, () => invoke("rbs_unload", { elementId: id }));
       }
     }
     for (const [id, now] of current) {
@@ -1485,21 +1498,26 @@ export function App() {
         // A path appearing for an element the host already has in
         // memory (first save) is a no-op host-side: rbs_load re-reads
         // the file just written.
-        void invoke("rbs_load", { elementId: id, path: now.path })
-          .then(() => invoke("rbs_set_run", { elementId: id, run: now.run }))
-          .catch(() => {});
+        const path = now.path;
+        queueRbsOp(id, () =>
+          invoke("rbs_load", { elementId: id, path }).then(() =>
+            invoke("rbs_set_run", { elementId: id, run: now.run }),
+          ),
+        );
       } else if (now.path == null && !prev) {
         // A fresh element needs no file: the host seeds an in-memory
         // config from the project's current buses (saving is explicit).
-        void invoke("rbs_init", { elementId: id })
-          .then(() => invoke("rbs_set_run", { elementId: id, run: now.run }))
-          .catch(() => {});
+        queueRbsOp(id, () =>
+          invoke("rbs_init", { elementId: id }).then(() =>
+            invoke("rbs_set_run", { elementId: id, run: now.run }),
+          ),
+        );
       } else if (prev && prev.run !== now.run) {
-        void invoke("rbs_set_run", { elementId: id, run: now.run }).catch(() => {});
+        queueRbsOp(id, () => invoke("rbs_set_run", { elementId: id, run: now.run }));
       }
     }
     rbsHostStateRef.current = current;
-  }, [registry]);
+  }, [registry, queueRbsOp]);
   // The global RBS kill-switch is runtime-only host state; mirror it
   // through its dedicated event so the palette toggle and the panel
   // button stay in sync.

@@ -98,11 +98,22 @@ export function RbsPanel(props: IDockviewPanelProps) {
   }, [elementId]);
 
   useEffect(() => {
+    let active = true;
+    // Paint fast from whatever the host already has…
     refresh();
     const un = listen<string>("rbs-changed", (event) => {
       if (event.payload === elementId || event.payload === "*") refresh();
     });
+    // …and fetch again once the listener is attached: `listen` is
+    // async, and on app launch the host's `rbs_load` (driven by the
+    // project opening) can emit `rbs-changed` in the gap before
+    // registration — without this second fetch that emit is lost and
+    // the panel would sit empty until the next mutation.
+    void un.then(() => {
+      if (active) refresh();
+    });
     return () => {
+      active = false;
       void un.then((f) => f());
     };
   }, [refresh, elementId]);

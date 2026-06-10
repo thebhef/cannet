@@ -291,6 +291,23 @@ impl RbsRuntime {
             .find(|(_, n)| n == name)
             .map(|(id, _)| id.clone())
     }
+
+    /// Ensure `element_id` has state, seeding the file-less default
+    /// (project buses pre-added, Run off) when absent. Returns whether
+    /// a seed was created. Both the fresh-element path and the
+    /// load-failure fallback land here — an RBS element always has
+    /// *something* to view.
+    fn ensure_seeded(&mut self, element_id: &str) -> bool {
+        if self.elements.contains_key(element_id) {
+            return false;
+        }
+        let file = seeded_file(&self.project_buses);
+        self.elements.insert(
+            element_id.to_string(),
+            RbsElementState { path: None, file, dirty: false, run: false },
+        );
+        true
+    }
 }
 
 /// The registry id of one RBS row — deterministic so no id map needs
@@ -610,16 +627,31 @@ pub async fn rbs_load(
     element_id: String,
     path: String,
 ) -> Result<(), String> {
-    let text = std::fs::read_to_string(&path).map_err(|e| {
-        let msg = format!("failed to read RBS file at {path}: {e}");
+    // On any failure the element still gets state — the seeded
+    // file-less default — so its panel shows the usual tree instead
+    // of nothing (the error is on the system log; the element's path
+    // is left unset so a later Save can't clobber the unreadable
+    // file).
+    let fallback = |msg: String| {
         crate::sys_error!(&app, "rbs", "{msg}");
+        let seeded = state
+            .rbs
+            .lock()
+            .expect("rbs mutex poisoned")
+            .ensure_seeded(&element_id);
+        if seeded {
+            refresh_element(&app, &element_id);
+        }
         msg
-    })?;
-    let file = RbsFile::parse(&text).map_err(|e| {
-        let msg = format!("RBS file at {path}: {e}");
-        crate::sys_error!(&app, "rbs", "{msg}");
-        msg
-    })?;
+    };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => return Err(fallback(format!("failed to read RBS file at {path}: {e}"))),
+    };
+    let file = match RbsFile::parse(&text) {
+        Ok(f) => f,
+        Err(e) => return Err(fallback(format!("RBS file at {path}: {e}"))),
+    };
     {
         let mut rbs = state.rbs.lock().expect("rbs mutex poisoned");
         let run = rbs.elements.get(&element_id).is_some_and(|e| e.run);
@@ -656,18 +688,14 @@ pub async fn rbs_init(
     state: State<'_, AppState>,
     element_id: String,
 ) -> Result<(), String> {
-    {
-        let mut rbs = state.rbs.lock().expect("rbs mutex poisoned");
-        if rbs.elements.contains_key(&element_id) {
-            return Ok(());
-        }
-        let file = seeded_file(&rbs.project_buses);
-        rbs.elements.insert(
-            element_id.clone(),
-            RbsElementState { path: None, file, dirty: false, run: false },
-        );
+    let seeded = state
+        .rbs
+        .lock()
+        .expect("rbs mutex poisoned")
+        .ensure_seeded(&element_id);
+    if seeded {
+        refresh_element(&app, &element_id);
     }
-    refresh_element(&app, &element_id);
     Ok(())
 }
 
@@ -1817,6 +1845,26 @@ VAL_ 291 TargetMode 0 "Off" 1 "Standby" 2 "Active";
         assert!(registry.is_running(&row_id("el1", "Powertrain", "0x123")));
         // No period anywhere → can't schedule (but isn't an error).
         assert!(!registry.is_running(&row_id("el1", "Powertrain", "0x200")));
+    }
+
+    /// The seeded fallback is idempotent: first call creates the
+    /// file-less default, repeats are no-ops (an rbs_load must never
+    /// be overwritten by a late rbs_init).
+    #[test]
+    fn ensure_seeded_creates_once_and_never_overwrites() {
+        let mut rbs = RbsRuntime {
+            project_buses: vec![("p1".into(), "Powertrain".into())],
+            ..RbsRuntime::default()
+        };
+        assert!(rbs.ensure_seeded("el1"));
+        assert!(rbs.elements["el1"].file.buses.contains_key("Powertrain"));
+        assert!(rbs.elements["el1"].path.is_none());
+        // A loaded element is left untouched.
+        rbs.elements.get_mut("el1").unwrap().path = Some("/tmp/x.cannet_rbs".into());
+        rbs.elements.get_mut("el1").unwrap().run = true;
+        assert!(!rbs.ensure_seeded("el1"));
+        assert_eq!(rbs.elements["el1"].path.as_deref(), Some("/tmp/x.cannet_rbs"));
+        assert!(rbs.elements["el1"].run);
     }
 
     #[test]

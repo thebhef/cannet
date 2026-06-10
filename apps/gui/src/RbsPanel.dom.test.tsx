@@ -34,8 +34,14 @@ vi.mock("@tauri-apps/api/core", () => ({
     }
   }),
 }));
+// Captures registered handlers so tests can deliver `rbs-changed`
+// events like the host does.
+let eventHandlers: Array<(e: { payload: string }) => void> = [];
 vi.mock("@tauri-apps/api/event", () => ({
-  listen: vi.fn(async () => () => {}),
+  listen: vi.fn(async (_name: string, handler: (e: { payload: string }) => void) => {
+    eventHandlers.push(handler);
+    return () => {};
+  }),
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(async () => null),
@@ -202,6 +208,7 @@ function sampleView(): RbsView {
 beforeEach(() => {
   VIEW = null;
   calls.length = 0;
+  eventHandlers = [];
 });
 afterEach(() => cleanup());
 
@@ -223,6 +230,21 @@ describe("RbsPanel (thin view over the host RBS model)", () => {
         path: "/tmp/picked.cannet_rbs",
       }),
     );
+  });
+
+  it("recovers when the host state lands after mount (launch race)", async () => {
+    // On app launch the layout's panel can mount before the project's
+    // rbs_load finishes: the first fetch sees nothing. The panel must
+    // pick the state up via the post-subscribe fetch / a later
+    // rbs-changed — never sit empty.
+    VIEW = null;
+    renderPanel("/tmp/sim.cannet_rbs");
+    await waitFor(() => expect(lastCall("rbs_view")).toBeDefined());
+    expect(screen.queryByText("Powertrain")).not.toBeInTheDocument();
+    // Host finishes loading and emits rbs-changed.
+    VIEW = sampleView();
+    for (const h of eventHandlers) h({ payload: "el" });
+    expect(await screen.findByText("Powertrain")).toBeInTheDocument();
   });
 
   it("renders the host tree: bus → ECU → message, with inert unresolved buses", async () => {
