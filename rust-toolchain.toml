@@ -1,0 +1,8 @@
+# Pin the Rust toolchain so local builds and CI use the exact same
+# rustc/clippy. Without this, CI floats to the latest stable and new
+# clippy lints (the workspace opts into `clippy::pedantic`) break the
+# `-D warnings` gate on code that was clean under an older clippy.
+# Bump this deliberately, fixing any new lints in the same change.
+[toolchain]
+channel = "1.96.0"
+components = ["clippy", "rustfmt"]

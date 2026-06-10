@@ -521,6 +521,7 @@ pub struct DbcContentRecord {
 /// round-trip.
 #[derive(serde::Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
+#[allow(clippy::struct_excessive_bools)] // a serialized search record, not a state machine
 pub struct DbcMessageContentRecord {
     pub message_id: u32,
     pub extended: bool,

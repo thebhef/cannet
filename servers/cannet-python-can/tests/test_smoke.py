@@ -63,7 +63,6 @@ def test_subscribe_unknown_interface_yields_error_envelope() -> None:
     envelope on the response stream — the exact wire contract the
     Rust client relies on."""
 
-    from cannet_python_can import driver as drv_iface
     from cannet_python_can import server
     from cannet_python_can._proto import cannet_pb2 as pb
 
@@ -87,7 +86,9 @@ def test_subscribe_unknown_interface_yields_error_envelope() -> None:
     # Exact ordering: a session-opened log envelope, then the Error.
     assert out, "expected at least one envelope on response stream"
     error_envs = [e for e in out if e.WhichOneof("body") == "error"]
-    assert error_envs, f"expected an Error envelope, got: {[e.WhichOneof('body') for e in out]}"
+    assert error_envs, (
+        f"expected an Error envelope, got: {[e.WhichOneof('body') for e in out]}"
+    )
     assert error_envs[0].error.code == pb.Error.CODE_UNKNOWN_INTERFACE
 
 

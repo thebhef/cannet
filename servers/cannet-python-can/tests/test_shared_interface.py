@@ -138,9 +138,7 @@ def _drain(
         if env.WhichOneof("body") == kind:
             out.append(env)
     if len(out) < count:
-        raise AssertionError(
-            f"only got {len(out)}/{count} envelopes of kind {kind!r}"
-        )
+        raise AssertionError(f"only got {len(out)}/{count} envelopes of kind {kind!r}")
     return out
 
 

@@ -13,7 +13,7 @@
 //! Lifetimes:
 //! - **virtual bus**: instantiated on project open ([`Self::create`]),
 //!   dropped on project close. Owns its bridges. A vbus has no
-//!   user-configurable bitrate — SharedBus's arbitration timing
+//!   user-configurable bitrate — `SharedBus`'s arbitration timing
 //!   comes from a fixed [`default_vbus_config`] applied at create
 //!   time and never changes for the bus's lifetime.
 //! - **session participants**: held by the in-process session in
@@ -258,7 +258,7 @@ pub fn replay(
 }
 
 /// Fixed [`BusConfig`] used for every host-side virtual bus.
-/// SharedBus needs *a* bus configuration for its arbitration timing,
+/// `SharedBus` needs *a* bus configuration for its arbitration timing,
 /// but a vbus is in-process and not a model of a real wire — so the
 /// user never sees this value and there's no point exposing it.
 #[must_use]

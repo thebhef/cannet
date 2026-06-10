@@ -113,7 +113,8 @@ def test_serve_recovers_from_pinned_port_collision() -> None:
         holder.bind(("127.0.0.1", 0))
         taken_port = holder.getsockname()[1]
         server, address = srv.serve(
-            f"127.0.0.1:{taken_port}", driver=EmptyDriver()  # type: ignore[arg-type]
+            f"127.0.0.1:{taken_port}",
+            driver=EmptyDriver(),  # type: ignore[arg-type]
         )
         try:
             host, port = srv._split_address(address)
@@ -126,7 +127,9 @@ def test_serve_recovers_from_pinned_port_collision() -> None:
         holder.close()
 
 
-def test_bind_with_retry_raises_when_all_attempts_fail(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_bind_with_retry_raises_when_all_attempts_fail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """If even ``host:0`` keeps failing, the function gives up loudly.
 
     Simulates the exhaustion case with a stub server that always raises.

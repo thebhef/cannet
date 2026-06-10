@@ -134,7 +134,7 @@ enum SessionTx {
     Remote(SessionTransmitter),
     /// In-process backend — one `LocalSink` per opened binding,
     /// keyed by the binding's channel. `transmit` looks up the sink
-    /// by channel and submits the frame on it; the SharedBus fans
+    /// by channel and submits the frame on it; the `SharedBus` fans
     /// the frame out to every other participant on the bus, who
     /// receive it as `Direction::Rx`.
     Vbus(Vec<(u8, std::sync::Arc<std::sync::Mutex<cannet_core::LocalSink>>)>),
@@ -147,6 +147,7 @@ impl SessionTx {
         interface_id: &str,
         frame: &cannet_core::CanFrame,
     ) -> Result<(), String> {
+        use cannet_core::CanFrameSink;
         match self {
             SessionTx::Remote(t) => {
                 t.transmit(interface_id, frame).map_err(|e| e.to_string())
@@ -163,7 +164,6 @@ impl SessionTx {
                 let mut guard = sink
                     .lock()
                     .expect("vbus participant sink mutex poisoned");
-                use cannet_core::CanFrameSink;
                 guard
                     .submit(frame.clone())
                     .map_err(|e| e.to_string())
@@ -262,6 +262,24 @@ struct AppState {
     verifier: verification::VerificationState,
 }
 
+/// The build's version string: `git describe --tags` as captured by
+/// `build.rs` (vergen), e.g. `v0.1.0` on a release tag or
+/// `v0.1.0-3-gabc1234` for a build a few commits past one. Falls back to
+/// the Cargo crate version when the binary was built outside a git
+/// checkout (no `VERGEN_GIT_DESCRIBE` set).
+fn build_version() -> &'static str {
+    match option_env!("VERGEN_GIT_DESCRIBE") {
+        Some(v) if !v.is_empty() && v != "VERGEN_IDEMPOTENT_OUTPUT" => v,
+        _ => env!("CARGO_PKG_VERSION"),
+    }
+}
+
+/// Report the running build's version for display in the title bar.
+#[tauri::command]
+fn app_version() -> &'static str {
+    build_version()
+}
+
 /// Boot the Tauri runtime.
 ///
 /// # Panics
@@ -269,6 +287,7 @@ struct AppState {
 /// `WebView`, etc.) — there's no recovery path, so we surface the error
 /// loudly rather than silently exiting.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+#[allow(clippy::too_many_lines)]
 pub fn run() {
     // Set up `tracing`'s `fmt` layer for stderr so dev logs still show
     // up alongside the in-process ring the System Messages panel
@@ -364,6 +383,7 @@ pub fn run() {
             rbs::rbs_view,
             rbs::rbs_crc_algorithms,
             fetch_field_validity,
+            app_version,
         ])
         .setup(move |app| {
             // Make sure the main window has the id our capabilities expect.
@@ -417,7 +437,7 @@ fn should_emit_trace_grew(last: Option<(u64, f64)>, current: (u64, f64)) -> bool
 /// thread. Each tick reads the cheap `(len, frames_per_second)` pair and
 /// emits only when [`should_emit_trace_grew`] says something moved — so a
 /// connected but idle session stops collecting a tail, serializing it,
-/// and waking the WebView listener at 10 Hz for data that hasn't changed.
+/// and waking the `WebView` listener at 10 Hz for data that hasn't changed.
 /// The `collect_trace_records` tail decode (the expensive part) runs only
 /// on a tick that actually emits.
 fn spawn_trace_grew_emitter(app: AppHandle) {
@@ -1980,6 +2000,7 @@ async fn connect_remote_server(
 /// session and is keyed by the full `local-vbus://<id>` URL, so the
 /// rest of the host (`transmit_frame`, `connectedBusIds`, Disconnect)
 /// treats it uniformly.
+#[allow(clippy::too_many_lines)]
 fn connect_local_vbus(
     app: &AppHandle,
     address: String,
@@ -2088,11 +2109,10 @@ fn connect_local_vbus(
                     .expect("remote_sessions mutex poisoned");
                 let session_dead = guard
                     .get(&address_for_cleanup)
-                    .map(|s| match &s.tx {
+                    .is_none_or(|s| match &s.tx {
                         SessionTx::Vbus(sinks) => sinks.is_empty(),
                         SessionTx::Remote(_) => false,
-                    })
-                    .unwrap_or(true);
+                    });
                 if session_dead {
                     guard.remove(&address_for_cleanup);
                     drop(guard);
@@ -2145,7 +2165,6 @@ impl cannet_core::CanFrameSource for LocalSourceFrameSource {
                 Some(cannet_core::ParticipantEvent::NoAcknowledger(_)) => {
                     // Host-side participants don't currently surface
                     // NACKs to the trace; spin to the next event.
-                    continue;
                 }
                 None => return Ok(None),
             }
@@ -2480,7 +2499,7 @@ fn set_transmit_frame(
     id: String,
     mut frame: transmit_frames::TransmitFrame,
 ) {
-    frame.id = id.clone();
+    id.clone_into(&mut frame.id);
     let parked =
         frame.mode != transmit_frames::TransmitMode::Periodic || frame.cycle_ms == 0;
     state
@@ -2646,7 +2665,7 @@ fn run_transmit_scheduler(
     let mut schedule = transmit_scheduler::PeriodicSchedule::new();
     // Idle wait when nothing is scheduled — long, but bounded so the
     // thread stays responsive to a spurious wake and re-checks cleanly.
-    let idle = Duration::from_secs(3600);
+    let idle = Duration::from_hours(1);
     loop {
         let wait = schedule
             .next_deadline()
@@ -3076,6 +3095,9 @@ fn signal_to_wire(sig: &DecodedSignal<'_>) -> SignalRecord {
 /// dropped first.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
+// Returns `Result` for IPC-command uniformity even though replay only
+// logs per-bus errors and always succeeds overall.
+#[allow(clippy::unnecessary_wraps)]
 fn replay_local_virtual_buses(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -3098,7 +3120,7 @@ fn replay_local_virtual_buses(
 /// Create a virtual bus. The GUI calls this from the project
 /// panel's *Add virtual bus* action. The vbus has no user-
 /// configurable bitrate (see `LocalVirtualBusDef`); the host applies
-/// a fixed default to SharedBus internally.
+/// a fixed default to `SharedBus` internally.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 fn create_local_virtual_bus(
@@ -3582,11 +3604,12 @@ mod tests {
             match source_q.try_next() {
                 Ok(Some(cannet_core::ParticipantEvent::Frame { frame, .. })) => break frame,
                 Ok(_) => {}
-                Err(_) => panic!("q's participant detached unexpectedly"),
+                Err(e) => panic!("q's participant detached unexpectedly: {e:?}"),
             }
-            if std::time::Instant::now() >= deadline {
-                panic!("vbus fan-out never arrived on q");
-            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "vbus fan-out never arrived on q"
+            );
             std::thread::sleep(std::time::Duration::from_millis(10));
         };
         assert_eq!(frame_q.direction, Direction::Rx);
@@ -3597,7 +3620,7 @@ mod tests {
     /// signal cache for a plot panel scoped to the same bus — the
     /// tx-confirm is the only record on the sending bus (the wire
     /// fan-out goes elsewhere), so a plot of "what I just sent on
-    /// bus X" must include Direction::Tx rows.
+    /// bus X" must include `Direction::Tx` rows.
     #[test]
     fn tx_confirm_is_visible_via_sample_signals_signal_cache() {
         use cannet_dbc::Database;
@@ -3650,12 +3673,13 @@ mod tests {
     /// The user's actual scenario: two project buses ("p", "q") both
     /// bound to the same vbus. Transmit a frame on "p" through the
     /// host's transmit-frame command (so the tx-confirm appends to
-    /// the trace store as Direction::Tx with bus_id "p", and the
-    /// SharedBus fans the frame out to "q"'s participant; a pump
-    /// stamps the fan-out copy with bus_id "q" and Direction::Rx).
+    /// the trace store as `Direction::Tx` with `bus_id` "p", and the
+    /// `SharedBus` fans the frame out to "q"'s participant; a pump
+    /// stamps the fan-out copy with `bus_id` "q" and `Direction::Rx`).
     /// A plot scoped to *either* bus must then find the decoded
     /// signal in its signal cache — Tx for "p", Rx for "q".
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn full_vbus_session_tx_decodes_for_sender_and_receiver_plots() {
         use cannet_dbc::Database;
         let state = test_state();
@@ -3690,10 +3714,11 @@ mod tests {
             let mut adapter = LocalSourceFrameSource { source: source_q, channel: 1 };
             let channel_to_bus = vec![(1u8, Some("q".to_string()))];
             while !stop_for_pump.load(Ordering::Relaxed) {
-                let Ok(opt) = cannet_core::CanFrameSource::next_frame(&mut adapter) else {
+                let Some(frame) =
+                    cannet_core::CanFrameSource::next_frame(&mut adapter).ok().flatten()
+                else {
                     break;
                 };
-                let Some(frame) = opt else { break };
                 let mut raw = RawTraceFrame::from(frame);
                 if let Ok(bid) = route_channel(raw.channel, &channel_to_bus) {
                     raw.bus_id = bid;
@@ -4076,6 +4101,7 @@ mod tests {
 
     #[test]
     #[ignore = "throughput benchmark; run with --ignored --nocapture"]
+    #[allow(clippy::cast_precision_loss)] // frame counts never approach 2^52
     fn bench_tx_model_only() {
         let state = test_state();
         let id = cannet_core::CanId::standard(0x123).unwrap();
@@ -4105,6 +4131,7 @@ mod tests {
 
     #[test]
     #[ignore = "throughput benchmark; run with --ignored --nocapture"]
+    #[allow(clippy::cast_precision_loss)] // frame counts never approach 2^52
     fn bench_tx_vbus_real_path() {
         let state = test_state();
         state
@@ -4124,10 +4151,11 @@ mod tests {
             let mut adapter = LocalSourceFrameSource { source: source_q, channel: 1 };
             let channel_to_bus = vec![(1u8, Some("q".to_string()))];
             while !stop_for_pump.load(Ordering::Relaxed) {
-                let Ok(opt) = cannet_core::CanFrameSource::next_frame(&mut adapter) else {
+                let Some(frame) =
+                    cannet_core::CanFrameSource::next_frame(&mut adapter).ok().flatten()
+                else {
                     break;
                 };
-                let Some(frame) = opt else { break };
                 let mut raw = RawTraceFrame::from(frame);
                 if let Ok(bid) = route_channel(raw.channel, &channel_to_bus) {
                     raw.bus_id = bid;
@@ -4286,7 +4314,7 @@ mod tests {
     }
 
     /// The spec types round-trip through JSON in ADR 0028's file shape
-    /// (snake_case keys, `range_bits` array, hex-string CRC params).
+    /// (`snake_case` keys, `range_bits` array, hex-string CRC params).
     #[test]
     fn calc_spec_serde_matches_the_adr_shapes() {
         let json = r#"{

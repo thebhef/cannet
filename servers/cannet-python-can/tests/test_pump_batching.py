@@ -97,9 +97,7 @@ class _FakeDriver:
         self._channels: list[_FakeChannel] = []
 
     def list_channels(self):
-        return [
-            drv.Channel(id=self._channel_id, display_name="fake")
-        ]
+        return [drv.Channel(id=self._channel_id, display_name="fake")]
 
     def open(self, channel_id: str, config: drv.OpenConfig) -> _FakeChannel:
         if channel_id != self._channel_id:
@@ -217,9 +215,9 @@ def test_burst_over_cap_splits_into_multiple_envelopes() -> None:
         envelopes = _drain_frame_batches(outbox, until=total)
         seen = sum(len(env.frame_batch.frames) for env in envelopes)
         assert seen == total
-        assert all(
-            len(env.frame_batch.frames) <= cap for env in envelopes
-        ), "an envelope exceeded the batch cap"
+        assert all(len(env.frame_batch.frames) <= cap for env in envelopes), (
+            "an envelope exceeded the batch cap"
+        )
         assert len(envelopes) >= 3, (
             "burst of 2*cap+5 should produce at least 3 envelopes"
         )

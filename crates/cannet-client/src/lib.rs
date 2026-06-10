@@ -275,7 +275,6 @@ pub fn connect_and_subscribe(
     subscriptions: Vec<Subscription>,
 ) -> Result<RemoteCanFrameSource, ConnectionError> {
     let address = address.to_string();
-    let subs_for_thread = subscriptions.clone();
     let (frame_tx, frame_rx) = mpsc::channel::<Result<CanFrame, ConnectionError>>();
     let (ready_tx, ready_rx) =
         mpsc::sync_channel::<Result<SessionReady, ConnectionError>>(1);
@@ -283,7 +282,7 @@ pub fn connect_and_subscribe(
 
     let thread = thread::Builder::new()
         .name("cannet-client".into())
-        .spawn(move || run_worker(address, subs_for_thread, frame_tx, ready_tx, shutdown_rx))
+        .spawn(move || run_worker(address, subscriptions, frame_tx, ready_tx, shutdown_rx))
         .map_err(|e| ConnectionError::Thread(e.to_string()))?;
 
     match ready_rx.recv() {
@@ -553,6 +552,7 @@ fn run_worker(
     });
 }
 
+#[allow(clippy::too_many_lines)]
 async fn run_session(
     address: String,
     subscriptions: Vec<Subscription>,
@@ -683,17 +683,18 @@ async fn run_session(
             message = stream.next() => match message {
                 Some(Ok(envelope)) => match envelope.body {
                     Some(Body::FrameBatch(batch)) => {
-                        let channel = match id_to_channel.get(&batch.interface_id).copied() {
-                            Some(c) => c,
-                            None => {
-                                let Some((_, c)) = factory_prefixes
-                                    .iter()
-                                    .find(|(p, _)| batch.interface_id.starts_with(p))
-                                else {
-                                    continue;
-                                };
-                                *c
-                            }
+                        let channel = if let Some(c) =
+                            id_to_channel.get(&batch.interface_id).copied()
+                        {
+                            c
+                        } else {
+                            let Some((_, c)) = factory_prefixes
+                                .iter()
+                                .find(|(p, _)| batch.interface_id.starts_with(p))
+                            else {
+                                continue;
+                            };
+                            *c
                         };
                         for proto_frame in batch.frames {
                             match proto_to_frame(&proto_frame, channel) {

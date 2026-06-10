@@ -249,9 +249,7 @@ class _SharedInterface:
     def channel_id(self) -> str:
         return self._channel_id
 
-    def attach(
-        self, outbox: "queue.Queue[Optional[pb.Envelope]]"
-    ) -> None:
+    def attach(self, outbox: "queue.Queue[Optional[pb.Envelope]]") -> None:
         """Register ``outbox`` as a subscriber.
 
         Opens the underlying channel on the first attach. Pushes the
@@ -280,9 +278,7 @@ class _SharedInterface:
             )
         )
 
-    def detach(
-        self, outbox: "queue.Queue[Optional[pb.Envelope]]"
-    ) -> bool:
+    def detach(self, outbox: "queue.Queue[Optional[pb.Envelope]]") -> bool:
         """Drop ``outbox`` from the subscriber list.
 
         Returns ``True`` when this was the last subscriber and the
@@ -419,9 +415,7 @@ class _SharedInterface:
                 self._rx_queue.put(frame)
         except Exception as e:  # noqa: BLE001
             _log.warning("rx pump for %s crashed: %s", cid, e)
-            err = _log_envelope(
-                pb.LOG_LEVEL_ERROR, f"rx pump for {cid} crashed: {e}"
-            )
+            err = _log_envelope(pb.LOG_LEVEL_ERROR, f"rx pump for {cid} crashed: {e}")
             for ob in self._outbox_snapshot():
                 ob.put(err)
 
@@ -448,24 +442,18 @@ class _SharedInterface:
                     if remaining_ns <= 0:
                         break
                     try:
-                        nxt = self._rx_queue.get(
-                            timeout=remaining_ns / 1_000_000_000
-                        )
+                        nxt = self._rx_queue.get(timeout=remaining_ns / 1_000_000_000)
                     except queue.Empty:
                         break
                     batch_frames.append(_frame_to_proto(nxt))
                 env = pb.Envelope(
-                    frame_batch=pb.FrameBatch(
-                        interface_id=cid, frames=batch_frames
-                    )
+                    frame_batch=pb.FrameBatch(interface_id=cid, frames=batch_frames)
                 )
                 for ob in self._outbox_snapshot():
                     ob.put(env)
         except Exception as e:  # noqa: BLE001
             _log.warning("pack pump for %s crashed: %s", cid, e)
-            err = _log_envelope(
-                pb.LOG_LEVEL_ERROR, f"pack pump for {cid} crashed: {e}"
-            )
+            err = _log_envelope(pb.LOG_LEVEL_ERROR, f"pack pump for {cid} crashed: {e}")
             for ob in self._outbox_snapshot():
                 ob.put(err)
 
@@ -568,9 +556,7 @@ class _InterfaceRegistry:
                 if cur is shared and not cur.has_subscribers():
                     self._interfaces.pop(channel_id, None)
 
-    def reconfigure(
-        self, channel_id: str, config: drv.OpenConfig
-    ) -> None:
+    def reconfigure(self, channel_id: str, config: drv.OpenConfig) -> None:
         with self._lock:
             shared = self._interfaces.get(channel_id)
             self._configs[channel_id] = config
@@ -679,9 +665,7 @@ class CannetServerService(pb_grpc.CannetServerServicer):
 
     def _enumerate_interfaces(self) -> list[pb.Interface]:
         return [
-            pb.Interface(
-                id=c.id, display_name=c.display_name, fd_capable=c.fd_capable
-            )
+            pb.Interface(id=c.id, display_name=c.display_name, fd_capable=c.fd_capable)
             for c in self._driver.list_channels()
         ]
 
@@ -772,13 +756,9 @@ class CannetServerService(pb_grpc.CannetServerServicer):
                 for env in request_iterator:
                     body = env.WhichOneof("body")
                     if body == "subscribe":
-                        self._handle_subscribe(
-                            env.subscribe, subscribed, outbox
-                        )
+                        self._handle_subscribe(env.subscribe, subscribed, outbox)
                     elif body == "unsubscribe":
-                        self._handle_unsubscribe(
-                            env.unsubscribe, subscribed, outbox
-                        )
+                        self._handle_unsubscribe(env.unsubscribe, subscribed, outbox)
                     elif body == "frame_batch":
                         self._handle_tx(env.frame_batch, subscribed, outbox)
                     elif body == "configure_bus":
@@ -824,9 +804,7 @@ class CannetServerService(pb_grpc.CannetServerServicer):
             )
             return
         except OSError as e:
-            outbox.put(
-                _log_envelope(pb.LOG_LEVEL_ERROR, f"open {cid} failed: {e}")
-            )
+            outbox.put(_log_envelope(pb.LOG_LEVEL_ERROR, f"open {cid} failed: {e}"))
             outbox.put(
                 _error_envelope(
                     pb.Error.CODE_UNKNOWN_INTERFACE, f"open {cid} failed: {e}"
@@ -867,9 +845,7 @@ class CannetServerService(pb_grpc.CannetServerServicer):
             try:
                 self._registry.transmit(cid, frame)
             except drv.TxRejected as e:
-                outbox.put(
-                    _error_envelope(pb.Error.CODE_TX_REJECTED, str(e))
-                )
+                outbox.put(_error_envelope(pb.Error.CODE_TX_REJECTED, str(e)))
             except KeyError:
                 # Interface was closed between the subscribed-check
                 # and the transmit — race with another session's last

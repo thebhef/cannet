@@ -1313,7 +1313,7 @@ pub async fn rbs_view(
         let ecu_views: Vec<RbsEcuView> = ecus
             .into_iter()
             .map(|(name, mut messages)| {
-                messages.sort_by(|a, b| (a.extended, a.message_id).cmp(&(b.extended, b.message_id)));
+                messages.sort_by_key(|a| (a.extended, a.message_id));
                 let enabled = bus.ecus.get(&name).is_none_or(|e| e.enabled);
                 RbsEcuView { name, enabled, messages }
             })
@@ -1848,8 +1848,8 @@ VAL_ 291 TargetMode 0 "Off" 1 "Standby" 2 "Active";
     }
 
     /// The seeded fallback is idempotent: first call creates the
-    /// file-less default, repeats are no-ops (an rbs_load must never
-    /// be overwritten by a late rbs_init).
+    /// file-less default, repeats are no-ops (an `rbs_load` must never
+    /// be overwritten by a late `rbs_init`).
     #[test]
     fn ensure_seeded_creates_once_and_never_overwrites() {
         let mut rbs = RbsRuntime {

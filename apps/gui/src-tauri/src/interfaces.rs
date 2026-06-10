@@ -199,17 +199,13 @@ pub async fn refresh_interfaces(
 async fn run_watch(app: AppHandle, address: String) {
     loop {
         match cannet_client::watch_interfaces(&address).await {
-            Ok(mut stream) => loop {
-                match stream.next().await {
-                    Ok(Some(interfaces)) => {
-                        let records: Vec<InterfaceRecord> =
-                            interfaces.into_iter().map(InterfaceRecord::from).collect();
-                        update_cache_and_emit(&app, &address, &records);
-                    }
-                    Ok(None) => break,
-                    Err(_) => break,
+            Ok(mut stream) => {
+                while let Ok(Some(interfaces)) = stream.next().await {
+                    let records: Vec<InterfaceRecord> =
+                        interfaces.into_iter().map(InterfaceRecord::from).collect();
+                    update_cache_and_emit(&app, &address, &records);
                 }
-            },
+            }
             Err(e) => {
                 // First connect (or reconnect) failed. Log once at
                 // warn so the user sees something on a misconfigured

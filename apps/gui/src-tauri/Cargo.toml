@@ -14,6 +14,12 @@ workspace = true
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+# Stamps the binary with `git describe --tags` at build time so a
+# packaged build reports the exact tag/commit it was cut from. The
+# committed crate/config version stays 0.0.0; the real version is
+# generated here (and, for the installer, injected from the release tag
+# in CI). `gitcl` shells out to the `git` already required to build.
+vergen = { version = "8", features = ["git", "gitcl"] }
 
 [dependencies]
 tauri = { version = "2", features = [] }

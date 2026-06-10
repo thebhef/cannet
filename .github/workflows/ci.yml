@@ -1,0 +1,93 @@
+name: CI
+
+# Runs the documented test + lint suite (README § Tests and lint) on
+# every pull request and every push to main. Linux is the canonical
+# host target — the Tauri GUI crate links against the system WebView,
+# so the webkit2gtk dev libraries are installed before the Rust build.
+#
+# Also exposed as a reusable workflow (`workflow_call`) so the release
+# workflow runs these exact checks as a gate before building any bundle
+# — a release never publishes from a commit whose tests/clippy fail.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust (test + clippy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install WebView host libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            libssl-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev
+
+      # rust-toolchain.toml pins the version + clippy component; rustup
+      # installs exactly that, so CI matches local.
+      - name: Install pinned Rust toolchain
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo test --workspace
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  frontend:
+    name: Frontend (vitest + build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.2
+
+      - uses: actions/setup-node@v4
+        with:
+          # Exact Node version pinned in .node-version (read by local
+          # version managers too), so CI and local match.
+          node-version-file: .node-version
+          cache: pnpm
+          cache-dependency-path: apps/gui/pnpm-lock.yaml
+
+      - run: pnpm --dir apps/gui install --frozen-lockfile
+      - run: pnpm --dir apps/gui test
+      - run: pnpm --dir apps/gui build
+
+  python:
+    name: Python sidecar (ruff + mypy + pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: servers/cannet-python-can
+    steps:
+      - uses: actions/checkout@v4
+
+      # uv version is pinned for reproducibility; the tool + dependency
+      # versions themselves come from the committed uv.lock. uv installs
+      # the Python 3.13 the sidecar requires on its own.
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.9.21"
+          enable-cache: true
+          cache-dependency-glob: servers/cannet-python-can/uv.lock
+
+      - run: uv sync --extra dev --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy
+      - run: uv run pytest

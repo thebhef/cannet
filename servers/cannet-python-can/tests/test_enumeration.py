@@ -124,7 +124,9 @@ def _uninstall_fake_vector() -> None:
 def test_vector_includes_serial_in_id_and_label() -> None:
     _install_fake_vector(
         [
-            _VectorCfg("VN1640A", 0, serial_number=12345, channel_capabilities=_XL_CANFD_ISO),
+            _VectorCfg(
+                "VN1640A", 0, serial_number=12345, channel_capabilities=_XL_CANFD_ISO
+            ),
             _VectorCfg("VN1640A", 1, serial_number=12345),
         ]
     )
@@ -374,9 +376,7 @@ def test_pcan_unknown_handle_falls_back_to_hex_body() -> None:
         assert chans[0].id == "pcan:handle=0xFF(h:0xFF, ch:0, uid:0)"
         # No named slot for this handle → the display drops the
         # would-be slot prefix and shows just the paren metadata.
-        assert chans[0].display_name == (
-            "PEAK PCAN-Mystery (h:0xFF, ch:0, uid:0)"
-        )
+        assert chans[0].display_name == ("PEAK PCAN-Mystery (h:0xFF, ch:0, uid:0)")
     finally:
         _remove_fake_modules("can.interfaces.pcan", "can.interfaces.pcan.basic")
 
@@ -410,9 +410,10 @@ def test_bus_kwargs_for_parses_paren_metadata() -> None:
         "pcan",
         {"channel": "PCAN_USBBUS1", "bitrate": 500_000},
     )
-    assert m._bus_kwargs_for(
-        "pcan:PCAN_USBBUS1(h:0x51, ch:0, uid:42)", cfg
-    ) == ("pcan", {"channel": "PCAN_USBBUS1", "bitrate": 500_000})
+    assert m._bus_kwargs_for("pcan:PCAN_USBBUS1(h:0x51, ch:0, uid:42)", cfg) == (
+        "pcan",
+        {"channel": "PCAN_USBBUS1", "bitrate": 500_000},
+    )
     # PCAN unknown-handle fallback parses to int for python-can.
     assert m._bus_kwargs_for("pcan:handle=0xFF(h:0xFF, ch:0)", cfg) == (
         "pcan",
@@ -432,7 +433,9 @@ def test_bus_kwargs_for_fd_routes_through_bit_timing() -> None:
 
     m = _fresh_driver_module()
     cfg = OpenConfig(
-        bitrate_bps=500_000, fd=True, data_bitrate_bps=2_000_000,
+        bitrate_bps=500_000,
+        fd=True,
+        data_bitrate_bps=2_000_000,
     )
 
     for channel_id, expected_backend, expected_extra in (
@@ -581,7 +584,8 @@ def test_open_non_pcan_does_not_touch_pcan_basic() -> None:
 
         # Would raise AttributeError if the PCAN suppression ran here.
         m.PythonCanDriver().open(
-            "vector:Virtual(ch:0)", OpenConfig(bitrate_bps=500_000),
+            "vector:Virtual(ch:0)",
+            OpenConfig(bitrate_bps=500_000),
         )
     finally:
         _restore_can_interface_bus(original)

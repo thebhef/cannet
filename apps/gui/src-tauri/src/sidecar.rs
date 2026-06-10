@@ -343,6 +343,7 @@ pub fn spawn_sidecar(app: &AppHandle) {
     });
 }
 
+#[allow(clippy::too_many_lines)]
 fn spawn_blocking_inner(app: &AppHandle) {
     let Some(launcher) = resolve_launch_path() else {
         sys_error!(
@@ -539,7 +540,7 @@ fn set_phase(app: &AppHandle, phase: SidecarPhase, address: Option<String>) {
         let prev_address = inner.bound_address.clone();
         let prev_was_ready = inner.phase == SidecarPhase::Ready;
         inner.phase = phase;
-        inner.bound_address = address.clone();
+        inner.bound_address = address;
         let now_ready = phase == SidecarPhase::Ready;
         // Lifecycle drives the local-address watch. The actual
         // subscription manager lives in `interfaces.rs`; this just
@@ -567,7 +568,6 @@ fn set_phase(app: &AppHandle, phase: SidecarPhase, address: Option<String>) {
     };
     let _ = app.emit(STATUS_EVENT, status);
     match watch_change {
-        WatchChange::None => {}
         WatchChange::Start(Some(addr)) => crate::interfaces::watch(app, addr),
         WatchChange::Stop(Some(addr)) => crate::interfaces::unwatch(app, &addr),
         WatchChange::Replace { stop, start } => {
@@ -578,11 +578,10 @@ fn set_phase(app: &AppHandle, phase: SidecarPhase, address: Option<String>) {
                 crate::interfaces::watch(app, addr);
             }
         }
-        // Start without address / Stop without address: the address
-        // slot is `None` on phase transitions the launcher drives
-        // before the listening banner arrives. Nothing to do for
-        // interface discovery in that case.
-        WatchChange::Start(None) | WatchChange::Stop(None) => {}
+        // Nothing to do: either no change, or a Start/Stop whose address
+        // slot is `None` on phase transitions the launcher drives before
+        // the listening banner arrives.
+        WatchChange::None | WatchChange::Start(None) | WatchChange::Stop(None) => {}
     }
 }
 
