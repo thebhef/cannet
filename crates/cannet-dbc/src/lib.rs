@@ -539,6 +539,25 @@ impl Database {
     /// representable range (`[0, 2^size - 1]` unsigned;
     /// `[-2^(size-1), 2^(size-1) - 1]` signed) before encoding, and
     /// the [`EncodedSignal::saturated`] flag is set.
+    /// Every message that declares calculated fields via the cannet
+    /// attributes, as `(raw id, extended, config)` — what an
+    /// ingest-time verifier enumerates to build its per-id config
+    /// index. Sorted by `(extended, id)` for stable iteration.
+    #[must_use]
+    pub fn calculated_field_messages(&self) -> Vec<(u32, bool, &CalculatedFieldsConfig)> {
+        let mut out: Vec<(u32, bool, &CalculatedFieldsConfig)> = self
+            .messages
+            .iter()
+            .filter(|(_, e)| !e.calc_fields.is_empty())
+            .map(|(id, e)| {
+                let (raw, extended) = message_id_parts(*id);
+                (raw, extended, &e.calc_fields)
+            })
+            .collect();
+        out.sort_by_key(|(id, ext, _)| (*ext, *id));
+        out
+    }
+
     /// Resolve a calculated-fields config against the message addressed
     /// by `id`: destination signals become bit placements, the CRC
     /// algorithm becomes a ready-built engine, and every config error

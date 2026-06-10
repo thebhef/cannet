@@ -256,13 +256,18 @@ impl TraceStore {
     /// rate sample if at least [`RATE_SAMPLE_INTERVAL`] has passed.
     ///
     /// Frames whose timestamp predates the current
-    /// [`Self::start_session`] are silently dropped. That handles the
-    /// pipeline-in-flight case after a Clear / new session: the recv
-    /// path (sidecar queue, gRPC, packer thread) can still deliver
-    /// frames captured before the clear; they'd otherwise land in the
-    /// freshly-empty buffer with stale timestamps and show as negative
-    /// offsets in the trace view.
-    pub fn append(&self, frame: RawTraceFrame) {
+    /// [`Self::start_session`] are silently dropped (returning
+    /// `None`). That handles the pipeline-in-flight case after a
+    /// Clear / new session: the recv path (sidecar queue, gRPC,
+    /// packer thread) can still deliver frames captured before the
+    /// clear; they'd otherwise land in the freshly-empty buffer with
+    /// stale timestamps and show as negative offsets in the trace
+    /// view.
+    ///
+    /// Returns the appended frame's absolute index — what the
+    /// ingest-time verifier keys its violation records on, and what a
+    /// tx-confirm reports back.
+    pub fn append(&self, frame: RawTraceFrame) -> Option<u64> {
         let now = Instant::now();
         let ts_ns = frame.timestamp_ns;
         let key: FrameKey = (
@@ -273,7 +278,7 @@ impl TraceStore {
         );
         let mut inner = self.inner.lock().expect("trace store mutex poisoned");
         if ts_ns < inner.session_start_ns {
-            return;
+            return None;
         }
         let id_key = (frame.id, frame.extended);
         inner.frames.push(frame);
@@ -297,6 +302,7 @@ impl TraceStore {
             });
             prune_rate_samples(&mut inner.rate_samples, now);
         }
+        Some(u64::try_from(count - 1).unwrap_or(u64::MAX))
     }
 
     /// Number of frames currently stored.

@@ -29,6 +29,11 @@ pub struct TraceFrameRecord {
     /// frame, which a filter `{bus: ...}` predicate never matches.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bus_id: Option<String>,
+    /// Ingest-time verification finding for this frame (`"crc"` /
+    /// `"counter"` / `"truncated"`), if any — the trace view renders
+    /// flagged rows red (ADR 0027). Absent for clean frames.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub violation: Option<&'static str>,
 }
 
 /// A page of a filtered chronological trace view: the total match
@@ -108,6 +113,7 @@ impl TraceFrameRecord {
             data,
             decoded,
             bus_id: frame.bus_id.clone(),
+            violation: None,
         }
     }
 }

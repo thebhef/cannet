@@ -482,9 +482,10 @@ fn sync_schedules(state: &AppState) {
     }
 }
 
-/// Rebuild rows + re-resolve calculated fields + reconcile schedules
-/// for one element, then notify panels. The standard tail of every
-/// mutation command.
+/// Rebuild rows + re-resolve calculated fields + rebuild the
+/// ingest-time verification index + reconcile schedules for one
+/// element, then notify panels. The standard tail of every mutation
+/// command.
 fn refresh_element(app: &AppHandle, element_id: &str) {
     let state: State<'_, AppState> = app.state();
     let warnings = rebuild_element_rows(&state, element_id);
@@ -492,6 +493,7 @@ fn refresh_element(app: &AppHandle, element_id: &str) {
         sys_warn!(app, "rbs", "{element_id}: {w}");
     }
     crate::refresh_calc_resolutions(app);
+    crate::rebuild_verification(&state);
     sync_schedules(&state);
     let _ = app.emit("rbs-changed", element_id);
 }
@@ -513,6 +515,7 @@ pub(crate) fn refresh_all_elements(app: &AppHandle) {
         }
     }
     crate::refresh_calc_resolutions(app);
+    crate::rebuild_verification(&state);
     sync_schedules(&state);
     let _ = app.emit("rbs-changed", "*");
 }

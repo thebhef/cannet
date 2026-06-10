@@ -49,6 +49,7 @@ mod system_log;
 mod trace_store;
 mod transmit_frames;
 mod transmit_scheduler;
+mod verification;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -254,6 +255,11 @@ struct AppState {
     /// the global kill-switch. Lock order: `rbs` before `databases`
     /// before `transmit_frames` before `remote_sessions`.
     rbs: Mutex<rbs::RbsRuntime>,
+    /// Ingest-time CRC / counter verification (ADR 0027): the
+    /// per-`(bus, id)` config index, counter continuity, the sparse
+    /// violation index the trace fetch decorates rows from, and the
+    /// validity map. Owns its own lock.
+    verifier: verification::VerificationState,
 }
 
 /// Boot the Tauri runtime.
@@ -287,6 +293,7 @@ pub fn run() {
             transmit_frames: Mutex::new(transmit_frames::TransmitFrameRegistry::default()),
             transmit_scheduler,
             rbs: Mutex::new(rbs::RbsRuntime::default()),
+            verifier: verification::VerificationState::default(),
         })
         .manage(sidecar::SidecarState::default())
         .manage(interfaces::InterfacesState::default())
@@ -355,6 +362,7 @@ pub fn run() {
             rbs::rbs_dirty,
             rbs::rbs_view,
             rbs::rbs_crc_algorithms,
+            fetch_field_validity,
         ])
         .setup(move |app| {
             // Make sure the main window has the id our capabilities expect.
@@ -1032,13 +1040,17 @@ fn collect_trace_records(state: &AppState, start: u64, end: u64) -> Vec<TraceFra
     let end_us = usize::try_from(end).unwrap_or(usize::MAX);
     let raw = state.trace_store.slice(start_us, end_us);
     let dbs = state.databases.lock().expect("databases mutex poisoned");
+    let violations: std::collections::HashMap<u64, &'static str> =
+        state.verifier.violations_in(start, end).into_iter().collect();
     raw.into_iter()
         .enumerate()
         .map(|(i, frame)| {
             #[allow(clippy::cast_possible_truncation)]
             let absolute_index = start + i as u64;
             let decoded = decode_against(&dbs, &frame);
-            TraceFrameRecord::from_raw(absolute_index, &frame, decoded)
+            let mut record = TraceFrameRecord::from_raw(absolute_index, &frame, decoded);
+            record.violation = violations.get(&absolute_index).copied();
+            record
         })
         .collect()
 }
@@ -1228,7 +1240,10 @@ async fn fetch_filtered_trace(
         .into_iter()
         .map(|(i, frame)| {
             let index = u64::try_from(i).unwrap_or(u64::MAX);
-            TraceFrameRecord::from_raw(index, &frame, decode_against(&dbs, &frame))
+            let mut record =
+                TraceFrameRecord::from_raw(index, &frame, decode_against(&dbs, &frame));
+            record.violation = state.verifier.violation_at(index);
+            record
         })
         .collect();
     FilteredTracePage { count, start, rows }
@@ -1255,8 +1270,10 @@ fn clear_trace_store(app: AppHandle, state: State<'_, AppState>) {
     state.trace_store.start_session(now_ns);
     // The decoded-sample caches hold frame indices into the store —
     // wipe them too, otherwise the next `sample_signals` would slice
-    // against a buffer that no longer exists.
+    // against a buffer that no longer exists. Same for the
+    // verification runtime (violation indices + counter continuity).
     state.signal_caches.clear();
+    state.verifier.clear_runtime();
     if let Some(applied) = state.notes.clear() {
         let _ = app.emit("notes-changed", applied.notes);
     }
@@ -2226,7 +2243,16 @@ fn run_pump<S>(
                     state.trace_store.start_session(raw.timestamp_ns);
                     needs_replay_session_start = false;
                 }
-                state.trace_store.append(raw);
+                // Ingest-time verification (ADR 0027): ids with a
+                // calculated-field config get checked against the
+                // appended index. The `wants` probe keeps the
+                // unconfigured fast path clone-free.
+                let checked = state.verifier.wants(&raw).then(|| raw.clone());
+                if let Some(index) = state.trace_store.append(raw) {
+                    if let Some(frame) = checked {
+                        state.verifier.observe(app, &frame, index);
+                    }
+                }
                 total = total.saturating_add(1);
             }
             Ok(None) => break,
@@ -2321,6 +2347,82 @@ fn resolve_effective_calc(
         .resolve_calculated_fields(id, &merged)
         .map(Some)
         .map_err(|e| e.to_string())
+}
+
+/// Current per-`(bus, id)` calculated-field validity, as observed by
+/// the ingest-time verifier. Entries appear once an id with a config
+/// has produced its first violation; absent ids have never failed.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn fetch_field_validity(state: State<'_, AppState>) -> Vec<verification::ValidityRecord> {
+    state.verifier.validity_snapshot()
+}
+
+/// Rebuild the ingest-time verifier's config index from the loaded
+/// DBC set plus every RBS element's per-message overrides (an
+/// override replaces the DBC default per field — ADR 0027). Called
+/// alongside the calc-resolution refresh whenever DBCs, project
+/// buses, or RBS configs change.
+pub(crate) fn rebuild_verification(state: &AppState) {
+    let overrides: Vec<(String, u32, bool, cannet_dbc::CalculatedFieldsConfig)> = {
+        let rbs_guard = state.rbs.lock().expect("rbs mutex poisoned");
+        let dbs = state.databases.lock().expect("databases mutex poisoned");
+        let mut out = Vec::new();
+        for element in rbs_guard.elements.values() {
+            for (bus_key, bus) in &element.file.buses {
+                let Some(bus_id) = rbs_guard
+                    .project_buses
+                    .iter()
+                    .find(|(_, n)| n == bus_key)
+                    .map(|(id, _)| id.clone())
+                else {
+                    continue;
+                };
+                for ecu in bus.ecus.values() {
+                    for (msg_key, msg) in &ecu.messages {
+                        if msg.counter.is_none() && msg.crc.is_none() {
+                            continue;
+                        }
+                        let Ok((id, extended)) = rbs::parse_message_key(msg_key) else {
+                            continue;
+                        };
+                        let can_id = if extended {
+                            CanId::extended(id)
+                        } else {
+                            CanId::standard(id)
+                        };
+                        let Ok(can_id) = can_id else { continue };
+                        let spec = ipc::CalcFieldsSpec {
+                            counter: msg.counter.clone(),
+                            crc: msg.crc.clone(),
+                        };
+                        let Ok(override_config) = spec.to_config() else {
+                            continue;
+                        };
+                        // Per-field layering over the DBC default.
+                        let dbc_default = dbs
+                            .iter()
+                            .filter(|d| {
+                                d.buses.is_empty() || d.buses.iter().any(|b| b == &bus_id)
+                            })
+                            .find_map(|d| d.db.dbc_calculated_fields(can_id))
+                            .cloned()
+                            .unwrap_or_default();
+                        let merged = cannet_dbc::CalculatedFieldsConfig {
+                            counter: override_config.counter.or(dbc_default.counter),
+                            crc: override_config.crc.or(dbc_default.crc),
+                        };
+                        if !merged.is_empty() {
+                            out.push((bus_id.clone(), id, extended, merged));
+                        }
+                    }
+                }
+            }
+        }
+        out
+    };
+    let dbs = state.databases.lock().expect("databases mutex poisoned");
+    state.verifier.rebuild_configs(&dbs, &overrides);
 }
 
 /// Re-resolve every TX-registry entry's calculated fields against the
@@ -2665,8 +2767,7 @@ fn transmit_frame_inner(
     // remote session is actually carrying it.
     let mut raw = RawTraceFrame::from(frame.clone());
     raw.bus_id = Some(request.bus_id.clone());
-    state.trace_store.append(raw);
-    let tx_confirm_index = u64::try_from(state.trace_store.len()).unwrap_or(u64::MAX) - 1;
+    let tx_confirm_index = state.trace_store.append(raw).unwrap_or(u64::MAX);
 
     let wire_status = match routing {
         None if sessions_guard.is_empty() => ipc::TransmitWireStatus::NotConnected,
@@ -3141,6 +3242,7 @@ mod tests {
             // the registry's `running` state is what the tests assert.
             transmit_scheduler: transmit_scheduler::channel().0,
             rbs: Mutex::new(rbs::RbsRuntime::default()),
+            verifier: verification::VerificationState::default(),
         }
     }
 
@@ -3152,7 +3254,7 @@ mod tests {
         }
     }
 
-    fn loaded_scoped(path: &str, dbc_text: &str, buses: &[&str]) -> LoadedDbc {
+    pub(crate) fn loaded_scoped(path: &str, dbc_text: &str, buses: &[&str]) -> LoadedDbc {
         LoadedDbc {
             path: path.into(),
             db: Database::parse(dbc_text).expect("test DBC parses"),
