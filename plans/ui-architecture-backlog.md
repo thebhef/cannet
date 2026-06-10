@@ -35,17 +35,34 @@ stale comment.
 ## Scheduled into phases
 
 The view/model deviations this file tracked are now scheduled — see
-`plans/phased-implementation.md` Phases 10-11 and
-[windowed-model-convergence.md](windowed-model-convergence.md):
+`plans/phased-implementation.md` Phases 11-12,
+[windowed-model-convergence.md](windowed-model-convergence.md), and
+the normative ADRs
+[`../docs/adr/0001-indefinite-length-capture.md`](../docs/adr/0001-indefinite-length-capture.md)
+(requirement) and
+[`../docs/adr/0002-disk-spill-store.md`](../docs/adr/0002-disk-spill-store.md)
+(design):
 
 - **PlotPanel `resample` — model state in a view.** `traceRangesRef`,
   the capture-lifetime per-signal min/max latch held in a React ref,
-  is model state. Resolved by **Phase 10 Slice 4** — the latch moves
+  is model state. Resolved by **Phase 11 Slice 4** — the latch moves
   host-side as a `min_max` query.
 - **By-ID view — unpaged snapshot, client-side sort.** Resolved by
-  **Phase 10 Slice 3** — by-ID pages through the shared `RowPage`
+  **Phase 11 Slice 3** — by-ID pages through the shared `RowPage`
   primitive and sorts host-side.
-- **Filtered-trace scan O(window)** and **unbounded decoded-sample
-  cache** — the model-side data-volume deviations — are scheduled into
-  **Phase 11** (indefinite-length capture) as the filter index and the
-  decimated decoded-sample tier.
+- **Filtered trace — frontend cap + host scan complexity.** Two
+  distinct deviations:
+  - *View-side:* `TracePanel.tsx`'s `chronoFiltered` array, capped at
+    `FILTERED_CAP`, holds match history in the frontend. Resolved by
+    **Phase 11 Slice 2** — the filtered path moves to the shared
+    `RowPage` primitive and the cap is removed.
+  - *Model-side:* the host filter scan is O(capture) today; Slice 2
+    brings it to O(window) on the in-RAM `Vec`; **Phase 12** makes it
+    O(page) via the materialized filter index — ADR 0002 **DS-3**, where
+    every predicate is id-narrowable against the DBC so no index build
+    is an O(capture) scan.
+- **Unbounded decoded-sample cache.** Scheduled into **Phase 12** as
+  ADR 0002 **DS-5** — a per-signal min/max **resolution pyramid**,
+  built lazily on first plot and by-id-accelerated, that `DecimatedRange`
+  reads at the coarsest level above `maxPoints` so "fit data" stays
+  bounded at 10^9 frames.

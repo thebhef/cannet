@@ -36,6 +36,16 @@ and the license / platform constraints we need to be aware of.
   row index. ~120 lines, no external dep.
 - **`@xyflow/react`** (formerly `react-flow`, MIT) — `adopted` in
   Phase 6 for the project graph view. See [`../docs/adr/0006-xyflow-project-graph.md`](../docs/adr/0006-xyflow-project-graph.md).
+- **`fzf-for-js`** (MIT) — `proposed` for Phase 10 Track 4 as the
+  fuzzy / acronym matcher shared by the command palette
+  (`Cmd/Ctrl+Shift+P`), the go-to-view palette (`Cmd/Ctrl+P`), and
+  the DBC panel's search (Phase 10 Track 5). Port of VS Code / fzf's
+  matcher — camelHump and abbreviation matching ("MyCanMessage"
+  reachable from "mcmess"), ranking. Pending evaluation against
+  `fuse.js` (popular, lower-quality acronym matching) and `kbar`'s
+  built-in matcher; flip to `adopted` once Track 4's evaluation
+  step confirms parity with the VS Code matcher we're emulating.
+  See [`../docs/adr/0018-command-keybinding-framework.md`](../docs/adr/0018-command-keybinding-framework.md).
 
 ### CAN / CANFD Abstraction
 
@@ -90,18 +100,18 @@ crate retained long-term).
   `cannet-blf`; the per-object-type coverage matrix is maintained
   in [`../docs/blf-feature-support.md`](../docs/blf-feature-support.md).
   - **`blf_asc`** (v0.2, MIT/Apache) — `adopted` Phase 1, `retired`
-    Phase 9.5. The native reader/writer in
+    Phase 10 (Track 1). The native reader/writer in
     `cannet-blf::format::{reader, writer}` covers everything the
     wrapper used to. See ADR 0009.
   - **`vector_blf`** (Technica-Engineering, C++, GPL-3.0-or-later) —
-    `adopted` Phase 9.5 as a test-only black-box oracle. Cloned at
+    `adopted` Phase 10 (Track 1) as a test-only black-box oracle. Cloned at
     a pinned upstream ref into `target/` at test time, never
     vendored, never shipped in cannet's runtime binary; its GPL
     posture stays outside the runtime distribution. Gated behind
     the `vector-blf-oracle` cargo feature so default CI doesn't
     require a C++ toolchain. See ADR 0009 "Test coverage strategy"
     §4.
-  - **`flate2`** (v1, MIT / Apache-2.0) — `adopted` Phase 9.5 for
+  - **`flate2`** (v1, MIT / Apache-2.0) — `adopted` Phase 10 (Track 1) for
     `LOG_CONTAINER` zlib inflate/deflate. Default
     backend (`rust_backend` → `miniz_oxide`) keeps the build
     pure-Rust and matches `vector_blf`'s on-the-wire format
@@ -112,7 +122,7 @@ crate retained long-term).
 ### Storage
 
 - **`memmap2`** crate (Rust, MIT / Apache-2.0) — `proposed` for
-  Phase 11. Cross-platform `mmap` syscall abstraction for the
+  Phase 12. Cross-platform `mmap` syscall abstraction for the
   disk-spill raw store. See [`../docs/adr/0002-disk-spill-store.md`](../docs/adr/0002-disk-spill-store.md).
 
 ### Protocols

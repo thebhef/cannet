@@ -1,13 +1,13 @@
 # Windowed-model convergence
 
-Status: Slice 0 shipped. Slices 1-4 are **Phase 10** of
+Status: Slice 0 shipped. Slices 1-4 are **Phase 11** of
 `plans/phased-implementation.md`; the indefinite-length / disk-spill
-work they are designed against is **Phase 11**.
+work they are designed against is **Phase 12**.
 
 This is the canonical statement of the GUI's **thin views over a
 windowed model** principle and the coordinated plan to converge on it.
 `plans/ui-architecture-backlog.md` tracked the individual deviations;
-they are now scheduled into Phases 10 and 11. Domain terms — capture,
+they are now scheduled into Phases 11 and 12. Domain terms — capture,
 capture model, derived projection, view, trace, by-ID view, series,
 filter predicate — are defined in [`../docs/CONTEXT.md`](../docs/CONTEXT.md).
 
@@ -42,7 +42,7 @@ Two consequences shape everything below:
   to disk as a **random-access indexed** store (frame index → file
   offset), so any row is O(1) to fetch. It is *not* a ring buffer and
   *not* bounded scrollback — no historical row is ever evicted or made
-  unreachable. This is Phase 11; see
+  unreachable. This is Phase 12; see
   [`../docs/adr/0001-indefinite-length-capture.md`](../docs/adr/0001-indefinite-length-capture.md).
 - Any projection that holds per-frame data is also unbounded and must
   not stay RAM-resident: the decoded-signal cache needs a decimated
@@ -104,7 +104,7 @@ So convergence is **one lifecycle contract, two accessors**.
 
 The host accessor signatures are **frozen in Slice 1 as disk-spill-
 ready** trait/command signatures — random-access, async, paged — so
-Phase 11 is a second implementation behind the same surface, not a
+Phase 12 is a second implementation behind the same surface, not a
 redesign.
 
 Every windowed host response carries, alongside its payload:
@@ -180,7 +180,7 @@ The two accessors are the *windowed* contract.
 
 Each slice ships independently and leaves the app working and tested
 (`pnpm --dir apps/gui test`, `cargo test -p cannet-gui`). Slices 1-4
-land against the current in-RAM `TraceStore` `Vec`; Phase 11 swaps the
+land against the current in-RAM `TraceStore` `Vec`; Phase 12 swaps the
 host implementation behind the frozen contract.
 
 ### Slice 0 — Plot extent: stop extrapolating ✅ shipped
@@ -209,7 +209,7 @@ Extract the Layer-A lifecycle into the shared primitive
 `chunkCache`/`refreshChunk` behind `TraceData`) its first consumer.
 **Also freeze the host accessor contract** — `RowPage` and
 `DecimatedRange` as explicit, disk-spill-ready trait/command
-signatures (random-access, async, paged) — so Phase 11 is a second
+signatures (random-access, async, paged) — so Phase 12 is a second
 implementation behind them, not a redesign. Frontend behavior is
 unchanged.
 
@@ -220,7 +220,7 @@ Acceptance:
   primitive;
 - `RowPage` and `DecimatedRange` are defined as frozen signatures,
   documented as implemented over the in-RAM `Vec` in Slices 2-4 and
-  reimplemented over the disk-spilled store in Phase 11;
+  reimplemented over the disk-spilled store in Phase 12;
 - the primitive has unit tests for descriptor memoisation and for
   invalidation on re-anchor, descriptor change, and buffer clear —
   including that an extent advance alone does not re-fetch a history
@@ -236,7 +236,7 @@ skip decoding non-matches. The filtered `TracePanel` path uses the
 shared primitive; `FILTERED_CAP` is removed.
 
 Over the in-RAM `Vec` the host scan is O(window); that is acceptable
-at `Vec` scale and is what Phase 11's filter index makes O(page) at
+at `Vec` scale and is what Phase 12's filter index makes O(page) at
 10^9 frames.
 
 Acceptance:
@@ -280,7 +280,7 @@ capture-lifetime *model* state held in a React ref — host-side as a
 `min_max` query against the per-signal min/max latch projection.
 
 Over the in-RAM `Vec` the plot samples the current append-only
-`SignalCacheStore`; Phase 11 gives that projection its decimated
+`SignalCacheStore`; Phase 12 gives that projection its decimated
 persistent tier so "fit data" stays fast at 10^9 frames.
 
 Acceptance:
@@ -300,20 +300,20 @@ Acceptance:
 - **Moving rendering host-side.** uPlot series merging and virtualizer
   geometry stay in the view.
 - **Disk-spill itself.** Slices 1-4 land against the in-RAM `Vec`; the
-  random-access disk-spilled store is Phase 11, behind the
+  random-access disk-spilled store is Phase 12, behind the
   Slice-1-frozen contract.
 
 ## Priority and sequencing
 
-This is **Phase 10** of `plans/phased-implementation.md`. The
+This is **Phase 11** of `plans/phased-implementation.md`. The
 duplication actively generates bugs — Slice 0 (shipped) fixed one.
 Slices 1-4 are ordered: 1 establishes the contract *and* freezes the
 host accessor signatures, 2 and 3 deliver real view wins on it, 4
 retires the most complex hand-rolled cache.
 
 The convergence is a **view-side** refactor; the indefinite-length /
-disk-spill work is a **model-side** change (**Phase 11**). They meet
+disk-spill work is a **model-side** change (**Phase 12**). They meet
 only at the host accessor signatures, which Slice 1 freezes. So Slices
-1-4 land first, against the in-RAM `Vec`; Phase 11 then provides a
+1-4 land first, against the in-RAM `Vec`; Phase 12 then provides a
 second implementation of the same frozen contract. See
 [`../docs/adr/0001-indefinite-length-capture.md`](../docs/adr/0001-indefinite-length-capture.md).

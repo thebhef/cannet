@@ -22,13 +22,13 @@ The constraints they answer to:
 - **Reviewability.** Keep the hand-written surface small and lean
   on a vetted library for the failure-mode-rich parts.
 - **Not a serialization artifact.** The disk-spill store is the
-  *live working store* — ephemeral scratch, rebuilt each session.
-  Explicit `.blf` "Save Capture" stays the separate export path;
-  this scratch store is not a saved-capture format.
+  *live working store* — scratch, not a saved-capture format.
+  Explicit `.blf` "Save Capture" stays the separate export path.
+  (The on-disk files are not deleted on exit — see DS-7.)
 
 ## Decision
 
-Six decisions, DS-1 through DS-6.
+Seven decisions, DS-1 through DS-7.
 
 ### DS-1 — On-disk format
 
@@ -122,6 +122,91 @@ trait; the in-RAM `Vec` implementation retires to a **test double**.
 There is one production implementation and one test implementation —
 not two production paths to keep in sync.
 
+### DS-7 — Scratch lifecycle: cache directory, reset-on-new-trace
+
+The scratch files live in a single directory under the OS cache
+directory: `$XDG_CACHE_HOME/cannet/current/` on Linux, the OS
+equivalents on macOS and Windows (Tauri's `PathResolver::app_cache_dir()`
+is the natural source). There is at most one trace in scope at a
+time, so one directory — not a per-session subdirectory — is the
+honest data model.
+
+`current/` is the home for **all session-scoped data the GUI is
+mutating**, not only the raw frame store. That includes the raw
+metadata and payload (DS-1), the `by-id` and filter indexes (DS-3),
+the per-signal decimated pyramids (DS-5), and **session-authored
+markers and events** — `GLOBAL_MARKER` and `EVENT_COMMENT` records
+authored during a live capture before any `.blf` Save, and
+markers/events accumulated against an already-open BLF before its
+next Save back out. On Save Capture, markers and events fold into
+the output `.blf` per [ADR 0010](0010-no-sidecar-files.md); until
+then `current/` is where they live. (Exact on-disk form for
+markers/events is left to the implementer — appendable BLF-record
+files are the natural fit since Save already writes that format.)
+
+**Lifecycle: reset on new trace, never on exit.** `current/` is
+wiped exactly when the *session buffer* is wiped:
+
+- **Clear** (user-initiated) — wipes `current/` and starts fresh.
+- **Start a new capture from a stopped state** — wipes `current/`
+  and starts fresh. Starting a fresh capture *is* discarding the
+  previous trace; the disk scratch and the session buffer go
+  together.
+- **Exit / panic / crash** — `current/` is left alone.
+
+Together these mean: whenever a project is opened (auto-reopen at
+launch, or manual Open Project), if `current/` exists *and its
+recorded project identity matches the project being opened*, it is
+loaded as a **stopped, historical trace** — the prior session the
+user did not explicitly discard. From there the user can Save
+Capture to a `.blf` (preserving it), or Start (wiping it and
+beginning a new capture). There is no automatic background cleanup
+at any time.
+
+(For context: today the frontend auto-reopens the last project at
+launch by reading a `cannet.lastProject.v1` path from `localStorage`
+and calling `open_project` — see [dockLayout.ts:19](../../apps/gui/src/dockLayout.ts#L19),
+[App.tsx:1274](../../apps/gui/src/App.tsx#L1274). DS-7's gate runs as
+part of that `open_project` call. The host carries no project-reload
+memory of its own — `current/` is *not* a launch trigger, only a
+match against whatever project the frontend opens.)
+
+**Project identity gate.** `current/` records the identity of the
+project it belongs to, plus the project's path at the time the
+scratch was created. The identity is what gates loading; the path is
+a host-side diagnostic / robustness record (so the host has its own
+trace of which project the scratch belongs to, independent of the
+frontend's `localStorage` pointer). On `open_project`, the scratch
+loads only when its recorded identity matches the project's
+identity; otherwise it stays on disk, invisible to the active
+project. Opening a *different* project is not a wipe trigger; only
+Clear and Start wipe. (So opening project B hides project A's
+scratch but doesn't destroy it; reopening project A brings it back.)
+
+Identity must be **stable across rename and move** — a project's
+file path is the user's to change at any time, and the
+`localStorage` pointer can go stale or be wiped. The identity is a
+UUID embedded inside the project JSON file, generated once when the
+project is first created and never modified after. This requires
+adding a `project_id: Uuid` field to the `Project` schema (it is not
+present today — see [project.rs:97](../../apps/gui/src-tauri/src/project.rs#L97))
+under [ADR 0011](0011-project-file-format.md)'s normal schema-version
+migration: when an older project file is parsed, a UUID is generated
+and written back on next save. The path recorded alongside the
+identity in `current/` is best-effort diagnostic data, not the basis
+for the match.
+
+This is deliberate. The on-disk formats are reload-compatible by
+construction (DS-1's arithmetic-addressable fixed-size records,
+DS-3's append-only indexes, DS-5's append-only pyramids, and the
+append-only marker/event files all survive a process exit
+unchanged), which is what makes the launch-loads-prior-as-stopped
+behavior mechanically free — including the markers and events
+authored before the crash. Auto-deleting on exit, or on crash, would
+foreclose that path without changing the formats that enable it.
+The opt-in `clear on exit` toggle belongs in a future settings
+panel, not in the always-on cleanup policy.
+
 ## Alternatives considered
 
 - **An embedded database for the raw store (SQLite, LMDB, RocksDB).**
@@ -153,6 +238,20 @@ not two production paths to keep in sync.
   Rejected (DS-6). Two production implementations of one contract is
   duplication the project has already shed on the view side; the
   `Vec` store earns its keep only as a test double.
+- **Auto-cleanup of scratch files on exit (or on crash).** Rejected
+  (DS-7). mmap'd files persist after process exit — the format is
+  reload-compatible by construction, and auto-deleting on exit (or,
+  worse, attempting to scrub on crash) would foreclose the "launch
+  loads the prior session as a stopped trace" behavior whose
+  mechanism is already in place. Cleanup happens only when the
+  *session buffer* is reset (Clear, or Start of a new capture);
+  opt-in clear-on-exit is a future settings-panel item, not an
+  always-on behavior.
+- **Per-session subdirectory under the cache root.** Rejected (DS-7).
+  Only one trace is ever in scope, so a single `current/` directory
+  is the honest data model — per-session subdirs would either always
+  hold exactly one occupant (waste) or imply a multi-session history
+  the product does not have.
 - **Raw `libc` / `windows-sys` FFI for the `mmap` syscalls.**
   Rejected. `memmap2` already wraps POSIX `mmap` and Windows
   `CreateFileMapping` / `MapViewOfFile` behind one Rust API.
@@ -171,10 +270,14 @@ not two production paths to keep in sync.
 - The `RowPage` / `DecimatedRange` host accessor signatures from
   [ADR 0001](0001-indefinite-length-capture.md) are unchanged; only
   their implementation swaps.
-- The disk-spill store is **ephemeral scratch** — created per session,
-  not persisted across runs, and not a serialization format. "Save
-  Capture" to `.blf` remains the separate export. No new `.blf`
-  sidecar is introduced ([ADR 0010](0010-no-sidecar-files.md)).
+- The disk-spill store is **scratch, not a serialization format** —
+  "Save Capture" to `.blf` remains the separate export and the
+  canonical durable form. No new `.blf` sidecar is introduced
+  ([ADR 0010](0010-no-sidecar-files.md)). Per DS-7 the scratch files
+  *do* survive across runs (cleanup is manual via the GUI Clear
+  action), so the format is reload-compatible — a property a future
+  "recover unsaved capture" feature can use without revisiting this
+  ADR.
 - **Disk-space cost.** ~26 B per frame of metadata plus payload; a
   10^9-frame capture needs tens of GB of scratch space. The host sites
   the scratch files on a volume with room and surfaces a clear error

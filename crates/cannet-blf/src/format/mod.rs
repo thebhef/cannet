@@ -1,4 +1,4 @@
-//! Native Vector BLF format codec (Phase 9.5; see
+//! Native Vector BLF format codec (Phase 10 Track 1; see
 //! `plans/phased-implementation.md`).
 //!
 //! This module is the on-disk format surface — it parses and emits
