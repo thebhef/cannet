@@ -26,6 +26,13 @@ Frontend-only checks need no system libraries: `pnpm --dir apps/gui
 install` once, then `pnpm --dir apps/gui test` and `pnpm --dir apps/gui
 build`.
 
+For the `servers/cannet-python-can` sidecar, always use `uv` to run and
+test — never `pip install` into the venv. The committed `.venv` is the
+runtime venv and deliberately omits dev tools; the `dev` extra in
+`pyproject.toml` carries pytest/mypy/ruff. Use `uv run --extra dev <cmd>`
+(e.g. `uv run --extra dev pytest tests/...`) for anything needing dev
+dependencies, and plain `uv run <cmd>` for runtime.
+
 ## Planning
 
 The `plans/` directory is the source of truth for what we're building and in

@@ -270,6 +270,33 @@ impl Database {
         self.messages.len()
     }
 
+    /// Every message as `(message_id, extended, name)` — the 29/11-bit
+    /// arbitration id with the extended-id flag split out, plus the
+    /// resolved message name. Borrowing and unsorted: a cheap identity
+    /// sweep for callers that only need to know *which ids* a name can
+    /// decode under (e.g. resolving a name filter to an id set before
+    /// a bulk scan), without paying for full descriptors.
+    pub fn message_names(&self) -> impl Iterator<Item = (u32, bool, &str)> + '_ {
+        self.messages.iter().map(|(id, entry)| {
+            let (message_id, extended) = message_id_parts(*id);
+            (message_id, extended, entry.name.as_str())
+        })
+    }
+
+    /// Every signal as `(message_id, extended, signal_name)`. The
+    /// borrowing, unsorted counterpart of [`Database::signals`] for
+    /// callers that only need the signal→message-id relation (e.g.
+    /// resolving a signal filter to an id set before a bulk scan).
+    pub fn signal_names(&self) -> impl Iterator<Item = (u32, bool, &str)> + '_ {
+        self.messages.iter().flat_map(|(id, entry)| {
+            let (message_id, extended) = message_id_parts(*id);
+            entry
+                .signals
+                .iter()
+                .map(move |s| (message_id, extended, s.signal.name.as_str()))
+        })
+    }
+
     /// Every signal defined in the database, as `(message, signal)`
     /// descriptors suitable for a "pick a signal to plot" UI.
     ///
@@ -1553,6 +1580,26 @@ SIG_VALTYPE_ 513 Lat : 1;
         let ext = sigs.iter().find(|s| s.signal_name == "ExtSig").unwrap();
         assert!(ext.extended);
         assert_eq!(ext.message_id, 0x98FF_0502 & 0x1FFF_FFFF);
+    }
+
+    #[test]
+    fn message_names_lists_every_message_with_id_parts() {
+        let db = Database::parse(SAMPLE_DBC).unwrap();
+        let mut names: Vec<(u32, bool, &str)> = db.message_names().collect();
+        names.sort_unstable();
+        assert_eq!(names.len(), 6);
+        assert!(names.contains(&(256, false, "EngineData")));
+        // Extended-id flag split out of the raw BO_ id.
+        assert!(names.contains(&(0x98FF_0502 & 0x1FFF_FFFF, true, "ExtendedMsg")));
+    }
+
+    #[test]
+    fn signal_names_maps_signals_to_their_message_id() {
+        let db = Database::parse(SAMPLE_DBC).unwrap();
+        let names: Vec<(u32, bool, &str)> = db.signal_names().collect();
+        assert_eq!(names.len(), 13); // same total as `signals()`
+        assert!(names.contains(&(256, false, "EngineSpeed")));
+        assert!(names.contains(&(0x98FF_0502 & 0x1FFF_FFFF, true, "ExtSig")));
     }
 
     #[test]

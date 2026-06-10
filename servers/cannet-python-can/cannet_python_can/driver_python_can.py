@@ -214,9 +214,18 @@ def _list_vector() -> List[Channel]:
       ``app_name`` python-can needs to reopen the channel.
     - ``hw_type`` — ``XL_HardwareType``. ``XL_HWTYPE_NONE`` (0) marks
       a channel slot the XL driver pre-allocated but no physical
-      hardware fills; we skip those, otherwise a 4-port VN1630A
-      reports six slots.
-    - ``hw_channel`` — per-card channel number.
+      hardware fills; we skip those.
+    - ``channel_bus_capabilities`` — ``XL_BusCapabilities`` flags. We
+      keep only channels whose ``XL_BUS_COMPATIBLE_CAN`` bit is set,
+      which drops the non-CAN slots the XL driver enumerates next to
+      the CAN ports — e.g. a VN1630A's on-board D/A I/O channel, which
+      otherwise shows up as a bogus fifth "CAN" channel.
+    - ``hw_channel`` — 0-based per-card channel number, and the open
+      key python-can's vector backend wants as ``channel=``. The
+      ``ch:`` in the id is this raw value; the *display* shows
+      ``hw_channel + 1`` so the channel number matches the device's
+      own 1-based "Channel N" label (the hardware silkscreen and
+      Vector Hardware Config both count from 1).
     - ``serial_number`` — card serial; the disambiguator for two
       physically identical VN devices, and the open-path key (see
       :func:`_bus_kwargs_for`).
@@ -232,6 +241,10 @@ def _list_vector() -> List[Channel]:
     # native library on some platforms; if the lookup fails we just
     # report fd_capable=False, which is the right default.
     fd_mask = 0
+    # ``XL_BUS_COMPATIBLE_CAN`` bit, used to keep only CAN channels.
+    # Left at 0 if the lookup fails, in which case we don't filter on
+    # bus capability — better to over-list than to hide a real channel.
+    can_cap_mask = 0
     try:
         from can.interfaces.vector import xldefine  # type: ignore[import-untyped]
 
@@ -246,8 +259,16 @@ def _list_vector() -> List[Channel]:
                 xldefine.XL_ChannelCapabilities, "XL_CHANNEL_FLAG_CANFD_ISO_SUPPORT", 0
             )
         )
+        can_cap_mask = int(
+            getattr(
+                getattr(xldefine, "XL_BusCapabilities", None),
+                "XL_BUS_COMPATIBLE_CAN",
+                0,
+            )
+        )
     except Exception:  # noqa: BLE001
         fd_mask = 0
+        can_cap_mask = 0
     try:
         configs = vector_canlib.get_channel_configs()
     except Exception as e:  # noqa: BLE001
@@ -258,18 +279,29 @@ def _list_vector() -> List[Channel]:
         hw_type = getattr(cfg, "hw_type", None)
         if hw_type is not None and int(hw_type) == 0:
             continue
+        # Keep only CAN channels. A VN1630A enumerates its on-board
+        # D/A I/O slot right after the CAN ports; it shares the CAN
+        # ports' hardware type but its bus capability is DAIO, not CAN,
+        # so without this it leaks through as a phantom CAN channel.
+        # Skip the test only when we couldn't resolve the CAN bit or
+        # the config doesn't report capabilities — never hide a channel
+        # we can't classify.
+        if can_cap_mask:
+            bus_caps = getattr(cfg, "channel_bus_capabilities", None)
+            if bus_caps is not None and not (int(bus_caps) & can_cap_mask):
+                continue
         app_name = getattr(cfg, "name", None) or "vector"
         hw_channel = getattr(cfg, "hw_channel", None)
         if hw_channel is None:
             continue
         sn = getattr(cfg, "serial_number", None)
-        meta = []
-        if sn:
-            meta.append(f"SN:{sn}")
-        meta.append(f"ch:{hw_channel}")
-        meta_str = ", ".join(meta)
-        cid = f"vector:{app_name}({meta_str})"
-        label = f"Vector {app_name} ({meta_str})"
+        sn_chunk = f"SN:{sn}, " if sn else ""
+        # The id carries the raw 0-based ``hw_channel`` python-can opens
+        # with; the display counts from 1 to match the device's own
+        # channel labelling, so the two never disagree in front of the
+        # user.
+        cid = f"vector:{app_name}({sn_chunk}ch:{hw_channel})"
+        label = f"Vector {app_name} ({sn_chunk}ch:{hw_channel + 1})"
         fd = False
         if fd_mask:
             caps = int(getattr(cfg, "channel_capabilities", 0) or 0)
