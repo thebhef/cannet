@@ -11,6 +11,7 @@ import { useFilteredTrace } from "./useFilteredTrace";
 import { useElementRegistry } from "./projectElements";
 import { useProjectContext } from "./projectContext";
 import { buildSinkPredicate } from "./sinkPredicate";
+import { elementLabel } from "./elementLabel";
 import { SourcesContextMenu } from "./SourcesPicker";
 import {
   type ColumnKey,
@@ -126,11 +127,7 @@ export function TracePanel(props: IDockviewPanelProps) {
     () =>
       registry.entries
         .filter((e) => e.element.kind === "filter")
-        .map((e) => ({
-          id: e.element.id,
-          label:
-            (e.element as { name?: string }).name ?? `Filter ${e.element.id.slice(0, 6)}`,
-        })),
+        .map((e) => ({ id: e.element.id, label: elementLabel(e.element) })),
     [registry.entries],
   );
   const handleSourcesChange = useCallback(

@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { elementPanelComponent, parseSavedLayout } from "./dockLayout";
+import {
+  DBC_PANEL_ID,
+  PROJECT_GRAPH_PANEL_ID,
+  PROJECT_PANEL_ID,
+  SYSTEM_MESSAGES_PANEL_ID,
+  elementPanelComponent,
+  panelKindForFocus,
+  parseSavedLayout,
+} from "./dockLayout";
 
 describe("parseSavedLayout", () => {
   it("returns null for missing input", () => {
@@ -41,5 +49,25 @@ describe("elementPanelComponent", () => {
     // panel. Opening a filter in a trace panel let that panel's
     // `ensure(id, "trace")` retype — and destroy — the filter element.
     expect(elementPanelComponent("filter")).toBeNull();
+  });
+});
+
+describe("panelKindForFocus", () => {
+  it("an element-backed panel reports its element kind", () => {
+    expect(panelKindForFocus("trace-abc", "trace")).toBe("trace");
+    expect(panelKindForFocus("plot-abc", "plot")).toBe("plot");
+    expect(panelKindForFocus("transmit-abc", "transmit")).toBe("transmit");
+  });
+
+  it("singleton panels report their fixed id", () => {
+    expect(panelKindForFocus(PROJECT_PANEL_ID, null)).toBe("project");
+    expect(panelKindForFocus(SYSTEM_MESSAGES_PANEL_ID, null)).toBe("system-messages");
+    expect(panelKindForFocus(PROJECT_GRAPH_PANEL_ID, null)).toBe("project-graph");
+    expect(panelKindForFocus(DBC_PANEL_ID, null)).toBe("dbc");
+  });
+
+  it("anything else (including a filter) is null", () => {
+    expect(panelKindForFocus("mystery", null)).toBeNull();
+    expect(panelKindForFocus("trace-abc", "filter")).toBeNull();
   });
 });

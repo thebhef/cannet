@@ -57,6 +57,11 @@ file is in a different category.
   then rejected, not migrated. If a migration path is ever needed
   (e.g. once the tool has real users with saved projects), it is added
   deliberately at that point.
+- Purely additive fields that the loader can default when absent
+  (`transmit_frames`, the element display `name` — see
+  [ADR 0019](0019-project-element-display-names.md)) are not shape
+  changes; they land without a version bump so existing files keep
+  opening.
 - The "host doesn't interpret the layout" rule holds without
   exception: the host never parses the dockview blob's shape.
 - The schema version is defined in both TypeScript and Rust; they

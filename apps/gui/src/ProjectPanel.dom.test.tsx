@@ -16,14 +16,17 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: invokeMock,
 }));
 
+import type { IDockviewPanel } from "dockview";
+
 import {
   AddServerInline,
   BusInterfaceCombo,
+  ElementRow,
   LocalInterfaceList,
   uniqueRemoteServers,
 } from "./ProjectPanel";
 import { LOCAL_SERVER } from "./types";
-import type { Bus, InterfaceBinding, InterfaceRecord } from "./types";
+import type { Bus, InterfaceBinding, InterfaceRecord, ProjectElement } from "./types";
 
 const BUS1: Bus = { id: "b1", name: "Bus 1" };
 // The live address the sidecar is bound to *this* session. Discovery
@@ -446,5 +449,73 @@ describe("LocalInterfaceList", () => {
       />,
     );
     expect(screen.getByText("(local driver offline)")).toBeInTheDocument();
+  });
+});
+
+describe("ElementRow", () => {
+  const traceEl: ProjectElement = {
+    kind: "trace",
+    id: "el-1",
+    name: "Trace 1",
+    sources: ["*"],
+  };
+
+  it("shows the kind and an inline-rename input holding the name", () => {
+    render(
+      <ElementRow
+        element={traceEl}
+        panel={undefined}
+        onOpen={() => {}}
+        onRename={() => {}}
+        onRemove={() => {}}
+      />,
+    );
+    expect(screen.getByText("Trace")).toBeInTheDocument();
+    expect(screen.getByLabelText("element el-1 name")).toHaveValue("Trace 1");
+  });
+
+  it("typing in the input fires onRename with the new name", () => {
+    const onRename = vi.fn();
+    render(
+      <ElementRow
+        element={traceEl}
+        panel={undefined}
+        onOpen={() => {}}
+        onRename={onRename}
+        onRemove={() => {}}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("element el-1 name"), {
+      target: { value: "Cabin sweep" },
+    });
+    expect(onRename).toHaveBeenCalledWith("Cabin sweep");
+  });
+
+  it("offers Open when no panel exists and Focus when one does", () => {
+    const onOpen = vi.fn();
+    const { rerender } = render(
+      <ElementRow
+        element={traceEl}
+        panel={undefined}
+        onOpen={onOpen}
+        onRename={() => {}}
+        onRemove={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    expect(onOpen).toHaveBeenCalled();
+
+    const setActive = vi.fn();
+    rerender(
+      <ElementRow
+        element={traceEl}
+        panel={{ api: { setActive } } as unknown as IDockviewPanel}
+        onOpen={() => {}}
+        onRename={() => {}}
+        onRemove={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Focus" }));
+    expect(setActive).toHaveBeenCalled();
   });
 });

@@ -26,10 +26,9 @@ work or admit it isn't going to happen and delete it.
 
 Near-term work — fold these into a phase before picking up the
 lower-priority follow-ups below. The original "Minimum Usability
-Tasks" list is split across **Task 11** (transmit signals,
-shipped), **Task 12** (DBC view + drag/drop, shipped),
-**Task 15** (plot refinements, shipped), and **Task 16** (hotkey
-framework) in the [roadmap](tasks/roadmap.md).
+Tasks" list shipped across **Task 11** (transmit signals),
+**Task 12** (DBC view + drag/drop), **Task 15** (plot
+refinements), and **Task 16** (hotkey framework).
 
 - takes a long time to exit gracefully
 
@@ -205,6 +204,15 @@ trip over it.
 
 ### GUI chrome and cross-cutting
 
+- `[cleanup]` `cannet-gui` `App.tsx` `updateElement`: marks the
+  workspace dirty via `queueMicrotask(() => setDirty(true))` *inside*
+  the `setRegistry` updater — a side effect in code React expects to
+  be pure (updaters can re-run under StrictMode / concurrent
+  replays). Harmless today (idempotent true-set, and a replay only
+  happens while a real patch is in flight), but revisit on the next
+  best-practices / performance pass: the pure shape is dirty-marking
+  at the edit call sites (rename, sources picker, predicate editor,
+  sinks sync) instead of inside the updater.
 - `[feat]` `cannet-gui` Save Capture: **time-range export.** Phase 9's
   Save Capture writes the entire session buffer to a `.blf`. Add the
   ability to pick a start and end time (or start/end frame index) on

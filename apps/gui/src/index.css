@@ -300,6 +300,79 @@ header {
   background: #1a212b;
 }
 
+/* Command / go-to-view palette (ADR 0018). Reuses the modal chrome
+   but anchors near the top and scrolls a result list. */
+.palette-backdrop {
+  align-items: flex-start;
+  padding-top: 10vh;
+}
+
+.palette {
+  width: 34rem;
+  max-width: 90vw;
+  padding: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.palette-input {
+  font: inherit;
+  width: 100%;
+  box-sizing: border-box;
+  background: #0f172a;
+  color: #e2e8f0;
+  border: 1px solid #2c3444;
+  border-radius: 4px;
+  padding: 0.4rem 0.6rem;
+}
+
+.palette-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.palette-item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.3rem 0.6rem;
+  border-radius: 4px;
+  color: #cbd5e1;
+  cursor: pointer;
+}
+
+.palette-item.selected {
+  background: #1d4ed8;
+  color: #f8fafc;
+}
+
+.palette-item-label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette-item-hint {
+  flex: 0 0 auto;
+  font-size: 0.75rem;
+  color: #94a3b8;
+}
+
+.palette-item.selected .palette-item-hint {
+  color: #cbd5e1;
+}
+
+.palette-empty {
+  padding: 0.3rem 0.6rem;
+  color: #64748b;
+  font-style: italic;
+}
+
 /* Phase-6 modal overlay variant (BLF channel-map). Same look as
    `.modal-backdrop` but the modal is wider and the rows scroll. */
 .modal-overlay {
@@ -582,11 +655,13 @@ header {
   margin-bottom: 0.3rem;
 }
 
-.project-element-name {
-  flex: 1 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.project-element-kind {
+  flex: 0 0 auto;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #94a3b8;
+  min-width: 4.5rem;
 }
 
 .project-path {

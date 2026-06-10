@@ -288,6 +288,14 @@ export interface ByIdSnapshotRecord {
 /// trace's mode + columns, a plot's areas / cursors, a transmit
 /// panel's frame list) in the dockview panel `params`.
 ///
+/// Every kind carries a model-owned display `name` (ADR 0019),
+/// resolved by `elementLabel` for every view. Optional in the type
+/// only because elements are constructed/loaded incrementally; the
+/// registry's `create` assigns a `${Kind} ${n}` default and
+/// `assignDefaultNames` backfills on project open, so it's always
+/// present in practice. Additive — no schema-version bump (the host
+/// round-trips `elements` opaquely).
+///
 /// `sources` is every consumer's producer-selection list — bus ids or
 /// upstream filter ids — with [`ALL_BUSES_WILDCARD`] (`"*"`) as the
 /// wildcard meaning "every bus in the project, including buses added
@@ -297,9 +305,15 @@ export interface ByIdSnapshotRecord {
 /// projects saved a single `source?: string` field instead; the
 /// loader normalises those to `sources: ["*"]` (`normalizeElement`).
 export type ProjectElement =
-  | { kind: "trace"; id: string; sources: string[] }
-  | { kind: "plot"; id: string; sources: string[] }
-  | { kind: "transmit"; id: string; sinks: string[]; frameIds: string[] }
+  | { kind: "trace"; id: string; name?: string; sources: string[] }
+  | { kind: "plot"; id: string; name?: string; sources: string[] }
+  | {
+      kind: "transmit";
+      id: string;
+      name?: string;
+      sinks: string[];
+      frameIds: string[];
+    }
   | {
       kind: "filter";
       id: string;
