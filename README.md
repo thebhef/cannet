@@ -154,3 +154,12 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 pnpm --dir apps/gui build          # type-checks and bundles the frontend
 ```
+
+## License
+
+cannet is free software: you can use, study, modify, and redistribute
+it under the terms of the **GNU General Public License v3.0 only**
+(`GPL-3.0-only`). Derivative works must stay under the same license.
+See [`LICENSE`](LICENSE) for the full text.
+
+Copyright © 2026 Ben Hefner.
