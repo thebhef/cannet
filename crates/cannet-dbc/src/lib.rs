@@ -5,14 +5,17 @@
 //! and runs the bit-extraction maths against `cannet_core::CanFrame` payloads.
 
 mod decode;
+mod encode;
 
 pub use decode::{decode_signal_bits, sign_extend};
+pub use encode::encode_signal_bits;
 
 use std::collections::HashMap;
 
 use cannet_core::CanFrame;
 use can_dbc::{
-    AttributeValue, Dbc, MessageId, MultiplexIndicator, Signal, SignalExtendedValueType, ValueType,
+    AttributeValue, Dbc, MessageId, MultiplexIndicator, NumericValue, Signal,
+    SignalExtendedValueType, ValueType,
 };
 
 /// A parsed DBC database, indexed for fast frame lookup.
@@ -28,6 +31,17 @@ struct MessageEntry {
     name: String,
     /// Expected payload length in bytes from the DBC `BO_` declaration.
     expected_len: usize,
+    /// True if the DBC marks this message as CAN-FD — either via the
+    /// `VFrameFormat` attribute being one of the FD codes
+    /// (14 = Standard CAN-FD, 15 = Extended CAN-FD), or as a fallback
+    /// when `expected_len` exceeds the classic max of 8 bytes.
+    is_fd: bool,
+    /// CAN-FD BRS (Bit Rate Switch) setting from the DBC's
+    /// `GenMsgCANFDBRS` per-message attribute. `1` = on, `0` = off;
+    /// when the attribute is absent on an FD message, default to
+    /// `true` (the typical real-world setting). Always `false` for
+    /// classic messages.
+    brs: bool,
     signals: Vec<SignalEntry>,
 }
 
@@ -127,9 +141,13 @@ impl Database {
                 .get(&msg.id)
                 .cloned()
                 .unwrap_or_else(|| msg.name.clone());
+            let is_fd = message_is_fd(&dbc, msg.id, expected_len);
+            let brs = is_fd && message_brs(&dbc, msg.id);
             messages.insert(msg.id, MessageEntry {
                 name,
                 expected_len,
+                is_fd,
+                brs,
                 signals,
             });
         }
@@ -220,6 +238,347 @@ impl Database {
         let key = canid_to_message_id(id)?;
         let entry = self.messages.get(&key)?;
         Some(decode_message(entry, data))
+    }
+
+    /// Rich descriptor for one message — everything the transmit
+    /// panel's signal table needs to render rows (factor / offset /
+    /// size / range / mux indicator / float kind) without
+    /// reimplementing DBC-walking logic on the frontend. Returns
+    /// `None` if no message matches `id`.
+    ///
+    /// The trace view's per-frame decode path is unchanged; this is a
+    /// separate metadata view that pairs with [`Database::encode_frame`]
+    /// and [`Database::decode_raw`].
+    #[must_use]
+    pub fn describe_message(&self, id: cannet_core::CanId) -> Option<MessageDescriptor> {
+        let key = canid_to_message_id(id)?;
+        let entry = self.messages.get(&key)?;
+        let mut uses_extended_mux = false;
+        let signals = entry
+            .signals
+            .iter()
+            .map(|s| {
+                let mux = match s.signal.multiplexer_indicator {
+                    MultiplexIndicator::Plain => SignalMux::Plain,
+                    MultiplexIndicator::Multiplexor => SignalMux::Multiplexor,
+                    MultiplexIndicator::MultiplexedSignal(sel) => SignalMux::Multiplexed {
+                        selector: sel,
+                    },
+                    MultiplexIndicator::MultiplexorAndMultiplexedSignal(sel) => {
+                        uses_extended_mux = true;
+                        SignalMux::MultiplexorAndMultiplexed { selector: sel }
+                    }
+                };
+                let float_kind = match s.extended_type {
+                    SignalExtendedValueType::IEEEfloat32Bit => FloatKind::Float32,
+                    SignalExtendedValueType::IEEEdouble64bit => FloatKind::Float64,
+                    SignalExtendedValueType::SignedOrUnsignedInteger => FloatKind::Integer,
+                };
+                SignalDescriptorRich {
+                    name: s.signal.name.clone(),
+                    unit: s.signal.unit.clone(),
+                    factor: s.signal.factor,
+                    offset: s.signal.offset,
+                    min: numeric_to_f64(s.signal.min),
+                    max: numeric_to_f64(s.signal.max),
+                    size: u32::try_from(s.signal.size).unwrap_or(0),
+                    signed: s.signal.value_type == ValueType::Signed,
+                    mux,
+                    float_kind,
+                    has_value_table: !s.value_table.is_empty(),
+                }
+            })
+            .collect();
+        Some(MessageDescriptor {
+            name: entry.name.clone(),
+            expected_len: entry.expected_len,
+            is_fd: entry.is_fd,
+            brs: entry.brs,
+            uses_extended_mux,
+            signals,
+        })
+    }
+
+    /// Partial-encode `signals` into `base`. For each `(name, physical)`
+    /// pair, looks up the signal by name on the message addressed by
+    /// `id`, converts the physical value back to its raw bit pattern
+    /// (`(physical - offset) / factor`, rounded; IEEE float signals
+    /// take the f32 / f64 bit pattern directly), and writes those bits
+    /// into `base` at the signal's `start_bit / size / byte_order`. All
+    /// other bits in `base` are preserved.
+    ///
+    /// The encoder is the inverse of [`Database::decode`] in the
+    /// strong sense: for every signal in the database, encoding a
+    /// decoded `physical` value back into a zeroed buffer (then
+    /// decoding) round-trips to the same physical (modulo rounding and
+    /// f32 precision for `SIG_VALTYPE_ 1` signals).
+    ///
+    /// Returns `None` if no message matches `id`. Otherwise returns an
+    /// [`EncodeReport`] with one entry per signal — `written` for the
+    /// successful encodes, `skipped` for the ones that couldn't fit
+    /// the payload or whose name didn't resolve. Skipped signals leave
+    /// `base` untouched.
+    ///
+    /// **Multiplexing.** The encoder is mux-agnostic: it writes the
+    /// bits the caller names. If the caller wants the inactive arm's
+    /// bits zeroed on a switch change, it passes the new switch value
+    /// *and* each new-arm sub-signal set to `0.0` in the same call;
+    /// the encoder writes them in order.
+    ///
+    /// Out-of-range physical values are saturated to the signal's
+    /// representable range (`[0, 2^size - 1]` unsigned;
+    /// `[-2^(size-1), 2^(size-1) - 1]` signed) before encoding, and
+    /// the [`EncodedSignal::saturated`] flag is set.
+    pub fn encode_frame(
+        &self,
+        id: cannet_core::CanId,
+        signals: &[(&str, f64)],
+        base: &mut [u8],
+    ) -> Option<EncodeReport> {
+        let key = canid_to_message_id(id)?;
+        let entry = self.messages.get(&key)?;
+
+        let mut report = EncodeReport::default();
+        for &(name, physical) in signals {
+            match encode_one_signal(entry, name, physical, base) {
+                Ok(written) => report.written.push(written),
+                Err(skipped) => report.skipped.push(skipped),
+            }
+        }
+        Some(report)
+    }
+}
+
+/// Encode one named signal's bits into `data`, leaving all other bits
+/// untouched. Returns `Err(SkippedSignal)` and does not mutate `data`
+/// if the signal is unknown or its bits don't fit `data`.
+fn encode_one_signal(
+    entry: &MessageEntry,
+    name: &str,
+    physical: f64,
+    data: &mut [u8],
+) -> Result<EncodedSignal, SkippedSignal> {
+    let Some(sig_entry) = entry.signals.iter().find(|s| s.signal.name == name) else {
+        return Err(SkippedSignal {
+            name: name.to_string(),
+            reason: SkipReason::SignalNotFound,
+        });
+    };
+    let sig = &sig_entry.signal;
+    let Ok(start_bit) = usize::try_from(sig.start_bit) else {
+        return Err(SkippedSignal {
+            name: name.to_string(),
+            reason: SkipReason::SizeOutOfRange,
+        });
+    };
+    let size_usize = match usize::try_from(sig.size) {
+        Ok(s) if (1..=64).contains(&s) => s,
+        _ => {
+            return Err(SkippedSignal {
+                name: name.to_string(),
+                reason: SkipReason::SizeOutOfRange,
+            });
+        }
+    };
+    // Safe — checked above.
+    #[allow(clippy::cast_possible_truncation)]
+    let size_u32 = size_usize as u32;
+
+    let (raw_unsigned, saturated) =
+        physical_to_raw(physical, sig, size_u32, sig_entry.extended_type);
+
+    if encode::encode_signal_bits(data, start_bit, size_usize, raw_unsigned, sig.byte_order)
+        .is_none()
+    {
+        return Err(SkippedSignal {
+            name: name.to_string(),
+            reason: SkipReason::BaseTooShort,
+        });
+    }
+
+    Ok(EncodedSignal {
+        name: name.to_string(),
+        raw_unsigned,
+        saturated,
+    })
+}
+
+/// Convert a physical value back to a raw bit pattern according to the
+/// signal's type. For integer signals this is `round((physical - offset)
+/// / factor)`, then saturated to the signal's signed / unsigned range.
+/// For IEEE-typed signals (`SIG_VALTYPE_ … 1` / `2`) the result is the
+/// `f32` / `f64` bit pattern of the same expression — matching the
+/// shape `decode_signal` parses on the way back.
+fn physical_to_raw(
+    physical: f64,
+    sig: &Signal,
+    size_bits: u32,
+    extended_type: SignalExtendedValueType,
+) -> (u64, bool) {
+    // Float branches first — they ignore the signed flag and don't
+    // saturate via integer bounds; an out-of-range physical clamps at
+    // f32 ±inf, which is still a representable f32 bit pattern.
+    match extended_type {
+        SignalExtendedValueType::IEEEfloat32Bit if size_bits == 32 => {
+            let scaled = (physical - sig.offset) / sig.factor;
+            // `as f32` saturates infinities to +/- inf and clamps
+            // overflows toward the same — both are still well-defined
+            // bit patterns, so we don't flag them as "saturated" here.
+            #[allow(clippy::cast_possible_truncation)]
+            let f32_val = scaled as f32;
+            return (u64::from(f32_val.to_bits()), false);
+        }
+        SignalExtendedValueType::IEEEdouble64bit if size_bits == 64 => {
+            let scaled = (physical - sig.offset) / sig.factor;
+            return (scaled.to_bits(), false);
+        }
+        _ => {}
+    }
+
+    let raw_f = (physical - sig.offset) / sig.factor;
+    let raw_rounded = raw_f.round();
+
+    if sig.value_type == ValueType::Signed {
+        // Signed: range [-2^(size-1), 2^(size-1) - 1]. At size==64 use
+        // i64's bounds directly; otherwise compute them from `size`.
+        let (min_i, max_i) = if size_bits == 64 {
+            (i64::MIN, i64::MAX)
+        } else {
+            let high = 1_i64 << (size_bits - 1);
+            (-high, high - 1)
+        };
+        // Cast to f64 for the comparison — for sizes <= 53 bits this is
+        // exact; for larger signed sizes (rare) f64 mantissa loss can
+        // push the boundary by 1 ulp, which we accept.
+        #[allow(clippy::cast_precision_loss)]
+        let (min_f, max_f) = (min_i as f64, max_i as f64);
+        let (raw_i, saturated) = if !raw_rounded.is_finite() || raw_rounded > max_f {
+            (max_i, true)
+        } else if raw_rounded < min_f {
+            (min_i, true)
+        } else {
+            // In-range cast: f64 → i64 is well-defined here.
+            #[allow(clippy::cast_possible_truncation)]
+            let v = raw_rounded as i64;
+            (v, false)
+        };
+        let raw_u = if size_bits == 64 {
+            raw_i.cast_unsigned()
+        } else {
+            (raw_i.cast_unsigned()) & ((1u64 << size_bits) - 1)
+        };
+        (raw_u, saturated)
+    } else {
+        let max_u = if size_bits == 64 {
+            u64::MAX
+        } else {
+            (1u64 << size_bits) - 1
+        };
+        #[allow(clippy::cast_precision_loss)]
+        let max_f = max_u as f64;
+        let (raw_u, saturated) = if !raw_rounded.is_finite() || raw_rounded > max_f {
+            (max_u, true)
+        } else if raw_rounded < 0.0 {
+            (0u64, true)
+        } else {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let v = raw_rounded as u64;
+            (v, false)
+        };
+        (raw_u, saturated)
+    }
+}
+
+/// Result of a [`Database::encode_frame`] call: one entry per input
+/// signal, partitioned into the ones whose bits were written and the
+/// ones that couldn't be (unknown name, doesn't fit `base`, …).
+#[derive(Debug, Default, Clone)]
+pub struct EncodeReport {
+    /// Successful per-signal writes, in input order.
+    pub written: Vec<EncodedSignal>,
+    /// Per-signal skips, in input order. Skipped signals do not mutate
+    /// `base`.
+    pub skipped: Vec<SkippedSignal>,
+}
+
+/// A signal whose bits were written into the payload.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EncodedSignal {
+    pub name: String,
+    /// Raw bit pattern actually placed in the payload (post-saturation,
+    /// post-rounding). Width matches the signal's declared `size`.
+    pub raw_unsigned: u64,
+    /// True if the requested physical value lay outside the signal's
+    /// representable range and was clamped before encoding.
+    pub saturated: bool,
+}
+
+/// A signal that couldn't be encoded.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkippedSignal {
+    pub name: String,
+    pub reason: SkipReason,
+}
+
+/// Why a signal was skipped by [`Database::encode_frame`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkipReason {
+    /// No signal with this name on the resolved message.
+    SignalNotFound,
+    /// The signal's bits would have run past the end of `base`.
+    BaseTooShort,
+    /// The signal's `start_bit` / `size` are outside the encoder's
+    /// supported range (`size` ∈ `1..=64`, `start_bit` fits `usize`).
+    SizeOutOfRange,
+}
+
+/// Whether the DBC marks this message as CAN-FD. Checks
+/// `VFrameFormat` (14 = Standard CAN-FD, 15 = Extended CAN-FD) first,
+/// then falls back to "size > 8" since classic CAN tops out at 8
+/// payload bytes.
+fn message_is_fd(dbc: &Dbc, msg_id: MessageId, expected_len: usize) -> bool {
+    for av in &dbc.attribute_values_message {
+        if av.message_id == msg_id && av.name == "VFrameFormat" {
+            if let AttributeValue::Uint(n) = av.value {
+                // VFrameFormat: 0 Standard CAN, 1 Extended CAN, 14
+                // Standard CAN-FD, 15 Extended CAN-FD, 2 J1939PG, ...
+                return n == 14 || n == 15;
+            }
+            if let AttributeValue::Int(n) = av.value {
+                return n == 14 || n == 15;
+            }
+        }
+    }
+    expected_len > 8
+}
+
+/// Whether BRS (Bit Rate Switch) is on for this FD message, from
+/// `GenMsgCANFDBRS` (1 = on, 0 = off). When the attribute is absent,
+/// default to `true` — the typical real-world setting for FD frames.
+fn message_brs(dbc: &Dbc, msg_id: MessageId) -> bool {
+    for av in &dbc.attribute_values_message {
+        if av.message_id == msg_id && av.name == "GenMsgCANFDBRS" {
+            if let AttributeValue::Uint(n) = av.value {
+                return n != 0;
+            }
+            if let AttributeValue::Int(n) = av.value {
+                return n != 0;
+            }
+        }
+    }
+    true
+}
+
+/// Widen a DBC numeric value to `f64`. The `SG_` min / max fields use
+/// this — even an integer DBC bound is most useful as f64 at the
+/// transmit-panel layer where physical values are already f64.
+fn numeric_to_f64(value: NumericValue) -> f64 {
+    match value {
+        #[allow(clippy::cast_precision_loss)]
+        NumericValue::Uint(u) => u as f64,
+        #[allow(clippy::cast_precision_loss)]
+        NumericValue::Int(i) => i as f64,
+        NumericValue::Double(d) => d,
     }
 }
 
@@ -390,6 +749,84 @@ pub struct SignalDescriptor {
     /// separate `value_table` round-trip to decide between numeric and
     /// symbolic rendering.
     pub has_value_table: bool,
+}
+
+/// Rich descriptor for one DBC message — its identity, its declared
+/// payload length, whether it uses extended multiplexing (the panel
+/// falls back to bytes-only editing when this is true), and a rich
+/// per-signal view. Returned by [`Database::describe_message`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct MessageDescriptor {
+    pub name: String,
+    /// Declared `BO_` size in bytes.
+    pub expected_len: usize,
+    /// `true` if the DBC marks this as a CAN-FD message
+    /// (`VFrameFormat` = 14/15, or `expected_len > 8` as fallback).
+    /// The transmit panel uses this to set the frame's `kind` when
+    /// the id binds to a DBC message.
+    pub is_fd: bool,
+    /// CAN-FD BRS (Bit Rate Switch) from the DBC's `GenMsgCANFDBRS`
+    /// attribute. Defaults to `true` for FD messages with no
+    /// attribute. Always `false` for classic messages.
+    pub brs: bool,
+    /// `true` if any signal in this message is
+    /// [`SignalMux::MultiplexorAndMultiplexed`] (a "sub-mux" /
+    /// extended multiplexing arm). The transmit panel treats these as
+    /// not-supported for signal-level editing.
+    pub uses_extended_mux: bool,
+    pub signals: Vec<SignalDescriptorRich>,
+}
+
+/// Per-signal rich descriptor — everything the transmit panel's
+/// signals table needs to render and validate a row without
+/// reimplementing DBC walking.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SignalDescriptorRich {
+    pub name: String,
+    pub unit: String,
+    pub factor: f64,
+    pub offset: f64,
+    /// `SG_` declared minimum (physical units). Note that DBCs
+    /// commonly declare `[0|0]` to mean "no constraint"; callers
+    /// inspecting this should check for `min == max`.
+    pub min: f64,
+    pub max: f64,
+    /// Signal width in bits (1..=64).
+    pub size: u32,
+    pub signed: bool,
+    pub mux: SignalMux,
+    pub float_kind: FloatKind,
+    pub has_value_table: bool,
+}
+
+/// Mux indicator on a DBC signal. Mirrors `can_dbc::MultiplexIndicator`
+/// but renamed for clarity and serialised with stable, lowercase
+/// discriminants for the IPC layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignalMux {
+    /// Not part of any multiplexed group; always present in the
+    /// decoded frame.
+    Plain,
+    /// The switch (`M`) signal whose value selects which arm of the
+    /// multiplexed group is active.
+    Multiplexor,
+    /// A multiplexed sub-signal (`m<selector>`) — present only when
+    /// the switch decodes to `selector`.
+    Multiplexed { selector: u64 },
+    /// A sub-switch — a multiplexed signal that *itself* multiplexes
+    /// further sub-signals. The transmit panel treats this as
+    /// "extended mux" and falls back to bytes-only.
+    MultiplexorAndMultiplexed { selector: u64 },
+}
+
+/// How a signal's raw bits should be interpreted by encode / decode:
+/// as a scaled integer (the DBC default), or as the bit pattern of
+/// an IEEE-754 `f32` / `f64` (declared via `SIG_VALTYPE_`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloatKind {
+    Integer,
+    Float32,
+    Float64,
 }
 
 #[derive(Debug)]
@@ -759,5 +1196,405 @@ VAL_ 256 Direction -1 "Backward" 0 "Stopped" 1 "Forward" ;
             .all(|s| s.name != "EngineSpeed" && s.name != "EngineTemp"));
         assert_eq!(decoded.actual_len, 1);
         assert_eq!(decoded.expected_len, 8);
+    }
+
+    // --- encode_frame ---
+
+    fn std_id(raw: u32) -> CanId {
+        CanId::standard(raw).unwrap()
+    }
+
+    /// Look up a signal's decoded physical value, asserting it exists.
+    fn physical_of(msg: &DecodedMessage<'_>, name: &str) -> f64 {
+        signal_by_name(msg, name).value
+    }
+
+    #[test]
+    fn encode_returns_none_for_unknown_id() {
+        let db = Database::parse(SAMPLE_DBC).unwrap();
+        let mut base = vec![0u8; 8];
+        assert!(db.encode_frame(std_id(0x600), &[("Whatever", 0.0)], &mut base).is_none());
+    }
+
+    #[test]
+    fn encode_flags_unknown_signals_but_still_reports() {
+        let db = Database::parse(SAMPLE_DBC).unwrap();
+        let mut base = vec![0u8; 8];
+        let report = db
+            .encode_frame(
+                std_id(256),
+                &[("EngineSpeed", 1165.0), ("NotASignal", 0.0)],
+                &mut base,
+            )
+            .unwrap();
+        assert_eq!(report.written.len(), 1);
+        assert_eq!(report.written[0].name, "EngineSpeed");
+        assert_eq!(report.skipped.len(), 1);
+        assert_eq!(report.skipped[0].name, "NotASignal");
+        assert_eq!(report.skipped[0].reason, SkipReason::SignalNotFound);
+    }
+
+    #[test]
+    fn encode_round_trips_little_endian_unsigned_with_factor() {
+        let db = Database::parse(SAMPLE_DBC).unwrap();
+        let mut base = vec![0u8; 8];
+        // EngineSpeed: 16 LE bits factor 0.25.
+        db.encode_frame(std_id(256), &[("EngineSpeed", 1165.0)], &mut base)
+            .unwrap();
+        let decoded = db.decode(&make_frame(256, false, base.clone())).unwrap();
+        assert!((physical_of(&decoded, "EngineSpeed") - 1165.0).abs() < 1e-9);
+        // Bytes 0..2 are the encoded raw 0x1234; bytes 2..8 untouched.
+        assert_eq!(&base[0..2], &[0x34, 0x12]);
+        assert_eq!(&base[2..], &[0u8; 6]);
+    }
+
+    #[test]
+    fn encode_round_trips_little_endian_signed_negative() {
+        let db = Database::parse(SAMPLE_DBC).unwrap();
+        let mut base = vec![0u8; 8];
+        // LeSigned: 16 LE bits signed, factor 1 offset 0.
+        db.encode_frame(std_id(258), &[("LeSigned", -1.0)], &mut base)
+            .unwrap();
+        assert_eq!(&base[0..2], &[0xFF, 0xFF]);
+        let decoded = db.decode(&make_frame(258, false, base.clone())).unwrap();
+        let s = signal_by_name(&decoded, "LeSigned");
+        assert_eq!(s.raw_signed, -1);
+        assert!((s.value + 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn encode_round_trips_big_endian_signed_negative() {
+        let db = Database::parse(SAMPLE_DBC).unwrap();
+        let mut base = vec![0u8; 8];
+        // BeSigned lives at start_bit 23, 16 BE bits; bytes [2] then [3].
+        db.encode_frame(std_id(257), &[("BeSigned", -2.0)], &mut base)
+            .unwrap();
+        assert_eq!(base[2], 0xFF);
+        assert_eq!(base[3], 0xFE);
+        let decoded = db.decode(&make_frame(257, false, base.clone())).unwrap();
+        let s = signal_by_name(&decoded, "BeSigned");
+        assert_eq!(s.raw_signed, -2);
+    }
+
+    #[test]
+    fn encode_round_trips_offset_signal() {
+        let db = Database::parse(SAMPLE_DBC).unwrap();
+        let mut base = vec![0u8; 8];
+        // EngineTemp: 8 bits factor 1 offset -40 → physical 60 → raw 100.
+        db.encode_frame(std_id(256), &[("EngineTemp", 60.0)], &mut base)
+            .unwrap();
+        assert_eq!(base[2], 100);
+        let decoded = db.decode(&make_frame(256, false, base.clone())).unwrap();
+        assert!((physical_of(&decoded, "EngineTemp") - 60.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn encode_round_trips_ieee_float32_signal() {
+        // Lat has `SIG_VALTYPE_ … 1;`, factor 1 offset 0.
+        let db = Database::parse(SAMPLE_DBC).unwrap();
+        let mut base = vec![0u8; 8];
+        let physical = 37.7749_f64;
+        db.encode_frame(std_id(513), &[("Lat", physical)], &mut base)
+            .unwrap();
+        let decoded = db.decode(&make_frame(513, false, base.clone())).unwrap();
+        let lat = signal_by_name(&decoded, "Lat");
+        // f32 precision: agree to ~1e-5.
+        assert!((lat.value - physical).abs() < 1e-4);
+    }
+
+    #[test]
+    fn encode_preserves_neighbouring_bytes() {
+        let db = Database::parse(SAMPLE_DBC).unwrap();
+        // Pre-populate the payload with a pattern that doesn't overlap
+        // EngineSpeed's bytes — bytes 2..8 are EngineTemp/ThrottlePos/pad.
+        let mut base = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x12, 0x34, 0x56, 0x78];
+        db.encode_frame(std_id(256), &[("EngineSpeed", 1165.0)], &mut base)
+            .unwrap();
+        // Bytes 0..2 are EngineSpeed's; bytes 2..8 must survive intact.
+        assert_eq!(&base[2..], &[0xBE, 0xEF, 0x12, 0x34, 0x56, 0x78]);
+    }
+
+    #[test]
+    fn encode_saturates_out_of_range_unsigned() {
+        let db = Database::parse(SAMPLE_DBC).unwrap();
+        let mut base = vec![0u8; 8];
+        // EngineSpeed: 16-bit unsigned, factor 0.25. Max raw = 65535,
+        // max physical = 65535 * 0.25 = 16383.75. Asking for 20000 should
+        // saturate to raw=65535.
+        let report = db
+            .encode_frame(std_id(256), &[("EngineSpeed", 20000.0)], &mut base)
+            .unwrap();
+        assert_eq!(report.written.len(), 1);
+        assert!(report.written[0].saturated, "expected saturation flag");
+        assert_eq!(report.written[0].raw_unsigned, 0xFFFF);
+        assert_eq!(&base[0..2], &[0xFF, 0xFF]);
+
+        // Negative value on an unsigned signal saturates to 0.
+        let mut base = vec![0xAAu8; 8];
+        let report = db
+            .encode_frame(std_id(256), &[("EngineSpeed", -1.0)], &mut base)
+            .unwrap();
+        assert!(report.written[0].saturated);
+        assert_eq!(report.written[0].raw_unsigned, 0);
+        assert_eq!(&base[0..2], &[0x00, 0x00]);
+        // Bytes outside EngineSpeed's window preserved.
+        assert_eq!(&base[2..], &[0xAA; 6]);
+    }
+
+    #[test]
+    fn encode_saturates_out_of_range_signed() {
+        let db = Database::parse(SAMPLE_DBC).unwrap();
+        let mut base = vec![0u8; 8];
+        // LeSigned: 16-bit signed; max +32767, min -32768.
+        let report = db
+            .encode_frame(std_id(258), &[("LeSigned", 1e9)], &mut base)
+            .unwrap();
+        assert!(report.written[0].saturated);
+        // Raw bits should be the unsigned representation of 32767.
+        assert_eq!(report.written[0].raw_unsigned, 0x7FFF);
+
+        let report = db
+            .encode_frame(std_id(258), &[("LeSigned", -1e9)], &mut base)
+            .unwrap();
+        assert!(report.written[0].saturated);
+        // i16::MIN = -32768 = 0x8000 (low 16 bits).
+        assert_eq!(report.written[0].raw_unsigned, 0x8000);
+    }
+
+    #[test]
+    fn encode_skips_signals_that_dont_fit_base() {
+        let db = Database::parse(SAMPLE_DBC).unwrap();
+        // Only 1 byte of base; EngineSpeed needs 2.
+        let mut base = vec![0xAAu8; 1];
+        let before = base.clone();
+        let report = db
+            .encode_frame(std_id(256), &[("EngineSpeed", 1165.0)], &mut base)
+            .unwrap();
+        assert_eq!(report.written.len(), 0);
+        assert_eq!(report.skipped.len(), 1);
+        assert_eq!(report.skipped[0].reason, SkipReason::BaseTooShort);
+        // Base must be unchanged when the only signal was skipped.
+        assert_eq!(base, before);
+    }
+
+    #[test]
+    fn encode_round_trips_muxed_signals_for_each_arm() {
+        // MuxedMsg has Mux (selector), Mode0Field m0, Mode1Field m1,
+        // Always (plain). Encoding switch + the active arm's sub-signal
+        // should round-trip through decode.
+        let db = Database::parse(SAMPLE_DBC).unwrap();
+        let mut base = vec![0u8; 8];
+
+        // Arm 0: M=0, Mode0Field=0xAABB, Always=0x77.
+        db.encode_frame(
+            std_id(512),
+            &[
+                ("Mux", 0.0),
+                ("Mode0Field", 0xAABB_u32.into()),
+                ("Always", 0x77_u32.into()),
+            ],
+            &mut base,
+        )
+        .unwrap();
+        let decoded = db.decode(&make_frame(512, false, base.clone())).unwrap();
+        let names: Vec<&str> = decoded.signals.iter().map(|s| s.name).collect();
+        assert!(names.contains(&"Mode0Field"));
+        assert!(!names.contains(&"Mode1Field"));
+        assert_eq!(signal_by_name(&decoded, "Mode0Field").raw_unsigned, 0xAABB);
+        assert_eq!(signal_by_name(&decoded, "Always").raw_unsigned, 0x77);
+
+        // Arm 1: M=1, Mode1Field=0x1234 — write switch + new sub-signal
+        // in the same call. The bits for Mode0Field overlap Mode1Field
+        // in the payload, so Mode0Field bits get overwritten by the new
+        // sub-signal write. Always (a non-mux signal) survives.
+        db.encode_frame(
+            std_id(512),
+            &[("Mux", 1.0), ("Mode1Field", 0x1234_u32.into())],
+            &mut base,
+        )
+        .unwrap();
+        let decoded = db.decode(&make_frame(512, false, base.clone())).unwrap();
+        let names: Vec<&str> = decoded.signals.iter().map(|s| s.name).collect();
+        assert!(!names.contains(&"Mode0Field"));
+        assert!(names.contains(&"Mode1Field"));
+        assert_eq!(signal_by_name(&decoded, "Mode1Field").raw_unsigned, 0x1234);
+        // Always (byte 3, not part of mux) preserved through the switch.
+        assert_eq!(signal_by_name(&decoded, "Always").raw_unsigned, 0x77);
+    }
+
+    #[test]
+    fn describe_message_returns_rich_descriptor_with_range_and_mux() {
+        let db = Database::parse(SAMPLE_DBC).unwrap();
+        // MuxedMsg: switch + two mux arms + Always.
+        let desc = db.describe_message(std_id(512)).unwrap();
+        assert_eq!(desc.name, "MuxedMsg");
+        assert_eq!(desc.expected_len, 8);
+        assert!(!desc.uses_extended_mux);
+
+        let by_name: HashMap<&str, &SignalDescriptorRich> =
+            desc.signals.iter().map(|s| (s.name.as_str(), s)).collect();
+        assert!(matches!(by_name["Mux"].mux, SignalMux::Multiplexor));
+        assert!(matches!(
+            by_name["Mode0Field"].mux,
+            SignalMux::Multiplexed { selector: 0 },
+        ));
+        assert!(matches!(
+            by_name["Mode1Field"].mux,
+            SignalMux::Multiplexed { selector: 1 },
+        ));
+        assert!(matches!(by_name["Always"].mux, SignalMux::Plain));
+
+        // EngineSpeed declares [0|16383.75] — non-default range.
+        let speed = db
+            .describe_message(std_id(256))
+            .unwrap()
+            .signals
+            .into_iter()
+            .find(|s| s.name == "EngineSpeed")
+            .unwrap();
+        assert!((speed.min - 0.0).abs() < 1e-9);
+        assert!((speed.max - 16383.75).abs() < 1e-9);
+        assert_eq!(speed.size, 16);
+        assert!(!speed.signed);
+        assert!(matches!(speed.float_kind, FloatKind::Integer));
+        assert!((speed.factor - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn describe_message_marks_ieee_float_signals() {
+        let db = Database::parse(SAMPLE_DBC).unwrap();
+        let desc = db.describe_message(std_id(513)).unwrap();
+        let lat = desc.signals.iter().find(|s| s.name == "Lat").unwrap();
+        assert!(matches!(lat.float_kind, FloatKind::Float32));
+        // Alt has no SIG_VALTYPE_ entry — stays Integer despite being
+        // a signed 32-bit signal with a fractional factor.
+        let alt = desc.signals.iter().find(|s| s.name == "Alt").unwrap();
+        assert!(matches!(alt.float_kind, FloatKind::Integer));
+        assert!(alt.signed);
+    }
+
+    #[test]
+    fn describe_message_returns_none_for_unknown_id() {
+        let db = Database::parse(SAMPLE_DBC).unwrap();
+        assert!(db.describe_message(std_id(0x600)).is_none());
+    }
+
+    const FD_DBC: &str = r#"VERSION ""
+
+NS_ :
+
+BS_:
+
+BU_: ECU
+
+BO_ 100 ClassicByDefault: 8 ECU
+ SG_ Sig : 0|8@1+ (1,0) [0|0] "" ECU
+
+BO_ 200 FdByVFrameFormat: 8 ECU
+ SG_ Sig : 0|8@1+ (1,0) [0|0] "" ECU
+
+BO_ 300 FdBySize: 16 ECU
+ SG_ Sig : 0|8@1+ (1,0) [0|0] "" ECU
+
+BO_ 400 FdBrsOff: 8 ECU
+ SG_ Sig : 0|8@1+ (1,0) [0|0] "" ECU
+
+BA_DEF_ BO_ "VFrameFormat" INT 0 16;
+BA_DEF_ BO_ "GenMsgCANFDBRS" INT 0 1;
+BA_DEF_DEF_ "VFrameFormat" 0;
+BA_DEF_DEF_ "GenMsgCANFDBRS" 1;
+BA_ "VFrameFormat" BO_ 200 14;
+BA_ "VFrameFormat" BO_ 400 14;
+BA_ "GenMsgCANFDBRS" BO_ 400 0;
+"#;
+
+    #[test]
+    fn describe_message_derives_fd_from_vframeformat_or_size() {
+        let db = Database::parse(FD_DBC).unwrap();
+        let classic = db.describe_message(std_id(100)).unwrap();
+        assert!(!classic.is_fd, "size==8 with no VFrameFormat → classic");
+        assert!(!classic.brs);
+
+        let by_attr = db.describe_message(std_id(200)).unwrap();
+        assert!(by_attr.is_fd, "VFrameFormat=14 → FD");
+        assert!(by_attr.brs, "no GenMsgCANFDBRS → default true on FD");
+
+        let by_size = db.describe_message(std_id(300)).unwrap();
+        assert!(by_size.is_fd, "size>8 → FD fallback");
+        assert!(by_size.brs);
+
+        let brs_off = db.describe_message(std_id(400)).unwrap();
+        assert!(brs_off.is_fd);
+        assert!(!brs_off.brs, "GenMsgCANFDBRS=0 → BRS off");
+    }
+
+    #[test]
+    fn encode_round_trips_every_signal_in_demo_fixture() {
+        // Property test: for every (message, signal) pair, encoding the
+        // physical value `factor + offset` (which maps to raw = 1 for
+        // any integer signal, exactly representable for any signal
+        // size ≥ 1 bit, signed or unsigned) round-trips through decode
+        // to the same physical value. IEEE-typed signals just need a
+        // finite physical f32 / f64 can hold.
+        let db = Database::parse(SAMPLE_DBC).unwrap();
+        // Walk the signals via the parsed entries so we can look up
+        // factor / offset per signal. `db.signals()` returns a
+        // descriptor view that doesn't carry these.
+        for (key, entry) in &db.messages {
+            let (raw_id, extended) = message_id_parts(*key);
+            let id = if extended {
+                CanId::extended(raw_id).unwrap()
+            } else {
+                CanId::standard(raw_id).unwrap()
+            };
+            for sig in &entry.signals {
+                let physical: f64 = sig.signal.factor + sig.signal.offset;
+                let mut base = vec![0u8; entry.expected_len.max(8)];
+                let report = db
+                    .encode_frame(id, &[(sig.signal.name.as_str(), physical)], &mut base)
+                    .unwrap_or_else(|| panic!("encode_frame returned None for {}", entry.name));
+                assert_eq!(
+                    report.written.len(),
+                    1,
+                    "no successful write for {}::{} (skipped: {:?})",
+                    entry.name,
+                    sig.signal.name,
+                    report.skipped,
+                );
+
+                let decoded = db
+                    .decode(&make_frame(raw_id, extended, base.clone()))
+                    .unwrap();
+                // Muxed sub-signals are filtered by decode when the
+                // mux switch's encoded raw value doesn't match this
+                // arm; in that case there's nothing to compare against
+                // and we move on. The non-muxed and switch signals are
+                // always present.
+                if let Some(s) = decoded
+                    .signals
+                    .iter()
+                    .find(|s| s.name == sig.signal.name)
+                {
+                    // f32 IEEE signals lose precision in the bottom
+                    // few bits; everything else is exact.
+                    let tol = if matches!(
+                        sig.extended_type,
+                        SignalExtendedValueType::IEEEfloat32Bit
+                    ) {
+                        1e-5
+                    } else {
+                        1e-9
+                    };
+                    assert!(
+                        (s.value - physical).abs() < tol,
+                        "{}::{}: encoded {physical}, decoded back as {} (raw_unsigned={})",
+                        entry.name,
+                        sig.signal.name,
+                        s.value,
+                        s.raw_unsigned,
+                    );
+                }
+            }
+        }
     }
 }

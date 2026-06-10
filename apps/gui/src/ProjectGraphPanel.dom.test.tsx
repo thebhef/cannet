@@ -55,6 +55,7 @@ const projectCtx: ProjectContextValue = {
   buses: [{ id: "p", name: "Powertrain" }],
   interfaceBindings: [],
   connectedAddresses: [],
+  connectedBusIds: [],
   remoteConnected: false,
   blfPath: null,
   onNewProject: noop,

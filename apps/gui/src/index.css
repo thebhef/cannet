@@ -1639,9 +1639,11 @@ header {
   cursor: pointer;
 }
 
-/* Phase-5 transmit panel. Three-row body: a slim toolbar, then a
- * left-aside frame list + right-section editor that fill the rest. */
-.transmit-panel {
+/* Phase 10 Track 2 transmit panel. Single column of collapsible
+ * frame-tiles; each tile carries its own send / cyclic controls,
+ * identity strip, and bytes editor. Expanded view (steps 5-8) adds
+ * the frame-shape strip + signals table inline. */
+.tx-panel {
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -1649,7 +1651,7 @@ header {
   color: #e2e8f0;
   font-size: 0.85rem;
 }
-.transmit-panel-toolbar {
+.tx-panel-toolbar {
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -1657,158 +1659,420 @@ header {
   border-bottom: 1px solid #1f2630;
   background: #11161a;
 }
-.transmit-panel-toolbar button {
+.tx-panel-toolbar button {
   background: #0f141d;
   color: #94a3b8;
   border: 1px solid #2c3444;
   border-radius: 3px;
   font: inherit;
-  padding: 0.1rem 0.4rem;
+  padding: 0.1rem 0.5rem;
   cursor: pointer;
 }
-.transmit-status {
-  margin-left: auto;
-  color: #94a3b8;
-  font-size: 0.8rem;
+.tx-panel-toolbar button:hover {
+  color: #e2e8f0;
+  border-color: #3f4a5f;
 }
-.transmit-panel-body {
-  display: flex;
+.tx-panel-list {
   flex: 1 1 auto;
-  min-height: 0;
-}
-.transmit-frame-list {
-  width: 16rem;
-  border-right: 1px solid #1f2630;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
 }
-.transmit-frame-list .empty {
+.tx-empty {
   color: #94a3b8;
-  padding: 0.5rem;
+  padding: 0.75rem;
   font-style: italic;
 }
-.transmit-frame-row {
+
+/* One frame = one row-tile. */
+.tx-frame-row {
   display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.25rem 0.5rem;
-  cursor: pointer;
+  align-items: stretch;
   border-bottom: 1px solid #1a1f28;
 }
-.transmit-frame-row.active {
-  background: #1f2c3a;
+.tx-frame-row:hover {
+  background: #131923;
 }
-.transmit-frame-row-name {
-  flex: 1;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.tx-drag-handle {
+  width: 0.45rem;
+  flex: 0 0 auto;
+  cursor: grab;
+  /* Background colour is set inline (bus colour); slim by default,
+   * subtly highlights on hover so the grab target is discoverable. */
 }
-.transmit-frame-row-id {
-  color: #94a3b8;
-  font-family: ui-monospace, SFMono-Regular, monospace;
-  font-size: 0.78rem;
+.tx-drag-handle:hover {
+  filter: brightness(1.25);
 }
-.transmit-frame-row-remove {
-  background: transparent;
-  border: none;
-  color: #94a3b8;
-  cursor: pointer;
-  font-size: 1rem;
-  line-height: 1;
-}
-.transmit-frame-row-remove:hover {
-  color: #f87171;
-}
-.transmit-frame-editor {
-  flex: 1;
-  padding: 0.5rem;
-  overflow-y: auto;
-}
-.transmit-frame-editor .empty {
-  color: #94a3b8;
-  font-style: italic;
-}
-.transmit-editor-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  align-items: center;
-  margin-bottom: 0.5rem;
-}
-.transmit-editor-row label {
+.tx-frame-body {
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
-  font-size: 0.75rem;
-  color: #94a3b8;
+  padding: 0.35rem 0.5rem;
+  gap: 0.35rem;
+  min-width: 0;
+  /* The FD bytes editor uses container queries to pick its row
+   * length — see `.tx-bytes-fd` below. */
+  container-type: inline-size;
 }
-.transmit-editor-row label.grow {
-  flex: 1;
+
+/* Line 1: cycle controls + identity strip. */
+.tx-row-line {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
 }
-.transmit-editor-row label.grow input {
-  width: 100%;
+.tx-row-identity .tx-name {
+  flex: 1 1 8rem;
+  min-width: 4rem;
+  background: transparent;
+  color: #e2e8f0;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  font: inherit;
+  padding: 0.1rem 0.25rem;
 }
-.transmit-editor-warning {
-  outline: 1px solid #d97706;
+.tx-row-identity .tx-name:focus,
+.tx-row-identity .tx-name:hover {
+  border-color: #2c3444;
+  background: #0f141d;
 }
-.transmit-editor-row input,
-.transmit-editor-row select {
+.tx-row-identity .tx-bus,
+.tx-row-identity .tx-canid-input,
+.tx-row-identity .tx-period {
   background: #0f141d;
   color: #e2e8f0;
   border: 1px solid #2c3444;
   border-radius: 3px;
   font: inherit;
   padding: 0.1rem 0.25rem;
-  margin-top: 0.1rem;
 }
-.transmit-editor-row .mode-toggle button {
-  background: #0f141d;
+.tx-row-identity .tx-warn {
+  outline: 1px solid #d97706;
+}
+.tx-row-identity .tx-dbc-name {
   color: #94a3b8;
-  border: 1px solid #2c3444;
-  border-radius: 3px;
-  font: inherit;
-  padding: 0.1rem 0.4rem;
-  cursor: pointer;
-}
-.transmit-editor-row .mode-toggle button.active {
-  background: #1f2c3a;
-  color: #e2e8f0;
-}
-.transmit-editor-row > button {
-  background: #0f141d;
-  color: #94a3b8;
-  border: 1px solid #2c3444;
-  border-radius: 3px;
-  font: inherit;
-  padding: 0.1rem 0.4rem;
-  cursor: pointer;
-}
-.transmit-signals {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  margin: 0.5rem 0;
-}
-.transmit-signal {
-  display: grid;
-  grid-template-columns: 12rem 4rem 1fr;
-  gap: 0.5rem;
-  align-items: center;
-}
-.transmit-signal .signal-name {
+  font-size: 0.78rem;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  max-width: 12rem;
 }
-.transmit-signal .signal-unit {
+.tx-row-identity .tx-expand,
+.tx-row-identity .tx-remove {
+  background: transparent;
+  border: 1px solid transparent;
   color: #94a3b8;
-  font-size: 0.78rem;
+  cursor: pointer;
+  font: inherit;
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+  line-height: 1;
 }
-.transmit-signal .signal-hint {
+.tx-row-identity .tx-expand:hover {
+  color: #e2e8f0;
+  border-color: #2c3444;
+}
+.tx-row-identity .tx-remove:hover,
+.tx-row-identity .tx-remove-armed {
+  color: #f87171;
+  border-color: #7f1d1d;
+  background: #2a1414;
+}
+
+/* CAN-id input: `s:0x` / `x:0x` prefix + hex digits. */
+.tx-canid {
+  display: inline-flex;
+  align-items: center;
+  background: #0f141d;
+  border: 1px solid #2c3444;
+  border-radius: 3px;
+  padding: 0 0.25rem 0 0.35rem;
+}
+.tx-canid-prefix {
+  color: #64748b;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.78rem;
+  padding-right: 0.15rem;
+}
+.tx-canid-input {
+  background: transparent;
+  color: #e2e8f0;
+  border: none !important;
+  outline: none;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.85rem;
+  width: 5rem;
+  padding: 0.1rem 0 !important;
+}
+
+/* Cycle controls — manual / periodic toggle + the right action. */
+.tx-cycle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex: 0 0 auto;
+}
+.tx-cycle-toggle {
+  display: inline-flex;
+  border: 1px solid #2c3444;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.tx-cycle-toggle button {
+  background: #0f141d;
+  color: #94a3b8;
+  border: none;
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.1rem 0.45rem;
+  cursor: pointer;
+}
+.tx-cycle-toggle button.active {
+  background: #1f2c3a;
+  color: #e2e8f0;
+}
+.tx-send,
+.tx-start,
+.tx-stop {
+  background: #0f141d;
+  color: #cbd5e1;
+  border: 1px solid #2c3444;
+  border-radius: 3px;
+  font: inherit;
+  padding: 0.1rem 0.5rem;
+  cursor: pointer;
+}
+.tx-stop {
+  color: #fca5a5;
+  border-color: #7f1d1d;
+}
+.tx-send:disabled,
+.tx-start:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.tx-period {
+  width: 4.5rem;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}
+.tx-period-unit {
+  color: #64748b;
+  font-size: 0.75rem;
+  margin-left: -0.15rem;
+}
+
+/* Bytes editor — per-byte hex cells with index label above each.
+ *
+ * Classic frames (max 8 bytes) sit in a single row of 8.
+ * FD frames (up to 64 bytes) wrap at a *multiple of 8*: 8 by default
+ * (narrow panels), stepping up through 16 / 24 / 32 / 40 / 48 / 56 /
+ * 64 as the panel widens, via container queries on the row body. */
+.tx-bytes {
+  display: grid;
+  gap: 0.2rem 0.3rem;
+  padding: 0.1rem 0 0.1rem 0;
+  overflow-x: auto;
+}
+.tx-bytes-classic {
+  grid-template-columns: repeat(8, max-content);
+}
+.tx-bytes-fd {
+  grid-template-columns: repeat(8, max-content);
+}
+/* Each cell input is 2.1rem wide with a 0.3rem column gap, so 8
+ * additional cells need ~19rem more container width. Step up the
+ * row length by 8 cells at each threshold. */
+@container (min-width: 38rem) {
+  .tx-bytes-fd { grid-template-columns: repeat(16, max-content); }
+}
+@container (min-width: 58rem) {
+  .tx-bytes-fd { grid-template-columns: repeat(24, max-content); }
+}
+@container (min-width: 77rem) {
+  .tx-bytes-fd { grid-template-columns: repeat(32, max-content); }
+}
+@container (min-width: 96rem) {
+  .tx-bytes-fd { grid-template-columns: repeat(40, max-content); }
+}
+@container (min-width: 115rem) {
+  .tx-bytes-fd { grid-template-columns: repeat(48, max-content); }
+}
+@container (min-width: 134rem) {
+  .tx-bytes-fd { grid-template-columns: repeat(56, max-content); }
+}
+@container (min-width: 153rem) {
+  .tx-bytes-fd { grid-template-columns: repeat(64, max-content); }
+}
+.tx-bytes-none {
+  display: block;
   color: #64748b;
   font-style: italic;
   font-size: 0.78rem;
+  padding-left: 0.1rem;
+}
+.tx-byte-cell {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.05rem;
+}
+.tx-byte-cell .tx-byte-index {
+  color: #475569;
+  font-size: 0.65rem;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  line-height: 1;
+}
+.tx-byte-cell input {
+  width: 2.1rem;
+  background: #0f141d;
+  color: #e2e8f0;
+  border: 1px solid #2c3444;
+  border-radius: 3px;
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.85rem;
+  text-align: center;
+  padding: 0.15rem 0;
+}
+.tx-byte-cell input:focus {
+  outline: none;
+  border-color: #60a5fa;
+}
+.tx-bytes-fd .tx-byte-cell input {
+  /* FD frames have up to 64 bytes; give the cells slightly more
+   * vertical room so the wrapped grid scans cleanly. */
+  padding: 0.25rem 0;
+}
+
+/* Drop zone after the last row — lets the user drop a dragged frame
+ * at the end of the list. Invisible by default; only its slight
+ * height matters so there's a target. */
+.tx-frame-dropzone {
+  min-height: 0.5rem;
+  flex: 0 0 auto;
+}
+
+/* Expanded face — frame-shape strip on top, signals table below. */
+.tx-expanded {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding-top: 0.3rem;
+  border-top: 1px dashed #1f2630;
+}
+
+/* Frame-shape strip — kind/extended/BRS/DLC. */
+.tx-shape-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem 1rem;
+  align-items: center;
+  padding: 0.1rem 0.1rem 0.2rem 0.1rem;
+}
+.tx-shape-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: #94a3b8;
+  font-size: 0.78rem;
+}
+.tx-shape-field select,
+.tx-shape-field input[type="number"] {
+  background: #0f141d;
+  color: #e2e8f0;
+  border: 1px solid #2c3444;
+  border-radius: 3px;
+  font: inherit;
+  padding: 0.1rem 0.25rem;
+}
+.tx-shape-field select:disabled,
+.tx-shape-field input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.tx-shape-hint {
+  color: #64748b;
+  font-size: 0.72rem;
+  font-style: italic;
+  margin-left: auto;
+}
+.tx-shape-checkbox {
+  /* Looks like a label-prefixed checkbox; checkbox first so the click
+   * target reads naturally. */
+}
+
+/* Signals table — spreadsheet-dense rows: name | value | unit | range. */
+.tx-signals {
+  display: grid;
+  grid-template-columns: minmax(8rem, 14rem) minmax(6rem, 9rem) auto auto;
+  column-gap: 0.5rem;
+  row-gap: 0.05rem;
+  padding: 0.1rem 0.1rem;
+  align-items: center;
+}
+.tx-signals-empty {
+  color: #64748b;
+  font-style: italic;
+  font-size: 0.78rem;
+  padding: 0.1rem 0.1rem;
+}
+.tx-signals-extmux {
+  display: block;
+  color: #fcd34d;
+  font-size: 0.78rem;
+  padding: 0.3rem 0.5rem;
+  background: #1e1a0a;
+  border: 1px solid #4a3a0a;
+  border-radius: 3px;
+}
+.tx-signals-header {
+  display: contents;
+}
+.tx-signals-header > span {
+  color: #64748b;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid #1f2630;
+  padding-bottom: 0.1rem;
+  margin-bottom: 0.1rem;
+}
+.tx-signal-row {
+  display: contents;
+}
+.tx-signal-row .tx-col-name {
+  color: #cbd5e1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.82rem;
+}
+.tx-signal-row .tx-col-unit {
+  color: #94a3b8;
+  font-size: 0.78rem;
+}
+.tx-signal-row .tx-col-range {
+  color: #64748b;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+.tx-signal-input {
+  background: #0f141d;
+  color: #e2e8f0;
+  border: 1px solid #2c3444;
+  border-radius: 3px;
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.82rem;
+  padding: 0.08rem 0.3rem;
+  width: 100%;
+  box-sizing: border-box;
+}
+.tx-signal-input:focus {
+  outline: none;
+  border-color: #60a5fa;
 }
 
 /* Phase 7 — System Messages panel + unread badge */

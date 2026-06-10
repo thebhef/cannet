@@ -33,10 +33,12 @@ frame's `dataHex`. No new IPC shape — same pattern as `decode_frame`.
 **3. Bytes are the persisted source of truth; both views update
 from either.** A transmit frame's persisted state stays
 `dataHex: string`. The transmit panel shows two **simultaneously
-editable** tables — a signals table (hideable) and a bytes table
-(always visible). Editing a signal partial-encodes that signal's
-bits into the current bytes; the bytes table re-renders. Editing a
-byte updates `dataHex` directly; the signals table re-decodes. The
+editable** surfaces — a per-byte hex-cell strip (always visible in
+the frame's collapsed row) and a signals table (visible when the
+frame's row is expanded *and* its id maps to a DBC message).
+Editing a signal partial-encodes that signal's bits into the
+current bytes; the byte cells re-render. Editing a byte cell
+updates `dataHex` directly; the signals table re-decodes. The
 signals view is a derived projection over the bytes, never the
 other way round.
 

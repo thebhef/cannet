@@ -1294,12 +1294,11 @@ day-to-day use of the app and gives Phase 11's view-side convergence
 a stable hotkey/command surface from day one. Phases 13, 14, and 18
 keep what's left of their original scope.
 
-Track order: Track 1 (shipped). Then 2 → 4 → 3 → 5: transmit
-usability lands first because it's independent and the worst day-to-
-day pain; the command/hotkey framework lands next because Tracks 3
-and 5 register commands on it; plot pinpoints land third (its
-hotkeys ride the framework); DBC view + drag/drop lands fourth
-(its palette commands ride the framework, its search reuses the
+Track order: Track 1 (shipped), Track 2 (shipped). Then 4 → 3 → 5:
+the command/hotkey framework lands next because Tracks 3 and 5
+register commands on it; plot pinpoints land third (its hotkeys
+ride the framework); DBC view + drag/drop lands fourth (its
+palette commands ride the framework, its search reuses the
 framework's fuzzy matcher).
 
 ### Track 1 — `cannet-blf` Own Implementation
@@ -1388,14 +1387,19 @@ Deferred follow-ups:
 
 ### Track 2 — Transmit Usability
 
-Make the transmit panel's signal editing actually work. Today's
-panel (`apps/gui/src/TransmitPanel.tsx`) lets the user type raw hex
-into `dataHex` and pick an enum signal's raw value from a dropdown
-that copies a single byte into the payload; numeric signals have
-no input at all. A frame with a multi-byte signed signal or a
-big-endian message is unsendable without computing bytes by hand.
+Status: **shipped.** Made the transmit panel's signal editing
+actually work and reshaped the panel around the real workflow
+(interactive multi-frame poking) rather than a per-frame form. The
+prior panel let the user type raw hex into `dataHex` and pick an
+enum signal's raw value from a dropdown that copied a single byte
+into the payload; numeric signals had no input at all. A frame with
+a multi-byte signed signal or a big-endian message was unsendable
+without computing bytes by hand. The form-shaped layout (one frame
+in the sidebar, one tall form on the right, hex-string editor
+mode-toggled with a signal picker) wasted screen and hid the
+bytes ↔ signals relationship.
 
-What lands:
+**Encoder + descriptor commands (`cannet-dbc` + GUI host).**
 
 - **`cannet_dbc::Database::encode_frame`** — the inverse of
   `decode`. Encodes `{signal_name → f64}` into the message's
@@ -1403,46 +1407,112 @@ What lands:
   offset, signedness, big- and little-endian, multi-byte signals,
   floats / doubles, and **multiplexed messages** (simple mux:
   one `M` switch + `m<N>` sub-signals). The encoder is a
-  *partial encode* — it writes only the bits the named signal
-  covers, preserving other bytes. Round-trip tests against
+  *partial encode* — it writes only the bits the named signals
+  cover, preserving other bytes. Round-trip tests against
   `decode` over the demo fixture; oracle tests for mux against
   a hand-encoded reference.
-- **`encode_frame` Tauri command** in the GUI host. The panel
-  calls it on every signal edit; the host returns the new
-  payload bytes which the panel writes back into `dataHex`.
-- **Two simultaneous editable tables** in the transmit frame
-  detail, replacing today's mode toggle:
-  - **Signals table.** One row per signal, columns: `name`,
-    `value` (editable — numeric input for plain, dropdown plus
-    raw-numeric input for enum), `unit`, `[min, max]` (derived
-    from `factor` / `offset` / `length` / `signed`),
-    `start · length · endianness · signed?` (compact hint).
-    Multiplexed messages show the mux switch signal first; sub-
-    signals dim / hide based on the current switch value. The
-    signals table is **hideable** (single toggle on the frame
-    toolbar).
-  - **Bytes table.** Always visible. One row per byte, columns:
-    `#`, `hex` (editable, two hex digits), `bin` (read-only
-    `0b…`), `signals` (names of signals whose bits live in this
-    byte; dim if signal is mux-inactive).
-- **Bytes are the source of truth, both views update from
-  either.** Persisted state stays `dataHex`. Editing a signal
-  partial-encodes the changed signal's bits into the current
-  bytes; the bytes table re-renders. Editing a byte sets
-  `dataHex` directly; the signals table re-decodes. Mux-inactive
-  byte regions are never clobbered by signal edits.
+- **`cannet_dbc::Database::describe_message`** — rich per-message
+  view: name, declared length, `is_fd` (from `VFrameFormat`
+  14/15, with `size > 8` fallback), `brs` (from `GenMsgCANFDBRS`,
+  defaulting to `true` on FD), `uses_extended_mux`, and a vector
+  of rich per-signal descriptors (`factor / offset / size /
+  signed / min / max / mux indicator / float kind /
+  has_value_table`).
+- **Tauri commands.** Three new entries in the GUI host:
+  `encode_frame` (writes signal edits back to bytes),
+  `describe_message` (the metadata above — feeds the signals
+  table headers + the FD / BRS auto-derivation), `decode_frame`
+  (decodes a hypothetical panel-side payload through the loaded
+  DBCs — feeds the signals table values without the frame
+  needing to be in the trace store).
+
+**Panel shape.** Single vertical column of frames; each frame is a
+collapsible row-tile. Many tiles can be expanded at once.
+Drag-reorderable via a far-left handle tinted with the destination
+bus's colour. Clicking anywhere on the row that isn't an
+interactive control (input, select, button, …) toggles the row's
+expansion. Persisted state per frame stays `dataHex` (bytes as
+source of truth — see ADR 0017).
+
+**Collapsed face (per frame).** Two regions:
+
+- *Line 1 (control + identity).* Drag handle · manual/periodic
+  toggle (manual → `send`; periodic → period-ms input + start /
+  stop) · name · bus · id (hex) · DBC message name when the id
+  matches a loaded DBC · `×` remove with confirm-on-click.
+- *Line 2+ (bytes editor).* Per-byte editable hex cells with
+  `Tab` / `Shift+Tab` navigation between cells. Classic frames = 8
+  cells in one row. FD frames wrap at *a multiple of 8 cells per
+  row* — 8 at narrow panel widths, stepping up through 16 / 24 /
+  32 / 40 / 48 / 56 / 64 as the panel widens (CSS container
+  queries on the row body). The bytes editor *is* the bytes view —
+  there is no separate bytes table elsewhere.
+
+**Transmit is a no-op when the bus isn't connected.** The
+project context exposes `connectedBusIds` (derived from
+`interfaceBindings` + `connectedAddresses` + the resolved sidecar
+address). When a frame's bus isn't in that set, `send` and
+`start` are disabled with an explanatory tooltip, and the cyclic
+scheduler (if it's running from a prior connected period) skips
+ticks until the session comes back. No frames hit the local
+trace as Tx-confirms while disconnected — the trace stays a
+faithful record of what actually went on the wire.
+
+Successful sends are visible as Tx-confirm rows in the trace;
+failures and any unusual conditions write to the system log via
+the existing `sys_info` / `sys_error` paths. There is no inline
+last-send status on the tile.
+
+**Expanded face (per frame).** Two regions:
+
+- *Frame-shape strip.* Kind, extended toggle, BRS (FD only),
+  DLC (remote only). **`kind` and `brs` are derived from the
+  DBC** when the frame's id binds to a message: `kind` from the
+  `VFrameFormat` attribute (14/15 → FD) with `size > 8` as
+  fallback, and `brs` from `GenMsgCANFDBRS` (defaulting to `true`
+  for FD messages with no attribute). The corresponding controls
+  are disabled when DBC-bound and labelled accordingly; for
+  unbound frames the user picks both directly. Remote / error
+  kinds aren't DBC-derivable and remain user-selectable.
+- *Signals table.* Only when the frame is bound to a DBC message.
+  Spreadsheet-dense rows. Columns: `name` · `value` (editable) ·
+  `unit` · `range`. Range is taken from the DBC `SG_ [min|max]`
+  fields when set; when the DBC declares `[0|0]` (no constraint),
+  the range is derived from `factor·raw_min + offset .. factor·raw_max + offset`.
+  Plain signals: numeric input. Enum signals: a combobox that
+  filters by label or accepts a raw number typed directly. No bit-
+  level columns (`start_bit`, `length`, `endianness`, `signed?`) —
+  that's DBC-editor territory.
+
+**Mux (simple).** Active arm only — sub-signals for inactive
+`m<N>` arms are not shown. When the mux switch changes, the new
+arm's sub-signal bits are zeroed (the new arm starts fresh; the
+encoder leaves no leakage from the previous arm).
+
+**Nested / extended mux (`m0M`, `m1M`, …).** Signals table
+replaced by a short note explaining that the message uses extended
+multiplexing and isn't decoded for editing here. Bytes remain
+editable — the frame can still be sent.
+
+**Drop ESI.** The CAN-FD Error State Indicator flag is a niche
+fuzz/test affordance and has no real use from a transmit panel.
+Removed from the panel entirely; `transmit_frame` still accepts an
+`esi` field (defaulted to `false`) so the IPC shape is unchanged.
 
 ADR: [`docs/adr/0017-transmit-signal-encoder-and-bytes-source-of-truth.md`](../docs/adr/0017-transmit-signal-encoder-and-bytes-source-of-truth.md)
 captures (i) where the encoder lives (`cannet-dbc`), (ii) the
 partial-encode semantics, and (iii) the bytes-as-source-of-truth
 two-way sync model.
 
-Deferred follow-ups (backlog):
+Deferred follow-ups:
 
-- **Nested / extended multiplexing** (`m0M`, `m1M`, …) — rare in
-  practice and wants a recursive mux-picker UI. Messages with
-  extended mux degrade to "raw bytes only" mode with a clear note.
+- **Nested / extended multiplexing** in the signals table — wants
+  a recursive mux-picker UI; out of scope here.
 - **CRC + sequence-count fields** stays a **Phase 17** feature.
+- **Host-side periodic scheduler** — today's per-tick `setInterval`
+  in the panel is rate-limited by the UI tick (see backlog: 1 ms
+  cyclic transmit observed at ~20-40 msg/s). Moving the cycle loop
+  fully host-side is its own piece of work and isn't bundled here.
 
 Exit criteria:
 
@@ -1450,18 +1520,43 @@ Exit criteria:
   `decode` for every signal in the demo fixture (factor / offset,
   signed / unsigned, BE / LE, multi-byte, floats, simple mux).
 - Editing any plain signal's value in the panel produces the
-  correct payload bytes; editing an enum signal via its dropdown
-  produces the correct multi-byte encoding (not just the one
-  byte today's panel writes).
-- Editing a single byte in the bytes table updates the visible
-  signal values without clobbering bits outside the edited byte.
+  correct payload bytes; editing an enum signal via its combobox
+  produces the correct multi-byte encoding (not just the one byte
+  today's panel writes).
+- Editing a single byte cell updates the visible signal values
+  without clobbering bits outside the edited byte.
 - A multiplexed message: changing the mux switch swaps the
-  visible sub-signals; editing a sub-signal's value updates only
-  the bits for the currently active mux.
-- Backlog item removed: "cannet-gui transmit panel: proper
-  signal-to-bytes encoding".
-- Rustdoc on `cannet_dbc::Database::encode_frame` covers the
-  partial-encode contract; the ADR is checked in.
+  visible sub-signals and zeroes the new arm's sub-signal bits;
+  editing a sub-signal's value updates only the bits for the
+  currently active mux.
+- A frame whose id has no matching DBC message edits as bytes
+  only (no signals table).
+- A frame whose DBC message uses extended multiplexing edits as
+  bytes only (signals-table replaced by an explanatory note).
+- A frame whose DBC message has `VFrameFormat` 14/15 (or
+  `size > 8`) automatically gets `kind = "fd"`; the kind selector
+  in the expanded face is disabled. `GenMsgCANFDBRS = 0` clears
+  the BRS checkbox; default `1` (or absent) sets it. Both
+  controls become editable again when the frame's id is changed
+  to one with no DBC match.
+- The `send` and `start` controls are disabled when the frame's
+  bus has no live remote session (`projectContext.connectedBusIds`
+  doesn't include the bus). A cyclic schedule started during a
+  connected period skips ticks while disconnected and resumes on
+  reconnect — no Tx-confirm rows land in the trace while
+  disconnected.
+- Clicking the row body (anywhere not on an interactive control)
+  toggles the row's expansion. The bus-tinted drag handle on the
+  left edge reorders frames within the list.
+- FD frames wrap their byte cells at a multiple of 8 (8 at narrow
+  widths, stepping up through 16/24/32/40/48/56/64 as the panel
+  widens).
+- Backlog item removed: "[feat] cannet-gui transmit panel: top
+  level start/stop button in message list view" (now per-frame in
+  the collapsed face).
+- Rustdoc on `cannet_dbc::Database::encode_frame` and
+  `Database::describe_message` covers the partial-encode contract
+  and the DBC-derived FD / BRS rules; the ADR is checked in.
 
 ### Track 3 — Plot Pinpoints
 

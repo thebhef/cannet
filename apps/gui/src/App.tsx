@@ -1318,6 +1318,19 @@ export function App() {
         .map(([addr]) => addr),
     [remoteSessions],
   );
+  // A bus is "connected" when its interface binding resolves to one
+  // of the running session addresses. The transmit panel gates
+  // send / start on this.
+  const connectedBusIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const b of interfaceBindings) {
+      const resolved = resolveServer(b.server, sidecarAddress);
+      if (resolved && connectedAddresses.includes(resolved)) {
+        set.add(b.bus_id);
+      }
+    }
+    return Array.from(set);
+  }, [interfaceBindings, sidecarAddress, connectedAddresses]);
 
   const blfPath =
     state.kind === "loading" || state.kind === "running" || state.kind === "done"
@@ -1334,6 +1347,7 @@ export function App() {
       interfaceBindings,
       connectedAddresses,
       remoteConnected,
+      connectedBusIds,
       blfPath,
       onNewProject: handleNewProject,
       onOpenProject: handleOpenProject,
@@ -1361,6 +1375,7 @@ export function App() {
       interfaceBindings,
       connectedAddresses,
       remoteConnected,
+      connectedBusIds,
       blfPath,
       handleNewProject,
       handleOpenProject,

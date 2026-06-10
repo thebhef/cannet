@@ -139,7 +139,6 @@ trip over it.
   refactor (host-side periodic scheduler + signal-to-bytes encoding
   in `cannet-dbc`); revisit after that lands and drop this item if
   the refactor covers it.
-- `[feat]` `cannet-gui` transmit panel: top level start/stop button in message list view
 
 ### Cursors and markers
 

@@ -60,7 +60,7 @@ pub struct DecodedRecord {
     pub signals: Vec<SignalRecord>,
 }
 
-#[derive(serde::Serialize, Clone)]
+#[derive(serde::Serialize, Clone, Debug)]
 pub struct SignalRecord {
     pub name: String,
     /// Physical value (raw * factor + offset).
@@ -258,6 +258,102 @@ pub struct SignalDescriptorRecord {
 pub struct ValueTableEntryRecord {
     pub raw: i64,
     pub label: String,
+}
+
+/// One signal edit the transmit panel wants pushed through the encoder:
+/// the DBC signal name and the physical value the user typed. The host
+/// runs every entry through [`cannet_dbc::Database::encode_frame`] in
+/// order; partial encode means the call effectively writes one signal's
+/// bits at a time, leaving everything else intact.
+#[derive(serde::Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct EncodeFrameSignal {
+    pub name: String,
+    pub physical: f64,
+}
+
+/// Response from `encode_frame`. `bytes` is the partial-encoded
+/// payload — `dataHex` for the frame goes through `bytes.to_hex()` on
+/// the frontend. `skipped` lists each signal the encoder couldn't
+/// place (unknown name, signal bits past the end of `base`, …) so the
+/// panel can surface a hint; in normal use the panel only passes
+/// signals it just listed via `list_signals`, so this stays empty.
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct EncodeFrameResponse {
+    pub bytes: Vec<u8>,
+    pub skipped: Vec<EncodeFrameSkipped>,
+}
+
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct EncodeFrameSkipped {
+    pub name: String,
+    /// Stable identifier the frontend can match on:
+    /// `signal_not_found` / `base_too_short` / `size_out_of_range`.
+    pub reason: &'static str,
+}
+
+/// Rich descriptor for one DBC message — what the transmit panel's
+/// signals table needs to render rows. Returned by
+/// `describe_message`. `None` (Tauri-side `null`) when no DBC matches
+/// the requested `(message_id, extended)` pair.
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageDescriptorRecord {
+    pub name: String,
+    /// `BO_` declared length in bytes.
+    pub expected_len: usize,
+    /// `true` when the DBC marks this as a CAN-FD message
+    /// (`VFrameFormat` = 14/15, or `expected_len > 8` as fallback).
+    pub is_fd: bool,
+    /// CAN-FD BRS from the `GenMsgCANFDBRS` attribute (default `true`
+    /// on FD messages with no attribute). Always `false` on classic.
+    pub brs: bool,
+    /// `true` iff any signal uses nested / extended multiplexing
+    /// (`m<N>M`). The transmit panel falls back to bytes-only editing
+    /// in that case.
+    pub uses_extended_mux: bool,
+    pub signals: Vec<SignalDescriptorRichRecord>,
+}
+
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SignalDescriptorRichRecord {
+    pub name: String,
+    pub unit: String,
+    pub factor: f64,
+    pub offset: f64,
+    /// DBC `SG_` declared min. When `min == max` the DBC didn't set a
+    /// useful range — the transmit panel derives a fallback from
+    /// `factor / offset / size / signed`.
+    pub min: f64,
+    pub max: f64,
+    pub size: u32,
+    pub signed: bool,
+    pub mux: SignalMuxRecord,
+    /// `integer` / `float32` / `float64`. Float kinds have no integer
+    /// range; the panel renders a free-form numeric input.
+    pub float_kind: &'static str,
+    pub has_value_table: bool,
+}
+
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SignalMuxRecord {
+    Plain,
+    Multiplexor,
+    Multiplexed { selector: u64 },
+    MultiplexorAndMultiplexed { selector: u64 },
+}
+
+/// Decoded signals for a hypothetical frame the transmit panel is
+/// constructing — same shape the trace view uses for received frames,
+/// but reached through `decode_frame` (no [`crate::trace_store`]
+/// involvement). `None` when no DBC matches the id.
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct DecodedFrameRecord {
+    pub name: String,
+    pub signals: Vec<SignalRecord>,
 }
 
 /// One `(bus, message, signal)` triple a plot panel wants sampled —

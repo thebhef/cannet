@@ -276,6 +276,83 @@ export interface ValueTableEntryRecord {
   label: string;
 }
 
+/// One signal edit passed to the `encode_frame` Tauri command: the DBC
+/// signal name and the physical value the user typed. The host walks
+/// the entries in order and partial-encodes each into the supplied
+/// payload — bits the named signal covers are overwritten, every
+/// other bit is preserved.
+export interface EncodeFrameSignal {
+  name: string;
+  physical: number;
+}
+
+/// Response from `encode_frame`. `bytes` is the partial-encoded
+/// payload (one entry per byte, 0–255). `skipped` carries any signal
+/// the encoder couldn't place — in normal use this stays empty
+/// because the panel only passes signal names it just listed via
+/// `list_signals`.
+export interface EncodeFrameResponse {
+  bytes: number[];
+  skipped: EncodeFrameSkipped[];
+}
+
+export interface EncodeFrameSkipped {
+  name: string;
+  /// `signal_not_found` | `base_too_short` | `size_out_of_range`.
+  reason: string;
+}
+
+/// Rich descriptor for one DBC message — what the transmit panel
+/// needs to render its signals table. Returned by `describe_message`;
+/// `null` when no loaded DBC matches the requested id.
+export interface MessageDescriptorRecord {
+  name: string;
+  expectedLen: number;
+  /// `true` when the DBC marks this as a CAN-FD message
+  /// (`VFrameFormat` = 14/15, or `expectedLen > 8` as fallback). The
+  /// transmit panel mirrors this onto the frame's `kind`.
+  isFd: boolean;
+  /// CAN-FD BRS, `true` for FD messages by default unless the DBC's
+  /// `GenMsgCANFDBRS` attribute sets it to 0. Always `false` on
+  /// classic messages.
+  brs: boolean;
+  /// `true` iff any signal uses nested / extended multiplexing
+  /// (`m<N>M`). The transmit panel falls back to bytes-only editing
+  /// in that case.
+  usesExtendedMux: boolean;
+  signals: SignalDescriptorRichRecord[];
+}
+
+export interface SignalDescriptorRichRecord {
+  name: string;
+  unit: string;
+  factor: number;
+  offset: number;
+  /// DBC `SG_` declared min. When `min === max` the DBC didn't set a
+  /// useful range — the panel derives a fallback from
+  /// `factor / offset / size / signed`.
+  min: number;
+  max: number;
+  size: number;
+  signed: boolean;
+  mux: SignalMuxRecord;
+  floatKind: "integer" | "float32" | "float64";
+  hasValueTable: boolean;
+}
+
+export type SignalMuxRecord =
+  | { kind: "plain" }
+  | { kind: "multiplexor" }
+  | { kind: "multiplexed"; selector: number }
+  | { kind: "multiplexor_and_multiplexed"; selector: number };
+
+/// Decoded signals for a hypothetical (panel-side) frame — returned
+/// by `decode_frame`. Empty signals on `null` (no DBC match).
+export interface DecodedFrameRecord {
+  name: string;
+  signals: SignalRecord[];
+}
+
 /// One signal's freshly-decoded points from `sample_signals`: parallel
 /// `(t, v)` arrays, `t` in absolute seconds.
 export interface SampledPoints {
