@@ -2800,3 +2800,18 @@ header {
   background: rgba(153, 27, 27, 0.45) !important;
   color: #fecaca;
 }
+
+/* transmit panel: calculated-fields strip (shared editor, ADR 0027) */
+.tx-calc-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 11px;
+}
+.tx-calc-label { color: #64748b; }
+.tx-calc-summary {
+  font-family: ui-monospace, monospace;
+  color: #a5b4fc;
+}
+.tx-calc-summary em { color: #eab308; font-style: normal; }
