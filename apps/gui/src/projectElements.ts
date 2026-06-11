@@ -1,6 +1,6 @@
 import { createContext, useContext } from "react";
 
-import type { ProjectElement, ProjectElementKind } from "./types";
+import type { ColorRule, ProjectElement, ProjectElementKind } from "./types";
 import type { TraceState } from "./trace";
 
 /// A registry entry: the persisted project element plus its runtime
@@ -65,7 +65,8 @@ export function isProjectElement(v: unknown): v is ProjectElement {
       o.kind === "plot" ||
       o.kind === "transmit" ||
       o.kind === "filter" ||
-      o.kind === "rbs") &&
+      o.kind === "rbs" ||
+      o.kind === "colormap") &&
     typeof o.id === "string"
   );
 }
@@ -104,8 +105,44 @@ export function normalizeElement(el: ProjectElement): ProjectElement {
       run: runRaw === true,
     };
   }
+  if (el.kind === "colormap") {
+    // A signal value→color map (ADR 0029): not a consumer, so no
+    // `sources`. Coerce the target-signal fields and rule list defensively
+    // so a malformed blob loads as an inert, editable map.
+    const o = el as unknown as {
+      busId?: unknown;
+      messageId?: unknown;
+      extended?: unknown;
+      signalName?: unknown;
+      rules?: unknown;
+    };
+    return {
+      ...el,
+      name,
+      busId: typeof o.busId === "string" ? o.busId : null,
+      messageId: typeof o.messageId === "number" ? o.messageId : 0,
+      extended: o.extended === true,
+      signalName: typeof o.signalName === "string" ? o.signalName : "",
+      rules: normalizeColorRules(o.rules),
+    };
+  }
   const raw = (el as unknown as { sources?: unknown }).sources;
   return { ...el, name, sources: stringList(raw, ["*"]) } as ProjectElement;
+}
+
+/// Coerce an unknown value to a well-formed `ColorRule[]` (ADR 0029),
+/// dropping any entry missing numeric `min`/`max` or a string `color`.
+function normalizeColorRules(v: unknown): ColorRule[] {
+  if (!Array.isArray(v)) return [];
+  const out: ColorRule[] = [];
+  for (const r of v) {
+    if (r == null || typeof r !== "object") continue;
+    const o = r as { min?: unknown; max?: unknown; color?: unknown };
+    if (typeof o.min === "number" && typeof o.max === "number" && typeof o.color === "string") {
+      out.push({ min: o.min, max: o.max, color: o.color });
+    }
+  }
+  return out;
 }
 
 /// Coerce an unknown value to a `string[]`, falling back to

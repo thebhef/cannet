@@ -61,6 +61,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "panel.add.plot", label: "Add plot panel", category: "Panels" },
   { id: "panel.add.transmit", label: "Add transmit panel", category: "Panels" },
   { id: "panel.add.rbs", label: "Add RBS panel", category: "Panels" },
+  { id: "panel.add.colormap", label: "Add color map", category: "Panels" },
   { id: "project.saveAll", label: "Save all", category: "Project" },
   {
     id: "rbs.killSwitch",

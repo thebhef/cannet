@@ -116,11 +116,16 @@ export function deriveGraph(
   }
 
   const busIds = new Set(buses.map((b) => b.id));
+  // Colour-map elements (ADR 0029) are ambient modifiers, not graph
+  // nodes — they never appear in the project graph or its wiring.
+  const graphElements = elements.filter(
+    (e): e is Exclude<ProjectElement, { kind: "colormap" }> => e.kind !== "colormap",
+  );
   const filterIds = new Set(
-    elements.filter((e) => e.kind === "filter").map((e) => e.id),
+    graphElements.filter((e) => e.kind === "filter").map((e) => e.id),
   );
 
-  for (const el of elements) {
+  for (const el of graphElements) {
     // Every element node's label resolves through the one shared
     // `elementLabel` (ADR 0019) — same string as the dockview tab,
     // the project panel, and the go-to-view palette.
@@ -132,7 +137,7 @@ export function deriveGraph(
     });
   }
 
-  for (const el of elements) {
+  for (const el of graphElements) {
     if (el.kind === "transmit") {
       // Producer-side wiring: one edge per explicit bus in `sinks`.
       // No wildcard support — `sinks` is always a literal list

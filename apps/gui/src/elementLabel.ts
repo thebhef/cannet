@@ -22,6 +22,8 @@ export function elementKindLabel(kind: ProjectElementKind): string {
       return "Filter";
     case "rbs":
       return "RBS";
+    case "colormap":
+      return "Color Map";
   }
 }
 

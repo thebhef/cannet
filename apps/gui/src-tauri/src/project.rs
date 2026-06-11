@@ -4,8 +4,8 @@
 //! The host owns the project model. The two fields it *doesn't*
 //! interpret are `layout` (`dockview`'s serialized layout blob) and
 //! `elements` (the project's elements — `trace` / `plot` / `transmit`
-//! / `filter`, each an opaque `{kind, id, …}` record the frontend
-//! defines); the host just round-trips both.
+//! / `filter` / `rbs` / `colormap`, each an opaque `{kind, id, …}`
+//! record the frontend defines); the host just round-trips both.
 //!
 //! Carries: the panel layout, the project elements, the loaded DBCs +
 //! per-DBC bus scoping, the logical-bus list, the interface → bus
@@ -165,8 +165,8 @@ pub struct Project {
     /// this; it's the frontend's serialized layout.
     pub layout: serde_json::Value,
     /// The project's elements — `trace` / `plot` / `transmit` /
-    /// `filter`, each an opaque `{kind, id, …}` record. The host
-    /// doesn't read these; the frontend owns the shape.
+    /// `filter` / `rbs` / `colormap`, each an opaque `{kind, id, …}`
+    /// record. The host doesn't read these; the frontend owns the shape.
     #[serde(default)]
     pub elements: Vec<serde_json::Value>,
     /// Logical buses the project knows about.

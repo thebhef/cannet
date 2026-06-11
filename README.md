@@ -655,6 +655,21 @@ exempt.
 > a Vite dev server (which `tauri dev` starts for you) or a built
 > frontend at `apps/gui/dist`. Use the `pnpm tauri` commands above.
 
+### Signal value→color maps
+
+**Add color map** opens a value→color map config panel (ADR 0029).
+A color map is a standalone, DBC-informed project element that targets
+one signal and assigns colors to its values — enum states each get a
+color (seeded from the DBC `VAL_` table), or a numeric band can be
+given a color over an inclusive `[min, max]` range. Unlike a filter it
+isn't wired through the graph: it's **ambient**, so any view rendering
+the target signal shows the colour. The expanded trace rows tint the
+signal's value cell; a plot fills the **enum logic-analyzer lane box**
+for each held value. Maps live in the project file and resolve
+first-match — the first map (and within it, the first rule) that covers
+a value wins. This is a first-cut prototype; the rule editor and
+numeric-signal plot rendering will grow.
+
 ### Phase-6 logical buses, filters & project graph
 
 Phase 6 makes "logical bus" the abstraction frames belong to and
