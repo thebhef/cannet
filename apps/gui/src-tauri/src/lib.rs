@@ -51,7 +51,7 @@ mod transmit_frames;
 mod transmit_scheduler;
 mod verification;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -64,7 +64,7 @@ use cannet_client::{PreSubscribeConfig, SessionHandle, SessionTransmitter, Subsc
 use cannet_core::{CanFrame as CoreCanFrame, CanFrameSource, CanId};
 use cannet_dbc::{Database, DecodedSignal};
 use dbc_watcher::DbcWatcher;
-use filter::FilterPredicate;
+use filter::{DecodeDependentLeaf, FilterPredicate};
 
 use ipc::{
     ByIdSnapshot, DbcAttributeRecord, DbcContentRecord, DbcInfo, DbcMessageContentRecord,
@@ -1097,6 +1097,50 @@ fn dbc_applies_to_frame(dbc: &LoadedDbc, frame: &RawTraceFrame) -> bool {
     }
 }
 
+/// Resolve `filter`'s decode-dependent leaves against the loaded DBCs
+/// into the set of arbitration ids whose decode could change the
+/// predicate's verdict — the *decode candidates*. A `name_regex` leaf
+/// contributes every id whose message name matches in any DBC; a
+/// `signal_equals` leaf contributes every id whose message carries a
+/// signal with that name.
+///
+/// For a frame whose id is outside the set, no DBC decodes it to a
+/// matching name / signal, so the decode-dependent leaves evaluate
+/// false with or without the decode and the raw leaves never read it —
+/// skipping the decode cannot change the scan's result. This is what
+/// keeps `fetch_filtered_trace`'s repeated full-window scans from
+/// decoding every frame in the session: the per-frame decode gate
+/// collapses to a set lookup, and only actual candidates pay for a
+/// decode. The set is keyed on the raw id alone (standard/extended
+/// collisions just decode a few extra frames — a harmless superset).
+fn decode_candidate_ids(dbs: &[LoadedDbc], filter: &FilterPredicate) -> HashSet<u32> {
+    let leaves = filter.decode_dependent_leaves();
+    let mut out = HashSet::new();
+    if leaves.is_empty() {
+        return out;
+    }
+    for d in dbs {
+        for (id, _extended, name) in d.db.message_names() {
+            let hit = leaves.iter().any(|l| {
+                matches!(l, DecodeDependentLeaf::MessageNameRegex(p)
+                    if filter::regex_match(p, name))
+            });
+            if hit {
+                out.insert(id);
+            }
+        }
+        for (id, _extended, sig) in d.db.signal_names() {
+            let hit = leaves
+                .iter()
+                .any(|l| matches!(l, DecodeDependentLeaf::SignalName(n) if *n == sig));
+            if hit {
+                out.insert(id);
+            }
+        }
+    }
+    out
+}
+
 /// Pull a `[start, end)` slice out of the trace store and decode each
 /// frame against the currently-attached DBC. The caller is expected to
 /// be the trace view, sizing `end - start` to the visible window plus a
@@ -1214,10 +1258,14 @@ async fn fetch_latest_by_id(
 ///
 /// The scan runs by reference inside the trace store
 /// ([`TraceStore::scan_window_filtered`]) — only the returned page's
-/// frames are cloned, never the whole window. Decoding is per-frame
-/// only when the predicate needs decoded fields
-/// ([`FilterPredicate::needs_decode`]); the page is always decoded for
-/// display.
+/// frames are cloned, never the whole window. The scan never decodes
+/// blindly: when the predicate has decode-dependent leaves, they're
+/// pre-resolved to a candidate-id set ([`decode_candidate_ids`]) and
+/// only frames whose id is in the set are decoded — every other
+/// frame's test is a raw-field check plus a set lookup. The scan holds
+/// the trace-store lock (which the ingest pump's `append` contends
+/// on), so per-frame work here directly bounds sustainable capture
+/// rate. The page is always decoded for display.
 ///
 /// `async` so Tauri runs it off the main thread, like `fetch_trace_range`.
 #[tauri::command]
@@ -1234,8 +1282,8 @@ async fn fetch_filtered_trace(
     let state: State<'_, AppState> = app.state();
     let start_us = usize::try_from(scan_start).unwrap_or(usize::MAX);
     let end_us = usize::try_from(scan_end).unwrap_or(usize::MAX);
-    let needs_decode = filter.needs_decode();
     let dbs = state.databases.lock().expect("databases mutex poisoned");
+    let candidates = decode_candidate_ids(&dbs, &filter);
     let (count, pairs) = state.trace_store.scan_window_filtered(
         start_us,
         end_us,
@@ -1243,7 +1291,7 @@ async fn fetch_filtered_trace(
         limit,
         from_end,
         |frame| {
-            let decoded = if needs_decode {
+            let decoded = if candidates.contains(&frame.id) {
                 decode_against(&dbs, frame)
             } else {
                 None
@@ -3357,6 +3405,70 @@ mod tests {
         assert_eq!(name(1).as_deref(), Some("FromBusC"));
         // An unassigned frame doesn't match any scoped DBC.
         assert_eq!(name(2), None);
+    }
+
+    #[test]
+    fn decode_candidates_resolve_name_and_signal_leaves_to_ids() {
+        let dbs = vec![
+            loaded("a.dbc", &tiny_dbc(256, "String1JustDetectedFault", "Sa")),
+            loaded("b.dbc", &tiny_dbc(512, "BrakeStatus", "Rpm")),
+        ];
+        let parse = |t: &str| serde_json::from_str::<FilterPredicate>(t).unwrap();
+
+        // Name leaf: only the message whose name matches contributes.
+        let by_name = decode_candidate_ids(&dbs, &parse(r#"{"name_regex": "String1JustDetected.*?"}"#));
+        assert_eq!(by_name, HashSet::from([256]));
+
+        // Signal leaf: only the message carrying the signal contributes.
+        let by_sig = decode_candidate_ids(
+            &dbs,
+            &parse(r#"{"signal_equals": {"name": "Rpm", "value": 1}}"#),
+        );
+        assert_eq!(by_sig, HashSet::from([512]));
+
+        // Composition unions the leaves; raw-only predicates resolve empty.
+        let both = decode_candidate_ids(
+            &dbs,
+            &parse(
+                r#"{"any": [{"name_regex": "^String1"}, {"signal_equals": {"name": "Rpm", "value": 1}}]}"#,
+            ),
+        );
+        assert_eq!(both, HashSet::from([256, 512]));
+        assert!(decode_candidate_ids(&dbs, &parse(r#"{"id_list": [256]}"#)).is_empty());
+    }
+
+    #[test]
+    fn filtered_scan_with_candidate_gating_matches_unconditional_decode() {
+        // The candidate gate must be invisible in the results: a scan
+        // that decodes only candidate ids returns exactly what a scan
+        // decoding every frame returns.
+        let dbs = vec![
+            loaded("a.dbc", &tiny_dbc(256, "String1JustDetectedFault", "Sa")),
+            loaded("b.dbc", &tiny_dbc(512, "BrakeStatus", "Sb")),
+        ];
+        let filter: FilterPredicate =
+            serde_json::from_str(r#"{"name_regex": "String1JustDetected.*?"}"#).unwrap();
+        let frames: Vec<RawTraceFrame> =
+            [256, 512, 999, 256].iter().map(|&id| frame_with_data(id)).collect();
+
+        let candidates = decode_candidate_ids(&dbs, &filter);
+        let gated: Vec<bool> = frames
+            .iter()
+            .map(|f| {
+                let decoded = if candidates.contains(&f.id) {
+                    decode_against(&dbs, f)
+                } else {
+                    None
+                };
+                filter.matches(f, decoded.as_ref())
+            })
+            .collect();
+        let unconditional: Vec<bool> = frames
+            .iter()
+            .map(|f| filter.matches(f, decode_against(&dbs, f).as_ref()))
+            .collect();
+        assert_eq!(gated, unconditional);
+        assert_eq!(gated, vec![true, false, false, true]);
     }
 
     #[test]

@@ -14,8 +14,10 @@ What we lock down here:
 - Two physically identical devices with different serials produce
   different ids and different labels (the regression that prevented a
   user from binding both PCAN-USBs to separate logical buses).
-- ``_list_vector`` skips ``XL_HWTYPE_NONE`` slots so a 4-channel
-  VN1630A doesn't show up as 6.
+- ``_list_vector`` skips ``XL_HWTYPE_NONE`` slots and non-CAN slots
+  (e.g. a VN1630A's on-board D/A I/O channel) so a 4-channel VN1630A
+  lists exactly four CAN channels, numbered to match the device's own
+  1-based "Channel N" labels.
 - ``_bus_kwargs_for`` round-trips the paren grammar, opening Vector
   via ``serial=`` so python-can never calls ``xlGetApplConfig``.
 """
@@ -66,12 +68,23 @@ def _fresh_driver_module():
 # ---- Vector ----------------------------------------------------------------
 
 
+# Match the real XL_ChannelCapabilities flag values.
+_XL_CANFD_BOSCH = 0x20000000
+_XL_CANFD_ISO = 0x80000000
+
+# Match the real XL_BusCapabilities flag values.
+_XL_BUS_COMPATIBLE_CAN = 1
+_XL_BUS_COMPATIBLE_DAIO = 64
+
+
 class _VectorCfg:
     """Subset of ``VectorChannelConfig`` (a NamedTuple in real life)
     the enumerator reads. ``channel_capabilities`` is an int bitmask
     holding ``XL_ChannelCapabilities`` flags. ``hw_type`` defaults to a
     non-zero value so tests that don't set it aren't filtered as
-    XL_HWTYPE_NONE slots."""
+    XL_HWTYPE_NONE slots. ``channel_bus_capabilities`` defaults to a
+    CAN-compatible bitmask so tests that don't set it aren't filtered
+    as non-CAN slots."""
 
     def __init__(
         self,
@@ -80,17 +93,14 @@ class _VectorCfg:
         serial_number=None,
         channel_capabilities=0,
         hw_type=10,
+        channel_bus_capabilities=_XL_BUS_COMPATIBLE_CAN,
     ):
         self.name = name
         self.hw_channel = hw_channel
         self.serial_number = serial_number
         self.channel_capabilities = channel_capabilities
         self.hw_type = hw_type
-
-
-# Match the real XL_ChannelCapabilities flag values.
-_XL_CANFD_BOSCH = 0x20000000
-_XL_CANFD_ISO = 0x80000000
+        self.channel_bus_capabilities = channel_bus_capabilities
 
 
 def _install_fake_vector(configs):
@@ -109,7 +119,11 @@ def _install_fake_vector(configs):
         XL_CHANNEL_FLAG_CANFD_BOSCH_SUPPORT = _XL_CANFD_BOSCH
         XL_CHANNEL_FLAG_CANFD_ISO_SUPPORT = _XL_CANFD_ISO
 
+    class _BusCaps:
+        XL_BUS_COMPATIBLE_CAN = _XL_BUS_COMPATIBLE_CAN
+
     mod_xldefine.XL_ChannelCapabilities = _Caps
+    mod_xldefine.XL_BusCapabilities = _BusCaps
     sys.modules["can.interfaces.vector.xldefine"] = mod_xldefine
 
 
@@ -139,10 +153,13 @@ def test_vector_includes_serial_in_id_and_label() -> None:
             "vector:VN1640A(SN:12345, ch:0)",
             "vector:VN1640A(SN:12345, ch:1)",
         ]
+        # Display counts channels from 1 (the device's own labelling),
+        # so hw_channel 0/1 read as ch:1/ch:2 — while the ids above keep
+        # the raw 0-based hw_channel python-can opens with.
         labels = sorted(c.display_name for c in chans)
         assert labels == [
-            "Vector VN1640A (SN:12345, ch:0)",
             "Vector VN1640A (SN:12345, ch:1)",
+            "Vector VN1640A (SN:12345, ch:2)",
         ]
         # First channel is FD-capable per the ISO flag in our fake.
         assert any(c.fd_capable for c in chans)
@@ -158,7 +175,7 @@ def test_vector_omits_sn_chunk_when_serial_missing() -> None:
         chans = m._list_vector()
         assert len(chans) == 1
         assert chans[0].id == "vector:VN1640A(ch:0)"
-        assert chans[0].display_name == "Vector VN1640A (ch:0)"
+        assert chans[0].display_name == "Vector VN1640A (ch:1)"
     finally:
         _uninstall_fake_vector()
 
@@ -188,6 +205,49 @@ def test_vector_skips_hw_type_none_slots() -> None:
             "vector:VN1630A(SN:12345, ch:1)",
             "vector:VN1630A(SN:12345, ch:2)",
             "vector:VN1630A(SN:12345, ch:3)",
+        }
+    finally:
+        _uninstall_fake_vector()
+
+
+def test_vector_skips_non_can_channels() -> None:
+    """A VN1630A enumerates its four CAN ports plus an on-board D/A I/O
+    channel that shares the CAN ports' hardware type but reports a DAIO
+    bus capability with no CAN bit. The enumerator must drop it so the
+    GUI doesn't offer a fifth, un-openable "CAN" channel — and must
+    keep the I/O channel's index from shifting the CAN ports' numbers
+    (here the I/O channel is hw_channel 4, displayed as the would-be
+    ch:5)."""
+    _install_fake_vector(
+        [
+            _VectorCfg("VN1630A Channel 1", 0, serial_number=585855),
+            _VectorCfg("VN1630A Channel 2", 1, serial_number=585855),
+            _VectorCfg("VN1630A Channel 3", 2, serial_number=585855),
+            _VectorCfg("VN1630A Channel 4", 3, serial_number=585855),
+            _VectorCfg(
+                "VN1630A Channel 5",
+                4,
+                serial_number=585855,
+                channel_bus_capabilities=_XL_BUS_COMPATIBLE_DAIO,
+            ),
+        ]
+    )
+    try:
+        m = _fresh_driver_module()
+        chans = m._list_vector()
+        assert len(chans) == 4
+        assert {c.id for c in chans} == {
+            "vector:VN1630A Channel 1(SN:585855, ch:0)",
+            "vector:VN1630A Channel 2(SN:585855, ch:1)",
+            "vector:VN1630A Channel 3(SN:585855, ch:2)",
+            "vector:VN1630A Channel 4(SN:585855, ch:3)",
+        }
+        # 1-based display matches each port's own "Channel N" name.
+        assert {c.display_name for c in chans} == {
+            "Vector VN1630A Channel 1 (SN:585855, ch:1)",
+            "Vector VN1630A Channel 2 (SN:585855, ch:2)",
+            "Vector VN1630A Channel 3 (SN:585855, ch:3)",
+            "Vector VN1630A Channel 4 (SN:585855, ch:4)",
         }
     finally:
         _uninstall_fake_vector()

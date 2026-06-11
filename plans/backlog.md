@@ -263,6 +263,23 @@ next pass on this surface can address them as one piece.
 
 ### Host crates, wire, and sidecar
 
+- `[perf]` `cannet-gui` `fetch_filtered_trace`: **incremental filter-match
+  index.** The decode-candidate gate (see `decode_candidate_ids` in
+  `lib.rs`) made the per-frame scan cost cheap, but each 250 ms refresh
+  still rescans the whole `[scan_start, scan_end)` window under the
+  trace-store lock — O(session length) per tick, forever. The proper fix
+  is an incremental per-filter match index (like `by_id`): remember the
+  matched indices and the high-water mark, scan only frames appended
+  since. Pick up if multi-hour captures with filtered panels show scan
+  cost creeping back up.
+- `[ui]` `cannet-python-can` sidecar: **suppress the `xlReceive failed
+  (XL_ERROR)` warning emitted on normal close.** Closing a Vector
+  channel while `_rx_pump` is blocked in `ch.recv` surfaces as a
+  WARN-level `rx for <id> failed: xlReceive failed (XL_ERROR) [Error
+  Code 255]` System Message on every disconnect — teardown noise, not
+  a fault. Detect the closed/closing state in the pump (or close the
+  channel only after the pump exits) so a clean unsubscribe doesn't
+  log a scary error.
 - `[perf]` `cannet-core`: revisit `CanFramePayload::Classic`/`Fd` to share
   a fixed-size inline buffer instead of `Vec<u8>` once the trace store /
   benchmark in Task 21 shows allocator pressure.

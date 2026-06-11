@@ -38,6 +38,9 @@
 //! autocomplete problems we don't need yet. The structured editor lives
 //! on the filter node in the project graph view.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::ipc::DecodedRecord;
@@ -90,17 +93,49 @@ impl FilterPredicate {
         }
     }
 
-    /// Does evaluating this predicate need the frame's *decoded*
-    /// signals / message name? `false` for id / bus predicates, which
-    /// read raw frame fields only — letting a bulk scan skip decoding
-    /// the frames that don't match (decoding is the costly part).
+    /// Collect the predicate's decode-dependent leaves — the
+    /// `name_regex` patterns and `signal_equals` signal names anywhere
+    /// in the tree. A bulk scan resolves these against the loaded DBCs
+    /// into the set of arbitration ids whose decode could possibly
+    /// change the verdict, and skips decoding every other frame: an id
+    /// that no DBC decodes to a matching name / signal makes these
+    /// leaves false with or without the decode.
     #[must_use]
-    pub fn needs_decode(&self) -> bool {
-        match self {
-            FilterPredicate::Invalid(_) => false,
-            FilterPredicate::Tagged(p) => p.needs_decode(),
+    pub fn decode_dependent_leaves(&self) -> Vec<DecodeDependentLeaf<'_>> {
+        let mut out = Vec::new();
+        self.collect_decode_dependent(&mut out);
+        out
+    }
+
+    fn collect_decode_dependent<'a>(&'a self, out: &mut Vec<DecodeDependentLeaf<'a>>) {
+        let FilterPredicate::Tagged(p) = self else {
+            return;
+        };
+        match p {
+            TaggedPredicate::All(children) | TaggedPredicate::Any(children) => {
+                for c in children {
+                    c.collect_decode_dependent(out);
+                }
+            }
+            TaggedPredicate::NameRegex(pat) => {
+                out.push(DecodeDependentLeaf::MessageNameRegex(pat));
+            }
+            TaggedPredicate::SignalEquals(m) => {
+                out.push(DecodeDependentLeaf::SignalName(&m.name));
+            }
+            TaggedPredicate::Bus(_) | TaggedPredicate::IdRange(_) | TaggedPredicate::IdList(_) => {}
         }
     }
+}
+
+/// One decode-dependent predicate leaf, borrowed from the predicate
+/// tree. See [`FilterPredicate::decode_dependent_leaves`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum DecodeDependentLeaf<'a> {
+    /// A `name_regex` pattern, matched against decoded message names.
+    MessageNameRegex(&'a str),
+    /// A `signal_equals` signal name, matched against decoded signals.
+    SignalName(&'a str),
 }
 
 impl TaggedPredicate {
@@ -125,27 +160,42 @@ impl TaggedPredicate {
         }
     }
 
-    fn needs_decode(&self) -> bool {
-        match self {
-            Self::All(children) | Self::Any(children) => {
-                children.iter().any(FilterPredicate::needs_decode)
-            }
-            Self::Bus(_) | Self::IdRange(_) | Self::IdList(_) => false,
-            Self::NameRegex(_) | Self::SignalEquals(_) => true,
-        }
-    }
 }
 
-/// Very small regex helper: tries to compile `pat` as a regex; if the
-/// pattern is invalid the predicate matches nothing (consistent with
-/// the "bad predicate = empty result" rule). We use the `regex` crate
-/// already present transitively through tonic; if it isn't, this falls
-/// back to a literal `contains` check.
-fn regex_match(pat: &str, haystack: &str) -> bool {
-    match regex::Regex::new(pat) {
-        Ok(re) => re.is_match(haystack),
-        Err(_) => false,
-    }
+thread_local! {
+    /// Per-thread memo of compiled patterns for [`regex_match`].
+    /// Predicate evaluation runs per *frame* in bulk scans, and
+    /// `Regex::new` costs tens of microseconds — recompiling per frame
+    /// was the dominant cost of a name-filtered scan, dwarfing the
+    /// decode it gated. `None` caches "pattern doesn't compile" so an
+    /// invalid pattern isn't re-parsed per frame either. Patterns come
+    /// from the project's filter elements (a handful), but the cache is
+    /// bounded anyway so arbitrary churn can't grow it without limit.
+    static REGEX_CACHE: RefCell<HashMap<String, Option<regex::Regex>>> =
+        RefCell::new(HashMap::new());
+}
+
+/// [`REGEX_CACHE`] entry cap; on overflow the cache is simply cleared
+/// (it re-warms in one scan pass).
+const REGEX_CACHE_CAP: usize = 64;
+
+/// Regex helper: compiles `pat` (memoized per thread) and tests
+/// `haystack`. An invalid pattern matches nothing — consistent with
+/// the "bad predicate = empty result" rule.
+pub(crate) fn regex_match(pat: &str, haystack: &str) -> bool {
+    REGEX_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(compiled) = cache.get(pat) {
+            return compiled.as_ref().is_some_and(|re| re.is_match(haystack));
+        }
+        if cache.len() >= REGEX_CACHE_CAP {
+            cache.clear();
+        }
+        let compiled = regex::Regex::new(pat).ok();
+        let matched = compiled.as_ref().is_some_and(|re| re.is_match(haystack));
+        cache.insert(pat.to_string(), compiled);
+        matched
+    })
 }
 
 #[cfg(test)]
@@ -246,21 +296,6 @@ mod tests {
     }
 
     #[test]
-    fn needs_decode_only_for_decoded_field_predicates() {
-        // id / bus predicates read raw frame fields — a bulk scan can
-        // skip decoding non-matches.
-        assert!(!parse(r#"{"id_range": [1, 10]}"#).needs_decode());
-        assert!(!parse(r#"{"id_list": [1]}"#).needs_decode());
-        assert!(!parse(r#"{"bus": "p"}"#).needs_decode());
-        // name / signal predicates need the decoded record.
-        assert!(parse(r#"{"name_regex": "^Eng"}"#).needs_decode());
-        assert!(parse(r#"{"signal_equals": {"name": "Rpm", "value": 1}}"#).needs_decode());
-        // Composition needs decode iff any child does.
-        assert!(!parse(r#"{"all": [{"bus": "p"}, {"id_list": [1]}]}"#).needs_decode());
-        assert!(parse(r#"{"any": [{"id_list": [1]}, {"name_regex": "x"}]}"#).needs_decode());
-    }
-
-    #[test]
     fn all_and_any_compose() {
         let p = parse(
             r#"{"all": [{"bus": "p"}, {"any": [{"id_range": [1, 10]}, {"id_list": [99]}]}]}"#,
@@ -284,5 +319,41 @@ mod tests {
         let p = parse(r#"{"name_regex": "("}"#);
         let d = decoded("anything", &[]);
         assert!(!p.matches(&frame_with(1, None), Some(&d)));
+        // Still a non-match on the (cached) second evaluation.
+        assert!(!p.matches(&frame_with(1, None), Some(&d)));
+    }
+
+    #[test]
+    fn regex_match_is_stable_across_repeated_calls() {
+        // The memo cache must not change verdicts: same pattern, both
+        // outcomes, repeatedly.
+        for _ in 0..3 {
+            assert!(regex_match("^Eng", "EngineData"));
+            assert!(!regex_match("^Eng", "BrakeStatus"));
+        }
+    }
+
+    #[test]
+    fn decode_dependent_leaves_collects_name_and_signal_leaves() {
+        let p = parse(
+            r#"{"all": [
+                {"bus": "p"},
+                {"name_regex": "^Fault"},
+                {"any": [{"id_list": [1]}, {"signal_equals": {"name": "Rpm", "value": 1}}]}
+            ]}"#,
+        );
+        assert_eq!(
+            p.decode_dependent_leaves(),
+            vec![
+                DecodeDependentLeaf::MessageNameRegex("^Fault"),
+                DecodeDependentLeaf::SignalName("Rpm"),
+            ],
+        );
+        // Raw-only predicates have no decode-dependent leaves.
+        assert!(parse(r#"{"all": [{"bus": "p"}, {"id_range": [1, 10]}]}"#)
+            .decode_dependent_leaves()
+            .is_empty());
+        // Invalid predicates contribute nothing.
+        assert!(parse(r#"{"unknown_kind": 42}"#).decode_dependent_leaves().is_empty());
     }
 }
