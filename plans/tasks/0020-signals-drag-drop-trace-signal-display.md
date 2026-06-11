@@ -9,6 +9,10 @@ signals as inline lines under the message row** (replacing today's
 expand-to-show grid — the trace-side counterpart to "signals are
 first-class").
 
+Additionally, address:
+- poor DBC panel performance with a large DBC (500+ messages - we should generate a more complex EV example including BMS, inverter, and a few other nominal ECUs)
+- FZF search in the DBC view doesn't hide items that don't match the filter string. With large DBCs it's difficult to actually find the highlighted filter-matching items.
+
 **ADR cleanup:** scrub task-number references out of
 [ADR 0020](../../docs/adr/0020-filter-defined-plot-areas.md) (its
 signal-view mention) — ADRs describe what *is*; task tracking lives
