@@ -462,12 +462,14 @@ fn spawn_trace_grew_emitter(app: AppHandle) {
                 collect_trace_records(state.inner(), count.saturating_sub(TRACE_GREW_TAIL), count);
             #[allow(clippy::cast_precision_loss)]
             let session_start_seconds = session_start_ns as f64 / 1_000_000_000.0;
+            let buffer_seconds = state.trace_store.buffer_seconds();
             let _ = app.emit(
                 "trace-grew",
                 TraceGrew {
                     count,
                     frames_per_second,
                     session_start_seconds,
+                    buffer_seconds,
                     tail,
                 },
             );

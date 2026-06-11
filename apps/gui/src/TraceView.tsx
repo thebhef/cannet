@@ -42,6 +42,7 @@ interface TraceViewProps {
   columns: readonly ColumnState[];
   onColumnResize: (key: ColumnKey, width: number) => void;
   onColumnToggle: (key: ColumnKey) => void;
+  onColumnReorder: (key: ColumnKey, beforeKey: ColumnKey | null) => void;
   /// Bus-id → bus-name lookup for the "bus" column, built once per
   /// render from the project's bus list.
   busLookup: BusLookup;
@@ -65,6 +66,7 @@ export function TraceView({
   columns,
   onColumnResize,
   onColumnToggle,
+  onColumnReorder,
   busLookup,
   getFrame,
   ensureVisible,
@@ -231,7 +233,12 @@ export function TraceView({
 
   return (
     <div className="trace">
-      <TraceHeader columns={shown} onColumnResize={onColumnResize} onColumnToggle={onColumnToggle} />
+      <TraceHeader
+        columns={shown}
+        onColumnResize={onColumnResize}
+        onColumnToggle={onColumnToggle}
+        onColumnReorder={onColumnReorder}
+      />
       <div ref={containerRef} className="trace-rows" onScroll={handleScroll}>
         {/* Spacer: gives the scrollbar the trace's full (scaled) extent. */}
         <div style={{ height: spacerHeight, position: "relative" }}>

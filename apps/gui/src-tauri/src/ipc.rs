@@ -151,6 +151,10 @@ pub struct TraceGrew {
     /// first frame's timestamp. Zero before any session has been
     /// configured.
     pub session_start_seconds: f64,
+    /// Wall-clock span of the buffered frames in seconds (newest −
+    /// oldest timestamp). Shown in the status line as "N s buffered";
+    /// zero when fewer than two frames are stored.
+    pub buffer_seconds: f64,
     /// The last frames in the store (up to a fixed cap), already decoded
     /// against the currently-attached DBC. The auto-scrolling trace view
     /// paints its live tail straight from this instead of round-tripping

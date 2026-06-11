@@ -166,6 +166,7 @@ export function App() {
   useEffect(() => startDiagReporter(), []); // DIAG
   const [count, setCount] = useState(0);
   const [framesPerSecond, setFramesPerSecond] = useState(0);
+  const [bufferSeconds, setBufferSeconds] = useState(0);
   // Live sidecar status — needed to resolve the `"local"` sentinel on
   // interface bindings to the sidecar's current bound address before
   // we invoke connect_remote_server (the Rust command takes a
@@ -583,6 +584,7 @@ export function App() {
           count: newCount,
           frames_per_second,
           session_start_seconds,
+          buffer_seconds,
           tail,
         } = event.payload;
         setCount((prev) => {
@@ -595,6 +597,7 @@ export function App() {
           session_start_seconds > 0 ? session_start_seconds : null,
         );
         setFramesPerSecond(frames_per_second);
+        setBufferSeconds(buffer_seconds);
         tailFramesRef.current = tail;
         tailStartRef.current = tail.length > 0 ? tail[0].index : newCount;
         refreshStalePartialChunks(newCount);
@@ -1901,8 +1904,8 @@ export function App() {
   );
 
   const status = useMemo(
-    () => renderStatus(state, remoteSessions, dbcPaths, count, framesPerSecond),
-    [state, remoteSessions, dbcPaths, count, framesPerSecond],
+    () => renderStatus(state, remoteSessions, dbcPaths, count, framesPerSecond, bufferSeconds),
+    [state, remoteSessions, dbcPaths, count, framesPerSecond, bufferSeconds],
   );
 
   const traceData: TraceData = useMemo(() => {
@@ -2216,6 +2219,7 @@ function renderStatus(
   dbcPaths: readonly string[],
   frameCount: number,
   framesPerSecond: number,
+  bufferSeconds: number,
 ): string {
   const dbc =
     dbcPaths.length === 0
@@ -2224,6 +2228,7 @@ function renderStatus(
         ? `DBC: ${shortenPath(dbcPaths[0])}`
         : `${dbcPaths.length} DBCs`;
   const fps = framesPerSecond > 0 ? ` · ${formatRate(framesPerSecond)}` : "";
+  const buf = bufferSeconds > 0 ? ` · ${formatDuration(bufferSeconds)} buffered` : "";
 
   // Remote sessions take priority over the BLF idle/done line — the
   // user is actively streaming. (BLF in-progress states render their
@@ -2245,7 +2250,7 @@ function renderStatus(
     const parts: string[] = [];
     if (running.length > 0) {
       parts.push(
-        `Streaming from ${running.length} server${running.length === 1 ? "" : "s"} (${totalInterfaces} interface${totalInterfaces === 1 ? "" : "s"}, ${formatNumber(frameCount)} frames${fps})`,
+        `Streaming from ${running.length} server${running.length === 1 ? "" : "s"} (${totalInterfaces} interface${totalInterfaces === 1 ? "" : "s"}, ${formatNumber(frameCount)} frames${fps}${buf})`,
       );
     }
     if (connecting > 0) parts.push(`${connecting} connecting`);
@@ -2266,7 +2271,7 @@ function renderStatus(
     case "loading":
       return `Opening ${shortenPath(state.result.blf_path)} … ${dbc}.`;
     case "running":
-      return `Streaming ${shortenPath(state.result.blf_path)} (${formatNumber(frameCount)} frames${fps}). ${dbc}.`;
+      return `Streaming ${shortenPath(state.result.blf_path)} (${formatNumber(frameCount)} frames${fps}${buf}). ${dbc}.`;
     case "done":
       return `Done: ${formatNumber(state.total)} frames from ${shortenPath(state.result.blf_path)}. ${dbc}.`;
     case "error":
@@ -2278,6 +2283,21 @@ function formatRate(fps: number): string {
   if (fps >= 10_000) return `${(fps / 1000).toFixed(1)}k fps`;
   if (fps >= 100) return `${Math.round(fps)} fps`;
   return `${fps.toFixed(1)} fps`;
+}
+
+/// Buffered-span readout as a `d:hh:mm:ss` clock, trimmed to the largest
+/// non-zero segment (mm:ss minimum): `0:05`, `2:05`, `1:02:05`,
+/// `3:01:02:05`. Lower segments are zero-padded once a higher one shows.
+function formatDuration(seconds: number): string {
+  const t = Math.floor(seconds);
+  const d = Math.floor(t / 86400);
+  const h = Math.floor((t % 86400) / 3600);
+  const m = Math.floor((t % 3600) / 60);
+  const s = t % 60;
+  const p = (n: number) => n.toString().padStart(2, "0");
+  if (d > 0) return `${d}:${p(h)}:${p(m)}:${p(s)}`;
+  if (h > 0) return `${h}:${p(m)}:${p(s)}`;
+  return `${m}:${p(s)}`;
 }
 
 function formatNumber(n: number): string {

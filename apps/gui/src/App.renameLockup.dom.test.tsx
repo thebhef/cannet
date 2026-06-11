@@ -143,6 +143,7 @@ function grew(count: number): TraceGrew {
     count,
     frames_per_second: 1000,
     session_start_seconds: 1000,
+    buffer_seconds: 1,
     tail: Array.from({ length: tailLen }, (_, i) => frame(count - tailLen + i)),
   };
 }

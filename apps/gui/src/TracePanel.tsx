@@ -17,9 +17,11 @@ import {
   type ColumnKey,
   type ColumnState,
   type SortState,
+  DEFAULT_SORT,
   busLookup,
   columnsFromParams,
   nextSort,
+  reorderColumn,
   resizeColumn,
   toggleColumn,
 } from "./traceColumns";
@@ -85,6 +87,11 @@ export function TracePanel(props: IDockviewPanelProps) {
     (key: ColumnKey) => setColumns((cs) => toggleColumn(cs, key)),
     [],
   );
+  const handleColumnReorder = useCallback(
+    (key: ColumnKey, beforeKey: ColumnKey | null) =>
+      setColumns((cs) => reorderColumn(cs, key, beforeKey)),
+    [],
+  );
 
   // Mirror this panel's persistable state into its dockview params so
   // it's in `toJSON()` (the project file / the localStorage layout).
@@ -95,7 +102,7 @@ export function TracePanel(props: IDockviewPanelProps) {
   // By-id mode state.
   const [rows, setRows] = useState<ByIdSnapshotRecord[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [sort, setSort] = useState<SortState>(null);
+  const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
   const onSortColumn = useCallback((key: ColumnKey) => setSort((s) => nextSort(s, key)), []);
   const onToggleExpand = useCallback((rowKey: string) => {
     setExpanded((prev) => {
@@ -266,6 +273,7 @@ export function TracePanel(props: IDockviewPanelProps) {
           columns={columns}
           onColumnResize={handleColumnResize}
           onColumnToggle={handleColumnToggle}
+          onColumnReorder={handleColumnReorder}
           busLookup={lookup}
           getFrame={chronoFiltered ? filtered.getFrame : trace.getFrame}
           ensureVisible={chronoFiltered ? filtered.ensureVisible : trace.ensureVisible}
@@ -277,6 +285,7 @@ export function TracePanel(props: IDockviewPanelProps) {
           columns={columns}
           onColumnResize={handleColumnResize}
           onColumnToggle={handleColumnToggle}
+          onColumnReorder={handleColumnReorder}
           sort={sort}
           onSortColumn={onSortColumn}
           baseTimestamp={trace.baseTimestampSeconds}

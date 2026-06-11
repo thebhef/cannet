@@ -1,10 +1,11 @@
-/// Per-panel trace-table column model: which columns are shown and how
-/// wide each is, plus the per-id-view sort. Split out of the panel
-/// components so the arithmetic is unit-tested without a DOM. Column
-/// *order* is fixed — it matches the canonical trace layout; width and
-/// visibility are user-adjustable (drag a header divider; toggle via the
-/// header's right-click menu), and in per-id mode you can click a
-/// header to sort by it.
+/// Per-panel trace-table column model: which columns are shown, in what
+/// order, and how wide each is, plus the per-id-view sort. Split out of
+/// the panel components so the arithmetic is unit-tested without a DOM.
+/// Order, width, and visibility are all user-adjustable (drag a header
+/// to reorder; drag its right divider to resize; toggle via the header's
+/// right-click menu), and in per-id mode you can click a header to sort
+/// by it. [`COLUMN_DEFS`] gives the default order; a saved layout may be
+/// any permutation of the columns.
 
 import type { Bus, ByIdSnapshotRecord } from "./types";
 
@@ -42,20 +43,24 @@ export interface ColumnDef {
   /// If true the column only makes sense in the per-id view (a single
   /// chronological frame has no "rate") — the chronological view drops it.
   byIdOnly?: boolean;
+  /// If true the column starts hidden in a fresh panel (the user can
+  /// re-show it via the header's right-click menu).
+  defaultHidden?: boolean;
 }
 
-/// The columns, in their fixed display order.
+/// The columns, in their fixed display order. The chronological view
+/// drops the `byIdOnly` ones, keeping the rest in this same order.
 export const COLUMN_DEFS: readonly ColumnDef[] = [
   { key: "idx", label: "index", byIdLabel: "count", className: "col-idx", defaultWidth: 64 },
   { key: "time", label: "time (s)", className: "col-time", defaultWidth: 110 },
+  { key: "rate", label: "msg/s", className: "col-rate", defaultWidth: 64, byIdOnly: true },
   { key: "bus", label: "bus", className: "col-bus", defaultWidth: 100 },
-  { key: "dir", label: "dir", className: "col-dir", defaultWidth: 40 },
   { key: "id", label: "id", className: "col-id", defaultWidth: 96 },
-  { key: "kind", label: "type", className: "col-kind", defaultWidth: 110 },
+  { key: "msg", label: "message", className: "col-msg", defaultWidth: 220 },
   { key: "len", label: "len", className: "col-len", defaultWidth: 44 },
   { key: "data", label: "data", className: "col-data", defaultWidth: 360, flex: true },
-  { key: "msg", label: "message", className: "col-msg", defaultWidth: 220 },
-  { key: "rate", label: "msg/s", className: "col-rate", defaultWidth: 64, byIdOnly: true },
+  { key: "dir", label: "dir", className: "col-dir", defaultWidth: 40 },
+  { key: "kind", label: "type", className: "col-kind", defaultWidth: 110, defaultHidden: true },
 ];
 
 /// Smallest a column can be dragged to.
@@ -68,42 +73,43 @@ export interface ColumnState {
   visible: boolean;
 }
 
-/// The default per-panel column state: every column visible at its
-/// default width, in canonical order.
+/// The default per-panel column state: each column at its default
+/// width, in canonical order, visible unless flagged `defaultHidden`
+/// (currently just `type`).
 export function defaultColumns(): ColumnState[] {
-  return COLUMN_DEFS.map((d) => ({ key: d.key, width: d.defaultWidth, visible: true }));
+  return COLUMN_DEFS.map((d) => ({ key: d.key, width: d.defaultWidth, visible: !d.defaultHidden }));
 }
 
 /// Validate a value persisted in a dockview panel's params (or a
-/// project file) as column state — it must be the canonical columns,
-/// in order, with sane width / visible fields. Anything else (a stale
-/// or corrupt blob) falls back to [`defaultColumns`]. A legacy `"ch"`
-/// key at the bus column's slot is treated as `"bus"` (the column was
-/// renamed when wire-level channel display was replaced with the
-/// project's bus name); width / visibility carry over.
+/// project file) as column state. It must be the canonical column set
+/// — every key present exactly once — but **in any order** (columns are
+/// user-reorderable, so a saved permutation is honoured verbatim), each
+/// with sane width / visible fields. Anything else (wrong length, a
+/// missing / duplicate / unknown key, a corrupt blob) falls back to
+/// [`defaultColumns`]. A legacy `"ch"` key is treated as `"bus"` (the
+/// column was renamed when wire-level channel display was replaced with
+/// the project's bus name); width / visibility / position carry over.
 export function columnsFromParams(value: unknown): ColumnState[] {
-  if (
-    Array.isArray(value) &&
-    value.length === COLUMN_DEFS.length &&
-    value.every((c, i) => {
-      if (c == null || typeof c !== "object") return false;
-      const o = c as { key?: unknown; width?: unknown; visible?: unknown };
-      const wantKey = COLUMN_DEFS[i].key;
-      const keyOk = o.key === wantKey || (wantKey === "bus" && o.key === "ch");
-      return (
-        keyOk && typeof o.width === "number" && typeof o.visible === "boolean"
-      );
-    })
-  ) {
-    return (value as readonly { key: string; width: number; visible: boolean }[]).map(
-      (c, i) => ({
-        key: COLUMN_DEFS[i].key, // canonicalise (handles "ch" → "bus")
-        width: c.width,
-        visible: c.visible,
-      }),
-    );
+  if (!Array.isArray(value) || value.length !== COLUMN_DEFS.length) {
+    return defaultColumns();
   }
-  return defaultColumns();
+  const canonical = new Set<string>(COLUMN_DEFS.map((d) => d.key));
+  const seen = new Set<string>();
+  const out: ColumnState[] = [];
+  for (const c of value) {
+    if (c == null || typeof c !== "object") return defaultColumns();
+    const o = c as { key?: unknown; width?: unknown; visible?: unknown };
+    if (typeof o.width !== "number" || typeof o.visible !== "boolean") return defaultColumns();
+    const key = o.key === "ch" ? "bus" : o.key; // legacy rename
+    if (typeof key !== "string" || !canonical.has(key) || seen.has(key)) {
+      return defaultColumns();
+    }
+    seen.add(key);
+    out.push({ key: key as ColumnKey, width: o.width, visible: o.visible });
+  }
+  // Length matches the canonical set and every key is canonical with no
+  // duplicates ⇒ exactly a permutation of all columns.
+  return out;
 }
 
 /// The definition for `key` (label, css class, flex flag).
@@ -158,6 +164,28 @@ export function toggleColumn(columns: readonly ColumnState[], key: ColumnKey): C
   return columns.map((c) => (c.key === key ? { ...c, visible: !c.visible } : c));
 }
 
+/// Move `key` so it sits immediately before `beforeKey` in display
+/// order, returning a new array. `beforeKey === null` moves it to the
+/// end. A no-op (returns a copy) when either key is unknown or the move
+/// wouldn't change anything. The full column set is reordered — hidden
+/// columns keep their slots; the caller passes visible-neighbour keys to
+/// reorder what's on screen.
+export function reorderColumn(
+  columns: readonly ColumnState[],
+  key: ColumnKey,
+  beforeKey: ColumnKey | null,
+): ColumnState[] {
+  if (key === beforeKey) return columns.slice();
+  const from = columns.findIndex((c) => c.key === key);
+  if (from < 0) return columns.slice();
+  const moved = columns[from];
+  const rest = columns.filter((_, i) => i !== from);
+  if (beforeKey === null) return [...rest, moved];
+  const to = rest.findIndex((c) => c.key === beforeKey);
+  if (to < 0) return columns.slice();
+  return [...rest.slice(0, to), moved, ...rest.slice(to)];
+}
+
 // --- bus name lookup ---
 
 /// Bus-id → bus-name lookup. Built once per render from `project.buses`
@@ -189,6 +217,10 @@ export function busDisplayName(
 /// default order (whatever the host returned — by `(bus_id, channel,
 /// id)`).
 export type SortState = { key: ColumnKey; dir: "asc" | "desc" } | null;
+
+/// The sort a fresh by-id panel opens with — ascending by arbitration
+/// id, the most useful default for scanning a bus's message map.
+export const DEFAULT_SORT: SortState = { key: "id", dir: "asc" };
 
 /// Clicking a column header cycles: not-sorted-by-it → ascending →
 /// descending → not sorted (back to the default order).
