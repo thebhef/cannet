@@ -24,7 +24,7 @@ cannet-python-can/
 │   └── regen_proto.sh          # regenerate stubs from ../../crates/cannet-wire/proto
 ├── tests/                      # pytest, hardware-free
 ├── SMOKE.md                    # per-vendor manual smoke procedures
-└── LICENSING.md                # LGPL diligence (see also ../LICENSING.md)
+└── LICENSING.md                # LGPL diligence for vendor driver libraries
 ```
 
 ## Run locally (developer)
