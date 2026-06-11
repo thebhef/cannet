@@ -9,6 +9,12 @@ import type { Bus, SignalDescriptorRecord, ValueTableEntryRecord } from "./types
 import { useTraceData } from "./traceData";
 import { useProjectContext } from "./projectContext";
 import { defaultBusColor } from "./busColor";
+import {
+  type ColorResolver,
+  type ColorTarget,
+  buildColorResolver,
+  colorMapLaneFill,
+} from "./colorMap";
 import { useElementRegistry } from "./projectElements";
 import { useTrace } from "./trace";
 import { TraceControls } from "./TraceControls";
@@ -461,7 +467,10 @@ export function PlotPanel(props: IDockviewPanelProps) {
   // `normalizeElement` yet — fall back to the wildcard so the picker
   // renders the default-all state instead of crashing.
   const currentSources =
-    plotElement && plotElement.kind !== "transmit" && plotElement.kind !== "rbs"
+    plotElement &&
+    plotElement.kind !== "transmit" &&
+    plotElement.kind !== "rbs" &&
+    plotElement.kind !== "colormap"
       ? plotElement.sources ?? ["*"]
       : ["*"];
   const availableFilters = useMemo(
@@ -1083,6 +1092,14 @@ export function PlotPanel(props: IDockviewPanelProps) {
     return m;
   }, [buses]);
 
+  // Signal value→colour maps (ADR 0029): one resolver over every
+  // colormap element, fed to each area so an enum lane box can be tinted
+  // by its held value. Rebuilt only when the element set changes.
+  const resolveColor = useMemo(
+    () => buildColorResolver(registry.entries.map((e) => e.element)),
+    [registry.entries],
+  );
+
   /// Areas with `signalFilter` resolved into a computed `signals`
   /// list (ADR 0020). For manual areas this is identical to the
   /// stored `area`. For filter areas the `signals` field is replaced
@@ -1458,6 +1475,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
               onPromoteFilterToManual={() => promoteFilterToManual(parent.id, parent.signals)}
               busNameLookup={busNameLookup}
               busColorLookup={busColorLookup}
+              resolveColor={resolveColor}
               panelElementId={elementId}
             />
           );
@@ -1786,6 +1804,9 @@ interface PlotAreaProps {
   /** Bus-id → render colour, for the swatch shown before the bus name
    * in each signal row (matches the bus's graph colour). */
   busColorLookup: ReadonlyMap<string, string>;
+  /** Signal value→colour resolver (ADR 0029): tints an enum lane box by
+   * its held value. Read live in the draw hook via a ref. */
+  resolveColor: ColorResolver;
   /** The owning plot panel's element id. Stamped on this panel's
    * internal signal-row drags via `setSignalDragData(..., elementId)`
    * and compared against the dropped payload's `sourcePanelId` so
@@ -1878,6 +1899,7 @@ function PlotArea(p: PlotAreaProps) {
     onPromoteFilterToManual,
     busNameLookup,
     busColorLookup,
+    resolveColor,
     panelElementId,
   } = p;
 
@@ -1959,6 +1981,17 @@ function PlotArea(p: PlotAreaProps) {
   // ticks / labels read each draw to match the trace.
   const primaryColorRef = useRef<string | null>(primarySignal?.color ?? null);
   primaryColorRef.current = primarySignal?.color ?? null;
+  // Live value→colour resolver for the draw hook (ADR 0029): updated each
+  // render so a colormap edit re-tints the enum lane on the next draw
+  // without rebuilding the uPlot instance.
+  const colorResolverRef = useRef<ColorResolver>(resolveColor);
+  colorResolverRef.current = resolveColor;
+  // uPlot draws imperatively, so a colormap edit only re-tints the enum
+  // lane on the next redraw. A running plot redraws on every sample; for
+  // a paused/stopped one, force a redraw when the resolver changes.
+  useEffect(() => {
+    uplotRef.current?.redraw();
+  }, [resolveColor]);
 
   // Value-table support for enum / state signals. When the
   // area shows *exactly one* signal *and* that signal has a `VAL_`
@@ -2455,6 +2488,19 @@ function PlotArea(p: PlotAreaProps) {
     // through the `signalSetKey` dep on this effect) installs the
     // enum-mode opts on the next uPlot instance.
     const enumActiveAtConstruct = enumMode && valueTable != null;
+    // The enum-mode area holds exactly one signal; capture its identity
+    // so the draw hook can resolve a colormap tint for the held value
+    // (ADR 0029). Stable for this instance — the effect rebuilds when the
+    // signal set changes.
+    const enumTarget: ColorTarget | null =
+      enumActiveAtConstruct && signals[0]
+        ? {
+            messageId: signals[0].messageId,
+            extended: signals[0].extended,
+            signalName: signals[0].signalName,
+            busId: signals[0].busId ?? null,
+          }
+        : null;
     const enumRaws = enumActiveAtConstruct ? valueTable.map((r) => r.raw) : [];
     const enumLabelFor = (raw: number): string => {
       const found = valueTable?.find((r) => r.raw === raw);
@@ -2749,18 +2795,27 @@ function PlotArea(p: PlotAreaProps) {
                   // held interval is visible even if the label text
                   // can't fit.
                   const labelFits = segW >= tw + padX * 2;
-                  // ~65% fill so the stepped line under the band
-                  // remains clearly visible — the user can still
-                  // trace the signal shape through the ribbon while
-                  // the labels stay readable; coloured border +
-                  // centred text in the series colour stay fully
-                  // opaque so legibility isn't compromised.
-                  ctx.fillStyle = "rgba(10, 13, 15, 0.65)";
+                  // A colormap (ADR 0029) targeting this signal tints the
+                  // box by the held value: an opaque-ish fill in the
+                  // value's colour with a contrasting label. Without a
+                  // map, fall back to the neutral dark ribbon + series-
+                  // coloured border/label. The ~65–85% fills keep the
+                  // stepped line faintly visible underneath either way.
+                  const mapColor = enumTarget
+                    ? colorResolverRef.current(enumTarget, seg.v)
+                    : null;
+                  // Same ribbon style as the un-mapped case — the line
+                  // shows through a 0.65-opacity dim fill — but the
+                  // border and label take the value's colour, and the
+                  // fill is a darkened shade of it.
+                  const fill = mapColor ? colorMapLaneFill(mapColor) : "rgba(10, 13, 15, 0.65)";
+                  const accent = mapColor ?? boxColor;
+                  ctx.fillStyle = fill;
                   ctx.fillRect(visStart, bandTop, segW, bandH);
-                  ctx.strokeStyle = boxColor;
+                  ctx.strokeStyle = accent;
                   ctx.strokeRect(visStart + 0.5, bandTop + 0.5, segW - 1, bandH - 1);
                   if (labelFits) {
-                    ctx.fillStyle = boxColor;
+                    ctx.fillStyle = accent;
                     ctx.textAlign = "center";
                     ctx.textBaseline = "middle";
                     ctx.fillText(lbl, visStart + segW / 2, (bandTop + bandBot) / 2);

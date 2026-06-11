@@ -11,6 +11,7 @@ import { useFilteredTrace } from "./useFilteredTrace";
 import { useElementRegistry } from "./projectElements";
 import { useProjectContext } from "./projectContext";
 import { buildSinkPredicate } from "./sinkPredicate";
+import { buildColorResolver } from "./colorMap";
 import { elementLabel } from "./elementLabel";
 import { SourcesContextMenu } from "./SourcesPicker";
 import {
@@ -57,6 +58,14 @@ export function TracePanel(props: IDockviewPanelProps) {
   const { api } = props;
   const buses = project.buses;
   const lookup = useMemo(() => busLookup(buses), [buses]);
+  // Signal value→color maps (ADR 0029) are ambient: compile every
+  // colormap element in the project into one resolver the decoded-signal
+  // cells call to tint themselves. Rebuilt only when the element set
+  // changes, so the memoised rows aren't churned.
+  const resolveColor = useMemo(
+    () => buildColorResolver(registry.entries.map((e) => e.element)),
+    [registry.entries],
+  );
 
   const params = props.params as
     | { elementId?: unknown; mode?: unknown; autoScroll?: unknown; columns?: unknown }
@@ -125,7 +134,10 @@ export function TracePanel(props: IDockviewPanelProps) {
   // element is still being healed or has a legacy shape lacking the
   // field — be defensive so the picker never reads from `undefined`.
   const currentSources =
-    element && element.kind !== "transmit" && element.kind !== "rbs"
+    element &&
+    element.kind !== "transmit" &&
+    element.kind !== "rbs" &&
+    element.kind !== "colormap"
       ? element.sources ?? ["*"]
       : ["*"];
   // Filters available to wire upstream of this trace. Exclude
@@ -275,6 +287,7 @@ export function TracePanel(props: IDockviewPanelProps) {
           onColumnToggle={handleColumnToggle}
           onColumnReorder={handleColumnReorder}
           busLookup={lookup}
+          resolveColor={resolveColor}
           getFrame={chronoFiltered ? filtered.getFrame : trace.getFrame}
           ensureVisible={chronoFiltered ? filtered.ensureVisible : trace.ensureVisible}
           onAutoScrollDisabled={handleAutoScrollDisabled}
@@ -286,6 +299,7 @@ export function TracePanel(props: IDockviewPanelProps) {
           onColumnResize={handleColumnResize}
           onColumnToggle={handleColumnToggle}
           onColumnReorder={handleColumnReorder}
+          resolveColor={resolveColor}
           sort={sort}
           onSortColumn={onSortColumn}
           baseTimestamp={trace.baseTimestampSeconds}

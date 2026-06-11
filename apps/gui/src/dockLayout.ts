@@ -46,6 +46,9 @@ export const DBC_PANEL_COMPONENT = "dbc";
 /// multiple named RBS elements per project are allowed, each
 /// referencing its own `.cannet_rbs` file.
 export const RBS_PANEL_COMPONENT = "rbs";
+/// Signal value→color map config panel (ADR 0029). Element-backed,
+/// like RBS — each colormap element opens into its own editor panel.
+export const COLORMAP_PANEL_COMPONENT = "colormap";
 /// Singleton id — toolbar's "DBC panel" button uses this to
 /// show-or-focus a single instance.
 export const DBC_PANEL_ID = "dbc";
@@ -110,6 +113,8 @@ export function elementPanelComponent(kind: ProjectElementKind): string | null {
       return TRANSMIT_PANEL_COMPONENT;
     case "rbs":
       return RBS_PANEL_COMPONENT;
+    case "colormap":
+      return COLORMAP_PANEL_COMPONENT;
     case "filter":
       return null;
   }

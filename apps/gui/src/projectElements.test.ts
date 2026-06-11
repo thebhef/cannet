@@ -16,6 +16,7 @@ describe("isProjectElement", () => {
     expect(isProjectElement({ kind: "filter", id: "f" })).toBe(true);
     expect(isProjectElement({ kind: "transmit", id: "x" })).toBe(true);
     expect(isProjectElement({ kind: "rbs", id: "r" })).toBe(true);
+    expect(isProjectElement({ kind: "colormap", id: "c" })).toBe(true);
   });
 
   it("rejects unknown kinds, non-strings, and primitives", () => {
@@ -125,6 +126,46 @@ describe("normalizeElement", () => {
     expect((normalizeElement(named) as { name?: string }).name).toBe("My trace");
     const malformed = { kind: "trace", id: "t", sources: ["*"], name: 42 } as unknown as ProjectElement;
     expect((normalizeElement(malformed) as { name?: string }).name).toBeUndefined();
+  });
+
+  it("normalises a colormap: coerces target fields and drops malformed rules", () => {
+    // A bare / hand-edited colormap loads inert and editable.
+    const bare = { kind: "colormap", id: "c" } as unknown as ProjectElement;
+    expect(normalizeElement(bare)).toMatchObject({
+      kind: "colormap",
+      busId: null,
+      messageId: 0,
+      extended: false,
+      signalName: "",
+      rules: [],
+    });
+    // Well-formed fields survive; junk rules are dropped, good ones kept.
+    const full = {
+      kind: "colormap",
+      id: "c",
+      busId: "chassis",
+      messageId: 0x120,
+      extended: true,
+      signalName: "Gear",
+      rules: [
+        { min: 0, max: 0, color: "#111" },
+        { min: 1, color: "#222" }, // missing max → dropped
+        { min: 2, max: 2, color: 3 }, // non-string color → dropped
+        { min: 3, max: 5, color: "#333" },
+      ],
+    } as unknown as ProjectElement;
+    expect(normalizeElement(full)).toMatchObject({
+      busId: "chassis",
+      messageId: 0x120,
+      extended: true,
+      signalName: "Gear",
+      rules: [
+        { min: 0, max: 0, color: "#111" },
+        { min: 3, max: 5, color: "#333" },
+      ],
+    });
+    // A colormap never gains a `sources` field (it's not a consumer).
+    expect((normalizeElement(bare) as { sources?: unknown }).sources).toBeUndefined();
   });
 
   it("normalises a filter, preserving its name + predicate", () => {

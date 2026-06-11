@@ -32,7 +32,7 @@ export function buildSinkPredicate(
   sink: ProjectElement,
   lookupElement: (id: string) => ProjectElement | undefined,
 ): SinkFilter {
-  if (sink.kind === "transmit" || sink.kind === "rbs") return null;
+  if (sink.kind === "transmit" || sink.kind === "rbs" || sink.kind === "colormap") return null;
   const sources = sink.sources;
   if (sources.length === 0) {
     return { any: [] };

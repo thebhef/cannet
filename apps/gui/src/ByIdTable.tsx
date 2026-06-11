@@ -2,6 +2,7 @@ import { memo } from "react";
 
 import type { ByIdSnapshotRecord, SignalRecord, TraceFrameRecord } from "./types";
 import { formatSignalValueWithLabel } from "./format";
+import { type ColorResolver, colorMapTint } from "./colorMap";
 import { setSignalDragData } from "./dragSignals";
 import {
   type BusLookup,
@@ -32,6 +33,8 @@ interface ByIdTableProps {
   onColumnResize: (key: ColumnKey, width: number) => void;
   onColumnToggle: (key: ColumnKey) => void;
   onColumnReorder: (key: ColumnKey, beforeKey: ColumnKey | null) => void;
+  /// Resolves a decoded signal's value→color tint (ADR 0029), or null.
+  resolveColor: ColorResolver | null;
   sort: SortState;
   onSortColumn: (key: ColumnKey) => void;
   baseTimestamp: number | null;
@@ -48,6 +51,7 @@ export function ByIdTable({
   onColumnResize,
   onColumnToggle,
   onColumnReorder,
+  resolveColor,
   sort,
   onSortColumn,
   baseTimestamp,
@@ -88,6 +92,7 @@ export function ByIdTable({
               gridTemplate={gridTemplate}
               baseTimestamp={baseTimestamp}
               busLookup={busLookup}
+              resolveColor={resolveColor}
               isExpanded={expanded.has(key)}
               onToggle={onToggleExpand}
             />
@@ -107,6 +112,7 @@ interface ByIdRowProps {
   gridTemplate: string;
   baseTimestamp: number | null;
   busLookup: BusLookup;
+  resolveColor: ColorResolver | null;
   isExpanded: boolean;
   onToggle: (rowKey: string) => void;
 }
@@ -120,6 +126,7 @@ const ByIdRow = memo(function ByIdRow({
   gridTemplate,
   baseTimestamp,
   busLookup,
+  resolveColor,
   isExpanded,
   onToggle,
 }: ByIdRowProps) {
@@ -142,6 +149,7 @@ const ByIdRow = memo(function ByIdRow({
               frame={frame}
               messageName={frame.decoded!.name}
               sig={sig}
+              resolveColor={resolveColor}
             />
           ))}
         </div>
@@ -160,11 +168,22 @@ function DecodedSignalCell({
   frame,
   messageName,
   sig,
+  resolveColor,
 }: {
   frame: TraceFrameRecord;
   messageName: string;
   sig: SignalRecord;
+  resolveColor: ColorResolver | null;
 }) {
+  const tint = resolveColor?.(
+    {
+      messageId: frame.id,
+      extended: frame.extended,
+      signalName: sig.name,
+      busId: frame.bus_id ?? null,
+    },
+    sig.value,
+  );
   return (
     <div
       className="signal"
@@ -184,7 +203,10 @@ function DecodedSignalCell({
       }}
     >
       <span className="signal-name">{sig.name}</span>
-      <span className="signal-value">
+      <span
+        className="signal-value"
+        style={tint ? { background: colorMapTint(tint) } : undefined}
+      >
         {formatSignalValueWithLabel(sig.value, sig.unit, sig.label)}
       </span>
     </div>

@@ -36,6 +36,7 @@ import { ProjectGraphPanel } from "./ProjectGraphPanel";
 import { PlotPanel } from "./PlotPanel";
 import { TransmitPanel } from "./TransmitPanel";
 import { RbsPanel } from "./RbsPanel";
+import { ColorMapPanel } from "./ColorMapPanel";
 import { SystemMessagesPanel } from "./SystemMessagesPanel";
 import { DbcPanel } from "./DbcPanel";
 import { SystemLogContext, type SystemLogContextValue } from "./systemLogContext";
@@ -86,6 +87,7 @@ import {
   PROJECT_GRAPH_PANEL_ID,
   PROJECT_PANEL_COMPONENT,
   PROJECT_PANEL_ID,
+  COLORMAP_PANEL_COMPONENT,
   RBS_PANEL_COMPONENT,
   SYSTEM_MESSAGES_PANEL_COMPONENT,
   SYSTEM_MESSAGES_PANEL_ID,
@@ -156,6 +158,7 @@ const DOCK_COMPONENTS = {
   [PLOT_PANEL_COMPONENT]: PlotPanel,
   [TRANSMIT_PANEL_COMPONENT]: TransmitPanel,
   [RBS_PANEL_COMPONENT]: RbsPanel,
+  [COLORMAP_PANEL_COMPONENT]: ColorMapPanel,
   [PROJECT_GRAPH_PANEL_COMPONENT]: ProjectGraphPanel,
   [SYSTEM_MESSAGES_PANEL_COMPONENT]: SystemMessagesPanel,
   [DBC_PANEL_COMPONENT]: DbcPanel,
@@ -323,6 +326,10 @@ export function App() {
         // Path picked in the panel; Run is off by default (ADR 0028 —
         // a fresh reference never transmits unasked).
         return { kind, id, name, path: null, run: false };
+      case "colormap":
+        // A signal value→color map (ADR 0029): the target signal and
+        // rules are filled in via its config panel; it starts inert.
+        return { kind, id, name, busId: null, messageId: 0, extended: false, signalName: "", rules: [] };
       default:
         return { kind, id, name, sources: ["*"] };
     }
@@ -1475,6 +1482,19 @@ export function App() {
     });
   }, [create]);
 
+  const addColorMapPanel = useCallback(() => {
+    const api = dockApiRef.current;
+    if (!api) return;
+    const title = defaultElementName("colormap", registryRef.current.map((e) => e.element));
+    const elementId = create("colormap");
+    api.addPanel({
+      id: `colormap-${elementId}`,
+      component: COLORMAP_PANEL_COMPONENT,
+      title,
+      params: { elementId },
+    });
+  }, [create]);
+
   // --- RBS host lifecycle (ADR 0028) ---
   // The host resolves `.cannet_rbs` bus-name keys against the
   // project's logical buses; push the (id, name) map on every change.
@@ -1728,6 +1748,7 @@ export function App() {
     "panel.add.plot": addPlotPanel,
     "panel.add.transmit": addTransmitPanel,
     "panel.add.rbs": addRbsPanel,
+    "panel.add.colormap": addColorMapPanel,
     "project.saveAll": () => void handleSaveAllRef.current(),
     "rbs.killSwitch": toggleRbsKillSwitch,
     "panel.show.systemMessages": showSystemMessagesPanel,
@@ -2133,6 +2154,7 @@ export function App() {
           <button onClick={addPlotPanel}>Add plot panel</button>
           <button onClick={addTransmitPanel}>Add transmit panel</button>
           <button onClick={addRbsPanel}>Add RBS panel</button>
+          <button onClick={addColorMapPanel}>Add color map</button>
           <button onClick={showDbcPanel}>DBC panel</button>
           <button onClick={showProjectGraphPanel}>Graph panel</button>
           <button onClick={showProjectPanel}>Project panel</button>

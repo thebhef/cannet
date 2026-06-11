@@ -311,9 +311,34 @@ export interface ByIdSnapshotRecord {
 /// exactly those producers and future buses don't auto-flow. Older
 /// projects saved a single `source?: string` field instead; the
 /// loader normalises those to `sources: ["*"]` (`normalizeElement`).
+/// One value→color rule in a {@link ProjectElement} `colormap`: an
+/// inclusive raw-value range and the hex color to tint matching values
+/// with. An enum value `v` is the degenerate range `[v, v]`. See ADR
+/// 0029.
+export interface ColorRule {
+  min: number;
+  max: number;
+  color: string;
+}
+
 export type ProjectElement =
   | { kind: "trace"; id: string; name?: string; sources: string[] }
   | { kind: "plot"; id: string; name?: string; sources: string[] }
+  | {
+      /// A standalone, ambient signal value→color map (ADR 0029): not a
+      /// graph node, not wired through `sources`. Any view rendering the
+      /// target signal tints its value cell by the matching rule.
+      kind: "colormap";
+      id: string;
+      name?: string;
+      /// Optional bus scope; null / absent matches the signal on any bus.
+      busId?: string | null;
+      /// Target signal: message arbitration id, std/ext, signal name.
+      messageId: number;
+      extended: boolean;
+      signalName: string;
+      rules: ColorRule[];
+    }
   | {
       kind: "transmit";
       id: string;

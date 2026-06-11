@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 
 import type { SignalRecord, TraceFrameRecord } from "./types";
 import { formatSignalValueWithLabel } from "./format";
+import { type ColorResolver, colorMapTint } from "./colorMap";
 import { setSignalDragData } from "./dragSignals";
 import {
   EXPANDED_ROW_HEIGHT,
@@ -43,6 +44,8 @@ interface TraceViewProps {
   onColumnResize: (key: ColumnKey, width: number) => void;
   onColumnToggle: (key: ColumnKey) => void;
   onColumnReorder: (key: ColumnKey, beforeKey: ColumnKey | null) => void;
+  /// Resolves a decoded signal's value→color tint (ADR 0029), or null.
+  resolveColor: ColorResolver | null;
   /// Bus-id → bus-name lookup for the "bus" column, built once per
   /// render from the project's bus list.
   busLookup: BusLookup;
@@ -67,6 +70,7 @@ export function TraceView({
   onColumnResize,
   onColumnToggle,
   onColumnReorder,
+  resolveColor,
   busLookup,
   getFrame,
   ensureVisible,
@@ -264,6 +268,7 @@ export function TraceView({
                 columns={visible}
                 gridTemplate={gridTemplate}
                 busLookup={busLookup}
+                resolveColor={resolveColor}
                 onToggle={toggleExpanded}
               />
             ))}
@@ -283,6 +288,7 @@ interface RowProps {
   columns: readonly ColumnState[];
   gridTemplate: string;
   busLookup: BusLookup;
+  resolveColor: ColorResolver | null;
   onToggle: (absoluteIndex: number) => void;
 }
 
@@ -295,6 +301,7 @@ const Row = memo(function Row({
   columns,
   gridTemplate,
   busLookup,
+  resolveColor,
   onToggle,
 }: RowProps) {
   const height = isExpanded ? EXPANDED_ROW_HEIGHT : ROW_HEIGHT;
@@ -331,6 +338,7 @@ const Row = memo(function Row({
               frame={frame}
               messageName={frame.decoded!.name}
               sig={sig}
+              resolveColor={resolveColor}
             />
           ))}
         </div>
@@ -350,11 +358,22 @@ function DecodedSignalCell({
   frame,
   messageName,
   sig,
+  resolveColor,
 }: {
   frame: TraceFrameRecord;
   messageName: string;
   sig: SignalRecord;
+  resolveColor: ColorResolver | null;
 }) {
+  const tint = resolveColor?.(
+    {
+      messageId: frame.id,
+      extended: frame.extended,
+      signalName: sig.name,
+      busId: frame.bus_id ?? null,
+    },
+    sig.value,
+  );
   return (
     <div
       className="signal"
@@ -380,7 +399,10 @@ function DecodedSignalCell({
       }}
     >
       <span className="signal-name">{sig.name}</span>
-      <span className="signal-value">
+      <span
+        className="signal-value"
+        style={tint ? { background: colorMapTint(tint) } : undefined}
+      >
         {formatSignalValueWithLabel(sig.value, sig.unit, sig.label)}
       </span>
     </div>
