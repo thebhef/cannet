@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -24,6 +24,7 @@ import {
   toggleColumn,
 } from "./traceColumns";
 import type { ByIdSnapshotRecord } from "./types";
+import { diagCount } from "./diag"; // DIAG
 
 type TraceMode = "chronological" | "by-id";
 
@@ -46,6 +47,7 @@ function elementIdFromParams(params: unknown): string {
  * state, persisted in the dockview panel `params`.
  */
 export function TracePanel(props: IDockviewPanelProps) {
+  diagCount("render.TracePanel"); // DIAG
   const data = useTraceData();
   const registry = useElementRegistry();
   const { ensure } = registry;
@@ -150,14 +152,43 @@ export function TracePanel(props: IDockviewPanelProps) {
   // before returning, so unchecking a bus in the panel's source picker
   // drops its frames here without any frontend post-filter pass.
   const refreshTrigger = trace.status === "running" ? trace.frameCount : -1;
+  // DIAG: attribute each by-id effect firing to the dependency that
+  // actually changed — during the freeze this fires once per render
+  // cycle, and whichever dep churns is the loop's driver.
+  const byIdDepsRef = useRef<{
+    mode: TraceMode;
+    offset: number;
+    status: string;
+    refreshTrigger: number;
+    fetchFilter: unknown;
+  } | null>(null);
   useEffect(() => {
     if (mode !== "by-id") return;
+    const prev = byIdDepsRef.current; // DIAG
+    if (prev) {
+      if (prev.mode !== mode) diagCount("byid.dep.mode"); // DIAG
+      if (prev.offset !== trace.offset) diagCount("byid.dep.offset"); // DIAG
+      if (prev.status !== trace.status) diagCount("byid.dep.status"); // DIAG
+      if (prev.refreshTrigger !== refreshTrigger) diagCount("byid.dep.refreshTrigger"); // DIAG
+      if (prev.fetchFilter !== fetchFilter) diagCount("byid.dep.fetchFilter"); // DIAG
+    } else {
+      diagCount("byid.dep.mount"); // DIAG
+    }
+    byIdDepsRef.current = {
+      mode,
+      offset: trace.offset,
+      status: trace.status,
+      refreshTrigger,
+      fetchFilter,
+    }; // DIAG
+    diagCount("invoke.fetch_latest_by_id"); // DIAG
     void invoke<ByIdSnapshotRecord[]>("fetch_latest_by_id", {
       since: trace.offset,
       filter: fetchFilter,
     })
       .then(setRows)
       .catch(() => {
+        diagCount("reject.fetch_latest_by_id"); // DIAG
         /* a failed snapshot just leaves the last one up */
       });
   }, [mode, trace.offset, trace.status, refreshTrigger, fetchFilter]);

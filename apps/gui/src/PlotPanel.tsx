@@ -435,6 +435,7 @@ function elementIdFromParams(raw: unknown): string {
 // tests can import them without dragging uplot into a jsdom run.
 import { applyAreaFilters } from "./plotFilter";
 import { deriveAxesForArea, type YAxisMode } from "./plotAxisDerivation";
+import { diagCount } from "./diag"; // DIAG
 
 const Y_AXIS_MODES: YAxisMode[] = ["unified", "per-unit", "individual"];
 function yAxisModeFromRaw(v: unknown): YAxisMode {
@@ -442,6 +443,7 @@ function yAxisModeFromRaw(v: unknown): YAxisMode {
 }
 
 export function PlotPanel(props: IDockviewPanelProps) {
+  diagCount("render.PlotPanel"); // DIAG
   const data = useTraceData();
   const { dbcPaths, buses } = useProjectContext();
   const registry = useElementRegistry();
@@ -599,6 +601,11 @@ export function PlotPanel(props: IDockviewPanelProps) {
   // record it as the shared window, propagate, drop out of follow-live.
   const onUserXChange = useCallback(
     (min: number, max: number, fromId: string) => {
+      // DIAG: fires only on a real user pan/zoom — if this spins
+      // during the freeze, the setScale suppression window is being
+      // missed and the x-sync ring (applyXAll → setScale hook →
+      // onUserXChange) is the loop.
+      diagCount("plot.userXChange"); // DIAG
       applyXAll(min, max, fromId);
       setFollowLive(false);
     },
@@ -613,6 +620,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
   });
   const onAreaResampled = useCallback(
     (areaId: string, lastT: number | null) => {
+      diagCount("plot.areaResampled"); // DIAG
       if (lastT != null) extentByAreaRef.current.set(areaId, lastT);
       else extentByAreaRef.current.delete(areaId);
       const ext = sharedExtent();
@@ -1040,6 +1048,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
 
   const reportSeries = useCallback(
     (areaId: string, series: Map<string, Series>) => {
+      diagCount("plot.reportSeries"); // DIAG
       if (!measEnabled) return;
       setSeriesByArea((p) => {
         const next = new Map(p);
@@ -1804,6 +1813,7 @@ interface AreaCache {
 }
 
 function PlotArea(p: PlotAreaProps) {
+  diagCount("render.PlotArea"); // DIAG
   const {
     area,
     label,
@@ -1952,6 +1962,7 @@ function PlotArea(p: PlotAreaProps) {
     Promise.all(
       signals.map(async (s) => {
         try {
+          diagCount("invoke.list_value_tables"); // DIAG
           const rows = await invoke<ValueTableEntryRecord[]>("list_value_tables", {
             messageId: s.messageId,
             extended: s.extended,
@@ -2061,6 +2072,7 @@ function PlotArea(p: PlotAreaProps) {
     const u = uplotRef.current;
     if (!u) return;
     if (resampleBusyRef.current) return;
+    diagCount("plotarea.resample"); // DIAG
     resampleBusyRef.current = true;
     const t0 = performance.now();
     try {
@@ -2169,6 +2181,7 @@ function PlotArea(p: PlotAreaProps) {
         return;
       }
 
+      diagCount("invoke.sample_signals"); // DIAG
       const buf = await invoke<ArrayBuffer>("sample_signals", {
         fromIndex: visStart,
         windowEnd: visEnd,
@@ -2408,6 +2421,7 @@ function PlotArea(p: PlotAreaProps) {
       const probe = new ResizeObserver(() => {
         if (el.clientWidth && el.clientHeight) {
           probe.disconnect();
+          diagCount("uplot.resizeTick.probe"); // DIAG
           setResizeTick((n) => n + 1);
         }
       });
@@ -2875,6 +2889,7 @@ function PlotArea(p: PlotAreaProps) {
     // uPlot needs `data.length === series.length`; start with an
     // empty column per series (the resample below fills them).
     const initialData = [[] as number[], ...signals.map(() => [] as number[])] as uPlot.AlignedData;
+    diagCount("uplot.create"); // DIAG
     const u = new uPlot(opts, initialData, el);
     uplotRef.current = u;
     registerInstance(areaId, u);
@@ -2908,6 +2923,7 @@ function PlotArea(p: PlotAreaProps) {
       if (w === lastW && h === lastH) return;
       lastW = w;
       lastH = h;
+      diagCount("uplot.setSize"); // DIAG
       withSuppressed(() => u.setSize({ width: w, height: h }));
     });
     ro.observe(el);
@@ -2929,6 +2945,7 @@ function PlotArea(p: PlotAreaProps) {
       // scheduling and the rebuild never happens.
       postMountRebuildTimer = window.setTimeout(() => {
         postMountRebuildDoneRef.current = true;
+        diagCount("uplot.resizeTick.postMount"); // DIAG
         setResizeTick((n) => n + 1);
       }, 250);
     }
@@ -2940,6 +2957,7 @@ function PlotArea(p: PlotAreaProps) {
       if (hoverRafRef.current) cancelAnimationFrame(hoverRafRef.current);
       hoverRafRef.current = 0;
       registerInstance(areaId, null);
+      diagCount("uplot.destroy"); // DIAG
       u.destroy();
       if (uplotRef.current === u) uplotRef.current = null;
     };

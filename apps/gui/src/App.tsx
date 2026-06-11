@@ -119,6 +119,7 @@ import {
   PanelCommandsContext,
   createPanelCommandRegistry,
 } from "./panelCommands";
+import { diagCount, startDiagReporter } from "./diag"; // DIAG
 
 // BLF + global error state. Remote sessions are tracked separately
 // (multi-server: one entry per address in `remoteSessions`).
@@ -161,6 +162,8 @@ const DOCK_COMPONENTS = {
 };
 
 export function App() {
+  diagCount("render.App"); // DIAG
+  useEffect(() => startDiagReporter(), []); // DIAG
   const [count, setCount] = useState(0);
   const [framesPerSecond, setFramesPerSecond] = useState(0);
   // Live sidecar status — needed to resolve the `"local"` sentinel on
@@ -324,6 +327,7 @@ export function App() {
     }
   };
   const create = useCallback((kind: ProjectElementKind): string => {
+    diagCount("registry.create"); // DIAG
     const id = crypto.randomUUID();
     setRegistry((prev) => {
       const name = defaultElementName(kind, prev.map((e) => e.element));
@@ -339,12 +343,14 @@ export function App() {
       const i = prev.findIndex((e) => e.element.id === id);
       const name = defaultElementName(kind, prev.map((e) => e.element));
       if (i < 0) {
+        diagCount("registry.ensure.append"); // DIAG
         return [
           ...prev,
           { element: buildFreshElement(kind, id, name), trace: clearedTrace(countRef.current) },
         ];
       }
       if (prev[i].element.kind === kind) return prev;
+      diagCount("registry.ensure.replace"); // DIAG
       const next = prev.slice();
       next[i] = { ...next[i], element: buildFreshElement(kind, id, name) };
       return next;
@@ -360,6 +366,7 @@ export function App() {
         changed = true;
         return { ...e, trace: t };
       });
+      if (changed) diagCount("registry.updateTrace"); // DIAG
       return changed ? next : prev;
     });
   }, []);
@@ -369,16 +376,26 @@ export function App() {
   // (sets `sinks`), the project panel's inline rename (sets `name`),
   // and the "Insert filter upstream" flow (sets multiple at once).
   // Guards are in the pure helper: kind / id mismatch and filter
-  // cycles are silently refused. See `applyElementPatch`. A patch
-  // that actually changes a persisted field marks the workspace
-  // dirty (deferred to a microtask — updaters must stay pure).
+  // cycles are silently refused. See `applyElementPatch`.
+  //
+  // Dirty-marking happens HERE, at the call site, against the last
+  // rendered registry — never inside the updater. The updater must be
+  // pure: React replays queued updaters (StrictMode, interrupted /
+  // entangled renders), and a side effect there re-arms its own render
+  // pass — under a high-rate capture this self-scheduled into a
+  // permanent render loop that froze the GUI on the first rename
+  // keystroke. The call-site check can mis-judge no-op-ness against a
+  // one-render-stale base during a rapid edit burst; `dirty` is sticky
+  // and the next real edit corrects it, while the state itself keeps
+  // exact semantics through the pure updater.
   const updateElement = useCallback(
     (id: string, patch: Partial<ProjectElement>) => {
-      setRegistry((prev) => {
-        const next = applyElementPatch(prev, id, patch) as RegistryEntry[];
-        if (next !== prev) queueMicrotask(() => setDirty(true));
-        return next;
-      });
+      diagCount("registry.update"); // DIAG
+      if (applyElementPatch(registryRef.current, id, patch) !== registryRef.current) {
+        diagCount("app.setDirty.callsite"); // DIAG
+        setDirty(true);
+      }
+      setRegistry((prev) => applyElementPatch(prev, id, patch) as RegistryEntry[]);
     },
     [],
   );
@@ -471,6 +488,7 @@ export function App() {
 
   const refreshChunk = useCallback(async (chunkIdx: number) => {
     if (inflightChunksRef.current.has(chunkIdx)) return;
+    diagCount("invoke.fetch_trace_range"); // DIAG
     inflightChunksRef.current.add(chunkIdx);
     try {
       const start = chunkIdx * CHUNK_SIZE;
@@ -528,6 +546,7 @@ export function App() {
       setSystemMessages((current) => reconcileSnapshot(current, snap));
     });
     const unlisten = listen<SystemMessage>("system-log-appended", (event) => {
+      diagCount("event.system-log-appended"); // DIAG
       setSystemMessages((current) => mergeSystemMessage(current, event.payload));
     });
     return () => {
@@ -559,6 +578,7 @@ export function App() {
 
     unlistens.push(
       listen<TraceGrew>("trace-grew", (event) => {
+        diagCount("event.trace-grew"); // DIAG
         const {
           count: newCount,
           frames_per_second,
@@ -618,6 +638,7 @@ export function App() {
         changed = true;
         return { ...e, trace: t };
       });
+      if (changed) diagCount("registry.reanchor"); // DIAG
       return changed ? next : prev;
     });
   }, [count]);
@@ -640,6 +661,7 @@ export function App() {
         changed = true;
         return { ...e, trace: t };
       });
+      if (changed) diagCount("registry.clearOffset"); // DIAG
       return changed ? next : prev;
     });
   }, [sessionStartSeconds]);
@@ -1550,7 +1572,10 @@ export function App() {
       const entry = registry.find((e) => e.element.id === elementId);
       if (!entry) continue;
       const label = elementLabel(entry.element);
-      if (panel.title !== label) panel.api.setTitle(label);
+      if (panel.title !== label) {
+        diagCount("dockview.setTitle"); // DIAG
+        panel.api.setTitle(label);
+      }
     }
   }, [registry]);
 
@@ -1815,6 +1840,7 @@ export function App() {
 
       // Track the focused panel for the command context (ADR 0018).
       api.onDidActivePanelChange((panel) => {
+        diagCount("app.setActivePanel"); // DIAG
         if (!panel) {
           setActivePanel(null);
           return;
@@ -1848,6 +1874,7 @@ export function App() {
       // (panels added / dragged / closed, columns resized) also marks
       // the workspace dirty.
       api.onDidLayoutChange(() => {
+        diagCount("dockview.layoutChange"); // DIAG
         try {
           localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(api.toJSON()));
         } catch {
@@ -1878,14 +1905,15 @@ export function App() {
     [state, remoteSessions, dbcPaths, count, framesPerSecond],
   );
 
-  const traceData: TraceData = useMemo(
-    () => ({ count, version, sessionStartSeconds, getFrame, ensureVisible }),
-    [count, version, sessionStartSeconds, getFrame, ensureVisible],
-  );
+  const traceData: TraceData = useMemo(() => {
+    diagCount("memo.traceData"); // DIAG
+    return { count, version, sessionStartSeconds, getFrame, ensureVisible };
+  }, [count, version, sessionStartSeconds, getFrame, ensureVisible]);
 
   const elementRegistryValue: ElementRegistry = useMemo(
     () => ({
-      entries: registry,
+      entries: (diagCount("memo.elementRegistryValue"), registry), // DIAG
+
       get: (id) => registry.find((e) => e.element.id === id),
       create,
       ensure,
@@ -1952,7 +1980,8 @@ export function App() {
 
   const projectContextValue: ProjectContextValue = useMemo(
     () => ({
-      projectPath,
+      projectPath: (diagCount("memo.projectContextValue"), projectPath), // DIAG
+
       dirty,
       dbcPaths,
       dbcBuses,

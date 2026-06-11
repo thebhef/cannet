@@ -142,6 +142,27 @@ trip over it.
   exercise the native dialog — confirm it opens on each shipping
   WebView (WebKitGTK / WKWebView / WebView2) next time the app is
   run by hand.
+- `[perf]` `cannet-gui` plot panel: **batch the per-resample report
+  fan-out.** Each `PlotArea` resample fires up to six panel-level
+  setStates (`reportSeries` / `Perf` / `HostMs` / `Rate` / `Cache` /
+  `Base`), each of which re-renders the panel and with it *every*
+  area. Measured during the rename-lockup investigation at
+  ~1000 msg/s with 3 plot panels / 13 derived areas: ~200 `PlotArea`
+  renders/s and 750–1000 ms of >50 ms long tasks per second — the UI
+  thread runs at 75–100% utilization just displaying the stream, and
+  that saturation is what made the React update-queue jam (the
+  rename-freeze bug) reachable. Coalesce the reports (one reducer
+  dispatch per resample, or ref + rAF flush) so a resample costs one
+  panel update.
+- `[bug]` `cannet-gui` plot panel: **uncaught uPlot TypeError after
+  dev reload while streaming.** Seen during the rename-lockup
+  investigation: `Uncaught TypeError: object null is not iterable` at
+  `drawAxesGrid` (uPlot `_commit`) right after a dev-server reload
+  mid-capture, alongside Tauri "couldn't find callback" warnings.
+  Looks like a draw on a destroyed / rebuilt instance. Reproduce and
+  guard (likely a `uplotRef.current` staleness window in
+  `PlotPanel.tsx`'s create/destroy effect).
+
 ### DBC view
 
 - `[feat]` `cannet-gui` DBC view: **ECU view mode** — group the message
@@ -192,15 +213,6 @@ trip over it.
 
 ### GUI chrome and cross-cutting
 
-- `[cleanup]` `cannet-gui` `App.tsx` `updateElement`: marks the
-  workspace dirty via `queueMicrotask(() => setDirty(true))` *inside*
-  the `setRegistry` updater — a side effect in code React expects to
-  be pure (updaters can re-run under StrictMode / concurrent
-  replays). Harmless today (idempotent true-set, and a replay only
-  happens while a real patch is in flight), but revisit on the next
-  best-practices / performance pass: the pure shape is dirty-marking
-  at the edit call sites (rename, sources picker, predicate editor,
-  sinks sync) instead of inside the updater.
 - `[feat]` `cannet-gui` Save Capture: **time-range export.** Phase 9's
   Save Capture writes the entire session buffer to a `.blf`. Add the
   ability to pick a start and end time (or start/end frame index) on
@@ -263,15 +275,26 @@ next pass on this surface can address them as one piece.
 
 ### Host crates, wire, and sidecar
 
-- `[perf]` `cannet-gui` `fetch_filtered_trace`: **incremental filter-match
-  index.** The decode-candidate gate (see `decode_candidate_ids` in
-  `lib.rs`) made the per-frame scan cost cheap, but each 250 ms refresh
-  still rescans the whole `[scan_start, scan_end)` window under the
-  trace-store lock — O(session length) per tick, forever. The proper fix
-  is an incremental per-filter match index (like `by_id`): remember the
-  matched indices and the high-water mark, scan only frames appended
-  since. Pick up if multi-hour captures with filtered panels show scan
-  cost creeping back up.
+- `[perf]` `cannet-gui` `fetch_filtered_trace`: **make filtered scans
+  incremental and event-invalidated.** Two pieces of redundant
+  per-refresh work remain, sharing one invalidation story (filter
+  edited / DBC set changed), so land them as one pass:
+  - *Incremental filter-match index.* The decode-candidate gate (see
+    `decode_candidate_ids` in `lib.rs`) made the per-frame scan cost
+    cheap, but each 250 ms refresh still rescans the whole
+    `[scan_start, scan_end)` window under the trace-store lock —
+    O(session length) per tick, forever. Proper fix: a per-filter
+    match index (like `by_id`) remembering matched indices and a
+    high-water mark, scanning only frames appended since.
+  - *Cached candidate sets.* `decode_candidate_ids` re-runs the
+    name/signal resolution against every loaded DBC on every fetch
+    (4 Hz+ per filtered panel), though it's a pure function of
+    (predicate, loaded DBCs) and both have change events. Cache keyed
+    by predicate + a databases generation counter; the risky part is
+    auditing every `state.databases` mutation site (load, remove,
+    reload-all, watcher reload, bus-rescope) for the bump — a missed
+    invalidation is a wrong-results bug, which is why this wasn't done
+    inline with the gate itself.
 - `[ui]` `cannet-python-can` sidecar: **suppress the `xlReceive failed
   (XL_ERROR)` warning emitted on normal close.** Closing a Vector
   channel while `_rx_pump` is blocked in `ch.recv` surfaces as a
