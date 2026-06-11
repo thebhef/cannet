@@ -64,18 +64,27 @@ Artifact (~40 MB): `dist/cannet-python-can/cannet-python-can[.exe]` +
    the Task 26 release workflow.
 5. **Docs** — README: replace the fetch-`uv` prose (§ sidecar,
    Downloads) with the frozen-sidecar story; note `uv` is now dev-only.
-   `technology-inventory.md` PyInstaller entry (done as part of capturing
-   this task). Two present-tense statements become false only once the
-   freeze ships and must flip **in the same change**:
+   **Add the `technology-inventory.md` PyInstaller entry and update the
+   `python-can` entry — it is now redistributed, and its license string
+   is currently wrong (`Apache-2.0` → `LGPL-3.0-only`). Not yet done;
+   this task owns both fixes.** One present-tense statement becomes false only
+   once the freeze ships and must flip **in the same change**:
    - [ADR 0008](../../docs/adr/0008-python-can-sidecar.md) — "the
      sidecar's first launch materialises the venv" describes the dev
      flow; end users now get the frozen binary.
-   - [`servers/cannet-python-can/LICENSING.md`](../../servers/cannet-python-can/LICENSING.md)
-     — "ships no `python-can` binary; the user's `uv sync` fetches it
-     from PyPI" is no longer true: the frozen binary **bundles**
-     `python-can` / `grpcio` / `protobuf` (all permissive), and
-     PyInstaller's own GPL-with-exception terms apply to the freeze
-     tooling. Redo the licensing note for what we now redistribute.
+
+   [`servers/cannet-python-can/LICENSING.md`](../../servers/cannet-python-can/LICENSING.md)
+   has already been rewritten for the frozen model (bundles
+   `python-can` / `grpcio` / `protobuf` / CPython; LGPL-3.0 §4
+   compliance via the onedir layout). When the build lands, **verify
+   the onedir path and collection flags it describes match what the
+   build produces**, and adjust if they diverged.
+6. **Third-party license file** — ship a `THIRD-PARTY-LICENSES` file in
+   the installer carrying the LGPL-3.0 + GPL-3.0 texts (for
+   `python-can`) and the Apache-2.0 `NOTICE` / BSD / PSF texts (for
+   `grpcio` / `protobuf` / CPython), per LICENSING.md § `python-can`. →
+   verify: the file is present in the built installer. (A runtime
+   about-box attribution surface is a follow-up — see backlog.)
 
 ## Decisions (resolved)
 
@@ -101,5 +110,9 @@ Artifact (~40 MB): `dist/cannet-python-can/cannet-python-can[.exe]` +
 - CI builds and smoke-runs the frozen sidecar on the release runners.
 - Task 24 / Task 26 references to the end-user `uv` fetch flow are
   reconciled to point at this task's frozen approach.
-- README + `technology-inventory.md` match the shipped behavior; ADR
-  0036 recorded.
+- README + `technology-inventory.md` match the shipped behavior (the
+  PyInstaller and updated `python-can` entries land here); ADR 0036
+  recorded.
+- The installer carries a `THIRD-PARTY-LICENSES` file (LGPL-3.0 +
+  GPL-3.0 + Apache `NOTICE` / BSD / PSF), satisfying LICENSING.md's
+  §4 obligations for the redistributed frozen dependencies.

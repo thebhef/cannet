@@ -4,7 +4,7 @@ members = ["crates/cannet-core", "crates/cannet-blf", "crates/cannet-dbc", "crat
 
 [workspace.package]
 edition = "2021"
-license = "GPL-3.0-only"
+license = "MIT"
 publish = false
 
 [workspace.lints.rust]

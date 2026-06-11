@@ -1,57 +1,51 @@
 # cannet-python-can — licensing diligence
 
-The sidecar exists, in part, to keep the LGPL surface area of vendor
-driver libraries off the rest of the codebase. This file records the
-analysis behind the layout so the rationale isn't lost.
+The sidecar keeps the CAN driver libraries' LGPL surface in one process
+and one folder — off the GUI/Rust binary. This records the compliance
+posture.
 
-## Summary
+Two distribution models:
 
-- The sidecar is its own process, communicating with `cannet-gui`
-  exclusively over the [`cannet-wire`](../../crates/cannet-wire) gRPC
-  protocol — a public, documented IPC boundary.
-- The sidecar's venv is **user-replaceable**. `python-can` is the
-  default driver library, but the adapter in `driver.py` lets a user
-  install a different library (or write their own) with no changes to
-  any other crate or app in this repository.
-- Therefore: even where the underlying SDK is LGPL or proprietary,
-  the rest of the cannet codebase neither links to nor distributes
-  the SDK; the user opts in to the SDK on their own machine when they
-  plug in hardware.
+- **Dev** — runs from source in a `uv` venv; redistributes nothing.
+- **End-user** — ships as a frozen PyInstaller **onedir** binary in the
+  installer ([ADR 0036](../../docs/adr/0036-frozen-python-can-sidecar.md)),
+  **embedding** the deps below. Here cannet *is* a redistributor.
 
-## Components
+| Component               | License                       | End-user distribution       |
+|-------------------------|-------------------------------|-----------------------------|
+| `python-can`            | LGPL-3.0-only                 | frozen into the onedir      |
+| `grpcio`                | Apache-2.0                    | frozen into the onedir      |
+| `protobuf`              | BSD-3-Clause                  | frozen into the onedir      |
+| CPython                 | PSF-2.0                       | frozen into the onedir      |
+| PyInstaller             | GPL-2.0-or-later w/ exception | build tool only             |
+| Vector/Kvaser/PEAK SDKs | proprietary                   | user-installed, not bundled |
 
-| Component        | License            | Distribution                            |
-|------------------|--------------------|-----------------------------------------|
-| `python-can`     | LGPL-3.0           | installed at runtime via `uv sync`      |
-| `grpcio`         | Apache-2.0         | installed at runtime via `uv sync`      |
-| `protobuf`       | BSD-3-Clause       | installed at runtime via `uv sync`      |
-| Vector XL Driver | proprietary        | user-installed, not bundled             |
-| Kvaser CANlib    | proprietary        | user-installed, not bundled             |
-| PEAK PCAN-Basic  | proprietary        | user-installed, not bundled             |
+**Permissive deps** (`grpcio`, `protobuf`, CPython) only need their
+notices retained in a `THIRD-PARTY-LICENSES` file shipped with the
+installer. **PyInstaller**'s bootloader exception lets us ship the
+frozen output under any license; it imposes nothing.
 
-`python-can` is LGPL-3.0. The cannet sidecar uses `python-can` from a
-separate, replaceable Python venv — the binding is by `import`, not by
-static link, and `python-can`'s LGPL allows that kind of use without
-infecting the importing program's license. The cannet codebase ships
-no `python-can` binary; the user's `uv sync` step fetches it from
-PyPI under its own license.
+**`python-can` (LGPL-3.0)** — freezing it in makes the installer a
+Combined Work under LGPL §4, which LGPL permits under any license
+(cannet stays MIT). Compliance is cheap because it's pure Python:
 
-The vendor SDKs (Vector / Kvaser / PEAK) are proprietary but freely
-redistributable for use with the corresponding hardware. We do not
-bundle them; users install them per the vendor's documentation. The
-adapter just `import`s the vendor's Python module if it is present.
+- **§4d relink** — satisfied by the onedir itself: `python-can` lands as
+  editable modules under `_internal/can/`; a user swaps in a modified
+  copy in place (no separate relink for an import-linked library). The
+  build keeps it as collected files (`--collect-submodules can`).
+- **Source** — public and unmodified at the `uv.lock`-pinned version
+  (`github.com/hardbyte/python-can`); ship the LGPL-3.0 + GPL-3.0 texts
+  and a pointer.
+- **Notices (§4a–c)** — the `THIRD-PARTY-LICENSES` file (and, later, an
+  about-box) name `python-can` as LGPL-covered.
+- **No tivoization** — the onedir is left user-modifiable.
 
-## Swap procedure
+**Vendor SDKs** are loaded via `ctypes` from the user's own hardware-SDK
+install; never frozen in.
 
-A user who wants to avoid `python-can` entirely (LGPL avoidance, a
-preferred alternative driver, or in-house code) can:
+## Swapping `python-can`
 
-1. Edit `pyproject.toml`: replace the `python-can>=4.3` line with the
-   alternative package (or remove it).
-2. Implement a module exposing a `Driver` callable matching
-   `driver.Driver` from this package.
-3. Set `CANNET_DRIVER_MODULE=<your_module>` before the GUI launches
-   the sidecar (the GUI passes the env through).
-4. Run `uv sync` to materialise the new venv.
-
-The wire surface and the rest of the cannet codebase are unaffected.
+- **Frozen:** replace the modules under `_internal/can/` with an
+  interface-compatible version — no cannet rebuild.
+- **Dev:** swap the dep in `pyproject.toml`, expose a `Driver` callable
+  matching `driver.Driver`, set `CANNET_DRIVER_MODULE`, `uv sync`.
