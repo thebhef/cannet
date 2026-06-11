@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import type { FilterPredicate, TraceFrameRecord } from "./types";
+import { diagCount } from "./diag"; // DIAG
 
 /// Rows fetched per filtered page. Big enough that ordinary scrolling
 /// stays inside the loaded page; small enough that one page is a cheap
@@ -93,6 +94,7 @@ export function useFilteredTrace(
       }
       c.fetching = true;
       const ctxKey = c.ctxKey;
+      diagCount("invoke.fetch_filtered_trace"); // DIAG
       void invoke<FilteredTracePage>("fetch_filtered_trace", {
         filter: c.filter,
         scanStart: c.winStart,

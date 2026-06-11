@@ -24,6 +24,7 @@ import {
   visibleColumns,
 } from "./traceColumns";
 import { TraceHeader, cellContent } from "./traceTable";
+import { diagCount } from "./diag"; // DIAG
 
 interface TraceViewProps {
   count: number;
@@ -69,6 +70,7 @@ export function TraceView({
   ensureVisible,
   onAutoScrollDisabled,
 }: TraceViewProps) {
+  diagCount("render.TraceView"); // DIAG
   const containerRef = useRef<HTMLDivElement>(null);
 
   const [viewportHeight, setViewportHeight] = useState(600);
@@ -104,6 +106,7 @@ export function TraceView({
   useEffect(() => {
     if (!containerRef.current) return;
     const update = () => {
+      diagCount("traceview.resizeObserver"); // DIAG
       if (containerRef.current) {
         setViewportHeight(containerRef.current.clientHeight);
       }
