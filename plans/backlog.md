@@ -118,14 +118,6 @@ trip over it.
 
 ### Plot panel
 
-- `[feat]` `cannet-gui` plot panel: **enum-aware per-unit grouping**.
-  Task 15 added the `yAxisMode` selector (unified / per-unit /
-  individual). `deriveAxesForArea` has an `isEnum` predicate slot to
-  break each enum onto its own axis in per-unit mode, but the panel
-  doesn't source it (today each `PlotArea` resolves enum-ness
-  per-axis via `list_value_tables`; the panel level doesn't roll
-  that up). Add a panel-level enum cache populated from
-  `list_value_tables` so per-unit can give every enum its own axis.
 - `[perf]` `cannet-gui` plot panel: **coalesce per-axis resamples.**
   In per-unit / individual mode each derived axis runs its own
   resample loop, so an area with N axes makes N `sample_signals`
@@ -134,14 +126,6 @@ trip over it.
   this is bounded — but a panel-level shared fetch split per axis
   would cut the IPC. Pick up if the Task 21 profiling baseline
   flags it.
-- `[verify]` `cannet-gui` plot panel: **colour picker on the real
-  WebView.** The per-series picker opens a visually hidden
-  `<input type="color">` via programmatic `.click()` from the
-  swatch's contextmenu handler (`SignalSwatch` in `PlotPanel.tsx`).
-  Works in Chromium and generally in WebKitGTK, but jsdom can't
-  exercise the native dialog — confirm it opens on each shipping
-  WebView (WebKitGTK / WKWebView / WebView2) next time the app is
-  run by hand.
 - `[perf]` `cannet-gui` plot panel: **batch the per-resample report
   fan-out.** Each `PlotArea` resample fires up to six panel-level
   setStates (`reportSeries` / `Perf` / `HostMs` / `Rate` / `Cache` /

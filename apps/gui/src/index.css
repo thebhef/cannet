@@ -1117,6 +1117,16 @@ header {
   color: #cbd5e1;
 }
 
+/* Header cells are also drag-to-reorder. `grab` hints the drag; the
+   dragged cell dims while it's in flight. The resize handle keeps its
+   own `col-resize` cursor (it sits above this). */
+.trace-header > span.col-draggable {
+  cursor: grab;
+}
+.trace-header > span.col-dragging {
+  opacity: 0.4;
+}
+
 .sort-marker {
   color: #93c5fd;
 }
@@ -1471,13 +1481,13 @@ header {
  * (aligns with the signal name) so it doesn't drift down on rows that
  * grow a diagnostic line. */
 .plot-signal-swatch {
-  width: 0.7rem;
-  height: 0.7rem;
-  border-radius: 2px;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 3px;
   border: 1px solid rgba(255, 255, 255, 0.15);
   padding: 0;
   cursor: pointer;
-  margin-top: 0.25rem;
+  margin-top: 0.18rem;
 }
 .plot-signal-swatch.hidden {
   opacity: 0.25;
@@ -1521,6 +1531,17 @@ header {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* Small colour dot before the bus name in a signal row — matches the
+ * bus's graph colour so the source bus is identifiable at a glance. */
+.plot-bus-swatch {
+  display: inline-block;
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 2px;
+  margin-right: 0.3rem;
+  vertical-align: middle;
+  border: 1px solid rgba(255, 255, 255, 0.15);
 }
 .plot-signal-row.hidden .plot-signal-name,
 .plot-signal-row.hidden .plot-signal-message {

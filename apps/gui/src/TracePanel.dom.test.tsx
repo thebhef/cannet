@@ -9,7 +9,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 
 import { invoke } from "@tauri-apps/api/core";
 
@@ -91,10 +91,10 @@ function makeRegistry(elements: ProjectElement[]): ElementRegistry {
   } as unknown as ElementRegistry;
 }
 
-function renderPanel(elements: ProjectElement[], count = 100) {
+function renderPanel(elements: ProjectElement[], count = 100, mode = "chronological") {
   const api = { updateParameters: vi.fn() };
   const props = {
-    params: { elementId: "t1", mode: "chronological" },
+    params: { elementId: "t1", mode },
     api,
   } as unknown as Parameters<typeof TracePanel>[0];
   // One registry instance across re-renders so the trace element (and
@@ -109,8 +109,8 @@ function renderPanel(elements: ProjectElement[], count = 100) {
       </ProjectContext.Provider>
     </TraceDataContext.Provider>
   );
-  const { rerender } = render(tree(count));
-  return { grow: (c: number) => rerender(tree(c)) };
+  const { rerender, container } = render(tree(count));
+  return { grow: (c: number) => rerender(tree(c)), container };
 }
 
 beforeEach(() => {
@@ -154,6 +154,23 @@ describe("TracePanel chronological filtering", () => {
     // used; the panel itself issues no `fetch_filtered_trace`.
     renderPanel([{ kind: "trace", id: "t1", sources: ["*"] } as ProjectElement]);
     expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("right-clicking a column header opens the column menu, not the sources picker", () => {
+    // Regression: the panel opens its sources context-menu on any
+    // right-click. The header's own show/hide-columns menu must stop
+    // the event from bubbling, or the sources menu renders over it and
+    // the column menu can't be used.
+    const { container } = renderPanel(
+      [{ kind: "trace", id: "t1", sources: ["*"] } as ProjectElement],
+      100,
+      "by-id",
+    );
+    const header = container.querySelector(".trace-header");
+    expect(header).toBeTruthy();
+    fireEvent.contextMenu(header!);
+    expect(container.querySelector(".column-context-menu")).toBeInTheDocument();
+    expect(document.querySelector(".sources-context-menu")).not.toBeInTheDocument();
   });
 
   it("re-pages the tail as the trace window grows", async () => {

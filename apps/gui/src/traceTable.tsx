@@ -14,6 +14,10 @@ import {
 } from "./traceColumns";
 import { formatData, formatId, formatKind, formatMsgRate, formatTimestamp } from "./format";
 
+/// DnD payload type for dragging a column header to reorder it. Carries
+/// the dragged column's `ColumnKey` as plain text.
+const COLUMN_DND_MIME = "application/x-cannet-trace-column";
+
 /// The content for one trace cell, given the column. The `#` column is
 /// the row's 1-based index in the chronological view, and the total
 /// frame count for the id in the by-id view (passed as `count`); it's
@@ -69,6 +73,9 @@ interface TraceHeaderProps {
   columns: readonly ColumnState[];
   onColumnResize: (key: ColumnKey, width: number) => void;
   onColumnToggle: (key: ColumnKey) => void;
+  /// Drag-to-reorder: move `key` to immediately before `beforeKey`
+  /// (`null` = to the end). Omitted ⇒ headers aren't draggable.
+  onColumnReorder?: (key: ColumnKey, beforeKey: ColumnKey | null) => void;
   /// If given, column headers are clickable to sort (cycled by the
   /// caller via `onSortColumn`) and the active one shows ▲ / ▼.
   sort?: SortState;
@@ -86,12 +93,19 @@ export function TraceHeader({
   columns,
   onColumnResize,
   onColumnToggle,
+  onColumnReorder,
   sort,
   onSortColumn,
   byId,
 }: TraceHeaderProps) {
   const visible = visibleColumns(columns);
+  const visibleKeys = visible.map((c) => c.key);
   const gridTemplate = gridTemplateColumns(columns);
+
+  // Drag-to-reorder: the column currently being dragged (for the dimmed
+  // affordance). Drop on a header's left/right half inserts the dragged
+  // column before/after it.
+  const [dragKey, setDragKey] = useState<ColumnKey | null>(null);
 
   // Column-resize drag: which column, the pointer X at drag start, and
   // that column's width then. The handle takes pointer capture.
@@ -139,6 +153,10 @@ export function TraceHeader({
       style={{ gridTemplateColumns: gridTemplate }}
       onContextMenu={(e) => {
         e.preventDefault();
+        // Stop the right-click from also reaching the panel-level
+        // context-menu handler (the sources picker) — otherwise both
+        // menus open and the sources menu renders over this one.
+        e.stopPropagation();
         setMenu({ x: e.clientX, y: e.clientY });
       }}
     >
@@ -147,16 +165,58 @@ export function TraceHeader({
         const label = byId ? def.byIdLabel ?? def.label : def.label;
         const sortable = !!onSortColumn;
         const active = sort?.key === c.key;
+        const draggable = !!onColumnReorder;
         return (
           <span
             key={c.key}
-            className={`${def.className}${sortable ? " col-sortable" : ""}`}
+            className={`${def.className}${sortable ? " col-sortable" : ""}${
+              draggable ? " col-draggable" : ""
+            }${dragKey === c.key ? " col-dragging" : ""}`}
             onClick={sortable ? () => onSortColumn?.(c.key) : undefined}
+            draggable={draggable}
+            onDragStart={
+              draggable
+                ? (e) => {
+                    e.dataTransfer.setData(COLUMN_DND_MIME, c.key);
+                    e.dataTransfer.effectAllowed = "move";
+                    setDragKey(c.key);
+                  }
+                : undefined
+            }
+            onDragOver={
+              draggable
+                ? (e) => {
+                    if (!e.dataTransfer.types.includes(COLUMN_DND_MIME)) return;
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = "move";
+                  }
+                : undefined
+            }
+            onDrop={
+              draggable
+                ? (e) => {
+                    const moved = e.dataTransfer.getData(COLUMN_DND_MIME) as ColumnKey;
+                    if (!moved) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    // Left half ⇒ drop before this column; right half ⇒
+                    // after it (before the next visible one, or the end).
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const after = e.clientX > rect.left + rect.width / 2;
+                    const idx = visibleKeys.indexOf(c.key);
+                    const beforeKey = after ? visibleKeys[idx + 1] ?? null : c.key;
+                    onColumnReorder?.(moved, beforeKey);
+                    setDragKey(null);
+                  }
+                : undefined
+            }
+            onDragEnd={draggable ? () => setDragKey(null) : undefined}
           >
             {label}
             {active && <span className="sort-marker">{sort?.dir === "asc" ? " ▲" : " ▼"}</span>}
             <span
               className="col-resize-handle"
+              draggable={false}
               onPointerDown={(e) => onResizeDown(c.key, e)}
               onPointerMove={onResizeMove}
               onPointerUp={onResizeUp}

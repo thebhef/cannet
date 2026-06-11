@@ -55,6 +55,10 @@ export interface TraceGrew {
   /// time, so every frame in a session shares one stable zero. Zero
   /// before any session has been configured.
   session_start_seconds: number;
+  /// Wall-clock span of the buffered frames in seconds (newest − oldest
+  /// timestamp). Shown in the status line; zero when fewer than two
+  /// frames are buffered.
+  buffer_seconds: number;
   tail: TraceFrameRecord[];
 }
 

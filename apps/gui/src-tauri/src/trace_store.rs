@@ -348,6 +348,26 @@ impl TraceStore {
         (first, last)
     }
 
+    /// Wall-clock span of the buffered frames, in seconds: the timestamp
+    /// gap between the oldest and newest frame currently stored. Zero
+    /// when fewer than two frames are buffered. Drives the "N s buffered"
+    /// readout in the status line. Frames are appended in arrival order,
+    /// so `first` is the oldest and `last` the newest.
+    #[must_use]
+    pub fn buffer_seconds(&self) -> f64 {
+        let inner = self.inner.lock().expect("trace store mutex poisoned");
+        match (inner.frames.first(), inner.frames.last()) {
+            (Some(first), Some(last)) => {
+                let span = last.timestamp_ns.saturating_sub(first.timestamp_ns);
+                #[allow(clippy::cast_precision_loss)]
+                {
+                    span as f64 / 1_000_000_000.0
+                }
+            }
+            _ => 0.0,
+        }
+    }
+
     /// For one `(id, extended)` arbitration key: clone the matching
     /// frames in `[start, end)` **paired with their frame index in the
     /// store**. The per-id index ([`Inner::by_id`]) jumps straight to
@@ -573,6 +593,19 @@ mod tests {
         let slice = store.slice(2, 5);
         let ids: Vec<u32> = slice.iter().map(|f| f.id).collect();
         assert_eq!(ids, vec![2, 3, 4]);
+    }
+
+    #[test]
+    fn buffer_seconds_spans_oldest_to_newest() {
+        let store = TraceStore::new();
+        // Empty and single-frame buffers have no span.
+        assert_eq!(store.buffer_seconds(), 0.0);
+        store.append(dummy(5_000_000_000, 1));
+        assert_eq!(store.buffer_seconds(), 0.0);
+        // Newest − oldest = 7.5 s − 5 s = 2.5 s.
+        store.append(dummy(6_000_000_000, 2));
+        store.append(dummy(7_500_000_000, 3));
+        assert!((store.buffer_seconds() - 2.5).abs() < 1e-9);
     }
 
     #[test]

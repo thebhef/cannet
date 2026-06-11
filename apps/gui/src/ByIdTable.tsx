@@ -31,6 +31,7 @@ interface ByIdTableProps {
   columns: readonly ColumnState[];
   onColumnResize: (key: ColumnKey, width: number) => void;
   onColumnToggle: (key: ColumnKey) => void;
+  onColumnReorder: (key: ColumnKey, beforeKey: ColumnKey | null) => void;
   sort: SortState;
   onSortColumn: (key: ColumnKey) => void;
   baseTimestamp: number | null;
@@ -46,6 +47,7 @@ export function ByIdTable({
   columns,
   onColumnResize,
   onColumnToggle,
+  onColumnReorder,
   sort,
   onSortColumn,
   baseTimestamp,
@@ -68,6 +70,7 @@ export function ByIdTable({
           columns={columns}
           onColumnResize={onColumnResize}
           onColumnToggle={onColumnToggle}
+          onColumnReorder={onColumnReorder}
           sort={sort}
           onSortColumn={onSortColumn}
           byId

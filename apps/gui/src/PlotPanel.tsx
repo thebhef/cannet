@@ -8,6 +8,7 @@ import "uplot/dist/uPlot.min.css";
 import type { Bus, SignalDescriptorRecord, ValueTableEntryRecord } from "./types";
 import { useTraceData } from "./traceData";
 import { useProjectContext } from "./projectContext";
+import { defaultBusColor } from "./busColor";
 import { useElementRegistry } from "./projectElements";
 import { useTrace } from "./trace";
 import { TraceControls } from "./TraceControls";
@@ -1073,6 +1074,15 @@ export function PlotPanel(props: IDockviewPanelProps) {
     return m;
   }, [buses]);
 
+  // Bus id → render colour (explicit `color`, else the palette colour
+  // for the bus's list position) — mirrors `effectiveBusColor` so the
+  // swatch in a signal row matches the bus's graph colour.
+  const busColorLookup = useMemo(() => {
+    const m = new Map<string, string>();
+    buses.forEach((b, i) => m.set(b.id, b.color ?? defaultBusColor(i)));
+    return m;
+  }, [buses]);
+
   /// Areas with `signalFilter` resolved into a computed `signals`
   /// list (ADR 0020). For manual areas this is identical to the
   /// stored `area`. For filter areas the `signals` field is replaced
@@ -1447,6 +1457,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
               onSetSignalFilter={(f) => setAreaSignalFilter(parent.id, f)}
               onPromoteFilterToManual={() => promoteFilterToManual(parent.id, parent.signals)}
               busNameLookup={busNameLookup}
+              busColorLookup={busColorLookup}
               panelElementId={elementId}
             />
           );
@@ -1772,6 +1783,9 @@ interface PlotAreaProps {
    * Each signal row displays its bus name so a `(message, signal)`
    * shown on two different buses is unambiguous. */
   busNameLookup: ReadonlyMap<string, string>;
+  /** Bus-id → render colour, for the swatch shown before the bus name
+   * in each signal row (matches the bus's graph colour). */
+  busColorLookup: ReadonlyMap<string, string>;
   /** The owning plot panel's element id. Stamped on this panel's
    * internal signal-row drags via `setSignalDragData(..., elementId)`
    * and compared against the dropped payload's `sourcePanelId` so
@@ -1863,6 +1877,7 @@ function PlotArea(p: PlotAreaProps) {
     onSetSignalFilter,
     onPromoteFilterToManual,
     busNameLookup,
+    busColorLookup,
     panelElementId,
   } = p;
 
@@ -2484,6 +2499,14 @@ function PlotArea(p: PlotAreaProps) {
           stroke: () => primaryColorRef.current ?? AXIS_STROKE,
           ticks: { stroke: () => primaryColorRef.current ?? AXIS_TICKS, width: 1 },
         };
+    // Only the bottom-most stacked area carries the "time (s)" label and
+    // numeric ticks. Upper areas keep gridlines + tick marks (so the
+    // shared x-grid still reads across the whole stack) but drop the
+    // label and the numbers — they're identical on every area, so
+    // repeating them just wastes vertical space.
+    const xAxis: uPlot.Axis = isLast
+      ? { ...axisCommon, label: "time (s)", labelSize: 16, size: 34 }
+      : { ...axisCommon, size: 18, values: (_u, splits) => splits.map(() => "") };
     const opts: uPlot.Options = {
       width: el.clientWidth || 600,
       height: Math.max(60, el.clientHeight - 2),
@@ -2501,10 +2524,7 @@ function PlotArea(p: PlotAreaProps) {
       // box-zoom on right-drag instead (see the `ready` hook), so
       // left-clicks are free for placing cursors / notes.
       cursor: { drag: { x: false, y: false } },
-      axes: [
-        { ...axisCommon, label: "time (s)", labelSize: 16, size: 34 },
-        yAxis,
-      ],
+      axes: [xAxis, yAxis],
       series: [
         {},
         ...signals.map((s) => ({
@@ -2962,7 +2982,7 @@ function PlotArea(p: PlotAreaProps) {
       if (uplotRef.current === u) uplotRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [signalSetKey, areaId, resizeTick, valueTable, showPoints]);
+  }, [signalSetKey, areaId, resizeTick, valueTable, showPoints, isLast]);
 
   // While the trace is running, re-sample on a self-paced loop at the
   // configured rate (each tick scheduled after the previous one
@@ -3407,9 +3427,18 @@ function PlotArea(p: PlotAreaProps) {
                     {s.signalName}
                   </span>
                   <span className="plot-signal-message" title={s.messageName}>
-                    {s.busId
-                      ? `${busNameLookup.get(s.busId) ?? s.busId} · ${s.messageName}`
-                      : s.messageName}
+                    {s.busId ? (
+                      <>
+                        <span
+                          className="plot-bus-swatch"
+                          style={{ background: busColorLookup.get(s.busId) ?? "#94a3b8" }}
+                          aria-hidden="true"
+                        />
+                        {`${busNameLookup.get(s.busId) ?? s.busId} · ${s.messageName}`}
+                      </>
+                    ) : (
+                      s.messageName
+                    )}
                   </span>
                 </div>
                 <div className="plot-signal-readout">
