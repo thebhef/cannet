@@ -63,6 +63,14 @@ Static and automated checks we'd like running on the repo to catch a
 class of bug before it ships, rather than relying on the next user to
 trip over it.
 
+- `[ci]` **Verify the release workflow produces installable bundles.**
+  Task 26 stood up `release.yml` (manual `workflow_dispatch` → draft
+  pre-release with macOS arm64 `.dmg` + Windows x64 `.msi`/NSIS), but
+  it has never been dispatched — its "produces installers" and
+  "version shows in the title bar" exit criteria are unverified. Run
+  it once and confirm the artifacts install and launch before relying
+  on it for the alpha.
+
 - `[ci]` **Typed Tauri command bindings via `tauri-specta`.** The
   `invoke<T>(cmd, args)` signature types only the return value; `args`
   is `unknown`, so a snake_case/camelCase wire-name mismatch between a
@@ -118,26 +126,6 @@ trip over it.
 
 ### Plot panel
 
-- `[perf]` `cannet-gui` plot panel: **coalesce per-axis resamples.**
-  In per-unit / individual mode each derived axis runs its own
-  resample loop, so an area with N axes makes N `sample_signals`
-  round-trips per tick where unified makes one. Each fetch is
-  correctly scoped to its own signal subset and visible range, so
-  this is bounded — but a panel-level shared fetch split per axis
-  would cut the IPC. Pick up if the Task 21 profiling baseline
-  flags it.
-- `[perf]` `cannet-gui` plot panel: **batch the per-resample report
-  fan-out.** Each `PlotArea` resample fires up to six panel-level
-  setStates (`reportSeries` / `Perf` / `HostMs` / `Rate` / `Cache` /
-  `Base`), each of which re-renders the panel and with it *every*
-  area. Measured during the rename-lockup investigation at
-  ~1000 msg/s with 3 plot panels / 13 derived areas: ~200 `PlotArea`
-  renders/s and 750–1000 ms of >50 ms long tasks per second — the UI
-  thread runs at 75–100% utilization just displaying the stream, and
-  that saturation is what made the React update-queue jam (the
-  rename-freeze bug) reachable. Coalesce the reports (one reducer
-  dispatch per resample, or ref + rAF flush) so a resample costs one
-  panel update.
 - `[bug]` `cannet-gui` plot panel: **uncaught uPlot TypeError after
   dev reload while streaming.** Seen during the rename-lockup
   investigation: `Uncaught TypeError: object null is not iterable` at
