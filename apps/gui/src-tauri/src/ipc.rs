@@ -135,6 +135,15 @@ pub struct DbcInfo {
     pub buses: Vec<String>,
 }
 
+/// One bus's current frame rate, as carried by [`TraceGrew`].
+#[derive(serde::Serialize, Clone)]
+pub struct BusFps {
+    /// Logical bus id, or `None` for the unassigned bucket.
+    pub bus_id: Option<String>,
+    /// Estimated frames per second on this bus over the last second.
+    pub frames_per_second: f64,
+}
+
 /// Periodic IPC event carrying the trace store's current size and rate.
 /// Fired at ~10 Hz when there's been activity since the last tick.
 #[derive(serde::Serialize, Clone)]
@@ -144,6 +153,12 @@ pub struct TraceGrew {
     /// Estimated current frame rate (frames per second over the last
     /// second of appends).
     pub frames_per_second: f64,
+    /// Per-bus breakdown of the current frame rate — what localises a
+    /// slowdown to a specific bus on a multi-bus stream.
+    pub frames_per_second_by_bus: Vec<BusFps>,
+    /// Cumulative frames the session-start guard has dropped (stale
+    /// pipeline frames). Climbs only on a clear/reconnect race.
+    pub frames_dropped_before_session: u64,
     /// Session-start timestamp in seconds (Unix epoch, fractional). The
     /// trace UI displays everything relative to this — a single, stable
     /// origin for the whole live capture / replay. Live capture sets it

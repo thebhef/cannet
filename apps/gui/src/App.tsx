@@ -121,7 +121,7 @@ import {
   PanelCommandsContext,
   createPanelCommandRegistry,
 } from "./panelCommands";
-import { diagCount, startDiagReporter } from "./diag"; // DIAG
+import { diagCount, diagGauge, startDiagReporter } from "./diag"; // DIAG
 
 // BLF + global error state. Remote sessions are tracked separately
 // (multi-server: one entry per address in `remoteSessions`).
@@ -590,10 +590,22 @@ export function App() {
         const {
           count: newCount,
           frames_per_second,
+          frames_per_second_by_bus,
+          frames_dropped_before_session,
           session_start_seconds,
           buffer_seconds,
           tail,
         } = event.payload;
+        // DIAG: log buffer size + aggregate/per-bus FPS as gauges so a
+        // capture shows throughput against buffer growth, per bus.
+        diagGauge("count", newCount); // DIAG
+        diagGauge("fps", frames_per_second); // DIAG
+        for (const b of frames_per_second_by_bus) {
+          diagGauge(`fps.${b.bus_id ?? "(unassigned)"}`, b.frames_per_second); // DIAG
+        }
+        // DIAG: session-start drop counter (stale pipeline frames after a
+        // clear/reconnect race).
+        diagGauge("drop.before_session", frames_dropped_before_session); // DIAG
         setCount((prev) => {
           if (newCount < prev) {
             invalidateCache();

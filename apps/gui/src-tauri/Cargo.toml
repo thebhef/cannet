@@ -47,6 +47,18 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 # next door. Default backend wraps the OS-native APIs (FSEvents,
 # inotify, ReadDirectoryChangesW).
 notify = { version = "8", default-features = false, features = ["macos_kqueue"] }
+# Process memory + process-tree enumeration for the on-disk health
+# recorder (`crash.rs`): sums RSS over our process and its descendants
+# so the WebView's separate processes (WebView2 on Windows, WebKitGTK on
+# Linux) are accounted for, not just the Rust host. The workspace forbids
+# `unsafe`, so a crate is required to wrap the per-OS process APIs. Only
+# the process module is needed.
+sysinfo = { version = "0.33", default-features = false, features = ["system"] }
+# ISO-8601 / RFC-3339 timestamps in the on-disk crash log (`crash.rs`).
+# Already in the dependency graph transitively; this just makes the
+# dependency direct. `std` (not `clock`) is all we need to format an
+# epoch-ms value — we don't read the wall clock through chrono.
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 # Phase 9: round-trip the Save Capture writer through real files

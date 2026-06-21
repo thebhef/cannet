@@ -34,6 +34,7 @@
 //! or removing a DBC mid-stream just changes what subsequent fetches
 //! return.
 
+mod crash;
 mod dbc_watcher;
 mod filter;
 mod interfaces;
@@ -67,7 +68,7 @@ use dbc_watcher::DbcWatcher;
 use filter::{DecodeDependentLeaf, FilterPredicate};
 
 use ipc::{
-    ByIdSnapshot, DbcAttributeRecord, DbcContentRecord, DbcInfo, DbcMessageContentRecord,
+    BusFps, ByIdSnapshot, DbcAttributeRecord, DbcContentRecord, DbcInfo, DbcMessageContentRecord,
     DbcSignalContentRecord, DecodedRecord, FilteredTracePage, InterfaceRecord, LogFinished,
     OpenLogResult, RemoteSessionResult, SampledPoints, SignalDescriptorRecord, SignalQuery,
     SignalRecord, SignalsSample, TraceFrameRecord, TraceGrew, ValueTableEntryRecord,
@@ -293,6 +294,12 @@ pub fn run() {
     // up alongside the in-process ring the System Messages panel
     // renders. Idempotent — safe to call again from tests.
     system_log::init_tracing_subscriber();
+    // Persist a crash record on panic before any Tauri state exists — so
+    // even an early-startup panic lands on disk. The companion flight
+    // recorder (spawned in `setup`) and the System Messages mirror cover
+    // the rest; uncatchable deaths (abort/OOM, stack overflow, native
+    // crash) still leave the recorder's trail. See `crash.rs`.
+    crash::install_panic_hook();
     // The transmit scheduler thread owns the receiver; the handle lives
     // on `AppState` so the IPC commands can push schedule changes. The
     // thread is spawned in `setup` (it needs the `AppHandle`).
@@ -390,6 +397,7 @@ pub fn run() {
             // Tauri assigns "main" by default for the first window in the
             // config; we rely on that here.
             debug_assert!(app.get_webview_window("main").is_some());
+            crash::spawn_health_recorder(app.handle().clone());
             spawn_trace_grew_emitter(app.handle().clone());
             // The single transmit scheduler thread drives every running
             // periodic. Takes ownership of the command
@@ -463,11 +471,21 @@ fn spawn_trace_grew_emitter(app: AppHandle) {
             #[allow(clippy::cast_precision_loss)]
             let session_start_seconds = session_start_ns as f64 / 1_000_000_000.0;
             let buffer_seconds = state.trace_store.buffer_seconds();
+            let frames_per_second_by_bus = state
+                .trace_store
+                .frames_per_second_by_bus()
+                .into_iter()
+                .map(|(bus_id, frames_per_second)| BusFps { bus_id, frames_per_second })
+                .collect();
+            let frames_dropped_before_session =
+                state.trace_store.frames_dropped_before_session();
             let _ = app.emit(
                 "trace-grew",
                 TraceGrew {
                     count,
                     frames_per_second,
+                    frames_per_second_by_bus,
+                    frames_dropped_before_session,
                     session_start_seconds,
                     buffer_seconds,
                     tail,
@@ -1466,6 +1484,9 @@ pub(crate) fn emit_system_log(
 ) {
     let state: State<'_, AppState> = app.state();
     if let Some(entry) = state.system_log.push(source, level, message) {
+        // Mirror every rung message to the rolling tmp log so the stream
+        // survives a crash that the panic hook can't catch (see `crash.rs`).
+        crash::persist_message(&entry);
         let _ = app.emit("system-log-appended", entry);
     }
 }

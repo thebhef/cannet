@@ -238,4 +238,31 @@ crate retained long-term).
   run in the CI `python` job. ruff is from Astral, like the `uv` already
   in use. MIT / (mypy) MIT.
 
-_Profiling instrumentation TBD — populated in Phase 7._
+- **`memory-stats`** crate — `proposed` then **`rejected`** (replaced by
+  `sysinfo`, below) for the crash health recorder. It reads only the
+  *current* process's RSS; the WebView runs in *separate* processes
+  (WebView2 on Windows, WebKitGTK on Linux), which are the larger memory
+  consumers and the ones a crash needs accounted for. Capturing those
+  requires enumerating the process tree, which `memory-stats` can't do.
+- **`sysinfo`** crate (v0.33, runtime dependency in `apps/gui/src-tauri`,
+  `system` feature only) — `adopted` for the on-disk crash health
+  recorder (`crash.rs`). Once a second it sums RSS over the host process
+  and every descendant, so the WebView's processes are folded into the
+  `tree_mb` figure on Windows / Linux; the rolling crash log then records
+  memory growth up to an instant, uncatchable death (OOM `abort`, stack
+  overflow, native crash). The workspace forbids `unsafe`, so a crate is
+  required to wrap the per-OS process APIs. **macOS limitation:** the
+  WebKit helpers are launchd-owned XPC services, not our descendants, so
+  `tree_mb` counts the host only there — attributing them needs the
+  private "responsible process" API + `unsafe`, deliberately not pulled
+  in for a diagnostic. MIT.
+
+- **`chrono`** crate (v0.4, runtime dependency in `apps/gui/src-tauri`,
+  `default-features = false`, `std` only) — `adopted` to render
+  ISO-8601 / RFC-3339 UTC timestamps in the on-disk crash log
+  (`crash.rs`). Already present transitively, so this only makes the
+  dependency direct; the `clock` feature is intentionally off (we format
+  an epoch-ms value, never read the wall clock through chrono). MIT /
+  Apache-2.0.
+
+*Profiling instrumentation TBD — populated in Phase 7.*

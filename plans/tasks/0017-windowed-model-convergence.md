@@ -101,6 +101,35 @@ Over the in-RAM `Vec` the host scan is O(window); that is acceptable at
 `Vec` scale and is what Task 18's filter index makes O(page) at 10^9
 frames.
 
+**Confirmed runtime offender (Task 21 diagnosis).** The current filtered
+path re-scans the whole buffer ~8×/s for the scrollbar match-count, and
+`scan_window_filtered` holds the `trace_store` mutex for that O(buffer)
+scan. Under the RBS repro this contention — not the scan's raw cost — is
+what halves per-bus ingest FPS and spaces out RBS transmit as the buffer
+grows: the same lock gates RX `append` and tx-confirm `append`, so a
+history scan starves live ingest and transmit. Beyond moving onto the
+contract, this slice must therefore:
+
+- make the periodic match-count refresh **incremental** — scan only
+  frames appended since the last refresh and keep a running per-view
+  match count, O(Δ) not O(buffer); and
+- **bound the lock-hold** — the filtered scan must not hold the append
+  mutex for the full window (snapshot/segment the scan, or read under a
+  lock that does not block `append`), so a history scan can never starve
+  live ingest or transmit.
+
+Regression test: the virtual-bus reproduction (460 msg/s, 5 ids, filtered
+chrono open) must assert per-bus ingest FPS stays flat as the buffer
+grows past ~200k — the check that this offender stays dead.
+
+Status (2026-06-21): the dominant cost — the following-live tail cloning
+*every* match in the window under the mutex — is fixed tactically in
+`scan_window_filtered` (slide match indices, clone only the last `cap`
+once after the scan). The remaining O(window) predicate scan still runs
+under the mutex; at `Vec` scale it is cheap, and the incremental
+match-count above is what removes it for the full slice / Task 18. The
+virtual-bus regression test is still owed.
+
 Acceptance:
 
 - the filtered trace pages the full match history, not just the last
@@ -151,6 +180,17 @@ Acceptance:
 - the per-signal extent comes from the host, not a JS ref;
 - `resample`'s hand-rolled cache bookkeeping and `traceRangesRef` are
   gone.
+
+Design note (from a reverted Task 21 experiment). When the rewrite
+touches the area→panel reporting, prefer a single report object
+(`{ lastT, series, perf/host/rate/cache gauges, base }`) over today's
+six-callback fan-out — it's the cleaner shape. But do **not** assume
+coalescing those reports buys render-cost: a tactical version that
+bundled them and flushed once per `requestAnimationFrame` left the
+plot over-render *entirely unchanged* and broke follow-live by
+deferring the x-window slide a frame. So measure before adding any
+batching, and keep the live-edge slide synchronous with the resample
+that produced it.
 
 ## Non-goals
 

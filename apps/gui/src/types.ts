@@ -50,6 +50,12 @@ export interface TraceFrameRecord {
 export interface TraceGrew {
   count: number;
   frames_per_second: number;
+  /// Per-bus frame-rate breakdown (`bus_id: null` is the unassigned
+  /// bucket). Used by the diagnostic logging to localise a slowdown to a
+  /// specific bus on a multi-bus stream.
+  frames_per_second_by_bus: { bus_id: string | null; frames_per_second: number }[];
+  /// Cumulative frames dropped by the session-start guard.
+  frames_dropped_before_session: number;
   /// Session-start timestamp (Unix epoch seconds, fractional). The
   /// trace view subtracts this from frame timestamps to render relative
   /// time, so every frame in a session shares one stable zero. Zero
