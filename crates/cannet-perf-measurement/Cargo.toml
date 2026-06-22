@@ -1,0 +1,35 @@
+[package]
+name = "cannet-perf-measurement"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "cannet-perf-measurement"
+path = "src/main.rs"
+
+[dependencies]
+cannet-core = { path = "../cannet-core" }
+cannet-dbc = { path = "../cannet-dbc" }
+cannet-client = { path = "../cannet-client" }
+cannet-server = { path = "../cannet-server" }
+# The grpc / hardware-peak modes drive the real gRPC wire: a tokio
+# runtime hosts the in-process virtual-bus server (grpc mode) and blocks
+# on the sidecar address oneshot.
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+# Reuse the real host model (TraceStore, filter predicate, project/RBS
+# parsers) instead of reimplementing it — see the module-visibility note
+# in apps/gui/src-tauri/src/lib.rs.
+cannet-gui = { path = "../../apps/gui/src-tauri" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+# Process RSS for the memory-growth metric (same crate/version the GUI's
+# crash recorder uses).
+sysinfo = { version = "0.33", default-features = false, features = ["system"] }
+# Local date for the dated baseline filename (git supplies the hash).
+chrono = { version = "0.4", default-features = false, features = ["clock"] }

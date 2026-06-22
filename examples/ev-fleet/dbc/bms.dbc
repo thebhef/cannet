@@ -1,0 +1,71 @@
+VERSION "ev-fleet bms 1.0"
+
+NS_ :
+	NS_DESC_
+	CM_
+	BA_DEF_
+	BA_
+	VAL_
+	CAT_DEF_
+	CAT_
+	FILTER
+	BA_DEF_DEF_
+	EV_DATA_
+	ENVVAR_DATA_
+	SGTYPE_
+	SGTYPE_VAL_
+	BA_DEF_SGTYPE_
+	BA_SGTYPE_
+	SIG_TYPE_REF_
+	VAL_TABLE_
+	SIG_GROUP_
+	SIG_VALTYPE_
+	SIGTYPE_VALTYPE_
+	BO_TX_BU_
+	BA_DEF_REL_
+	BA_REL_
+	BA_DEF_DEF_REL_
+	BU_SG_REL_
+	BU_EV_REL_
+	BU_BO_REL_
+	SG_MUL_VAL_
+
+BS_:
+
+BU_: BMS VCU ThermalMgr MotorFront MotorRear
+
+BO_ 768 BmsState: 8 BMS
+ SG_ PackVoltage : 0|16@1+ (0.1,0) [0|6553.5] "V" VCU,ThermalMgr
+ SG_ PackCurrent : 16|16@1- (0.1,0) [-3276.8|3276.7] "A" VCU,ThermalMgr
+ SG_ SocPct : 32|8@1+ (0.5,0) [0|127.5] "%" VCU
+ SG_ SohPct : 40|8@1+ (0.5,0) [0|127.5] "%" VCU
+ SG_ PackTempC : 48|8@1- (1,-40) [-40|87] "degC" VCU,ThermalMgr
+ SG_ PackStatus : 56|4@1+ (1,0) [0|15] "" VCU,ThermalMgr
+
+BO_ 769 BmsCellSummary: 8 BMS
+ SG_ CellVMin : 0|16@1+ (0.001,0) [0|65.535] "V" VCU
+ SG_ CellVMax : 16|16@1+ (0.001,0) [0|65.535] "V" VCU
+ SG_ CellTMin : 32|8@1- (1,-40) [-40|87] "degC" VCU,ThermalMgr
+ SG_ CellTMax : 40|8@1- (1,-40) [-40|87] "degC" VCU,ThermalMgr
+ SG_ BalancingActive : 48|1@1+ (1,0) [0|1] "" VCU
+
+BO_ 770 BmsLimits: 8 BMS
+ SG_ ChargeCurrentLimit : 0|16@1+ (0.1,0) [0|6553.5] "A" VCU,MotorFront,MotorRear
+ SG_ DischargeCurrentLimit : 16|16@1+ (0.1,0) [0|6553.5] "A" VCU,MotorFront,MotorRear
+ SG_ ContactorState : 32|2@1+ (1,0) [0|3] "" VCU
+
+CM_ BO_ 768 "Battery pack state, 20 ms cadence on the battery bus, standard 11-bit ID. Read by the VCU (across the bridge) and the thermal manager.";
+CM_ BO_ 769 "Cell voltage/temperature extremes, 100 ms cadence.";
+CM_ BO_ 770 "Charge/discharge current limits, 100 ms cadence. The inverters clamp torque to the discharge limit.";
+CM_ SG_ 770 ContactorState "0=Open 1=Precharge 2=Closed 3=Fault.";
+
+BA_DEF_ BO_ "GenMsgCycleTime" INT 0 100000;
+BA_DEF_ SG_ "GenSigStartValue" FLOAT 0 100000;
+BA_DEF_DEF_ "GenMsgCycleTime" 0;
+BA_DEF_DEF_ "GenSigStartValue" 0;
+BA_ "GenMsgCycleTime" BO_ 768 20;
+BA_ "GenMsgCycleTime" BO_ 769 100;
+BA_ "GenMsgCycleTime" BO_ 770 100;
+
+VAL_ 768 PackStatus 0 "Init" 1 "Idle" 2 "Drive" 3 "Charge" 4 "Fault";
+VAL_ 770 ContactorState 0 "Open" 1 "Precharge" 2 "Closed" 3 "Fault";

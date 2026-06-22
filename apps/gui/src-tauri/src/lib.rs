@@ -36,8 +36,19 @@
 
 mod crash;
 mod dbc_watcher;
-mod filter;
+// `filter` and `trace_store` are `pub` so the `cannet-perf-measurement` performance
+// harness can drive the real host model — the same `TraceStore` and
+// filter predicate the GUI runs — rather than reimplementing them and
+// measuring a stand-in. `project` and `rbs` stay private (their
+// `#[tauri::command]` fns reference the crate-private `AppState`); the
+// harness only needs their file-model types, re-exported below.
+pub mod filter;
 mod interfaces;
+// trace_store's `pub mod` (below) exposes its accessors as crate-public
+// API for the harness; they `.expect` on an internally-upheld mutex
+// invariant rather than a caller-reachable condition, so the pedantic
+// panics/empty/default doc lints are suppressed here rather than
+// papered over the whole module with boilerplate.
 mod ipc;
 mod local_buses;
 mod notes;
@@ -47,10 +58,21 @@ mod signal_cache;
 mod sidecar;
 mod signal_sampler;
 mod system_log;
-mod trace_store;
+#[allow(
+    clippy::missing_panics_doc,
+    clippy::new_without_default,
+    clippy::len_without_is_empty
+)]
+pub mod trace_store;
 mod transmit_frames;
 mod transmit_scheduler;
 mod verification;
+
+// File-model types the `cannet-perf-measurement` harness reuses, re-exported so the
+// harness can parse the example project / RBS through the production
+// types without the crate-private command modules they live in.
+pub use project::{Project, PROJECT_SCHEMA_VERSION};
+pub use rbs::{format_message_key, parse_message_key, RbsFile, RbsMessage, RbsValue};
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;

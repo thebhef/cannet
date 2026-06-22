@@ -1,0 +1,134 @@
+//! Baseline capture and regression checking.
+//!
+//! `baseline` runs every mode and writes their configs + metrics to a
+//! JSON file; `check` re-runs each captured mode with its own config and
+//! compares, failing (non-zero exit) if any gated metric has regressed
+//! past its tolerance. The baseline is **environment-relative** —
+//! absolute throughput and scan time scale with the host CPU (and, for
+//! the hardware mode, the adapters) — so the workflow is: capture a
+//! baseline on a machine, then `check` on that machine detects drift.
+//! The committed baseline is a reference shape; regenerate it for your
+//! own host before trusting the absolute numbers.
+
+use serde::{Deserialize, Serialize};
+
+use crate::grpc::GrpcConfig;
+use crate::hardware_peak::HardwarePeakConfig;
+use crate::runner::HarnessReport;
+use crate::tracebuffer::TracebufferConfig;
+
+/// Bumped when the baseline file's shape or the gated-metric set changes.
+pub const BASELINE_VERSION: u32 = 2;
+
+/// The metric subset persisted and compared, the same for every mode.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Metrics {
+    pub ingest_fps_overall: f64,
+    pub fps_retention: f64,
+    pub append_ms_max: f64,
+    pub scan_ms_max: f64,
+}
+
+impl From<&HarnessReport> for Metrics {
+    fn from(r: &HarnessReport) -> Self {
+        Self {
+            ingest_fps_overall: r.ingest_fps_overall,
+            fps_retention: r.fps_retention,
+            append_ms_max: r.append_ms_max,
+            scan_ms_max: r.scan_ms_max,
+        }
+    }
+}
+
+/// One mode's captured config + metrics. The config is stored so `check`
+/// re-runs with exactly the parameters the baseline was taken under.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModeBaseline<C> {
+    pub config: C,
+    pub metrics: Metrics,
+}
+
+/// A captured baseline: one optional block per mode (a mode is absent if
+/// it couldn't run at capture — e.g. hardware not connected), plus the
+/// schema tag so a stale file is rejected rather than mis-compared.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Baseline {
+    pub baseline_version: u32,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tracebuffer: Option<ModeBaseline<TracebufferConfig>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub grpc: Option<ModeBaseline<GrpcConfig>>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub hardware_peak: Option<ModeBaseline<HardwarePeakConfig>>,
+}
+
+/// Gating tolerances. Relative where the metric scales with the host
+/// (throughput, scan time); absolute floors absorb scheduler jitter.
+mod tol {
+    /// Ingest throughput may not drop below this fraction of baseline.
+    pub const INGEST_FPS_MIN_FRACTION: f64 = 0.85;
+    /// FPS retention may not drop below this fraction of baseline …
+    pub const RETENTION_MIN_FRACTION: f64 = 0.90;
+    /// … nor below this absolute floor (ingest must not be starved).
+    pub const RETENTION_ABS_FLOOR: f64 = 0.80;
+    /// Latency metrics may grow at most this multiple of baseline …
+    pub const LATENCY_MAX_FACTOR: f64 = 2.0;
+    /// … plus this floor (ms), so tiny baselines don't false-trip.
+    pub const LATENCY_FLOOR_MS: f64 = 5.0;
+}
+
+/// One metric's verdict within a mode.
+pub struct Verdict {
+    pub mode: &'static str,
+    pub metric: &'static str,
+    pub baseline: f64,
+    pub current: f64,
+    pub limit: f64,
+    pub pass: bool,
+}
+
+/// Compare a mode's fresh report against its baseline metrics.
+#[must_use]
+pub fn check_mode(mode: &'static str, baseline: &Metrics, current: &HarnessReport) -> Vec<Verdict> {
+    let mut verdicts = Vec::new();
+
+    // Higher-is-better, relative-to-baseline floors.
+    let ingest_limit = baseline.ingest_fps_overall * tol::INGEST_FPS_MIN_FRACTION;
+    verdicts.push(Verdict {
+        mode,
+        metric: "ingest_fps_overall",
+        baseline: baseline.ingest_fps_overall,
+        current: current.ingest_fps_overall,
+        limit: ingest_limit,
+        pass: current.ingest_fps_overall >= ingest_limit,
+    });
+
+    let retention_limit =
+        (baseline.fps_retention * tol::RETENTION_MIN_FRACTION).min(tol::RETENTION_ABS_FLOOR);
+    verdicts.push(Verdict {
+        mode,
+        metric: "fps_retention",
+        baseline: baseline.fps_retention,
+        current: current.fps_retention,
+        limit: retention_limit,
+        pass: current.fps_retention >= retention_limit,
+    });
+
+    // Lower-is-better, relative-to-baseline ceilings.
+    for (metric, base, cur) in [
+        ("append_ms_max", baseline.append_ms_max, current.append_ms_max),
+        ("scan_ms_max", baseline.scan_ms_max, current.scan_ms_max),
+    ] {
+        let limit = base * tol::LATENCY_MAX_FACTOR + tol::LATENCY_FLOOR_MS;
+        verdicts.push(Verdict {
+            mode,
+            metric,
+            baseline: base,
+            current: cur,
+            limit,
+            pass: cur <= limit,
+        });
+    }
+
+    verdicts
+}

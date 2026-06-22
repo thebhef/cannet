@@ -1,0 +1,66 @@
+VERSION "ev-fleet thermal 1.0"
+
+NS_ :
+	NS_DESC_
+	CM_
+	BA_DEF_
+	BA_
+	VAL_
+	CAT_DEF_
+	CAT_
+	FILTER
+	BA_DEF_DEF_
+	EV_DATA_
+	ENVVAR_DATA_
+	SGTYPE_
+	SGTYPE_VAL_
+	BA_DEF_SGTYPE_
+	BA_SGTYPE_
+	SIG_TYPE_REF_
+	VAL_TABLE_
+	SIG_GROUP_
+	SIG_VALTYPE_
+	SIGTYPE_VALTYPE_
+	BO_TX_BU_
+	BA_DEF_REL_
+	BA_REL_
+	BA_DEF_DEF_REL_
+	BU_SG_REL_
+	BU_EV_REL_
+	BU_BO_REL_
+	SG_MUL_VAL_
+
+BS_:
+
+BU_: ThermalMgr DCDC OBC VCU BMS
+
+BO_ 1024 ThermalState: 8 ThermalMgr
+ SG_ CoolantTempIn : 0|16@1- (0.1,-40) [-40|6513.5] "degC" VCU,BMS
+ SG_ CoolantTempOut : 16|16@1- (0.1,-40) [-40|6513.5] "degC" VCU,BMS
+ SG_ PumpDutyPct : 32|8@1+ (0.5,0) [0|127.5] "%" VCU
+ SG_ FanDutyPct : 40|8@1+ (0.5,0) [0|127.5] "%" VCU
+
+BO_ 1040 DcdcState: 8 DCDC
+ SG_ OutputVoltage : 0|16@1+ (0.01,0) [0|655.35] "V" VCU
+ SG_ OutputCurrent : 16|16@1- (0.1,0) [-3276.8|3276.7] "A" VCU
+ SG_ DcdcTempC : 32|8@1- (1,-40) [-40|87] "degC" VCU
+ SG_ DcdcEnabled : 40|1@1+ (1,0) [0|1] "" VCU
+
+BO_ 1056 ObcState: 8 OBC
+ SG_ AcVoltage : 0|16@1+ (0.1,0) [0|6553.5] "V" VCU,BMS
+ SG_ ChargeCurrent : 16|16@1+ (0.1,0) [0|6553.5] "A" VCU,BMS
+ SG_ ObcTempC : 32|8@1- (1,-40) [-40|87] "degC" VCU
+ SG_ ChargeState : 40|3@1+ (1,0) [0|7] "" VCU,BMS
+
+CM_ BO_ 1024 "Coolant loop state, 100 ms cadence on the battery bus, standard 11-bit ID. Read by the VCU and BMS.";
+CM_ BO_ 1040 "DC-DC converter state (HV to 12 V), 100 ms cadence.";
+CM_ BO_ 1056 "On-board charger state, 200 ms cadence. The BMS gates charging on these.";
+CM_ SG_ 1056 ChargeState "0=Idle 1=Precharge 2=Charging 3=Complete 4=Fault.";
+
+BA_DEF_ BO_ "GenMsgCycleTime" INT 0 100000;
+BA_DEF_DEF_ "GenMsgCycleTime" 0;
+BA_ "GenMsgCycleTime" BO_ 1024 100;
+BA_ "GenMsgCycleTime" BO_ 1040 100;
+BA_ "GenMsgCycleTime" BO_ 1056 200;
+
+VAL_ 1056 ChargeState 0 "Idle" 1 "Precharge" 2 "Charging" 3 "Complete" 4 "Fault";

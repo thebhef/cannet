@@ -1,0 +1,81 @@
+VERSION "ev-fleet vcu 1.0"
+
+NS_ :
+	NS_DESC_
+	CM_
+	BA_DEF_
+	BA_
+	VAL_
+	CAT_DEF_
+	CAT_
+	FILTER
+	BA_DEF_DEF_
+	EV_DATA_
+	ENVVAR_DATA_
+	SGTYPE_
+	SGTYPE_VAL_
+	BA_DEF_SGTYPE_
+	BA_SGTYPE_
+	SIG_TYPE_REF_
+	VAL_TABLE_
+	SIG_GROUP_
+	SIG_VALTYPE_
+	SIGTYPE_VALTYPE_
+	BO_TX_BU_
+	BA_DEF_REL_
+	BA_REL_
+	BA_DEF_DEF_REL_
+	BU_SG_REL_
+	BU_EV_REL_
+	BU_BO_REL_
+	SG_MUL_VAL_
+
+BS_:
+
+BU_: VCU MotorFront MotorRear BMS ThermalMgr
+
+BO_ 256 VcuStatus: 8 VCU
+ SG_ VehSpeed : 0|16@1+ (0.01,0) [0|655.35] "km/h" MotorFront,MotorRear,BMS,ThermalMgr
+ SG_ TorqueRequest : 16|16@1- (0.1,0) [-3276.8|3276.7] "Nm" MotorFront,MotorRear
+ SG_ AccelPedal : 32|8@1+ (0.5,0) [0|127.5] "%" MotorFront,MotorRear
+ SG_ BrakePedal : 40|8@1+ (0.5,0) [0|127.5] "%" MotorFront,MotorRear
+ SG_ Gear : 48|3@1+ (1,0) [0|7] "" MotorFront,MotorRear
+ SG_ Ready : 51|1@1+ (1,0) [0|1] "" MotorFront,MotorRear,BMS,ThermalMgr
+
+BO_ 272 VcuTorqueCmd: 8 VCU
+ SG_ TorqueCmdFront : 0|16@1- (0.1,0) [-3276.8|3276.7] "Nm" MotorFront
+ SG_ TorqueCmdRear : 16|16@1- (0.1,0) [-3276.8|3276.7] "Nm" MotorRear
+ SG_ MotorEnable : 32|1@1+ (1,0) [0|1] "" MotorFront,MotorRear
+
+BO_ 2566869155 VcuBmsCommand: 8 VCU
+ SG_ CmdMode : 0|8@1+ (1,0) [0|255] "" BMS
+ SG_ ContactorReq : 24|2@1+ (1,0) [0|3] "" BMS
+ SG_ AliveCtr : 48|4@1+ (1,0) [0|15] "" BMS
+ SG_ Crc8 : 56|8@1+ (1,0) [0|255] "" BMS
+
+CM_ BO_ 256 "Vehicle control unit status, 10 ms cadence on the powertrain bus, standard 11-bit ID. Received by the inverters, BMS, and thermal manager.";
+CM_ BO_ 272 "Per-axle torque command from the VCU to the front and rear inverters, 10 ms cadence.";
+CM_ BO_ 2566869155 "E2E-protected contactor command from the VCU to the BMS (extended 29-bit ID, 50 ms): crosses the physical bridge to the battery bus. AliveCtr rolls 0-15 each send, Crc8 is CRC-8/SAE-J1850 over bytes 0-6 prefixed with Data ID 0xA3 (ADR 0027 calculated fields).";
+CM_ SG_ 256 Gear "Discrete gear position. Decode via VAL_ table.";
+
+BA_DEF_ BO_ "GenMsgCycleTime" INT 0 100000;
+BA_DEF_ BO_ "GenMsgSendType" ENUM "Cyclic","OnEvent","CyclicIfActive","NoMsgSendType";
+BA_DEF_ SG_ "GenSigStartValue" FLOAT 0 100000;
+BA_DEF_ SG_ "CannetCounter" STRING ;
+BA_DEF_ SG_ "CannetCrc" STRING ;
+BA_DEF_DEF_ "GenMsgCycleTime" 0;
+BA_DEF_DEF_ "GenMsgSendType" "NoMsgSendType";
+BA_DEF_DEF_ "GenSigStartValue" 0;
+BA_DEF_DEF_ "CannetCounter" "";
+BA_DEF_DEF_ "CannetCrc" "";
+BA_ "GenMsgCycleTime" BO_ 256 10;
+BA_ "GenMsgCycleTime" BO_ 272 10;
+BA_ "GenMsgCycleTime" BO_ 2566869155 50;
+BA_ "GenMsgSendType" BO_ 2566869155 0;
+BA_ "GenSigStartValue" SG_ 2566869155 CmdMode 1;
+BA_ "GenSigStartValue" SG_ 2566869155 ContactorReq 2;
+BA_ "CannetCounter" SG_ 2566869155 AliveCtr "increment=1;rollover=15";
+BA_ "CannetCrc" SG_ 2566869155 Crc8 "alg=CRC-8/SAE-J1850;range=0:56;prefix=A3";
+
+VAL_ 256 Gear 0 "P" 1 "R" 2 "N" 3 "D" 4 "S" 5 "L" 6 "Manual" 7 "Reserved";
+VAL_ 2566869155 ContactorReq 0 "Open" 1 "Precharge" 2 "Closed" 3 "Fault";

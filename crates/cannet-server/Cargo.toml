@@ -16,8 +16,8 @@ cannet-core = { path = "../cannet-core" }
 cannet-wire = { path = "../cannet-wire" }
 clap = { version = "4", features = ["derive"] }
 futures-core = "0.3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync"] }
-tokio-stream = { version = "0.1", features = ["time"] }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync"] }
+tokio-stream = { version = "0.1", features = ["net", "time"] }
 tonic = "0.12"
 
 [dev-dependencies]
