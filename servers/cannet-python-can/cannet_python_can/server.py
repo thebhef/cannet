@@ -131,26 +131,6 @@ def _error_envelope(code: "pb.Error.Code.V", message: str) -> pb.Envelope:
     return pb.Envelope(error=pb.Error(code=code, message=message))
 
 
-def _interfaces_equal(a: list[pb.Interface], b: list[pb.Interface]) -> bool:
-    """Identity comparison for the watcher's change-detection.
-
-    Two snapshots are equal if they have the same ids in the same order
-    and matching display_name + fd_capable fields. Order matters
-    because the driver's enumeration order is itself meaningful (it
-    mirrors the vendor's slot ordering). We use a tuple comparison
-    rather than ``==`` on the proto messages so unknown future fields
-    on ``pb.Interface`` can't accidentally fail equality.
-    """
-    if len(a) != len(b):
-        return False
-    return all(
-        x.id == y.id
-        and x.display_name == y.display_name
-        and x.fd_capable == y.fd_capable
-        for x, y in zip(a, b)
-    )
-
-
 def _configure_to_open_config(cfg: pb.ConfigureBus) -> drv.OpenConfig:
     """Translate a wire ``ConfigureBus`` into an :class:`OpenConfig`.
 
@@ -264,6 +244,16 @@ class _SharedInterface:
         self._tx_count = 0
         self._tx_count_total = 0
         self._tx_max_send_ns = 0
+        # Wall-clock of the previous ``ch.send`` completion, plus the
+        # worst idle between one send finishing and the next starting in
+        # the interval (`max_gap`). Measured separately from `max_send`
+        # so a slow send can't inflate it: a device-side TX stall blocks
+        # inside ``ch.send`` while frames keep arriving (max_gap stays
+        # small), whereas an upstream delivery burst leaves the sender
+        # idle waiting for the next frame (max_gap spikes alongside
+        # max_send). Reading both disambiguates where the stall lives.
+        self._tx_last_done_ns = 0
+        self._tx_max_gap_ns = 0
 
     @property
     def channel_id(self) -> str:
@@ -328,12 +318,20 @@ class _SharedInterface:
         # which the periodic tx-stats line surfaces as `max_send`.
         t0 = time.monotonic_ns()
         ch.send(frame)
-        send_ns = time.monotonic_ns() - t0
+        done = time.monotonic_ns()
+        send_ns = done - t0
         with self._tx_stats_lock:
             self._tx_count += 1
             self._tx_count_total += 1
             if send_ns > self._tx_max_send_ns:
                 self._tx_max_send_ns = send_ns
+            # Idle since the previous send completed — the frame-delivery
+            # gap, uncontaminated by this or the prior send's duration.
+            if self._tx_last_done_ns:
+                gap_ns = t0 - self._tx_last_done_ns
+                if gap_ns > self._tx_max_gap_ns:
+                    self._tx_max_gap_ns = gap_ns
+            self._tx_last_done_ns = done
 
     def reconfigure(self, new_config: drv.OpenConfig) -> None:
         """Apply a new :class:`OpenConfig`.
@@ -459,8 +457,10 @@ class _SharedInterface:
                         tx = self._tx_count
                         tx_total = self._tx_count_total
                         tx_max_ns = self._tx_max_send_ns
+                        tx_max_gap_ns = self._tx_max_gap_ns
                         self._tx_count = 0
                         self._tx_max_send_ns = 0
+                        self._tx_max_gap_ns = 0
                     if read > 0 or tx > 0:
                         read_rate = read / secs if secs > 0 else 0.0
                         _log.info(
@@ -472,11 +472,13 @@ class _SharedInterface:
                         )
                         tx_rate = tx / secs if secs > 0 else 0.0
                         _log.info(
-                            "tx stats %s: sent=%.0f/s total=%d max_send=%.2f ms",
+                            "tx stats %s: sent=%.0f/s total=%d "
+                            "max_send=%.2f ms max_gap=%.2f ms",
                             cid,
                             tx_rate,
                             tx_total,
                             tx_max_ns / 1e6,
+                            tx_max_gap_ns / 1e6,
                         )
                     read = 0
                     next_stats_ns = now_ns + _RX_STATS_INTERVAL_NS
@@ -638,11 +640,17 @@ class _InterfaceRegistry:
         shared.transmit(frame)
 
 
-#: How often the background watcher thread re-enumerates the driver's
-#: channel set. Cheap enough on every supported backend that this is
-#: effectively-free at 5s; the cadence is a server-side decision per
-#: ADR 0016, not a client-side preference.
-_WATCH_POLL_INTERVAL_S = 5.0
+#: How often a parked ``WatchInterfaces`` stream wakes to re-check
+#: ``context.is_active()``. This is a liveness safety-net only — it does
+#: **not** drive enumeration. ADR 0016 leaves the re-enumeration cadence
+#: to the server "[depending on] how cheap enumeration is on this
+#: backend"; on PCAN the global ``GetValue(PCAN_ATTACHED_CHANNELS)`` call
+#: serialises against ``CAN_Write`` in the driver, so re-enumerating on a
+#: timer stalled active transmits (~150 ms hiccups every poll). The
+#: sidecar therefore enumerates only on subscribe (the seed) and on an
+#: explicit ``ListInterfaces`` pull (the GUI's "Discover" button), never
+#: on a timer while channels are open.
+_WATCH_LIVENESS_RECHECK_S = 5.0
 
 
 class CannetServerService(pb_grpc.CannetServerServicer):
@@ -652,23 +660,24 @@ class CannetServerService(pb_grpc.CannetServerServicer):
         self,
         driver: drv.Driver,
         *,
-        watch_poll_interval_s: float = _WATCH_POLL_INTERVAL_S,
+        watch_recheck_interval_s: float = _WATCH_LIVENESS_RECHECK_S,
     ) -> None:
         self._driver = driver
         self._registry = _InterfaceRegistry(driver)
         # Shared snapshot cache + sequence counter, both guarded by
         # `_watch_cond`. Watchers block on the condition until the
-        # sequence advances past their last-seen value. The poll
-        # thread is the only writer.
+        # sequence advances past their last-seen value. The cache is
+        # seeded once on first subscribe and re-published only by an
+        # explicit pull — nothing re-enumerates on a timer.
         self._watch_cond = threading.Condition()
         self._watch_snapshot: list[pb.Interface] = []
         self._watch_seq: int = 0
-        self._watch_thread_started = False
+        self._watch_seeded = False
         self._watch_lock = threading.Lock()
-        # Cadence at which the background poll thread re-enumerates.
-        # Defaults to `_WATCH_POLL_INTERVAL_S` (production cadence);
-        # tests override it to keep the suite quick.
-        self._watch_poll_interval_s = watch_poll_interval_s
+        # How often a parked watcher wakes to re-check `is_active()` — a
+        # liveness safety-net, not an enumeration cadence. Tests override
+        # it to keep the suite quick.
+        self._watch_recheck_interval_s = watch_recheck_interval_s
 
     # ----- ListInterfaces ---------------------------------------------------
 
@@ -689,15 +698,18 @@ class CannetServerService(pb_grpc.CannetServerServicer):
         """Long-lived subscription to the interface set. ADR 0016.
 
         Yields the current snapshot immediately, then a fresh snapshot
-        every time the background poll thread detects a change. The
-        thread is shared across watchers, started lazily on the first
-        subscribe.
+        whenever the shared cache's sequence advances. On the PCAN
+        backend the cache is *not* re-enumerated on a timer (that call
+        contends with active transmits — see
+        ``_WATCH_LIVENESS_RECHECK_S``), so in practice a parked stream
+        yields once and then waits; a hot-plug is picked up by the next
+        explicit ``ListInterfaces`` pull rather than pushed here.
 
         The client ending the call wakes any waiter through the
         ``add_callback`` hook below — without it the watcher could
         block in ``cond.wait`` past the point the stream is gone.
         """
-        self._ensure_watch_thread()
+        self._ensure_watch_seeded()
         # Wake-on-disconnect: gRPC calls this on client cancel /
         # transport drop. Notifying all watchers lets each re-check
         # `context.is_active()` and exit its loop cleanly.
@@ -717,7 +729,7 @@ class CannetServerService(pb_grpc.CannetServerServicer):
                 # `is_active` check we run next.
                 self._watch_cond.wait_for(
                     lambda: self._watch_seq != last_seq or not context.is_active(),
-                    timeout=self._watch_poll_interval_s,
+                    timeout=self._watch_recheck_interval_s,
                 )
                 if not context.is_active():
                     return
@@ -736,54 +748,25 @@ class CannetServerService(pb_grpc.CannetServerServicer):
             for c in self._driver.list_channels()
         ]
 
-    def _ensure_watch_thread(self) -> None:
-        """Lazily start the single shared watcher thread. Idempotent;
-        runs once for the service's lifetime."""
+    def _ensure_watch_seeded(self) -> None:
+        """Seed the shared interface cache once, on the first subscribe.
+        Idempotent; runs a single enumeration for the service's lifetime.
+
+        This is the only enumeration the watch path triggers: ADR 0016
+        leaves the re-enumeration cadence to the server, and on PCAN a
+        periodic re-enumeration contends with active transmits (see
+        ``_WATCH_LIVENESS_RECHECK_S``), so subsequent refreshes come from
+        an explicit ``ListInterfaces`` pull, not a timer."""
         with self._watch_lock:
-            if self._watch_thread_started:
+            if self._watch_seeded:
                 return
-            self._watch_thread_started = True
+            self._watch_seeded = True
             # Seed the cache so the first watcher's immediate yield
-            # matches what `ListInterfaces` would have returned, even
-            # before the first poll tick.
+            # matches what `ListInterfaces` would have returned.
             initial = self._enumerate_interfaces()
             with self._watch_cond:
                 self._watch_snapshot = initial
                 self._watch_seq = 1
-            threading.Thread(
-                target=self._watch_loop,
-                name="watch-interfaces",
-                daemon=True,
-            ).start()
-
-    def _watch_loop(self) -> None:
-        """Poll the driver on `_WATCH_POLL_INTERVAL_S` and publish
-        whenever the enumeration changes. The daemon flag means the
-        thread is reaped at process exit; the sidecar has no other
-        shutdown hook on the service object."""
-        while True:
-            time.sleep(self._watch_poll_interval_s)
-            try:
-                fresh = self._enumerate_interfaces()
-            except Exception:  # noqa: BLE001
-                # Driver enumeration failure should not kill the
-                # watcher — log once and try again next tick. A
-                # persistent failure shows up as the cache staying
-                # stale, which the client sees as "the list hasn't
-                # changed."
-                _log.exception("watch-interfaces enumeration failed")
-                continue
-            with self._watch_cond:
-                if _interfaces_equal(self._watch_snapshot, fresh):
-                    continue
-                self._watch_snapshot = fresh
-                self._watch_seq += 1
-                self._watch_cond.notify_all()
-            _log.info(
-                "WatchInterfaces -> %d channels (seq %d)",
-                len(fresh),
-                self._watch_seq,
-            )
 
     def _wake_watchers(self) -> None:
         with self._watch_cond:

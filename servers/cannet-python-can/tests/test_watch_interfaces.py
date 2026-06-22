@@ -1,8 +1,10 @@
-"""Tests for the server-side ``WatchInterfaces`` poll loop.
+"""Tests for the server-side ``WatchInterfaces`` subscription.
 
 Drives ``CannetServerService`` against a stub driver whose enumeration
-can be mutated at runtime, so the change-detection path the GUI host
-relies on is exercised without any vendor SDKs.
+can be mutated at runtime, covering the seed-on-subscribe snapshot, the
+no-timer-repoll policy (enumeration contends with transmit on PCAN, so
+refresh is an explicit ``ListInterfaces`` pull), and clean exit on
+context cancel — all without any vendor SDKs.
 """
 
 from __future__ import annotations
@@ -96,7 +98,7 @@ def _drain(it, n: int, timeout_s: float = 2.0) -> list[pb.InterfaceList]:
 
 def test_watch_emits_initial_snapshot_immediately() -> None:
     driver = _StubDriver([_ch("can0"), _ch("can1", fd=True)])
-    svc = srv.CannetServerService(driver, watch_poll_interval_s=0.05)
+    svc = srv.CannetServerService(driver, watch_recheck_interval_s=0.05)
     ctx = _StubContext()
 
     it = svc.WatchInterfaces(pb.WatchInterfacesRequest(), ctx)
@@ -111,34 +113,42 @@ def test_watch_emits_initial_snapshot_immediately() -> None:
     assert snapshots[0].interfaces[1].fd_capable is True
 
 
-def test_watch_emits_fresh_snapshot_when_driver_set_changes() -> None:
+def test_watch_does_not_repoll_hotplug_but_explicit_list_reflects_it() -> None:
+    """Server-side cadence policy (ADR 0016): the PCAN-backed sidecar
+    does not re-enumerate on a timer — that call contends with active
+    transmits — so a hot-plug after subscribe is *not* pushed through the
+    watch stream. The change is picked up by an explicit `ListInterfaces`
+    pull (the GUI's "Discover" button)."""
     driver = _StubDriver([_ch("can0")])
-    svc = srv.CannetServerService(driver, watch_poll_interval_s=0.05)
+    svc = srv.CannetServerService(driver, watch_recheck_interval_s=0.05)
     ctx = _StubContext()
 
     it = svc.WatchInterfaces(pb.WatchInterfacesRequest(), ctx)
-    # Pull the initial snapshot first.
     [first] = _drain(it, 1)
     assert [i.id for i in first.interfaces] == ["can0"]
 
-    # Hot-plug: append a second interface. Within a couple of poll
-    # ticks the watcher must yield the new snapshot.
+    # Hot-plug a second interface. The watch stream must NOT push a fresh
+    # snapshot — there is no timer poll. `_drain` times out (raising
+    # AssertionError) because no second item ever arrives.
     driver.set([_ch("can0"), _ch("can1", fd=True)])
-    [second] = _drain(it, 1, timeout_s=2.0)
+    with pytest.raises(AssertionError):
+        _drain(it, 1, timeout_s=0.3)
 
+    # But an explicit pull reflects the new hardware immediately.
+    listed = svc.ListInterfaces(pb.ListInterfacesRequest(), ctx)
+    assert [i.id for i in listed.interfaces] == ["can0", "can1"]
+    assert listed.interfaces[1].fd_capable is True
+
+    # The drain thread is still parked inside the generator; cancelling
+    # wakes it so the daemon exits cleanly at teardown.
     ctx.cancel()
-    list(it)
-
-    assert [i.id for i in second.interfaces] == ["can0", "can1"]
-    assert second.interfaces[1].fd_capable is True
 
 
 def test_watch_does_not_repeat_unchanged_snapshots() -> None:
-    """A stable enumeration must not retrigger yields. Validates the
-    server-side change-detection — the GUI host's event channel stays
-    quiet on quiet hardware."""
+    """A stable subscription must not retrigger yields — the GUI host's
+    event channel stays quiet on quiet hardware."""
     driver = _StubDriver([_ch("can0")])
-    svc = srv.CannetServerService(driver, watch_poll_interval_s=0.05)
+    svc = srv.CannetServerService(driver, watch_recheck_interval_s=0.05)
     ctx = _StubContext()
 
     it = svc.WatchInterfaces(pb.WatchInterfacesRequest(), ctx)
@@ -162,7 +172,7 @@ def test_watch_exits_on_context_cancel() -> None:
     """Disconnect-wakes-watcher: cancelling the context must unblock
     any waiter without the test having to time out."""
     driver = _StubDriver([_ch("can0")])
-    svc = srv.CannetServerService(driver, watch_poll_interval_s=0.05)
+    svc = srv.CannetServerService(driver, watch_recheck_interval_s=0.05)
     ctx = _StubContext()
 
     it = svc.WatchInterfaces(pb.WatchInterfacesRequest(), ctx)

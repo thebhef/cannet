@@ -122,13 +122,22 @@ Regression test: the virtual-bus reproduction (460 msg/s, 5 ids, filtered
 chrono open) must assert per-bus ingest FPS stays flat as the buffer
 grows past ~200k — the check that this offender stays dead.
 
-Status (2026-06-21): the dominant cost — the following-live tail cloning
-*every* match in the window under the mutex — is fixed tactically in
-`scan_window_filtered` (slide match indices, clone only the last `cap`
-once after the scan). The remaining O(window) predicate scan still runs
-under the mutex; at `Vec` scale it is cheap, and the incremental
-match-count above is what removes it for the full slice / Task 18. The
-virtual-bus regression test is still owed.
+Status (2026-06-22): the **bounded lock-hold is done**. The monolithic
+`scan_window_filtered` is replaced by `TraceStore::scan_chunk` (returns
+match *indices* for a bounded `[start, end)` under one lock) plus
+`frames_at` (clones only the page). `fetch_filtered_trace` drives the
+scan as a sequence of chunks, releasing the trace-store mutex and
+`await`-yielding between each, so a history scan never holds the `append`
+mutex across the whole buffer. Confirmed against the Task 21 capture as
+the fix for the host-side TX-delivery stall (the growing `max_gap`): the
+filtered scan was starving the tx-confirm `append`, not just RX. Still
+owed for the full slice: (1) the **incremental O(Δ) match-count** — the
+chunked scan is bounded-lock but still O(window) CPU per refresh, cheap
+at `Vec` scale, removed for 10^9 frames by Task 18's filter index; and
+(2) the **virtual-bus FPS-flat regression test**. A unit-level guard
+(`append_interleaves_between_chunk_scans_without_a_buffer_wide_lock`) now
+asserts an append landing between chunk scans is visible to the next
+chunk — the property that lets live ingest proceed mid-scan.
 
 Acceptance:
 
