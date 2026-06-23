@@ -19,6 +19,8 @@
 // feels wedged" report starts from this console stream instead of
 // from scratch.
 
+import { invoke } from "@tauri-apps/api/core";
+
 const counts = new Map<string, number>();
 
 // Gauges: latest absolute readings (not per-second deltas). The 1 Hz
@@ -82,6 +84,47 @@ export function diagCount(key: string, n = 1): void {
   }
 }
 
+// --- Render-tier perf capture (Task 21 frontend characterisation) ---
+//
+// During a capture the 1 Hz reporter (below) also *pushes* each second's
+// snapshot to the host (`diag_push`), which accumulates them and reduces
+// the series to a diffable `RenderReport` on finish — the render-tier
+// counterpart to the host-side perf harness's baseline. The host ignores
+// pushes when no capture is armed, so the reporter pushes unconditionally
+// while `capturing` without a round-trip to check.
+let capturing = false;
+let captureStartMs = 0;
+
+/// Arm a host-side capture under `label` and start pushing per-second
+/// samples. Returns once the host has armed.
+export async function beginDiagCapture(label: string): Promise<void> {
+  await invoke("diag_capture_start", { label });
+  captureStartMs = performance.now();
+  capturing = true;
+}
+
+/// Stop pushing and finish the host-side capture, returning its
+/// `FinishedCapture` ({ report, path }). When `path` is given the host
+/// also writes the report there as JSON.
+export async function endDiagCapture(path?: string): Promise<unknown> {
+  capturing = false;
+  return invoke("diag_capture_finish", { path: path ?? null });
+}
+
+// Scriptable entry point so an operator (or automation) can bracket a
+// capture from the devtools console without a dedicated UI:
+//   await window.__cannetPerf.begin("ev-demo: 2 plots + 2 traces")
+//   …let the RBS workload run…
+//   await window.__cannetPerf.end("<path>/<date>-<hash>-frontend.json")
+declare global {
+  interface Window {
+    __cannetPerf?: {
+      begin: (label: string) => Promise<void>;
+      end: (path?: string) => Promise<unknown>;
+    };
+  }
+}
+
 let running = false;
 
 /// Start the 1 Hz reporter (idempotent). Returns a stop function so
@@ -125,17 +168,44 @@ export function startDiagReporter(): () => void {
     last = new Map(counts);
     const lt = longTaskMs;
     longTaskMs = 0;
+    // Report the renderer's JS-heap size to the host so the crash
+    // health log can split a JS leak from native/GPU growth. Chromium-
+    // only (`performance.memory`); absent elsewhere (jsdom in tests).
+    const mem = (performance as { memory?: { usedJSHeapSize?: number } })
+      .memory;
+    if (typeof mem?.usedJSHeapSize === "number") {
+      diagGauge("jsheap_mb", mem.usedJSHeapSize / (1024 * 1024));
+      void invoke("report_js_heap", { bytes: mem.usedJSHeapSize }).catch(
+        () => {},
+      );
+    }
     const g: Record<string, number> = {};
     for (const [k, v] of gauges) g[k] = Math.round(v * 10) / 10;
     // eslint-disable-next-line no-console
     console.log(
       `${logStamp()} [diag] lag=${lag.toFixed(0)}ms longtask=${lt.toFixed(0)}ms gauges=${JSON.stringify(g)} ${JSON.stringify(delta)}`,
     );
+    if (capturing) {
+      // Best-effort: a dropped second isn't worth surfacing, and a
+      // failing invoke (e.g. host gone) shouldn't break the reporter.
+      void invoke("diag_push", {
+        sample: {
+          t_ms: now - captureStartMs,
+          lag_ms: lag,
+          longtask_ms: lt,
+          counts: delta,
+          gauges: g,
+        },
+      }).catch(() => {});
+    }
   }, 1000);
+
+  window.__cannetPerf = { begin: beginDiagCapture, end: endDiagCapture };
 
   return () => {
     window.clearInterval(interval);
     po?.disconnect();
     running = false;
+    delete window.__cannetPerf;
   };
 }

@@ -71,12 +71,11 @@ impl DbcWatcher {
     /// `AppHandle::clone` is cheap.
     pub fn new(app: &AppHandle) -> Self {
         let callback_app = app.clone();
-        let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-            match res {
+        let watcher =
+            notify::recommended_watcher(move |res: notify::Result<notify::Event>| match res {
                 Ok(event) => on_event(&callback_app, &event),
                 Err(e) => sys_warn!(&callback_app, "dbc-watch", "watcher error: {e}"),
-            }
-        });
+            });
         match watcher {
             Ok(w) => Self {
                 watcher: Some(w),

@@ -61,19 +61,23 @@ export function decodeSignalsSample(buf: ArrayBuffer): SignalsSample {
   for (let s = 0; s < nsig; s++) {
     const n = view.getUint32(off, true);
     off += 4;
-    // The f64 arrays may sit at offsets that aren't 8-aligned within
-    // `buf` (the `u32` lens are 4-aligned), so `new Float64Array(buf,
-    // off, n)` can throw. Slice to a fresh aligned buffer first; the
-    // copy is bulk-memcpy and still much cheaper than JSON parse.
-    const tBuf = buf.slice(off, off + n * 8);
-    const vBuf = buf.slice(off + n * 8, off + n * 16);
-    off += n * 16;
-    // Convert to plain `number[]` so the rest of the pipeline (merge,
+    // Read the f64 runs straight out of `buf` via `DataView`. The arrays
+    // may sit at offsets that aren't 8-aligned (the `u32` lens are only
+    // 4-aligned), but `getFloat64` reads any byte offset — so unlike
+    // `new Float64Array(buf, off, n)` it needs no aligned copy. This
+    // deliberately avoids the previous `buf.slice()` per signal: at a
+    // high plot update rate × many signals those fresh per-tick
+    // `ArrayBuffer`s were a large source of churned native memory that
+    // V8 reclaims only lazily, ratcheting the renderer's working set.
+    // Output is plain `number[]` so the rest of the pipeline (merge,
     // normalise, mergeSeries) keeps its existing types unchanged.
-    series[s] = {
-      t: Array.from(new Float64Array(tBuf)),
-      v: Array.from(new Float64Array(vBuf)),
-    };
+    const t = new Array<number>(n);
+    const v = new Array<number>(n);
+    const vOff = off + n * 8;
+    for (let j = 0; j < n; j++) t[j] = view.getFloat64(off + j * 8, true);
+    for (let j = 0; j < n; j++) v[j] = view.getFloat64(vOff + j * 8, true);
+    off += n * 16;
+    series[s] = { t, v };
   }
   return {
     from_seconds: Number.isNaN(fromS) ? null : fromS,

@@ -23,14 +23,17 @@
 //!   thread, and backtrace to the same log (the catchable-death path),
 //!   then chains the previous hook so stderr/`tracing` still fire.
 //! - [`spawn_health_recorder`] emits a once-a-second System Message with
-//!   `{trace_len, buffer_seconds, fps, rss_mb, tree_mb, webview_mb,
-//!   sys_avail_mb, sys_total_mb}` — so it rides the normal logging pipe
-//!   and lands in the same rolling log. That trail is what survives an
-//!   uncatchable death: `sys_avail_mb` diving toward zero before a crash
-//!   gap means system memory exhaustion (which kills every memory-hungry
-//!   app at once and often leaves no per-process crash record);
-//!   `webview_mb` climbing while `rss_mb` stays flat localises a leak to
-//!   the renderer rather than the Rust host.
+//!   `{trace_len, buffer_seconds, fps, rss_mb, tree_mb, webview_mb (split
+//!   browser/renderer/gpu/other), jsheap_mb, sys_avail_mb, sys_total_mb}`
+//!   — so it rides the normal logging pipe and lands in the same rolling
+//!   log. That trail is what survives an uncatchable death: `sys_avail_mb`
+//!   diving toward zero before a crash gap means system memory exhaustion
+//!   (which kills every memory-hungry app at once and often leaves no
+//!   per-process crash record). The `webview` split plus `jsheap_mb`
+//!   localises a leak: `jsheap_mb` flat while `webview_mb` climbs ⇒ it's
+//!   native, and the `gpu`/`renderer`/`browser` breakdown names which
+//!   process holds it. `jsheap_mb` is reported by the frontend through
+//!   [`record_js_heap`] (the host can't read another process's V8 heap).
 //!
 //! Memory is read via the `sysinfo` crate (the workspace forbids
 //! `unsafe`, so a crate is needed to wrap the per-OS process APIs). The
@@ -44,10 +47,11 @@
 use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use tauri::{AppHandle, Manager};
 
 use crate::sys_info;
@@ -68,6 +72,29 @@ const HEALTH_INTERVAL: Duration = Duration::from_secs(1);
 /// Serializes writes from the many threads that log concurrently (pump,
 /// recorder, command handlers) so their lines don't interleave.
 static WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Latest renderer JS-heap reading (`performance.memory.usedJSHeapSize`),
+/// in bytes, pushed by the frontend ~1 Hz through [`record_js_heap`].
+/// `0` means "not yet reported". The host can't read another process's
+/// V8 heap, so this is the one number that must originate in the
+/// `WebView` — pairing it with the host-measured `webview_mb` splits a
+/// JS-heap leak from native/GPU growth.
+static LAST_JS_HEAP: AtomicU64 = AtomicU64::new(0);
+
+/// Record the frontend's latest JS-heap size (bytes). Called from the
+/// `report_js_heap` Tauri command.
+pub fn record_js_heap(bytes: u64) {
+    LAST_JS_HEAP.store(bytes, Ordering::Relaxed);
+}
+
+/// The last JS-heap reading, or `None` if the frontend hasn't reported
+/// one yet.
+fn js_heap_bytes() -> Option<u64> {
+    match LAST_JS_HEAP.load(Ordering::Relaxed) {
+        0 => None,
+        v => Some(v),
+    }
+}
 
 /// The idiomatic per-OS log directory, set once at `setup` from Tauri's
 /// [`app_log_dir`] (`%LOCALAPPDATA%\<id>\logs` on Windows,
@@ -181,6 +208,18 @@ pub fn spawn_health_recorder(app: AppHandle) {
         });
 }
 
+/// Which Chromium child role a `WebView` process plays, parsed from its
+/// `--type=` argument. The browser (no `--type`) and renderer hold JS;
+/// the GPU process holds the compositor / GPU buffers a heap snapshot
+/// can't see — the split tells a native/GPU leak from a renderer one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WebviewKind {
+    Browser,
+    Renderer,
+    Gpu,
+    Other,
+}
+
 /// A memory snapshot for one health tick. All fields are bytes, `None`
 /// when the read failed (or, for the per-process fields, when our own
 /// PID couldn't be resolved).
@@ -190,9 +229,21 @@ struct MemorySample {
     host: Option<u64>,
     /// Host + every descendant (folds in the `WebView` on Windows / Linux).
     tree: Option<u64>,
-    /// Descendant `WebView` processes only (`msedgewebview2` / `WebKit`) —
-    /// isolates the renderer so a leak there is visible by name.
+    /// Descendant `WebView` processes only (`msedgewebview2` / `WebKit`).
     webview: Option<u64>,
+    /// `WebView` browser (main) process(es).
+    webview_browser: Option<u64>,
+    /// `WebView` renderer process(es) — where the JS heap lives.
+    webview_renderer: Option<u64>,
+    /// `WebView` GPU process(es) — compositor / GPU buffers, invisible to
+    /// a JS heap snapshot.
+    webview_gpu: Option<u64>,
+    /// `WebView` utility / crashpad / other helper process(es).
+    webview_other: Option<u64>,
+    /// Renderer JS heap (`performance.memory.usedJSHeapSize`), reported by
+    /// the frontend. Flat here while `webview`/`webview_gpu` climb ⇒ the
+    /// leak is native/GPU, not JS.
+    js_heap: Option<u64>,
     /// System-wide available memory — the OOM tell. If this dives toward
     /// zero just before a crash gap, the death was memory exhaustion.
     sys_avail: Option<u64>,
@@ -200,37 +251,73 @@ struct MemorySample {
     sys_total: Option<u64>,
 }
 
+/// Classify a process by name + command line into a [`WebviewKind`], or
+/// `None` if it isn't a `WebView` process. Pure (takes the joined
+/// command line as a string) so it's unit-testable without `sysinfo`.
+fn webview_kind(name_lower: &str, cmd_joined: &str) -> Option<WebviewKind> {
+    if !(name_lower.contains("webview") || name_lower.contains("webkit")) {
+        return None;
+    }
+    let kind = match cmd_joined.split("--type=").nth(1) {
+        None => WebviewKind::Browser, // no `--type` ⇒ the main browser process
+        Some(rest) => {
+            let ty = rest
+                .split([' ', '"'])
+                .next()
+                .unwrap_or("");
+            match ty {
+                "renderer" => WebviewKind::Renderer,
+                "gpu-process" => WebviewKind::Gpu,
+                _ => WebviewKind::Other, // utility, crashpad-handler, …
+            }
+        }
+    };
+    Some(kind)
+}
+
 /// Refresh `sys` and snapshot memory: the host alone, the whole process
-/// tree, the `WebView` subset, and system-wide available / total memory.
-/// `own_pid` is `None` only if the current PID couldn't be resolved, in
-/// which case the per-process figures are `None` but system memory is
-/// still reported.
+/// tree, the `WebView` subset split by Chromium role, the renderer JS
+/// heap, and system-wide available / total memory. `own_pid` is `None`
+/// only if the current PID couldn't be resolved, in which case the
+/// per-process figures are `None` but system memory is still reported.
 fn read_memory(sys: &mut System, own_pid: Option<Pid>) -> MemorySample {
     sys.refresh_memory();
+    // Command lines are immutable per process, so refresh them only for
+    // processes that don't have one cached yet (new spawns) — cheaper
+    // than re-reading every PEB each second.
     sys.refresh_processes_specifics(
         ProcessesToUpdate::All,
         true,
-        ProcessRefreshKind::nothing().with_memory(),
+        ProcessRefreshKind::nothing()
+            .with_memory()
+            .with_cmd(UpdateKind::OnlyIfNotSet),
     );
     let mut sample = MemorySample {
         sys_avail: Some(sys.available_memory()),
         sys_total: Some(sys.total_memory()),
+        js_heap: js_heap_bytes(),
         ..MemorySample::default()
     };
     let Some(root) = own_pid.map(sysinfo::Pid::as_u32) else {
         return sample;
     };
-    // `(pid, parent, mem_bytes, is_webview)` for every process.
-    let entries: Vec<(u32, Option<u32>, u64, bool)> = sys
+    // `(pid, parent, mem_bytes, webview-kind)` for every process.
+    let entries: Vec<(u32, Option<u32>, u64, Option<WebviewKind>)> = sys
         .processes()
         .values()
         .map(|p| {
             let name = p.name().to_string_lossy().to_ascii_lowercase();
+            let cmd = p
+                .cmd()
+                .iter()
+                .map(|s| s.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(" ");
             (
                 p.pid().as_u32(),
                 p.parent().map(sysinfo::Pid::as_u32),
                 p.memory(),
-                name.contains("webview") || name.contains("webkit"),
+                webview_kind(&name, &cmd),
             )
         })
         .collect();
@@ -242,20 +329,27 @@ fn read_memory(sys: &mut System, own_pid: Option<Pid>) -> MemorySample {
         .map(|(_, _, mem, _)| *mem);
     // Only report the tree if the root was actually found in the table.
     if sample.host.is_some() {
+        let in_family = |pid: &u32| family.contains(pid);
         sample.tree = Some(
             entries
                 .iter()
-                .filter(|(pid, _, _, _)| family.contains(pid))
+                .filter(|(pid, _, _, _)| in_family(pid))
                 .map(|(_, _, mem, _)| *mem)
                 .sum(),
         );
-        sample.webview = Some(
+        let wv_sum = |want: Option<WebviewKind>| -> u64 {
             entries
                 .iter()
-                .filter(|(pid, _, _, is_wv)| *is_wv && family.contains(pid))
+                .filter(|(pid, _, _, kind)| in_family(pid) && (want.is_none() || *kind == want))
+                .filter(|(_, _, _, kind)| kind.is_some())
                 .map(|(_, _, mem, _)| *mem)
-                .sum(),
-        );
+                .sum()
+        };
+        sample.webview = Some(wv_sum(None));
+        sample.webview_browser = Some(wv_sum(Some(WebviewKind::Browser)));
+        sample.webview_renderer = Some(wv_sum(Some(WebviewKind::Renderer)));
+        sample.webview_gpu = Some(wv_sum(Some(WebviewKind::Gpu)));
+        sample.webview_other = Some(wv_sum(Some(WebviewKind::Other)));
     }
     sample
 }
@@ -283,21 +377,29 @@ fn descendant_pids(links: &[(u32, Option<u32>)], root: u32) -> std::collections:
 /// The health-sample message body. Pure so it's unit-testable. Memory is
 /// shown in whole MB for readability; an absent reading prints `?`.
 /// `rss_mb` is the Rust host alone, `tree_mb` host + descendants,
-/// `webview_mb` the renderer subset, and `sys_avail_mb` / `sys_total_mb`
-/// the machine-wide figures that reveal an OOM.
+/// `webview_mb` the `WebView` subset split into `browser`/`renderer`/`gpu`/
+/// `other`, `jsheap_mb` the renderer JS heap, and `sys_avail_mb` /
+/// `sys_total_mb` the machine-wide figures that reveal an OOM.
 fn format_health_message(
     trace_len: usize,
     buffer_seconds: f64,
     fps: f64,
     mem: &MemorySample,
 ) -> String {
-    let mb = |b: Option<u64>| b.map_or_else(|| "?".to_string(), |v| (v / (1024 * 1024)).to_string());
+    let mb =
+        |b: Option<u64>| b.map_or_else(|| "?".to_string(), |v| (v / (1024 * 1024)).to_string());
     format!(
         "trace_len={trace_len} buffer_s={buffer_seconds:.1} fps={fps:.0} \
-         rss_mb={} tree_mb={} webview_mb={} sys_avail_mb={} sys_total_mb={}",
+         rss_mb={} tree_mb={} webview_mb={}[browser={} renderer={} gpu={} other={}] \
+         jsheap_mb={} sys_avail_mb={} sys_total_mb={}",
         mb(mem.host),
         mb(mem.tree),
         mb(mem.webview),
+        mb(mem.webview_browser),
+        mb(mem.webview_renderer),
+        mb(mem.webview_gpu),
+        mb(mem.webview_other),
+        mb(mem.js_heap),
         mb(mem.sys_avail),
         mb(mem.sys_total),
     )
@@ -434,19 +536,46 @@ mod tests {
             host: Some(2_147_483_648),
             tree: Some(6_442_450_944),
             webview: Some(4_294_967_296),
+            webview_browser: Some(536_870_912),
+            webview_renderer: Some(1_073_741_824),
+            webview_gpu: Some(2_147_483_648),
+            webview_other: Some(536_870_912),
+            js_heap: Some(268_435_456),
             sys_avail: Some(1_073_741_824),
             sys_total: Some(34_359_738_368),
         };
         assert_eq!(
             format_health_message(180_000, 392.5, 440.4, &mem),
             "trace_len=180000 buffer_s=392.5 fps=440 rss_mb=2048 tree_mb=6144 \
-             webview_mb=4096 sys_avail_mb=1024 sys_total_mb=32768"
+             webview_mb=4096[browser=512 renderer=1024 gpu=2048 other=512] \
+             jsheap_mb=256 sys_avail_mb=1024 sys_total_mb=32768"
         );
         assert_eq!(
             format_health_message(0, 0.0, 0.0, &MemorySample::default()),
-            "trace_len=0 buffer_s=0.0 fps=0 rss_mb=? tree_mb=? webview_mb=? \
-             sys_avail_mb=? sys_total_mb=?"
+            "trace_len=0 buffer_s=0.0 fps=0 rss_mb=? tree_mb=? \
+             webview_mb=?[browser=? renderer=? gpu=? other=?] \
+             jsheap_mb=? sys_avail_mb=? sys_total_mb=?"
         );
+    }
+
+    #[test]
+    fn webview_kind_classifies_by_type_arg() {
+        let bw = "C:/x/msedgewebview2.exe";
+        assert_eq!(webview_kind(bw, "msedgewebview2.exe --embedded"), Some(WebviewKind::Browser));
+        assert_eq!(
+            webview_kind(bw, "msedgewebview2.exe --type=renderer --lang=en"),
+            Some(WebviewKind::Renderer)
+        );
+        assert_eq!(
+            webview_kind(bw, "msedgewebview2.exe --type=gpu-process"),
+            Some(WebviewKind::Gpu)
+        );
+        assert_eq!(
+            webview_kind(bw, "msedgewebview2.exe --type=utility --x"),
+            Some(WebviewKind::Other)
+        );
+        // Not a webview process at all.
+        assert_eq!(webview_kind("python.exe", "python -m cannet --type=renderer"), None);
     }
 
     #[test]

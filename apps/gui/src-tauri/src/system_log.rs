@@ -117,7 +117,12 @@ impl SystemLog {
     /// Push a message, with the rate-limit template defaulting to the
     /// message text itself. Returns the appended [`SystemMessage`] —
     /// or `None` if the rate limiter dropped this one.
-    pub fn push(&self, source: &str, level: LogLevel, message: impl Into<String>) -> Option<SystemMessage> {
+    pub fn push(
+        &self,
+        source: &str,
+        level: LogLevel,
+        message: impl Into<String>,
+    ) -> Option<SystemMessage> {
         let msg = message.into();
         let template = msg.clone();
         self.push_with_template(source, level, &template, msg)
@@ -140,7 +145,10 @@ impl SystemLog {
         let key = (source.to_string(), template.to_string());
         let times = inner.recent.entry(key).or_default();
         // Prune older-than-window timestamps before deciding.
-        while times.front().is_some_and(|t| now.duration_since(*t) > RATE_LIMIT_WINDOW) {
+        while times
+            .front()
+            .is_some_and(|t| now.duration_since(*t) > RATE_LIMIT_WINDOW)
+        {
             times.pop_front();
         }
         let suppressed = times.len() >= RATE_LIMIT_BURST;
@@ -263,9 +271,28 @@ pub fn bridge_wire_log(
 /// a `tracing::event!` *and* pushes into the ring; this subscriber is
 /// what makes the `event!` half visible on stderr during development.
 /// Safe to call multiple times — the underlying registry is idempotent.
+/// Install the dev-stderr `tracing` subscriber.
+///
+/// Without a filter, a bare `fmt` layer enables every event from every
+/// crate at TRACE — which floods stderr with `tonic` / `h2` / `hyper`
+/// transport spam under a live gRPC session. That volume isn't free: when
+/// stderr is a live terminal (e.g. `tauri dev` in an editor), rendering it
+/// steals CPU from timing-sensitive work like the transmit scheduler.
+///
+/// So we cap the default at `info`, drop the chatty transport crates to
+/// `warn`, and honour `RUST_LOG` when set (so a debugging session can dial
+/// any target back up). This only governs the dev-stderr layer; the System
+/// Messages panel is fed separately by `emit_system_log`, so quieting
+/// stderr never hides an in-app message.
 pub fn init_tracing_subscriber() {
-    use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt};
-    let _ = tracing_subscriber::registry().with(fmt::layer()).try_init();
+    use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::new("info,tonic=warn,h2=warn,hyper=warn,hyper_util=warn,tower=warn")
+    });
+    let _ = tracing_subscriber::registry()
+        .with(filter)
+        .with(fmt::layer())
+        .try_init();
 }
 
 /// Emit at info level. Fans the formatted message into the host's
@@ -323,8 +350,10 @@ mod tests {
         log.push("dbc", LogLevel::Warn, "first").unwrap();
         log.push("dbc", LogLevel::Error, "second").unwrap();
         let snap = log.snapshot();
-        assert_eq!(snap.iter().map(|m| m.message.as_str()).collect::<Vec<_>>(),
-                   vec!["first", "second"]);
+        assert_eq!(
+            snap.iter().map(|m| m.message.as_str()).collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
     }
 
     #[test]
@@ -357,7 +386,9 @@ mod tests {
         for _ in 0..RATE_LIMIT_BURST {
             assert!(log.push("dbc", LogLevel::Error, "boom").is_some());
         }
-        let note = log.push("dbc", LogLevel::Error, "boom").expect("note emitted");
+        let note = log
+            .push("dbc", LogLevel::Error, "boom")
+            .expect("note emitted");
         assert_eq!(note.level, LogLevel::Warn);
         assert!(note.message.contains("rate-limited"));
         // Further duplicates inside the window vanish.
@@ -427,16 +458,12 @@ mod tests {
     fn template_separates_rate_limit_buckets() {
         let log = SystemLog::new();
         for i in 0..RATE_LIMIT_BURST {
-            log.push_with_template(
-                "project",
-                LogLevel::Info,
-                "tpl-A",
-                format!("variant {i}"),
-            );
+            log.push_with_template("project", LogLevel::Info, "tpl-A", format!("variant {i}"));
         }
         // Same template, distinct message text — still rate-limited.
         assert_eq!(
-            log.push_with_template("project", LogLevel::Info, "tpl-A", "another").map(|m| m.level),
+            log.push_with_template("project", LogLevel::Info, "tpl-A", "another")
+                .map(|m| m.level),
             Some(LogLevel::Warn), // suppression note
         );
         // Different template — bucket is fresh.

@@ -129,7 +129,11 @@ impl PeriodicSchedule {
         self.seq += 1;
         let seq = self.seq;
         self.live.insert(id.clone(), seq);
-        self.heap.push(Reverse(Pending { deadline: at, seq, id }));
+        self.heap.push(Reverse(Pending {
+            deadline: at,
+            seq,
+            id,
+        }));
     }
 
     /// Stop `id`. Its queued heap entry (if any) becomes stale and is

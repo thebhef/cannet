@@ -135,8 +135,12 @@ impl VerificationState {
         let mut inner = self.inner.lock().expect("verification mutex poisoned");
         let live_ids: std::collections::HashSet<(u32, bool)> =
             configs.keys().map(|(_, id, ext)| (*id, *ext)).collect();
-        inner.counters.retain(|(_, id, ext), _| live_ids.contains(&(*id, *ext)));
-        inner.validity.retain(|(_, id, ext), _| live_ids.contains(&(*id, *ext)));
+        inner
+            .counters
+            .retain(|(_, id, ext), _| live_ids.contains(&(*id, *ext)));
+        inner
+            .validity
+            .retain(|(_, id, ext), _| live_ids.contains(&(*id, *ext)));
         inner.configs = configs;
     }
 

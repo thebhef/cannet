@@ -286,7 +286,13 @@ impl TransmitFrameRegistry {
     pub fn resolution_inputs(&self) -> Vec<(String, TransmitRequest, Option<CalcFieldsSpec>)> {
         self.entries
             .iter()
-            .map(|e| (e.frame.id.clone(), e.frame.request.clone(), e.frame.calc.clone()))
+            .map(|e| {
+                (
+                    e.frame.id.clone(),
+                    e.frame.request.clone(),
+                    e.frame.calc.clone(),
+                )
+            })
             .collect()
     }
 
@@ -311,7 +317,12 @@ impl TransmitFrameRegistry {
         self.entries
             .iter()
             .filter_map(|e| match &e.frame.source {
-                TransmitSource::Rbs { element, bus, ecu, message } => Some(RbsRowKey {
+                TransmitSource::Rbs {
+                    element,
+                    bus,
+                    ecu,
+                    message,
+                } => Some(RbsRowKey {
                     id: e.frame.id.clone(),
                     element: element.clone(),
                     bus: bus.clone(),
@@ -552,7 +563,10 @@ mod tests {
         // A payload edit mid-run is visible to the next `fire_info` read
         // (what the scheduler does each tick — property 4).
         reg.set(TransmitFrame {
-            request: TransmitRequest { data: vec![1, 2, 3], ..req("p", 0x100) },
+            request: TransmitRequest {
+                data: vec![1, 2, 3],
+                ..req("p", 0x100)
+            },
             ..frame("a", "p", 0x100, TransmitMode::Periodic, 100)
         });
         let (request, cycle_ms) = reg.fire_info("a").unwrap();
@@ -721,7 +735,10 @@ mod tests {
     fn too_short_buffer_sends_unmodified_instead_of_dropping() {
         let mut reg = TransmitFrameRegistry::default();
         reg.set(TransmitFrame {
-            request: TransmitRequest { data: vec![1, 2], ..req("p", 256) },
+            request: TransmitRequest {
+                data: vec![1, 2],
+                ..req("p", 256)
+            },
             ..frame("a", "p", 256, TransmitMode::Periodic, 100)
         });
         reg.set_resolved_calc("a", Some(resolved_calc()));

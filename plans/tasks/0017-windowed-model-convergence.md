@@ -201,6 +201,47 @@ deferring the x-window slide a frame. So measure before adding any
 batching, and keep the live-edge slide synchronous with the resample
 that produced it.
 
+**Confirmed runtime offender + crash (diagnosed 2026-06-25).** This
+slice is the structural fix for a renderer-memory crash. `PlotArea.resample`
+allocates per tick in the renderer in proportion to plotted-signal count
+times update rate: the `sample_signals` response `ArrayBuffer`, the
+`mergeSeries` rebuild, and `uPlot.setData`. That is native /
+`ArrayBuffer`-backed memory (not the V8 JS heap, not GPU), which V8
+reclaims only lazily — so above ~10 Hz the renderer's working set climbs
+unbounded instead of sawtoothing. It was reproduced ramping to ~3 GB and
+tipping an already-loaded machine into a system-wide OOM that killed
+every Chromium process at once (the host, all VS Code windows) with no
+per-process Windows Error Report — the hard-to-diagnose "whole tree
+vanishes" failure. Isolated to the plots by live bisection: closing the
+trace views and idling the IPC changed nothing; closing the plots
+dropped the renderer ~600 MB; signal count scaled it linearly; update
+rate scaled it. The host-side health recorder (`crash.rs`: `webview_mb`
+split by Chromium process role + `jsheap_mb` + `sys_avail_mb`, mirrored
+to the rolling on-disk log) is the standing instrument that localised it
+and will catch a regression.
+
+Tactical mitigations already applied ahead of this slice — they lower the
+*peak* (crash headroom) but leave the per-tick churn, which only paging
+removes:
+
+- `decodeSignalsSample` ([plotData.ts](../../apps/gui/src/plotData.ts))
+  reads the f64 runs straight from the response buffer via `DataView`
+  instead of an aligned `buf.slice()` per signal — removes ~half the
+  per-tick external allocation;
+- `max_points` lowered from `canvasW * 2` to `canvasW`
+  ([PlotPanel.tsx](../../apps/gui/src/PlotPanel.tsx)): the host
+  min/max-decimates to `2 * max_points`, so one point per pixel here is
+  two per pixel on the wire — the full resolution a min/max envelope can
+  show; `canvasW * 2` was a redundant 4 points/pixel. Halves bytes per
+  fetch.
+
+Together ~1/4 the per-tick allocation — enough to move 15 Hz from an
+unbounded climb to a bounded sawtooth, but not to flatten it. Paging the
+plot through the shared primitive (decimation / merge / extent host-side,
+only the viewport slice shipped) removes the residual `invoke`-buffer +
+`mergeSeries` + `uPlot.setData` rebuild the mitigations can't reach — the
+reason this slice, not the tactical fixes, is the real cure.
+
 ## Non-goals
 
 - **One accessor signature.** `RowPage` and `DecimatedRange` stay

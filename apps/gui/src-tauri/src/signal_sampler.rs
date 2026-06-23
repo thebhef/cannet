@@ -198,8 +198,14 @@ BO_ 256 EngineData: 2 ECU
         assert_eq!(
             pts,
             vec![
-                SamplePoint { t_seconds: 1.0, value: 1.0 },
-                SamplePoint { t_seconds: 2.0, value: 2.0 },
+                SamplePoint {
+                    t_seconds: 1.0,
+                    value: 1.0
+                },
+                SamplePoint {
+                    t_seconds: 2.0,
+                    value: 2.0
+                },
             ]
         );
     }
@@ -222,11 +228,20 @@ BO_ 256 EngineData: 2 ECU
             frame(1_000_000_000, 256, vec![0x08, 0x00]),
         ];
         let pts = sample_signal(&frames, &db, 256, false, "EngineSpeed");
-        assert_eq!(pts, vec![SamplePoint { t_seconds: 1.0, value: 2.0 }]);
+        assert_eq!(
+            pts,
+            vec![SamplePoint {
+                t_seconds: 1.0,
+                value: 2.0
+            }]
+        );
     }
 
     fn pt(t: f64, v: f64) -> SamplePoint {
-        SamplePoint { t_seconds: t, value: v }
+        SamplePoint {
+            t_seconds: t,
+            value: v,
+        }
     }
 
     #[test]

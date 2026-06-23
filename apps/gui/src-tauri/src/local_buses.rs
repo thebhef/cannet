@@ -33,12 +33,10 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use cannet_client::{
-    connect_and_subscribe, ConnectionError, SessionHandle, SessionTransmitter,
-    Subscription,
+    connect_and_subscribe, ConnectionError, SessionHandle, SessionTransmitter, Subscription,
 };
 use cannet_core::{
-    BridgeHandle, BusConfig, CanFrame, CanFrameSink, LocalSink, LocalSource,
-    SharedBus,
+    BridgeHandle, BusConfig, CanFrame, CanFrameSink, LocalSink, LocalSource, SharedBus,
 };
 
 use crate::project::{BridgeSpec, LocalVirtualBusDef};
@@ -168,17 +166,14 @@ impl LocalBusRegistry {
         } else {
             Subscription::new(spec.interface.clone(), LOCAL_BUS_CHANNEL)
         };
-        let session = connect_and_subscribe(&spec.remote_address, vec![subscription])
-            .map_err(|e: ConnectionError| {
-                format!("bridge {:?} failed to connect: {e}", spec.name)
-            })?;
+        let session = connect_and_subscribe(&spec.remote_address, vec![subscription]).map_err(
+            |e: ConnectionError| format!("bridge {:?} failed to connect: {e}", spec.name),
+        )?;
         let effective_id = session
             .subscriptions()
             .first()
             .map(|s| s.effective_id().to_string())
-            .ok_or_else(|| {
-                format!("bridge {:?}: no resolved subscription", spec.name)
-            })?;
+            .ok_or_else(|| format!("bridge {:?}: no resolved subscription", spec.name))?;
         let (handle, receiver, transmitter) = session.into_parts();
         let sink = SessionSink {
             transmitter,
@@ -197,11 +192,7 @@ impl LocalBusRegistry {
     }
 
     /// Detach a bridge by name. Returns `true` if it existed.
-    pub fn detach_bridge(
-        &self,
-        virtual_bus_id: &str,
-        name: &str,
-    ) -> Result<bool, String> {
+    pub fn detach_bridge(&self, virtual_bus_id: &str, name: &str) -> Result<bool, String> {
         let mut guard = self.inner.lock().expect("local-bus registry poisoned");
         let entry = guard
             .get_mut(virtual_bus_id)
@@ -231,10 +222,7 @@ impl LocalBusRegistry {
 /// buses are dropped first. Per-binding session participants are
 /// **not** opened here — that happens on Connect, the same way a
 /// remote session would.
-pub fn replay(
-    registry: &LocalBusRegistry,
-    defs: &[LocalVirtualBusDef],
-) -> Vec<String> {
+pub fn replay(registry: &LocalBusRegistry, defs: &[LocalVirtualBusDef]) -> Vec<String> {
     registry.drop_all();
     let mut errors = Vec::new();
     for def in defs {
@@ -302,7 +290,8 @@ mod tests {
     #[test]
     fn create_then_drop_works() {
         let reg = LocalBusRegistry::default();
-        reg.create("vbus", "Test", BusConfig::classic_500k()).unwrap();
+        reg.create("vbus", "Test", BusConfig::classic_500k())
+            .unwrap();
         assert_eq!(reg.bus_ids(), vec!["vbus".to_string()]);
         assert!(reg.drop_bus("vbus"));
         assert!(reg.bus_ids().is_empty());

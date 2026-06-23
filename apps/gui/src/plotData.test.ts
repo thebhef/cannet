@@ -151,6 +151,20 @@ describe("decodeSignalsSample", () => {
     expect(out.series[2].t).toEqual([]);
   });
 
+  it("decodes f64 runs at non-8-aligned offsets (DataView-direct path)", () => {
+    // A first signal with an odd point count pushes the *second*
+    // signal's f64 run to a 4-byte- (not 8-byte-) aligned offset — the
+    // case the dropped `buf.slice()` aligned-copy used to handle. The
+    // `DataView.getFloat64` reads must decode it correctly without a copy.
+    const buf = encode(0, 0, 0, 0, [
+      { t: [1], v: [9] }, // 1 pt shifts the next run off 8-alignment
+      { t: [2.25, 3.5, 4.75], v: [-2.25, -3.5, -4.75] },
+    ]);
+    const out = decodeSignalsSample(buf);
+    expect(out.series[1].t).toEqual([2.25, 3.5, 4.75]);
+    expect(out.series[1].v).toEqual([-2.25, -3.5, -4.75]);
+  });
+
   it("translates NaN sentinels back to null for the optional anchors", () => {
     const buf = encode(null, null, 0, 0, []);
     const out = decodeSignalsSample(buf);

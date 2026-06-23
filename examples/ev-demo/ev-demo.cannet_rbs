@@ -1,0 +1,142 @@
+{
+  "schema_version": 1,
+  "fill_bit": 0,
+  "buses": {
+    "Battery": {
+      "enabled": true,
+      "ecus": {
+        "BMS": {
+          "enabled": true,
+          "messages": {
+            "0x300": {
+              "signals": {
+                "PackCurrent": 85.0,
+                "PackStatus": "Drive",
+                "PackTempC": 31.0,
+                "PackVoltage": 396.0,
+                "SocPct": 72.0,
+                "SohPct": 98.0
+              }
+            },
+            "0x301": {
+              "signals": {
+                "BalancingActive": 0.0,
+                "CellTMax": 33.0,
+                "CellTMin": 29.0,
+                "CellVMax": 3.46,
+                "CellVMin": 3.41
+              }
+            },
+            "0x302": {
+              "signals": {
+                "ChargeCurrentLimit": 150.0,
+                "ContactorState": "Closed",
+                "DischargeCurrentLimit": 420.0
+              }
+            }
+          }
+        },
+        "DCDC": {
+          "enabled": true,
+          "messages": {
+            "0x410": {
+              "signals": {
+                "DcdcEnabled": 1.0,
+                "DcdcTempC": 52.0,
+                "OutputCurrent": 45.0,
+                "OutputVoltage": 13.8
+              }
+            }
+          }
+        },
+        "OBC": {
+          "enabled": true,
+          "messages": {
+            "0x420": {
+              "signals": {
+                "AcVoltage": 0.0,
+                "ChargeCurrent": 0.0,
+                "ChargeState": "Idle",
+                "ObcTempC": 30.0
+              }
+            }
+          }
+        },
+        "ThermalMgr": {
+          "enabled": true,
+          "messages": {
+            "0x400": {
+              "signals": {
+                "CoolantTempIn": 35.0,
+                "CoolantTempOut": 41.0,
+                "FanDutyPct": 40.0,
+                "PumpDutyPct": 60.0
+              }
+            }
+          }
+        }
+      }
+    },
+    "Powertrain": {
+      "enabled": true,
+      "ecus": {
+        "MotorFront": {
+          "enabled": true,
+          "messages": {
+            "0x200": {
+              "signals": {
+                "InverterTempC": 45.0,
+                "MotorRpm": 4200.0,
+                "MotorTempC": 58.0,
+                "MotorTorque": 95.0,
+                "PhaseCurrent": 180.0
+              }
+            }
+          }
+        },
+        "MotorRear": {
+          "enabled": true,
+          "messages": {
+            "0x201": {
+              "signals": {
+                "InverterTempC": 47.0,
+                "MotorRpm": 4200.0,
+                "MotorTempC": 60.0,
+                "MotorTorque": 90.0,
+                "PhaseCurrent": 175.0
+              }
+            }
+          }
+        },
+        "VCU": {
+          "enabled": true,
+          "messages": {
+            "0x100": {
+              "signals": {
+                "AccelPedal": 30.0,
+                "BrakePedal": 0.0,
+                "Gear": "D",
+                "Ready": 1.0,
+                "TorqueRequest": 120.0,
+                "VehSpeed": 65.0
+              }
+            },
+            "0x110": {
+              "signals": {
+                "MotorEnable": 1.0,
+                "TorqueCmdFront": 110.0,
+                "TorqueCmdRear": 105.0
+              }
+            },
+            "0x18FF50A3x": {
+              "signals": {
+                "CmdMode": 1.0,
+                "ContactorReq": "Closed"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

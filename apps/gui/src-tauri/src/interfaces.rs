@@ -145,10 +145,7 @@ pub fn unwatch(app: &AppHandle, address: &str) {
 /// updates through [`INTERFACES_CHANGED_EVENT`]).
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn get_interfaces(
-    state: State<'_, InterfacesState>,
-    address: String,
-) -> Vec<InterfaceRecord> {
+pub fn get_interfaces(state: State<'_, InterfacesState>, address: String) -> Vec<InterfaceRecord> {
     let inner = state.inner.lock().expect("interfaces state poisoned");
     inner
         .entries
@@ -186,8 +183,7 @@ pub async fn refresh_interfaces(
     let interfaces = cannet_client::list_interfaces(&address)
         .await
         .map_err(|e| e.to_string())?;
-    let records: Vec<InterfaceRecord> =
-        interfaces.into_iter().map(InterfaceRecord::from).collect();
+    let records: Vec<InterfaceRecord> = interfaces.into_iter().map(InterfaceRecord::from).collect();
     update_cache_and_emit(&app, &address, &records);
     Ok(records)
 }

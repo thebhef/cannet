@@ -1,8 +1,8 @@
-# ev-fleet — example EV project & perf workload
+# ev-demo — example EV project & perf workload
 
-A small but realistic electric-vehicle model used two ways:
+A small but realistic single-vehicle electric-vehicle model used two ways:
 
-- **as a cannet project** you can open in the GUI (`ev-fleet.cannet`), and
+- **as a cannet project** you can open in the GUI (`ev-demo.cannet_prj`), and
 - **as the reproducible workload** the `cannet-perf-measurement` performance /
   integration harness runs as a rest-of-bus simulation (see
   `crates/cannet-perf-measurement`).
@@ -47,12 +47,19 @@ is a rolling counter and `Crc8` a CRC-8/SAE-J1850 over the payload
 (ADR 0027 calculated fields), so the example also exercises the
 counter/CRC path.
 
+Each enum signal in the DBCs carries a value→color map (ADR 0029),
+authored as `colormap` project elements: `Gear`, `ContactorReq`,
+`PackStatus`, `ContactorState`, and `ChargeState`. Faults render red,
+closed/complete/drive green, transitional states amber, neutral states
+grey — so the trace cells and plot enum lanes read in colour wherever
+those signals appear.
+
 ## Files
 
 | File | What it is |
 | --- | --- |
-| `ev-fleet.cannet` | Project: buses, the two PEAK interface bindings, DBC scoping, and the trace / plot / RBS elements. Schema v7. |
-| `ev-fleet.cannet_rbs` | Rest-of-bus simulation (ADR 0028): static signal values per message. Cadences come from each DBC's `GenMsgCycleTime`. |
+| `ev-demo.cannet_prj` | Project: buses, the two PEAK interface bindings, DBC scoping (DBCs referenced by project-relative path — ADR 0030), the trace / plot / RBS elements, the enum value→color maps (ADR 0029), and a populated dockview layout that opens them. Schema v7. |
+| `ev-demo.cannet_rbs` | Rest-of-bus simulation (ADR 0028): static signal values per message. Cadences come from each DBC's `GenMsgCycleTime`. |
 | `dbc/*.dbc` | The four ECU databases. |
 
 The RBS holds **static** values — a steady-state snapshot of a vehicle
@@ -62,9 +69,13 @@ values → these overrides.
 
 ## Using it
 
-- **GUI**: open `ev-fleet.cannet`. Connect the two buses to the PEAK
-  interfaces (or rebind to whatever interfaces you have), then Run the
-  RBS element to transmit the rest-of-bus.
+- **GUI**: open `ev-demo.cannet_prj`. Its layout opens a representative
+  view configuration — a chronological and a by-id trace, a powertrain
+  and a battery plot (each pre-filtered to its bus's signals), and the
+  RBS panel. Connect the two buses to the PEAK interfaces (or rebind to
+  whatever interfaces you have), then Run the RBS element to transmit the
+  rest-of-bus. This is also the view set the frontend perf
+  characterisation drives.
 - **Harness**: `cargo run -p cannet-perf-measurement -- validate` prints the
   schedule this project produces; the other subcommands run it across
   the harness's source modes. See `crates/cannet-perf-measurement`.

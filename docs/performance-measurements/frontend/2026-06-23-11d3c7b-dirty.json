@@ -1,0 +1,128 @@
+{
+  "mode": "frontend",
+  "label": "ev-demo: 2 plots + 2 traces",
+  "duration_s": 58.997200000047684,
+  "sample_count": 60,
+  "longtask_ms_per_s": {
+    "mean": 0.0,
+    "max": 0.0,
+    "p95": 0.0
+  },
+  "lag_ms": {
+    "mean": -0.02833333214124044,
+    "max": 15.699999928474426
+  },
+  "jank_seconds": 0,
+  "jank_fraction": 0.0,
+  "frames_late_per_s_mean": 0.0,
+  "counters_per_s": {
+    "app.setActivePanel": {
+      "mean": 0.06666666666666667,
+      "max": 1.0
+    },
+    "byid.dep.refreshTrigger": {
+      "mean": 9.983333333333333,
+      "max": 10.0
+    },
+    "dockview.layoutChange": {
+      "mean": 0.16666666666666666,
+      "max": 2.0
+    },
+    "event.system-log-appended": {
+      "mean": 2.95,
+      "max": 5.0
+    },
+    "event.trace-grew": {
+      "mean": 10.0,
+      "max": 10.0
+    },
+    "invoke.fetch_latest_by_id": {
+      "mean": 9.983333333333333,
+      "max": 10.0
+    },
+    "invoke.sample_signals": {
+      "mean": 157.65,
+      "max": 216.0
+    },
+    "memo.traceData": {
+      "mean": 9.983333333333333,
+      "max": 10.0
+    },
+    "plot.areaResampled": {
+      "mean": 160.71666666666667,
+      "max": 216.0
+    },
+    "plot.reportSeries": {
+      "mean": 157.7,
+      "max": 216.0
+    },
+    "plot.userXChange": {
+      "mean": 0.7666666666666667,
+      "max": 15.0
+    },
+    "plotarea.resample": {
+      "mean": 160.66666666666666,
+      "max": 216.0
+    },
+    "render.App": {
+      "mean": 21.666666666666668,
+      "max": 24.0
+    },
+    "render.PlotArea": {
+      "mean": 616.2166666666667,
+      "max": 841.0
+    },
+    "render.PlotPanel": {
+      "mean": 139.6,
+      "max": 198.0
+    },
+    "render.TracePanel": {
+      "mean": 29.966666666666665,
+      "max": 31.0
+    },
+    "render.TraceView": {
+      "mean": 20.016666666666666,
+      "max": 21.0
+    },
+    "traceview.resizeObserver": {
+      "mean": 0.016666666666666666,
+      "max": 1.0
+    },
+    "uplot.setSize": {
+      "mean": 0.18333333333333332,
+      "max": 11.0
+    }
+  },
+  "gauges": {
+    "count": {
+      "mean": 32940.46666666667,
+      "max": 63320.0,
+      "last": 63320.0
+    },
+    "drop.before_session": {
+      "mean": 0.0,
+      "max": 0.0,
+      "last": 0.0
+    },
+    "fps": {
+      "mean": 1026.7766666666664,
+      "max": 1052.5,
+      "last": 1029.5
+    },
+    "fps.batt": {
+      "mean": 514.9983333333333,
+      "max": 527.5,
+      "last": 521.8
+    },
+    "fps.pt": {
+      "mean": 514.395,
+      "max": 526.9,
+      "last": 512.2
+    },
+    "ms.fetch_latest_by_id": {
+      "mean": 27.386666666666663,
+      "max": 41.3,
+      "last": 28.5
+    }
+  }
+}

@@ -84,7 +84,7 @@ crates/
                  `Drop`.
   cannet-perf-measurement/
                  Agent-runnable performance / integration harness. Runs a
-                 rest-of-bus simulation of the `examples/ev-fleet` workload
+                 rest-of-bus simulation of the `examples/ev-demo` workload
                  through the real host model and emits machine-readable
                  metrics diffed against a dated baseline
                  (`cargo run -p cannet-perf-measurement -- check`). Three
@@ -254,6 +254,50 @@ cannet window. Use **Open BLF…** to pick a log; **Add DBC…** loads a
 database for live decoding — load more than one and frames decode
 against each in order, first match wins (every loaded DBC applies to
 the one interface for now).
+
+### Self-driving performance runs
+
+The shipping GUI can drive itself for a render-tier performance
+measurement, no operator and no external automation client — it covers
+every platform the app ships on (incl. macOS, which has no WebDriver).
+Pass the launch flags through to the binary (after a `--` separator under
+`tauri dev`):
+
+```sh
+pnpm --dir apps/gui tauri dev -- -- \
+  --project examples/ev-demo/ev-demo.cannet_prj \
+  --connect-on-start \
+  --perf-capture-secs 60 \
+  --perf-out docs/performance-measurements/frontend/<date>-<hash>.json
+```
+
+- `--project <path>` opens a project deterministically (ahead of the
+  last-opened pointer). Usable on its own to just open a project.
+- `--connect-on-start` fires the same connect a user clicks, once the
+  project's bindings (and, for a local binding, the sidecar) are ready.
+- `--perf-capture-secs <n>` captures the frontend diagnostics for `n`
+  seconds after the session settles, then writes the report and exits.
+- `--perf-out <path>` is where the `RenderReport` JSON lands;
+  `--perf-label <text>` names the scenario in it.
+
+Everything else the run needs is already in the saved project: the panel
+layout (the views under test), the bus bindings (the frame source), and
+the rest-of-bus simulation's run flag (the load, which resumes on
+connect). For a hardware-free run the project should bind to a virtual
+bus. See [ADR 0031](docs/adr/0031-gui-performance-automation-self-driving.md).
+
+The render report this writes is the frontend counterpart to the host
+harness's baseline. The harness can't generate it (only the webview sees
+the render tier), so it's fed in: `cannet-perf-measurement baseline
+--frontend-report <report>` stores its gated UX-health metrics
+(long-task time, lag, jank fraction) alongside the host modes, and
+`cannet-perf-measurement check --frontend-report <fresh-report>` gates a
+fresh run against them. `baseline` writes a dated
+`<date>-<hash>[-dirty].json` snapshot; `check` compares against the
+canonical `docs/performance-measurements/baseline.json` — promote a
+snapshot to the reference by copying it there. Frontend render reports
+live under `docs/performance-measurements/frontend/`, kept apart from the
+host baseline they feed.
 
 The window below the toolbar is a dockable panel area. The default
 layout has a **trace panel** and a **project panel** (the project's

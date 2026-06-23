@@ -3,7 +3,7 @@
 //! Kept in one place so the React-side TypeScript types can mirror them
 //! without spelunking through other modules.
 
-use cannet_core::{Direction, CanFramePayload};
+use cannet_core::{CanFramePayload, Direction};
 
 use crate::trace_store::RawTraceFrame;
 
@@ -80,11 +80,7 @@ pub struct SignalRecord {
 
 impl TraceFrameRecord {
     #[allow(clippy::cast_precision_loss)]
-    pub fn from_raw(
-        index: u64,
-        frame: &RawTraceFrame,
-        decoded: Option<DecodedRecord>,
-    ) -> Self {
+    pub fn from_raw(index: u64, frame: &RawTraceFrame, decoded: Option<DecodedRecord>) -> Self {
         let timestamp_seconds = (frame.timestamp_ns as f64) / 1e9;
         let direction = match frame.direction {
             Direction::Rx => "Rx",
@@ -392,19 +388,14 @@ fn parse_hex_prefix(text: &str) -> Result<Vec<u8>, String> {
 mod opt_hex_u64 {
     // serde `with` modules must take the field type by reference.
     #[allow(clippy::ref_option)]
-    pub fn serialize<S: serde::Serializer>(
-        value: &Option<u64>,
-        ser: S,
-    ) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: serde::Serializer>(value: &Option<u64>, ser: S) -> Result<S::Ok, S::Error> {
         match value {
             Some(v) => ser.serialize_str(&format!("{v:#X}")),
             None => ser.serialize_none(),
         }
     }
 
-    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
-        de: D,
-    ) -> Result<Option<u64>, D::Error> {
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Option<u64>, D::Error> {
         use serde::Deserialize;
 
         #[derive(serde::Deserialize)]
@@ -420,13 +411,12 @@ mod opt_hex_u64 {
             NumOrStr::Num(n) => Ok(Some(n)),
             NumOrStr::Str(s) => {
                 let t = s.trim();
-                let parsed = if let Some(hex) =
-                    t.strip_prefix("0x").or_else(|| t.strip_prefix("0X"))
-                {
-                    u64::from_str_radix(hex, 16)
-                } else {
-                    t.parse()
-                };
+                let parsed =
+                    if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+                        u64::from_str_radix(hex, 16)
+                    } else {
+                        t.parse()
+                    };
                 parsed
                     .map(Some)
                     .map_err(|_| serde::de::Error::custom(format!("invalid number \"{s}\"")))

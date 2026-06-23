@@ -286,8 +286,10 @@ pub fn resolve_sidecar_dir() -> Option<PathBuf> {
 /// Where [`resolve_sidecar_dir`] looked, formatted for the System
 /// Messages panel so the user can see what we tried.
 fn sidecar_dir_search_summary() -> String {
-    let exe = std::env::current_exe()
-        .map_or_else(|e| format!("<current_exe failed: {e}>"), |p| p.display().to_string());
+    let exe = std::env::current_exe().map_or_else(
+        |e| format!("<current_exe failed: {e}>"),
+        |p| p.display().to_string(),
+    );
     format!(
         "CANNET_SIDECAR_DIR (unset) → walk up from {exe} looking for `servers/cannet-python-can/pyproject.toml` or `cannet-python-can/pyproject.toml`"
     )
@@ -308,7 +310,11 @@ fn bundled_uv_path() -> Option<PathBuf> {
 }
 
 fn uv_filename() -> &'static str {
-    if cfg!(windows) { "uv.exe" } else { "uv" }
+    if cfg!(windows) {
+        "uv.exe"
+    } else {
+        "uv"
+    }
 }
 
 fn which_uv() -> Option<PathBuf> {
@@ -550,12 +556,10 @@ fn set_phase(app: &AppHandle, phase: SidecarPhase, address: Option<String>) {
         let change = match (prev_was_ready, now_ready) {
             (false, true) => WatchChange::Start(inner.bound_address.clone()),
             (true, false) => WatchChange::Stop(prev_address),
-            (true, true) if prev_address != inner.bound_address => {
-                WatchChange::Replace {
-                    stop: prev_address,
-                    start: inner.bound_address.clone(),
-                }
-            }
+            (true, true) if prev_address != inner.bound_address => WatchChange::Replace {
+                stop: prev_address,
+                start: inner.bound_address.clone(),
+            },
             _ => WatchChange::None,
         };
         (
@@ -681,9 +685,10 @@ pub fn classify_stdout_line(line: &str) -> (LogLevel, String) {
         // last-chance handler. The matching multi-line traceback
         // follows on stderr (one `LogLevel::Warn` line per frame).
         ["sidecar", "error", msg] => (LogLevel::Error, format!("sidecar fatal: {msg}")),
-        ["interface", id, display, kind] => {
-            (LogLevel::Info, format!("interface {id} ({display}) [{kind}]"))
-        }
+        ["interface", id, display, kind] => (
+            LogLevel::Info,
+            format!("interface {id} ({display}) [{kind}]"),
+        ),
         _ => (LogLevel::Info, line.to_string()),
     }
 }
@@ -789,8 +794,7 @@ mod tests {
         );
         assert!(matches!(lvl, LogLevel::Info), "INFO should not be warned");
         assert_eq!(
-            msg,
-            "cannet_python_can.server ListInterfaces -> 2 channels",
+            msg, "cannet_python_can.server ListInterfaces -> 2 channels",
             "timestamp should be stripped; name + message retained"
         );
 
@@ -804,38 +808,33 @@ mod tests {
         );
         assert!(matches!(lvl, LogLevel::Error));
 
-        let (lvl, _) = classify_stderr_line(
-            "2026-05-25 16:05:43,487 CRITICAL cannet_python_can boom",
-        );
+        let (lvl, _) =
+            classify_stderr_line("2026-05-25 16:05:43,487 CRITICAL cannet_python_can boom");
         assert!(matches!(lvl, LogLevel::Error));
 
-        let (lvl, _) = classify_stderr_line(
-            "2026-05-25 16:05:43,487 DEBUG cannet_python_can chatty",
-        );
+        let (lvl, _) =
+            classify_stderr_line("2026-05-25 16:05:43,487 DEBUG cannet_python_can chatty");
         assert!(matches!(lvl, LogLevel::Info));
     }
 
     #[test]
     fn classify_stderr_falls_back_to_warn_on_unrecognised_lines() {
         // Traceback frame — no levelname token at position 2.
-        let (lvl, msg) =
-            classify_stderr_line("  File \"server.py\", line 42, in <module>");
+        let (lvl, msg) = classify_stderr_line("  File \"server.py\", line 42, in <module>");
         assert!(matches!(lvl, LogLevel::Warn));
         assert_eq!(msg, "  File \"server.py\", line 42, in <module>");
 
         // Looks roughly right but the level token isn't a real level.
-        let (lvl, msg) = classify_stderr_line(
-            "2026-05-25 16:05:43,487 BANANAS cannet_python_can not a level",
-        );
+        let (lvl, msg) =
+            classify_stderr_line("2026-05-25 16:05:43,487 BANANAS cannet_python_can not a level");
         assert!(matches!(lvl, LogLevel::Warn));
         assert!(msg.contains("BANANAS"));
     }
 
     #[test]
     fn classify_stdout_promotes_error_banner_to_error_level() {
-        let (lvl, msg) = classify_stdout_line(
-            "sidecar\terror\tVersionError: protobuf gencode/runtime mismatch",
-        );
+        let (lvl, msg) =
+            classify_stdout_line("sidecar\terror\tVersionError: protobuf gencode/runtime mismatch");
         assert!(matches!(lvl, LogLevel::Error));
         assert!(
             msg.contains("VersionError"),
@@ -898,9 +897,7 @@ mod tests {
         // selection was added to fix.
         for launcher in [LaunchPath::PathUv, LaunchPath::SystemPython] {
             let cmd = build_command(launcher, &sample_sidecar_dir());
-            let has_bind = cmd
-                .get_args()
-                .any(|a| a == "--bind");
+            let has_bind = cmd.get_args().any(|a| a == "--bind");
             assert!(
                 !has_bind,
                 "{launcher:?} command should not pass --bind; got {:?}",

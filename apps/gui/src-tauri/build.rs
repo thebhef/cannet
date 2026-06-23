@@ -6,8 +6,6 @@ fn main() {
     // Best-effort: a build outside a git checkout (e.g. from a source
     // tarball) simply doesn't set the var, and the app falls back to the
     // Cargo crate version — see `build_version` in `lib.rs`.
-    let _ = EmitBuilder::builder()
-        .git_describe(true, true, None)
-        .emit();
+    let _ = EmitBuilder::builder().git_describe(true, true, None).emit();
     tauri_build::build();
 }
