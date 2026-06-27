@@ -1,7 +1,7 @@
 {
   "schema_version": 7,
   "layout": {
-    "activeGroup": "7",
+    "activeGroup": "8",
     "grid": {
       "height": 2010,
       "orientation": "HORIZONTAL",
@@ -61,7 +61,7 @@
                             "trace-byid"
                           ]
                         },
-                        "size": 243,
+                        "size": 244,
                         "type": "leaf"
                       },
                       {
@@ -72,7 +72,7 @@
                             "trace-dd6c1363-0e44-44ac-97fe-ca4d8126bbea"
                           ]
                         },
-                        "size": 243,
+                        "size": 242,
                         "type": "leaf"
                       }
                     ],

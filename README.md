@@ -1022,7 +1022,8 @@ file is written, per [ADR 0010](docs/adr/0010-no-sidecar-files.md).
 
 **Recent BLFs**. The toolbar grows a **Recent** dropdown next to
 **Open BLF…** that lists the last 8 opened BLF paths, persisted
-in `localStorage`. Picking one fast-paths through the standard
+host-side ([ADR 0032](docs/adr/0032-machine-local-ui-state-host-side.md)).
+Picking one fast-paths through the standard
 Open BLF flow (the channel-mapping modal still runs because each
 BLF can route differently onto the current project's buses); a
 successful Save Capture promotes the saved path too, so

@@ -1,11 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  RECENT_COMMANDS_KEY,
   RECENT_COMMANDS_LIMIT,
-  loadRecentCommands,
   recordRecentCommand,
-  saveRecentCommands,
   sortRecentFirst,
 } from "./recentCommands";
 
@@ -31,33 +28,6 @@ describe("recordRecentCommand", () => {
 
   it("ignores an empty id", () => {
     expect(recordRecentCommand(["a"], "")).toEqual(["a"]);
-  });
-});
-
-describe("load / save round-trip", () => {
-  function memoryStorage(): { getItem(k: string): string | null; setItem(k: string, v: string): void } {
-    const map = new Map<string, string>();
-    return {
-      getItem: (k) => map.get(k) ?? null,
-      setItem: (k, v) => void map.set(k, v),
-    };
-  }
-
-  it("round-trips a list", () => {
-    const storage = memoryStorage();
-    saveRecentCommands(storage, ["b", "a"]);
-    expect(loadRecentCommands(storage)).toEqual(["b", "a"]);
-  });
-
-  it("tolerates missing or malformed storage", () => {
-    const storage = memoryStorage();
-    expect(loadRecentCommands(storage)).toEqual([]);
-    storage.setItem(RECENT_COMMANDS_KEY, "not json");
-    expect(loadRecentCommands(storage)).toEqual([]);
-    storage.setItem(RECENT_COMMANDS_KEY, JSON.stringify({ nope: 1 }));
-    expect(loadRecentCommands(storage)).toEqual([]);
-    storage.setItem(RECENT_COMMANDS_KEY, JSON.stringify(["ok", 7, ""]));
-    expect(loadRecentCommands(storage)).toEqual(["ok"]);
   });
 });
 

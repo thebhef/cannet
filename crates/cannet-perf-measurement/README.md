@@ -27,7 +27,7 @@ scan), one metric set, and one report shape (the shared machinery is in
 | `hardware-peak` | the python-can sidecar transmits the simulation onto a real PEAK adapter and reads it back on a second one | `uv` + the sidecar package + two physically-bridged PEAK adapters |
 
 `tracebuffer` directly characterises the host-model lock contention the
-Task 21 diagnosis found. `grpc` adds gRPC serialization + virtual-bus
+perf-harness diagnosis found. `grpc` adds gRPC serialization + virtual-bus
 fan-out; `hardware-peak` adds the real driver and wire.
 
 ## Usage

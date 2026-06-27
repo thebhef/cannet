@@ -49,12 +49,14 @@ import {
 import { NotesContext, type NotesContextValue } from "./notesContext";
 import type { Note } from "./notes";
 import { sortNotesChronologically } from "./notes";
+import { recordRecentBlf, forgetRecentBlf } from "./recentBlfs";
 import {
-  loadRecentBlfs,
-  recordRecentBlf,
-  forgetRecentBlf,
-  saveRecentBlfs,
-} from "./recentBlfs";
+  prefs,
+  setRecentBlfs as persistRecentBlfs,
+  setRecentCommands as persistRecentCommands,
+  setLastProject as persistLastProject,
+  setLayout as persistLayout,
+} from "./hostPrefs";
 import type { SystemMessage } from "./types";
 import { TraceDataContext, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
@@ -81,8 +83,6 @@ import {
   BY_ID_PANEL_COMPONENT,
   DBC_PANEL_COMPONENT,
   DBC_PANEL_ID,
-  LAST_PROJECT_KEY,
-  LAYOUT_STORAGE_KEY,
   PLOT_PANEL_COMPONENT,
   PROJECT_GRAPH_PANEL_COMPONENT,
   PROJECT_GRAPH_PANEL_ID,
@@ -95,7 +95,6 @@ import {
   TRACE_PANEL_COMPONENT,
   TRANSMIT_PANEL_COMPONENT,
   panelKindForFocus,
-  parseSavedLayout,
   validateLayout,
 } from "./dockLayout";
 import {
@@ -113,9 +112,7 @@ import {
 } from "./keybindings";
 import { PaletteModal, type PaletteItem } from "./PaletteModal";
 import {
-  loadRecentCommands,
   recordRecentCommand,
-  saveRecentCommands,
   sortRecentFirst,
 } from "./recentCommands";
 import {
@@ -275,21 +272,21 @@ export function App() {
   // list at `src-tauri/src/notes.rs`). Bootstrapped by
   // `fetch_notes` and kept current by `notes-changed` events.
   const [notes, setNotes] = useState<Note[]>([]);
-  // Recent BLFs (the N most-recent opened BLF paths,
-  // persisted in localStorage). Offered in the Open BLF flow and
-  // the project panel's BLF import affordance.
-  const [recentBlfs, setRecentBlfs] = useState<string[]>(() => loadRecentBlfs(localStorage));
+  // Recent BLFs (the N most-recent opened BLF paths, persisted host-side
+  // per ADR 0032). Offered in the Open BLF flow and the project panel's
+  // BLF import affordance.
+  const [recentBlfs, setRecentBlfs] = useState<string[]>(() => prefs().recent_blfs);
   const rememberRecentBlf = useCallback((path: string) => {
     setRecentBlfs((current) => {
       const next = recordRecentBlf(current, path);
-      saveRecentBlfs(localStorage, next);
+      persistRecentBlfs(next);
       return next;
     });
   }, []);
   const dropRecentBlf = useCallback((path: string) => {
     setRecentBlfs((current) => {
       const next = forgetRecentBlf(current, path);
-      saveRecentBlfs(localStorage, next);
+      persistRecentBlfs(next);
       return next;
     });
   }, []);
@@ -506,8 +503,8 @@ export function App() {
   const [openPalette, setOpenPalette] = useState<"commands" | "goto" | null>(null);
   // The last few commands run (MRU, capped — see recentCommands.ts);
   // the command palette floats them to the top, VS Code-style.
-  const [recentCommands, setRecentCommands] = useState<string[]>(() =>
-    loadRecentCommands(localStorage),
+  const [recentCommands, setRecentCommands] = useState<string[]>(
+    () => prefs().recent_commands,
   );
   // Panel-local command implementations (plot fit / follow-live).
   const [panelCommands] = useState(createPanelCommandRegistry);
@@ -1054,16 +1051,11 @@ export function App() {
   );
 
   // Record which project is "open" — both the React state and the
-  // `localStorage` pointer that reopens it on the next launch. `null`
-  // means an unsaved workspace.
+  // host-side pointer (ADR 0032) that reopens it on the next launch.
+  // `null` means an unsaved workspace.
   const rememberProject = useCallback((path: string | null) => {
     setProjectPath(path);
-    try {
-      if (path) localStorage.setItem(LAST_PROJECT_KEY, path);
-      else localStorage.removeItem(LAST_PROJECT_KEY);
-    } catch {
-      /* best effort */
-    }
+    persistLastProject(path);
   }, []);
 
   // Apply an opened project: restore the panel layout (incl. per-panel
@@ -1901,7 +1893,7 @@ export function App() {
     if (id !== "palette.show" && id !== "goto.view") {
       setRecentCommands((current) => {
         const next = recordRecentCommand(current, id);
-        saveRecentCommands(localStorage, next);
+        persistRecentCommands(next);
         return next;
       });
     }
@@ -2009,7 +2001,7 @@ export function App() {
       });
 
       let restored = false;
-      const saved = parseSavedLayout(localStorage.getItem(LAYOUT_STORAGE_KEY));
+      const saved = validateLayout(prefs().layout);
       if (saved) {
         try {
           api.fromJSON(saved);
@@ -2023,18 +2015,13 @@ export function App() {
       }
 
       // Persist after the initial restore/seed so we never write an
-      // empty or half-built layout. Best-effort: localStorage can be
-      // unavailable or full. This is the "no project open" layout — a
-      // reopened named project (below) overwrites it. Any layout change
-      // (panels added / dragged / closed, columns resized) also marks
-      // the workspace dirty.
+      // empty or half-built layout. Best-effort (ADR 0032). This is the
+      // "no project open" layout — a reopened named project (below)
+      // overwrites it. Any layout change (panels added / dragged /
+      // closed, columns resized) also marks the workspace dirty.
       api.onDidLayoutChange(() => {
         diagCount("dockview.layoutChange"); // DIAG
-        try {
-          localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(api.toJSON()));
-        } catch {
-          /* layout persistence is best-effort */
-        }
+        persistLayout(api.toJSON());
         setDirty(true);
       });
 
@@ -2052,7 +2039,7 @@ export function App() {
         // it replaces the layout restored above (and re-applies the
         // bus/DBC config). A stale pointer (file moved/deleted) is
         // cleared so it stops failing.
-        const projectToOpen = cfg?.project ?? localStorage.getItem(LAST_PROJECT_KEY);
+        const projectToOpen = cfg?.project ?? prefs().last_project;
         if (projectToOpen) {
           try {
             const p = await invoke<Project>("open_project", { path: projectToOpen });

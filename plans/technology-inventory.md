@@ -34,6 +34,16 @@ and the license / platform constraints we need to be aware of.
   virtualizer (`apps/gui/src/TraceView.tsx`) that caps the scroll
   container at 16M px and maps scrollTop fractionally to absolute
   row index. ~120 lines, no external dep.
+- **`tauri-plugin-window-state`** (v2, MIT / Apache-2.0) — `adopted`
+  to persist the main window's size / position / maximized / fullscreen
+  state across launches (machine-local app state, not project data, so
+  it lives in `app_config_dir`, not the project file — see
+  [`../docs/adr/0032-machine-local-ui-state-host-side.md`](../docs/adr/0032-machine-local-ui-state-host-side.md)).
+  The host owns a small off-screen guard
+  (`window_state::ensure_on_screen`) on top of the plugin's restore: the
+  window is borderless, so a restored position that lands off every
+  connected monitor would leave its title bar unreachable — the guard
+  recentres it on the primary monitor.
 - **`@xyflow/react`** (formerly `react-flow`, MIT) — `adopted` in
   Phase 6 for the project graph view. See [`../docs/adr/0006-xyflow-project-graph.md`](../docs/adr/0006-xyflow-project-graph.md).
 - **`fzf`** (BSD-3-Clause, npm: `fzf`, repo:

@@ -24,6 +24,11 @@ vergen = { version = "8", features = ["git", "gitcl"] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+# Persists the main window's size / position / maximized / fullscreen
+# state across launches. `window_state::ensure_on_screen` recovers a
+# restored position that landed off every connected monitor (borderless
+# window, so an off-screen title bar would otherwise be unreachable).
+tauri-plugin-window-state = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Filter-predicate `name_regex` evaluation; small surface, transitively

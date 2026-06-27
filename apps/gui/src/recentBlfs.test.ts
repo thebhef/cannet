@@ -1,30 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  RECENT_BLFS_KEY,
   RECENT_BLFS_LIMIT,
   forgetRecentBlf,
-  loadRecentBlfs,
-  parseRecentBlfs,
   recordRecentBlf,
-  saveRecentBlfs,
-  type RecentBlfsStorage,
 } from "./recentBlfs";
-
-function fakeStorage(initial: Record<string, string> = {}): RecentBlfsStorage & {
-  data: Record<string, string>;
-} {
-  const data = { ...initial };
-  return {
-    data,
-    getItem(k) {
-      return Object.prototype.hasOwnProperty.call(data, k) ? data[k] : null;
-    },
-    setItem(k, v) {
-      data[k] = v;
-    },
-  };
-}
 
 describe("recentBlfs", () => {
   it("recordRecentBlf prepends, dedupes, and caps", () => {
@@ -52,24 +32,5 @@ describe("recentBlfs", () => {
     expect(forgetRecentBlf(["/a.blf", "/b.blf"], "/a.blf")).toEqual(["/b.blf"]);
     // Missing path is a no-op (returns identity).
     expect(forgetRecentBlf(["/a.blf"], "/missing")).toEqual(["/a.blf"]);
-  });
-
-  it("parseRecentBlfs tolerates junk", () => {
-    expect(parseRecentBlfs(null)).toEqual([]);
-    expect(parseRecentBlfs("not json")).toEqual([]);
-    expect(parseRecentBlfs(`{"not":"array"}`)).toEqual([]);
-    expect(parseRecentBlfs(`["/a.blf", 42, null, "/b.blf"]`)).toEqual(["/a.blf", "/b.blf"]);
-  });
-
-  it("load / save round-trip through the storage adapter", () => {
-    const s = fakeStorage();
-    saveRecentBlfs(s, ["/x.blf", "/y.blf"]);
-    expect(JSON.parse(s.data[RECENT_BLFS_KEY])).toEqual(["/x.blf", "/y.blf"]);
-    expect(loadRecentBlfs(s)).toEqual(["/x.blf", "/y.blf"]);
-  });
-
-  it("loadRecentBlfs returns [] on a fresh / corrupt store", () => {
-    expect(loadRecentBlfs(fakeStorage())).toEqual([]);
-    expect(loadRecentBlfs(fakeStorage({ [RECENT_BLFS_KEY]: "🙃" }))).toEqual([]);
   });
 });
