@@ -66,7 +66,8 @@ id/bus predicate needs no decode, isolating lock cost; default
 
 | Mode | Flag | Default | Meaning |
 | --- | --- | --- | --- |
-| `tracebuffer` | `--target-frames` | 200000 | stop once the buffer holds this many frames |
+| `tracebuffer` | `--store` | mem | store backend: `mem` (in-RAM) or `disk` (the disk-spill store, ADR 0002) — drives the disk store on the same in-process model load so it can be measured before it becomes the production path |
+| | `--target-frames` | 200000 | stop once the buffer holds this many frames |
 | | `--ingest-hz` | 25000 | append pace (frames/s); `0` = flat-out |
 | `grpc` | `--target-frames` | 50000 | stop once the receiver has stored this many |
 | | `--tx-hz` | 5000 | transmit pace (offered wire load); `0` = flat-out |

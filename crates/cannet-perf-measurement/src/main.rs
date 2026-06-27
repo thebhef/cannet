@@ -15,7 +15,7 @@ use cannet_perf_measurement::check::{
 use cannet_perf_measurement::frontend::{self, FrontendBaseline, FrontendMetrics};
 use cannet_perf_measurement::grpc::{self, GrpcConfig};
 use cannet_perf_measurement::hardware_peak::{self, HardwarePeakConfig};
-use cannet_perf_measurement::tracebuffer::{self, TracebufferConfig};
+use cannet_perf_measurement::tracebuffer::{self, StoreKind, TracebufferConfig};
 use cannet_perf_measurement::{
     default_baseline_path, default_example_dir, default_measurements_dir, load_example,
     measurement_filename, workload,
@@ -80,6 +80,10 @@ enum Command {
 
 #[derive(Args)]
 struct TracebufferArgs {
+    /// Store backend to drive: `mem` (in-RAM, current production) or
+    /// `disk` (the disk-spill store, ADR 0002).
+    #[arg(long, default_value = "mem")]
+    store: String,
     /// Stop once the buffer reaches this many frames.
     #[arg(long, default_value_t = 200_000)]
     target_frames: usize,
@@ -167,7 +171,13 @@ impl HardwarePeakArgs {
 
 impl TracebufferArgs {
     fn into_config(self) -> Result<TracebufferConfig, String> {
+        let store = match self.store.as_str() {
+            "mem" => StoreKind::Mem,
+            "disk" => StoreKind::Disk,
+            other => return Err(format!("invalid --store {other:?} (expected mem|disk)")),
+        };
         Ok(TracebufferConfig {
+            store,
             target_frames: self.target_frames,
             ingest_hz: self.ingest_hz,
             scan: !self.no_scan,

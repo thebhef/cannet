@@ -25,9 +25,27 @@ use crate::runner::{
 use crate::workload::ScheduledMessage;
 use crate::LoadedExample;
 
+/// Which `TraceStore` backend the run drives. Lets the harness measure
+/// the disk-spill store (ADR 0002) on the same in-process model load as
+/// the in-RAM store, before the disk store becomes the production path.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StoreKind {
+    /// The in-RAM `MemRawStore` (the current production path).
+    #[default]
+    Mem,
+    /// The disk-spill `DiskRawStore`, mapping segment files under a
+    /// per-run scratch directory.
+    Disk,
+}
+
 /// Tracebuffer-mode run parameters.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TracebufferConfig {
+    /// Which store backend to drive. Defaults (and deserializes, for old
+    /// baselines) to [`StoreKind::Mem`].
+    #[serde(default)]
+    pub store: StoreKind,
     /// Stop once the buffer reaches this many frames.
     pub target_frames: usize,
     /// Ingest pace, frames/s. Accelerated far above a real bus so the
@@ -50,6 +68,7 @@ pub struct TracebufferConfig {
 impl Default for TracebufferConfig {
     fn default() -> Self {
         Self {
+            store: StoreKind::Mem,
             target_frames: 200_000,
             ingest_hz: 25_000.0,
             scan: true,
@@ -83,7 +102,16 @@ pub fn run_with_schedule(
 ) -> HarnessReport {
     let templates = Arc::new(templates);
 
-    let store = Arc::new(TraceStore::new());
+    // A disk-store run needs a scratch directory for its segment files;
+    // hold the `TempDir` for the whole run so it is wiped on return.
+    let scratch = match cfg.store {
+        StoreKind::Mem => None,
+        StoreKind::Disk => Some(tempfile::TempDir::new().expect("create scratch tempdir")),
+    };
+    let store = Arc::new(match &scratch {
+        None => TraceStore::new(),
+        Some(dir) => TraceStore::new_disk(dir.path()).expect("open disk store"),
+    });
     store.start_session(0); // 0 = no timestamp gating
 
     let stop = Arc::new(AtomicBool::new(false));

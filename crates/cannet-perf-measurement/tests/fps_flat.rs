@@ -37,6 +37,7 @@ fn five_id_pt_schedule() -> Vec<ScheduledMessage> {
 #[test]
 fn filtered_scan_keeps_ingest_fps_flat_as_the_buffer_grows() {
     let cfg = TracebufferConfig {
+        store: cannet_perf_measurement::tracebuffer::StoreKind::Mem,
         target_frames: 200_000,
         // Paced (not flat-out): a real bus coexists with the scan rather
         // than filling the buffer before the scan runs. Matches the

@@ -33,3 +33,6 @@ clap = { version = "4", features = ["derive"] }
 sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 # Local date for the dated baseline filename (git supplies the hash).
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# Scratch directory for the `tracebuffer --store disk` run (the disk-spill
+# store needs a real directory to map its segment files in).
+tempfile = "3"
