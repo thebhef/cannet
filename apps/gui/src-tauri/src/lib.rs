@@ -316,6 +316,38 @@ fn report_js_heap(bytes: u64) {
     crash::record_js_heap(bytes);
 }
 
+/// The live disk-spill scratch directory: `<OS cache dir>/cannet/current`
+/// (ADR 0002 DS-7). Created if absent. This is the single working store
+/// location — ephemeral scratch, not an export — wiped only when the
+/// session buffer is (Clear / Start), so a prior session present at launch
+/// can be reloaded as a stopped historical trace.
+fn scratch_current_dir() -> std::io::Result<std::path::PathBuf> {
+    let base = dirs::cache_dir().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "no OS cache directory")
+    })?;
+    let dir = base.join("cannet").join("current");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+/// Open the production trace store on the disk-spill backend rooted at
+/// `scratch` (ADR 0002 DS-6: the disk store is the only production path).
+/// Falls back to the in-RAM store — logging why — if the scratch dir can't
+/// be resolved or the disk store can't be opened, so a capture still runs
+/// (degraded to RAM-bounded) rather than the app failing to boot.
+fn open_trace_store(scratch: std::io::Result<std::path::PathBuf>) -> Arc<TraceStore> {
+    match scratch.and_then(|dir| TraceStore::new_disk(&dir)) {
+        Ok(store) => Arc::new(store),
+        Err(e) => {
+            tracing::error!(
+                "disk-spill scratch unavailable ({e}); falling back to the in-RAM store \
+                 (capture is bounded by available RAM)"
+            );
+            Arc::new(TraceStore::new())
+        }
+    }
+}
+
 /// Boot the Tauri runtime.
 ///
 /// # Panics
@@ -363,7 +395,7 @@ pub fn run() {
         .manage(AppState {
             databases: Mutex::new(Vec::new()),
             remote_sessions: Mutex::new(HashMap::new()),
-            trace_store: Arc::new(TraceStore::new()),
+            trace_store: open_trace_store(scratch_current_dir()),
             signal_caches: SignalCacheStore::new(),
             system_log: SystemLog::new(),
             notes: NotesStore::new(),
@@ -3844,6 +3876,40 @@ mod tests {
             payload: CanFramePayload::Classic(vec![]),
             bus_id: None,
         }
+    }
+
+    #[test]
+    fn open_trace_store_uses_the_disk_backend_at_the_scratch_dir() {
+        // Production opens the disk-spill store rooted at the scratch dir
+        // (ADR 0002 DS-6): an append lands as on-disk segment files there,
+        // proving the live store is disk-backed and not the in-RAM double.
+        let root = tempfile::TempDir::new().unwrap();
+        let dir = root.path().join("current");
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = open_trace_store(Ok(dir.clone()));
+        store.append(dummy_frame(1_000, 0x123));
+        assert_eq!(store.len(), 1);
+        let has_segments = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|e| {
+                let n = e.file_name();
+                let n = n.to_string_lossy();
+                n.starts_with("meta.") || n.starts_with("payload.")
+            });
+        assert!(has_segments, "expected disk-spill segment files in {dir:?}");
+    }
+
+    #[test]
+    fn open_trace_store_falls_back_to_in_ram_when_scratch_is_unavailable() {
+        // A scratch dir that can't be resolved/opened must not down the app:
+        // the store falls back to the in-RAM backend and a capture still runs.
+        let store = open_trace_store(Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "no cache dir",
+        )));
+        store.append(dummy_frame(1_000, 0x1));
+        assert_eq!(store.len(), 1);
     }
 
     /// Drive a [`PageSelector`] with a sequence of match indices.
