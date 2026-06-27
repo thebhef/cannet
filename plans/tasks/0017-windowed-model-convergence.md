@@ -89,6 +89,42 @@ Acceptance:
   window;
 - existing trace tests stay green.
 
+Status (2026-06-26): **shipped.** The primitive is
+[`useWindowedQuery`](../../apps/gui/src/useWindowedQuery.ts) — the
+Layer-A lifecycle (descriptor memoisation, single-flight fetch, re-anchor
+on scroll-out, drop-and-re-anchor on descriptor change, extent tracked
+separately from window content) generalised out of `useFilteredTrace`.
+Its `extent` input is the hinge: a caller that knows the count cheaply
+(raw chrono, from `trace-grew`) passes it and a parked window never
+re-fetches; one that does not (the filtered match count) omits it and a
+parked stale tick does a count-only refresh. Unit-tested in
+[`useWindowedQuery.test.ts`](../../apps/gui/src/useWindowedQuery.test.ts)
+(8 cases incl. the extent-advance-no-refetch rule).
+
+Raw chrono converged onto it **per-panel**, symmetric with
+`useFilteredTrace`: [`useTrace`](../../apps/gui/src/trace.ts) builds a
+`useWindowedQuery` over `[offset, offset+frameCount)`. The App-level
+chunk cache is gone — `chunkCacheRef`/`cacheOrderRef`/
+`inflightChunksRef`/`refreshChunk`/`fetchChunk`/
+`refreshStalePartialChunks`/`CHUNK_SIZE`/`CACHE_CHUNKS` deleted.
+`TraceData` shrank to shared model facts plus the two thin accessors
+(`epoch`, `fetchRange`, `liveTail`); `getFrame`/`ensureVisible`/`version`
+moved off the context onto the per-panel window. The auto-scrolling view
+still drives fetches via `ensureVisible`, and the `liveTail` overlay
+covers the live edge between them, so follow-live is flicker-free with no
+background re-page (matching the old tail-overlay behaviour exactly).
+
+Host contract frozen in [`ipc.rs`](../../apps/gui/src-tauri/src/ipc.rs):
+`RowPage<T> { count, start, rows }` is the named row-addressed accessor
+response (ADR 0025), with `FilteredTracePage = RowPage<TraceFrameRecord>`
+its first instantiation — same wire fields, no frontend change.
+`DecimatedRange` names the plot's time-addressed lossy response (the
+former `SignalsSample`). Both carry rustdoc declaring them
+store-independent so the disk-spilled store (Task 18) is a second
+implementation, not a redesign. Filtered/by-ID/plot adopt these in
+Slices 2-4. `pnpm --dir apps/gui test` (427) and `cargo test -p
+cannet-gui` (186) green; clippy clean.
+
 ### Slice 2 — Filtered chrono onto the contract
 
 `fetch_trace_range` gains an optional `FilterPredicate` and returns

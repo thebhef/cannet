@@ -163,15 +163,6 @@ const AUTOMATION_SETTLE_MS = 2000;
 // ready for a local binding) before giving up on the auto-connect.
 const AUTOMATION_READY_TIMEOUT_MS = 30000;
 
-/// Number of frames per cache chunk. Each chunk is fetched in one
-/// IPC round-trip; smaller = more fetches but cheaper each, larger =
-/// fewer fetches but each is bigger.
-const CHUNK_SIZE = 500;
-/// LRU budget for the chunk cache. 120 chunks * 500 frames = 60 k
-/// rows cached, plenty to cover the viewport plus scroll prefetch
-/// even at high scroll velocities.
-const CACHE_CHUNKS = 120;
-
 /// Dockview panel-component registry, defined at module scope so
 /// dockview never sees a fresh object and re-registers. The
 /// chronological and per-id views are one component now (`TracePanel`,
@@ -204,20 +195,18 @@ export function App() {
   const sidecarAddress =
     sidecar.phase === "ready" ? sidecar.address : null;
 
-  // Chunked cache of fetched trace rows, keyed by chunk index. Shared by
-  // every trace panel — they all view the one host-side capture; only
-  // their scroll position and auto-scroll toggle are per panel.
-  const chunkCacheRef = useRef<Map<number, TraceFrameRecord[]>>(new Map());
-  const cacheOrderRef = useRef<number[]>([]);
-  const inflightChunksRef = useRef<Set<number>>(new Set());
-  // The newest frames, as carried by the most recent `trace-grew`
-  // event — a contiguous run ending at the live tail. `getFrame`
-  // consults this when the chunk cache hasn't caught up, which is what
-  // keeps auto-scroll from flashing placeholders. `tailStartRef` is
-  // the absolute index of `tailFramesRef.current[0]`.
-  const tailFramesRef = useRef<TraceFrameRecord[]>([]);
-  const tailStartRef = useRef(0);
-  const [version, setVersion] = useState(0);
+  // Shared trace-model facts. Each trace panel builds its *own* window
+  // over the host capture (`useTrace` → `useWindowedQuery`); the App
+  // owns only what every window shares: a re-anchor `epoch` (bumped when
+  // the model identity changes), and the live-edge tail carried by the
+  // most recent `trace-grew` (a contiguous run ending at the live tip),
+  // which the windows overlay so following live never flashes a
+  // placeholder at the edge.
+  const [traceEpoch, setTraceEpoch] = useState(0);
+  const [liveTail, setLiveTail] = useState<{
+    start: number;
+    rows: TraceFrameRecord[];
+  }>({ start: 0, rows: [] });
 
   const [state, setState] = useState<LogState>({ kind: "idle" });
   // Paths of the loaded DBCs, in priority order (mirrors the host's set
@@ -509,14 +498,23 @@ export function App() {
   // Panel-local command implementations (plot fit / follow-live).
   const [panelCommands] = useState(createPanelCommandRegistry);
 
+  // Re-anchor every trace window: bump the epoch (each window folds it
+  // into its descriptor and drops/re-fetches) and clear the live tail.
   const invalidateCache = useCallback(() => {
-    chunkCacheRef.current.clear();
-    cacheOrderRef.current = [];
-    inflightChunksRef.current.clear();
-    tailFramesRef.current = [];
-    tailStartRef.current = 0;
-    setVersion((v) => v + 1);
+    setTraceEpoch((e) => e + 1);
+    setLiveTail({ start: 0, rows: [] });
   }, []);
+
+  // The unfiltered `RowPage` read: raw chronological rows for an
+  // absolute index range. A trace window translates its local offset
+  // into this range; the host owns the buffer (ADR 0025).
+  const fetchRange = useCallback(
+    (start: number, end: number): Promise<TraceFrameRecord[]> => {
+      diagCount("invoke.fetch_trace_range"); // DIAG
+      return invoke<TraceFrameRecord[]>("fetch_trace_range", { start, end });
+    },
+    [],
+  );
 
   // (Re)starting the session buffer — opening a BLF, connecting to a
   // server, or Clear — also (re)starts every trace / plot element:
@@ -527,55 +525,6 @@ export function App() {
   const startAllElements = useCallback(() => {
     setRegistry((prev) => prev.map((e) => ({ ...e, trace: freshTrace(0) })));
   }, []);
-
-  const refreshChunk = useCallback(async (chunkIdx: number) => {
-    if (inflightChunksRef.current.has(chunkIdx)) return;
-    diagCount("invoke.fetch_trace_range"); // DIAG
-    inflightChunksRef.current.add(chunkIdx);
-    try {
-      const start = chunkIdx * CHUNK_SIZE;
-      const end = start + CHUNK_SIZE;
-      const frames = await invoke<TraceFrameRecord[]>("fetch_trace_range", {
-        start,
-        end,
-      });
-      chunkCacheRef.current.set(chunkIdx, frames);
-      cacheOrderRef.current = cacheOrderRef.current.filter((c) => c !== chunkIdx);
-      cacheOrderRef.current.push(chunkIdx);
-      while (cacheOrderRef.current.length > CACHE_CHUNKS) {
-        const evict = cacheOrderRef.current.shift();
-        if (evict !== undefined) chunkCacheRef.current.delete(evict);
-      }
-      setVersion((v) => v + 1);
-    } finally {
-      inflightChunksRef.current.delete(chunkIdx);
-    }
-  }, []);
-
-  const fetchChunk = useCallback(
-    (chunkIdx: number) => {
-      if (chunkCacheRef.current.has(chunkIdx)) return;
-      void refreshChunk(chunkIdx);
-    },
-    [refreshChunk],
-  );
-
-  // A cached chunk goes stale when more frames land in its range after
-  // it was fetched. Re-fetch any such partial chunk so the chunk cache
-  // stays consistent for when the user scrolls back into it. (The live
-  // edge the auto-scrolling view shows is served from the `trace-grew`
-  // tail overlay, not from here.)
-  const refreshStalePartialChunks = useCallback(
-    (newCount: number) => {
-      for (const [chunkIdx, chunk] of chunkCacheRef.current) {
-        const chunkStart = chunkIdx * CHUNK_SIZE;
-        if (chunk.length < CHUNK_SIZE && chunkStart + chunk.length < newCount) {
-          void refreshChunk(chunkIdx);
-        }
-      }
-    },
-    [refreshChunk],
-  );
 
   // Bootstrap + live-update the system-log mirror. The
   // snapshot is the source of truth on mount; thereafter the host's
@@ -651,9 +600,10 @@ export function App() {
         );
         setFramesPerSecond(frames_per_second);
         setBufferSeconds(buffer_seconds);
-        tailFramesRef.current = tail;
-        tailStartRef.current = tail.length > 0 ? tail[0].index : newCount;
-        refreshStalePartialChunks(newCount);
+        setLiveTail({
+          start: tail.length > 0 ? tail[0].index : newCount,
+          rows: tail,
+        });
       }),
     );
 
@@ -681,7 +631,7 @@ export function App() {
     return () => {
       unlistens.forEach((p) => p.then((fn) => fn()));
     };
-  }, [invalidateCache, refreshStalePartialChunks]);
+  }, [invalidateCache]);
 
   // Re-anchor every trace window when the session buffer shrinks (a new
   // connection cleared it) — a no-op on every other tick.
@@ -1514,40 +1464,6 @@ export function App() {
     [],
   );
 
-  const getFrame = useCallback((index: number): TraceFrameRecord | null => {
-    const chunkIdx = Math.floor(index / CHUNK_SIZE);
-    const chunk = chunkCacheRef.current.get(chunkIdx);
-    const fromChunk = chunk ? chunk[index - chunkIdx * CHUNK_SIZE] : undefined;
-    if (fromChunk) return fromChunk;
-    // Not (yet) in the chunk cache — fall back to the live tail
-    // carried by the most recent `trace-grew`, which covers the newest
-    // rows the auto-scroll window shows.
-    const tail = tailFramesRef.current;
-    const tailOffset = index - tailStartRef.current;
-    if (tailOffset >= 0 && tailOffset < tail.length) return tail[tailOffset];
-    return null;
-  }, []);
-
-  const ensureVisible = useCallback(
-    (startIndex: number, endIndex: number) => {
-      if (count === 0) return;
-      const safeEnd = Math.min(endIndex, count);
-      if (safeEnd <= 0) return;
-      const firstChunk = Math.floor(startIndex / CHUNK_SIZE);
-      const lastChunk = Math.floor((safeEnd - 1) / CHUNK_SIZE);
-      // Prefetch one chunk on either side so brisk scrolling doesn't
-      // bottom out into placeholders at chunk boundaries.
-      const prefetchStart = Math.max(0, firstChunk - 1);
-      const prefetchEnd = lastChunk + 1;
-      for (let c = prefetchStart; c <= prefetchEnd; c++) {
-        if (c < 0) continue;
-        if (c * CHUNK_SIZE >= count) break;
-        fetchChunk(c);
-      }
-    },
-    [count, fetchChunk],
-  );
-
   // Tab titles come from the element's model-owned name (ADR 0019):
   // the handler computes the same `${Kind} ${n}` default `create`
   // assigns (against the registry the element is joining), and the
@@ -2065,8 +1981,14 @@ export function App() {
 
   const traceData: TraceData = useMemo(() => {
     diagCount("memo.traceData"); // DIAG
-    return { count, version, sessionStartSeconds, getFrame, ensureVisible };
-  }, [count, version, sessionStartSeconds, getFrame, ensureVisible]);
+    return {
+      count,
+      sessionStartSeconds,
+      epoch: traceEpoch,
+      fetchRange,
+      liveTail,
+    };
+  }, [count, sessionStartSeconds, traceEpoch, fetchRange, liveTail]);
 
   const elementRegistryValue: ElementRegistry = useMemo(
     () => ({

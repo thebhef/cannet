@@ -39,10 +39,10 @@ class FakeResizeObserver {
 
 const traceData: TraceData = {
   count: 100,
-  version: 1,
   sessionStartSeconds: 0,
-  getFrame: () => null,
-  ensureVisible: () => {},
+  epoch: 0,
+  fetchRange: async () => [],
+  liveTail: { start: 0, rows: [] },
 };
 
 const projectCtx = {
