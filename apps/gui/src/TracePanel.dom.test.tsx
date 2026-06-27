@@ -86,7 +86,10 @@ function makeRegistry(elements: ProjectElement[]): ElementRegistry {
     create: () => "",
     ensure: () => {},
     updateTrace: () => {},
-    update: () => {},
+    update: (id: string, patch: Partial<ProjectElement>) => {
+      const e = map.get(id);
+      if (e) map.set(id, { ...e, element: { ...e.element, ...patch } as ProjectElement });
+    },
     remove: () => {},
   } as unknown as ElementRegistry;
 }
@@ -110,7 +113,7 @@ function renderPanel(elements: ProjectElement[], count = 100, mode = "chronologi
     </TraceDataContext.Provider>
   );
   const { rerender, container } = render(tree(count));
-  return { grow: (c: number) => rerender(tree(c)), container };
+  return { grow: (c: number) => rerender(tree(c)), container, api, registry };
 }
 
 beforeEach(() => {
@@ -188,5 +191,34 @@ describe("TracePanel chronological filtering", () => {
         expect.objectContaining({ scanEnd: 150, fromEnd: true }),
       ),
     );
+  });
+});
+
+describe("TracePanel config persistence", () => {
+  it("restores config from the element over bare reopen params", () => {
+    // Reopened from the Elements list, params carry only `elementId`
+    // (+ the default `mode: by-id`); the real setup lives on the
+    // element's `config`, which must win.
+    const el = {
+      kind: "trace",
+      id: "t1",
+      sources: ["*"],
+      config: { mode: "chronological", autoScroll: false },
+    } as unknown as ProjectElement;
+    const { api } = renderPanel([el], 100, "by-id");
+    const calls = api.updateParameters.mock.calls;
+    const last = calls[calls.length - 1]?.[0] ?? {};
+    expect(last.mode).toBe("chronological");
+    expect(last.autoScroll).toBe(false);
+  });
+
+  it("mirrors its config onto the element via the registry", () => {
+    const { registry } = renderPanel(
+      [{ kind: "trace", id: "t1", sources: ["*"] } as ProjectElement],
+      100,
+      "by-id",
+    );
+    const cfg = (registry.get("t1")!.element as { config?: { mode?: string } }).config;
+    expect(cfg?.mode).toBe("by-id");
   });
 });

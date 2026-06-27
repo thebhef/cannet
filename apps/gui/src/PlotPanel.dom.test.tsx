@@ -109,13 +109,20 @@ class FakeResizeObserver {
   disconnect() {}
 }
 
-// A throwaway element registry: PlotPanel only uses `ensure` (to
-// register its element) and, via `useTrace`, `get` / `updateTrace`.
+// A throwaway element registry: PlotPanel uses `ensure` (to register
+// its element), `update` (to persist its `config` blob), and, via
+// `useTrace`, `get` / `updateTrace`. `seed` pre-populates an element so
+// a test can mount a panel against an element that already carries
+// config (the close-and-reopen path).
 type TS = ReturnType<typeof freshTrace>;
-type Entry = { element: { kind: "plot"; id: string }; trace: TS };
-function makeRegistry(): ElementRegistry {
+type Entry = { element: { kind: "plot"; id: string; config?: Record<string, unknown> }; trace: TS };
+function makeRegistry(seed?: { id: string; config?: Record<string, unknown> }): ElementRegistry {
   const map = new Map<string, Entry>();
-  const entry = (id: string): Entry => ({ element: { kind: "plot", id }, trace: freshTrace(0) });
+  const entry = (id: string, config?: Record<string, unknown>): Entry => ({
+    element: { kind: "plot", id, config },
+    trace: freshTrace(0),
+  });
+  if (seed) map.set(seed.id, entry(seed.id, seed.config));
   return {
     get entries() {
       return [...map.values()];
@@ -128,6 +135,10 @@ function makeRegistry(): ElementRegistry {
     },
     ensure: (id: string) => {
       if (!map.has(id)) map.set(id, entry(id));
+    },
+    update: (id: string, patch: { config?: Record<string, unknown> }) => {
+      const e = map.get(id);
+      if (e) map.set(id, { ...e, element: { ...e.element, ...patch } });
     },
     updateTrace: (id: string, updater: (s: TS) => TS) => {
       const e = map.get(id);
@@ -183,19 +194,20 @@ const projectCtx: ProjectContextValue = {
   onUpdateVirtualBus: () => {},
 };
 
-function renderPanel() {
+function renderPanel(opts?: { params?: Record<string, unknown>; registry?: ElementRegistry }) {
   const api = { updateParameters: vi.fn() };
-  const props = { params: {}, api } as unknown as Parameters<typeof PlotPanel>[0];
+  const props = { params: opts?.params ?? {}, api } as unknown as Parameters<typeof PlotPanel>[0];
+  const registry = opts?.registry ?? makeRegistry();
   render(
     <TraceDataContext.Provider value={traceData}>
       <ProjectContext.Provider value={projectCtx}>
-        <ElementRegistryContext.Provider value={makeRegistry()}>
+        <ElementRegistryContext.Provider value={registry}>
           <PlotPanel {...props} />
         </ElementRegistryContext.Provider>
       </ProjectContext.Provider>
     </TraceDataContext.Provider>,
   );
-  return api;
+  return { api, registry };
 }
 
 beforeEach(() => {
@@ -427,7 +439,7 @@ describe("PlotPanel", () => {
   });
 
   it("show-points tri-state defaults to auto and persists to panel params", () => {
-    const api = renderPanel();
+    const { api } = renderPanel();
     const sel = screen.getByLabelText("show points") as HTMLSelectElement;
     expect(sel.value).toBe("auto");
     fireEvent.change(sel, { target: { value: "on" } });
@@ -438,6 +450,54 @@ describe("PlotPanel", () => {
     expect(lastCall.showPoints).toBe("on");
     fireEvent.change(sel, { target: { value: "off" } });
     expect((screen.getByLabelText("show points") as HTMLSelectElement).value).toBe("off");
+  });
+
+  it("restores its signals from the element's config when reopened with bare params", () => {
+    // The close-and-reopen bug: reopening from the Elements list mounts
+    // the panel with params carrying only `elementId`; the signal setup
+    // lives on the element's `config`. Reading it back is what keeps the
+    // panel from coming up empty.
+    const registry = makeRegistry({
+      id: "el-reopen",
+      config: {
+        areas: [
+          {
+            id: "a1",
+            signals: [
+              {
+                busId: null,
+                messageId: 256,
+                extended: false,
+                signalName: "EngineSpeed",
+                messageName: "EngineData",
+                unit: "rpm",
+                color: "#abcdef",
+              },
+            ],
+          },
+        ],
+      },
+    });
+    renderPanel({ params: { elementId: "el-reopen" }, registry });
+    expect(screen.getByText("EngineSpeed")).toBeInTheDocument();
+  });
+
+  it("mirrors its config onto the element via the registry", async () => {
+    const { registry } = renderPanel({
+      params: { elementId: "el-persist" },
+      registry: makeRegistry({ id: "el-persist" }),
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: /EngineData\.EngineSpeed/ })).toBeInTheDocument(),
+    );
+    fireEvent.change(screen.getByLabelText("add signal to focused plot area"), {
+      target: { value: "*|s:256:EngineSpeed" },
+    });
+    await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
+    const cfg = (registry.get("el-persist")!.element as {
+      config?: { areas?: Array<{ signals: unknown[] }> };
+    }).config;
+    expect(cfg?.areas?.some((a) => a.signals.length > 0)).toBe(true);
   });
 });
 

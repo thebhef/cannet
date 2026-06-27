@@ -127,7 +127,16 @@ export function normalizeElement(el: ProjectElement): ProjectElement {
     };
   }
   const raw = (el as unknown as { sources?: unknown }).sources;
-  return { ...el, name, sources: stringList(raw, ["*"]) } as ProjectElement;
+  // `config` (model-owned panel state — see `PanelViewConfig`): a
+  // view-backed element's panel setup. Keep a plain object, drop
+  // anything else so a malformed blob loads as "no saved config" rather
+  // than poisoning the panel's tolerant parsers.
+  const configRaw = (el as unknown as { config?: unknown }).config;
+  const config =
+    configRaw != null && typeof configRaw === "object" && !Array.isArray(configRaw)
+      ? (configRaw as Record<string, unknown>)
+      : undefined;
+  return { ...el, name, sources: stringList(raw, ["*"]), config } as ProjectElement;
 }
 
 /// Coerce an unknown value to a well-formed `ColorRule[]` (ADR 0029),
@@ -198,21 +207,51 @@ export function applyElementPatch(
 }
 
 /// True when every field in `patch` already equals the element's current
-/// value (array fields compared element-wise). Used by [`applyElementPatch`]
-/// to keep a no-op patch identity-stable.
+/// value, compared by *content* ([`valuesEqual`]) so arrays and nested
+/// objects (a panel's `config` blob) don't trip on identity. Used by
+/// [`applyElementPatch`] to keep a no-op patch identity-stable: the
+/// `config`-persisting panel effect rebuilds a fresh blob every render,
+/// so without a deep compare every mount would re-allocate the registry
+/// (marking the project dirty on open and re-firing registry consumers).
 function patchIsNoOp(current: ProjectElement, patch: Partial<ProjectElement>): boolean {
   const cur = current as unknown as Record<string, unknown>;
   const pat = patch as unknown as Record<string, unknown>;
   for (const key of Object.keys(pat)) {
-    const a = cur[key];
-    const b = pat[key];
-    if (Array.isArray(a) && Array.isArray(b)) {
-      if (a.length !== b.length || a.some((v, idx) => v !== b[idx])) return false;
-    } else if (a !== b) {
-      return false;
-    }
+    if (!valuesEqual(cur[key], pat[key])) return false;
   }
   return true;
+}
+
+/// Recursive structural equality for JSON-shaped values (the patch
+/// fields and the persisted `config` blob are all JSON-serializable).
+/// Compares arrays element-wise and plain objects key-wise; everything
+/// else by `===` (so `NaN !== NaN`, which never occurs in these fields).
+/// A key whose value is `undefined` is treated as absent — JSON drops
+/// such keys, so a config rebuilt in memory (e.g. an area's
+/// `signalFilter: undefined`) must compare equal to the same config
+/// round-tripped through save/load, or opening a project would mark it
+/// dirty.
+function valuesEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((v, i) => valuesEqual(v, b[i]));
+  }
+  if (
+    a != null &&
+    b != null &&
+    typeof a === "object" &&
+    typeof b === "object" &&
+    !Array.isArray(a) &&
+    !Array.isArray(b)
+  ) {
+    const ao = a as Record<string, unknown>;
+    const bo = b as Record<string, unknown>;
+    const ak = Object.keys(ao).filter((k) => ao[k] !== undefined);
+    const bk = Object.keys(bo).filter((k) => bo[k] !== undefined);
+    if (ak.length !== bk.length) return false;
+    return ak.every((k) => valuesEqual(ao[k], bo[k]));
+  }
+  return false;
 }
 
 /// Would patching filter `filterId`'s `sources` to `newSources`

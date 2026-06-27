@@ -1,43 +1,54 @@
 {
   "schema_version": 7,
   "layout": {
-    "activeGroup": "g-plot-battery",
+    "activeGroup": "7",
     "grid": {
       "height": 2010,
-      "orientation": "VERTICAL",
+      "orientation": "HORIZONTAL",
       "root": {
         "data": [
           {
             "data": [
               {
-                "data": [
-                  {
-                    "data": {
-                      "activeView": "project",
-                      "id": "1",
-                      "views": [
-                        "project"
-                      ]
-                    },
-                    "size": 915,
-                    "type": "leaf"
-                  },
-                  {
-                    "data": {
-                      "activeView": "rbs-vehicle",
-                      "id": "g-rbs-vehicle",
-                      "views": [
-                        "rbs-vehicle",
-                        "dbc"
-                      ]
-                    },
-                    "size": 728,
-                    "type": "leaf"
-                  }
-                ],
-                "size": 568,
-                "type": "branch"
+                "data": {
+                  "activeView": "project",
+                  "id": "1",
+                  "views": [
+                    "project"
+                  ]
+                },
+                "size": 670,
+                "type": "leaf"
               },
+              {
+                "data": {
+                  "activeView": "rbs-vehicle",
+                  "id": "g-rbs-vehicle",
+                  "views": [
+                    "rbs-vehicle",
+                    "dbc"
+                  ]
+                },
+                "size": 670,
+                "type": "leaf"
+              },
+              {
+                "data": {
+                  "activeView": "system-messages",
+                  "id": "3",
+                  "views": [
+                    "system-messages"
+                  ]
+                },
+                "size": 670,
+                "type": "leaf"
+              }
+            ],
+            "size": 574,
+            "type": "branch"
+          },
+          {
+            "data": [
               {
                 "data": [
                   {
@@ -45,73 +56,72 @@
                       {
                         "data": {
                           "activeView": "trace-byid",
-                          "id": "g-trace-byid",
+                          "id": "7",
                           "views": [
                             "trace-byid"
                           ]
                         },
-                        "size": 941,
+                        "size": 243,
                         "type": "leaf"
                       },
                       {
                         "data": {
                           "activeView": "trace-dd6c1363-0e44-44ac-97fe-ca4d8126bbea",
-                          "id": "g-trace-chrono",
+                          "id": "8",
                           "views": [
-                            "trace-chrono",
                             "trace-dd6c1363-0e44-44ac-97fe-ca4d8126bbea"
                           ]
                         },
-                        "size": 941,
+                        "size": 243,
                         "type": "leaf"
                       }
                     ],
-                    "size": 646,
+                    "size": 982,
                     "type": "branch"
                   },
                   {
                     "data": {
-                      "activeView": "plot-powertrain",
-                      "id": "g-plot-powertrain",
+                      "activeView": "trace-chrono",
+                      "id": "4",
                       "views": [
-                        "plot-powertrain"
+                        "trace-chrono"
                       ]
                     },
-                    "size": 417,
-                    "type": "leaf"
-                  },
-                  {
-                    "data": {
-                      "activeView": "plot-battery",
-                      "id": "g-plot-battery",
-                      "views": [
-                        "plot-battery"
-                      ]
-                    },
-                    "size": 580,
+                    "size": 894,
                     "type": "leaf"
                   }
                 ],
-                "size": 1882,
+                "size": 486,
                 "type": "branch"
+              },
+              {
+                "data": {
+                  "activeView": "plot-battery",
+                  "id": "9",
+                  "views": [
+                    "plot-battery"
+                  ]
+                },
+                "size": 854,
+                "type": "leaf"
+              },
+              {
+                "data": {
+                  "activeView": "plot-powertrain",
+                  "id": "6",
+                  "views": [
+                    "plot-powertrain"
+                  ]
+                },
+                "size": 670,
+                "type": "leaf"
               }
             ],
-            "size": 1643,
+            "size": 1876,
             "type": "branch"
-          },
-          {
-            "data": {
-              "activeView": "system-messages",
-              "id": "3",
-              "views": [
-                "system-messages"
-              ]
-            },
-            "size": 367,
-            "type": "leaf"
           }
         ],
-        "size": 2450,
+        "size": 2010,
         "type": "branch"
       },
       "width": 2450
@@ -273,12 +283,12 @@
           ],
           "cursorMode": "x",
           "cursorX": {
-            "a": 615.7088233824518,
-            "b": 615.6887157976696
+            "a": null,
+            "b": null
           },
           "cursorYByArea": {},
           "elementId": "battery",
-          "followLive": false,
+          "followLive": true,
           "maxRateHz": 15,
           "measEnabled": false,
           "measKeys": [
@@ -291,7 +301,7 @@
             "delta"
           ],
           "showDiag": false,
-          "showPoints": "on",
+          "showPoints": "auto",
           "signalsWidthPx": 372
         },
         "title": "Battery"
@@ -329,7 +339,7 @@
             "delta"
           ],
           "showDiag": false,
-          "showPoints": "on",
+          "showPoints": "auto",
           "signalsWidthPx": 367
         },
         "title": "Powertrain"
@@ -546,6 +556,62 @@
   },
   "elements": [
     {
+      "config": {
+        "autoScroll": true,
+        "columns": [
+          {
+            "key": "idx",
+            "visible": true,
+            "width": 64
+          },
+          {
+            "key": "time",
+            "visible": true,
+            "width": 110
+          },
+          {
+            "key": "rate",
+            "visible": true,
+            "width": 64
+          },
+          {
+            "key": "bus",
+            "visible": true,
+            "width": 100
+          },
+          {
+            "key": "id",
+            "visible": true,
+            "width": 96
+          },
+          {
+            "key": "msg",
+            "visible": true,
+            "width": 220
+          },
+          {
+            "key": "len",
+            "visible": true,
+            "width": 44
+          },
+          {
+            "key": "data",
+            "visible": true,
+            "width": 360
+          },
+          {
+            "key": "dir",
+            "visible": true,
+            "width": 40
+          },
+          {
+            "key": "kind",
+            "visible": false,
+            "width": 110
+          }
+        ],
+        "mode": "chronological"
+      },
       "id": "chrono",
       "kind": "trace",
       "name": "All buses",
@@ -554,6 +620,62 @@
       ]
     },
     {
+      "config": {
+        "autoScroll": true,
+        "columns": [
+          {
+            "key": "idx",
+            "visible": true,
+            "width": 64
+          },
+          {
+            "key": "time",
+            "visible": true,
+            "width": 110
+          },
+          {
+            "key": "rate",
+            "visible": true,
+            "width": 64
+          },
+          {
+            "key": "bus",
+            "visible": true,
+            "width": 100
+          },
+          {
+            "key": "id",
+            "visible": true,
+            "width": 96
+          },
+          {
+            "key": "msg",
+            "visible": true,
+            "width": 220
+          },
+          {
+            "key": "len",
+            "visible": true,
+            "width": 44
+          },
+          {
+            "key": "data",
+            "visible": true,
+            "width": 360
+          },
+          {
+            "key": "dir",
+            "visible": true,
+            "width": 40
+          },
+          {
+            "key": "kind",
+            "visible": false,
+            "width": 110
+          }
+        ],
+        "mode": "by-id"
+      },
       "id": "byid",
       "kind": "trace",
       "name": "PowertrainById",
@@ -562,6 +684,38 @@
       ]
     },
     {
+      "config": {
+        "areas": [
+          {
+            "id": "pt-motors",
+            "primarySignalKey": null,
+            "signalFilter": "^Powertrain\\.(MotorFrontStatus|MotorRearStatus|VcuTorqueCmd)\\.",
+            "signals": [],
+            "yAxisMode": "per-unit"
+          }
+        ],
+        "cursorMode": "off",
+        "cursorX": {
+          "a": null,
+          "b": null
+        },
+        "cursorYByArea": {},
+        "followLive": true,
+        "maxRateHz": 15,
+        "measEnabled": false,
+        "measKeys": [
+          "a",
+          "b",
+          "dt",
+          "freq",
+          "valA",
+          "valB",
+          "delta"
+        ],
+        "showDiag": false,
+        "showPoints": "auto",
+        "signalsWidthPx": 367
+      },
       "id": "powertrain",
       "kind": "plot",
       "name": "Powertrain",
@@ -570,6 +724,162 @@
       ]
     },
     {
+      "config": {
+        "areas": [
+          {
+            "id": "batt-state",
+            "primarySignalKey": "batt|s:768:PackTempC",
+            "signals": [
+              {
+                "busId": "batt",
+                "color": "#60a5fa",
+                "extended": false,
+                "messageId": 768,
+                "messageName": "BmsState",
+                "signalName": "PackCurrent",
+                "unit": "A"
+              },
+              {
+                "busId": "batt",
+                "color": "#fbbf24",
+                "extended": false,
+                "messageId": 768,
+                "messageName": "BmsState",
+                "signalName": "PackTempC",
+                "unit": "degC"
+              },
+              {
+                "busId": "batt",
+                "color": "#f472b6",
+                "extended": false,
+                "messageId": 768,
+                "messageName": "BmsState",
+                "signalName": "PackVoltage",
+                "unit": "V"
+              },
+              {
+                "busId": "batt",
+                "color": "#a78bfa",
+                "extended": false,
+                "messageId": 768,
+                "messageName": "BmsState",
+                "signalName": "SocPct",
+                "unit": "%"
+              },
+              {
+                "busId": "batt",
+                "color": "#22d3ee",
+                "extended": false,
+                "messageId": 768,
+                "messageName": "BmsState",
+                "signalName": "SohPct",
+                "unit": "%"
+              },
+              {
+                "busId": "batt",
+                "color": "#fb7185",
+                "extended": false,
+                "messageId": 770,
+                "messageName": "BmsLimits",
+                "signalName": "ChargeCurrentLimit",
+                "unit": "A"
+              },
+              {
+                "busId": "batt",
+                "color": "#60a5fa",
+                "extended": false,
+                "messageId": 770,
+                "messageName": "BmsLimits",
+                "signalName": "DischargeCurrentLimit",
+                "unit": "A"
+              },
+              {
+                "busId": "batt",
+                "color": "#34d399",
+                "extended": false,
+                "messageId": 1024,
+                "messageName": "ThermalState",
+                "signalName": "CoolantTempIn",
+                "unit": "degC"
+              },
+              {
+                "busId": "batt",
+                "color": "#fbbf24",
+                "extended": false,
+                "messageId": 1024,
+                "messageName": "ThermalState",
+                "signalName": "CoolantTempOut",
+                "unit": "degC"
+              },
+              {
+                "busId": "batt",
+                "color": "#f472b6",
+                "extended": false,
+                "messageId": 1024,
+                "messageName": "ThermalState",
+                "signalName": "FanDutyPct",
+                "unit": "%"
+              },
+              {
+                "busId": "batt",
+                "color": "#a78bfa",
+                "extended": false,
+                "messageId": 1024,
+                "messageName": "ThermalState",
+                "signalName": "PumpDutyPct",
+                "unit": "%"
+              }
+            ],
+            "yAxisMode": "per-unit"
+          },
+          {
+            "id": "2012ee34-a39f-400c-8818-316f3229434c",
+            "primarySignalKey": null,
+            "signals": [
+              {
+                "busId": "batt",
+                "color": "#34d399",
+                "extended": false,
+                "messageId": 768,
+                "messageName": "BmsState",
+                "signalName": "PackStatus",
+                "unit": ""
+              },
+              {
+                "busId": "batt",
+                "color": "#facc15",
+                "extended": false,
+                "messageId": 770,
+                "messageName": "BmsLimits",
+                "signalName": "ContactorState",
+                "unit": ""
+              }
+            ],
+            "yAxisMode": "individual"
+          }
+        ],
+        "cursorMode": "x",
+        "cursorX": {
+          "a": null,
+          "b": null
+        },
+        "cursorYByArea": {},
+        "followLive": true,
+        "maxRateHz": 15,
+        "measEnabled": false,
+        "measKeys": [
+          "a",
+          "b",
+          "dt",
+          "freq",
+          "valA",
+          "valB",
+          "delta"
+        ],
+        "showDiag": false,
+        "showPoints": "auto",
+        "signalsWidthPx": 372
+      },
       "id": "battery",
       "kind": "plot",
       "name": "Battery",
@@ -770,6 +1080,62 @@
       "signalName": "ChargeState"
     },
     {
+      "config": {
+        "autoScroll": true,
+        "columns": [
+          {
+            "key": "idx",
+            "visible": true,
+            "width": 64
+          },
+          {
+            "key": "time",
+            "visible": true,
+            "width": 110
+          },
+          {
+            "key": "rate",
+            "visible": true,
+            "width": 64
+          },
+          {
+            "key": "bus",
+            "visible": true,
+            "width": 100
+          },
+          {
+            "key": "id",
+            "visible": true,
+            "width": 96
+          },
+          {
+            "key": "msg",
+            "visible": true,
+            "width": 220
+          },
+          {
+            "key": "len",
+            "visible": true,
+            "width": 44
+          },
+          {
+            "key": "data",
+            "visible": true,
+            "width": 360
+          },
+          {
+            "key": "dir",
+            "visible": true,
+            "width": 40
+          },
+          {
+            "key": "kind",
+            "visible": false,
+            "width": 110
+          }
+        ],
+        "mode": "by-id"
+      },
       "id": "dd6c1363-0e44-44ac-97fe-ca4d8126bbea",
       "kind": "trace",
       "name": "BatteryById",

@@ -296,10 +296,15 @@ export interface ByIdSnapshotRecord {
 /// project view and panel-reopen treat it as a plot, not a trace);
 /// `transmit` = a transmit panel composing CAN frames;
 /// `filter` = a filter element (structured predicate +
-/// upstream sources). The element itself carries no extra config beyond
-/// what's listed below — the panel showing it owns its config (a
-/// trace's mode + columns, a plot's areas / cursors, a transmit
-/// panel's frame list) in the dockview panel `params`.
+/// upstream sources). A view-backed element (trace / plot) carries its
+/// panel's setup in {@link PanelViewConfig} `config` — a trace's mode +
+/// columns, a plot's areas / cursors. That's model state, so it survives
+/// closing and reopening the panel within a session, not only a project
+/// save/restore. The panel also mirrors the same blob into its dockview
+/// `params` so the unsaved-workspace `localStorage` layout — which does
+/// not persist the registry — can restore it across an app restart. A
+/// transmit's frame list and an rbs's `.cannet_rbs` path live in their
+/// own host-side stores, not in `config`.
 ///
 /// Every kind carries a model-owned display `name` (ADR 0019),
 /// resolved by `elementLabel` for every view. Optional in the type
@@ -327,9 +332,20 @@ export interface ColorRule {
   color: string;
 }
 
+/// A view-backed element's persisted panel configuration: an opaque
+/// blob the panel writes and reads, the model stores without
+/// interpreting. Each panel owns its own keys and parses them
+/// tolerantly (a plot's `areas` / `cursorX` / `measKeys` …, a trace's
+/// `mode` / `columns` / `autoScroll`), so the shape is intentionally
+/// `unknown`-valued here. It lives on the element (not just the dockview
+/// `params`) so a view's setup survives closing and reopening its panel
+/// within a session. Additive — the host round-trips `elements`
+/// opaquely, so no schema-version bump.
+export type PanelViewConfig = Record<string, unknown>;
+
 export type ProjectElement =
-  | { kind: "trace"; id: string; name?: string; sources: string[] }
-  | { kind: "plot"; id: string; name?: string; sources: string[] }
+  | { kind: "trace"; id: string; name?: string; sources: string[]; config?: PanelViewConfig }
+  | { kind: "plot"; id: string; name?: string; sources: string[]; config?: PanelViewConfig }
   | {
       /// A standalone, ambient signal value→color map (ADR 0029): not a
       /// graph node, not wired through `sources`. Any view rendering the
