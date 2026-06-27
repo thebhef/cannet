@@ -95,8 +95,9 @@ use filter::{DecodeDependentLeaf, FilterPredicate};
 use ipc::{
     BusFps, ByIdSnapshot, DbcAttributeRecord, DbcContentRecord, DbcInfo, DbcMessageContentRecord,
     DbcSignalContentRecord, DecimatedRange, DecodedRecord, FilteredTracePage, InterfaceRecord,
-    LogFinished, OpenLogResult, RemoteSessionResult, SampledPoints, SignalDescriptorRecord,
-    SignalQuery, SignalRecord, TraceFrameRecord, TraceGrew, ValueTableEntryRecord,
+    LogFinished, OpenLogResult, RemoteSessionResult, RowPage, SampledPoints,
+    SignalDescriptorRecord, SignalQuery, SignalRecord, TraceFrameRecord, TraceGrew,
+    ValueTableEntryRecord,
 };
 use notes::{Note, NotesStore};
 use signal_cache::SignalCacheStore;
@@ -378,7 +379,7 @@ pub fn run() {
             clear_dbcs,
             set_dbc_buses,
             fetch_trace_range,
-            fetch_latest_by_id,
+            fetch_by_id_page,
             fetch_filtered_trace,
             clear_trace_store,
             connect_remote_server,
@@ -1303,49 +1304,155 @@ fn record_matches(predicate: &FilterPredicate, record: &TraceFrameRecord) -> boo
     predicate.matches(&raw, record.decoded.as_ref())
 }
 
-/// Latest frame seen for each distinct (channel, id, extended-flag)
-/// whose most recent occurrence is at or after session count `since` —
-/// one per id, sorted by channel then id, decoded against the loaded
-/// DBCs, each paired with the id's current message rate. `since` is a
-/// trace window's start, so for a *running* trace this is "the latest
-/// value of every id in the window". Backs the per-message-ID panel;
-/// `async` so it runs off the main thread, like [`fetch_trace_range`].
+/// Sort key for the by-id "bus" column: the project bus *name* (so the
+/// on-screen order matches what the user reads), the raw bus id when the
+/// project doesn't know it (defensive — a removed bus), or `"~"` for an
+/// unassigned frame so it sorts after any real bus name ascending.
+/// Mirrors the former client-side `sortValue` "bus" case, moved host-side
+/// with the rest of the by-id sort.
+fn bus_sort_key(bus_id: Option<&str>, names: &HashMap<String, String>) -> String {
+    match bus_id {
+        None => "~".to_string(),
+        Some(id) => names.get(id).cloned().unwrap_or_else(|| id.to_string()),
+    }
+}
+
+/// The `kind` column's sort key — the frame-kind discriminant, matching
+/// the `snake_case` tag the frontend column shows.
+fn kind_sort_key(kind: &ipc::CanFrameKind) -> &'static str {
+    match kind {
+        ipc::CanFrameKind::Classic => "classic",
+        ipc::CanFrameKind::Fd { .. } => "fd",
+        ipc::CanFrameKind::Remote { .. } => "remote",
+        ipc::CanFrameKind::Error => "error",
+    }
+}
+
+/// Compare two by-id rows by one column's value — the host-side
+/// equivalent of the former client `sortValue` / `compareValues`
+/// (traceColumns.ts). An unknown key compares equal (leaves the order).
+fn by_id_cmp(
+    a: &ByIdSnapshot,
+    b: &ByIdSnapshot,
+    key: &str,
+    names: &HashMap<String, String>,
+) -> std::cmp::Ordering {
+    let (fa, fb) = (&a.frame, &b.frame);
+    match key {
+        "rate" => a.rate.total_cmp(&b.rate),
+        "idx" => fa.index.cmp(&fb.index),
+        "time" => fa.timestamp_seconds.total_cmp(&fb.timestamp_seconds),
+        "bus" => {
+            bus_sort_key(fa.bus_id.as_deref(), names).cmp(&bus_sort_key(fb.bus_id.as_deref(), names))
+        }
+        "dir" => fa.direction.cmp(fb.direction),
+        "id" => fa.id.cmp(&fb.id),
+        "kind" => kind_sort_key(&fa.kind).cmp(kind_sort_key(&fb.kind)),
+        "len" => fa.data.len().cmp(&fb.data.len()),
+        "data" => fa.data.cmp(&fb.data),
+        "msg" => {
+            let na = fa.decoded.as_ref().map_or("", |d| d.name.as_str());
+            let nb = fb.decoded.as_ref().map_or("", |d| d.name.as_str());
+            na.cmp(nb)
+        }
+        _ => std::cmp::Ordering::Equal,
+    }
+}
+
+/// Sort by-id rows host-side per the panel's column sort, so a *paged*
+/// by-id view orders the whole set rather than each page in isolation
+/// (ADR 0025). `key` / `dir` are the `ColumnKey` and direction the panel
+/// sends; a `None` key leaves the `latest_in_window` default order (by
+/// bus, channel, id). Replaces the former client-side `sortRows`. Stable,
+/// so equal keys keep the default order — including under `desc`.
+fn sort_by_id(
+    rows: &mut [ByIdSnapshot],
+    key: Option<&str>,
+    dir: Option<&str>,
+    names: &HashMap<String, String>,
+) {
+    let Some(key) = key else { return };
+    let desc = dir == Some("desc");
+    rows.sort_by(|a, b| {
+        let c = by_id_cmp(a, b, key, names);
+        if desc {
+            c.reverse()
+        } else {
+            c
+        }
+    });
+}
+
+/// A *paged* by-id snapshot of the trace window `[scan_start, scan_end)`:
+/// one row per arbitration id, its latest in-window frame decoded against
+/// the loaded DBCs (paired with the id's rate and session frame count),
+/// optionally constrained by `filter`, sorted host-side per
+/// `sort_key` / `sort_dir`, returned as the page `[offset, offset+limit)`
+/// of a [`RowPage`] (ADR 0025). The by-id view pages this through the
+/// same windowed-source primitive as the chronological views — there is
+/// no separate whole-snapshot path. `bus_names` carries the project's bus
+/// id→name map so the "bus" column sorts by the name the user sees (the
+/// host knows only bus ids). A count-only refresh passes `limit == 0` and
+/// reads just `count`.
 ///
-/// `filter` drops rows whose latest frame doesn't pass the
-/// predicate. (Note: this filters the *latest* observation; a row a
-/// signal-value filter excludes can re-appear once the id emits a
-/// passing value.)
+/// `filter` drops rows whose latest in-window frame doesn't pass the
+/// predicate. (As before, this filters the *latest* observation; a row a
+/// signal-value filter excludes can re-appear once the id emits a passing
+/// value.) Bounding to `scan_end` rather than the live tip is what makes
+/// a paused/stopped snapshot reflect the window it shows. `async` so
+/// Tauri runs it off the main thread, like the other paged accessors.
 #[tauri::command]
-#[allow(clippy::unused_async)] // `async` is what makes Tauri run it off the main thread
-async fn fetch_latest_by_id(
+#[allow(clippy::unused_async, clippy::too_many_arguments)] // off-thread; args are the IPC payload
+async fn fetch_by_id_page(
     app: AppHandle,
-    since: u64,
     filter: Option<FilterPredicate>,
-) -> Vec<ByIdSnapshot> {
+    scan_start: u64,
+    scan_end: u64,
+    sort_key: Option<String>,
+    sort_dir: Option<String>,
+    bus_names: Vec<(String, String)>,
+    offset: u64,
+    limit: u64,
+) -> RowPage<ByIdSnapshot> {
     let state: State<'_, AppState> = app.state();
-    let since = usize::try_from(since).unwrap_or(usize::MAX);
-    let rows = state.trace_store.latest_since(since);
-    let dbs = state.databases.lock().expect("databases mutex poisoned");
-    rows.into_iter()
-        .filter_map(|row| {
-            let decoded = decode_against(&dbs, &row.frame);
-            let record = TraceFrameRecord::from_raw(
-                u64::try_from(row.index).unwrap_or(u64::MAX),
-                &row.frame,
-                decoded,
-            );
-            if let Some(p) = filter.as_ref() {
-                if !record_matches(p, &record) {
-                    return None;
+    let start = usize::try_from(scan_start).unwrap_or(usize::MAX);
+    let end = usize::try_from(scan_end).unwrap_or(usize::MAX);
+    let rows = state.trace_store.latest_in_window(start, end);
+    let mut snaps: Vec<ByIdSnapshot> = {
+        let dbs = state.databases.lock().expect("databases mutex poisoned");
+        rows.into_iter()
+            .filter_map(|row| {
+                let decoded = decode_against(&dbs, &row.frame);
+                let record = TraceFrameRecord::from_raw(
+                    u64::try_from(row.index).unwrap_or(u64::MAX),
+                    &row.frame,
+                    decoded,
+                );
+                if let Some(p) = filter.as_ref() {
+                    if !record_matches(p, &record) {
+                        return None;
+                    }
                 }
-            }
-            Some(ByIdSnapshot {
-                frame: record,
-                rate: row.rate,
-                count: row.count,
+                Some(ByIdSnapshot {
+                    frame: record,
+                    rate: row.rate,
+                    count: row.count,
+                })
             })
-        })
-        .collect()
+            .collect()
+    };
+    let names: HashMap<String, String> = bus_names.into_iter().collect();
+    sort_by_id(&mut snaps, sort_key.as_deref(), sort_dir.as_deref(), &names);
+
+    let count = u64::try_from(snaps.len()).unwrap_or(u64::MAX);
+    let off = usize::try_from(offset).unwrap_or(usize::MAX).min(snaps.len());
+    let lim = usize::try_from(limit).unwrap_or(usize::MAX);
+    let page: Vec<ByIdSnapshot> = snaps.into_iter().skip(off).take(lim).collect();
+    RowPage {
+        count,
+        start: u64::try_from(off).unwrap_or(0),
+        rows: page,
+    }
 }
 
 /// Streaming page selector for [`fetch_filtered_trace`]: as match
@@ -3654,6 +3761,80 @@ mod tests {
         let (prefix, _, _) = select(&m[..k], 0, 0, false, 0);
         let (resumed, _, _) = select(&m[k..], 0, 0, false, prefix);
         assert_eq!(resumed, full);
+    }
+
+    // --- by-id host-side sort (former client `sortRows`) ---
+
+    fn snap(id: u32, channel: u8, rate: f64, bus: Option<&str>) -> ByIdSnapshot {
+        ByIdSnapshot {
+            frame: TraceFrameRecord {
+                index: 0,
+                timestamp_seconds: 0.0,
+                channel,
+                id,
+                extended: false,
+                direction: "Rx",
+                kind: ipc::CanFrameKind::Classic,
+                data: vec![],
+                decoded: None,
+                bus_id: bus.map(Into::into),
+                violation: None,
+            },
+            rate,
+            count: 0,
+        }
+    }
+
+    fn sorted_ids(
+        rows: &[ByIdSnapshot],
+        key: Option<&str>,
+        dir: Option<&str>,
+        names: &HashMap<String, String>,
+    ) -> Vec<u32> {
+        let mut v = rows.to_vec();
+        sort_by_id(&mut v, key, dir, names);
+        v.iter().map(|r| r.frame.id).collect()
+    }
+
+    #[test]
+    fn sort_by_id_orders_by_a_column_stable_and_no_op_for_none() {
+        let names = HashMap::new();
+        let rows = [snap(0x200, 1, 0.0, None), snap(0x100, 0, 0.0, None), snap(0x100, 2, 0.0, None)];
+        // None key leaves the input order (the host default).
+        assert_eq!(sorted_ids(&rows, None, None, &names), vec![0x200, 0x100, 0x100]);
+        // Stable: the two 0x100 rows keep their input order (channels 0, 2).
+        let mut v = rows.to_vec();
+        sort_by_id(&mut v, Some("id"), Some("asc"), &names);
+        assert_eq!(
+            v.iter().map(|r| (r.frame.id, r.frame.channel)).collect::<Vec<_>>(),
+            vec![(0x100, 0), (0x100, 2), (0x200, 1)],
+        );
+        assert_eq!(sorted_ids(&rows, Some("id"), Some("desc"), &names), vec![0x200, 0x100, 0x100]);
+    }
+
+    #[test]
+    fn sort_by_id_orders_by_rate() {
+        let names = HashMap::new();
+        let rows = [snap(0x100, 0, 5.0, None), snap(0x200, 0, 50.0, None), snap(0x300, 0, 0.5, None)];
+        assert_eq!(sorted_ids(&rows, Some("rate"), Some("asc"), &names), vec![0x300, 0x100, 0x200]);
+        assert_eq!(sorted_ids(&rows, Some("rate"), Some("desc"), &names), vec![0x200, 0x100, 0x300]);
+    }
+
+    #[test]
+    fn sort_by_id_orders_by_bus_name_unassigned_last() {
+        // Sorts by the resolved bus *name*, with the unassigned bucket
+        // after any real bus ascending (and before them descending).
+        let names: HashMap<String, String> =
+            [("p".to_string(), "Powertrain".to_string()), ("c".to_string(), "Chassis".to_string())]
+                .into_iter()
+                .collect();
+        let rows = [
+            snap(0x100, 0, 0.0, Some("p")), // Powertrain
+            snap(0x200, 0, 0.0, None),      // unassigned
+            snap(0x300, 0, 0.0, Some("c")), // Chassis
+        ];
+        assert_eq!(sorted_ids(&rows, Some("bus"), Some("asc"), &names), vec![0x300, 0x100, 0x200]);
+        assert_eq!(sorted_ids(&rows, Some("bus"), Some("desc"), &names), vec![0x200, 0x100, 0x300]);
     }
 
     /// A classic frame with a full 8-byte payload — enough that an

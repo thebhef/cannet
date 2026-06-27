@@ -538,21 +538,59 @@ impl TraceStore {
     /// For each distinct [`FrameKey`] whose most recent occurrence is at
     /// index `>= since`: that index, a clone of the frame, and the id's
     /// current message rate — sorted by key (channel, then id, then
-    /// standard-before-extended). `since` is a trace window's start: for
-    /// a *running* trace this is exactly "the latest frame of each id
-    /// within the window"; for a paused/stopped trace whose end is below
-    /// the buffer's tip it can include an id's later occurrence (fine
-    /// for a live-values view).
+    /// standard-before-extended). A thin alias for
+    /// [`Self::latest_in_window`] over `[since, tip]`.
     #[must_use]
     pub fn latest_since(&self, since: usize) -> Vec<LatestById> {
+        self.latest_in_window(since, usize::MAX)
+    }
+
+    /// Latest-by-id snapshot bounded to the window `[start, end)`: for
+    /// each distinct [`FrameKey`] with an occurrence in the window, its
+    /// *last* occurrence **within the window** — a clone of the frame
+    /// paired with the id's current message rate and total session count,
+    /// sorted by key (bus, then channel, then id, then
+    /// standard-before-extended).
+    ///
+    /// Unlike a global latest-by-id, this never looks past `end`: it is
+    /// the by-id snapshot *of the window*, the by-id counterpart of the
+    /// filtered trace's `[scan_start, scan_end)` slice (ADR 0025). For a
+    /// paused/stopped trace whose window ends below the buffer tip that
+    /// matters — a frame received after the window must not leak into the
+    /// snapshot.
+    ///
+    /// When `end` covers the buffer tip (the running, follow-live case)
+    /// the maintained `latest` map already holds each key's last index,
+    /// all in-window, so this takes that O(keys) fast path. A bounded
+    /// window (paused / scrolled into history) costs one O(end - start)
+    /// pass — paid on a status change, not on the live refresh tick.
+    #[must_use]
+    pub fn latest_in_window(&self, start: usize, end: usize) -> Vec<LatestById> {
         let now = Instant::now();
         let inner = self.inner.lock().expect("trace store mutex poisoned");
-        let mut keyed: Vec<(FrameKey, usize)> = inner
-            .latest
-            .iter()
-            .filter(|(_, &idx)| idx >= since)
-            .map(|(key, &idx)| (key.clone(), idx))
-            .collect();
+        let len = inner.frames.len();
+        let end = end.min(len);
+        if start >= end {
+            return Vec::new();
+        }
+        // Last in-window index per key. When the window reaches the tip,
+        // the maintained `latest` map is exactly that (every entry's index
+        // is `< len == end`); otherwise scan the window once, letting a
+        // later occurrence overwrite an earlier one so the last wins.
+        let mut keyed: Vec<(FrameKey, usize)> = if end == len {
+            inner
+                .latest
+                .iter()
+                .filter(|(_, &idx)| idx >= start)
+                .map(|(key, &idx)| (key.clone(), idx))
+                .collect()
+        } else {
+            let mut last: HashMap<FrameKey, usize> = HashMap::new();
+            for (offset, f) in inner.frames[start..end].iter().enumerate() {
+                last.insert((f.bus_id.clone(), f.channel, f.id, f.extended), start + offset);
+            }
+            last.into_iter().collect()
+        };
         keyed.sort_unstable();
         keyed
             .into_iter()
@@ -836,6 +874,37 @@ mod tests {
         );
         store.start_session(0);
         assert!(store.latest_since(0).is_empty());
+    }
+
+    #[test]
+    fn latest_in_window_bounds_to_the_window_end() {
+        // Snapshot-correctness: a paused/stopped window must reflect the
+        // window it shows, not the live tip. id 1 recurs after the window
+        // closes; bounding to `end` keeps its in-window latest.
+        let store = TraceStore::new();
+        for id in [1u32, 2, 1, 2, 1] {
+            store.append(dummy(0, id)); // indices: 0=1,1=2,2=1,3=2,4=1
+        }
+        // Window past the tip == global latest: id1@4, id2@3.
+        assert_eq!(
+            store
+                .latest_in_window(0, store.len())
+                .iter()
+                .map(|l| (l.frame.id, l.index))
+                .collect::<Vec<_>>(),
+            vec![(1, 4), (2, 3)],
+        );
+        // Bounded to [0, 3): id1's last in-window frame is @2 (not @4).
+        assert_eq!(
+            store
+                .latest_in_window(0, 3)
+                .iter()
+                .map(|l| (l.frame.id, l.index))
+                .collect::<Vec<_>>(),
+            vec![(1, 2), (2, 1)],
+        );
+        // start >= end → empty.
+        assert!(store.latest_in_window(5, 3).is_empty());
     }
 
     #[test]

@@ -5,7 +5,7 @@
 //! against each frame in a slice. The predicate is JSON-friendly and
 //! round-trips through `serde_json`, so the frontend can edit it
 //! directly and pass it down on `fetch_trace_range` /
-//! `fetch_latest_by_id` / `sample_signals` without any wire-format
+//! `fetch_by_id_page` / `sample_signals` without any wire-format
 //! glue.
 //!
 //! ## Predicate shape

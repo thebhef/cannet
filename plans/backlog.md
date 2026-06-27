@@ -99,6 +99,14 @@ trip over it.
 
 ### Trace view
 
+- `[ui]` by-ID view (`useByIdView.ts`): while *running*, the live refresh
+  re-pages page 0, so a by-ID view scrolled into a later page is yanked
+  back to the top each tick. Only reachable with an unusually large id
+  space (the by-ID set is id-space-bounded, so it almost always fits one
+  page); the common case is unaffected. Fix when it bites: re-page the
+  *current* page on the live tick instead of page 0 (needs the windowed
+  primitive to expose "refresh the loaded window" distinct from
+  follow-live's "re-page the tail").
 - `[ui]` `cannet-gui`: **bitfield message visualizer**. Render a CAN
   message as its raw bits laid out as a grid (8×N cells, one per bit),
   coloured / lit by current value, with DBC-derived signal overlays

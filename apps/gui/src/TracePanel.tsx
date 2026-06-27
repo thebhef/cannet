@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
-import { invoke } from "@tauri-apps/api/core";
 
 import { TraceView } from "./TraceView";
 import { ByIdTable } from "./ByIdTable";
@@ -8,6 +7,7 @@ import { TraceControls } from "./TraceControls";
 import { useTraceData } from "./traceData";
 import { useTrace } from "./trace";
 import { useFilteredTrace } from "./useFilteredTrace";
+import { useByIdView } from "./useByIdView";
 import { useElementRegistry } from "./projectElements";
 import { useProjectContext } from "./projectContext";
 import { buildSinkPredicate } from "./sinkPredicate";
@@ -26,8 +26,7 @@ import {
   resizeColumn,
   toggleColumn,
 } from "./traceColumns";
-import type { ByIdSnapshotRecord } from "./types";
-import { diagCount, diagTime } from "./diag"; // DIAG
+import { diagCount } from "./diag"; // DIAG
 
 type TraceMode = "chronological" | "by-id";
 
@@ -123,8 +122,9 @@ export function TracePanel(props: IDockviewPanelProps) {
     api.updateParameters({ elementId, ...config });
   }, [api, update, elementId, mode, autoScroll, columns]);
 
-  // By-id mode state.
-  const [rows, setRows] = useState<ByIdSnapshotRecord[]>([]);
+  // By-id mode state. The snapshot itself is host-paged and host-sorted
+  // (see `useByIdView` below); the panel owns only the view-local sort
+  // and expand state.
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
   const onSortColumn = useCallback((key: ColumnKey) => setSort((s) => nextSort(s, key)), []);
@@ -179,56 +179,27 @@ export function TracePanel(props: IDockviewPanelProps) {
     setSourcesMenu({ x: e.clientX, y: e.clientY });
   }, []);
 
-  // While in by-id mode: refresh the latest-by-id snapshot on mount, on
-  // window change (clear / start moves `offset`), on every tick while
-  // running, and once on a status change (which captures the snapshot
-  // when the trace is paused / stopped). The host applies `fetchFilter`
-  // before returning, so unchecking a bus in the panel's source picker
-  // drops its frames here without any frontend post-filter pass.
-  const refreshTrigger = trace.status === "running" ? trace.frameCount : -1;
-  // DIAG: attribute each by-id effect firing to the dependency that
-  // actually changed — during the freeze this fires once per render
-  // cycle, and whichever dep churns is the loop's driver.
-  const byIdDepsRef = useRef<{
-    mode: TraceMode;
-    offset: number;
-    status: string;
-    refreshTrigger: number;
-    fetchFilter: unknown;
-  } | null>(null);
-  useEffect(() => {
-    if (mode !== "by-id") return;
-    const prev = byIdDepsRef.current; // DIAG
-    if (prev) {
-      if (prev.mode !== mode) diagCount("byid.dep.mode"); // DIAG
-      if (prev.offset !== trace.offset) diagCount("byid.dep.offset"); // DIAG
-      if (prev.status !== trace.status) diagCount("byid.dep.status"); // DIAG
-      if (prev.refreshTrigger !== refreshTrigger) diagCount("byid.dep.refreshTrigger"); // DIAG
-      if (prev.fetchFilter !== fetchFilter) diagCount("byid.dep.fetchFilter"); // DIAG
-    } else {
-      diagCount("byid.dep.mount"); // DIAG
-    }
-    byIdDepsRef.current = {
-      mode,
-      offset: trace.offset,
-      status: trace.status,
-      refreshTrigger,
-      fetchFilter,
-    }; // DIAG
-    diagCount("invoke.fetch_latest_by_id"); // DIAG
-    void diagTime( // DIAG
-      "ms.fetch_latest_by_id",
-      invoke<ByIdSnapshotRecord[]>("fetch_latest_by_id", {
-        since: trace.offset,
-        filter: fetchFilter,
-      }),
-    )
-      .then(setRows)
-      .catch(() => {
-        diagCount("reject.fetch_latest_by_id"); // DIAG
-        /* a failed snapshot just leaves the last one up */
-      });
-  }, [mode, trace.offset, trace.status, refreshTrigger, fetchFilter]);
+  // By-id: the host-paged, host-sorted snapshot of the window
+  // `[offset, offset + frameCount)`. Paged through the same windowed
+  // primitive as the chronological views — it holds only the visible
+  // page and does no sorting (host-side). The host applies `fetchFilter`
+  // before returning, so unchecking a bus in the source picker drops its
+  // frames here. `busNames` lets the host sort the "bus" column by the
+  // project name the user sees. Bounding to `offset + frameCount` keeps a
+  // paused / stopped snapshot reflecting the window, not the live tip.
+  const busNames = useMemo<[string, string][]>(
+    () => buses.map((b) => [b.id, b.name]),
+    [buses],
+  );
+  const byId = useByIdView(
+    mode === "by-id",
+    trace.offset,
+    trace.offset + trace.frameCount,
+    sort,
+    fetchFilter,
+    busNames,
+    trace.status === "running",
+  );
 
   // Chronological + filtered: the shared chunk cache (App.tsx) is
   // global and unfiltered, so when this panel has a filter the
@@ -312,7 +283,10 @@ export function TracePanel(props: IDockviewPanelProps) {
         />
       ) : (
         <ByIdTable
-          rows={rows}
+          count={byId.count}
+          version={byId.version}
+          getRow={byId.getRow}
+          ensureVisible={byId.ensureVisible}
           columns={columns}
           onColumnResize={handleColumnResize}
           onColumnToggle={handleColumnToggle}

@@ -6,7 +6,7 @@
 // tint string are unit-tested in colorMap.test.ts; this guards that the
 // row renderer actually applies them.
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, render } from "@testing-library/react";
 
@@ -30,10 +30,20 @@ const frame: TraceFrameRecord = {
 };
 const row: ByIdSnapshotRecord = { frame, rate: 0, count: 1 };
 
+// ByIdTable virtualizes (like TraceView), so it needs a ResizeObserver.
+class FakeResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+
 function renderTable(resolveColor: ColorResolver | null) {
   return render(
     <ByIdTable
-      rows={[row]}
+      count={1}
+      version={0}
+      getRow={(i) => (i === 0 ? row : null)}
+      ensureVisible={() => {}}
       columns={defaultColumns()}
       onColumnResize={() => {}}
       onColumnToggle={() => {}}
@@ -49,7 +59,13 @@ function renderTable(resolveColor: ColorResolver | null) {
   );
 }
 
-afterEach(cleanup);
+beforeEach(() => {
+  vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+});
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 describe("ByIdTable color-map tint", () => {
   it("tints the signal-value cell when a colormap matches the value", () => {

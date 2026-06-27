@@ -15,7 +15,9 @@ import { invoke } from "@tauri-apps/api/core";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string) => {
-    if (cmd === "fetch_filtered_trace") return { count: 0, start: 0, rows: [] };
+    if (cmd === "fetch_filtered_trace" || cmd === "fetch_by_id_page") {
+      return { count: 0, start: 0, rows: [] };
+    }
     return [];
   }),
 }));

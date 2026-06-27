@@ -103,11 +103,18 @@ apps/
                      regardless of size; the wheel scrolls natively but
                      falls back to row-stepped scrolling when a notch
                      would skip a screenful in the compressed regime);
-                     by-ID is `ByIdTable.tsx`. Shared table bits — the
+                     by-ID is `ByIdTable.tsx` (the same scaled
+                     virtualizer, over the host-sorted by-ID snapshot).
+                     Both views — chronological, filtered, and by-ID —
+                     page through one windowed-source primitive
+                     (`useWindowedQuery.ts`, ADR 0025); the by-ID and
+                     filtered adapters are `useByIdView.ts` /
+                     `useFilteredTrace.ts`. Shared table bits — the
                      header (drag-resize, right-click show/hide,
                      click-to-sort) and the cell renderer — are in
-                     `traceTable.tsx`; the column model + sort in
-                     `traceColumns.ts`. `ProjectPanel.tsx` is the
+                     `traceTable.tsx`; the column model in
+                     `traceColumns.ts` (the by-ID sort runs host-side).
+                     `ProjectPanel.tsx` is the
                      project / elements / bus / DBC panel; `PlotPanel.tsx`
                      the Phase-4 signal plot (uPlot), with `plotData.ts`
                      merging independently-sampled series onto one
@@ -137,8 +144,9 @@ apps/
                      per-id message-rate estimate); the BLF and remote
                      pumps append frames, and the frontend pulls slices
                      via the `fetch_trace_range` command and the
-                     latest-by-id snapshot (each id's latest frame + its
-                     rate) via `fetch_latest_by_id` (both decoded against the
+                     host-sorted, paged latest-by-id snapshot (each id's
+                     latest in-window frame + its rate) via
+                     `fetch_by_id_page` (both decoded against the
                      loaded DBCs — first match wins — at fetch time, both
                      off the main thread), plus a `trace-grew` IPC tick (~10 Hz:
                      count, rate, and a decoded tail of the newest rows
@@ -792,7 +800,7 @@ for its `sinks` list.
 a structured predicate (`{all | any | bus | id_range | id_list |
 name_regex | signal_equals}`) and its own `sources` list so it can
 chain after other filters or buses. The fetch path
-(`fetch_trace_range`, `fetch_latest_by_id`) accepts an optional
+(`fetch_trace_range`, `fetch_by_id_page`) accepts an optional
 predicate that drops records that don't pass; the trace store stays
 one filter-agnostic session buffer, and each consumer scopes what
 it renders. There's no expression DSL — the predicate is built in
