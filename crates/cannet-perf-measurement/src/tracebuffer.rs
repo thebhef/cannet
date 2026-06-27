@@ -67,7 +67,21 @@ impl Default for TracebufferConfig {
 /// store's mutex is poisoned) — a worker fault is not recoverable here.
 #[must_use]
 pub fn run(ex: &LoadedExample, cfg: &TracebufferConfig) -> HarnessReport {
-    let templates = Arc::new(crate::workload::build_schedule(ex));
+    run_with_schedule(crate::workload::build_schedule(ex), cfg)
+}
+
+/// Run the tracebuffer workload against an explicit message schedule
+/// (rather than one derived from a loaded example). The entry point for
+/// deterministic tests that drive a hand-built schedule.
+///
+/// # Panics
+/// Panics if the ingest or scan worker thread panics.
+#[must_use]
+pub fn run_with_schedule(
+    templates: Vec<ScheduledMessage>,
+    cfg: &TracebufferConfig,
+) -> HarnessReport {
+    let templates = Arc::new(templates);
 
     let store = Arc::new(TraceStore::new());
     store.start_session(0); // 0 = no timestamp gating

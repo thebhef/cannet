@@ -155,9 +155,20 @@ impl IngestRecorder {
     }
 }
 
-/// The contending filtered-scan loop: chunked scans over the whole
-/// buffer, mirroring the GUI's scrollbar match-count refresh. `hz <= 0`
-/// runs scans back to back; a positive value paces to that rate.
+/// The contending filtered-scan loop, mirroring the GUI's scrollbar
+/// match-count refresh. Each pass scans only the frames appended since
+/// the previous one — the **incremental** count refresh (ADR 0025): the
+/// view keeps a running per-view match count and resumes from the last
+/// index it counted, so steady-state contention is O(Δ), not O(buffer).
+/// The first pass over a small buffer and every later delta are both
+/// bounded by the inter-pass growth, so a long-running filtered view
+/// never re-scans the whole history on a refresh. (A filtered view
+/// *opened* against an already-large buffer pays one full scan to
+/// establish its baseline; that one-off is not the steady-state
+/// contention this models. The positional page fetch on scroll / follow
+/// live remains O(buffer) until Task 18's filter index.)
+///
+/// `hz <= 0` runs scans back to back; a positive value paces to that rate.
 pub fn scan_loop(
     store: &TraceStore,
     stop: &AtomicBool,
@@ -166,10 +177,13 @@ pub fn scan_loop(
 ) -> Vec<Duration> {
     let interval = (hz > 0.0).then(|| Duration::from_secs_f64(1.0 / hz));
     let mut durations = Vec::new();
+    // The running checkpoint: the absolute index up to which matches have
+    // already been counted. A refresh scans only `[counted_to, len)`.
+    let mut counted_to = 0;
     while !stop.load(Ordering::Relaxed) {
         let t0 = Instant::now();
         let len = store.len();
-        let mut pos = 0;
+        let mut pos = counted_to.min(len);
         while pos < len {
             let end = (pos + SCAN_CHUNK).min(len);
             // `None` decoded — an id/bus predicate needs no decode, so
@@ -177,6 +191,7 @@ pub fn scan_loop(
             let _ = store.scan_chunk(pos, end, |f| predicate.matches(f, None));
             pos = end;
         }
+        counted_to = len;
         let elapsed = t0.elapsed();
         durations.push(elapsed);
         if let Some(interval) = interval {

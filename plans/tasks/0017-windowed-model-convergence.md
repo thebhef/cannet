@@ -158,22 +158,48 @@ Regression test: the virtual-bus reproduction (460 msg/s, 5 ids, filtered
 chrono open) must assert per-bus ingest FPS stays flat as the buffer
 grows past ~200k — the check that this offender stays dead.
 
-Status (2026-06-22): the **bounded lock-hold is done**. The monolithic
-`scan_window_filtered` is replaced by `TraceStore::scan_chunk` (returns
-match *indices* for a bounded `[start, end)` under one lock) plus
-`frames_at` (clones only the page). `fetch_filtered_trace` drives the
-scan as a sequence of chunks, releasing the trace-store mutex and
-`await`-yielding between each, so a history scan never holds the `append`
-mutex across the whole buffer. Confirmed against the perf capture as
-the fix for the host-side TX-delivery stall (the growing `max_gap`): the
-filtered scan was starving the tx-confirm `append`, not just RX. Still
-owed for the full slice: (1) the **incremental O(Δ) match-count** — the
-chunked scan is bounded-lock but still O(window) CPU per refresh, cheap
-at `Vec` scale, removed for 10^9 frames by Task 18's filter index; and
-(2) the **virtual-bus FPS-flat regression test**. A unit-level guard
-(`append_interleaves_between_chunk_scans_without_a_buffer_wide_lock`) now
-asserts an append landing between chunk scans is visible to the next
-chunk — the property that lets live ingest proceed mid-scan.
+Status (2026-06-26): **shipped.** The bounded lock-hold (done 2026-06-22)
+is now joined by the incremental count and the convergence onto the
+shared primitive.
+
+- **Convergence.** [`useFilteredTrace`](../../apps/gui/src/useFilteredTrace.ts)
+  is now a thin adapter over [`useWindowedQuery`](../../apps/gui/src/useWindowedQuery.ts):
+  the generic primitive owns the lifecycle (descriptor memoisation,
+  single-flight, re-anchor, drop-on-change); the adapter supplies the
+  filtered `fetchPage` and the incremental-count cursor. Its bespoke
+  lifecycle (ctxKey, dirty flag, manual single-flight, throttle loop) is
+  gone. `TracePanel` is unchanged (same external `FilteredTrace` API).
+- **Incremental O(Δ) match-count.** A count-only refresh passes the
+  `(prev_count, prev_count_end)` it already knows; the host
+  ([`fetch_filtered_trace`](../../apps/gui/src-tauri/src/lib.rs)) seeds
+  the count and scans only frames appended since — O(Δ) — returning the
+  **full** total (the host owns the count; the view stores it, no JS
+  arithmetic on the fact). A row page (or a stale checkpoint) scans the
+  window from its start. The page-selection logic is the pure, unit-tested
+  [`PageSelector`]; tests cover total / offset / limit / from_end and the
+  incremental-equals-full invariant.
+- **Regression test.** `crates/cannet-perf-measurement/tests/fps_flat.rs`
+  drives a hand-built 5-id schedule past 200k frames with the contending
+  filtered scan and asserts `fps_retention >= 0.8` (the diagnosed offender
+  drove it toward 0.5). The harness `scan_loop` now models the incremental
+  refresh (scans only `[counted_to, len)` each pass), matching the real
+  change.
+
+Perf vs the prior baseline (incremental scan): steady-state filtered
+contention collapsed — `scan_ms_max` tracebuffer 24.4→0.85 ms (~29×),
+grpc 8.25→0.17 ms (~48×), hardware-peak 2.65→0.09 ms; `append_ms_max`
+also dropped 4–6× (less total lock contention). `fps_retention` stays
+~1.0. The baseline was **re-captured** (2026-06-26) so the new lows are
+the reference: the tracebuffer `scan_ms_max` gate is now 6.7 ms (was
+53.7), so a reversion to the O(buffer) scan would fail the gate. (The
+hardware-peak block kept its last-known-good numbers — the adapter was
+transiently idle during the capture; the deterministic tracebuffer/grpc
+modes tightly gate the same incremental code path.)
+
+The earlier unit guard
+(`append_interleaves_between_chunk_scans_without_a_buffer_wide_lock`)
+remains: it asserts an append landing between chunk scans is visible to
+the next chunk — the property that lets live ingest proceed mid-scan.
 
 Acceptance:
 
