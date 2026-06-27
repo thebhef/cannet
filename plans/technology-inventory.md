@@ -153,9 +153,17 @@ crate retained long-term).
 
 ### Storage
 
-- **`memmap2`** crate (Rust, MIT / Apache-2.0) — `proposed` for
-  Task 18. Cross-platform `mmap` syscall abstraction for the
-  disk-spill raw store. See [`../docs/adr/0002-disk-spill-store.md`](../docs/adr/0002-disk-spill-store.md).
+- **`memmap2`** crate (Rust, MIT / Apache-2.0) — `adopted`.
+  Cross-platform `mmap` syscall abstraction for the disk-spill raw
+  store. See [`../docs/adr/0002-disk-spill-store.md`](../docs/adr/0002-disk-spill-store.md).
+  Lives in the dedicated `crates/cannet-spill` crate, which owns the
+  raw `RawStore` trait, the in-RAM `MemRawStore` test double, and the
+  disk-backed `DiskRawStore`. That crate is the *only* place the
+  workspace's `unsafe_code = "forbid"` policy is relaxed (to `deny`,
+  with justified per-site `#[allow]`s): mapping a file is inherently
+  `unsafe`, and containing it to one focused crate keeps the
+  failure-mode-rich surface reviewable and every other crate
+  `unsafe`-free.
 - **`notify`** crate (Rust, CC0-1.0 / Apache-2.0) — `adopted` in
   Phase 12 follow-up for the GUI host's DBC file watcher
   (`apps/gui/src-tauri/src/dbc_watcher.rs`). Wraps the OS-native

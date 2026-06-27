@@ -13,18 +13,21 @@
 //!
 //! [`RawTraceFrame`] is the canonical undecoded shape. It owns its
 //! payload bytes (no borrowing into a parent file or stream) so once
-//! a frame is appended the source it came from is irrelevant. Append
-//! is `O(1)` via [`Vec::push`]; slices clone out of the lock so the
-//! decoder can run without holding it.
+//! a frame is appended the source it came from is irrelevant.
 //!
-//! ## Bounds and the future
+//! ## Facade over a swappable raw store
 //!
-//! The store is `Vec<RawTraceFrame>`. For a long-running
-//! session this grows unbounded; the disk-spill follow-up is
-//! deferred. The interface here is shaped so that
-//! evolution (windowed in-memory tail + on-disk overflow) can land
-//! behind the same `append` / `len` / `slice` surface without
-//! reshaping callers.
+//! `TraceStore` is a thin facade: the raw frame bytes — the part that
+//! grows with capture length — live behind the
+//! [`cannet_spill::RawStore`] trait, while the small, id-space-bounded
+//! *derived* state (per-id rates, newest-per-id, per-bus / per-direction
+//! throughput) stays here in RAM. Two raw stores implement the trait: the
+//! in-RAM [`cannet_spill::MemRawStore`] test double and the disk-spill
+//! [`cannet_spill::DiskRawStore`] production store
+//! ([ADR 0002](../../../docs/adr/0002-disk-spill-store.md)). Swapping one
+//! for the other never reshapes callers — the accessor surface
+//! (`append` / `len` / `slice` / `scan_chunk` / …) is store-independent
+//! ([ADR 0025](../../../docs/adr/0025-frontend-windowed-source-contract.md)).
 //!
 //! ## Rate estimation
 //!
@@ -55,10 +58,14 @@
 //! falling back to `0.0` if there isn't yet enough signal to estimate.
 
 use std::collections::{HashMap, VecDeque};
+use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use cannet_core::{CanFrame, CanFramePayload, Direction};
+use cannet_core::Direction;
+use cannet_spill::{DiskRawStore, MemRawStore, RawStore};
+
+pub use cannet_spill::RawTraceFrame;
 
 /// How far back the rate estimator looks. One second is short enough
 /// that a stalled stream registers immediately and long enough that
@@ -85,11 +92,6 @@ const PER_ID_RATE_ALPHA: f64 = 0.6;
 /// servers report frames on the same wire channel — without it, the
 /// per-id snapshot would collapse them into one row.
 type FrameKey = (Option<String>, u8, u32, bool);
-
-/// Identifies a frame by arbitration id alone (id value + addressing
-/// mode, channel-independent) — what signal sampling keys on, since a
-/// DBC message id isn't channel-scoped.
-type IdKey = (u32, bool);
 
 /// Per-id message-rate estimate. Tracks the EMA of the *frame-time*
 /// inter-arrival (the bus-side cadence) plus the wall-clock time of
@@ -160,39 +162,6 @@ pub struct LatestById {
     pub count: u64,
 }
 
-/// One row in the trace store. Owned, undecoded.
-///
-/// `bus_id` is the project's logical bus this frame was routed onto
-/// — `None` if no binding/mapping assigned one. Pump threads
-/// stamp it before appending; per-bus DBC scoping and the filter
-/// predicate both read it. `channel` keeps its meaning (the source's
-/// 0-based channel number) and is what the user maps onto a `bus_id`
-/// at import / connect time.
-#[derive(Debug, Clone)]
-pub struct RawTraceFrame {
-    pub timestamp_ns: u64,
-    pub channel: u8,
-    pub id: u32,
-    pub extended: bool,
-    pub direction: Direction,
-    pub payload: CanFramePayload,
-    pub bus_id: Option<String>,
-}
-
-impl From<CanFrame> for RawTraceFrame {
-    fn from(frame: CanFrame) -> Self {
-        Self {
-            timestamp_ns: frame.timestamp_ns,
-            channel: frame.channel,
-            id: frame.id.raw(),
-            extended: frame.id.is_extended(),
-            direction: frame.direction,
-            payload: frame.payload,
-            bus_id: None,
-        }
-    }
-}
-
 /// The trace model. Single producer (per pump thread) is typical but
 /// not required; multiple producers serialise on the inner mutex.
 pub struct TraceStore {
@@ -238,21 +207,17 @@ struct Inner {
     /// configured yet" — every frame is accepted (used at construction
     /// and during tests that don't care).
     session_start_ns: u64,
-    frames: Vec<RawTraceFrame>,
+    /// The raw frame bytes — `Vec`-backed in tests, disk-spilled in
+    /// production. Owns the always-on `by-id` index too (on disk for the
+    /// disk store), so it serves [`Self::matching_frames_indexed`].
+    raw: Box<dyn RawStore>,
     rate_samples: VecDeque<RateSample>,
-    /// Index into `frames` of the most recent frame seen for each
-    /// [`FrameKey`] — `O(1)` to maintain on append, and what the
-    /// per-message-ID view reads instead of walking the whole buffer.
+    /// Frame index of the most recent frame seen for each [`FrameKey`] —
+    /// `O(1)` to maintain on append, and what the per-message-ID view
+    /// reads instead of walking the whole buffer.
     latest: HashMap<FrameKey, usize>,
     /// Per-id message-rate estimate, also maintained `O(1)` on append.
     rates: HashMap<FrameKey, RateEstimate>,
-    /// For each arbitration id ([`IdKey`]): the indices into `frames` of
-    /// every frame with that id, in append (hence index-ascending)
-    /// order. `O(1)` push on append; lets [`Self::slice_matching`] jump
-    /// straight to a signal's frames in a window instead of scanning all
-    /// of it — so a live plot of a sparse signal doesn't walk the whole
-    /// capture each re-sample.
-    by_id: HashMap<IdKey, Vec<usize>>,
     /// Per-bus rate state, keyed by the frame's logical bus (`None` =
     /// unassigned, its own bucket). Maintained `O(1)` on append; backs
     /// [`TraceStore::frames_per_second_by_bus`], the per-bus throughput
@@ -272,15 +237,26 @@ struct Inner {
 }
 
 impl TraceStore {
+    /// Construct over an in-RAM [`MemRawStore`] — the test double. Used by
+    /// unit tests and the perf harness; production uses [`Self::new_disk`].
     pub fn new() -> Self {
+        Self::with_raw(Box::new(MemRawStore::new()))
+    }
+
+    /// Construct over the disk-spill [`DiskRawStore`] rooted at `dir` (the
+    /// production path, ADR 0002). The directory must already exist.
+    pub fn new_disk(dir: impl AsRef<Path>) -> std::io::Result<Self> {
+        Ok(Self::with_raw(Box::new(DiskRawStore::new(dir)?)))
+    }
+
+    fn with_raw(raw: Box<dyn RawStore>) -> Self {
         Self {
             inner: Mutex::new(Inner {
                 session_start_ns: 0,
-                frames: Vec::new(),
+                raw,
                 rate_samples: VecDeque::new(),
                 latest: HashMap::new(),
                 rates: HashMap::new(),
-                by_id: HashMap::new(),
                 per_bus: HashMap::new(),
                 rx_rate: RateTrack::default(),
                 tx_rate: RateTrack::default(),
@@ -321,11 +297,10 @@ impl TraceStore {
             inner.dropped_before_session = inner.dropped_before_session.saturating_add(1);
             return None;
         }
-        let id_key = (frame.id, frame.extended);
-        inner.frames.push(frame);
-        let count = inner.frames.len();
-        inner.latest.insert(key.clone(), count - 1);
-        inner.by_id.entry(id_key).or_default().push(count - 1);
+        // The raw store assigns the dense index and maintains `by-id`.
+        let idx = inner.raw.append(frame);
+        let count = idx + 1;
+        inner.latest.insert(key.clone(), idx);
         inner
             .rates
             .entry(key)
@@ -376,7 +351,7 @@ impl TraceStore {
             });
             prune_rate_samples(&mut dir_rate.samples, now);
         }
-        Some(u64::try_from(count - 1).unwrap_or(u64::MAX))
+        Some(u64::try_from(idx).unwrap_or(u64::MAX))
     }
 
     /// Number of frames currently stored.
@@ -385,7 +360,7 @@ impl TraceStore {
         self.inner
             .lock()
             .expect("trace store mutex poisoned")
-            .frames
+            .raw
             .len()
     }
 
@@ -395,13 +370,11 @@ impl TraceStore {
     /// returns an empty `Vec`.
     #[must_use]
     pub fn slice(&self, start: usize, end: usize) -> Vec<RawTraceFrame> {
-        let inner = self.inner.lock().expect("trace store mutex poisoned");
-        let len = inner.frames.len();
-        if start >= len {
-            return Vec::new();
-        }
-        let end = end.min(len);
-        inner.frames[start..end].to_vec()
+        self.inner
+            .lock()
+            .expect("trace store mutex poisoned")
+            .raw
+            .slice(start, end)
     }
 
     /// First-and-last frame timestamps for the (clamped) range
@@ -411,18 +384,11 @@ impl TraceStore {
     /// per-signal decoded-sample slice the cache produces.
     #[must_use]
     pub fn frame_timestamps(&self, start: usize, end: usize) -> (Option<u64>, Option<u64>) {
-        let inner = self.inner.lock().expect("trace store mutex poisoned");
-        let len = inner.frames.len();
-        if start >= len {
-            return (None, None);
-        }
-        let end = end.min(len);
-        let first = inner.frames.get(start).map(|f| f.timestamp_ns);
-        let last = end
-            .checked_sub(1)
-            .and_then(|i| inner.frames.get(i))
-            .map(|f| f.timestamp_ns);
-        (first, last)
+        self.inner
+            .lock()
+            .expect("trace store mutex poisoned")
+            .raw
+            .frame_timestamps(start, end)
     }
 
     /// Wall-clock span of the buffered frames, in seconds: the timestamp
@@ -433,9 +399,9 @@ impl TraceStore {
     #[must_use]
     pub fn buffer_seconds(&self) -> f64 {
         let inner = self.inner.lock().expect("trace store mutex poisoned");
-        match (inner.frames.first(), inner.frames.last()) {
+        match inner.raw.first_last_ts() {
             (Some(first), Some(last)) => {
-                let span = last.timestamp_ns.saturating_sub(first.timestamp_ns);
+                let span = last.saturating_sub(first);
                 #[allow(clippy::cast_precision_loss)]
                 {
                     span as f64 / 1_000_000_000.0
@@ -447,11 +413,11 @@ impl TraceStore {
 
     /// For one `(id, extended)` arbitration key: clone the matching
     /// frames in `[start, end)` **paired with their frame index in the
-    /// store**. The per-id index ([`Inner::by_id`]) jumps straight to
-    /// the matching frames, so the work is `O(matches + log n)` —
-    /// what the host-side decoded-sample cache uses to map between
-    /// frame indices and sample indices (a `[from_frame, to_frame)`
-    /// query can then binary-search the cache).
+    /// store**. The raw store's `by-id` index jumps straight to the
+    /// matching frames, so the work is `O(matches + log n)` — what the
+    /// host-side decoded-sample cache uses to map between frame indices
+    /// and sample indices (a `[from_frame, to_frame)` query can then
+    /// binary-search the cache).
     #[must_use]
     pub fn matching_frames_indexed(
         &self,
@@ -460,23 +426,11 @@ impl TraceStore {
         start: usize,
         end: usize,
     ) -> Vec<(usize, RawTraceFrame)> {
-        let inner = self.inner.lock().expect("trace store mutex poisoned");
-        let len = inner.frames.len();
-        if start >= len {
-            return Vec::new();
-        }
-        let end = end.min(len);
-        match inner.by_id.get(&(id_raw, extended)) {
-            Some(frame_idxs) => {
-                let lo = frame_idxs.partition_point(|&i| i < start);
-                let hi = frame_idxs.partition_point(|&i| i < end);
-                frame_idxs[lo..hi]
-                    .iter()
-                    .map(|&i| (i, inner.frames[i].clone()))
-                    .collect()
-            }
-            None => Vec::new(),
-        }
+        self.inner
+            .lock()
+            .expect("trace store mutex poisoned")
+            .raw
+            .matching_frames_indexed(id_raw, extended, start, end)
     }
 
     /// Scan the clamped range `[start, end)`, test each frame with
@@ -499,17 +453,11 @@ impl TraceStore {
         end: usize,
         keep: impl Fn(&RawTraceFrame) -> bool,
     ) -> Vec<usize> {
-        let inner = self.inner.lock().expect("trace store mutex poisoned");
-        let len = inner.frames.len();
-        if start >= len {
-            return Vec::new();
-        }
-        let end = end.min(len);
-        inner.frames[start..end]
-            .iter()
-            .enumerate()
-            .filter_map(|(i, frame)| keep(frame).then_some(start + i))
-            .collect()
+        self.inner
+            .lock()
+            .expect("trace store mutex poisoned")
+            .raw
+            .scan_chunk(start, end, &keep)
     }
 
     /// Clone the frames at the given absolute indices, each paired with
@@ -520,10 +468,11 @@ impl TraceStore {
     /// match set.
     #[must_use]
     pub fn frames_at(&self, idxs: &[usize]) -> Vec<(usize, RawTraceFrame)> {
-        let inner = self.inner.lock().expect("trace store mutex poisoned");
-        idxs.iter()
-            .filter_map(|&i| inner.frames.get(i).map(|frame| (i, frame.clone())))
-            .collect()
+        self.inner
+            .lock()
+            .expect("trace store mutex poisoned")
+            .raw
+            .frames_at(idxs)
     }
 
     /// Begin a new session: empty the buffer **and** raise the
@@ -537,19 +486,19 @@ impl TraceStore {
     /// own time origin. Tests that just want an empty buffer with no
     /// gating pass `0`.
     ///
-    /// (Why fresh Vec/HashMap allocations instead of `clear()`: those
-    /// only reset length, leaving the — possibly enormous after a long
-    /// replay — backing buffers resident. Replacing the containers
-    /// returns the memory to the allocator so a small session after a
-    /// large one doesn't carry the previous footprint.)
+    /// (Why fresh `HashMap` allocations instead of `clear()`: those only
+    /// reset length, leaving the — possibly enormous after a long replay
+    /// — backing buffers resident. Replacing the containers returns the
+    /// memory to the allocator so a small session after a large one
+    /// doesn't carry the previous footprint. The raw store does the same
+    /// in its own [`RawStore::clear`].)
     pub fn start_session(&self, session_start_ns: u64) {
         let mut inner = self.inner.lock().expect("trace store mutex poisoned");
         inner.session_start_ns = session_start_ns;
-        inner.frames = Vec::new();
+        inner.raw.clear();
         inner.rate_samples = VecDeque::new();
         inner.latest = HashMap::new();
         inner.rates = HashMap::new();
-        inner.by_id = HashMap::new();
         inner.per_bus = HashMap::new();
         inner.rx_rate = RateTrack::default();
         inner.tx_rate = RateTrack::default();
@@ -600,7 +549,7 @@ impl TraceStore {
     pub fn latest_in_window(&self, start: usize, end: usize) -> Vec<LatestById> {
         let now = Instant::now();
         let inner = self.inner.lock().expect("trace store mutex poisoned");
-        let len = inner.frames.len();
+        let len = inner.raw.len();
         let end = end.min(len);
         if start >= end {
             return Vec::new();
@@ -618,19 +567,24 @@ impl TraceStore {
                 .collect()
         } else {
             let mut last: HashMap<FrameKey, usize> = HashMap::new();
-            for (offset, f) in inner.frames[start..end].iter().enumerate() {
+            for (offset, f) in inner.raw.slice(start, end).iter().enumerate() {
                 last.insert((f.bus_id.clone(), f.channel, f.id, f.extended), start + offset);
             }
             last.into_iter().collect()
         };
         keyed.sort_unstable();
+        // Materialise the selected frames in one indexed read (from the
+        // raw store's ring or its mappings), aligned with `keyed`.
+        let idxs: Vec<usize> = keyed.iter().map(|(_, idx)| *idx).collect();
+        let frames = inner.raw.frames_at(&idxs);
         keyed
             .into_iter()
-            .map(|(key, idx)| {
+            .zip(frames)
+            .map(|((key, idx), (_, frame))| {
                 let est = inner.rates.get(&key);
                 LatestById {
                     index: idx,
-                    frame: inner.frames[idx].clone(),
+                    frame,
                     rate: est.map_or(0.0, |r| r.rate(now)),
                     count: est.map_or(0, |r| r.count),
                 }
@@ -723,7 +677,7 @@ fn rate_from_samples(samples: &VecDeque<RateSample>) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cannet_core::{CanId, Direction};
+    use cannet_core::{CanFrame, CanFramePayload, CanId};
 
     fn dummy(ts_ns: u64, id: u32) -> RawTraceFrame {
         RawTraceFrame {
