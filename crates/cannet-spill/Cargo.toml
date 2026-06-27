@@ -25,6 +25,13 @@ cannet-core = { path = "../cannet-core" }
 # `MapViewOfFile` on Windows, behind one Rust API (ADR 0002). The disk
 # raw store maps its pre-allocated segment files for random-access reads.
 memmap2 = "0.9"
+# The reopen manifest (ADR 0002 DS-4/DS-7): a small JSON record of the
+# store's valid-length watermarks, bus-intern table, and by-id directory,
+# written on flush so a prior scratch can be remapped without an
+# O(capture) rebuild scan. serde/serde_json carry the (de)serialization
+# rather than a hand-rolled binary format.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [dev-dependencies]
 tempfile = "3"
