@@ -108,9 +108,20 @@ session present at launch is loaded as a stopped historical trace
       FD/remote/error/bus interning + ring tail; geometric by-id rebuild;
       append-continues-from-watermark; absent / corrupt manifest;
       clear-removes-manifest).
-    - **Step 5.3b — not started.** `project_id: Uuid` on the `Project`
-      schema + ADR-0011 migration (generate on first parse of an older
-      file, write back on next save).
+    - **Step 5.3b — done.** `project_id: Uuid` on the `Project` schema —
+      the stable identity the DS-7 gate keys on. Added as an *additive
+      field with a generating serde default, no `schema_version` bump*
+      (the ADR's "schema-version migration" framing was wrong — ADR 0011
+      *rejects* non-current versions; the real convention for additive
+      fields is the `transmit_frames` pattern, and the ADR text is now
+      fixed to say so). Host-managed like `transmit_frames`: the
+      frontend's `gatherProject()` omits it, so relying on a frontend
+      round-trip would mint a new id every save. Instead `save_project`
+      anchors the id to the target file (`existing_project_id` reads the
+      id already on disk and preserves it; a brand-new file keeps the
+      freshly generated one). New `uuid` dep (v4 + serde). 3 tests
+      (generate-when-absent + distinct, preserve-explicit + round-trip,
+      file-anchor recovers/None). The field is inert until 5.3c reads it.
     - **Step 5.3c — not started.** Host wiring (lib.rs / trace_store.rs):
       `current/` records the project identity (host-side, separate from
       the spill manifest); `open_project` reopens-as-stopped only on an

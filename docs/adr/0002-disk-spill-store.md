@@ -187,14 +187,18 @@ Identity must be **stable across rename and move** — a project's
 file path is the user's to change at any time, and the last-project
 pointer can go stale or be wiped. The identity is a
 UUID embedded inside the project JSON file, generated once when the
-project is first created and never modified after. This requires
-adding a `project_id: Uuid` field to the `Project` schema (it is not
-present today — see [project.rs:97](../../apps/gui/src-tauri/src/project.rs#L97))
-under [ADR 0011](0011-project-file-format.md)'s normal schema-version
-migration: when an older project file is parsed, a UUID is generated
-and written back on next save. The path recorded alongside the
-identity in `current/` is best-effort diagnostic data, not the basis
-for the match.
+project is first created and never modified after. This adds a
+`project_id: Uuid` field to the `Project` schema. [ADR 0011](0011-project-file-format.md)
+rejects rather than migrates a non-current `schema_version`, so the
+field is added the way other backward-compatible fields are (e.g.
+`transmit_frames`): an **additive field with a generating serde
+default, no version bump**. An older file with no id gains a freshly
+generated one when it is read; because the field is host-managed (the
+frontend's save payload omits it, like `transmit_frames`), `save_project`
+anchors it to the target file — preserving the id already on disk and
+writing a new one only for a brand-new file — so it stays stable across
+saves. The path recorded alongside the identity in `current/` is
+best-effort diagnostic data, not the basis for the match.
 
 This is deliberate. The on-disk formats are reload-compatible by
 construction (DS-1's arithmetic-addressable fixed-size records,

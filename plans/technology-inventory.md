@@ -30,6 +30,10 @@ and the license / platform constraints we need to be aware of.
   (`current/manifest.json`: valid-length watermarks, bus-intern table,
   by-id directory) so a prior scratch remaps without an O(capture)
   rebuild scan (ADR 0002 DS-4/DS-7) — same crate, no new dependency.
+- **`uuid`** (v1, MIT / Apache-2.0) — `adopted` for `Project::project_id`,
+  the stable per-project identity that gates disk-spill scratch reload
+  across rename/move (ADR 0002 DS-7). `v4` (random) + `serde` features.
+  New direct dependency of `cannet-gui`.
 - **`@tanstack/react-virtual`** — `adopted` in Phase 1, `removed` in
   Phase 2. The library's count-based virtualizer doesn't handle the
   browser's CSS dimension cap (≈17M-33M px depending on the engine):
