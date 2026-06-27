@@ -8,10 +8,11 @@ fixes the requirement (random-access, loss-free);
 the on-disk format and I/O architecture and is **normative for this
 task**.
 
-This is the **model-side** counterpart to Task 17: it provides a
-second implementation of the `RowPage` / `DecimatedRange` accessor
-signatures Task 17 Slice 1 froze — no contract change, no view
-change. (Explicit `.blf` "Save Capture" stays a separate feature; the
+This is the **model-side** counterpart to the frontend
+windowed-source convergence: it provides a second implementation of
+the `RowPage` / `DecimatedRange` accessor signatures frozen by
+[`../../docs/adr/0025-frontend-windowed-source-contract.md`](../../docs/adr/0025-frontend-windowed-source-contract.md)
+— no contract change, no view change. (Explicit `.blf` "Save Capture" stays a separate feature; the
 disk-spill store is the live working store — ephemeral scratch, not an
 export format.)
 
@@ -91,7 +92,7 @@ Exit criteria:
 
 - a capture runs past available RAM with no row becoming unreachable;
   scroll / filter / plot of deep history all work;
-- the `RowPage` / `DecimatedRange` signatures from Task 17 are
+- the `RowPage` / `DecimatedRange` signatures (ADR 0025) are
   unchanged — only their host implementation is swapped;
 - `fetch_trace_range` / `fetch_by_id_page` with a predicate are
   O(page) via the filter index, with no O(capture) scan in any filter
