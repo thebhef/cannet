@@ -5,7 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 
-import type { Bus, SignalDescriptorRecord, ValueTableEntryRecord } from "./types";
+import type { Bus, SignalDescriptorRecord, SignalExtent, ValueTableEntryRecord } from "./types";
 import { useTraceData } from "./traceData";
 import { useProjectContext } from "./projectContext";
 import { defaultBusColor } from "./busColor";
@@ -1932,19 +1932,17 @@ function PlotArea(p: PlotAreaProps) {
   const presentRef = useRef<Map<string, number | null>>(new Map());
   const resampleBusyRef = useRef(false);
   const cacheRef = useRef<AreaCache | null>(null);
-  /** Per-trace auto-normalisation latch (signal key → [lo, hi] of raw
-   * values seen). Lives outside `cacheRef` because the cache gets re-
-   * anchored every time `lr.winStart` slides under a bounded history
-   * buffer — which on a live capture is every tick. Keeping the latch
-   * in the cache caused it to be recomputed from the current visible
-   * window each tick (signal "moves around" because the [lo, hi]
-   * keeps shrinking as old peaks scroll off-screen). Survives anchor
-   * resets; reset only on `resetYEpoch` (Fit Data) and pruned to the
-   * currently-displayed signal set on signal changes. */
-  const traceRangesRef = useRef<Map<string, { lo: number; hi: number }>>(new Map());
-  /** True while a manual Fit Y override is active — pins
-   * `traceRangesRef` so the per-tick latch/refit code in `resample`
-   * leaves it alone. Cleared by Fit Data. */
+  /** Per-signal y-range pinned by a manual Fit Y (signal key → [lo, hi]
+   * snapshot of the rendered extent at the moment Fit Y was hit). Only
+   * read while {@link manualFitYRef} is set — it's a view-local user
+   * override of the display, not model state. The widen-only auto-norm
+   * latch that used to live here is gone: in follow-live the y-extent
+   * now comes from the host's `signal_min_max` (ADR 0025), and a paused/
+   * zoomed view fits the visible slice each tick. */
+  const manualRangesRef = useRef<Map<string, { lo: number; hi: number }>>(new Map());
+  /** True while a manual Fit Y override is active — the per-tick
+   * normalisation in `resample` reads {@link manualRangesRef} instead of
+   * the host extent. Cleared by Fit Data. */
   const manualFitYRef = useRef(false);
   /** The y-range actually used to normalise each signal on the most
    * recent resample — the widen-only latch, the manual Fit Y pin, or
@@ -2168,20 +2166,6 @@ function PlotArea(p: PlotAreaProps) {
       // session buffer was cleared).
       const sk = signals.map(signalRefKey).join("|");
       let cache = cacheRef.current;
-      // Drop latch entries for signals that are no longer in this area
-      // (cleanup on the same pass so removed-then-readded signals get
-      // a fresh latch from current data).
-      if (cache && cache.signalSetKey !== sk) {
-        const stillPresent = new Set(signals.map(signalRefKey));
-        for (const k of Array.from(traceRangesRef.current.keys())) {
-          if (!stillPresent.has(k)) traceRangesRef.current.delete(k);
-        }
-      }
-      // The session buffer was just cleared — the value-range latch
-      // built up from the previous capture is stale; drop it.
-      if (cache && lr.winEnd < cache.lastWinEnd) {
-        traceRangesRef.current.clear();
-      }
       if (
         !cache ||
         cache.anchorStart !== lr.winStart ||
@@ -2258,20 +2242,35 @@ function PlotArea(p: PlotAreaProps) {
         return;
       }
 
+      // Shared query list for both host calls below.
+      const sigQuery = signals.map((s) => ({
+        busId: s.busId,
+        messageId: s.messageId,
+        extended: s.extended,
+        signalName: s.signalName,
+      }));
+      // Follow-live auto-norm reads the host's all-time per-signal extent
+      // (`signal_min_max`, ADR 0025) so a peak that has scrolled out of
+      // the raw window still sets the y-scale. Skip the round-trip when a
+      // manual Fit Y is pinned, when paused/zoomed (the visible slice is
+      // fit instead), or in enum mode (no normalisation). Fetched in
+      // parallel with the sample so it adds no wall-clock.
+      const enumActivePre = enumModeRef.current && valueTableRef.current != null;
+      const wantHostExtent = lr.followLive && !manualFitYRef.current && !enumActivePre;
       diagCount("invoke.sample_signals"); // DIAG
-      const buf = await invoke<ArrayBuffer>("sample_signals", {
-        fromIndex: visStart,
-        windowEnd: visEnd,
-        fromSeconds,
-        toSeconds,
-        signals: signals.map((s) => ({
-          busId: s.busId,
-          messageId: s.messageId,
-          extended: s.extended,
-          signalName: s.signalName,
-        })),
-        maxPoints: maxPts,
-      });
+      const [buf, hostExtents] = await Promise.all([
+        invoke<ArrayBuffer>("sample_signals", {
+          fromIndex: visStart,
+          windowEnd: visEnd,
+          fromSeconds,
+          toSeconds,
+          signals: sigQuery,
+          maxPoints: maxPts,
+        }),
+        wantHostExtent
+          ? invoke<(SignalExtent | null)[]>("signal_min_max", { signals: sigQuery })
+          : Promise.resolve(null),
+      ]);
       const res = decodeSignalsSample(buf);
       if (uplotRef.current !== u || cacheRef.current !== cache) return;
       lr.onReportHostMs(areaId, res.slice_ms + res.decode_ms);
@@ -2322,26 +2321,33 @@ function PlotArea(p: PlotAreaProps) {
       // series for that); the y-axis tick labels map back through the
       // primary signal's group range to real engineering values.
       //
-      // First latch a per-signal `(lo, hi)` of observed values (group
-      // union happens below, at normalise time). Three modes, all
-      // backed by `traceRangesRef`:
+      // The per-signal `(lo, hi)` driving the normalise (group union
+      // happens below) is resolved by mode — no JS-held latch anymore:
       //
-      //  * **Manual override** (Fit Y) — `manualFitYRef.current` is
-      //    set, the stored ranges are used as-is until the next Fit
-      //    Data or `clear`.
-      //  * **Follow-live ON** — widen-only latch: each tick the
-      //    visible slice's min/max only ever *grows* the stored
-      //    range, never shrinks it. The decimation we run on the slice
-      //    keeps the per-bucket extremes, so the latch sees the full
-      //    capture's peak-to-peak even when older peaks have scrolled
-      //    out of the raw window. This is what stops the y-axis from
-      //    "snapping back" when a peak drops off the left edge.
-      //  * **Follow-live OFF** — recompute from visible: a zoomed-in
-      //    pan should fill the canvas with the detail in the current
-      //    window, so the range is *replaced* each tick (not widened).
-      const ranges = traceRangesRef.current;
+      //  * **Manual Fit Y** — the user-pinned `manualRangesRef`
+      //    snapshot is used as-is until the next Fit Data / Clear.
+      //  * **Follow-live ON** — the host's all-time per-signal extent
+      //    (`hostExtents`, from `signal_min_max`). The host sees every
+      //    decoded sample, so a peak that scrolled out of the raw
+      //    window still sets the scale and the y-axis never "snaps
+      //    back" — and it's a host-owned model fact (ADR 0025), not a
+      //    range latched in a React ref.
+      //  * **Follow-live OFF** — the visible slice's own min/max,
+      //    recomputed each tick so a zoomed-in pan fills the canvas
+      //    with its local detail (shaping already-paged data).
+      const ranges = new Map<string, { lo: number; hi: number }>();
       signals.forEach((s, i) => {
         const key = signalRefKey(s);
+        if (manualFitYRef.current) {
+          const m = manualRangesRef.current.get(key);
+          if (m) ranges.set(key, m);
+          return;
+        }
+        if (lr.followLive) {
+          const e = hostExtents?.[i];
+          if (e && e.hi > e.lo) ranges.set(key, { lo: e.lo, hi: e.hi });
+          return;
+        }
         const ser = seriesRel[i];
         if (ser.v.length === 0) return;
         let lo = Infinity;
@@ -2350,18 +2356,7 @@ function PlotArea(p: PlotAreaProps) {
           if (v < lo) lo = v;
           if (v > hi) hi = v;
         }
-        if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) return;
-        if (manualFitYRef.current) return; // user pinned the range
-        const existing = ranges.get(key);
-        if (!lr.followLive || !existing) {
-          ranges.set(key, { lo, hi });
-        } else {
-          // widen-only
-          ranges.set(key, {
-            lo: Math.min(existing.lo, lo),
-            hi: Math.max(existing.hi, hi),
-          });
-        }
+        if (Number.isFinite(lo) && Number.isFinite(hi) && hi > lo) ranges.set(key, { lo, hi });
       });
       // Unit-based y-scale (ADR 0026): the per-signal latches above
       // feed `groupScaleRanges`, which hands every signal the *union*
@@ -3121,11 +3116,10 @@ function PlotArea(p: PlotAreaProps) {
     void resampleRef.current();
   }, [followLive]);
 
-  // Panel asked us to refit y — drop the per-trace normalisation range
-  // (and any manual Fit Y override) so the next tick uses the host
-  // extrema fresh.
+  // Panel asked us to refit y — drop any manual Fit Y override so the
+  // next tick uses the host extent (follow-live) / visible slice fresh.
   useEffect(() => {
-    traceRangesRef.current.clear();
+    manualRangesRef.current = new Map();
     manualFitYRef.current = false;
   }, [resetYEpoch]);
 
@@ -3147,7 +3141,7 @@ function PlotArea(p: PlotAreaProps) {
       if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) continue;
       next.set(key, { lo, hi });
     }
-    traceRangesRef.current = next;
+    manualRangesRef.current = next;
     manualFitYRef.current = true;
     void resampleRef.current();
   }, []);

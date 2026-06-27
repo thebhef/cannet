@@ -787,6 +787,20 @@ pub struct DecimatedRange {
     pub decode_ms: f64,
 }
 
+/// One signal's all-time value extent (min/max over every decoded
+/// sample) — the host-owned y-extent the plot's auto-normalisation
+/// reads. A **scalar model fact**, queried directly per ADR 0025
+/// (not part of the windowed [`DecimatedRange`] accessor), so the
+/// frontend no longer latches a widen-only range in a React ref.
+/// Returned per requested signal by
+/// [`signal_min_max`](crate::signal_min_max); `null` for a signal
+/// nothing has decoded yet.
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct SignalExtent {
+    pub lo: f64,
+    pub hi: f64,
+}
+
 /// One CAN interface as exposed by a remote `cannet-server`. Mirrors
 /// `cannet_client::Interface`, kept here so the React side has a stable
 /// `snake_case` payload to deserialize against.

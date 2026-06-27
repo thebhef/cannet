@@ -96,7 +96,7 @@ use ipc::{
     BusFps, ByIdSnapshot, DbcAttributeRecord, DbcContentRecord, DbcInfo, DbcMessageContentRecord,
     DbcSignalContentRecord, DecimatedRange, DecodedRecord, FilteredTracePage, InterfaceRecord,
     LogFinished, OpenLogResult, RemoteSessionResult, RowPage, SampledPoints,
-    SignalDescriptorRecord, SignalQuery, SignalRecord, TraceFrameRecord, TraceGrew,
+    SignalDescriptorRecord, SignalExtent, SignalQuery, SignalRecord, TraceFrameRecord, TraceGrew,
     ValueTableEntryRecord,
 };
 use notes::{Note, NotesStore};
@@ -391,6 +391,7 @@ pub fn run() {
             list_signals,
             list_dbc_content,
             sample_signals,
+            signal_min_max,
             list_transmit_frames,
             set_transmit_frame,
             remove_transmit_frame,
@@ -2253,6 +2254,38 @@ fn sample_signals_inner(
         slice_ms,
         decode_ms,
     }
+}
+
+/// Each requested signal's all-time value extent — the host-owned
+/// y-extent the plot's auto-normalisation reads (ADR 0025: a scalar
+/// model fact, queried directly rather than latched in a React ref).
+/// One [`SignalExtent`] per query in the same order, `None` for a
+/// signal nothing has decoded yet. Like `sample_signals` it catches the
+/// per-signal caches up to the store tip, so cost is `O(new matches)`.
+#[tauri::command]
+#[allow(clippy::unused_async)]
+async fn signal_min_max(app: AppHandle, signals: Vec<SignalQuery>) -> Vec<Option<SignalExtent>> {
+    let state: State<'_, AppState> = app.state();
+    let dbs_guard = state.databases.lock().expect("databases mutex poisoned");
+    let db_refs: Vec<&Database> = dbs_guard.iter().map(|l| &l.db).collect();
+    let out = signals
+        .iter()
+        .map(|q| {
+            state
+                .signal_caches
+                .min_max(
+                    q.bus_id.as_deref(),
+                    q.message_id,
+                    q.extended,
+                    &q.signal_name,
+                    &state.trace_store,
+                    &db_refs,
+                )
+                .map(|(lo, hi)| SignalExtent { lo, hi })
+        })
+        .collect();
+    drop(dbs_guard);
+    out
 }
 
 fn decode_raw_frame(db: &Database, frame: &RawTraceFrame) -> Option<DecodedRecord> {

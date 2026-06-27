@@ -25,3 +25,4 @@ signal) between plot panels.
 - dragging size of plot areas/individual traces vertically
 - per-unit plots currently only collect plots on an axis; they don't share the scale between signals
 - still seeing double-plot points frequently; not sure whether issue with tx timing, rx, or plot
+- per-unit trace areas should combine enums, enums should be offset from one another and packed tightly to conserve vertical space.
