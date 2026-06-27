@@ -73,9 +73,19 @@ session present at launch is loaded as a stopped historical trace
     direct dependency (resolves the per-OS cache dir). The existing
     chunked-scan `fetch_filtered_trace` keeps working through the
     store-independent facade, so the app stays green.
-  - **Step 5.2 — not started.** Rewrite `fetch_filtered_trace` onto the
-    filter index (`refresh_filter_index` + `FilterIndex::page`), with the
-    active index held on `AppState`.
+  - **Step 5.2 — done.** `fetch_filtered_trace` is served from the
+    materialized filter index, not a window scan. `AppState` holds the
+    active `FilterIndex` (`ActiveFilterIndex`) keyed by
+    `(predicate, session_start_ns)`: a predicate change or a Clear/new
+    capture (which bumps `session_start_ns`) rebuilds it; otherwise each
+    call extends it to the tip (`refresh_filter_index`, `O(delta)`,
+    candidate-id frames only). The `[scan_start, scan_end)` window maps onto
+    a match-position range via two `FilterIndex::position_of` lower-bounds
+    (new spill primitive), count is the range width, and the page is a
+    random-access `FilterIndex::page` slice — serving is `O(log n + page)`.
+    The old chunked-scan helpers (`PageSelector`, `scan_chunk_filtered`,
+    `tail_page`) are retired. Verified: gui + spill unit suites, frontend
+    suite (wire contract unchanged), and a render-tier perf run/gate.
   - **Step 5.3 — not started.** The DS-7 scratch lifecycle: `project_id`
     UUID identity gate in `open_project`, reset-on-Clear/Start, and
     load-prior-as-stopped (needs a new disk-store *reload* capability —
@@ -85,6 +95,23 @@ session present at launch is loaded as a stopped historical trace
 Decisions and deviations recorded so far (to fold into ADR 0002 at
 Step 6):
 
+- **The filtered-fetch incremental-count checkpoint is now vestigial.**
+  `fetch_filtered_trace` still accepts `prev_count` / `prev_count_end` for
+  IPC compatibility but ignores them: the filter index gives an exact count
+  in `O(log n)` (two `position_of` searches), so the old O(Δ) checkpoint
+  that existed to avoid a full window re-scan is unnecessary. The
+  follow-live-tail semantics are preserved (the last `limit` matches in the
+  window) but served from the index rather than a backward scan. A later
+  cleanup can drop the params from the IPC payload + the frontend; left in
+  place here to keep 5.2 a surgical host-only change.
+- **The filter index build holds the `databases` lock for its duration.**
+  Unlike the retired per-chunk scan (which re-locked `databases` between
+  chunks), the index `keep` closure borrows the DBCs across the whole
+  synchronous `refresh_filter_index`. The trace-store append lock is still
+  released between chunks inside the extend (ingest is not starved), but a
+  one-time deep-history *first* build briefly blocks DBC add/remove and the
+  tokio worker it runs on. Steady-state extends are `O(delta)` so the hold
+  is negligible; the one-time build cost is what Step 7 measures.
 - **Intermediate state after Step 5.1: the scratch is wiped on launch,
   not reloaded.** `DiskRawStore::new` clears stale `current/` segments on
   construction, so a prior session is *not yet* reloaded as a stopped
