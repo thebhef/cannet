@@ -29,6 +29,7 @@ use cannet_gui_lib::{parse_message_key, Project, RbsFile, PROJECT_SCHEMA_VERSION
 pub mod check;
 pub mod filter_bench;
 pub mod frontend;
+pub mod signal_bench;
 pub mod runner;
 pub mod sidecar;
 pub mod tracebuffer;

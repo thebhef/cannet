@@ -50,6 +50,30 @@ drops from ~scan-time to microseconds; a selective `id_list` filter wins
 on the build too. Flags: `--store mem|disk`, `--frames`, `--predicate`
 (JSON, must be id-narrowable — no decode), `--offset`, `--limit`.
 
+`signal-bench` is the analogous one-shot characterization of the
+**per-signal decimation pyramid** (ADR 0002 DS-5). The pyramid is a
+property of a decoded signal — a multi-resolution view of its value
+series — not of any one consumer (a plot fitting all data is the consumer
+today, but the property is the signal's). Before it, a whole-span serve
+materialized every decoded sample in range and decimated it — O(matches),
+paid on every request; the pyramid lets the host read the coarsest level
+whose in-range count still exceeds the point budget, so the serve is
+O(budget) regardless of the signal's length. `signal-bench` fills a real
+`TraceStore`, picks the most-frequent scheduled signal, builds its
+pyramid once, then times a whole-span serve two ways:
+
+| field | meaning |
+| --- | --- |
+| `matches` | decoded samples for the chosen signal — the raw series length |
+| `build_ms` | first serve: catch-up decode of the signal's frames + fold up the pyramid (O(that id's occurrences)) |
+| `serve_naive_ms` | raw whole-span materialise + `decimate_min_max` — the per-request cost before the pyramid (O(matches)) |
+| `serve_pyramid_us` | pyramid serve of the same span — the steady cost now (O(max_points)) |
+
+So as a capture deepens, `serve_naive_ms` grows with `matches` while
+`serve_pyramid_us` stays flat — at 10^8 frames the naive path is hundreds
+of ms per request (jank) while the pyramid serve stays sub-ms. Flags:
+`--store mem|disk`, `--frames`, `--max-points`.
+
 ## Usage
 
 ```sh
@@ -67,6 +91,12 @@ cargo run -p cannet-perf-measurement -- hardware-peak [flags]
 # scan, one-time index build, per-fetch index page.
 cargo run -p cannet-perf-measurement -- filter-bench \
     --store disk --frames 200000 --predicate '{"bus":"pt"}' --offset 50000
+
+# Characterize the per-signal decimation pyramid (ADR 0002 DS-5): fill a
+# real TraceStore, then time a whole-span decoded-signal serve two ways —
+# raw materialize + decimate vs the bounded pyramid serve.
+cargo run -p cannet-perf-measurement -- signal-bench \
+    --store disk --frames 2000000 --max-points 2000
 
 # Capture a dated baseline of all modes, then check against it.
 cargo run -p cannet-perf-measurement -- baseline

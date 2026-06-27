@@ -57,8 +57,15 @@ mod prefs;
 mod project;
 mod rbs;
 mod sidecar;
-mod signal_cache;
-mod signal_sampler;
+// `signal_cache` and `signal_sampler` are `pub` so the
+// `cannet-perf-measurement` harness can drive the real per-signal
+// decimation pyramid (ADR 0002 DS-5) — the same `SignalCacheStore`
+// the GUI plots through — rather than measuring a stand-in. The
+// mutex `.expect` is an internally-upheld invariant, so the pedantic
+// missing-panics lint is suppressed here rather than papered over.
+#[allow(clippy::missing_panics_doc, clippy::new_without_default)]
+pub mod signal_cache;
+pub mod signal_sampler;
 mod system_log;
 #[allow(
     clippy::missing_panics_doc,
@@ -2209,6 +2216,10 @@ fn sample_signals_inner(
     // longer scales with capture length.
     let dbs_guard = state.databases.lock().expect("databases mutex poisoned");
     let db_refs: Vec<&Database> = dbs_guard.iter().map(|l| &l.db).collect();
+    // The cache decimates internally now: it reads the coarsest pyramid
+    // level above `max_points` (ADR 0002 DS-5), so a "fit data" over a
+    // huge capture serves `O(max_points)` points instead of
+    // materializing and decimating the whole raw window here every tick.
     let sliced: Vec<Vec<signal_sampler::SamplePoint>> = signals
         .iter()
         .map(|q| {
@@ -2219,6 +2230,7 @@ fn sample_signals_inner(
                 &q.signal_name,
                 slice_from,
                 slice_to,
+                max_points as usize,
                 &state.trace_store,
                 &db_refs,
             )
@@ -2230,12 +2242,7 @@ fn sample_signals_inner(
     let t_decode = std::time::Instant::now();
     let series: Vec<SampledPoints> = sliced
         .into_iter()
-        .map(|samples| {
-            let points = if max_points > 0 {
-                signal_sampler::decimate_min_max(&samples, max_points as usize)
-            } else {
-                samples
-            };
+        .map(|points| {
             let mut t = Vec::with_capacity(points.len());
             let mut v = Vec::with_capacity(points.len());
             for p in points {
@@ -4510,6 +4517,7 @@ mod tests {
             "Sig",
             0.0,
             f64::MAX,
+            0,
             &state.trace_store,
             &db_refs,
         );
@@ -4650,6 +4658,7 @@ mod tests {
             "Sig",
             0.0,
             f64::MAX,
+            0,
             &state.trace_store,
             &db_refs,
         );
@@ -4666,6 +4675,7 @@ mod tests {
             "Sig",
             0.0,
             f64::MAX,
+            0,
             &state.trace_store,
             &db_refs,
         );

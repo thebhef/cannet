@@ -13,6 +13,7 @@ use cannet_perf_measurement::check::{
     self, Baseline, Expected, Metrics, ModeBaseline, BASELINE_VERSION,
 };
 use cannet_perf_measurement::filter_bench::{self, FilterBenchConfig};
+use cannet_perf_measurement::signal_bench::{self, SignalBenchConfig};
 use cannet_perf_measurement::frontend::{self, FrontendBaseline, FrontendMetrics};
 use cannet_perf_measurement::grpc::{self, GrpcConfig};
 use cannet_perf_measurement::hardware_peak::{self, HardwarePeakConfig};
@@ -67,6 +68,10 @@ enum Command {
     /// three ways — full scan, one-time index build, per-fetch index page
     /// — to characterize the filter index (ADR 0002 DS-3).
     FilterBench(FilterBenchArgs),
+    /// Fill a real `TraceStore` and time a whole-span decoded-signal serve
+    /// two ways — raw materialize + decimate vs the pyramid serve — to
+    /// characterize the per-signal decimation tier (ADR 0002 DS-5).
+    SignalBench(SignalBenchArgs),
     /// Drive frames over the real gRPC wire through an in-process virtual
     /// bus into the model, and print the metrics as JSON.
     Grpc(GrpcArgs),
@@ -193,6 +198,34 @@ struct FilterBenchArgs {
     limit: usize,
 }
 
+#[derive(Args)]
+struct SignalBenchArgs {
+    /// Store backend: `mem` or `disk`.
+    #[arg(long, default_value = "disk")]
+    store: String,
+    /// Frames to fill before measuring.
+    #[arg(long, default_value_t = 200_000)]
+    frames: usize,
+    /// Point budget the whole-span serve targets.
+    #[arg(long, default_value_t = 2_000)]
+    max_points: usize,
+}
+
+impl SignalBenchArgs {
+    fn into_config(self) -> Result<SignalBenchConfig, String> {
+        let store = match self.store.as_str() {
+            "mem" => StoreKind::Mem,
+            "disk" => StoreKind::Disk,
+            other => return Err(format!("invalid --store {other:?} (expected mem|disk)")),
+        };
+        Ok(SignalBenchConfig {
+            store,
+            frames: self.frames,
+            max_points: self.max_points,
+        })
+    }
+}
+
 impl FilterBenchArgs {
     fn into_config(self) -> Result<FilterBenchConfig, String> {
         let store = match self.store.as_str() {
@@ -238,6 +271,7 @@ fn main() -> ExitCode {
         Command::Validate => run_validate(&dir),
         Command::Tracebuffer(args) => run_tracebuffer(&dir, args),
         Command::FilterBench(args) => run_filter_bench(&dir, args),
+        Command::SignalBench(args) => run_signal_bench(&dir, args),
         Command::Grpc(args) => run_grpc(&dir, args),
         Command::HardwarePeak(args) => run_hardware_peak(&dir, args),
         Command::Baseline => run_baseline(&dir, cli.baseline, cli.frontend_report),
@@ -434,6 +468,17 @@ fn run_filter_bench(dir: &std::path::Path, args: FilterBenchArgs) -> Result<Exit
     let ex = load_example(dir)?;
     let cfg = args.into_config()?;
     let report = filter_bench::run(&ex, &cfg);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_signal_bench(dir: &std::path::Path, args: SignalBenchArgs) -> Result<ExitCode, String> {
+    let ex = load_example(dir)?;
+    let cfg = args.into_config()?;
+    let report = signal_bench::run(&ex, &cfg);
     println!(
         "{}",
         serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
