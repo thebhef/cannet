@@ -45,6 +45,15 @@ cargo run -p cannet-perf-measurement -- hardware-peak [flags]
 # Capture a dated baseline of all modes, then check against it.
 cargo run -p cannet-perf-measurement -- baseline
 cargo run -p cannet-perf-measurement -- check         # exit non-zero on regression
+
+# Include the render tier: a self-driving GUI run (ADR 0031) writes a
+# RenderReport, which `baseline` stores and `check` compares. The expected
+# rx/tx rates gate the live ev-demo sim's throughput as a two-sided band
+# (too few *or* too many frames fails); they apply to the frontend tier
+# only — host modes gate ingest relative to their own baseline.
+cargo run -p cannet-perf-measurement -- \
+    --frontend-report <render-report.json> \
+    --expected-rx-fps 515 --expected-tx-fps 515 check
 ```
 
 ### Per-mode flags
@@ -109,7 +118,7 @@ mode present in the baseline but unrunnable now (no hardware) is
 **skipped, not failed**, so `check` still gates `tracebuffer` + `grpc` on
 a machine without PEAK adapters.
 
-Gated metrics and tolerances (per mode):
+Gated metrics and tolerances (per host mode):
 
 | metric | gate |
 | --- | --- |
@@ -117,6 +126,31 @@ Gated metrics and tolerances (per mode):
 | `fps_retention` | ≥ 90 % of baseline, absolute floor 0.80 |
 | `append_ms_max` | ≤ 2× baseline + 5 ms |
 | `scan_ms_max` | ≤ 2× baseline + 5 ms |
+
+### Frontend tier
+
+The host modes can't see the React / uPlot / virtualizer render tier, so a
+self-driving GUI run (ADR 0031) writes a `RenderReport` that `--frontend-report`
+feeds in. It carries the render-tier UX-health signals **and** the
+`fps.rx` / `fps.tx` gauges reduced to a per-direction throughput — the model
+splits the trace store's append rate by `Direction`, so a transmit stall is
+visible even when receive holds. The render-tier longtask/lag/jank gates
+stayed green while real throughput halved under the diagnosed bug; the
+rate gates below are what close that blind spot.
+
+| metric | gate |
+| --- | --- |
+| `longtask_ms_per_s_mean` / `_p95` | ≤ 2× baseline + floor (10 / 17 ms) |
+| `lag_ms_max` | ≤ 2× baseline + 20 ms |
+| `jank_fraction` | ≤ 2× baseline + 0.05 |
+| `rx_fps_retention` / `tx_fps_retention` | ≥ 90 % of baseline, absolute floor 0.80 |
+| `rx_fps_expected` / `tx_fps_expected` | within ±15 % of `--expected-{rx,tx}-fps` |
+
+The expected-rate gate is a **two-sided band**: the sim emits a deterministic
+schedule (515 frames/s for ev-demo, echoed both directions), so a shortfall
+*and* an overshoot are failures. It's baseline-independent — a uniformly-slow
+run is caught even against a slow baseline — whereas retention catches
+decay-with-buffer-growth regardless of the absolute level.
 
 **Baselines are environment-relative.** Absolute throughput and scan time
 scale with the host CPU (and, for `hardware-peak`, the adapters), so a

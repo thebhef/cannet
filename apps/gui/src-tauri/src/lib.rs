@@ -545,11 +545,15 @@ fn spawn_trace_grew_emitter(app: AppHandle) {
                 })
                 .collect();
             let frames_dropped_before_session = state.trace_store.frames_dropped_before_session();
+            let (frames_per_second_rx, frames_per_second_tx) =
+                state.trace_store.frames_per_second_by_direction();
             let _ = app.emit(
                 "trace-grew",
                 TraceGrew {
                     count,
                     frames_per_second,
+                    frames_per_second_rx,
+                    frames_per_second_tx,
                     frames_per_second_by_bus,
                     frames_dropped_before_session,
                     session_start_seconds,
@@ -1514,6 +1518,62 @@ impl PageSelector {
     }
 }
 
+/// Scan one chunk `[lo, hi)` of the store for frames matching `filter`,
+/// returning their absolute indices. The predicate decodes only frames
+/// whose id is in `candidates` (the filter's decode-dependent leaves) and
+/// raw-field-tests the rest. Shared by [`fetch_filtered_trace`]'s forward,
+/// incremental-count, and backward-tail scans so the match test is written
+/// once. Caller holds the `databases` lock for the call and releases it
+/// between chunks.
+fn scan_chunk_filtered(
+    store: &crate::trace_store::TraceStore,
+    dbs: &[LoadedDbc],
+    candidates: &HashSet<u32>,
+    filter: &FilterPredicate,
+    lo: usize,
+    hi: usize,
+) -> Vec<usize> {
+    store.scan_chunk(lo, hi, |frame| {
+        let decoded = if candidates.contains(&frame.id) {
+            decode_against(dbs, frame)
+        } else {
+            None
+        };
+        filter.matches(frame, decoded.as_ref())
+    })
+}
+
+/// Materialise the decoded rows of a filtered page from its absolute store
+/// indices: clone the frames, decode each against the current DBCs, and
+/// attach any ingest-time violation. Shared by [`fetch_filtered_trace`]'s
+/// full-scan and follow-live tail paths.
+fn materialize_filtered_rows(state: &AppState, page_idxs: &[usize]) -> Vec<TraceFrameRecord> {
+    let pairs = state.trace_store.frames_at(page_idxs);
+    let dbs = state.databases.lock().expect("databases mutex poisoned");
+    pairs
+        .into_iter()
+        .map(|(i, frame)| {
+            let index = u64::try_from(i).unwrap_or(u64::MAX);
+            let mut record = TraceFrameRecord::from_raw(index, &frame, decode_against(&dbs, &frame));
+            record.violation = state.verifier.violation_at(index);
+            record
+        })
+        .collect()
+}
+
+/// Finish a follow-live tail page from match indices collected by scanning
+/// the window *backward* in chunks — each chunk's matches appended
+/// newest-first, so `collected_desc` is descending overall. Keep the `cap`
+/// most-recent, return them ascending (oldest-first, the render order), and
+/// the match-index of the first (`total - page_len`). Pure so the index
+/// math is unit-tested apart from the scan/lock machinery.
+fn tail_page(mut collected_desc: Vec<usize>, cap: usize, total: u64) -> (Vec<usize>, u64) {
+    collected_desc.truncate(cap);
+    collected_desc.reverse();
+    let start = total.saturating_sub(u64::try_from(collected_desc.len()).unwrap_or(0));
+    (collected_desc, start)
+}
+
 /// A *paged* window into the filtered chronological trace.
 /// Scans `[scan_start, scan_end)` of the trace store, applies `filter`,
 /// and returns the total match count plus the decoded matches at
@@ -1522,13 +1582,20 @@ impl PageSelector {
 /// page and the running total in one call. The frontend pages this; it
 /// never holds the whole filtered set in memory.
 ///
-/// A count-only refresh (`limit == 0`) may pass `prev_count` /
-/// `prev_count_end` — the `(count, end)` the caller already knows — so
-/// the host counts only frames appended since and reports the full total
-/// in O(Δ) rather than re-scanning the window. Any call that returns rows
-/// ignores the checkpoint and scans from `scan_start` so it can position
-/// the page. A stale checkpoint (its end outside the window) falls back
-/// to a full re-count.
+/// The `prev_count` / `prev_count_end` checkpoint — the `(count, end)` the
+/// caller already knows — lets two paths avoid a full window re-scan:
+/// - A **count-only refresh** (`limit == 0`) counts only frames appended
+///   since the checkpoint and reports the full total in O(Δ).
+/// - A **follow-live tail** (`from_end`) takes that same incremental total
+///   and then scans *backward* from the tip for just its page, so the
+///   steady follow-live tick is O(Δ + page span) rather than re-scanning
+///   `[scan_start, scan_end)` every time. Without it (the first call, or a
+///   stale checkpoint whose end is outside the window) the tail falls back
+///   to the full forward scan, which also seeds the next checkpoint.
+///
+/// A **positioned page** (`from_end == false`, `limit > 0`) ignores the
+/// checkpoint and scans from `scan_start` so it can place the page by
+/// match-index; that happens on user scroll, not on the live tick.
 ///
 /// The scan runs as a sequence of bounded chunks
 /// ([`TraceStore::scan_chunk`]), releasing the trace-store lock — and
@@ -1597,23 +1664,78 @@ async fn fetch_filtered_trace(
         decode_candidate_ids(&dbs, &filter)
     };
 
-    // Drive the scan chunk by chunk, feeding matches into the page
-    // selector. The store lock is held only for each `scan_chunk`;
-    // between chunks we yield.
+    // Follow-live tail fast path: the last `limit` matches plus the running
+    // total in O(Δ + tail span), not a full `[win_start, end)` re-scan. The
+    // full re-scan ran on every refresh tick while following live —
+    // chunked, so never a buffer-wide lock-hold, but its O(buffer) work per
+    // tick still loaded the store and dragged ingest down as the buffer
+    // grew. Used only with a valid checkpoint (the steady follow-live
+    // case); the first call after a descriptor change has none and takes
+    // the full scan below, which seeds it.
+    if from_end && limit > 0 {
+        if let (Some(prev_c), Some(prev_e)) = (prev_count, prev_count_end) {
+            let prev_e = usize::try_from(prev_e).unwrap_or(usize::MAX);
+            if prev_e >= win_start && prev_e <= end {
+                // Total: prior count plus matches in the freshly-appended
+                // tail `[prev_e, end)`.
+                let mut count = prev_c;
+                let mut pos = prev_e;
+                while pos < end {
+                    let chunk_end = pos.saturating_add(SCAN_CHUNK).min(end);
+                    let n = {
+                        let dbs = state.databases.lock().expect("databases mutex poisoned");
+                        scan_chunk_filtered(
+                            &state.trace_store,
+                            &dbs,
+                            &candidates,
+                            &filter,
+                            pos,
+                            chunk_end,
+                        )
+                        .len()
+                    };
+                    count = count.saturating_add(u64::try_from(n).unwrap_or(0));
+                    pos = chunk_end;
+                    tokio::task::yield_now().await;
+                }
+                // Page: scan backward from `end` until `limit` matches are
+                // collected (or `win_start` is reached) — bounded by how far
+                // back the tail page reaches, not the whole buffer.
+                let cap = usize::try_from(limit).unwrap_or(usize::MAX);
+                let mut collected: Vec<usize> = Vec::new();
+                let mut hi = end;
+                while hi > win_start && collected.len() < cap {
+                    let lo = hi.saturating_sub(SCAN_CHUNK).max(win_start);
+                    let mut matches = {
+                        let dbs = state.databases.lock().expect("databases mutex poisoned");
+                        scan_chunk_filtered(&state.trace_store, &dbs, &candidates, &filter, lo, hi)
+                    };
+                    matches.reverse(); // newest-first within the chunk
+                    collected.extend(matches);
+                    hi = lo;
+                    tokio::task::yield_now().await;
+                }
+                let (page_idxs, start_match) = tail_page(collected, cap, count);
+                let rows = materialize_filtered_rows(state.inner(), &page_idxs);
+                return FilteredTracePage {
+                    count,
+                    start: start_match,
+                    rows,
+                };
+            }
+        }
+    }
+
+    // Full scan: a count-only refresh, a positioned page, or the first
+    // follow-live tail before a checkpoint exists. Driven chunk by chunk so
+    // the store lock is held only per chunk, yielding between.
     let mut sel = PageSelector::new(offset, limit, from_end, seed);
     let mut pos = scan_from;
     while pos < end {
         let chunk_end = pos.saturating_add(SCAN_CHUNK).min(end);
         let matches = {
             let dbs = state.databases.lock().expect("databases mutex poisoned");
-            state.trace_store.scan_chunk(pos, chunk_end, |frame| {
-                let decoded = if candidates.contains(&frame.id) {
-                    decode_against(&dbs, frame)
-                } else {
-                    None
-                };
-                filter.matches(frame, decoded.as_ref())
-            })
+            scan_chunk_filtered(&state.trace_store, &dbs, &candidates, &filter, pos, chunk_end)
         };
         for idx in matches {
             sel.push(idx);
@@ -1623,20 +1745,7 @@ async fn fetch_filtered_trace(
     }
 
     let (count, page_idxs, start_match) = sel.finish();
-    let pairs = state.trace_store.frames_at(&page_idxs);
-    let rows = {
-        let dbs = state.databases.lock().expect("databases mutex poisoned");
-        pairs
-            .into_iter()
-            .map(|(i, frame)| {
-                let index = u64::try_from(i).unwrap_or(u64::MAX);
-                let mut record =
-                    TraceFrameRecord::from_raw(index, &frame, decode_against(&dbs, &frame));
-                record.violation = state.verifier.violation_at(index);
-                record
-            })
-            .collect()
-    };
+    let rows = materialize_filtered_rows(state.inner(), &page_idxs);
     FilteredTracePage {
         count,
         start: start_match,
@@ -3747,6 +3856,33 @@ mod tests {
         assert_eq!(count, 3);
         assert!(page.is_empty());
         assert_eq!(start, 3); // offset.min(count)
+    }
+
+    #[test]
+    fn tail_page_keeps_the_most_recent_cap_in_render_order() {
+        // Backward chunked scan appends each chunk newest-first, so the
+        // input is descending overall. A window of 6 matches, cap 3:
+        // newest chunk {15,20}→[20,15], next {9,12}→[12,9] (loop stops,
+        // ≥cap collected). Keep the 3 newest, return ascending.
+        let collected_desc = vec![20usize, 15, 12, 9];
+        let (page, start) = tail_page(collected_desc, 3, 6);
+        assert_eq!(page, vec![12, 15, 20]); // last 3 matches, oldest-first
+        assert_eq!(start, 3); // total(6) - page.len(3): match-index of `12`
+
+        // The from_end PageSelector over the same full match set must agree
+        // — the incremental tail and a full re-scan return the same page.
+        let full = [3usize, 7, 9, 12, 15, 20];
+        let (count, sel_page, sel_start) = select(&full, 0, 3, true, 0);
+        assert_eq!((count, sel_page, sel_start), (6, page, start));
+    }
+
+    #[test]
+    fn tail_page_fewer_matches_than_cap_returns_all_from_zero() {
+        // Sparse window: backward scan reached win_start with < cap; keep
+        // all, anchored at match-index 0.
+        let (page, start) = tail_page(vec![30usize, 20, 10], 10, 3);
+        assert_eq!(page, vec![10, 20, 30]);
+        assert_eq!(start, 0);
     }
 
     #[test]

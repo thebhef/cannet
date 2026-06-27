@@ -275,17 +275,19 @@ next pass on this surface can address them as one piece.
 
 ### Host crates, wire, and sidecar
 
-- `[perf]` `cannet-gui` `fetch_filtered_trace`: **make filtered scans
-  incremental and event-invalidated.** Two pieces of redundant
-  per-refresh work remain, sharing one invalidation story (filter
-  edited / DBC set changed), so land them as one pass:
-  - *Incremental filter-match index.* The decode-candidate gate (see
-    `decode_candidate_ids` in `lib.rs`) made the per-frame scan cost
-    cheap, but each 250 ms refresh still rescans the whole
-    `[scan_start, scan_end)` window under the trace-store lock —
-    O(session length) per tick, forever. Proper fix: a per-filter
-    match index (like `by_id`) remembering matched indices and a
-    high-water mark, scanning only frames appended since.
+- `[perf]` `cannet-gui` `fetch_filtered_trace`: **further filtered-scan
+  reductions.** The per-tick O(session length) rescan is fixed — the
+  follow-live tail now resumes from an incremental count checkpoint and
+  scans only *backward* from the tip for its page (`fetch_filtered_trace`
+  fast path + `useFilteredTrace` cursor), so a filtered panel parked at the
+  tail costs O(Δ + page span) per tick, not O(buffer). Two residual pieces
+  remain, sharing one invalidation story (filter edited / DBC set changed):
+  - *Positioned deep-scroll fetch.* A non-tail page (the user scrolled into
+    history) still scans from `scan_start` to place itself by match-index —
+    O(offset), but on the scroll, not the live tick. A per-filter match
+    index (like `by_id`, remembering matched indices) would make it
+    O(log + page); only worth it if deep-scrolling a filtered view on a
+    huge buffer proves janky.
   - *Cached candidate sets.* `decode_candidate_ids` re-runs the
     name/signal resolution against every loaded DBC on every fetch
     (4 Hz+ per filtered panel), though it's a pure function of

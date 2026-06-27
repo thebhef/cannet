@@ -1,4 +1,4 @@
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import type { FilterPredicate, TraceFrameRecord } from "./types";
@@ -69,6 +69,17 @@ export function useFilteredTrace(
   const descriptor =
     active && filter != null ? `${winStart}:${JSON.stringify(filter)}` : "";
 
+  // A new window or predicate invalidates the incremental cursor: reset it
+  // to an empty count at the new window start before the first fetch under
+  // the new descriptor. The follow-live tail fetch now resumes from the
+  // checkpoint too, so without this it would resume from the *previous*
+  // descriptor's stale total. The first fetch then counts the window from
+  // scratch and reseeds. Declared before `useWindowedQuery` so this effect
+  // runs before the one that issues that first fetch.
+  useEffect(() => {
+    cursor.current = { countedEnd: winStart, total: 0 };
+  }, [descriptor, winStart]);
+
   const fetchPage = useCallback(
     async (
       offset: number,
@@ -77,6 +88,12 @@ export function useFilteredTrace(
     ): Promise<WindowPage<TraceFrameRecord>> => {
       diagCount("invoke.fetch_filtered_trace"); // DIAG
       const countOnly = limit === 0;
+      // Both the count-only refresh and the follow-live tail (`fromEnd`)
+      // resume from the incremental checkpoint so the host counts only the
+      // newly-appended tail (O(Δ)) instead of re-scanning the window. A
+      // positioned page (neither) scans from the window start to place
+      // itself by match-index, so it ignores the checkpoint.
+      const useCheckpoint = countOnly || fromEnd;
       const res = await invoke<FilteredTracePage>("fetch_filtered_trace", {
         filter,
         scanStart: winStart,
@@ -84,13 +101,11 @@ export function useFilteredTrace(
         offset: fromEnd ? 0 : Math.max(0, offset),
         limit,
         fromEnd,
-        // Incremental checkpoint only on the count-only refresh; a
-        // row-returning call scans from the window start anyway.
-        prevCount: countOnly ? cursor.current.total : null,
-        prevCountEnd: countOnly ? cursor.current.countedEnd : null,
+        prevCount: useCheckpoint ? cursor.current.total : null,
+        prevCountEnd: useCheckpoint ? cursor.current.countedEnd : null,
       });
       // The host returns the full total either way; advance the cursor
-      // so the next count-only refresh resumes from here.
+      // so the next checkpoint-using fetch resumes from here.
       cursor.current = { countedEnd: winEnd, total: res.count };
       return { total: res.count, start: res.start, rows: res.rows };
     },

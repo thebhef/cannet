@@ -50,6 +50,10 @@ export interface TraceFrameRecord {
 export interface TraceGrew {
   count: number;
   frames_per_second: number;
+  /// Receive / transmit-confirmed frame rates, split by direction so a
+  /// transmit stall is visible even when the aggregate looks healthy.
+  frames_per_second_rx: number;
+  frames_per_second_tx: number;
   /// Per-bus frame-rate breakdown (`bus_id: null` is the unassigned
   /// bucket). Used by the diagnostic logging to localise a slowdown to a
   /// specific bus on a multi-bus stream.

@@ -21,6 +21,7 @@ High-performance CAN traffic analyzer.
   - [x] Addressable by host:port
   - [ ] Discoverable on the network
 - [ ] Rest-of-bus simulation: gridview of ids with live signal values, transmitted on a cadence
+  - [ ] External value-source binding: an out-of-repo process streams sparse signal values that RBS applies as overrides
 - [ ] CRC and sequence-count calculation in arbitrary message fields
 - [x] DBC ingestion
 - [ ] EDS ingestion

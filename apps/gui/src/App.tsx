@@ -573,16 +573,21 @@ export function App() {
         const {
           count: newCount,
           frames_per_second,
+          frames_per_second_rx,
+          frames_per_second_tx,
           frames_per_second_by_bus,
           frames_dropped_before_session,
           session_start_seconds,
           buffer_seconds,
           tail,
         } = event.payload;
-        // DIAG: log buffer size + aggregate/per-bus FPS as gauges so a
-        // capture shows throughput against buffer growth, per bus.
+        // DIAG: log buffer size + aggregate/rx/tx/per-bus FPS as gauges so
+        // a capture shows throughput against buffer growth, split by
+        // direction and per bus.
         diagGauge("count", newCount); // DIAG
         diagGauge("fps", frames_per_second); // DIAG
+        diagGauge("fps.rx", frames_per_second_rx); // DIAG
+        diagGauge("fps.tx", frames_per_second_tx); // DIAG
         for (const b of frames_per_second_by_bus) {
           diagGauge(`fps.${b.bus_id ?? "(unassigned)"}`, b.frames_per_second); // DIAG
         }
