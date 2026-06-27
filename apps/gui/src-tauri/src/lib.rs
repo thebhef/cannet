@@ -203,6 +203,14 @@ impl SessionTx {
 /// the status line and auto-scroll feel live.
 const TRACE_GREW_TICK: Duration = Duration::from_millis(100);
 
+/// How often the host flushes the trace store to disk (ADR 0002
+/// DS-2/DS-7). Much slower than [`TRACE_GREW_TICK`]: a flush fsyncs
+/// segments and rewrites the reopen manifest, so it trades a small,
+/// bounded I/O cost for crash durability — a crash loses at most this
+/// much trailing capture — and there is nothing to gain by doing it at UI
+/// cadence.
+const TRACE_FLUSH_TICK: Duration = Duration::from_secs(2);
+
 /// How many trailing frames to ship with each `trace-grew` event so the
 /// auto-scrolling trace view can paint its live tail without a fetch
 /// round-trip. Comfortably larger than any plausible visible-row count
@@ -295,6 +303,11 @@ struct AppState {
     /// rebuilt on a predicate or capture-session change, extended
     /// incrementally otherwise. `fetch_filtered_trace` serves pages from it.
     filter_index: Mutex<Option<ActiveFilterIndex>>,
+    /// Identity of the currently open project (ADR 0002 DS-7), set by
+    /// `open_project`. Stamped into the scratch when a capture starts so a
+    /// later launch reloads that scratch only against the same project;
+    /// `None` when no project is open.
+    active_project_id: Mutex<Option<uuid::Uuid>>,
 }
 
 /// The build's version string: `git describe --tags` as captured by
@@ -436,6 +449,7 @@ pub fn run() {
             verifier: verification::VerificationState::default(),
             filter_index_dir: filter_dir,
             filter_index: Mutex::new(None),
+            active_project_id: Mutex::new(None),
         })
         .manage(sidecar::SidecarState::default())
         .manage(interfaces::InterfacesState::default())
@@ -452,6 +466,7 @@ pub fn run() {
             fetch_by_id_page,
             fetch_filtered_trace,
             clear_trace_store,
+            restore_scratch_capture,
             connect_remote_server,
             disconnect_remote_server,
             project::open_project,
@@ -531,6 +546,7 @@ pub fn run() {
             }
             crash::spawn_health_recorder(app.handle().clone());
             spawn_trace_grew_emitter(app.handle().clone());
+            spawn_trace_flusher(app.handle().clone());
             // The single transmit scheduler thread drives every running
             // periodic. Takes ownership of the command
             // receiver created above.
@@ -632,6 +648,32 @@ fn spawn_trace_grew_emitter(app: AppHandle) {
                     tail,
                 },
             );
+        }
+    });
+}
+
+/// Periodically flush the trace store so its disk-spill segments and
+/// reopen manifest stay durable (ADR 0002 DS-7) — without this nothing
+/// drives [`TraceStore::flush`], so a prior session could never be
+/// reloaded. Skips a tick when the buffer hasn't grown since the last
+/// flush, so an idle or stopped session doesn't rewrite the manifest for
+/// no reason; the first tick after capture stops still persists the final
+/// state, so a cleanly stopped trace is reloadable within one tick.
+fn spawn_trace_flusher(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(TRACE_FLUSH_TICK);
+        let mut last_flushed_len = 0usize;
+        loop {
+            interval.tick().await;
+            let state: State<'_, AppState> = app.state();
+            let len = state.trace_store.len();
+            if len == last_flushed_len {
+                continue;
+            }
+            match state.trace_store.flush() {
+                Ok(()) => last_flushed_len = len,
+                Err(e) => tracing::warn!(error = %e, "trace store flush failed"),
+            }
         }
     });
 }
@@ -1809,6 +1851,21 @@ fn all_ids_tested(store: &TraceStore) -> filter::CandidateSet {
 /// prompting the trace view to drop its row cache. Any
 /// session-scoped notes go with the buffer (they reference timestamps
 /// on the now-discarded timeline).
+/// Re-stamp the scratch for a freshly reset capture buffer (ADR 0002
+/// DS-7), called right after each `start_session`: drop the now-stale
+/// filter index and record the active project as the scratch's owner, so
+/// a later launch reloads this session only against the same project.
+/// `start_session` already wiped the raw store, the reopen manifest, and
+/// the prior identity / derived files; this writes the fresh identity.
+fn restamp_scratch_for_capture(state: &AppState) {
+    *state.filter_index.lock().expect("filter index mutex poisoned") = None;
+    let active = *state
+        .active_project_id
+        .lock()
+        .expect("active project mutex poisoned");
+    state.trace_store.write_scratch_identity(active);
+}
+
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 fn clear_trace_store(app: AppHandle, state: State<'_, AppState>) {
@@ -1816,6 +1873,7 @@ fn clear_trace_store(app: AppHandle, state: State<'_, AppState>) {
         .duration_since(std::time::SystemTime::UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
     state.trace_store.start_session(now_ns);
+    restamp_scratch_for_capture(&state);
     // The decoded-sample caches hold frame indices into the store —
     // wipe them too, otherwise the next `sample_signals` would slice
     // against a buffer that no longer exists. Same for the
@@ -1824,6 +1882,46 @@ fn clear_trace_store(app: AppHandle, state: State<'_, AppState>) {
     state.verifier.clear_runtime();
     if let Some(applied) = state.notes.clear() {
         let _ = app.emit("notes-changed", applied.notes);
+    }
+}
+
+/// What a successful scratch restore brings back: the reloaded frame
+/// `count` and the session-start anchor (seconds since the Unix epoch) the
+/// trace view renders timestamps relative to. `count == 0` means nothing
+/// was restored.
+#[derive(serde::Serialize, Clone, Copy)]
+pub struct RestoredCapture {
+    count: u64,
+    session_start_seconds: f64,
+}
+
+/// Reload the prior disk-spill capture as a stopped historical trace, if
+/// one belongs to the open project (ADR 0002 DS-7). The frontend calls
+/// this *after* `open_project` has applied the project and cleared the
+/// trace view, so the restored history is presented rather than wiped by
+/// the open. Returns `count == 0` when there is nothing to restore (no
+/// open project, no scratch, or an identity mismatch) — the gate lives in
+/// [`TraceStore::try_reload`], which only reloads on a matching identity.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn restore_scratch_capture(app: AppHandle, state: State<'_, AppState>) -> RestoredCapture {
+    let active = *state
+        .active_project_id
+        .lock()
+        .expect("active project mutex poisoned");
+    if !active.is_some_and(|pid| state.trace_store.try_reload(pid)) {
+        return RestoredCapture {
+            count: 0,
+            session_start_seconds: 0.0,
+        };
+    }
+    let count = state.trace_store.len();
+    let session_start_ns = state.trace_store.session_start_ns();
+    sys_info!(&app, "project", "restored {count} frames from prior capture");
+    #[allow(clippy::cast_precision_loss)]
+    RestoredCapture {
+        count: u64::try_from(count).unwrap_or(u64::MAX),
+        session_start_seconds: session_start_ns as f64 / 1_000_000_000.0,
     }
 }
 
@@ -2818,6 +2916,7 @@ fn run_pump<S>(
                 }
                 if needs_replay_session_start {
                     state.trace_store.start_session(raw.timestamp_ns);
+                    restamp_scratch_for_capture(&state);
                     needs_replay_session_start = false;
                 }
                 // Ingest-time verification (ADR 0027): ids with a
@@ -4099,6 +4198,7 @@ mod tests {
             verifier: verification::VerificationState::default(),
             filter_index_dir: std::env::temp_dir().join("cannet-test-filter"),
             filter_index: Mutex::new(None),
+            active_project_id: Mutex::new(None),
         }
     }
 

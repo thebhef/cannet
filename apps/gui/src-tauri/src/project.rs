@@ -282,6 +282,15 @@ pub fn open_project(
     };
     match parse_project(&text) {
         Ok(p) => {
+            // Record the open project's identity (ADR 0002 DS-7). A prior
+            // capture belonging to this project is reloaded *separately* by
+            // `restore_scratch_capture`, which the frontend calls after it
+            // has applied the project and cleared the trace view — so the
+            // restored history isn't clobbered by open-clears-the-trace.
+            *state
+                .active_project_id
+                .lock()
+                .expect("active project mutex poisoned") = Some(p.project_id);
             // Load the host TX-message registry from
             // the project's pool. All periodics start stopped — reopen
             // never fires traffic onto a bus the user hasn't

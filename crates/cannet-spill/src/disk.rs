@@ -147,6 +147,30 @@ impl DiskRawStore {
         Ok(store)
     }
 
+    /// Construct an empty store rooted at `dir` **without wiping** any
+    /// files already there (ADR 0002 DS-7). Used at launch: the store
+    /// starts empty (presenting no trace) but leaves a prior session's
+    /// segments and manifest intact, so [`Self::reopen`] can still load
+    /// them once the matching project is opened. The first capture
+    /// ([`RawStore::clear`] via the host's start-session) wipes them, so
+    /// the preserved files are only ever reopened or cleared — never
+    /// appended into.
+    pub fn open_empty(dir: impl AsRef<Path>) -> io::Result<Self> {
+        let dir = dir.as_ref().to_path_buf();
+        Ok(Self {
+            by_id: ByIdIndex::new(&dir),
+            dir,
+            cfg: DiskConfig::default(),
+            len: 0,
+            payload_cursor: 0,
+            meta_segs: Vec::new(),
+            payload_segs: Vec::new(),
+            ring: VecDeque::new(),
+            bus_intern: Vec::new(),
+            bus_rev: HashMap::new(),
+        })
+    }
+
     /// Reopen a prior store from its on-disk manifest (ADR 0002 DS-7),
     /// remapping the existing segment files **without wiping them**.
     /// Returns `Ok(None)` when `dir` holds no manifest (nothing to
@@ -838,6 +862,29 @@ mod tests {
         s.clear();
         drop(s);
         assert!(DiskRawStore::reopen(dir.path()).unwrap().is_none());
+    }
+
+    #[test]
+    fn open_empty_presents_empty_but_preserves_the_files_for_reopen() {
+        // Launch semantics: a prior flushed session is left intact and the
+        // store still presents empty, so the gate can reopen it later.
+        let dir = TempDir::new().unwrap();
+        {
+            let mut s = DiskRawStore::with_config(dir.path(), tiny()).unwrap();
+            for i in 0u32..5 {
+                s.append(frame(0, i));
+            }
+            s.flush().unwrap();
+        }
+        let empty = DiskRawStore::open_empty(dir.path()).unwrap();
+        assert_eq!(empty.len(), 0, "presents empty");
+        drop(empty);
+        // The files survived, so a reopen still recovers the prior session.
+        assert_eq!(
+            DiskRawStore::reopen(dir.path()).unwrap().unwrap().len(),
+            5,
+            "files preserved for reopen"
+        );
     }
 
     #[test]

@@ -286,7 +286,20 @@ next pass on this surface can address them as one piece.
 
 ### Host crates, wire, and sidecar
 
-- `[perf]` `cannet-gui` `fetch_filtered_trace`: **further filtered-scan
+- `[bug]` `cannet-gui` disk-spill scratch: **two app instances share and
+  stomp one `current/` dir.** The scratch lives at a single fixed path
+  (`<OS cache>/cannet/current/`), and nothing arbitrates exclusive
+  ownership. [ADR 0002 DS-7](../docs/adr/0002-disk-spill-store.md)'s
+  `project_id` identity gate decides what a launch *reloads*, but it does
+  not stop a second concurrent instance from opening the same dir and
+  appending/clearing into the same segment files as the first — mutual
+  corruption (and a second instance's capture silently destroys the
+  first's reloadable session). Options: an OS advisory lock / lockfile in
+  `current/` taken at boot (second instance falls back to a per-pid
+  scratch dir, or refuses, or runs RAM-only), or a per-instance scratch
+  subdir keyed by pid with the identity gate scanning siblings. Decide
+  the contract (single-instance-wins vs. multi-instance-isolated) when
+  picking up. Surfaced while wiring 5.3c reload.
   reductions.** The per-tick O(session length) rescan is fixed — the
   follow-live tail now resumes from an incremental count checkpoint and
   scans only *backward* from the tip for its page (`fetch_filtered_trace`

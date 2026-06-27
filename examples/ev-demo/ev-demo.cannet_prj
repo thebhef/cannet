@@ -1,5 +1,6 @@
 {
   "schema_version": 7,
+  "project_id": "e2f3d8f8-217d-4250-8f20-ce0753e2894d",
   "layout": {
     "activeGroup": "6",
     "grid": {
@@ -340,7 +341,7 @@
             "delta"
           ],
           "showDiag": false,
-          "showPoints": "on",
+          "showPoints": "auto",
           "signalsWidthPx": 367
         },
         "title": "Powertrain"
@@ -776,7 +777,7 @@
           "delta"
         ],
         "showDiag": false,
-        "showPoints": "on",
+        "showPoints": "auto",
         "signalsWidthPx": 367
       },
       "id": "powertrain",
