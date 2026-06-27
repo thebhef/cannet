@@ -128,6 +128,163 @@ impl FilterPredicate {
     }
 }
 
+/// The by-id candidate set a filter index builds from (ADR 0002 DS-3):
+/// the arbitration keys whose frames *could* match the predicate, plus
+/// whether every such frame matches (so the build can skip reading
+/// frames). See [`resolve_candidates`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidateSet {
+    /// Candidate `(id, extended)` keys, sorted and deduped. The filter
+    /// index visits only these ids' frames (via the by-id index).
+    pub keys: Vec<(u32, bool)>,
+    /// `true` when membership in `keys` *is* the match — every candidate
+    /// frame matches, so the index records them without a frame read
+    /// (`id_list` / `id_range`). `false` when a per-frame `keep` test is
+    /// still needed (`bus` confirms `bus_id`; `name_regex` / `signal_equals`
+    /// decode).
+    pub membership: bool,
+}
+
+/// The DBC- and capture-derived facts [`resolve_candidates`] needs, passed
+/// as closures so the resolver is pure logic testable without a real DBC
+/// or store.
+pub struct CandidateInputs<'a> {
+    /// Distinct `(id, extended)` keys seen in the capture, sorted. Used to
+    /// turn an `id_range` (which can't be enumerated) into the ids that
+    /// actually occurred in it.
+    pub seen_ids: &'a [(u32, bool)],
+    /// The `(id, extended)` keys seen on a given logical bus.
+    pub seen_on_bus: &'a dyn Fn(&str) -> Vec<(u32, bool)>,
+    /// The ids whose DBC message name matches a `name_regex` pattern.
+    pub regex_ids: &'a dyn Fn(&str) -> Vec<(u32, bool)>,
+    /// The ids whose DBC message carries a named signal.
+    pub signal_ids: &'a dyn Fn(&str) -> Vec<(u32, bool)>,
+}
+
+/// Resolve a predicate to its by-id candidate set, or `None` when it is
+/// not id-narrowable (the caller must visit the whole window).
+///
+/// The match set is always a subset of the returned `keys`, so building an
+/// index off `keys` (then applying `keep` unless `membership`) is sound.
+/// `None` means "could be any id" — an empty `all` (vacuous-true) or an
+/// `any` with a non-narrowable branch.
+#[must_use]
+pub fn resolve_candidates(
+    predicate: &FilterPredicate,
+    inputs: &CandidateInputs<'_>,
+) -> Option<CandidateSet> {
+    let p = match predicate {
+        // An invalid predicate matches nothing — an empty, membership set.
+        FilterPredicate::Invalid(_) => {
+            return Some(CandidateSet {
+                keys: Vec::new(),
+                membership: true,
+            })
+        }
+        FilterPredicate::Tagged(p) => p,
+    };
+    match p {
+        TaggedPredicate::IdList(ids) => Some(CandidateSet {
+            keys: normalize(ids.iter().flat_map(|&id| [(id, false), (id, true)]).collect()),
+            membership: true,
+        }),
+        TaggedPredicate::IdRange([lo, hi]) => Some(CandidateSet {
+            keys: inputs
+                .seen_ids
+                .iter()
+                .copied()
+                .filter(|&(id, _)| id >= *lo && id <= *hi)
+                .collect(),
+            membership: true,
+        }),
+        TaggedPredicate::Bus(b) => Some(CandidateSet {
+            keys: normalize((inputs.seen_on_bus)(b)),
+            // A frame's id can occur on another bus, so confirm bus_id.
+            membership: false,
+        }),
+        TaggedPredicate::NameRegex(pat) => Some(CandidateSet {
+            keys: normalize((inputs.regex_ids)(pat)),
+            // Per-bus DBC scoping: confirm by decoding.
+            membership: false,
+        }),
+        TaggedPredicate::SignalEquals(m) => Some(CandidateSet {
+            keys: normalize((inputs.signal_ids)(&m.name)),
+            membership: false,
+        }),
+        TaggedPredicate::All(children) => resolve_all(children, inputs),
+        TaggedPredicate::Any(children) => resolve_any(children, inputs),
+    }
+}
+
+/// `all`: the match set is the intersection of the children's, so any
+/// narrowable child bounds it; intersect the narrowable children's keys
+/// (a non-narrowable child doesn't shrink the bound). Membership only
+/// survives if *every* child is a narrowable membership child.
+fn resolve_all(
+    children: &[FilterPredicate],
+    inputs: &CandidateInputs<'_>,
+) -> Option<CandidateSet> {
+    let mut acc: Option<Vec<(u32, bool)>> = None;
+    let mut membership = true;
+    for c in children {
+        match resolve_candidates(c, inputs) {
+            Some(set) => {
+                membership &= set.membership;
+                acc = Some(match acc {
+                    None => set.keys,
+                    Some(prev) => intersect(&prev, &set.keys),
+                });
+            }
+            None => membership = false, // un-narrowable child needs testing
+        }
+    }
+    acc.map(|keys| CandidateSet { keys, membership })
+}
+
+/// `any`: the match set is the union of the children's. If any child is
+/// non-narrowable the union spans all ids, so the `any` is too; otherwise
+/// union the keys. Membership survives only if every child is membership.
+fn resolve_any(
+    children: &[FilterPredicate],
+    inputs: &CandidateInputs<'_>,
+) -> Option<CandidateSet> {
+    let mut keys: Vec<(u32, bool)> = Vec::new();
+    let mut membership = true;
+    for c in children {
+        let set = resolve_candidates(c, inputs)?; // any None ⇒ whole `any` None
+        membership &= set.membership;
+        keys.extend(set.keys);
+    }
+    Some(CandidateSet {
+        keys: normalize(keys),
+        membership,
+    })
+}
+
+fn normalize(mut v: Vec<(u32, bool)>) -> Vec<(u32, bool)> {
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
+/// Intersection of two sorted, deduped key slices.
+fn intersect(a: &[(u32, bool)], b: &[(u32, bool)]) -> Vec<(u32, bool)> {
+    let (mut i, mut j) = (0, 0);
+    let mut out = Vec::new();
+    while i < a.len() && j < b.len() {
+        match a[i].cmp(&b[j]) {
+            std::cmp::Ordering::Less => i += 1,
+            std::cmp::Ordering::Greater => j += 1,
+            std::cmp::Ordering::Equal => {
+                out.push(a[i]);
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+    out
+}
+
 /// One decode-dependent predicate leaf, borrowed from the predicate
 /// tree. See [`FilterPredicate::decode_dependent_leaves`].
 #[derive(Debug, PartialEq, Eq)]
@@ -330,6 +487,131 @@ mod tests {
             assert!(regex_match("^Eng", "EngineData"));
             assert!(!regex_match("^Eng", "BrakeStatus"));
         }
+    }
+
+    fn inputs<'a>(
+        seen: &'a [(u32, bool)],
+        on_bus: &'a dyn Fn(&str) -> Vec<(u32, bool)>,
+        regex: &'a dyn Fn(&str) -> Vec<(u32, bool)>,
+        signal: &'a dyn Fn(&str) -> Vec<(u32, bool)>,
+    ) -> CandidateInputs<'a> {
+        CandidateInputs {
+            seen_ids: seen,
+            seen_on_bus: on_bus,
+            regex_ids: regex,
+            signal_ids: signal,
+        }
+    }
+
+    #[test]
+    fn id_list_is_a_membership_set_over_both_addressing_modes() {
+        let none = |_: &str| Vec::new();
+        let inp = inputs(&[], &none, &none, &none);
+        let set = resolve_candidates(&parse(r#"{"id_list": [1, 3]}"#), &inp).unwrap();
+        assert!(set.membership);
+        assert_eq!(set.keys, vec![(1, false), (1, true), (3, false), (3, true)]);
+    }
+
+    #[test]
+    fn id_range_intersects_with_seen_ids() {
+        let none = |_: &str| Vec::new();
+        let seen = [(5, false), (50, false), (150, false), (250, true)];
+        let inp = inputs(&seen, &none, &none, &none);
+        let set = resolve_candidates(&parse(r#"{"id_range": [10, 200]}"#), &inp).unwrap();
+        assert!(set.membership);
+        assert_eq!(set.keys, vec![(50, false), (150, false)]);
+    }
+
+    #[test]
+    fn bus_resolves_to_seen_on_bus_and_needs_a_keep_test() {
+        let none = |_: &str| Vec::new();
+        let on_bus = |b: &str| {
+            if b == "pt" {
+                vec![(0x100, false), (0x200, false)]
+            } else {
+                vec![]
+            }
+        };
+        let inp = inputs(&[], &on_bus, &none, &none);
+        let set = resolve_candidates(&parse(r#"{"bus": "pt"}"#), &inp).unwrap();
+        assert!(!set.membership, "bus must confirm bus_id per frame");
+        assert_eq!(set.keys, vec![(0x100, false), (0x200, false)]);
+    }
+
+    #[test]
+    fn name_regex_and_signal_equals_use_dbc_ids_and_need_decode() {
+        let none = |_: &str| Vec::new();
+        let regex = |p: &str| (p == "^Eng").then(|| vec![(0x10, false)]).unwrap_or_default();
+        let signal = |n: &str| (n == "Rpm").then(|| vec![(0x10, false)]).unwrap_or_default();
+        let inp = inputs(&[], &none, &regex, &signal);
+        let nr = resolve_candidates(&parse(r#"{"name_regex": "^Eng"}"#), &inp).unwrap();
+        assert!(!nr.membership);
+        assert_eq!(nr.keys, vec![(0x10, false)]);
+        let se =
+            resolve_candidates(&parse(r#"{"signal_equals":{"name":"Rpm","value":1}}"#), &inp)
+                .unwrap();
+        assert!(!se.membership);
+        assert_eq!(se.keys, vec![(0x10, false)]);
+    }
+
+    #[test]
+    fn all_intersects_children_and_drops_membership_when_tested() {
+        let none = |_: &str| Vec::new();
+        let on_bus = |_: &str| vec![(1, false), (2, false), (3, false)];
+        let inp = inputs(&[], &on_bus, &none, &none);
+        // bus∩id_list: candidate = {1,2,3} ∩ {2,4} = {2}; tested (bus leaf).
+        let set = resolve_candidates(
+            &parse(r#"{"all": [{"bus": "p"}, {"id_list": [2, 4]}]}"#),
+            &inp,
+        )
+        .unwrap();
+        assert!(!set.membership);
+        assert_eq!(set.keys, vec![(2, false)]);
+    }
+
+    #[test]
+    fn all_of_membership_children_stays_membership() {
+        let none = |_: &str| Vec::new();
+        let seen = [(2, false), (3, false), (4, false)];
+        let inp = inputs(&seen, &none, &none, &none);
+        // id_range[1,3] ∩ id_list{2,3,9} = {2,3}; both membership ⇒ membership.
+        let set = resolve_candidates(
+            &parse(r#"{"all": [{"id_range": [1, 3]}, {"id_list": [2, 3, 9]}]}"#),
+            &inp,
+        )
+        .unwrap();
+        assert!(set.membership);
+        assert_eq!(set.keys, vec![(2, false), (3, false)]);
+    }
+
+    #[test]
+    fn any_unions_children_but_a_nonnarrowable_branch_is_unbounded() {
+        let none = |_: &str| Vec::new();
+        let inp = inputs(&[], &none, &none, &none);
+        // any of two id_lists ⇒ union, membership.
+        let set = resolve_candidates(
+            &parse(r#"{"any": [{"id_list": [1]}, {"id_list": [2]}]}"#),
+            &inp,
+        )
+        .unwrap();
+        assert!(set.membership);
+        assert_eq!(set.keys, vec![(1, false), (1, true), (2, false), (2, true)]);
+        // An empty `all` is vacuous-true (any id) ⇒ that `any` branch is
+        // non-narrowable ⇒ the whole `any` is None.
+        assert!(resolve_candidates(
+            &parse(r#"{"any": [{"id_list": [1]}, {"all": []}]}"#),
+            &inp,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn empty_all_is_not_narrowable_and_invalid_matches_nothing() {
+        let none = |_: &str| Vec::new();
+        let inp = inputs(&[], &none, &none, &none);
+        assert!(resolve_candidates(&parse(r#"{"all": []}"#), &inp).is_none());
+        let invalid = resolve_candidates(&parse(r#"{"unknown": 1}"#), &inp).unwrap();
+        assert!(invalid.membership && invalid.keys.is_empty());
     }
 
     #[test]

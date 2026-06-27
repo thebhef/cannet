@@ -25,6 +25,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
 # parsers) instead of reimplementing it — see the module-visibility note
 # in apps/gui/src-tauri/src/lib.rs.
 cannet-gui = { path = "../../apps/gui/src-tauri" }
+# The `FilterIndex` the filter-bench builds against the real store.
+cannet-spill = { path = "../cannet-spill" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 clap = { version = "4", features = ["derive"] }

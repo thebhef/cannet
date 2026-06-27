@@ -12,6 +12,7 @@ use clap::{Args, Parser, Subcommand};
 use cannet_perf_measurement::check::{
     self, Baseline, Expected, Metrics, ModeBaseline, BASELINE_VERSION,
 };
+use cannet_perf_measurement::filter_bench::{self, FilterBenchConfig};
 use cannet_perf_measurement::frontend::{self, FrontendBaseline, FrontendMetrics};
 use cannet_perf_measurement::grpc::{self, GrpcConfig};
 use cannet_perf_measurement::hardware_peak::{self, HardwarePeakConfig};
@@ -62,6 +63,10 @@ enum Command {
     /// Drive frames into a real `TraceStore` in-process while a filtered
     /// scan contends, and print the metrics as JSON.
     Tracebuffer(TracebufferArgs),
+    /// Fill a real `TraceStore` and time a deep positional filtered page
+    /// three ways — full scan, one-time index build, per-fetch index page
+    /// — to characterize the filter index (ADR 0002 DS-3).
+    FilterBench(FilterBenchArgs),
     /// Drive frames over the real gRPC wire through an in-process virtual
     /// bus into the model, and print the metrics as JSON.
     Grpc(GrpcArgs),
@@ -169,6 +174,43 @@ impl HardwarePeakArgs {
     }
 }
 
+#[derive(Args)]
+struct FilterBenchArgs {
+    /// Store backend: `mem` or `disk`.
+    #[arg(long, default_value = "disk")]
+    store: String,
+    /// Frames to fill before measuring.
+    #[arg(long, default_value_t = 200_000)]
+    frames: usize,
+    /// Predicate to filter by (JSON; must be id-narrowable, no decode).
+    #[arg(long, default_value = "{\"bus\":\"pt\"}")]
+    predicate: String,
+    /// Match-position offset of the page to fetch (use a deep one).
+    #[arg(long, default_value_t = 50_000)]
+    offset: usize,
+    /// Page size.
+    #[arg(long, default_value_t = 50)]
+    limit: usize,
+}
+
+impl FilterBenchArgs {
+    fn into_config(self) -> Result<FilterBenchConfig, String> {
+        let store = match self.store.as_str() {
+            "mem" => StoreKind::Mem,
+            "disk" => StoreKind::Disk,
+            other => return Err(format!("invalid --store {other:?} (expected mem|disk)")),
+        };
+        Ok(FilterBenchConfig {
+            store,
+            frames: self.frames,
+            predicate: serde_json::from_str(&self.predicate)
+                .map_err(|e| format!("invalid --predicate JSON: {e}"))?,
+            offset: self.offset,
+            limit: self.limit,
+        })
+    }
+}
+
 impl TracebufferArgs {
     fn into_config(self) -> Result<TracebufferConfig, String> {
         let store = match self.store.as_str() {
@@ -195,6 +237,7 @@ fn main() -> ExitCode {
     let result = match cli.command {
         Command::Validate => run_validate(&dir),
         Command::Tracebuffer(args) => run_tracebuffer(&dir, args),
+        Command::FilterBench(args) => run_filter_bench(&dir, args),
         Command::Grpc(args) => run_grpc(&dir, args),
         Command::HardwarePeak(args) => run_hardware_peak(&dir, args),
         Command::Baseline => run_baseline(&dir, cli.baseline, cli.frontend_report),
@@ -380,6 +423,17 @@ fn run_tracebuffer(dir: &std::path::Path, args: TracebufferArgs) -> Result<ExitC
     let ex = load_example(dir)?;
     let cfg = args.into_config()?;
     let report = tracebuffer::run(&ex, &cfg);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_filter_bench(dir: &std::path::Path, args: FilterBenchArgs) -> Result<ExitCode, String> {
+    let ex = load_example(dir)?;
+    let cfg = args.into_config()?;
+    let report = filter_bench::run(&ex, &cfg);
     println!(
         "{}",
         serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
