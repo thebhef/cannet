@@ -74,6 +74,15 @@ and the license / platform constraints we need to be aware of.
   (only ships as part of `kbar`'s command-palette package and would
   drag `kbar` in for the search-matcher use). See
   [`../docs/adr/0018-command-keybinding-framework.md`](../docs/adr/0018-command-keybinding-framework.md).
+- **`react-jsonschema-form`** (@rjsf, Apache-2.0) — `rejected` (Task 18
+  Step 6). Schema-driven settings form generator; the obvious "VS Code-like
+  settings" candidate. Rejected as premature: the frontend stack is
+  deliberately lean (no component/form library) and the initial settings
+  count is two, so a schema-driven framework is an abstraction for
+  single-use code with generic styling that fights the app's bespoke
+  panels. A flat in-repo panel is used instead. Revisit only if settings
+  proliferate — the `settings.json` storage contract is independent of the
+  panel. See [`../docs/adr/0034-settings-vs-state-and-custom-settings-panel.md`](../docs/adr/0034-settings-vs-state-and-custom-settings-panel.md).
 
 ### CAN / CANFD Abstraction
 

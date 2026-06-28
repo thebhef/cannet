@@ -1,6 +1,6 @@
 # ADR 0032 — Machine-local UI state persists host-side in the app config dir
 
-Status: accepted (2026-06-26)
+Status: accepted (2026-06-26); refined by [ADR 0034](0034-settings-vs-state-and-custom-settings-panel.md), which splits this file into `settings.json` (user intent) and `state.json` (the contents below, renamed).
 
 ## Decision
 
