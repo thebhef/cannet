@@ -54,6 +54,12 @@ the order below is the order of work, top first.
     `(signal, value)` updates by name; RBS applies them as overrides and
     keeps its own cadence/CRC/counters. Lets an external, out-of-repo sim
     (e.g. an EV drive cycle) drive the RBS.
+11. [Task 30 — Code-Quality Debt: Deduplication & God-File Split](0030-code-quality-dedup.md)
+    — pay down the copy-pasted hot-path implementations (CAN-ID
+    extraction ×5, DBC bit-walkers ×3, decoder boilerplate) and the
+    frontend fetch/format dups that also break the thin-view rule, plus
+    split the two god-files (`lib.rs`, `PlotPanel.tsx`). Small reviewable
+    refactors under green tests; pick up opportunistically.
 
 ## Notes
 

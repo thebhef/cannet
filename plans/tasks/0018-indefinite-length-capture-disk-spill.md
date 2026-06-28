@@ -397,13 +397,22 @@ rustdoc and the README current for what it ships:
   user-set maximum on the disk-spill scratch size (bytes; default off /
   unbounded), persisted in `settings.json` ([ADR 0034](../../docs/adr/0034-settings-vs-state-and-custom-settings-panel.md))
   and edited through the custom settings panel that also carries the
-  `clear scratch cache on exit` toggle. Over-limit behaviour is **drop
-  oldest**: the raw store becomes a windowed ring — when the scratch
-  exceeds the cap the oldest sealed segments are dropped and a **low-water
-  mark** rises, relaxing the DS-1 random-access contract (rows below the
-  mark are no longer addressable). That relaxation + the low-water mark
-  land as an update to [ADR 0002](../../docs/adr/0002-disk-spill-store.md).
-  Sub-slices:
+  `clear scratch cache on exit` toggle. The cap measures the **total
+  `current/` footprint** — the raw message segments **and** the derived
+  caches that grow with capture (by-id index, filter indexes, signal-cache
+  pyramids); bounding the raw store alone would not hold disk, since the
+  pyramids are `O(matches over capture lifetime)`. Over-limit behaviour is
+  **drop oldest**: the store becomes a windowed ring — when the total
+  exceeds the cap a single **low-water mark** rises and *every* family
+  **front-trims** the segments below it (drops the oldest, never rebuilds —
+  a clear/rebuild on each eviction would be `O(live window)` every sealed
+  segment, far too costly at steady-state cap). The mark relaxes the DS-1
+  random-access contract (rows below it are no longer addressable). That
+  relaxation + the low-water mark land as an update to
+  [ADR 0002](../../docs/adr/0002-disk-spill-store.md). User notes are *not*
+  evicted — they are user-authored, bounded by note count, and don't grow
+  with capture; a note below the floor simply points into truncated history
+  (the 6e truncation marker is the signal). Sub-slices:
     - **Step 6a — done.** Settings infrastructure ([ADR 0034](../../docs/adr/0034-settings-vs-state-and-custom-settings-panel.md)).
       Split machine state from user intent. The `prefs` module + its
       `preferences.json` became the `state` module + `state.json` (struct
@@ -430,36 +439,87 @@ rustdoc and the README current for what it ships:
       being open) and `app.exit` (closes the window via its own
       close-requested path, so the unsaved-changes prompt and clean-shutdown
       flush both run).
-    - **Step 6b — Low-water mark + explicit `Evicted` read contract.**
-      `read_frame` / `read_ts` today guard only the upper bound
-      (`idx >= len → None`); below the mark they would index a dropped
-      segment and panic. Add a `first_index` floor and an explicit
-      evicted/unavailable read result, and move `first_last_ts` off the
-      hardcoded index 0 onto the mark. The collection reads (`slice`,
-      `matching_frames_indexed`, …) already `filter_map` over `read_frame`,
-      so they tolerate the gap once the primitive returns the evicted
-      result rather than panicking. TDD: append past a tiny cap; assert
-      evicted reads return the unavailable result (no panic) and
-      `first_last_ts` tracks the mark.
-    - **Step 6c — Windowed-ring eviction (without losing the by-id newest).**
-      Enforce the cap: drop the oldest sealed meta/payload segments and the
-      by-id postings below the mark, raise the low-water mark, delete the
-      segment files. Eviction must not blank a rare id from the by-id grid:
-      the host `latest` map keys a `FrameKey` to a frame *index*, and the
-      grid resolves it with a raw read at display time, so once that index
-      evicts the id's last sighting is gone. Retaining the full newest frame
-      *eagerly* in `latest` would clone the heap payload on every append (a
-      per-frame allocation on the ingest hot path); instead capture it
-      **lazily, at eviction time** — before a segment is dropped (it is still
-      mapped), copy the newest-per-key frames that fall in it into a
+    - **Step 6b — done.** Low-water mark + explicit evicted read contract,
+      **across every trimmable store** ([ADR 0002](../../docs/adr/0002-disk-spill-store.md)).
+      Eviction front-trims three mmap'd segment chains — the raw store, the
+      signal-cache pyramids, and the filter indexes — and all three share
+      one panic class: a read addressing a slot below the mark indexes a
+      (would-be) dropped segment. The mark and the *read* half of the
+      contract land in each of them now, *before* anything trims, so 6c/6d's
+      diffs are purely the eviction policy and can't reintroduce a read
+      panic. The contract is one concept spanning the stores, not a
+      raw-store-only guard — hardening only the raw store would have left the
+      pyramid and filter-index serve paths to panic the moment 6d trims them.
+      *Raw store* (`DiskRawStore`): a `first_index` floor (lowest
+      still-addressable row; `0` until eviction raises it); `read_frame` /
+      `read_ts` return `None` (the evicted result) for `idx < first_index`, so
+      the collection reads (`slice`, `matching_frames_indexed`,
+      `frame_timestamps`, …) tolerate the gap through their existing
+      `filter_map`; `frame_timestamps` clamps its start up to the mark and
+      `first_last_ts` reads the span from `first_index`..`len-1`, not the
+      hardcoded index 0. *Signal-cache pyramids* (`SampleSeq` + the serve path
+      in `signal_cache.rs`): a per-level `first_slot` floor (`first_slot` /
+      `live_len` accessors, `evict_below` to raise it preserving absolute slot
+      numbering); the serve path's binary search (`partition_by_t`) starts its
+      lower bound at the level's mark and the `±2` boundary widening clamps to
+      it, so a window straddling or below the floor never reads a trimmed slot
+      and a fully-evicted level serves empty. *Filter index* (`FilterIndex`):
+      a `first_pos` floor; `position_of` lower-bounds at the mark and `page`
+      clamps its start up to it, so an evicted match-position is never read
+      (the `position_of`/count *base shift* is 6d's job — this is just the
+      read guard). The mark is set only in tests (6c/6d raise it for real when
+      they drop the segment files). Three tests, one per store, each seed past
+      a tiny store, raise the mark directly, and assert below-mark reads are
+      evicted (no panic), at/above reads resolve, ranges straddling the mark
+      drop the evicted prefix, and the span/empty bookkeeping tracks the mark
+      (`disk::reads_below_the_low_water_mark_are_evicted_not_panics`,
+      `sample_seq::evict_below_raises_the_live_floor_preserving_absolute_slots`,
+      `signal_cache::serve_skips_an_evicted_pyramid_front_without_panicking`,
+      `filter_index::reads_below_the_low_water_position_are_evicted_not_panics`).
+    - **Step 6c — Raw windowed-ring eviction (without losing the by-id newest).**
+      Enforce the cap on the **raw + by-id** families: when the total
+      `current/` footprint exceeds the cap, raise the shared low-water mark,
+      drop the oldest sealed meta/payload segments and the by-id postings
+      below it, and delete those segment files. (The mark is computed from
+      the *total* footprint, but only the raw and by-id families trim here;
+      the derived caches — signal pyramids, filter indexes — front-trim to
+      the same mark in 6d, which is what actually closes the cap. Until then
+      the raw families track the mark but `current/` total can still exceed
+      it via the pyramids.) Eviction must not blank a rare id from the by-id
+      grid: the host `latest` map keys a `FrameKey` to a frame *index*, and
+      the grid resolves it with a raw read at display time, so once that
+      index evicts the id's last sighting is gone. Retaining the full newest
+      frame *eagerly* in `latest` would clone the heap payload on every
+      append (a per-frame allocation on the ingest hot path); instead capture
+      it **lazily, at eviction time** — before a segment is dropped (it is
+      still mapped), copy the newest-per-key frames that fall in it into a
       retention overlay keyed by `FrameKey`, bounded by id-space. The by-id
       read path falls back to the overlay when an index is below the mark.
-      Persist the overlay into `derived.json` so a reopen across an eviction
-      keeps those last values. Verify: a capture past the cap holds the dir
-      size at the cap; reopen across an eviction is intact above the mark; a
+      Persist the overlay + the mark into `derived.json` / the manifest so a
+      reopen across an eviction keeps those last values and the floor.
+      Verify: a capture past the cap holds the raw + by-id footprint to the
+      windowed mark; reopen across an eviction is intact above the mark; a
       rare id whose only frame was evicted still shows its last value in the
       by-id grid, before and after reopen.
-    - **Step 6d — Truncation as a derived event.** Surface the low-water
+    - **Step 6d — Derived-cache front-trim (close the cap).** Front-trim the
+      derived caches to the shared low-water mark so the **total `current/`
+      footprint** holds at the cap. The floors + evicted-read guards already
+      exist (6b: `SampleSeq::first_slot`/`evict_below` and
+      `FilterIndex::first_pos`, plus the floor-aware serve paths), so this
+      slice adds only the *physical* trim and the cap wiring: drop the
+      now-dead leading segment *files* below
+      each store's mark, and raise the marks from the cap computation 6c does.
+      Front-trim, not clear/rebuild. The pyramid's higher levels are bucketed
+      (`PYRAMID_BRANCH` points of the level below), so dropping a front segment
+      realigns the surviving bucket boundaries; the level files are derived (no
+      manifest), so a coarse re-fold of the boundary bucket on next serve is
+      acceptable. The filter index also shifts its `position_of`/count base off
+      0 onto the mark (the count-math counterpart of 6b's read guard, which
+      kept `len` absolute). Verify: a capture past the cap holds the *whole*
+      `current/` dir at the cap (pyramids + indexes included), not just the
+      raw families; a plot fit-data after eviction starts at the truncation
+      floor, not before it; filtered counts stay exact across an eviction.
+    - **Step 6e — Truncation as a derived event.** Surface the low-water
       `(idx, ts)` as a derived, non-persisted, non-exported event
       ([ADR 0035](../../docs/adr/0035-timeline-event-model.md)), rendered as
       a plot cursor and a trace floor row ("history truncated here"),
@@ -470,7 +530,7 @@ rustdoc and the README current for what it ships:
       other kinds at arbitrary timestamps, needing ts→index placement — is
       an ADR 0035 consequence tracked in the backlog; this slice wires only
       the truncation floor row.)
-    - **Step 6e — Trace-panel show/hide events.** A view-local "show events"
+    - **Step 6f — Trace-panel show/hide events.** A view-local "show events"
       toggle in the trace panel's existing sources context menu
       (`SourcesContextMenu`) controlling whether event rows render in the
       trace. Verify: the toggle shows/hides the event rows without

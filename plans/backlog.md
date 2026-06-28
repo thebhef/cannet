@@ -292,6 +292,17 @@ next pass on this surface can address them as one piece.
 
 ### Host crates, wire, and sidecar
 
+- `[idea]` `cannet-gui` disk-spill eviction (task 0018 Step 6): **pin
+  note-bearing regions against eviction.** The windowed-ring cap drops the
+  oldest frames purely by age; a section the user annotated with a note is
+  evicted like any other. Preserve a window around each user note — don't
+  drop segments within `±N` seconds of a note's timestamp — so the frames a
+  marker refers to survive even as older unannotated history is trimmed.
+  Needs the eviction mark computation to consult the (timestamp-keyed) note
+  set and skip / fragment the trimmed range around pinned spans; the mark
+  stops being a single monotonic floor (it becomes a set of live ranges),
+  so weigh that complexity against the benefit. Deferred from Step 6 — the
+  base cap evicts by age only; notes are kept but may dangle below the floor.
 - `[bug]` `cannet-gui` disk-spill scratch: **two app instances share and
   stomp one `current/` dir.** The scratch lives at a single fixed path
   (`<OS cache>/cannet/current/`), and nothing arbitrates exclusive
