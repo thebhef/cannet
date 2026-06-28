@@ -354,6 +354,45 @@ fn read_memory(sys: &mut System, own_pid: Option<Pid>) -> MemorySample {
     sample
 }
 
+/// Reusable process-memory sampler for the ADR-0031 diag capture: one
+/// `System`, refreshed per sample, yielding the host / tree / webview-
+/// renderer split as `mem.*_mb` gauges. Held across a capture so the
+/// per-second refresh stays cheap (the same `read_memory` the health
+/// recorder uses; this just packages it for the gauge stream).
+pub(crate) struct MemSampler {
+    sys: System,
+    own_pid: Option<Pid>,
+}
+
+impl MemSampler {
+    pub(crate) fn new() -> Self {
+        Self {
+            sys: System::new(),
+            own_pid: sysinfo::get_current_pid().ok(),
+        }
+    }
+
+    /// Refresh and insert the current memory split as `mem.*_mb` gauges
+    /// (megabytes). Figures that couldn't be read (PID unresolved, or the
+    /// per-process table missing the root) are skipped rather than zeroed,
+    /// so the reduction's slope/peak see only real readings.
+    pub(crate) fn stamp_mb(&mut self, gauges: &mut std::collections::BTreeMap<String, f64>) {
+        let m = read_memory(&mut self.sys, self.own_pid);
+        #[allow(clippy::cast_precision_loss)]
+        let mb = |bytes: u64| bytes as f64 / (1024.0 * 1024.0);
+        for (key, bytes) in [
+            ("mem.host_mb", m.host),
+            ("mem.tree_mb", m.tree),
+            ("mem.webview_renderer_mb", m.webview_renderer),
+            ("mem.webview_mb", m.webview),
+        ] {
+            if let Some(b) = bytes {
+                gauges.insert(key.to_string(), mb(b));
+            }
+        }
+    }
+}
+
 /// The set of `root` plus every process reachable from it through the
 /// parent links in `links` (`(pid, parent_pid)`). Pure and unit-testable
 /// — no `sysinfo` in the signature. The visited set makes it robust to a

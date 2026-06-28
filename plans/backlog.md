@@ -435,3 +435,23 @@ next pass on this surface can address them as one piece.
   and should be renamed (e.g. `LocalUv` / `local_uv_path`) for
   consistency. User-facing strings and module docs are already
   updated; this is a code-only follow-up.
+
+- `[dev]` **Dev server port is fixed, blocking concurrent `tauri dev`
+  instances.** The Vite dev port lives in two places that must agree:
+  [`apps/gui/vite.config.ts`](apps/gui/vite.config.ts) pins
+  `port: 5173, strictPort: true` (hard-fails on a busy port rather than
+  moving up) and [`apps/gui/src-tauri/tauri.conf.json`](apps/gui/src-tauri/tauri.conf.json)
+  `devUrl` is statically `http://localhost:5173`. So a stale Vite
+  server wedges dev, and two `tauri dev` sessions can't coexist (the
+  symptom that surfaced this: a leaked `node.exe` holding 5173). Make
+  the port env-driven across both sides — Vite reads
+  `CANNET_DEV_PORT` (default 5173), plus a `dev:alt` script that runs a
+  second instance on another port with a matching `tauri dev --config`
+  `devUrl` override. Dev-mode only: the built app loads bundled assets
+  (no 5173), so production multi-instance is unaffected — the real
+  multi-instance blocker there is the shared `current/` scratch dir
+  (see the disk-spill scratch item under *Host crates*). Lower
+  priority: `cannet-server`'s `--bind` default
+  `127.0.0.1:50051` is a fixed *default* (already overridable by flag);
+  consider an ephemeral default so two standalone servers don't collide
+  out of the box.

@@ -202,6 +202,38 @@ rate gates below are what close that blind spot.
 | `jank_fraction` | ≤ 2× baseline + 0.05 |
 | `rx_fps_retention` / `tx_fps_retention` | ≥ 90 % of baseline, absolute floor 0.80 |
 | `rx_fps_expected` / `tx_fps_expected` | within ±15 % of `--expected-{rx,tx}-fps` |
+| `jsheap_mb_peak` / `renderer_mb_peak` / `host_mb_peak` / `tree_mb_peak` | ≤ 2× baseline + 64 MB |
+| `jsheap_mb_drift_per_min` / `renderer_mb_drift_per_min` / `tree_mb_drift_per_min` | ≤ 2× baseline + 5 MB/min |
+| `flush_ms_mean` | ≤ 25 ms (absolute) |
+| `tx_late_ms_mean` | ≤ 18 ms (absolute) |
+
+The memory rows (ADR 0031) gate the renderer's growth — the JS heap
+(`jsheap_mb`, reported by the frontend) and the WebView renderer process RSS
+(`mem.webview_renderer_mb`, where a native/GPU climb the heap can't see
+surfaces), each as a run **peak** and a least-squares **drift per minute**.
+`host_mb_peak` watches the Rust host RSS (expected flat). `tree_mb` —
+the whole-app RSS (host + every WebView descendant: browser, renderer, GPU,
+utility) — is the holistic backstop: a leak in a process the per-process
+rows don't name (the GPU process, a helper) trips neither `renderer` nor
+`host` but shows in the tree, which is also the single number for
+total-footprint growth. They are **inert until a baseline carries them** — a
+baseline lacking the fields gates nothing, so they arm on the next
+regeneration. Drift only reads as signal over a representative-length
+capture (a multi-minute `--perf-capture-secs`, not the smoke-test span), so
+capture a memory baseline at scenario length.
+
+The `flush_ms` / `tx_late_ms` rows gate **host append-lock contention** (ADR
+0031): the periodic `TraceStore::flush` holds the append lock, so its
+duration *is* the contention, and the transmit scheduler's wake lateness is
+its user-facing effect. These are signals throughput/retention is
+**structurally blind** to — a periodic sub-second stall is refilled by the
+catch-up burst after it, so `tx_fps` retention stays ~1.0 straight through it
+(it did, while a flush stalled ingest/transmit every 2 s). The gated
+statistic is the **mean**, not the peak: the regression is a *systematic*
+per-flush stall (every tick slow), which moves the mean cleanly, whereas a
+peak gate would flap on one-off OS writeback noise. Gated against an
+**absolute** ceiling (a flush should average a few ms regardless of the
+machine), always active — an absent gauge reads 0, which passes.
 
 The expected-rate gate is a **two-sided band**: the sim emits a deterministic
 schedule (515 frames/s for ev-demo, echoed both directions), so a shortfall

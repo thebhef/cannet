@@ -64,6 +64,10 @@ struct IdPostings {
     /// index be located in `O(log segs)`.
     cum_cap: Vec<usize>,
     len: usize,
+    /// Index of the first segment that may hold un-flushed entries — the
+    /// tail at the previous flush. Appends only ever touch the tail, so a
+    /// flush re-syncs from here forward, never the sealed segments below it.
+    flushed_from: usize,
 }
 
 impl IdPostings {
@@ -124,6 +128,9 @@ impl ByIdIndex {
                 post.cum_cap.push(prev + cap);
             }
             post.len = len;
+            // Reopened segments are durable; the next flush re-syncs only
+            // from the active tail.
+            post.flushed_from = post.segs.len().saturating_sub(1);
             map.insert((id, extended), post);
         }
         Ok(Self { dir, map })
@@ -139,13 +146,22 @@ impl ByIdIndex {
             .collect()
     }
 
-    /// Flush every mapped posting segment so the postings are durable
-    /// before the manifest that references them is written.
-    pub(crate) fn flush(&self) -> std::io::Result<()> {
-        for post in self.map.values() {
-            for seg in &post.segs {
-                seg.map.flush()?;
+    /// Flush the posting segments dirtied since the last flush so the
+    /// postings are durable before the manifest that references them is
+    /// written. Incremental: each posting only appends to its tail, so
+    /// sealed segments below `flushed_from` are already durable and are not
+    /// re-synced — keeping a flush `O(active segments)`, not `O(all by-id
+    /// segments)`, which at deep history is the bulk of the flush cost.
+    pub(crate) fn flush(&mut self, sync: bool) -> std::io::Result<()> {
+        for post in self.map.values_mut() {
+            for seg in &post.segs[post.flushed_from..] {
+                if sync {
+                    seg.map.flush()?;
+                } else {
+                    seg.map.flush_async()?;
+                }
             }
+            post.flushed_from = post.segs.len().saturating_sub(1);
         }
         Ok(())
     }
