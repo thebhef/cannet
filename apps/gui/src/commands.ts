@@ -19,7 +19,8 @@ export type FocusedPanelKind =
   | "project"
   | "project-graph"
   | "system-messages"
-  | "dbc";
+  | "dbc"
+  | "settings";
 
 /// The small, fixed context object command predicates range over
 /// (ADR 0018) — deliberately not a general expression language.
@@ -52,6 +53,12 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "project.open", label: "Open project…", category: "Project" },
   { id: "project.save", label: "Save project", category: "Project" },
   { id: "project.saveAs", label: "Save project as…", category: "Project" },
+  {
+    id: "project.close",
+    label: "Close project",
+    category: "Project",
+    context: (ctx) => ctx.hasProjectOpen,
+  },
   { id: "blf.open", label: "Open BLF…", category: "File" },
   { id: "dbc.add", label: "Add DBC…", category: "File" },
   { id: "connection.connect", label: "Connect", category: "Connection" },
@@ -71,7 +78,9 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "panel.show.systemMessages", label: "Show system messages", category: "Panels" },
   { id: "panel.show.projectGraph", label: "Show project graph", category: "Panels" },
   { id: "panel.show.dbc", label: "Show DBC panel", category: "Panels" },
+  { id: "panel.show.settings", label: "Show settings", category: "Panels" },
   { id: "panel.rename", label: "Rename panel…", category: "Panels" },
+  { id: "app.exit", label: "Exit", category: "App" },
   { id: "palette.show", label: "Show command palette", category: "Palette" },
   { id: "goto.view", label: "Go to view…", category: "Palette" },
   { id: "plot.fitXAxis", label: "Plot: fit x axis", category: "Plot", context: plotFocused },
@@ -121,6 +130,7 @@ function enumerateContexts(): CommandContext[] {
     "project-graph",
     "system-messages",
     "dbc",
+    "settings",
   ];
   const out: CommandContext[] = [];
   for (const focusedPanelKind of kinds) {

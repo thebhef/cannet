@@ -33,6 +33,10 @@ export const RBS_PANEL_COMPONENT = "rbs";
 /// Signal value→color map config panel (ADR 0029). Element-backed,
 /// like RBS — each colormap element opens into its own editor panel.
 export const COLORMAP_PANEL_COMPONENT = "colormap";
+/// User-settings editor over the host's `settings.json` (ADR 0034).
+/// Singleton (same pattern as the project / graph / system-messages /
+/// DBC panels) — settings are app-global, so one instance suffices.
+export const SETTINGS_PANEL_COMPONENT = "settings";
 /// Singleton id — toolbar's "DBC panel" button uses this to
 /// show-or-focus a single instance.
 export const DBC_PANEL_ID = "dbc";
@@ -46,6 +50,10 @@ export const PROJECT_GRAPH_PANEL_ID = "project-graph";
 /// focus it, or add it on first click.
 export const PROJECT_PANEL_ID = "project";
 export const SYSTEM_MESSAGES_PANEL_ID = "system-messages";
+
+/// The settings panel is a singleton too — one app-global instance,
+/// opened from the command palette.
+export const SETTINGS_PANEL_ID = "settings";
 
 /// What `CommandContext.focusedPanelKind` should report for the
 /// active dockview panel: element-backed panels report their element
@@ -75,6 +83,8 @@ export function panelKindForFocus(
       return "project-graph";
     case DBC_PANEL_ID:
       return "dbc";
+    case SETTINGS_PANEL_ID:
+      return "settings";
     default:
       return null;
   }

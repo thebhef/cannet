@@ -40,6 +40,7 @@ import { RbsPanel } from "./RbsPanel";
 import { ColorMapPanel } from "./ColorMapPanel";
 import { SystemMessagesPanel } from "./SystemMessagesPanel";
 import { DbcPanel } from "./DbcPanel";
+import { SettingsPanel } from "./SettingsPanel";
 import { SystemLogContext, type SystemLogContextValue } from "./systemLogContext";
 import {
   mergeSystemMessage,
@@ -51,12 +52,12 @@ import type { Note } from "./notes";
 import { sortNotesChronologically } from "./notes";
 import { recordRecentBlf, forgetRecentBlf } from "./recentBlfs";
 import {
-  prefs,
+  hostState,
   setRecentBlfs as persistRecentBlfs,
   setRecentCommands as persistRecentCommands,
   setLastProject as persistLastProject,
   setLayout as persistLayout,
-} from "./hostPrefs";
+} from "./hostState";
 import type { SystemMessage } from "./types";
 import { TraceDataContext, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
@@ -91,6 +92,8 @@ import {
   PROJECT_PANEL_ID,
   COLORMAP_PANEL_COMPONENT,
   RBS_PANEL_COMPONENT,
+  SETTINGS_PANEL_COMPONENT,
+  SETTINGS_PANEL_ID,
   SYSTEM_MESSAGES_PANEL_COMPONENT,
   SYSTEM_MESSAGES_PANEL_ID,
   TRACE_PANEL_COMPONENT,
@@ -180,6 +183,7 @@ const DOCK_COMPONENTS = {
   [PROJECT_GRAPH_PANEL_COMPONENT]: ProjectGraphPanel,
   [SYSTEM_MESSAGES_PANEL_COMPONENT]: SystemMessagesPanel,
   [DBC_PANEL_COMPONENT]: DbcPanel,
+  [SETTINGS_PANEL_COMPONENT]: SettingsPanel,
 };
 
 export function App() {
@@ -265,7 +269,7 @@ export function App() {
   // Recent BLFs (the N most-recent opened BLF paths, persisted host-side
   // per ADR 0032). Offered in the Open BLF flow and the project panel's
   // BLF import affordance.
-  const [recentBlfs, setRecentBlfs] = useState<string[]>(() => prefs().recent_blfs);
+  const [recentBlfs, setRecentBlfs] = useState<string[]>(() => hostState().recent_blfs);
   const rememberRecentBlf = useCallback((path: string) => {
     setRecentBlfs((current) => {
       const next = recordRecentBlf(current, path);
@@ -494,7 +498,7 @@ export function App() {
   // The last few commands run (MRU, capped — see recentCommands.ts);
   // the command palette floats them to the top, VS Code-style.
   const [recentCommands, setRecentCommands] = useState<string[]>(
-    () => prefs().recent_commands,
+    () => hostState().recent_commands,
   );
   // Panel-local command implementations (plot fit / follow-live).
   const [panelCommands] = useState(createPanelCommandRegistry);
@@ -1724,6 +1728,18 @@ export function App() {
     [showSingletonPanel],
   );
 
+  // Settings editor — singleton, app-global (ADR 0034). Opened from the
+  // command palette; edits `settings.json` through the host.
+  const showSettingsPanel = useCallback(
+    () =>
+      showSingletonPanel({
+        id: SETTINGS_PANEL_ID,
+        component: SETTINGS_PANEL_COMPONENT,
+        title: "Settings",
+      }),
+    [showSingletonPanel],
+  );
+
   // System-log context: mirror + clear + markRead. `clear`
   // empties both the host's ring and the frontend's mirror; the host
   // does *not* reset its seq counter (callers rely on monotonicity),
@@ -1812,6 +1828,9 @@ export function App() {
     "project.open": () => void handleOpenProject(),
     "project.save": () => void handleSaveProject(),
     "project.saveAs": () => void handleSaveProjectAs(),
+    // Close project = return to a fresh no-project workspace (same reset
+    // the New-project action performs).
+    "project.close": handleNewProject,
     "blf.open": () => void handleOpenLog(),
     "dbc.add": () => void handleAddDbc(),
     "connection.connect": () => void handleConnect(),
@@ -1827,11 +1846,16 @@ export function App() {
     "panel.show.systemMessages": showSystemMessagesPanel,
     "panel.show.projectGraph": showProjectGraphPanel,
     "panel.show.dbc": showDbcPanel,
+    "panel.show.settings": showSettingsPanel,
     // Renaming happens in the project panel (the canonical edit
     // surface — ADR 0019); the command surfaces it.
     "panel.rename": showProjectPanel,
     "palette.show": () => setOpenPalette("commands"),
     "goto.view": () => setOpenPalette("goto"),
+    // Quit via the window's own close path: runs the unsaved-changes
+    // prompt (`onCloseRequested`) and the clean-shutdown flush, exactly
+    // like clicking the title-bar close button.
+    "app.exit": () => void getCurrentWindow().close(),
     "plot.fitXAxis": () => runFocusedPanelCommand("plot.fitXAxis"),
     "plot.followLive.enable": () => runFocusedPanelCommand("plot.followLive.enable"),
   };
@@ -1951,7 +1975,7 @@ export function App() {
       });
 
       let restored = false;
-      const saved = validateLayout(prefs().layout);
+      const saved = validateLayout(hostState().layout);
       if (saved) {
         try {
           api.fromJSON(saved);
@@ -1989,7 +2013,7 @@ export function App() {
         // it replaces the layout restored above (and re-applies the
         // bus/DBC config). A stale pointer (file moved/deleted) is
         // cleared so it stops failing.
-        const projectToOpen = cfg?.project ?? prefs().last_project;
+        const projectToOpen = cfg?.project ?? hostState().last_project;
         if (projectToOpen) {
           try {
             const p = await invoke<Project>("open_project", { path: projectToOpen });

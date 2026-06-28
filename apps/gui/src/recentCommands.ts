@@ -4,7 +4,7 @@
 // of its (unfiltered) list, VS Code-style — an MRU list, not a
 // strict history: re-running a command moves it to the front, and
 // the list is capped. Persisted host-side across app restarts
-// (ADR 0032); these are the pure list helpers feeding `hostPrefs`.
+// (ADR 0032); these are the pure list helpers feeding `hostState`.
 
 /// Maximum number of recently-used commands to remember.
 export const RECENT_COMMANDS_LIMIT = 10;

@@ -53,7 +53,8 @@ mod interfaces;
 mod ipc;
 mod local_buses;
 mod notes;
-mod prefs;
+mod settings;
+mod state;
 mod project;
 mod rbs;
 mod sidecar;
@@ -493,8 +494,10 @@ pub fn run() {
             disconnect_remote_server,
             project::open_project,
             project::save_project,
-            prefs::get_prefs,
-            prefs::set_prefs,
+            state::get_state,
+            state::set_state,
+            settings::get_settings,
+            settings::set_settings,
             list_signals,
             list_dbc_content,
             sample_signals,
