@@ -430,6 +430,8 @@ pub fn run() {
     let scratch_path = scratch.as_ref().ok().map(std::path::PathBuf::as_path);
     let filter_dir = filter_index_dir(scratch_path);
     let signal_dir = signal_cache_dir(scratch_path);
+    // Owned copy for the notes store — `open_trace_store` moves `scratch`.
+    let notes_dir = scratch_path.map(std::path::Path::to_path_buf);
     let trace_store = open_trace_store(scratch);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -453,7 +455,13 @@ pub fn run() {
             trace_store,
             signal_caches: SignalCacheStore::new(signal_dir),
             system_log: SystemLog::new(),
-            notes: NotesStore::new(),
+            // Notes share the scratch `current/` dir with the trace store's
+            // identity/derived files (ADR 0002 DS-7); they persist on every
+            // edit, so a marker added to a stopped trace survives reopen.
+            notes: match notes_dir {
+                Some(p) => NotesStore::with_scratch(p),
+                None => NotesStore::new(),
+            },
             dbc_watcher: Mutex::new(None),
             local_buses: local_buses::LocalBusRegistry::default(),
             transmit_frames: Mutex::new(transmit_frames::TransmitFrameRegistry::default()),
@@ -1900,6 +1908,10 @@ fn restamp_scratch_for_capture(state: &AppState) {
         .lock()
         .expect("active project mutex poisoned");
     state.trace_store.write_scratch_identity(active);
+    // Drop the scratch copy of notes too (ADR 0002 DS-7): a reset session
+    // starts with no events. The live `NotesStore` is cleared / replaced by
+    // the caller, which re-persists from there.
+    state.notes.wipe_scratch();
 }
 
 #[tauri::command]
@@ -1953,6 +1965,11 @@ fn restore_scratch_capture(app: AppHandle, state: State<'_, AppState>) -> Restor
     }
     let count = state.trace_store.len();
     let session_start_ns = state.trace_store.session_start_ns();
+    // Bring the session's events back too (ADR 0002 DS-7 / ADR 0035) — the
+    // scratch's own copy, independent of any BLF round-trip.
+    if let Some(restored) = state.notes.restore() {
+        let _ = app.emit("notes-changed", restored);
+    }
     sys_info!(&app, "project", "restored {count} frames from prior capture");
     #[allow(clippy::cast_precision_loss)]
     RestoredCapture {

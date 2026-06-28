@@ -909,7 +909,7 @@ impl CandidateSource for TraceStore {
 /// Serialize `value` to `path` as JSON via a temp-file + rename, so a
 /// crash mid-write can't leave a half-written file that fails to parse on
 /// reload.
-fn write_json<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
+pub(crate) fn write_json<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
     let bytes = serde_json::to_vec(value)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     let tmp = path.with_extension("json.tmp");
@@ -920,7 +920,7 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
 /// Read and parse a JSON file written by [`write_json`]. `None` when the
 /// file is absent or unparseable — both treated as "no usable state",
 /// which the reload path handles as a clean miss.
-fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
+pub(crate) fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
     let bytes = std::fs::read(path).ok()?;
     serde_json::from_slice(&bytes).ok()
 }

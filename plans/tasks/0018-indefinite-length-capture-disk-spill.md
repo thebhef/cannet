@@ -86,10 +86,11 @@ session present at launch is loaded as a stopped historical trace
     The old chunked-scan helpers (`PageSelector`, `scan_chunk_filtered`,
     `tail_page`) are retired. Verified: gui + spill unit suites, frontend
     suite (wire contract unchanged), and a render-tier perf run/gate.
-  - **Step 5.3 — the DS-7 scratch lifecycle, sliced into four
+  - **Step 5.3 — the DS-7 scratch lifecycle, sliced into several
     independently-landable parts** (it spans a new disk-store reopen
-    surface, a `Project` schema migration, host wiring, and the pyramid
-    residency bound — too much for one reviewable diff):
+    surface, a `Project` schema migration, host wiring, the pyramid
+    residency bound, scratch-persisted events, and the by-id derived-state
+    shape — too much for one reviewable diff):
     - **Step 5.3a — done.** Disk-store persistent watermark + reopen
       (cannet-spill only, no GUI change). `DiskRawStore::flush` now writes
       a `manifest.json` (schema `version`, `DiskConfig`, the `len` /
@@ -221,33 +222,56 @@ session present at launch is loaded as a stopped historical trace
       geometric segments, lazy file creation, prefix isolation, flush) and a
       `signal_cache` test asserting levels spill to `sig.*` files and
       `clear` wipes them.
-    - **Step 5.3e — events (notes) persist with the scratch. Not yet
-      started.** DS-7 names markers/events as part of the `current/`
-      session state — the durable-kind persistence of the event model
-      ([ADR 0035](../../docs/adr/0035-timeline-event-model.md)) — but 5.3c
-      only persisted the raw frames, derived
-      state, and identity — the session-scoped `NotesStore`
-      (`apps/gui/src-tauri/src/notes.rs`, a `Mutex<Vec<Note>>`) is left
-      out. Today notes are persisted *only* into a `.blf` on Save
-      Capture (`GLOBAL_MARKER` records) and reloaded *only* from a
-      `.blf` on Open Capture; they are not written to the scratch. So a
-      running trace that spills to disk and is reloaded through the
-      manifest gate (`try_reload`) comes back with its frames but an
-      empty event list — the cursors a user placed during the live
-      capture are lost on the very reopen DS-7 promises is lossless. A
-      crash-then-remap loses them too. **This must not be deferred.**
-      Write the notes into `current/` (a `notes.json`, temp-file +
-      rename, on the same flush cadence as `derived.json` — or folded
-      into it), wipe it on Clear/Start alongside `identity.json` /
-      `derived.json`, and restore the `NotesStore` from it in the
-      `try_reload` gate so a reopened scratch capture brings its events
-      back. The BLF path (Save/Open Capture) is unchanged and remains
-      the export/import home; this is purely the scratch's own copy.
-      Verify: a capture with notes spilled to disk and reopened via the
-      manifest (no `.blf` round-trip) restores every note at its
-      timestamp; Clear/Start drops the scratch notes so a later reload
-      misses them.
-- **Steps 6–7 — not started.**
+    - **Step 5.3e — done.** Events (notes) persist with the scratch — the
+      durable-kind persistence of the event model
+      ([ADR 0035](../../docs/adr/0035-timeline-event-model.md)). Before this,
+      5.3c persisted only the raw frames, derived state, and identity; the
+      session-scoped `NotesStore` was written *only* into a `.blf` on Save
+      Capture and reloaded *only* from a `.blf` on Open Capture, so a trace
+      that spilled to disk and reopened through the manifest gate
+      (`try_reload`) came back with its frames but an empty event list —
+      cursors placed during the live capture lost on the very reopen DS-7
+      promises is lossless. Now the notes ride the scratch as their own
+      `current/notes.json` (atomic temp-file + rename), restored in the open
+      gate and wiped on Clear/Start. **`NotesStore` owns its persistence**
+      (the `SignalCacheStore::new(dir)` pattern): built with
+      `with_scratch(dir)`, it rewrites `notes.json` on **every edit** —
+      *not* the frame-flush cadence. That distinction is load-bearing: notes
+      are user data that changes independently of ingest, so a marker added
+      to a *stopped, reloaded* trace (no new frames, no flush tick) must
+      still reach disk — the first cut persisted on the flush tick and lost
+      exactly those edits. `TraceStore` stays ignorant of events (the orphan
+      `scratch_dir()` getter was removed); the host gives `NotesStore` the
+      same `current/` dir, `restore_scratch_capture` restores after a
+      successful `try_reload` and emits `notes-changed`, and
+      `restamp_scratch_for_capture` wipes on reset. The BLF path is unchanged
+      and remains the export/import home; this is purely the scratch's own
+      copy. One `notes` unit test asserts a manual edit with **no frame
+      activity** round-trips through `notes.json`, an edit on the stopped
+      store re-persists, and `wipe_scratch` drops it so a later restore
+      misses.
+    - **Step 5.3f — By-id derived state holds the full newest frame, not a
+      raw-store index. Not yet started.** The host `latest` map keys a
+      `FrameKey` to a frame *index* (5.3c persists that index in
+      `derived.json`), and the live by-id grid resolves it with a raw
+      `read_frame` at display time. That makes the derived state — which is
+      meant to be self-contained host state bounded by id-space (the
+      `cannet-spill` crate doc's raw-vs-derived split) — actually a pointer
+      into the `O(capture)` raw store. It works only while every index stays
+      valid: a latent coupling today that becomes a *correctness* bug the
+      moment Step 6 eviction can drop the segment an index points at (a rare
+      id's last sighting vanishes from the grid, and a persisted index can
+      dangle below a reloaded low-water mark). Retain the full newest
+      `RawTraceFrame` per key instead (still id-space bounded) and persist
+      the *frame*, not the index, in `derived.json`, so the by-id snapshot
+      is self-contained and survives both eviction and reload. This is
+      derived-state model completion, not eviction behaviour, so it lands in
+      Step 5 with the rest of the derived state; Step 6 eviction then merely
+      relies on it. Verify: the by-id newest snapshot round-trips through
+      `derived.json` carrying the full frame; a stopped reloaded trace shows
+      each key's last value with no raw read.
+- **Steps 6–7 — not started** (Step 5 completes once 5.3f lands; it gates
+  Step 6).
 
 Deviations / decisions in 5.3a:
 
@@ -393,7 +417,20 @@ rustdoc and the README current for what it ships:
   mark are no longer addressable). That relaxation + the low-water mark
   land as an update to [ADR 0002](../../docs/adr/0002-disk-spill-store.md).
   Sub-slices:
-    - **Step 6a — Low-water mark + explicit `Evicted` read contract.**
+    - **Step 6a — Settings infrastructure ([ADR 0034](../../docs/adr/0034-settings-vs-state-and-custom-settings-panel.md)).**
+      The cap and the `clear scratch cache on exit` toggle need a home that
+      does not exist yet. Split machine state from user intent: rename the
+      existing `preferences.json` → `state.json` (host-derived UI state,
+      [ADR 0032](../../docs/adr/0032-machine-local-ui-state-host-side.md))
+      and add a new `settings.json` (user intent) behind a `settings.rs`
+      module carrying `scratch_cap_bytes` (default null / unbounded) and
+      `clear_scratch_on_exit` (default false). Build the flat in-repo
+      settings panel (no schema-form dependency — ADR 0034) and a
+      `panel.show.settings` command-palette entry to open it. The two cap
+      fields are inert until 6c reads them. Verify: `state.json` round-trips
+      the renamed prefs; `settings.json` round-trips both new fields at
+      their defaults; the panel opens from the palette and edits both.
+    - **Step 6b — Low-water mark + explicit `Evicted` read contract.**
       `read_frame` / `read_ts` today guard only the upper bound
       (`idx >= len → None`); below the mark they would index a dropped
       segment and panic. Add a `first_index` floor and an explicit
@@ -404,17 +441,13 @@ rustdoc and the README current for what it ships:
       result rather than panicking. TDD: append past a tiny cap; assert
       evicted reads return the unavailable result (no panic) and
       `first_last_ts` tracks the mark.
-    - **Step 6b — Windowed-ring eviction.** Enforce the cap: drop the oldest
+    - **Step 6c — Windowed-ring eviction.** Enforce the cap: drop the oldest
       sealed meta/payload segments and the by-id postings below the mark,
-      raise the low-water mark, delete the segment files. Verify: a capture
-      past the cap holds the dir size at the cap; reopen across an eviction
-      is intact above the mark.
-    - **Step 6c — By-id retain newest-per-key frame.** The host `latest` map
-      keys a `FrameKey` to a frame *index*; once that index evicts, the id's
-      last sighting is lost from the live by-id grid. Retain the full newest
-      `RawTraceFrame` per key (bounded by id-space, not capture length) so
-      the live snapshot survives eviction. Verify: a rare id whose only
-      frame is evicted still shows its last value in the by-id view.
+      raise the low-water mark, delete the segment files. The by-id live
+      grid stays correct across the drop because 5.3f retains the full
+      newest frame per key (not a now-evicted index). Verify: a capture past
+      the cap holds the dir size at the cap; reopen across an eviction is
+      intact above the mark.
     - **Step 6d — Truncation as a derived event.** Surface the low-water
       `(idx, ts)` as a derived, non-persisted, non-exported event
       ([ADR 0035](../../docs/adr/0035-timeline-event-model.md)), rendered as
@@ -529,66 +562,77 @@ Dropped alternatives: a by-id *dirty set* (marginal — every id gets a frame
 each tick) and reopen-rebuild of the by-id tail (conflicts with DS-3's
 no-`O(capture)`-reopen).
 
-## Reload caches not invalidated on DBC change (bug, not yet fixed)
+## Reloaded plot shows only a trailing ~10 s window (bug, root cause confirmed)
 
-**Symptom.** After a scratch reload, a plot shows one signal mostly/fully
-populated but another only partially — or only the most recent page of
-samples. Reproduced on a reopened session.
+**Symptom.** After a scratch reload, a plot intermittently shows only the
+recent slice of a signal, not the full restored span. Recovered manually by
+Follow-Live → Fit-Data → un-Follow-Live.
 
-**Root cause.** The per-signal pyramid (`signal_cache.rs`) and the active
-filter index are *derived* state rebuilt lazily on first serve, but neither
-is invalidated when the DBC set changes. `SignalCache::catch_up` advances
-`next_index` to the store tip **unconditionally** — frames it couldn't decode
-(the signal's DBC not yet loaded, or dropped by the bus filter) are skipped
-and never revisited. `signal_caches.clear()` has exactly one caller,
-`clear_trace_store`; `load_dbc` / `set_dbc_buses` / `remove_dbc` /
-`clear_dbcs` mutate the DBC set and call only `rbs::refresh_all_elements`. So
-if a signal's first `slice`/`min_max` runs before its DBC is loaded, the
-pyramid jumps past the historical frames and — because a reopened trace is
-stopped (no future appends to trigger re-decode) — stays empty/partial
-forever. Per-signal timing differences give "one signal fine, another not";
-a capture that continued after reload gives "only the most recent page".
+**Not the host — proven from the live scratch.** Raw store reopens losslessly
+(`manifest len = 1267578`; each by-id length = sum of its two per-bus
+`derived.json` counts). All 26 pyramids rebuild complete (~57627 pts over the
+full 579 s, read from the `(t,v)` f64 pairs). Trace table renders complete.
+Data's all loaded; the plot just isn't *showing* it. (Debug note: pyramid
+level files are pre-allocated — file size is capacity; real length is the
+count of non-zero `t_seconds`, not `bytes/16`.)
 
-The on-disk reopen *data* is complete and self-consistent — confirmed against
-a live scratch: each manifest by-id length equals the exact sum of its
-per-bus `derived.json` counts, and every meta/payload/by-id segment the
-watermarks imply is present and correctly sized. The bug is purely in the
-derived-cache lifecycle, not the spill read/persist path.
+**Root cause.** `PlotPanel.onAreaResampled` slides the x-window to the live
+edge when Follow-Live is on (the default):
 
-**Relation to ADR 0033.** This is the exact failure mode ADR 0033 ("build a
-model layer's dependencies before the layer itself") addresses: a derived
-cache read before its DBC dependency is loaded computes an empty decode and
-*caches it*. ADR 0033 chose **ordering** as the remedy (`applyProject`
-sequences DBCs → RBS → views → replayed capture) and explicitly *rejected*
-per-view re-validation as the dependency fills in. The bug is that this is
-not enough for the reload case, in two ways:
+```js
+const width = sync set ? sync.xMax - sync.xMin : DEFAULT_FOLLOW_WIDTH_SECONDS; // 10
+applyXAll(Math.max(0, ext - width), ext, null);   // visible x = [ext-width, ext]
+```
 
-1. **A consequence of ADR 0033 is unimplemented.** Its consequence bullet 2
-   says "the project / RBS / DBC disk-watch reloads follow the same order
-   when *rebuilding dependent state*." For a derived cache, rebuilding
-   dependent state means dropping it so it re-derives — but `load_dbc` /
-   `set_dbc_buses` / `remove_dbc` / `clear_dbcs` and the watcher reload never
-   clear `signal_caches` or the active `filter_index`. So a DBC that arrives
-   or changes after the caches exist leaves them stale with no rebuild.
-2. **Ordering alone cannot cover an async reload.** The DBC FS-watcher reload
-   fires at an arbitrary time while plots are already live; there is no
-   open-path sequence point to "await" it ahead of a plot's next sample. The
-   ADR's rationale (ordering suffices, re-validation unneeded) holds for the
-   initial open but not for in-session DBC changes.
+On restore `ext` jumps to ~579 s; if the slide fires before x-sync is set,
+`width = 10` ⇒ last 10 s of 579 visible (rest off-screen). Intermittent: if an
+earlier resample/fit set x-sync to the full span first, `width` is the full
+span and it stays whole. A restored trace is **stopped** — no live edge — so a
+trailing window is the wrong default.
 
-The active filter index has the same gap (keyed by predicate + session start,
-rebuilt on predicate change but not on DBC change) — which is why ADR 0033's
-originating bug saw "plot *and filtered view* cached empty".
+**Fix (decided — fit once on restore).** Only apply the trailing slide when
+`trace.status === "running"`; otherwise take the existing fit branch (`xMax ==
+null → applyXAll(0, ext)`). Fits a stopped span to `[0, ext]` once (next slide
+no-ops — x-sync now set, and `width` becomes the full span). Pause untouched
+(x-sync already set). Extract a pure `followXWindow(followLive, running, xMin,
+xMax, ext) → {min,max} | null` (with `DEFAULT_FOLLOW_WIDTH_SECONDS`) and
+unit-test it: stopped+`ext ≫ width` → `[0, ext]`; running → `[ext-width, ext]`;
+x-sync set → `null`.
 
-**Fix (proposed).** Implement ADR 0033 consequence 2 as a coarse host-side
-invalidation: on any DBC-set mutation (`load_dbc` / `set_dbc_buses` /
-`remove_dbc` / `clear_dbcs` and the watcher reload), `signal_caches.clear()`
-and reset the active `filter_index` to `None`. Both rebuild on next serve in
-dependency order (DBC set already updated), and DBC changes are rare, so the
-rebuild cost is acceptable. This is a *clear-and-rebuild* invalidation, not
-the incremental per-view re-validation ADR 0033 rejected, so it stays
-consistent with the ADR's spirit while closing the reload gap — but ADR 0033
-should be amended to note that in-session DBC changes need this invalidation
-(ordering covers only the initial open). TDD: build a signal cache against a
-stopped store with the DBC absent, then load the DBC and assert the next
-slice returns the full series.
+*Dropped:* persisting per-trace x positions (ADR 0032 state) — would fight
+follow-live; fit-on-restore suffices.
+
+## Separate latent bug — derived caches not invalidated on DBC change
+
+Found while investigating the above; **not** the clean-cold-open trigger
+(the awaited open path keeps it from firing there), but real and worth fixing.
+
+The per-signal pyramid (`signal_cache.rs`) and the active filter index are
+*derived* state rebuilt lazily on first serve. `SignalCache::catch_up`
+advances `next_index` to the store tip **unconditionally** — frames it
+couldn't decode (the signal's DBC not yet loaded, or dropped by the bus
+filter) are skipped and never revisited. `signal_caches.clear()` has exactly
+one caller, `clear_trace_store`; `load_dbc` / `set_dbc_buses` / `remove_dbc` /
+`clear_dbcs` and the FS-watcher reload mutate the DBC set and call only
+`rbs::refresh_all_elements`. So a DBC that arrives or changes *after* a
+signal's cache exists leaves it stale with no rebuild — and on a stopped
+reloaded trace (no future appends) it stays empty/partial forever. The active
+filter index has the same gap (keyed by predicate + session start, rebuilt on
+predicate change but not on DBC change).
+
+This is the failure mode ADR 0033 ("build a model layer's dependencies before
+the layer itself") targets. ADR 0033 chose **ordering** and explicitly
+*rejected* per-view re-validation — which covers the initial open but **not**
+an in-session DBC change (notably the async FS-watcher reload, which has no
+open-path sequence point to await). ADR 0033 consequence bullet 2 already
+commits to "rebuilding dependent state" on reloads; for a derived cache that
+means *dropping* it so it re-derives, which is currently unimplemented.
+
+**Fix (proposed).** On any DBC-set mutation, `signal_caches.clear()` and reset
+the active `filter_index` to `None`; both rebuild on next serve against the
+now-settled DBC set, and DBC changes are rare so the cost is acceptable. This
+is *clear-and-rebuild*, not the incremental per-view re-validation ADR 0033
+rejected, so it stays within the ADR's spirit — but ADR 0033 should be amended
+to note in-session DBC changes need this invalidation. TDD: build a signal
+cache against a stopped store with the DBC absent, load the DBC, assert the
+next slice returns the full series.
