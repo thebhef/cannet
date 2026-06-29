@@ -141,6 +141,7 @@ function grew(count: number): TraceGrew {
   const tailLen = Math.min(256, count);
   return {
     count,
+    first_index: 0,
     frames_per_second: 1000,
     frames_per_second_rx: 1000,
     frames_per_second_tx: 0,
@@ -148,6 +149,8 @@ function grew(count: number): TraceGrew {
     frames_dropped_before_session: 0,
     session_start_seconds: 1000,
     buffer_seconds: 1,
+    scratch_bytes: null,
+    mem_bytes: null,
     tail: Array.from({ length: tailLen }, (_, i) => frame(count - tailLen + i)),
   };
 }

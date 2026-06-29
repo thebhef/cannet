@@ -49,6 +49,10 @@ export interface TraceFrameRecord {
 /// trace view can paint the live edge without a fetch round-trip.
 export interface TraceGrew {
   count: number;
+  /// Windowed-ring low-water mark (ADR 0002 DS-8): the lowest still-live row
+  /// index. `0` until eviction truncates the oldest history; the trace view
+  /// clamps its window to `[first_index, count)`.
+  first_index: number;
   frames_per_second: number;
   /// Receive / transmit-confirmed frame rates, split by direction so a
   /// transmit stall is visible even when the aggregate looks healthy.
@@ -69,6 +73,14 @@ export interface TraceGrew {
   /// timestamp). Shown in the status line; zero when fewer than two
   /// frames are buffered.
   buffer_seconds: number;
+  /// Total on-disk scratch footprint in bytes as of the last flush (the
+  /// disk-spill `current/` dir). Shown in the status line as the cache
+  /// size; `null` when the store is in-RAM (no disk scratch).
+  scratch_bytes: number | null;
+  /// Host-process resident memory in bytes (~1 Hz sample) — the in-memory
+  /// counterpart to `scratch_bytes` in the status line. `null` until the
+  /// first health sample.
+  mem_bytes: number | null;
   tail: TraceFrameRecord[];
 }
 

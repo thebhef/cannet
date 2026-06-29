@@ -62,7 +62,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use cannet_core::Direction;
+use cannet_core::{CanFdFlags, CanFramePayload, Direction};
 use cannet_spill::{CandidateSource, DiskRawStore, FilterIndex, MemRawStore, RawStore};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -91,8 +91,54 @@ struct ScratchIdentity {
     project_id: Uuid,
 }
 
-/// One persisted derived-state row: a [`FrameKey`] flattened, plus its
-/// last-seen frame index and session frame count.
+/// `derived.json` mirror of a frame payload. `cannet-core`'s
+/// [`CanFramePayload`] carries no serde derives (a foundational crate kept
+/// dependency-free), so the host serialises this local shape for the
+/// retention overlay and converts back on reopen.
+#[derive(Serialize, Deserialize)]
+enum PersistedPayload {
+    Classic(Vec<u8>),
+    Fd { data: Vec<u8>, brs: bool, esi: bool },
+    Remote { dlc: u8 },
+    Error,
+}
+
+impl From<&CanFramePayload> for PersistedPayload {
+    fn from(p: &CanFramePayload) -> Self {
+        match p {
+            CanFramePayload::Classic(d) => Self::Classic(d.clone()),
+            CanFramePayload::Fd { data, flags } => Self::Fd {
+                data: data.clone(),
+                brs: flags.bitrate_switch,
+                esi: flags.error_state_indicator,
+            },
+            CanFramePayload::Remote { dlc } => Self::Remote { dlc: *dlc },
+            CanFramePayload::Error => Self::Error,
+        }
+    }
+}
+
+impl From<PersistedPayload> for CanFramePayload {
+    fn from(p: PersistedPayload) -> Self {
+        match p {
+            PersistedPayload::Classic(d) => Self::Classic(d),
+            PersistedPayload::Fd { data, brs, esi } => Self::Fd {
+                data,
+                flags: CanFdFlags {
+                    bitrate_switch: brs,
+                    error_state_indicator: esi,
+                },
+            },
+            PersistedPayload::Remote { dlc } => Self::Remote { dlc },
+            PersistedPayload::Error => Self::Error,
+        }
+    }
+}
+
+/// One persisted derived-state row: a [`FrameKey`] flattened, its last-seen
+/// frame index and session frame count, plus the newest frame itself (the
+/// retention overlay — `timestamp_ns` / `tx` / `payload`), so a reopen across
+/// an eviction still shows the row's last value.
 #[derive(Serialize, Deserialize)]
 struct DerivedEntry {
     bus_id: Option<String>,
@@ -101,6 +147,9 @@ struct DerivedEntry {
     extended: bool,
     last_index: u64,
     count: u64,
+    timestamp_ns: u64,
+    tx: bool,
+    payload: PersistedPayload,
 }
 
 /// Persisted derived state ([`DERIVED_FILE`]): the session-start anchor
@@ -261,6 +310,15 @@ struct Inner {
     /// `O(1)` to maintain on append, and what the per-message-ID view
     /// reads instead of walking the whole buffer.
     latest: HashMap<FrameKey, usize>,
+    /// The newest *frame* seen for each [`FrameKey`] — the eager retention
+    /// overlay (ADR 0002 DS-8). Maintained `O(1)` on append (one frame clone)
+    /// and bounded by id-space, not capture length. The global latest-by-id
+    /// read serves frame content from here instead of reading the maintained
+    /// index back from the raw store, so a row whose newest frame has been
+    /// evicted below the low-water mark still shows its last value. Persisted
+    /// in `derived.json`, so the last value survives a reopen across an
+    /// eviction.
+    latest_frame: HashMap<FrameKey, RawTraceFrame>,
     /// Per-id message-rate estimate, also maintained `O(1)` on append.
     rates: HashMap<FrameKey, RateEstimate>,
     /// Per-bus rate state, keyed by the frame's logical bus (`None` =
@@ -284,6 +342,18 @@ struct Inner {
     /// manifest (in the raw store) plus the host-side identity and derived
     /// files this facade writes (ADR 0002 DS-7).
     scratch_dir: Option<PathBuf>,
+    /// Windowed-ring cap (ADR 0002 DS-8): the maximum total `current/`
+    /// footprint in bytes before a flush sheds the oldest raw history.
+    /// `None` (the default) is unbounded — the scratch grows with the
+    /// capture. Set from `settings.json` (`scratch_cap_bytes`) at launch
+    /// and on each settings change.
+    scratch_cap_bytes: Option<u64>,
+    /// Total `current/` scratch footprint in bytes as of the last flush —
+    /// the figure the status readout shows. Measured on the flush cadence
+    /// (the dir walk is too costly for the ~10 Hz status tick), so a
+    /// growing capture's reported size lags real growth by at most one
+    /// flush. `0` for the in-RAM double (no scratch dir).
+    footprint_bytes: u64,
 }
 
 impl TraceStore {
@@ -312,14 +382,70 @@ impl TraceStore {
                 raw,
                 rate_samples: VecDeque::new(),
                 latest: HashMap::new(),
+                latest_frame: HashMap::new(),
                 rates: HashMap::new(),
                 per_bus: HashMap::new(),
                 rx_rate: RateTrack::default(),
                 tx_rate: RateTrack::default(),
                 dropped_before_session: 0,
                 scratch_dir,
+                scratch_cap_bytes: None,
+                footprint_bytes: 0,
             }),
         }
+    }
+
+    /// The total `current/` scratch footprint in bytes as of the last flush,
+    /// or `None` for the in-RAM double (which has no scratch dir). Drives the
+    /// status readout (ADR 0002 DS-8).
+    pub fn scratch_footprint_bytes(&self) -> Option<u64> {
+        let inner = self.inner.lock().expect("trace store mutex poisoned");
+        inner.scratch_dir.is_some().then_some(inner.footprint_bytes)
+    }
+
+    /// The windowed-ring low-water mark and the timestamp (seconds) of the
+    /// oldest live row (ADR 0002 DS-8). The host trims the derived caches
+    /// (pyramids, filter index) and the trace view's live window to these
+    /// after an eviction. The mark is `0` and the timestamp the whole-buffer
+    /// start until eviction first advances them.
+    pub fn low_water(&self) -> (usize, Option<f64>) {
+        let inner = self.inner.lock().expect("trace store mutex poisoned");
+        let mark = inner.raw.first_index();
+        #[allow(clippy::cast_precision_loss)]
+        let ts = inner.raw.first_last_ts().0.map(|ns| ns as f64 / 1e9);
+        (mark, ts)
+    }
+
+    /// Length and low-water mark read under a *single* lock, so the two are
+    /// mutually consistent (ADR 0002 DS-8). The status line's retained count
+    /// is `len - first_index`; reading `len` and `first_index` under separate
+    /// locks lets a flush evict between them, leaving `first_index > len` and
+    /// a spurious zero. Returning both from one critical section forecloses
+    /// that, guaranteeing `first_index <= len`.
+    pub fn len_and_low_water(&self) -> (usize, usize) {
+        let inner = self.inner.lock().expect("trace store mutex poisoned");
+        (inner.raw.len(), inner.raw.first_index())
+    }
+
+    /// A per-family breakdown of the scratch footprint for the cache
+    /// diagnostic (ADR 0002 DS-8), or `None` for the in-RAM double. The
+    /// directory walk runs off the store lock (the dir is cloned under the
+    /// lock, then released).
+    pub fn scratch_breakdown(&self) -> Option<ScratchBreakdown> {
+        let dir = {
+            let inner = self.inner.lock().expect("trace store mutex poisoned");
+            inner.scratch_dir.clone()?
+        };
+        Some(scratch_breakdown(&dir))
+    }
+
+    /// Set the windowed-ring cap (ADR 0002 DS-8) — the maximum total
+    /// `current/` footprint before a flush sheds the oldest raw history.
+    /// `None` is unbounded. A no-op in effect for the in-RAM double (it has
+    /// no scratch dir, so flush never measures or evicts).
+    pub fn set_scratch_cap(&self, cap: Option<u64>) {
+        let mut inner = self.inner.lock().expect("trace store mutex poisoned");
+        inner.scratch_cap_bytes = cap;
     }
 
     /// Append a frame to the tail of the trace. Updates the
@@ -354,10 +480,14 @@ impl TraceStore {
             inner.dropped_before_session = inner.dropped_before_session.saturating_add(1);
             return None;
         }
-        // The raw store assigns the dense index and maintains `by-id`.
-        let idx = inner.raw.append(frame);
+        // The raw store assigns the dense index and maintains `by-id`. The
+        // frame clones into the eager retention overlay (ADR 0002 DS-8): one
+        // small id-space-bounded clone per append keeps the trim itself pure
+        // front-truncation, so an evicted index never blanks a by-id row.
+        let idx = inner.raw.append(frame.clone());
         let count = idx + 1;
         inner.latest.insert(key.clone(), idx);
+        inner.latest_frame.insert(key.clone(), frame);
         inner
             .rates
             .entry(key)
@@ -555,6 +685,7 @@ impl TraceStore {
         inner.raw.clear();
         inner.rate_samples = VecDeque::new();
         inner.latest = HashMap::new();
+        inner.latest_frame = HashMap::new();
         inner.rates = HashMap::new();
         inner.per_bus = HashMap::new();
         inner.rx_rate = RateTrack::default();
@@ -598,6 +729,31 @@ impl TraceStore {
 
     fn flush_with(&self, sync: bool) -> std::io::Result<()> {
         let mut inner = self.inner.lock().expect("trace store mutex poisoned");
+        // Windowed-ring cap (ADR 0002 DS-8): shed the oldest raw segments
+        // *before* the raw flush, so the manifest that flush writes reflects
+        // the post-eviction floor and segment set. A manifest written before
+        // the eviction would name segment files the eviction then deletes, and
+        // a reopen across that eviction would fail.
+        //
+        // The cap bounds the *whole* scratch dir, but only the raw family is
+        // shed here — the derived caches (pyramids, by-id, filter) cascade-
+        // trim to the new low-water afterward (6d, in the flusher). So scale
+        // the request by the raw share of the dir: handing the whole-dir
+        // excess to a raw-only eviction would shed raw to cover the derived
+        // families' bytes too, collapsing the retained window to the tail.
+        // The cascade then shrinks the derived families to match, so raw + the
+        // cascade converge on the cap together across a tick or two.
+        if let (Some(dir), Some(cap)) = (inner.scratch_dir.clone(), inner.scratch_cap_bytes) {
+            let footprint = dir_footprint(&dir);
+            if footprint > cap {
+                let raw = inner.raw.raw_disk_bytes();
+                let raw_excess = u64::try_from(
+                    u128::from(footprint - cap) * u128::from(raw) / u128::from(footprint),
+                )
+                .unwrap_or(footprint - cap);
+                inner.raw.evict_oldest_bytes(raw_excess);
+            }
+        }
         if sync {
             inner.raw.flush()?;
         } else {
@@ -605,15 +761,18 @@ impl TraceStore {
         }
         if let Some(dir) = inner.scratch_dir.clone() {
             let entries = inner
-                .latest
+                .latest_frame
                 .iter()
-                .map(|(key, &idx)| DerivedEntry {
+                .map(|(key, frame)| DerivedEntry {
                     bus_id: key.0.clone(),
                     channel: key.1,
                     id: key.2,
                     extended: key.3,
-                    last_index: idx as u64,
+                    last_index: inner.latest.get(key).map_or(0, |&i| i as u64),
                     count: inner.rates.get(key).map_or(0, |r| r.count),
+                    timestamp_ns: frame.timestamp_ns,
+                    tx: matches!(frame.direction, Direction::Tx),
+                    payload: PersistedPayload::from(&frame.payload),
                 })
                 .collect();
             let derived = DerivedState {
@@ -621,6 +780,10 @@ impl TraceStore {
                 entries,
             };
             write_json(&dir.join(DERIVED_FILE), &derived)?;
+            // Cache the total footprint after all of this flush's writes, so
+            // the status readout (ADR 0002 DS-8) reflects the on-disk truth
+            // including the manifest and derived files just written.
+            inner.footprint_bytes = dir_footprint(&dir);
         }
         Ok(())
     }
@@ -674,16 +837,27 @@ impl TraceStore {
         // read. Rates are left empty (a reloaded trace is stopped, so every
         // rate reads zero); only the newest-index and count are recovered.
         inner.latest = HashMap::new();
+        inner.latest_frame = HashMap::new();
         inner.rates = HashMap::new();
         inner.session_start_ns = 0;
         if let Some(derived) = read_json::<DerivedState>(&dir.join(DERIVED_FILE)) {
             inner.session_start_ns = derived.session_start_ns;
             let now = Instant::now();
             for e in derived.entries {
+                let frame = RawTraceFrame {
+                    timestamp_ns: e.timestamp_ns,
+                    channel: e.channel,
+                    id: e.id,
+                    extended: e.extended,
+                    direction: if e.tx { Direction::Tx } else { Direction::Rx },
+                    payload: e.payload.into(),
+                    bus_id: e.bus_id.clone(),
+                };
                 let key: FrameKey = (e.bus_id, e.channel, e.id, e.extended);
                 inner
                     .latest
                     .insert(key.clone(), usize::try_from(e.last_index).unwrap_or(usize::MAX));
+                inner.latest_frame.insert(key.clone(), frame);
                 let mut est = RateEstimate::first_seen(0, now);
                 est.count = e.count;
                 inner.rates.insert(key, est);
@@ -741,33 +915,44 @@ impl TraceStore {
         if start >= end {
             return Vec::new();
         }
-        // Last in-window index per key. When the window reaches the tip,
-        // the maintained `latest` map is exactly that (every entry's index
-        // is `< len == end`); otherwise scan the window once, letting a
-        // later occurrence overwrite an earlier one so the last wins.
-        let mut keyed: Vec<(FrameKey, usize)> = if end == len {
+        // (key, last-in-window index, frame). When the window reaches the
+        // tip (the running follow-live case), the maintained `latest` index
+        // and the eager overlay already hold each key's newest frame — serve
+        // the frame from the overlay, not a raw read, so a row whose index
+        // has evicted below the low-water mark still resolves (ADR 0002
+        // DS-8). A bounded window (paused / scrolled into history) scans the
+        // window once and materialises its frames by index — that path only
+        // addresses live rows.
+        let mut rows: Vec<(FrameKey, usize, RawTraceFrame)> = if end == len {
             inner
                 .latest
                 .iter()
                 .filter(|(_, &idx)| idx >= start)
-                .map(|(key, &idx)| (key.clone(), idx))
+                .filter_map(|(key, &idx)| {
+                    inner
+                        .latest_frame
+                        .get(key)
+                        .map(|f| (key.clone(), idx, f.clone()))
+                })
                 .collect()
         } else {
             let mut last: HashMap<FrameKey, usize> = HashMap::new();
             for (offset, f) in inner.raw.slice(start, end).iter().enumerate() {
                 last.insert((f.bus_id.clone(), f.channel, f.id, f.extended), start + offset);
             }
-            last.into_iter().collect()
+            let mut keyed: Vec<(FrameKey, usize)> = last.into_iter().collect();
+            keyed.sort_unstable();
+            let idxs: Vec<usize> = keyed.iter().map(|(_, idx)| *idx).collect();
+            let frames = inner.raw.frames_at(&idxs);
+            keyed
+                .into_iter()
+                .zip(frames)
+                .map(|((key, idx), (_, frame))| (key, idx, frame))
+                .collect()
         };
-        keyed.sort_unstable();
-        // Materialise the selected frames in one indexed read (from the
-        // raw store's ring or its mappings), aligned with `keyed`.
-        let idxs: Vec<usize> = keyed.iter().map(|(_, idx)| *idx).collect();
-        let frames = inner.raw.frames_at(&idxs);
-        keyed
-            .into_iter()
-            .zip(frames)
-            .map(|((key, idx), (_, frame))| {
+        rows.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        rows.into_iter()
+            .map(|(key, idx, frame)| {
                 let est = inner.rates.get(&key);
                 LatestById {
                     index: idx,
@@ -923,6 +1108,143 @@ pub(crate) fn write_json<T: Serialize>(path: &Path, value: &T) -> std::io::Resul
 pub(crate) fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
     let bytes = std::fs::read(path).ok()?;
     serde_json::from_slice(&bytes).ok()
+}
+
+/// Total bytes of every file under `dir` (recursively) — the `current/`
+/// scratch footprint the windowed-ring cap measures (ADR 0002 DS-8): raw
+/// segments, by-id and filter indexes, signal pyramids, and the small JSON
+/// sidecars. Best-effort: an unreadable entry counts zero, so a transient
+/// I/O hiccup can't wedge the flush path.
+fn dir_footprint(dir: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut total = 0;
+    for entry in entries.flatten() {
+        match entry.metadata() {
+            Ok(meta) if meta.is_dir() => total += dir_footprint(&entry.path()),
+            Ok(meta) => total += meta.len(),
+            Err(_) => {}
+        }
+    }
+    total
+}
+
+/// A per-family breakdown of the `current/` scratch footprint for the
+/// periodic cache diagnostic (ADR 0002 DS-8). Byte counts are on-disk
+/// segment-file sizes; `*_files` are file counts (segments, i.e. "pages").
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ScratchBreakdown {
+    /// Raw frame store: `meta.*` + `payload.*` segments.
+    pub frames_bytes: u64,
+    pub frames_files: u64,
+    /// Signal-cache resolution pyramids (the `signals/` subdir).
+    pub pyramid_bytes: u64,
+    pub pyramid_files: u64,
+    /// Deepest pyramid (number of levels) across all cached signals.
+    pub pyramid_depth: u64,
+    /// Everything else: by-id postings, filter indexes, and the small JSON
+    /// sidecars (manifest / derived / identity).
+    pub other_bytes: u64,
+    pub other_files: u64,
+    /// Sum of the three families' byte counts.
+    pub total_bytes: u64,
+}
+
+/// Bucket the `current/` scratch by family for the cache diagnostic. One
+/// walk: top-level `meta.*`/`payload.*` are frames, the `signals/` subdir is
+/// the pyramids (with its level depth), everything else (by-id, the
+/// `filter/` subdir, JSON sidecars) is "other".
+fn scratch_breakdown(dir: &Path) -> ScratchBreakdown {
+    let mut b = ScratchBreakdown::default();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return b;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Ok(meta) = entry.metadata() else { continue };
+        if meta.is_dir() {
+            if name == "signals" {
+                let (bytes, files, depth) = walk_pyramids(&entry.path());
+                b.pyramid_bytes += bytes;
+                b.pyramid_files += files;
+                b.pyramid_depth = b.pyramid_depth.max(depth);
+            } else {
+                let (bytes, files) = walk_dir(&entry.path());
+                b.other_bytes += bytes;
+                b.other_files += files;
+            }
+        } else if name.starts_with("meta.") || name.starts_with("payload.") {
+            b.frames_bytes += meta.len();
+            b.frames_files += 1;
+        } else {
+            b.other_bytes += meta.len();
+            b.other_files += 1;
+        }
+    }
+    b.total_bytes = b.frames_bytes + b.pyramid_bytes + b.other_bytes;
+    b
+}
+
+/// Recursively sum `(bytes, file_count)` under `dir`.
+fn walk_dir(dir: &Path) -> (u64, u64) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return (0, 0);
+    };
+    let (mut bytes, mut files) = (0, 0);
+    for entry in entries.flatten() {
+        match entry.metadata() {
+            Ok(m) if m.is_dir() => {
+                let (b, f) = walk_dir(&entry.path());
+                bytes += b;
+                files += f;
+            }
+            Ok(m) => {
+                bytes += m.len();
+                files += 1;
+            }
+            Err(_) => {}
+        }
+    }
+    (bytes, files)
+}
+
+/// Like [`walk_dir`] for the `signals/` pyramid dir, also returning the
+/// deepest pyramid (level count) seen — parsed from the `….l{n}.{seg}`
+/// segment file names.
+fn walk_pyramids(dir: &Path) -> (u64, u64, u64) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return (0, 0, 0);
+    };
+    let (mut bytes, mut files, mut depth) = (0, 0, 0);
+    for entry in entries.flatten() {
+        let Ok(m) = entry.metadata() else { continue };
+        if m.is_dir() {
+            let (b, f, d) = walk_pyramids(&entry.path());
+            bytes += b;
+            files += f;
+            depth = depth.max(d);
+        } else {
+            bytes += m.len();
+            files += 1;
+            if let Some(level) = pyramid_level(&entry.file_name().to_string_lossy()) {
+                depth = depth.max(level + 1);
+            }
+        }
+    }
+    (bytes, files, depth)
+}
+
+/// The level index `n` in a pyramid segment file name `….l{n}.{seg}`
+/// (`{base}.l0.0000`, `{base}.l2.0003`, …), or `None` if it doesn't match.
+fn pyramid_level(name: &str) -> Option<u64> {
+    let after = &name[name.rfind(".l")? + 2..];
+    let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    digits.parse().ok()
 }
 
 fn prune_rate_samples(samples: &mut VecDeque<RateSample>, now: Instant) {
@@ -1449,6 +1771,218 @@ mod tests {
             .unwrap()
             .expect("flush wrote a reopen manifest");
         assert_eq!(reopened.len(), 5);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn scratch_breakdown_buckets_by_family() {
+        // The cache diagnostic (ADR 0002 DS-8): frames vs pyramid vs other,
+        // file counts, and the deepest pyramid parsed from the level names.
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        std::fs::write(d.join("meta.000000"), vec![0u8; 100]).unwrap();
+        std::fs::write(d.join("payload.000000"), vec![0u8; 200]).unwrap();
+        std::fs::write(d.join("byid.s00000100.0000"), vec![0u8; 50]).unwrap();
+        std::fs::write(d.join("manifest.json"), vec![0u8; 10]).unwrap();
+        std::fs::create_dir(d.join("filter")).unwrap();
+        std::fs::write(d.join("filter").join("filt.0000"), vec![0u8; 30]).unwrap();
+        std::fs::create_dir(d.join("signals")).unwrap();
+        std::fs::write(d.join("signals").join("0x100.sig.l0.0000"), vec![0u8; 300]).unwrap();
+        std::fs::write(d.join("signals").join("0x100.sig.l1.0000"), vec![0u8; 150]).unwrap();
+        std::fs::write(d.join("signals").join("0x100.sig.l2.0000"), vec![0u8; 70]).unwrap();
+
+        let b = scratch_breakdown(d);
+        assert_eq!(b.frames_bytes, 300); // meta 100 + payload 200
+        assert_eq!(b.frames_files, 2);
+        assert_eq!(b.pyramid_bytes, 520); // 300 + 150 + 70
+        assert_eq!(b.pyramid_files, 3);
+        assert_eq!(b.pyramid_depth, 3); // levels l0, l1, l2 → depth 3
+        assert_eq!(b.other_bytes, 90); // byid 50 + manifest 10 + filter 30
+        assert_eq!(b.other_files, 3);
+        assert_eq!(b.total_bytes, 300 + 520 + 90);
+    }
+
+    #[test]
+    fn scratch_footprint_bytes_is_none_for_ram_and_tracks_disk() {
+        // The status readout source (ADR 0002 DS-8): None for the in-RAM
+        // double, the measured `current/` footprint for a disk store, cached
+        // on the flush cadence.
+        let ram = TraceStore::new();
+        assert_eq!(ram.scratch_footprint_bytes(), None);
+
+        let dir = std::env::temp_dir().join(format!("cannet-fp-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = TraceStore::new_disk(&dir).unwrap();
+        assert_eq!(store.scratch_footprint_bytes(), Some(0), "no flush yet");
+        for i in 0u32..50 {
+            store.append(dummy(u64::from(i) * 1_000, i));
+        }
+        store.flush().unwrap();
+        let fp = store.scratch_footprint_bytes().expect("disk store reports a footprint");
+        assert!(fp > 0, "footprint reflects the written scratch");
+        assert_eq!(fp, dir_footprint(&dir), "cached value matches a fresh walk");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn flush_sheds_oldest_segments_when_over_the_scratch_cap() {
+        // 6c-B (ADR 0002 DS-8): a flush past the cap drops the oldest raw
+        // segments; the tip is unchanged, only the floor moves.
+        use cannet_spill::{DiskConfig, DiskRawStore};
+        let dir = std::env::temp_dir().join(format!("cannet-cap-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = DiskConfig {
+            records_per_seg: 4,
+            payload_seg_bytes: 64,
+            ring_capacity: 3,
+        };
+        let raw = Box::new(DiskRawStore::with_config(&dir, cfg).unwrap());
+        let store = TraceStore::with_raw(raw, Some(dir.clone()));
+        for i in 0u32..40 {
+            store.append(dummy(u64::from(i) * 1_000, 0x100));
+        }
+        store.flush().unwrap(); // unbounded: no eviction
+        assert!(!store.slice(0, 1).is_empty(), "row 0 present before the cap");
+        let full = dir_footprint(&dir);
+        // Cap well below the footprint: the next flush sheds the oldest.
+        store.set_scratch_cap(Some(full / 2));
+        store.flush().unwrap();
+        let after = dir_footprint(&dir);
+        assert!(after < full, "flush reclaimed disk: {after} < {full}");
+        assert!(store.slice(0, 1).is_empty(), "oldest rows were evicted");
+        assert_eq!(store.len(), 40, "the tip is unchanged — only the floor moved");
+        assert_eq!(store.slice(39, 40)[0].id, 0x100, "the live tail still reads");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn by_id_overlay_keeps_a_rare_ids_last_value_across_eviction() {
+        // 6c-C (ADR 0002 DS-8): the global latest-by-id read serves frame
+        // content from the eager overlay, so an id whose only frame was
+        // evicted below the low-water mark still shows its last value in the
+        // by-id grid — not a blank row, and not misaligned onto another id's
+        // frame (the failure mode of reading evicted indices back from raw).
+        use cannet_spill::{DiskConfig, DiskRawStore};
+        let dir = std::env::temp_dir().join(format!("cannet-overlay-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = DiskConfig {
+            records_per_seg: 4,
+            payload_seg_bytes: 64,
+            ring_capacity: 3,
+        };
+        let raw = Box::new(DiskRawStore::with_config(&dir, cfg).unwrap());
+        let store = TraceStore::with_raw(raw, Some(dir.clone()));
+        // A rare id seen once at the very start (index 0), then a flood of a
+        // common id that pushes the rare id's only frame into the oldest
+        // segments.
+        store.append({
+            let mut f = dummy(1_000, 0x7AA);
+            f.payload = CanFramePayload::Classic(vec![0xAB]);
+            f
+        });
+        for i in 1u32..40 {
+            store.append(dummy(u64::from(i) * 1_000, 0x100));
+        }
+        store.flush().unwrap();
+        let full = dir_footprint(&dir);
+        store.set_scratch_cap(Some(full / 2));
+        store.flush().unwrap();
+
+        let (mark, _) = store.low_water();
+        assert!(mark > 0, "eviction advanced the low-water mark");
+        assert!(store.slice(0, 1).is_empty(), "the rare id's frame left raw");
+        let rows = store.latest_since(0);
+        let rare = rows
+            .iter()
+            .find(|r| r.frame.id == 0x7AA)
+            .expect("the evicted rare id is still in the by-id grid");
+        assert_eq!(rare.frame.payload.data(), &[0xAB], "its last value survives");
+        // The common id is also present and correct (no zip misalignment).
+        assert!(rows.iter().any(|r| r.frame.id == 0x100));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn by_id_overlay_persists_an_evicted_last_value_across_reopen() {
+        // 6c-C: the overlay rides `derived.json`, so a reopen across an
+        // eviction still serves the evicted id's last value.
+        use cannet_spill::{DiskConfig, DiskRawStore};
+        let dir = std::env::temp_dir().join(format!("cannet-overlay-rl-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pid = uuid::Uuid::new_v4();
+        let cfg = DiskConfig {
+            records_per_seg: 4,
+            payload_seg_bytes: 64,
+            ring_capacity: 3,
+        };
+        {
+            let raw = Box::new(DiskRawStore::with_config(&dir, cfg).unwrap());
+            let store = TraceStore::with_raw(raw, Some(dir.clone()));
+            store.write_scratch_identity(Some(pid));
+            store.append({
+                let mut f = dummy(1_000, 0x7AA);
+                f.payload = CanFramePayload::Classic(vec![0xCD]);
+                f
+            });
+            for i in 1u32..40 {
+                store.append(dummy(u64::from(i) * 1_000, 0x100));
+            }
+            store.flush().unwrap();
+            store.set_scratch_cap(Some(dir_footprint(&dir) / 2));
+            store.flush().unwrap();
+            assert!(store.slice(0, 1).is_empty(), "evicted before reopen");
+        }
+        let booted = TraceStore::new_disk(&dir).unwrap();
+        assert!(booted.try_reload(pid), "matching project reloads");
+        let rare = booted
+            .latest_since(0)
+            .into_iter()
+            .find(|r| r.frame.id == 0x7AA)
+            .expect("the evicted rare id reloads with its last value");
+        assert_eq!(rare.frame.payload.data(), &[0xCD]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn cap_eviction_does_not_over_evict_raw_for_derived_family_footprint() {
+        // Regression (ADR 0002 DS-8): the scratch cap bounds the *whole* dir
+        // (raw + the derived caches), but only the raw family is shed at flush
+        // — the derived caches cascade-trim to the new low-water afterward.
+        // Sizing the raw eviction against the whole-dir excess made it shed raw
+        // to cover the derived families' bytes too, collapsing the retained
+        // window to the tail ("retained resets to ~0 every flush"). The request
+        // must be scaled to the raw share so raw + the cascade land at the cap
+        // together.
+        use cannet_spill::{DiskConfig, DiskRawStore};
+        let dir =
+            std::env::temp_dir().join(format!("cannet-cap-share-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = DiskConfig { records_per_seg: 4, payload_seg_bytes: 64, ring_capacity: 3 };
+        let raw = Box::new(DiskRawStore::with_config(&dir, cfg).unwrap());
+        let store = TraceStore::with_raw(raw, Some(dir.clone()));
+        for i in 0u32..40 {
+            store.append(dummy(u64::from(i) * 1_000, 0x100));
+        }
+        store.flush().unwrap();
+        // A derived cache as large as the whole raw dir, which this flush
+        // cannot shed (not a `meta.`/`payload.` file) — it stands in for the
+        // signal pyramids that live in a `signals/` sibling.
+        let raw_dir_bytes = dir_footprint(&dir);
+        let stub = vec![0u8; usize::try_from(raw_dir_bytes).unwrap()];
+        std::fs::write(dir.join("derived.stub"), stub).unwrap();
+        // Cap at the raw dir's size: the whole dir is now ~2x the cap, but the
+        // excess is the derived stub, not raw.
+        store.set_scratch_cap(Some(raw_dir_bytes));
+        store.flush().unwrap();
+
+        let len = store.len();
+        let (mark, _) = store.low_water();
+        assert!(mark > 0, "eviction advanced the low-water mark");
+        assert!(
+            len - mark >= 12,
+            "raw over-evicted to cover the derived stub: retained {} of {len} (mark {mark})",
+            len - mark,
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

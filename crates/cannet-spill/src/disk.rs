@@ -65,14 +65,24 @@ struct Manifest {
     /// geometry the files were written with, not whatever `Default` is.
     cfg: DiskConfig,
     len: u64,
+    /// Low-water mark (ADR 0002 DS-8). Defaulted for v1 manifests written
+    /// before windowed-ring eviction existed (they had no evicted rows, so
+    /// `0` is correct). Reopen derives the dropped-segment bases from it.
+    #[serde(default)]
+    first_index: u64,
     payload_cursor: u64,
     bus_intern: Vec<String>,
-    /// One `(id, extended, len)` per by-id posting list.
-    byid: Vec<(u32, bool, u64)>,
+    /// One `(id, extended, len, first_slot)` per by-id posting list — the
+    /// `first_slot` windowed-ring floor (DS-8) so a reopen across an eviction
+    /// maps only surviving segments.
+    byid: Vec<(u32, bool, u64, u64)>,
 }
 
-/// Current [`Manifest::version`].
-const MANIFEST_VERSION: u32 = 1;
+/// Current [`Manifest::version`]. v2 added [`Manifest::first_index`] (the
+/// DS-8 low-water mark); v3 added the per-id `first_slot` to the by-id
+/// directory (6d). A manifest from before the current layout fails to parse
+/// and the caller wipes the (ephemeral) scratch.
+const MANIFEST_VERSION: u32 = 3;
 
 /// Segment sizing and the RAM-ring depth. Defaults suit production; tests
 /// shrink them to exercise rollover and ring eviction cheaply.
@@ -112,6 +122,13 @@ pub struct DiskRawStore {
     payload_cursor: u64,
     meta_segs: Vec<Segment>,
     payload_segs: Vec<Segment>,
+    /// Absolute segment number of `meta_segs[0]` / `payload_segs[0]` — the
+    /// count of leading segments windowed-ring eviction (ADR 0002 DS-8) has
+    /// dropped. `0` until the first eviction. An absolute segment number `s`
+    /// addresses `meta_segs[s - meta_seg_base]`, so surviving rows keep the
+    /// arithmetic addressing of DS-1 while the dropped files free disk.
+    meta_seg_base: usize,
+    payload_seg_base: usize,
     /// Index of the first meta / payload segment that may hold un-flushed
     /// bytes — the segment that was active at the previous flush. Sealed
     /// segments below it were made durable while they were the tail, so a
@@ -155,6 +172,8 @@ impl DiskRawStore {
             payload_cursor: 0,
             meta_segs: Vec::new(),
             payload_segs: Vec::new(),
+            meta_seg_base: 0,
+            payload_seg_base: 0,
             flushed_meta: 0,
             flushed_payload: 0,
             ring: VecDeque::new(),
@@ -184,6 +203,8 @@ impl DiskRawStore {
             payload_cursor: 0,
             meta_segs: Vec::new(),
             payload_segs: Vec::new(),
+            meta_seg_base: 0,
+            payload_seg_base: 0,
             flushed_meta: 0,
             flushed_payload: 0,
             ring: VecDeque::new(),
@@ -212,39 +233,56 @@ impl DiskRawStore {
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let len = usize::try_from(manifest.len).unwrap_or(usize::MAX);
         let cfg = manifest.cfg;
+        let first_index = usize::try_from(manifest.first_index).unwrap_or(0);
         let mut bus_rev = HashMap::new();
         for (i, name) in manifest.bus_intern.iter().enumerate() {
             bus_rev.insert(name.clone(), u16::try_from(i).unwrap_or(u16::MAX));
         }
+        // A meta segment is dropped (DS-8) iff it falls entirely below the
+        // mark; the first surviving segment is the one holding `first_index`.
+        let meta_seg_base = first_index / cfg.records_per_seg;
         let mut store = Self {
             by_id: ByIdIndex::reopen(&dir, &manifest.byid)?,
             dir,
             cfg,
             len,
-            first_index: 0,
+            first_index,
             payload_cursor: manifest.payload_cursor,
             meta_segs: Vec::new(),
             payload_segs: Vec::new(),
+            meta_seg_base,
+            payload_seg_base: 0, // set once the first live meta record maps
             flushed_meta: 0,
             flushed_payload: 0,
             ring: VecDeque::new(),
             bus_intern: manifest.bus_intern,
             bus_rev,
         };
-        // Map the metadata and payload segment chains the watermarks imply.
-        let meta_segs = len.div_ceil(cfg.records_per_seg);
-        for i in 0..meta_segs {
+        // Map the surviving metadata segments — from the dropped base up to
+        // the count the watermark implies.
+        let meta_segs_count = len.div_ceil(cfg.records_per_seg);
+        for i in meta_seg_base..meta_segs_count {
             let path = store.meta_seg_path(i);
             store.meta_segs.push(open_segment(&path)?);
         }
-        let payload_segs = if manifest.payload_cursor == 0 {
+        // The lowest live payload byte is the first live row's payload
+        // offset; payload segments wholly below it were dropped, so map from
+        // there. (Reading the first live meta record needs the meta segments
+        // mapped, which they now are.)
+        store.payload_seg_base = if first_index < len {
+            usize::try_from(store.meta_payload_off(first_index) / cfg.payload_seg_bytes as u64)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let payload_segs_count = if manifest.payload_cursor == 0 {
             0
         } else {
             usize::try_from((manifest.payload_cursor - 1) / cfg.payload_seg_bytes as u64)
                 .unwrap_or(usize::MAX)
                 + 1
         };
-        for i in 0..payload_segs {
+        for i in store.payload_seg_base..payload_segs_count {
             let path = store.payload_seg_path(i);
             store.payload_segs.push(open_segment(&path)?);
         }
@@ -259,8 +297,8 @@ impl DiskRawStore {
         store.ring.extend(tail);
         // Reopened segments are already durable on disk, so the first flush
         // need only re-sync from the active tail forward.
-        store.flushed_meta = store.meta_segs.len().saturating_sub(1);
-        store.flushed_payload = store.payload_segs.len().saturating_sub(1);
+        store.flushed_meta = meta_segs_count.saturating_sub(1).max(meta_seg_base);
+        store.flushed_payload = payload_segs_count.saturating_sub(1).max(store.payload_seg_base);
         Ok(Some(store))
     }
 
@@ -272,6 +310,7 @@ impl DiskRawStore {
             version: MANIFEST_VERSION,
             cfg: self.cfg,
             len: self.len as u64,
+            first_index: self.first_index as u64,
             payload_cursor: self.payload_cursor,
             bus_intern: self.bus_intern.clone(),
             byid: self.by_id.directory(),
@@ -309,22 +348,24 @@ impl DiskRawStore {
     /// device would pin the append lock. Either way the OS page cache makes
     /// the writes visible to a reopen in the same session (ADR 0002 DS-2).
     fn flush_inner(&mut self, sync: bool) -> io::Result<()> {
-        for s in &self.meta_segs[self.flushed_meta..] {
+        // `flushed_*` are absolute segment numbers; index the front-trimmed
+        // `Vec`s relative to the dropped base (DS-8).
+        for s in &self.meta_segs[self.flushed_meta - self.meta_seg_base..] {
             if sync {
                 s.map.flush()?;
             } else {
                 s.map.flush_async()?;
             }
         }
-        for s in &self.payload_segs[self.flushed_payload..] {
+        for s in &self.payload_segs[self.flushed_payload - self.payload_seg_base..] {
             if sync {
                 s.map.flush()?;
             } else {
                 s.map.flush_async()?;
             }
         }
-        self.flushed_meta = self.meta_segs.len().saturating_sub(1);
-        self.flushed_payload = self.payload_segs.len().saturating_sub(1);
+        self.flushed_meta = self.meta_seg_base + self.meta_segs.len().saturating_sub(1);
+        self.flushed_payload = self.payload_seg_base + self.payload_segs.len().saturating_sub(1);
         self.by_id.flush(sync)?;
         self.write_manifest()
     }
@@ -334,13 +375,18 @@ impl DiskRawStore {
         self.payload_segs.clear();
         self.flushed_meta = 0;
         self.flushed_payload = 0;
+        self.meta_seg_base = 0;
+        self.payload_seg_base = 0;
+        self.first_index = 0;
         self.by_id.clear();
         remove_files_with_prefixes(&self.dir, &["meta.", "payload.", BYID_PREFIX, "manifest."])
     }
 
+    // `seg` is an absolute segment number; the active tail lives at
+    // `meta_seg_base + meta_segs.len() - 1`, so grow until it covers `seg`.
     fn ensure_meta_seg(&mut self, seg: usize) {
-        while self.meta_segs.len() <= seg {
-            let i = self.meta_segs.len();
+        while self.meta_seg_base + self.meta_segs.len() <= seg {
+            let i = self.meta_seg_base + self.meta_segs.len();
             let bytes = self.cfg.records_per_seg * RECORD_SIZE;
             let s = create_segment(&self.meta_seg_path(i), bytes)
                 .expect("cannet-spill: metadata segment I/O failed");
@@ -349,8 +395,8 @@ impl DiskRawStore {
     }
 
     fn ensure_payload_seg(&mut self, seg: usize) {
-        while self.payload_segs.len() <= seg {
-            let i = self.payload_segs.len();
+        while self.payload_seg_base + self.payload_segs.len() <= seg {
+            let i = self.payload_seg_base + self.payload_segs.len();
             let s = create_segment(&self.payload_seg_path(i), self.cfg.payload_seg_bytes)
                 .expect("cannet-spill: payload segment I/O failed");
             self.payload_segs.push(s);
@@ -389,7 +435,8 @@ impl DiskRawStore {
         let seg = (off / seg_bytes) as usize;
         self.ensure_payload_seg(seg);
         let within = (off % seg_bytes) as usize;
-        self.payload_segs[seg].map[within..within + bytes.len()].copy_from_slice(bytes);
+        self.payload_segs[seg - self.payload_seg_base].map[within..within + bytes.len()]
+            .copy_from_slice(bytes);
         self.payload_cursor = off + bytes.len() as u64;
         off
     }
@@ -398,7 +445,8 @@ impl DiskRawStore {
         let seg = idx / self.cfg.records_per_seg;
         self.ensure_meta_seg(seg);
         let within = (idx % self.cfg.records_per_seg) * RECORD_SIZE;
-        self.meta_segs[seg].map[within..within + RECORD_SIZE].copy_from_slice(bytes);
+        self.meta_segs[seg - self.meta_seg_base].map[within..within + RECORD_SIZE]
+            .copy_from_slice(bytes);
     }
 
     /// The lowest index currently mirrored in the RAM ring.
@@ -418,7 +466,7 @@ impl DiskRawStore {
         }
         let seg = idx / self.cfg.records_per_seg;
         let within = (idx % self.cfg.records_per_seg) * RECORD_SIZE;
-        let bytes = &self.meta_segs[seg].map[within..within + 8];
+        let bytes = &self.meta_segs[seg - self.meta_seg_base].map[within..within + 8];
         Some(u64::from_le_bytes(bytes.try_into().unwrap()))
     }
 
@@ -436,13 +484,16 @@ impl DiskRawStore {
         }
         let seg = idx / self.cfg.records_per_seg;
         let within = (idx % self.cfg.records_per_seg) * RECORD_SIZE;
-        let rec = MetaRecord::decode(&self.meta_segs[seg].map[within..within + RECORD_SIZE]);
+        let rec = MetaRecord::decode(
+            &self.meta_segs[seg - self.meta_seg_base].map[within..within + RECORD_SIZE],
+        );
         let data: &[u8] = if rec.payload_len == 0 {
             &[]
         } else {
             let pseg = (rec.payload_off / self.cfg.payload_seg_bytes as u64) as usize;
             let pwithin = (rec.payload_off % self.cfg.payload_seg_bytes as u64) as usize;
-            &self.payload_segs[pseg].map[pwithin..pwithin + rec.payload_len as usize]
+            &self.payload_segs[pseg - self.payload_seg_base].map
+                [pwithin..pwithin + rec.payload_len as usize]
         };
         let payload = rebuild_payload(rec.kind, data);
         let bus_id = if rec.bus_idx == BUS_NONE {
@@ -459,6 +510,68 @@ impl DiskRawStore {
             payload,
             bus_id,
         })
+    }
+
+    /// Payload offset recorded for row `idx`, read straight from the meta
+    /// mapping (written on every append, so this is valid for any
+    /// `[first_index, len)` row regardless of the RAM ring). Locates the
+    /// lowest still-live payload byte when trimming payload segments.
+    fn meta_payload_off(&self, idx: usize) -> u64 {
+        let seg = idx / self.cfg.records_per_seg;
+        let within = (idx % self.cfg.records_per_seg) * RECORD_SIZE;
+        MetaRecord::decode(
+            &self.meta_segs[seg - self.meta_seg_base].map[within..within + RECORD_SIZE],
+        )
+        .payload_off
+    }
+
+    /// Windowed-ring eviction (ADR 0002 DS-8): raise the low-water mark to
+    /// `first_index`, dropping every *sealed* leading meta/payload segment
+    /// that now falls entirely below it and deleting its file, so the
+    /// scratch footprint follows the live window. Surviving rows keep their
+    /// absolute index — only the floor moves, mapped through `meta_seg_base`
+    /// / `payload_seg_base` — so `read_frame` still resolves them
+    /// arithmetically and the read guard returns the evicted result for a row
+    /// below the mark.
+    ///
+    /// Clamped to `[self.first_index, self.len]`: the floor only ever rises,
+    /// and never past the live tail (the active tail segment is never
+    /// dropped). This trims only the raw family; the by-id postings and
+    /// derived caches front-trim against this same mark elsewhere.
+    pub fn evict_below(&mut self, first_index: usize) {
+        let first_index = first_index.clamp(self.first_index, self.len);
+        self.first_index = first_index;
+        // Meta segment `s` holds rows `[s*rps, (s+1)*rps)`, so it is wholly
+        // below the mark iff `s < first_index / rps`. Never drop the segment
+        // holding the live tail.
+        let rps = self.cfg.records_per_seg;
+        let tail_meta_seg = self.len.saturating_sub(1) / rps;
+        let target_meta_base = (first_index / rps).min(tail_meta_seg);
+        while self.meta_seg_base < target_meta_base {
+            drop(self.meta_segs.remove(0)); // unmap before deleting (Windows)
+            let _ = std::fs::remove_file(self.meta_seg_path(self.meta_seg_base));
+            self.meta_seg_base += 1;
+        }
+        // The lowest live payload byte is the first live row's payload offset;
+        // payload segments wholly below it are dead.
+        if first_index < self.len {
+            let min_off = self.meta_payload_off(first_index);
+            let seg_bytes = self.cfg.payload_seg_bytes as u64;
+            let tail_payload_seg = self.payload_cursor.saturating_sub(1) / seg_bytes;
+            let target_payload_base =
+                usize::try_from((min_off / seg_bytes).min(tail_payload_seg)).unwrap_or(0);
+            while self.payload_seg_base < target_payload_base {
+                drop(self.payload_segs.remove(0));
+                let _ = std::fs::remove_file(self.payload_seg_path(self.payload_seg_base));
+                self.payload_seg_base += 1;
+            }
+        }
+        // The incremental-flush watermarks must not point below the new base.
+        self.flushed_meta = self.flushed_meta.max(self.meta_seg_base);
+        self.flushed_payload = self.flushed_payload.max(self.payload_seg_base);
+        // Front-trim the always-on by-id index to the same mark — it is part
+        // of the raw family's footprint and grows O(capture) (DS-8 / 6d).
+        self.by_id.evict_below(first_index as u64);
     }
 }
 
@@ -497,6 +610,10 @@ impl RawStore for DiskRawStore {
 
     fn len(&self) -> usize {
         self.len
+    }
+
+    fn first_index(&self) -> usize {
+        self.first_index
     }
 
     fn clear(&mut self) {
@@ -594,6 +711,36 @@ impl RawStore for DiskRawStore {
 
     fn flush_async(&mut self) -> io::Result<()> {
         self.flush_inner(false)
+    }
+
+    fn evict_oldest_bytes(&mut self, bytes: u64) -> u64 {
+        let mut freed = 0;
+        while freed < bytes {
+            // The next eviction target is the start of the segment after the
+            // current base — advancing the floor by one meta segment.
+            let next_first = (self.meta_seg_base + 1) * self.cfg.records_per_seg;
+            if next_first >= self.len {
+                break; // only the live tail segment remains
+            }
+            let before = self.raw_disk_bytes();
+            self.evict_below(next_first);
+            let after = self.raw_disk_bytes();
+            if after >= before {
+                break; // nothing dropped — guard against a stuck loop
+            }
+            freed += before - after;
+        }
+        freed
+    }
+
+    /// On-disk bytes of the mapped raw segments (meta + payload). Each
+    /// segment is pre-allocated to full size, so its file is exactly that
+    /// many bytes regardless of the valid-length watermark — the figure the
+    /// windowed-ring cap sheds against (DS-8).
+    fn raw_disk_bytes(&self) -> u64 {
+        let meta = self.meta_segs.len() * self.cfg.records_per_seg * RECORD_SIZE;
+        let payload = self.payload_segs.len() * self.cfg.payload_seg_bytes;
+        (meta + payload) as u64
     }
 }
 
@@ -693,6 +840,164 @@ mod tests {
         assert_eq!(s.frame_timestamps(0, 20), (Some(80), Some(190)));
         // A by-id read whose hits are all below the mark comes back empty.
         assert!(s.matching_frames_indexed(3, false, 0, 20).is_empty());
+    }
+
+    #[test]
+    fn evict_below_drops_oldest_meta_segments_and_files() {
+        // 6c-A windowed-ring eviction (ADR 0002 DS-8): raising the mark drops
+        // the leading meta segments that fall *entirely* below it and deletes
+        // their files, while surviving rows keep their absolute index.
+        let dir = TempDir::new().unwrap();
+        let mut s = DiskRawStore::with_config(dir.path(), tiny()).unwrap(); // rps = 4
+        for i in 0u32..20 {
+            s.append(frame(u64::from(i) * 10, i));
+        }
+        assert_eq!(s.meta_segs.len(), 5, "rows 0..20 fill 5 meta segments");
+        s.evict_below(8);
+        assert_eq!(s.first_index, 8);
+        // Segments 0 and 1 (rows 0..8) are wholly below the mark and dropped;
+        // segment 2 holds the first live row (8) and is kept.
+        assert_eq!(s.meta_seg_base, 2);
+        assert_eq!(s.meta_segs.len(), 3);
+        assert!(!dir.path().join("meta.000000").exists(), "seg 0 file deleted");
+        assert!(!dir.path().join("meta.000001").exists(), "seg 1 file deleted");
+        assert!(dir.path().join("meta.000002").exists(), "seg 2 file kept");
+        for i in 0..8 {
+            assert!(s.read_frame(i).is_none(), "row {i} evicted");
+        }
+        for i in 8..20 {
+            let f = s.read_frame(i).expect("live row reads across the base shift");
+            assert_eq!(f.id, i as u32);
+            assert_eq!(f.timestamp_ns, i as u64 * 10);
+        }
+        assert_eq!(s.first_last_ts(), (Some(80), Some(190)));
+        // Appends continue from the tip with the floor in place.
+        let idx = s.append(frame(9999, 99));
+        assert_eq!(idx, 20);
+        assert_eq!(s.read_frame(20).unwrap().id, 99);
+    }
+
+    #[test]
+    fn evict_below_drops_oldest_payload_segments() {
+        let dir = TempDir::new().unwrap();
+        let mut s = DiskRawStore::with_config(dir.path(), tiny()).unwrap(); // payload_seg_bytes = 64
+        for i in 0u32..20 {
+            let mut f = frame(u64::from(i), i);
+            f.payload = CanFramePayload::Classic(vec![i as u8; 20]); // 20 B each
+            s.append(f);
+        }
+        let payload_files = |d: &std::path::Path| {
+            std::fs::read_dir(d)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|e| e.file_name().to_string_lossy().starts_with("payload."))
+                .count()
+        };
+        let before = payload_files(dir.path());
+        assert!(before >= 5, "20-byte payloads span several payload segments");
+        s.evict_below(12);
+        assert!(
+            payload_files(dir.path()) < before,
+            "payload segments wholly below the mark are reclaimed",
+        );
+        // Live rows still rebuild their payload across the payload base shift.
+        for i in 12..20usize {
+            assert_eq!(
+                s.read_frame(i).unwrap().payload.data(),
+                vec![i as u8; 20].as_slice(),
+            );
+        }
+    }
+
+    #[test]
+    fn reopen_after_eviction_restores_the_floor() {
+        let dir = TempDir::new().unwrap();
+        {
+            let mut s = DiskRawStore::with_config(dir.path(), tiny()).unwrap();
+            for i in 0u32..20 {
+                s.append(frame(u64::from(i) * 10, i));
+            }
+            s.evict_below(8);
+            s.flush().unwrap();
+        }
+        let s = DiskRawStore::reopen(dir.path()).unwrap().expect("manifest present");
+        assert_eq!(s.len(), 20);
+        assert_eq!(s.first_index, 8, "the floor reloads from the manifest");
+        for i in 0..8 {
+            assert!(s.read_frame(i).is_none(), "row {i} stays evicted after reopen");
+        }
+        for i in 8..20 {
+            let f = s.read_frame(i).expect("live row after reopen");
+            assert_eq!(f.id, i as u32);
+            assert_eq!(f.timestamp_ns, i as u64 * 10);
+        }
+        assert_eq!(s.first_last_ts(), (Some(80), Some(190)));
+    }
+
+    #[test]
+    fn evict_oldest_bytes_holds_the_window_and_keeps_the_tail() {
+        // 6c-B cap primitive (ADR 0002 DS-8): shed the oldest raw segments
+        // until at least the requested bytes are freed, never dropping the
+        // live tail.
+        let dir = TempDir::new().unwrap();
+        let mut s = DiskRawStore::with_config(dir.path(), tiny()).unwrap();
+        for i in 0u32..40 {
+            let mut f = frame(u64::from(i) * 5, i);
+            f.payload = CanFramePayload::Classic(vec![i as u8; 20]); // grow payload segs too
+            s.append(f);
+        }
+        let full = s.raw_disk_bytes();
+        let target = full / 2;
+        let freed = s.evict_oldest_bytes(target);
+        assert!(freed >= target, "frees at least the requested {target} bytes (got {freed})");
+        assert_eq!(s.raw_disk_bytes(), full - freed, "footprint drops by exactly what was freed");
+        assert!(s.first_index > 0 && s.first_index < 40, "the floor moved into the window");
+        for i in 0..s.first_index {
+            assert!(s.read_frame(i).is_none(), "row {i} evicted");
+        }
+        let fi = s.first_index;
+        for i in fi..40 {
+            let f = s.read_frame(i).expect("live row");
+            assert_eq!(f.id, i as u32);
+            assert_eq!(f.timestamp_ns, i as u64 * 5);
+            assert_eq!(f.payload.data(), vec![i as u8; 20].as_slice());
+        }
+        // The tail is never dropped, even asking for more than the whole store.
+        let freed_all = s.evict_oldest_bytes(u64::MAX);
+        assert!(s.read_frame(39).is_some(), "live tail survives an over-large request");
+        let _ = freed_all;
+    }
+
+    #[test]
+    fn reopen_after_eviction_restores_by_id_postings() {
+        // 6d: by-id front-trims with the raw store (DiskRawStore::evict_below
+        // calls by_id.evict_below), and the per-id first_slot persists so a
+        // reopen across the eviction serves the same windowed by-id reads.
+        let dir = TempDir::new().unwrap();
+        {
+            let mut s = DiskRawStore::with_config(dir.path(), tiny()).unwrap();
+            for i in 0u32..300 {
+                s.append(frame(u64::from(i), 7)); // hot id 7 at every index
+            }
+            s.evict_below(100);
+            s.flush().unwrap();
+        }
+        let s = DiskRawStore::reopen(dir.path()).unwrap().expect("manifest present");
+        assert_eq!(s.first_index, 100);
+        // by-id reads above the mark survive the reopen.
+        let hits: Vec<usize> = s
+            .matching_frames_indexed(7, false, 100, 300)
+            .into_iter()
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(hits, (100..300).collect::<Vec<usize>>());
+        // A read spanning the mark drops the evicted prefix (raw guard).
+        let spanning: Vec<usize> = s
+            .matching_frames_indexed(7, false, 0, 300)
+            .into_iter()
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(spanning, (100..300).collect::<Vec<usize>>());
     }
 
     #[test]

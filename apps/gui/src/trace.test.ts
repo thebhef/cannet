@@ -12,6 +12,7 @@ import {
   stopTrace,
   traceFrameCount,
   traceStatus,
+  traceWindow,
 } from "./trace";
 
 describe("freshTrace / clearedTrace / traceStatus / traceFrameCount", () => {
@@ -40,6 +41,23 @@ describe("freshTrace / clearedTrace / traceStatus / traceFrameCount", () => {
     // It spans every reloaded frame, and stays put as a stopped trace.
     expect(traceFrameCount(t, 3626)).toBe(3626);
     expect(traceFrameCount(t, 5000)).toBe(3626);
+  });
+
+  it("traceWindow clamps the window start up to the low-water mark", () => {
+    // No eviction: the window spans the whole running trace.
+    const running = freshTrace(0);
+    expect(traceWindow(running, 1000, 0)).toEqual({ offset: 0, frameCount: 1000 });
+    // Eviction raised the mark to 300 → the window starts there, 700 live rows.
+    expect(traceWindow(running, 1000, 300)).toEqual({ offset: 300, frameCount: 700 });
+    // A stale floor past the buffer (a Clear left it for a tick) clamps to the
+    // buffer rather than going negative.
+    expect(traceWindow(running, 1000, 5000)).toEqual({ offset: 1000, frameCount: 0 });
+    // A frozen (stopped) window whose span is partly below the mark keeps only
+    // the part at/above it.
+    const frozen = { start: 0, end: 500, isPaused: false, traceStartOffsetSeconds: null };
+    expect(traceWindow(frozen, 1000, 300)).toEqual({ offset: 300, frameCount: 200 });
+    // …and one wholly below the mark collapses to empty.
+    expect(traceWindow(frozen, 1000, 600)).toEqual({ offset: 600, frameCount: 0 });
   });
 
   it("clear keeps the run state — running stays running, stopped stopped, paused paused", () => {

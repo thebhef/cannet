@@ -38,6 +38,24 @@ pub struct Settings {
     pub clear_scratch_on_exit: bool,
 }
 
+/// Minimum effective windowed-ring scratch cap (ADR 0002 DS-8). Below this
+/// the pre-allocated segment families dominate the budget — one payload
+/// segment (4 MiB) plus one filter segment (8 MiB) for a single filtered
+/// view already exceed a small cap — so the retained frame window thrashes a
+/// whole meta segment at a time and a smaller cap can't be honored usefully.
+/// A cap set below the floor is raised to it; `None` (unbounded) is untouched.
+pub const MIN_SCRATCH_CAP_BYTES: u64 = 100 * 1024 * 1024;
+
+/// Apply the cap floor (ADR 0002 DS-8): raise a below-floor cap up to
+/// [`MIN_SCRATCH_CAP_BYTES`], passing `None` (unbounded) through unchanged.
+/// The floor is policy applied where settings meet the store, not in the
+/// low-level `set_scratch_cap`, so tests can still drive eviction with a
+/// tiny cap.
+#[must_use]
+pub fn floored_scratch_cap(cap: Option<u64>) -> Option<u64> {
+    cap.map(|v| v.max(MIN_SCRATCH_CAP_BYTES))
+}
+
 /// Parse settings JSON, tolerating junk. A malformed or partial file
 /// yields [`Settings::default`] rather than an error — a corrupt settings
 /// file must never brick startup. Split from IO so it's testable without
@@ -97,7 +115,11 @@ pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<(), Str
         let msg = format!("failed to write settings: {e}");
         crate::sys_warn!(&app, "settings", "{msg}");
         msg
-    })
+    })?;
+    // Apply the windowed-ring scratch cap (ADR 0002 DS-8) to the live store
+    // so a changed cap takes effect on the next flush, not just next launch.
+    crate::apply_scratch_cap(&app);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -149,6 +171,21 @@ mod tests {
     fn unknown_fields_are_ignored() {
         let s = parse_settings(r#"{"scratch_cap_bytes": 1024, "future_key": 42}"#);
         assert_eq!(s.scratch_cap_bytes, Some(1024));
+    }
+
+    #[test]
+    fn cap_floor_raises_below_minimum_and_leaves_unbounded_alone() {
+        // Unbounded passes through; a below-floor cap is raised to the floor;
+        // at-or-above is untouched (ADR 0002 DS-8).
+        assert_eq!(floored_scratch_cap(None), None);
+        assert_eq!(floored_scratch_cap(Some(15 * 1024 * 1024)), Some(MIN_SCRATCH_CAP_BYTES));
+        assert_eq!(floored_scratch_cap(Some(0)), Some(MIN_SCRATCH_CAP_BYTES));
+        assert_eq!(
+            floored_scratch_cap(Some(MIN_SCRATCH_CAP_BYTES)),
+            Some(MIN_SCRATCH_CAP_BYTES),
+        );
+        let big = 8 * 1024 * 1024 * 1024;
+        assert_eq!(floored_scratch_cap(Some(big)), Some(big));
     }
 
     #[test]

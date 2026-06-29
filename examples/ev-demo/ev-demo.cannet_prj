@@ -2,7 +2,7 @@
   "schema_version": 7,
   "project_id": "e2f3d8f8-217d-4250-8f20-ce0753e2894d",
   "layout": {
-    "activeGroup": "6",
+    "activeGroup": "3",
     "grid": {
       "height": 2010,
       "orientation": "HORIZONTAL",
@@ -35,10 +35,11 @@
               },
               {
                 "data": {
-                  "activeView": "system-messages",
+                  "activeView": "settings",
                   "id": "3",
                   "views": [
-                    "system-messages"
+                    "system-messages",
+                    "settings"
                   ]
                 },
                 "size": 670,
@@ -82,7 +83,7 @@
                   },
                   {
                     "data": {
-                      "activeView": "trace-f0ac8c09-742b-4ba6-8b00-0e75ff6ffe88",
+                      "activeView": "trace-chrono",
                       "id": "4",
                       "views": [
                         "trace-chrono",
@@ -321,7 +322,7 @@
               "yAxisMode": "per-unit"
             }
           ],
-          "cursorMode": "off",
+          "cursorMode": "note",
           "cursorX": {
             "a": null,
             "b": null
@@ -358,6 +359,11 @@
           "elementId": "vehicle"
         },
         "title": "Vehicle RBS"
+      },
+      "settings": {
+        "contentComponent": "settings",
+        "id": "settings",
+        "title": "Settings"
       },
       "system-messages": {
         "contentComponent": "system-messages",
@@ -758,7 +764,7 @@
             "yAxisMode": "per-unit"
           }
         ],
-        "cursorMode": "off",
+        "cursorMode": "note",
         "cursorX": {
           "a": null,
           "b": null

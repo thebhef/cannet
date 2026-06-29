@@ -53,8 +53,10 @@ pub struct SampleSeq {
     dir: PathBuf,
     prefix: String,
     segs: Vec<Segment>,
-    /// `cum_cap[i]` = total entry capacity of `segs[0..=i]`, so a slot index
-    /// is located in `O(log segs)`.
+    /// `cum_cap[i]` = total entry capacity of segments `0..=i` in **absolute**
+    /// numbering (includes any dropped leading segments), so a slot index is
+    /// located in `O(log segs)` and a surviving slot keeps its original index
+    /// across a trim.
     cum_cap: Vec<usize>,
     len: usize,
     /// Low-water mark: the lowest still-live slot (ADR 0002). `0` until the
@@ -65,6 +67,9 @@ pub struct SampleSeq {
     /// `first_index`), so the serve path's binary search and the host's
     /// slot bookkeeping stay valid — only the floor moves.
     first_slot: usize,
+    /// Count of dropped leading segments — the absolute number of `segs[0]`.
+    /// An absolute segment number `s` addresses `segs[s - seg_base]`.
+    seg_base: usize,
 }
 
 impl SampleSeq {
@@ -78,6 +83,7 @@ impl SampleSeq {
             cum_cap: Vec::new(),
             len: 0,
             first_slot: 0,
+            seg_base: 0,
         }
     }
 
@@ -105,14 +111,22 @@ impl SampleSeq {
     }
 
     /// Raise the low-water mark to `first_slot`, evicting the slots below it
-    /// (clamped to `[self.first_slot, len]`, so the floor only ever rises).
-    /// Absolute slot numbering is preserved — a live read still addresses a
-    /// surviving slot by its original index — so this only narrows the live
-    /// range. Dropping the now-dead leading segment *files* is the
-    /// windowed-ring eviction's job; this sets the logical floor the serve
-    /// path reads so a below-mark slot is never touched.
+    /// (clamped to `[self.first_slot, len]`, so the floor only ever rises),
+    /// and **drop every leading segment file that now falls entirely below
+    /// it** to reclaim disk (ADR 0002 DS-8 / 6d). Absolute slot numbering is
+    /// preserved (`seg_base` maps an absolute segment number to its slot in
+    /// the trimmed `Vec`), so a live read still addresses a surviving slot by
+    /// its original index; only whole dead segments are dropped, so the floor
+    /// may sit inside the first kept segment (its sub-floor prefix is simply
+    /// never served).
     pub fn evict_below(&mut self, first_slot: usize) {
         self.first_slot = first_slot.clamp(self.first_slot, self.len);
+        let target_base = self.cum_cap.partition_point(|&c| c <= self.first_slot);
+        while self.seg_base < target_base {
+            drop(self.segs.remove(0)); // unmap before deleting (Windows)
+            let _ = std::fs::remove_file(self.seg_path(self.seg_base));
+            self.seg_base += 1;
+        }
     }
 
     fn capacity(&self) -> usize {
@@ -136,7 +150,7 @@ impl SampleSeq {
     /// dropped it would touch an unmapped segment.
     pub fn get(&self, k: usize) -> (f64, f64) {
         let (seg, off) = self.locate(k);
-        let bytes = &self.segs[seg].map[off..off + ENTRY_BYTES];
+        let bytes = &self.segs[seg - self.seg_base].map[off..off + ENTRY_BYTES];
         let t = f64::from_le_bytes(bytes[0..8].try_into().unwrap());
         let v = f64::from_le_bytes(bytes[8..16].try_into().unwrap());
         (t, v)
@@ -151,7 +165,7 @@ impl SampleSeq {
     /// as the rest of the disk store.
     pub fn push(&mut self, t: f64, value: f64) {
         if self.len == self.capacity() {
-            let i = self.segs.len();
+            let i = self.cum_cap.len(); // absolute segment number (survives a trim)
             let cap = seg_capacity(i);
             let seg = create_segment(&self.seg_path(i), cap * ENTRY_BYTES)
                 .expect("cannet-spill: sample-seq segment I/O failed");
@@ -160,7 +174,7 @@ impl SampleSeq {
             self.cum_cap.push(prev + cap);
         }
         let (seg, off) = self.locate(self.len);
-        let map = &mut self.segs[seg].map;
+        let map = &mut self.segs[seg - self.seg_base].map;
         map[off..off + 8].copy_from_slice(&t.to_le_bytes());
         map[off + 8..off + ENTRY_BYTES].copy_from_slice(&value.to_le_bytes());
         self.len += 1;
@@ -226,6 +240,26 @@ mod tests {
         assert_eq!(l1.len(), 1);
         assert_eq!(l1.get(0), (7.0, 9.0));
         assert_eq!(l0.get(50), (50.0, 1.0));
+    }
+
+    #[test]
+    fn evict_below_drops_dead_leading_segment_files() {
+        // 6d: front-trim drops the whole leading segment files below the mark
+        // and reclaims their disk, while surviving slots still read by their
+        // absolute index across the base shift.
+        let dir = TempDir::new().unwrap();
+        let mut seq = SampleSeq::new(dir.path(), "sig.l0");
+        for i in 0..2000u32 {
+            seq.push(f64::from(i), f64::from(i) * 2.0);
+        }
+        let before = std::fs::read_dir(dir.path()).unwrap().count();
+        assert!(before >= 4, "2000 points span several geometric segments");
+        seq.evict_below(500);
+        assert_eq!(seq.first_slot(), 500);
+        assert_eq!(seq.get(500), (500.0, 1000.0), "kept slot reads across the base shift");
+        assert_eq!(seq.get(1999), (1999.0, 3998.0));
+        let after = std::fs::read_dir(dir.path()).unwrap().count();
+        assert!(after < before, "leading pyramid segment files reclaimed: {after} < {before}");
     }
 
     #[test]

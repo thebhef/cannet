@@ -107,6 +107,17 @@ render. Named so far:
   (`{ id, timestamp_ns, label }`) grows a kind discriminant and per-kind
   metadata as kinds are added. The concept rename needs no data
   migration; the scratch and BLF encodings evolve per kind.
+- **The event store becomes a formal host-side abstraction**, paralleling
+  the frame store's facade-over-backend shape (`TraceStore` over
+  `cannet_spill::RawStore`, [ADR 0002](0002-disk-spill-store.md)). Today
+  `NotesStore` is an ad-hoc `Mutex<Vec<Note>>` that happens to own its own
+  scratch persistence; as the model grows kinds it is named as *the*
+  session-scoped event store — the single owner of the event collection,
+  its change-event surface, and per-kind persistence/export — so views and
+  detectors observe one model rather than a bag of notes. This is the same
+  thin-views discipline the frame store already follows: the host owns the
+  model, the views are windows onto it. The abstraction is introduced as
+  part of building this model out, not as a separate rename.
 - The disk-spill truncation marker renders through this model (a plot
   cursor and a trace floor row) as a derived, non-persisted,
   non-exported kind — it never becomes user data, and it is distinct from

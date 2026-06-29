@@ -18,6 +18,11 @@ import type { TraceFrameRecord } from "./types";
  */
 export interface TraceData {
   count: number;
+  /// Windowed-ring low-water mark (ADR 0002 DS-8): the lowest still-live row
+  /// index in the session buffer. `0` until the disk-spill cap truncates the
+  /// oldest history. A chronological window clamps its start up to this so
+  /// evicted rows below the floor aren't rendered as blank placeholders.
+  firstIndex: number;
   /// Unix-epoch seconds of the session's zero point. Set by the host's
   /// `start_session` (via the `trace-grew` event); `null` until the
   /// first session-grow tick after a Clear / Connect. Every trace view

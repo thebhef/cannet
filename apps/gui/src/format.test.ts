@@ -1,6 +1,24 @@
 import { describe, expect, it } from "vitest";
 
-import { formatSignalValue, formatSignalValueWithLabel } from "./format";
+import { formatFrameCount, formatSignalValue, formatSignalValueWithLabel } from "./format";
+
+describe("formatFrameCount", () => {
+  it("shows just the total before any eviction (floor at 0)", () => {
+    expect(formatFrameCount(1234, 0)).toBe("1,234 frames");
+  });
+
+  it("shows retained of total once the windowed-ring floor has advanced", () => {
+    // 9,412,008 appended, floor at 8,924,777 → 487,231 still retained.
+    expect(formatFrameCount(9_412_008, 8_924_777)).toBe(
+      "487,231 of 9,412,008 frames",
+    );
+  });
+
+  it("clamps a floor at or past the total to zero retained", () => {
+    // A stale floor (a Clear left it for a tick) must never go negative.
+    expect(formatFrameCount(500, 600)).toBe("0 of 500 frames");
+  });
+});
 
 describe("formatSignalValueWithLabel", () => {
   it("returns just the numeric formatted value when no label is given", () => {

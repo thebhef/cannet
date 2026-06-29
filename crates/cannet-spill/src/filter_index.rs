@@ -51,6 +51,10 @@ const BUILD_CHUNK: usize = 8192;
 pub struct FilterIndex {
     dir: PathBuf,
     segs: Vec<Segment>,
+    /// Postings per segment file. [`SEG_ENTRIES`] in production; tests lower
+    /// it (via [`FilterIndex::new_with_seg_entries`]) so a small match set
+    /// still spans several files and exercises segment-boundary trimming.
+    seg_entries: usize,
     /// Number of matching frame indices stored.
     len: usize,
     /// Frame index (exclusive) the index has been built up to. Lets a
@@ -63,20 +67,34 @@ pub struct FilterIndex {
     /// evicted. Match-positions stay absolute across a trim, so a below-mark
     /// position is never read (its segment may be unmapped).
     first_pos: usize,
+    /// Count of dropped leading segments — the absolute number of `segs[0]`.
+    /// An absolute segment number `s` addresses `segs[s - seg_base]`, so a
+    /// surviving posting keeps its original match-position across a trim.
+    seg_base: usize,
 }
 
 impl FilterIndex {
     /// Create an empty filter index under `dir`, clearing any stale
     /// `filter.*` segment files left there.
     pub fn new(dir: impl AsRef<Path>) -> io::Result<Self> {
+        Self::new_with_seg_entries(dir, SEG_ENTRIES)
+    }
+
+    /// Like [`Self::new`] but with a caller-chosen segment size. Only the
+    /// default ([`SEG_ENTRIES`]) ships; tests pass a small value so a small
+    /// match set spans several segment files and exercises the
+    /// segment-boundary trim ([`Self::evict_below`]).
+    fn new_with_seg_entries(dir: impl AsRef<Path>, seg_entries: usize) -> io::Result<Self> {
         let dir = dir.as_ref().to_path_buf();
         remove_files_with_prefixes(&dir, &[FILTER_PREFIX])?;
         Ok(Self {
             dir,
             segs: Vec::new(),
+            seg_entries,
             len: 0,
             built_through: 0,
             first_pos: 0,
+            seg_base: 0,
         })
     }
 
@@ -110,23 +128,27 @@ impl FilterIndex {
     }
 
     fn push(&mut self, frame_idx: usize) {
-        let seg = self.len / SEG_ENTRIES;
-        while self.segs.len() <= seg {
-            let i = self.segs.len();
-            let s = create_segment(&self.seg_path(i), SEG_ENTRIES * ENTRY_BYTES)
+        let seg = self.len / self.seg_entries; // absolute segment number
+        while self.seg_base + self.segs.len() <= seg {
+            let i = self.seg_base + self.segs.len(); // absolute segment number
+            let s = create_segment(&self.seg_path(i), self.seg_entries * ENTRY_BYTES)
                 .expect("cannet-spill: filter-index segment I/O failed");
             self.segs.push(s);
         }
-        let off = (self.len % SEG_ENTRIES) * ENTRY_BYTES;
-        self.segs[seg].map[off..off + ENTRY_BYTES]
+        let off = (self.len % self.seg_entries) * ENTRY_BYTES;
+        self.segs[seg - self.seg_base].map[off..off + ENTRY_BYTES]
             .copy_from_slice(&(frame_idx as u64).to_le_bytes());
         self.len += 1;
     }
 
     fn entry(&self, k: usize) -> usize {
-        let seg = k / SEG_ENTRIES;
-        let off = (k % SEG_ENTRIES) * ENTRY_BYTES;
-        let v = u64::from_le_bytes(self.segs[seg].map[off..off + ENTRY_BYTES].try_into().unwrap());
+        let seg = k / self.seg_entries;
+        let off = (k % self.seg_entries) * ENTRY_BYTES;
+        let v = u64::from_le_bytes(
+            self.segs[seg - self.seg_base].map[off..off + ENTRY_BYTES]
+                .try_into()
+                .unwrap(),
+        );
         usize::try_from(v).unwrap_or(usize::MAX)
     }
 
@@ -214,6 +236,32 @@ impl FilterIndex {
         (start..end).map(|k| self.entry(k)).collect()
     }
 
+    /// Front-trim the index to the raw store's low-water mark (ADR 0002
+    /// DS-8 / 6d): the postings whose matched frame index is below
+    /// `first_index` are evicted with their frames, so `first_pos` rises to
+    /// the first surviving match-position and every whole leading segment
+    /// file now entirely below it is dropped to reclaim disk. Match-positions
+    /// stay absolute — a `seg_base` maps an absolute segment number to its
+    /// slot in the trimmed `Vec`, so the read guards in [`Self::position_of`]
+    /// / [`Self::page`] still address surviving postings by their original
+    /// position. Only whole dead segments are dropped, so the new floor may
+    /// sit inside the first kept segment (its sub-floor prefix is simply never
+    /// read). `len` stays the absolute match-position bound; the index keeps
+    /// extending at the tail across a trim.
+    pub fn evict_below(&mut self, first_index: usize) {
+        // The first still-live match-position: the count of matches whose
+        // frame index is below `first_index` (lower-bounded at the current
+        // mark, so the floor only rises).
+        let floor = self.position_of(first_index);
+        self.first_pos = floor.clamp(self.first_pos, self.len);
+        let target_base = self.first_pos / self.seg_entries;
+        while self.seg_base < target_base {
+            drop(self.segs.remove(0)); // unmap before deleting (Windows)
+            let _ = std::fs::remove_file(self.seg_path(self.seg_base));
+            self.seg_base += 1;
+        }
+    }
+
     /// Drop the index: unmap and delete its segment files, reset to empty.
     /// The predicate-change path (a fresh predicate invalidates the whole
     /// index).
@@ -222,6 +270,7 @@ impl FilterIndex {
         self.len = 0;
         self.built_through = 0;
         self.first_pos = 0;
+        self.seg_base = 0;
         remove_files_with_prefixes(&self.dir, &[FILTER_PREFIX])
     }
 }
@@ -424,6 +473,59 @@ mod tests {
         assert_eq!(page, vec![12, 15, 18, 21, 24, 27]); // positions 4..10
         // A page entirely below the mark comes back empty (no panic).
         assert!(idx.page(0, 4).is_empty());
+    }
+
+    #[test]
+    fn evict_below_drops_dead_leading_segment_files_and_rebases() {
+        // 6d (ADR 0002 DS-8): once the matched frames drop below the raw
+        // store's `first_index`, the index front-trims — raising `first_pos`,
+        // dropping the whole leading segment files now entirely below it, and
+        // reclaiming their disk — while surviving match-positions still page
+        // by their absolute position across the base shift.
+        let store = seeded(30); // id 0x100 → frames 0,3,6,…,27 (10 matches)
+        let dir = TempDir::new().unwrap();
+        // Tiny segments (4 postings each) so 10 matches span several files.
+        let mut idx = FilterIndex::new_with_seg_entries(dir.path(), 4).unwrap();
+        idx.extend_membership(&store, &[(0x100, false)], store.len());
+        assert_eq!(idx.len(), 10);
+        let seg_files = || {
+            std::fs::read_dir(dir.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|e| e.file_name().to_string_lossy().starts_with(FILTER_PREFIX))
+                .count()
+        };
+        let before = seg_files();
+        assert!(before >= 3, "10 matches over 4-posting segments span ≥3 files");
+
+        // Evict every frame below index 13: matches 0,3,6,9,12 go (positions
+        // 0..5), so the first live position is 5 (frame 15).
+        idx.evict_below(13);
+        assert_eq!(idx.first_pos(), 5);
+        assert_eq!(idx.len(), 10, "len stays the absolute match-position bound");
+        // The whole leading segment file (positions 0..4) is reclaimed; the
+        // partially-dead one (4..8, holding live position 5) is kept.
+        assert!(seg_files() < before, "dead leading segment file reclaimed");
+        // Surviving matches still page by absolute position across the shift.
+        assert_eq!(idx.page(5, 100), vec![15, 18, 21, 24, 27]);
+        assert_eq!(idx.position_of(0), 5, "lower bound never descends below the mark");
+        // A page wholly below the mark is empty (no panic / unmapped read).
+        assert!(idx.page(0, 5).is_empty());
+
+        // The index keeps extending past an eviction: new matches append at
+        // the tail with their absolute frame index.
+        let mut store = store;
+        for i in 30..42 {
+            let f = match i % 3 {
+                0 => frame(0x100, Some("a")),
+                1 => frame(0x200, Some("a")),
+                _ => frame(0x300, Some("b")),
+            };
+            store.append(f);
+        }
+        idx.extend_membership(&store, &[(0x100, false)], store.len());
+        // Frames 30,33,36,39 are new 0x100 matches at positions 10..14.
+        assert_eq!(idx.page(10, 100), vec![30, 33, 36, 39]);
     }
 
     #[test]

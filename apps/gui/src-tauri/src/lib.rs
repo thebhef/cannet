@@ -371,6 +371,16 @@ fn open_trace_store(scratch: std::io::Result<std::path::PathBuf>) -> Arc<TraceSt
     }
 }
 
+/// Push the windowed-ring scratch cap (ADR 0002 DS-8) from settings onto
+/// the live trace store. Called at launch and after every settings change
+/// so the cap takes effect without a restart.
+pub(crate) fn apply_scratch_cap(app: &AppHandle) {
+    // Raise a below-floor cap to the minimum (ADR 0002 DS-8): a smaller cap
+    // can't be honored once the pre-allocated segment families are counted.
+    let cap = settings::floored_scratch_cap(settings::get_settings(app.clone()).scratch_cap_bytes);
+    app.state::<AppState>().trace_store.set_scratch_cap(cap);
+}
+
 /// The directory the live filter index roots in: a `filter/` subdir of the
 /// disk-spill scratch (ADR 0002 DS-3/DS-7), or an OS-temp fallback if the
 /// scratch is unavailable. Created if absent; failure to create is left to
@@ -572,6 +582,9 @@ pub fn run() {
             crash::spawn_health_recorder(app.handle().clone());
             spawn_trace_grew_emitter(app.handle().clone());
             spawn_trace_flusher(app.handle().clone());
+            // Apply the persisted windowed-ring scratch cap (ADR 0002 DS-8)
+            // so a flush honors it from the first tick.
+            apply_scratch_cap(app.handle());
             // The single transmit scheduler thread drives every running
             // periodic. Takes ownership of the command
             // receiver created above.
@@ -643,7 +656,11 @@ fn spawn_trace_grew_emitter(app: AppHandle) {
         loop {
             interval.tick().await;
             let state: State<'_, AppState> = app.state();
-            let count = u64::try_from(state.trace_store.len()).unwrap_or(u64::MAX);
+            // Read len and the low-water mark together so the status line's
+            // `count - first_index` can't go momentarily negative when a flush
+            // evicts between two separate reads (ADR 0002 DS-8).
+            let (count_usize, first_index_usize) = state.trace_store.len_and_low_water();
+            let count = u64::try_from(count_usize).unwrap_or(u64::MAX);
             let frames_per_second = state.trace_store.frames_per_second();
             let session_start_ns = state.trace_store.session_start_ns();
             if !should_emit_trace_grew(
@@ -669,12 +686,16 @@ fn spawn_trace_grew_emitter(app: AppHandle) {
                 })
                 .collect();
             let frames_dropped_before_session = state.trace_store.frames_dropped_before_session();
+            let scratch_bytes = state.trace_store.scratch_footprint_bytes();
+            let first_index = first_index_usize as u64;
+            let mem_bytes = crash::last_host_rss();
             let (frames_per_second_rx, frames_per_second_tx) =
                 state.trace_store.frames_per_second_by_direction();
             let _ = app.emit(
                 "trace-grew",
                 TraceGrew {
                     count,
+                    first_index,
                     frames_per_second,
                     frames_per_second_rx,
                     frames_per_second_tx,
@@ -682,6 +703,8 @@ fn spawn_trace_grew_emitter(app: AppHandle) {
                     frames_dropped_before_session,
                     session_start_seconds,
                     buffer_seconds,
+                    scratch_bytes,
+                    mem_bytes,
                     tail,
                 },
             );
@@ -700,6 +723,7 @@ fn spawn_trace_flusher(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(TRACE_FLUSH_TICK);
         let mut last_flushed_len = 0usize;
+        let mut last_trimmed_mark = 0usize;
         loop {
             interval.tick().await;
             let state: State<'_, AppState> = app.state();
@@ -720,6 +744,28 @@ fn spawn_trace_flusher(app: AppHandle) {
                     app.state::<diag::HostMetrics>().record_flush_ms(ms);
                 }
                 Err(e) => tracing::warn!(error = %e, "trace store flush failed"),
+            }
+            // The flush may have advanced the windowed-ring mark (raw + by-id
+            // evicted inside `flush_async`). Front-trim the derived caches to
+            // the same mark so the *total* scratch footprint holds at the cap
+            // (ADR 0002 DS-8 / 6d) — they live in `AppState`, not the store.
+            // The pyramids trim by truncation *time* (their slots are
+            // `(t, value)` points); the filter index trims by frame *index*
+            // (its postings are frame indices), so it takes the mark directly.
+            let (mark, ts_seconds) = state.trace_store.low_water();
+            if mark > last_trimmed_mark {
+                if let Some(ts) = ts_seconds {
+                    state.signal_caches.evict_below(ts);
+                }
+                if let Some(active) = state
+                    .filter_index
+                    .lock()
+                    .expect("filter index mutex poisoned")
+                    .as_mut()
+                {
+                    active.index.evict_below(mark);
+                }
+                last_trimmed_mark = mark;
             }
         }
     });
@@ -1943,6 +1989,10 @@ fn clear_trace_store(app: AppHandle, state: State<'_, AppState>) {
 #[derive(serde::Serialize, Clone, Copy)]
 pub struct RestoredCapture {
     count: u64,
+    /// Windowed-ring low-water mark of the reloaded store (ADR 0002 DS-8):
+    /// non-zero when the prior capture was evicted before exit, so the
+    /// restored chronological view clamps to `[first_index, count)`.
+    first_index: u64,
     session_start_seconds: f64,
 }
 
@@ -1963,10 +2013,12 @@ fn restore_scratch_capture(app: AppHandle, state: State<'_, AppState>) -> Restor
     if !active.is_some_and(|pid| state.trace_store.try_reload(pid)) {
         return RestoredCapture {
             count: 0,
+            first_index: 0,
             session_start_seconds: 0.0,
         };
     }
     let count = state.trace_store.len();
+    let first_index = state.trace_store.low_water().0 as u64;
     let session_start_ns = state.trace_store.session_start_ns();
     // Bring the session's events back too (ADR 0002 DS-7 / ADR 0035) — the
     // scratch's own copy, independent of any BLF round-trip.
@@ -1977,6 +2029,7 @@ fn restore_scratch_capture(app: AppHandle, state: State<'_, AppState>) -> Restor
     #[allow(clippy::cast_precision_loss)]
     RestoredCapture {
         count: u64::try_from(count).unwrap_or(u64::MAX),
+        first_index,
         session_start_seconds: session_start_ns as f64 / 1_000_000_000.0,
     }
 }

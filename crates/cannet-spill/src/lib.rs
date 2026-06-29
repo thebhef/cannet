@@ -97,6 +97,14 @@ pub trait RawStore: Send {
         self.len() == 0
     }
 
+    /// The windowed-ring low-water mark ([ADR 0002](../../../docs/adr/0002-disk-spill-store.md)
+    /// DS-8): the lowest still-addressable row index. `0` until eviction
+    /// front-trims the oldest rows; the live range is `[first_index, len)`.
+    /// Defaults to `0` for the in-RAM double, which never evicts.
+    fn first_index(&self) -> usize {
+        0
+    }
+
     /// Drop every frame and reset to empty (a new session / Clear).
     fn clear(&mut self);
 
@@ -162,6 +170,27 @@ pub trait RawStore: Send {
     /// async distinction (the in-RAM double).
     fn flush_async(&mut self) -> std::io::Result<()> {
         self.flush()
+    }
+
+    /// Windowed-ring eviction ([ADR 0002](../../../docs/adr/0002-disk-spill-store.md)
+    /// DS-8): drop the oldest raw segments until at least `bytes` of on-disk
+    /// footprint have been freed, or only the live tail remains. Returns the
+    /// bytes actually freed. Trims only the raw meta/payload family — by-id
+    /// and the derived caches front-trim against the same low-water mark
+    /// elsewhere. Defaults to a no-op for the in-RAM double, which never
+    /// spills.
+    fn evict_oldest_bytes(&mut self, bytes: u64) -> u64 {
+        let _ = bytes;
+        0
+    }
+
+    /// On-disk bytes of the raw meta/payload family — the share of the
+    /// scratch dir this store is responsible for. The cap bounds the *whole*
+    /// dir (raw + derived caches), so the host scales an eviction request by
+    /// this share before calling [`Self::evict_oldest_bytes`]. `0` for the
+    /// in-RAM double, which never spills.
+    fn raw_disk_bytes(&self) -> u64 {
+        0
     }
 }
 

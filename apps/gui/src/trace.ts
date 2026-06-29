@@ -95,6 +95,24 @@ export function traceFrameCount(s: TraceState, sessionCount: number): number {
   return Math.max(0, end - start);
 }
 
+/// The chronological window's absolute range `[offset, offset + frameCount)`
+/// over the session buffer, clamped to the windowed-ring low-water mark
+/// `firstIndex` (ADR 0002 DS-8): rows below the mark were truncated off
+/// disk, so the window starts at `max(start, firstIndex)` and never renders
+/// evicted rows as blank placeholders. `firstIndex` is itself clamped to the
+/// buffer so a stale floor left by a Clear / new session for a tick can't
+/// push the window out of range. Pure so it's unit-tested without React.
+export function traceWindow(
+  s: TraceState,
+  sessionCount: number,
+  firstIndex: number,
+): { offset: number; frameCount: number } {
+  const floor = Math.min(Math.max(0, firstIndex), sessionCount);
+  const end = Math.min(s.end ?? sessionCount, sessionCount);
+  const offset = Math.max(Math.min(s.start, sessionCount), floor);
+  return { offset, frameCount: Math.max(0, end - offset) };
+}
+
 /// Re-anchor a trace if the session buffer shrank out from under it
 /// (e.g. a new connection or "New project" cleared it). A *running*
 /// trace whose start dangled past the new end restarts empty (still
@@ -212,8 +230,9 @@ export function useTrace(data: TraceData, elementId: string): TraceHandle {
   const sessionCount = data.count;
   const state = reg.get(elementId)?.trace ?? clearedTrace(0);
 
-  const offset = Math.min(state.start, sessionCount);
-  const frameCount = traceFrameCount(state, sessionCount);
+  // Clamp the window start up to the windowed-ring low-water mark (ADR 0002
+  // DS-8) so truncated rows below the floor aren't rendered as placeholders.
+  const { offset, frameCount } = traceWindow(state, sessionCount, data.firstIndex);
 
   const baseTimestampSeconds =
     data.sessionStartSeconds === null
