@@ -142,6 +142,7 @@ function grew(count: number): TraceGrew {
   return {
     count,
     first_index: 0,
+    first_index_ts_ns: null,
     frames_per_second: 1000,
     frames_per_second_rx: 1000,
     frames_per_second_tx: 0,

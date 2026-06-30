@@ -23,6 +23,11 @@ export interface TraceData {
   /// oldest history. A chronological window clamps its start up to this so
   /// evicted rows below the floor aren't rendered as blank placeholders.
   firstIndex: number;
+  /// Absolute ns of the oldest retained frame, or `null` when nothing has
+  /// been truncated (`firstIndex === 0`) or the buffer is empty. This is
+  /// where the derived truncation marker (ADR 0035) sits — the timeline-
+  /// event views read it to synthesise that marker.
+  truncationTsNs: number | null;
   /// Unix-epoch seconds of the session's zero point. Set by the host's
   /// `start_session` (via the `trace-grew` event); `null` until the
   /// first session-grow tick after a Clear / Connect. Every trace view

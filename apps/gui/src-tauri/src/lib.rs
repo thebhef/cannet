@@ -530,8 +530,11 @@ pub fn run() {
             fetch_notes,
             add_note,
             rename_note,
+            recolor_note,
             remove_note,
             clear_notes,
+            frame_indices_at_ns,
+            filtered_positions_at_ns,
             save_capture,
             sidecar::restart_sidecar,
             sidecar::get_sidecar_status,
@@ -658,8 +661,11 @@ fn spawn_trace_grew_emitter(app: AppHandle) {
             let state: State<'_, AppState> = app.state();
             // Read len and the low-water mark together so the status line's
             // `count - first_index` can't go momentarily negative when a flush
-            // evicts between two separate reads (ADR 0002 DS-8).
-            let (count_usize, first_index_usize) = state.trace_store.len_and_low_water();
+            // evicts between two separate reads (ADR 0002 DS-8). The oldest-
+            // retained ts rides along so the frontend can place the truncation
+            // marker (ADR 0035) when `first_index > 0`.
+            let (count_usize, first_index_usize, oldest_ts_ns) =
+                state.trace_store.len_and_low_water();
             let count = u64::try_from(count_usize).unwrap_or(u64::MAX);
             let frames_per_second = state.trace_store.frames_per_second();
             let session_start_ns = state.trace_store.session_start_ns();
@@ -696,6 +702,7 @@ fn spawn_trace_grew_emitter(app: AppHandle) {
                 TraceGrew {
                     count,
                     first_index,
+                    first_index_ts_ns: oldest_ts_ns,
                     frames_per_second,
                     frames_per_second_rx,
                     frames_per_second_tx,
@@ -977,6 +984,24 @@ pub struct SaveCaptureResult {
 /// `description` empty) get a synthetic id `blf-marker-<index>` so
 /// their `rename` / `remove` paths still work; this mints a stable
 /// id deterministic in the marker's position within the file.
+/// An event colour (ADR 0035) as the BLF marker's `0x00RRGGBB`
+/// foreground colour: `#RRGGBB` parses to the packed RGB; `None` (or an
+/// unparseable string) is `0`, the marker build default. Inverse of
+/// [`rgb_to_color`].
+fn color_to_rgb(color: Option<&str>) -> u32 {
+    color
+        .and_then(|c| u32::from_str_radix(c.trim_start_matches('#'), 16).ok())
+        .map_or(0, |rgb| rgb & 0x00FF_FFFF)
+}
+
+/// The inverse: a packed `0x00RRGGBB` becomes `Some("#RRGGBB")`, except `0`
+/// (the marker build default / an uncoloured event) reads back as `None` so
+/// an uncoloured note round-trips as uncoloured rather than as black.
+fn rgb_to_color(rgb: u32) -> Option<String> {
+    let rgb = rgb & 0x00FF_FFFF;
+    (rgb != 0).then(|| format!("#{rgb:06X}"))
+}
+
 fn read_notes_from_blf(blf_path: &str) -> Result<Vec<Note>, String> {
     use cannet_blf::format::reader::{BlfObject, BlfReader};
     let mut reader = BlfReader::open(blf_path).map_err(|e| e.to_string())?;
@@ -1000,6 +1025,8 @@ fn read_notes_from_blf(blf_path: &str) -> Result<Vec<Note>, String> {
                 id,
                 timestamp_ns,
                 label,
+                kind: notes::EventKind::Note,
+                color: rgb_to_color(m.foreground_color),
             });
         }
     }
@@ -1059,7 +1086,12 @@ fn write_capture(
         } else {
             let note = note_iter.next().expect("peek matched");
             writer
-                .append_marker(note.timestamp_ns, &note.label, &note.id)
+                .append_marker(
+                    note.timestamp_ns,
+                    &note.label,
+                    &note.id,
+                    color_to_rgb(note.color.as_deref()),
+                )
                 .map_err(|e| format!("failed to write marker: {e}"))?;
         }
     }
@@ -1737,6 +1769,65 @@ fn materialize_filtered_rows(state: &AppState, page_idxs: &[usize]) -> Vec<Trace
         .collect()
 }
 
+/// Ensure the active filter index ([`AppState::filter_index`]) is built for
+/// `filter` against the current capture session and current to the store tip,
+/// returning the held lock guard. The shared head of [`fetch_filtered_trace`]
+/// and [`filtered_positions_at_ns`]: rebuild on a predicate or session change
+/// (a Clear / new capture bumps `session_start_ns`, invalidating the recorded
+/// frame indices), then extend by the freshly-appended tail — candidate-id
+/// narrowed, `O(delta)`, never an `O(capture)` scan. `None` when the index
+/// file is unavailable (the caller serves an empty result). The `databases`
+/// lock is held only for the synchronous build; the index's own chunked
+/// extend releases the trace-store append lock between chunks, so ingest is
+/// not starved.
+fn ensure_active_filter_index<'a>(
+    state: &'a AppState,
+    filter: &FilterPredicate,
+) -> Option<std::sync::MutexGuard<'a, Option<ActiveFilterIndex>>> {
+    let mut guard = state
+        .filter_index
+        .lock()
+        .expect("filter index mutex poisoned");
+    let session = state.trace_store.session_start_ns();
+    let needs_rebuild = match guard.as_ref() {
+        Some(a) => a.predicate != *filter || a.session_start_ns != session,
+        None => true,
+    };
+    if needs_rebuild {
+        let index = match cannet_spill::FilterIndex::new(&state.filter_index_dir) {
+            Ok(i) => i,
+            Err(e) => {
+                tracing::error!("filter index unavailable ({e})");
+                return None;
+            }
+        };
+        *guard = Some(ActiveFilterIndex {
+            predicate: filter.clone(),
+            session_start_ns: session,
+            index,
+        });
+    }
+    {
+        let active = guard.as_mut().expect("active filter index just set");
+        let dbs = state.databases.lock().expect("databases mutex poisoned");
+        let candidates = resolve_candidates_for(filter, &state.trace_store, &dbs)
+            .unwrap_or_else(|| all_ids_tested(&state.trace_store));
+        let decode_ids = decode_candidate_ids(&dbs, filter);
+        let keep = |f: &RawTraceFrame| {
+            let decoded = if decode_ids.contains(&f.id) {
+                decode_against(&dbs, f)
+            } else {
+                None
+            };
+            filter.matches(f, decoded.as_ref())
+        };
+        state
+            .trace_store
+            .refresh_filter_index(&mut active.index, &candidates, &keep);
+    }
+    Some(guard)
+}
+
 /// A *paged* window into the filtered chronological trace, served from the
 /// materialized filter index (ADR 0002 DS-3). Returns the total match count
 /// within `[scan_start, scan_end)` plus the decoded matches at match-indices
@@ -1787,62 +1878,16 @@ async fn fetch_filtered_trace(
     let win_start = usize::try_from(scan_start).unwrap_or(usize::MAX);
 
     // Hold the active filter index for the whole call (filtered fetches are
-    // infrequent and the index is cheap to serve). Rebuild it when the
-    // predicate or the capture session changed — a Clear / new capture bumps
-    // `session_start_ns`, so the recorded frame indices belong to a
-    // discarded timeline — otherwise extend it to the current tip below.
-    let mut guard = state
-        .filter_index
-        .lock()
-        .expect("filter index mutex poisoned");
-    let session = state.trace_store.session_start_ns();
-    let needs_rebuild = match guard.as_ref() {
-        Some(a) => a.predicate != filter || a.session_start_ns != session,
-        None => true,
+    // infrequent and the index is cheap to serve), built for this predicate
+    // and current to the store tip.
+    let Some(mut guard) = ensure_active_filter_index(state.inner(), &filter) else {
+        return FilteredTracePage {
+            count: 0,
+            start: 0,
+            rows: Vec::new(),
+        };
     };
-    if needs_rebuild {
-        let index = match cannet_spill::FilterIndex::new(&state.filter_index_dir) {
-            Ok(i) => i,
-            Err(e) => {
-                tracing::error!("filter index unavailable ({e}); returning an empty filtered page");
-                return FilteredTracePage {
-                    count: 0,
-                    start: 0,
-                    rows: Vec::new(),
-                };
-            }
-        };
-        *guard = Some(ActiveFilterIndex {
-            predicate: filter.clone(),
-            session_start_ns: session,
-            index,
-        });
-    }
-    let active = guard.as_mut().expect("active filter index just set");
-
-    // Bring the index current to the store tip: resolve the predicate to its
-    // by-id candidate set and extend by the freshly-appended delta, visiting
-    // only candidate-id frames (never an O(capture) scan). The `databases`
-    // lock is held only for this synchronous build; the index's own chunked
-    // extend releases the trace-store append lock between chunks, so ingest
-    // is not starved.
-    {
-        let dbs = state.databases.lock().expect("databases mutex poisoned");
-        let candidates = resolve_candidates_for(&filter, &state.trace_store, &dbs)
-            .unwrap_or_else(|| all_ids_tested(&state.trace_store));
-        let decode_ids = decode_candidate_ids(&dbs, &filter);
-        let keep = |f: &RawTraceFrame| {
-            let decoded = if decode_ids.contains(&f.id) {
-                decode_against(&dbs, f)
-            } else {
-                None
-            };
-            filter.matches(f, decoded.as_ref())
-        };
-        state
-            .trace_store
-            .refresh_filter_index(&mut active.index, &candidates, &keep);
-    }
+    let active = guard.as_mut().expect("active filter index ensured");
 
     // Map the frame window `[scan_start, end)` onto a match-position range
     // (two lower-bound searches) and read that page directly. `end` is
@@ -1993,6 +2038,11 @@ pub struct RestoredCapture {
     /// non-zero when the prior capture was evicted before exit, so the
     /// restored chronological view clamps to `[first_index, count)`.
     first_index: u64,
+    /// Absolute ns of the oldest retained frame — where the truncation
+    /// marker (ADR 0035) sits when `first_index > 0`, so a reopened evicted
+    /// capture shows it without waiting for a `trace-grew` tick (a stopped
+    /// trace gets none). `None` when nothing was truncated or restored.
+    first_index_ts_ns: Option<u64>,
     session_start_seconds: f64,
 }
 
@@ -2014,11 +2064,12 @@ fn restore_scratch_capture(app: AppHandle, state: State<'_, AppState>) -> Restor
         return RestoredCapture {
             count: 0,
             first_index: 0,
+            first_index_ts_ns: None,
             session_start_seconds: 0.0,
         };
     }
-    let count = state.trace_store.len();
-    let first_index = state.trace_store.low_water().0 as u64;
+    let (count, first_index_usize, first_index_ts_ns) = state.trace_store.len_and_low_water();
+    let first_index = first_index_usize as u64;
     let session_start_ns = state.trace_store.session_start_ns();
     // Bring the session's events back too (ADR 0002 DS-7 / ADR 0035) — the
     // scratch's own copy, independent of any BLF round-trip.
@@ -2030,6 +2081,7 @@ fn restore_scratch_capture(app: AppHandle, state: State<'_, AppState>) -> Restor
     RestoredCapture {
         count: u64::try_from(count).unwrap_or(u64::MAX),
         first_index,
+        first_index_ts_ns,
         session_start_seconds: session_start_ns as f64 / 1_000_000_000.0,
     }
 }
@@ -2110,6 +2162,70 @@ fn add_note(app: AppHandle, note: Note) {
 fn rename_note(app: AppHandle, id: String, label: String) {
     let state: State<'_, AppState> = app.state();
     if let Some(applied) = state.notes.rename(&id, label) {
+        let _ = app.emit("notes-changed", applied.notes);
+    }
+}
+
+/// Anchor each timeline event's timestamp to a frame index (ADR 0035): the
+/// first retained frame at/after that ns, or `len()` if past the tail. The
+/// chronological trace view splices events into its frame stream at these
+/// indices — time→index is the model's job (ADR 0024), not the view's.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn frame_indices_at_ns(state: State<'_, AppState>, timestamps: Vec<u64>) -> Vec<u64> {
+    timestamps
+        .into_iter()
+        .map(|ts| state.trace_store.frame_index_at_ns(ts) as u64)
+        .collect()
+}
+
+/// Anchor each timeline event's timestamp to a window-local match position in
+/// the *filtered* chronological view (ADR 0035 + ADR 0002 DS-3). The raw
+/// [`frame_indices_at_ns`] anchors index the unfiltered stream; a filtered
+/// view pages its own match-position space, so its interleave needs each
+/// event mapped there: ns → raw frame index ([`TraceStore::frame_index_at_ns`],
+/// time→index per ADR 0024) → match position
+/// ([`cannet_spill::FilterIndex::position_of`]), expressed relative to the
+/// window start `scan_start`. Returns one position per timestamp, in input
+/// order; a value outside `[0, window-match-count]` means the event falls
+/// outside the window and the view drops it — mirroring the unfiltered merge,
+/// where out-of-window anchors are likewise dropped.
+///
+/// `async` so Tauri runs it off the main thread; the body holds no lock
+/// across an `.await` (it takes none).
+#[tauri::command]
+#[allow(clippy::unused_async)] // `async` makes Tauri run it off the main thread
+async fn filtered_positions_at_ns(
+    app: AppHandle,
+    filter: FilterPredicate,
+    scan_start: u64,
+    timestamps: Vec<u64>,
+) -> Vec<i64> {
+    let state: State<'_, AppState> = app.state();
+    let Some(mut guard) = ensure_active_filter_index(state.inner(), &filter) else {
+        return Vec::new();
+    };
+    let active = guard.as_mut().expect("active filter index ensured");
+    // The window start's match position is the local zero: an event's
+    // window-local row is `position_of(its frame) - position_of(scan_start)`.
+    let base = i64::try_from(active.index.position_of(usize::try_from(scan_start).unwrap_or(usize::MAX)))
+        .unwrap_or(i64::MAX);
+    timestamps
+        .into_iter()
+        .map(|ts| {
+            let raw = state.trace_store.frame_index_at_ns(ts);
+            i64::try_from(active.index.position_of(raw)).unwrap_or(i64::MAX) - base
+        })
+        .collect()
+}
+
+/// Recolour an existing note (ADR 0035): `Some("#RRGGBB")` to set, `null`
+/// to clear back to the view default.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn recolor_note(app: AppHandle, id: String, color: Option<String>) {
+    let state: State<'_, AppState> = app.state();
+    if let Some(applied) = state.notes.recolor(&id, color) {
         let _ = app.emit("notes-changed", applied.notes);
     }
 }
@@ -5015,11 +5131,15 @@ mod tests {
                 id: "a".into(),
                 timestamp_ns: ts_base + 500,
                 label: "first".into(),
+                kind: notes::EventKind::Note,
+                color: Some("#FF8800".into()),
             },
             notes::Note {
                 id: "b".into(),
                 timestamp_ns: ts_base + 1_500,
                 label: "second".into(),
+                kind: notes::EventKind::Note,
+                color: None,
             },
         ];
 
@@ -5057,8 +5177,12 @@ mod tests {
         assert_eq!(recovered.len(), 2);
         assert_eq!(recovered[0].id, "a");
         assert_eq!(recovered[0].label, "first");
+        // Colour round-trips via the marker's foreground colour (ADR 0035);
+        // the uncoloured note reads back uncoloured, not as black.
+        assert_eq!(recovered[0].color.as_deref(), Some("#FF8800"));
         assert_eq!(recovered[1].id, "b");
         assert_eq!(recovered[1].label, "second");
+        assert_eq!(recovered[1].color, None);
         // Timestamps round-trip within ms precision (the SYSTEMTIME
         // header floor that the writer applies); accept the
         // ms-rounded values.

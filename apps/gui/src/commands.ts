@@ -20,7 +20,8 @@ export type FocusedPanelKind =
   | "project-graph"
   | "system-messages"
   | "dbc"
-  | "settings";
+  | "settings"
+  | "events";
 
 /// The small, fixed context object command predicates range over
 /// (ADR 0018) — deliberately not a general expression language.
@@ -79,6 +80,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "panel.show.projectGraph", label: "Show project graph", category: "Panels" },
   { id: "panel.show.dbc", label: "Show DBC panel", category: "Panels" },
   { id: "panel.show.settings", label: "Show settings", category: "Panels" },
+  { id: "panel.show.events", label: "Show events", category: "Panels" },
   { id: "panel.rename", label: "Rename panel…", category: "Panels" },
   { id: "app.exit", label: "Exit", category: "App" },
   { id: "palette.show", label: "Show command palette", category: "Palette" },

@@ -168,6 +168,10 @@ pub struct TraceGrew {
     /// view clamps its window to `[first_index, count)` so evicted rows
     /// aren't rendered as blank placeholders.
     pub first_index: u64,
+    /// Absolute ns of the oldest retained frame — where the truncation
+    /// marker (ADR 0035) sits when `first_index > 0`. `None` for an empty
+    /// store. A derived value: not persisted, not exported.
+    pub first_index_ts_ns: Option<u64>,
     /// Estimated current frame rate (frames per second over the last
     /// second of appends).
     pub frames_per_second: f64,

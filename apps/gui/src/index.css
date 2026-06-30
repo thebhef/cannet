@@ -1075,6 +1075,128 @@ header {
   white-space: nowrap;
 }
 
+/* Timeline-event rows (ADR 0035) drawn inline by the same TraceView
+   renderer as frames — the truncation marker and notes. They override the
+   frame column grid with a simple flex row of time + colour swatch +
+   label. */
+.trace-event-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #cbd5e1;
+  background: #11161e;
+  border-block: 1px solid #1f2630;
+  white-space: nowrap;
+}
+
+.trace-event-time {
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
+  min-width: 6ch;
+}
+
+/* Jump every trace and plot to this event (events view only). Neutral, not
+   destructive — distinct from the × remove. */
+.trace-event-goto {
+  flex: 0 0 auto;
+  font: inherit;
+  line-height: 1;
+  background: transparent;
+  color: #64748b;
+  border: none;
+  padding: 0 0.2rem;
+  cursor: pointer;
+}
+.trace-event-goto:hover {
+  color: #cbd5e1;
+}
+
+/* Full-height colour bar at the row's left. A `<button>` for editable
+   events (click opens the stacked native picker), a bare `<span>` for the
+   derived truncation marker. */
+.trace-event-swatch {
+  align-self: stretch;
+  width: 1.5rem;
+  flex: 0 0 auto;
+  border: 1px solid rgb(255 255 255 / 0.12);
+  border-radius: 2px;
+}
+button.trace-event-swatch {
+  cursor: pointer;
+}
+/* Wrap the swatch + its hidden colour input (same control as the plot's
+   series swatch). The input pops the native picker over the swatch. */
+.trace-event-swatch-wrap {
+  position: relative;
+  display: flex;
+  align-self: stretch;
+  flex: 0 0 auto;
+}
+.trace-event-swatch-input {
+  position: absolute;
+  inset: 0;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  pointer-events: none;
+  border: 0;
+  padding: 0;
+}
+
+.trace-event-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Click the label of an editable event to rename it inline. */
+.trace-event-label-editable {
+  cursor: text;
+}
+.trace-event-label-editable:hover {
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+/* The inline rename input that replaces the label while editing. */
+.trace-event-label-input {
+  font: inherit;
+  flex: 1 1 auto;
+  min-width: 0;
+  background: #131923;
+  color: #e2e8f0;
+  border: 1px solid #2c3444;
+  border-radius: 3px;
+  padding: 0 0.25rem;
+}
+/* Pinned to the right edge of the row. */
+.trace-event-remove {
+  margin-left: auto;
+  flex: 0 0 auto;
+  font: inherit;
+  line-height: 1;
+  background: transparent;
+  color: #64748b;
+  border: none;
+  padding: 0 0.35rem;
+  cursor: pointer;
+}
+.trace-event-remove:hover {
+  color: #f87171;
+}
+
+.trace-event-truncation {
+  font-style: italic;
+  color: #e0a030;
+}
+
+/* The pinned truncation floor row above the chronological scroll area —
+   in normal flow (not absolutely positioned like the virtualized rows),
+   so it needs its own vertical padding. */
+.trace-truncation-banner {
+  padding-block: 0.15rem;
+  flex: 0 0 auto;
+}
+
 .trace-header {
   background: #131923;
   color: #94a3b8;
@@ -1273,17 +1395,6 @@ header {
 }
 .plot-area-ycursors .pink {
   color: #ff5577;
-}
-
-.plot-event-edit {
-  flex: 1 1 auto;
-  background: #0f141d;
-  color: #e2e8f0;
-  border: 1px solid #2c3444;
-  border-radius: 3px;
-  font: inherit;
-  font-size: 0.74rem;
-  padding: 0 0.2rem;
 }
 
 .plot-area.focused {
@@ -1915,48 +2026,6 @@ header {
 }
 .plot-meas-v.pink {
   color: #ff5577;
-}
-
-/* Plot panel — event log (user notes) */
-.plot-events-log {
-  flex: 0 0 auto;
-  max-height: 5.5rem;
-  overflow-y: auto;
-  border-top: 1px solid #1f2630;
-  background: #0e1316;
-  font-size: 0.74rem;
-}
-.plot-event-row {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.1rem 0.5rem;
-  border-bottom: 1px dotted #1c252b;
-}
-.plot-event-t {
-  color: #64748b;
-  font-variant-numeric: tabular-nums;
-  flex: 0 0 6rem;
-}
-.plot-event-label {
-  color: #cbd5e1;
-  flex: 1 1 auto;
-}
-.plot-event-row button {
-  background: none;
-  border: none;
-  color: #64748b;
-  cursor: pointer;
-  font-size: 0.9rem;
-  line-height: 1;
-}
-.plot-event-row button:hover {
-  color: #ff5577;
-}
-/* The "goto" button isn't destructive — use a neutral hover accent
- * so it doesn't read like the × remove next to it. */
-.plot-event-row button.plot-event-goto:hover {
-  color: #cbd5e1;
 }
 
 /* Plot panel — per-area Fit Y control. (The old fixed-range editor was

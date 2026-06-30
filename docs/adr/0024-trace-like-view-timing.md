@@ -1,68 +1,55 @@
-# ADR 0024 — Trace timing: session start, trace start, and how time renders
+# ADR 0024 — Trace timing: one origin, elapsed time, how time renders
 
-Status: accepted (2026-06-01)
+Status: accepted (2026-06-01); amended (2026-06-30) — replaced the
+per-trace re-zero display model with a single application-level origin
+rendered as elapsed time. The history below describes the current
+decision; the superseded per-trace-offset rendering is recorded under
+"Rejected alternatives."
 
 ## Decision
 
 cannet has one **session buffer** and any number of **traces**
-rendered over it. A trace is a series of messages — a window into
-the session buffer. The trace view (the row-table panel) and the
-plot panel are two renderers of a trace; they share one timing
-model.
+rendered over it. A trace is a window into the session buffer. The
+trace view (the row-table panel) and the plot panel are two renderers
+of a trace; they share one timing model, and that model has a single
+origin for the whole application.
 
-The model has two clocks and a derivation rule:
-
-1. **The session buffer has a start time.** It is set when the
-   session buffer starts and when it is cleared, and stored as
-   wall-clock seconds (Unix epoch). A buffer that has never been
+1. **The session buffer has a start time** — the one origin. It is
+   set when the session buffer starts and when it is cleared, stored
+   as wall-clock seconds (Unix epoch). A buffer that has never been
    started has no start time.
 
-2. **Each trace has its own start time.** It may be `null`,
-   which means "use the session buffer's start time" — and the
-   trace tracks the session start as it changes. When non-`null`,
-   it overrides; the trace's time column is rooted there
-   instead.
+2. **Every renderer displays elapsed time since that origin.** A row,
+   a plot x-axis tick, an event marker — each shows
+   `frame.timestamp − session_start`. This is the only formula, and
+   there is exactly one `session_start` for the application. No trace,
+   panel, or renderer has its own zero.
 
-3. **Time renders relative to the trace's effective start.** A
-   row in a renderer displays `frame.timestamp − trace_start`,
-   where `trace_start` is the trace's own start time if it has
-   one, else the session buffer's start time. This is the only
-   formula.
+3. **Elapsed time renders as `[d:][hh:][mm:]ss.ffff`** — only the
+   segments needed to span the magnitude, with four fractional digits
+   (0.1 ms). The leading segment is unpadded (`5.8710`, `1:05.0000`);
+   lower segments are two-digit zero-padded once a higher one is
+   present (`2:00:03.5000`, `1:01:01:01.5000`).
 
-When the trace's start time is set:
-
-- It is `null` by default (a freshly created trace).
-- It is reset to `null` whenever the session buffer starts (and
-  therefore on Clear, since Clear *is* a session-buffer start).
-- It is captured to "now in session-relative seconds" on the
-  trace's own *Clear*, and on *Start* after a *Stop*. Those are
-  the actions whose semantics is "this is my new zero." Pause /
-  Resume preserve it — they don't change the zero.
-
-These rules apply uniformly to every trace. The trace view and
-the plot do not have their own private notion of time.
+Because the origin is shared, the same instant reads identically in
+every panel: the trace table, the plot, and any event marker all show
+the same elapsed value for a given frame.
 
 ## Why
 
-A user looking at a 2 GB capture across four panels needs every
-panel's time column to mean the same thing without explanation.
-The session buffer owns the canonical timeline; traces render
-windows over it. Letting traces diverge by mistake — a panel
-showing 0.500 s when the next panel shows 47:13.500 for the same
-frame — destroys that shared reference.
+A user looking at the same event in three places — a row in the trace
+table, a vertical marker on the plot, a line in the events view — must
+see one number. The cost of getting this wrong is concrete: a panel
+showing `5.8710` for the frame the next panel labels `0.0000` destroys
+the shared reference and is read as a bug.
 
-But there is a legitimate per-trace escape hatch: when the user
-clicks *Clear* on a panel, or *Stop* then *Start*, the intent is
-"re-zero the time column right here." The trace's own start time
-is what carries that intent. Pause / Resume don't carry it —
-those are about whether the buffer keeps streaming in, not
-where zero is.
-
-The two clocks combine to one number for rendering, every render,
-from the current session start plus the trace's offset (if any).
-That keeps the null-tracks-session behavior trivially correct: a
-new session start instantly re-zeroes every trace that didn't
-explicitly opt out.
+The earlier model allowed each renderer to pick its own zero: a trace
+could re-zero its time column on Clear / Stop+Start (a per-trace
+offset), and the plot anchored its x-axis at the first frame in its
+own window. The same event then showed up to three different times.
+The single shared origin removes that whole class of confusion; the
+absolute timestamp is still what filtering and the host work in, so
+nothing of value is lost by not re-zeroing the display.
 
 ## Mechanics
 
@@ -70,85 +57,86 @@ Host-side (`cannet-gui::trace_store`):
 
 - `TraceStore` holds `session_start_ns: u64` and exposes
   `start_session(session_start_ns)` and a `session_start_ns()`
-  reader. `start_session` is called by `clear_trace_store`
-  (Connect / Open / toolbar Clear all go through it) and by the
-  BLF replay pump on its first frame.
+  reader. `start_session` is called by `clear_trace_store` (Connect /
+  Open / toolbar Clear all go through it) and by the replay pump on
+  its first frame.
 - `TraceStore::append` drops any frame stamped strictly before
-  `session_start_ns`. This is the buffer-side guard: frames
-  in-flight through the recv pipeline at the moment of Clear can
-  arrive late with pre-Clear timestamps; they must not land in
-  the new session.
-- The `trace-grew` event carries `session_start_seconds`. The
-  frontend treats it as the canonical session start.
+  `session_start_ns` — the buffer-side guard, so frames in-flight at
+  the moment of Clear can't land in the new session with a pre-Clear
+  timestamp.
+- The `trace-grew` event carries `session_start_seconds`; the
+  frontend treats it as the canonical, only origin.
 
 Frontend (`apps/gui/src`):
 
-- `TraceState.traceStartOffsetSeconds: number | null` is the
-  trace's own start time, expressed as a delta from the current
-  session start. `null` means "use the session start directly."
-- `useTrace` derives `baseTimestampSeconds = sessionStart +
-  (offset ?? 0)` every render. Every trace flows through this
-  hook, so the rules apply uniformly across the trace view and
-  the plot.
-- `freshTrace(n)` / `clearedTrace(n)` default the offset to
-  `null`. Per-trace *Clear* and *Start*-after-*Stop* capture
-  `currentSessionOffsetSeconds(data)` (latest tip's
-  session-relative time) into the offset. Pause / Resume /
-  Stop preserve it.
+- `format.ts::formatElapsed(seconds)` renders the elapsed-time string;
+  `formatTimestamp(ts, base)` is `formatElapsed(ts − base)`.
+- `useTrace` derives `baseTimestampSeconds = sessionStartSeconds` and
+  every renderer subtracts it. The row table, the by-id table, and the
+  events view pass it straight to `formatTimestamp`.
+- The plot renders against the same origin: it passes
+  `sessionStartSeconds` as `DecimatedRequest.origin`, so its x-axis
+  `t = 0` is the session start (not the first frame in its window).
+- `TraceState.traceStartOffsetSeconds` is **retained but dormant**. It
+  is still set by per-trace Clear / Start-after-Stop, but it is no
+  longer added to the rendered origin. Keeping the field (rather than
+  deleting the machinery) leaves a per-view re-zero one wiring change
+  away if it is ever wanted again, without resurrecting the
+  multi-origin confusion in the meantime.
 
 ## Invariants
 
-These follow from the decision and must hold:
-
-- **A trace's rendered time is never negative.** If it ever is,
-  either the buffer-side guard let a stale frame in or a
-  trace's offset survived past a session-buffer start. Both are
-  bugs.
-- **A `null` trace start tracks the session start live.** Setting
-  the session start updates every `null`-offset trace in the
-  same render.
-- **A new session start always implies every trace's offset is
-  reset to `null`** — the user has had no chance to express a
-  per-trace re-zero against the new session yet.
+- **Rendered time is `frame.timestamp − session_start`, everywhere.**
+  If two panels disagree about a frame's time, one of them is not
+  using the session origin — a bug.
+- **Rendered time is never negative.** Frames stamped before
+  `session_start` are dropped by the buffer guard; if a negative time
+  appears, the guard let a stale frame through.
+- **A new session start re-zeroes every panel in the same render.**
+  There is one number to change and no per-view state to reconcile.
 
 ## Consequences
 
-- The trace view and the plot share `useTrace` and `TraceState`.
-  Each is a renderer of a trace; the timing model belongs to the
-  trace, not to the renderer. A new kind of trace renderer (e.g.,
-  a future statistics overlay) plugs into the same hook rather
-  than inventing its own clock.
-- The frontend never holds an absolute "row 0 timestamp" of its
-  own; whatever zero a trace shows is derived from the two
-  numbers above on every render. There is no third source of
-  truth to keep in sync.
-- A trace's offset is *seconds from the current session start*,
-  not a wall-clock timestamp. It does not need rewriting when
-  the session start changes — the derivation re-evaluates
-  against the new session start naturally. It does need
-  resetting on session-buffer start, because the moment that
-  produced the offset is gone.
+- The trace view and the plot share the session origin, not just a
+  hook. A new trace renderer (e.g. a statistics overlay) subtracts the
+  same `session_start` and inherits the shared timescale for free.
+- The frontend never holds an absolute "row 0 timestamp" of its own,
+  and no renderer anchors on its window's first frame. Whatever zero a
+  panel shows is `session_start`, derived every render.
+- Per-trace re-zero is not a user-visible feature today. The dormant
+  offset field documents that this was a deliberate removal, not an
+  oversight.
 
 ## Rejected alternatives
 
-- **Per-trace "row 0 timestamp" captured as wall-clock.** Was
-  briefly used by the trace view (`baseTimestampSeconds`
-  captured from the first row of the session buffer). Created a
-  third source of truth that drifted from the session start,
-  re-broke on every panel mount, and silently survived session
-  restarts — a frequent source of negative-time bugs.
-- **The trace view and the plot each owning their own clock.**
-  Looks flexible; in practice produces panels that disagree
-  about what time it is. The single shared abstraction is
-  cheaper to reason about and cheaper to keep correct.
-- **Re-zero on every Pause/Resume.** Conflates "stop streaming
-  in" with "re-zero my view." Pause means "freeze what I'm
-  looking at"; the time column should not jump under the user
-  when they hit Pause and then Resume.
+- **Per-trace re-zero applied to the display** (the original decision
+  here). A trace's *Clear* or *Stop→Start* captured "now in
+  session-relative seconds" and rooted that trace's time column there.
+  Looked like a useful escape hatch; in practice it meant two trace
+  panels over the same buffer showed different times for the same
+  frame. Superseded by the single origin; the offset field survives
+  but is no longer a display input.
+- **The plot anchoring its x-axis at its window's first frame**
+  (`ts(winStart)`). This was a third origin — different again from
+  both the session start and any per-trace offset — so the plot's
+  marker for an event sat at a different time than the trace row for
+  the same event. Replaced by feeding the session start as the plot's
+  x-axis origin.
+- **Per-trace "row 0 timestamp" captured as wall-clock.** An even
+  earlier form, briefly used by the trace view: a third source of
+  truth that drifted from the session start, re-broke on every panel
+  mount, and silently survived session restarts — a frequent source of
+  negative-time bugs.
+- **Re-zero on Pause/Resume.** Conflates "stop streaming in" with
+  "re-zero my view." Pause means freeze what I'm looking at; the time
+  column should not jump.
 
 ## See also
 
-- [ADR 0005](0005-dockview-panel-layout.md) — the panel host
-  these renderers run inside.
-- [ADR 0007](0007-uplot-plot-renderer.md) — the plot renderer;
-  this ADR governs *its* time column too.
+- [ADR 0005](0005-dockview-panel-layout.md) — the panel host these
+  renderers run inside.
+- [ADR 0007](0007-uplot-plot-renderer.md) — the plot renderer; this
+  ADR governs its time column and x-axis origin too.
+- [ADR 0035](0035-timeline-event-model.md) — timeline events render
+  through the same origin, so an event marker reads the same time in
+  the trace, the plot, and the events view.

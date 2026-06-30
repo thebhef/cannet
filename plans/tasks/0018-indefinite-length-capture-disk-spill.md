@@ -1,917 +1,299 @@
 # Task 18 — Indefinite-Length Capture (Disk-Spill)
 
-Make a capture indefinite-length — 10^7 to 10^9 frames, multi-hour to
-multi-day — by spilling the raw frame store to disk while keeping
-every historical row addressable. [`../../docs/adr/0001-indefinite-length-capture.md`](../../docs/adr/0001-indefinite-length-capture.md)
-fixes the requirement (random-access, loss-free);
-[`../../docs/adr/0002-disk-spill-store.md`](../../docs/adr/0002-disk-spill-store.md) fixes
-the on-disk format and I/O architecture and is **normative for this
-task**.
+Capture indefinite-length (10^7–10^9 frames, multi-hour→multi-day): spill raw
+frame store to disk, every historical row still addressable. Req
+[ADR 0001](../../docs/adr/0001-indefinite-length-capture.md) (random-access,
+loss-free); on-disk format + I/O **normative**
+[ADR 0002](../../docs/adr/0002-disk-spill-store.md). Model-side twin of the
+frontend windowed-source: 2nd impl of `RowPage`/`DecimatedRange`
+([ADR 0025](../../docs/adr/0025-frontend-windowed-source-contract.md)) — no
+contract/view change. Disk-spill store = live working store (ephemeral
+scratch), not export; explicit `.blf` "Save Capture" separate.
 
-This is the **model-side** counterpart to the frontend
-windowed-source convergence: it provides a second implementation of
-the `RowPage` / `DecimatedRange` accessor signatures frozen by
-[`../../docs/adr/0025-frontend-windowed-source-contract.md`](../../docs/adr/0025-frontend-windowed-source-contract.md)
-— no contract change, no view change. (Explicit `.blf` "Save Capture" stays a separate feature; the
-disk-spill store is the live working store — ephemeral scratch, not an
-export format.)
+ADR 0002 (DS-1..DS-8):
 
-ADR 0002 in brief: the raw store is two append-only files — fixed-size
-~26 B metadata records giving arithmetic random access, plus a packed
-payload blob (DS-1); writes are write-through and readers `mmap`, with
-the kernel page cache as the hot tier and a RAM ring bridging the
-un-flushed tail (DS-2); `by-id` and per-filter indexes are
-materialized mmap'd files, every predicate id-narrowable against the
-DBC so no index build is an O(capture) scan (DS-3); every file family
-is fixed-size pre-allocated segments mapped whole with a valid-length
-watermark (DS-4); the decoded-signal cache gains a per-signal min/max
-resolution pyramid (DS-5); the disk store is the only production
-path, the in-RAM `Vec` retiring to a test double (DS-6); and the
-scratch lives in a single `current/` directory under the OS cache
-dir and is wiped exactly when the session buffer is — on Clear, or
-on Start of a new capture — never on exit or crash, so a prior
-session present at launch is loaded as a stopped historical trace
-(DS-7).
+- **DS-1** raw store = 2 append-only files: fixed 27 B meta records (arithmetic
+  random access) + packed payload blob.
+- **DS-2** write-through; readers mmap (page cache = hot tier) + RAM ring
+  bridges un-flushed tail. periodic flush async msync, sync flush clean shutdown.
+- **DS-3** by-id + per-filter indexes = mmap files. every predicate
+  id-narrowable vs DBC → no O(capture) index build.
+- **DS-4** every family = fixed pre-allocated segments mapped whole + valid-len
+  watermark (the reopen manifest).
+- **DS-5** decoded-signal cache = per-signal min/max resolution pyramid.
+- **DS-6** disk store = only prod path; in-RAM `Vec` → test double.
+- **DS-7** scratch = single `current/` dir under OS cache dir. wiped only when
+  session buffer is (Clear / Start), never exit/crash → prior session at launch
+  loads as stopped historical trace.
+- **DS-8** opt-in scratch cap (bytes, default unbounded). over-cap =
+  drop-oldest windowed ring: one low-water mark rises, every family front-trims
+  segments below it. relaxes DS-1 random-access below mark. DS-1..7 hold when
+  cap unset.
 
-## Status (in progress, on a working branch — not yet merged)
+## Status (branch `0018-disk-spill-11`, not merged)
 
-- **Step 1 — done.** `cannet-spill` crate holds the storage layer:
-  `RawStore` trait, in-RAM `MemRawStore` (test double), disk-backed
-  `DiskRawStore` (mmap'd metadata + payload segments, RAM ring). gui's
-  `TraceStore` is now a thin facade over `Box<dyn RawStore>`.
-- **Step 2 — done.** `ByIdIndex`: per-id append-only mmap'd posting
-  lists with geometric segments (bounds both RAM and live-mapping count).
-- **Step 3 — done.** Spill `FilterIndex` (membership + tested build,
-  `page`, `built_through` watermark) and the gui
-  `filter::resolve_candidates` predicate→candidate-id resolver are done
-  and unit-tested. The `CandidateSource` seam +
-  `TraceStore::refresh_filter_index` let the index build against the live
-  facade, and the perf harness `filter-bench` subcommand characterizes it
-  on the disk store (deep positional page: full scan vs one-time build vs
-  per-fetch index page). **The `fetch_filtered_trace` command rewrite
-  moved to Step 5** (see below).
-- **Step 4 — done.** `SignalCacheStore` now holds a per-signal min/max
-  **resolution pyramid** (level 0 = raw decoded series; each higher level
-  = per-bucket min/max over `PYRAMID_BRANCH` points of the level below).
-  `SignalCacheStore::slice` gained a `max_points` budget and serves a
-  range by reading the coarsest level whose in-range count still exceeds
-  the budget, so a whole-span serve is `O(max_points)` instead of
-  `O(matches)`. Built incrementally on the existing by-id-accelerated
-  catch-up. The perf harness `signal-bench` subcommand characterizes it
-  (whole-span serve: raw materialize+decimate vs pyramid serve), and three
-  `signal_cache` unit tests cover bounded output, spike survival, and
-  window-relative level choice.
-- **Step 5 — in progress, sliced into three independently-landable
-  parts** (the roadmap's Step 5 is large; each slice keeps the app
-  working and tested):
-  - **Step 5.1 — done.** Production now boots on the disk store: the
-    `AppState` in `run()` constructs `TraceStore::new_disk(<OS cache
-    dir>/cannet/current)` via `open_trace_store` / `scratch_current_dir`
-    (the in-RAM store stays the unit-test/perf double). If the scratch
-    dir can't be resolved or opened, it logs and falls back to the in-RAM
-    store so the app still boots (capture bounded by RAM). `dirs` is now a
-    direct dependency (resolves the per-OS cache dir). The existing
-    chunked-scan `fetch_filtered_trace` keeps working through the
-    store-independent facade, so the app stays green.
-  - **Step 5.2 — done.** `fetch_filtered_trace` is served from the
-    materialized filter index, not a window scan. `AppState` holds the
-    active `FilterIndex` (`ActiveFilterIndex`) keyed by
-    `(predicate, session_start_ns)`: a predicate change or a Clear/new
-    capture (which bumps `session_start_ns`) rebuilds it; otherwise each
-    call extends it to the tip (`refresh_filter_index`, `O(delta)`,
-    candidate-id frames only). The `[scan_start, scan_end)` window maps onto
-    a match-position range via two `FilterIndex::position_of` lower-bounds
-    (new spill primitive), count is the range width, and the page is a
-    random-access `FilterIndex::page` slice — serving is `O(log n + page)`.
-    The old chunked-scan helpers (`PageSelector`, `scan_chunk_filtered`,
-    `tail_page`) are retired. Verified: gui + spill unit suites, frontend
-    suite (wire contract unchanged), and a render-tier perf run/gate.
-  - **Step 5.3 — the DS-7 scratch lifecycle, sliced into several
-    independently-landable parts** (it spans a new disk-store reopen
-    surface, a `Project` schema migration, host wiring, the pyramid
-    residency bound, and scratch-persisted events — too much for one
-    reviewable diff):
-    - **Step 5.3a — done.** Disk-store persistent watermark + reopen
-      (cannet-spill only, no GUI change). `DiskRawStore::flush` now writes
-      a `manifest.json` (schema `version`, `DiskConfig`, the `len` /
-      `payload_cursor` valid-length watermarks, the RAM-only `bus_intern`
-      table, and the by-id `(id, extended, len)` directory).
-      `DiskRawStore::reopen(dir)` remaps the existing segment files
-      **without truncating them** (new `seg::open_segment`), restores the
-      watermarks and bus table, rebuilds each by-id chain from its
-      persisted length (`byid::reopen`, geometry deterministic in the
-      segment index), and refills the RAM ring from the durable tail —
-      `O(segments)`, no capture rebuild scan. Returns `Ok(None)` when no
-      manifest exists, `Err` on a corrupt one (caller wipes). `clear` /
-      `new` now also drop the manifest so a wiped store never reloads
-      stale. `serde`/`serde_json` added to the crate for the manifest (no
-      new workspace dependency). 7 new tests (round-trip incl.
-      FD/remote/error/bus interning + ring tail; geometric by-id rebuild;
-      append-continues-from-watermark; absent / corrupt manifest;
-      clear-removes-manifest).
-    - **Step 5.3b — done.** `project_id: Uuid` on the `Project` schema —
-      the stable identity the DS-7 gate keys on. Added as an *additive
-      field with a generating serde default, no `schema_version` bump*
-      (the ADR's "schema-version migration" framing was wrong — ADR 0011
-      *rejects* non-current versions; the real convention for additive
-      fields is the `transmit_frames` pattern, and the ADR text is now
-      fixed to say so). Host-managed like `transmit_frames`: the
-      frontend's `gatherProject()` omits it, so relying on a frontend
-      round-trip would mint a new id every save. Instead `save_project`
-      anchors the id to the target file (`existing_project_id` reads the
-      id already on disk and preserves it; a brand-new file keeps the
-      freshly generated one). New `uuid` dep (v4 + serde). 3 tests
-      (generate-when-absent + distinct, preserve-explicit + round-trip,
-      file-anchor recovers/None). The field is inert until 5.3c reads it.
-    - **Step 5.3c — host wiring, sliced into four** (it spans durability,
-      a host identity file, the open gate + reconstruction, and the
-      reset path):
-      - **Step 5.3c-i — done.** Durability cadence. Discovery:
-        `RawStore::flush` was never called in production, so 5.3a's
-        manifest was dormant — reopen would always find nothing. Added
-        `TraceStore::flush` (locks, delegates to `raw.flush()`; a no-op on
-        the in-RAM double) and a `spawn_trace_flusher` task on a 2 s
-        cadence (`TRACE_FLUSH_TICK`), skipping a tick when the buffer
-        hasn't grown — so an idle/stopped session doesn't rewrite the
-        manifest, and the first tick after capture stops still persists
-        the final state (a cleanly stopped trace is reloadable within one
-        tick). No explicit stop/exit flush needed for correctness. Two
-        tests (no-op on the double; disk flush → `DiskRawStore::reopen`
-        round-trips). ~~**Watch item for Step 7:** the cadence uses the
-        full `flush()` (every mapped segment)…~~ **Resolved** — it showed
-        up earlier than 10^8 frames: the full-chain synchronous flush held
-        the append lock ~110 ms every `TRACE_FLUSH_TICK`, stalling
-        ingest/transmit on a periodic sawtooth (confirmed by moving the
-        sawtooth's period when the tick changed). Fixed two ways: the flush
-        is now **incremental** (only segments dirtied since the last flush;
-        sealed segments are synced once) and **asynchronous**
-        (`msync(MS_ASYNC)`, not a per-segment `fsync`), with a synchronous
-        flush only on clean shutdown — see ADR 0002 DS-2. A
-        `flush_ms`/`tx_late_ms` host-jitter gate (ADR 0031) was added so
-        this regression class is caught by the perf test, since throughput
-        averages are structurally blind to a sub-second stall.
-      - **Step 5.3c (rest) — done** in one commit (the ii/iii/iv split was
-        dropped — they're one lifecycle feature, ~200 lines, not three
-        reviewable units). Pieces:
-        - **Boot stops wiping.** New `DiskRawStore::open_empty` constructs
-          an empty store that *preserves* the on-disk files;
-          `TraceStore::new_disk` uses it, so a prior session survives boot
-          for the gate to reload (the old `new` wiped at construction,
-          which would have destroyed the scratch before any gate ran).
-        - **Host scratch files, facade-owned.** The facade holds the
-          `scratch_dir` and writes two small JSON files there:
-          `identity.json` (`project_id`) on capture start, and
-          `derived.json` (`session_start_ns` + per-key newest-index/count)
-          on every flush. Both via temp-file + rename.
-        - **Derived state — fork P (persist), not rebuild-from-by-id.**
-          The facade's `latest`/counts are keyed by the full `(bus,
-          channel, id, extended)`; the by-id index is keyed by `(id,
-          extended)`, so rebuilding would collapse a same-id-on-multiple-
-          buses case (common in multi-bus captures, and it would break
-          filter candidate resolution, not just display). Persisting is
-          faithful and rides the flush we already added. Rates reset to
-          zero (a reloaded trace is stopped).
-        - **The gate.** `open_project` calls `TraceStore::try_reload(
-          project_id)`: on an `identity.json` match with a reopenable
-          store, it swaps in the disk store, restores derived state +
-          `session_start_ns`, and the trace comes back stopped; a mismatch
-          (or no scratch) leaves it on disk, untouched. Then it records the
-          project as `AppState::active_project_id`.
-        - **Reset on Clear/Start.** `start_session` (the buffer reset)
-          removes `identity.json` + `derived.json` (the raw `clear` already
-          dropped segments + manifest); a `restamp_scratch_for_capture`
-          helper after each `start_session` (Clear and BLF-replay sites)
-          drops the filter index and writes the fresh identity for the
-          active project.
-        - **Frontend restore + open-path ordering (ADR 0033).** A new
-          `restore_scratch_capture` command returns the reloaded count +
-          session start; `applyProject` calls it *after* the open clears
-          the view, setting each element's window to `restoredTrace` (a
-          stopped trace spanning the whole reloaded buffer). This exposed a
-          latent race: `applyProject` fired DBC load, RBS register, layout,
-          and restore concurrently, so a later-loaded bus's DBC (battery)
-          wasn't present when the restored capture first sampled it — that
-          bus's plot + filtered view cached empty while the earlier bus
-          rendered. Fixed by sequencing the open path (DBCs → RBS → views →
-          replayed capture), each stage awaited; captured as ADR 0033.
-          Verified end-to-end on the ev-demo project (battery + powertrain
-          both restore; no `not loaded` warning wave).
-        - 6 tests (spill `open_empty` preserve+reopen; facade reload
-          match/mismatch/faithful-multi-bus/session-start; Clear wipes
-          identity so a later reload misses) + a `restoredTrace` frontend
-          unit test.
-        - **Deviation:** `identity.json` records only `project_id`, not the
-          project *path* DS-7 mentions. The path is best-effort diagnostic
-          ("not the basis for the match"), and writing it at capture start
-          would mean threading the active path through `AppState` too —
-          omitted as not worth the wiring. Can be added later if a
-          diagnostic need appears.
-    - **Step 5.3d — done.** Disk-back the DS-5 pyramids in `current/`
-      (the residency bound). New `cannet-spill::SampleSeq`: an append-only
-      run of `(t_seconds, value)` pairs on a geometric mmap'd segment chain
-      (64→65 536 entries, doubling — the by-id postings' layout, 16-byte
-      records). `signal_cache`'s pyramid is now `Vec<SampleSeq>` instead of
-      `Vec<Vec<SamplePoint>>`, rooted at a `signals/` subdir of the scratch,
-      so the resident set is only the segment handles plus recently-served
-      windows — the kernel pages cold history out (before this, level 0 +
-      the higher levels were `O(matches per signal)` in RAM). A pyramid is
-      *derived* state, so it carries **no reopen manifest**: the raw store
-      is the source of truth, and `SignalCacheStore::clear` /construction
-      wipes the dir, with the next serve rebuilding the pyramid on disk from
-      the reopened frames. New `SampleSeq` tests (round-trip across
-      geometric segments, lazy file creation, prefix isolation, flush) and a
-      `signal_cache` test asserting levels spill to `sig.*` files and
-      `clear` wipes them.
-    - **Step 5.3e — done.** Events (notes) persist with the scratch — the
-      durable-kind persistence of the event model
-      ([ADR 0035](../../docs/adr/0035-timeline-event-model.md)). Before this,
-      5.3c persisted only the raw frames, derived state, and identity; the
-      session-scoped `NotesStore` was written *only* into a `.blf` on Save
-      Capture and reloaded *only* from a `.blf` on Open Capture, so a trace
-      that spilled to disk and reopened through the manifest gate
-      (`try_reload`) came back with its frames but an empty event list —
-      cursors placed during the live capture lost on the very reopen DS-7
-      promises is lossless. Now the notes ride the scratch as their own
-      `current/notes.json` (atomic temp-file + rename), restored in the open
-      gate and wiped on Clear/Start. **`NotesStore` owns its persistence**
-      (the `SignalCacheStore::new(dir)` pattern): built with
-      `with_scratch(dir)`, it rewrites `notes.json` on **every edit** —
-      *not* the frame-flush cadence. That distinction is load-bearing: notes
-      are user data that changes independently of ingest, so a marker added
-      to a *stopped, reloaded* trace (no new frames, no flush tick) must
-      still reach disk — the first cut persisted on the flush tick and lost
-      exactly those edits. `TraceStore` stays ignorant of events (the orphan
-      `scratch_dir()` getter was removed); the host gives `NotesStore` the
-      same `current/` dir, `restore_scratch_capture` restores after a
-      successful `try_reload` and emits `notes-changed`, and
-      `restamp_scratch_for_capture` wipes on reset. The BLF path is unchanged
-      and remains the export/import home; this is purely the scratch's own
-      copy. One `notes` unit test asserts a manual edit with **no frame
-      activity** round-trips through `notes.json`, an edit on the stopped
-      store re-persists, and `wipe_scratch` drops it so a later restore
-      misses.
-- **Step 6 — in progress** (6a–6d landed; see the sub-slice list and the
-  "Current state / next" block below). **Step 7 — not started.** (The by-id
-  newest-frame retention first scoped as 5.3f moved into Step 6c. The
-  lazy-at-eviction sketch noted here earlier was reversed: the user chose an
-  *eager* overlay — one small id-space-bounded frame clone per append — so the
-  trim itself stays pure front-truncation with zero per-frame work when
-  segments drop. See 6c-C below.)
+- **Step 1 done** — `cannet-spill`: `RawStore` trait, `MemRawStore` (double),
+  `DiskRawStore` (mmap meta+payload + RAM ring). gui `TraceStore` = thin facade
+  over `Box<dyn RawStore>`.
+- **Step 2 done** — `ByIdIndex`: per-id append-only mmap posting lists,
+  geometric segments (64→65536 doubling).
+- **Step 3 done** — `FilterIndex` (membership + build + `page` +
+  `built_through`) + gui `filter::resolve_candidates`. `CandidateSource` seam +
+  `refresh_filter_index`. perf `filter-bench`.
+- **Step 4 done** — `SignalCacheStore` per-signal min/max pyramid (L0 raw
+  decoded; Ln = per-bucket min/max over `PYRAMID_BRANCH`=8). `slice(max_points)`
+  serves coarsest level > budget → O(max_points). perf `signal-bench`.
+- **Step 5 done** — disk store live in prod + filtered-fetch on filter index +
+  DS-7 scratch lifecycle.
+  - **5.1** — `AppState` boots `TraceStore::new_disk(<OS cache>/cannet/current)`;
+    RAM-store fallback if scratch unavailable. `dirs` dep.
+  - **5.2** — `fetch_filtered_trace` from filter index, not scan.
+    `ActiveFilterIndex` keyed `(predicate, session_start_ns)`; window →
+    match-position via 2× `FilterIndex::position_of`; page = random-access
+    slice. O(log n + page). old scan helpers retired.
+  - **5.3a** — persistent watermark + reopen (spill only). `flush` writes
+    `manifest.json` (version, DiskConfig, len/payload_cursor, bus_intern, by-id
+    dir). `reopen(dir)` remaps without truncate, rebuilds by-id from len
+    (geometry deterministic), refills ring from tail. `serde`/`serde_json` dep.
+  - **5.3b** — `project_id: Uuid` on `Project` (additive serde-default field, no
+    schema bump — `transmit_frames` pattern). `save_project` anchors id to
+    target file. `uuid` dep.
+  - **5.3c-i** — durability cadence. `TraceStore::flush` + `spawn_trace_flusher`
+    2 s (`TRACE_FLUSH_TICK`), skip tick if buffer not grown. flush incremental
+    (only segments dirtied since last; `flushed_*` watermark) + async
+    (`msync MS_ASYNC`), sync only clean shutdown. `flush_ms`/`tx_late_ms`
+    ADR-0031 gate.
+  - **5.3c rest** — boot stops wiping (`open_empty` preserves files). facade
+    owns `scratch_dir`, writes `identity.json` (project_id, on start) +
+    `derived.json` (session_start_ns + per-key newest-index/count, on flush).
+    derived = persist, NOT rebuild-from-by-id (would collapse same-id-multi-bus,
+    by-id keyed `(id,ext)` only). gate: `open_project`→`try_reload(project_id)`
+    swaps store + restores derived + records `active_project_id`. reset on
+    Clear/Start via `restamp_scratch_for_capture`. frontend
+    `restore_scratch_capture` + open-path ordering (ADR 0033: DBCs→RBS→views→
+    replay, each awaited).
+  - **5.3d** — disk-back pyramids. `cannet-spill::SampleSeq` (append-only (t,v)
+    f64 pairs, geometric mmap chain, 16 B records). pyramid = `Vec<SampleSeq>`
+    under `current/signals/`. derived → no manifest, rebuilt from reopened
+    frames on serve.
+  - **5.3e** — notes persist with scratch
+    ([ADR 0035](../../docs/adr/0035-timeline-event-model.md)).
+    `NotesStore::with_scratch(dir)` rewrites `current/notes.json` on **every
+    edit** (not flush cadence — stopped trace gets no flush). restored in open
+    gate, wiped on Clear/Start. BLF path unchanged.
+- **Step 6 in progress** (6a–6f done, 6g partial) — scratch cap + windowed-ring
+  eviction. cap = total `current/` footprint (raw + by-id + filter + pyramids).
+  drop-oldest front-trim to shared low-water mark, never rebuild.
+  [ADR 0034](../../docs/adr/0034-settings-vs-state-and-custom-settings-panel.md)
+  settings, ADR 0002 DS-8.
+  - **6a done** — settings infra. `prefs`/`preferences.json` →
+    `state`/`state.json` (`Prefs`→`UiState`, `get/set_prefs`→`get/set_state`,
+    frontend `hostState`). new `settings.rs`/`settings.json` (user intent):
+    `scratch_cap_bytes` (null), `clear_scratch_on_exit` (false), every key
+    serialized. flat hand-rolled `SettingsPanel` (no schema-form dep; @rjsf
+    stays rejected). palette `project.close`, `app.exit`.
+  - **6b done** — low-water mark + evicted-read contract across all 3 trimmable
+    chains (raw, pyramids, filter) BEFORE any trim. raw `first_index` floor
+    (`read_frame`/`read_ts`→None below); pyramid per-level `first_slot`
+    (`evict_below`, partition clamps); filter `first_pos`. mark set only in tests
+    here. 3 tests.
+  - **6c done** — raw windowed-ring eviction + retention overlay.
+    `DiskRawStore::evict_below(first_index)` drops sealed meta/payload segments
+    fully below mark, deletes files; `meta_seg_base`/`payload_seg_base` keep
+    indices absolute; mark in manifest. host raises mark on flush when footprint
+    > cap. **6c-C eager overlay** `latest_frame: HashMap<FrameKey,
+    RawTraceFrame>` on every append (one clone, id-space-bounded) → global
+    latest-by-id read serves it, evicted index never blanks grid row; rides
+    `derived.json`. + evict-before-flush manifest fix.
+  - **6d done** — per-id/derived front-trim closes cap. by-id trim in
+    `evict_below` (per-id `first_slot`/`seg_base`, manifest v3);
+    `SampleSeq`/`SignalCacheStore::evict_below(ts)` pyramid trim by truncation
+    time; `FilterIndex::evict_below` (drop segs + `first_pos` + `seg_base`).
+    flusher drives all when `low_water` advances. filtered view needs no
+    frontend change (`traceWindow` clamp covers).
+  - **6e+6f done (merged)** — timeline-event model
+    ([ADR 0035](../../docs/adr/0035-timeline-event-model.md)). frames stay
+    index-paged; events = separate fetch-whole channel, merged at view by ts
+    (`Frame|Event` base). (1) truncation marker (derived, non-persisted,
+    non-exported floor row + plot cursor, moves with mark); (2) events
+    interleaved into chronological trace (`eventMerge.ts`) + singleton
+    `EventsPanel`; (3) name+colour edit end-to-end (`notes.rs` `kind`+`color`,
+    BLF `foreground_color` round-trip, inline edit). cross-panel goto
+    (`gotoEvent.ts`). one timestamp origin (`frame.ts − session_start` elapsed,
+    `formatElapsed`; plot x-origin = session start). live-window legibility
+    precursor: `first_index` on `trace-grew` + `traceWindow` clamp fixes
+    blank-placeholder rows.
+  - **6g partial** — honest residency metric. status-line pairs `scratch_bytes`
+    (store on-disk, pre-allocated incl. zero-pad + cold) + `mem_bytes`
+    (whole-process RSS) — NOT complementary (mapped pages counted in both; RSS =
+    whole host). replace RSS half with store resident estimate (mapped-resident
+    bytes, or RAM-ring + working-window proxy). *done:* status reads "retained of
+    total frames" off `count − firstIndex`. *open:* residency metric, label
+    `RAM`→`host`, pyramid count not depth, split `other` (by-id/filter/JSON).
+- **Step 7 not started** — benchmark: scroll/filter/plot deep history
+  < 100 ms / 60 fps @ 10^8+ frames. arm ADR-0031 frontend-memory baseline
+  (deep-history run). confirm disk-backed-pyramid residency vs flat host RSS.
 
-Deviations / decisions in 5.3a:
+**Cap bug fixed (6c).** cap check measured whole-dir footprint but handed whole
+excess to raw-only `evict_oldest_bytes` → over-evicted raw to protected tail
+(retained ~0). fix: scale request by raw share (`raw_disk_bytes`/footprint).
+test `cap_eviction_does_not_over_evict_raw_for_derived_family_footprint`. +
+`trace-grew` `len_and_low_water()` one lock (was 2 → spurious "0 of N"). + **min
+effective cap** `MIN_SCRATCH_CAP_BYTES = 100 MiB` (`floored_scratch_cap`, ADR
+0002 DS-8): small caps thrashed (floor ~17 MiB = 1 payload seg + 1 filter seg +
+never-evictable tail).
 
-- **DS-4's "valid-length watermark" lands as the reopen manifest.** 5.1
-  shipped the disk store with `len` / `payload_cursor` / `bus_intern`
-  RAM-only (a session was lost on exit); 5.3a persists them so the
-  formats are reload-compatible *in practice*, not just in principle.
-- **The manifest is a JSON file, not a binary footer.** The reopen
-  state is tiny and id-space-bounded; serde_json keeps the
-  failure-mode-rich (de)serialization off the hand-written surface and
-  the file human-inspectable for debugging.
-- **By-id chains rebuild from length alone.** The segment geometry
-  (64, 128, … capped at 65 536) is deterministic in the segment index,
-  so the manifest stores only each id's `len`; reopen recomputes the
-  chain. A shared `seg_capacity(i)` helper replaced the inline
-  `(BASE_ENTRIES << i).min(MAX)` at the append site too — same values,
-  and it removes a latent left-shift overflow that would have hit an id
-  with 58+ segments (~3M occurrences).
-- **The project-identity gate file is a *host* concern, not the spill
-  manifest.** Keeping `cannet-spill` ignorant of projects: 5.3c writes
-  the `project_id` + path record into `current/` separately.
+**Trim = pure front-truncation.** drop whole leading segment files, raise floor,
+bump base offset; surviving rows keep absolute index; no rewrite / compaction /
+re-index. zero per-frame work on drop (eager overlay pays one clone/append
+instead).
 
-Decisions and deviations recorded so far (to fold into ADR 0002 at
-Step 6):
+Tests @ latest: spill 46, gui 248, frontend 467, clippy + tsc clean.
 
-- **The filtered-fetch incremental-count checkpoint is now vestigial.**
-  `fetch_filtered_trace` still accepts `prev_count` / `prev_count_end` for
-  IPC compatibility but ignores them: the filter index gives an exact count
-  in `O(log n)` (two `position_of` searches), so the old O(Δ) checkpoint
-  that existed to avoid a full window re-scan is unnecessary. The
-  follow-live-tail semantics are preserved (the last `limit` matches in the
-  window) but served from the index rather than a backward scan. A later
-  cleanup can drop the params from the IPC payload + the frontend; left in
-  place here to keep 5.2 a surgical host-only change.
-- **The filter index build holds the `databases` lock for its duration.**
-  Unlike the retired per-chunk scan (which re-locked `databases` between
-  chunks), the index `keep` closure borrows the DBCs across the whole
-  synchronous `refresh_filter_index`. The trace-store append lock is still
-  released between chunks inside the extend (ingest is not starved), but a
-  one-time deep-history *first* build briefly blocks DBC add/remove and the
-  tokio worker it runs on. Steady-state extends are `O(delta)` so the hold
-  is negligible; the one-time build cost is what Step 7 measures.
-- **Intermediate state after Step 5.1: the scratch is wiped on launch,
-  not reloaded.** `DiskRawStore::new` clears stale `current/` segments on
-  construction, so a prior session is *not yet* reloaded as a stopped
-  trace — that (and the `project_id` identity gate that makes a single
-  shared `current/` safe across instances) is Step 5.3. Until then the
-  observable behaviour matches today's in-RAM store (a session is lost on
-  exit); the only new gap is that two concurrent instances would share and
-  stomp one `current/` dir, which the 5.3 identity gate closes.
+## Key decisions
 
-- **`memmap2`'s `unsafe` is contained to the dedicated `cannet-spill`
-  crate**, which alone relaxes the workspace `unsafe_code = "forbid"` to
-  `deny` + per-site `#[allow]`. Every other crate stays `unsafe`-free.
-- **DS-6's "TraceStore is a trait" is realized as the `RawStore` trait
-  behind the `TraceStore` facade** — one production store
-  (`DiskRawStore`), one test double (`MemRawStore`), derived state
-  (rates / newest-per-id) written once in the facade.
-- **Bus predicates are id-narrowed via "ids seen on the bus"** (derived
-  from the facade's existing newest-per-key map) rather than a dedicated
-  by-bus index — no new index family, and a per-frame `bus_id` test
-  keeps it correct when an id appears on more than one bus (also
-  forward-compatible with other frame/bus kinds).
-- **The metadata record is 27 B** (ADR DS-1's "~26 B"), the extra byte
-  an explicit `channel`.
-- **DS-5's pyramid is framed as a property of the decoded *signal*, not
-  of the plot.** `SignalCacheStore::slice` serves a value range at a
-  point budget; a plot fitting all data is the consumer today, but the
-  multi-resolution view is the signal's (so other consumers — export,
-  stats — can use it). The harness mode is `signal-bench`, not
-  `plot-bench`.
-- **The pyramid bounds *serve cost* (`O(max_points)`); the residency
-  bound is disk-backing it (done in 5.3d).** Every level is now an mmap'd
-  `cannet-spill::SampleSeq` under `current/signals/`, so a level's
-  `O(matches per signal)` bytes live on disk and the resident set is the
-  segment handles plus recently-served windows. A pyramid is derived
-  state, so 5.3d chose lazy rebuild from the reopened raw store over a
-  pyramid manifest — the append-only layout *is* reload-compatible, but
-  re-deriving is simpler and the raw store is the single source of truth.
-- **Production runs on `DiskRawStore` as of Step 5.1.** `AppState`
-  constructs the disk store rooted at `<OS cache dir>/cannet/current`;
-  `MemRawStore` is the unit-test / perf double. The `fetch_filtered_trace`
-  rewrite onto the filter index (5.2) and the DS-7 scratch lifecycle (5.3)
-  remain.
+- DS-4 watermark = reopen manifest (JSON not binary footer — tiny,
+  id-space-bounded, serde keeps (de)ser off hand-written surface,
+  human-inspectable).
+- by-id chains rebuild from len alone (`seg_capacity(i)` deterministic; shared
+  helper removed latent left-shift overflow at 58+ segments).
+- project-identity gate = host concern, not spill manifest (`cannet-spill` stays
+  project-ignorant).
+- filtered-fetch `prev_count`/`prev_count_end` now vestigial (filter index gives
+  exact count O(log n)); kept for IPC compat, drop later.
+- filter index build holds `databases` lock for duration (one-time deep build
+  briefly blocks DBC add/remove; steady extends O(delta)).
+- `memmap2` unsafe contained to `cannet-spill` (relaxes workspace
+  `unsafe_code=forbid`→deny + per-site allow); every other crate unsafe-free.
+- DS-6 trait = `RawStore` behind `TraceStore` facade (1 prod store, 1 double,
+  derived state written once in facade).
+- bus predicates id-narrowed via "ids seen on bus" (from newest-per-key map), no
+  by-bus index; per-frame `bus_id` test keeps multi-bus correct.
+- meta record 27 B (DS-1 "~26"), extra byte = explicit `channel`.
+- DS-5 pyramid = property of decoded *signal* not plot (`signal-bench`).
+  serve-cost bound O(max_points); residency bound = disk-backing (5.3d, lazy
+  rebuild not pyramid manifest).
 
-Steps — each lands independently, leaves the app working and tested
-(`cargo test -p cannet-gui`, `pnpm --dir apps/gui test`), and keeps
-rustdoc and the README current for what it ships:
+## Exit criteria
 
-- **Step 1 — `TraceStore` trait + disk-backed raw store (DS-1, DS-2,
-  DS-4).** Extract `TraceStore` as a trait from the current `Vec`
-  implementation. Add the disk-backed raw store: the two append-only
-  segmented files, write-through buffered append, mmap'd reads, and the
-  RAM ring for the un-flushed tail. `fetch_trace_range` with no
-  predicate is served from it. Verify: frames round-trip through the
-  disk store; a capture larger than the RAM ring reads back every row
-  correctly; segment rollover is exercised.
-- **Step 2 — Always-on `by-id` index (DS-3 backbone).** Add the per-id
-  append-only mmap'd index files, maintained on every append.
-  `fetch_by_id_page` with no predicate is served from it. Verify:
-  by-id paging is O(page); a capture spanning many ids pages and sorts
-  correctly.
-- **Step 3 — Materialized filter index (DS-3).** Add per-filter index
-  files. `bus` / `id_range` / `id_list` / `name_regex` predicates
-  build by merging `by-id` lists with no frame decode; `signal_equals`
-  builds by decoding only its DBC-resolved candidate ids' frames;
-  `all` / `any` compose id sets. Indexes drop on predicate change.
-  `fetch_trace_range(predicate)` and `fetch_by_id_page(predicate)` are
-  O(page). Verify: filtered paging is O(page); `name_regex` builds
-  with zero frame decode; `signal_equals` decodes only candidate-id
-  frames; a predicate change drops and rebuilds the index.
-- **Step 4 — Decimated decoded-sample tier (DS-5).** Give
-  `signal_cache::SignalCacheStore` the per-signal min/max resolution
-  pyramid; `DecimatedRange` reads the coarsest level above
-  `maxPoints`. Pyramids build lazily per signal on first plot,
-  by-id-accelerated. Verify: a plot "fit data" over a 10^8-frame
-  capture does not re-decode the whole capture; min/max spikes survive
-  decimation.
-- **Step 5 — Go live: disk store in production + filtered-fetch
-  integration + scratch lifecycle (DS-6, DS-7).** The disk-backed store
-  becomes the only production path: `AppState` constructs `DiskRawStore`
-  (the `Vec` store moves to a test double behind `RawStore`); the
-  `fetch_trace_range` / `fetch_by_id_page` / `fetch_filtered_trace`
-  commands serve from the disk store, with `fetch_filtered_trace`
-  rewritten onto the filter index (`TraceStore::refresh_filter_index` +
-  `FilterIndex::page`, preserving the incremental-count and
-  follow-live-tail semantics) and the old chunked scan retired for the
-  production path; and the DS-7 scratch lifecycle lands (scratch under
-  the OS cache dir's `current/`, the `project_id` UUID identity gate in
-  `open_project`, reset-on-Clear/Start, load-prior-as-stopped). Verify:
-  the production path constructs only the disk store; filtered paging is
-  O(page) end to end; the scratch survives a restart and reloads as a
-  stopped trace when the project identity matches; the suite stays green
-  through the test double.
-- **Step 6 — Configurable scratch cap + windowed-ring eviction.** A
-  user-set maximum on the disk-spill scratch size (bytes; default off /
-  unbounded), persisted in `settings.json` ([ADR 0034](../../docs/adr/0034-settings-vs-state-and-custom-settings-panel.md))
-  and edited through the custom settings panel that also carries the
-  `clear scratch cache on exit` toggle. The cap measures the **total
-  `current/` footprint** — the raw message segments **and** the derived
-  caches that grow with capture (by-id index, filter indexes, signal-cache
-  pyramids); bounding the raw store alone would not hold disk, since the
-  pyramids are `O(matches over capture lifetime)`. Over-limit behaviour is
-  **drop oldest**: the store becomes a windowed ring — when the total
-  exceeds the cap a single **low-water mark** rises and *every* family
-  **front-trims** the segments below it (drops the oldest, never rebuilds —
-  a clear/rebuild on each eviction would be `O(live window)` every sealed
-  segment, far too costly at steady-state cap). The mark relaxes the DS-1
-  random-access contract (rows below it are no longer addressable). That
-  relaxation + the low-water mark + the cross-store evicted-read contract
-  landed as **DS-8** in
-  [ADR 0002](../../docs/adr/0002-disk-spill-store.md) (the cap is opt-in,
-  default unbounded, so DS-1..DS-7 hold unconditionally when unset). User notes are *not*
-  evicted — they are user-authored, bounded by note count, and don't grow
-  with capture; a note below the floor simply points into truncated history
-  (the 6e truncation marker is the signal). Sub-slices:
-    - **Step 6a — done.** Settings infrastructure ([ADR 0034](../../docs/adr/0034-settings-vs-state-and-custom-settings-panel.md)).
-      Split machine state from user intent. The `prefs` module + its
-      `preferences.json` became the `state` module + `state.json` (struct
-      `Prefs`→`UiState`, commands `get_prefs`/`set_prefs`→`get_state`/
-      `set_state`; frontend `hostPrefs.ts`→`hostState.ts`, `prefs()`→
-      `hostState()`). No migration — the code reads `state.json` and ignores
-      any old `preferences.json` (ADR 0034 / 0011). New `settings.rs` +
-      `settings.json` (user intent) carries `scratch_cap_bytes` (default
-      null / unbounded) and `clear_scratch_on_exit` (default false), via
-      `get_settings`/`set_settings`; unlike `state.json`, every key is
-      serialized even at its default so the hand-editable file is
-      discoverable. A flat, hand-rolled `SettingsPanel` (no schema-form
-      dependency — ADR 0034; @rjsf stays `rejected` in the inventory) is a
-      singleton dockview panel opened by the `panel.show.settings`
-      palette/command entry; it loads `settings.json` on mount and writes
-      the whole struct back per edit (cap entered in MB, stored as bytes).
-      The two cap fields are inert until 6c reads them. Verified: `state`
-      module tests (rename round-trip) + 8 `settings` tests (round-trip,
-      defaults unbounded/keep, every-key-serialized, partial/junk tolerance)
-      green; frontend builds + 441 tests pass (the rename-lockup test
-      confirms `set_state` end-to-end). Two further palette commands landed
-      alongside: `project.close` (the entry ADR 0034 mentions — reuses the
-      New-project reset to a fresh no-project workspace, gated on a project
-      being open) and `app.exit` (closes the window via its own
-      close-requested path, so the unsaved-changes prompt and clean-shutdown
-      flush both run).
-    - **Step 6b — done.** Low-water mark + explicit evicted read contract,
-      **across every trimmable store** ([ADR 0002](../../docs/adr/0002-disk-spill-store.md)).
-      Eviction front-trims three mmap'd segment chains — the raw store, the
-      signal-cache pyramids, and the filter indexes — and all three share
-      one panic class: a read addressing a slot below the mark indexes a
-      (would-be) dropped segment. The mark and the *read* half of the
-      contract land in each of them now, *before* anything trims, so 6c/6d's
-      diffs are purely the eviction policy and can't reintroduce a read
-      panic. The contract is one concept spanning the stores, not a
-      raw-store-only guard — hardening only the raw store would have left the
-      pyramid and filter-index serve paths to panic the moment 6d trims them.
-      *Raw store* (`DiskRawStore`): a `first_index` floor (lowest
-      still-addressable row; `0` until eviction raises it); `read_frame` /
-      `read_ts` return `None` (the evicted result) for `idx < first_index`, so
-      the collection reads (`slice`, `matching_frames_indexed`,
-      `frame_timestamps`, …) tolerate the gap through their existing
-      `filter_map`; `frame_timestamps` clamps its start up to the mark and
-      `first_last_ts` reads the span from `first_index`..`len-1`, not the
-      hardcoded index 0. *Signal-cache pyramids* (`SampleSeq` + the serve path
-      in `signal_cache.rs`): a per-level `first_slot` floor (`first_slot` /
-      `live_len` accessors, `evict_below` to raise it preserving absolute slot
-      numbering); the serve path's binary search (`partition_by_t`) starts its
-      lower bound at the level's mark and the `±2` boundary widening clamps to
-      it, so a window straddling or below the floor never reads a trimmed slot
-      and a fully-evicted level serves empty. *Filter index* (`FilterIndex`):
-      a `first_pos` floor; `position_of` lower-bounds at the mark and `page`
-      clamps its start up to it, so an evicted match-position is never read
-      (the `position_of`/count *base shift* is 6d's job — this is just the
-      read guard). The mark is set only in tests (6c/6d raise it for real when
-      they drop the segment files). Three tests, one per store, each seed past
-      a tiny store, raise the mark directly, and assert below-mark reads are
-      evicted (no panic), at/above reads resolve, ranges straddling the mark
-      drop the evicted prefix, and the span/empty bookkeeping tracks the mark
-      (`disk::reads_below_the_low_water_mark_are_evicted_not_panics`,
-      `sample_seq::evict_below_raises_the_live_floor_preserving_absolute_slots`,
-      `signal_cache::serve_skips_an_evicted_pyramid_front_without_panicking`,
-      `filter_index::reads_below_the_low_water_position_are_evicted_not_panics`).
-    - **Step 6c — Raw windowed-ring eviction + retention overlay.** Evict the
-      **raw meta/payload** family to the shared low-water mark and keep a rare
-      id's last value alive across the truncation. (Only the raw family trims
-      here. The per-id/derived chains — by-id, signal pyramids, filter indexes
-      — front-trim to the *same* mark in 6d, which is what actually closes the
-      cap; until then `current/` total can still exceed it via those chains.
-      by-id moved here from an earlier 6c draft: it is a per-id geometric chain
-      like the pyramids, and its leading-segment drop needs a per-id floor of
-      its own, so it groups with the other per-id trims in 6d rather than with
-      the raw family.) Three commits. *6c-A (cannet-spill):*
-      `DiskRawStore::evict_below(first_index)` drops the oldest *sealed*
-      meta/payload segments that fall **entirely** below the mark, deletes their
-      files, and raises `first_index`. Segment indices stay absolute — a
-      `meta_seg_base`/`payload_seg_base` offset maps an absolute segment number
-      to its slot in the now front-trimmed `Vec`, so `read_frame`/`locate`/the
-      incremental-flush watermarks still address surviving rows by their
-      original index, and the 6b read guard already returns the evicted result
-      below the mark. The mark persists in the manifest; reopen restores it.
-      *6c-B (host):* measure the total `current/` footprint, and when it exceeds
-      `scratch_cap_bytes` (6a settings) raise the mark on flush so the oldest
-      raw segments drop. The mark is computed from the *total* footprint, but
-      only the raw family trims here (see above). *6c-C (host) — DONE:*
-      keep the by-id grid's last value across the eviction. The host
-      `latest` map keys a `FrameKey` to a frame *index*; once that index evicts,
-      a raw read returns the evicted result and the grid row would blank.
-      **Decision (user, this session): an *eager* overlay** — a
-      `FrameKey`→newest-`RawTraceFrame` map maintained on every append, bounded
-      by id-space (not capture length). The global-latest by-id read serves from
-      the overlay (no index→raw read), so an evicted index never blanks a row;
-      the windowed-latest path keeps walking indices (already evicted-tolerant).
-      Persist the overlay into `derived.json` so a reopen across an eviction
-      keeps those last values. Chosen over the earlier "capture lazily at
-      eviction time" plan: eager costs one small frame clone per append into an
-      id-space-bounded map, but keeps the **trim itself pure front-truncation**
-      (zero per-frame work when segments drop) — the simpler, more predictable
-      split. *6c-A/B/C all done.* 6c-A/B: `DiskRawStore::evict_below` /
-      `evict_oldest_bytes`, manifest `first_index` + reopen; flush-time cap
-      enforcement from `settings.json`, applied at launch and on each settings
-      change. 6c-C: the `latest_frame: HashMap<FrameKey, RawTraceFrame>` overlay
-      maintained on append (one frame clone) and reset on Clear; the global
-      latest-by-id read (`latest_in_window` follow-live path) serves frame
-      content from it, not a raw read, so an evicted index resolves; it rides
-      `derived.json` (a host-local `PersistedPayload` mirror, since `cannet-core`
-      carries no serde) and reopens in `try_reload`. **Correctness fix landed
-      with it:** `flush_with` now evicts *before* the raw flush, so the manifest
-      reflects the post-eviction segment set — a manifest written before the
-      eviction named dropped files and a reopen across it failed. Cache **observability** also
-      landed alongside (so the cap's effect is visible while by-id/pyramids stay
-      untrimmed until 6d): the streaming status line shows host RSS and the
-      on-disk cache size (`mem_bytes` / `scratch_bytes` on `trace-grew`, cached
-      at flush / published by the health recorder), and the 1 s health log line
-      gains a per-family cache breakdown (`cache_mb=…[frames=… pyramid=… other=…
-      pages=… pyr_depth=…]` from `TraceStore::scratch_breakdown`). Open polish
-      noted in discussion, not yet done: relabel the status `RAM`→`host`; report
-      a pyramid *count* instead of depth; split `other` into by-id/filter/JSON.
-      Verify: a capture past the cap holds the raw meta/payload footprint to
-      the windowed mark; reads below the mark return the evicted result, not a
-      panic; reopen across an eviction is intact above the mark; a rare id
-      whose only frame was evicted still shows its last value in the by-id
-      grid, before and after reopen.
-    - **Step 6d — Per-id/derived front-trim (close the cap).** Front-trim the
-      per-id and derived chains to the shared low-water mark so the **total
-      `current/` footprint** holds at the cap. The pyramid and filter-index
-      floors + evicted-read guards already exist (6b:
-      `SampleSeq::first_slot`/`evict_below` and `FilterIndex::first_pos`, plus
-      the floor-aware serve paths); the **by-id** index gets its per-id floor
-      *here*, with its trim — by-id reads resolve to frame indices the raw
-      store already guards, so it has no read-panic until its own segments
-      drop, and the floor (mirroring `SampleSeq::first_slot`) rightly lands in
-      the slice that drops them. So this slice adds the *physical* trim and the
-      cap wiring: drop the now-dead leading segment *files* below
-      each store's mark, and raise the marks from the cap computation 6c does.
-      Front-trim, not clear/rebuild. The pyramid's higher levels are bucketed
-      (`PYRAMID_BRANCH` points of the level below), so dropping a front segment
-      realigns the surviving bucket boundaries; the level files are derived (no
-      manifest), so a coarse re-fold of the boundary bucket on next serve is
-      acceptable. The filter index also shifts its `position_of`/count base off
-      0 onto the mark (the count-math counterpart of 6b's read guard, which
-      kept `len` absolute). Verify: a capture past the cap holds the *whole*
-      `current/` dir at the cap (pyramids + indexes included), not just the
-      raw families; a plot fit-data after eviction starts at the truncation
-      floor, not before it; filtered counts stay exact across an eviction.
-      *Status: DONE — by-id + pyramid + filter trim + host orchestration.* by-id
-      front-trims inside `DiskRawStore::evict_below` (per-id `first_slot`/`seg_base`,
-      drops dead leading segments + files, removes fully-dead ids, manifest v3
-      persists the per-id floor); `SampleSeq::evict_below` now drops its leading
-      segment files too, and `SignalCache`/`SignalCacheStore::evict_below(ts)`
-      front-trims every pyramid level by the truncation time; `FilterIndex::evict_below`
-      (drop leading filter segment files + raise `first_pos` + `seg_base` so
-      surviving postings keep their absolute match-position) reclaims the filter
-      index. The trace flusher reads the advanced mark/ts (`TraceStore::low_water`,
-      `RawStore::first_index`) and, when the mark advances, calls
-      `signal_caches.evict_below(ts)` (by truncation time) **and**
-      `active.index.evict_below(mark)` (by frame index) so every derived cache
-      follows the cap. **No frontend change was needed for the filtered view:** it
-      derives its window from the same `trace.offset` the chronological
-      `traceWindow` clamp already raised to `first_index` (the 6e live-window
-      precursor), so it never requests a window below the floor — the host's
-      6b `position_of`/`page` read guards then keep its count/page exact across an
-      eviction. The "expose a separate match-position floor" the earlier sketch
-      anticipated turned out unnecessary.
-    - **Step 6e — Truncation as a derived event.** Surface the low-water
-      `(idx, ts)` as a derived, non-persisted, non-exported event
-      ([ADR 0035](../../docs/adr/0035-timeline-event-model.md)), rendered as
-      a plot cursor and a trace floor row ("history truncated here"),
-      created/moved whenever a chunk is dropped. It stays distinct from the
-      view's time origin ([ADR 0024](../../docs/adr/0024-trace-like-view-timing.md)).
-      Verify: dropping a chunk moves the marker; it never exports to BLF or
-      persists to the scratch. (The general event-row surface — notes and
-      other kinds at arbitrary timestamps, needing ts→index placement — is
-      an ADR 0035 consequence tracked in the backlog; this slice wires only
-      the truncation floor row.)
-      *Live-window legibility — DONE this session (a precursor pulled forward
-      to fix a visible bug):* before any marker, the trace view was rendering
-      evicted rows as a band of blank placeholders, because the frontend modeled
-      the buffer as `[0, count)` with `count` the absolute (un-shrinking) tip.
-      Fix: the host emits `first_index` on `trace-grew` and returns it from
-      `restore_scratch_capture` (`RestoredCapture.first_index`); the frontend
-      threads it through `TraceData.firstIndex` and the new pure
-      `trace.ts::traceWindow(state, count, firstIndex)` clamps the chronological
-      window to `[max(start, firstIndex), end)` — so truncated rows are no longer
-      addressable by the view, live and reopened alike. The *event marker* itself
-      (the ADR 0035 floor row / plot cursor) is still TODO — this only stopped the
-      blank rows.
-    - **Step 6f — Trace-panel show/hide events.** A view-local "show events"
-      toggle in the trace panel's existing sources context menu
-      (`SourcesContextMenu`) controlling whether event rows render in the
-      trace. Verify: the toggle shows/hides the event rows without
-      refetching frames.
-    - **Step 6g — Honest residency metric for the status line.** The cache
-      observability landed in 6c pairs two numbers on the status line that
-      read as a "RAM vs. disk-cache split" but are neither complementary nor
-      the same scope, so the readout misleads:
-        - `scratch_bytes` (`DiskRawStore::raw_disk_bytes` / `scratch_breakdown`)
-          is the **store's** on-disk footprint — full *pre-allocated* segment
-          sizes, including the zero-padded tail of the active segment and cold
-          history never touched. Grows with capture (held at the cap once 6d
-          closes it).
-        - `mem_bytes` (`crash::last_host_rss`) is **whole-process RSS** — the
-          Rust heap, decoded-signal caches, Tauri runtime, *plus* whatever
-          mmap'd segment pages are currently resident.
-      The two are not a split of one total: resident mapped pages are counted
-      in **both**, and RSS carries the entire host, not the store. Whether they
-      track each other is regime-dependent (capture ≫ RAM → RSS ≪ disk as the
-      OS reclaims cold pages; capture ≪ RAM, hot → RSS ≈ the resident slice of
-      disk; small/in-RAM capture → disk is `null`/hidden while RSS is host
-      heap), so neither "RAM stays tiny while disk grows" nor "mmap means
-      RAM ≈ disk" holds universally. RSS can't answer "how much of my capture
-      is hot in RAM."
-      Replace the RSS half with a **store-specific resident estimate** — the
-      mapped-and-resident bytes of the `current/` segment families (raw +
-      pyramids + indexes), or as a cheap proxy the RAM-ring + recently-served
-      working-window size. That makes the pair a real "on-disk footprint vs.
-      hot-in-RAM residency" readout that demonstrates the spill design's bound
-      (residency stays bounded while disk grows). Whole-process RSS stays where
-      it belongs — the crash/health telemetry (`format_health_message`
-      `rss_mb`/`tree_mb`) and the ADR-0031 capture — not as the "RAM half" of a
-      spill split. Folds in the open status-line polish already noted under 6c
-      (relabel `RAM`→`host` becomes moot once the figure is store-scoped;
-      pyramid *count* not depth; split `other` into by-id/filter/JSON).
-      Verify: the residency figure tracks the working set, not host heap —
-      it stays bounded as a capture grows past RAM (RSS would not), and a
-      small in-RAM capture shows a small residency, not the full host RSS.
-      *Done so far:* the status line's "N frames" now reads
-      "`retained` of `total` frames" once the floor advances
-      (`format.ts::formatFrameCount` off `count - firstIndex`) — it
-      previously showed only the monotonic total, so a capped capture's
-      count climbed forever and never reflected eviction. The residency /
-      RSS rework and the label/breakdown polish above remain.
-  Verify (step): capturing past the cap drops oldest and holds the dir at
-  the cap; reads below the mark return the evicted result, not a panic; the
-  cap round-trips through the settings panel; the truncation marker shows in
-  plot and trace and moves on eviction; the by-id grid keeps a rare id's
-  last value across eviction.
+- capture past RAM, no row unreachable; scroll/filter/plot deep history work.
+- `RowPage`/`DecimatedRange` sigs (ADR 0025) unchanged — only host impl swapped.
+- `fetch_trace_range`/`fetch_by_id_page` w/ predicate O(page), no O(capture)
+  scan in any index build.
+- plot fit-data over 10^9 capture doesn't re-decode whole.
+- disk store = only prod `TraceStore`; `Vec` = double.
+- benchmark: GUI < 100 ms / 60 fps @ 10^8+ frames.
+- scratch cap wired through settings panel; over-limit in ADR-0002 + System
+  Messages.
+- backlog removed: TraceStore disk-spill, index filtered scan, bound
+  decoded-sample cache.
+- README documents indefinite capture + limits; rustdoc on `TraceStore` trait +
+  disk impl; ADR 0002 + `memmap2` inventory reflect shipped.
 
-  **Current state / next (all uncommitted on `0018-disk-spill-11`).** *Done:*
-  DS-8 ADR; **6a/6b**; **6c** complete (6c-A/B raw windowed-ring eviction +
-  flush-time cap enforcement + `settings.json` wiring; 6c-C eager by-id overlay
-  — `latest_frame` served on the follow-live latest-by-id read, persisted in
-  `derived.json`, reopened in `try_reload`; plus the evict-before-flush manifest
-  fix); cache observability (status line shows host RSS + on-disk cache; 1 s
-  health log carries the per-family breakdown); **6d** complete (by-id trim in
-  `DiskRawStore::evict_below`, `SampleSeq`/`SignalCacheStore::evict_below(ts)`
-  pyramid trim, `FilterIndex::evict_below` filter-segment trim, all orchestrated
-  from the flusher when `low_water` advances — the filtered view needed no
-  frontend change, the chronological `traceWindow` clamp covers it); and the 6e
-  **live-window legibility** precursor (`first_index` on `trace-grew` +
-  `RestoredCapture.first_index` + `trace.ts::traceWindow` clamp — fixes the
-  blank-placeholder-row bug); and a first **6g** slice — the status line's
-  frame count now reads "retained of total" once the floor advances
-  (`formatFrameCount`), instead of the monotonic total that ignored eviction.
-  That readout surfaced a **6c cap bug, now fixed:** the cap check measured the
-  *whole* scratch dir (`dir_footprint`) but handed the entire excess to the
-  raw-only `evict_oldest_bytes`, so when the derived caches were large the raw
-  store was over-evicted down to the protected tail every flush (retained
-  collapsed to ~0). The request is now scaled by the raw share of the dir
-  (`raw_disk_bytes` / footprint, new on the `RawStore` trait); raw and the
-  derived cascade converge on the cap together. Regression test:
-  `cap_eviction_does_not_over_evict_raw_for_derived_family_footprint`.
-  Two follow-ups from live testing at small caps: (1) the `trace-grew`
-  emitter read `len` and `low_water` under *separate* locks, so a flush
-  evicting between them could leave `first_index > count` and a spurious
-  "0 of N" — now one `len_and_low_water()` critical section. (2) A live
-  scratch-dir walk showed the floor: one payload segment (4 MiB) + one
-  filter segment (8 MiB, a single filtered view) + the never-evictable tail
-  put the minimum footprint ~17 MiB, so a 15–25 MiB cap thrashed a meta
-  segment at a time. Per the user, a **minimum effective cap** is now
-  enforced (`settings::MIN_SCRATCH_CAP_BYTES = 100 MiB`,
-  `floored_scratch_cap`, mirrored by the settings UI) — documented in ADR
-  0002 DS-8. *Still open under 6g:* the host-held residency metric and the
-  health-log polish (pyramid count, split `other`).
-  All green: spill 46, gui 245, frontend 445, clippy + tsc clean. *Trim is
-  pure front-truncation* — drop whole leading
-  segment files + raise a floor + bump a base offset; surviving rows keep their
-  absolute index; no rewrite / compaction / re-index. *Next, in order:* **6e**
-  proper (ADR 0035 truncation marker / floor row), **6f** (show/hide toggle),
-  **6g** (honest residency metric for the status line), then **Step 7**. *Open
-  UI polish (folds into 6g):* relabel status `RAM`→`host`; report a pyramid
-  *count* not depth; split the health-log `other` into by-id / filter / JSON.
-- **Step 7 — Benchmark.** A documented benchmark covering scroll /
-  filter / plot of deep history, confirming GUI interactions stay
-  < 100 ms / 60 fps with a 10^8+-frame capture open. Also **captures the
-  frontend memory baseline** (ADR 0031): the renderer / JS-heap peak and
-  drift gates and the host process-memory split are instrumented (`diag.rs`
-  `GaugeSpread::slope_per_min`, `crash::MemSampler`, `frontend.rs`), but
-  stay inert until a baseline carries them — a deep-history run is the
-  representative-length, sustained-capture scenario that arms them, so the
-  baseline regen lands here. This is also where the disk-backed-pyramid
-  residency win (5.3d) is confirmed against host RSS holding flat.
+## Fixed: periodic-flush lock contention
 
-Exit criteria:
+**Problem.** `flush` (`TRACE_FLUSH_TICK`=2 s) held append lock 80–145 ms
+fsync'ing every segment + manifest. ingest/transmit append through it → TX
+scheduler ~110 ms late every 2 s (periodic TX/RX stutter, invisible to per-sec
+fps, retention 1.0). confirmed: tick→10 s moved stall→10 s 1:1.
 
-- a capture runs past available RAM with no row becoming unreachable;
-  scroll / filter / plot of deep history all work;
-- the `RowPage` / `DecimatedRange` signatures (ADR 0025) are
-  unchanged — only their host implementation is swapped;
-- `fetch_trace_range` / `fetch_by_id_page` with a predicate are
-  O(page) via the filter index, with no O(capture) scan in any filter
-  index build;
-- a plot "fit data" over a 10^9-frame capture does not re-decode the
-  whole capture;
-- the disk-backed store is the only production `TraceStore`; the `Vec`
-  store is a test double;
-- a documented benchmark shows GUI interactions stay < 100 ms / 60 fps
-  with a 10^8+-frame capture open;
-- the user-configurable scratch-size cap is wired through the
-  settings panel, with the over-limit behaviour documented in an
-  ADR-0002 update and surfaced in System Messages when reached;
-- backlog items removed: `TraceStore` disk-spill, index the filtered
-  trace scan, bound the host-side decoded-sample cache;
-- README documents indefinite-length capture and its limits; rustdoc
-  covers the `TraceStore` trait and the disk-backed implementation;
-  ADR 0002 and the `memmap2` entry in
-  `plans/technology-inventory.md` reflect the shipped design.
+**Fix.** incremental flush (only segments dirtied since last, O(segs)≈1) + async
+msync (`MS_ASYNC`/`FlushViewOfFile`, not fsync; sync only clean shutdown).
+detect: `flush_ms`/`tx_late_ms` gated on **mean** ≤25/≤18 ms (ADR-0031). result:
+pre-fix 38/27 → post-fix 15/8.6; 1200 s/1.23 M soak 9.8/5.2, retention 1.0.
 
-## Periodic-flush lock contention (fixed)
+**Deferred — off-lock manifest/derived writes.** residual `flush_ms` peaks
+~68 ms = manifest + derived write + ~20 per-id msyncs under lock. two-phase:
+locked = async-msync dirtied segs + snapshot manifest inputs; unlocked =
+serialize+write (temp+rename). safe: appends only append → off-lock manifest
+names durable prefix, reopen tolerates undercount. needs
+`flush_segments(sync)`+`manifest_bytes()` split + `flush_with`
+snapshot-then-write. dropped alts: by-id dirty set (marginal), reopen-rebuild
+by-id tail (conflicts DS-3 no-O(capture)-reopen).
 
-**Problem.** `TraceStore::flush` (`TRACE_FLUSH_TICK` = 2 s) held the
-trace-store **append lock** 80–145 ms while it `fsync`'d every mapped segment
-and rewrote the manifest + derived state. Ingest and transmit append through
-that lock, so the transmit scheduler fired ~110 ms late every 2 s — a periodic
-TX/RX stutter invisible to per-second fps (the catch-up burst refills the gap;
-retention held 1.0). Causally confirmed: moving the tick to 10 s moved the
-stall to 10 s, 1:1.
+## Open bugs
 
-**Fix.**
+### Reloaded plot shows only trailing ~10 s window (root cause confirmed)
 
-- *Incremental flush* — re-sync only segments dirtied since the last flush;
-  sealed segments are immutable, synced once as the tail. `DiskRawStore` /
-  `ByIdIndex` carry a `flushed_*` watermark, so per-flush work is `O(segments
-  since last flush)` — normally one. The load-bearing fix at 10^8 frames
-  (resolved Step-5.3c-i watch item above).
-- *Async msync* — periodic flush uses `flush_async` (`MS_ASYNC` /
-  `FlushViewOfFile`), not device `fsync`. Reopen-after-restart still works (the
-  page cache backs the mapping); only trailing-window power-loss durability
-  relaxes — fine for ephemeral scratch. A sync `flush()` runs on clean
-  shutdown. ADR 0002 DS-2.
+**Symptom.** scratch reload → plot intermittently shows only recent slice. manual
+recover: Follow-Live → Fit-Data → un-Follow-Live.
 
-**Detection.** The host stamps two jitter gauges into the ADR-0031 capture from
-a lock-free `diag::HostMetrics` — `flush_ms` (lock-hold) and `tx_late_ms`
-(scheduler wake lateness) — gated on their **mean** (≤ 25 / ≤ 18 ms). Mean, not
-peak: it catches the systematic per-flush regression and shrugs off one-off OS
-writeback spikes (a peak gate flaps). These are the *only* metrics that see the
-stall; throughput and retention never moved.
+**Not host (proven from live scratch).** raw reopens lossless (`manifest
+len=1267578`; each by-id len = sum of 2 per-bus `derived.json` counts). all 26
+pyramids complete (~57627 pts / 579 s, read from (t,v) f64). table complete. data
+loaded, plot not *showing* it. (debug: pyramid L files pre-allocated → size =
+capacity; real len = count of non-zero `t_seconds`, not bytes/16.)
 
-**Result.** Stutter gone. Pre-fix the live capture failed both gates (flush 38,
-tx-late 27, every other metric green); post-fix 15 / 8.6. A 1200 s / 1.23 M-frame
-soak holds at flush 9.8, tx-late 5.2, retention 1.0 — the fix scales.
-
-### Deferred — off-lock manifest/derived writes
-
-Residual `flush_ms` **peaks** (~68 ms; mean ~15) are work still under the lock:
-the manifest write (by-id directory + bus table, temp + rename), the
-derived-state write, and ~20 per-id msyncs — an occasional slow rename spikes
-the peak. Crush it with a **two-phase flush**:
-
-- *Locked:* async-msync the dirtied segments; snapshot the manifest inputs
-  (watermarks, bus-intern, by-id directory) and derived state. Release.
-- *Unlocked:* serialize and write both files (temp + atomic rename).
-
-Safe because appends only *append*: a concurrent append lands in the next
-checkpoint, so the off-lock manifest names a durable *prefix* — and reopen
-already tolerates an undercounting manifest (reloads the prefix; next flush
-catches up). Needs `DiskRawStore` to split msync from manifest-write
-(`flush_segments(sync)` + `manifest_bytes()`) and `TraceStore::flush_with` to
-snapshot-then-write outside the lock. Under-lock cost then drops to just the
-async msync (single-digit ms), and the gate can tighten to a peak ceiling.
-
-Dropped alternatives: a by-id *dirty set* (marginal — every id gets a frame
-each tick) and reopen-rebuild of the by-id tail (conflicts with DS-3's
-no-`O(capture)`-reopen).
-
-## Reloaded plot shows only a trailing ~10 s window (bug, root cause confirmed)
-
-**Symptom.** After a scratch reload, a plot intermittently shows only the
-recent slice of a signal, not the full restored span. Recovered manually by
-Follow-Live → Fit-Data → un-Follow-Live.
-
-**Not the host — proven from the live scratch.** Raw store reopens losslessly
-(`manifest len = 1267578`; each by-id length = sum of its two per-bus
-`derived.json` counts). All 26 pyramids rebuild complete (~57627 pts over the
-full 579 s, read from the `(t,v)` f64 pairs). Trace table renders complete.
-Data's all loaded; the plot just isn't *showing* it. (Debug note: pyramid
-level files are pre-allocated — file size is capacity; real length is the
-count of non-zero `t_seconds`, not `bytes/16`.)
-
-**Root cause.** `PlotPanel.onAreaResampled` slides the x-window to the live
-edge when Follow-Live is on (the default):
+**Root cause.** `PlotPanel.onAreaResampled` follow-live (default on) slides
+x-window to live edge:
 
 ```js
 const width = sync set ? sync.xMax - sync.xMin : DEFAULT_FOLLOW_WIDTH_SECONDS; // 10
-applyXAll(Math.max(0, ext - width), ext, null);   // visible x = [ext-width, ext]
+applyXAll(Math.max(0, ext - width), ext, null);   // x = [ext-width, ext]
 ```
 
-On restore `ext` jumps to ~579 s; if the slide fires before x-sync is set,
-`width = 10` ⇒ last 10 s of 579 visible (rest off-screen). Intermittent: if an
-earlier resample/fit set x-sync to the full span first, `width` is the full
-span and it stays whole. A restored trace is **stopped** — no live edge — so a
-trailing window is the wrong default.
+restore → `ext` jumps ~579 s; slide before x-sync set → `width=10` → last 10 s
+visible. intermittent: earlier resample/fit sets x-sync full → `width`=full →
+stays whole. restored trace stopped (no live edge) → trailing window wrong
+default.
 
-**Fix (decided — fit once on restore).** Only apply the trailing slide when
-`trace.status === "running"`; otherwise take the existing fit branch (`xMax ==
-null → applyXAll(0, ext)`). Fits a stopped span to `[0, ext]` once (next slide
-no-ops — x-sync now set, and `width` becomes the full span). Pause untouched
-(x-sync already set). Extract a pure `followXWindow(followLive, running, xMin,
-xMax, ext) → {min,max} | null` (with `DEFAULT_FOLLOW_WIDTH_SECONDS`) and
-unit-test it: stopped+`ext ≫ width` → `[0, ext]`; running → `[ext-width, ext]`;
-x-sync set → `null`.
+**Fix (decided — fit once on restore).** trailing slide only when
+`trace.status==="running"`; else fit branch (`xMax==null → applyXAll(0,ext)`).
+fits stopped span [0,ext] once (next slide no-ops, width=full). pause untouched.
+extract pure `followXWindow(followLive, running, xMin, xMax, ext)→{min,max}|null`,
+unit-test. *dropped:* persist per-trace x positions (ADR 0032) — fights
+follow-live.
 
-*Dropped:* persisting per-trace x positions (ADR 0032 state) — would fight
-follow-live; fit-on-restore suffices.
+### Cursor-jump on stopped plot shows no data (same class)
 
-## Cursor-jump on a stopped plot shows no data (same root class)
+**Symptom.** jump between event markers on reloaded (stopped) plot moves x-window
+but renders no data there.
 
-**Symptom.** Jumping between event-cursor markers on a reloaded (stopped) plot
-moves the x-window to the marker but renders no data there.
+**Root cause.** pure x-window change has no refetch trigger on stopped trace.
+resample loop gated on `live` → stopped samples once, no interval; re-fires only
+on `winStart`/`winEnd`/`followLive` toggle/mount/`fitY`. `gotoNote` does
+`applyXAll` (scale only, no fetch) + `setFollowLive(false)`, relying on
+followLive→false effect. follow-live already off → no-op → no resample →
+`useDecimatedRange` never fetches new slice → uPlot holds old window off-screen.
+same gap breaks `fitData`/pan on stopped trace.
 
-**Root cause.** A pure x-window change has no refetch trigger on a stopped
-trace. The resample loop is gated on `live` (`PlotPanel.tsx`): a stopped/paused
-trace samples once, no interval — it only re-fires on `winStart`/`winEnd`,
-`followLive` toggle, mount, `fitY`. `gotoNote` only does `applyXAll` (sets the
-uPlot scale + `xSyncRef`, no fetch) and `setFollowLive(false)`, relying on the
-`followLive→false` effect to resample. If follow-live is *already* off (a prior
-jump/pan), that's a no-op → no resample → `useDecimatedRange` never fetches the
-new `[t±width]` slice → uPlot still holds the previous window's data, off-screen
-at the new x-range. Not the host (data is all present); the frontend just
-doesn't ask. The same gap makes `fitData`/manual-pan on a stopped trace
-unreliable unless follow-live happens to toggle.
+**Fix (proposed).** one refetch trigger for any x-window change: bump `xEpoch`
+from `applyXAll` callers (`gotoNote`/`fitData`/`onUserXChange`) + per-area
+`useEffect(resample,[xEpoch])`. subsumes fit-on-restore refetch — land both
+together.
 
-**Fix (proposed).** One refetch trigger for any x-window change: bump an
-`xEpoch` (or call resample) from `applyXAll`'s callers (`gotoNote`, `fitData`,
-`onUserXChange`) and add a per-area `useEffect(resample, [xEpoch])`. Covers
-jump, fit, and pan uniformly and subsumes the fit-on-restore refetch — land
-both together.
+### Derived caches not invalidated on DBC change (latent)
 
-## Separate latent bug — derived caches not invalidated on DBC change
+not the clean-cold-open trigger (awaited open path hides it), but real.
+`signal_cache` pyramid + active filter index = derived, lazy. `catch_up`
+advances `next_index` to tip **unconditionally** → frames it couldn't decode
+(DBC not loaded / bus-filtered) skipped forever. `signal_caches.clear()` only
+caller = `clear_trace_store`; `load_dbc`/`set_dbc_buses`/`remove_dbc`/
+`clear_dbcs` + FS-watcher reload only call `rbs::refresh_all_elements`. DBC
+arriving after cache exists → stale, no rebuild; stopped reloaded trace (no
+appends) → empty/partial forever. filter index same gap. = ADR 0033 failure mode
+(chose ordering, rejected re-validation; covers initial open not in-session /
+async-watcher DBC change); consequence-2 ("rebuild dependent state on reload")
+unimplemented for derived caches.
 
-Found while investigating the above; **not** the clean-cold-open trigger
-(the awaited open path keeps it from firing there), but real and worth fixing.
+**Fix (proposed).** on any DBC-set mutation: `signal_caches.clear()` + reset
+active `filter_index`→None (clear-and-rebuild, DBC changes rare). amend ADR 0033.
+TDD: cache vs stopped store, DBC absent → load DBC → next slice full series.
 
-The per-signal pyramid (`signal_cache.rs`) and the active filter index are
-*derived* state rebuilt lazily on first serve. `SignalCache::catch_up`
-advances `next_index` to the store tip **unconditionally** — frames it
-couldn't decode (the signal's DBC not yet loaded, or dropped by the bus
-filter) are skipped and never revisited. `signal_caches.clear()` has exactly
-one caller, `clear_trace_store`; `load_dbc` / `set_dbc_buses` / `remove_dbc` /
-`clear_dbcs` and the FS-watcher reload mutate the DBC set and call only
-`rbs::refresh_all_elements`. So a DBC that arrives or changes *after* a
-signal's cache exists leaves it stale with no rebuild — and on a stopped
-reloaded trace (no future appends) it stays empty/partial forever. The active
-filter index has the same gap (keyed by predicate + session start, rebuilt on
-predicate change but not on DBC change).
+## Idea (not scheduled): pyramid in-memory residency knob
 
-This is the failure mode ADR 0033 ("build a model layer's dependencies before
-the layer itself") targets. ADR 0033 chose **ordering** and explicitly
-*rejected* per-view re-validation — which covers the initial open but **not**
-an in-session DBC change (notably the async FS-watcher reload, which has no
-open-path sequence point to await). ADR 0033 consequence bullet 2 already
-commits to "rebuilding dependent state" on reloads; for a derived cache that
-means *dropping* it so it re-derives, which is currently unimplemented.
+pyramid disk-backed (`SampleSeq` mmap) since 5.3d → residency already implicitly
+bounded (segment handles + recently-served windows; kernel pages cold out). no
+explicit RAM knob (unlike frame ring's `ring_capacity`). two distinct levers,
+separate before any work:
 
-**Fix (proposed).** On any DBC-set mutation, `signal_caches.clear()` and reset
-the active `filter_index` to `None`; both rebuild on next serve against the
-now-settled DBC set, and DBC changes are rare so the cost is acceptable. This
-is *clear-and-rebuild*, not the incremental per-view re-validation ADR 0033
-rejected, so it stays within the ADR's spirit — but ADR 0033 should be amended
-to note in-session DBC changes need this invalidation. TDD: build a signal
-cache against a stopped store with the DBC absent, load the DBC, assert the
-next slice returns the full series.
+- **resident window** (residency lever) — cap hot RAM per level (madvise/pin
+  recent N, demand-page rest). mirrors `ring_capacity`. doesn't change contents.
+- **`PYRAMID_BRANCH` fan-out** (fidelity/cost lever) — const 8; larger → fewer
+  levels, coarser, smaller pyramid (disk+RAM); changes structure, trades
+  fidelity for size.
 
-## Pyramid in-memory residency knob (idea, not scheduled)
-
-The signal pyramid is disk-backed (`SampleSeq`, mmap) since 5.3d, so its
-residency is already *implicitly* bounded: only the segment handles plus
-whatever windows the serve path recently touched are resident, and the kernel
-pages cold history out under pressure. There is no explicit RAM knob for it —
-unlike the frame side, where `DiskRawStore`'s RAM ring has `ring_capacity`.
-
-A user- or config-settable knob on the pyramid's in-memory footprint could be
-useful. Two distinct things "size of the pyramid in-memory" could mean — they
-are not the same lever and want separating before any work:
-
-- **Resident window (the residency lever).** Cap how much of each level stays
-  hot in RAM — e.g. `madvise`/pin the most-recent N entries per level and let
-  the rest demand-page. This parallels the frame ring's `ring_capacity`: a RAM
-  bound that never changes what the pyramid *contains*, only what's resident.
-- **`PYRAMID_BRANCH` fan-out (a fidelity/cost lever).** Today a const `8`
-  (points per min/max bucket). A larger branch → fewer levels, coarser steps,
-  a smaller total pyramid (disk *and* RAM); a smaller branch → finer overview
-  at more cost. This changes the *structure*, so it trades plot fidelity for
-  size, not residency for residency.
-
-Likely the intended knob is the **resident window** (it mirrors the frame
-ring and is purely a RAM bound). Note this is distinct from Step 6's scratch
-**disk** cap: that bounds the on-disk `current/` footprint; this would bound
-RAM residency of an already-disk-backed structure. Since mmap demand-paging
-already bounds residency in practice, this is an optimization/control, not a
-correctness need — hence parked here rather than scheduled. Decide which lever
-(and whether a knob is worth the surface) before pulling it into a step.
+likely intended = resident window (pure RAM bound). distinct from Step 6 disk cap
+(on-disk footprint). mmap demand-paging already bounds residency →
+optimization/control not correctness. decide lever + whether worth surface before
+scheduling.

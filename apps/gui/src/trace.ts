@@ -13,8 +13,18 @@ import { useCallback } from "react";
 
 import type { TraceData } from "./traceData";
 import type { TraceFrameRecord } from "./types";
+import type { TimelineEvent } from "./notes";
 import { useElementRegistry } from "./projectElements";
 import { useWindowedQuery, type WindowPage } from "./useWindowedQuery";
+
+/// A row in a trace-style view (ADR 0035): the common base the single
+/// TraceView renderer draws, either a CAN frame or a timeline event. The
+/// `row` discriminant picks the cell layout. Events carry no frame index,
+/// so the merge into this stream happens at the *view*, by timestamp —
+/// frames stay index-paged (ADR 0025), events are fetched whole (ADR 0035).
+export type TraceRow =
+  | { row: "frame"; frame: TraceFrameRecord }
+  | { row: "event"; event: TimelineEvent };
 
 /// Rows fetched per unfiltered-chrono window. Big enough that ordinary
 /// scrolling stays inside the loaded page (the view shows ~tens of rows
@@ -206,10 +216,9 @@ export interface TraceHandle {
   /// Bumped when the window's loaded rows change — pass through to the
   /// view so it re-renders and re-consults `getFrame`.
   version: number;
-  /// Effective zero point for the time column in seconds (Unix epoch).
-  /// Combines the session start (`data.sessionStartSeconds`) with the
-  /// per-view trace start offset (Clear / Stop+Start). `null` until a
-  /// session is configured.
+  /// Zero point for the time column in seconds (Unix epoch): the single
+  /// application-level trace start, `data.sessionStartSeconds` (ADR 0024).
+  /// `null` until a session is configured.
   baseTimestampSeconds: number | null;
   getFrame: (traceIndex: number) => TraceFrameRecord | null;
   ensureVisible: (start: number, end: number) => void;
@@ -234,10 +243,11 @@ export function useTrace(data: TraceData, elementId: string): TraceHandle {
   // DS-8) so truncated rows below the floor aren't rendered as placeholders.
   const { offset, frameCount } = traceWindow(state, sessionCount, data.firstIndex);
 
-  const baseTimestampSeconds =
-    data.sessionStartSeconds === null
-      ? null
-      : data.sessionStartSeconds + (state.traceStartOffsetSeconds ?? 0);
+  // Every renderer shows elapsed time since the one application-level trace
+  // start (ADR 0024): the session-buffer start. The per-trace
+  // `traceStartOffsetSeconds` is no longer applied to the rendered zero — it
+  // is left on `TraceState` (set by Clear / Start) but vestigial for display.
+  const baseTimestampSeconds = data.sessionStartSeconds;
 
   // This panel's window over the unfiltered chronological rows
   // `[offset, offset + frameCount)`, indexed locally `[0, frameCount)`.

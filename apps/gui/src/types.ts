@@ -53,6 +53,10 @@ export interface TraceGrew {
   /// index. `0` until eviction truncates the oldest history; the trace view
   /// clamps its window to `[first_index, count)`.
   first_index: number;
+  /// Absolute ns of the oldest retained frame — where the truncation
+  /// marker (ADR 0035) sits when `first_index > 0`. `null` for an empty
+  /// store. Derived: not persisted, not exported.
+  first_index_ts_ns: number | null;
   frames_per_second: number;
   /// Receive / transmit-confirmed frame rates, split by direction so a
   /// transmit stall is visible even when the aggregate looks healthy.
