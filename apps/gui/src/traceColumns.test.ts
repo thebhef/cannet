@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { Bus, ByIdSnapshotRecord, TraceFrameRecord } from "./types";
+import type { Bus } from "./types";
 import {
   COLUMN_DEFS,
   DEFAULT_SORT,
@@ -13,7 +13,6 @@ import {
   nextSort,
   reorderColumn,
   resizeColumn,
-  sortRows,
   toggleColumn,
   visibleColumns,
 } from "./traceColumns";
@@ -162,7 +161,10 @@ describe("toggleColumn", () => {
   });
 });
 
-describe("nextSort / sortRows", () => {
+// The by-id sort itself runs host-side now (`sort_by_id` in
+// apps/gui/src-tauri/src/lib.rs, unit-tested there). The panel only
+// computes the next `SortState` from a header click; that stays here.
+describe("nextSort", () => {
   it("defaults to ascending by id", () => {
     expect(DEFAULT_SORT).toEqual({ key: "id", dir: "asc" });
   });
@@ -173,68 +175,6 @@ describe("nextSort / sortRows", () => {
     expect(nextSort({ key: "id", dir: "desc" }, "id")).toBeNull();
     // Clicking a different column starts that one ascending.
     expect(nextSort({ key: "id", dir: "desc" }, "bus")).toEqual({ key: "bus", dir: "asc" });
-  });
-
-  function row(
-    id: number,
-    channel: number,
-    rate = 0,
-    bus_id: string | null = null,
-  ): ByIdSnapshotRecord {
-    const frame: TraceFrameRecord = {
-      index: 0,
-      timestamp_seconds: 0,
-      channel,
-      id,
-      extended: false,
-      direction: "Rx",
-      kind: { kind: "classic" },
-      data: [],
-      decoded: null,
-      bus_id,
-    };
-    return { frame, rate, count: 0 };
-  }
-
-  it("sorts by a column, stable, and is a no-op for null", () => {
-    const rows = [row(0x200, 1), row(0x100, 0), row(0x100, 2)];
-    expect(sortRows(rows, null)).toEqual(rows);
-    expect(sortRows(rows, null)).not.toBe(rows); // a copy
-    expect(
-      sortRows(rows, { key: "id", dir: "asc" }).map((r) => [r.frame.id, r.frame.channel]),
-    ).toEqual([
-      [0x100, 0],
-      [0x100, 2],
-      [0x200, 1],
-    ]);
-    expect(sortRows(rows, { key: "id", dir: "desc" }).map((r) => r.frame.id)).toEqual([
-      0x200, 0x100, 0x100,
-    ]);
-  });
-
-  it("sorts by the per-id message rate", () => {
-    const rows = [row(0x100, 0, 5), row(0x200, 0, 50), row(0x300, 0, 0.5)];
-    expect(sortRows(rows, { key: "rate", dir: "asc" }).map((r) => r.rate)).toEqual([0.5, 5, 50]);
-    expect(sortRows(rows, { key: "rate", dir: "desc" }).map((r) => r.rate)).toEqual([50, 5, 0.5]);
-  });
-
-  it("sorts by bus name (alphabetical), with unassigned last", () => {
-    const buses: Bus[] = [
-      { id: "p", name: "Powertrain" },
-      { id: "c", name: "Chassis" },
-    ];
-    const lookup = busLookup(buses);
-    const rows = [
-      row(0x100, 0, 0, "p"), // Powertrain
-      row(0x200, 0, 0, null), // unassigned
-      row(0x300, 0, 0, "c"), // Chassis
-    ];
-    expect(
-      sortRows(rows, { key: "bus", dir: "asc" }, lookup).map((r) => r.frame.bus_id),
-    ).toEqual(["c", "p", null]);
-    expect(
-      sortRows(rows, { key: "bus", dir: "desc" }, lookup).map((r) => r.frame.bus_id),
-    ).toEqual([null, "p", "c"]);
   });
 });
 

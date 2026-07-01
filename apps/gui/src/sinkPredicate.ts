@@ -1,6 +1,6 @@
 // Pure builder that turns a consumer's `sources` (and any upstream
 // filter's `predicate`) into the host-side `FilterPredicate` shape
-// the `fetch_trace_range` / `fetch_latest_by_id` / `sample_signals`
+// the `fetch_trace_range` / `fetch_by_id_page` / `sample_signals`
 // commands accept. Lifted out of the panel code so it has one
 // unambiguous home and the resolution is unit-testable.
 

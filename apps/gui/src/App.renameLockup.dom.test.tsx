@@ -30,13 +30,13 @@ vi.mock("@tauri-apps/api/core", () => ({
     switch (cmd) {
       case "fetch_system_log":
       case "fetch_notes":
-      case "fetch_latest_by_id":
       case "fetch_trace_range":
       case "list_transmit_frames":
       case "list_signals":
       case "rbs_dirty":
         return [];
       case "fetch_filtered_trace":
+      case "fetch_by_id_page":
         return { count: 0, start: 0, rows: [] };
       case "app_version":
         return "0.0.0-test";
@@ -205,13 +205,19 @@ describe("rename keystroke under a streaming session", () => {
     }
 
     // Prove the synthetic stream actually landed: a *running* by-id
-    // trace re-fetches its snapshot when the window's frame count
-    // grows, so the ticks must have produced fetch_latest_by_id
-    // calls beyond the mount-time one. Without this the test could
-    // silently exercise an idle app and prove nothing.
-    expect(
-      invokeLog.filter((c) => c === "fetch_latest_by_id").length,
-    ).toBeGreaterThanOrEqual(2);
+    // trace re-pages its snapshot as the window grows (the windowed
+    // primitive's throttled live refresh), so beyond the mount-time
+    // fetch the growth must drive more `fetch_by_id_page` calls. The
+    // refresh is interval-driven now, so wait for it rather than
+    // asserting synchronously. Without this the test could silently
+    // exercise an idle app and prove nothing.
+    await waitFor(
+      () =>
+        expect(
+          invokeLog.filter((c) => c === "fetch_by_id_page").length,
+        ).toBeGreaterThanOrEqual(2),
+      { timeout: 3000 },
+    );
 
     const invokesBefore = invokeLog.length;
     const before = performance.now();

@@ -7,7 +7,7 @@
 /// by it. [`COLUMN_DEFS`] gives the default order; a saved layout may be
 /// any permutation of the columns.
 
-import type { Bus, ByIdSnapshotRecord } from "./types";
+import type { Bus } from "./types";
 
 /// A trace column's stable identity.
 export type ColumnKey =
@@ -229,75 +229,8 @@ export function nextSort(current: SortState, key: ColumnKey): SortState {
   return current.dir === "asc" ? { key, dir: "desc" } : null;
 }
 
-/// The value a by-id row sorts by for a given column — raw fields, so
-/// no dependency on the formatters. The `bus` column sorts by the
-/// resolved bus *name* (so the order on screen matches what the user
-/// reads); unassigned rows sort last in ascending order — they share
-/// the empty-string key only with each other, the stable secondary
-/// sort then preserves their host-returned order.
-function sortValue(
-  row: ByIdSnapshotRecord,
-  key: ColumnKey,
-  lookup: BusLookup,
-): number | string | number[] {
-  if (key === "rate") return row.rate;
-  const frame = row.frame;
-  switch (key) {
-    case "idx":
-      return frame.index;
-    case "time":
-      return frame.timestamp_seconds;
-    case "bus":
-      // Unassigned (bus_id=null) → "~" so it sorts after any real bus
-      // name in ascending order (and before them in descending).
-      return frame.bus_id == null ? "~" : lookup.get(frame.bus_id) ?? frame.bus_id;
-    case "dir":
-      return frame.direction;
-    case "id":
-      return frame.id;
-    case "kind":
-      return frame.kind.kind;
-    case "len":
-      return frame.data.length;
-    case "data":
-      return frame.data;
-    case "msg":
-      return frame.decoded?.name ?? "";
-  }
-}
-
-function compareValues(a: number | string | number[], b: number | string | number[]): number {
-  if (typeof a === "number" && typeof b === "number") return a - b;
-  if (typeof a === "string" && typeof b === "string") return a < b ? -1 : a > b ? 1 : 0;
-  if (Array.isArray(a) && Array.isArray(b)) {
-    const n = Math.min(a.length, b.length);
-    for (let i = 0; i < n; i++) {
-      if (a[i] !== b[i]) return a[i] - b[i];
-    }
-    return a.length - b.length;
-  }
-  return 0;
-}
-
-/// A new array of `rows` sorted by `sort` (a stable sort — equal keys
-/// keep the host's order). `null` returns `rows` unchanged. `lookup`
-/// supplies bus-id → name resolution for the "bus" column; other
-/// columns ignore it (an empty map is fine for non-bus sorts).
-export function sortRows(
-  rows: readonly ByIdSnapshotRecord[],
-  sort: SortState,
-  lookup: BusLookup = new Map(),
-): ByIdSnapshotRecord[] {
-  if (!sort) return rows.slice();
-  const factor = sort.dir === "asc" ? 1 : -1;
-  return rows
-    .map((row, i) => ({ row, i }))
-    .sort((x, y) => {
-      const c = compareValues(
-        sortValue(x.row, sort.key, lookup),
-        sortValue(y.row, sort.key, lookup),
-      );
-      return c !== 0 ? c * factor : x.i - y.i;
-    })
-    .map(({ row }) => row);
-}
+// By-id rows are sorted host-side now — the panel sends its `SortState`
+// to `fetch_by_id_page`, which orders the whole snapshot before paging
+// (ADR 0025), so a paged view sorts globally rather than per-page. The
+// former client-side `sortValue` / `compareValues` / `sortRows` live in
+// the host's `sort_by_id` (apps/gui/src-tauri/src/lib.rs).

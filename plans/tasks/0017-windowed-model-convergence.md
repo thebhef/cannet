@@ -233,6 +233,57 @@ Acceptance:
 - the paused/stopped snapshot-correctness item already in
   `plans/backlog.md` is folded in.
 
+Status (2026-06-27): **shipped.**
+
+- **Host accessor.** `fetch_latest_by_id` is replaced by
+  [`fetch_by_id_page`](../../apps/gui/src-tauri/src/lib.rs), returning a
+  `RowPage<ByIdSnapshot>` — the same row-addressed contract the
+  chronological/filtered views use (ADR 0025), now its third
+  instantiation. It takes `scan_start` / `scan_end`, the panel's sort
+  (`sort_key` / `sort_dir`), the project `bus_names` map, and
+  `offset` / `limit`; `limit == 0` is a count-only refresh.
+- **Sort moved host-side.** The client `sortRows` / `sortValue` /
+  `compareValues` (traceColumns.ts) are gone; the host's
+  [`sort_by_id`](../../apps/gui/src-tauri/src/lib.rs) orders the *whole*
+  snapshot before paging, so a paged view sorts globally rather than
+  per-page. `bus_names` rides along so the "bus" column still sorts by
+  the project name the user sees (the host knows only bus ids). Unit
+  tested (`sort_by_id_*`, the former `sortRows` cases ported to Rust);
+  the panel keeps only `nextSort` (header-click → next `SortState`).
+- **Paused/stopped snapshot correctness.** The new
+  [`TraceStore::latest_in_window`](../../apps/gui/src-tauri/src/trace_store.rs)
+  bounds each id's latest frame to `[start, end)`, so a paused/stopped
+  window reflects the window it shows rather than the live tip. (No
+  discrete by-id item was left in `plans/backlog.md`; the concern was the
+  `latest_since` rustdoc caveat, now resolved.) `latest_since` is a thin
+  alias for `latest_in_window(since, tip)`; the tip-covering (running)
+  case still takes the O(keys) `latest`-map fast path, the bounded
+  (historical) case pays one O(window) pass — on a status change, not the
+  live tick. Tested (`latest_in_window_bounds_to_the_window_end`).
+- **View pages + virtualizes.** [`ByIdTable`](../../apps/gui/src/ByIdTable.tsx)
+  now windows the host snapshot with the same scaled virtualizer as
+  `TraceView`, reading through [`useByIdView`](../../apps/gui/src/useByIdView.ts)
+  — a thin adapter over `useWindowedQuery`, symmetric with
+  `useFilteredTrace`. Expand/collapse keys on the stable
+  [`byIdRowKey`](../../apps/gui/src/ByIdTable.tsx) (bus:id:ext), not row
+  position, so it survives a re-sort or a new id appearing above it;
+  expanded *positions* for the virtualizer's height math are derived from
+  the loaded rows' keys. The unpaged whole-snapshot `useEffect` (and its
+  `rows` state) in `TracePanel` is gone.
+- **Filter.** Preserved the existing latest-then-filter semantics (a row
+  whose *latest* frame fails the predicate drops, and can reappear once
+  the id emits a passing value) — already "the snapshot, filtered," and a
+  surgical change; true latest-*matching*-per-id would be a separate
+  semantic upgrade.
+
+`pnpm --dir apps/gui test` (424) and `cargo test -p cannet-gui` (195)
+green; clippy clean.
+
+Known limitation (logged in `plans/backlog.md`): while *running*, the
+live refresh re-pages page 0, so a by-id view scrolled into a later page
+(only possible with an unusually large id space) is pulled back to the
+top each tick. The common single-page case is unaffected.
+
 ### Slice 4 — Plot onto the shared cache primitive
 
 Fold `PlotArea`'s `cacheRef` / `fetchKey` memo / anchor-reset logic onto
