@@ -124,7 +124,8 @@ impl RateEstimate {
                 self.ema_dt_secs = dt;
             }
         } else if dt > 0.0 {
-            self.ema_dt_secs = PER_ID_RATE_ALPHA * dt + (1.0 - PER_ID_RATE_ALPHA) * self.ema_dt_secs;
+            self.ema_dt_secs =
+                PER_ID_RATE_ALPHA * dt + (1.0 - PER_ID_RATE_ALPHA) * self.ema_dt_secs;
         }
         self.last_ts_ns = ts_ns;
         self.last_wall = now;
@@ -140,7 +141,11 @@ impl RateEstimate {
         }
         let since = now.duration_since(self.last_wall).as_secs_f64();
         let dt = since.max(self.ema_dt_secs);
-        if dt > 0.0 { 1.0 / dt } else { 0.0 }
+        if dt > 0.0 {
+            1.0 / dt
+        } else {
+            0.0
+        }
     }
 }
 
@@ -383,7 +388,10 @@ impl TraceStore {
         }
         let end = end.min(len);
         let first = inner.frames.get(start).map(|f| f.timestamp_ns);
-        let last = end.checked_sub(1).and_then(|i| inner.frames.get(i)).map(|f| f.timestamp_ns);
+        let last = end
+            .checked_sub(1)
+            .and_then(|i| inner.frames.get(i))
+            .map(|f| f.timestamp_ns);
         (first, last)
     }
 
@@ -432,7 +440,10 @@ impl TraceStore {
             Some(frame_idxs) => {
                 let lo = frame_idxs.partition_point(|&i| i < start);
                 let hi = frame_idxs.partition_point(|&i| i < end);
-                frame_idxs[lo..hi].iter().map(|&i| (i, inner.frames[i].clone())).collect()
+                frame_idxs[lo..hi]
+                    .iter()
+                    .map(|&i| (i, inner.frames[i].clone()))
+                    .collect()
             }
             None => Vec::new(),
         }
@@ -690,7 +701,6 @@ mod tests {
         assert_eq!(slice.len(), 2);
     }
 
-
     #[test]
     fn matching_frames_indexed_returns_index_paired_clones() {
         let store = TraceStore::new();
@@ -700,7 +710,10 @@ mod tests {
         }
         let pairs = store.matching_frames_indexed(7, false, 1, 5);
         assert_eq!(
-            pairs.iter().map(|(i, f)| (*i, f.timestamp_ns)).collect::<Vec<_>>(),
+            pairs
+                .iter()
+                .map(|(i, f)| (*i, f.timestamp_ns))
+                .collect::<Vec<_>>(),
             vec![(2, 2_000), (4, 4_000)],
         );
         // Out-of-range start: empty.
@@ -742,7 +755,9 @@ mod tests {
         // Indices preserved in request order; ts proves the right frames.
         let got = store.frames_at(&[4, 1, 2]);
         assert_eq!(
-            got.iter().map(|(i, f)| (*i, f.timestamp_ns)).collect::<Vec<_>>(),
+            got.iter()
+                .map(|(i, f)| (*i, f.timestamp_ns))
+                .collect::<Vec<_>>(),
             vec![(4, 4_000), (1, 1_000), (2, 2_000)],
         );
         // Out-of-range indices are skipped, not panicked on.
@@ -839,10 +854,7 @@ mod tests {
             .map(|r| (r.frame.bus_id.as_deref(), r.frame.timestamp_ns))
             .collect();
         // One row per (bus, channel, id) with each bus's latest frame.
-        assert_eq!(
-            by_bus,
-            vec![(Some("c"), 1_000), (Some("p"), 2_000)],
-        );
+        assert_eq!(by_bus, vec![(Some("c"), 1_000), (Some("p"), 2_000)],);
     }
 
     #[test]
@@ -882,8 +894,7 @@ mod tests {
         store.append(dummy(0, 0x200));
         store.append(dummy_on_bus(1_000, 0x200, "a"));
         let rows = store.latest_since(0);
-        let buses: Vec<Option<&str>> =
-            rows.iter().map(|r| r.frame.bus_id.as_deref()).collect();
+        let buses: Vec<Option<&str>> = rows.iter().map(|r| r.frame.bus_id.as_deref()).collect();
         assert_eq!(buses, vec![None, Some("a")]);
     }
 
@@ -893,9 +904,9 @@ mod tests {
         let t0 = Instant::now();
         let mut r = RateEstimate::first_seen(0, t0);
         assert_eq!(r.rate(t0), 0.0); // one frame: no estimate yet
-        // Second frame: 100 ms apart in *frame time*, but the wall clock
-        // hasn't advanced at all (simulates batched arrival). Rate must
-        // reflect the frame-time interval, not the wall-clock one.
+                                     // Second frame: 100 ms apart in *frame time*, but the wall clock
+                                     // hasn't advanced at all (simulates batched arrival). Rate must
+                                     // reflect the frame-time interval, not the wall-clock one.
         r.observe(100_000_000, t0);
         assert!((r.rate(t0) - 10.0).abs() < 1e-6);
         // No further frames: a second of wall time later the estimate
@@ -976,9 +987,15 @@ mod tests {
         store.append(dummy_on_bus(0, 1, "A"));
         store.append(dummy_on_bus(0, 2, "B"));
         store.append(dummy(0, 3)); // unassigned
-        let buses: Vec<Option<String>> =
-            store.frames_per_second_by_bus().into_iter().map(|(b, _)| b).collect();
-        assert_eq!(buses, vec![None, Some("A".to_string()), Some("B".to_string())]);
+        let buses: Vec<Option<String>> = store
+            .frames_per_second_by_bus()
+            .into_iter()
+            .map(|(b, _)| b)
+            .collect();
+        assert_eq!(
+            buses,
+            vec![None, Some("A".to_string()), Some("B".to_string())]
+        );
     }
 
     #[test]

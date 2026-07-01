@@ -159,7 +159,6 @@ impl TaggedPredicate {
             },
         }
     }
-
 }
 
 thread_local! {
@@ -354,6 +353,8 @@ mod tests {
             .decode_dependent_leaves()
             .is_empty());
         // Invalid predicates contribute nothing.
-        assert!(parse(r#"{"unknown_kind": 42}"#).decode_dependent_leaves().is_empty());
+        assert!(parse(r#"{"unknown_kind": 42}"#)
+            .decode_dependent_leaves()
+            .is_empty());
     }
 }

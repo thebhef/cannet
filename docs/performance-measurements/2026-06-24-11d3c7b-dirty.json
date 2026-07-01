@@ -11,10 +11,10 @@
       }
     },
     "metrics": {
-      "ingest_fps_overall": 25000.06165811604,
-      "fps_retention": 0.9999870946410633,
-      "append_ms_max": 21.000999999999998,
-      "scan_ms_max": 24.0287
+      "ingest_fps_overall": 24942.14116446111,
+      "fps_retention": 0.9953179197815069,
+      "append_ms_max": 21.2799,
+      "scan_ms_max": 24.3656
     }
   },
   "grpc": {
@@ -28,10 +28,10 @@
       }
     },
     "metrics": {
-      "ingest_fps_overall": 2771.3656536684093,
-      "fps_retention": 1.006492539100513,
-      "append_ms_max": 10.180700000000002,
-      "scan_ms_max": 12.6431
+      "ingest_fps_overall": 2882.031288853384,
+      "fps_retention": 1.0123631723125759,
+      "append_ms_max": 8.111,
+      "scan_ms_max": 8.2497
     }
   },
   "hardware_peak": {
@@ -46,10 +46,19 @@
       }
     },
     "metrics": {
-      "ingest_fps_overall": 999.6957376037817,
-      "fps_retention": 1.000146431737747,
-      "append_ms_max": 6.7366,
-      "scan_ms_max": 9.854999999999999
+      "ingest_fps_overall": 999.8354620771833,
+      "fps_retention": 1.0009709326770182,
+      "append_ms_max": 2.3575,
+      "scan_ms_max": 2.6445000000000003
+    }
+  },
+  "frontend": {
+    "label": "ev-demo: 2 plots + 2 traces",
+    "metrics": {
+      "longtask_ms_per_s_mean": 0.0,
+      "longtask_ms_per_s_p95": 0.0,
+      "lag_ms_max": 15.699999928474426,
+      "jank_fraction": 0.0
     }
   }
 }

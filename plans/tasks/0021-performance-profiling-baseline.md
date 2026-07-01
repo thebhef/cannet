@@ -63,7 +63,7 @@ tactical fix committed, but Task 21 is **not finished**. Still owed:
 
 - **Agent-runnable automated harness + checked-in baseline — done.** The
   `cannet-perf-measurement` crate ships a reproducible workload — a
-  rest-of-bus simulation of the `examples/ev-fleet` EV project (two
+  rest-of-bus simulation of the `examples/ev-demo` EV project (two
   physically-bridged buses, seven ECUs, four DBCs, ~515 frames/s) — and
   three source modes that share one model (`TraceStore` + the filtered
   scan), one metric set, and one report shape (`runner.rs`):
@@ -111,22 +111,66 @@ tactical fix committed, but Task 21 is **not finished**. Still owed:
       time per second, frames late against the ~16 ms budget (jank),
       `PlotArea` / panel renders/s, input→paint latency, and
       panel time-to-first-render. The `diag.ts` `lag` / `longtask`
-      signals + render counters are the raw material; today they are only
-      observable by eye in devtools.
+      signals + render counters are the raw material. **Done**: the host
+      `diag` module's `RenderReport` reduces a capture to long-task ms/s
+      (mean / max / p95), lag, jank-second fraction, estimated frames-late
+      per second, and per-counter / per-gauge spreads. Still missing from
+      the metric set: input→paint latency and panel time-to-first-render
+      (both need new frontend instrumentation, not just the existing
+      counters).
     - **Representative drive**: against the real host + real frontend
-      under the `examples/ev-fleet` RBS workload, with representative view
+      under the `examples/ev-demo` RBS workload, with representative view
       configurations (N plot panels / a trace panel / by-ID open), since
-      the saturation is view- and rate-driven, not buffer-driven. This
-      requires **extending the `examples/ev-fleet` project to carry actual
-      plot and trace views** — a real `dockview` layout with the panels
-      open, not just the element records it ships today (its layout blob is
-      empty, so opening it renders nothing). The committed example becomes
-      the representative view configuration the measurement drives.
-    - **Automation**: get those metrics out of the webview as a periodic,
-      machine-readable summary (e.g. a frontend "perf probe" run that
-      scripts a workload and dumps the diag metrics, or the host
-      capturing a pushed perf summary), so a run is diffable like the
-      host harness's baseline rather than a manual devtools session.
+      the saturation is view- and rate-driven, not buffer-driven. The
+      `examples/ev-demo` project **now carries that view set** — a
+      populated `dockview` layout that opens a chronological trace, a
+      by-id trace, a powertrain plot and a battery plot (each a filter-mode
+      area so it draws its bus's signals), and the RBS panel, instead of
+      the empty layout blob it shipped before (which rendered nothing on
+      open). A `cannet-perf-measurement` test
+      (`layout_opens_representative_views`) guards it against drifting back
+      to empty. This committed layout is the representative view
+      configuration the measurement drives; what remains is the measurement
+      itself (metrics + automation).
+    - **Automation — self-driving the real GUI ([ADR 0031](../../docs/adr/0031-gui-performance-automation-self-driving.md);
+      partially done).** During a bracketed capture the `diag.ts` 1 Hz
+      reporter pushes each second's snapshot to the host (`diag_push`);
+      `diag_capture_start` / `diag_capture_finish` arm and finalise it, and
+      the host reduces the series to a `RenderReport` written as JSON. Two
+      ways to bracket a run: an operator from the devtools console via
+      `window.__cannetPerf.begin(label)` / `.end(path)`, or **the
+      self-driving launch flags** — `--project` / `--connect-on-start` /
+      `--perf-capture-secs` / `--perf-out` (+ `--perf-label`), parsed by the
+      host (`AutomationConfig::from_args`), served to the webview
+      (`diag_autostart`), which then opens the project, connects, captures
+      for the span, writes the report, and exits with no operator. The
+      self-driving flow was run end-to-end on 2026-06-23 (production build,
+      `ev-demo` over PCAN, ~1030 fps) and produced a valid `RenderReport` —
+      ~600 `PlotArea` renders/s under load with the UI thread staying
+      responsive (`lag` max 16 ms, zero janky seconds, `longtask` genuinely
+      0 — the observer is live, re-confirmed by an 82 ms/s reading under a
+      debug build). **Baseline/check fold — done (2026-06-24).** A
+      `frontend` block now slots beside the host modes in the baseline
+      file — a purely additive optional field, so no `baseline_version`
+      bump and existing baselines keep checking (ADR 0011).
+      `cannet-perf-measurement` gained a
+      `--frontend-report <path>` flag and a `frontend` module that mirrors
+      the gated UX-health subset (`longtask_ms_per_s` mean + p95,
+      `lag_ms.max`, `jank_fraction`; `frames_late_per_s_mean` dropped as
+      collinear with long-task mean). `baseline --frontend-report` stores
+      those metrics; `check --frontend-report` gates a fresh report against
+      them with the hardware-absent "compare-don't-rerun" pattern (no
+      report → omitted at capture, skipped at check). `check` now compares
+      against a canonical `docs/performance-measurements/baseline.json`
+      (replacing the fragile "newest `.json` in the dir wins" discovery,
+      which mistook a frontend report written beside the baselines for one
+      and broke `check`); `baseline` still writes a dated
+      `<date>-<hash>[-dirty].json` snapshot, and promoting one to the
+      reference is a deliberate copy to `baseline.json`. Frontend render
+      reports live under `docs/performance-measurements/frontend/`, apart
+      from the host baseline they feed. Note: the committed `ev-demo` project binds to physical
+      PCAN, so a hardware-free render run needs a project that binds to a
+      virtual bus (a property of the saved project, per ADR 0031).
     This is end-to-end "server ingest → GUI render" latency the original
     scope named, captured at the tier the host-side harness can't reach.
 - **Ingest/TX lock contention — full fix.** The tactical
@@ -161,6 +205,67 @@ tactical fix committed, but Task 21 is **not finished**. Still owed:
     `fetch_filtered_trace`). Still owed there: the true O(Δ) incremental
     match-count and the full virtual-bus FPS-flat regression test.
   Neither case is frame loss (sidecar `total` == host `count`).
+- **TX residual jitter — grid catch-up after late wakes (observed
+  2026-06-23; mechanism confirmed, root cause of the late wake not yet
+  confirmed).** After the two stalls above were fixed, a 20 ms periodic
+  still shows ~5–6 intervals at ~20 ms then a pair ~5 ms apart, repeating.
+  This is *not* drift or loss (`sent`/s still matches the schedule
+  exactly) — it's the fixed-rate grid paying back a late wake. Confirmed
+  mechanism from the code: the scheduler reschedules on the grid
+  (`next_tick_deadline` → `deadline + period`, not `now + period`), so a
+  wake that returns ~15 ms late fires then, and the *next* grid deadline is
+  only ~5 ms out → the short catch-up interval before it re-settles at
+  20 ms. Corroborated by the sidecar `max_gap` (21–33 ms on the 20 ms
+  message — the late wake; the 5 ms double is its payback). Magnitude is
+  jitter (tens of ms), not the multi-hundred-ms stalls above. Two
+  candidate causes for the *late wake* were: (a) Windows timer
+  granularity (`rx.recv_timeout` ~15.6 ms unless `timeBeginPeriod(1)` is
+  held), and (b) `trace_store` lock contention in the fire path (tx-confirm
+  `append` blocked by the scan, same lock family as the stalls above).
+  **Experiment run 2026-06-24** — a per-second wake-lateness histogram +
+  max fire-duration probe (`SchedDiag`, dev-log target `tx-sched`) over a
+  60 s debug run against the live PCAN bus, buffer growing 0 → 64 k frames:
+  - **Timer granularity falsified.** Every second's wakes fell in the
+    `<2 ms` bucket (`max_late` 1.7–2.5 ms) — the `8–18`/`18–30`/`≥30`
+    buckets never populated (one lone 77 ms outlier across ~14 k wakes).
+    `recv_timeout` returns within ~2 ms, so WebView2 is holding the global
+    timer at ~1 ms; a `timeBeginPeriod(1)` fix would be treating a
+    non-cause.
+  - **No contention at 64 k frames.** `max_fire` stayed sub-millisecond
+    (≤ 3.2 ms once). TX is clean at this scale — which is why the double
+    only appears on *long* sessions (the original `max_gap` reading was at
+    ~515 s / 530 k frames).
+  So the surviving cause is (b), the **buffer-proportional
+  `scan_window_filtered` lock** already documented under "Diagnosis
+  findings" — not a new timer problem. **Follow-up runs (2026-06-24)
+  to 250 k and 506 k frames stayed clean**: wakes held in the `<2 ms`
+  bucket throughout, `max_fire` ≤ 8.65 ms (a lone outlier over ~130 k
+  wakes; steady-state ~0.5 ms), `max_late` ≤ 5.9 ms. So the jitter is
+  **not** a steady-state property of the running workload even at the
+  buffer scale where it was originally seen (~515 s). It needs a trigger
+  the *unattended* run lacks — the O(buffer) filtered / by-id scans only
+  fire hard when those views are **actively scrolled / refreshed**, so the
+  residual jitter is **interaction-triggered** scan-lock contention at high
+  buffer, not something the live bus produces on its own. To reproduce it
+  in automation we'd have to drive the heavy-view scroll (the self-driving
+  flags don't). The fix still maps to the already-planned O(Δ) incremental
+  match-count + bounded lock-hold (Task 17 Slice 2), **not**
+  `timeBeginPeriod`.
+- **Dev-terminal log firehose degraded TX regularity — fixed
+  (2026-06-23).** `init_tracing_subscriber` installed a bare `fmt` layer
+  with no filter, so every crate logged at TRACE (the `tonic` / `h2` /
+  `hyper` transport firehose under a live gRPC session) and `RUST_LOG` was
+  ignored. Volume itself wasn't the cost — it was the editor's integrated
+  terminal *rendering* that firehose live (an Electron CPU sink on the same
+  machine the scheduler runs on): a direct-exe run piping the same volume
+  to a file was markedly steadier than `tauri dev` in the VSCode terminal.
+  Fixed by giving the subscriber an `EnvFilter` (default
+  `info,tonic=warn,h2=warn,hyper=warn,hyper_util=warn,tower=warn`,
+  honouring `RUST_LOG`); the System Messages panel is unaffected (fed by
+  `emit_system_log`, not this layer). Quieting the terminal visibly
+  improved TX regularity — but the grid-catch-up jitter above remains, so
+  this was a contributor, not the whole story. Broader per-source
+  log-volume control (sidecar, frontend) stays the backlog item.
 
 ## Diagnosis findings (confirmed 2026-06-21)
 
@@ -288,7 +393,7 @@ cache/reporting surface — Task 17 Slice 4 rewrites it.
    (host-side — the trace_store lock). Both fixed; see "TX steady-state
    regularity" above. The `max_gap` probe was added to disambiguate them.
 3. **Automated harness + checked-in baseline — done (all three modes).**
-   `cannet-perf-measurement` ships the `examples/ev-fleet` workload and the
+   `cannet-perf-measurement` ships the `examples/ev-demo` workload and the
    `tracebuffer` (in-process), `grpc` (virtual bus over real gRPC), and
    `hardware-peak` (full stack over PEAK hardware, validated) modes;
    `baseline` writes a dated file under `docs/performance-measurements/`

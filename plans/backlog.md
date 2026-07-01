@@ -201,6 +201,16 @@ trip over it.
   panel shows its own re-sample rate now; generalise that to a small
   always-available indicator so other panels' costs are visible too.
   Useful while tuning the trace virtualizer and any future heavy view.
+- `[feat]` **Configurable log volume / verbosity.** Logging volume is
+  fixed today — the host System Messages bus, the python-can sidecar,
+  and the frontend `diag` stream each emit at a hard-coded level with no
+  user control. We'll want a way to configure how much is logged: a
+  minimum level (and ideally per-source filtering) plus volume guards
+  (rate limiting / retention or ring-buffer caps) so a chatty source
+  can't drown the panel or grow unbounded. Natural home is the Settings
+  panel (see the `clear scratch cache on exit` item) once it exists.
+  Surfaced while building the Task 21 frontend perf capture, which adds
+  yet another log/metric stream.
 - `[ui]` GUI-wide visual restyle: adopt the dark "scope" visual
   language from `plans/plot-panel-reference.html` (the prototype's colour
   variables, monospace type scale, panel chrome, control styling) across

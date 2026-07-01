@@ -1,6 +1,6 @@
 //! Agent-runnable performance / integration harness for cannet.
 //!
-//! The harness drives a reproducible CAN workload — the `examples/ev-fleet`
+//! The harness drives a reproducible CAN workload — the `examples/ev-demo`
 //! project (an EV model: powertrain and battery buses with a
 //! BMS, dual traction inverters, and thermal / DC-DC / OBC ECUs) — through
 //! the host model and emits machine-readable metrics that a baseline can be
@@ -27,6 +27,7 @@ use cannet_dbc::Database;
 use cannet_gui_lib::{parse_message_key, Project, RbsFile, PROJECT_SCHEMA_VERSION};
 
 pub mod check;
+pub mod frontend;
 pub mod runner;
 pub mod sidecar;
 pub mod tracebuffer;
@@ -40,7 +41,7 @@ pub struct LoadedDbc {
     pub db: Database,
 }
 
-/// The parsed `examples/ev-fleet` project: the project document, its RBS
+/// The parsed `examples/ev-demo` project: the project document, its RBS
 /// simulation, and every DBC it references — each validated against the
 /// real parser the GUI uses.
 pub struct LoadedExample {
@@ -55,7 +56,7 @@ pub struct LoadedExample {
 /// directory.
 #[must_use]
 pub fn default_example_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/ev-fleet")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/ev-demo")
 }
 
 /// Directory holding the dated, git-stamped performance baselines.
@@ -78,17 +79,13 @@ pub fn measurement_filename() -> String {
     format!("{date}-{hash}{dirty}.json")
 }
 
-/// The newest `.json` baseline in `dir`, by modification time.
+/// The canonical committed baseline `check` compares against by default.
+/// Dated measurement snapshots (`measurement_filename`) sit beside it for
+/// archival; promoting one to the reference is a deliberate copy to this
+/// path, not a "newest file wins" guess.
 #[must_use]
-pub fn latest_measurement(dir: &Path) -> Option<PathBuf> {
-    let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)
-        .ok()?
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "json"))
-        .collect();
-    paths.sort_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok());
-    paths.pop()
+pub fn default_baseline_path() -> PathBuf {
+    default_measurements_dir().join("baseline.json")
 }
 
 fn git_output(args: &[&str]) -> Option<String> {
@@ -104,8 +101,8 @@ fn git_output(args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// Load and parse the example project at `dir`: the `.cannet` project
-/// (schema-checked), the `.cannet_rbs` simulation, and each referenced
+/// Load and parse the example project at `dir`: the `.cannet_prj`
+/// project (schema-checked), the `.cannet_rbs` simulation, and each referenced
 /// DBC (paths resolved relative to `dir`). Every parse goes through the
 /// production parser, so a malformed artifact fails here.
 ///
@@ -113,7 +110,7 @@ fn git_output(args: &[&str]) -> Option<String> {
 /// Returns a human-readable message if any file is missing, unreadable,
 /// fails to parse, or carries an unsupported schema version.
 pub fn load_example(dir: &Path) -> Result<LoadedExample, String> {
-    let project_path = dir.join("ev-fleet.cannet");
+    let project_path = dir.join("ev-demo.cannet_prj");
     let project_text = std::fs::read_to_string(&project_path)
         .map_err(|e| format!("reading {}: {e}", project_path.display()))?;
     let project: Project = serde_json::from_str(&project_text)
@@ -126,7 +123,7 @@ pub fn load_example(dir: &Path) -> Result<LoadedExample, String> {
         ));
     }
 
-    let rbs_path = dir.join("ev-fleet.cannet_rbs");
+    let rbs_path = dir.join("ev-demo.cannet_rbs");
     let rbs_text = std::fs::read_to_string(&rbs_path)
         .map_err(|e| format!("reading {}: {e}", rbs_path.display()))?;
     let rbs = RbsFile::parse(&rbs_text).map_err(|e| format!("{}: {e}", rbs_path.display()))?;

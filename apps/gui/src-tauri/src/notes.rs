@@ -103,7 +103,9 @@ impl NotesStore {
             .position(|n| n.timestamp_ns > note.timestamp_ns)
             .unwrap_or(guard.len());
         guard.insert(pos, note);
-        Some(Applied { notes: guard.clone() })
+        Some(Applied {
+            notes: guard.clone(),
+        })
     }
 
     /// Rename a note. `None` if `id` is unknown.
@@ -111,7 +113,9 @@ impl NotesStore {
         let mut guard = self.inner.lock().expect("notes mutex poisoned");
         let slot = guard.iter_mut().find(|n| n.id == id)?;
         slot.label = label.into();
-        Some(Applied { notes: guard.clone() })
+        Some(Applied {
+            notes: guard.clone(),
+        })
     }
 
     /// Remove a note. `None` if `id` is unknown.
@@ -122,7 +126,9 @@ impl NotesStore {
         if guard.len() == before {
             return None;
         }
-        Some(Applied { notes: guard.clone() })
+        Some(Applied {
+            notes: guard.clone(),
+        })
     }
 
     /// Drop every note. Emits `Some` only if there was anything
@@ -147,7 +153,9 @@ impl NotesStore {
         notes.sort_by_key(|n| n.timestamp_ns);
         let mut guard = self.inner.lock().expect("notes mutex poisoned");
         *guard = notes;
-        Applied { notes: guard.clone() }
+        Applied {
+            notes: guard.clone(),
+        }
     }
 }
 
@@ -228,12 +236,14 @@ mod tests {
         let n = note("a", 1_700_000_000_000_000_000, "first");
         let v = serde_json::to_value(&n).unwrap();
         assert_eq!(v["timestampNs"], 1_700_000_000_000_000_000_u64);
-        assert!(v.get("timestamp_ns").is_none(), "snake_case must not leak: {v}");
+        assert!(
+            v.get("timestamp_ns").is_none(),
+            "snake_case must not leak: {v}"
+        );
 
-        let parsed: Note = serde_json::from_str(
-            r#"{"id":"a","timestampNs":1700000000000000000,"label":"first"}"#,
-        )
-        .unwrap();
+        let parsed: Note =
+            serde_json::from_str(r#"{"id":"a","timestampNs":1700000000000000000,"label":"first"}"#)
+                .unwrap();
         assert_eq!(parsed, n);
     }
 
@@ -246,7 +256,11 @@ mod tests {
             note("b", 2_000, "two"),
         ]);
         assert_eq!(
-            applied.notes.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(),
+            applied
+                .notes
+                .iter()
+                .map(|n| n.id.as_str())
+                .collect::<Vec<_>>(),
             vec!["a", "b", "c"],
         );
     }

@@ -304,7 +304,12 @@ impl RbsRuntime {
         let file = seeded_file(&self.project_buses);
         self.elements.insert(
             element_id.to_string(),
-            RbsElementState { path: None, file, dirty: false, run: false },
+            RbsElementState {
+                path: None,
+                file,
+                dirty: false,
+                run: false,
+            },
         );
         true
     }
@@ -400,14 +405,62 @@ fn reconstruct_payload(
 // Registration and schedule reconciliation
 // ---------------------------------------------------------------------
 
+/// Whether DBC `d` is scoped to bus `bus_id`. An empty scope is the
+/// "applies to all buses" default.
+fn dbc_scoped_to(d: &crate::LoadedDbc, bus_id: &str) -> bool {
+    d.buses.is_empty() || d.buses.iter().any(|b| b == bus_id)
+}
+
+/// Visit every message the rest-of-bus simulation should show for
+/// `bus_id`, drawn from **all** DBCs scoped to that bus — a bus may
+/// have several (the ev-demo example scopes two per bus). Messages
+/// sharing an id are de-duplicated, first DBC on the bus winning. For
+/// each surviving message `visit` receives the owning database, the
+/// message key, its [`cannet_core::CanId`], the decoded descriptor, and
+/// the resolved transmitter (ECU) name. The row rebuild and the panel
+/// view share this so they can never disagree about which messages a
+/// bus carries.
+fn for_each_scoped_message<F>(dbs: &[crate::LoadedDbc], bus_id: &str, mut visit: F)
+where
+    F: FnMut(
+        &cannet_dbc::Database,
+        &str,
+        cannet_core::CanId,
+        &cannet_dbc::MessageDescriptor,
+        &str,
+    ),
+{
+    let mut seen: HashSet<String> = HashSet::new();
+    for loaded in dbs.iter().filter(|d| dbc_scoped_to(d, bus_id)) {
+        for content in loaded.db.dbc_content() {
+            let key = format_message_key(content.message_id, content.extended);
+            let id = if content.extended {
+                cannet_core::CanId::extended(content.message_id)
+            } else {
+                cannet_core::CanId::standard(content.message_id)
+            };
+            let Ok(id) = id else { continue };
+            let Some(desc) = loaded.db.describe_message(id) else {
+                continue;
+            };
+            if !seen.insert(key.clone()) {
+                continue;
+            }
+            let ecu_name = desc
+                .transmitter
+                .clone()
+                .unwrap_or_else(|| "(no transmitter)".to_string());
+            visit(&loaded.db, &key, id, &desc, &ecu_name);
+        }
+    }
+}
+
 /// Rebuild one element's registry rows: **every DBC message on each
 /// resolved file bus** gets a provenance-tagged registry entry with a
 /// freshly reconstructed buffer (overrides applied where the file has
 /// an entry); rows that no longer resolve are removed. Returns
 /// warnings to surface (file entries no DBC defines, transmitter
 /// mismatches, bad overrides).
-// One pass over the DBC tree with per-row assembly inline — splitting
-// it would thread eight locals through a helper for no clarity gain.
 #[allow(clippy::too_many_lines)]
 fn rebuild_element_rows(state: &AppState, element_id: &str) -> Vec<String> {
     let rbs = state.rbs.lock().expect("rbs mutex poisoned");
@@ -425,31 +478,15 @@ fn rebuild_element_rows(state: &AppState, element_id: &str) -> Vec<String> {
             // never a load failure (ADR 0028).
             continue;
         };
-        // One bus simulates one DBC's tree (the first scoped to it).
-        let Some(loaded) = dbs
-            .iter()
-            .find(|d| d.buses.is_empty() || d.buses.iter().any(|b| b == &bus_id))
-        else {
+        // No DBC scoped to this bus: skip it entirely — no rows, and no
+        // "undefined message" warnings for the file's entries.
+        if !dbs.iter().any(|d| dbc_scoped_to(d, &bus_id)) {
             continue;
-        };
+        }
         let mut covered: HashSet<String> = HashSet::new();
-        for content in loaded.db.dbc_content() {
-            let msg_key = format_message_key(content.message_id, content.extended);
-            let id = if content.extended {
-                cannet_core::CanId::extended(content.message_id)
-            } else {
-                cannet_core::CanId::standard(content.message_id)
-            };
-            let Ok(id) = id else { continue };
-            let Some(desc) = loaded.db.describe_message(id) else {
-                continue;
-            };
-            covered.insert(msg_key.clone());
-            let ecu_name = desc
-                .transmitter
-                .clone()
-                .unwrap_or_else(|| "(no transmitter)".to_string());
-            let entry = element.file.entry_for(bus_key, &msg_key);
+        for_each_scoped_message(&dbs, &bus_id, |db, msg_key, id, desc, ecu_name| {
+            covered.insert(msg_key.to_string());
+            let entry = element.file.entry_for(bus_key, msg_key);
             if let Some((file_ecu, _)) = entry {
                 if file_ecu != ecu_name {
                     warnings.push(format!(
@@ -459,10 +496,11 @@ fn rebuild_element_rows(state: &AppState, element_id: &str) -> Vec<String> {
                 }
             }
             let msg = entry.map_or(&no_overrides, |(_, m)| m);
-            let (data, mut w) =
-                reconstruct_payload(&loaded.db, id, &desc, msg, element.file.fill_bit);
-            warnings
-                .extend(w.drain(..).map(|w| format!("{bus_key}/{ecu_name}/{msg_key}: {w}")));
+            let (data, mut w) = reconstruct_payload(db, id, desc, msg, element.file.fill_bit);
+            warnings.extend(
+                w.drain(..)
+                    .map(|w| format!("{bus_key}/{ecu_name}/{msg_key}: {w}")),
+            );
             let calc = if msg.counter.is_some() || msg.crc.is_some() {
                 Some(CalcFieldsSpec {
                     counter: msg.counter.clone(),
@@ -472,13 +510,17 @@ fn rebuild_element_rows(state: &AppState, element_id: &str) -> Vec<String> {
                 None
             };
             desired.push(TransmitFrame {
-                id: row_id(element_id, bus_key, &msg_key),
+                id: row_id(element_id, bus_key, msg_key),
                 description: String::new(),
                 request: TransmitRequest {
                     bus_id: bus_id.clone(),
-                    id: content.message_id,
-                    extended: content.extended,
-                    kind: if desc.is_fd { TransmitKind::Fd } else { TransmitKind::Classic },
+                    id: id.raw(),
+                    extended: id.is_extended(),
+                    kind: if desc.is_fd {
+                        TransmitKind::Fd
+                    } else {
+                        TransmitKind::Classic
+                    },
                     data,
                     brs: desc.brs,
                     esi: false,
@@ -489,12 +531,12 @@ fn rebuild_element_rows(state: &AppState, element_id: &str) -> Vec<String> {
                 source: TransmitSource::Rbs {
                     element: element_id.to_string(),
                     bus: bus_key.clone(),
-                    ecu: ecu_name,
-                    message: msg_key,
+                    ecu: ecu_name.to_string(),
+                    message: msg_key.to_string(),
                 },
                 calc,
             });
-        }
+        });
         // File entries the DBC doesn't define: carried (the overrides
         // are the user's), warned, no row (ADR 0028).
         if let Some(bus) = element.file.buses.get(bus_key) {
@@ -657,7 +699,12 @@ pub async fn rbs_load(
         let run = rbs.elements.get(&element_id).is_some_and(|e| e.run);
         rbs.elements.insert(
             element_id.clone(),
-            RbsElementState { path: Some(path.clone()), file, dirty: false, run },
+            RbsElementState {
+                path: Some(path.clone()),
+                file,
+                dirty: false,
+                run,
+            },
         );
     }
     sys_info!(&app, "rbs", "loaded RBS config {path}");
@@ -794,7 +841,11 @@ pub async fn rbs_set_kill_switch(
         &app,
         "rbs",
         "global RBS kill-switch {}",
-        if on { "ON — all simulation transmit stopped" } else { "off" }
+        if on {
+            "ON — all simulation transmit stopped"
+        } else {
+            "off"
+        }
     );
     sync_schedules(&state);
     // Dedicated event so every surface that mirrors the runtime-only
@@ -807,12 +858,7 @@ pub async fn rbs_set_kill_switch(
 /// Mutate one element's file document in place, mark it dirty, and
 /// run the rebuild/resolve/sync/notify tail. The closure returns
 /// `Err` to reject the edit (nothing is marked dirty).
-fn edit_file<F>(
-    app: &AppHandle,
-    state: &AppState,
-    element_id: &str,
-    edit: F,
-) -> Result<(), String>
+fn edit_file<F>(app: &AppHandle, state: &AppState, element_id: &str, edit: F) -> Result<(), String>
 where
     F: FnOnce(&mut RbsFile) -> Result<(), String>,
 {
@@ -831,12 +877,7 @@ where
 
 /// Address one message entry in a file, creating the path (bus → ecu
 /// → message) if missing.
-fn entry_mut<'a>(
-    file: &'a mut RbsFile,
-    bus: &str,
-    ecu: &str,
-    message: &str,
-) -> &'a mut RbsMessage {
+fn entry_mut<'a>(file: &'a mut RbsFile, bus: &str, ecu: &str, message: &str) -> &'a mut RbsMessage {
     file.buses
         .entry(bus.to_string())
         .or_insert_with(RbsBus::new)
@@ -877,7 +918,12 @@ pub async fn rbs_set_enabled(
         let new_bus = !element.file.buses.contains_key(&bus);
         match (&ecu, &message) {
             (None, _) => {
-                element.file.buses.entry(bus).or_insert_with(RbsBus::new).enabled = enabled;
+                element
+                    .file
+                    .buses
+                    .entry(bus)
+                    .or_insert_with(RbsBus::new)
+                    .enabled = enabled;
             }
             (Some(ecu), None) => {
                 element
@@ -1197,7 +1243,11 @@ pub struct RbsSignalView {
 /// Assemble the panel view for one element. `None` if the element
 /// isn't loaded.
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value, clippy::too_many_lines, clippy::unused_async)]
+#[allow(
+    clippy::needless_pass_by_value,
+    clippy::too_many_lines,
+    clippy::unused_async
+)]
 pub async fn rbs_view(
     state: State<'_, AppState>,
     element_id: String,
@@ -1228,85 +1278,63 @@ pub async fn rbs_view(
         // entries.
         let mut ecus: BTreeMap<String, Vec<RbsMessageView>> = BTreeMap::new();
         if let Some(bus_id) = &bus_id {
-            // One bus renders one DBC's tree (the first scoped to it)
-            // — the common case is exactly one DBC per bus.
-            let applicable = dbs
-                .iter()
-                .find(|d| d.buses.is_empty() || d.buses.iter().any(|b| b == bus_id));
-            if let Some(loaded) = applicable {
-                for content in loaded.db.dbc_content() {
-                    let key = format_message_key(content.message_id, content.extended);
-                    let id = if content.extended {
-                        cannet_core::CanId::extended(content.message_id)
-                    } else {
-                        cannet_core::CanId::standard(content.message_id)
-                    };
-                    let Ok(id) = id else { continue };
-                    let Some(desc) = loaded.db.describe_message(id) else {
-                        continue;
-                    };
-                    let ecu_name = desc
-                        .transmitter
-                        .clone()
-                        .unwrap_or_else(|| "(no transmitter)".to_string());
-                    // The file entry, if the message is listed —
-                    // under *any* ECU key (hand-edits may misplace
-                    // it; the DBC grouping wins, with a warning).
-                    let file_entry: Option<(&String, &RbsMessage)> = bus
-                        .ecus
-                        .iter()
-                        .find_map(|(ek, e)| e.messages.get(&key).map(|m| (ek, m)));
-                    let view = build_message_view(
-                        MessageViewInputs {
-                            element_id: &element_id,
-                            bus_key,
-                            key: &key,
-                            enabled: element.file.is_message_enabled(bus_key, &key),
-                            id,
-                            db: &loaded.db,
-                            desc: &desc,
-                            file_entry,
-                            fill_bit: element.file.fill_bit,
-                            ecu_name: &ecu_name,
-                        },
-                        &registry,
-                    );
-                    ecus.entry(ecu_name).or_default().push(view);
-                }
-            }
+            for_each_scoped_message(&dbs, bus_id, |db, key, id, desc, ecu_name| {
+                // The file entry, if the message is listed — under *any*
+                // ECU key (hand-edits may misplace it; the DBC grouping
+                // wins, with a warning).
+                let file_entry: Option<(&String, &RbsMessage)> = bus
+                    .ecus
+                    .iter()
+                    .find_map(|(ek, e)| e.messages.get(key).map(|m| (ek, m)));
+                let view = build_message_view(
+                    MessageViewInputs {
+                        element_id: &element_id,
+                        bus_key,
+                        key,
+                        enabled: element.file.is_message_enabled(bus_key, key),
+                        id,
+                        db,
+                        desc,
+                        file_entry,
+                        fill_bit: element.file.fill_bit,
+                        ecu_name,
+                    },
+                    &registry,
+                );
+                ecus.entry(ecu_name.to_string()).or_default().push(view);
+            });
         }
         // File-listed messages no DBC defines (or for an unresolved
         // bus): inert rows under their file ECU.
         for (ecu_key, ecu) in &bus.ecus {
             for (msg_key, msg) in &ecu.messages {
-                let already = ecus
-                    .values()
-                    .flatten()
-                    .any(|m| &m.key == msg_key);
+                let already = ecus.values().flatten().any(|m| &m.key == msg_key);
                 if already {
                     continue;
                 }
                 let (message_id, extended) = parse_message_key(msg_key).unwrap_or((0, false));
-                ecus.entry(ecu_key.clone()).or_default().push(RbsMessageView {
-                    key: msg_key.clone(),
-                    message_id,
-                    extended,
-                    name: None,
-                    in_file: true,
-                    enabled: element.file.is_message_enabled(bus_key, msg_key),
-                    running: false,
-                    period_ms: msg.period_ms,
-                    period_overridden: msg.period_ms.is_some(),
-                    is_fd: false,
-                    expected_len: 0,
-                    data: Vec::new(),
-                    counter: msg.counter.clone(),
-                    counter_overridden: msg.counter.is_some(),
-                    crc: msg.crc.clone(),
-                    crc_overridden: msg.crc.is_some(),
-                    transmitter_mismatch: None,
-                    signals: Vec::new(),
-                });
+                ecus.entry(ecu_key.clone())
+                    .or_default()
+                    .push(RbsMessageView {
+                        key: msg_key.clone(),
+                        message_id,
+                        extended,
+                        name: None,
+                        in_file: true,
+                        enabled: element.file.is_message_enabled(bus_key, msg_key),
+                        running: false,
+                        period_ms: msg.period_ms,
+                        period_overridden: msg.period_ms.is_some(),
+                        is_fd: false,
+                        expected_len: 0,
+                        data: Vec::new(),
+                        counter: msg.counter.clone(),
+                        counter_overridden: msg.counter.is_some(),
+                        crc: msg.crc.clone(),
+                        crc_overridden: msg.crc.is_some(),
+                        transmitter_mismatch: None,
+                        signals: Vec::new(),
+                    });
             }
         }
 
@@ -1315,7 +1343,11 @@ pub async fn rbs_view(
             .map(|(name, mut messages)| {
                 messages.sort_by_key(|a| (a.extended, a.message_id));
                 let enabled = bus.ecus.get(&name).is_none_or(|e| e.enabled);
-                RbsEcuView { name, enabled, messages }
+                RbsEcuView {
+                    name,
+                    enabled,
+                    messages,
+                }
             })
             .collect();
         buses.push(RbsBusView {
@@ -1382,8 +1414,7 @@ fn build_message_view(
     // fly.
     let registry_data = registry.request_data(&row_id(element_id, bus_key, key));
     let running = registry.is_running(&row_id(element_id, bus_key, key));
-    let data = registry_data
-        .unwrap_or_else(|| reconstruct_payload(db, id, desc, msg, fill_bit).0);
+    let data = registry_data.unwrap_or_else(|| reconstruct_payload(db, id, desc, msg, fill_bit).0);
 
     // Effective designations: override else DBC default (per field).
     let dbc_calc = CalcFieldsSpec::from_config(&desc.calc_fields);
@@ -1479,7 +1510,12 @@ mod tests {
         assert_eq!(parse_message_key("10x"), Ok((0x10, true)));
         assert_eq!(parse_message_key("0x10"), Ok((0x10, false)));
         assert_eq!(parse_message_key("0X1AX"), Ok((0x1A, true)));
-        for (id, ext) in [(0u32, false), (0, true), (0x7FF, false), (0x1FFF_FFFF, true)] {
+        for (id, ext) in [
+            (0u32, false),
+            (0, true),
+            (0x7FF, false),
+            (0x1FFF_FFFF, true),
+        ] {
             assert_eq!(
                 parse_message_key(&format_message_key(id, ext)),
                 Ok((id, ext)),
@@ -1604,8 +1640,50 @@ BA_ "CannetCrc" SG_ 291 Crc8 "alg=CRC-8/SAE-J1850;range=0:56";
 VAL_ 291 TargetMode 0 "Off" 1 "Standby" 2 "Active";
 "#;
 
+    /// A second, disjoint DBC (message 0x300, transmitter `MOT`) used to
+    /// exercise more-than-one-DBC-per-bus scoping.
+    const SECOND_DBC: &str = r#"VERSION ""
+NS_ :
+BS_:
+BU_: MOT
+BO_ 768 MotorStatus: 8 MOT
+ SG_ Rpm : 0|16@1+ (1,0) [0|65535] "" Vector__XXX
+BA_DEF_ BO_ "GenMsgCycleTime" INT 0 100000;
+BA_DEF_DEF_ "GenMsgCycleTime" 0;
+BA_ "GenMsgCycleTime" BO_ 768 20;
+"#;
+
+    /// A third DBC (message 0x500) scoped to a *different* bus, to prove
+    /// the scoping filter excludes off-bus DBCs.
+    const THIRD_DBC: &str = r#"VERSION ""
+NS_ :
+BS_:
+BU_: AUX
+BO_ 1280 AuxFrame: 8 AUX
+ SG_ Val : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+"#;
+
     fn db() -> cannet_dbc::Database {
         cannet_dbc::Database::parse(RBS_DBC).unwrap()
+    }
+
+    /// The scoped-message visitor — shared by the row rebuild and the
+    /// panel view — unions every DBC scoped to the bus, de-dupes shared
+    /// ids (first DBC wins), and excludes DBCs scoped to other buses.
+    #[test]
+    fn scoped_message_visitor_unions_dedups_and_filters_by_bus() {
+        let dbs = vec![
+            crate::tests::loaded_scoped("a.dbc", RBS_DBC, &["p1"]), // 0x123, 0x200
+            crate::tests::loaded_scoped("a2.dbc", RBS_DBC, &["p1"]), // dup ids → deduped
+            crate::tests::loaded_scoped("b.dbc", SECOND_DBC, &["p1"]), // 0x300
+            crate::tests::loaded_scoped("c.dbc", THIRD_DBC, &["p2"]), // off-bus → excluded
+        ];
+        let mut keys = Vec::new();
+        for_each_scoped_message(&dbs, "p1", |_db, key, _id, _desc, _ecu| {
+            keys.push(key.to_string());
+        });
+        keys.sort();
+        assert_eq!(keys, vec!["0x123", "0x200", "0x300"]);
     }
 
     #[test]
@@ -1616,18 +1694,24 @@ VAL_ 291 TargetMode 0 "Off" 1 "Standby" 2 "Active";
 
         // Fill 1 + defaults only: untouched bytes are 0xFF, defaulted
         // signals carry GenSigStartValue (raw 2 / raw 1000).
-        let (buf, warnings) =
-            reconstruct_payload(&database, id, &desc, &RbsMessage::new(), 1);
+        let (buf, warnings) = reconstruct_payload(&database, id, &desc, &RbsMessage::new(), 1);
         assert!(warnings.is_empty());
         assert_eq!(buf[0], 2, "TargetMode raw default");
-        assert_eq!(u16::from_le_bytes([buf[1], buf[2]]), 1000, "PackVoltage raw");
+        assert_eq!(
+            u16::from_le_bytes([buf[1], buf[2]]),
+            1000,
+            "PackVoltage raw"
+        );
         assert_eq!(buf[7], 0xFF, "no default → fill bit");
 
         // Overrides: enum by label, hex raw, physical number.
         let mut msg = RbsMessage::new();
-        msg.signals.insert("TargetMode".into(), RbsValue::Text("Standby".into()));
-        msg.signals.insert("PackVoltage".into(), RbsValue::Number(403.2));
-        msg.signals.insert("AliveCtr".into(), RbsValue::Text("0xA".into()));
+        msg.signals
+            .insert("TargetMode".into(), RbsValue::Text("Standby".into()));
+        msg.signals
+            .insert("PackVoltage".into(), RbsValue::Number(403.2));
+        msg.signals
+            .insert("AliveCtr".into(), RbsValue::Text("0xA".into()));
         msg.signals.insert("Nope".into(), RbsValue::Number(1.0));
         let (buf, warnings) = reconstruct_payload(&database, id, &desc, &msg, 0);
         assert_eq!(buf[0], 1, "enum label Standby = raw 1");
@@ -1638,10 +1722,75 @@ VAL_ 291 TargetMode 0 "Off" 1 "Standby" 2 "Active";
 
         // Unknown enum label warns and leaves the default in place.
         let mut msg = RbsMessage::new();
-        msg.signals.insert("TargetMode".into(), RbsValue::Text("Nonsense".into()));
+        msg.signals
+            .insert("TargetMode".into(), RbsValue::Text("Nonsense".into()));
         let (buf, warnings) = reconstruct_payload(&database, id, &desc, &msg, 0);
         assert_eq!(buf[0], 2, "default survives a bad override");
         assert_eq!(warnings.len(), 1);
+    }
+
+    /// A bus may have more than one DBC scoped to it (the `ev-demo`
+    /// example scopes two per bus). Every message from *every* scoped
+    /// DBC must load — not just the first DBC's — and a file entry a
+    /// later DBC defines must not be reported as "no DBC defines it".
+    #[test]
+    fn rows_union_across_every_dbc_scoped_to_a_bus() {
+        let state = crate::tests::test_state();
+        // Two DBCs, both scoped to bus p1.
+        state
+            .databases
+            .lock()
+            .unwrap()
+            .push(crate::tests::loaded_scoped("a.dbc", RBS_DBC, &["p1"]));
+        state
+            .databases
+            .lock()
+            .unwrap()
+            .push(crate::tests::loaded_scoped("b.dbc", SECOND_DBC, &["p1"]));
+        // The file references a message from each DBC.
+        let file = RbsFile::parse(
+            r#"{ "schema_version": 1, "buses": {
+                 "Powertrain": { "ecus": {
+                     "BMS": { "messages": { "0x123": {} } },
+                     "MOT": { "messages": { "0x300": {} } }
+                 } } }
+             }"#,
+        )
+        .unwrap();
+        {
+            let mut rbs = state.rbs.lock().unwrap();
+            rbs.project_buses = vec![("p1".into(), "Powertrain".into())];
+            rbs.elements.insert(
+                "el1".into(),
+                RbsElementState {
+                    path: Some("/tmp/x.cannet_rbs".into()),
+                    file,
+                    dirty: false,
+                    run: false,
+                },
+            );
+        }
+
+        let warnings = rebuild_element_rows(&state, "el1");
+        assert!(
+            warnings.is_empty(),
+            "no message should be unmatched: {warnings:?}"
+        );
+
+        let registry = state.transmit_frames.lock().unwrap();
+        let ids = registry.rbs_row_ids("el1");
+        // Both DBCs' full message sets register: 0x123 + 0x200 (RBS_DBC)
+        // and 0x300 (SECOND_DBC).
+        assert!(
+            ids.iter()
+                .any(|i| i == &row_id("el1", "Powertrain", "0x300")),
+            "the second DBC's message must load: {ids:?}"
+        );
+        assert!(
+            ids.iter()
+                .any(|i| i == &row_id("el1", "Powertrain", "0x123")),
+            "the first DBC's message must still load: {ids:?}"
+        );
     }
 
     /// End-to-end host model: load a file into state, rebuild rows,
@@ -1651,7 +1800,11 @@ VAL_ 291 TargetMode 0 "Off" 1 "Standby" 2 "Active";
     #[allow(clippy::too_many_lines)]
     fn rows_register_and_schedules_follow_the_anded_enables() {
         let state = crate::tests::test_state();
-        state.databases.lock().unwrap().push(crate::tests::loaded("a.dbc", RBS_DBC));
+        state
+            .databases
+            .lock()
+            .unwrap()
+            .push(crate::tests::loaded("a.dbc", RBS_DBC));
         let file = RbsFile::parse(
             r#"{ "schema_version": 1, "buses": {
                  "Powertrain": { "ecus": { "BMS": { "messages": {
@@ -1688,7 +1841,11 @@ VAL_ 291 TargetMode 0 "Off" 1 "Standby" 2 "Active";
         assert_eq!(ids.len(), 2, "{ids:?}");
         let status_id = row_id("el1", "Powertrain", "0x123");
         let data = registry.request_data(&status_id).unwrap();
-        assert_eq!(u16::from_le_bytes([data[1], data[2]]), 4032, "override encoded");
+        assert_eq!(
+            u16::from_le_bytes([data[1], data[2]]),
+            4032,
+            "override encoded"
+        );
         assert_eq!(data[0], 2, "DBC default encoded");
         // Provenance keeps RBS rows out of the panel list / snapshot.
         assert!(registry.list().is_empty());
@@ -1699,7 +1856,14 @@ VAL_ 291 TargetMode 0 "Off" 1 "Standby" 2 "Active";
         sync_schedules(&state);
         assert!(!state.transmit_frames.lock().unwrap().is_running(&status_id));
 
-        state.rbs.lock().unwrap().elements.get_mut("el1").unwrap().run = true;
+        state
+            .rbs
+            .lock()
+            .unwrap()
+            .elements
+            .get_mut("el1")
+            .unwrap()
+            .run = true;
         sync_schedules(&state);
         {
             let registry = state.transmit_frames.lock().unwrap();
@@ -1807,7 +1971,12 @@ VAL_ 291 TargetMode 0 "Off" 1 "Standby" 2 "Active";
             el.file.buses.remove("Powertrain");
         }
         rebuild_element_rows(&state, "el1");
-        assert!(state.transmit_frames.lock().unwrap().rbs_row_ids("el1").is_empty());
+        assert!(state
+            .transmit_frames
+            .lock()
+            .unwrap()
+            .rbs_row_ids("el1")
+            .is_empty());
     }
 
     /// A fresh element's default config pre-adds every project bus
@@ -1826,13 +1995,22 @@ VAL_ 291 TargetMode 0 "Off" 1 "Standby" 2 "Active";
         );
         assert!(file.buses.values().all(|b| b.enabled && b.ecus.is_empty()));
         let state = crate::tests::test_state();
-        state.databases.lock().unwrap().push(crate::tests::loaded("a.dbc", RBS_DBC));
+        state
+            .databases
+            .lock()
+            .unwrap()
+            .push(crate::tests::loaded("a.dbc", RBS_DBC));
         {
             let mut rbs = state.rbs.lock().unwrap();
             rbs.project_buses = vec![("p1".into(), "Powertrain".into())];
             rbs.elements.insert(
                 "el1".into(),
-                RbsElementState { path: None, file, dirty: false, run: true },
+                RbsElementState {
+                    path: None,
+                    file,
+                    dirty: false,
+                    run: true,
+                },
             );
         }
         rebuild_element_rows(&state, "el1");
@@ -1863,14 +2041,21 @@ VAL_ 291 TargetMode 0 "Off" 1 "Standby" 2 "Active";
         rbs.elements.get_mut("el1").unwrap().path = Some("/tmp/x.cannet_rbs".into());
         rbs.elements.get_mut("el1").unwrap().run = true;
         assert!(!rbs.ensure_seeded("el1"));
-        assert_eq!(rbs.elements["el1"].path.as_deref(), Some("/tmp/x.cannet_rbs"));
+        assert_eq!(
+            rbs.elements["el1"].path.as_deref(),
+            Some("/tmp/x.cannet_rbs")
+        );
         assert!(rbs.elements["el1"].run);
     }
 
     #[test]
     fn transmitter_mismatch_loads_with_a_warning() {
         let state = crate::tests::test_state();
-        state.databases.lock().unwrap().push(crate::tests::loaded("a.dbc", RBS_DBC));
+        state
+            .databases
+            .lock()
+            .unwrap()
+            .push(crate::tests::loaded("a.dbc", RBS_DBC));
         let file = RbsFile::parse(
             r#"{ "schema_version": 1, "buses": {
                  "Powertrain": { "ecus": { "NotBms": { "messages": { "0x123": {} } } } }
@@ -1896,7 +2081,12 @@ VAL_ 291 TargetMode 0 "Off" 1 "Standby" 2 "Active";
         // Loaded anyway (the DBC grouping wins); rows cover the
         // whole DBC tree.
         assert_eq!(
-            state.transmit_frames.lock().unwrap().rbs_row_ids("el1").len(),
+            state
+                .transmit_frames
+                .lock()
+                .unwrap()
+                .rbs_row_ids("el1")
+                .len(),
             2
         );
     }

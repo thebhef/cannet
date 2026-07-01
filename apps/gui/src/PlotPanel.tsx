@@ -134,9 +134,10 @@ const AXIS_GRID = "#222b35";
 const AXIS_TICKS = "#3a4654";
 const ZOOM_STEP = 1.15;
 /** Floor for `sample_signals`' `max_points` (the host min/max-decimates
- * to at most `2 * max_points`). 2× the canvas width is what we ask for
- * in practice; the floor catches early-mount cases where `clientWidth`
- * is still small. */
+ * to at most `2 * max_points`). We ask for ~1× the canvas width — 2
+ * points per pixel after the host's 2× envelope, the full resolution a
+ * min/max plot can show; the floor catches early-mount cases where
+ * `clientWidth` is still small. */
 const MIN_DECIMATION_POINTS = 200;
 /** Plot update-rate options (Hz) offered in the toolbar, and the
  * default. Lower = less CPU under a fast capture; the re-sample loop is
@@ -2197,7 +2198,13 @@ function PlotArea(p: PlotAreaProps) {
       }
 
       const canvasW = canvasRef.current?.clientWidth || 600;
-      const maxPts = Math.max(MIN_DECIMATION_POINTS, Math.round(canvasW * 2));
+      // One `max_points` per canvas pixel: the host min/max-decimates to
+      // at most `2 * max_points`, i.e. 2 points per pixel — the min and
+      // max of each pixel column, which is the full resolution a min/max
+      // envelope can show. Asking for `canvasW * 2` here meant 4 points
+      // per pixel: double the data (and double the per-tick `ArrayBuffer`
+      // the renderer churns) for no visible gain.
+      const maxPts = Math.max(MIN_DECIMATION_POINTS, Math.round(canvasW));
       const fetchKey = `${visStart}:${visEnd}:${fromSeconds}:${toSeconds}:${maxPts}`;
 
       // Same request as last successful fetch — nothing to do, just

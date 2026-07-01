@@ -346,15 +346,16 @@ mod tests {
     #[test]
     fn round_trips_through_the_serializer() {
         let p = sample();
-        assert_eq!(parse_project(&serde_json::to_string_pretty(&p).unwrap()).unwrap(), p);
+        assert_eq!(
+            parse_project(&serde_json::to_string_pretty(&p).unwrap()).unwrap(),
+            p
+        );
     }
 
     #[test]
     fn parse_defaults_the_optional_fields() {
-        let p = parse_project(
-            r#"{"schema_version": 7, "layout": {"grid": {}, "panels": {}}}"#,
-        )
-        .unwrap();
+        let p = parse_project(r#"{"schema_version": 7, "layout": {"grid": {}, "panels": {}}}"#)
+            .unwrap();
         assert!(p.elements.is_empty());
         assert!(p.dbcs.is_empty());
         assert!(p.buses.is_empty());
@@ -450,7 +451,10 @@ mod tests {
                 "schema version {v} should be rejected, not migrated"
             );
         }
-        assert!(parse_project(r#"{"layout": {}}"#).is_err(), "missing version");
+        assert!(
+            parse_project(r#"{"layout": {}}"#).is_err(),
+            "missing version"
+        );
         assert!(parse_project("not json").is_err());
     }
 

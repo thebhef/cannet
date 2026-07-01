@@ -1,0 +1,108 @@
+{
+  "mode": "frontend",
+  "label": "tx-jitter probe to 500k [DEBUG]",
+  "duration_s": 489.00170000004766,
+  "sample_count": 490,
+  "longtask_ms_per_s": {
+    "mean": 0.7857142857142857,
+    "max": 81.0,
+    "p95": 0.0
+  },
+  "lag_ms": {
+    "mean": -0.00918367346938777,
+    "max": 27.0
+  },
+  "jank_seconds": 6,
+  "jank_fraction": 0.012244897959183673,
+  "frames_late_per_s_mean": 0.04714285714285714,
+  "counters_per_s": {
+    "byid.dep.refreshTrigger": {
+      "mean": 20.0,
+      "max": 20.0
+    },
+    "event.system-log-appended": {
+      "mean": 2.938775510204082,
+      "max": 5.0
+    },
+    "event.trace-grew": {
+      "mean": 10.0,
+      "max": 10.0
+    },
+    "invoke.fetch_latest_by_id": {
+      "mean": 20.0,
+      "max": 20.0
+    },
+    "invoke.sample_signals": {
+      "mean": 120.71428571428571,
+      "max": 150.0
+    },
+    "memo.traceData": {
+      "mean": 20.0,
+      "max": 20.0
+    },
+    "plot.areaResampled": {
+      "mean": 171.18163265306123,
+      "max": 201.0
+    },
+    "plot.reportSeries": {
+      "mean": 120.71428571428571,
+      "max": 151.0
+    },
+    "plotarea.resample": {
+      "mean": 171.18163265306123,
+      "max": 201.0
+    },
+    "render.App": {
+      "mean": 43.32244897959184,
+      "max": 50.0
+    },
+    "render.PlotArea": {
+      "mean": 951.0408163265306,
+      "max": 1224.0
+    },
+    "render.PlotPanel": {
+      "mean": 217.9265306122449,
+      "max": 288.0
+    },
+    "render.TracePanel": {
+      "mean": 99.98367346938775,
+      "max": 100.0
+    },
+    "render.TraceView": {
+      "mean": 40.0,
+      "max": 40.0
+    }
+  },
+  "gauges": {
+    "count": {
+      "mean": 254114.95714285714,
+      "max": 505950.0,
+      "last": 505950.0
+    },
+    "drop.before_session": {
+      "mean": 0.0,
+      "max": 0.0,
+      "last": 0.0
+    },
+    "fps": {
+      "mean": 1031.1022448979597,
+      "max": 1051.7,
+      "last": 1022.4
+    },
+    "fps.batt": {
+      "mean": 515.7677551020408,
+      "max": 524.6,
+      "last": 516.2
+    },
+    "fps.pt": {
+      "mean": 515.4853061224487,
+      "max": 523.1,
+      "last": 516.5
+    },
+    "ms.fetch_latest_by_id": {
+      "mean": 18.184489795918367,
+      "max": 48.0,
+      "last": 15.0
+    }
+  }
+}

@@ -45,7 +45,10 @@ struct SignalCache {
 
 impl SignalCache {
     fn new() -> Self {
-        Self { samples: Vec::new(), next_index: 0 }
+        Self {
+            samples: Vec::new(),
+            next_index: 0,
+        }
     }
 }
 
@@ -64,7 +67,9 @@ pub struct SignalCacheStore {
 
 impl SignalCacheStore {
     pub fn new() -> Self {
-        Self { caches: Mutex::new(HashMap::new()) }
+        Self {
+            caches: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Drop every cached series — call on `clear_trace_store` (the
@@ -151,7 +156,9 @@ impl SignalCacheStore {
         if cache.samples.is_empty() {
             return Vec::new();
         }
-        let lo = cache.samples.partition_point(|p| p.t_seconds < from_seconds);
+        let lo = cache
+            .samples
+            .partition_point(|p| p.t_seconds < from_seconds);
         let hi = cache.samples.partition_point(|p| p.t_seconds < to_seconds);
         // Include two boundary samples on each side of the requested
         // range. One was enough in principle (uPlot will draw the line
@@ -213,7 +220,10 @@ mod tests {
 
         // Full time range — all four id-256 samples.
         let all = cache.slice(None, 256, false, "X", 0.0, 10.0, &store, dbs);
-        assert_eq!(all.iter().map(|p| p.value as u32).collect::<Vec<_>>(), vec![1, 2, 3, 4]);
+        assert_eq!(
+            all.iter().map(|p| p.value as u32).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4]
+        );
 
         // Narrow time range [2.5, 4.5): only the id-256 sample at t = 3
         // is in range. The ±2 boundary widening also pulls in samples
@@ -221,18 +231,27 @@ mod tests {
         // uPlot the last-known-coming-in value and the next-going-out
         // value to draw a line across.
         let mid = cache.slice(None, 256, false, "X", 2.5, 4.5, &store, dbs);
-        assert_eq!(mid.iter().map(|p| p.value as u32).collect::<Vec<_>>(), vec![1, 2, 3, 4]);
+        assert_eq!(
+            mid.iter().map(|p| p.value as u32).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4]
+        );
 
         // Very narrow zoom that contains zero matches: the slice still
         // returns the boundary samples on each side, so the plot draws
         // a line across the canvas instead of going blank.
         let narrow = cache.slice(None, 256, false, "X", 0.5, 1.5, &store, dbs);
-        assert_eq!(narrow.iter().map(|p| p.value as u32).collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert_eq!(
+            narrow.iter().map(|p| p.value as u32).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
 
         // Append a new sample — catch-up extends the cached vector.
         store.append(dummy(6 * S, 256, vec![5, 0, 0, 0, 0, 0, 0, 0]));
         let all2 = cache.slice(None, 256, false, "X", 0.0, 10.0, &store, dbs);
-        assert_eq!(all2.iter().map(|p| p.value as u32).collect::<Vec<_>>(), vec![1, 2, 3, 4, 5]);
+        assert_eq!(
+            all2.iter().map(|p| p.value as u32).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 5]
+        );
 
         // Clear drops the cache; the next slice rebuilds it.
         cache.clear();
@@ -272,11 +291,17 @@ mod tests {
         let dbs: &[&Database] = &[&db];
         let cache = SignalCacheStore::new();
         let on_p = cache.slice(Some("p"), 256, false, "X", 0.0, 10.0, &store, dbs);
-        assert_eq!(on_p.iter().map(|p| p.value).collect::<Vec<_>>(), vec![1.0, 3.0]);
+        assert_eq!(
+            on_p.iter().map(|p| p.value).collect::<Vec<_>>(),
+            vec![1.0, 3.0]
+        );
         let on_c = cache.slice(Some("c"), 256, false, "X", 0.0, 10.0, &store, dbs);
         assert_eq!(on_c.iter().map(|p| p.value).collect::<Vec<_>>(), vec![2.0]);
         // Legacy "any bus" path: takes every frame regardless of tag.
         let any = cache.slice(None, 256, false, "X", 0.0, 10.0, &store, dbs);
-        assert_eq!(any.iter().map(|p| p.value).collect::<Vec<_>>(), vec![1.0, 2.0, 3.0]);
+        assert_eq!(
+            any.iter().map(|p| p.value).collect::<Vec<_>>(),
+            vec![1.0, 2.0, 3.0]
+        );
     }
 }

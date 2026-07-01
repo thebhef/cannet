@@ -2,7 +2,7 @@
 
 Agent-runnable performance / integration harness. It runs a **rest-of-bus
 (RBS) simulation** of a reproducible CAN workload — the
-[`examples/ev-fleet`](../../examples/ev-fleet) EV project — synthesizing
+[`examples/ev-demo`](../../examples/ev-demo) EV project — synthesizing
 frames from the DBCs and the project's static RBS signal values (it does
 *not* replay a recorded log), and emits machine-readable metrics that a
 checked-in baseline can be diffed against, so a regression shows up as a

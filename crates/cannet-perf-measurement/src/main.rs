@@ -12,11 +12,12 @@ use clap::{Args, Parser, Subcommand};
 use cannet_perf_measurement::check::{
     self, Baseline, Metrics, ModeBaseline, BASELINE_VERSION,
 };
+use cannet_perf_measurement::frontend::{self, FrontendBaseline, FrontendMetrics};
 use cannet_perf_measurement::grpc::{self, GrpcConfig};
 use cannet_perf_measurement::hardware_peak::{self, HardwarePeakConfig};
 use cannet_perf_measurement::tracebuffer::{self, TracebufferConfig};
 use cannet_perf_measurement::{
-    default_example_dir, default_measurements_dir, latest_measurement, load_example,
+    default_baseline_path, default_example_dir, default_measurements_dir, load_example,
     measurement_filename, workload,
 };
 
@@ -26,7 +27,7 @@ use cannet_perf_measurement::{
     about = "cannet performance / integration harness"
 )]
 struct Cli {
-    /// Example project directory (defaults to examples/ev-fleet).
+    /// Example project directory (defaults to examples/ev-demo).
     #[arg(long, global = true)]
     example: Option<PathBuf>,
     /// Explicit baseline file. `baseline` defaults to writing a new
@@ -34,6 +35,11 @@ struct Cli {
     /// to reading the newest file there.
     #[arg(long, global = true)]
     baseline: Option<PathBuf>,
+    /// Render report (`RenderReport` JSON) from a self-driving GUI run.
+    /// `baseline` stores its gated metrics; `check` compares a fresh one
+    /// against them. Omit to leave the frontend tier out of the run.
+    #[arg(long, global = true)]
+    frontend_report: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -171,8 +177,8 @@ fn main() -> ExitCode {
         Command::Tracebuffer(args) => run_tracebuffer(&dir, args),
         Command::Grpc(args) => run_grpc(&dir, args),
         Command::HardwarePeak(args) => run_hardware_peak(&dir, args),
-        Command::Baseline => run_baseline(&dir, cli.baseline),
-        Command::Check => run_check(&dir, cli.baseline),
+        Command::Baseline => run_baseline(&dir, cli.baseline, cli.frontend_report),
+        Command::Check => run_check(&dir, cli.baseline, cli.frontend_report),
     };
     match result {
         Ok(code) => code,
@@ -183,7 +189,11 @@ fn main() -> ExitCode {
     }
 }
 
-fn run_baseline(dir: &std::path::Path, out: Option<PathBuf>) -> Result<ExitCode, String> {
+fn run_baseline(
+    dir: &std::path::Path,
+    out: Option<PathBuf>,
+    frontend_report: Option<PathBuf>,
+) -> Result<ExitCode, String> {
     let baseline_path = if let Some(p) = out {
         p
     } else {
@@ -211,6 +221,18 @@ fn run_baseline(dir: &std::path::Path, out: Option<PathBuf>) -> Result<ExitCode,
         eprintln!("  hardware-peak skipped: {e}");
     }
 
+    let frontend = if let Some(p) = frontend_report {
+        eprintln!("capturing frontend from {}…", p.display());
+        let report = frontend::load_report(&p)?;
+        Some(FrontendBaseline {
+            label: report.label.clone(),
+            metrics: FrontendMetrics::from(&report),
+        })
+    } else {
+        eprintln!("frontend skipped: no --frontend-report given");
+        None
+    };
+
     let baseline = Baseline {
         baseline_version: BASELINE_VERSION,
         tracebuffer: Some(ModeBaseline {
@@ -225,6 +247,7 @@ fn run_baseline(dir: &std::path::Path, out: Option<PathBuf>) -> Result<ExitCode,
             config: hw_cfg,
             metrics: Metrics::from(&r),
         }),
+        frontend,
     };
     let text = serde_json::to_string_pretty(&baseline).map_err(|e| e.to_string())?;
     std::fs::write(&baseline_path, text + "\n").map_err(|e| e.to_string())?;
@@ -232,13 +255,19 @@ fn run_baseline(dir: &std::path::Path, out: Option<PathBuf>) -> Result<ExitCode,
     Ok(ExitCode::SUCCESS)
 }
 
-fn run_check(dir: &std::path::Path, explicit: Option<PathBuf>) -> Result<ExitCode, String> {
-    let baseline_path = match explicit {
-        Some(p) => p,
-        None => latest_measurement(&default_measurements_dir()).ok_or_else(|| {
-            "no baseline in docs/performance-measurements/ — run `baseline` first".to_string()
-        })?,
-    };
+fn run_check(
+    dir: &std::path::Path,
+    explicit: Option<PathBuf>,
+    frontend_report: Option<PathBuf>,
+) -> Result<ExitCode, String> {
+    let baseline_path = explicit.unwrap_or_else(default_baseline_path);
+    if !baseline_path.exists() {
+        return Err(format!(
+            "no baseline at {} — capture one with `baseline` and promote it (copy the dated \
+             snapshot to baseline.json)",
+            baseline_path.display()
+        ));
+    }
     let text = std::fs::read_to_string(&baseline_path)
         .map_err(|e| format!("reading baseline {}: {e}", baseline_path.display()))?;
     let baseline: Baseline = serde_json::from_str(&text)
@@ -269,6 +298,19 @@ fn run_check(dir: &std::path::Path, explicit: Option<PathBuf>) -> Result<ExitCod
             Ok(rep) => verdicts.extend(check::check_mode("hardware-peak", &mb.metrics, &rep)),
             Err(e) => skipped.push(("hardware-peak", e)),
         }
+    }
+    if let Some(fb) = &baseline.frontend {
+        // The harness can't re-run the frontend; a fresh report must be
+        // supplied. Without one, the tier is skipped, not failed.
+        match frontend_report {
+            Some(p) => {
+                let current = FrontendMetrics::from(&frontend::load_report(&p)?);
+                verdicts.extend(frontend::check_frontend(&fb.metrics, &current));
+            }
+            None => skipped.push(("frontend", "no --frontend-report supplied".to_string())),
+        }
+    } else if frontend_report.is_some() {
+        eprintln!("note: --frontend-report ignored (baseline has no frontend block)");
     }
 
     println!(

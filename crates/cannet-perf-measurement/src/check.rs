@@ -17,7 +17,11 @@ use crate::hardware_peak::HardwarePeakConfig;
 use crate::runner::HarnessReport;
 use crate::tracebuffer::TracebufferConfig;
 
-/// Bumped when the baseline file's shape or the gated-metric set changes.
+/// Bumped only on a *breaking* shape change — a field removed or
+/// renamed, or a gated metric's meaning changed — which rejects older
+/// files rather than migrating them. Purely additive optional fields that
+/// default when absent (e.g. `frontend`) are not breaking and land
+/// without a bump, so existing baselines keep checking (ADR 0011).
 pub const BASELINE_VERSION: u32 = 2;
 
 /// The metric subset persisted and compared, the same for every mode.
@@ -60,6 +64,11 @@ pub struct Baseline {
     pub grpc: Option<ModeBaseline<GrpcConfig>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub hardware_peak: Option<ModeBaseline<HardwarePeakConfig>>,
+    /// Render-tier metrics from a self-driving GUI run, supplied via
+    /// `--frontend-report` (the harness can't generate them). Absent when
+    /// no report was given at capture.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub frontend: Option<crate::frontend::FrontendBaseline>,
 }
 
 /// Gating tolerances. Relative where the metric scales with the host

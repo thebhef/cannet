@@ -36,6 +36,7 @@
 
 mod crash;
 mod dbc_watcher;
+mod diag;
 // `filter` and `trace_store` are `pub` so the `cannet-perf-measurement` performance
 // harness can drive the real host model — the same `TraceStore` and
 // filter predicate the GUI runs — rather than reimplementing them and
@@ -54,8 +55,8 @@ mod local_buses;
 mod notes;
 mod project;
 mod rbs;
-mod signal_cache;
 mod sidecar;
+mod signal_cache;
 mod signal_sampler;
 mod system_log;
 #[allow(
@@ -172,24 +173,16 @@ impl SessionTx {
     ) -> Result<(), String> {
         use cannet_core::CanFrameSink;
         match self {
-            SessionTx::Remote(t) => {
-                t.transmit(interface_id, frame).map_err(|e| e.to_string())
-            }
+            SessionTx::Remote(t) => t.transmit(interface_id, frame).map_err(|e| e.to_string()),
             SessionTx::Vbus(participants) => {
                 let sink = participants
                     .iter()
                     .find(|(c, _)| *c == channel)
-                    .ok_or_else(|| {
-                        format!("vbus session has no participant on channel {channel}")
-                    })?
+                    .ok_or_else(|| format!("vbus session has no participant on channel {channel}"))?
                     .1
                     .clone();
-                let mut guard = sink
-                    .lock()
-                    .expect("vbus participant sink mutex poisoned");
-                guard
-                    .submit(frame.clone())
-                    .map_err(|e| e.to_string())
+                let mut guard = sink.lock().expect("vbus participant sink mutex poisoned");
+                guard.submit(frame.clone()).map_err(|e| e.to_string())
             }
         }
     }
@@ -303,6 +296,16 @@ fn app_version() -> &'static str {
     build_version()
 }
 
+/// Record the frontend's current JS-heap size (bytes) for the health
+/// recorder's log line. The host can't read the `WebView`'s V8 heap, so
+/// the renderer pushes `performance.memory.usedJSHeapSize` here ~1 Hz;
+/// pairing it with the host-measured `webview_mb` splits a JS-heap leak
+/// from native/GPU growth. See `crash.rs`.
+#[tauri::command]
+fn report_js_heap(bytes: u64) {
+    crash::record_js_heap(bytes);
+}
+
 /// Boot the Tauri runtime.
 ///
 /// # Panics
@@ -327,6 +330,10 @@ pub fn run() {
     // thread is spawned in `setup` (it needs the `AppHandle`).
     let (transmit_scheduler, transmit_sched_rx) = transmit_scheduler::channel();
     let transmit_sched_rx = std::sync::Mutex::new(Some(transmit_sched_rx));
+    // Parse the self-driving perf flags (ADR 0031) once at startup; the
+    // webview fetches the result via `diag_autostart` on boot. `None` on a
+    // normal launch leaves boot behaviour untouched.
+    let autostart = diag::AutomationConfig::from_args(std::env::args());
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
@@ -345,6 +352,8 @@ pub fn run() {
         })
         .manage(sidecar::SidecarState::default())
         .manage(interfaces::InterfacesState::default())
+        .manage(diag::DiagState::default())
+        .manage(diag::AutomationState(autostart))
         .invoke_handler(tauri::generate_handler![
             open_log,
             scan_blf_channels,
@@ -413,6 +422,11 @@ pub fn run() {
             rbs::rbs_crc_algorithms,
             fetch_field_validity,
             app_version,
+            diag::diag_capture_start,
+            diag::diag_push,
+            diag::diag_capture_finish,
+            diag::diag_autostart,
+            report_js_heap,
         ])
         .setup(move |app| {
             // Make sure the main window has the id our capabilities expect.
@@ -440,7 +454,10 @@ pub fn run() {
             // DBC IPC commands can watch / unwatch paths.
             let watcher = DbcWatcher::new(app.handle());
             let state: State<'_, AppState> = app.state();
-            *state.dbc_watcher.lock().expect("dbc_watcher mutex poisoned") = Some(watcher);
+            *state
+                .dbc_watcher
+                .lock()
+                .expect("dbc_watcher mutex poisoned") = Some(watcher);
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -497,10 +514,12 @@ fn spawn_trace_grew_emitter(app: AppHandle) {
                 .trace_store
                 .frames_per_second_by_bus()
                 .into_iter()
-                .map(|(bus_id, frames_per_second)| BusFps { bus_id, frames_per_second })
+                .map(|(bus_id, frames_per_second)| BusFps {
+                    bus_id,
+                    frames_per_second,
+                })
                 .collect();
-            let frames_dropped_before_session =
-                state.trace_store.frames_dropped_before_session();
+            let frames_dropped_before_session = state.trace_store.frames_dropped_before_session();
             let _ = app.emit(
                 "trace-grew",
                 TraceGrew {
@@ -597,7 +616,11 @@ fn open_log(
     let notes = match read_notes_from_blf(&blf_path) {
         Ok(v) => v,
         Err(e) => {
-            sys_warn!(&app, "blf-import", "couldn't read markers from {blf_path}: {e}");
+            sys_warn!(
+                &app,
+                "blf-import",
+                "couldn't read markers from {blf_path}: {e}"
+            );
             Vec::new()
         }
     };
@@ -996,7 +1019,11 @@ fn add_dbc(
             slot.db = db;
             true
         } else {
-            list.push(LoadedDbc { path: path.clone(), db, buses: Vec::new() });
+            list.push(LoadedDbc {
+                path: path.clone(),
+                db,
+                buses: Vec::new(),
+            });
             false
         }
     };
@@ -1103,8 +1130,11 @@ fn collect_trace_records(state: &AppState, start: u64, end: u64) -> Vec<TraceFra
     let end_us = usize::try_from(end).unwrap_or(usize::MAX);
     let raw = state.trace_store.slice(start_us, end_us);
     let dbs = state.databases.lock().expect("databases mutex poisoned");
-    let violations: std::collections::HashMap<u64, &'static str> =
-        state.verifier.violations_in(start, end).into_iter().collect();
+    let violations: std::collections::HashMap<u64, &'static str> = state
+        .verifier
+        .violations_in(start, end)
+        .into_iter()
+        .collect();
     raw.into_iter()
         .enumerate()
         .map(|(i, frame)| {
@@ -1285,7 +1315,11 @@ async fn fetch_latest_by_id(
                     return None;
                 }
             }
-            Some(ByIdSnapshot { frame: record, rate: row.rate, count: row.count })
+            Some(ByIdSnapshot {
+                frame: record,
+                rate: row.rate,
+                count: row.count,
+            })
         })
         .collect()
 }
@@ -1926,7 +1960,6 @@ fn decode_raw_frame(db: &Database, frame: &RawTraceFrame) -> Option<DecodedRecor
     })
 }
 
-
 /// Connect to a `cannet-server`, list its interfaces, subscribe only
 /// to the interfaces named by `bindings`, and spawn a pump thread to
 /// push frames at the frontend.
@@ -1998,10 +2031,7 @@ async fn connect_remote_server(
             if !interfaces.iter().any(|iface| iface.id == b.interface) {
                 return None;
             }
-            let sub = Subscription::new(
-                b.interface.clone(),
-                u8::try_from(i).unwrap_or(u8::MAX),
-            );
+            let sub = Subscription::new(b.interface.clone(), u8::try_from(i).unwrap_or(u8::MAX));
             Some(match presubscribe_config_from(b) {
                 Some(cfg) => sub.with_config(cfg),
                 None => sub,
@@ -2010,9 +2040,7 @@ async fn connect_remote_server(
         .collect();
 
     if subscriptions.is_empty() {
-        return Err(format!(
-            "no bound interface matches what {address} exposes"
-        ));
+        return Err(format!("no bound interface matches what {address} exposes"));
     }
 
     let address_for_thread = address.clone();
@@ -2151,7 +2179,11 @@ fn connect_local_vbus(
     vbus_id: &str,
     binding_lookup: &[InterfaceBusBinding],
 ) -> Result<RemoteSessionResult, String> {
-    sys_info!(&app, "connection", "opening in-process session against {address}");
+    sys_info!(
+        &app,
+        "connection",
+        "opening in-process session against {address}"
+    );
 
     let state: State<'_, AppState> = app.state();
 
@@ -2251,12 +2283,10 @@ fn connect_local_vbus(
                     .remote_sessions
                     .lock()
                     .expect("remote_sessions mutex poisoned");
-                let session_dead = guard
-                    .get(&address_for_cleanup)
-                    .is_none_or(|s| match &s.tx {
-                        SessionTx::Vbus(sinks) => sinks.is_empty(),
-                        SessionTx::Remote(_) => false,
-                    });
+                let session_dead = guard.get(&address_for_cleanup).is_none_or(|s| match &s.tx {
+                    SessionTx::Vbus(sinks) => sinks.is_empty(),
+                    SessionTx::Remote(_) => false,
+                });
                 if session_dead {
                     guard.remove(&address_for_cleanup);
                     drop(guard);
@@ -2302,7 +2332,10 @@ impl cannet_core::CanFrameSource for LocalSourceFrameSource {
     fn next_frame(&mut self) -> Result<Option<cannet_core::CanFrame>, Self::Error> {
         loop {
             match self.source.next_event() {
-                Some(cannet_core::ParticipantEvent::Frame { mut frame, sender: _ }) => {
+                Some(cannet_core::ParticipantEvent::Frame {
+                    mut frame,
+                    sender: _,
+                }) => {
                     frame.channel = self.channel;
                     return Ok(Some(frame));
                 }
@@ -2326,11 +2359,7 @@ impl cannet_core::CanFrameSource for LocalSourceFrameSource {
 /// disconnects only that one.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-fn disconnect_remote_server(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    address: Option<String>,
-) {
+fn disconnect_remote_server(app: AppHandle, state: State<'_, AppState>, address: Option<String>) {
     let sessions: Vec<(String, RemoteSession)> = {
         let mut guard = state
             .remote_sessions
@@ -2423,16 +2452,17 @@ fn run_pump<S>(
             Err(e) => {
                 let msg = e.to_string();
                 sys_error!(app, "connection", "frame source ended with error: {msg}");
-                let _ = app.emit(
-                    "log-finished",
-                    LogFinished::Error { message: msg },
-                );
+                let _ = app.emit("log-finished", LogFinished::Error { message: msg });
                 return;
             }
         }
     }
 
-    sys_info!(app, "connection", "frame source ended cleanly ({total} frames)");
+    sys_info!(
+        app,
+        "connection",
+        "frame source ended cleanly ({total} frames)"
+    );
     let _ = app.emit("log-finished", LogFinished::Ok { total });
 }
 
@@ -2566,9 +2596,7 @@ pub(crate) fn rebuild_verification(state: &AppState) {
                         // Per-field layering over the DBC default.
                         let dbc_default = dbs
                             .iter()
-                            .filter(|d| {
-                                d.buses.is_empty() || d.buses.iter().any(|b| b == &bus_id)
-                            })
+                            .filter(|d| d.buses.is_empty() || d.buses.iter().any(|b| b == &bus_id))
                             .find_map(|d| d.db.dbc_calculated_fields(can_id))
                             .cloned()
                             .unwrap_or_default();
@@ -2644,8 +2672,7 @@ fn set_transmit_frame(
     mut frame: transmit_frames::TransmitFrame,
 ) {
     id.clone_into(&mut frame.id);
-    let parked =
-        frame.mode != transmit_frames::TransmitMode::Periodic || frame.cycle_ms == 0;
+    let parked = frame.mode != transmit_frames::TransmitMode::Periodic || frame.cycle_ms == 0;
     state
         .transmit_frames
         .lock()
@@ -2778,7 +2805,96 @@ fn next_tick_deadline(
     period: Duration,
 ) -> std::time::Instant {
     let target = prev + period;
-    if target > now { target } else { now }
+    if target > now {
+        target
+    } else {
+        now
+    }
+}
+
+/// Per-second diagnostic accumulator for the transmit scheduler's wake
+/// jitter. The scheduler reschedules on a fixed grid, so a wake that
+/// returns late past its deadline is paid back by a short next interval
+/// (a visible "catch-up" double on a tight periodic). This probe
+/// localises the *cause* of that lateness: a histogram of wake lateness
+/// (`now − deadline`) — a cluster around one OS timer tick (~15 ms on
+/// Windows) points at timer granularity — alongside the max per-tick
+/// fire duration, which points at lock contention in the transmit path
+/// when it spikes. Summarised once a second to the dev log (target
+/// `tx-sched`); silent while no periodic is scheduled.
+struct SchedDiag {
+    window_start: std::time::Instant,
+    /// Scheduled (timeout-driven) wakes this window.
+    wakes: u32,
+    /// Wake-lateness histogram, ms buckets: `<2`, `2–8`, `8–18`,
+    /// `18–30`, `≥30` (the 8–18 bucket straddles a Windows timer tick).
+    late_buckets: [u32; 5],
+    max_late_ms: f64,
+    /// Ticks that fired ≥1 frame, and the worst fire-loop duration seen.
+    fire_ticks: u32,
+    frames: u32,
+    max_fire_ms: f64,
+}
+
+impl SchedDiag {
+    fn new(now: std::time::Instant) -> Self {
+        Self {
+            window_start: now,
+            wakes: 0,
+            late_buckets: [0; 5],
+            max_late_ms: 0.0,
+            fire_ticks: 0,
+            frames: 0,
+            max_fire_ms: 0.0,
+        }
+    }
+
+    fn record_wake(&mut self, late: Duration) {
+        self.wakes += 1;
+        let ms = late.as_secs_f64() * 1000.0;
+        if ms > self.max_late_ms {
+            self.max_late_ms = ms;
+        }
+        let bucket = if ms < 2.0 {
+            0
+        } else if ms < 8.0 {
+            1
+        } else if ms < 18.0 {
+            2
+        } else if ms < 30.0 {
+            3
+        } else {
+            4
+        };
+        self.late_buckets[bucket] += 1;
+    }
+
+    fn record_fire(&mut self, dur: Duration, frames: usize) {
+        self.fire_ticks += 1;
+        self.frames += u32::try_from(frames).unwrap_or(u32::MAX);
+        let ms = dur.as_secs_f64() * 1000.0;
+        if ms > self.max_fire_ms {
+            self.max_fire_ms = ms;
+        }
+    }
+
+    /// Emit and reset once the window reaches a second. Skips the log line
+    /// (but still rolls the window) when nothing fired, so an idle
+    /// scheduler stays silent.
+    fn maybe_emit(&mut self, now: std::time::Instant) {
+        if now.duration_since(self.window_start) < Duration::from_secs(1) {
+            return;
+        }
+        if self.wakes > 0 {
+            let b = self.late_buckets;
+            tracing::info!(
+                target: "tx-sched",
+                "wakes={} late_ms[<2|2-8|8-18|18-30|>=30]={}|{}|{}|{}|{} max_late={:.1}ms frames={} max_fire={:.2}ms",
+                self.wakes, b[0], b[1], b[2], b[3], b[4], self.max_late_ms, self.frames, self.max_fire_ms,
+            );
+        }
+        *self = SchedDiag::new(now);
+    }
 }
 
 /// The single transmit scheduler thread. It owns one
@@ -2810,20 +2926,31 @@ fn run_transmit_scheduler(
     // Idle wait when nothing is scheduled — long, but bounded so the
     // thread stays responsive to a spurious wake and re-checks cleanly.
     let idle = Duration::from_hours(1);
+    let mut diag = SchedDiag::new(std::time::Instant::now());
     loop {
-        let wait = schedule
-            .next_deadline()
-            .map_or(idle, |d| d.saturating_duration_since(std::time::Instant::now()));
-        match rx.recv_timeout(wait) {
-            Ok(SchedulerCmd::Start(id)) => schedule.schedule(id, std::time::Instant::now()),
+        let planned = schedule.next_deadline();
+        let wait = planned.map_or(idle, |d| {
+            d.saturating_duration_since(std::time::Instant::now())
+        });
+        let recv = rx.recv_timeout(wait);
+        let now = std::time::Instant::now();
+        match recv {
+            Ok(SchedulerCmd::Start(id)) => schedule.schedule(id, now),
             Ok(SchedulerCmd::Stop(id)) => schedule.unschedule(&id),
-            Err(RecvTimeoutError::Timeout) => {}
+            // A timeout is a scheduled wake: record how late past the
+            // deadline `recv_timeout` actually returned (the jitter probe).
+            Err(RecvTimeoutError::Timeout) => {
+                if let Some(d) = planned {
+                    diag.record_wake(now.saturating_duration_since(d));
+                }
+            }
             // All senders dropped — the app is shutting down.
             Err(RecvTimeoutError::Disconnected) => break,
         }
 
-        let now = std::time::Instant::now();
         let state: State<'_, AppState> = app.state();
+        let fire_start = std::time::Instant::now();
+        let mut fired = 0usize;
         for (id, fired_at) in schedule.take_due(now) {
             let Some((request, cycle_ms)) = state
                 .transmit_frames
@@ -2835,6 +2962,7 @@ fn run_transmit_scheduler(
                 schedule.unschedule(&id);
                 continue;
             };
+            fired += 1;
             let connected = {
                 let sessions = state
                     .remote_sessions
@@ -2849,6 +2977,10 @@ fn run_transmit_scheduler(
             let next = next_tick_deadline(fired_at, std::time::Instant::now(), period);
             schedule.reschedule(&id, next);
         }
+        if fired > 0 {
+            diag.record_fire(fire_start.elapsed(), fired);
+        }
+        diag.maybe_emit(std::time::Instant::now());
     }
 }
 
@@ -2918,12 +3050,9 @@ fn transmit_frame_inner(
             cannet_core::Direction::Tx,
             request.dlc,
         ),
-        ipc::TransmitKind::Error => cannet_core::CanFrame::error(
-            timestamp_ns,
-            wire_channel,
-            id,
-            cannet_core::Direction::Tx,
-        ),
+        ipc::TransmitKind::Error => {
+            cannet_core::CanFrame::error(timestamp_ns, wire_channel, id, cannet_core::Direction::Tx)
+        }
     };
 
     // Append the tx-confirm — stamp it with the target `bus_id` so
@@ -2936,12 +3065,13 @@ fn transmit_frame_inner(
     let wire_status = match routing {
         None if sessions_guard.is_empty() => ipc::TransmitWireStatus::NotConnected,
         None => ipc::TransmitWireStatus::Failed {
-            message: format!(
-                "bus {} is not bound on any active server",
-                request.bus_id
-            ),
+            message: format!("bus {} is not bound on any active server", request.bus_id),
         },
-        Some(BusRoute { address, channel, interface_id }) => {
+        Some(BusRoute {
+            address,
+            channel,
+            interface_id,
+        }) => {
             // Re-borrow the session for the actual transmit; `routing`
             // dropped its borrow when it returned.
             let session = sessions_guard
@@ -2983,11 +3113,7 @@ pub(crate) fn resolve_bus_route(
     for (address, session) in sessions {
         for (ch, b) in &session.channel_to_bus {
             if b.as_deref() == Some(bus_id) {
-                if let Some((_, iid)) = session
-                    .channel_to_interface
-                    .iter()
-                    .find(|(c, _)| c == ch)
-                {
+                if let Some((_, iid)) = session.channel_to_interface.iter().find(|(c, _)| c == ch) {
                     return Some(BusRoute {
                         address: address.clone(),
                         channel: *ch,
@@ -3016,7 +3142,10 @@ fn list_value_tables(
 ) -> Vec<ipc::ValueTableEntryRecord> {
     let dbs = state.databases.lock().expect("databases mutex poisoned");
     for loaded in dbs.iter() {
-        if let Some(rows) = loaded.db.value_table_for_signal(message_id, extended, &signal_name) {
+        if let Some(rows) = loaded
+            .db
+            .value_table_for_signal(message_id, extended, &signal_name)
+        {
             return rows
                 .iter()
                 .map(|e| ipc::ValueTableEntryRecord {
@@ -3212,7 +3341,9 @@ fn encode_frame_inner(
             return Ok(ipc::EncodeFrameResponse { bytes, skipped });
         }
     }
-    Err(format!("no DBC matches id 0x{message_id:X} (extended={extended})"))
+    Err(format!(
+        "no DBC matches id 0x{message_id:X} (extended={extended})"
+    ))
 }
 
 fn signal_to_wire(sig: &DecodedSignal<'_>) -> SignalRecord {
@@ -3310,11 +3441,9 @@ fn attach_local_bus_bridge(
     spec: project::BridgeSpec,
     allocates: Option<bool>,
 ) -> Result<(), String> {
-    state.local_buses.attach_bridge(
-        &virtual_bus_id,
-        &spec,
-        allocates.unwrap_or(false),
-    )?;
+    state
+        .local_buses
+        .attach_bridge(&virtual_bus_id, &spec, allocates.unwrap_or(false))?;
     sys_info!(
         &app,
         "virtual-bus",
@@ -3333,9 +3462,7 @@ fn detach_local_bus_bridge(
     virtual_bus_id: String,
     name: String,
 ) -> Result<bool, String> {
-    let removed = state
-        .local_buses
-        .detach_bridge(&virtual_bus_id, &name)?;
+    let removed = state.local_buses.detach_bridge(&virtual_bus_id, &name)?;
     if removed {
         sys_info!(
             &app,
@@ -3350,10 +3477,7 @@ fn detach_local_bus_bridge(
 /// GUI's project panel uses it as a readout.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-fn list_local_bus_bridges(
-    state: State<'_, AppState>,
-    virtual_bus_id: String,
-) -> Vec<String> {
+fn list_local_bus_bridges(state: State<'_, AppState>, virtual_bus_id: String) -> Vec<String> {
     state.local_buses.bridge_names(&virtual_bus_id)
 }
 
@@ -3433,10 +3557,15 @@ mod tests {
     fn collect_trace_records_uses_absolute_indices() {
         let state = test_state();
         for i in 0u32..10 {
-            state.trace_store.append(dummy_frame(u64::from(i) * 1_000, i));
+            state
+                .trace_store
+                .append(dummy_frame(u64::from(i) * 1_000, i));
         }
         let mid = collect_trace_records(&state, 3, 6);
-        assert_eq!(mid.iter().map(|r| r.index).collect::<Vec<_>>(), vec![3, 4, 5]);
+        assert_eq!(
+            mid.iter().map(|r| r.index).collect::<Vec<_>>(),
+            vec![3, 4, 5]
+        );
         assert_eq!(mid.iter().map(|r| r.id).collect::<Vec<_>>(), vec![3, 4, 5]);
         // No DBC attached -> nothing decoded.
         assert!(mid.iter().all(|r| r.decoded.is_none()));
@@ -3467,7 +3596,10 @@ mod tests {
         assert_eq!(name(1).as_deref(), Some("OnlyInB")); // only DBC B has it
         assert_eq!(name(2).as_deref(), Some("SharedMsg")); // both — A first
         assert_eq!(
-            r[2].decoded.as_ref().map(|d| d.signals[0].name.clone()).as_deref(),
+            r[2].decoded
+                .as_ref()
+                .map(|d| d.signals[0].name.clone())
+                .as_deref(),
             Some("FromA"),
         );
         assert!(r[3].decoded.is_none()); // no DBC knows id 999
@@ -3512,7 +3644,8 @@ mod tests {
         let parse = |t: &str| serde_json::from_str::<FilterPredicate>(t).unwrap();
 
         // Name leaf: only the message whose name matches contributes.
-        let by_name = decode_candidate_ids(&dbs, &parse(r#"{"name_regex": "String1JustDetected.*?"}"#));
+        let by_name =
+            decode_candidate_ids(&dbs, &parse(r#"{"name_regex": "String1JustDetected.*?"}"#));
         assert_eq!(by_name, HashSet::from([256]));
 
         // Signal leaf: only the message carrying the signal contributes.
@@ -3544,8 +3677,10 @@ mod tests {
         ];
         let filter: FilterPredicate =
             serde_json::from_str(r#"{"name_regex": "String1JustDetected.*?"}"#).unwrap();
-        let frames: Vec<RawTraceFrame> =
-            [256, 512, 999, 256].iter().map(|&id| frame_with_data(id)).collect();
+        let frames: Vec<RawTraceFrame> = [256, 512, 999, 256]
+            .iter()
+            .map(|&id| frame_with_data(id))
+            .collect();
 
         let candidates = decode_candidate_ids(&dbs, &filter);
         let gated: Vec<bool> = frames
@@ -3575,8 +3710,7 @@ mod tests {
         r1.bus_id = Some("p".into());
         let mut r2 = TraceFrameRecord::from_raw(1, &frame_with_data(256), None);
         r2.bus_id = Some("c".into());
-        let predicate: FilterPredicate =
-            serde_json::from_str(r#"{"bus": "p"}"#).unwrap();
+        let predicate: FilterPredicate = serde_json::from_str(r#"{"bus": "p"}"#).unwrap();
         let filtered = apply_filter_records(vec![r1.clone(), r2], Some(&predicate));
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].bus_id.as_deref(), Some("p"));
@@ -3757,20 +3891,15 @@ mod tests {
             .local_buses
             .create("vbus", "v", cannet_core::BusConfig::classic_500k())
             .unwrap();
-        let (sink_p, _source_p) = state
-            .local_buses
-            .attach_participant("vbus")
-            .unwrap();
-        let (_sink_q, mut source_q) = state
-            .local_buses
-            .attach_participant("vbus")
-            .unwrap();
+        let (sink_p, _source_p) = state.local_buses.attach_participant("vbus").unwrap();
+        let (_sink_q, mut source_q) = state.local_buses.attach_participant("vbus").unwrap();
 
         let session = RemoteSession {
             handle: None,
-            tx: SessionTx::Vbus(vec![
-                (0, std::sync::Arc::new(std::sync::Mutex::new(sink_p))),
-            ]),
+            tx: SessionTx::Vbus(vec![(
+                0,
+                std::sync::Arc::new(std::sync::Mutex::new(sink_p)),
+            )]),
             channel_to_interface: vec![(0, project::LOCAL_VBUS_INTERFACE.into())],
             channel_to_bus: vec![(0, Some("p".into()))],
             stop: Arc::new(AtomicBool::new(false)),
@@ -3836,7 +3965,11 @@ mod tests {
 
         // One-message DBC: id 0x123, 8-bit signal "Sig" at byte 0.
         let dbc_text = tiny_dbc(0x123, "Msg", "Sig");
-        state.databases.lock().unwrap().push(loaded("test.dbc", &dbc_text));
+        state
+            .databases
+            .lock()
+            .unwrap()
+            .push(loaded("test.dbc", &dbc_text));
 
         // Transmit a frame on bus "p" with payload [42, ...]. No
         // session is required for the tx-confirm row to land.
@@ -3893,7 +4026,11 @@ mod tests {
         let state = test_state();
 
         let dbc_text = tiny_dbc(0x456, "Msg", "Sig");
-        state.databases.lock().unwrap().push(loaded("test.dbc", &dbc_text));
+        state
+            .databases
+            .lock()
+            .unwrap()
+            .push(loaded("test.dbc", &dbc_text));
 
         // Set up the vbus and two participants the way
         // `connect_local_vbus` does — one per project bus.
@@ -3901,14 +4038,8 @@ mod tests {
             .local_buses
             .create("vbus", "v", cannet_core::BusConfig::classic_500k())
             .unwrap();
-        let (sink_p, _source_p) = state
-            .local_buses
-            .attach_participant("vbus")
-            .unwrap();
-        let (_sink_q, source_q) = state
-            .local_buses
-            .attach_participant("vbus")
-            .unwrap();
+        let (sink_p, _source_p) = state.local_buses.attach_participant("vbus").unwrap();
+        let (_sink_q, source_q) = state.local_buses.attach_participant("vbus").unwrap();
 
         // Spawn the rx pump for "q" — mirrors the per-participant
         // pump `connect_local_vbus` spawns. `LocalSourceFrameSource`
@@ -3919,11 +4050,15 @@ mod tests {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_for_pump = stop.clone();
         let pump = std::thread::spawn(move || {
-            let mut adapter = LocalSourceFrameSource { source: source_q, channel: 1 };
+            let mut adapter = LocalSourceFrameSource {
+                source: source_q,
+                channel: 1,
+            };
             let channel_to_bus = vec![(1u8, Some("q".to_string()))];
             while !stop_for_pump.load(Ordering::Relaxed) {
-                let Some(frame) =
-                    cannet_core::CanFrameSource::next_frame(&mut adapter).ok().flatten()
+                let Some(frame) = cannet_core::CanFrameSource::next_frame(&mut adapter)
+                    .ok()
+                    .flatten()
                 else {
                     break;
                 };
@@ -3939,17 +4074,15 @@ mod tests {
         // sink the transmit path uses).
         let session = RemoteSession {
             handle: None,
-            tx: SessionTx::Vbus(vec![
-                (0, std::sync::Arc::new(std::sync::Mutex::new(sink_p))),
-            ]),
+            tx: SessionTx::Vbus(vec![(
+                0,
+                std::sync::Arc::new(std::sync::Mutex::new(sink_p)),
+            )]),
             channel_to_interface: vec![
                 (0, project::LOCAL_VBUS_INTERFACE.into()),
                 (1, project::LOCAL_VBUS_INTERFACE.into()),
             ],
-            channel_to_bus: vec![
-                (0, Some("p".into())),
-                (1, Some("q".into())),
-            ],
+            channel_to_bus: vec![(0, Some("p".into())), (1, Some("q".into()))],
             stop: Arc::new(AtomicBool::new(false)),
         };
         state
@@ -4003,8 +4136,14 @@ mod tests {
 
         // Plot scoped to "p" sees the tx-confirm.
         let samples_p = state.signal_caches.slice(
-            Some("p"), 0x456, false, "Sig",
-            0.0, f64::MAX, &state.trace_store, &db_refs,
+            Some("p"),
+            0x456,
+            false,
+            "Sig",
+            0.0,
+            f64::MAX,
+            &state.trace_store,
+            &db_refs,
         );
         assert!(
             samples_p.iter().any(|p| (p.value - 7.0).abs() < 1e-9),
@@ -4013,8 +4152,14 @@ mod tests {
 
         // Plot scoped to "q" sees the fan-out.
         let samples_q = state.signal_caches.slice(
-            Some("q"), 0x456, false, "Sig",
-            0.0, f64::MAX, &state.trace_store, &db_refs,
+            Some("q"),
+            0x456,
+            false,
+            "Sig",
+            0.0,
+            f64::MAX,
+            &state.trace_store,
+            &db_refs,
         );
         assert!(
             samples_q.iter().any(|p| (p.value - 7.0).abs() < 1e-9),
@@ -4130,8 +4275,14 @@ mod tests {
         // Timestamps round-trip within ms precision (the SYSTEMTIME
         // header floor that the writer applies); accept the
         // ms-rounded values.
-        assert_eq!(recovered[0].timestamp_ns / 1_000_000, (ts_base + 500) / 1_000_000);
-        assert_eq!(recovered[1].timestamp_ns / 1_000_000, (ts_base + 1_500) / 1_000_000);
+        assert_eq!(
+            recovered[0].timestamp_ns / 1_000_000,
+            (ts_base + 500) / 1_000_000
+        );
+        assert_eq!(
+            recovered[1].timestamp_ns / 1_000_000,
+            (ts_base + 1_500) / 1_000_000
+        );
     }
 
     /// `write_capture` re-channels each frame by its `bus_id`'s
@@ -4166,13 +4317,7 @@ mod tests {
         ];
         let buses = vec!["p".to_string(), "c".to_string()];
 
-        let outcome = write_capture(
-            dest.to_str().unwrap(),
-            &frames,
-            &[],
-            &buses,
-        )
-        .unwrap();
+        let outcome = write_capture(dest.to_str().unwrap(), &frames, &[], &buses).unwrap();
         assert_eq!(outcome.frame_count, 3);
 
         let mut src = BlfCanFrameSource::open(&dest).unwrap();
@@ -4234,7 +4379,12 @@ mod tests {
         let abs = 1_700_000_000_000_000_000u64;
         let start = w.set_start_if_unset((abs / 1_000_000) * 1_000_000);
         // Two markers with no description (third-party shape).
-        let m1 = marker::build(abs - start, b"Notes".to_vec(), b"first".to_vec(), Vec::new());
+        let m1 = marker::build(
+            abs - start,
+            b"Notes".to_vec(),
+            b"first".to_vec(),
+            Vec::new(),
+        );
         let m2 = marker::build(
             (abs + 1_000_000) - start,
             b"Notes".to_vec(),
@@ -4242,7 +4392,8 @@ mod tests {
             Vec::new(),
         );
         w.append_object(&marker::encode(&m1), abs).unwrap();
-        w.append_object(&marker::encode(&m2), abs + 1_000_000).unwrap();
+        w.append_object(&marker::encode(&m2), abs + 1_000_000)
+            .unwrap();
         w.finish().unwrap();
 
         let read = read_notes_from_blf(dest.to_str().unwrap()).unwrap();
@@ -4356,11 +4507,15 @@ mod tests {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_for_pump = stop.clone();
         let pump = std::thread::spawn(move || {
-            let mut adapter = LocalSourceFrameSource { source: source_q, channel: 1 };
+            let mut adapter = LocalSourceFrameSource {
+                source: source_q,
+                channel: 1,
+            };
             let channel_to_bus = vec![(1u8, Some("q".to_string()))];
             while !stop_for_pump.load(Ordering::Relaxed) {
-                let Some(frame) =
-                    cannet_core::CanFrameSource::next_frame(&mut adapter).ok().flatten()
+                let Some(frame) = cannet_core::CanFrameSource::next_frame(&mut adapter)
+                    .ok()
+                    .flatten()
                 else {
                     break;
                 };
@@ -4512,13 +4667,9 @@ mod tests {
             }),
             crc: None,
         };
-        assert!(
-            resolve_effective_calc(&dbs, &calc_request("q", 291), Some(&bad)).is_err()
-        );
+        assert!(resolve_effective_calc(&dbs, &calc_request("q", 291), Some(&bad)).is_err());
         // … and so is an override on a message no DBC defines.
-        assert!(
-            resolve_effective_calc(&dbs, &calc_request("p", 291), Some(&bad)).is_err()
-        );
+        assert!(resolve_effective_calc(&dbs, &calc_request("p", 291), Some(&bad)).is_err());
     }
 
     /// The spec types round-trip through JSON in ADR 0028's file shape

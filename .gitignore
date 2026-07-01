@@ -12,6 +12,7 @@ apps/gui/tsconfig.tsbuildinfo
 
 # Claude Code worktrees
 .claude/worktrees/
+.claude/settings.local.json
 
 # Python sidecars (servers/)
 __pycache__/

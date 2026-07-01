@@ -29,6 +29,7 @@ import {
   resolveServer,
 } from "./types";
 import { useSidecarStatus } from "./sidecarStatus";
+import { projectDir, resolveProjectPath } from "./projectPaths";
 import { TitleBar } from "./TitleBar";
 import { TracePanel } from "./TracePanel";
 import { ProjectPanel } from "./ProjectPanel";
@@ -121,7 +122,13 @@ import {
   PanelCommandsContext,
   createPanelCommandRegistry,
 } from "./panelCommands";
-import { diagCount, diagGauge, startDiagReporter } from "./diag"; // DIAG
+import {
+  beginDiagCapture,
+  diagCount,
+  diagGauge,
+  endDiagCapture,
+  startDiagReporter,
+} from "./diag"; // DIAG
 
 // BLF + global error state. Remote sessions are tracked separately
 // (multi-server: one entry per address in `remoteSessions`).
@@ -136,6 +143,28 @@ type RemoteStatus =
   | { kind: "connecting" }
   | { kind: "running"; result: RemoteSessionResult }
   | { kind: "error"; message: string };
+
+// Self-driving perf automation config, served by the host's
+// `diag_autostart` command from the launch flags (ADR 0031). `null` for
+// a normal launch. Field names mirror the host's camelCase serialization.
+// Every field is optional in effect: `--project` alone just opens the
+// project; adding `connectOnStart` connects; adding `captureSecs` records
+// for that span, writes `out`, and exits.
+type AutomationConfig = {
+  project: string | null;
+  connectOnStart: boolean;
+  captureSecs: number | null;
+  out: string | null;
+  label: string | null;
+};
+
+// How long to let the connected session settle before bracketing a
+// capture — connect clears the buffer and the rest-of-bus simulation
+// spins up, so the first second or two isn't representative.
+const AUTOMATION_SETTLE_MS = 2000;
+// Cap on waiting for connect preconditions (bindings loaded; sidecar
+// ready for a local binding) before giving up on the auto-connect.
+const AUTOMATION_READY_TIMEOUT_MS = 30000;
 
 /// Number of frames per cache chunk. Each chunk is fetched in one
 /// IPC round-trip; smaller = more fetches but cheaper each, larger =
@@ -289,6 +318,14 @@ export function App() {
   // without taking `count` as a dependency (it changes every tick).
   const countRef = useRef(0);
   countRef.current = count;
+  // Perf self-driving config (ADR 0031), fetched once from the host on
+  // boot and handed to the orchestration effect below. `null` = normal
+  // launch. The mirrored refs let that once-mounted effect read live
+  // connect preconditions without re-subscribing on every change.
+  const [automation, setAutomation] = useState<AutomationConfig | null>(null);
+  const interfaceBindingsRef = useRef<InterfaceBinding[]>([]);
+  const sidecarAddressRef = useRef<string | null>(null);
+  const handleConnectRef = useRef<() => Promise<void>>(() => Promise.resolve());
 
   // --- element registry ops ---
   // Latest bus list, mirrored into a ref so element creation can
@@ -1035,7 +1072,12 @@ export function App() {
   // Doesn't touch a live connection: the project's bus is configured
   // into the fields; hit Connect to switch.
   const applyProject = useCallback(
-    (project: Project) => {
+    (project: Project, projectFilePath: string) => {
+      // DBC and `.cannet_rbs` references in the project may be relative
+      // to the project file's own directory (ADR 0030); resolve them to
+      // absolute before they reach the host commands, which read from
+      // disk directly.
+      const dir = projectDir(projectFilePath);
       // Restore the element registry first so the panels `fromJSON`
       // creates (which reference elements by `params.elementId`) find
       // their entries. (A panel that doesn't still self-heals.)
@@ -1045,7 +1087,12 @@ export function App() {
         assignDefaultNames(
           (Array.isArray(project.elements) ? project.elements : [])
             .filter(isProjectElement)
-            .map(normalizeElement),
+            .map(normalizeElement)
+            .map((el) =>
+              el.kind === "rbs" && el.path
+                ? { ...el, path: resolveProjectPath(dir, el.path) }
+                : el,
+            ),
         ).map((el) => ({ element: el, trace: clearedTrace(countRef.current) })),
       );
       const api = dockApiRef.current;
@@ -1067,7 +1114,9 @@ export function App() {
       const incomingBindings = Array.isArray(project.interface_bindings)
         ? project.interface_bindings
         : [];
-      const incomingDbcs: DbcRef[] = Array.isArray(project.dbcs) ? project.dbcs : [];
+      const incomingDbcs: DbcRef[] = (Array.isArray(project.dbcs) ? project.dbcs : []).map(
+        (d) => ({ ...d, path: resolveProjectPath(dir, d.path) }),
+      );
       const incomingVbuses: LocalVirtualBusDef[] = Array.isArray(
         project.local_virtual_buses,
       )
@@ -1139,7 +1188,7 @@ export function App() {
     if (typeof selected !== "string") return;
     try {
       const project = await invoke<Project>("open_project", { path: selected });
-      applyProject(project);
+      applyProject(project, selected);
       rememberProject(selected);
       setDirty(false);
     } catch (err) {
@@ -1243,6 +1292,76 @@ export function App() {
   // current values rather than re-registering on every change.
   dirtyRef.current = dirty;
   handleSaveProjectRef.current = handleSaveProject;
+  // Mirror the connect preconditions + action for the once-mounted perf
+  // orchestration effect (ADR 0031).
+  interfaceBindingsRef.current = interfaceBindings;
+  sidecarAddressRef.current = sidecarAddress;
+  handleConnectRef.current = handleConnect;
+
+  // Self-driving perf run (ADR 0031). When the host hands us an
+  // automation config, connect (if asked), capture for the requested
+  // span, write the report, and exit — without an operator. The project
+  // has already been opened in `onReady`; everything the workload needs
+  // (layout, bindings, the RBS run flag) rides in the saved project, so
+  // the flags add only the two decisions a project deliberately doesn't
+  // persist: touch interfaces, and record.
+  useEffect(() => {
+    if (!automation) return;
+    let cancelled = false;
+    const sleep = (ms: number) =>
+      new Promise<void>((resolve) => setTimeout(resolve, ms));
+    // Poll `pred` until it holds or `timeoutMs` elapses (returns whether
+    // it held) — waits out the async settle after the project applies:
+    // bindings load into state, and the local sidecar comes up.
+    const waitUntil = async (pred: () => boolean, timeoutMs: number) => {
+      const start = performance.now();
+      while (!pred()) {
+        if (cancelled || performance.now() - start > timeoutMs) return false;
+        await sleep(100);
+      }
+      return true;
+    };
+    void (async () => {
+      try {
+        if (automation.connectOnStart) {
+          const ready = await waitUntil(
+            () =>
+              interfaceBindingsRef.current.length > 0 &&
+              (!interfaceBindingsRef.current.some(isLocalBinding) ||
+                sidecarAddressRef.current !== null),
+            AUTOMATION_READY_TIMEOUT_MS,
+          );
+          if (cancelled) return;
+          if (ready) await handleConnectRef.current();
+        }
+        if (automation.captureSecs != null) {
+          await sleep(AUTOMATION_SETTLE_MS);
+          if (cancelled) return;
+          await beginDiagCapture(
+            automation.label ?? automation.project ?? "perf",
+          );
+          await sleep(automation.captureSecs * 1000);
+          if (cancelled) return;
+          await endDiagCapture(automation.out ?? undefined);
+        }
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("perf automation run failed", err);
+      } finally {
+        // A capture run is unattended — exit so the launching CLI
+        // returns. `destroy` skips the dirty-close prompt (applying the
+        // project dirties the workspace). A connect-only / project-only
+        // run leaves the app open for interactive use.
+        if (!cancelled && automation.captureSecs != null) {
+          getCurrentWindow().destroy();
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [automation]);
+
   useEffect(() => {
     const win = getCurrentWindow();
     let unlisten: (() => void) | undefined;
@@ -1919,19 +2038,35 @@ export function App() {
         setDirty(true);
       });
 
-      // Reopen the last named project, if any — it replaces the layout
-      // restored above (and re-applies the bus/DBC config). A stale
-      // pointer (file moved/deleted) is cleared so it stops failing.
-      const lastProject = localStorage.getItem(LAST_PROJECT_KEY);
-      if (lastProject) {
-        void invoke<Project>("open_project", { path: lastProject })
-          .then((p) => {
-            applyProject(p);
-            rememberProject(lastProject);
+      // Perf self-driving flags (ADR 0031) override the last-opened
+      // pointer: `--project` names the project deterministically. Fetch
+      // the config first so the project it names is the one we open.
+      void (async () => {
+        let cfg: AutomationConfig | null = null;
+        try {
+          cfg = await invoke<AutomationConfig | null>("diag_autostart");
+        } catch {
+          /* no host / not armed — fall through to the last-opened path */
+        }
+        // Reopen the named project (automation) or the last one opened —
+        // it replaces the layout restored above (and re-applies the
+        // bus/DBC config). A stale pointer (file moved/deleted) is
+        // cleared so it stops failing.
+        const projectToOpen = cfg?.project ?? localStorage.getItem(LAST_PROJECT_KEY);
+        if (projectToOpen) {
+          try {
+            const p = await invoke<Project>("open_project", { path: projectToOpen });
+            applyProject(p, projectToOpen);
+            rememberProject(projectToOpen);
             setDirty(false);
-          })
-          .catch(() => rememberProject(null));
-      }
+          } catch {
+            rememberProject(null);
+          }
+        }
+        // Hand off to the orchestration effect, which connects /
+        // captures / exits per the flags once the project has applied.
+        if (cfg) setAutomation(cfg);
+      })();
     },
     [seedDefaultLayout, applyProject, rememberProject],
   );

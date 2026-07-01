@@ -3,7 +3,7 @@
 //! Spawns the sidecar, enumerates its interfaces, and drives the workload
 //! over real CAN: the schedule is transmitted on one PEAK adapter and
 //! read back on the other (the two adapters are physically bridged — the
-//! `examples/ev-fleet` bench topology), then fed into the model while the
+//! `examples/ev-demo` bench topology), then fed into the model while the
 //! same filtered scan contends. This is the only mode that exercises the
 //! driver and the wire end to end; it needs hardware, so it can't run in
 //! CI. Reuses the grpc mode's wire ingest / transmit loops — only the frame
