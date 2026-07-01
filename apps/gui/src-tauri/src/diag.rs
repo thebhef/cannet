@@ -16,6 +16,7 @@
 //! the same way.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
@@ -31,6 +32,59 @@ const FRAME_BUDGET_MS: f64 = 1000.0 / 60.0;
 /// frames' worth of uninterruptible work — the threshold the browser's
 /// own `longtask` entries use, and what a user perceives as a hitch.
 const JANK_THRESHOLD_MS: f64 = 50.0;
+
+/// Host-side jitter metrics the frontend can't see, drained into each
+/// capture sample (ADR 0031). Both hold the **max since the last drain**,
+/// so a per-second drain yields that second's worst case — the tail signal
+/// a throughput average is structurally blind to (a sub-second stall is
+/// hidden by the catch-up burst that follows it).
+///
+/// - `flush_ms` — duration of the periodic `TraceStore::flush`; it holds
+///   the append lock, so this *is* the lock-contention root signal,
+///   present in any capture.
+/// - `tx_late_ms` — the transmit scheduler's wake lateness; the
+///   user-facing effect of the same contention, and it also catches lock
+///   holders other than flush. Only non-zero while something transmits.
+///
+/// Managed as Tauri state: the flusher and scheduler threads record into
+/// it; [`diag_push`] drains it.
+#[derive(Default)]
+pub struct HostMetrics {
+    flush_ms_max: AtomicU64,
+    tx_late_ms_max: AtomicU64,
+}
+
+impl HostMetrics {
+    /// Raise `slot` to `ms` if larger (a lock-free max).
+    fn record(slot: &AtomicU64, ms: f64) {
+        let want = ms.to_bits();
+        let mut cur = slot.load(Ordering::Relaxed);
+        while f64::from_bits(cur) < ms {
+            match slot.compare_exchange_weak(cur, want, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => break,
+                Err(observed) => cur = observed,
+            }
+        }
+    }
+
+    /// Record a `TraceStore::flush` duration (ms).
+    pub fn record_flush_ms(&self, ms: f64) {
+        Self::record(&self.flush_ms_max, ms);
+    }
+
+    /// Record a transmit-scheduler wake lateness (ms).
+    pub fn record_tx_late_ms(&self, ms: f64) {
+        Self::record(&self.tx_late_ms_max, ms);
+    }
+
+    /// Read and reset both maxima — the capture's per-second drain.
+    fn drain(&self) -> (f64, f64) {
+        (
+            f64::from_bits(self.flush_ms_max.swap(0, Ordering::Relaxed)),
+            f64::from_bits(self.tx_late_ms_max.swap(0, Ordering::Relaxed)),
+        )
+    }
+}
 
 /// One second of frontend diagnostics, pushed by `diag.ts`.
 #[derive(Debug, Clone, Deserialize)]
@@ -69,12 +123,18 @@ pub struct LongTaskSpread {
 }
 
 /// Gauge spread, plus the final reading (gauges are absolute levels, so
-/// the end value — e.g. final buffer size — is meaningful on its own).
+/// the end value — e.g. final buffer size — is meaningful on its own) and
+/// the linear drift over the run. `slope_per_min` is the least-squares
+/// slope of the reading against capture time, in the gauge's own units per
+/// minute — the signal for a slow memory climb (`jsheap_mb`,
+/// `mem.webview_renderer_mb`) that `max`/`last` alone can't separate from a
+/// one-off spike.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct GaugeSpread {
     pub mean: f64,
     pub max: f64,
     pub last: f64,
+    pub slope_per_min: f64,
 }
 
 /// A throughput gauge reduced for regression gating: its run mean plus
@@ -184,21 +244,21 @@ pub fn summarize(label: &str, samples: &[DiagSample]) -> RenderReport {
     }
     let mut gauges = BTreeMap::new();
     for k in gauge_keys {
-        let series: Vec<f64> = samples
+        // Pair each present reading with its sample time so the drift is a
+        // regression over real elapsed time, not sample ordinal.
+        let pairs: Vec<(f64, f64)> = samples
             .iter()
-            .filter_map(|s| s.gauges.get(k).copied())
+            .filter_map(|s| s.gauges.get(k).map(|&v| (s.t_ms, v)))
             .collect();
-        let last = samples
-            .iter()
-            .rev()
-            .find_map(|s| s.gauges.get(k).copied())
-            .unwrap_or(0.0);
+        let series: Vec<f64> = pairs.iter().map(|(_, v)| *v).collect();
+        let last = pairs.last().map_or(0.0, |(_, v)| *v);
         gauges.insert(
             k.to_string(),
             GaugeSpread {
                 mean: mean(&series),
                 max: max(&series),
                 last,
+                slope_per_min: slope_per_min(&pairs),
             },
         );
     }
@@ -269,6 +329,30 @@ fn max(xs: &[f64]) -> f64 {
     xs.iter().copied().fold(0.0_f64, f64::max)
 }
 
+/// Least-squares slope of `(t_ms, value)` pairs, scaled to the value's
+/// units **per minute**. Fewer than two points (or a degenerate time span)
+/// → 0. Used for the per-gauge drift in [`GaugeSpread`]: a positive
+/// `jsheap_mb` / `mem.*_mb` slope is the slow-climb signal a leak gate
+/// watches.
+#[allow(clippy::cast_precision_loss)]
+fn slope_per_min(pairs: &[(f64, f64)]) -> f64 {
+    let n = pairs.len();
+    if n < 2 {
+        return 0.0;
+    }
+    let nf = n as f64;
+    let sx: f64 = pairs.iter().map(|(t, _)| *t).sum();
+    let sy: f64 = pairs.iter().map(|(_, v)| *v).sum();
+    let sxx: f64 = pairs.iter().map(|(t, _)| t * t).sum();
+    let sxy: f64 = pairs.iter().map(|(t, v)| t * v).sum();
+    let denom = nf * sxx - sx * sx;
+    if denom.abs() < f64::EPSILON {
+        return 0.0;
+    }
+    // Slope is value-per-ms; ×60_000 ms/min gives value-per-minute.
+    (nf * sxy - sx * sy) / denom * 60_000.0
+}
+
 /// Linear-interpolated percentile of a non-negative series. Empty → 0.
 #[allow(
     clippy::cast_precision_loss,
@@ -305,6 +389,10 @@ struct Capture {
     active: bool,
     label: String,
     samples: Vec<DiagSample>,
+    /// Host-side process-memory sampler, live only while a capture is
+    /// armed. The frontend can't read process RSS, so the host stamps the
+    /// `mem.*_mb` split onto each pushed sample (ADR 0031).
+    mem: Option<crate::crash::MemSampler>,
 }
 
 /// What [`diag_capture_finish`] returns: the reduced report and, when a
@@ -318,20 +406,42 @@ pub struct FinishedCapture {
 /// Arm a capture under `label`, discarding any prior samples.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn diag_capture_start(state: State<'_, DiagState>, label: String) {
+pub fn diag_capture_start(
+    state: State<'_, DiagState>,
+    metrics: State<'_, HostMetrics>,
+    label: String,
+) {
     let mut cap = state.inner.lock().expect("diag mutex poisoned");
     cap.active = true;
     cap.label = label;
     cap.samples.clear();
+    cap.mem = Some(crate::crash::MemSampler::new());
+    // Discard any max accrued before the capture so the first sample isn't
+    // inflated by a pre-capture flush / scheduler stall.
+    let _ = metrics.drain();
 }
 
 /// Record one per-second sample. Ignored unless a capture is armed, so
 /// the frontend can push unconditionally without a round-trip to check.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn diag_push(state: State<'_, DiagState>, sample: DiagSample) {
+pub fn diag_push(
+    state: State<'_, DiagState>,
+    metrics: State<'_, HostMetrics>,
+    mut sample: DiagSample,
+) {
     let mut cap = state.inner.lock().expect("diag mutex poisoned");
     if cap.active {
+        // Stamp the host-side process-memory split onto the sample before
+        // storing it, so the renderer/host gauges share the frontend's
+        // 1 Hz timeline.
+        if let Some(mem) = cap.mem.as_mut() {
+            mem.stamp_mb(&mut sample.gauges);
+        }
+        // Drain the host jitter maxima into this second's sample.
+        let (flush_ms, tx_late_ms) = metrics.drain();
+        sample.gauges.insert("flush_ms".to_string(), flush_ms);
+        sample.gauges.insert("tx_late_ms".to_string(), tx_late_ms);
         cap.samples.push(sample);
     }
 }
@@ -350,6 +460,7 @@ pub fn diag_capture_finish(
     let (label, samples) = {
         let mut cap = state.inner.lock().expect("diag mutex poisoned");
         cap.active = false;
+        cap.mem = None;
         (cap.label.clone(), std::mem::take(&mut cap.samples))
     };
     if samples.is_empty() {
@@ -578,6 +689,30 @@ mod tests {
         approx(r.gauges["count"].mean, 2000.0);
         approx(r.gauges["count"].max, 3000.0);
         approx(r.gauges["count"].last, 3000.0);
+    }
+
+    #[test]
+    fn gauge_slope_is_the_linear_drift_per_minute() {
+        // A gauge climbing 100 units every second (1000 ms) drifts at
+        // 100 * 60 = 6000 units/min, regardless of noise-free linearity.
+        let samples: Vec<DiagSample> = (0..10)
+            .map(|i| {
+                let mut s = sample(f64::from(i) * 1000.0, 0.0, 0.0);
+                s.gauges.insert("mem.host_mb".into(), 50.0 + f64::from(i) * 100.0);
+                s
+            })
+            .collect();
+        let r = summarize("climb", &samples);
+        approx(r.gauges["mem.host_mb"].slope_per_min, 6000.0);
+        // A flat gauge has zero drift; a single reading too.
+        let flat: Vec<DiagSample> = (0..5)
+            .map(|i| {
+                let mut s = sample(f64::from(i) * 1000.0, 0.0, 0.0);
+                s.gauges.insert("flat".into(), 42.0);
+                s
+            })
+            .collect();
+        approx(summarize("flat", &flat).gauges["flat"].slope_per_min, 0.0);
     }
 
     fn args(parts: &[&str]) -> Vec<String> {

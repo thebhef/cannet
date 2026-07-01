@@ -136,10 +136,19 @@ session present at launch is loaded as a stopped historical trace
         the final state (a cleanly stopped trace is reloadable within one
         tick). No explicit stop/exit flush needed for correctness. Two
         tests (no-op on the double; disk flush → `DiskRawStore::reopen`
-        round-trips). **Watch item for Step 7:** the cadence uses the full
-        `flush()` (every mapped segment); at 10^8 frames that's many
-        msyncs under the append lock — measure there and make it
-        incremental (flush only newly-sealed segments) if it shows up.
+        round-trips). ~~**Watch item for Step 7:** the cadence uses the
+        full `flush()` (every mapped segment)…~~ **Resolved** — it showed
+        up earlier than 10^8 frames: the full-chain synchronous flush held
+        the append lock ~110 ms every `TRACE_FLUSH_TICK`, stalling
+        ingest/transmit on a periodic sawtooth (confirmed by moving the
+        sawtooth's period when the tick changed). Fixed two ways: the flush
+        is now **incremental** (only segments dirtied since the last flush;
+        sealed segments are synced once) and **asynchronous**
+        (`msync(MS_ASYNC)`, not a per-segment `fsync`), with a synchronous
+        flush only on clean shutdown — see ADR 0002 DS-2. A
+        `flush_ms`/`tx_late_ms` host-jitter gate (ADR 0031) was added so
+        this regression class is caught by the perf test, since throughput
+        averages are structurally blind to a sub-second stall.
       - **Step 5.3c (rest) — done** in one commit (the ii/iii/iv split was
         dropped — they're one lifecycle feature, ~200 lines, not three
         reviewable units). Pieces:
@@ -196,8 +205,22 @@ session present at launch is loaded as a stopped historical trace
           would mean threading the active path through `AppState` too —
           omitted as not worth the wiring. Can be added later if a
           diagnostic need appears.
-    - **Step 5.3d — not started.** Disk-back the DS-5 pyramids in
-      `current/` (residency bound; layout already reload-compatible).
+    - **Step 5.3d — done.** Disk-back the DS-5 pyramids in `current/`
+      (the residency bound). New `cannet-spill::SampleSeq`: an append-only
+      run of `(t_seconds, value)` pairs on a geometric mmap'd segment chain
+      (64→65 536 entries, doubling — the by-id postings' layout, 16-byte
+      records). `signal_cache`'s pyramid is now `Vec<SampleSeq>` instead of
+      `Vec<Vec<SamplePoint>>`, rooted at a `signals/` subdir of the scratch,
+      so the resident set is only the segment handles plus recently-served
+      windows — the kernel pages cold history out (before this, level 0 +
+      the higher levels were `O(matches per signal)` in RAM). A pyramid is
+      *derived* state, so it carries **no reopen manifest**: the raw store
+      is the source of truth, and `SignalCacheStore::clear` /construction
+      wipes the dir, with the next serve rebuilding the pyramid on disk from
+      the reopened frames. New `SampleSeq` tests (round-trip across
+      geometric segments, lazy file creation, prefix isolation, flush) and a
+      `signal_cache` test asserting levels spill to `sig.*` files and
+      `clear` wipes them.
 - **Steps 6–7 — not started.**
 
 Deviations / decisions in 5.3a:
@@ -270,12 +293,14 @@ Step 6):
   multi-resolution view is the signal's (so other consumers — export,
   stats — can use it). The harness mode is `signal-bench`, not
   `plot-bench`.
-- **The pyramid bounds *serve cost* (`O(max_points)`), not RAM
-  residency.** Level 0 (the raw decoded series) still lives in RAM at
-  `O(matches per signal)`. The residency bound is disk-backing the
-  pyramids in `current/` (DS-7), which lands with the live switchover in
-  Step 5 — the pyramid's append-only level layout is already
-  reload-compatible by construction.
+- **The pyramid bounds *serve cost* (`O(max_points)`); the residency
+  bound is disk-backing it (done in 5.3d).** Every level is now an mmap'd
+  `cannet-spill::SampleSeq` under `current/signals/`, so a level's
+  `O(matches per signal)` bytes live on disk and the resident set is the
+  segment handles plus recently-served windows. A pyramid is derived
+  state, so 5.3d chose lazy rebuild from the reopened raw store over a
+  pyramid manifest — the append-only layout *is* reload-compatible, but
+  re-deriving is simpler and the raw store is the single source of truth.
 - **Production runs on `DiskRawStore` as of Step 5.1.** `AppState`
   constructs the disk store rooted at `<OS cache dir>/cannet/current`;
   `MemRawStore` is the unit-test / perf double. The `fetch_filtered_trace`
@@ -346,7 +371,14 @@ rustdoc and the README current for what it ships:
   Messages surface explains the boundary.
 - **Step 7 — Benchmark.** A documented benchmark covering scroll /
   filter / plot of deep history, confirming GUI interactions stay
-  < 100 ms / 60 fps with a 10^8+-frame capture open.
+  < 100 ms / 60 fps with a 10^8+-frame capture open. Also **captures the
+  frontend memory baseline** (ADR 0031): the renderer / JS-heap peak and
+  drift gates and the host process-memory split are instrumented (`diag.rs`
+  `GaugeSpread::slope_per_min`, `crash::MemSampler`, `frontend.rs`), but
+  stay inert until a baseline carries them — a deep-history run is the
+  representative-length, sustained-capture scenario that arms them, so the
+  baseline regen lands here. This is also where the disk-backed-pyramid
+  residency win (5.3d) is confirmed against host RSS holding flat.
 
 Exit criteria:
 
@@ -372,3 +404,60 @@ Exit criteria:
   covers the `TraceStore` trait and the disk-backed implementation;
   ADR 0002 and the `memmap2` entry in
   `plans/technology-inventory.md` reflect the shipped design.
+
+## Periodic-flush lock contention (fixed)
+
+**Problem.** `TraceStore::flush` (`TRACE_FLUSH_TICK` = 2 s) held the
+trace-store **append lock** 80–145 ms while it `fsync`'d every mapped segment
+and rewrote the manifest + derived state. Ingest and transmit append through
+that lock, so the transmit scheduler fired ~110 ms late every 2 s — a periodic
+TX/RX stutter invisible to per-second fps (the catch-up burst refills the gap;
+retention held 1.0). Causally confirmed: moving the tick to 10 s moved the
+stall to 10 s, 1:1.
+
+**Fix.**
+
+- *Incremental flush* — re-sync only segments dirtied since the last flush;
+  sealed segments are immutable, synced once as the tail. `DiskRawStore` /
+  `ByIdIndex` carry a `flushed_*` watermark, so per-flush work is `O(segments
+  since last flush)` — normally one. The load-bearing fix at 10^8 frames
+  (resolved Step-5.3c-i watch item above).
+- *Async msync* — periodic flush uses `flush_async` (`MS_ASYNC` /
+  `FlushViewOfFile`), not device `fsync`. Reopen-after-restart still works (the
+  page cache backs the mapping); only trailing-window power-loss durability
+  relaxes — fine for ephemeral scratch. A sync `flush()` runs on clean
+  shutdown. ADR 0002 DS-2.
+
+**Detection.** The host stamps two jitter gauges into the ADR-0031 capture from
+a lock-free `diag::HostMetrics` — `flush_ms` (lock-hold) and `tx_late_ms`
+(scheduler wake lateness) — gated on their **mean** (≤ 25 / ≤ 18 ms). Mean, not
+peak: it catches the systematic per-flush regression and shrugs off one-off OS
+writeback spikes (a peak gate flaps). These are the *only* metrics that see the
+stall; throughput and retention never moved.
+
+**Result.** Stutter gone. Pre-fix the live capture failed both gates (flush 38,
+tx-late 27, every other metric green); post-fix 15 / 8.6. A 1200 s / 1.23 M-frame
+soak holds at flush 9.8, tx-late 5.2, retention 1.0 — the fix scales.
+
+### Deferred — off-lock manifest/derived writes
+
+Residual `flush_ms` **peaks** (~68 ms; mean ~15) are work still under the lock:
+the manifest write (by-id directory + bus table, temp + rename), the
+derived-state write, and ~20 per-id msyncs — an occasional slow rename spikes
+the peak. Crush it with a **two-phase flush**:
+
+- *Locked:* async-msync the dirtied segments; snapshot the manifest inputs
+  (watermarks, bus-intern, by-id directory) and derived state. Release.
+- *Unlocked:* serialize and write both files (temp + atomic rename).
+
+Safe because appends only *append*: a concurrent append lands in the next
+checkpoint, so the off-lock manifest names a durable *prefix* — and reopen
+already tolerates an undercounting manifest (reloads the prefix; next flush
+catches up). Needs `DiskRawStore` to split msync from manifest-write
+(`flush_segments(sync)` + `manifest_bytes()`) and `TraceStore::flush_with` to
+snapshot-then-write outside the lock. Under-lock cost then drops to just the
+async msync (single-digit ms), and the gate can tighten to a peak ceiling.
+
+Dropped alternatives: a by-id *dirty set* (marginal — every id gets a frame
+each tick) and reopen-rebuild of the by-id tail (conflicts with DS-3's
+no-`O(capture)`-reopen).

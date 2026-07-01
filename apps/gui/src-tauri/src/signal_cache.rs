@@ -26,11 +26,14 @@
 //! built incrementally on the same catch-up (each new sample is folded
 //! into each higher level at most once), so first-plot build is
 //! `O(that id's occurrences)` and steady-state serve is `O(max_points)`.
-//! Total RAM is still `O(total matches per signal)` — the pyramid bounds
-//! *serve cost*, not residency; disk-backing level 0 (DS-7's pyramids in
-//! `current/`) is the residency bound and lands with the live switchover.
-//! Caches are cleared by [`SignalCacheStore::clear`] on
-//! `clear_trace_store`.
+//! Every pyramid level is an mmap'd [`SampleSeq`] under the disk-spill
+//! scratch (ADR 0002 DS-5/DS-7), so the resident set is only the segment
+//! handles plus whatever windows the serve path has recently touched — the
+//! kernel pages cold history out under pressure. A pyramid is *derived*
+//! state, so it carries no reopen manifest: [`SignalCacheStore::clear`]
+//! (on `clear_trace_store`) drops the caches and wipes their files, and the
+//! next serve rebuilds the pyramid on disk by re-decoding the reopened raw
+//! frames (the source of truth).
 //!
 //! Concurrency: one global mutex around the (small) `HashMap`. The
 //! catch-up itself doesn't hold the trace-store lock beyond
@@ -38,9 +41,11 @@
 //! pump isn't starved by long catch-ups.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use cannet_dbc::Database;
+use cannet_spill::SampleSeq;
 
 use crate::signal_sampler::{self, SamplePoint};
 use crate::trace_store::TraceStore;
@@ -55,13 +60,20 @@ const PYRAMID_BRANCH: usize = 8;
 /// One signal's decoded samples as a min/max resolution pyramid, plus
 /// the next trace-store frame index to scan from on the next catch-up.
 struct SignalCache {
+    /// Scratch directory the level [`SampleSeq`]s are rooted in, and the
+    /// per-signal file-name base under it — held so [`Self::fold`] can mint
+    /// a new level's sequence when the one below first overflows a bucket.
+    dir: PathBuf,
+    base: String,
     /// Resolution pyramid. `levels[0]` is the raw decoded series in
     /// capture (frame-index) order; `levels[n]` (n ≥ 1) holds, for each
     /// bucket of [`PYRAMID_BRANCH`] consecutive `levels[n-1]` points,
     /// that bucket's min- and max-value points in time order. Every
     /// level is non-decreasing in `t_seconds`, so the serve path
-    /// binary-searches each by `t_seconds`.
-    levels: Vec<Vec<SamplePoint>>,
+    /// binary-searches each by `t_seconds`. Each level is an mmap'd
+    /// [`SampleSeq`], so the pyramid's residency is bounded (the module
+    /// docs); only the small per-level segment directories stay in RAM.
+    levels: Vec<SampleSeq>,
     /// `folded[n]` = how many of `levels[n]`'s points have already been
     /// folded into complete buckets in `levels[n+1]`. Lets catch-up
     /// extend the pyramid incrementally: only the buckets that just
@@ -81,9 +93,14 @@ struct SignalCache {
 }
 
 impl SignalCache {
-    fn new() -> Self {
+    /// A fresh cache whose level-0 sequence is rooted at `dir` with file
+    /// base `base` (`{base}.l0`, `{base}.l1`, … minted per level by
+    /// [`Self::fold`]).
+    fn new(dir: &Path, base: &str) -> Self {
         Self {
-            levels: vec![Vec::new()],
+            dir: dir.to_path_buf(),
+            base: base.to_string(),
+            levels: vec![SampleSeq::new(dir, format!("{base}.l0"))],
             folded: vec![0],
             next_index: 0,
             lo: f64::INFINITY,
@@ -142,7 +159,7 @@ impl SignalCache {
                     if point.value > self.hi {
                         self.hi = point.value;
                     }
-                    self.levels[0].push(point);
+                    self.levels[0].push(point.t_seconds, point.value);
                     break;
                 }
             }
@@ -168,34 +185,38 @@ impl SignalCache {
                 break;
             }
             if self.levels.len() == src + 1 {
-                self.levels.push(Vec::new());
+                let n = self.levels.len();
+                self.levels
+                    .push(SampleSeq::new(&self.dir, format!("{}.l{n}", self.base)));
                 self.folded.push(0);
             }
             for b in 0..complete {
                 let s = start + b * PYRAMID_BRANCH;
-                // Scope the immutable borrow of `levels[src]` so the
-                // `levels[src + 1]` push below can mutably borrow `levels`
-                // (SamplePoint is Copy, so the extrema are owned copies).
-                let (pmin, pmax) = {
-                    let bucket = &self.levels[src][s..s + PYRAMID_BRANCH];
-                    let mut lo = 0;
-                    let mut hi = 0;
-                    for (i, p) in bucket.iter().enumerate() {
-                        if p.value < bucket[lo].value {
-                            lo = i;
-                        }
-                        if p.value > bucket[hi].value {
-                            hi = i;
-                        }
+                // Copy the bucket out of `levels[src]` first (releasing its
+                // immutable borrow) so the `levels[src + 1]` push below can
+                // mutably borrow `levels`.
+                let mut bucket = [(0.0f64, 0.0f64); PYRAMID_BRANCH];
+                for (j, slot) in bucket.iter_mut().enumerate() {
+                    *slot = self.levels[src].get(s + j);
+                }
+                let mut lo = 0;
+                let mut hi = 0;
+                for (i, &(_, v)) in bucket.iter().enumerate() {
+                    if v < bucket[lo].1 {
+                        lo = i;
                     }
-                    // Emit in time (index) order; collapse to one when the
-                    // bucket's min and max are the same point (flat bucket).
-                    let (a, c) = (lo.min(hi), lo.max(hi));
-                    (bucket[a], (a != c).then(|| bucket[c]))
-                };
-                self.levels[src + 1].push(pmin);
-                if let Some(pmax) = pmax {
-                    self.levels[src + 1].push(pmax);
+                    if v > bucket[hi].1 {
+                        hi = i;
+                    }
+                }
+                // Emit in time (index) order; collapse to one when the
+                // bucket's min and max are the same point (flat bucket).
+                let (a, c) = (lo.min(hi), lo.max(hi));
+                let (tmin, vmin) = bucket[a];
+                self.levels[src + 1].push(tmin, vmin);
+                if a != c {
+                    let (tmax, vmax) = bucket[c];
+                    self.levels[src + 1].push(tmax, vmax);
                 }
             }
             self.folded[src] = start + complete * PYRAMID_BRANCH;
@@ -238,25 +259,47 @@ impl SignalCache {
     }
 }
 
+/// Smallest slot `k` in `[0, level.len())` whose `t_seconds` is `>= target`
+/// — the partition point of the (non-decreasing) `t_seconds` order, by
+/// binary search over [`SampleSeq::get`].
+fn partition_by_t(level: &SampleSeq, target: f64) -> usize {
+    let mut lo = 0;
+    let mut hi = level.len();
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if level.get(mid).0 < target {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    lo
+}
+
 /// Count of `level` points whose `t_seconds` lies in `[from, to)`.
 /// `level` is non-decreasing in `t_seconds`, so this is two binary
 /// searches.
-fn window_count(level: &[SamplePoint], from: f64, to: f64) -> usize {
-    let lo = level.partition_point(|p| p.t_seconds < from);
-    let hi = level.partition_point(|p| p.t_seconds < to);
-    hi - lo
+fn window_count(level: &SampleSeq, from: f64, to: f64) -> usize {
+    partition_by_t(level, to) - partition_by_t(level, from)
 }
 
 /// Slice `level` to `[from, to)`, widened by two boundary points on each
 /// side. The extra points give a line renderer a segment running off each
 /// range edge, so a consumer drawing the series doesn't go blank or end a
-/// bin early at the range boundary (see [`SignalCacheStore::slice`]).
-fn window_slice(level: &[SamplePoint], from: f64, to: f64) -> Vec<SamplePoint> {
-    let lo = level.partition_point(|p| p.t_seconds < from);
-    let hi = level.partition_point(|p| p.t_seconds < to);
+/// bin early at the range boundary (see [`SignalCacheStore::slice`]). The
+/// chosen level holds `O(max_points)` points in the window, so this
+/// materializes a bounded run out of the mmap'd sequence.
+fn window_slice(level: &SampleSeq, from: f64, to: f64) -> Vec<SamplePoint> {
+    let lo = partition_by_t(level, from);
+    let hi = partition_by_t(level, to);
     let lo_inclusive = lo.saturating_sub(2);
     let hi_inclusive = std::cmp::min(level.len(), hi.saturating_add(2));
-    level[lo_inclusive..hi_inclusive].to_vec()
+    (lo_inclusive..hi_inclusive)
+        .map(|k| {
+            let (t_seconds, value) = level.get(k);
+            SamplePoint { t_seconds, value }
+        })
+        .collect()
 }
 
 /// Cache key — one bucket per `(bus, message, signal)` triple, so
@@ -267,22 +310,75 @@ fn window_slice(level: &[SamplePoint], from: f64, to: f64) -> Vec<SamplePoint> {
 /// signal binding.
 type SignalKey = (Option<String>, u32, bool, String);
 
-/// Process-wide collection of per-signal caches.
+/// A stable, filesystem-safe file-name base for a signal's pyramid levels:
+/// `sig.{s|e}{id:08x}.{hash:016x}`. The id and extended flag are encoded
+/// literally (debuggable); the variable-length bus/signal text is folded
+/// into an FNV-1a hash so the name is bounded and contains no path-hostile
+/// characters. Deterministic in the key, so the same signal always maps to
+/// the same files within a session.
+fn key_prefix(key: &SignalKey) -> String {
+    let (bus, id, extended, signal) = key;
+    // FNV-1a over a canonical encoding of the whole key, separators
+    // included so `(Some("a"), "b")` and `(Some("ab"), "")` can't alias.
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut mix = |bytes: &[u8]| {
+        for &b in bytes {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    mix(bus.as_deref().unwrap_or("").as_bytes());
+    mix(&[0]);
+    mix(&id.to_le_bytes());
+    mix(&[u8::from(*extended)]);
+    mix(signal.as_bytes());
+    let kind = if *extended { 'e' } else { 's' };
+    format!("sig.{kind}{id:08x}.{h:016x}")
+}
+
+/// Remove every file directly under `dir` (the pyramid scratch). Called
+/// after the mappings have been dropped, so Windows allows the removal.
+/// Best-effort: a missing dir or an unremovable file is ignored — the
+/// pyramid is derived state that rebuilds regardless.
+fn wipe_dir(dir: &Path) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// Process-wide collection of per-signal caches. The pyramid levels spill
+/// to mmap'd files under `root` (a `signals/` subdir of the disk-spill
+/// scratch), so the resident set stays bounded (ADR 0002 DS-5/DS-7).
 pub struct SignalCacheStore {
+    root: PathBuf,
     caches: Mutex<HashMap<SignalKey, SignalCache>>,
 }
 
 impl SignalCacheStore {
-    pub fn new() -> Self {
+    /// Root the per-signal pyramids at `root`, wiping any stale files left
+    /// there by a prior session (a pyramid is derived state — rebuilt from
+    /// the reopened raw frames — so nothing there is worth preserving).
+    pub fn new(root: impl AsRef<Path>) -> Self {
+        let root = root.as_ref().to_path_buf();
+        let _ = std::fs::create_dir_all(&root);
+        wipe_dir(&root);
         Self {
+            root,
             caches: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Drop every cached series — call on `clear_trace_store` (the
-    /// frame indices and samples no longer correspond to anything).
+    /// Drop every cached series and wipe its files — call on
+    /// `clear_trace_store` (the frame indices and samples no longer
+    /// correspond to anything). Dropping the map unmaps the segments first,
+    /// so the files can then be removed (Windows forbids removing a mapped
+    /// file).
     pub fn clear(&self) {
-        *self.caches.lock().expect("signal cache mutex poisoned") = HashMap::new();
+        let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
+        *caches = HashMap::new();
+        wipe_dir(&self.root);
     }
 
     /// Catch the signal's cache up to the trace store's current tip,
@@ -330,7 +426,10 @@ impl SignalCacheStore {
             extended,
             signal_name.to_string(),
         );
-        let cache = caches.entry(key).or_insert_with(SignalCache::new);
+        let base = key_prefix(&key);
+        let cache = caches
+            .entry(key)
+            .or_insert_with(|| SignalCache::new(&self.root, &base));
 
         cache.catch_up(bus_id, message_id, extended, signal_name, store, dbs);
         cache.window(from_seconds, to_seconds, max_points)
@@ -359,7 +458,10 @@ impl SignalCacheStore {
             extended,
             signal_name.to_string(),
         );
-        let cache = caches.entry(key).or_insert_with(SignalCache::new);
+        let base = key_prefix(&key);
+        let cache = caches
+            .entry(key)
+            .or_insert_with(|| SignalCache::new(&self.root, &base));
         cache.catch_up(bus_id, message_id, extended, signal_name, store, dbs);
         cache.extent()
     }
@@ -370,6 +472,7 @@ mod tests {
     use super::*;
     use crate::trace_store::RawTraceFrame;
     use cannet_core::{CanFramePayload, Direction};
+    use tempfile::TempDir;
 
     fn dummy(ts_ns: u64, id: u32, payload: Vec<u8>) -> RawTraceFrame {
         RawTraceFrame {
@@ -408,7 +511,8 @@ mod tests {
         store.append(dummy(5 * S, 256, vec![4, 0, 0, 0, 0, 0, 0, 0]));
         let db = load_dbc();
         let dbs: &[&Database] = &[&db];
-        let cache = SignalCacheStore::new();
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(tmp.path());
 
         // Full time range — all four id-256 samples. `max_points = 0`
         // disables decimation, so the raw level-0 window comes back.
@@ -465,7 +569,8 @@ mod tests {
         store.append(dummy(2 * S, 256, vec![5, 0, 0, 0, 0, 0, 0, 0]));
         let db = load_dbc();
         let dbs: &[&Database] = &[&db];
-        let cache = SignalCacheStore::new();
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(tmp.path());
 
         assert_eq!(
             cache.min_max(None, 256, false, "X", &store, dbs),
@@ -491,7 +596,8 @@ mod tests {
         store.append(dummy(0, 256, vec![1, 0, 0, 0, 0, 0, 0, 0]));
         let db = load_dbc();
         let dbs: &[&Database] = &[&db];
-        let cache = SignalCacheStore::new();
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(tmp.path());
         // Unknown id and unknown signal both have no decoded samples.
         assert!(cache.min_max(None, 999, false, "X", &store, dbs).is_none());
         assert!(cache.min_max(None, 256, false, "Nope", &store, dbs).is_none());
@@ -503,7 +609,8 @@ mod tests {
         store.append(dummy(0, 256, vec![0; 8]));
         let db = load_dbc();
         let dbs: &[&Database] = &[&db];
-        let cache = SignalCacheStore::new();
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(tmp.path());
         let nope = cache.slice(None, 256, false, "Nope", 0.0, 1.0, 0, &store, dbs);
         assert!(nope.is_empty());
         let no_id = cache.slice(None, 42, false, "X", 0.0, 1.0, 0, &store, dbs);
@@ -527,7 +634,8 @@ mod tests {
         store.append(c2);
         let db = load_dbc();
         let dbs: &[&Database] = &[&db];
-        let cache = SignalCacheStore::new();
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(tmp.path());
         let on_p = cache.slice(Some("p"), 256, false, "X", 0.0, 10.0, 0, &store, dbs);
         assert_eq!(
             on_p.iter().map(|p| p.value).collect::<Vec<_>>(),
@@ -564,7 +672,8 @@ mod tests {
         }
         let db = load_dbc();
         let dbs: &[&Database] = &[&db];
-        let cache = SignalCacheStore::new();
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(tmp.path());
 
         let max_points = 200;
         let fit = cache.slice(
@@ -603,7 +712,8 @@ mod tests {
         }
         let db = load_dbc();
         let dbs: &[&Database] = &[&db];
-        let cache = SignalCacheStore::new();
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(tmp.path());
 
         let fit = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 100, &store, dbs);
         assert!(
@@ -632,7 +742,8 @@ mod tests {
         }
         let db = load_dbc();
         let dbs: &[&Database] = &[&db];
-        let cache = SignalCacheStore::new();
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(tmp.path());
 
         let max_points = 100;
         // Whole capture.
@@ -663,5 +774,44 @@ mod tests {
             .filter(|p| p.t_seconds >= from && p.t_seconds < to)
             .count();
         assert!(in_range > 0 && in_range <= 504);
+    }
+
+    #[test]
+    fn pyramid_levels_spill_to_disk_and_clear_wipes_them() {
+        // Enough samples to fold at least one higher level (200 / 8 = 25
+        // level-1 points), so more than level 0 lands on disk.
+        let store = TraceStore::new();
+        for i in 0..200u64 {
+            store.append(val_frame(i * S, (i % 50) as u16));
+        }
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(tmp.path());
+
+        // Serving catches the pyramid up; its level files land under root.
+        let _ = cache.slice(None, 256, false, "X", 0.0, 1000.0, 100, &store, dbs);
+        let names: Vec<String> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            names.iter().any(|n| n.contains(".l0.")),
+            "expected a level-0 segment file, got {names:?}",
+        );
+        assert!(
+            names.iter().any(|n| n.contains(".l1.")),
+            "expected a folded level-1 segment file, got {names:?}",
+        );
+
+        // Clear drops the caches (unmapping) and wipes the files.
+        cache.clear();
+        let after = std::fs::read_dir(tmp.path()).unwrap().flatten().count();
+        assert_eq!(after, 0, "clear must wipe the pyramid files");
+
+        // A subsequent serve rebuilds the pyramid from the raw store.
+        let rebuilt = cache.slice(None, 256, false, "X", 0.0, 1000.0, 0, &store, dbs);
+        assert_eq!(rebuilt.len(), 200);
     }
 }

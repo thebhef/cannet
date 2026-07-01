@@ -27,11 +27,13 @@ mod disk;
 mod filter_index;
 mod mem;
 mod record;
+mod sample_seq;
 mod seg;
 
 pub use disk::{DiskConfig, DiskRawStore};
 pub use filter_index::FilterIndex;
 pub use mem::MemRawStore;
+pub use sample_seq::SampleSeq;
 
 // `CandidateSource` is defined below alongside `RawStore`.
 
@@ -141,11 +143,25 @@ pub trait RawStore: Send {
     /// id) duplicate-free.
     fn candidate_indices(&self, ids: &[(u32, bool)], start: usize, end: usize) -> Vec<usize>;
 
-    /// Flush any buffered writes to the backing store. A no-op for the
-    /// in-RAM double; an `msync` of the active segments for the disk
-    /// store.
+    /// Flush buffered writes to the backing store **durably**. A no-op for
+    /// the in-RAM double; for the disk store a synchronous `msync` of the
+    /// active segments (waits for the bytes to reach the device) plus the
+    /// reopen manifest. The crash-hardening path — use on clean shutdown.
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
+    }
+
+    /// Flush buffered writes **without** waiting for the device — an
+    /// asynchronous `msync` (queues writeback) plus the manifest. The OS
+    /// page cache still makes every write visible to a reopen in the same
+    /// session, so this preserves reopen-after-process-restart (the
+    /// ephemeral scratch's durability contract, [ADR 0002](../../../docs/adr/0002-disk-spill-store.md)
+    /// DS-2); only a power loss before writeback could lose the trailing
+    /// window. The periodic-flush path, where waiting on the device would
+    /// hold the append lock. Defaults to [`Self::flush`] for stores with no
+    /// async distinction (the in-RAM double).
+    fn flush_async(&mut self) -> std::io::Result<()> {
+        self.flush()
     }
 }
 

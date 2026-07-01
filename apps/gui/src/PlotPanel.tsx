@@ -20,6 +20,7 @@ import { useTrace } from "./trace";
 import { TraceControls } from "./TraceControls";
 import { useNotes } from "./notesContext";
 import { enumSegments, groupScaleRanges, mergeSeries, signalKey } from "./plotData";
+import { showPointsFromRaw, showPointsToUplot, type ShowPointsMode } from "./plotPoints";
 import { elementLabel } from "./elementLabel";
 import { usePanelCommands } from "./panelCommands";
 import { SourcesMenuSection } from "./SourcesPicker";
@@ -214,13 +215,6 @@ interface XCursors {
   b: number | null;
 }
 
-/** Show-points tri-state — applies to every series on every axis of
- * every plot area in the panel. `auto` defers to uPlot's
- * density-aware mode (`points: { show: "auto" }`), which only draws
- * points when there's room between samples; `off` forces no points;
- * `on` forces points always. See task 15 / ADR 0026. */
-type ShowPointsMode = "auto" | "off" | "on";
-
 interface PlotPanelParams {
   elementId?: unknown;
   areas?: unknown;
@@ -236,22 +230,6 @@ interface PlotPanelParams {
   maxRateHz?: unknown;
   signalsWidthPx?: unknown;
   showPoints?: unknown;
-}
-
-function showPointsFromRaw(v: unknown): ShowPointsMode {
-  return v === "off" || v === "on" ? v : "auto";
-}
-
-/** Map the panel's tri-state to a uPlot `Series.points` spec.
- *
- * - `auto` → omit `show`, so uPlot's default density-aware filter
- *   draws points only when the sample-to-pixel ratio is low enough.
- * - `off` → `show: false`.
- * - `on` → `show: true`. */
-function showPointsToUplot(mode: ShowPointsMode): { show?: boolean } {
-  if (mode === "off") return { show: false };
-  if (mode === "on") return { show: true };
-  return {};
 }
 
 /** Per-area side-panel width range (pixels). Default and clamps for
@@ -2520,12 +2498,10 @@ function PlotArea(p: PlotAreaProps) {
           label: `${s.messageName}.${s.signalName}`,
           stroke: s.color,
           width: 1,
-          // `auto` → uPlot's density-aware default (points drawn when
-          // the per-pixel sample count drops below ~0.5); `off`/`on`
-          // are the explicit overrides. uPlot's `points.show` accepts a
-          // boolean *or* the literal `false` to disable, so we map the
-          // tri-state to a per-series boolean (auto = undefined ⇒ uPlot
-          // default).
+          // `auto` defers to uPlot's density default; `off` never draws
+          // markers; `on` always draws them but capped at a flat max across
+          // the visible range so a zoomed-out window doesn't render a
+          // marker per decimated sample. See `plotPoints.ts`.
           points: showPointsToUplot(showPoints),
           show: !s.hidden,
           ...(enumActiveAtConstruct && uPlot.paths.stepped

@@ -96,7 +96,11 @@ pub fn run(ex: &LoadedExample, cfg: &SignalBenchConfig) -> SignalBenchReport {
     store.start_session(0);
     fill(&store, &templates, cfg.frames);
 
-    let caches = SignalCacheStore::new();
+    // The pyramid levels spill to mmap'd files too (ADR 0002 DS-5/DS-7);
+    // root them in a tempdir held for the bench so the serve path exercises
+    // the disk-backed `SampleSeq`, matching production.
+    let signals = tempfile::TempDir::new().expect("signals tempdir");
+    let caches = SignalCacheStore::new(signals.path());
     let (bus, id, ext, sig) = (
         Some(chosen.bus_id.as_str()),
         chosen.can_id,

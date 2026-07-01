@@ -383,6 +383,17 @@ fn filter_index_dir(scratch: Option<&std::path::Path>) -> std::path::PathBuf {
     dir
 }
 
+/// The directory the per-signal decimation pyramids spill into: a
+/// `signals/` subdir of the disk-spill scratch (ADR 0002 DS-5/DS-7), or an
+/// OS-temp fallback if the scratch is unavailable. `SignalCacheStore::new`
+/// wipes it on construction (a pyramid is derived state).
+fn signal_cache_dir(scratch: Option<&std::path::Path>) -> std::path::PathBuf {
+    match scratch {
+        Some(s) => s.join("signals"),
+        None => std::env::temp_dir().join("cannet").join("signals"),
+    }
+}
+
 /// Boot the Tauri runtime.
 ///
 /// # Panics
@@ -416,7 +427,9 @@ pub fn run() {
     // RAM). The filter-index dir is derived before `scratch` is moved into
     // `open_trace_store`.
     let scratch = scratch_current_dir();
-    let filter_dir = filter_index_dir(scratch.as_ref().ok().map(std::path::PathBuf::as_path));
+    let scratch_path = scratch.as_ref().ok().map(std::path::PathBuf::as_path);
+    let filter_dir = filter_index_dir(scratch_path);
+    let signal_dir = signal_cache_dir(scratch_path);
     let trace_store = open_trace_store(scratch);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -438,7 +451,7 @@ pub fn run() {
             databases: Mutex::new(Vec::new()),
             remote_sessions: Mutex::new(HashMap::new()),
             trace_store,
-            signal_caches: SignalCacheStore::new(),
+            signal_caches: SignalCacheStore::new(signal_dir),
             system_log: SystemLog::new(),
             notes: NotesStore::new(),
             dbc_watcher: Mutex::new(None),
@@ -451,6 +464,7 @@ pub fn run() {
             filter_index: Mutex::new(None),
             active_project_id: Mutex::new(None),
         })
+        .manage(diag::HostMetrics::default())
         .manage(sidecar::SidecarState::default())
         .manage(interfaces::InterfacesState::default())
         .manage(diag::DiagState::default())
@@ -572,8 +586,20 @@ pub fn run() {
                 .expect("dbc_watcher mutex poisoned") = Some(watcher);
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running cannet");
+        .build(tauri::generate_context!())
+        .expect("error while running cannet")
+        .run(|app_handle, event| {
+            // Harden the scratch on clean shutdown: the periodic flusher
+            // only queues writeback (async msync, ADR 0002 DS-2), so one
+            // synchronous flush on exit makes the trailing window durable
+            // against a power loss right after quit.
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                let state = app_handle.state::<AppState>();
+                if let Err(e) = state.trace_store.flush() {
+                    tracing::warn!(error = %e, "shutdown trace flush failed");
+                }
+            }
+        });
 }
 
 /// Whether a `trace-grew` tick should emit, given the `(count, fps)` it
@@ -670,8 +696,18 @@ fn spawn_trace_flusher(app: AppHandle) {
             if len == last_flushed_len {
                 continue;
             }
-            match state.trace_store.flush() {
-                Ok(()) => last_flushed_len = len,
+            // Async flush (ADR 0002 DS-2): queue writeback without waiting
+            // on the device, so the append lock isn't pinned on a disk
+            // fsync. Time it anyway — the duration is the lock-contention
+            // signal the perf capture gates on (ADR 0031 /
+            // `diag::HostMetrics`).
+            let started = std::time::Instant::now();
+            match state.trace_store.flush_async() {
+                Ok(()) => {
+                    last_flushed_len = len;
+                    let ms = started.elapsed().as_secs_f64() * 1000.0;
+                    app.state::<diag::HostMetrics>().record_flush_ms(ms);
+                }
                 Err(e) => tracing::warn!(error = %e, "trace store flush failed"),
             }
         }
@@ -3364,7 +3400,7 @@ impl SchedDiag {
     /// Emit and reset once the window reaches a second. Skips the log line
     /// (but still rolls the window) when nothing fired, so an idle
     /// scheduler stays silent.
-    fn maybe_emit(&mut self, now: std::time::Instant) {
+    fn maybe_emit(&mut self, now: std::time::Instant, metrics: &diag::HostMetrics) {
         if now.duration_since(self.window_start) < Duration::from_secs(1) {
             return;
         }
@@ -3376,6 +3412,10 @@ impl SchedDiag {
                 self.wakes, b[0], b[1], b[2], b[3], b[4], self.max_late_ms, self.frames, self.max_fire_ms,
             );
         }
+        // Surface this window's worst wake-lateness to the perf capture
+        // (ADR 0031 / `diag::HostMetrics`) — the tail signal a throughput
+        // average can't see.
+        metrics.record_tx_late_ms(self.max_late_ms);
         *self = SchedDiag::new(now);
     }
 }
@@ -3406,6 +3446,7 @@ fn run_transmit_scheduler(
     use transmit_scheduler::SchedulerCmd;
 
     let mut schedule = transmit_scheduler::PeriodicSchedule::new();
+    let metrics = app.state::<diag::HostMetrics>();
     // Idle wait when nothing is scheduled — long, but bounded so the
     // thread stays responsive to a spurious wake and re-checks cleanly.
     let idle = Duration::from_hours(1);
@@ -3463,7 +3504,7 @@ fn run_transmit_scheduler(
         if fired > 0 {
             diag.record_fire(fire_start.elapsed(), fired);
         }
-        diag.maybe_emit(std::time::Instant::now());
+        diag.maybe_emit(std::time::Instant::now(), &metrics);
     }
 }
 
@@ -4180,11 +4221,16 @@ mod tests {
     }
 
     pub(crate) fn test_state() -> AppState {
+        // A process-unique signals dir so concurrently-running tests don't
+        // share (and wipe) each other's pyramid files.
+        static SIGNALS_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = SIGNALS_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let signals_dir = std::env::temp_dir().join(format!("cannet-test-signals-{n}"));
         AppState {
             databases: Mutex::new(Vec::new()),
             remote_sessions: Mutex::new(HashMap::new()),
             trace_store: Arc::new(TraceStore::new()),
-            signal_caches: SignalCacheStore::new(),
+            signal_caches: SignalCacheStore::new(signals_dir),
             system_log: SystemLog::new(),
             notes: NotesStore::new(),
             dbc_watcher: Mutex::new(None),

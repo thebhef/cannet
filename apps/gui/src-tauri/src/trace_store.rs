@@ -583,8 +583,26 @@ impl TraceStore {
     /// its newest-index/count entries never reference a frame past the
     /// just-persisted length.
     pub fn flush(&self) -> std::io::Result<()> {
+        self.flush_with(true)
+    }
+
+    /// Like [`Self::flush`] but with a non-blocking `msync` of the raw
+    /// store (ADR 0002 DS-2): queues writeback instead of waiting for the
+    /// device, so the periodic flusher doesn't pin the append lock on a
+    /// disk fsync. Reopen-after-process-restart is unaffected (the page
+    /// cache backs the mapping); only power-loss durability of the trailing
+    /// window relaxes — acceptable for the ephemeral scratch.
+    pub fn flush_async(&self) -> std::io::Result<()> {
+        self.flush_with(false)
+    }
+
+    fn flush_with(&self, sync: bool) -> std::io::Result<()> {
         let mut inner = self.inner.lock().expect("trace store mutex poisoned");
-        inner.raw.flush()?;
+        if sync {
+            inner.raw.flush()?;
+        } else {
+            inner.raw.flush_async()?;
+        }
         if let Some(dir) = inner.scratch_dir.clone() {
             let entries = inner
                 .latest

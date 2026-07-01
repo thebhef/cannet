@@ -86,3 +86,23 @@ the decision to touch interfaces, and the decision to record.
 - The self-driving flags are an automation surface on the shipping
   binary. They default off (a normal launch is unaffected) and are
   additive; the manual console capture remains for interactive use.
+- The capture includes a **memory tier**. The frontend already reports
+  the JS heap (`jsheap_mb`); while a capture is armed the host stamps its
+  own process-memory split onto each per-second sample — host RSS
+  (`mem.host_mb`, expected flat), the whole tree (`mem.tree_mb`), and the
+  WebView renderer process (`mem.webview_renderer_mb`, where a native or
+  GPU-side climb a JS heap snapshot can't see surfaces). The frontend
+  can't read process RSS, so the host is the only place this split is
+  available. Each gauge's reduction carries a linear `slope_per_min`
+  (least-squares drift) alongside its peak, because a slow leak's
+  signature is the *drift*, which a peak or final reading alone can't
+  separate from a one-off spike. The checker gates renderer / JS-heap /
+  host / whole-tree peak (and renderer / JS-heap / tree drift) the same
+  lower-is-better way as the UX metrics — the per-process rows localize a
+  leak while `mem.tree_mb` (host + every descendant) is the holistic
+  backstop that catches growth in a process the named rows miss (the GPU
+  process, a helper). The memory gates stay **inert until a baseline
+  carries the memory tier** (a baseline lacking the fields gates nothing),
+  so they arm on the next baseline regeneration. Drift only reads as signal over a
+  representative-length capture — a multi-minute run, not the smoke-test
+  span — so a memory baseline is captured at scenario length.

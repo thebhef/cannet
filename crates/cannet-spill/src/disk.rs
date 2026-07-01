@@ -106,6 +106,15 @@ pub struct DiskRawStore {
     payload_cursor: u64,
     meta_segs: Vec<Segment>,
     payload_segs: Vec<Segment>,
+    /// Index of the first meta / payload segment that may hold un-flushed
+    /// bytes — the segment that was active at the previous flush. Sealed
+    /// segments below it were made durable while they were the tail, so a
+    /// flush only re-syncs from here to the current tail (incremental
+    /// flush): `O(segments dirtied since last flush)`, not `O(all
+    /// segments)`, which is what keeps the periodic flush off the append
+    /// lock's critical path at deep history.
+    flushed_meta: usize,
+    flushed_payload: usize,
     ring: VecDeque<RawTraceFrame>,
     bus_intern: Vec<String>,
     bus_rev: HashMap<String, u16>,
@@ -139,6 +148,8 @@ impl DiskRawStore {
             payload_cursor: 0,
             meta_segs: Vec::new(),
             payload_segs: Vec::new(),
+            flushed_meta: 0,
+            flushed_payload: 0,
             ring: VecDeque::new(),
             bus_intern: Vec::new(),
             bus_rev: HashMap::new(),
@@ -165,6 +176,8 @@ impl DiskRawStore {
             payload_cursor: 0,
             meta_segs: Vec::new(),
             payload_segs: Vec::new(),
+            flushed_meta: 0,
+            flushed_payload: 0,
             ring: VecDeque::new(),
             bus_intern: Vec::new(),
             bus_rev: HashMap::new(),
@@ -203,6 +216,8 @@ impl DiskRawStore {
             payload_cursor: manifest.payload_cursor,
             meta_segs: Vec::new(),
             payload_segs: Vec::new(),
+            flushed_meta: 0,
+            flushed_payload: 0,
             ring: VecDeque::new(),
             bus_intern: manifest.bus_intern,
             bus_rev,
@@ -233,6 +248,10 @@ impl DiskRawStore {
         let ring_from = len.saturating_sub(cfg.ring_capacity);
         let tail: Vec<RawTraceFrame> = (ring_from..len).filter_map(|i| store.read_frame(i)).collect();
         store.ring.extend(tail);
+        // Reopened segments are already durable on disk, so the first flush
+        // need only re-sync from the active tail forward.
+        store.flushed_meta = store.meta_segs.len().saturating_sub(1);
+        store.flushed_payload = store.payload_segs.len().saturating_sub(1);
         Ok(Some(store))
     }
 
@@ -267,9 +286,45 @@ impl DiskRawStore {
     /// including the reopen manifest so a wiped store never reloads a
     /// stale prior session. Maps are dropped first so Windows lets the
     /// files be removed.
+    /// Incremental flush: re-sync only the segments dirtied since the last
+    /// flush — the tail that was active then (it may have sealed and grown)
+    /// through the current tail. Sealed segments below `flushed_*` were
+    /// synced while they were the tail and never change again, so the
+    /// manifest written below still names only durable bytes. This makes
+    /// the hold `O(segments since last flush)`, normally one.
+    ///
+    /// `sync` chooses the msync flavor: `true` waits for the device
+    /// (`FlushFileBuffers` on Windows) — the crash-hardening shutdown path;
+    /// `false` queues writeback (`FlushViewOfFile` / `MS_ASYNC`) and
+    /// returns at memcpy speed — the periodic path, where waiting on the
+    /// device would pin the append lock. Either way the OS page cache makes
+    /// the writes visible to a reopen in the same session (ADR 0002 DS-2).
+    fn flush_inner(&mut self, sync: bool) -> io::Result<()> {
+        for s in &self.meta_segs[self.flushed_meta..] {
+            if sync {
+                s.map.flush()?;
+            } else {
+                s.map.flush_async()?;
+            }
+        }
+        for s in &self.payload_segs[self.flushed_payload..] {
+            if sync {
+                s.map.flush()?;
+            } else {
+                s.map.flush_async()?;
+            }
+        }
+        self.flushed_meta = self.meta_segs.len().saturating_sub(1);
+        self.flushed_payload = self.payload_segs.len().saturating_sub(1);
+        self.by_id.flush(sync)?;
+        self.write_manifest()
+    }
+
     fn remove_segment_files(&mut self) -> io::Result<()> {
         self.meta_segs.clear();
         self.payload_segs.clear();
+        self.flushed_meta = 0;
+        self.flushed_payload = 0;
         self.by_id.clear();
         remove_files_with_prefixes(&self.dir, &["meta.", "payload.", BYID_PREFIX, "manifest."])
     }
@@ -520,18 +575,11 @@ impl RawStore for DiskRawStore {
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        // Flush every mapped segment, not just the active tail: the
-        // manifest written below names the whole chain, so the bytes it
-        // points at must all be durable before it lands. Already-clean
-        // (sealed) pages make this near-free after their first flush.
-        for s in &self.meta_segs {
-            s.map.flush()?;
-        }
-        for s in &self.payload_segs {
-            s.map.flush()?;
-        }
-        self.by_id.flush()?;
-        self.write_manifest()
+        self.flush_inner(true)
+    }
+
+    fn flush_async(&mut self) -> io::Result<()> {
+        self.flush_inner(false)
     }
 }
 
@@ -785,6 +833,37 @@ mod tests {
         }
         assert_eq!(s.bus_intern, vec!["pt".to_string(), "body".to_string()]);
         assert_eq!(s.first_last_ts(), (Some(1), Some(111)));
+    }
+
+    #[test]
+    fn incremental_flush_across_segment_seals_stays_durable() {
+        // The incremental flush only re-syncs from the previously-active
+        // segment forward. Flush *repeatedly while appending across seals*
+        // — the tiny config seals a meta segment every 4 frames, and 200
+        // frames of one hot id overflow the by-id chain (64, 128, … entry
+        // segments). Flushing every 7 frames lands mid-segment and across
+        // seals on alternating ticks, so a missed watermark seam would drop
+        // a just-sealed segment's final bytes. Reopen must still return
+        // every frame and the full by-id posting.
+        let dir = TempDir::new().unwrap();
+        {
+            let mut s = DiskRawStore::with_config(dir.path(), tiny()).unwrap();
+            for i in 0u32..200 {
+                s.append(frame(u64::from(i), 7));
+                if i % 7 == 0 {
+                    s.flush().unwrap();
+                }
+            }
+            s.flush().unwrap();
+        } // dropped — only the files (and what the flushes made durable) remain
+        let s = DiskRawStore::reopen(dir.path()).unwrap().expect("manifest present");
+        assert_eq!(s.len(), 200);
+        for i in 0u32..200 {
+            let f = &s.slice(i as usize, i as usize + 1)[0];
+            assert_eq!(f.timestamp_ns, u64::from(i), "frame {i} lost after incremental flush");
+        }
+        // The by-id chain — also incrementally flushed — reopened intact.
+        assert_eq!(s.matching_frames_indexed(7, false, 0, 200).len(), 200);
     }
 
     #[test]
