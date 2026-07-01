@@ -193,6 +193,17 @@ trip over it.
 
 ### GUI chrome and cross-cutting
 
+- `[ui]` `cannet-gui` status line (`renderStatus` in `App.tsx`): a global
+  `state.kind === "error"` is **sticky** — once set, the top-left status
+  shows `Error: …` forever, even after the session recovers and is
+  streaming fine. Observed under `tauri dev --connect-on-start`: a
+  transient connect-time error left the error label up for the whole
+  run, while a clean relaunch showed the normal "Streaming … N frames"
+  line. A live remote session masks it (`remoteSessions.size > 0` takes
+  priority in `renderStatus`), but an error that lands while no remote
+  session is registered persists. Clear the error state when a session
+  starts/recovers (or expire it) so a recovered app stops reading as
+  broken.
 - `[feat]` `cannet-gui` Save Capture: **time-range export.** Phase 9's
   Save Capture writes the entire session buffer to a `.blf`. Add the
   ability to pick a start and end time (or start/end frame index) on

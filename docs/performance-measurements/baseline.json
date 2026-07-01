@@ -55,10 +55,14 @@
   "frontend": {
     "label": "ev-demo: filtered chrono trace + plots",
     "metrics": {
-      "longtask_ms_per_s_mean": 0,
-      "longtask_ms_per_s_p95": 0,
-      "lag_ms_max": 32.700000047683716,
-      "jank_fraction": 0
+      "longtask_ms_per_s_mean": 4.866666666666666,
+      "longtask_ms_per_s_p95": 50.099999999999994,
+      "lag_ms_max": 32,
+      "jank_fraction": 0.05,
+      "rx_fps_overall": 512.6216666666667,
+      "rx_fps_retention": 0.9990965578202998,
+      "tx_fps_overall": 512.5366666666666,
+      "tx_fps_retention": 0.9996228623447557
     }
   }
 }
