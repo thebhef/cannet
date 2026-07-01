@@ -257,6 +257,22 @@ impl SignalCache {
             signal_sampler::decimate_min_max(&slice, max_points)
         }
     }
+
+    /// Front-trim every level to the truncation time `ts_seconds` (ADR 0002
+    /// DS-8 / 6d): drop the points (and their leading segment files) older
+    /// than the live window, so the pyramid's footprint follows the raw
+    /// store's. Each level is non-decreasing in `t_seconds`, so the floor is
+    /// the time partition point. `folded` is bumped to the floor so the next
+    /// [`Self::fold`] never reads an evicted slot — old points evict only
+    /// after they have long since folded upward, so this is normally a no-op
+    /// on `folded`, but it makes the rare evict-outran-fold case safe.
+    fn evict_below(&mut self, ts_seconds: f64) {
+        for n in 0..self.levels.len() {
+            let floor = partition_by_t(&self.levels[n], ts_seconds);
+            self.levels[n].evict_below(floor);
+            self.folded[n] = self.folded[n].max(floor);
+        }
+    }
 }
 
 /// Smallest live slot `k` in `[first_slot, level.len())` whose `t_seconds`
@@ -383,6 +399,18 @@ impl SignalCacheStore {
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
         *caches = HashMap::new();
         wipe_dir(&self.root);
+    }
+
+    /// Front-trim every cached pyramid to the truncation time `ts_seconds`
+    /// (ADR 0002 DS-8 / 6d) so the signal cache's footprint follows the raw
+    /// store's windowed-ring eviction. The host calls this with the timestamp
+    /// of the raw low-water mark whenever eviction advances it; signals with
+    /// no points that old are unaffected.
+    pub fn evict_below(&self, ts_seconds: f64) {
+        let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
+        for cache in caches.values_mut() {
+            cache.evict_below(ts_seconds);
+        }
     }
 
     /// Catch the signal's cache up to the trace store's current tip,
@@ -847,5 +875,29 @@ mod tests {
         // A fully-evicted level serves empty rather than reading a dead slot.
         cache.levels[0].evict_below(100);
         assert!(cache.window(0.0, 1000.0, 0).is_empty());
+    }
+
+    #[test]
+    fn evict_below_trims_the_pyramid_by_time_and_reclaims_disk() {
+        // 6d: front-trim the whole pyramid to a truncation timestamp — every
+        // level drops the points (and leading segment files) older than it,
+        // keeping the serve aligned with the raw store's live window.
+        let dir = TempDir::new().unwrap();
+        let mut cache = SignalCache::new(dir.path(), "0x100.sig");
+        for i in 0..200u32 {
+            cache.levels[0].push(f64::from(i), f64::from(i)); // t = value = i seconds
+        }
+        cache.fold(); // build the higher levels
+        let before = std::fs::read_dir(dir.path()).unwrap().count();
+        cache.evict_below(100.0);
+        assert_eq!(cache.levels[0].first_slot(), 100, "level-0 floor rose to t=100");
+        let pts = cache.window(0.0, 200.0, 0);
+        assert!(!pts.is_empty());
+        assert!(
+            pts.iter().all(|p| p.t_seconds >= 100.0),
+            "no point below the truncation time survives",
+        );
+        let after = std::fs::read_dir(dir.path()).unwrap().count();
+        assert!(after < before, "pyramid disk reclaimed: {after} < {before}");
     }
 }

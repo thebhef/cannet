@@ -87,6 +87,20 @@ pub fn record_js_heap(bytes: u64) {
     LAST_JS_HEAP.store(bytes, Ordering::Relaxed);
 }
 
+/// Latest host-process RSS (bytes), published by [`spawn_health_recorder`]
+/// each tick so the ~10 Hz status emitter can show the in-memory figure
+/// without its own (expensive) sysinfo process scan. `0` = not yet sampled.
+static LAST_HOST_RSS: AtomicU64 = AtomicU64::new(0);
+
+/// The last host-process RSS reading (bytes), or `None` if the health
+/// recorder hasn't sampled one yet.
+pub fn last_host_rss() -> Option<u64> {
+    match LAST_HOST_RSS.load(Ordering::Relaxed) {
+        0 => None,
+        v => Some(v),
+    }
+}
+
 /// The last JS-heap reading, or `None` if the frontend hasn't reported
 /// one yet.
 fn js_heap_bytes() -> Option<u64> {
@@ -199,11 +213,17 @@ pub fn spawn_health_recorder(app: AppHandle) {
             let buffer_seconds = state.trace_store.buffer_seconds();
             let fps = state.trace_store.frames_per_second();
             let mem = read_memory(&mut sys, own_pid);
+            // Publish the host RSS so the ~10 Hz status emitter can show the
+            // in-memory figure without its own sysinfo scan.
+            if let Some(rss) = mem.host {
+                LAST_HOST_RSS.store(rss, Ordering::Relaxed);
+            }
+            let breakdown = state.trace_store.scratch_breakdown();
             sys_info!(
                 &app,
                 "health",
                 "{}",
-                format_health_message(trace_len, buffer_seconds, fps, &mem)
+                format_health_message(trace_len, buffer_seconds, fps, &mem, breakdown.as_ref())
             );
         });
 }
@@ -418,19 +438,35 @@ fn descendant_pids(links: &[(u32, Option<u32>)], root: u32) -> std::collections:
 /// `rss_mb` is the Rust host alone, `tree_mb` host + descendants,
 /// `webview_mb` the `WebView` subset split into `browser`/`renderer`/`gpu`/
 /// `other`, `jsheap_mb` the renderer JS heap, and `sys_avail_mb` /
-/// `sys_total_mb` the machine-wide figures that reveal an OOM.
+/// `sys_total_mb` the machine-wide figures that reveal an OOM. `breakdown`
+/// (when disk-backed) adds the on-disk scratch cache split by family
+/// (ADR 0002 DS-8) — frames vs pyramids vs other (by-id/filter/JSON), the
+/// segment-file count, and the deepest pyramid.
 fn format_health_message(
     trace_len: usize,
     buffer_seconds: f64,
     fps: f64,
     mem: &MemorySample,
+    breakdown: Option<&crate::trace_store::ScratchBreakdown>,
 ) -> String {
     let mb =
         |b: Option<u64>| b.map_or_else(|| "?".to_string(), |v| (v / (1024 * 1024)).to_string());
+    let cache = match breakdown {
+        Some(b) => format!(
+            " cache_mb={}[frames={} pyramid={} other={} pages={} pyr_depth={}]",
+            mb(Some(b.total_bytes)),
+            mb(Some(b.frames_bytes)),
+            mb(Some(b.pyramid_bytes)),
+            mb(Some(b.other_bytes)),
+            b.frames_files + b.pyramid_files + b.other_files,
+            b.pyramid_depth,
+        ),
+        None => String::new(),
+    };
     format!(
         "trace_len={trace_len} buffer_s={buffer_seconds:.1} fps={fps:.0} \
          rss_mb={} tree_mb={} webview_mb={}[browser={} renderer={} gpu={} other={}] \
-         jsheap_mb={} sys_avail_mb={} sys_total_mb={}",
+         jsheap_mb={} sys_avail_mb={} sys_total_mb={}{cache}",
         mb(mem.host),
         mb(mem.tree),
         mb(mem.webview),
@@ -584,16 +620,36 @@ mod tests {
             sys_total: Some(34_359_738_368),
         };
         assert_eq!(
-            format_health_message(180_000, 392.5, 440.4, &mem),
+            format_health_message(180_000, 392.5, 440.4, &mem, None),
             "trace_len=180000 buffer_s=392.5 fps=440 rss_mb=2048 tree_mb=6144 \
              webview_mb=4096[browser=512 renderer=1024 gpu=2048 other=512] \
              jsheap_mb=256 sys_avail_mb=1024 sys_total_mb=32768"
         );
         assert_eq!(
-            format_health_message(0, 0.0, 0.0, &MemorySample::default()),
+            format_health_message(0, 0.0, 0.0, &MemorySample::default(), None),
             "trace_len=0 buffer_s=0.0 fps=0 rss_mb=? tree_mb=? \
              webview_mb=?[browser=? renderer=? gpu=? other=?] \
              jsheap_mb=? sys_avail_mb=? sys_total_mb=?"
+        );
+    }
+
+    #[test]
+    fn health_message_appends_the_scratch_cache_breakdown() {
+        use crate::trace_store::ScratchBreakdown;
+        let b = ScratchBreakdown {
+            frames_bytes: 40 * 1024 * 1024,
+            frames_files: 27,
+            pyramid_bytes: 25 * 1024 * 1024,
+            pyramid_files: 110,
+            pyramid_depth: 4,
+            other_bytes: 6 * 1024 * 1024,
+            other_files: 5,
+            total_bytes: 71 * 1024 * 1024,
+        };
+        let line = format_health_message(180_000, 1.0, 0.0, &MemorySample::default(), Some(&b));
+        assert!(
+            line.ends_with(" cache_mb=71[frames=40 pyramid=25 other=6 pages=142 pyr_depth=4]"),
+            "{line}"
         );
     }
 

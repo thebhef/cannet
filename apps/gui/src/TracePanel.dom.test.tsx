@@ -41,6 +41,7 @@ class FakeResizeObserver {
 
 const traceData: TraceData = {
   count: 100,
+  firstIndex: 0,
   sessionStartSeconds: 0,
   epoch: 0,
   fetchRange: async () => [],

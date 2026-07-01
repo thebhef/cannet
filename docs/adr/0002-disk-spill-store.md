@@ -19,7 +19,9 @@ The constraints they answer to:
   decoupled from the ingest rate
   ([ADR 0025](0025-frontend-windowed-source-contract.md)).
 - **Loss-free addressability.** Every historical row stays addressable
-  for the life of the capture (ADR 0001).
+  for the life of the capture (ADR 0001) — **unless** the user sets a
+  scratch-size cap, which bounds addressability below to a low-water
+  mark (DS-8).
 - **Reviewability.** Keep the hand-written surface small and lean
   on a vetted library for the failure-mode-rich parts.
 - **Not a serialization artifact.** The disk-spill store is the
@@ -29,7 +31,7 @@ The constraints they answer to:
 
 ## Decision
 
-Seven decisions, DS-1 through DS-7.
+Eight decisions, DS-1 through DS-8.
 
 ### DS-1 — On-disk format
 
@@ -41,12 +43,23 @@ the frame's scalar fields — timestamp, interned bus index, arbitration
 id, flags — and an inline `(offset, len)` into the payload blob.
 `bus_id` is interned to a small integer index.
 
+Arithmetic addressability is absolute and unconditional in the
+default (uncapped) configuration; when the user sets a scratch cap the
+addressable range is bounded below by the DS-8 low-water mark, but
+surviving rows keep their original absolute index — the mark narrows
+the range, it does not renumber it.
+
 ### DS-2 — Tiering
 
 Writes are **write-through**: every frame is appended straight to the
 two files, buffered, and flushed on a cadence. Readers `mmap` the
 files; the **kernel page cache is the hot tier** — there is no
-hand-rolled hot-window cache and no eviction policy. A small **RAM
+hand-rolled hot-window cache. There is no eviction policy in the
+default configuration; the optional capacity-driven drop-oldest of
+DS-8 is the one exception, and it is a *capacity bound* (free the
+oldest sealed segments when a user-set total cap is exceeded), not a
+hot-window residency cache — the page cache remains the hot tier for
+whatever is still live. A small **RAM
 ring** holds the most recent frames that have not yet been flushed, so
 a read of the live tail is served from RAM until those bytes are
 durable.
@@ -117,8 +130,6 @@ does not.
 The raw store shares one frame-count epoch across its metadata and
 payload segments. Each index family tracks its own count.
 
-### DS-5 — Decimated tier
-
 The decoded-signal cache gains a per-signal **resolution pyramid**:
 level 0 is the raw decoded series; level n is min/max over buckets of
 Bⁿ samples. `DecimatedRange` serves a plot by reading the coarsest
@@ -126,6 +137,23 @@ level whose point count still exceeds `maxPoints`, so a "fit data"
 over the whole capture reads a bounded number of points instead of
 re-decoding the raw series. Per-bucket min/max means spikes survive
 decimation.
+
+**Why a pyramid, and not a sorted index / b-tree.** The plot's question
+is not point-lookup ("the sample at time t") — it is **downsampling**:
+"give me ≤ `maxPoints` points that faithfully represent the N samples in
+this window." A b-tree (or any sorted index) answers point-lookup and
+range scan in `O(log n + k)`, but for a fit-data `k` is *every* sample in
+the window — sorting shrinks the time to *find* the range, not the count
+of points in it, so the serve stays `O(window)` and a whole-capture fit is
+`O(capture)`. The pyramid instead **precomputes min/max aggregates at
+geometrically coarsening scales**; the serve picks the coarsest level
+still above the budget, making cost `O(maxPoints)` independent of window
+length. The two are complementary, not competing: within a level the
+points are time-ordered and binary-searched (the b-tree-like access lives
+*inside* a level), and the pyramid adds the zoom dimension a flat sorted
+index has no answer for. Per-bucket min **and** max (not decimate-by-
+stride, which would drop the extreme between kept points) is what makes
+the coarse overview faithful — a transient spike survives at every level.
 
 A signal's pyramid is built lazily on first plot and
 **by-id-accelerated**: the signal's frames are located via its message
@@ -227,6 +255,85 @@ foreclose that path without changing the formats that enable it.
 The opt-in `clear on exit` toggle belongs in a future settings
 panel, not in the always-on cleanup policy.
 
+### DS-8 — Bounded scratch: optional cap + windowed-ring eviction
+
+DS-1 through DS-7 keep every historical row for the life of the
+capture. That is the right default, but an indefinite capture on a
+finite volume needs an opt-out: a user-set **maximum scratch size**
+(bytes; default **off / unbounded**, persisted in `settings.json` per
+[ADR 0034](0034-settings-vs-state-and-custom-settings-panel.md)). When
+the cap is unset, everything above holds unconditionally — DS-8 adds
+no behavior. When it is set, the store becomes a **windowed ring**.
+
+**The cap bounds the total `current/` footprint**, not the raw store
+alone — the raw metadata and payload (DS-1), the `by-id` and filter
+indexes (DS-3), and the per-signal pyramids (DS-5). Bounding only the
+raw store would not hold disk: a pyramid grows `O(matches over the
+capture's lifetime)`, so the derived caches must be in the budget or
+the cap leaks.
+
+**Over-limit behavior is drop-oldest.** When the total exceeds the
+cap, a single **low-water mark** rises and *every* trimmable family
+**front-trims** the segments that fall entirely below it — the oldest
+sealed segment files are dropped (freed), never rewritten. The
+alternative, clearing and rebuilding the live window on each eviction,
+is `O(live window)` per sealed segment freed — far too costly at a
+steady-state cap, where eviction runs continuously.
+
+**There is a cap floor.** Each family pre-allocates whole segments, and
+the active tail segment of every family is never evictable — so the
+*minimum* live footprint is one segment per active family (one raw
+payload segment alone is 4 MiB; a single filtered view adds an 8 MiB
+filter segment). A cap below that sum can't be honored: eviction frees
+the oldest sealed segments but cannot drop the tail, so the footprint
+floors above the cap while the retained frame window thrashes a whole
+meta segment at a time. The segment geometry is tuned for the 10⁸-frame,
+multi-day target (large segments → fewer files), which makes that floor
+coarse. Rather than make eviction chase an infeasible cap, a **minimum
+effective cap** is enforced where the setting meets the store
+(`settings::MIN_SCRATCH_CAP_BYTES`): a smaller user value is raised to
+the floor, and the settings UI mirrors it. `None` (unbounded) is
+unaffected.
+
+**One mark, every store; absolute numbering preserved.** The mark is a
+single logical floor applied across all three append-only segment
+chains — the raw store (`first_index`), each pyramid level
+(`first_slot`), and each filter index (`first_pos`). A trim only raises
+the floor; it never renumbers surviving slots, so a binary search, an
+absolute frame index held elsewhere, and the host's slot bookkeeping
+all stay valid across an eviction. The live range of each store is
+`[first_*, len)`.
+
+**The evicted-read contract.** A read addressing a slot below the mark
+returns an explicit **evicted result** — `None` for a raw frame, an
+empty/clamped range for a serve path, a skipped position for a filter
+page — and **never panics**, even though the segment that once held
+that slot has been freed. This is the property that lets eviction be a
+pure segment-drop: the read paths are hardened to treat below-mark
+slots as gone, so trimming the files behind them adds no new failure
+mode. It is one contract spanning the stores, not a per-store guard.
+
+**The DS-1 relaxation.** With a cap set, DS-1's "row N is found by
+arithmetic" and the Context's "every historical row stays addressable"
+hold only **above the mark**. Rows below it are evicted: addressing one
+is the evicted-read result, not an error and not a stale row.
+
+**Notes are not evicted.** Session-authored markers and events
+(DS-7) are user-authored, bounded by note count, and do not grow with
+capture length, so they are never trimmed by the cap. A note whose
+anchor falls below the floor simply points into truncated history; the
+truncation point is surfaced as a timeline event
+([ADR 0035](0035-timeline-event-model.md)) so the gap is visible rather
+than silent.
+
+**Reopen.** The low-water mark (and any retention state the eviction
+keeps, such as the newest-per-id values needed to keep a rare id
+visible in the `by-id` grid after its only frame is evicted) is part of
+the persisted reopen state under `current/`, so reopening across an
+eviction restores the same floor and the same live window — DS-7's
+"reload as a stopped trace" extends unchanged to a capped, truncated
+scratch.
+
 ## Alternatives considered
 
 - **An embedded database for the raw store (SQLite, LMDB, RocksDB).**
@@ -237,11 +344,23 @@ panel, not in the always-on cleanup policy.
   indexing. A library *is* warranted for the failure-mode-rich part —
   the `mmap` syscall abstraction — and that is `memmap2` (see
   Consequences).
+- **A sorted index / b-tree over decoded samples instead of the
+  pyramid.** Rejected (DS-5). It answers point-lookup and range scan,
+  but the plot needs *downsampling* — a bounded representative point set
+  over a window — and a sorted index still yields every point in the
+  window, so a fit-data stays `O(window)` (whole-capture: `O(capture)`).
+  The pyramid's precomputed per-scale min/max is what makes the serve
+  `O(maxPoints)`. (The two compose: each pyramid level *is* time-sorted
+  and binary-searched internally — the pyramid adds the zoom dimension a
+  flat index lacks.)
 - **A hand-rolled hot-window cache with an eviction policy.** Rejected
   (DS-2). The kernel page cache is already an LRU file cache — shared
   across processes, tuned, and the demand-paging path the OS uses for
   everything. Hand-rolling one is expensive-to-review surface for no
-  gain over `mmap`.
+  gain over `mmap`. (DS-8's drop-oldest is not this: it frees whole
+  sealed segment *files* to hold a disk cap, leaving residency of the
+  live window to the same page cache — it is a capacity bound, not a
+  per-page eviction cache.)
 - **A single growing file per family instead of segments.** Rejected
   (DS-4). A growing mapped file must be remapped as it grows, and
   Windows cannot resize a file that has an active mapping. Fixed-size
@@ -303,7 +422,9 @@ panel, not in the always-on cleanup policy.
   the scratch files on a volume with room and surfaces a clear error
   if it runs out. `by-id` and the per-signal pyramids persist for the
   capture's life and add their own disk cost; filter index files are
-  transient (dropped on predicate change).
+  transient (dropped on predicate change). A user who cannot spare
+  tens of GB sets the DS-8 scratch cap, trading unbounded history for a
+  bounded footprint (the oldest frames evict).
 - An I/O error on a mapped page raises `SIGBUS` (Unix) or
   `EXCEPTION_IN_PAGE_ERROR` (Windows) rather than a recoverable error
   return — an acceptable "the scratch volume failed" failure mode for

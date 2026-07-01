@@ -60,14 +60,24 @@ pub(crate) const BYID_PREFIX: &str = "byid.";
 #[derive(Default)]
 struct IdPostings {
     segs: Vec<Segment>,
-    /// `cum_cap[i]` = total entry capacity of `segs[0..=i]`. Lets a slot
-    /// index be located in `O(log segs)`.
+    /// `cum_cap[i]` = total entry capacity of segments `0..=i` in **absolute**
+    /// numbering (includes any dropped leading segments, so a surviving slot
+    /// keeps its original index across a trim). Lets a slot index be located
+    /// in `O(log segs)`.
     cum_cap: Vec<usize>,
     len: usize,
-    /// Index of the first segment that may hold un-flushed entries — the
-    /// tail at the previous flush. Appends only ever touch the tail, so a
+    /// Absolute index of the first segment that may hold un-flushed entries —
+    /// the tail at the previous flush. Appends only ever touch the tail, so a
     /// flush re-syncs from here forward, never the sealed segments below it.
     flushed_from: usize,
+    /// Windowed-ring floor (ADR 0002 DS-8 / 6d): the lowest still-mapped slot,
+    /// always a segment boundary. `0` until eviction drops leading segments.
+    /// Reads stay within `[first_slot, len)`; a binary search lower-bounds
+    /// here so it never touches a dropped segment.
+    first_slot: usize,
+    /// Count of dropped leading segments — the absolute number of `segs[0]`.
+    /// An absolute segment number `s` addresses `segs[s - seg_base]`.
+    seg_base: usize,
 }
 
 impl IdPostings {
@@ -75,17 +85,53 @@ impl IdPostings {
         self.cum_cap.last().copied().unwrap_or(0)
     }
 
-    /// `(segment index, byte offset within it)` for entry slot `k`.
+    /// `(absolute segment index, byte offset within it)` for entry slot `k`.
     fn locate(&self, k: usize) -> (usize, usize) {
         let seg = self.cum_cap.partition_point(|&c| c <= k);
         let base = if seg == 0 { 0 } else { self.cum_cap[seg - 1] };
         (seg, (k - base) * ENTRY_BYTES)
     }
 
-    /// The frame index stored at slot `k` (`k < len`).
+    /// The frame index stored at the live slot `k` (`first_slot <= k < len`).
     fn entry(&self, k: usize) -> u64 {
         let (seg, off) = self.locate(k);
-        u64::from_le_bytes(self.segs[seg].map[off..off + ENTRY_BYTES].try_into().unwrap())
+        u64::from_le_bytes(
+            self.segs[seg - self.seg_base].map[off..off + ENTRY_BYTES]
+                .try_into()
+                .unwrap(),
+        )
+    }
+
+    /// Front-trim to the low-water mark `first_index`: drop every leading
+    /// segment whose entries are *all* below it and delete its file, raising
+    /// `first_slot`/`seg_base`. Returns `true` when the id is now fully dead
+    /// (no live entry remains), so the caller can forget it. Whole segments
+    /// only — the partial dead prefix inside the first kept segment stays and
+    /// is filtered by the raw read guard.
+    fn evict_below(&mut self, dir: &Path, id: u32, extended: bool, first_index: u64) -> bool {
+        // First live slot: the lowest slot whose stored frame index is
+        // `>= first_index`. Everything below it is dead (evicted raw rows).
+        let floor_slot = partition_point(self, first_index);
+        // The id is dead if no slot survives the mark; drop the whole chain.
+        let target_base = if floor_slot >= self.len {
+            self.cum_cap.len()
+        } else {
+            // Keep the segment that holds `floor_slot`; drop the strictly
+            // earlier ones (those whose cumulative capacity fits below it).
+            self.cum_cap.partition_point(|&c| c <= floor_slot)
+        };
+        while self.seg_base < target_base {
+            drop(self.segs.remove(0)); // unmap before deleting (Windows)
+            let _ = std::fs::remove_file(seg_path(dir, id, extended, self.seg_base));
+            self.seg_base += 1;
+        }
+        self.first_slot = if self.seg_base == 0 {
+            0
+        } else {
+            self.cum_cap[self.seg_base - 1]
+        };
+        self.flushed_from = self.flushed_from.max(self.seg_base);
+        self.first_slot >= self.len
     }
 }
 
@@ -112,37 +158,47 @@ impl ByIdIndex {
     /// I/O error, which the caller treats as an unusable scratch.
     pub(crate) fn reopen(
         dir: impl AsRef<Path>,
-        entries: &[(u32, bool, u64)],
+        entries: &[(u32, bool, u64, u64)],
     ) -> std::io::Result<Self> {
         let dir = dir.as_ref().to_path_buf();
         let mut map = HashMap::new();
-        for &(id, extended, len) in entries {
+        for &(id, extended, len, first_slot) in entries {
             let len = usize::try_from(len).unwrap_or(usize::MAX);
+            let first_slot = usize::try_from(first_slot).unwrap_or(0);
             let mut post = IdPostings::default();
+            // Rebuild the absolute cum_cap up to `len` (the geometry is
+            // deterministic in the absolute segment index).
             while post.capacity() < len {
-                let i = post.segs.len();
+                let i = post.cum_cap.len();
                 let cap = seg_capacity(i);
-                let seg = open_segment(&seg_path(&dir, id, extended, i))?;
-                post.segs.push(seg);
                 let prev = post.cum_cap.last().copied().unwrap_or(0);
                 post.cum_cap.push(prev + cap);
             }
+            // `first_slot` is a segment boundary; the segments below it were
+            // dropped on eviction (DS-8), so map only those at/above it.
+            let seg_base = post.cum_cap.partition_point(|&c| c <= first_slot);
+            for i in seg_base..post.cum_cap.len() {
+                post.segs.push(open_segment(&seg_path(&dir, id, extended, i))?);
+            }
             post.len = len;
+            post.first_slot = first_slot;
+            post.seg_base = seg_base;
             // Reopened segments are durable; the next flush re-syncs only
             // from the active tail.
-            post.flushed_from = post.segs.len().saturating_sub(1);
+            post.flushed_from = seg_base + post.segs.len().saturating_sub(1);
             map.insert((id, extended), post);
         }
         Ok(Self { dir, map })
     }
 
-    /// The persisted directory: one `(id, extended, len)` per posting
-    /// list with at least one entry. Written into the store manifest on
-    /// flush so [`Self::reopen`] can rebuild the chains.
-    pub(crate) fn directory(&self) -> Vec<(u32, bool, u64)> {
+    /// The persisted directory: one `(id, extended, len, first_slot)` per
+    /// posting list. `first_slot` is the windowed-ring floor (DS-8), so a
+    /// reopen across an eviction maps only the surviving segments. Written
+    /// into the store manifest on flush.
+    pub(crate) fn directory(&self) -> Vec<(u32, bool, u64, u64)> {
         self.map
             .iter()
-            .map(|(&(id, ext), post)| (id, ext, post.len as u64))
+            .map(|(&(id, ext), post)| (id, ext, post.len as u64, post.first_slot as u64))
             .collect()
     }
 
@@ -154,16 +210,29 @@ impl ByIdIndex {
     /// segments)`, which at deep history is the bulk of the flush cost.
     pub(crate) fn flush(&mut self, sync: bool) -> std::io::Result<()> {
         for post in self.map.values_mut() {
-            for seg in &post.segs[post.flushed_from..] {
+            // `flushed_from` is an absolute segment number; index the
+            // front-trimmed `Vec` relative to the dropped base (DS-8).
+            for seg in &post.segs[post.flushed_from - post.seg_base..] {
                 if sync {
                     seg.map.flush()?;
                 } else {
                     seg.map.flush_async()?;
                 }
             }
-            post.flushed_from = post.segs.len().saturating_sub(1);
+            post.flushed_from = post.seg_base + post.segs.len().saturating_sub(1);
         }
         Ok(())
+    }
+
+    /// Front-trim every id's postings to the low-water mark `first_index`
+    /// (ADR 0002 DS-8 / 6d): drop the leading dead segments and delete their
+    /// files; an id with no surviving entry is forgotten entirely. Called by
+    /// [`crate::disk::DiskRawStore::evict_below`] with the same mark the raw
+    /// store front-trims to, so by-id stays aligned with the live window.
+    pub(crate) fn evict_below(&mut self, first_index: u64) {
+        let dir = self.dir.clone();
+        self.map
+            .retain(|&(id, extended), post| !post.evict_below(&dir, id, extended, first_index));
     }
 
     /// Record that frame `frame_idx` carries `(id, extended)`. Appends to
@@ -175,7 +244,7 @@ impl ByIdIndex {
         let dir = &self.dir;
         let post = self.map.entry((id, extended)).or_default();
         if post.len == post.capacity() {
-            let i = post.segs.len();
+            let i = post.cum_cap.len(); // absolute segment number (survives a trim)
             let cap = seg_capacity(i);
             let seg = create_segment(&seg_path(dir, id, extended, i), cap * ENTRY_BYTES)
                 .expect("cannet-spill: by-id segment I/O failed");
@@ -184,7 +253,8 @@ impl ByIdIndex {
             post.cum_cap.push(prev + cap);
         }
         let (seg, off) = post.locate(post.len);
-        post.segs[seg].map[off..off + ENTRY_BYTES].copy_from_slice(&frame_idx.to_le_bytes());
+        post.segs[seg - post.seg_base].map[off..off + ENTRY_BYTES]
+            .copy_from_slice(&frame_idx.to_le_bytes());
         post.len += 1;
     }
 
@@ -231,10 +301,11 @@ fn seg_path(dir: &Path, id: u32, extended: bool, seg: usize) -> PathBuf {
     dir.join(format!("{BYID_PREFIX}{kind}{id:08x}.{seg:04}"))
 }
 
-/// Smallest slot `k` in `[0, len)` whose stored frame index is `>= target`
-/// (the partition point of an ascending list).
+/// Smallest live slot `k` in `[first_slot, len)` whose stored frame index is
+/// `>= target` (the partition point of an ascending list). Lower-bounding at
+/// `first_slot` keeps the search out of any dropped leading segment (DS-8).
 fn partition_point(post: &IdPostings, target: u64) -> usize {
-    let mut lo = 0usize;
+    let mut lo = post.first_slot;
     let mut hi = post.len;
     while lo < hi {
         let mid = lo + (hi - lo) / 2;
@@ -301,6 +372,56 @@ mod tests {
             // Each id's frames are exactly i where i % 500 == id.
             assert!(got.iter().all(|&v| (v as u32) % 500 == id));
         }
+    }
+
+    fn byid_file_count(dir: &std::path::Path) -> usize {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().starts_with(BYID_PREFIX))
+            .count()
+    }
+
+    #[test]
+    fn evict_below_drops_dead_leading_segments() {
+        // 6d windowed-ring trim (ADR 0002 DS-8): front-trim a hot id's
+        // postings to the low-water mark — drop the leading segments whose
+        // entries are all below it and delete their files — while keeping
+        // absolute slot numbering so windowed reads stay valid. Whole
+        // segments only, so the surviving floor is a segment boundary at or
+        // below the mark (the dead tail inside the kept segment is filtered
+        // by the raw read guard, not here).
+        let dir = TempDir::new().unwrap();
+        let mut idx = ByIdIndex::new(dir.path());
+        for i in 0u64..1000 {
+            idx.push(7, false, i); // id 7 at every frame index
+        }
+        let before = byid_file_count(dir.path());
+        assert!(before >= 4, "1000 entries span several geometric segments");
+        idx.evict_below(300);
+        let got = idx.range(7, false, 0, 1000);
+        assert!(!got.is_empty());
+        let floor = got[0];
+        assert!(floor > 0 && floor <= 300, "floor {floor} is a dropped-segment boundary ≤ mark");
+        assert_eq!(got, (floor..1000).collect::<Vec<usize>>(), "contiguous above the floor");
+        assert!(idx.range(7, false, 0, floor).is_empty(), "below the floor is gone");
+        assert!(byid_file_count(dir.path()) < before, "leading segment files reclaimed");
+    }
+
+    #[test]
+    fn evict_below_removes_a_fully_dead_id() {
+        // A rare id whose every sighting is below the mark drops out entirely
+        // (all its segments are dead).
+        let dir = TempDir::new().unwrap();
+        let mut idx = ByIdIndex::new(dir.path());
+        idx.push(0x55, false, 5);
+        idx.push(0x55, false, 9);
+        for i in 100u64..400 {
+            idx.push(7, false, i); // keep some other id live above the mark
+        }
+        idx.evict_below(50);
+        assert!(idx.range(0x55, false, 0, 1000).is_empty(), "the rare id is gone");
+        assert!(!idx.range(7, false, 0, 1000).is_empty(), "the live id stays");
     }
 
     #[test]

@@ -30,6 +30,19 @@ export function formatData(frame: TraceFrameRecord): string {
     .join(" ");
 }
 
+/// The status-line frame-count phrase. Under windowed-ring eviction
+/// (ADR 0002 DS-8) the live window holds only `[firstIndex, total)`, so
+/// once the floor has advanced show "<retained> of <total> frames" — the
+/// total keeps climbing while the retained count plateaus at the cap.
+/// Before any eviction (floor at 0) it's just "<total> frames". The
+/// retained count is clamped to zero so a stale floor (left for a tick by
+/// a Clear) never renders negative.
+export function formatFrameCount(total: number, firstIndex: number): string {
+  if (firstIndex <= 0) return `${total.toLocaleString()} frames`;
+  const retained = Math.max(0, total - firstIndex);
+  return `${retained.toLocaleString()} of ${total.toLocaleString()} frames`;
+}
+
 export function formatTimestamp(seconds: number, base: number | null): string {
   const t = base === null ? seconds : seconds - base;
   return t.toFixed(3);

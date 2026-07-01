@@ -160,8 +160,14 @@ pub struct BusFps {
 /// Fired at ~10 Hz when there's been activity since the last tick.
 #[derive(serde::Serialize, Clone)]
 pub struct TraceGrew {
-    /// Total number of frames in the store right now.
+    /// Total number of frames in the store right now (the absolute tip;
+    /// unaffected by eviction).
     pub count: u64,
+    /// Windowed-ring low-water mark (ADR 0002 DS-8): the lowest still-live
+    /// row index. `0` until eviction truncates the oldest history. The trace
+    /// view clamps its window to `[first_index, count)` so evicted rows
+    /// aren't rendered as blank placeholders.
+    pub first_index: u64,
     /// Estimated current frame rate (frames per second over the last
     /// second of appends).
     pub frames_per_second: f64,
@@ -188,6 +194,17 @@ pub struct TraceGrew {
     /// oldest timestamp). Shown in the status line as "N s buffered";
     /// zero when fewer than two frames are stored.
     pub buffer_seconds: f64,
+    /// Total on-disk scratch footprint in bytes as of the last flush
+    /// (ADR 0002 DS-8) — the raw segments, indexes, and pyramids under
+    /// `current/`. Shown in the status line as the cache size. `None` when
+    /// the store is in-RAM (no disk scratch), so the view can hide it.
+    pub scratch_bytes: Option<u64>,
+    /// Host-process resident memory in bytes, as last sampled by the health
+    /// recorder (~1 Hz). The in-memory counterpart to `scratch_bytes` in the
+    /// status line — together they show the disk-spill residency split (RAM
+    /// stays bounded while the on-disk cache grows). `None` until the first
+    /// health sample.
+    pub mem_bytes: Option<u64>,
     /// The last frames in the store (up to a fixed cap), already decoded
     /// against the currently-attached DBC. The auto-scrolling trace view
     /// paints its live tail straight from this instead of round-tripping

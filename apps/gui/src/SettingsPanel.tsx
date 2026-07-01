@@ -10,6 +10,14 @@ import {
 
 const BYTES_PER_MB = 1024 * 1024;
 
+/// Minimum effective scratch cap in MB (ADR 0002 DS-8). A smaller cap can't
+/// be honored — the pre-allocated segment families (one payload + one filter
+/// segment alone are ~12 MiB) dominate the budget and the retained window
+/// thrashes a segment at a time. The host clamps authoritatively; the UI
+/// mirrors the floor so the displayed value matches what's enforced. Keep in
+/// sync with `settings::MIN_SCRATCH_CAP_BYTES`.
+const MIN_CAP_MB = 100;
+
 /**
  * Settings panel — a flat, hand-rolled editor over the host's
  * `settings.json` (ADR 0034). User intent only (the disk-spill scratch
@@ -49,7 +57,9 @@ export function SettingsPanel(_props: IDockviewPanelProps) {
   const capMb =
     settings.scratch_cap_bytes == null
       ? ""
-      : String(Math.round(settings.scratch_cap_bytes / BYTES_PER_MB));
+      : // Mirror the host's floor: a stored sub-floor value (e.g. a
+        // hand-edited settings.json) is enforced at the floor, so show it.
+        String(Math.max(MIN_CAP_MB, Math.round(settings.scratch_cap_bytes / BYTES_PER_MB)));
 
   const onCapChange = (raw: string) => {
     const trimmed = raw.trim();
@@ -59,7 +69,9 @@ export function SettingsPanel(_props: IDockviewPanelProps) {
     }
     const mb = Number(trimmed);
     if (!Number.isFinite(mb) || mb < 0) return; // ignore non-numeric / negative
-    update({ scratch_cap_bytes: Math.round(mb * BYTES_PER_MB) });
+    // Mirror the host's cap floor (ADR 0002 DS-8) so the box never shows a
+    // value smaller than what's actually enforced.
+    update({ scratch_cap_bytes: Math.round(Math.max(mb, MIN_CAP_MB) * BYTES_PER_MB) });
   };
 
   return (
@@ -70,7 +82,7 @@ export function SettingsPanel(_props: IDockviewPanelProps) {
           <span className="settings-label">Cache size cap (MB)</span>
           <input
             type="number"
-            min={0}
+            min={MIN_CAP_MB}
             step={64}
             placeholder="unbounded"
             value={capMb}
@@ -78,7 +90,8 @@ export function SettingsPanel(_props: IDockviewPanelProps) {
           />
           <span className="settings-desc">
             Drop the oldest history once the on-disk cache exceeds this.
-            Blank = unbounded.
+            Minimum {MIN_CAP_MB} MB — below that, pre-allocated segments
+            dominate and the cap can't be honored. Blank = unbounded.
           </span>
         </label>
         <label className="settings-field settings-field-checkbox">

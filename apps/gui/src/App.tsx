@@ -80,6 +80,7 @@ import {
   restoredTrace,
 } from "./trace";
 import { defaultBusColor } from "./busColor";
+import { formatFrameCount } from "./format";
 import { assignDefaultNames, defaultElementName, elementLabel } from "./elementLabel";
 import {
   BY_ID_PANEL_COMPONENT,
@@ -190,8 +191,18 @@ export function App() {
   diagCount("render.App"); // DIAG
   useEffect(() => startDiagReporter(), []); // DIAG
   const [count, setCount] = useState(0);
+  // Windowed-ring low-water mark from `trace-grew` (ADR 0002 DS-8): the
+  // chronological window clamps its start up to this so truncated rows below
+  // the floor aren't rendered as blank placeholders. `0` until eviction.
+  const [firstIndex, setFirstIndex] = useState(0);
   const [framesPerSecond, setFramesPerSecond] = useState(0);
   const [bufferSeconds, setBufferSeconds] = useState(0);
+  // On-disk scratch footprint from the latest `trace-grew`; `null` when the
+  // store is in-RAM, which hides the cache-size readout.
+  const [scratchBytes, setScratchBytes] = useState<number | null>(null);
+  // Host-process resident memory from the latest `trace-grew` (~1 Hz); the
+  // in-memory counterpart to the on-disk cache size.
+  const [memBytes, setMemBytes] = useState<number | null>(null);
   // Live sidecar status — needed to resolve the `"local"` sentinel on
   // interface bindings to the sidecar's current bound address before
   // we invoke connect_remote_server (the Rust command takes a
@@ -577,6 +588,7 @@ export function App() {
         diagCount("event.trace-grew"); // DIAG
         const {
           count: newCount,
+          first_index,
           frames_per_second,
           frames_per_second_rx,
           frames_per_second_tx,
@@ -584,6 +596,8 @@ export function App() {
           frames_dropped_before_session,
           session_start_seconds,
           buffer_seconds,
+          scratch_bytes,
+          mem_bytes,
           tail,
         } = event.payload;
         // DIAG: log buffer size + aggregate/rx/tx/per-bus FPS as gauges so
@@ -610,6 +624,9 @@ export function App() {
         );
         setFramesPerSecond(frames_per_second);
         setBufferSeconds(buffer_seconds);
+        setScratchBytes(scratch_bytes);
+        setMemBytes(mem_bytes);
+        setFirstIndex(first_index);
         setLiveTail({
           start: tail.length > 0 ? tail[0].index : newCount,
           rows: tail,
@@ -1107,12 +1124,15 @@ export function App() {
       // view, not inside `open_project` — keeps the clear from clobbering
       // the restored history.
       try {
-        const restored = await invoke<{ count: number; session_start_seconds: number }>(
-          "restore_scratch_capture",
-        );
+        const restored = await invoke<{
+          count: number;
+          first_index: number;
+          session_start_seconds: number;
+        }>("restore_scratch_capture");
         if (restored.count <= 0) return;
         invalidateCache();
         setCount(restored.count);
+        setFirstIndex(restored.first_index);
         setSessionStartSeconds(
           restored.session_start_seconds > 0 ? restored.session_start_seconds : null,
         );
@@ -2033,20 +2053,42 @@ export function App() {
   );
 
   const status = useMemo(
-    () => renderStatus(state, remoteSessions, dbcPaths, count, framesPerSecond, bufferSeconds),
-    [state, remoteSessions, dbcPaths, count, framesPerSecond, bufferSeconds],
+    () =>
+      renderStatus(
+        state,
+        remoteSessions,
+        dbcPaths,
+        count,
+        firstIndex,
+        framesPerSecond,
+        bufferSeconds,
+        scratchBytes,
+        memBytes,
+      ),
+    [
+      state,
+      remoteSessions,
+      dbcPaths,
+      count,
+      firstIndex,
+      framesPerSecond,
+      bufferSeconds,
+      scratchBytes,
+      memBytes,
+    ],
   );
 
   const traceData: TraceData = useMemo(() => {
     diagCount("memo.traceData"); // DIAG
     return {
       count,
+      firstIndex,
       sessionStartSeconds,
       epoch: traceEpoch,
       fetchRange,
       liveTail,
     };
-  }, [count, sessionStartSeconds, traceEpoch, fetchRange, liveTail]);
+  }, [count, firstIndex, sessionStartSeconds, traceEpoch, fetchRange, liveTail]);
 
   const elementRegistryValue: ElementRegistry = useMemo(
     () => ({
@@ -2354,9 +2396,13 @@ function renderStatus(
   remoteSessions: ReadonlyMap<string, RemoteStatus>,
   dbcPaths: readonly string[],
   frameCount: number,
+  firstIndex: number,
   framesPerSecond: number,
   bufferSeconds: number,
+  scratchBytes: number | null,
+  memBytes: number | null,
 ): string {
+  const frames = formatFrameCount(frameCount, firstIndex);
   const dbc =
     dbcPaths.length === 0
       ? "no DBC attached"
@@ -2364,7 +2410,13 @@ function renderStatus(
         ? `DBC: ${shortenPath(dbcPaths[0])}`
         : `${dbcPaths.length} DBCs`;
   const fps = framesPerSecond > 0 ? ` · ${formatRate(framesPerSecond)}` : "";
-  const buf = bufferSeconds > 0 ? ` · ${formatDuration(bufferSeconds)} buffered` : "";
+  const buf = bufferSeconds > 0 ? ` · ${formatDuration(bufferSeconds)} elapsed` : "";
+  // Disk-spill residency split (ADR 0002 DS-8): host RAM vs on-disk cache.
+  // Each shows only when present (`null` / zero hides it) — in-RAM stores
+  // report no cache, and memory lands once the first health sample arrives.
+  const mem = memBytes != null && memBytes > 0 ? ` · ${formatBytes(memBytes)} RAM` : "";
+  const cache =
+    scratchBytes != null && scratchBytes > 0 ? ` · ${formatBytes(scratchBytes)} disk` : "";
 
   // Remote sessions take priority over the BLF idle/done line — the
   // user is actively streaming. (BLF in-progress states render their
@@ -2386,7 +2438,7 @@ function renderStatus(
     const parts: string[] = [];
     if (running.length > 0) {
       parts.push(
-        `Streaming from ${running.length} server${running.length === 1 ? "" : "s"} (${totalInterfaces} interface${totalInterfaces === 1 ? "" : "s"}, ${formatNumber(frameCount)} frames${fps}${buf})`,
+        `Streaming from ${running.length} server${running.length === 1 ? "" : "s"} (${totalInterfaces} interface${totalInterfaces === 1 ? "" : "s"}, ${frames}${fps}${buf}${mem}${cache})`,
       );
     }
     if (connecting > 0) parts.push(`${connecting} connecting`);
@@ -2407,7 +2459,7 @@ function renderStatus(
     case "loading":
       return `Opening ${shortenPath(state.result.blf_path)} … ${dbc}.`;
     case "running":
-      return `Streaming ${shortenPath(state.result.blf_path)} (${formatNumber(frameCount)} frames${fps}${buf}). ${dbc}.`;
+      return `Streaming ${shortenPath(state.result.blf_path)} (${frames}${fps}${buf}${mem}${cache}). ${dbc}.`;
     case "done":
       return `Done: ${formatNumber(state.total)} frames from ${shortenPath(state.result.blf_path)}. ${dbc}.`;
     case "error":
@@ -2438,6 +2490,21 @@ function formatDuration(seconds: number): string {
 
 function formatNumber(n: number): string {
   return n.toLocaleString();
+}
+
+/// Byte count as a compact binary-unit size for the status line: `512 KB`,
+/// `3.4 MB`, `1.2 GB`. Sub-kilobyte sizes show as `B`; larger units keep one
+/// decimal once past 9.9 so the readout stays short.
+function formatBytes(bytes: number): string {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const digits = unit === 0 || value >= 100 ? 0 : 1;
+  return `${value.toFixed(digits)} ${units[unit]}`;
 }
 
 function shortenPath(path: string): string {
