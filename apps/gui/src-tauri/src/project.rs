@@ -18,6 +18,7 @@
 //! migrated.
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 /// Current project-file schema version. A file is accepted only if its
 /// `schema_version` matches exactly; any other value is rejected with a
@@ -161,6 +162,21 @@ pub struct DbcRef {
 pub struct Project {
     /// Schema version — see [`PROJECT_SCHEMA_VERSION`].
     pub schema_version: u32,
+    /// Stable per-project identity, generated once when the project is
+    /// first created and never changed after. It gates disk-spill scratch
+    /// reload across rename/move (ADR 0002 DS-7): the scratch records the
+    /// id of the project that produced it, and a launch reloads that
+    /// scratch only against a project carrying the same id.
+    ///
+    /// Like `transmit_frames`, this is host-managed and the frontend
+    /// doesn't carry it: it's an additive field with a generating default
+    /// (so an older file with no id gains one on read, no schema bump),
+    /// and [`save_project`] anchors it to the target file — preserving the
+    /// id already on disk and writing a fresh one only for a brand-new
+    /// file. That keeps it stable across saves even though the frontend's
+    /// save payload omits it.
+    #[serde(default = "generate_project_id")]
+    pub project_id: Uuid,
     /// The `dockview` panel layout, verbatim. The host doesn't read
     /// this; it's the frontend's serialized layout.
     pub layout: serde_json::Value,
@@ -198,6 +214,28 @@ pub struct Project {
     /// Additive; no schema-version bump.
     #[serde(default)]
     pub transmit_frames: Vec<crate::transmit_frames::TransmitFrame>,
+}
+
+/// A fresh random project identity. The serde default for
+/// [`Project::project_id`]: an older file with no id gains one when it's
+/// parsed; [`save_project`] then anchors it so it stays put thereafter.
+fn generate_project_id() -> Uuid {
+    Uuid::new_v4()
+}
+
+/// The `project_id` already recorded in the file at `path`, if it has
+/// one. Read directly from the JSON (not a full parse) so it survives
+/// even a file this build would otherwise reject on `schema_version`.
+/// `None` when the file is absent, unreadable, or carries no valid id —
+/// i.e. a brand-new target, which legitimately gets a freshly generated
+/// identity.
+fn existing_project_id(path: &str) -> Option<Uuid> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    value
+        .get("project_id")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|s| Uuid::parse_str(s).ok())
 }
 
 /// Parse project JSON. Accepts only a file whose `schema_version`
@@ -280,6 +318,13 @@ pub fn save_project(
     path: String,
     mut project: Project,
 ) -> Result<(), String> {
+    // Anchor the project identity to the target file: keep the id already
+    // on disk, so it stays stable across saves even though the frontend's
+    // save payload omits it (the serde default would otherwise mint a new
+    // one each time). A brand-new file keeps the freshly generated id.
+    if let Some(id) = existing_project_id(&path) {
+        project.project_id = id;
+    }
     // The host registry is the source of truth for TX
     // messages — the thin-view frontend doesn't carry them in the
     // project it submits. Snapshot the registry into the project before
@@ -317,6 +362,7 @@ mod tests {
     fn sample() -> Project {
         Project {
             schema_version: PROJECT_SCHEMA_VERSION,
+            project_id: generate_project_id(),
             layout: serde_json::json!({ "grid": { "root": {} }, "panels": {} }),
             elements: vec![serde_json::json!({ "kind": "trace", "id": "abc" })],
             buses: vec![Bus {
@@ -363,6 +409,63 @@ mod tests {
         assert_eq!(p.remote_address, None);
     }
 
+    #[test]
+    fn parse_generates_a_project_id_when_the_file_has_none() {
+        // An older file without the field gains a fresh id on read, and
+        // two reads of the same id-less text get *distinct* ids (it's
+        // generated, not a fixed default).
+        let text = r#"{"schema_version": 7, "layout": {"grid": {}, "panels": {}}}"#;
+        let a = parse_project(text).unwrap().project_id;
+        let b = parse_project(text).unwrap().project_id;
+        assert_ne!(a, Uuid::nil());
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn parse_preserves_an_explicit_project_id() {
+        let id = Uuid::new_v4();
+        let text = format!(
+            r#"{{"schema_version": 7, "project_id": "{id}", "layout": {{"grid": {{}}, "panels": {{}}}}}}"#
+        );
+        assert_eq!(parse_project(&text).unwrap().project_id, id);
+        // And it survives a serialize → parse round-trip.
+        let p = parse_project(&text).unwrap();
+        assert_eq!(
+            parse_project(&serde_json::to_string(&p).unwrap())
+                .unwrap()
+                .project_id,
+            id
+        );
+    }
+
+    #[test]
+    fn existing_project_id_reads_back_a_recorded_id_and_none_otherwise() {
+        let dir = std::env::temp_dir().join(format!("cannet-pid-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = Uuid::new_v4();
+        let with_id = dir.join("p.cannet_prj");
+        std::fs::write(
+            &with_id,
+            format!(r#"{{"schema_version": 7, "project_id": "{id}", "layout": {{}}}}"#),
+        )
+        .unwrap();
+        assert_eq!(
+            existing_project_id(with_id.to_str().unwrap()),
+            Some(id),
+            "an on-disk id is recovered"
+        );
+        // A file with no id, and an absent file, both yield None — a
+        // brand-new target that legitimately mints its own identity.
+        let no_id = dir.join("q.cannet_prj");
+        std::fs::write(&no_id, r#"{"schema_version": 7, "layout": {}}"#).unwrap();
+        assert_eq!(existing_project_id(no_id.to_str().unwrap()), None);
+        assert_eq!(
+            existing_project_id(dir.join("absent.cannet_prj").to_str().unwrap()),
+            None
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// A virtual-bus definition + a binding pointing at it round-trip
     /// through serialize + parse. The vbus owns the config/bridges;
     /// the binding only references the vbus by id.
@@ -370,6 +473,7 @@ mod tests {
     fn local_virtual_bus_definition_and_binding_round_trip() {
         let p = Project {
             schema_version: PROJECT_SCHEMA_VERSION,
+            project_id: generate_project_id(),
             layout: serde_json::json!({"grid": {}, "panels": {}}),
             elements: vec![],
             buses: vec![Bus {
@@ -411,6 +515,7 @@ mod tests {
     fn local_sentinel_round_trips_through_serialize_and_parse() {
         let p = Project {
             schema_version: PROJECT_SCHEMA_VERSION,
+            project_id: generate_project_id(),
             layout: serde_json::json!({"grid": {}, "panels": {}}),
             elements: vec![],
             buses: vec![Bus {
