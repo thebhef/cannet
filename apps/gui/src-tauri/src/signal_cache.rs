@@ -41,6 +41,14 @@ struct SignalCache {
     /// Next trace-store frame index to start the next catch-up scan
     /// from. Advances to `TraceStore::len()` after each catch-up.
     next_index: usize,
+    /// Running all-time value extent over every decoded sample —
+    /// widen-only, maintained as samples are pushed. This is the
+    /// host-owned y-extent the plot's auto-normalisation reads (ADR
+    /// 0025: a scalar model fact, not a windowed accessor), so the
+    /// frontend no longer latches it in a React ref. `lo > hi` (the
+    /// empty sentinel) means nothing has decoded yet.
+    lo: f64,
+    hi: f64,
 }
 
 impl SignalCache {
@@ -48,7 +56,68 @@ impl SignalCache {
         Self {
             samples: Vec::new(),
             next_index: 0,
+            lo: f64::INFINITY,
+            hi: f64::NEG_INFINITY,
         }
+    }
+
+    /// All-time value extent, or `None` if nothing has decoded yet.
+    fn extent(&self) -> Option<(f64, f64)> {
+        (self.lo <= self.hi).then_some((self.lo, self.hi))
+    }
+
+    /// Decode any matching frames in `[next_index, store_len)` into the
+    /// cache, advancing `next_index` to the tip and widening the
+    /// `[lo, hi]` extent. `O(new matches since last call)` — the whole
+    /// point of the cache. Shared by [`SignalCacheStore::slice`] and
+    /// [`SignalCacheStore::min_max`] so both observe the same samples.
+    fn catch_up(
+        &mut self,
+        bus_id: Option<&str>,
+        message_id: u32,
+        extended: bool,
+        signal_name: &str,
+        store: &TraceStore,
+        dbs: &[&Database],
+    ) {
+        let store_len = store.len();
+        if self.next_index >= store_len {
+            return;
+        }
+        let new_matches =
+            store.matching_frames_indexed(message_id, extended, self.next_index, store_len);
+        for (_idx, frame) in new_matches {
+            // Bus filter: when the query is scoped to a bus, drop
+            // frames whose `bus_id` doesn't match. `None` on the query
+            // is the legacy "any bus" path that takes every frame.
+            if let Some(want) = bus_id {
+                if frame.bus_id.as_deref() != Some(want) {
+                    continue;
+                }
+            }
+            // Try each loaded DBC in priority order, first decode wins
+            // (matches `sample_signals`' existing semantics).
+            for db in dbs {
+                let decoded = signal_sampler::sample_signal(
+                    std::slice::from_ref(&frame),
+                    db,
+                    message_id,
+                    extended,
+                    signal_name,
+                );
+                if let Some(point) = decoded.into_iter().next() {
+                    if point.value < self.lo {
+                        self.lo = point.value;
+                    }
+                    if point.value > self.hi {
+                        self.hi = point.value;
+                    }
+                    self.samples.push(point);
+                    break;
+                }
+            }
+        }
+        self.next_index = store_len;
     }
 }
 
@@ -119,39 +188,7 @@ impl SignalCacheStore {
         );
         let cache = caches.entry(key).or_insert_with(SignalCache::new);
 
-        // Catch up: decode any matching frames in `[next_index, len)`.
-        let store_len = store.len();
-        if cache.next_index < store_len {
-            let new_matches =
-                store.matching_frames_indexed(message_id, extended, cache.next_index, store_len);
-            for (_idx, frame) in new_matches {
-                // Bus filter: when the query is scoped to a bus,
-                // drop frames whose `bus_id` doesn't match. `None` on
-                // the query is the legacy "any bus" path that takes
-                // every frame.
-                if let Some(want) = bus_id {
-                    if frame.bus_id.as_deref() != Some(want) {
-                        continue;
-                    }
-                }
-                // Try each loaded DBC in priority order, first decode
-                // wins (matches `sample_signals`' existing semantics).
-                for db in dbs {
-                    let decoded = signal_sampler::sample_signal(
-                        std::slice::from_ref(&frame),
-                        db,
-                        message_id,
-                        extended,
-                        signal_name,
-                    );
-                    if let Some(point) = decoded.into_iter().next() {
-                        cache.samples.push(point);
-                        break;
-                    }
-                }
-            }
-            cache.next_index = store_len;
-        }
+        cache.catch_up(bus_id, message_id, extended, signal_name, store, dbs);
 
         if cache.samples.is_empty() {
             return Vec::new();
@@ -170,6 +207,34 @@ impl SignalCacheStore {
         let lo_inclusive = lo.saturating_sub(2);
         let hi_inclusive = std::cmp::min(cache.samples.len(), hi.saturating_add(2));
         cache.samples[lo_inclusive..hi_inclusive].to_vec()
+    }
+
+    /// The signal's all-time value extent `(lo, hi)` over every decoded
+    /// sample, catching the cache up to the store's tip first. `None`
+    /// when no matching frame has decoded yet. This is the host-owned
+    /// y-extent the plot's auto-normalisation reads — a scalar model
+    /// fact (ADR 0025), so the frontend reads it instead of latching a
+    /// widen-only range in a React ref. `bus_id` scoping matches
+    /// [`Self::slice`].
+    pub fn min_max(
+        &self,
+        bus_id: Option<&str>,
+        message_id: u32,
+        extended: bool,
+        signal_name: &str,
+        store: &TraceStore,
+        dbs: &[&Database],
+    ) -> Option<(f64, f64)> {
+        let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
+        let key: SignalKey = (
+            bus_id.map(str::to_owned),
+            message_id,
+            extended,
+            signal_name.to_string(),
+        );
+        let cache = caches.entry(key).or_insert_with(SignalCache::new);
+        cache.catch_up(bus_id, message_id, extended, signal_name, store, dbs);
+        cache.extent()
     }
 }
 
@@ -257,6 +322,51 @@ mod tests {
         cache.clear();
         let after = cache.slice(None, 256, false, "X", 0.0, 10.0, &store, dbs);
         assert_eq!(after.len(), 5);
+    }
+
+    #[test]
+    fn min_max_tracks_all_time_extent_and_catches_up() {
+        // The per-signal min/max latch is the host-owned y-extent the
+        // plot's auto-normalisation reads (ADR 0025: a scalar model
+        // fact, not a windowed accessor). It is all-time and widen-only:
+        // a later in-range sample never shrinks it, a new extreme grows
+        // it, and a fresh append is caught up on the next call.
+        let store = TraceStore::new();
+        store.append(dummy(0, 256, vec![3, 0, 0, 0, 0, 0, 0, 0]));
+        store.append(dummy(S, 256, vec![1, 0, 0, 0, 0, 0, 0, 0]));
+        store.append(dummy(2 * S, 256, vec![5, 0, 0, 0, 0, 0, 0, 0]));
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let cache = SignalCacheStore::new();
+
+        assert_eq!(
+            cache.min_max(None, 256, false, "X", &store, dbs),
+            Some((1.0, 5.0))
+        );
+        // A later sample inside the latch doesn't shrink it.
+        store.append(dummy(3 * S, 256, vec![2, 0, 0, 0, 0, 0, 0, 0]));
+        assert_eq!(
+            cache.min_max(None, 256, false, "X", &store, dbs),
+            Some((1.0, 5.0))
+        );
+        // A new extreme widens it.
+        store.append(dummy(4 * S, 256, vec![9, 0, 0, 0, 0, 0, 0, 0]));
+        assert_eq!(
+            cache.min_max(None, 256, false, "X", &store, dbs),
+            Some((1.0, 9.0))
+        );
+    }
+
+    #[test]
+    fn min_max_is_none_for_a_signal_nothing_has_decoded() {
+        let store = TraceStore::new();
+        store.append(dummy(0, 256, vec![1, 0, 0, 0, 0, 0, 0, 0]));
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let cache = SignalCacheStore::new();
+        // Unknown id and unknown signal both have no decoded samples.
+        assert!(cache.min_max(None, 999, false, "X", &store, dbs).is_none());
+        assert!(cache.min_max(None, 256, false, "Nope", &store, dbs).is_none());
     }
 
     #[test]

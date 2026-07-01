@@ -131,6 +131,33 @@ the distinct-id count) are plain queries, not windowed accessors.
 Renderer-shaping of already-bounded data (merging series for uPlot)
 stays in the view.
 
+### The shape it converges to
+
+One lifecycle under both accessors; each view is a thin source over it,
+picking the accessor its result shape needs:
+
+```text
+  shared windowed-source lifecycle (Layer A)
+  descriptor memo · single-flight · re-anchor on scroll-out ·
+  drop-on-descriptor-change · extent tracked separately from content
+       │
+       ├─ raw chrono   ┐
+       │  filtered     ├─ useWindowedQuery ───► RowPage         rows[off, off+limit)
+       │  by-ID        ┘  getRow / ensureVisible                index-addressed, exact
+       │
+       └─ plot           useDecimatedRange ───► DecimatedRange  [t0, t1] + pixel budget
+                         visible decimated snapshot             time-addressed, lossy
+
+  scalar model facts (a signal's all-time min/max, distinct-id count)
+  are plain queries beside the lifecycle — not windowed accessors.
+```
+
+The three row-addressed views share one primitive (`useWindowedQuery`)
+and are thin adapters that add only their fetch and descriptor. The plot
+cannot be a row page — time-addressed and lossy — so it is that
+lifecycle's time-addressed sibling (`useDecimatedRange`), not a fourth
+bespoke cache.
+
 ## Alternatives considered
 
 - **One unified accessor signature.** Rejected: the plot is

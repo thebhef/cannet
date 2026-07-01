@@ -362,6 +362,32 @@ only the viewport slice shipped) removes the residual `invoke`-buffer +
 `mergeSeries` + `uPlot.setData` rebuild the mitigations can't reach — the
 reason this slice, not the tactical fixes, is the real cure.
 
+Status (2026-06-27): **part 1 of 2 shipped** (per-signal extent host-side).
+
+- **`traceRangesRef` retired.** The widen-only per-signal min/max latch —
+  capture-lifetime *model* state that was living in a React ref — is gone.
+  Its all-time extent now comes from the host:
+  [`SignalCache`](../../apps/gui/src-tauri/src/signal_cache.rs) maintains
+  a running `(lo, hi)` over every decoded sample (the catch-up is factored
+  into a shared `catch_up`, used by both `slice` and the new `min_max`),
+  and [`signal_min_max`](../../apps/gui/src-tauri/src/lib.rs) returns it
+  per signal as a [`SignalExtent`] — a **scalar model query** (ADR 0025),
+  not part of the windowed `DecimatedRange` accessor. The plot fetches it
+  in parallel with `sample_signals` (only when following live), so it adds
+  no wall-clock. `PlotArea`'s auto-norm now resolves its range by mode:
+  follow-live → host extent; paused/zoomed → the visible slice's own
+  min/max; manual Fit Y → a view-local `manualRangesRef` pin (a user
+  display override, which legitimately stays frontend). Host sees every
+  sample (not just decimated buckets), so the y-axis is strictly more
+  stable than the old latch. `cargo test -p cannet-gui` (203) and `pnpm
+  --dir apps/gui test` (424) green; clippy clean; build clean.
+- **Remaining (part 2):** fold `cacheRef` / `fetchKey` / anchor-reset onto
+  the shared windowed-source lifecycle via a `DecimatedRange` sibling hook
+  (`useDecimatedRange`) — ADR 0025 makes the plot the one time-addressed,
+  lossy view, so it gets a sibling of `useWindowedQuery`, not that hook
+  itself. `resample` keeps only renderer-shaping (auto-norm math,
+  `mergeSeries`, enum mode, `uPlot.setData`, the follow-live edge slide).
+
 ## Non-goals
 
 - **One accessor signature.** `RowPage` and `DecimatedRange` stay

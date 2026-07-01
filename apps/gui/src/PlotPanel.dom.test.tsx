@@ -86,6 +86,10 @@ vi.mock("@tauri-apps/api/core", () => ({
     if (cmd === "list_signals") return SIGNALS;
     if (cmd === "sample_signals")
       return encodeSample((args?.signals ?? []).map(() => ({ t: [0, 1, 2], v: [10, 20, 15] })));
+    if (cmd === "signal_min_max")
+      // Host-owned all-time per-signal extent (ADR 0025) — matches the
+      // sampled values' min/max so follow-live auto-norm has a range.
+      return (args?.signals ?? []).map(() => ({ lo: 10, hi: 20 }));
     return undefined;
   }),
 }));

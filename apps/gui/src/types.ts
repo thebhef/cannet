@@ -818,6 +818,15 @@ export interface SampledPoints {
   v: number[];
 }
 
+/// One signal's all-time value extent from `signal_min_max` — the
+/// host-owned y-extent the plot's auto-normalisation reads (ADR 0025:
+/// a scalar model fact, not a windowed accessor). `null` (per signal)
+/// when nothing has decoded yet.
+export interface SignalExtent {
+  lo: number;
+  hi: number;
+}
+
 /// Severity of a {@link SystemMessage}. The frontend's
 /// minimum-level filter compares two levels by `SYSTEM_LOG_LEVEL_RANK`
 /// — see `systemLog.ts`.
