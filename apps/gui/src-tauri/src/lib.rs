@@ -52,7 +52,7 @@ mod transmit_frames;
 mod transmit_scheduler;
 mod verification;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -1276,20 +1276,24 @@ async fn fetch_latest_by_id(
 /// page and the running total in one call. The frontend pages this; it
 /// never holds the whole filtered set in memory.
 ///
-/// The scan runs by reference inside the trace store
-/// ([`TraceStore::scan_window_filtered`]) — only the returned page's
-/// frames are cloned, never the whole window. The scan never decodes
-/// blindly: when the predicate has decode-dependent leaves, they're
-/// pre-resolved to a candidate-id set ([`decode_candidate_ids`]) and
-/// only frames whose id is in the set are decoded — every other
-/// frame's test is a raw-field check plus a set lookup. The scan holds
-/// the trace-store lock (which the ingest pump's `append` contends
-/// on), so per-frame work here directly bounds sustainable capture
-/// rate. The page is always decoded for display.
+/// The scan runs as a sequence of bounded chunks
+/// ([`TraceStore::scan_chunk`]), releasing the trace-store lock — and
+/// `await`-yielding — between each, so a history scan never holds the
+/// append mutex across the whole buffer. That mutex also gates the
+/// ingest pump's `append` and the tx-confirm `append`, so a buffer-wide
+/// locked scan here starved RX and transmit as the buffer grew (Task 21
+/// diagnosis); chunking bounds the lock-hold to one chunk. The scan
+/// never decodes blindly: when the predicate has decode-dependent
+/// leaves, they're pre-resolved to a candidate-id set
+/// ([`decode_candidate_ids`]) and only frames whose id is in the set are
+/// decoded — every other frame's test is a raw-field check plus a set
+/// lookup. Only the returned page's frames are cloned
+/// ([`TraceStore::frames_at`]), never the whole match set; that page is
+/// decoded for display.
 ///
-/// `async` so Tauri runs it off the main thread, like `fetch_trace_range`.
+/// `async` so Tauri runs it off the main thread, and so the per-chunk
+/// `yield_now` actually cedes the runtime between chunks.
 #[tauri::command]
-#[allow(clippy::unused_async)] // `async` is what makes Tauri run it off the main thread
 async fn fetch_filtered_trace(
     app: AppHandle,
     filter: FilterPredicate,
@@ -1299,43 +1303,90 @@ async fn fetch_filtered_trace(
     limit: u64,
     from_end: bool,
 ) -> FilteredTracePage {
+    /// Frames scanned under one lock acquisition before releasing it and
+    /// yielding. Small enough that the append mutex is never held long
+    /// (the starvation fix); large enough that the per-chunk lock /
+    /// yield overhead stays negligible against a multi-hundred-k buffer.
+    const SCAN_CHUNK: usize = 8192;
+
     let state: State<'_, AppState> = app.state();
-    let start_us = usize::try_from(scan_start).unwrap_or(usize::MAX);
-    let end_us = usize::try_from(scan_end).unwrap_or(usize::MAX);
-    let dbs = state.databases.lock().expect("databases mutex poisoned");
-    let candidates = decode_candidate_ids(&dbs, &filter);
-    let (count, pairs) = state.trace_store.scan_window_filtered(
-        start_us,
-        end_us,
-        offset,
-        limit,
-        from_end,
-        |frame| {
-            let decoded = if candidates.contains(&frame.id) {
-                decode_against(&dbs, frame)
-            } else {
-                None
-            };
-            filter.matches(frame, decoded.as_ref())
-        },
-    );
+    let start = usize::try_from(scan_start).unwrap_or(usize::MAX);
+    let end = usize::try_from(scan_end)
+        .unwrap_or(usize::MAX)
+        .min(state.trace_store.len());
+    let cap = usize::try_from(limit).unwrap_or(usize::MAX);
+    let hi = offset.saturating_add(limit);
+
+    // Resolve the decode-candidate id set once against the current DBCs.
+    // The per-chunk match test re-locks `databases` (a `std::sync::Mutex`
+    // guard must never be held across the `.await` below).
+    let candidates = {
+        let dbs = state.databases.lock().expect("databases mutex poisoned");
+        decode_candidate_ids(&dbs, &filter)
+    };
+
+    // Drive the scan chunk by chunk: accumulate the running match count
+    // and keep only the page's indices (a sliding tail for `from_end`,
+    // the `[offset, hi)` slice otherwise). The store lock is held only
+    // for each `scan_chunk`; between chunks we yield.
+    let mut count: u64 = 0;
+    let mut page: VecDeque<usize> = VecDeque::new();
+    let mut pos = start;
+    while pos < end {
+        let chunk_end = pos.saturating_add(SCAN_CHUNK).min(end);
+        let matches = {
+            let dbs = state.databases.lock().expect("databases mutex poisoned");
+            state.trace_store.scan_chunk(pos, chunk_end, |frame| {
+                let decoded = if candidates.contains(&frame.id) {
+                    decode_against(&dbs, frame)
+                } else {
+                    None
+                };
+                filter.matches(frame, decoded.as_ref())
+            })
+        };
+        for idx in matches {
+            let match_idx = count;
+            count += 1;
+            if from_end {
+                page.push_back(idx);
+                if page.len() > cap {
+                    page.pop_front();
+                }
+            } else if match_idx >= offset && match_idx < hi {
+                page.push_back(idx);
+            }
+        }
+        pos = chunk_end;
+        tokio::task::yield_now().await;
+    }
+
+    let page_idxs: Vec<usize> = page.into_iter().collect();
+    let pairs = state.trace_store.frames_at(&page_idxs);
     let win_len = u64::try_from(pairs.len()).unwrap_or(u64::MAX);
-    let start = if from_end {
+    let start_match = if from_end {
         count.saturating_sub(win_len)
     } else {
         offset.min(count)
     };
-    let rows = pairs
-        .into_iter()
-        .map(|(i, frame)| {
-            let index = u64::try_from(i).unwrap_or(u64::MAX);
-            let mut record =
-                TraceFrameRecord::from_raw(index, &frame, decode_against(&dbs, &frame));
-            record.violation = state.verifier.violation_at(index);
-            record
-        })
-        .collect();
-    FilteredTracePage { count, start, rows }
+    let rows = {
+        let dbs = state.databases.lock().expect("databases mutex poisoned");
+        pairs
+            .into_iter()
+            .map(|(i, frame)| {
+                let index = u64::try_from(i).unwrap_or(u64::MAX);
+                let mut record =
+                    TraceFrameRecord::from_raw(index, &frame, decode_against(&dbs, &frame));
+                record.violation = state.verifier.violation_at(index);
+                record
+            })
+            .collect()
+    };
+    FilteredTracePage {
+        count,
+        start: start_match,
+        rows,
+    }
 }
 
 /// Drop every stored frame and start a fresh session timeline rooted

@@ -67,7 +67,13 @@ The sidecar implements the **hardware-server wire model** described in
 [ADR 0022](../../docs/adr/0022-hardware-server-model.md):
 
 - `ListInterfaces` / `WatchInterfaces` enumerate the driver's
-  channels (ADR 0016).
+  channels (ADR 0016). Enumeration runs on subscribe (the
+  `WatchInterfaces` seed) and on each explicit `ListInterfaces` pull —
+  **not** on a timer: on PCAN the global channel-enumeration call
+  serialises against `CAN_Write`, so periodic re-enumeration stalled
+  active transmits. A hot-plug while connected is picked up by the
+  next `ListInterfaces` (the GUI's "Discover" button), which ADR 0016
+  leaves to the server's discretion.
 - A physical channel is **opened once and shared** across every
   subscribed session. A reference count on `Subscribe` /
   `Unsubscribe` drives start / stop; the first subscriber opens the

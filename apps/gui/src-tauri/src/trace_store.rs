@@ -438,59 +438,50 @@ impl TraceStore {
         }
     }
 
-    /// Scan `[scan_start, scan_end)` (clamped), test each frame with
-    /// `keep`, and return the total number of matches plus a windowed
-    /// page of `(absolute index, cloned frame)` pairs — the matches at
-    /// match-indices `[offset, offset + limit)`, or the last `limit`
-    /// matches when `from_end`. `limit == 0` returns the count alone.
-    /// Backs `fetch_filtered_trace`.
+    /// Scan the clamped range `[start, end)`, test each frame with
+    /// `keep`, and return the **absolute store indices** of the matches,
+    /// in ascending order. Nothing is cloned — the result is cheap
+    /// `usize`s.
     ///
-    /// The scan itself is by reference and **at most `limit` frames are
-    /// ever cloned**: the `from_end` path slides a window of match
-    /// *indices* (cheap `usize`s) and materialises the surviving page
-    /// only after the scan. That keeps the held [`Inner`] mutex off the
-    /// O(matches) clone path a following-live tail fetch would otherwise
-    /// take on a large filtered history — the lock-hold that starved RX
-    /// `append` and RBS transmit as the buffer grew (Task 21 diagnosis).
+    /// This is the bounded unit of a filtered scan: the [`Inner`] mutex
+    /// is held only for this range, so a caller scans a large window as
+    /// a sequence of chunks, releasing the lock (and yielding) between
+    /// them. That keeps a history scan from ever holding the append
+    /// mutex across the whole buffer — the lock-hold that starved RX
+    /// `append` and transmit as the buffer grew (Task 21 diagnosis). The
+    /// matched page is materialised separately via [`Self::frames_at`].
     #[must_use]
-    pub fn scan_window_filtered(
+    pub fn scan_chunk(
         &self,
-        scan_start: usize,
-        scan_end: usize,
-        offset: u64,
-        limit: u64,
-        from_end: bool,
+        start: usize,
+        end: usize,
         keep: impl Fn(&RawTraceFrame) -> bool,
-    ) -> (u64, Vec<(usize, RawTraceFrame)>) {
+    ) -> Vec<usize> {
         let inner = self.inner.lock().expect("trace store mutex poisoned");
         let len = inner.frames.len();
-        if scan_start >= len {
-            return (0, Vec::new());
+        if start >= len {
+            return Vec::new();
         }
-        let end = scan_end.min(len);
-        let cap = usize::try_from(limit).unwrap_or(usize::MAX);
-        let hi = offset.saturating_add(limit);
-        let mut count: u64 = 0;
-        // Collect only the page's *indices* during the scan; clone frames
-        // once at the end so the lock-hold never scales with match count.
-        let mut idxs: VecDeque<usize> = VecDeque::new();
-        for (i, frame) in inner.frames[scan_start..end].iter().enumerate() {
-            if !keep(frame) {
-                continue;
-            }
-            let match_idx = count;
-            count += 1;
-            if from_end {
-                idxs.push_back(scan_start + i);
-                if idxs.len() > cap {
-                    idxs.pop_front();
-                }
-            } else if match_idx >= offset && match_idx < hi {
-                idxs.push_back(scan_start + i);
-            }
-        }
-        let window = idxs.into_iter().map(|i| (i, inner.frames[i].clone())).collect();
-        (count, window)
+        let end = end.min(len);
+        inner.frames[start..end]
+            .iter()
+            .enumerate()
+            .filter_map(|(i, frame)| keep(frame).then_some(start + i))
+            .collect()
+    }
+
+    /// Clone the frames at the given absolute indices, each paired with
+    /// its index, in `idxs` order; indices past the current end are
+    /// skipped. Backs the filtered-trace page fetch: the chunked scan
+    /// collects the page's match indices, then this materialises just
+    /// that page — at most one page's worth of clones, never the whole
+    /// match set.
+    #[must_use]
+    pub fn frames_at(&self, idxs: &[usize]) -> Vec<(usize, RawTraceFrame)> {
+        let inner = self.inner.lock().expect("trace store mutex poisoned");
+        idxs.iter()
+            .filter_map(|&i| inner.frames.get(i).map(|frame| (i, frame.clone())))
+            .collect()
     }
 
     /// Begin a new session: empty the buffer **and** raise the
@@ -721,48 +712,68 @@ mod tests {
     }
 
     #[test]
-    fn scan_window_filtered_pages_matches_without_cloning_the_window() {
+    fn scan_chunk_returns_absolute_match_indices_in_its_range() {
         let store = TraceStore::new();
-        // id 256 on the even raw indices → 5 matches (raw 0, 2, 4, 6, 8).
+        // id 256 on the even raw indices → matches at raw 0, 2, 4, 6, 8.
         for i in 0u32..10 {
             store.append(dummy(0, if i % 2 == 0 { 256 } else { 999 }));
         }
         let keep = |f: &RawTraceFrame| f.id == 256;
-        // Forward page [1, 3): match-indices 1, 2 → raw 2 and 4.
-        let (count, page) = store.scan_window_filtered(0, 10, 1, 2, false, keep);
-        assert_eq!(count, 5);
-        assert_eq!(page.iter().map(|(i, _)| *i).collect::<Vec<_>>(), vec![2, 4]);
-        // from_end, last 2 matches → raw 6 and 8.
-        let (count, page) = store.scan_window_filtered(0, 10, 0, 2, true, keep);
-        assert_eq!(count, 5);
-        assert_eq!(page.iter().map(|(i, _)| *i).collect::<Vec<_>>(), vec![6, 8]);
-        // Count-only (limit 0): the total, no rows cloned.
-        let (count, page) = store.scan_window_filtered(0, 10, 0, 0, false, keep);
-        assert_eq!(count, 5);
-        assert!(page.is_empty());
+        // A sub-range scan returns only the matches inside it, by
+        // absolute index.
+        assert_eq!(store.scan_chunk(0, 5, keep), vec![0, 2, 4]);
+        assert_eq!(store.scan_chunk(5, 10, keep), vec![6, 8]);
+        // The chunks concatenate to the full match set — the property the
+        // chunked driver relies on.
+        let mut all = store.scan_chunk(0, 5, keep);
+        all.extend(store.scan_chunk(5, 10, keep));
+        assert_eq!(all, vec![0, 2, 4, 6, 8]);
+        // Out-of-range start: empty. End past the buffer is clamped.
+        assert!(store.scan_chunk(99, 200, keep).is_empty());
+        assert_eq!(store.scan_chunk(8, 1000, keep), vec![8]);
     }
 
     #[test]
-    fn scan_window_filtered_from_end_keeps_only_last_cap_over_a_large_match_set() {
-        // Guards the tail path: over many matches, `from_end` returns the
-        // last `cap` (in ascending index order) and the full count — and
-        // a `cap` larger than the match set returns every match. (Backs
-        // the clone-deferral fix: the tail must materialise only the last
-        // `cap` frames, not every match in the window.)
+    fn frames_at_clones_only_the_requested_indices_and_skips_out_of_range() {
         let store = TraceStore::new();
-        for i in 0u32..100 {
-            store.append(dummy(u64::from(i) * 1_000, 256));
+        for i in 0u32..6 {
+            store.append(dummy(u64::from(i) * 1_000, i));
+        }
+        // Indices preserved in request order; ts proves the right frames.
+        let got = store.frames_at(&[4, 1, 2]);
+        assert_eq!(
+            got.iter().map(|(i, f)| (*i, f.timestamp_ns)).collect::<Vec<_>>(),
+            vec![(4, 4_000), (1, 1_000), (2, 2_000)],
+        );
+        // Out-of-range indices are skipped, not panicked on.
+        let got = store.frames_at(&[2, 99]);
+        assert_eq!(got.iter().map(|(i, _)| *i).collect::<Vec<_>>(), vec![2]);
+        assert!(store.frames_at(&[]).is_empty());
+    }
+
+    #[test]
+    fn append_interleaves_between_chunk_scans_without_a_buffer_wide_lock() {
+        // Regression for the Task 21 lock-starvation fix: a filtered scan
+        // is driven as a sequence of `scan_chunk` calls so the append
+        // mutex is released between chunks. This simulates that interleave
+        // single-threadedly: an append landing *between* two chunk scans
+        // is visible to the later chunk, and indices stay consistent —
+        // the property that lets live ingest proceed mid-scan instead of
+        // being starved by one buffer-wide locked scan.
+        let store = TraceStore::new();
+        for _ in 0..8 {
+            store.append(dummy(0, 256)); // raw 0..8 all match
         }
         let keep = |f: &RawTraceFrame| f.id == 256;
-        let (count, page) = store.scan_window_filtered(0, 100, 0, 3, true, keep);
-        assert_eq!(count, 100);
-        assert_eq!(page.iter().map(|(i, _)| *i).collect::<Vec<_>>(), vec![97, 98, 99]);
-        // cap beyond the match set → every match, still ascending.
-        let (count, page) = store.scan_window_filtered(0, 100, 0, 1000, true, keep);
-        assert_eq!(count, 100);
-        assert_eq!(page.len(), 100);
-        assert_eq!(page.first().map(|(i, _)| *i), Some(0));
-        assert_eq!(page.last().map(|(i, _)| *i), Some(99));
+        let first = store.scan_chunk(0, 4, keep);
+        assert_eq!(first, vec![0, 1, 2, 3]);
+        // An append happens "between chunks" — the lock was not held.
+        store.append(dummy(0, 256)); // raw 8 (a new match)
+        let second = store.scan_chunk(4, store.len(), keep);
+        assert_eq!(second, vec![4, 5, 6, 7, 8]);
+        // The page materialises by index against the grown buffer.
+        let page = store.frames_at(&[0, 8]);
+        assert_eq!(page.iter().map(|(i, _)| *i).collect::<Vec<_>>(), vec![0, 8]);
     }
 
     #[test]

@@ -75,13 +75,34 @@ tactical fix committed, but Task 21 is **not finished**. Still owed:
   `scan_window_filtered` clone-deferral is committed; the durable fix
   (incremental O(Δ) match-count, bounded lock-hold) and its virtual-bus
   regression test live in **Task 17 Slice 2** and are not yet done.
-- **TX steady-state regularity.** Confirmed to be the same lock; expected
-  to ease behind the Slice 2 fix. A sidecar-side probe to rule out a
-  fire-path stall now **exists but has not been read**: `transmit()`
-  times each `ch.send` and the rx pump emits a companion
-  `tx stats … sent=…/s max_send=… ms` line. Owed: run it against a live
-  high-rate capture and interpret `max_send`, and measure TX jitter
-  against memory growth.
+- **TX steady-state regularity — diagnosed (2026-06-22); two distinct
+  stalls, both fixed.** The `max_send` probe was read against a live
+  high-rate capture (Bus 1 TX → Bus 2 RX loopback), and a second probe —
+  `max_gap`, the idle between consecutive `ch.send` calls, measured so a
+  slow send can't inflate it — was added to separate a device-side block
+  from an upstream delivery gap. The single symptom was actually two
+  independent problems:
+  - **Periodic ~150 ms `max_send` spikes — sidecar/driver.** Spaced to
+    the `WatchInterfaces` poll cadence (confirmed: bumping the poll
+    interval retimed the spikes to it). Root cause: the watcher
+    re-enumerated PCAN every poll via the global
+    `GetValue(PCAN_ATTACHED_CHANNELS)`, which serialises against
+    `CAN_Write` in the driver, so a send landing during enumeration
+    blocked. Fixed by making the sidecar enumerate only on subscribe
+    (the seed) and on an explicit `ListInterfaces` pull — never on a
+    timer while channels are open (within ADR 0016's server-cadence
+    latitude). The `max_gap` probe is kept.
+  - **Growing 30→300 ms `max_gap` — host-side, buffer-proportional.**
+    `max_send` stayed near-zero while `max_gap` climbed with `buffer_s`
+    (rate held constant) ⇒ frames were delivered to the sidecar in
+    bursts: the host's TX-frame delivery stalls, not the device. This is
+    the `trace_store` filtered-scan lock (the confirmed offender)
+    starving `append` — including the tx-confirm `append`. Fixed by the
+    chunked, lock-releasing, `await`-yielding filtered scan (Task 17
+    Slice 2 — `scan_chunk` / `frames_at`, driven from
+    `fetch_filtered_trace`). Still owed there: the true O(Δ) incremental
+    match-count and the full virtual-bus FPS-flat regression test.
+  Neither case is frame loss (sidecar `total` == host `count`).
 
 ## Diagnosis findings (confirmed 2026-06-21)
 
@@ -163,6 +184,16 @@ with buffer size only while views are open. Both route to the
 plot-coalescing fix here and the Task 17 view convergence, not to the
 sidecar or driver.
 
+**Correction (2026-06-22).** Conclusion (2) was too broad. The plot
+gaps that align with the periodic ~150 ms `max_send` spikes are *not* a
+render artifact — they are a genuine on-wire/timestamp hole from the
+PCAN watch-loop enumeration stalling `ch.send` (see "TX steady-state
+regularity" above). On the loopback those frames hit Bus 2 late and
+recv-stamped late, so the gap is faithfully rendered. The
+render-artifact explanation still holds for the *non-stall-aligned*
+bursty lurch; the stall-aligned gaps are sidecar/driver and are fixed by
+the no-timer-enumeration change.
+
 ## Handoff — current state and next steps
 
 **Repo state.** The instrumentation and the *tactical* lock fix are
@@ -193,11 +224,11 @@ cache/reporting surface — Task 17 Slice 4 rewrites it.
    Wrap the synchronous resample sections (`decodeSignalsSample`, the
    auto-norm / `mergeSeries` block, `u.setData`) in `diagTime` to find
    which one is the 200–767 ms task. Localise *before* changing code.
-2. **Read the TX probe (closes the fire-path-stall question).** On a
-   high-rate capture, read the new `tx stats … max_send=… ms` line:
-   near-zero `max_send` while host-side TX spacing grows ⇒ the stall is
-   host-side (the same lock, fixed via Task 17 Slice 2); a spiking
-   `max_send` ⇒ a sidecar/driver TX-buffer stall, a new problem.
+2. **Read the TX probe — done (2026-06-22).** Both branches turned out
+   to be real: a spiking `max_send` (sidecar/driver — PCAN watch-loop
+   enumeration) *and* a growing `max_gap` with near-zero `max_send`
+   (host-side — the trace_store lock). Both fixed; see "TX steady-state
+   regularity" above. The `max_gap` probe was added to disambiguate them.
 3. **Build the automated harness + checked-in baseline.** Unstarted and
    the largest remaining deliverable (see "Added scope") — a runnable
    procedure emitting machine-readable numbers diffable against a
