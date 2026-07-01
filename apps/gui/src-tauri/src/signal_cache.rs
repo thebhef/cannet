@@ -2,22 +2,35 @@
 //! as the trace store grows so `sample_signals` doesn't re-decode the
 //! same matching frames on every call.
 //!
-//! Each plotted signal gets its own [`SignalCache`]: a vector of
-//! decoded samples in capture order, plus the next trace-store frame
-//! index to scan from. A call to [`SignalCacheStore::slice`] catches
-//! the cache up to the store's current tip (decoding any new matching
-//! frames against the loaded DBCs) and then returns just the sample
-//! slice within a requested `[from_seconds, to_seconds)` window via
-//! binary search on the samples' `t_seconds`.
+//! Each decoded signal gets its own [`SignalCache`]: a **resolution
+//! pyramid** of its decoded samples plus the next trace-store frame
+//! index to scan from. The pyramid is a property of the signal, not of
+//! any one consumer — a plot fitting all data is the consumer today,
+//! but the multi-resolution view is the signal's. Level 0 is the raw
+//! decoded series in capture order; each higher level holds, per bucket
+//! of [`PYRAMID_BRANCH`] points of the level below, that bucket's min-
+//! and max-value points — so the pyramid is geometrically smaller going
+//! up and per-bucket extrema mean spikes survive (ADR 0002 DS-5). A
+//! call to [`SignalCacheStore::slice`] catches the cache up to the
+//! store's tip (decoding any new matching frames against the loaded
+//! DBCs), then serves a `[from_seconds, to_seconds)` range at a point
+//! budget by reading the coarsest pyramid level that still has more than
+//! `max_points` points in the range. So a whole-span serve over a
+//! 10^8-frame capture reads `O(max_points)` points instead of
+//! materializing and decimating the whole raw series on every request.
 //!
 //! Coupled with the existing per-id index in [`TraceStore::by_id`],
 //! catch-up is `O(Σ new matches)`: at high rate the per-tick work
 //! is bounded by how much capture arrived since the last call, not by
-//! the total capture length — which is the whole point. Memory grows
-//! `O(total matches per signal)`; for now we accept that, with the
-//! eventual bound (a min/max decimation tier behind the raw recent
-//! window) is deferred. Caches are cleared by
-//! [`SignalCacheStore::clear`] on `clear_trace_store`.
+//! the total capture length — which is the whole point. The pyramid is
+//! built incrementally on the same catch-up (each new sample is folded
+//! into each higher level at most once), so first-plot build is
+//! `O(that id's occurrences)` and steady-state serve is `O(max_points)`.
+//! Total RAM is still `O(total matches per signal)` — the pyramid bounds
+//! *serve cost*, not residency; disk-backing level 0 (DS-7's pyramids in
+//! `current/`) is the residency bound and lands with the live switchover.
+//! Caches are cleared by [`SignalCacheStore::clear`] on
+//! `clear_trace_store`.
 //!
 //! Concurrency: one global mutex around the (small) `HashMap`. The
 //! catch-up itself doesn't hold the trace-store lock beyond
@@ -32,12 +45,28 @@ use cannet_dbc::Database;
 use crate::signal_sampler::{self, SamplePoint};
 use crate::trace_store::TraceStore;
 
-/// One signal's decoded samples in capture (frame-index) order, plus
+/// Min/max bucket branching factor: each pyramid level merges this many
+/// consecutive points of the level below into one bucket, emitting that
+/// bucket's min- and max-value points (so spikes survive). 8 keeps 2
+/// points per 8, a ~4× point reduction per level, so a handful of levels
+/// span 10^7+ samples and a wide-window serve reads a small coarse level.
+const PYRAMID_BRANCH: usize = 8;
+
+/// One signal's decoded samples as a min/max resolution pyramid, plus
 /// the next trace-store frame index to scan from on the next catch-up.
 struct SignalCache {
-    /// Decoded samples in capture (frame-index) order. The slice path
-    /// binary-searches on `samples[i].t_seconds`.
-    samples: Vec<SamplePoint>,
+    /// Resolution pyramid. `levels[0]` is the raw decoded series in
+    /// capture (frame-index) order; `levels[n]` (n ≥ 1) holds, for each
+    /// bucket of [`PYRAMID_BRANCH`] consecutive `levels[n-1]` points,
+    /// that bucket's min- and max-value points in time order. Every
+    /// level is non-decreasing in `t_seconds`, so the serve path
+    /// binary-searches each by `t_seconds`.
+    levels: Vec<Vec<SamplePoint>>,
+    /// `folded[n]` = how many of `levels[n]`'s points have already been
+    /// folded into complete buckets in `levels[n+1]`. Lets catch-up
+    /// extend the pyramid incrementally: only the buckets that just
+    /// became complete are folded, so per-call work is `O(new matches)`.
+    folded: Vec<usize>,
     /// Next trace-store frame index to start the next catch-up scan
     /// from. Advances to `TraceStore::len()` after each catch-up.
     next_index: usize,
@@ -54,7 +83,8 @@ struct SignalCache {
 impl SignalCache {
     fn new() -> Self {
         Self {
-            samples: Vec::new(),
+            levels: vec![Vec::new()],
+            folded: vec![0],
             next_index: 0,
             lo: f64::INFINITY,
             hi: f64::NEG_INFINITY,
@@ -112,13 +142,121 @@ impl SignalCache {
                     if point.value > self.hi {
                         self.hi = point.value;
                     }
-                    self.samples.push(point);
+                    self.levels[0].push(point);
                     break;
                 }
             }
         }
         self.next_index = store_len;
+        self.fold();
     }
+
+    /// Propagate newly-appended `levels[0]` points up the pyramid: for
+    /// each level, fold every bucket of [`PYRAMID_BRANCH`] points that
+    /// became complete since the last call into the level above, emitting
+    /// that bucket's min- and max-value points in time order. Amortized
+    /// `O(new points)` — a point is folded into each higher level at most
+    /// once — and it creates the next level only when the one below has a
+    /// full bucket to give it, so the pyramid is exactly as tall as the
+    /// data warrants (the top level always holds `< PYRAMID_BRANCH` points).
+    fn fold(&mut self) {
+        let mut src = 0;
+        loop {
+            let start = self.folded[src];
+            let complete = (self.levels[src].len() - start) / PYRAMID_BRANCH;
+            if complete == 0 {
+                break;
+            }
+            if self.levels.len() == src + 1 {
+                self.levels.push(Vec::new());
+                self.folded.push(0);
+            }
+            for b in 0..complete {
+                let s = start + b * PYRAMID_BRANCH;
+                // Scope the immutable borrow of `levels[src]` so the
+                // `levels[src + 1]` push below can mutably borrow `levels`
+                // (SamplePoint is Copy, so the extrema are owned copies).
+                let (pmin, pmax) = {
+                    let bucket = &self.levels[src][s..s + PYRAMID_BRANCH];
+                    let mut lo = 0;
+                    let mut hi = 0;
+                    for (i, p) in bucket.iter().enumerate() {
+                        if p.value < bucket[lo].value {
+                            lo = i;
+                        }
+                        if p.value > bucket[hi].value {
+                            hi = i;
+                        }
+                    }
+                    // Emit in time (index) order; collapse to one when the
+                    // bucket's min and max are the same point (flat bucket).
+                    let (a, c) = (lo.min(hi), lo.max(hi));
+                    (bucket[a], (a != c).then(|| bucket[c]))
+                };
+                self.levels[src + 1].push(pmin);
+                if let Some(pmax) = pmax {
+                    self.levels[src + 1].push(pmax);
+                }
+            }
+            self.folded[src] = start + complete * PYRAMID_BRANCH;
+            src += 1;
+        }
+    }
+
+    /// Serve a `[from, to)` window decimated to about `max_points` points.
+    /// Reads the coarsest pyramid level whose in-window point count still
+    /// exceeds `max_points` (so the next coarser level would drop below
+    /// it), slices that level to the window with two boundary points on
+    /// each side, and clamps to `max_points` via min/max decimation. The
+    /// chosen level holds at most `~PYRAMID_BRANCH × max_points` points in
+    /// the window, so this is `O(max_points)` regardless of capture
+    /// length. `max_points == 0` disables decimation and returns the raw
+    /// level-0 window slice.
+    fn window(&self, from: f64, to: f64, max_points: usize) -> Vec<SamplePoint> {
+        if self.levels[0].is_empty() {
+            return Vec::new();
+        }
+        // Coarsest level still holding > max_points points in the window.
+        // Counts shrink monotonically as levels coarsen, so walk up while
+        // the count stays above the budget.
+        let mut chosen = 0;
+        if max_points > 0 {
+            for (n, level) in self.levels.iter().enumerate() {
+                if window_count(level, from, to) > max_points {
+                    chosen = n;
+                } else {
+                    break;
+                }
+            }
+        }
+        let slice = window_slice(&self.levels[chosen], from, to);
+        if max_points == 0 {
+            slice
+        } else {
+            signal_sampler::decimate_min_max(&slice, max_points)
+        }
+    }
+}
+
+/// Count of `level` points whose `t_seconds` lies in `[from, to)`.
+/// `level` is non-decreasing in `t_seconds`, so this is two binary
+/// searches.
+fn window_count(level: &[SamplePoint], from: f64, to: f64) -> usize {
+    let lo = level.partition_point(|p| p.t_seconds < from);
+    let hi = level.partition_point(|p| p.t_seconds < to);
+    hi - lo
+}
+
+/// Slice `level` to `[from, to)`, widened by two boundary points on each
+/// side. The extra points give a line renderer a segment running off each
+/// range edge, so a consumer drawing the series doesn't go blank or end a
+/// bin early at the range boundary (see [`SignalCacheStore::slice`]).
+fn window_slice(level: &[SamplePoint], from: f64, to: f64) -> Vec<SamplePoint> {
+    let lo = level.partition_point(|p| p.t_seconds < from);
+    let hi = level.partition_point(|p| p.t_seconds < to);
+    let lo_inclusive = lo.saturating_sub(2);
+    let hi_inclusive = std::cmp::min(level.len(), hi.saturating_add(2));
+    level[lo_inclusive..hi_inclusive].to_vec()
 }
 
 /// Cache key — one bucket per `(bus, message, signal)` triple, so
@@ -148,9 +286,13 @@ impl SignalCacheStore {
     }
 
     /// Catch the signal's cache up to the trace store's current tip,
-    /// then return the cached samples whose `t_seconds` lies in
-    /// `[from_seconds, to_seconds)`. Empty if no DBC decodes the signal
-    /// or no matching frames have been seen yet.
+    /// then return the samples whose `t_seconds` lies in
+    /// `[from_seconds, to_seconds)`, decimated to about `max_points`
+    /// points by reading the coarsest pyramid level that still has more
+    /// than `max_points` points in the window (ADR 0002 DS-5).
+    /// `max_points == 0` disables decimation and returns the raw
+    /// level-0 window slice. Empty if no DBC decodes the signal or no
+    /// matching frames have been seen yet.
     ///
     /// Slicing by time rather than by trace-store frame index matters
     /// when the caller derives a range from "visible x-axis seconds"
@@ -163,9 +305,10 @@ impl SignalCacheStore {
     ///
     /// The catch-up is `O(new matches since last call)` — fast in
     /// steady state; only the first call on a fresh cache pays for the
-    /// backlog. Loaded-DBC iteration mirrors the rest of the host's
-    /// "first DBC that decodes wins" semantics. `bus_id` scopes the
-    /// catch-up to frames tagged with that bus; pass `None` for the
+    /// backlog. The decimated serve is `O(max_points)`, independent of
+    /// capture length. Loaded-DBC iteration mirrors the rest of the
+    /// host's "first DBC that decodes wins" semantics. `bus_id` scopes
+    /// the catch-up to frames tagged with that bus; pass `None` for the
     /// legacy "any bus" path.
     #[allow(clippy::too_many_arguments)]
     pub fn slice(
@@ -176,6 +319,7 @@ impl SignalCacheStore {
         signal_name: &str,
         from_seconds: f64,
         to_seconds: f64,
+        max_points: usize,
         store: &TraceStore,
         dbs: &[&Database],
     ) -> Vec<SamplePoint> {
@@ -189,24 +333,7 @@ impl SignalCacheStore {
         let cache = caches.entry(key).or_insert_with(SignalCache::new);
 
         cache.catch_up(bus_id, message_id, extended, signal_name, store, dbs);
-
-        if cache.samples.is_empty() {
-            return Vec::new();
-        }
-        let lo = cache
-            .samples
-            .partition_point(|p| p.t_seconds < from_seconds);
-        let hi = cache.samples.partition_point(|p| p.t_seconds < to_seconds);
-        // Include two boundary samples on each side of the requested
-        // range. One was enough in principle (uPlot will draw the line
-        // segment from the off-canvas point to the first in-canvas one
-        // and clip at the edge), but in practice users have reported
-        // gaps near the left/right edges at zoom-in — widening to 2
-        // is essentially free and gives the renderer more line to
-        // anchor against.
-        let lo_inclusive = lo.saturating_sub(2);
-        let hi_inclusive = std::cmp::min(cache.samples.len(), hi.saturating_add(2));
-        cache.samples[lo_inclusive..hi_inclusive].to_vec()
+        cache.window(from_seconds, to_seconds, max_points)
     }
 
     /// The signal's all-time value extent `(lo, hi)` over every decoded
@@ -283,8 +410,9 @@ mod tests {
         let dbs: &[&Database] = &[&db];
         let cache = SignalCacheStore::new();
 
-        // Full time range — all four id-256 samples.
-        let all = cache.slice(None, 256, false, "X", 0.0, 10.0, &store, dbs);
+        // Full time range — all four id-256 samples. `max_points = 0`
+        // disables decimation, so the raw level-0 window comes back.
+        let all = cache.slice(None, 256, false, "X", 0.0, 10.0, 0, &store, dbs);
         assert_eq!(
             all.iter().map(|p| p.value as u32).collect::<Vec<_>>(),
             vec![1, 2, 3, 4]
@@ -295,7 +423,7 @@ mod tests {
         // at t = 0 / 2 (just before) and t = 5 (just after), giving
         // uPlot the last-known-coming-in value and the next-going-out
         // value to draw a line across.
-        let mid = cache.slice(None, 256, false, "X", 2.5, 4.5, &store, dbs);
+        let mid = cache.slice(None, 256, false, "X", 2.5, 4.5, 0, &store, dbs);
         assert_eq!(
             mid.iter().map(|p| p.value as u32).collect::<Vec<_>>(),
             vec![1, 2, 3, 4]
@@ -304,15 +432,15 @@ mod tests {
         // Very narrow zoom that contains zero matches: the slice still
         // returns the boundary samples on each side, so the plot draws
         // a line across the canvas instead of going blank.
-        let narrow = cache.slice(None, 256, false, "X", 0.5, 1.5, &store, dbs);
+        let narrow = cache.slice(None, 256, false, "X", 0.5, 1.5, 0, &store, dbs);
         assert_eq!(
             narrow.iter().map(|p| p.value as u32).collect::<Vec<_>>(),
             vec![1, 2, 3]
         );
 
-        // Append a new sample — catch-up extends the cached vector.
+        // Append a new sample — catch-up extends the cached series.
         store.append(dummy(6 * S, 256, vec![5, 0, 0, 0, 0, 0, 0, 0]));
-        let all2 = cache.slice(None, 256, false, "X", 0.0, 10.0, &store, dbs);
+        let all2 = cache.slice(None, 256, false, "X", 0.0, 10.0, 0, &store, dbs);
         assert_eq!(
             all2.iter().map(|p| p.value as u32).collect::<Vec<_>>(),
             vec![1, 2, 3, 4, 5]
@@ -320,7 +448,7 @@ mod tests {
 
         // Clear drops the cache; the next slice rebuilds it.
         cache.clear();
-        let after = cache.slice(None, 256, false, "X", 0.0, 10.0, &store, dbs);
+        let after = cache.slice(None, 256, false, "X", 0.0, 10.0, 0, &store, dbs);
         assert_eq!(after.len(), 5);
     }
 
@@ -376,9 +504,9 @@ mod tests {
         let db = load_dbc();
         let dbs: &[&Database] = &[&db];
         let cache = SignalCacheStore::new();
-        let nope = cache.slice(None, 256, false, "Nope", 0.0, 1.0, &store, dbs);
+        let nope = cache.slice(None, 256, false, "Nope", 0.0, 1.0, 0, &store, dbs);
         assert!(nope.is_empty());
-        let no_id = cache.slice(None, 42, false, "X", 0.0, 1.0, &store, dbs);
+        let no_id = cache.slice(None, 42, false, "X", 0.0, 1.0, 0, &store, dbs);
         assert!(no_id.is_empty());
     }
 
@@ -400,18 +528,140 @@ mod tests {
         let db = load_dbc();
         let dbs: &[&Database] = &[&db];
         let cache = SignalCacheStore::new();
-        let on_p = cache.slice(Some("p"), 256, false, "X", 0.0, 10.0, &store, dbs);
+        let on_p = cache.slice(Some("p"), 256, false, "X", 0.0, 10.0, 0, &store, dbs);
         assert_eq!(
             on_p.iter().map(|p| p.value).collect::<Vec<_>>(),
             vec![1.0, 3.0]
         );
-        let on_c = cache.slice(Some("c"), 256, false, "X", 0.0, 10.0, &store, dbs);
+        let on_c = cache.slice(Some("c"), 256, false, "X", 0.0, 10.0, 0, &store, dbs);
         assert_eq!(on_c.iter().map(|p| p.value).collect::<Vec<_>>(), vec![2.0]);
         // Legacy "any bus" path: takes every frame regardless of tag.
-        let any = cache.slice(None, 256, false, "X", 0.0, 10.0, &store, dbs);
+        let any = cache.slice(None, 256, false, "X", 0.0, 10.0, 0, &store, dbs);
         assert_eq!(
             any.iter().map(|p| p.value).collect::<Vec<_>>(),
             vec![1.0, 2.0, 3.0]
         );
+    }
+
+    /// A 16-bit LE value packed into the low two payload bytes — the
+    /// `X` signal of `TEST_DBC` (`0|16@1+`). Lets the pyramid tests drive
+    /// specific decoded values, including a spike.
+    fn val_frame(ts_ns: u64, v: u16) -> RawTraceFrame {
+        let [b0, b1] = v.to_le_bytes();
+        dummy(ts_ns, 256, vec![b0, b1, 0, 0, 0, 0, 0, 0])
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn fit_data_over_large_capture_returns_bounded_points() {
+        // Far more samples than the canvas budget: a "fit data" serve
+        // must read a coarse pyramid level and return O(max_points), not
+        // re-materialize the whole raw series.
+        let store = TraceStore::new();
+        let n = 50_000u64;
+        for i in 0..n {
+            store.append(val_frame(i * S, (i % 1000) as u16));
+        }
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let cache = SignalCacheStore::new();
+
+        let max_points = 200;
+        let fit = cache.slice(
+            None,
+            256,
+            false,
+            "X",
+            f64::MIN,
+            f64::MAX,
+            max_points,
+            &store,
+            dbs,
+        );
+        // decimate_min_max bounds output to 2*max_points + 2.
+        assert!(
+            fit.len() <= 2 * max_points + 2,
+            "fit returned {} points, expected ≤ {}",
+            fit.len(),
+            2 * max_points + 2,
+        );
+        // And far fewer than the raw series — the whole point.
+        assert!(fit.len() < n as usize / 10);
+    }
+
+    #[test]
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+    fn decimation_preserves_spikes() {
+        // One extreme sample buried in a flat series must survive a
+        // coarse fit-data serve — per-bucket min/max keeps the argmax.
+        let store = TraceStore::new();
+        let n = 20_000u64;
+        let spike_at = 12_345u64;
+        for i in 0..n {
+            let v = if i == spike_at { 60_000 } else { 1 };
+            store.append(val_frame(i * S, v));
+        }
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let cache = SignalCacheStore::new();
+
+        let fit = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 100, &store, dbs);
+        assert!(
+            fit.iter().any(|p| (p.value - 60_000.0).abs() < 0.5),
+            "spike (60000) lost during decimation; got max {:?}",
+            fit.iter().map(|p| p.value).fold(f64::MIN, f64::max),
+        );
+        // The spike's timestamp is preserved too (not snapped to a bucket
+        // edge): its bucket's argmax is the spike sample itself.
+        assert!(
+            fit.iter()
+                .any(|p| (p.t_seconds - (spike_at * S) as f64 / 1e9).abs() < 0.5),
+        );
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn zoom_in_reads_a_finer_level_than_fit_data() {
+        // A narrow window over the same capture should serve more detail
+        // (finer level) than the whole-capture fit — the level choice is
+        // window-relative, not capture-relative.
+        let store = TraceStore::new();
+        let n = 40_000u64;
+        for i in 0..n {
+            store.append(val_frame(i * S, (i % 500) as u16));
+        }
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let cache = SignalCacheStore::new();
+
+        let max_points = 100;
+        // Whole capture.
+        let fit = cache.slice(
+            None,
+            256,
+            false,
+            "X",
+            f64::MIN,
+            f64::MAX,
+            max_points,
+            &store,
+            dbs,
+        );
+        // A 500-sample-wide window (well under the level-0 count but over
+        // max_points): served from a fine level, so every in-window raw
+        // sample is representable.
+        let from = 1000.0;
+        let to = 1500.0;
+        let zoom = cache.slice(None, 256, false, "X", from, to, max_points, &store, dbs);
+        // Both honour the budget…
+        assert!(fit.len() <= 2 * max_points + 2);
+        assert!(zoom.len() <= 2 * max_points + 2);
+        // …and the zoomed window's samples all fall in range (plus the ±2
+        // boundary), confirming it's a window slice, not the whole series.
+        let in_range = zoom
+            .iter()
+            .filter(|p| p.t_seconds >= from && p.t_seconds < to)
+            .count();
+        assert!(in_range > 0 && in_range <= 504);
     }
 }

@@ -41,15 +41,27 @@ session present at launch is loaded as a stopped historical trace
   `TraceStore` is now a thin facade over `Box<dyn RawStore>`.
 - **Step 2 — done.** `ByIdIndex`: per-id append-only mmap'd posting
   lists with geometric segments (bounds both RAM and live-mapping count).
-- **Step 3 — in progress.** Spill `FilterIndex` (membership + tested
-  build, `page`, `built_through` watermark) and the gui
+- **Step 3 — done.** Spill `FilterIndex` (membership + tested build,
+  `page`, `built_through` watermark) and the gui
   `filter::resolve_candidates` predicate→candidate-id resolver are done
-  and unit-tested. The `CandidateSource` seam + `TraceStore::refresh_filter_index`
-  let the index build against the live facade, and the perf harness is
-  being wired to characterize it on the disk store (positional page:
-  scan vs index). **The `fetch_filtered_trace` command rewrite moved to
-  Step 5** (see below).
-- **Steps 4–7 — not started.**
+  and unit-tested. The `CandidateSource` seam +
+  `TraceStore::refresh_filter_index` let the index build against the live
+  facade, and the perf harness `filter-bench` subcommand characterizes it
+  on the disk store (deep positional page: full scan vs one-time build vs
+  per-fetch index page). **The `fetch_filtered_trace` command rewrite
+  moved to Step 5** (see below).
+- **Step 4 — done.** `SignalCacheStore` now holds a per-signal min/max
+  **resolution pyramid** (level 0 = raw decoded series; each higher level
+  = per-bucket min/max over `PYRAMID_BRANCH` points of the level below).
+  `SignalCacheStore::slice` gained a `max_points` budget and serves a
+  range by reading the coarsest level whose in-range count still exceeds
+  the budget, so a whole-span serve is `O(max_points)` instead of
+  `O(matches)`. Built incrementally on the existing by-id-accelerated
+  catch-up. The perf harness `signal-bench` subcommand characterizes it
+  (whole-span serve: raw materialize+decimate vs pyramid serve), and three
+  `signal_cache` unit tests cover bounded output, spike survival, and
+  window-relative level choice.
+- **Steps 5–7 — not started.**
 
 Decisions and deviations recorded so far (to fold into ADR 0002 at
 Step 6):
@@ -68,6 +80,18 @@ Step 6):
   forward-compatible with other frame/bus kinds).
 - **The metadata record is 27 B** (ADR DS-1's "~26 B"), the extra byte
   an explicit `channel`.
+- **DS-5's pyramid is framed as a property of the decoded *signal*, not
+  of the plot.** `SignalCacheStore::slice` serves a value range at a
+  point budget; a plot fitting all data is the consumer today, but the
+  multi-resolution view is the signal's (so other consumers — export,
+  stats — can use it). The harness mode is `signal-bench`, not
+  `plot-bench`.
+- **The pyramid bounds *serve cost* (`O(max_points)`), not RAM
+  residency.** Level 0 (the raw decoded series) still lives in RAM at
+  `O(matches per signal)`. The residency bound is disk-backing the
+  pyramids in `current/` (DS-7), which lands with the live switchover in
+  Step 5 — the pyramid's append-only level layout is already
+  reload-compatible by construction.
 - **Production still runs on `MemRawStore`.** The disk store is built,
   unit-tested, and perf-characterized in isolation; the live switchover
   (constructing `DiskRawStore` in `AppState`), the `fetch_filtered_trace`
