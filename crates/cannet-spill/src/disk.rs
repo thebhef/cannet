@@ -360,6 +360,13 @@ impl RawStore for DiskRawStore {
             .collect()
     }
 
+    fn candidate_indices(&self, ids: &[(u32, bool)], start: usize, end: usize) -> Vec<usize> {
+        if start >= self.len {
+            return Vec::new();
+        }
+        self.by_id.merge_range(ids, start, end.min(self.len))
+    }
+
     fn flush(&mut self) -> io::Result<()> {
         if let Some(s) = self.meta_segs.last() {
             s.map.flush()?;

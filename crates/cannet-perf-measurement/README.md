@@ -30,6 +30,26 @@ scan), one metric set, and one report shape (the shared machinery is in
 perf-harness diagnosis found. `grpc` adds gRPC serialization + virtual-bus
 fan-out; `hardware-peak` adds the real driver and wire.
 
+`filter-bench` is a one-shot characterization of the **filter index**
+(ADR 0002 DS-3), separate from the continuous modes. `tracebuffer`'s scan
+measures the *incremental count* refresh (already O(Δ)), which doesn't
+exercise the index; the index's win is the **positional page fetch** —
+the scan path re-scans `[0, offset]` to place a page (O(buffer)), while
+the index pages in O(page) after a one-time build. `filter-bench` fills a
+real `TraceStore`, resolves the predicate to its by-id candidate set, and
+times the deep positional page three ways:
+
+| field | meaning |
+| --- | --- |
+| `scan_positional_ms` | full forward scan to count + materialise the page — today's positioned-fetch cost, paid on every scroll |
+| `index_build_ms` | one-time filter-index build (≈ one scan for a permissive predicate; far less for a selective one, which visits only candidate-id frames) |
+| `index_page_us` | per-fetch index page after the build — the steady cost (O(page)) |
+
+So a permissive `bus` filter pays ~one scan to build, then every fetch
+drops from ~scan-time to microseconds; a selective `id_list` filter wins
+on the build too. Flags: `--store mem|disk`, `--frames`, `--predicate`
+(JSON, must be id-narrowable — no decode), `--offset`, `--limit`.
+
 ## Usage
 
 ```sh
@@ -41,6 +61,12 @@ cargo run -p cannet-perf-measurement -- validate
 cargo run -p cannet-perf-measurement -- tracebuffer   [flags]
 cargo run -p cannet-perf-measurement -- grpc          [flags]
 cargo run -p cannet-perf-measurement -- hardware-peak [flags]
+
+# Characterize the materialized filter index (ADR 0002 DS-3): fill a real
+# TraceStore, then time a deep positional filtered page three ways — full
+# scan, one-time index build, per-fetch index page.
+cargo run -p cannet-perf-measurement -- filter-bench \
+    --store disk --frames 200000 --predicate '{"bus":"pt"}' --offset 50000
 
 # Capture a dated baseline of all modes, then check against it.
 cargo run -p cannet-perf-measurement -- baseline

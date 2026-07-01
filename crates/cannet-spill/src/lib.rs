@@ -24,12 +24,16 @@
 
 mod byid;
 mod disk;
+mod filter_index;
 mod mem;
 mod record;
 mod seg;
 
 pub use disk::{DiskConfig, DiskRawStore};
+pub use filter_index::FilterIndex;
 pub use mem::MemRawStore;
+
+// `CandidateSource` is defined below alongside `RawStore`.
 
 use cannet_core::{CanFrame, CanFramePayload, Direction};
 
@@ -128,10 +132,51 @@ pub trait RawStore: Send {
     /// its index, in `idxs` order; indices past the end are skipped.
     fn frames_at(&self, idxs: &[usize]) -> Vec<(usize, RawTraceFrame)>;
 
+    /// Ascending frame indices in `[start, end)` whose `(id, extended)`
+    /// is in `ids` — the by-id-narrowed candidate set a filter index
+    /// builds from. It visits only those ids' frames (via the `by-id`
+    /// index), never the whole window, so a selective filter is
+    /// `O(candidate occurrences)`, not `O(window)`. `ids` need not be
+    /// sorted or unique; the result is sorted and (since a frame has one
+    /// id) duplicate-free.
+    fn candidate_indices(&self, ids: &[(u32, bool)], start: usize, end: usize) -> Vec<usize>;
+
     /// Flush any buffered writes to the backing store. A no-op for the
     /// in-RAM double; an `msync` of the active segments for the disk
     /// store.
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
+    }
+}
+
+/// The read-only surface a [`FilterIndex`] builds against: enough to walk
+/// the by-id-narrowed candidate frames and read them.
+///
+/// Every [`RawStore`] is one (blanket impl below), so a filter index can
+/// build directly against a raw store. The host's `TraceStore` facade —
+/// which owns the raw store behind its lock — also implements it, so the
+/// index builds against the facade without exposing the inner store. This
+/// is the seam that lets the filter index serve the live model
+/// ([ADR 0025](../../../docs/adr/0025-frontend-windowed-source-contract.md))
+/// rather than only a bare store in tests.
+pub trait CandidateSource {
+    /// Total frames available. (Named `frame_count`, not `len`, so it
+    /// never shadows [`RawStore::len`] when both traits are in scope.)
+    fn frame_count(&self) -> usize;
+    /// See [`RawStore::candidate_indices`].
+    fn candidate_indices(&self, ids: &[(u32, bool)], start: usize, end: usize) -> Vec<usize>;
+    /// See [`RawStore::frames_at`].
+    fn frames_at(&self, idxs: &[usize]) -> Vec<(usize, RawTraceFrame)>;
+}
+
+impl<T: RawStore + ?Sized> CandidateSource for T {
+    fn frame_count(&self) -> usize {
+        RawStore::len(self)
+    }
+    fn candidate_indices(&self, ids: &[(u32, bool)], start: usize, end: usize) -> Vec<usize> {
+        RawStore::candidate_indices(self, ids, start, end)
+    }
+    fn frames_at(&self, idxs: &[usize]) -> Vec<(usize, RawTraceFrame)> {
+        RawStore::frames_at(self, idxs)
     }
 }

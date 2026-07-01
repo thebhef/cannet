@@ -119,6 +119,18 @@ impl ByIdIndex {
             .collect()
     }
 
+    /// The union of several ids' frame indices in `[start, end)`, sorted
+    /// ascending. Each id's postings are already ascending and the id sets
+    /// are disjoint (a frame has one id), so the merge is duplicate-free.
+    pub(crate) fn merge_range(&self, ids: &[(u32, bool)], start: usize, end: usize) -> Vec<usize> {
+        let mut out = Vec::new();
+        for &(id, extended) in ids {
+            out.extend(self.range(id, extended, start, end));
+        }
+        out.sort_unstable();
+        out
+    }
+
     /// Drop every mapping. The caller removes the segment files (via
     /// [`crate::seg::remove_files_with_prefixes`]) once the maps are gone.
     pub(crate) fn clear(&mut self) {

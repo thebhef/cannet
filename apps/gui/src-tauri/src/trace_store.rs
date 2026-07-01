@@ -63,7 +63,9 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use cannet_core::Direction;
-use cannet_spill::{DiskRawStore, MemRawStore, RawStore};
+use cannet_spill::{CandidateSource, DiskRawStore, FilterIndex, MemRawStore, RawStore};
+
+use crate::filter::CandidateSet;
 
 pub use cannet_spill::RawTraceFrame;
 
@@ -592,6 +594,52 @@ impl TraceStore {
             .collect()
     }
 
+    /// Bring `index` current against this store for a resolved predicate,
+    /// then it can be paged in `O(page)` ([`FilterIndex::page`]). The
+    /// `candidates` come from [`crate::filter::resolve_candidates`]; for a
+    /// membership set every candidate frame matches (no read), otherwise
+    /// `keep` applies the full predicate per candidate frame (the caller
+    /// gates decode the same way the scan path does). The build visits
+    /// only candidate-id frames and only the `[built_through, len)` delta,
+    /// so a steady filtered view is `O(delta)` and a fresh one
+    /// `O(matches)` — never an `O(capture)` scan (ADR 0002 DS-3).
+    ///
+    /// This is the model-side core of the indexed filtered fetch; the
+    /// Tauri command and the perf harness drive it.
+    pub fn refresh_filter_index(
+        &self,
+        index: &mut FilterIndex,
+        candidates: &CandidateSet,
+        keep: &dyn Fn(&RawTraceFrame) -> bool,
+    ) {
+        let to = self.len();
+        if candidates.membership {
+            index.extend_membership(self, &candidates.keys, to);
+        } else {
+            index.extend(self, &candidates.keys, keep, to);
+        }
+    }
+
+    /// The distinct `(bus_id, id, extended)` keys seen this session, from
+    /// the maintained newest-per-key map (so it is id-space-bounded, not a
+    /// capture walk). The filter-index candidate resolver
+    /// (`filter::resolve_candidates`) reads it to turn a `bus` predicate
+    /// into the ids on that bus and an `id_range` into the ids that
+    /// actually occurred. Channels are collapsed: a `(bus, id, extended)`
+    /// is reported once regardless of how many wire channels carried it.
+    #[must_use]
+    pub fn seen_bus_ids(&self) -> Vec<(Option<String>, u32, bool)> {
+        let inner = self.inner.lock().expect("trace store mutex poisoned");
+        let mut out: Vec<(Option<String>, u32, bool)> = inner
+            .latest
+            .keys()
+            .map(|(bus, _ch, id, ext)| (bus.clone(), *id, *ext))
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
     /// Number of frames the session-start guard has dropped (stale
     /// pipeline frames after a clear/reconnect). Surfaced so that
     /// otherwise-silent path is visible in the diagnostic readout.
@@ -648,6 +696,28 @@ impl TraceStore {
         let rx = rate_from_samples(&inner.rx_rate.samples);
         let tx = rate_from_samples(&inner.tx_rate.samples);
         (rx, tx)
+    }
+}
+
+/// Lets a [`FilterIndex`] build against the facade without exposing the
+/// raw store: each call locks, delegates to the inner store, and releases
+/// — so the chunked index build never holds the append mutex across the
+/// whole window (the same lock discipline the chunked scan keeps).
+impl CandidateSource for TraceStore {
+    fn frame_count(&self) -> usize {
+        self.len()
+    }
+
+    fn candidate_indices(&self, ids: &[(u32, bool)], start: usize, end: usize) -> Vec<usize> {
+        self.inner
+            .lock()
+            .expect("trace store mutex poisoned")
+            .raw
+            .candidate_indices(ids, start, end)
+    }
+
+    fn frames_at(&self, idxs: &[usize]) -> Vec<(usize, RawTraceFrame)> {
+        self.frames_at(idxs)
     }
 }
 
@@ -1024,6 +1094,26 @@ mod tests {
         store.append(dummy(500, 1)); // stale → dropped + counted
         store.append(dummy(2_000, 2)); // kept
         assert_eq!(store.frames_dropped_before_session(), 1);
+    }
+
+    #[test]
+    fn seen_bus_ids_reports_distinct_bus_id_keys_collapsing_channels() {
+        let store = TraceStore::new();
+        store.append(dummy_on_bus(0, 0x100, "pt"));
+        store.append(dummy_on_bus(1, 0x100, "pt")); // same key — collapses
+        store.append(dummy_on_bus(2, 0x200, "pt"));
+        store.append(dummy_on_bus(3, 0x100, "body")); // same id, other bus
+        store.append(dummy(4, 0x300)); // unassigned bus
+        let seen = store.seen_bus_ids();
+        assert_eq!(
+            seen,
+            vec![
+                (None, 0x300, false),
+                (Some("body".into()), 0x100, false),
+                (Some("pt".into()), 0x100, false),
+                (Some("pt".into()), 0x200, false),
+            ],
+        );
     }
 
     #[test]

@@ -126,4 +126,22 @@ impl RawStore for MemRawStore {
             .filter_map(|&i| self.frames.get(i).map(|frame| (i, frame.clone())))
             .collect()
     }
+
+    fn candidate_indices(&self, ids: &[(u32, bool)], start: usize, end: usize) -> Vec<usize> {
+        let len = self.frames.len();
+        if start >= len {
+            return Vec::new();
+        }
+        let end = end.min(len);
+        let mut out = Vec::new();
+        for key in ids {
+            if let Some(v) = self.by_id.get(key) {
+                let lo = v.partition_point(|&i| i < start);
+                let hi = v.partition_point(|&i| i < end);
+                out.extend_from_slice(&v[lo..hi]);
+            }
+        }
+        out.sort_unstable();
+        out
+    }
 }

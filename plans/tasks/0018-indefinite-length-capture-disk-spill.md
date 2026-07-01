@@ -33,6 +33,47 @@ on Start of a new capture — never on exit or crash, so a prior
 session present at launch is loaded as a stopped historical trace
 (DS-7).
 
+## Status (in progress, on a working branch — not yet merged)
+
+- **Step 1 — done.** `cannet-spill` crate holds the storage layer:
+  `RawStore` trait, in-RAM `MemRawStore` (test double), disk-backed
+  `DiskRawStore` (mmap'd metadata + payload segments, RAM ring). gui's
+  `TraceStore` is now a thin facade over `Box<dyn RawStore>`.
+- **Step 2 — done.** `ByIdIndex`: per-id append-only mmap'd posting
+  lists with geometric segments (bounds both RAM and live-mapping count).
+- **Step 3 — in progress.** Spill `FilterIndex` (membership + tested
+  build, `page`, `built_through` watermark) and the gui
+  `filter::resolve_candidates` predicate→candidate-id resolver are done
+  and unit-tested. The `CandidateSource` seam + `TraceStore::refresh_filter_index`
+  let the index build against the live facade, and the perf harness is
+  being wired to characterize it on the disk store (positional page:
+  scan vs index). **The `fetch_filtered_trace` command rewrite moved to
+  Step 5** (see below).
+- **Steps 4–7 — not started.**
+
+Decisions and deviations recorded so far (to fold into ADR 0002 at
+Step 6):
+
+- **`memmap2`'s `unsafe` is contained to the dedicated `cannet-spill`
+  crate**, which alone relaxes the workspace `unsafe_code = "forbid"` to
+  `deny` + per-site `#[allow]`. Every other crate stays `unsafe`-free.
+- **DS-6's "TraceStore is a trait" is realized as the `RawStore` trait
+  behind the `TraceStore` facade** — one production store
+  (`DiskRawStore`), one test double (`MemRawStore`), derived state
+  (rates / newest-per-id) written once in the facade.
+- **Bus predicates are id-narrowed via "ids seen on the bus"** (derived
+  from the facade's existing newest-per-key map) rather than a dedicated
+  by-bus index — no new index family, and a per-frame `bus_id` test
+  keeps it correct when an id appears on more than one bus (also
+  forward-compatible with other frame/bus kinds).
+- **The metadata record is 27 B** (ADR DS-1's "~26 B"), the extra byte
+  an explicit `channel`.
+- **Production still runs on `MemRawStore`.** The disk store is built,
+  unit-tested, and perf-characterized in isolation; the live switchover
+  (constructing `DiskRawStore` in `AppState`), the `fetch_filtered_trace`
+  rewrite to use the filter index, and the DS-7 scratch lifecycle all
+  land together in **Step 5**.
+
 Steps — each lands independently, leaves the app working and tested
 (`cargo test -p cannet-gui`, `pnpm --dir apps/gui test`), and keeps
 rustdoc and the README current for what it ships:
@@ -66,11 +107,22 @@ rustdoc and the README current for what it ships:
   by-id-accelerated. Verify: a plot "fit data" over a 10^8-frame
   capture does not re-decode the whole capture; min/max spikes survive
   decimation.
-- **Step 5 — Retire the in-RAM `Vec` store (DS-6).** The disk-backed
-  store becomes the only production path; the `Vec` implementation
-  moves to a test double behind the `TraceStore` trait. Verify: the
-  production path constructs only the disk store; the suite stays
-  green through the test double.
+- **Step 5 — Go live: disk store in production + filtered-fetch
+  integration + scratch lifecycle (DS-6, DS-7).** The disk-backed store
+  becomes the only production path: `AppState` constructs `DiskRawStore`
+  (the `Vec` store moves to a test double behind `RawStore`); the
+  `fetch_trace_range` / `fetch_by_id_page` / `fetch_filtered_trace`
+  commands serve from the disk store, with `fetch_filtered_trace`
+  rewritten onto the filter index (`TraceStore::refresh_filter_index` +
+  `FilterIndex::page`, preserving the incremental-count and
+  follow-live-tail semantics) and the old chunked scan retired for the
+  production path; and the DS-7 scratch lifecycle lands (scratch under
+  the OS cache dir's `current/`, the `project_id` UUID identity gate in
+  `open_project`, reset-on-Clear/Start, load-prior-as-stopped). Verify:
+  the production path constructs only the disk store; filtered paging is
+  O(page) end to end; the scratch survives a restart and reloads as a
+  stopped trace when the project identity matches; the suite stays green
+  through the test double.
 - **Step 6 — Configurable scratch cap.** A user-set maximum on the
   disk-spill scratch size (configured in bytes; default off /
   unbounded). Exposed through the same settings panel the High-
