@@ -14,6 +14,12 @@ import { useCallback } from "react";
 import type { TraceData } from "./traceData";
 import type { TraceFrameRecord } from "./types";
 import { useElementRegistry } from "./projectElements";
+import { useWindowedQuery, type WindowPage } from "./useWindowedQuery";
+
+/// Rows fetched per unfiltered-chrono window. Big enough that ordinary
+/// scrolling stays inside the loaded page (the view shows ~tens of rows
+/// at a time); small enough to stay a cheap IPC payload per fetch.
+const CHRONO_PAGE = 1000;
 
 export type TraceStatus = "running" | "paused" | "stopped";
 
@@ -153,7 +159,9 @@ export function resumeTrace(s: TraceState): TraceState {
 /// moment of the click rather than at session start.
 function currentSessionOffsetSeconds(data: TraceData): number | null {
   if (data.sessionStartSeconds === null || data.count === 0) return null;
-  const tip = data.getFrame(data.count - 1);
+  // The live tail ends at the tip; its last row is the newest frame.
+  const tail = data.liveTail.rows;
+  const tip = tail.length > 0 ? tail[tail.length - 1] : null;
   if (!tip) return null;
   return tip.timestamp_seconds - data.sessionStartSeconds;
 }
@@ -169,7 +177,8 @@ export interface TraceHandle {
   /// panel's "latest since" — need this; chronological views use the
   /// windowed `getFrame` / `ensureVisible` and never see it.
   offset: number;
-  /// Bumped when the chunk cache changes — pass through to the view.
+  /// Bumped when the window's loaded rows change — pass through to the
+  /// view so it re-renders and re-consults `getFrame`.
   version: number;
   /// Effective zero point for the time column in seconds (Unix epoch).
   /// Combines the session start (`data.sessionStartSeconds`) with the
@@ -203,11 +212,41 @@ export function useTrace(data: TraceData, elementId: string): TraceHandle {
       ? null
       : data.sessionStartSeconds + (state.traceStartOffsetSeconds ?? 0);
 
-  const getFrame = useCallback((i: number) => data.getFrame(offset + i), [data, offset]);
-  const ensureVisible = useCallback(
-    (a: number, b: number) => data.ensureVisible(offset + a, offset + b),
-    [data, offset],
+  // This panel's window over the unfiltered chronological rows
+  // `[offset, offset + frameCount)`, indexed locally `[0, frameCount)`.
+  // The window holds only the visible page; the host pages the rest.
+  // `extent` is `frameCount` (known cheaply here), so an extent advance
+  // while parked never re-fetches (ADR 0025); the auto-scrolling view
+  // drives fetches via `ensureVisible`, and `liveTail` covers the live
+  // edge between them, so no background re-page is needed.
+  const fetchPage = useCallback(
+    async (
+      localOffset: number,
+      limit: number,
+      fromEnd: boolean,
+    ): Promise<WindowPage<TraceFrameRecord>> => {
+      const winEnd = offset + frameCount;
+      const absStart = fromEnd
+        ? Math.max(offset, winEnd - limit)
+        : offset + localOffset;
+      const absEnd = Math.min(winEnd, absStart + limit);
+      const rows = absEnd > absStart ? await data.fetchRange(absStart, absEnd) : [];
+      return { total: frameCount, start: absStart - offset, rows };
+    },
+    [data, offset, frameCount],
   );
+
+  const win = useWindowedQuery<TraceFrameRecord>({
+    descriptor: `${data.epoch}:${offset}`,
+    fetchPage,
+    followLive: false,
+    extentSignal: data.count,
+    extent: frameCount,
+    liveTail: { start: data.liveTail.start - offset, rows: data.liveTail.rows },
+    pageSize: CHRONO_PAGE,
+  });
+  const getFrame = win.getRow;
+  const ensureVisible = win.ensureVisible;
 
   const { updateTrace } = reg;
   const start = useCallback(
@@ -235,7 +274,7 @@ export function useTrace(data: TraceData, elementId: string): TraceHandle {
     status: traceStatus(state),
     frameCount,
     offset,
-    version: data.version,
+    version: win.version,
     baseTimestampSeconds,
     getFrame,
     ensureVisible,

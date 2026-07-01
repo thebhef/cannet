@@ -94,9 +94,9 @@ use filter::{DecodeDependentLeaf, FilterPredicate};
 
 use ipc::{
     BusFps, ByIdSnapshot, DbcAttributeRecord, DbcContentRecord, DbcInfo, DbcMessageContentRecord,
-    DbcSignalContentRecord, DecodedRecord, FilteredTracePage, InterfaceRecord, LogFinished,
-    OpenLogResult, RemoteSessionResult, SampledPoints, SignalDescriptorRecord, SignalQuery,
-    SignalRecord, SignalsSample, TraceFrameRecord, TraceGrew, ValueTableEntryRecord,
+    DbcSignalContentRecord, DecimatedRange, DecodedRecord, FilteredTracePage, InterfaceRecord,
+    LogFinished, OpenLogResult, RemoteSessionResult, SampledPoints, SignalDescriptorRecord,
+    SignalQuery, SignalRecord, TraceFrameRecord, TraceGrew, ValueTableEntryRecord,
 };
 use notes::{Note, NotesStore};
 use signal_cache::SignalCacheStore;
@@ -1836,7 +1836,7 @@ async fn sample_signals(
     tauri::ipc::Response::new(encode_signals_sample(&sample))
 }
 
-/// Pack a [`SignalsSample`] into the compact binary layout the frontend
+/// Pack a [`DecimatedRange`] into the compact binary layout the frontend
 /// decodes via `DataView` / `Float64Array`. Replaces the JSON encode of
 /// the same data — at 10 panels × a few signals × thousands of points
 /// the JSON path was 100-200 ms of every per-tick wall clock, and
@@ -1856,7 +1856,7 @@ async fn sample_signals(
 ///   t[n]  f64×n    timestamps (absolute seconds)
 ///   v[n]  f64×n    values
 /// ```
-fn encode_signals_sample(s: &SignalsSample) -> Vec<u8> {
+fn encode_signals_sample(s: &DecimatedRange) -> Vec<u8> {
     let total_points: usize = s.series.iter().map(|p| p.t.len()).sum();
     let mut buf = Vec::with_capacity(8 + 32 + 4 + s.series.len() * 4 + total_points * 16);
     buf.extend_from_slice(b"SIGSAMP\x01");
@@ -1888,7 +1888,7 @@ fn sample_signals_inner(
     to_seconds: Option<f64>,
     signals: &[SignalQuery],
     max_points: u32,
-) -> SignalsSample {
+) -> DecimatedRange {
     let state: State<'_, AppState> = app.state();
 
     #[allow(clippy::cast_precision_loss)]
@@ -1962,7 +1962,7 @@ fn sample_signals_inner(
         .collect();
     let decode_ms = t_decode.elapsed().as_secs_f64() * 1000.0;
 
-    SignalsSample {
+    DecimatedRange {
         from_seconds: from_ts.map(ns_to_seconds),
         last_seconds: last_ts.map(ns_to_seconds),
         series,

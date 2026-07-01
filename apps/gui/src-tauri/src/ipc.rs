@@ -37,18 +37,34 @@ pub struct TraceFrameRecord {
 }
 
 /// A page of a filtered chronological trace view: the total match
-/// count over the scanned range, the match-index of `rows[0]`, and the
-/// decoded matches themselves. Returned by `fetch_filtered_trace` — the
+/// The frozen **row-addressed accessor response** of the windowed-source
+/// contract (ADR 0025): a page of rows addressed by row index, carrying
+/// the extent (`count`)
+/// that drives the scrollbar and the absolute `start` of `rows[0]` so the
+/// view positions the page without re-deriving where it goes. The three
+/// row views — raw chronological, filtered chronological, and by-ID —
+/// all return this; they differ only in *which* rows, not in how a page
+/// is shaped. The signature is store-independent by design: the in-RAM
+/// `Vec` and the disk-spilled store return the same `RowPage`, so the
+/// disk-spilled store is a second implementation behind it, not a
+/// redesign.
+#[derive(serde::Serialize, Clone)]
+pub struct RowPage<T> {
+    /// Extent: total rows for the request (e.g. total matches in a
+    /// filtered scan's `[scan_start, scan_end)` range). Drives the
+    /// scrollbar; advances on capture growth without re-paging history.
+    pub count: u64,
+    /// Absolute index of `rows[0]` (0 when `rows` is empty).
+    pub start: u64,
+    /// The page itself — `rows[count..]` is never materialised.
+    pub rows: Vec<T>,
+}
+
+/// The filtered chronological trace's page — the first instantiation of
+/// the [`RowPage`] contract. Returned by `fetch_filtered_trace`; the
 /// frontend pages this, holding only the visible slice and never the
 /// whole filtered set.
-#[derive(serde::Serialize, Clone)]
-pub struct FilteredTracePage {
-    /// Total matches in the scanned `[scan_start, scan_end)` range.
-    pub count: u64,
-    /// Match-index of `rows[0]` (0 when `rows` is empty).
-    pub start: u64,
-    pub rows: Vec<TraceFrameRecord>,
-}
+pub type FilteredTracePage = RowPage<TraceFrameRecord>;
 
 #[derive(serde::Serialize, Clone)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -734,6 +750,15 @@ pub struct SampledPoints {
     pub v: Vec<f64>,
 }
 
+/// The frozen **time-addressed, lossy accessor response** of the
+/// windowed-source contract (ADR 0025): the plot's decimated range.
+/// Unlike a [`RowPage`] it is addressed by
+/// time, not row index, and is lossy (one min/max bucket per pixel
+/// column), so "page N of a signal" is meaningless — that single
+/// distinction is why the contract has two accessors, not one. Like
+/// `RowPage` the signature is store-independent: the disk-spilled store's
+/// decimated tier reimplements it behind the same shape.
+///
 /// Return of [`sample_signals`](crate::sample_signals): one
 /// [`SampledPoints`] per requested signal (same order), plus the
 /// window's anchor timestamps so a live plot can place its x-origin and
@@ -743,7 +768,7 @@ pub struct SampledPoints {
 /// is the last frame before `window_end`. Both are `null` when the
 /// window is empty.
 #[derive(serde::Serialize, Clone, Debug)]
-pub struct SignalsSample {
+pub struct DecimatedRange {
     pub from_seconds: Option<f64>,
     pub last_seconds: Option<f64>,
     pub series: Vec<SampledPoints>,
