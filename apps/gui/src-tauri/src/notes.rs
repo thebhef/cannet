@@ -1,5 +1,6 @@
 //! Session-buffer notes — the host home for the plot panel's
-//! event-marker annotations.
+//! event-marker annotations. A note is the first kind in the
+//! timeline-event model (ADR 0035); this store is its seed.
 //!
 //! Notes are not owned by individual plot panels — a note placed
 //! over a timeline must be visible in every panel over that same

@@ -167,6 +167,12 @@ trip over it.
 
 ### Cursors and markers
 
+These are the general event surface governed by the timeline-event model
+([ADR 0035](../docs/adr/0035-timeline-event-model.md)) — markers across
+every timeseries view, persisted, exported, navigable, eventually a
+singleton panel. The disk-spill truncation marker (task 0018) wires the
+first non-note kind; the items below are the rest.
+
 - `[ui/feat]` cursor + marker rework.
   - Each cursor-created marker carries an editable description; the
     list UI gets an expand-to-show body on the row, collapsed by
