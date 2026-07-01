@@ -41,6 +41,7 @@ import { ColorMapPanel } from "./ColorMapPanel";
 import { SystemMessagesPanel } from "./SystemMessagesPanel";
 import { DbcPanel } from "./DbcPanel";
 import { SettingsPanel } from "./SettingsPanel";
+import { EventsPanel } from "./EventsPanel";
 import { SystemLogContext, type SystemLogContextValue } from "./systemLogContext";
 import {
   mergeSystemMessage,
@@ -95,6 +96,8 @@ import {
   RBS_PANEL_COMPONENT,
   SETTINGS_PANEL_COMPONENT,
   SETTINGS_PANEL_ID,
+  EVENTS_PANEL_COMPONENT,
+  EVENTS_PANEL_ID,
   SYSTEM_MESSAGES_PANEL_COMPONENT,
   SYSTEM_MESSAGES_PANEL_ID,
   TRACE_PANEL_COMPONENT,
@@ -185,6 +188,7 @@ const DOCK_COMPONENTS = {
   [SYSTEM_MESSAGES_PANEL_COMPONENT]: SystemMessagesPanel,
   [DBC_PANEL_COMPONENT]: DbcPanel,
   [SETTINGS_PANEL_COMPONENT]: SettingsPanel,
+  [EVENTS_PANEL_COMPONENT]: EventsPanel,
 };
 
 export function App() {
@@ -195,6 +199,9 @@ export function App() {
   // chronological window clamps its start up to this so truncated rows below
   // the floor aren't rendered as blank placeholders. `0` until eviction.
   const [firstIndex, setFirstIndex] = useState(0);
+  // Absolute ns of the oldest retained frame from `trace-grew` — where the
+  // derived truncation marker sits (ADR 0035). `null` until a tick carries it.
+  const [firstIndexTsNs, setFirstIndexTsNs] = useState<number | null>(null);
   const [framesPerSecond, setFramesPerSecond] = useState(0);
   const [bufferSeconds, setBufferSeconds] = useState(0);
   // On-disk scratch footprint from the latest `trace-grew`; `null` when the
@@ -589,6 +596,7 @@ export function App() {
         const {
           count: newCount,
           first_index,
+          first_index_ts_ns,
           frames_per_second,
           frames_per_second_rx,
           frames_per_second_tx,
@@ -627,6 +635,7 @@ export function App() {
         setScratchBytes(scratch_bytes);
         setMemBytes(mem_bytes);
         setFirstIndex(first_index);
+        setFirstIndexTsNs(first_index_ts_ns);
         setLiveTail({
           start: tail.length > 0 ? tail[0].index : newCount,
           rows: tail,
@@ -1127,12 +1136,14 @@ export function App() {
         const restored = await invoke<{
           count: number;
           first_index: number;
+          first_index_ts_ns: number | null;
           session_start_seconds: number;
         }>("restore_scratch_capture");
         if (restored.count <= 0) return;
         invalidateCache();
         setCount(restored.count);
         setFirstIndex(restored.first_index);
+        setFirstIndexTsNs(restored.first_index_ts_ns);
         setSessionStartSeconds(
           restored.session_start_seconds > 0 ? restored.session_start_seconds : null,
         );
@@ -1760,6 +1771,18 @@ export function App() {
     [showSingletonPanel],
   );
 
+  // Timeline-events view — singleton, app-global (ADR 0035). Opened from
+  // the command palette; renders the host notes + derived markers.
+  const showEventsPanel = useCallback(
+    () =>
+      showSingletonPanel({
+        id: EVENTS_PANEL_ID,
+        component: EVENTS_PANEL_COMPONENT,
+        title: "Events",
+      }),
+    [showSingletonPanel],
+  );
+
   // System-log context: mirror + clear + markRead. `clear`
   // empties both the host's ring and the frontend's mirror; the host
   // does *not* reset its seq counter (callers rely on monotonicity),
@@ -1805,6 +1828,9 @@ export function App() {
   const renameNoteRemote = useCallback((id: string, label: string) => {
     void invoke("rename_note", { id, label }).catch(() => { /* best effort */ });
   }, []);
+  const recolorNoteRemote = useCallback((id: string, color: string | null) => {
+    void invoke("recolor_note", { id, color }).catch(() => { /* best effort */ });
+  }, []);
   const removeNoteRemote = useCallback((id: string) => {
     void invoke("remove_note", { id }).catch(() => { /* best effort */ });
   }, []);
@@ -1813,9 +1839,10 @@ export function App() {
       notes,
       addNote: addNoteRemote,
       renameNote: renameNoteRemote,
+      recolorNote: recolorNoteRemote,
       removeNote: removeNoteRemote,
     }),
-    [notes, addNoteRemote, renameNoteRemote, removeNoteRemote],
+    [notes, addNoteRemote, renameNoteRemote, recolorNoteRemote, removeNoteRemote],
   );
 
   const showProjectPanel = useCallback(
@@ -1867,6 +1894,7 @@ export function App() {
     "panel.show.projectGraph": showProjectGraphPanel,
     "panel.show.dbc": showDbcPanel,
     "panel.show.settings": showSettingsPanel,
+    "panel.show.events": showEventsPanel,
     // Renaming happens in the project panel (the canonical edit
     // surface — ADR 0019); the command surfaces it.
     "panel.rename": showProjectPanel,
@@ -2083,12 +2111,15 @@ export function App() {
     return {
       count,
       firstIndex,
+      // The truncation marker exists only once eviction has truncated the
+      // oldest history (`firstIndex > 0`); otherwise there's nothing to mark.
+      truncationTsNs: firstIndex > 0 ? firstIndexTsNs : null,
       sessionStartSeconds,
       epoch: traceEpoch,
       fetchRange,
       liveTail,
     };
-  }, [count, firstIndex, sessionStartSeconds, traceEpoch, fetchRange, liveTail]);
+  }, [count, firstIndex, firstIndexTsNs, sessionStartSeconds, traceEpoch, fetchRange, liveTail]);
 
   const elementRegistryValue: ElementRegistry = useMemo(
     () => ({
@@ -2313,6 +2344,7 @@ export function App() {
           <button onClick={addColorMapPanel}>Add color map</button>
           <button onClick={showDbcPanel}>DBC panel</button>
           <button onClick={showProjectGraphPanel}>Graph panel</button>
+          <button onClick={showEventsPanel}>Events panel</button>
           <button onClick={showProjectPanel}>Project panel</button>
           <button
             onClick={showSystemMessagesPanel}

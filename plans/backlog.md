@@ -173,6 +173,22 @@ every timeseries view, persisted, exported, navigable, eventually a
 singleton panel. The disk-spill truncation marker (task 0018) wires the
 first non-note kind; the items below are the rest.
 
+Task 0018 landed more of this than just the truncation marker: notes grew a
+`kind` + `color`; events **interleave into the chronological trace** by
+timestamp (`eventMerge` splices host-anchored events — `frame_indices_at_ns`
+— into the windowed frame stream, the truncation marker as the floor row); a
+**singleton `EventsPanel`** (command palette → "Show events") is the trace
+view rendering only events; and an `EventContextMenu` edits
+name/colour/remove on any editable event row. Remaining follow-ups:
+
+- `[ui]` **Colour editing on the plot's own event list** (`EventLogRow` in
+  `PlotPanel`). The trace + events panel have it; the plot's note list still
+  only renames/removes. Add a colour swatch there for parity (the host
+  `recolor_note` command + `recolorNote` context dispatcher already exist).
+- `[feat]` **Interleave events into the *filtered* chronological trace.** The
+  unfiltered view interleaves; a filtered view pages its own (filtered) index
+  space, which the raw-frame anchors don't map to — events would need
+  filtered-position anchors.
 - `[ui/feat]` cursor + marker rework.
   - Each cursor-created marker carries an editable description; the
     list UI gets an expand-to-show body on the row, collapsed by

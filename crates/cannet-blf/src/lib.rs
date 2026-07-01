@@ -413,16 +413,18 @@ impl BlfCaptureWriter {
     /// round-trip (e.g. a stable id). Both are written as raw
     /// UTF-8 bytes — BLF's "MBCS" is encoding-tolerant.
     ///
-    /// The marker uses `group_name = "cannet"` and the default
-    /// colour / relocatable flags `GlobalMarker::build` stamps.
-    /// Markers ride in the same `LOG_CONTAINER`s as CAN frames in
-    /// timestamp order; intersperse them with `append` as the
-    /// capture timeline dictates.
+    /// The marker uses `group_name = "cannet"` and the relocatable
+    /// flag `GlobalMarker::build` stamps; `foreground_color` is the
+    /// event's `0x00RRGGBB` colour (ADR 0035), `0` for the build
+    /// default (black). Markers ride in the same `LOG_CONTAINER`s as
+    /// CAN frames in timestamp order; intersperse them with `append`
+    /// as the capture timeline dictates.
     pub fn append_marker(
         &mut self,
         timestamp_ns: u64,
         marker_name: &str,
         description: &str,
+        foreground_color: u32,
     ) -> Result<(), BlfWriteError> {
         let inner = self.inner.as_mut().ok_or_else(|| {
             BlfWriteError::Io(io::Error::other("writer has already been finished"))
@@ -430,12 +432,16 @@ impl BlfCaptureWriter {
         let candidate = (timestamp_ns / 1_000_000) * 1_000_000;
         let start = inner.set_start_if_unset(candidate);
         let rel = timestamp_ns.saturating_sub(start);
-        let marker = format::marker::build(
+        let mut marker = format::marker::build(
             rel,
             b"cannet".to_vec(),
             marker_name.as_bytes().to_vec(),
             description.as_bytes().to_vec(),
         );
+        // Carry the event's colour (ADR 0035) in the marker's `0x00RRGGBB`
+        // foreground colour; `0` is the build default (black) for an
+        // uncoloured event, preserving the prior byte output.
+        marker.foreground_color = foreground_color;
         let bytes = format::marker::encode(&marker);
         inner.append_object(&bytes, timestamp_ns)?;
         self.marker_count += 1;
@@ -915,7 +921,7 @@ mod tests {
         .unwrap();
         let mut w = BlfCaptureWriter::create(&dest).unwrap();
         w.append(&frame).unwrap();
-        w.append_marker(TS_BASE_NS + 1_000_000, "stuck bit", "note-uuid-1")
+        w.append_marker(TS_BASE_NS + 1_000_000, "stuck bit", "note-uuid-1", 0x00FF_8800)
             .unwrap();
         let outcome = w.finish().unwrap();
         assert_eq!(outcome.frame_count, 1);
@@ -938,6 +944,7 @@ mod tests {
                     assert_eq!(m.group_name, b"cannet");
                     assert_eq!(m.marker_name, b"stuck bit");
                     assert_eq!(m.description, b"note-uuid-1");
+                    assert_eq!(m.foreground_color, 0x00FF_8800, "colour round-trips");
                     saw_marker = true;
                 }
                 _ => {}

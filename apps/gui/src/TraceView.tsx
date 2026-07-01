@@ -1,7 +1,9 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { SignalRecord, TraceFrameRecord } from "./types";
-import { formatSignalValueWithLabel } from "./format";
+import type { TimelineEvent } from "./notes";
+import type { TraceRow } from "./trace";
+import { formatSignalValueWithLabel, formatTimestamp } from "./format";
 import { type ColorResolver, colorMapTint } from "./colorMap";
 import { setSignalDragData } from "./dragSignals";
 import {
@@ -30,7 +32,7 @@ import { diagCount } from "./diag"; // DIAG
 interface TraceViewProps {
   count: number;
   /// Bumped by the parent when chunk-cache contents change; its only
-  /// job is to re-render this component so `getFrame` is re-consulted
+  /// job is to re-render this component so `getRow` is re-consulted
   /// (e.g. a placeholder row's data just landed). Not read directly.
   version: number;
   /// `true`: the view pins to the live tail. `false`: the view stays
@@ -49,11 +51,41 @@ interface TraceViewProps {
   /// Bus-id → bus-name lookup for the "bus" column, built once per
   /// render from the project's bus list.
   busLookup: BusLookup;
-  getFrame: (absoluteIndex: number) => TraceFrameRecord | null;
+  /// One row of the merged base-typed stream (ADR 0035): a frame or a
+  /// timeline event. Frame rows page by index; event rows are merged in by
+  /// the parent. `null` is a not-yet-loaded frame placeholder.
+  getRow: (absoluteIndex: number) => TraceRow | null;
   ensureVisible: (start: number, end: number) => void;
   /// Called when the user scrolls the view themselves while
   /// `autoScroll` was on, so the parent can uncheck it.
   onAutoScrollDisabled: () => void;
+  /// Inline edit handlers for *editable* event rows (ADR 0035): rename (click
+  /// the label), recolour (click the swatch → native picker), remove (the row
+  /// button). Omitted where events aren't editable, which also hides the
+  /// controls. Must be referentially stable (the row is memoised).
+  eventActions?: EventActions;
+  /// A one-shot request to scroll a given display row into view (e.g. a
+  /// cross-panel "goto", ADR 0035). `seq` distinguishes successive requests so
+  /// the same `row` can be re-targeted; the view acts only when `seq` changes.
+  scrollTarget?: { row: number; seq: number } | null;
+  /// Show the frame column header. Default `true`; the dedicated events
+  /// panel (ADR 0035) passes `false` since its rows carry no frame columns.
+  showHeader?: boolean;
+}
+
+/// Inline mutators for an editable timeline event (ADR 0035), wired by the
+/// panel to the host notes commands. A single object so the memoised row
+/// takes one stable prop rather than three. `onGoto` is the odd one out: a
+/// cross-panel timeline jump keyed by the event's timestamp (not its id),
+/// since every panel resolves it against time (ADR 0024). Only the events
+/// view supplies it; where it's absent the goto button is hidden, and it
+/// works on any event (the truncation marker included), not just editable
+/// ones.
+export interface EventActions {
+  onRename: (id: string, label: string) => void;
+  onRecolor: (id: string, color: string | null) => void;
+  onRemove: (id: string) => void;
+  onGoto?: (timestampNs: number) => void;
 }
 
 /// Re-pin scrollTop only when it drifts from the target by more than
@@ -72,9 +104,12 @@ export function TraceView({
   onColumnReorder,
   resolveColor,
   busLookup,
-  getFrame,
+  getRow,
   ensureVisible,
   onAutoScrollDisabled,
+  eventActions,
+  scrollTarget,
+  showHeader = true,
 }: TraceViewProps) {
   diagCount("render.TraceView"); // DIAG
   const containerRef = useRef<HTMLDivElement>(null);
@@ -199,6 +234,17 @@ export function TraceView({
     }
   }, [count]);
 
+  // A cross-panel "goto" (ADR 0035): drop out of auto-scroll and anchor the
+  // requested display row near the top (a couple of rows of lead-in for
+  // context). Acts only on a new `seq` so the same row can be re-targeted.
+  const lastGotoSeq = useRef<number | null>(null);
+  useEffect(() => {
+    if (!scrollTarget || scrollTarget.seq === lastGotoSeq.current) return;
+    lastGotoSeq.current = scrollTarget.seq;
+    if (autoScroll) onAutoScrollDisabled();
+    setAnchoredRow(Math.max(0, Math.min(scrollTarget.row - 2, anchorMax)));
+  }, [scrollTarget, autoScroll, anchorMax, onAutoScrollDisabled]);
+
   const handleScroll = useCallback(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -237,12 +283,14 @@ export function TraceView({
 
   return (
     <div className="trace">
-      <TraceHeader
-        columns={shown}
-        onColumnResize={onColumnResize}
-        onColumnToggle={onColumnToggle}
-        onColumnReorder={onColumnReorder}
-      />
+      {showHeader && (
+        <TraceHeader
+          columns={shown}
+          onColumnResize={onColumnResize}
+          onColumnToggle={onColumnToggle}
+          onColumnReorder={onColumnReorder}
+        />
+      )}
       <div ref={containerRef} className="trace-rows" onScroll={handleScroll}>
         {/* Spacer: gives the scrollbar the trace's full (scaled) extent. */}
         <div style={{ height: spacerHeight, position: "relative" }}>
@@ -257,21 +305,31 @@ export function TraceView({
               overflow: "hidden",
             }}
           >
-            {placements.map(({ posKey, absIdx, top, isExpanded }) => (
-              <Row
-                key={posKey}
-                top={top}
-                absoluteIndex={absIdx}
-                isExpanded={isExpanded}
-                frame={getFrame(absIdx)}
-                baseTimestamp={baseTimestampSeconds}
-                columns={visible}
-                gridTemplate={gridTemplate}
-                busLookup={busLookup}
-                resolveColor={resolveColor}
-                onToggle={toggleExpanded}
-              />
-            ))}
+            {placements.map(({ posKey, absIdx, top, isExpanded }) => {
+              // Resolve the base-typed row once and hand the frame / event to
+              // the single Row renderer as separate props — the inner objects
+              // are ref-stable (chunk cache / events array), so `Row`'s memo
+              // still skips unchanged rows where wrapping in a fresh
+              // `{ row, … }` object each render would not (ADR 0035).
+              const r = getRow(absIdx);
+              return (
+                <Row
+                  key={posKey}
+                  top={top}
+                  absoluteIndex={absIdx}
+                  isExpanded={isExpanded}
+                  frame={r?.row === "frame" ? r.frame : null}
+                  event={r?.row === "event" ? r.event : null}
+                  baseTimestamp={baseTimestampSeconds}
+                  columns={visible}
+                  gridTemplate={gridTemplate}
+                  busLookup={busLookup}
+                  resolveColor={resolveColor}
+                  onToggle={toggleExpanded}
+                  eventActions={eventActions}
+                />
+              );
+            })}
           </div>
         </div>
       </div>
@@ -284,12 +342,16 @@ interface RowProps {
   absoluteIndex: number;
   isExpanded: boolean;
   frame: TraceFrameRecord | null;
+  /// Set when this row is a timeline event (ADR 0035) rather than a frame;
+  /// the single renderer draws an event row instead of frame cells.
+  event: TimelineEvent | null;
   baseTimestamp: number | null;
   columns: readonly ColumnState[];
   gridTemplate: string;
   busLookup: BusLookup;
   resolveColor: ColorResolver | null;
   onToggle: (absoluteIndex: number) => void;
+  eventActions?: EventActions;
 }
 
 const Row = memo(function Row({
@@ -297,13 +359,20 @@ const Row = memo(function Row({
   absoluteIndex,
   isExpanded,
   frame,
+  event,
   baseTimestamp,
   columns,
   gridTemplate,
   busLookup,
   resolveColor,
   onToggle,
+  eventActions,
 }: RowProps) {
+  // Event rows (truncation marker, notes) render through the same renderer
+  // as frames but with their own row layout (ADR 0035).
+  if (event) {
+    return <EventRow top={top} event={event} baseTimestamp={baseTimestamp} actions={eventActions} />;
+  }
   const height = isExpanded ? EXPANDED_ROW_HEIGHT : ROW_HEIGHT;
   return (
     <div
@@ -346,6 +415,140 @@ const Row = memo(function Row({
     </div>
   );
 });
+
+/// Default colour per event kind when an event carries no explicit colour
+/// (ADR 0035): notes share the plot's event blue; the derived truncation
+/// marker a muted amber.
+const EVENT_KIND_COLOR: Record<string, string> = {
+  note: "#4ecbff",
+  truncation: "#e0a030",
+};
+
+/// One timeline-event row (ADR 0035), rendered by the same `Row` path as a
+/// frame but with its own layout: the event time (relative to the trace
+/// origin, like a frame's time cell), a full-height colour swatch, and the
+/// label. Used for the truncation marker and for notes. Editable events
+/// (notes, given `actions`) carry inline controls: click the label to rename,
+/// click the swatch to recolour (the same native picker the plot uses), and a
+/// remove button on the row. Derived events (the truncation marker) render the
+/// same shape but inert.
+function EventRow({
+  top,
+  event,
+  baseTimestamp,
+  actions,
+}: {
+  top: number;
+  event: TimelineEvent;
+  baseTimestamp: number | null;
+  actions?: EventActions;
+}) {
+  const color = event.color ?? EVENT_KIND_COLOR[event.kind] ?? EVENT_KIND_COLOR.note;
+  const editable = event.editable && actions != null;
+  const onGoto = actions?.onGoto;
+  const colorInputRef = useRef<HTMLInputElement>(null);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(event.label);
+
+  // This is a virtualized row slot: when scrolling reuses it for a different
+  // event (or the label changes under us), drop any in-progress edit and
+  // re-seed the draft from the new label.
+  useEffect(() => {
+    setEditing(false);
+    setDraft(event.label);
+  }, [event.id, event.label]);
+
+  const commit = () => {
+    const next = draft.trim();
+    if (next && next !== event.label) actions?.onRename(event.id, next);
+    setEditing(false);
+  };
+
+  return (
+    <div
+      className={`trace-row trace-event-row trace-event-${event.kind}${
+        editable ? " trace-event-editable" : ""
+      }`}
+      style={{ position: "absolute", top, left: 0, right: 0, height: ROW_HEIGHT }}
+      title={event.label}
+    >
+      <span className="trace-event-time">
+        {formatTimestamp(event.timestampNs / 1e9, baseTimestamp)}
+      </span>
+      {onGoto && (
+        <button
+          type="button"
+          className="trace-event-goto"
+          title="go to this event in every trace and plot"
+          aria-label="go to this event"
+          onClick={() => onGoto(event.timestampNs)}
+        >
+          ⇥
+        </button>
+      )}
+      {editable ? (
+        // Swatch over a stacked native colour input — same control as the
+        // plot's series swatch (PlotPanel's `SignalSwatch`).
+        <span className="trace-event-swatch-wrap">
+          <button
+            type="button"
+            className="trace-event-swatch"
+            style={{ background: color }}
+            title="pick a colour"
+            aria-label="pick event colour"
+            onClick={() => colorInputRef.current?.click()}
+          />
+          <input
+            ref={colorInputRef}
+            type="color"
+            className="trace-event-swatch-input"
+            aria-label="event colour"
+            value={color}
+            onChange={(e) => actions?.onRecolor(event.id, e.target.value)}
+          />
+        </span>
+      ) : (
+        <span className="trace-event-swatch" style={{ background: color }} aria-hidden />
+      )}
+      {editing ? (
+        <input
+          className="trace-event-label-input"
+          autoFocus
+          aria-label="event label"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") commit();
+            else if (e.key === "Escape") {
+              setDraft(event.label);
+              setEditing(false);
+            }
+          }}
+          onBlur={commit}
+        />
+      ) : (
+        <span
+          className={`trace-event-label${editable ? " trace-event-label-editable" : ""}`}
+          title={editable ? "click to rename" : undefined}
+          onClick={editable ? () => setEditing(true) : undefined}
+        >
+          {event.label}
+        </span>
+      )}
+      {editable && (
+        <button
+          type="button"
+          className="trace-event-remove"
+          title="remove event"
+          aria-label="remove event"
+          onClick={() => actions?.onRemove(event.id)}
+        >
+          ×
+        </button>
+      )}
+    </div>
+  );
+}
 
 /// One decoded signal cell inside an expanded trace row. It is
 /// a drag source — dragging onto a plot area adds the

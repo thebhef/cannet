@@ -55,6 +55,11 @@ export interface DecimatedRequest {
   /// whole window (before zoom, or before `base` is known).
   xMin: number | null;
   xMax: number | null;
+  /// Desired x-axis origin (absolute seconds): the single application-level
+  /// trace start (ADR 0024), so the plot's `t=0` matches the trace table's.
+  /// `null`/omitted falls back to the window's first-frame timestamp — the
+  /// pre-session transient, before a session start is known.
+  origin?: number | null;
   /// Pixel budget — the host returns at most `2 * maxPoints` min/max
   /// points (one bucket per pixel column).
   maxPoints: number;
@@ -62,7 +67,9 @@ export interface DecimatedRequest {
 
 /// The current decimated window, times relative to `base`.
 export interface DecimatedSnapshot {
-  /// x-axis origin: the absolute timestamp of the window's first frame.
+  /// x-axis origin (absolute seconds): the application-level trace start
+  /// (`DecimatedRequest.origin`, ADR 0024), or the window's first-frame
+  /// timestamp before a session start is known.
   base: number;
   /// The window's last-frame time relative to `base` (the live edge), or
   /// `null` before the first non-empty fetch.
@@ -204,10 +211,13 @@ export function useDecimatedRange(): DecimatedRange {
 
       const res = decodeSignalsSample(buf);
       if (cache.base == null) {
-        // The first fetch on a fresh cache is anchored at `winStart`, so
-        // `res.from_seconds` is exactly ts(winStart) — the x-axis origin.
-        if (res.from_seconds == null) return { kind: "pending" }; // nothing real yet
-        cache.base = res.from_seconds;
+        // The x-axis origin is the application-level trace start (`req.origin`,
+        // ADR 0024) so the plot's `t=0` matches the trace table's. Until a
+        // session start is known it falls back to `res.from_seconds` (exactly
+        // ts(winStart), since the first fetch is anchored at `winStart`).
+        const origin = req.origin ?? res.from_seconds;
+        if (origin == null) return { kind: "pending" }; // nothing real yet
+        cache.base = origin;
       }
       const base = cache.base;
 

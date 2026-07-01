@@ -416,15 +416,21 @@ impl TraceStore {
         (mark, ts)
     }
 
-    /// Length and low-water mark read under a *single* lock, so the two are
-    /// mutually consistent (ADR 0002 DS-8). The status line's retained count
-    /// is `len - first_index`; reading `len` and `first_index` under separate
-    /// locks lets a flush evict between them, leaving `first_index > len` and
-    /// a spurious zero. Returning both from one critical section forecloses
-    /// that, guaranteeing `first_index <= len`.
-    pub fn len_and_low_water(&self) -> (usize, usize) {
+    /// Length, low-water mark, and the timestamp (ns) of the oldest retained
+    /// frame, read under a *single* lock so they're mutually consistent (ADR
+    /// 0002 DS-8). The status line's retained count is `len - first_index`;
+    /// reading `len` and `first_index` under separate locks lets a flush evict
+    /// between them, leaving `first_index > len` and a spurious zero.
+    /// Returning them from one critical section forecloses that, guaranteeing
+    /// `first_index <= len`. The oldest-retained ts is where the frontend
+    /// places the truncation marker (ADR 0035) when `first_index > 0`.
+    pub fn len_and_low_water(&self) -> (usize, usize, Option<u64>) {
         let inner = self.inner.lock().expect("trace store mutex poisoned");
-        (inner.raw.len(), inner.raw.first_index())
+        (
+            inner.raw.len(),
+            inner.raw.first_index(),
+            inner.raw.first_last_ts().0,
+        )
     }
 
     /// A per-family breakdown of the scratch footprint for the cache
@@ -576,6 +582,31 @@ impl TraceStore {
             .expect("trace store mutex poisoned")
             .raw
             .frame_timestamps(start, end)
+    }
+
+    /// The absolute index of the first *retained* frame whose timestamp is
+    /// `>= ts` (a lower bound), or `len()` if every retained frame is older.
+    /// This is the anchor where a timeline event at `ts` sorts into the
+    /// chronological frame stream (ADR 0035): the host owns the time↔index
+    /// mapping (ADR 0024), so the trace view never re-derives it in JS.
+    /// Frames are appended in arrival order with monotonic timestamps, so
+    /// this is an `O(log n)` binary search over `[first_index, len)`.
+    #[must_use]
+    pub fn frame_index_at_ns(&self, ts: u64) -> usize {
+        let inner = self.inner.lock().expect("trace store mutex poisoned");
+        let (mut lo, mut hi) = (inner.raw.first_index(), inner.raw.len());
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            // `frame_timestamps(mid, mid+1).0` is the timestamp at `mid`,
+            // read from the meta mapping without cloning the frame.
+            let mid_ts = inner.raw.frame_timestamps(mid, mid + 1).0.unwrap_or(u64::MAX);
+            if mid_ts < ts {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        lo
     }
 
     /// Wall-clock span of the buffered frames, in seconds: the timestamp
@@ -1444,6 +1475,20 @@ mod tests {
         assert_eq!(store.frame_timestamps(1, 4), (Some(1_000), Some(3_000)));
         assert_eq!(store.frame_timestamps(1, 100), (Some(1_000), Some(5_000)));
         assert_eq!(store.frame_timestamps(99, 200), (None, None));
+    }
+
+    #[test]
+    fn frame_index_at_ns_lower_bounds_the_time_to_a_frame_index() {
+        // Anchor where a timeline event sorts into the chronological stream
+        // (ADR 0035): the first frame with ts >= the event's ts.
+        let store = TraceStore::new();
+        for i in 0u32..6 {
+            store.append(dummy(u64::from(i) * 1_000, i)); // ts 0,1000,..,5000
+        }
+        assert_eq!(store.frame_index_at_ns(0), 0, "exact first");
+        assert_eq!(store.frame_index_at_ns(2_500), 3, "between 2000 and 3000 → 3");
+        assert_eq!(store.frame_index_at_ns(3_000), 3, "exact hit is the lower bound");
+        assert_eq!(store.frame_index_at_ns(99_000), 6, "after the last → len()");
     }
 
     #[test]

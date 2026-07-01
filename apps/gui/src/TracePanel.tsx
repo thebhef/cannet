@@ -1,11 +1,17 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
-import { TraceView } from "./TraceView";
+import { TraceView, type EventActions } from "./TraceView";
+import { GOTO_EVENT, type GotoPayload } from "./gotoEvent";
 import { ByIdTable } from "./ByIdTable";
 import { TraceControls } from "./TraceControls";
 import { useTraceData } from "./traceData";
-import { useTrace } from "./trace";
+import { useTrace, type TraceRow } from "./trace";
+import { useNotes } from "./notesContext";
+import { timelineEvents } from "./notes";
+import { buildEventMerge } from "./eventMerge";
 import { useFilteredTrace } from "./useFilteredTrace";
 import { useByIdView } from "./useByIdView";
 import { useElementRegistry } from "./projectElements";
@@ -68,7 +74,13 @@ export function TracePanel(props: IDockviewPanelProps) {
   );
 
   const params = props.params as
-    | { elementId?: unknown; mode?: unknown; autoScroll?: unknown; columns?: unknown }
+    | {
+        elementId?: unknown;
+        mode?: unknown;
+        autoScroll?: unknown;
+        columns?: unknown;
+        showEvents?: unknown;
+      }
     | undefined;
   const [elementId] = useState(() => elementIdFromParams(params));
   useEffect(() => {
@@ -95,6 +107,11 @@ export function TracePanel(props: IDockviewPanelProps) {
     typeof savedConfig?.autoScroll === "boolean" ? savedConfig.autoScroll : true,
   );
   const handleAutoScrollDisabled = useCallback(() => setAutoScroll(false), []);
+  // View-local: whether timeline events (ADR 0035) interleave into this
+  // chronological trace. Default on; persisted with the rest of the config.
+  const [showEvents, setShowEvents] = useState(() =>
+    typeof savedConfig?.showEvents === "boolean" ? savedConfig.showEvents : true,
+  );
   const [columns, setColumns] = useState<ColumnState[]>(() => columnsFromParams(savedConfig?.columns));
   const handleColumnResize = useCallback(
     (key: ColumnKey, width: number) => setColumns((cs) => resizeColumn(cs, key, width)),
@@ -117,10 +134,10 @@ export function TracePanel(props: IDockviewPanelProps) {
   // app restart, and it doesn't persist the registry).
   const { update } = registry;
   useEffect(() => {
-    const config = { mode, autoScroll, columns };
+    const config = { mode, autoScroll, columns, showEvents };
     update(elementId, { config });
     api.updateParameters({ elementId, ...config });
-  }, [api, update, elementId, mode, autoScroll, columns]);
+  }, [api, update, elementId, mode, autoScroll, columns, showEvents]);
 
   // By-id mode state. The snapshot itself is host-paged and host-sorted
   // (see `useByIdView` below); the panel owns only the view-local sort
@@ -217,6 +234,137 @@ export function TracePanel(props: IDockviewPanelProps) {
     trace.status === "running",
   );
 
+  // Timeline events (ADR 0035): host notes + the derived truncation marker,
+  // the whole (sparse) set. They render in the chronological trace, spliced
+  // among the frame rows by timestamp.
+  const { notes, renameNote, recolorNote, removeNote } = useNotes();
+  const events = useMemo(
+    () => timelineEvents(notes, data.truncationTsNs),
+    [notes, data.truncationTsNs],
+  );
+
+  // Interleave events into the chronological view when the view-local toggle
+  // is on — for both the unfiltered and the filtered chronological trace.
+  const interleave = mode === "chronological" && showEvents;
+  const baseCount = chronoFiltered ? filtered.count : trace.frameCount;
+  const baseGetFrame = chronoFiltered ? filtered.getFrame : trace.getFrame;
+  const baseEnsureVisible = chronoFiltered ? filtered.ensureVisible : trace.ensureVisible;
+
+  // The host anchors each event to a row in this view's index space (the host
+  // owns time→index, ADR 0024). For the unfiltered trace that's an absolute
+  // frame index (`frame_indices_at_ns`); for a filtered trace it's a
+  // window-local match position (`filtered_positions_at_ns`, which maps the
+  // event's frame through the active filter index, ADR 0002 DS-3) — the raw
+  // frame anchors don't index the filtered stream. We refetch when the event
+  // set, the filter, or the window start changes; an event's anchor is
+  // otherwise stable as frames append (frames arrive in increasing time, so a
+  // newer frame never moves an older event's row). `anchors` lags `events` by
+  // one async tick; the merge treats a length mismatch as "no events yet"
+  // (frames only) until it catches up.
+  const [anchors, setAnchors] = useState<number[]>([]);
+  useEffect(() => {
+    let live = true;
+    const ts = events.map((e) => e.timestampNs);
+    if (!interleave || ts.length === 0) {
+      setAnchors([]);
+      return;
+    }
+    const pending = chronoFiltered
+      ? invoke<number[]>("filtered_positions_at_ns", {
+          filter: fetchFilter,
+          scanStart: trace.offset,
+          timestamps: ts,
+        })
+      : invoke<number[]>("frame_indices_at_ns", { timestamps: ts });
+    void pending
+      .then((a) => {
+        if (live) setAnchors(a);
+      })
+      .catch(() => {
+        /* best effort — interleaving just stays off until it resolves */
+      });
+    return () => {
+      live = false;
+    };
+  }, [interleave, chronoFiltered, fetchFilter, events, trace.offset, data.epoch]);
+
+  // The merge places each event at `anchor - offset`. Unfiltered anchors are
+  // absolute frame indices, so the offset is the window start; filtered
+  // anchors are already window-local match positions, so the offset is zero.
+  const mergeOffset = chronoFiltered ? 0 : trace.offset;
+  const merge = useMemo(
+    () =>
+      buildEventMerge(
+        interleave ? events : [],
+        interleave && anchors.length === events.length ? anchors : [],
+        mergeOffset,
+        baseCount,
+      ),
+    [interleave, events, anchors, mergeOffset, baseCount],
+  );
+  // Base-typed rows (ADR 0035) for TraceView's one renderer: an event, or a
+  // frame (resolved through the windowed query at its local index). Inner
+  // frame / event refs are ref-stable, so Row's memo still holds.
+  const chronoGetRow = useCallback(
+    (d: number): TraceRow | null => {
+      const r = merge.rowAt(d);
+      if (r.row === "event") return { row: "event", event: r.event };
+      const f = baseGetFrame(r.localIndex);
+      return f ? { row: "frame", frame: f } : null;
+    },
+    [merge, baseGetFrame],
+  );
+  const chronoEnsureVisible = useCallback(
+    (d0: number, d1: number) => {
+      const [f0, f1] = merge.frameRange(d0, d1);
+      baseEnsureVisible(f0, f1);
+    },
+    [merge, baseEnsureVisible],
+  );
+
+  // Inline edit handlers for editable event rows (ADR 0035): rename / colour /
+  // remove, wired straight to the host notes commands. Memoised (the row is
+  // memoised) — the dispatchers are themselves stable.
+  const eventActions = useMemo<EventActions>(
+    () => ({ onRename: renameNote, onRecolor: recolorNote, onRemove: removeNote }),
+    [renameNote, recolorNote, removeNote],
+  );
+
+  // Cross-panel "goto" (ADR 0035): a broadcast carries an event's absolute
+  // timestamp; the chronological view resolves it to a display row and scrolls
+  // there. The resolver reads its inputs (window, filter, merge) through a ref
+  // so the listener subscribes once instead of re-subscribing as those churn
+  // each frame. Only the chronological mode has rows to scroll.
+  const [scrollTarget, setScrollTarget] = useState<{ row: number; seq: number } | null>(null);
+  const gotoSeq = useRef(0);
+  const gotoCtx = useRef({ mode, chronoFiltered, fetchFilter, offset: trace.offset, mergeOffset, merge });
+  gotoCtx.current = { mode, chronoFiltered, fetchFilter, offset: trace.offset, mergeOffset, merge };
+  useEffect(() => {
+    let live = true;
+    const unlisten = listen<GotoPayload>(GOTO_EVENT, async (e) => {
+      const ctx = gotoCtx.current;
+      if (ctx.mode !== "chronological") return;
+      const anchors = ctx.chronoFiltered
+        ? await invoke<number[]>("filtered_positions_at_ns", {
+            filter: ctx.fetchFilter,
+            scanStart: ctx.offset,
+            timestamps: [e.payload],
+          })
+        : await invoke<number[]>("frame_indices_at_ns", { timestamps: [e.payload] });
+      if (!live) return;
+      const abs = anchors[0];
+      if (abs == null) return;
+      // Re-read the ref post-await — the window may have advanced while the
+      // host resolved the anchor; map against the live merge.
+      const c = gotoCtx.current;
+      setScrollTarget({ row: c.merge.frameToDisplay(abs - c.mergeOffset), seq: ++gotoSeq.current });
+    });
+    return () => {
+      live = false;
+      void unlisten.then((fn) => fn());
+    };
+  }, []);
+
   return (
     <div className="trace-panel" onContextMenu={handleContextMenu}>
       {sourcesMenu && (
@@ -264,10 +412,20 @@ export function TracePanel(props: IDockviewPanelProps) {
             auto-scroll
           </label>
         )}
+        {mode === "chronological" && (
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={showEvents}
+              onChange={(e) => setShowEvents(e.target.checked)}
+            />
+            events
+          </label>
+        )}
       </div>
-      {mode === "chronological" ? (
+      {mode === "by-id" ? null : (
         <TraceView
-          count={chronoFiltered ? filtered.count : trace.frameCount}
+          count={merge.displayCount}
           version={chronoFiltered ? filtered.version : trace.version}
           autoScroll={autoScroll && trace.status === "running"}
           baseTimestampSeconds={trace.baseTimestampSeconds}
@@ -277,11 +435,14 @@ export function TracePanel(props: IDockviewPanelProps) {
           onColumnReorder={handleColumnReorder}
           busLookup={lookup}
           resolveColor={resolveColor}
-          getFrame={chronoFiltered ? filtered.getFrame : trace.getFrame}
-          ensureVisible={chronoFiltered ? filtered.ensureVisible : trace.ensureVisible}
+          getRow={chronoGetRow}
+          ensureVisible={chronoEnsureVisible}
           onAutoScrollDisabled={handleAutoScrollDisabled}
+          eventActions={eventActions}
+          scrollTarget={scrollTarget}
         />
-      ) : (
+      )}
+      {mode === "by-id" && (
         <ByIdTable
           count={byId.count}
           version={byId.version}

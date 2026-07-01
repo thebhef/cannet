@@ -21,6 +21,11 @@ vi.mock("@tauri-apps/api/core", () => ({
     return [];
   }),
 }));
+// The panel subscribes to the cross-panel "goto" bus at mount; the tests
+// don't fire it, but `listen()` must resolve to an unsubscriber.
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async () => () => {}),
+}));
 
 import { TracePanel } from "./TracePanel";
 import { TraceDataContext, type TraceData } from "./traceData";
@@ -42,6 +47,7 @@ class FakeResizeObserver {
 const traceData: TraceData = {
   count: 100,
   firstIndex: 0,
+  truncationTsNs: null,
   sessionStartSeconds: 0,
   epoch: 0,
   fetchRange: async () => [],

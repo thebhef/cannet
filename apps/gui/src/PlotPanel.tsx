@@ -19,6 +19,8 @@ import { useElementRegistry } from "./projectElements";
 import { useTrace } from "./trace";
 import { TraceControls } from "./TraceControls";
 import { useNotes } from "./notesContext";
+import { TRUNCATION_EVENT_ID } from "./notes";
+import { GOTO_EVENT, type GotoPayload } from "./gotoEvent";
 import { enumSegments, groupScaleRanges, mergeSeries, signalKey } from "./plotData";
 import { showPointsFromRaw, showPointsToUplot, type ShowPointsMode } from "./plotPoints";
 import { elementLabel } from "./elementLabel";
@@ -92,7 +94,9 @@ import {
  * The measurement strip's cell set is configurable: A, B, Δt, 1/Δt,
  * and per-trace value@A / value@B / Δ / min / max / mean over [A, B].
  * Event markers (the window-start "T0" plus notes) draw as vertical
- * lines; the event log renames (click) and removes notes.
+ * lines; "+ note" drops one. Renaming, recolouring, removing, and
+ * jumping to a note live in the dedicated events view (ADR 0035),
+ * which broadcasts a "goto" this panel re-centres its x-window on.
  *
  * Persistable state (areas + signal→area assignment, y-ranges,
  * follow-live, cursor mode, measurement toggle/selection; cursor
@@ -132,6 +136,9 @@ const TRACE_COLORS = [
 const CURSOR_A_COLOR = "#ffd93d";
 const CURSOR_B_COLOR = "#ff5577";
 const EVENT_COLOR = "#4ecbff";
+/// The derived truncation marker's cursor colour (ADR 0035) — a muted
+/// amber, distinct from the note-event blue. Matches the trace floor row.
+const TRUNCATION_COLOR = "#e0a030";
 const AXIS_STROKE = "#cbd5e1";
 const AXIS_GRID = "#222b35";
 const AXIS_TICKS = "#3a4654";
@@ -208,6 +215,9 @@ interface NoteEvent {
   /** Time in display-relative seconds. */
   t: number;
   label: string;
+  /** Cursor colour; defaults to the note event blue. The derived
+   *  truncation marker (ADR 0035) overrides it. */
+  color?: string;
 }
 
 interface XCursors {
@@ -536,7 +546,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
   // `rename_note` / `remove_note` Tauri commands — the
   // `notes-changed` event broadcasts the new list to every plot
   // panel.
-  const { notes: sessionNotes, addNote: dispatchAddNote, renameNote: dispatchRenameNote, removeNote: dispatchRemoveNote } = useNotes();
+  const { notes: sessionNotes, addNote: dispatchAddNote } = useNotes();
 
   // Per-area last-sampled series (only kept while the measurement strip
   // is on — it's the only consumer; the side-panel values come from the
@@ -1033,14 +1043,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
     },
     [baseSeconds, dispatchAddNote, sessionNotes.length],
   );
-  const renameNote = useCallback(
-    (id: string, label: string) => dispatchRenameNote(id, label),
-    [dispatchRenameNote],
-  );
-  const removeNote = useCallback(
-    (id: string) => dispatchRemoveNote(id),
-    [dispatchRemoveNote],
-  );
   // Jump the panel's x-window so the note at display-relative time
   // `t` is centred. Preserves the current zoom width; drops out of
   // follow-live (otherwise the next resample would slide the view
@@ -1058,6 +1060,25 @@ export function PlotPanel(props: IDockviewPanelProps) {
     },
     [applyXAll],
   );
+  // Cross-panel "goto" (ADR 0035): the events view broadcasts a target
+  // timestamp; centre the x-window on it. The payload is absolute ns, so
+  // convert against this panel's x-axis origin (`baseSeconds`), read through a
+  // ref so the listener subscribes once. Before the cache anchors there's no
+  // origin to project against — drop it.
+  const baseSecondsRef = useRef<number | null>(null);
+  useEffect(() => {
+    let live = true;
+    const unlisten = listen<GotoPayload>(GOTO_EVENT, (e) => {
+      if (!live) return;
+      const b = baseSecondsRef.current;
+      if (b == null || !Number.isFinite(b)) return;
+      gotoNote(e.payload / 1e9 - b);
+    });
+    return () => {
+      live = false;
+      void unlisten.then((fn) => fn());
+    };
+  }, [gotoNote]);
 
   const reportSeries = useCallback(
     (areaId: string, series: Map<string, Series>) => {
@@ -1079,6 +1100,11 @@ export function PlotPanel(props: IDockviewPanelProps) {
     (_areaId: string, secs: number | null) => setBaseSeconds(secs),
     [],
   );
+  // Mirror the x-axis origin into a ref for the goto listener (above), which
+  // subscribes once and so can't close over the live state value.
+  useEffect(() => {
+    baseSecondsRef.current = baseSeconds;
+  }, [baseSeconds]);
 
   const busNameLookup = useMemo(() => {
     const m = new Map<string, string>();
@@ -1234,9 +1260,30 @@ export function PlotPanel(props: IDockviewPanelProps) {
       id: n.id,
       t: n.timestampNs / 1e9 - baseSeconds,
       label: n.label,
+      // Carry the note's colour (ADR 0035) so its cursor matches the trace
+      // and events panel; `undefined` falls back to the default event blue.
+      color: n.color ?? undefined,
     }));
   }, [sessionNotes, baseSeconds]);
-  const events = useMemo(() => [{ id: "__t0", t: 0, label: "T0" }, ...notes], [notes]);
+  // The derived truncation marker (ADR 0035) as a plot cursor, when the
+  // disk-spill store has truncated the oldest history (`firstIndex > 0`).
+  const truncation = useMemo<NoteEvent | null>(() => {
+    if (baseSeconds == null || data.truncationTsNs == null) return null;
+    return {
+      id: TRUNCATION_EVENT_ID,
+      t: data.truncationTsNs / 1e9 - baseSeconds,
+      label: "history truncated here",
+      color: TRUNCATION_COLOR,
+    };
+  }, [data.truncationTsNs, baseSeconds]);
+  const events = useMemo<NoteEvent[]>(
+    () => [
+      { id: "__t0", t: 0, label: "T0" },
+      ...notes,
+      ...(truncation ? [truncation] : []),
+    ],
+    [notes, truncation],
+  );
   const dt = cursorX.a != null && cursorX.b != null ? cursorX.b - cursorX.a : null;
 
   /** Right-click anywhere on the panel toolbar opens this menu —
@@ -1434,6 +1481,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
               isParentHead={d.isFirstOfParent}
               winStart={winStart}
               winEnd={winEnd}
+              originSeconds={data.sessionStartSeconds}
               live={live}
               followLive={followLive}
               showPoints={showPoints}
@@ -1513,23 +1561,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
         </div>
       )}
 
-      {notes.length > 0 && (
-        <div className="plot-events-log">
-          {notes
-            .slice()
-            .sort((a, b) => a.t - b.t)
-            .map((n) => (
-              <EventLogRow
-                key={n.id}
-                t={fmtTime(n.t)}
-                label={n.label}
-                onGoto={() => gotoNote(n.t)}
-                onRename={(l) => renameNote(n.id, l)}
-                onRemove={() => removeNote(n.id)}
-              />
-            ))}
-        </div>
-      )}
     </div>
   );
 }
@@ -1542,65 +1573,6 @@ function MeasCell({ k, v, cls, swatch }: { k: string; v: string; cls?: string; s
         {k}
       </div>
       <div className={`plot-meas-v${cls ? ` ${cls}` : ""}`}>{v}</div>
-    </div>
-  );
-}
-
-function EventLogRow({
-  t,
-  label,
-  onGoto,
-  onRename,
-  onRemove,
-}: {
-  t: string;
-  label: string;
-  onGoto: () => void;
-  onRename: (l: string) => void;
-  onRemove: () => void;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(label);
-  const commit = () => {
-    if (draft.trim()) onRename(draft.trim());
-    setEditing(false);
-  };
-  return (
-    <div className="plot-event-row">
-      <button className="plot-event-goto" onClick={onGoto} title="jump x-axis to this note">
-        ⇥
-      </button>
-      <span className="plot-event-t">{t}</span>
-      {editing ? (
-        <input
-          className="plot-event-edit"
-          autoFocus
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={commit}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") commit();
-            else if (e.key === "Escape") {
-              setDraft(label);
-              setEditing(false);
-            }
-          }}
-        />
-      ) : (
-        <span
-          className="plot-event-label"
-          title="click to rename"
-          onClick={() => {
-            setDraft(label);
-            setEditing(true);
-          }}
-        >
-          {label}
-        </span>
-      )}
-      <button onClick={onRemove} title="remove note">
-        ×
-      </button>
     </div>
   );
 }
@@ -1719,6 +1691,10 @@ interface PlotAreaProps {
   isParentHead: boolean;
   winStart: number;
   winEnd: number;
+  /** The application-level trace start (absolute seconds, ADR 0024): the
+   * x-axis origin, so the plot's `t=0` matches the trace table's. `null`
+   * until a session start is known. */
+  originSeconds: number | null;
   live: boolean;
   followLive: boolean;
   /** Show-points tri-state from the panel toolbar — applied to every
@@ -1737,7 +1713,7 @@ interface PlotAreaProps {
   cursorXb: number | null;
   cursorYh1: number | null;
   cursorYh2: number | null;
-  events: Array<{ id: string; t: number; label: string }>;
+  events: NoteEvent[];
   xSyncRef: MutableRefObject<XSync>;
   registerInstance: (id: string, u: uPlot | null) => void;
   onUserXChange: (min: number, max: number, fromId: string) => void;
@@ -1831,6 +1807,7 @@ function PlotArea(p: PlotAreaProps) {
     isParentHead,
     winStart,
     winEnd,
+    originSeconds,
     live,
     followLive,
     showPoints,
@@ -2038,6 +2015,7 @@ function PlotArea(p: PlotAreaProps) {
   const liveRef = useRef({
     winStart,
     winEnd,
+    originSeconds,
     followLive,
     cursorMode,
     cursorXa,
@@ -2061,6 +2039,7 @@ function PlotArea(p: PlotAreaProps) {
     liveRef.current = {
       winStart,
       winEnd,
+      originSeconds,
       followLive,
       cursorMode,
       cursorXa,
@@ -2161,6 +2140,7 @@ function PlotArea(p: PlotAreaProps) {
           winEnd: lr.winEnd,
           xMin: xSyncRef.current.xMin,
           xMax: xSyncRef.current.xMax,
+          origin: lr.originSeconds,
           maxPoints: maxPts,
         },
         sidecar,
@@ -2580,7 +2560,7 @@ function PlotArea(p: PlotAreaProps) {
               }
             };
             for (const ev of lr.events) {
-              vline(ev.t, EVENT_COLOR, ev.id === "__t0" ? [] : [2, 3], isFirst ? ev.label : null, true);
+              vline(ev.t, ev.color ?? EVENT_COLOR, ev.id === "__t0" ? [] : [2, 3], isFirst ? ev.label : null, true);
             }
             // Task 15 / ADR 0026: the X cursor's time label appears on
             // every axis (it used to render only on the last area, so
@@ -3106,9 +3086,10 @@ function PlotArea(p: PlotAreaProps) {
     void valueTick;
     return effectiveRangesRef.current.get(key) ?? null;
   };
-  /** Cache x-origin (`ts(winStart)` in absolute seconds) — diagnostic.
-   * If this stays the same across a Clear, the cache anchor didn't
-   * re-establish and the visible x-axis will be in the *old* timescale. */
+  /** Cache x-origin (the application-level trace start, absolute seconds —
+   * ADR 0024) — diagnostic. If this stays the same across a Clear, the cache
+   * anchor didn't re-establish and the visible x-axis is in the *old*
+   * timescale. */
   const cacheBaseValue = (): number | null => {
     void valueTick;
     return currentRange()?.base ?? null;
@@ -3212,7 +3193,7 @@ function PlotArea(p: PlotAreaProps) {
               const b = cacheBaseValue();
               return b == null
                 ? "no cache yet"
-                : `cache x-origin (ts of winStart): ${b.toFixed(3)} s — diagnostic for whether the cache re-anchored after a Clear`;
+                : `cache x-origin (trace start): ${b.toFixed(3)} s — diagnostic for whether the cache re-anchored after a Clear`;
             })()}
           >
             {label}

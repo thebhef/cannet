@@ -17,6 +17,9 @@ export interface NotesContextValue {
   addNote: (id: string, timestampNs: number, label: string) => void;
   /// Update a note's label.
   renameNote: (id: string, label: string) => void;
+  /// Set or clear a note's colour (`#RRGGBB`, or `null` for the view
+  /// default) — ADR 0035.
+  recolorNote: (id: string, color: string | null) => void;
   /// Remove a note by id.
   removeNote: (id: string) => void;
 }
@@ -25,6 +28,7 @@ const fallback: NotesContextValue = {
   notes: [],
   addNote: () => {},
   renameNote: () => {},
+  recolorNote: () => {},
   removeNote: () => {},
 };
 

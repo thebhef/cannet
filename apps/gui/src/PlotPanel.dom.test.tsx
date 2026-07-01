@@ -157,6 +157,7 @@ function makeRegistry(seed?: { id: string; config?: Record<string, unknown> }): 
 const traceData: TraceData = {
   count: 100,
   firstIndex: 0,
+  truncationTsNs: null,
   sessionStartSeconds: 0,
   epoch: 0,
   fetchRange: async () => [],

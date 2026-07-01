@@ -64,6 +64,30 @@ pub struct Note {
     /// User-visible label. Defaults to "note N" on creation;
     /// editable.
     pub label: String,
+    /// Event kind (ADR 0035). The store holds only user-authored kinds;
+    /// `#[serde(default)]` keeps a pre-kind `notes.json` / BLF-derived note
+    /// readable (it reads back as [`EventKind::Note`]).
+    #[serde(default)]
+    pub kind: EventKind,
+    /// Optional `#RRGGBB` colour (ADR 0035). `None` renders in the view's
+    /// default event colour and round-trips through the BLF marker's
+    /// `foreground_color`. `#[serde(default)]` for back-compat.
+    #[serde(default)]
+    pub color: Option<String>,
+}
+
+/// The kind of a timeline event (ADR 0035). The host's event store holds
+/// user-authored, durable kinds; *derived* kinds (the disk-spill truncation
+/// marker) are synthesized in the frontend from host data — the low-water
+/// mark — and never enter this store, so they have no variant here. The set
+/// grows as durable kinds (message-bound, trigger) are added.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EventKind {
+    /// A user-placed marker — the original note. Editable, persisted to the
+    /// scratch, exported to BLF `GLOBAL_MARKER`.
+    #[default]
+    Note,
 }
 
 /// The session-scoped notes store. Single `Mutex`-guarded vec —
@@ -176,6 +200,22 @@ impl NotesStore {
         Some(applied)
     }
 
+    /// Recolour a note (ADR 0035 colour metadata): `Some("#RRGGBB")` to set,
+    /// `None` to clear back to the view default. `None` return if `id` is
+    /// unknown.
+    pub fn recolor(&self, id: &str, color: Option<String>) -> Option<Applied> {
+        let applied = {
+            let mut guard = self.inner.lock().expect("notes mutex poisoned");
+            let slot = guard.iter_mut().find(|n| n.id == id)?;
+            slot.color = color;
+            Applied {
+                notes: guard.clone(),
+            }
+        };
+        self.persist();
+        Some(applied)
+    }
+
     /// Remove a note. `None` if `id` is unknown.
     pub fn remove(&self, id: &str) -> Option<Applied> {
         let applied = {
@@ -254,6 +294,8 @@ mod tests {
             id: id.into(),
             timestamp_ns: ts,
             label: label.into(),
+            kind: EventKind::Note,
+            color: None,
         }
     }
 
@@ -287,6 +329,41 @@ mod tests {
         assert_eq!(applied.notes[0].label, "new");
         // Unknown id is a no-op (returns None).
         assert!(s.rename("missing", "x").is_none());
+    }
+
+    #[test]
+    fn recolor_sets_and_clears_color_only() {
+        let s = NotesStore::new();
+        s.add(note("a", 1_000, "one")).unwrap();
+        let applied = s.recolor("a", Some("#ff8800".into())).unwrap();
+        assert_eq!(applied.notes[0].color.as_deref(), Some("#ff8800"));
+        assert_eq!(applied.notes[0].label, "one", "label untouched");
+        // Clearing back to the default colour.
+        let applied = s.recolor("a", None).unwrap();
+        assert_eq!(applied.notes[0].color, None);
+        // Unknown id is a no-op.
+        assert!(s.recolor("missing", Some("#000".into())).is_none());
+    }
+
+    #[test]
+    fn color_and_kind_round_trip_through_scratch_json() {
+        // A pre-kind notes.json (no `kind`/`color`) still parses, and a
+        // coloured note survives a persist + restore (ADR 0002 DS-7 / 0035).
+        let legacy: Note = serde_json::from_str(
+            r#"{"id":"x","timestampNs":5,"label":"old"}"#,
+        )
+        .expect("a pre-kind note still deserializes");
+        assert_eq!(legacy.kind, EventKind::Note);
+        assert_eq!(legacy.color, None);
+
+        let dir = tempfile::tempdir().unwrap();
+        let s = NotesStore::with_scratch(dir.path().to_path_buf());
+        s.add(note("a", 1_000, "one")).unwrap();
+        s.recolor("a", Some("#00aaff".into())).unwrap();
+        let reopened = NotesStore::with_scratch(dir.path().to_path_buf());
+        let restored = reopened.restore().expect("scratch notes restore");
+        assert_eq!(restored[0].color.as_deref(), Some("#00aaff"));
+        assert_eq!(restored[0].kind, EventKind::Note);
     }
 
     #[test]
