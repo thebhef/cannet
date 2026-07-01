@@ -22,9 +22,11 @@
 //! that to a small, focused crate keeps the failure-mode-rich surface
 //! reviewable and leaves every other crate `unsafe`-free.
 
+mod byid;
 mod disk;
 mod mem;
 mod record;
+mod seg;
 
 pub use disk::{DiskConfig, DiskRawStore};
 pub use mem::MemRawStore;

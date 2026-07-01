@@ -19,17 +19,17 @@
 //! call out. Segments are pre-allocated to full size and mapped once, so
 //! a mapped file is never resized (which Windows forbids) (DS-4).
 //!
-//! The `by-id` index is kept in RAM here; ADR DS-3 (a later step)
-//! materializes it on disk.
+//! The always-on `by-id` index is materialized on disk too (DS-3), in
+//! [`crate::byid`]; only the small per-id directory of segment handles
+//! stays in RAM.
 
 use std::collections::{HashMap, VecDeque};
-use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 
-use memmap2::MmapMut;
-
+use crate::byid::{ByIdIndex, BYID_PREFIX};
 use crate::record::{rebuild_payload, split_payload, MetaRecord, BUS_NONE, RECORD_SIZE};
+use crate::seg::{create_segment, remove_files_with_prefixes, Segment};
 use crate::{RawStore, RawTraceFrame};
 
 /// Segment sizing and the RAM-ring depth. Defaults suit production; tests
@@ -55,13 +55,6 @@ impl Default for DiskConfig {
     }
 }
 
-/// One pre-allocated, whole-mapped segment file. The `File` is kept alive
-/// for the mapping's lifetime.
-struct Segment {
-    _file: File,
-    map: MmapMut,
-}
-
 /// Disk-backed [`RawStore`]. See the module docs.
 pub struct DiskRawStore {
     dir: PathBuf,
@@ -74,7 +67,7 @@ pub struct DiskRawStore {
     ring: VecDeque<RawTraceFrame>,
     bus_intern: Vec<String>,
     bus_rev: HashMap<String, u16>,
-    by_id: HashMap<(u32, bool), Vec<usize>>,
+    by_id: ByIdIndex,
 }
 
 impl DiskRawStore {
@@ -97,6 +90,7 @@ impl DiskRawStore {
         assert!(cfg.records_per_seg > 0, "records_per_seg must be positive");
         let dir = dir.as_ref().to_path_buf();
         let mut store = Self {
+            by_id: ByIdIndex::new(&dir),
             dir,
             cfg,
             len: 0,
@@ -106,7 +100,6 @@ impl DiskRawStore {
             ring: VecDeque::new(),
             bus_intern: Vec::new(),
             bus_rev: HashMap::new(),
-            by_id: HashMap::new(),
         };
         store.remove_segment_files()?;
         Ok(store)
@@ -125,15 +118,8 @@ impl DiskRawStore {
     fn remove_segment_files(&mut self) -> io::Result<()> {
         self.meta_segs.clear();
         self.payload_segs.clear();
-        for entry in std::fs::read_dir(&self.dir)? {
-            let path = entry?.path();
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name.starts_with("meta.") || name.starts_with("payload.") {
-                    std::fs::remove_file(&path)?;
-                }
-            }
-        }
-        Ok(())
+        self.by_id.clear();
+        remove_files_with_prefixes(&self.dir, &["meta.", "payload.", BYID_PREFIX])
     }
 
     fn ensure_meta_seg(&mut self, seg: usize) {
@@ -282,9 +268,7 @@ impl RawStore for DiskRawStore {
         };
         self.write_meta(idx, &rec.encode());
         self.by_id
-            .entry((frame.id, frame.extended))
-            .or_default()
-            .push(idx);
+            .push(frame.id, frame.extended, idx as u64);
         self.ring.push_back(frame);
         if self.ring.len() > self.cfg.ring_capacity {
             self.ring.pop_front();
@@ -303,7 +287,8 @@ impl RawStore for DiskRawStore {
         self.ring = VecDeque::new();
         self.bus_intern = Vec::new();
         self.bus_rev = HashMap::new();
-        self.by_id = HashMap::new();
+        // `remove_segment_files` drops the by-id mappings and deletes its
+        // files along with the raw families.
         self.remove_segment_files()
             .expect("cannet-spill: clearing scratch segments failed");
     }
@@ -344,17 +329,11 @@ impl RawStore for DiskRawStore {
             return Vec::new();
         }
         let end = end.min(self.len);
-        match self.by_id.get(&(id_raw, extended)) {
-            Some(frame_idxs) => {
-                let lo = frame_idxs.partition_point(|&i| i < start);
-                let hi = frame_idxs.partition_point(|&i| i < end);
-                frame_idxs[lo..hi]
-                    .iter()
-                    .filter_map(|&i| self.read_frame(i).map(|f| (i, f)))
-                    .collect()
-            }
-            None => Vec::new(),
-        }
+        self.by_id
+            .range(id_raw, extended, start, end)
+            .into_iter()
+            .filter_map(|i| self.read_frame(i).map(|f| (i, f)))
+            .collect()
     }
 
     fn scan_chunk(
@@ -390,27 +369,6 @@ impl RawStore for DiskRawStore {
         }
         Ok(())
     }
-}
-
-/// Create a segment file of exactly `bytes` and map it whole, read-write.
-fn create_segment(path: &Path, bytes: usize) -> io::Result<Segment> {
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(path)?;
-    file.set_len(bytes as u64)?;
-    // SAFETY: `file` was just created and sized to `bytes`; we keep its
-    // handle alive in the returned `Segment` for the mapping's whole
-    // lifetime, so it cannot be truncated out from under the map by this
-    // process. The map is only ever accessed behind the host's store
-    // mutex, so there is no concurrent mutation. External truncation of
-    // the scratch volume would raise SIGBUS / EXCEPTION_IN_PAGE_ERROR,
-    // which ADR 0002 accepts for an ephemeral store.
-    #[allow(unsafe_code)]
-    let map = unsafe { MmapMut::map_mut(&file)? };
-    Ok(Segment { _file: file, map })
 }
 
 #[cfg(test)]
