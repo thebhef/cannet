@@ -34,18 +34,6 @@ refinements), and **Task 16** (hotkey framework).
 
 #### Other near-term work
 
-- `[feat]` **Settings panel — first entry: `clear scratch cache on exit`.**
-  Per [ADR 0002 DS-7](../docs/adr/0002-disk-spill-store.md), the
-  disk-spill scratch (raw store + indexes + pyramids + session-authored
-  markers/events) lives in `$XDG_CACHE_HOME/cannet/current/` and is
-  wiped only when the session buffer is — on Clear, or on Start of a
-  new capture — never on exit or crash. That makes the launch-loads-
-  prior-as-stopped behavior mechanically free, but means a user who
-  quits without Clearing/Starting leaves the prior session on disk
-  indefinitely. A settings panel needs to exist; its first setting is
-  an opt-in `clear scratch cache on exit` toggle (default off) that
-  wipes `current/` on clean shutdown. Other settings will land here
-  as they come up; spec the panel itself when picking this up.
 - `[test-fixtures]` **Vendor python-can BLF fixtures under
   `crates/cannet-blf/tests/fixtures/python-can/`.** Phase 10 Step 1
   listed this as the first of four test sources but
@@ -215,17 +203,17 @@ name/colour/remove on any editable event row. Remaining follow-ups:
 
 ### GUI chrome and cross-cutting
 
-- `[ui]` `cannet-gui` status line (`renderStatus` in `App.tsx`): a global
-  `state.kind === "error"` is **sticky** — once set, the top-left status
-  shows `Error: …` forever, even after the session recovers and is
-  streaming fine. Observed under `tauri dev --connect-on-start`: a
-  transient connect-time error left the error label up for the whole
-  run, while a clean relaunch showed the normal "Streaming … N frames"
-  line. A live remote session masks it (`remoteSessions.size > 0` takes
-  priority in `renderStatus`), but an error that lands while no remote
-  session is registered persists. Clear the error state when a session
-  starts/recovers (or expire it) so a recovered app stops reading as
-  broken.
+- `[feat]` **Persist ephemeral view state with the project/scratch.** A
+  reopened session restores the capture and its origin (ADR 0002 DS-7 +
+  ADR 0024) but not *where each view was looking* — plot x-windows,
+  trace/by-id scroll positions & follow-live state, cursor placements,
+  filter-view offsets. These aren't project data in the classic sense,
+  but they're project-relevant: reopening lands you at a different view
+  than you left. Decide what to snapshot (per-element view state) and
+  where it rides (scratch alongside `session_start_ns`, or the project
+  file) so "exit and reopen" returns you to the same framing. Surfaced
+  during the plot window-start-origin fix (ADR 0024).
+
 - `[feat]` `cannet-gui` Save Capture: **time-range export.** Phase 9's
   Save Capture writes the entire session buffer to a `.blf`. Add the
   ability to pick a start and end time (or start/end frame index) on
@@ -249,8 +237,7 @@ name/colour/remove on any editable event row. Remaining follow-ups:
   minimum level (and ideally per-source filtering) plus volume guards
   (rate limiting / retention or ring-buffer caps) so a chatty source
   can't drown the panel or grow unbounded. Natural home is the Settings
-  panel (see the `clear scratch cache on exit` item) once it exists.
-  Surfaced while building the frontend perf capture, which adds
+  panel. Surfaced while building the frontend perf capture, which adds
   yet another log/metric stream.
 - `[perf]` Interaction-driven render capture. The self-driving perf flags
   capture the render tier *at rest* — they never scroll the heavy views,
@@ -362,6 +349,15 @@ next pass on this surface can address them as one piece.
   a fault. Detect the closed/closing state in the pump (or close the
   channel only after the pump exits) so a clean unsubscribe doesn't
   log a scary error.
+- `[perf]` `cannet-gui` status residency (task 0018 6g-C, deferred): the
+  status line's memory figure is whole-process RSS labelled `host`, not a
+  store-only residency estimate. A true mapped-resident metric
+  (`mincore` on Linux / `VirtualQuery` on Windows over the mmap'd cache
+  segments) plus a health-log breakdown refinement (split `other` into
+  by-id / filter / JSON; surface pyramid *file count* rather than depth)
+  would make the split honest. Low value / fragile cross-platform — mmap
+  paging already bounds store residency and the `host` label no longer
+  implies otherwise. Pick up only if residency needs real metering.
 - `[perf]` `cannet-core`: revisit `CanFramePayload::Classic`/`Fd` to share
   a fixed-size inline buffer instead of `Vec<u8>` once the trace store /
   perf benchmark shows allocator pressure.

@@ -80,6 +80,25 @@ lose the trailing frames since the last sync — an acceptable loss for an
 single **synchronous** flush runs on clean shutdown to harden that
 trailing window against a power loss right after quit.
 
+#### What is on disk, and when
+
+The store is not "buffer in RAM, spill under pressure." Each family is
+memory-mapped, but they materialize at different times, and only the raw
+frames are present from the first append:
+
+| Family | On disk from | Mechanism |
+| --- | --- | --- |
+| Raw frames (meta + payload) | the **first append** | write-through: each append `memcpy`s straight into the active segment's mapping (DS-1/DS-2). The mapping *is* the store — there is no RAM write-buffer that later flushes; `msync` only pushes already-written dirty pages to the device. |
+| `by-id` index | as frames land | append-only mmap postings, extended per frame (DS-3). |
+| Filter index | when a filter is **active** | built lazily per predicate off `by-id`, dropped when the predicate changes (DS-3). |
+| Signal-cache pyramid | first **plot sample** of a signal | *derived*, lazy: built on demand from the raw frames, mmap'd, carries no manifest, and is rebuilt from the reopened frames on serve (DS-5). |
+
+What is genuinely only in **RAM** is bounded and never capture-length: the
+recent-tail mirror (the DS-2 ring), the bus-intern table, and the small
+per-family directories of segment handles. Everything that grows with the
+capture lives in a memory-mapped file, so the resident set is whatever the
+kernel page cache keeps hot — not the capture length.
+
 ### DS-3 — Indexes
 
 Indexes are materialized as append-only mmap'd files.

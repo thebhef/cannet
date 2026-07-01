@@ -37,3 +37,14 @@ reads it.
   rebuilding dependent state.
 - Setting up a layer waits on its dependencies — the accepted cost of never
   caching a result computed against a half-built one.
+- The same rule applies to a dependency that changes **after** open, not
+  just ordering during it. The decode dictionary (the DBC set) can change
+  in-session — a DBC loaded, removed, re-scoped to different buses, or
+  auto-reloaded from disk — and the layers below it cache lazily, each
+  advancing its own decode cursor to the store tip and never revisiting a
+  frame. So any DBC-set mutation **drops** the derived decode state (the
+  per-signal decoded-sample caches and the active filter index) to force a
+  rebuild against the new set. Without this, a frame the old set couldn't
+  decode is skipped forever; on a stopped/reloaded capture (no new appends
+  to trigger a rebuild) the plot and filtered view stay empty or partial.
+  Ordering fixes open; clear-and-rebuild-on-change fixes the rest.

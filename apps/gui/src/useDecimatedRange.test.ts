@@ -105,10 +105,27 @@ describe("useDecimatedRange", () => {
 
     expect(out.kind).toBe("sampled");
     expect(out.snapshot.base).toBe(100);
+    expect(out.snapshot.firstT).toBe(0); // 100 − base (window starts at origin)
     expect(out.snapshot.lastT).toBe(5); // 105 − base
     expect(out.snapshot.byKey.get("k0")).toEqual({ t: [0, 1, 2], v: [1, 2, 3] });
     expect(mockInvoke).toHaveBeenCalledTimes(1);
     expect(result.current.current()?.base).toBe(100);
+  });
+
+  it("firstT is the window start relative to the session origin, not the window's own first frame", async () => {
+    // Window's first frame is at absolute 100 s, but the session origin
+    // (`origin`) is 90 s — so firstT is 10, the elapsed time the window
+    // begins at. This is the per-trace-Clear case (ADR 0024): the plot
+    // must keep session time, not re-zero the left edge to 0.
+    mockInvoke.mockResolvedValue(encode(100, 115, [{ t: [100, 110], v: [1, 2] }]));
+    const { result } = renderHook(() => useDecimatedRange());
+
+    const out = await run(() => result.current, req({ origin: 90 }));
+
+    expect(out.kind).toBe("sampled");
+    expect(out.snapshot.base).toBe(90);
+    expect(out.snapshot.firstT).toBe(10); // 100 − 90
+    expect(out.snapshot.lastT).toBe(25); // 115 − 90
   });
 
   it("skips the round-trip when the request is unchanged, reporting the live edge", async () => {
@@ -119,6 +136,7 @@ describe("useDecimatedRange", () => {
     const out = await run(() => result.current, req());
 
     expect(out.kind).toBe("unchanged");
+    expect(out.firstT).toBe(0);
     expect(out.lastT).toBe(5);
     expect(mockInvoke).toHaveBeenCalledTimes(1); // no second fetch
   });
