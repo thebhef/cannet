@@ -8,7 +8,7 @@
 //! store mutex. The headline numbers are **ingest-FPS retention** and the
 //! **worst append stall**: how much of the uncontended append rate
 //! survives, and how long a single append can block, as the buffer grows
-//! under that scan. The Task 21 diagnosis found a buffer-proportional
+//! under that scan. The perf-harness diagnosis found a buffer-proportional
 //! decay here; this mode turns it into measured, diffable numbers.
 
 use std::sync::atomic::{AtomicBool, Ordering};

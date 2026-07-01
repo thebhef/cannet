@@ -209,8 +209,18 @@ trip over it.
   (rate limiting / retention or ring-buffer caps) so a chatty source
   can't drown the panel or grow unbounded. Natural home is the Settings
   panel (see the `clear scratch cache on exit` item) once it exists.
-  Surfaced while building the Task 21 frontend perf capture, which adds
+  Surfaced while building the frontend perf capture, which adds
   yet another log/metric stream.
+- `[perf]` Interaction-driven render capture. The self-driving perf flags
+  capture the render tier *at rest* — they never scroll the heavy views,
+  so the interaction-triggered cost (the O(buffer) filtered / by-id scan
+  starving the UI thread, the plot over-render under active panning) goes
+  unmeasured, and the frontend baseline only gates "clean → clean." Add a
+  synthetic-scroll step to the orchestrator (no WebDriver, per ADR 0031)
+  that drives the heavy views during a capture; input→paint latency rides
+  along for free via the Event Timing API (`PerformanceObserver` `event`).
+  Skipped panel time-to-first-render — one-shot startup number, not the
+  sustained saturation that's the actual cost.
 - `[ui]` GUI-wide visual restyle: adopt the dark "scope" visual
   language from `plans/plot-panel-reference.html` (the prototype's colour
   variables, monospace type scale, panel chrome, control styling) across
@@ -287,7 +297,7 @@ next pass on this surface can address them as one piece.
   log a scary error.
 - `[perf]` `cannet-core`: revisit `CanFramePayload::Classic`/`Fd` to share
   a fixed-size inline buffer instead of `Vec<u8>` once the trace store /
-  benchmark in Task 21 shows allocator pressure.
+  perf benchmark shows allocator pressure.
 - `[feat]` `cannet-server` (Phase 2+): multi-client support. Phase 2 is
   single-client per server; a second connection is rejected with
   `Error::BUSY`. Lift this when there's a real use case (e.g. a second
@@ -374,7 +384,7 @@ next pass on this surface can address them as one piece.
     message rate sagging periodically. Suspected loopback / driver
     queueing rather than the scheduler (the fixed-grid scheduler
     absorbs work time and never bursts), but confirm against the
-    Task 21 profiling counters during the hardware pass and rule out
+    perf-harness profiling counters during the hardware pass and rule out
     a fire-path stall (registry lock contention at high aggregate
     rates).
   - **Task 14 RBS test matrix, live legs.** The RBS exit criteria's

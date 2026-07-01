@@ -4,22 +4,6 @@ import type { ProjectElementKind } from "./types";
 import type { FocusedPanelKind } from "./commands";
 
 /**
- * `localStorage` key for the persisted panel layout. The `.v1` suffix
- * is bumped if the serialized shape changes incompatibly. This is a
- * placeholder for the case where no project file is open: a project
- * file carries the layout, and this key is the "no project open" default.
- */
-export const LAYOUT_STORAGE_KEY = "cannet.layout.v1";
-
-/**
- * `localStorage` key holding the path of the last project that was
- * opened or saved-as, so it's reopened on launch. Absent / cleared
- * means "no named project" — fall back to the [`LAYOUT_STORAGE_KEY`]
- * layout.
- */
-export const LAST_PROJECT_KEY = "cannet.lastProject.v1";
-
-/**
  * Names the panel React components are registered under in the dockview
  * `components` map. Stored verbatim inside the serialized layout, so
  * changing them would orphan saved layouts — treat as stable.
@@ -137,17 +121,4 @@ export function validateLayout(parsed: unknown): SerializedDockview | null {
     return null;
   }
   return parsed as SerializedDockview;
-}
-
-/** Parse a previously-persisted dockview layout *string* (e.g. from
- * `localStorage`); see {@link validateLayout}. */
-export function parseSavedLayout(
-  raw: string | null | undefined,
-): SerializedDockview | null {
-  if (!raw) return null;
-  try {
-    return validateLayout(JSON.parse(raw));
-  } catch {
-    return null;
-  }
 }

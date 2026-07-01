@@ -17,45 +17,36 @@ the order below is the order of work, top first.
 
 ## Implementation order
 
-1. [Task 21 — Performance Profiling Baseline](0021-performance-profiling-baseline.md)
-   — three-tier profiling procedure and baseline numbers, an
-   agent-runnable automated perf harness, and fixes for the two
-   confirmed usability offenders (plot UI-thread saturation, transmit
-   steady-state jitter).
-2. [Task 28 — Panel Config Survives Close + Reopen](0028-panel-config-survives-reopen.md)
-   — move plot/trace view config off dockview `params` onto the model
-   element so closing and reopening a panel within a session no longer
-   loses its signals / areas / cursors / columns.
-3. [Task 20 — Signals, Drag/Drop & Trace Signal Display](0020-signals-drag-drop-trace-signal-display.md)
+1. [Task 20 — Signals, Drag/Drop & Trace Signal Display](0020-signals-drag-drop-trace-signal-display.md)
    — the signal-view panel and inline trace-row signals, plus the
    large-DBC panel performance and FZF-search-hiding fixes.
-4. [Task 17 — Windowed-Model Convergence](0017-windowed-model-convergence.md)
+2. [Task 17 — Windowed-Model Convergence](0017-windowed-model-convergence.md)
    — converge the four view caches onto one windowed-source contract
    (view-side; freezes the host signatures Task 18 reimplements). The
    host model grows unbounded with capture length (raw frames, the
    by-id index, per-signal sample caches), so this and Task 18 are the
    bound on long-run memory.
-5. [Task 18 — Indefinite-Length Capture (Disk-Spill)](0018-indefinite-length-capture-disk-spill.md)
+3. [Task 18 — Indefinite-Length Capture (Disk-Spill)](0018-indefinite-length-capture-disk-spill.md)
    — the model-side disk-spill store behind Task 17's frozen contract;
    bounds host RAM at the cost of disk.
-6. [Task 19 — Argument-Taking Palette Commands](0019-command-palette-goto.md)
+4. [Task 19 — Argument-Taking Palette Commands](0019-command-palette-goto.md)
    — the specialised, argument-taking commands (go-to-row / -time,
    set-visible-range, save-with-picker) on top of the command palette
    and go-to-view framework already shipped in task 16.
-7. [Task 25 — CAN HW + Virtual-Bus Bug Fixes](0025-can-hw-vbus-bugfixes.md)
+5. [Task 25 — CAN HW + Virtual-Bus Bug Fixes](0025-can-hw-vbus-bugfixes.md)
    — the hardware/virtual-bus verify-and-fix pass (timestamp handling,
    post-clear negative timestamps) plus DBC-view performance/search and
    the plot-colour bug.
-8. [Task 22 — CANopen](0022-canopen.md)
+6. [Task 22 — CANopen](0022-canopen.md)
    — EDS ingestion and SDO / PDO decoding.
-9. [Task 23 — Plot Measurements and Triggers](0023-plot-measurements-and-triggers.md)
+7. [Task 23 — Plot Measurements and Triggers](0023-plot-measurements-and-triggers.md)
    — triggers, math channels, manual per-series y, export, drag a
    plot area.
-10. [Task 24 — Cross-Cutting Polish](0024-cross-cutting-polish.md)
+8. [Task 24 — Cross-Cutting Polish](0024-cross-cutting-polish.md)
    — the small UX / infrastructure tail and the end-user runtime-tool
    fetch flow; several items now overlap Tasks 17/20 and the backlog,
    so re-derive the real remainder when it comes current.
-11. [Task 27 — Live Disk-Watch for Project & RBS Files](0027-project-rbs-disk-watch.md)
+9. [Task 27 — Live Disk-Watch for Project & RBS Files](0027-project-rbs-disk-watch.md)
     — generalize the DBC auto-reload watcher to project (`.cannet_prj`)
     and RBS (`.cannet_rbs`) files so external edits are picked up
     automatically.

@@ -21,6 +21,45 @@ surface over both the in-RAM and the disk-spilled
 
 ## Decision
 
+### How the views map onto the model
+
+The model is one append-only sequence of frames. Each view extracts a
+different *shape* from it — which is why the contract needs two
+accessors, not one and not four:
+
+```text
+  model:  frame index → 0   1   2   3   4   5   6   7   8   9  … tip
+                        ▓   ░   ▓   ▓   ░   ▒   ▓   ░   ▒   ▓
+                        append-only; host also keeps O(1) side indices:
+                        newest-per-id, per-id index lists, per-id/bus rates
+
+  raw chrono       a contiguous index range              → RowPage
+                   …▓ ░ ▓[▓ ░ ▒ ▓]░ ▒ ▓…                   rows[off, off+limit)
+
+  filtered chrono  the matching subsequence               → RowPage
+                   ▓ ░ ▓ ▓ ░ ▒ ▓ ░ ▒ ▓
+                   ●     ●         ●   (keep predicate)     matches[off, off+limit)
+
+  by-ID            newest index per id (+ rate, count)    → RowPage
+                   collapses the window to one row per id
+                   A→6   B→8   C→9
+
+  plot             per-signal indices, bucketed by time   → DecimatedRange
+                   sig: 0─2─3─6 …      min/max per pixel column
+                   t:   ├──┼──┼──┤     [from, to] seconds, lossy
+```
+
+Three of the four extract **rows addressed by index** — a range, a
+filtered subsequence, or a newest-per-id collapse — and differ only in
+*which* rows, not in how they are addressed or what a row is. The plot is
+the odd one out: it is addressed by **time** and its result is **lossy**
+(one min/max bucket per pixel), so "page 3 of RPM" is meaningless. That
+single distinction is the whole reason for two accessors.
+
+In every case the view holds only its current window; the host does all
+index↔time mapping, filtering, newest-per-id selection, rate estimation,
+and decimation against the one buffer.
+
 ### Two access patterns
 
 The views divide into **two** patterns — not one, not three:

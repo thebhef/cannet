@@ -101,7 +101,7 @@ Over the in-RAM `Vec` the host scan is O(window); that is acceptable at
 `Vec` scale and is what Task 18's filter index makes O(page) at 10^9
 frames.
 
-**Confirmed runtime offender (Task 21 diagnosis).** The current filtered
+**Confirmed runtime offender (perf-capture diagnosis).** The current filtered
 path re-scans the whole buffer ~8×/s for the scrollbar match-count, and
 `scan_window_filtered` holds the `trace_store` mutex for that O(buffer)
 scan. Under the RBS repro this contention — not the scan's raw cost — is
@@ -128,7 +128,7 @@ match *indices* for a bounded `[start, end)` under one lock) plus
 `frames_at` (clones only the page). `fetch_filtered_trace` drives the
 scan as a sequence of chunks, releasing the trace-store mutex and
 `await`-yielding between each, so a history scan never holds the `append`
-mutex across the whole buffer. Confirmed against the Task 21 capture as
+mutex across the whole buffer. Confirmed against the perf capture as
 the fix for the host-side TX-delivery stall (the growing `max_gap`): the
 filtered scan was starving the tx-confirm `append`, not just RX. Still
 owed for the full slice: (1) the **incremental O(Δ) match-count** — the
@@ -190,7 +190,7 @@ Acceptance:
 - `resample`'s hand-rolled cache bookkeeping and `traceRangesRef` are
   gone.
 
-Design note (from a reverted Task 21 experiment). When the rewrite
+Design note (from a reverted plot report-coalescing experiment). When the rewrite
 touches the area→panel reporting, prefer a single report object
 (`{ lastT, series, perf/host/rate/cache gauges, base }`) over today's
 six-callback fan-out — it's the cleaner shape. But do **not** assume
@@ -199,7 +199,14 @@ bundled them and flushed once per `requestAnimationFrame` left the
 plot over-render *entirely unchanged* and broke follow-live by
 deferring the x-window slide a frame. So measure before adding any
 batching, and keep the live-edge slide synchronous with the resample
-that produced it.
+that produced it. Characterize before cutting: at ~1000 msg/s with plots
+open the UI thread runs ~75–100% (~200 `PlotArea` renders/s, 200–767 ms
+long-task bursts). Wrap the synchronous resample sections
+(`decodeSignalsSample`, the auto-norm / `mergeSeries` block, `u.setData`)
+in `diagTime` and correlate the `longtask` spikes with the moving
+`render.*` / `plotarea.resample` counter to confirm which is the dominant
+task — this slice's paging is expected to retire all three, but localise
+so the win is verifiable.
 
 **Confirmed runtime offender + crash (diagnosed 2026-06-25).** This
 slice is the structural fix for a renderer-memory crash. `PlotArea.resample`

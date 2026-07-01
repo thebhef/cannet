@@ -53,6 +53,7 @@ mod interfaces;
 mod ipc;
 mod local_buses;
 mod notes;
+mod prefs;
 mod project;
 mod rbs;
 mod sidecar;
@@ -68,6 +69,7 @@ pub mod trace_store;
 mod transmit_frames;
 mod transmit_scheduler;
 mod verification;
+mod window_state;
 
 // File-model types the `cannet-perf-measurement` harness reuses, re-exported so the
 // harness can parse the example project / RBS through the production
@@ -336,6 +338,20 @@ pub fn run() {
     let autostart = diag::AutomationConfig::from_args(std::env::args());
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // Persist the main window's size, position, and maximized /
+        // fullscreen state across launches. The `setup` hook below runs
+        // `window_state::ensure_on_screen` afterwards to recover a window
+        // whose restored position landed off every connected monitor.
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::SIZE
+                        | tauri_plugin_window_state::StateFlags::POSITION
+                        | tauri_plugin_window_state::StateFlags::MAXIMIZED
+                        | tauri_plugin_window_state::StateFlags::FULLSCREEN,
+                )
+                .build(),
+        )
         .manage(AppState {
             databases: Mutex::new(Vec::new()),
             remote_sessions: Mutex::new(HashMap::new()),
@@ -369,6 +385,8 @@ pub fn run() {
             disconnect_remote_server,
             project::open_project,
             project::save_project,
+            prefs::get_prefs,
+            prefs::set_prefs,
             list_signals,
             list_dbc_content,
             sample_signals,
@@ -433,6 +451,12 @@ pub fn run() {
             // Tauri assigns "main" by default for the first window in the
             // config; we rely on that here.
             debug_assert!(app.get_webview_window("main").is_some());
+            // The window-state plugin has restored the saved geometry by
+            // now; pull a window whose title bar landed off-screen (a
+            // disconnected monitor) back onto the primary monitor.
+            if let Some(main) = app.get_webview_window("main") {
+                window_state::ensure_on_screen(&main);
+            }
             crash::spawn_health_recorder(app.handle().clone());
             spawn_trace_grew_emitter(app.handle().clone());
             // The single transmit scheduler thread drives every running
@@ -1337,8 +1361,8 @@ async fn fetch_latest_by_id(
 /// `await`-yielding — between each, so a history scan never holds the
 /// append mutex across the whole buffer. That mutex also gates the
 /// ingest pump's `append` and the tx-confirm `append`, so a buffer-wide
-/// locked scan here starved RX and transmit as the buffer grew (Task 21
-/// diagnosis); chunking bounds the lock-hold to one chunk. The scan
+/// locked scan here starved RX and transmit as the buffer grew (the
+/// diagnosed lock contention); chunking bounds the lock-hold to one chunk. The scan
 /// never decodes blindly: when the predicate has decode-dependent
 /// leaves, they're pre-resolved to a candidate-id set
 /// ([`decode_candidate_ids`]) and only frames whose id is in the set are

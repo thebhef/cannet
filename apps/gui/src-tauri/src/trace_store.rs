@@ -459,7 +459,8 @@ impl TraceStore {
     /// a sequence of chunks, releasing the lock (and yielding) between
     /// them. That keeps a history scan from ever holding the append
     /// mutex across the whole buffer — the lock-hold that starved RX
-    /// `append` and transmit as the buffer grew (Task 21 diagnosis). The
+    /// `append` and transmit as the buffer grew (the diagnosed lock
+    /// contention). The
     /// matched page is materialised separately via [`Self::frames_at`].
     #[must_use]
     pub fn scan_chunk(
@@ -768,7 +769,7 @@ mod tests {
 
     #[test]
     fn append_interleaves_between_chunk_scans_without_a_buffer_wide_lock() {
-        // Regression for the Task 21 lock-starvation fix: a filtered scan
+        // Regression for the lock-starvation fix: a filtered scan
         // is driven as a sequence of `scan_chunk` calls so the append
         // mutex is released between chunks. This simulates that interleave
         // single-threadedly: an append landing *between* two chunk scans

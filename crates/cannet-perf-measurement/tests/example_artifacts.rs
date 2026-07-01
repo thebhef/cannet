@@ -50,7 +50,7 @@ fn schedule_is_periodic_and_realistic() {
     }
 
     // The EV model sums to a few hundred frames/s — a useful sustained
-    // ingest workload, in the band the Task 21 diagnosis ran against.
+    // ingest workload, in the band the perf diagnosis ran against.
     let rate = workload::aggregate_rate_hz(&schedule);
     assert!(
         (300.0..=600.0).contains(&rate),
@@ -76,7 +76,7 @@ fn layout_opens_representative_views() {
     }
 
     // A representative render-tier load: both trace views (chronological +
-    // by-id, the config the Task 21 diagnosis ran against), at least two
+    // by-id, the config the perf diagnosis ran against), at least two
     // plots, and the RBS element that drives the workload.
     assert!(
         elements_by_kind.get("trace").is_some_and(|s| s.len() >= 2),

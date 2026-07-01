@@ -7,33 +7,26 @@ import {
   SYSTEM_MESSAGES_PANEL_ID,
   elementPanelComponent,
   panelKindForFocus,
-  parseSavedLayout,
+  validateLayout,
 } from "./dockLayout";
 
-describe("parseSavedLayout", () => {
+describe("validateLayout", () => {
   it("returns null for missing input", () => {
-    expect(parseSavedLayout(null)).toBeNull();
-    expect(parseSavedLayout(undefined)).toBeNull();
-    expect(parseSavedLayout("")).toBeNull();
+    expect(validateLayout(null)).toBeNull();
+    expect(validateLayout(undefined)).toBeNull();
   });
 
-  it("returns null for non-JSON input", () => {
-    expect(parseSavedLayout("{not json")).toBeNull();
-    expect(parseSavedLayout("undefined")).toBeNull();
+  it("returns null for a value that isn't a layout object", () => {
+    expect(validateLayout(42)).toBeNull();
+    expect(validateLayout("a string")).toBeNull();
+    expect(validateLayout([1, 2, 3])).toBeNull();
+    expect(validateLayout({ grid: {} })).toBeNull();
+    expect(validateLayout({ panels: {} })).toBeNull();
   });
 
-  it("returns null for JSON that isn't a layout object", () => {
-    expect(parseSavedLayout("42")).toBeNull();
-    expect(parseSavedLayout("null")).toBeNull();
-    expect(parseSavedLayout('"a string"')).toBeNull();
-    expect(parseSavedLayout("[1, 2, 3]")).toBeNull();
-    expect(parseSavedLayout('{"grid": {}}')).toBeNull();
-    expect(parseSavedLayout('{"panels": {}}')).toBeNull();
-  });
-
-  it("returns the parsed object when it has the dockview layout shape", () => {
+  it("returns the value when it has the dockview layout shape", () => {
     const layout = { grid: { root: {}, width: 800, height: 600 }, panels: {} };
-    expect(parseSavedLayout(JSON.stringify(layout))).toEqual(layout);
+    expect(validateLayout(layout)).toEqual(layout);
   });
 });
 

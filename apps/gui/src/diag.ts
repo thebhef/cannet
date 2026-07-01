@@ -84,7 +84,7 @@ export function diagCount(key: string, n = 1): void {
   }
 }
 
-// --- Render-tier perf capture (Task 21 frontend characterisation) ---
+// --- Render-tier perf capture (ADR 0031) ---
 //
 // During a capture the 1 Hz reporter (below) also *pushes* each second's
 // snapshot to the host (`diag_push`), which accumulates them and reduces

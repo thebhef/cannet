@@ -165,19 +165,18 @@ beginning a new capture). There is no automatic background cleanup
 at any time.
 
 (For context: today the frontend auto-reopens the last project at
-launch by reading a `cannet.lastProject.v1` path from `localStorage`
-and calling `open_project` — see [dockLayout.ts:19](../../apps/gui/src/dockLayout.ts#L19),
-[App.tsx:1274](../../apps/gui/src/App.tsx#L1274). DS-7's gate runs as
-part of that `open_project` call. The host carries no project-reload
-memory of its own — `current/` is *not* a launch trigger, only a
-match against whatever project the frontend opens.)
+launch by reading a host-persisted last-project pointer (ADR 0032) and
+calling `open_project`. DS-7's gate runs as part of that `open_project`
+call. The host carries no project-reload memory of its own — `current/`
+is *not* a launch trigger, only a match against whatever project the
+frontend opens.)
 
 **Project identity gate.** `current/` records the identity of the
 project it belongs to, plus the project's path at the time the
 scratch was created. The identity is what gates loading; the path is
 a host-side diagnostic / robustness record (so the host has its own
 trace of which project the scratch belongs to, independent of the
-frontend's `localStorage` pointer). On `open_project`, the scratch
+last-project pointer). On `open_project`, the scratch
 loads only when its recorded identity matches the project's
 identity; otherwise it stays on disk, invisible to the active
 project. Opening a *different* project is not a wipe trigger; only
@@ -185,8 +184,8 @@ Clear and Start wipe. (So opening project B hides project A's
 scratch but doesn't destroy it; reopening project A brings it back.)
 
 Identity must be **stable across rename and move** — a project's
-file path is the user's to change at any time, and the
-`localStorage` pointer can go stale or be wiped. The identity is a
+file path is the user's to change at any time, and the last-project
+pointer can go stale or be wiped. The identity is a
 UUID embedded inside the project JSON file, generated once when the
 project is first created and never modified after. This requires
 adding a `project_id: Uuid` field to the `Project` schema (it is not
