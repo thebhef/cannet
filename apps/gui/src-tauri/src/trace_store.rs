@@ -58,16 +58,59 @@
 //! falling back to `0.0` if there isn't yet enough signal to estimate.
 
 use std::collections::{HashMap, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use cannet_core::Direction;
 use cannet_spill::{CandidateSource, DiskRawStore, FilterIndex, MemRawStore, RawStore};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::filter::CandidateSet;
 
 pub use cannet_spill::RawTraceFrame;
+
+/// File in the scratch dir recording which project the on-disk session
+/// belongs to (ADR 0002 DS-7). Written when a capture starts; read by
+/// [`TraceStore::try_reload`] so a prior session reloads only against the
+/// project that produced it. (The project *path* DS-7 mentions is
+/// best-effort diagnostic only and is omitted here.)
+const IDENTITY_FILE: &str = "identity.json";
+
+/// File in the scratch dir holding the facade's RAM-only derived state —
+/// the per-key newest index + count and the session-start anchor — so a
+/// reopened session comes back with a working by-id view and filter
+/// candidate resolution, not just the raw frames (ADR 0002 DS-7). Written
+/// on flush; restored on reopen.
+const DERIVED_FILE: &str = "derived.json";
+
+/// Persisted scratch identity ([`IDENTITY_FILE`]).
+#[derive(Serialize, Deserialize)]
+struct ScratchIdentity {
+    project_id: Uuid,
+}
+
+/// One persisted derived-state row: a [`FrameKey`] flattened, plus its
+/// last-seen frame index and session frame count.
+#[derive(Serialize, Deserialize)]
+struct DerivedEntry {
+    bus_id: Option<String>,
+    channel: u8,
+    id: u32,
+    extended: bool,
+    last_index: u64,
+    count: u64,
+}
+
+/// Persisted derived state ([`DERIVED_FILE`]): the session-start anchor
+/// and one [`DerivedEntry`] per distinct key. Small (id-space-bounded),
+/// rewritten whole on each flush.
+#[derive(Serialize, Deserialize)]
+struct DerivedState {
+    session_start_ns: u64,
+    entries: Vec<DerivedEntry>,
+}
 
 /// How far back the rate estimator looks. One second is short enough
 /// that a stalled stream registers immediately and long enough that
@@ -236,22 +279,33 @@ struct Inner {
     /// returning `None`). Counted so that silent path is visible in the
     /// diagnostic readout.
     dropped_before_session: u64,
+    /// The disk-spill scratch directory, when this store is disk-backed
+    /// (`None` for the in-RAM test double). The home for the reopen
+    /// manifest (in the raw store) plus the host-side identity and derived
+    /// files this facade writes (ADR 0002 DS-7).
+    scratch_dir: Option<PathBuf>,
 }
 
 impl TraceStore {
     /// Construct over an in-RAM [`MemRawStore`] — the test double. Used by
     /// unit tests and the perf harness; production uses [`Self::new_disk`].
     pub fn new() -> Self {
-        Self::with_raw(Box::new(MemRawStore::new()))
+        Self::with_raw(Box::new(MemRawStore::new()), None)
     }
 
     /// Construct over the disk-spill [`DiskRawStore`] rooted at `dir` (the
-    /// production path, ADR 0002). The directory must already exist.
+    /// production path, ADR 0002). The directory must already exist. The
+    /// store opens **empty without wiping** `dir`, so a prior session's
+    /// files survive until the gate reloads them or a capture clears them
+    /// (ADR 0002 DS-7) — [`Self::try_reload`] is what brings a matching
+    /// prior session back.
     pub fn new_disk(dir: impl AsRef<Path>) -> std::io::Result<Self> {
-        Ok(Self::with_raw(Box::new(DiskRawStore::new(dir)?)))
+        let dir = dir.as_ref().to_path_buf();
+        let raw = Box::new(DiskRawStore::open_empty(&dir)?);
+        Ok(Self::with_raw(raw, Some(dir)))
     }
 
-    fn with_raw(raw: Box<dyn RawStore>) -> Self {
+    fn with_raw(raw: Box<dyn RawStore>, scratch_dir: Option<PathBuf>) -> Self {
         Self {
             inner: Mutex::new(Inner {
                 session_start_ns: 0,
@@ -263,6 +317,7 @@ impl TraceStore {
                 rx_rate: RateTrack::default(),
                 tx_rate: RateTrack::default(),
                 dropped_before_session: 0,
+                scratch_dir,
             }),
         }
     }
@@ -505,6 +560,118 @@ impl TraceStore {
         inner.rx_rate = RateTrack::default();
         inner.tx_rate = RateTrack::default();
         inner.dropped_before_session = 0;
+        // Wiping the buffer wipes the scratch (ADR 0002 DS-7): the raw
+        // store's `clear` already dropped its segments and manifest; drop
+        // the facade's derived + identity files too so a stale prior
+        // session can't be reloaded. The host re-writes the identity if
+        // this reset is the start of a fresh capture.
+        if let Some(dir) = inner.scratch_dir.clone() {
+            let _ = std::fs::remove_file(dir.join(DERIVED_FILE));
+            let _ = std::fs::remove_file(dir.join(IDENTITY_FILE));
+        }
+    }
+
+    /// Flush the raw store to disk — a no-op for the in-RAM test double,
+    /// and for the disk-spill store the durability point that makes its
+    /// segments and reopen manifest reloadable (ADR 0002 DS-4/DS-7). The
+    /// host calls this on a cadence so a crash loses at most the
+    /// since-last-flush tail (DS-2), and a cleanly stopped session is
+    /// reloadable as a stopped trace. Returns the raw store's I/O result.
+    ///
+    /// The raw store's manifest is written first (it is the authority on
+    /// frame count); then the facade's [`DERIVED_FILE`] is rewritten, so
+    /// its newest-index/count entries never reference a frame past the
+    /// just-persisted length.
+    pub fn flush(&self) -> std::io::Result<()> {
+        let mut inner = self.inner.lock().expect("trace store mutex poisoned");
+        inner.raw.flush()?;
+        if let Some(dir) = inner.scratch_dir.clone() {
+            let entries = inner
+                .latest
+                .iter()
+                .map(|(key, &idx)| DerivedEntry {
+                    bus_id: key.0.clone(),
+                    channel: key.1,
+                    id: key.2,
+                    extended: key.3,
+                    last_index: idx as u64,
+                    count: inner.rates.get(key).map_or(0, |r| r.count),
+                })
+                .collect();
+            let derived = DerivedState {
+                session_start_ns: inner.session_start_ns,
+                entries,
+            };
+            write_json(&dir.join(DERIVED_FILE), &derived)?;
+        }
+        Ok(())
+    }
+
+    /// Record which project the current scratch belongs to (ADR 0002
+    /// DS-7), so a later launch reloads it only against that project. A
+    /// no-op for the in-RAM double. `None` removes any prior identity (the
+    /// scratch then belongs to no project and never reloads). Called by
+    /// the host when a capture starts.
+    pub fn write_scratch_identity(&self, project_id: Option<Uuid>) {
+        let inner = self.inner.lock().expect("trace store mutex poisoned");
+        let Some(dir) = inner.scratch_dir.clone() else {
+            return;
+        };
+        let path = dir.join(IDENTITY_FILE);
+        match project_id {
+            Some(project_id) => {
+                if let Err(e) = write_json(&path, &ScratchIdentity { project_id }) {
+                    tracing::warn!(error = %e, "writing scratch identity failed");
+                }
+            }
+            None => {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+
+    /// Reload a prior on-disk session as a **stopped** trace, but only if
+    /// the scratch's recorded identity matches `project_id` (ADR 0002
+    /// DS-7). On a match with a reopenable store, this swaps in the
+    /// disk-spill store, restores the derived state and session-start
+    /// anchor, and returns `true`; otherwise it leaves the store untouched
+    /// (the scratch stays on disk, neither loaded nor wiped) and returns
+    /// `false`. The reloaded trace's per-id rates read zero — it isn't
+    /// live.
+    pub fn try_reload(&self, project_id: Uuid) -> bool {
+        let mut inner = self.inner.lock().expect("trace store mutex poisoned");
+        let Some(dir) = inner.scratch_dir.clone() else {
+            return false;
+        };
+        let matches = read_json::<ScratchIdentity>(&dir.join(IDENTITY_FILE))
+            .is_some_and(|id| id.project_id == project_id);
+        if !matches {
+            return false;
+        }
+        let Ok(Some(reopened)) = DiskRawStore::reopen(&dir) else {
+            return false;
+        };
+        inner.raw = Box::new(reopened);
+        // Restore the derived state the by-id view and filter resolution
+        // read. Rates are left empty (a reloaded trace is stopped, so every
+        // rate reads zero); only the newest-index and count are recovered.
+        inner.latest = HashMap::new();
+        inner.rates = HashMap::new();
+        inner.session_start_ns = 0;
+        if let Some(derived) = read_json::<DerivedState>(&dir.join(DERIVED_FILE)) {
+            inner.session_start_ns = derived.session_start_ns;
+            let now = Instant::now();
+            for e in derived.entries {
+                let key: FrameKey = (e.bus_id, e.channel, e.id, e.extended);
+                inner
+                    .latest
+                    .insert(key.clone(), usize::try_from(e.last_index).unwrap_or(usize::MAX));
+                let mut est = RateEstimate::first_seen(0, now);
+                est.count = e.count;
+                inner.rates.insert(key, est);
+            }
+        }
+        true
     }
 
     /// Current session-start threshold (Unix-epoch ns). The trace UI
@@ -719,6 +886,25 @@ impl CandidateSource for TraceStore {
     fn frames_at(&self, idxs: &[usize]) -> Vec<(usize, RawTraceFrame)> {
         self.frames_at(idxs)
     }
+}
+
+/// Serialize `value` to `path` as JSON via a temp-file + rename, so a
+/// crash mid-write can't leave a half-written file that fails to parse on
+/// reload.
+fn write_json<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
+    let bytes = serde_json::to_vec(value)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, &bytes)?;
+    std::fs::rename(&tmp, path)
+}
+
+/// Read and parse a JSON file written by [`write_json`]. `None` when the
+/// file is absent or unparseable — both treated as "no usable state",
+/// which the reload path handles as a clean miss.
+fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
+    let bytes = std::fs::read(path).ok()?;
+    serde_json::from_slice(&bytes).ok()
 }
 
 fn prune_rate_samples(samples: &mut VecDeque<RateSample>, now: Instant) {
@@ -1217,6 +1403,98 @@ mod tests {
         let (rx, tx) = store.frames_per_second_by_direction();
         assert!(rx > 0.0, "rx should estimate, got {rx}");
         assert_eq!(tx, 0.0);
+    }
+
+    #[test]
+    fn flush_is_a_noop_on_the_in_ram_double() {
+        // The test double has no disk; flush must still succeed so the
+        // host's flush cadence is store-agnostic.
+        let store = TraceStore::new();
+        store.append(dummy(0, 1));
+        assert!(store.flush().is_ok());
+    }
+
+    #[test]
+    fn flush_persists_a_disk_store_for_reopen() {
+        // The facade flush is the durability point the host cadence drives:
+        // after it, the disk store reopens with every frame (ADR 0002 DS-7).
+        let dir = std::env::temp_dir().join(format!("cannet-flush-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        {
+            let store = TraceStore::new_disk(&dir).unwrap();
+            for i in 0u32..5 {
+                store.append(dummy(u64::from(i) * 1_000, i));
+            }
+            store.flush().unwrap();
+        }
+        let reopened = cannet_spill::DiskRawStore::reopen(&dir)
+            .unwrap()
+            .expect("flush wrote a reopen manifest");
+        assert_eq!(reopened.len(), 5);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn try_reload_restores_a_matching_stopped_session() {
+        let dir = std::env::temp_dir().join(format!("cannet-reload-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pid = uuid::Uuid::new_v4();
+        {
+            let store = TraceStore::new_disk(&dir).unwrap();
+            store.start_session(1_000); // session-start anchor
+            store.write_scratch_identity(Some(pid));
+            store.append(dummy_on_bus(1_000, 0x100, "pt"));
+            store.append(dummy_on_bus(2_000, 0x100, "body")); // same id, other bus
+            store.append(dummy_on_bus(3_000, 0x100, "pt"));
+            store.flush().unwrap();
+        }
+        // A fresh launch over the same dir: empty until the gate reloads.
+        let booted = TraceStore::new_disk(&dir).unwrap();
+        assert_eq!(booted.len(), 0);
+        // Mismatched project: nothing loads, the scratch is left intact.
+        assert!(!booted.try_reload(uuid::Uuid::new_v4()));
+        assert_eq!(booted.len(), 0);
+        // Matching project: reloads as a stopped trace with derived state
+        // and the session-start anchor restored.
+        assert!(booted.try_reload(pid));
+        assert_eq!(booted.len(), 3);
+        assert_eq!(booted.session_start_ns(), 1_000);
+        // Multi-bus same-id stays faithful (fork P persists the full key):
+        // both buses are present with their own counts.
+        let mut by_bus: Vec<(Option<String>, u64)> = booted
+            .latest_since(0)
+            .iter()
+            .map(|r| (r.frame.bus_id.clone(), r.count))
+            .collect();
+        by_bus.sort();
+        assert_eq!(
+            by_bus,
+            vec![(Some("body".into()), 1), (Some("pt".into()), 2)]
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn start_session_wipes_the_scratch_so_a_later_reload_misses() {
+        let dir = std::env::temp_dir().join(format!("cannet-wipe-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pid = uuid::Uuid::new_v4();
+        {
+            let store = TraceStore::new_disk(&dir).unwrap();
+            store.write_scratch_identity(Some(pid));
+            store.append(dummy(1_000, 1));
+            store.flush().unwrap();
+        }
+        {
+            // A Clear / new-capture reset wipes the scratch identity.
+            let store = TraceStore::new_disk(&dir).unwrap();
+            assert!(store.try_reload(pid));
+            store.start_session(0);
+            store.flush().unwrap();
+        }
+        let booted = TraceStore::new_disk(&dir).unwrap();
+        assert!(!booted.try_reload(pid), "wiped identity must not reload");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

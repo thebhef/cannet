@@ -7,6 +7,7 @@ import {
   freshTrace,
   pauseTrace,
   reanchorToSession,
+  restoredTrace,
   resumeTrace,
   stopTrace,
   traceFrameCount,
@@ -30,6 +31,15 @@ describe("freshTrace / clearedTrace / traceStatus / traceFrameCount", () => {
     expect(traceStatus(t)).toBe("stopped");
     expect(traceFrameCount(t, 7)).toBe(0);
     expect(traceFrameCount(t, 10_000)).toBe(0);
+  });
+
+  it("a restored trace is stopped and spans the whole reloaded buffer", () => {
+    const t = restoredTrace(3626);
+    expect(t).toEqual({ start: 0, end: 3626, isPaused: false, traceStartOffsetSeconds: null });
+    expect(traceStatus(t)).toBe("stopped");
+    // It spans every reloaded frame, and stays put as a stopped trace.
+    expect(traceFrameCount(t, 3626)).toBe(3626);
+    expect(traceFrameCount(t, 5000)).toBe(3626);
   });
 
   it("clear keeps the run state — running stays running, stopped stopped, paused paused", () => {

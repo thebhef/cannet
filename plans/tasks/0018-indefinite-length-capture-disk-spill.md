@@ -122,13 +122,80 @@ session present at launch is loaded as a stopped historical trace
       freshly generated one). New `uuid` dep (v4 + serde). 3 tests
       (generate-when-absent + distinct, preserve-explicit + round-trip,
       file-anchor recovers/None). The field is inert until 5.3c reads it.
-    - **Step 5.3c — not started.** Host wiring (lib.rs / trace_store.rs):
-      `current/` records the project identity (host-side, separate from
-      the spill manifest); `open_project` reopens-as-stopped only on an
-      identity match (else leaves the scratch on disk); reset-on-Clear/Start
-      wipes `current/` incl. the filter index; the facade reconstructs its
-      RAM-only derived state (newest-per-id, counts) from the by-id index
-      on reopen.
+    - **Step 5.3c — host wiring, sliced into four** (it spans durability,
+      a host identity file, the open gate + reconstruction, and the
+      reset path):
+      - **Step 5.3c-i — done.** Durability cadence. Discovery:
+        `RawStore::flush` was never called in production, so 5.3a's
+        manifest was dormant — reopen would always find nothing. Added
+        `TraceStore::flush` (locks, delegates to `raw.flush()`; a no-op on
+        the in-RAM double) and a `spawn_trace_flusher` task on a 2 s
+        cadence (`TRACE_FLUSH_TICK`), skipping a tick when the buffer
+        hasn't grown — so an idle/stopped session doesn't rewrite the
+        manifest, and the first tick after capture stops still persists
+        the final state (a cleanly stopped trace is reloadable within one
+        tick). No explicit stop/exit flush needed for correctness. Two
+        tests (no-op on the double; disk flush → `DiskRawStore::reopen`
+        round-trips). **Watch item for Step 7:** the cadence uses the full
+        `flush()` (every mapped segment); at 10^8 frames that's many
+        msyncs under the append lock — measure there and make it
+        incremental (flush only newly-sealed segments) if it shows up.
+      - **Step 5.3c (rest) — done** in one commit (the ii/iii/iv split was
+        dropped — they're one lifecycle feature, ~200 lines, not three
+        reviewable units). Pieces:
+        - **Boot stops wiping.** New `DiskRawStore::open_empty` constructs
+          an empty store that *preserves* the on-disk files;
+          `TraceStore::new_disk` uses it, so a prior session survives boot
+          for the gate to reload (the old `new` wiped at construction,
+          which would have destroyed the scratch before any gate ran).
+        - **Host scratch files, facade-owned.** The facade holds the
+          `scratch_dir` and writes two small JSON files there:
+          `identity.json` (`project_id`) on capture start, and
+          `derived.json` (`session_start_ns` + per-key newest-index/count)
+          on every flush. Both via temp-file + rename.
+        - **Derived state — fork P (persist), not rebuild-from-by-id.**
+          The facade's `latest`/counts are keyed by the full `(bus,
+          channel, id, extended)`; the by-id index is keyed by `(id,
+          extended)`, so rebuilding would collapse a same-id-on-multiple-
+          buses case (common in multi-bus captures, and it would break
+          filter candidate resolution, not just display). Persisting is
+          faithful and rides the flush we already added. Rates reset to
+          zero (a reloaded trace is stopped).
+        - **The gate.** `open_project` calls `TraceStore::try_reload(
+          project_id)`: on an `identity.json` match with a reopenable
+          store, it swaps in the disk store, restores derived state +
+          `session_start_ns`, and the trace comes back stopped; a mismatch
+          (or no scratch) leaves it on disk, untouched. Then it records the
+          project as `AppState::active_project_id`.
+        - **Reset on Clear/Start.** `start_session` (the buffer reset)
+          removes `identity.json` + `derived.json` (the raw `clear` already
+          dropped segments + manifest); a `restamp_scratch_for_capture`
+          helper after each `start_session` (Clear and BLF-replay sites)
+          drops the filter index and writes the fresh identity for the
+          active project.
+        - **Frontend restore + open-path ordering (ADR 0033).** A new
+          `restore_scratch_capture` command returns the reloaded count +
+          session start; `applyProject` calls it *after* the open clears
+          the view, setting each element's window to `restoredTrace` (a
+          stopped trace spanning the whole reloaded buffer). This exposed a
+          latent race: `applyProject` fired DBC load, RBS register, layout,
+          and restore concurrently, so a later-loaded bus's DBC (battery)
+          wasn't present when the restored capture first sampled it — that
+          bus's plot + filtered view cached empty while the earlier bus
+          rendered. Fixed by sequencing the open path (DBCs → RBS → views →
+          replayed capture), each stage awaited; captured as ADR 0033.
+          Verified end-to-end on the ev-demo project (battery + powertrain
+          both restore; no `not loaded` warning wave).
+        - 6 tests (spill `open_empty` preserve+reopen; facade reload
+          match/mismatch/faithful-multi-bus/session-start; Clear wipes
+          identity so a later reload misses) + a `restoredTrace` frontend
+          unit test.
+        - **Deviation:** `identity.json` records only `project_id`, not the
+          project *path* DS-7 mentions. The path is best-effort diagnostic
+          ("not the basis for the match"), and writing it at capture start
+          would mean threading the active path through `AppState` too —
+          omitted as not worth the wiring. Can be added later if a
+          diagnostic need appears.
     - **Step 5.3d — not started.** Disk-back the DS-5 pyramids in
       `current/` (residency bound; layout already reload-compatible).
 - **Steps 6–7 — not started.**

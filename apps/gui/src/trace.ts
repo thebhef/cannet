@@ -56,6 +56,14 @@ export function clearedTrace(n: number, offsetSeconds: number | null = null): Tr
   return { start: n, end: n, isPaused: false, traceStartOffsetSeconds: offsetSeconds };
 }
 
+/// A *stopped* trace spanning the whole restored session buffer `[0, n)`.
+/// Used when a prior capture is reloaded on project open (ADR 0002 DS-7):
+/// the view shows the reloaded history, frozen (it isn't live), with the
+/// time column rooted at the session start the host restored.
+export function restoredTrace(n: number): TraceState {
+  return { start: 0, end: n, isPaused: false, traceStartOffsetSeconds: null };
+}
+
 /// Clear the trace (wipe its window to empty at `n` and re-anchor the
 /// time column at `offsetSeconds` into the session) while keeping
 /// whatever run state it was in — running stays running (it just keeps

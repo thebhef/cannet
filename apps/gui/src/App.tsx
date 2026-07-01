@@ -76,6 +76,7 @@ import {
   clearedTrace,
   freshTrace,
   reanchorToSession,
+  restoredTrace,
 } from "./trace";
 import { defaultBusColor } from "./busColor";
 import { assignDefaultNames, defaultElementName, elementLabel } from "./elementLabel";
@@ -1019,17 +1020,53 @@ export function App() {
   // Doesn't touch a live connection: the project's bus is configured
   // into the fields; hit Connect to switch.
   const applyProject = useCallback(
-    (project: Project, projectFilePath: string) => {
+    async (project: Project, projectFilePath: string) => {
       // DBC and `.cannet_rbs` references in the project may be relative
       // to the project file's own directory (ADR 0030); resolve them to
       // absolute before they reach the host commands, which read from
       // disk directly.
       const dir = projectDir(projectFilePath);
-      // Restore the element registry first so the panels `fromJSON`
-      // creates (which reference elements by `params.elementId`) find
-      // their entries. (A panel that doesn't still self-heals.)
-      // `assignDefaultNames` backfills `${Kind} ${n}` names onto
-      // elements saved before display names existed (ADR 0019).
+      // `project.remote_address` is ignored — addresses now live per-
+      // binding (see `gatherProject`); reading a v3 file's value would
+      // re-introduce the toolbar-level address we removed.
+      const incomingBuses = Array.isArray(project.buses) ? project.buses : [];
+      const incomingBindings = Array.isArray(project.interface_bindings)
+        ? project.interface_bindings
+        : [];
+      const incomingDbcs: DbcRef[] = (Array.isArray(project.dbcs) ? project.dbcs : []).map(
+        (d) => ({ ...d, path: resolveProjectPath(dir, d.path) }),
+      );
+      const incomingVbuses: LocalVirtualBusDef[] = Array.isArray(
+        project.local_virtual_buses,
+      )
+        ? project.local_virtual_buses
+        : [];
+      setBuses(incomingBuses);
+      setInterfaceBindings(incomingBindings);
+      setLocalVirtualBuses(incomingVbuses);
+      const scoping: Record<string, string[]> = {};
+      for (const d of incomingDbcs) scoping[d.path] = d.buses ?? [];
+      setDbcBuses(scoping);
+      // Open path ordering (ADR 0033): DBCs → RBS elements → views →
+      // replayed capture. The loaded DBC set is foundational model state
+      // — decoding, RBS message resolution, and plot labels all read it —
+      // so every view must validate against a *settled* set, not the
+      // partial set an interleaved `add_dbc` loop exposes. `loadDbcSet`
+      // clears then re-adds each DBC; awaiting it to completion first is
+      // what keeps RBS load, the restored layout, and the sampled capture
+      // below from racing a half-loaded set (which left the later-loaded
+      // buses' views empty). `loadDbcSet` takes the scoping map so each
+      // DBC is committed with the right `buses`.
+      await loadDbcSet(
+        incomingDbcs.map((d) => d.path),
+        scoping,
+      );
+      // Restore the element registry before the panels `fromJSON` creates
+      // (which reference elements by `params.elementId`) so they find
+      // their entries. (A panel that doesn't still self-heals.) RBS
+      // elements now load against the settled DBC set above.
+      // `assignDefaultNames` backfills `${Kind} ${n}` names onto elements
+      // saved before display names existed (ADR 0019).
       setRegistry(
         assignDefaultNames(
           (Array.isArray(project.elements) ? project.elements : [])
@@ -1051,44 +1088,36 @@ export function App() {
           /* keep the current layout if the saved one won't load */
         }
       }
-      // `project.remote_address` is ignored — addresses now live per-
-      // binding (see `gatherProject`); reading a v3 file's value would
-      // re-introduce the toolbar-level address we removed.
-      // Pull bus / binding state, then load DBCs with their
-      // bus scoping. `loadDbcSet` takes the scoping map so each DBC
-      // is committed to the host with the right `buses`.
-      const incomingBuses = Array.isArray(project.buses) ? project.buses : [];
-      const incomingBindings = Array.isArray(project.interface_bindings)
-        ? project.interface_bindings
-        : [];
-      const incomingDbcs: DbcRef[] = (Array.isArray(project.dbcs) ? project.dbcs : []).map(
-        (d) => ({ ...d, path: resolveProjectPath(dir, d.path) }),
-      );
-      const incomingVbuses: LocalVirtualBusDef[] = Array.isArray(
-        project.local_virtual_buses,
-      )
-        ? project.local_virtual_buses
-        : [];
-      setBuses(incomingBuses);
-      setInterfaceBindings(incomingBindings);
-      setLocalVirtualBuses(incomingVbuses);
-      const scoping: Record<string, string[]> = {};
-      for (const d of incomingDbcs) scoping[d.path] = d.buses ?? [];
-      setDbcBuses(scoping);
-      void loadDbcSet(
-        incomingDbcs.map((d) => d.path),
-        scoping,
-      );
       // Rebuild host-side virtual buses from project defs
       // (ADR 0021). Per-binding session participants are opened on
       // Connect, not here.
-      void invoke("replay_local_virtual_buses", {
+      await invoke("replay_local_virtual_buses", {
         defs: incomingVbuses,
       }).catch((err) => {
         console.error("replay_local_virtual_buses failed", err);
       });
+      // DS-7 (ADR 0002): restore a prior capture that belongs to this
+      // project as a stopped historical trace — last, so the plot and
+      // filtered views sample the replayed frames against the fully
+      // loaded DBC set above. Doing it here — after the open clears the
+      // view, not inside `open_project` — keeps the clear from clobbering
+      // the restored history.
+      try {
+        const restored = await invoke<{ count: number; session_start_seconds: number }>(
+          "restore_scratch_capture",
+        );
+        if (restored.count <= 0) return;
+        invalidateCache();
+        setCount(restored.count);
+        setSessionStartSeconds(
+          restored.session_start_seconds > 0 ? restored.session_start_seconds : null,
+        );
+        setRegistry((reg) => reg.map((e) => ({ ...e, trace: restoredTrace(restored.count) })));
+      } catch {
+        /* no scratch capture to restore */
+      }
     },
-    [loadDbcSet],
+    [loadDbcSet, invalidateCache],
   );
 
   const handleNewProject = useCallback(() => {
@@ -1135,7 +1164,7 @@ export function App() {
     if (typeof selected !== "string") return;
     try {
       const project = await invoke<Project>("open_project", { path: selected });
-      applyProject(project, selected);
+      void applyProject(project, selected);
       rememberProject(selected);
       setDirty(false);
     } catch (err) {
@@ -1964,7 +1993,7 @@ export function App() {
         if (projectToOpen) {
           try {
             const p = await invoke<Project>("open_project", { path: projectToOpen });
-            applyProject(p, projectToOpen);
+            void applyProject(p, projectToOpen);
             rememberProject(projectToOpen);
             setDirty(false);
           } catch {
