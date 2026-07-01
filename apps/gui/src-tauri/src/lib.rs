@@ -84,7 +84,7 @@ mod window_state;
 pub use project::{Project, PROJECT_SCHEMA_VERSION};
 pub use rbs::{format_message_key, parse_message_key, RbsFile, RbsMessage, RbsValue};
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -286,6 +286,15 @@ struct AppState {
     /// violation index the trace fetch decorates rows from, and the
     /// validity map. Owns its own lock.
     verifier: verification::VerificationState,
+    /// Directory the live filter index roots in (a `filter/` subdir of the
+    /// disk-spill scratch). The materialized filtered-trace index
+    /// ([`ActiveFilterIndex`]) writes its segment files here.
+    filter_index_dir: std::path::PathBuf,
+    /// The filter index for the trace's current filtered chronological view
+    /// (ADR 0002 DS-3). `None` until the first filtered fetch builds one;
+    /// rebuilt on a predicate or capture-session change, extended
+    /// incrementally otherwise. `fetch_filtered_trace` serves pages from it.
+    filter_index: Mutex<Option<ActiveFilterIndex>>,
 }
 
 /// The build's version string: `git describe --tags` as captured by
@@ -348,6 +357,19 @@ fn open_trace_store(scratch: std::io::Result<std::path::PathBuf>) -> Arc<TraceSt
     }
 }
 
+/// The directory the live filter index roots in: a `filter/` subdir of the
+/// disk-spill scratch (ADR 0002 DS-3/DS-7), or an OS-temp fallback if the
+/// scratch is unavailable. Created if absent; failure to create is left to
+/// `FilterIndex::new` to surface on first use.
+fn filter_index_dir(scratch: Option<&std::path::Path>) -> std::path::PathBuf {
+    let dir = match scratch {
+        Some(s) => s.join("filter"),
+        None => std::env::temp_dir().join("cannet").join("filter"),
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
 /// Boot the Tauri runtime.
 ///
 /// # Panics
@@ -376,6 +398,13 @@ pub fn run() {
     // webview fetches the result via `diag_autostart` on boot. `None` on a
     // normal launch leaves boot behaviour untouched.
     let autostart = diag::AutomationConfig::from_args(std::env::args());
+    // The disk-spill scratch and the filter-index dir under it are resolved
+    // once here; the trace store opens on the disk backend (or falls back to
+    // RAM). The filter-index dir is derived before `scratch` is moved into
+    // `open_trace_store`.
+    let scratch = scratch_current_dir();
+    let filter_dir = filter_index_dir(scratch.as_ref().ok().map(std::path::PathBuf::as_path));
+    let trace_store = open_trace_store(scratch);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         // Persist the main window's size, position, and maximized /
@@ -395,7 +424,7 @@ pub fn run() {
         .manage(AppState {
             databases: Mutex::new(Vec::new()),
             remote_sessions: Mutex::new(HashMap::new()),
-            trace_store: open_trace_store(scratch_current_dir()),
+            trace_store,
             signal_caches: SignalCacheStore::new(),
             system_log: SystemLog::new(),
             notes: NotesStore::new(),
@@ -405,6 +434,8 @@ pub fn run() {
             transmit_scheduler,
             rbs: Mutex::new(rbs::RbsRuntime::default()),
             verifier: verification::VerificationState::default(),
+            filter_index_dir: filter_dir,
+            filter_index: Mutex::new(None),
         })
         .manage(sidecar::SidecarState::default())
         .manage(interfaces::InterfacesState::default())
@@ -1499,88 +1530,58 @@ async fn fetch_by_id_page(
     }
 }
 
-/// Streaming page selector for [`fetch_filtered_trace`]: as match
-/// indices arrive in order (across chunked scans) it accumulates the
-/// running match `count` and keeps only the requested page's indices — a
-/// sliding tail of `limit` for `from_end`, or the `[offset, offset+limit)`
-/// slice otherwise. `seed` is the incremental-count checkpoint: matches
-/// already counted before the scan's first frame, so a count-only refresh
-/// that scans only newly-appended frames still reports the full total
-/// (ADR 0025 — the extent advances on growth without a full re-scan).
+/// The filter index `AppState` keeps live for the trace's current filtered
+/// view (ADR 0002 DS-3). It is rebuilt when the predicate it was built for
+/// changes, or when the capture session changes (a Clear / new capture
+/// bumps the store's `session_start_ns`, invalidating the recorded frame
+/// indices); otherwise it is extended incrementally as the capture grows,
+/// so a steady filtered view is `O(delta)` and serving a page is
+/// `O(log n + page)` — never an `O(capture)` scan.
+struct ActiveFilterIndex {
+    /// The predicate the index was built for. A different predicate is a
+    /// full rebuild.
+    predicate: FilterPredicate,
+    /// The store session the recorded indices belong to. A change (Clear /
+    /// new capture) means the indices reference a discarded timeline —
+    /// rebuild.
+    session_start_ns: u64,
+    index: cannet_spill::FilterIndex,
+}
+
+/// Map a filtered view window onto a single index page. `p_start` / `p_end`
+/// are the match-positions bounding the frame window `[scan_start, end)`
+/// (from [`cannet_spill::FilterIndex::position_of`]); within that window
+/// this returns the running match `count`, the absolute index page-position
+/// and length to read, and the match-index of the page's first row.
 ///
-/// Pure and synchronous: the async command feeds it the chunked scan
-/// results, and it is unit-tested without a runtime or DBCs.
-struct PageSelector {
-    count: u64,
-    page: VecDeque<usize>,
+/// It reproduces the old streaming selector's semantics off the
+/// random-access index: a forward `[offset, offset + limit)` slice, or the
+/// last `limit` matches when `from_end` (the live tail). Pure, so the
+/// index math is unit-tested apart from the store / lock machinery.
+fn windowed_filter_page(
+    p_start: usize,
+    p_end: usize,
     offset: u64,
-    hi: u64,
-    cap: usize,
+    limit: u64,
     from_end: bool,
-}
-
-impl PageSelector {
-    fn new(offset: u64, limit: u64, from_end: bool, seed: u64) -> Self {
-        Self {
-            count: seed,
-            page: VecDeque::new(),
-            offset,
-            hi: offset.saturating_add(limit),
-            cap: usize::try_from(limit).unwrap_or(usize::MAX),
-            from_end,
-        }
+) -> (u64, usize, usize, u64) {
+    let count_usize = p_end.saturating_sub(p_start);
+    let count = u64::try_from(count_usize).unwrap_or(u64::MAX);
+    let lim = usize::try_from(limit).unwrap_or(usize::MAX);
+    if from_end {
+        // The last `limit` matches in the window.
+        let page_len = lim.min(count_usize);
+        let page_pos = p_end - page_len;
+        let start_match = count.saturating_sub(u64::try_from(page_len).unwrap_or(u64::MAX));
+        (count, page_pos, page_len, start_match)
+    } else {
+        // The `[offset, offset + limit)` slice within the window.
+        let off = usize::try_from(offset).unwrap_or(usize::MAX).min(count_usize);
+        let page_len = lim.min(count_usize - off);
+        let page_pos = p_start + off;
+        let start_match = u64::try_from(off).unwrap_or(u64::MAX);
+        (count, page_pos, page_len, start_match)
     }
-
-    /// Feed one match index (absolute trace-store index), in scan order.
-    fn push(&mut self, idx: usize) {
-        let match_idx = self.count;
-        self.count += 1;
-        if self.from_end {
-            self.page.push_back(idx);
-            if self.page.len() > self.cap {
-                self.page.pop_front();
-            }
-        } else if match_idx >= self.offset && match_idx < self.hi {
-            self.page.push_back(idx);
-        }
-    }
-
-    /// `(total count, page indices, match-index of the page's first row)`.
-    fn finish(self) -> (u64, Vec<usize>, u64) {
-        let page: Vec<usize> = self.page.into_iter().collect();
-        let win_len = u64::try_from(page.len()).unwrap_or(u64::MAX);
-        let start_match = if self.from_end {
-            self.count.saturating_sub(win_len)
-        } else {
-            self.offset.min(self.count)
-        };
-        (self.count, page, start_match)
-    }
-}
-
-/// Scan one chunk `[lo, hi)` of the store for frames matching `filter`,
-/// returning their absolute indices. The predicate decodes only frames
-/// whose id is in `candidates` (the filter's decode-dependent leaves) and
-/// raw-field-tests the rest. Shared by [`fetch_filtered_trace`]'s forward,
-/// incremental-count, and backward-tail scans so the match test is written
-/// once. Caller holds the `databases` lock for the call and releases it
-/// between chunks.
-fn scan_chunk_filtered(
-    store: &crate::trace_store::TraceStore,
-    dbs: &[LoadedDbc],
-    candidates: &HashSet<u32>,
-    filter: &FilterPredicate,
-    lo: usize,
-    hi: usize,
-) -> Vec<usize> {
-    store.scan_chunk(lo, hi, |frame| {
-        let decoded = if candidates.contains(&frame.id) {
-            decode_against(dbs, frame)
-        } else {
-            None
-        };
-        filter.matches(frame, decoded.as_ref())
-    })
 }
 
 /// Materialise the decoded rows of a filtered page from its absolute store
@@ -1601,61 +1602,38 @@ fn materialize_filtered_rows(state: &AppState, page_idxs: &[usize]) -> Vec<Trace
         .collect()
 }
 
-/// Finish a follow-live tail page from match indices collected by scanning
-/// the window *backward* in chunks — each chunk's matches appended
-/// newest-first, so `collected_desc` is descending overall. Keep the `cap`
-/// most-recent, return them ascending (oldest-first, the render order), and
-/// the match-index of the first (`total - page_len`). Pure so the index
-/// math is unit-tested apart from the scan/lock machinery.
-fn tail_page(mut collected_desc: Vec<usize>, cap: usize, total: u64) -> (Vec<usize>, u64) {
-    collected_desc.truncate(cap);
-    collected_desc.reverse();
-    let start = total.saturating_sub(u64::try_from(collected_desc.len()).unwrap_or(0));
-    (collected_desc, start)
-}
-
-/// A *paged* window into the filtered chronological trace.
-/// Scans `[scan_start, scan_end)` of the trace store, applies `filter`,
-/// and returns the total match count plus the decoded matches at
-/// match-indices `[offset, offset + limit)` — or, when `from_end` is
-/// set, the *last* `limit` matches, so the live-tail view gets its
-/// page and the running total in one call. The frontend pages this; it
-/// never holds the whole filtered set in memory.
+/// A *paged* window into the filtered chronological trace, served from the
+/// materialized filter index (ADR 0002 DS-3). Returns the total match count
+/// within `[scan_start, scan_end)` plus the decoded matches at match-indices
+/// `[offset, offset + limit)` — or, when `from_end` is set, the *last*
+/// `limit` matches, so the live-tail view gets its page and the running
+/// total in one call. The frontend pages this; it never holds the whole
+/// filtered set in memory.
 ///
-/// The `prev_count` / `prev_count_end` checkpoint — the `(count, end)` the
-/// caller already knows — lets two paths avoid a full window re-scan:
-/// - A **count-only refresh** (`limit == 0`) counts only frames appended
-///   since the checkpoint and reports the full total in O(Δ).
-/// - A **follow-live tail** (`from_end`) takes that same incremental total
-///   and then scans *backward* from the tip for just its page, so the
-///   steady follow-live tick is O(Δ + page span) rather than re-scanning
-///   `[scan_start, scan_end)` every time. Without it (the first call, or a
-///   stale checkpoint whose end is outside the window) the tail falls back
-///   to the full forward scan, which also seeds the next checkpoint.
+/// The index — not a window scan — is what makes this `O(log n + page)`:
+/// the predicate resolves to its by-id candidate set
+/// ([`filter::resolve_candidates`]), the index is brought current to the
+/// store tip ([`TraceStore::refresh_filter_index`], `O(delta)`,
+/// visiting only candidate-id frames — never an `O(capture)` scan), and the
+/// `[scan_start, scan_end)` window maps onto a match-position range by two
+/// [`cannet_spill::FilterIndex::position_of`] lower-bounds. Count is then
+/// the range width and the page a random-access [`cannet_spill::FilterIndex::page`]
+/// slice. Only the returned page's frames are cloned and decoded for display
+/// ([`materialize_filtered_rows`]), never the whole match set.
 ///
-/// A **positioned page** (`from_end == false`, `limit > 0`) ignores the
-/// checkpoint and scans from `scan_start` so it can place the page by
-/// match-index; that happens on user scroll, not on the live tick.
+/// The index is held on [`AppState`] across calls and rebuilt only when the
+/// predicate or the capture session changes; otherwise each call extends it
+/// by the freshly-appended tail. Because the index gives an exact count in
+/// `O(log n)`, the legacy `prev_count` / `prev_count_end` incremental-count
+/// checkpoint is no longer needed — the parameters are accepted for IPC
+/// compatibility but unused.
 ///
-/// The scan runs as a sequence of bounded chunks
-/// ([`TraceStore::scan_chunk`]), releasing the trace-store lock — and
-/// `await`-yielding — between each, so a history scan never holds the
-/// append mutex across the whole buffer. That mutex also gates the
-/// ingest pump's `append` and the tx-confirm `append`, so a buffer-wide
-/// locked scan here starved RX and transmit as the buffer grew (the
-/// diagnosed lock contention); chunking bounds the lock-hold to one chunk. The scan
-/// never decodes blindly: when the predicate has decode-dependent
-/// leaves, they're pre-resolved to a candidate-id set
-/// ([`decode_candidate_ids`]) and only frames whose id is in the set are
-/// decoded — every other frame's test is a raw-field check plus a set
-/// lookup. Only the returned page's frames are cloned
-/// ([`TraceStore::frames_at`]), never the whole match set; that page is
-/// decoded for display.
-///
-/// `async` so Tauri runs it off the main thread, and so the per-chunk
-/// `yield_now` actually cedes the runtime between chunks.
+/// `async` so Tauri runs it off the main thread; the body holds no lock
+/// across an `.await` (it takes none — the index extend chunks its own
+/// trace-store locking internally).
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // a Tauri command — args are the IPC payload fields
+#[allow(clippy::unused_async)] // `async` makes Tauri run it off the main thread
 async fn fetch_filtered_trace(
     app: AppHandle,
     filter: FilterPredicate,
@@ -1667,129 +1645,155 @@ async fn fetch_filtered_trace(
     prev_count: Option<u64>,
     prev_count_end: Option<u64>,
 ) -> FilteredTracePage {
-    /// Frames scanned under one lock acquisition before releasing it and
-    /// yielding. Small enough that the append mutex is never held long
-    /// (the starvation fix); large enough that the per-chunk lock /
-    /// yield overhead stays negligible against a multi-hundred-k buffer.
-    const SCAN_CHUNK: usize = 8192;
-
     let state: State<'_, AppState> = app.state();
+    // The filter index gives an exact count in O(log n), so the legacy
+    // incremental-count checkpoint is no longer consulted.
+    let _ = (prev_count, prev_count_end);
     let win_start = usize::try_from(scan_start).unwrap_or(usize::MAX);
-    let end = usize::try_from(scan_end)
-        .unwrap_or(usize::MAX)
-        .min(state.trace_store.len());
 
-    // Incremental-count checkpoint: a count-only refresh (`limit == 0`)
-    // can resume from the `(count, end)` it already knows so the host
-    // counts only newly-appended frames — O(Δ). A stale checkpoint (end
-    // outside the window) or any row-returning call scans from the window
-    // start.
-    let (seed, scan_from) = match (limit, prev_count, prev_count_end) {
-        (0, Some(c), Some(e)) => {
-            let e = usize::try_from(e).unwrap_or(usize::MAX);
-            if e >= win_start && e <= end {
-                (c, e)
-            } else {
-                (0, win_start)
-            }
-        }
-        _ => (0, win_start),
+    // Hold the active filter index for the whole call (filtered fetches are
+    // infrequent and the index is cheap to serve). Rebuild it when the
+    // predicate or the capture session changed — a Clear / new capture bumps
+    // `session_start_ns`, so the recorded frame indices belong to a
+    // discarded timeline — otherwise extend it to the current tip below.
+    let mut guard = state
+        .filter_index
+        .lock()
+        .expect("filter index mutex poisoned");
+    let session = state.trace_store.session_start_ns();
+    let needs_rebuild = match guard.as_ref() {
+        Some(a) => a.predicate != filter || a.session_start_ns != session,
+        None => true,
     };
-
-    // Resolve the decode-candidate id set once against the current DBCs.
-    // The per-chunk match test re-locks `databases` (a `std::sync::Mutex`
-    // guard must never be held across the `.await` below).
-    let candidates = {
-        let dbs = state.databases.lock().expect("databases mutex poisoned");
-        decode_candidate_ids(&dbs, &filter)
-    };
-
-    // Follow-live tail fast path: the last `limit` matches plus the running
-    // total in O(Δ + tail span), not a full `[win_start, end)` re-scan. The
-    // full re-scan ran on every refresh tick while following live —
-    // chunked, so never a buffer-wide lock-hold, but its O(buffer) work per
-    // tick still loaded the store and dragged ingest down as the buffer
-    // grew. Used only with a valid checkpoint (the steady follow-live
-    // case); the first call after a descriptor change has none and takes
-    // the full scan below, which seeds it.
-    if from_end && limit > 0 {
-        if let (Some(prev_c), Some(prev_e)) = (prev_count, prev_count_end) {
-            let prev_e = usize::try_from(prev_e).unwrap_or(usize::MAX);
-            if prev_e >= win_start && prev_e <= end {
-                // Total: prior count plus matches in the freshly-appended
-                // tail `[prev_e, end)`.
-                let mut count = prev_c;
-                let mut pos = prev_e;
-                while pos < end {
-                    let chunk_end = pos.saturating_add(SCAN_CHUNK).min(end);
-                    let n = {
-                        let dbs = state.databases.lock().expect("databases mutex poisoned");
-                        scan_chunk_filtered(
-                            &state.trace_store,
-                            &dbs,
-                            &candidates,
-                            &filter,
-                            pos,
-                            chunk_end,
-                        )
-                        .len()
-                    };
-                    count = count.saturating_add(u64::try_from(n).unwrap_or(0));
-                    pos = chunk_end;
-                    tokio::task::yield_now().await;
-                }
-                // Page: scan backward from `end` until `limit` matches are
-                // collected (or `win_start` is reached) — bounded by how far
-                // back the tail page reaches, not the whole buffer.
-                let cap = usize::try_from(limit).unwrap_or(usize::MAX);
-                let mut collected: Vec<usize> = Vec::new();
-                let mut hi = end;
-                while hi > win_start && collected.len() < cap {
-                    let lo = hi.saturating_sub(SCAN_CHUNK).max(win_start);
-                    let mut matches = {
-                        let dbs = state.databases.lock().expect("databases mutex poisoned");
-                        scan_chunk_filtered(&state.trace_store, &dbs, &candidates, &filter, lo, hi)
-                    };
-                    matches.reverse(); // newest-first within the chunk
-                    collected.extend(matches);
-                    hi = lo;
-                    tokio::task::yield_now().await;
-                }
-                let (page_idxs, start_match) = tail_page(collected, cap, count);
-                let rows = materialize_filtered_rows(state.inner(), &page_idxs);
+    if needs_rebuild {
+        let index = match cannet_spill::FilterIndex::new(&state.filter_index_dir) {
+            Ok(i) => i,
+            Err(e) => {
+                tracing::error!("filter index unavailable ({e}); returning an empty filtered page");
                 return FilteredTracePage {
-                    count,
-                    start: start_match,
-                    rows,
+                    count: 0,
+                    start: 0,
+                    rows: Vec::new(),
                 };
             }
-        }
-    }
-
-    // Full scan: a count-only refresh, a positioned page, or the first
-    // follow-live tail before a checkpoint exists. Driven chunk by chunk so
-    // the store lock is held only per chunk, yielding between.
-    let mut sel = PageSelector::new(offset, limit, from_end, seed);
-    let mut pos = scan_from;
-    while pos < end {
-        let chunk_end = pos.saturating_add(SCAN_CHUNK).min(end);
-        let matches = {
-            let dbs = state.databases.lock().expect("databases mutex poisoned");
-            scan_chunk_filtered(&state.trace_store, &dbs, &candidates, &filter, pos, chunk_end)
         };
-        for idx in matches {
-            sel.push(idx);
-        }
-        pos = chunk_end;
-        tokio::task::yield_now().await;
+        *guard = Some(ActiveFilterIndex {
+            predicate: filter.clone(),
+            session_start_ns: session,
+            index,
+        });
+    }
+    let active = guard.as_mut().expect("active filter index just set");
+
+    // Bring the index current to the store tip: resolve the predicate to its
+    // by-id candidate set and extend by the freshly-appended delta, visiting
+    // only candidate-id frames (never an O(capture) scan). The `databases`
+    // lock is held only for this synchronous build; the index's own chunked
+    // extend releases the trace-store append lock between chunks, so ingest
+    // is not starved.
+    {
+        let dbs = state.databases.lock().expect("databases mutex poisoned");
+        let candidates = resolve_candidates_for(&filter, &state.trace_store, &dbs)
+            .unwrap_or_else(|| all_ids_tested(&state.trace_store));
+        let decode_ids = decode_candidate_ids(&dbs, &filter);
+        let keep = |f: &RawTraceFrame| {
+            let decoded = if decode_ids.contains(&f.id) {
+                decode_against(&dbs, f)
+            } else {
+                None
+            };
+            filter.matches(f, decoded.as_ref())
+        };
+        state
+            .trace_store
+            .refresh_filter_index(&mut active.index, &candidates, &keep);
     }
 
-    let (count, page_idxs, start_match) = sel.finish();
+    // Map the frame window `[scan_start, end)` onto a match-position range
+    // (two lower-bound searches) and read that page directly. `end` is
+    // clamped to what the index has actually been built through.
+    let end = usize::try_from(scan_end)
+        .unwrap_or(usize::MAX)
+        .min(active.index.built_through());
+    let p_start = active.index.position_of(win_start);
+    let p_end = active.index.position_of(end);
+    let (count, page_pos, page_len, start_match) =
+        windowed_filter_page(p_start, p_end, offset, limit, from_end);
+    let page_idxs = active.index.page(page_pos, page_len);
+    drop(guard);
+
     let rows = materialize_filtered_rows(state.inner(), &page_idxs);
     FilteredTracePage {
         count,
         start: start_match,
         rows,
+    }
+}
+
+/// Resolve `filter` to its by-id candidate set (ADR 0002 DS-3) against the
+/// live capture and DBCs. `None` when the predicate is not id-narrowable (a
+/// vacuous-true `all` or a non-narrowable `any`); the caller falls back to a
+/// tested build over every seen id.
+fn resolve_candidates_for(
+    filter: &FilterPredicate,
+    store: &TraceStore,
+    dbs: &[LoadedDbc],
+) -> Option<filter::CandidateSet> {
+    let seen = store.seen_bus_ids();
+    let mut seen_ids: Vec<(u32, bool)> = seen.iter().map(|(_, id, ext)| (*id, *ext)).collect();
+    seen_ids.sort_unstable();
+    seen_ids.dedup();
+    let seen_on_bus = |b: &str| -> Vec<(u32, bool)> {
+        seen.iter()
+            .filter(|(bus, _, _)| bus.as_deref() == Some(b))
+            .map(|(_, id, ext)| (*id, *ext))
+            .collect()
+    };
+    let regex_ids = |pat: &str| -> Vec<(u32, bool)> {
+        let mut v: Vec<(u32, bool)> = Vec::new();
+        for d in dbs {
+            for (id, ext, name) in d.db.message_names() {
+                if filter::regex_match(pat, name) {
+                    v.push((id, ext));
+                }
+            }
+        }
+        v
+    };
+    let signal_ids = |name: &str| -> Vec<(u32, bool)> {
+        let mut v: Vec<(u32, bool)> = Vec::new();
+        for d in dbs {
+            for (id, ext, sig) in d.db.signal_names() {
+                if sig == name {
+                    v.push((id, ext));
+                }
+            }
+        }
+        v
+    };
+    let inputs = filter::CandidateInputs {
+        seen_ids: &seen_ids,
+        seen_on_bus: &seen_on_bus,
+        regex_ids: &regex_ids,
+        signal_ids: &signal_ids,
+    };
+    filter::resolve_candidates(filter, &inputs)
+}
+
+/// The fallback candidate set for a non-id-narrowable predicate: every id
+/// the capture has seen, tested per frame. A correct (if `O(seen ids)`-wide)
+/// superset — these predicates are pathological (a vacuous-true `all`).
+fn all_ids_tested(store: &TraceStore) -> filter::CandidateSet {
+    let mut keys: Vec<(u32, bool)> = store
+        .seen_bus_ids()
+        .into_iter()
+        .map(|(_, id, ext)| (id, ext))
+        .collect();
+    keys.sort_unstable();
+    keys.dedup();
+    filter::CandidateSet {
+        keys,
+        membership: false,
     }
 }
 
@@ -3912,97 +3916,75 @@ mod tests {
         assert_eq!(store.len(), 1);
     }
 
-    /// Drive a [`PageSelector`] with a sequence of match indices.
-    fn select(
-        matches: &[usize],
-        offset: u64,
-        limit: u64,
-        from_end: bool,
-        seed: u64,
-    ) -> (u64, Vec<usize>, u64) {
-        let mut sel = PageSelector::new(offset, limit, from_end, seed);
-        for &idx in matches {
-            sel.push(idx);
-        }
-        sel.finish()
+    /// Serve a filtered page over a whole match set of `n` (positions
+    /// `[0, n)`), returning `(count, page positions, start_match)` — the
+    /// page is the position slice the index would read.
+    fn fpage(n: usize, offset: u64, limit: u64, from_end: bool) -> (u64, Vec<usize>, u64) {
+        let (count, pos, len, start) = windowed_filter_page(0, n, offset, limit, from_end);
+        (count, (pos..pos + len).collect(), start)
     }
 
     #[test]
-    fn page_selector_pages_a_forward_offset_limit_slice() {
-        let m = [10usize, 20, 30, 40, 50];
-        // match-indices 1..3 → the 2nd and 3rd matches.
-        let (count, page, start) = select(&m, 1, 2, false, 0);
+    fn windowed_filter_page_pages_a_forward_offset_limit_slice() {
+        // 5 matches at positions 0..5; forward [1, 3) → positions 1, 2.
+        let (count, page, start) = fpage(5, 1, 2, false);
         assert_eq!(count, 5);
-        assert_eq!(page, vec![20, 30]);
+        assert_eq!(page, vec![1, 2]);
         assert_eq!(start, 1);
     }
 
     #[test]
-    fn page_selector_from_end_keeps_the_last_limit_matches() {
-        let m = [10usize, 20, 30, 40, 50];
-        let (count, page, start) = select(&m, 0, 2, true, 0);
+    fn windowed_filter_page_from_end_keeps_the_last_limit_matches() {
+        let (count, page, start) = fpage(5, 0, 2, true);
         assert_eq!(count, 5);
-        assert_eq!(page, vec![40, 50]);
+        assert_eq!(page, vec![3, 4]);
         assert_eq!(start, 3); // count - page.len()
     }
 
     #[test]
-    fn page_selector_limit_zero_counts_without_paging() {
-        let m = [10usize, 20, 30, 40, 50];
-        let (count, page, start) = select(&m, 0, 0, false, 0);
+    fn windowed_filter_page_limit_zero_counts_without_paging() {
+        let (count, page, start) = fpage(5, 0, 0, false);
         assert_eq!(count, 5);
         assert!(page.is_empty());
         assert_eq!(start, 0);
     }
 
     #[test]
-    fn page_selector_offset_past_the_end_is_an_empty_page() {
-        let m = [10usize, 20, 30];
-        let (count, page, start) = select(&m, 99, 10, false, 0);
+    fn windowed_filter_page_offset_past_the_end_is_an_empty_page() {
+        let (count, page, start) = fpage(3, 99, 10, false);
         assert_eq!(count, 3);
         assert!(page.is_empty());
         assert_eq!(start, 3); // offset.min(count)
     }
 
     #[test]
-    fn tail_page_keeps_the_most_recent_cap_in_render_order() {
-        // Backward chunked scan appends each chunk newest-first, so the
-        // input is descending overall. A window of 6 matches, cap 3:
-        // newest chunk {15,20}→[20,15], next {9,12}→[12,9] (loop stops,
-        // ≥cap collected). Keep the 3 newest, return ascending.
-        let collected_desc = vec![20usize, 15, 12, 9];
-        let (page, start) = tail_page(collected_desc, 3, 6);
-        assert_eq!(page, vec![12, 15, 20]); // last 3 matches, oldest-first
-        assert_eq!(start, 3); // total(6) - page.len(3): match-index of `12`
-
-        // The from_end PageSelector over the same full match set must agree
-        // — the incremental tail and a full re-scan return the same page.
-        let full = [3usize, 7, 9, 12, 15, 20];
-        let (count, sel_page, sel_start) = select(&full, 0, 3, true, 0);
-        assert_eq!((count, sel_page, sel_start), (6, page, start));
-    }
-
-    #[test]
-    fn tail_page_fewer_matches_than_cap_returns_all_from_zero() {
-        // Sparse window: backward scan reached win_start with < cap; keep
-        // all, anchored at match-index 0.
-        let (page, start) = tail_page(vec![30usize, 20, 10], 10, 3);
-        assert_eq!(page, vec![10, 20, 30]);
+    fn windowed_filter_page_from_end_fewer_matches_than_limit() {
+        // Sparse window: fewer matches than the page cap → keep all,
+        // anchored at match-index 0.
+        let (count, page, start) = fpage(3, 0, 10, true);
+        assert_eq!(count, 3);
+        assert_eq!(page, vec![0, 1, 2]);
         assert_eq!(start, 0);
     }
 
     #[test]
-    fn page_selector_seed_makes_an_incremental_count_equal_a_full_count() {
-        // The incremental-count invariant: counting all matches at once
-        // must equal counting a prefix, then resuming from the prefix's
-        // total over the remaining matches (the O(Δ) refresh).
-        let m = [10usize, 20, 30, 40, 50, 60, 70];
-        let (full, _, _) = select(&m, 0, 0, false, 0);
+    fn windowed_filter_page_sub_window_offsets_into_absolute_positions() {
+        // A frame window mapping to match-positions [2, 7) (5 matches).
+        // Forward [0, 3) within the window → absolute positions 2, 3, 4.
+        let (count, pos, len, start) = windowed_filter_page(2, 7, 0, 3, false);
+        assert_eq!(count, 5);
+        assert_eq!((pos, len, start), (2, 3, 0));
+        // from_end within the same window → last 2 → positions 5, 6.
+        let (count, pos, len, start) = windowed_filter_page(2, 7, 0, 2, true);
+        assert_eq!((count, pos, len, start), (5, 5, 2, 3));
+    }
 
-        let k = 3;
-        let (prefix, _, _) = select(&m[..k], 0, 0, false, 0);
-        let (resumed, _, _) = select(&m[k..], 0, 0, false, prefix);
-        assert_eq!(resumed, full);
+    #[test]
+    fn windowed_filter_page_empty_or_inverted_window_is_zero() {
+        // win_start past the tip (p_start > p_end via saturating_sub) → no
+        // matches, empty page, regardless of direction.
+        assert_eq!(windowed_filter_page(7, 2, 0, 5, false), (0, 7, 0, 0));
+        assert_eq!(windowed_filter_page(7, 2, 0, 5, true), (0, 2, 0, 0));
     }
 
     // --- by-id host-side sort (former client `sortRows`) ---
@@ -4115,6 +4097,8 @@ mod tests {
             transmit_scheduler: transmit_scheduler::channel().0,
             rbs: Mutex::new(rbs::RbsRuntime::default()),
             verifier: verification::VerificationState::default(),
+            filter_index_dir: std::env::temp_dir().join("cannet-test-filter"),
+            filter_index: Mutex::new(None),
         }
     }
 

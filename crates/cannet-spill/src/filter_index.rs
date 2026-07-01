@@ -158,6 +158,29 @@ impl FilterIndex {
         self.built_through = self.built_through.max(to);
     }
 
+    /// The match-position of the first recorded match whose frame index is
+    /// `>= frame` — i.e. the number of matches with a frame index strictly
+    /// below `frame`. A lower-bound binary search over the ascending stored
+    /// indices, `O(log len)`.
+    ///
+    /// This maps a frame-index window onto match positions: the matches in
+    /// `[a, b)` are exactly the match-positions `[position_of(a),
+    /// position_of(b))`, so a windowed filtered view counts and pages by
+    /// slicing the index — no scan.
+    #[must_use]
+    pub fn position_of(&self, frame: usize) -> usize {
+        let (mut lo, mut hi) = (0usize, self.len);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if self.entry(mid) < frame {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        lo
+    }
+
     /// The matching frame indices at match-positions `[offset, offset +
     /// limit)`, ascending — the page the filtered chrono view renders.
     /// `O(limit)`.
@@ -265,6 +288,29 @@ mod tests {
         assert_eq!(idx.built_through(), 30);
         // Every recorded index really carries id 0x100 (offset % 3 == 0).
         assert!(idx.page(0, idx.len()).iter().all(|&i| i % 3 == 0));
+    }
+
+    #[test]
+    fn position_of_lower_bounds_a_frame_window_onto_match_positions() {
+        // ids cycle 0x100/0x200/0x300; index id 0x100 → frame indices
+        // 0,3,6,9,…,27 (10 matches over 30 frames).
+        let store = seeded(30);
+        let dir = TempDir::new().unwrap();
+        let mut idx = FilterIndex::new(dir.path()).unwrap();
+        idx.extend_membership(&store, &[(0x100, false)], store.len());
+        assert_eq!(idx.len(), 10);
+        // Below / at / between recorded frame indices.
+        assert_eq!(idx.position_of(0), 0); // first match is frame 0
+        assert_eq!(idx.position_of(1), 1); // frame 0 is below, 3 is above
+        assert_eq!(idx.position_of(3), 1); // exact hit → its own position
+        assert_eq!(idx.position_of(7), 3); // matches 0,3,6 below 7
+        assert_eq!(idx.position_of(30), 10); // past the tip → full count
+        assert_eq!(idx.position_of(1000), 10);
+        // A frame window [6, 21) selects match-positions [2, 7): frames
+        // 6,9,12,15,18.
+        let (a, b) = (idx.position_of(6), idx.position_of(21));
+        assert_eq!((a, b), (2, 7));
+        assert_eq!(idx.page(a, b - a), vec![6, 9, 12, 15, 18]);
     }
 
     #[test]
