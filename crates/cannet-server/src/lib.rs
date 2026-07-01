@@ -33,3 +33,28 @@ pub mod virtual_bus;
 pub use replay::{LoopingBlfReplay, ReplayError};
 pub use server::CannetServerImpl;
 pub use virtual_bus::{VirtualBusServerImpl, VIRTUAL_BUS_FACTORY_ID};
+
+/// Bind a virtual-bus server to an ephemeral local port and serve it.
+///
+/// Binds `127.0.0.1:0`, sends the resolved [`std::net::SocketAddr`] back
+/// through `addr_tx` once known, then serves until the future is dropped.
+/// A convenience for in-process consumers (tests, the `cannet-perf-measurement`
+/// harness) that need a real gRPC endpoint without the CLI binary or
+/// hand-rolled `tonic` / `tokio-stream` wiring.
+///
+/// # Errors
+/// Returns the bind or serve error from the OS / `tonic`.
+pub async fn serve_virtual_bus_ephemeral(
+    config: cannet_core::BusConfig,
+    addr_tx: tokio::sync::oneshot::Sender<std::net::SocketAddr>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let _ = addr_tx.send(addr);
+    let stream = tokio_stream::wrappers::TcpListenerStream::new(listener);
+    tonic::transport::Server::builder()
+        .add_service(VirtualBusServerImpl::new(config).into_service())
+        .serve_with_incoming(stream)
+        .await?;
+    Ok(())
+}

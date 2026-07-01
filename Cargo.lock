@@ -453,6 +453,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "cannet-perf-measurement"
+version = "0.0.0"
+dependencies = [
+ "cannet-client",
+ "cannet-core",
+ "cannet-dbc",
+ "cannet-gui",
+ "cannet-server",
+ "chrono",
+ "clap",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tokio",
+]
+
+[[package]]
 name = "cannet-server"
 version = "0.0.0"
 dependencies = [

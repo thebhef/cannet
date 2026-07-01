@@ -1,0 +1,55 @@
+{
+  "baseline_version": 2,
+  "tracebuffer": {
+    "config": {
+      "target_frames": 200000,
+      "ingest_hz": 25000.0,
+      "scan": true,
+      "scan_hz": 8.0,
+      "predicate": {
+        "bus": "pt"
+      }
+    },
+    "metrics": {
+      "ingest_fps_overall": 25000.06165811604,
+      "fps_retention": 0.9999870946410633,
+      "append_ms_max": 21.000999999999998,
+      "scan_ms_max": 24.0287
+    }
+  },
+  "grpc": {
+    "config": {
+      "target_frames": 50000,
+      "tx_hz": 5000.0,
+      "scan": true,
+      "scan_hz": 8.0,
+      "predicate": {
+        "bus": "pt"
+      }
+    },
+    "metrics": {
+      "ingest_fps_overall": 2771.3656536684093,
+      "fps_retention": 1.006492539100513,
+      "append_ms_max": 10.180700000000002,
+      "scan_ms_max": 12.6431
+    }
+  },
+  "hardware_peak": {
+    "config": {
+      "target_frames": 20000,
+      "tx_hz": 1000.0,
+      "speed_bps": 500000,
+      "scan": true,
+      "scan_hz": 8.0,
+      "predicate": {
+        "bus": "pt"
+      }
+    },
+    "metrics": {
+      "ingest_fps_overall": 999.6957376037817,
+      "fps_retention": 1.000146431737747,
+      "append_ms_max": 6.7366,
+      "scan_ms_max": 9.854999999999999
+    }
+  }
+}

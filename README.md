@@ -82,6 +82,15 @@ crates/
                  shutdown halves alongside a Phase-5
                  `SessionTransmitter` for client TX. Drops cleanly on
                  `Drop`.
+  cannet-perf-measurement/
+                 Agent-runnable performance / integration harness. Runs a
+                 rest-of-bus simulation of the `examples/ev-fleet` workload
+                 through the real host model and emits machine-readable
+                 metrics diffed against a dated baseline
+                 (`cargo run -p cannet-perf-measurement -- check`). Three
+                 modes: `tracebuffer` (in-process `TraceStore`), `grpc`
+                 (virtual bus over real gRPC), and `hardware-peak` (full
+                 stack over PEAK hardware via the sidecar). See its README.
 
 apps/
   gui/           Tauri 2 + React 18 + Vite trace viewer.

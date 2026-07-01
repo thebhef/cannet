@@ -61,16 +61,74 @@ usability problems rather than future concerns:
 The diagnosis below is done and the ingest/TX lock offender has a
 tactical fix committed, but Task 21 is **not finished**. Still owed:
 
-- **Agent-runnable automated harness + checked-in baseline.** Not
-  started. The whole "baseline numbers, diffable by an agent" deliverable
-  (above) is still outstanding — what exists today is ad-hoc manual
-  captures, not a reproducible harness.
-- **Plot UI-thread saturation.** Unfixed. The report-fan-out cut was
-  attempted and refuted (see below); the over-render driver is not yet
-  localised. The eventual fix is expected to land as part of the plot
-  rewrite in Task 17 Slice 4, but the *characterisation* (which
-  component re-renders at ~200/s; what the 200–767 ms long tasks are)
-  is still owed here.
+- **Agent-runnable automated harness + checked-in baseline — done.** The
+  `cannet-perf-measurement` crate ships a reproducible workload — a
+  rest-of-bus simulation of the `examples/ev-fleet` EV project (two
+  physically-bridged buses, seven ECUs, four DBCs, ~515 frames/s) — and
+  three source modes that share one model (`TraceStore` + the filtered
+  scan), one metric set, and one report shape (`runner.rs`):
+  - **`tracebuffer` — in-process** (deterministic, CI-friendly): drives
+    the real `TraceStore` directly against the filtered-scan contention.
+    `baseline` captures a dated, git-stamped file under
+    `docs/performance-measurements/`; `check` re-runs and exits non-zero
+    on a gated regression.
+  - **`grpc` — virtual bus**: frames travel the real gRPC wire through an
+    in-process `cannet-server` `SharedBus` + two `cannet-client` sessions
+    (added `cannet_server::serve_virtual_bus_ephemeral`).
+  - **`hardware-peak` — full stack**: the python-can sidecar transmits
+    the workload onto one PEAK adapter and reads it back on the other
+    (bridged); validated on hardware (PCAN-USB ×2). Needs hardware, so
+    `check` skips (not fails) it when absent.
+
+  The `tracebuffer` mode reproduces the diagnosed contention as numbers:
+  `fps_retention ≈
+  1.0` (the chunked-scan tactical fix holds) but `append_ms_max ≈
+  scan_ms_max` (an append can still stall ~one full scan on the unfair
+  mutex — the residual the Task 17 Slice 2 incremental match-count
+  removes; re-run `baseline` after Slice 2 lands and expect it to drop).
+- **Frontend (render-tier) performance characterization.** The
+  `cannet-perf-measurement` harness covers the host model, the wire, and
+  the hardware path, but it **stands in for** the frontend — it cannot
+  see the React/uPlot/virtualizer render tier, which is exactly where the
+  remaining user-visible cost lives. Two things are owed:
+  - **Localise the plot UI-thread saturation (immediate).** At high frame
+    rates with plot panels open the UI thread runs ~75–100% (~200
+    `PlotArea` renders/s, 200–767 ms long-task bursts). The report-fan-out
+    cut was attempted and refuted; the over-render driver is **not yet
+    localised**. Owed: instrument first — correlate the `[diag]`
+    `longtask` spikes with which `render.*` / `plotarea.resample` counter
+    moves with them (prime suspects: each `PlotArea`'s per-resample
+    `setValueTick`, or an App-level re-render) **before** changing code.
+    The *fix* is expected to fall out of the plot rewrite in Task 17 Slice
+    4; this task owes the *characterisation* so Slice 4 targets the real
+    driver.
+  - **A representative, repeatable frontend perf measurement (durable).**
+    The goal is to characterize the GUI's performance *as the user
+    experiences it* — perceived smoothness under the real workload — and
+    emit machine-readable numbers a baseline can diff, the render-tier
+    counterpart to the host-side modes. Design questions to settle:
+    - **Metrics that map to UX**, not internals: UI-thread long-task
+      time per second, frames late against the ~16 ms budget (jank),
+      `PlotArea` / panel renders/s, input→paint latency, and
+      panel time-to-first-render. The `diag.ts` `lag` / `longtask`
+      signals + render counters are the raw material; today they are only
+      observable by eye in devtools.
+    - **Representative drive**: against the real host + real frontend
+      under the `examples/ev-fleet` RBS workload, with representative view
+      configurations (N plot panels / a trace panel / by-ID open), since
+      the saturation is view- and rate-driven, not buffer-driven. This
+      requires **extending the `examples/ev-fleet` project to carry actual
+      plot and trace views** — a real `dockview` layout with the panels
+      open, not just the element records it ships today (its layout blob is
+      empty, so opening it renders nothing). The committed example becomes
+      the representative view configuration the measurement drives.
+    - **Automation**: get those metrics out of the webview as a periodic,
+      machine-readable summary (e.g. a frontend "perf probe" run that
+      scripts a workload and dumps the diag metrics, or the host
+      capturing a pushed perf summary), so a run is diffable like the
+      host harness's baseline rather than a manual devtools session.
+    This is end-to-end "server ingest → GUI render" latency the original
+    scope named, captured at the tier the host-side harness can't reach.
 - **Ingest/TX lock contention — full fix.** The tactical
   `scan_window_filtered` clone-deferral is committed; the durable fix
   (incremental O(Δ) match-count, bounded lock-hold) and its virtual-bus
@@ -229,11 +287,18 @@ cache/reporting surface — Task 17 Slice 4 rewrites it.
    enumeration) *and* a growing `max_gap` with near-zero `max_send`
    (host-side — the trace_store lock). Both fixed; see "TX steady-state
    regularity" above. The `max_gap` probe was added to disambiguate them.
-3. **Build the automated harness + checked-in baseline.** Unstarted and
-   the largest remaining deliverable (see "Added scope") — a runnable
-   procedure emitting machine-readable numbers diffable against a
-   checked-in baseline. Best built after Task 17 stabilises the model it
-   baselines against.
+3. **Automated harness + checked-in baseline — done (all three modes).**
+   `cannet-perf-measurement` ships the `examples/ev-fleet` workload and the
+   `tracebuffer` (in-process), `grpc` (virtual bus over real gRPC), and
+   `hardware-peak` (full stack over PEAK hardware, validated) modes;
+   `baseline` writes a dated file under `docs/performance-measurements/`
+   and `check` re-runs and gates every captured mode
+   (`cargo run -p cannet-perf-measurement -- check`). When Task 17 Slice 2
+   lands, re-run `baseline` so the recorded numbers reflect the
+   incremental-count model, and expect `append_ms_max` to drop well below
+   `scan_ms_max`. Remaining harness polish (not blockers): fold the wire
+   modes' offered-vs-achieved gap into the report, and add a `tracebuffer`
+   smoke test to the default `cargo test` suite.
 
 **Cross-task dependency.** The *durable* lock fix (incremental O(Δ)
 match-count + bounded lock-hold) and its virtual-bus regression test are
