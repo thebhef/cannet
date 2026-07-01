@@ -3,7 +3,7 @@
 // The N most-recently-opened BLF paths, offered in the Open BLF flow
 // and the project panel's BLF import affordance. Persisted host-side
 // across app restarts (ADR 0032); these are the pure list helpers that
-// shape the MRU before it's handed to `hostPrefs`.
+// shape the MRU before it's handed to `hostState`.
 
 /// Maximum number of recents to remember. Eight is roughly "every
 /// BLF you opened this week"; anything older is in the file picker.

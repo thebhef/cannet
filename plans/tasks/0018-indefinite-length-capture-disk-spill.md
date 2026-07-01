@@ -89,8 +89,8 @@ session present at launch is loaded as a stopped historical trace
   - **Step 5.3 — the DS-7 scratch lifecycle, sliced into several
     independently-landable parts** (it spans a new disk-store reopen
     surface, a `Project` schema migration, host wiring, the pyramid
-    residency bound, scratch-persisted events, and the by-id derived-state
-    shape — too much for one reviewable diff):
+    residency bound, and scratch-persisted events — too much for one
+    reviewable diff):
     - **Step 5.3a — done.** Disk-store persistent watermark + reopen
       (cannet-spill only, no GUI change). `DiskRawStore::flush` now writes
       a `manifest.json` (schema `version`, `DiskConfig`, the `len` /
@@ -250,28 +250,15 @@ session present at launch is loaded as a stopped historical trace
       activity** round-trips through `notes.json`, an edit on the stopped
       store re-persists, and `wipe_scratch` drops it so a later restore
       misses.
-    - **Step 5.3f — By-id derived state holds the full newest frame, not a
-      raw-store index. Not yet started.** The host `latest` map keys a
-      `FrameKey` to a frame *index* (5.3c persists that index in
-      `derived.json`), and the live by-id grid resolves it with a raw
-      `read_frame` at display time. That makes the derived state — which is
-      meant to be self-contained host state bounded by id-space (the
-      `cannet-spill` crate doc's raw-vs-derived split) — actually a pointer
-      into the `O(capture)` raw store. It works only while every index stays
-      valid: a latent coupling today that becomes a *correctness* bug the
-      moment Step 6 eviction can drop the segment an index points at (a rare
-      id's last sighting vanishes from the grid, and a persisted index can
-      dangle below a reloaded low-water mark). Retain the full newest
-      `RawTraceFrame` per key instead (still id-space bounded) and persist
-      the *frame*, not the index, in `derived.json`, so the by-id snapshot
-      is self-contained and survives both eviction and reload. This is
-      derived-state model completion, not eviction behaviour, so it lands in
-      Step 5 with the rest of the derived state; Step 6 eviction then merely
-      relies on it. Verify: the by-id newest snapshot round-trips through
-      `derived.json` carrying the full frame; a stopped reloaded trace shows
-      each key's last value with no raw read.
-- **Steps 6–7 — not started** (Step 5 completes once 5.3f lands; it gates
-  Step 6).
+- **Steps 6–7 — not started.** (The by-id newest-frame retention first
+  scoped here as 5.3f moved into Step 6c: retaining the full newest
+  `RawTraceFrame` *eagerly* in `latest` would clone the heap payload on
+  every append — a per-frame allocation on the ingest hot path — whereas
+  the only moment the index actually dangles is eviction. So the frame is
+  captured **lazily, at eviction time** (the still-mapped newest-per-key
+  frames in a to-be-dropped segment are copied into a retention overlay
+  before the drop), which keeps append index-only and is inherently
+  6-scope.)
 
 Deviations / decisions in 5.3a:
 
@@ -417,19 +404,32 @@ rustdoc and the README current for what it ships:
   mark are no longer addressable). That relaxation + the low-water mark
   land as an update to [ADR 0002](../../docs/adr/0002-disk-spill-store.md).
   Sub-slices:
-    - **Step 6a — Settings infrastructure ([ADR 0034](../../docs/adr/0034-settings-vs-state-and-custom-settings-panel.md)).**
-      The cap and the `clear scratch cache on exit` toggle need a home that
-      does not exist yet. Split machine state from user intent: rename the
-      existing `preferences.json` → `state.json` (host-derived UI state,
-      [ADR 0032](../../docs/adr/0032-machine-local-ui-state-host-side.md))
-      and add a new `settings.json` (user intent) behind a `settings.rs`
-      module carrying `scratch_cap_bytes` (default null / unbounded) and
-      `clear_scratch_on_exit` (default false). Build the flat in-repo
-      settings panel (no schema-form dependency — ADR 0034) and a
-      `panel.show.settings` command-palette entry to open it. The two cap
-      fields are inert until 6c reads them. Verify: `state.json` round-trips
-      the renamed prefs; `settings.json` round-trips both new fields at
-      their defaults; the panel opens from the palette and edits both.
+    - **Step 6a — done.** Settings infrastructure ([ADR 0034](../../docs/adr/0034-settings-vs-state-and-custom-settings-panel.md)).
+      Split machine state from user intent. The `prefs` module + its
+      `preferences.json` became the `state` module + `state.json` (struct
+      `Prefs`→`UiState`, commands `get_prefs`/`set_prefs`→`get_state`/
+      `set_state`; frontend `hostPrefs.ts`→`hostState.ts`, `prefs()`→
+      `hostState()`). No migration — the code reads `state.json` and ignores
+      any old `preferences.json` (ADR 0034 / 0011). New `settings.rs` +
+      `settings.json` (user intent) carries `scratch_cap_bytes` (default
+      null / unbounded) and `clear_scratch_on_exit` (default false), via
+      `get_settings`/`set_settings`; unlike `state.json`, every key is
+      serialized even at its default so the hand-editable file is
+      discoverable. A flat, hand-rolled `SettingsPanel` (no schema-form
+      dependency — ADR 0034; @rjsf stays `rejected` in the inventory) is a
+      singleton dockview panel opened by the `panel.show.settings`
+      palette/command entry; it loads `settings.json` on mount and writes
+      the whole struct back per edit (cap entered in MB, stored as bytes).
+      The two cap fields are inert until 6c reads them. Verified: `state`
+      module tests (rename round-trip) + 8 `settings` tests (round-trip,
+      defaults unbounded/keep, every-key-serialized, partial/junk tolerance)
+      green; frontend builds + 441 tests pass (the rename-lockup test
+      confirms `set_state` end-to-end). Two further palette commands landed
+      alongside: `project.close` (the entry ADR 0034 mentions — reuses the
+      New-project reset to a fresh no-project workspace, gated on a project
+      being open) and `app.exit` (closes the window via its own
+      close-requested path, so the unsaved-changes prompt and clean-shutdown
+      flush both run).
     - **Step 6b — Low-water mark + explicit `Evicted` read contract.**
       `read_frame` / `read_ts` today guard only the upper bound
       (`idx >= len → None`); below the mark they would index a dropped
@@ -441,13 +441,24 @@ rustdoc and the README current for what it ships:
       result rather than panicking. TDD: append past a tiny cap; assert
       evicted reads return the unavailable result (no panic) and
       `first_last_ts` tracks the mark.
-    - **Step 6c — Windowed-ring eviction.** Enforce the cap: drop the oldest
-      sealed meta/payload segments and the by-id postings below the mark,
-      raise the low-water mark, delete the segment files. The by-id live
-      grid stays correct across the drop because 5.3f retains the full
-      newest frame per key (not a now-evicted index). Verify: a capture past
-      the cap holds the dir size at the cap; reopen across an eviction is
-      intact above the mark.
+    - **Step 6c — Windowed-ring eviction (without losing the by-id newest).**
+      Enforce the cap: drop the oldest sealed meta/payload segments and the
+      by-id postings below the mark, raise the low-water mark, delete the
+      segment files. Eviction must not blank a rare id from the by-id grid:
+      the host `latest` map keys a `FrameKey` to a frame *index*, and the
+      grid resolves it with a raw read at display time, so once that index
+      evicts the id's last sighting is gone. Retaining the full newest frame
+      *eagerly* in `latest` would clone the heap payload on every append (a
+      per-frame allocation on the ingest hot path); instead capture it
+      **lazily, at eviction time** — before a segment is dropped (it is still
+      mapped), copy the newest-per-key frames that fall in it into a
+      retention overlay keyed by `FrameKey`, bounded by id-space. The by-id
+      read path falls back to the overlay when an index is below the mark.
+      Persist the overlay into `derived.json` so a reopen across an eviction
+      keeps those last values. Verify: a capture past the cap holds the dir
+      size at the cap; reopen across an eviction is intact above the mark; a
+      rare id whose only frame was evicted still shows its last value in the
+      by-id grid, before and after reopen.
     - **Step 6d — Truncation as a derived event.** Surface the low-water
       `(idx, ts)` as a derived, non-persisted, non-exported event
       ([ADR 0035](../../docs/adr/0035-timeline-event-model.md)), rendered as
@@ -601,6 +612,29 @@ x-sync set → `null`.
 
 *Dropped:* persisting per-trace x positions (ADR 0032 state) — would fight
 follow-live; fit-on-restore suffices.
+
+## Cursor-jump on a stopped plot shows no data (same root class)
+
+**Symptom.** Jumping between event-cursor markers on a reloaded (stopped) plot
+moves the x-window to the marker but renders no data there.
+
+**Root cause.** A pure x-window change has no refetch trigger on a stopped
+trace. The resample loop is gated on `live` (`PlotPanel.tsx`): a stopped/paused
+trace samples once, no interval — it only re-fires on `winStart`/`winEnd`,
+`followLive` toggle, mount, `fitY`. `gotoNote` only does `applyXAll` (sets the
+uPlot scale + `xSyncRef`, no fetch) and `setFollowLive(false)`, relying on the
+`followLive→false` effect to resample. If follow-live is *already* off (a prior
+jump/pan), that's a no-op → no resample → `useDecimatedRange` never fetches the
+new `[t±width]` slice → uPlot still holds the previous window's data, off-screen
+at the new x-range. Not the host (data is all present); the frontend just
+doesn't ask. The same gap makes `fitData`/manual-pan on a stopped trace
+unreliable unless follow-live happens to toggle.
+
+**Fix (proposed).** One refetch trigger for any x-window change: bump an
+`xEpoch` (or call resample) from `applyXAll`'s callers (`gotoNote`, `fitData`,
+`onUserXChange`) and add a per-area `useEffect(resample, [xEpoch])`. Covers
+jump, fit, and pan uniformly and subsumes the fit-on-restore refetch — land
+both together.
 
 ## Separate latent bug — derived caches not invalidated on DBC change
 

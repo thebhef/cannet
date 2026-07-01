@@ -2930,3 +2930,71 @@ header {
   color: #a5b4fc;
 }
 .tx-calc-summary em { color: #eab308; font-style: normal; }
+
+/* Settings panel (ADR 0034) — flat, hand-rolled editor over settings.json. */
+.settings-panel {
+  height: 100%;
+  overflow: auto;
+  padding: 0.75rem 1rem;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-size: 0.85rem;
+}
+.settings-title {
+  margin: 0 0 0.25rem;
+  font-size: 1rem;
+}
+.settings-hint {
+  margin: 0 0 1rem;
+  color: #94a3b8;
+}
+.settings-hint code {
+  font-family: ui-monospace, monospace;
+  color: #a5b4fc;
+}
+.settings-group {
+  border: 1px solid #1e293b;
+  border-radius: 4px;
+  padding: 0.5rem 0.75rem 0.75rem;
+  margin: 0 0 0.75rem;
+}
+.settings-group:disabled {
+  opacity: 0.5;
+}
+.settings-group legend {
+  padding: 0 0.4rem;
+  color: #cbd5e1;
+}
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  margin: 0.5rem 0;
+}
+.settings-field .settings-label {
+  color: #e2e8f0;
+}
+.settings-field input[type="number"] {
+  width: 12rem;
+  background: #1e293b;
+  color: #e2e8f0;
+  border: 1px solid #334155;
+  padding: 0.15rem 0.35rem;
+  border-radius: 3px;
+}
+.settings-field-checkbox {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+  gap: 0.1rem 0.4rem;
+}
+.settings-field-checkbox input {
+  grid-row: 1;
+}
+.settings-field-checkbox .settings-desc {
+  grid-column: 2;
+}
+.settings-desc {
+  color: #94a3b8;
+  font-size: 0.78rem;
+}
