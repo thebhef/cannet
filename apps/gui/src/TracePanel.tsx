@@ -27,7 +27,7 @@ import {
   toggleColumn,
 } from "./traceColumns";
 import type { ByIdSnapshotRecord } from "./types";
-import { diagCount } from "./diag"; // DIAG
+import { diagCount, diagTime } from "./diag"; // DIAG
 
 type TraceMode = "chronological" | "by-id";
 
@@ -201,10 +201,13 @@ export function TracePanel(props: IDockviewPanelProps) {
       fetchFilter,
     }; // DIAG
     diagCount("invoke.fetch_latest_by_id"); // DIAG
-    void invoke<ByIdSnapshotRecord[]>("fetch_latest_by_id", {
-      since: trace.offset,
-      filter: fetchFilter,
-    })
+    void diagTime( // DIAG
+      "ms.fetch_latest_by_id",
+      invoke<ByIdSnapshotRecord[]>("fetch_latest_by_id", {
+        since: trace.offset,
+        filter: fetchFilter,
+      }),
+    )
       .then(setRows)
       .catch(() => {
         diagCount("reject.fetch_latest_by_id"); // DIAG

@@ -194,6 +194,14 @@ _BATCH_MAX_FRAMES = 2048
 #: and the watcher does nothing.
 _STATE_POLL_INTERVAL_S = 0.5
 
+#: How often the reader thread logs its driver-read rate and rx-queue
+#: depth. Diagnostic only: comparing the read rate here against the
+#: host's append rate localises frame loss to *before* Python (driver RX
+#: overrun → read rate already short) versus *after* the read (queue
+#: backing up → loss downstream in pack/wire). Logged to stderr, which
+#: the host bridges into the System Messages panel.
+_RX_STATS_INTERVAL_NS = 2_000_000_000  # 2 s
+
 
 class _SharedInterface:
     """One open physical channel, shared across all subscribed sessions.
@@ -244,6 +252,18 @@ class _SharedInterface:
         self._last_state: pb.ControllerState.V = pb.CONTROLLER_STATE_ACTIVE
         self._last_tec: int = 0
         self._last_rec: int = 0
+        # Transmit-side counters, emitted alongside the rx stats on the
+        # rx pump's periodic tick. `transmit` runs on gRPC handler
+        # threads while the tick reads/resets on the rx thread, so a
+        # dedicated lightweight lock guards them (held only for the
+        # integer updates, never across ``ch.send``). `max_send_ns` is
+        # the worst single ``ch.send`` duration in the interval — the
+        # signal that distinguishes a host-side late send from a
+        # sidecar/driver TX-buffer stall.
+        self._tx_stats_lock = threading.Lock()
+        self._tx_count = 0
+        self._tx_count_total = 0
+        self._tx_max_send_ns = 0
 
     @property
     def channel_id(self) -> str:
@@ -303,7 +323,17 @@ class _SharedInterface:
             ch = self._channel
         if ch is None:
             raise drv.TxRejected(f"{self._channel_id}: interface closed")
+        # Time the send itself: a slow ``ch.send`` here means the
+        # driver's TX buffer is backing up (a sidecar-side stall),
+        # which the periodic tx-stats line surfaces as `max_send`.
+        t0 = time.monotonic_ns()
         ch.send(frame)
+        send_ns = time.monotonic_ns() - t0
+        with self._tx_stats_lock:
+            self._tx_count += 1
+            self._tx_count_total += 1
+            if send_ns > self._tx_max_send_ns:
+                self._tx_max_send_ns = send_ns
 
     def reconfigure(self, new_config: drv.OpenConfig) -> None:
         """Apply a new :class:`OpenConfig`.
@@ -396,6 +426,9 @@ class _SharedInterface:
         ``Frame`` onto ``self._rx_queue``, repeat. Protobuf encoding,
         batching, and outbox fan-out happen on the packer thread."""
         cid = self._channel_id
+        read = 0
+        read_total = 0
+        next_stats_ns = time.monotonic_ns() + _RX_STATS_INTERVAL_NS
         try:
             while not self._stop.is_set():
                 ch = self._current_channel()
@@ -410,9 +443,43 @@ class _SharedInterface:
                     if self._stop.wait(0.1):
                         break
                     continue
-                if frame is None:
-                    continue
-                self._rx_queue.put(frame)
+                if frame is not None:
+                    self._rx_queue.put(frame)
+                    read += 1
+                    read_total += 1
+                # Periodic stats. Checked every loop iteration (recv
+                # times out every 0.25 s), not only on frame arrival, so
+                # tx stats still emit on a bus that is transmitting but
+                # receiving nothing. A fully idle interval (no rx, no tx)
+                # is suppressed to keep the log quiet.
+                now_ns = time.monotonic_ns()
+                if now_ns >= next_stats_ns:
+                    secs = (now_ns - next_stats_ns + _RX_STATS_INTERVAL_NS) / 1e9
+                    with self._tx_stats_lock:
+                        tx = self._tx_count
+                        tx_total = self._tx_count_total
+                        tx_max_ns = self._tx_max_send_ns
+                        self._tx_count = 0
+                        self._tx_max_send_ns = 0
+                    if read > 0 or tx > 0:
+                        read_rate = read / secs if secs > 0 else 0.0
+                        _log.info(
+                            "rx stats %s: read=%.0f/s total=%d queue=%d",
+                            cid,
+                            read_rate,
+                            read_total,
+                            self._rx_queue.qsize(),
+                        )
+                        tx_rate = tx / secs if secs > 0 else 0.0
+                        _log.info(
+                            "tx stats %s: sent=%.0f/s total=%d max_send=%.2f ms",
+                            cid,
+                            tx_rate,
+                            tx_total,
+                            tx_max_ns / 1e6,
+                        )
+                    read = 0
+                    next_stats_ns = now_ns + _RX_STATS_INTERVAL_NS
         except Exception as e:  # noqa: BLE001
             _log.warning("rx pump for %s crashed: %s", cid, e)
             err = _log_envelope(pb.LOG_LEVEL_ERROR, f"rx pump for {cid} crashed: {e}")

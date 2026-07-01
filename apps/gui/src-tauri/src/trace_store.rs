@@ -207,6 +207,17 @@ struct RateSample {
     count: usize,
 }
 
+/// Per-bus rate state: the bus's own running frame count plus its
+/// rate-sample history. Sampled and pruned exactly like the aggregate
+/// [`Inner::rate_samples`], so [`TraceStore::frames_per_second_by_bus`]
+/// reads a per-bus rate the same way [`TraceStore::frames_per_second`]
+/// reads the aggregate.
+#[derive(Default)]
+struct BusRate {
+    count: usize,
+    samples: VecDeque<RateSample>,
+}
+
 struct Inner {
     /// Session-start timestamp in nanoseconds (the same Unix-epoch ns
     /// axis frames use). The trace UI displays everything relative to
@@ -235,6 +246,15 @@ struct Inner {
     /// of it — so a live plot of a sparse signal doesn't walk the whole
     /// capture each re-sample.
     by_id: HashMap<IdKey, Vec<usize>>,
+    /// Per-bus rate state, keyed by the frame's logical bus (`None` =
+    /// unassigned, its own bucket). Maintained `O(1)` on append; backs
+    /// [`TraceStore::frames_per_second_by_bus`], the per-bus throughput
+    /// readout used to localise where a high-rate stream is slowing.
+    per_bus: HashMap<Option<String>, BusRate>,
+    /// Frames rejected by the session-start guard ([`Self::append`]
+    /// returning `None`). Counted so that silent path is visible in the
+    /// diagnostic readout.
+    dropped_before_session: u64,
 }
 
 impl TraceStore {
@@ -247,6 +267,8 @@ impl TraceStore {
                 latest: HashMap::new(),
                 rates: HashMap::new(),
                 by_id: HashMap::new(),
+                per_bus: HashMap::new(),
+                dropped_before_session: 0,
             }),
         }
     }
@@ -276,8 +298,10 @@ impl TraceStore {
             frame.id,
             frame.extended,
         );
+        let bus_for_rate = key.0.clone();
         let mut inner = self.inner.lock().expect("trace store mutex poisoned");
         if ts_ns < inner.session_start_ns {
+            inner.dropped_before_session = inner.dropped_before_session.saturating_add(1);
             return None;
         }
         let id_key = (frame.id, frame.extended);
@@ -301,6 +325,21 @@ impl TraceStore {
                 count,
             });
             prune_rate_samples(&mut inner.rate_samples, now);
+        }
+        let bus_rate = inner.per_bus.entry(bus_for_rate).or_default();
+        bus_rate.count += 1;
+        let bus_due = match bus_rate.samples.back() {
+            Some(last) => now.duration_since(last.wall) >= RATE_SAMPLE_INTERVAL,
+            None => true,
+        };
+        if bus_due {
+            let bus_count = bus_rate.count;
+            bus_rate.samples.push_back(RateSample {
+                wall: now,
+                ts_ns,
+                count: bus_count,
+            });
+            prune_rate_samples(&mut bus_rate.samples, now);
         }
         Some(u64::try_from(count - 1).unwrap_or(u64::MAX))
     }
@@ -403,11 +442,16 @@ impl TraceStore {
     /// `keep`, and return the total number of matches plus a windowed
     /// page of `(absolute index, cloned frame)` pairs — the matches at
     /// match-indices `[offset, offset + limit)`, or the last `limit`
-    /// matches when `from_end`. Only the page's frames are cloned; the
-    /// scan itself is by reference, so a filtered fetch never copies
-    /// the whole window (which, on a multi-million-frame trace, dwarfed
-    /// the predicate test). `limit == 0` returns the count alone.
+    /// matches when `from_end`. `limit == 0` returns the count alone.
     /// Backs `fetch_filtered_trace`.
+    ///
+    /// The scan itself is by reference and **at most `limit` frames are
+    /// ever cloned**: the `from_end` path slides a window of match
+    /// *indices* (cheap `usize`s) and materialises the surviving page
+    /// only after the scan. That keeps the held [`Inner`] mutex off the
+    /// O(matches) clone path a following-live tail fetch would otherwise
+    /// take on a large filtered history — the lock-hold that starved RX
+    /// `append` and RBS transmit as the buffer grew (Task 21 diagnosis).
     #[must_use]
     pub fn scan_window_filtered(
         &self,
@@ -427,7 +471,9 @@ impl TraceStore {
         let cap = usize::try_from(limit).unwrap_or(usize::MAX);
         let hi = offset.saturating_add(limit);
         let mut count: u64 = 0;
-        let mut window: VecDeque<(usize, RawTraceFrame)> = VecDeque::new();
+        // Collect only the page's *indices* during the scan; clone frames
+        // once at the end so the lock-hold never scales with match count.
+        let mut idxs: VecDeque<usize> = VecDeque::new();
         for (i, frame) in inner.frames[scan_start..end].iter().enumerate() {
             if !keep(frame) {
                 continue;
@@ -435,15 +481,16 @@ impl TraceStore {
             let match_idx = count;
             count += 1;
             if from_end {
-                window.push_back((scan_start + i, frame.clone()));
-                if window.len() > cap {
-                    window.pop_front();
+                idxs.push_back(scan_start + i);
+                if idxs.len() > cap {
+                    idxs.pop_front();
                 }
             } else if match_idx >= offset && match_idx < hi {
-                window.push_back((scan_start + i, frame.clone()));
+                idxs.push_back(scan_start + i);
             }
         }
-        (count, window.into())
+        let window = idxs.into_iter().map(|i| (i, inner.frames[i].clone())).collect();
+        (count, window)
     }
 
     /// Begin a new session: empty the buffer **and** raise the
@@ -470,6 +517,8 @@ impl TraceStore {
         inner.latest = HashMap::new();
         inner.rates = HashMap::new();
         inner.by_id = HashMap::new();
+        inner.per_bus = HashMap::new();
+        inner.dropped_before_session = 0;
     }
 
     /// Current session-start threshold (Unix-epoch ns). The trace UI
@@ -516,6 +565,17 @@ impl TraceStore {
             .collect()
     }
 
+    /// Number of frames the session-start guard has dropped (stale
+    /// pipeline frames after a clear/reconnect). Surfaced so that
+    /// otherwise-silent path is visible in the diagnostic readout.
+    #[must_use]
+    pub fn frames_dropped_before_session(&self) -> u64 {
+        self.inner
+            .lock()
+            .expect("trace store mutex poisoned")
+            .dropped_before_session
+    }
+
     /// Estimated current append rate in frames per second.
     #[must_use]
     pub fn frames_per_second(&self) -> f64 {
@@ -523,6 +583,27 @@ impl TraceStore {
         let mut inner = self.inner.lock().expect("trace store mutex poisoned");
         prune_rate_samples(&mut inner.rate_samples, now);
         rate_from_samples(&inner.rate_samples)
+    }
+
+    /// Estimated current append rate per logical bus, in frames per
+    /// second. One entry per bus that has received a frame this session
+    /// (`None` = the unassigned bucket), sorted by bus (`None` first,
+    /// then by name). Lets a capture show *which* bus is slowing on a
+    /// multi-bus stream rather than only the aggregate.
+    #[must_use]
+    pub fn frames_per_second_by_bus(&self) -> Vec<(Option<String>, f64)> {
+        let now = Instant::now();
+        let mut inner = self.inner.lock().expect("trace store mutex poisoned");
+        let mut out: Vec<(Option<String>, f64)> = inner
+            .per_bus
+            .iter_mut()
+            .map(|(bus, br)| {
+                prune_rate_samples(&mut br.samples, now);
+                (bus.clone(), rate_from_samples(&br.samples))
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
     }
 }
 
@@ -599,9 +680,9 @@ mod tests {
     fn buffer_seconds_spans_oldest_to_newest() {
         let store = TraceStore::new();
         // Empty and single-frame buffers have no span.
-        assert_eq!(store.buffer_seconds(), 0.0);
+        assert!(store.buffer_seconds().abs() < 1e-9);
         store.append(dummy(5_000_000_000, 1));
-        assert_eq!(store.buffer_seconds(), 0.0);
+        assert!(store.buffer_seconds().abs() < 1e-9);
         // Newest − oldest = 7.5 s − 5 s = 2.5 s.
         store.append(dummy(6_000_000_000, 2));
         store.append(dummy(7_500_000_000, 3));
@@ -659,6 +740,29 @@ mod tests {
         let (count, page) = store.scan_window_filtered(0, 10, 0, 0, false, keep);
         assert_eq!(count, 5);
         assert!(page.is_empty());
+    }
+
+    #[test]
+    fn scan_window_filtered_from_end_keeps_only_last_cap_over_a_large_match_set() {
+        // Guards the tail path: over many matches, `from_end` returns the
+        // last `cap` (in ascending index order) and the full count — and
+        // a `cap` larger than the match set returns every match. (Backs
+        // the clone-deferral fix: the tail must materialise only the last
+        // `cap` frames, not every match in the window.)
+        let store = TraceStore::new();
+        for i in 0u32..100 {
+            store.append(dummy(u64::from(i) * 1_000, 256));
+        }
+        let keep = |f: &RawTraceFrame| f.id == 256;
+        let (count, page) = store.scan_window_filtered(0, 100, 0, 3, true, keep);
+        assert_eq!(count, 100);
+        assert_eq!(page.iter().map(|(i, _)| *i).collect::<Vec<_>>(), vec![97, 98, 99]);
+        // cap beyond the match set → every match, still ascending.
+        let (count, page) = store.scan_window_filtered(0, 100, 0, 1000, true, keep);
+        assert_eq!(count, 100);
+        assert_eq!(page.len(), 100);
+        assert_eq!(page.first().map(|(i, _)| *i), Some(0));
+        assert_eq!(page.last().map(|(i, _)| *i), Some(99));
     }
 
     #[test]
@@ -813,6 +917,15 @@ mod tests {
     }
 
     #[test]
+    fn append_counts_frames_dropped_before_session_start() {
+        let store = TraceStore::new();
+        store.start_session(1_000);
+        store.append(dummy(500, 1)); // stale → dropped + counted
+        store.append(dummy(2_000, 2)); // kept
+        assert_eq!(store.frames_dropped_before_session(), 1);
+    }
+
+    #[test]
     fn clear_resets_len() {
         let store = TraceStore::new();
         store.append(dummy(0, 1));
@@ -836,6 +949,46 @@ mod tests {
     fn rate_is_zero_with_no_samples() {
         let store = TraceStore::new();
         assert_eq!(store.frames_per_second(), 0.0);
+    }
+
+    #[test]
+    fn frames_per_second_by_bus_is_empty_with_no_frames() {
+        let store = TraceStore::new();
+        assert!(store.frames_per_second_by_bus().is_empty());
+    }
+
+    #[test]
+    fn frames_per_second_by_bus_buckets_each_bus_separately() {
+        // Each logical bus (and the unassigned `None` bucket) is tracked
+        // independently; the result is sorted (None first, then by name).
+        let store = TraceStore::new();
+        store.append(dummy_on_bus(0, 1, "A"));
+        store.append(dummy_on_bus(0, 2, "B"));
+        store.append(dummy(0, 3)); // unassigned
+        let buses: Vec<Option<String>> =
+            store.frames_per_second_by_bus().into_iter().map(|(b, _)| b).collect();
+        assert_eq!(buses, vec![None, Some("A".to_string()), Some("B".to_string())]);
+    }
+
+    #[test]
+    fn frames_per_second_by_bus_reports_a_per_bus_rate() {
+        // Two samples on bus A, the second taken after a wall gap longer
+        // than RATE_SAMPLE_INTERVAL (so it's actually recorded), with
+        // frame timestamps 100 ms apart and a count delta of 1 →
+        // (2 − 1) / 0.1 s = 10 frames/s. The sleep is what guarantees the
+        // second sample is due; the rate itself is read off the frame
+        // timestamps, not wall time.
+        let store = TraceStore::new();
+        store.append(dummy_on_bus(0, 1, "A"));
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        store.append(dummy_on_bus(100_000_000, 1, "A"));
+        let rate = store
+            .frames_per_second_by_bus()
+            .into_iter()
+            .find(|(b, _)| b.as_deref() == Some("A"))
+            .expect("bus A present")
+            .1;
+        assert!((rate - 10.0).abs() < 1.0, "expected ~10/s, got {rate}");
     }
 
     #[test]
