@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import type { FilterPredicate, TraceFrameRecord } from "./types";
+import { useWindowedQuery, type WindowPage } from "./useWindowedQuery";
 import { diagCount } from "./diag"; // DIAG
 
 /// Rows fetched per filtered page. Big enough that ordinary scrolling
@@ -15,7 +16,7 @@ const PAGE = 512;
 /// window scans under a high-rate stream.
 const REFRESH_MS = 250;
 
-/// Host `fetch_filtered_trace` reply (see `ipc.rs::FilteredTracePage`).
+/// Host `fetch_filtered_trace` reply (see `ipc.rs::RowPage`).
 interface FilteredTracePage {
   count: number;
   start: number;
@@ -34,25 +35,21 @@ export interface FilteredTrace {
   ensureVisible: (start: number, end: number) => void;
 }
 
-interface PageState {
-  count: number;
-  start: number;
-  rows: TraceFrameRecord[];
-  version: number;
-}
-
-const EMPTY: PageState = { count: 0, start: 0, rows: [], version: 0 };
-
 /// Page the host-side filtered view of the trace window
 /// `[winStart, winEnd)`. `active` is false when the panel has no
 /// filter (the caller uses the shared unfiltered cache instead).
 ///
-/// The view stays live across Start / Stop / Clear and as the trace
-/// grows: following live re-pages the tail; while parked it does a
-/// count-only refresh so the scrollbar tracks the growing total
-/// without re-pulling the (stable) history page the user is reading —
-/// `ensureVisible` re-pulls rows where they actually scroll. The
-/// live refreshes are throttled to `REFRESH_MS`.
+/// This is a thin adapter over [`useWindowedQuery`]: the generic
+/// primitive owns the windowed-source lifecycle (descriptor
+/// memoisation, single-flight fetch, re-anchor on scroll-out, drop on a
+/// descriptor change), and this layer supplies the filtered-specific
+/// `fetchPage` plus the **incremental match-count cursor**. The match
+/// count is the filtered view's extent; rather than re-scan the whole
+/// window every refresh, a count-only refresh resumes from the last
+/// `(count, end)` it knows and the host counts only newly-appended
+/// frames — O(Δ) (ADR 0025). The cursor is reconciled to the
+/// authoritative total whenever a row page is fetched (which scans the
+/// window from its start to position the page).
 export function useFilteredTrace(
   active: boolean,
   winStart: number,
@@ -61,124 +58,56 @@ export function useFilteredTrace(
   followLive: boolean,
   running: boolean,
 ): FilteredTrace {
-  const [page, setPage] = useState<PageState>(EMPTY);
+  // Incremental-count cursor: the total match count and the absolute
+  // index up to which it has been counted. Reset by a row-page fetch
+  // (which reads the authoritative count) and seeded fresh per
+  // descriptor (a new window/predicate fetches a page first). Mutated
+  // inside the single-flighted `fetchPage`, so reads and writes never
+  // overlap.
+  const cursor = useRef({ countedEnd: winStart, total: 0 });
 
-  // Latest inputs + single-flight fetch control, read by the stable
-  // `load` callback. Mutated in render — a plain "latest value" ref,
-  // never read for render output.
-  const ctl = useRef({
-    ctxKey: "",
-    winStart: 0,
-    winEnd: 0,
-    filter: null as FilterPredicate | null,
-    followLive: false,
-    fetching: false,
-    pending: null as
-      | { wantStart: number; fromEnd: boolean; countOnly: boolean }
-      | null,
-    dirty: false,
-  });
-  ctl.current.winStart = winStart;
-  ctl.current.winEnd = winEnd;
-  ctl.current.filter = filter;
-  ctl.current.followLive = followLive;
-
-  const load = useCallback(
-    (wantStart: number, fromEnd: boolean, countOnly: boolean) => {
-      const c = ctl.current;
-      if (c.filter == null) return;
-      if (c.fetching) {
-        // Only the most recent request matters — supersede any pending.
-        c.pending = { wantStart, fromEnd, countOnly };
-        return;
-      }
-      c.fetching = true;
-      const ctxKey = c.ctxKey;
-      diagCount("invoke.fetch_filtered_trace"); // DIAG
-      void invoke<FilteredTracePage>("fetch_filtered_trace", {
-        filter: c.filter,
-        scanStart: c.winStart,
-        scanEnd: c.winEnd,
-        offset: fromEnd ? 0 : Math.max(0, wantStart),
-        limit: countOnly ? 0 : PAGE,
-        fromEnd,
-      })
-        .then((res) => {
-          if (ctl.current.ctxKey !== ctxKey) return; // window/filter changed
-          setPage((p) =>
-            countOnly
-              ? { ...p, count: res.count, version: p.version + 1 }
-              : {
-                  count: res.count,
-                  start: res.start,
-                  rows: res.rows,
-                  version: p.version + 1,
-                },
-          );
-        })
-        .catch(() => {
-          /* keep the last page; a later tick or scroll retries */
-        })
-        .finally(() => {
-          c.fetching = false;
-          if (c.pending) {
-            const n = c.pending;
-            c.pending = null;
-            load(n.wantStart, n.fromEnd, n.countOnly);
-          }
-        });
-    },
-    [],
-  );
-
-  const ctxKey =
+  const descriptor =
     active && filter != null ? `${winStart}:${JSON.stringify(filter)}` : "";
 
-  // Window start or predicate changed — drop the page and load the
-  // first page afresh (immediate; not throttled).
-  useEffect(() => {
-    ctl.current.ctxKey = ctxKey;
-    setPage((p) => ({ ...EMPTY, version: p.version + 1 }));
-    if (ctxKey === "") return;
-    load(0, ctl.current.followLive, false);
-  }, [ctxKey, load]);
-
-  // Mark the view stale whenever the trace grows or its run-state
-  // changes — Start / Stop / Clear move `winEnd` / `running`.
-  useEffect(() => {
-    ctl.current.dirty = true;
-  }, [followLive, running, winEnd]);
-
-  // Throttled refresh: at most every `REFRESH_MS`, if stale, re-page.
-  // Following live → re-page the tail; parked → a count-only refresh.
-  useEffect(() => {
-    if (!active) return;
-    const id = window.setInterval(() => {
-      const c = ctl.current;
-      if (!c.dirty || c.ctxKey === "") return;
-      c.dirty = false;
-      if (c.followLive) load(0, true, false);
-      else load(0, false, true);
-    }, REFRESH_MS);
-    return () => window.clearInterval(id);
-  }, [active, load]);
-
-  const getFrame = useCallback(
-    (i: number) =>
-      i >= page.start && i < page.start + page.rows.length
-        ? page.rows[i - page.start]
-        : null,
-    [page],
-  );
-
-  const ensureVisible = useCallback(
-    (start: number, end: number) => {
-      // Already inside the loaded page — nothing to fetch.
-      if (start >= page.start && end <= page.start + page.rows.length) return;
-      load(Math.max(0, start - Math.floor(PAGE / 4)), false, false);
+  const fetchPage = useCallback(
+    async (
+      offset: number,
+      limit: number,
+      fromEnd: boolean,
+    ): Promise<WindowPage<TraceFrameRecord>> => {
+      diagCount("invoke.fetch_filtered_trace"); // DIAG
+      const countOnly = limit === 0;
+      const res = await invoke<FilteredTracePage>("fetch_filtered_trace", {
+        filter,
+        scanStart: winStart,
+        scanEnd: winEnd,
+        offset: fromEnd ? 0 : Math.max(0, offset),
+        limit,
+        fromEnd,
+        // Incremental checkpoint only on the count-only refresh; a
+        // row-returning call scans from the window start anyway.
+        prevCount: countOnly ? cursor.current.total : null,
+        prevCountEnd: countOnly ? cursor.current.countedEnd : null,
+      });
+      // The host returns the full total either way; advance the cursor
+      // so the next count-only refresh resumes from here.
+      cursor.current = { countedEnd: winEnd, total: res.count };
+      return { total: res.count, start: res.start, rows: res.rows };
     },
-    [page, load],
+    [filter, winStart, winEnd],
   );
 
-  return { count: page.count, version: page.version, getFrame, ensureVisible };
+  const { count, version, getRow, ensureVisible } =
+    useWindowedQuery<TraceFrameRecord>({
+      descriptor,
+      fetchPage,
+      followLive,
+      // `winEnd` advances every grow tick; `running` flips on Start/Stop.
+      // Either marks the view stale so the throttled tick refreshes.
+      extentSignal: winEnd + (running ? 0 : 1),
+      pageSize: PAGE,
+      refreshMs: REFRESH_MS,
+    });
+
+  return { count, version, getFrame: getRow, ensureVisible };
 }

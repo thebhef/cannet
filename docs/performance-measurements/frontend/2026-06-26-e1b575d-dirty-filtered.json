@@ -1,0 +1,149 @@
+{
+  "mode": "frontend",
+  "label": "ev-demo: filtered trace + plots",
+  "duration_s": 59.00259999990463,
+  "sample_count": 60,
+  "longtask_ms_per_s": {
+    "mean": 0.0,
+    "max": 0.0,
+    "p95": 0.0
+  },
+  "lag_ms": {
+    "mean": 0.1533333321412405,
+    "max": 22.59999990463257
+  },
+  "jank_seconds": 0,
+  "jank_fraction": 0.0,
+  "frames_late_per_s_mean": 0.0,
+  "counters_per_s": {
+    "app.setActivePanel": {
+      "mean": 0.016666666666666666,
+      "max": 1.0
+    },
+    "app.setDirty.callsite": {
+      "mean": 0.016666666666666666,
+      "max": 1.0
+    },
+    "byid.dep.fetchFilter": {
+      "mean": 0.03333333333333333,
+      "max": 2.0
+    },
+    "byid.dep.refreshTrigger": {
+      "mean": 30.0,
+      "max": 33.0
+    },
+    "dockview.layoutChange": {
+      "mean": 0.13333333333333333,
+      "max": 2.0
+    },
+    "event.system-log-appended": {
+      "mean": 2.933333333333333,
+      "max": 5.0
+    },
+    "event.trace-grew": {
+      "mean": 10.0,
+      "max": 11.0
+    },
+    "invoke.fetch_latest_by_id": {
+      "mean": 30.033333333333335,
+      "max": 33.0
+    },
+    "invoke.list_value_tables": {
+      "mean": 1.3,
+      "max": 26.0
+    },
+    "invoke.sample_signals": {
+      "mean": 114.63333333333334,
+      "max": 134.0
+    },
+    "memo.elementRegistryValue": {
+      "mean": 0.03333333333333333,
+      "max": 2.0
+    },
+    "memo.projectContextValue": {
+      "mean": 0.03333333333333333,
+      "max": 2.0
+    },
+    "memo.traceData": {
+      "mean": 20.0,
+      "max": 22.0
+    },
+    "plot.areaResampled": {
+      "mean": 116.51666666666667,
+      "max": 164.0
+    },
+    "plot.reportSeries": {
+      "mean": 114.63333333333334,
+      "max": 134.0
+    },
+    "plot.userXChange": {
+      "mean": 0.26666666666666666,
+      "max": 12.0
+    },
+    "plotarea.resample": {
+      "mean": 116.51666666666667,
+      "max": 164.0
+    },
+    "registry.update": {
+      "mean": 0.11666666666666667,
+      "max": 2.0
+    },
+    "render.App": {
+      "mean": 43.233333333333334,
+      "max": 50.0
+    },
+    "render.PlotArea": {
+      "mean": 834.3666666666667,
+      "max": 1102.0
+    },
+    "render.PlotPanel": {
+      "mean": 180.16666666666666,
+      "max": 248.0
+    },
+    "render.TracePanel": {
+      "mean": 140.13333333333333,
+      "max": 148.0
+    },
+    "render.TraceView": {
+      "mean": 40.03333333333333,
+      "max": 44.0
+    }
+  },
+  "gauges": {
+    "count": {
+      "mean": 33040.51666666667,
+      "max": 63428.0,
+      "last": 63428.0
+    },
+    "drop.before_session": {
+      "mean": 0.0,
+      "max": 0.0,
+      "last": 0.0
+    },
+    "fps": {
+      "mean": 1032.1833333333334,
+      "max": 1081.2,
+      "last": 1032.5
+    },
+    "fps.batt": {
+      "mean": 515.9783333333331,
+      "max": 542.2,
+      "last": 516.6
+    },
+    "fps.pt": {
+      "mean": 515.205,
+      "max": 528.6,
+      "last": 516.2
+    },
+    "jsheap_mb": {
+      "mean": 96.11166666666666,
+      "max": 162.2,
+      "last": 122.1
+    },
+    "ms.fetch_latest_by_id": {
+      "mean": 24.698333333333327,
+      "max": 45.9,
+      "last": 31.3
+    }
+  }
+}

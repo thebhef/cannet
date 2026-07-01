@@ -1348,6 +1348,65 @@ async fn fetch_latest_by_id(
         .collect()
 }
 
+/// Streaming page selector for [`fetch_filtered_trace`]: as match
+/// indices arrive in order (across chunked scans) it accumulates the
+/// running match `count` and keeps only the requested page's indices — a
+/// sliding tail of `limit` for `from_end`, or the `[offset, offset+limit)`
+/// slice otherwise. `seed` is the incremental-count checkpoint: matches
+/// already counted before the scan's first frame, so a count-only refresh
+/// that scans only newly-appended frames still reports the full total
+/// (ADR 0025 — the extent advances on growth without a full re-scan).
+///
+/// Pure and synchronous: the async command feeds it the chunked scan
+/// results, and it is unit-tested without a runtime or DBCs.
+struct PageSelector {
+    count: u64,
+    page: VecDeque<usize>,
+    offset: u64,
+    hi: u64,
+    cap: usize,
+    from_end: bool,
+}
+
+impl PageSelector {
+    fn new(offset: u64, limit: u64, from_end: bool, seed: u64) -> Self {
+        Self {
+            count: seed,
+            page: VecDeque::new(),
+            offset,
+            hi: offset.saturating_add(limit),
+            cap: usize::try_from(limit).unwrap_or(usize::MAX),
+            from_end,
+        }
+    }
+
+    /// Feed one match index (absolute trace-store index), in scan order.
+    fn push(&mut self, idx: usize) {
+        let match_idx = self.count;
+        self.count += 1;
+        if self.from_end {
+            self.page.push_back(idx);
+            if self.page.len() > self.cap {
+                self.page.pop_front();
+            }
+        } else if match_idx >= self.offset && match_idx < self.hi {
+            self.page.push_back(idx);
+        }
+    }
+
+    /// `(total count, page indices, match-index of the page's first row)`.
+    fn finish(self) -> (u64, Vec<usize>, u64) {
+        let page: Vec<usize> = self.page.into_iter().collect();
+        let win_len = u64::try_from(page.len()).unwrap_or(u64::MAX);
+        let start_match = if self.from_end {
+            self.count.saturating_sub(win_len)
+        } else {
+            self.offset.min(self.count)
+        };
+        (self.count, page, start_match)
+    }
+}
+
 /// A *paged* window into the filtered chronological trace.
 /// Scans `[scan_start, scan_end)` of the trace store, applies `filter`,
 /// and returns the total match count plus the decoded matches at
@@ -1355,6 +1414,14 @@ async fn fetch_latest_by_id(
 /// set, the *last* `limit` matches, so the live-tail view gets its
 /// page and the running total in one call. The frontend pages this; it
 /// never holds the whole filtered set in memory.
+///
+/// A count-only refresh (`limit == 0`) may pass `prev_count` /
+/// `prev_count_end` — the `(count, end)` the caller already knows — so
+/// the host counts only frames appended since and reports the full total
+/// in O(Δ) rather than re-scanning the window. Any call that returns rows
+/// ignores the checkpoint and scans from `scan_start` so it can position
+/// the page. A stale checkpoint (its end outside the window) falls back
+/// to a full re-count.
 ///
 /// The scan runs as a sequence of bounded chunks
 /// ([`TraceStore::scan_chunk`]), releasing the trace-store lock — and
@@ -1374,6 +1441,7 @@ async fn fetch_latest_by_id(
 /// `async` so Tauri runs it off the main thread, and so the per-chunk
 /// `yield_now` actually cedes the runtime between chunks.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // a Tauri command — args are the IPC payload fields
 async fn fetch_filtered_trace(
     app: AppHandle,
     filter: FilterPredicate,
@@ -1382,6 +1450,8 @@ async fn fetch_filtered_trace(
     offset: u64,
     limit: u64,
     from_end: bool,
+    prev_count: Option<u64>,
+    prev_count_end: Option<u64>,
 ) -> FilteredTracePage {
     /// Frames scanned under one lock acquisition before releasing it and
     /// yielding. Small enough that the append mutex is never held long
@@ -1390,12 +1460,27 @@ async fn fetch_filtered_trace(
     const SCAN_CHUNK: usize = 8192;
 
     let state: State<'_, AppState> = app.state();
-    let start = usize::try_from(scan_start).unwrap_or(usize::MAX);
+    let win_start = usize::try_from(scan_start).unwrap_or(usize::MAX);
     let end = usize::try_from(scan_end)
         .unwrap_or(usize::MAX)
         .min(state.trace_store.len());
-    let cap = usize::try_from(limit).unwrap_or(usize::MAX);
-    let hi = offset.saturating_add(limit);
+
+    // Incremental-count checkpoint: a count-only refresh (`limit == 0`)
+    // can resume from the `(count, end)` it already knows so the host
+    // counts only newly-appended frames — O(Δ). A stale checkpoint (end
+    // outside the window) or any row-returning call scans from the window
+    // start.
+    let (seed, scan_from) = match (limit, prev_count, prev_count_end) {
+        (0, Some(c), Some(e)) => {
+            let e = usize::try_from(e).unwrap_or(usize::MAX);
+            if e >= win_start && e <= end {
+                (c, e)
+            } else {
+                (0, win_start)
+            }
+        }
+        _ => (0, win_start),
+    };
 
     // Resolve the decode-candidate id set once against the current DBCs.
     // The per-chunk match test re-locks `databases` (a `std::sync::Mutex`
@@ -1405,13 +1490,11 @@ async fn fetch_filtered_trace(
         decode_candidate_ids(&dbs, &filter)
     };
 
-    // Drive the scan chunk by chunk: accumulate the running match count
-    // and keep only the page's indices (a sliding tail for `from_end`,
-    // the `[offset, hi)` slice otherwise). The store lock is held only
-    // for each `scan_chunk`; between chunks we yield.
-    let mut count: u64 = 0;
-    let mut page: VecDeque<usize> = VecDeque::new();
-    let mut pos = start;
+    // Drive the scan chunk by chunk, feeding matches into the page
+    // selector. The store lock is held only for each `scan_chunk`;
+    // between chunks we yield.
+    let mut sel = PageSelector::new(offset, limit, from_end, seed);
+    let mut pos = scan_from;
     while pos < end {
         let chunk_end = pos.saturating_add(SCAN_CHUNK).min(end);
         let matches = {
@@ -1426,29 +1509,14 @@ async fn fetch_filtered_trace(
             })
         };
         for idx in matches {
-            let match_idx = count;
-            count += 1;
-            if from_end {
-                page.push_back(idx);
-                if page.len() > cap {
-                    page.pop_front();
-                }
-            } else if match_idx >= offset && match_idx < hi {
-                page.push_back(idx);
-            }
+            sel.push(idx);
         }
         pos = chunk_end;
         tokio::task::yield_now().await;
     }
 
-    let page_idxs: Vec<usize> = page.into_iter().collect();
+    let (count, page_idxs, start_match) = sel.finish();
     let pairs = state.trace_store.frames_at(&page_idxs);
-    let win_len = u64::try_from(pairs.len()).unwrap_or(u64::MAX);
-    let start_match = if from_end {
-        count.saturating_sub(win_len)
-    } else {
-        offset.min(count)
-    };
     let rows = {
         let dbs = state.databases.lock().expect("databases mutex poisoned");
         pairs
@@ -3520,6 +3588,72 @@ mod tests {
             payload: CanFramePayload::Classic(vec![]),
             bus_id: None,
         }
+    }
+
+    /// Drive a [`PageSelector`] with a sequence of match indices.
+    fn select(
+        matches: &[usize],
+        offset: u64,
+        limit: u64,
+        from_end: bool,
+        seed: u64,
+    ) -> (u64, Vec<usize>, u64) {
+        let mut sel = PageSelector::new(offset, limit, from_end, seed);
+        for &idx in matches {
+            sel.push(idx);
+        }
+        sel.finish()
+    }
+
+    #[test]
+    fn page_selector_pages_a_forward_offset_limit_slice() {
+        let m = [10usize, 20, 30, 40, 50];
+        // match-indices 1..3 → the 2nd and 3rd matches.
+        let (count, page, start) = select(&m, 1, 2, false, 0);
+        assert_eq!(count, 5);
+        assert_eq!(page, vec![20, 30]);
+        assert_eq!(start, 1);
+    }
+
+    #[test]
+    fn page_selector_from_end_keeps_the_last_limit_matches() {
+        let m = [10usize, 20, 30, 40, 50];
+        let (count, page, start) = select(&m, 0, 2, true, 0);
+        assert_eq!(count, 5);
+        assert_eq!(page, vec![40, 50]);
+        assert_eq!(start, 3); // count - page.len()
+    }
+
+    #[test]
+    fn page_selector_limit_zero_counts_without_paging() {
+        let m = [10usize, 20, 30, 40, 50];
+        let (count, page, start) = select(&m, 0, 0, false, 0);
+        assert_eq!(count, 5);
+        assert!(page.is_empty());
+        assert_eq!(start, 0);
+    }
+
+    #[test]
+    fn page_selector_offset_past_the_end_is_an_empty_page() {
+        let m = [10usize, 20, 30];
+        let (count, page, start) = select(&m, 99, 10, false, 0);
+        assert_eq!(count, 3);
+        assert!(page.is_empty());
+        assert_eq!(start, 3); // offset.min(count)
+    }
+
+    #[test]
+    fn page_selector_seed_makes_an_incremental_count_equal_a_full_count() {
+        // The incremental-count invariant: counting all matches at once
+        // must equal counting a prefix, then resuming from the prefix's
+        // total over the remaining matches (the O(Δ) refresh).
+        let m = [10usize, 20, 30, 40, 50, 60, 70];
+        let (full, _, _) = select(&m, 0, 0, false, 0);
+
+        let k = 3;
+        let (prefix, _, _) = select(&m[..k], 0, 0, false, 0);
+        let (resumed, _, _) = select(&m[k..], 0, 0, false, prefix);
+        assert_eq!(resumed, full);
     }
 
     /// A classic frame with a full 8-byte payload — enough that an

@@ -148,6 +148,9 @@ describe("TracePanel chronological filtering", () => {
         offset: 0,
         limit: 512,
         fromEnd: true,
+        // A row page ignores the incremental-count checkpoint.
+        prevCount: null,
+        prevCountEnd: null,
       }),
     );
   });

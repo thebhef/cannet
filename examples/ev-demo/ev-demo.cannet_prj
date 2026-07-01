@@ -1,7 +1,7 @@
 {
   "schema_version": 7,
   "layout": {
-    "activeGroup": "3",
+    "activeGroup": "6",
     "grid": {
       "height": 2010,
       "orientation": "HORIZONTAL",
@@ -81,10 +81,11 @@
                   },
                   {
                     "data": {
-                      "activeView": "trace-chrono",
+                      "activeView": "trace-f0ac8c09-742b-4ba6-8b00-0e75ff6ffe88",
                       "id": "4",
                       "views": [
-                        "trace-chrono"
+                        "trace-chrono",
+                        "trace-f0ac8c09-742b-4ba6-8b00-0e75ff6ffe88"
                       ]
                     },
                     "size": 894,
@@ -339,7 +340,7 @@
             "delta"
           ],
           "showDiag": false,
-          "showPoints": "auto",
+          "showPoints": "on",
           "signalsWidthPx": 367
         },
         "title": "Powertrain"
@@ -551,6 +552,68 @@
           "mode": "by-id"
         },
         "title": "BatteryById"
+      },
+      "trace-f0ac8c09-742b-4ba6-8b00-0e75ff6ffe88": {
+        "contentComponent": "trace",
+        "id": "trace-f0ac8c09-742b-4ba6-8b00-0e75ff6ffe88",
+        "params": {
+          "autoScroll": true,
+          "columns": [
+            {
+              "key": "idx",
+              "visible": true,
+              "width": 64
+            },
+            {
+              "key": "time",
+              "visible": true,
+              "width": 110
+            },
+            {
+              "key": "rate",
+              "visible": true,
+              "width": 64
+            },
+            {
+              "key": "bus",
+              "visible": true,
+              "width": 100
+            },
+            {
+              "key": "id",
+              "visible": true,
+              "width": 96
+            },
+            {
+              "key": "msg",
+              "visible": true,
+              "width": 220
+            },
+            {
+              "key": "len",
+              "visible": true,
+              "width": 44
+            },
+            {
+              "key": "data",
+              "visible": true,
+              "width": 360
+            },
+            {
+              "key": "dir",
+              "visible": true,
+              "width": 40
+            },
+            {
+              "key": "kind",
+              "visible": false,
+              "width": 110
+            }
+          ],
+          "elementId": "f0ac8c09-742b-4ba6-8b00-0e75ff6ffe88",
+          "mode": "chronological"
+        },
+        "title": "Filtered"
       }
     }
   },
@@ -713,7 +776,7 @@
           "delta"
         ],
         "showDiag": false,
-        "showPoints": "auto",
+        "showPoints": "on",
         "signalsWidthPx": 367
       },
       "id": "powertrain",
@@ -1141,6 +1204,81 @@
       "name": "BatteryById",
       "sources": [
         "batt"
+      ]
+    },
+    {
+      "config": {
+        "autoScroll": true,
+        "columns": [
+          {
+            "key": "idx",
+            "visible": true,
+            "width": 64
+          },
+          {
+            "key": "time",
+            "visible": true,
+            "width": 110
+          },
+          {
+            "key": "rate",
+            "visible": true,
+            "width": 64
+          },
+          {
+            "key": "bus",
+            "visible": true,
+            "width": 100
+          },
+          {
+            "key": "id",
+            "visible": true,
+            "width": 96
+          },
+          {
+            "key": "msg",
+            "visible": true,
+            "width": 220
+          },
+          {
+            "key": "len",
+            "visible": true,
+            "width": 44
+          },
+          {
+            "key": "data",
+            "visible": true,
+            "width": 360
+          },
+          {
+            "key": "dir",
+            "visible": true,
+            "width": 40
+          },
+          {
+            "key": "kind",
+            "visible": false,
+            "width": 110
+          }
+        ],
+        "mode": "chronological"
+      },
+      "id": "f0ac8c09-742b-4ba6-8b00-0e75ff6ffe88",
+      "kind": "trace",
+      "name": "Filtered",
+      "sources": [
+        "8cb38662-634f-40a5-bc16-10d0133747c3"
+      ]
+    },
+    {
+      "id": "8cb38662-634f-40a5-bc16-10d0133747c3",
+      "kind": "filter",
+      "name": "BattFilt",
+      "predicate": {
+        "name_regex": "^Bms.*?"
+      },
+      "sources": [
+        "*"
       ]
     }
   ],
