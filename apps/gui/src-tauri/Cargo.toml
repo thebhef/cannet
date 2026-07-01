@@ -37,6 +37,10 @@ regex = "1"
 
 cannet-core = { path = "../../../crates/cannet-core" }
 cannet-blf = { path = "../../../crates/cannet-blf" }
+# Raw trace-frame storage behind the `TraceStore` facade: the in-RAM test
+# double and the disk-spill production store (ADR 0002). Owns the one
+# `unsafe` mmap surface so this crate stays `unsafe`-free.
+cannet-spill = { path = "../../../crates/cannet-spill" }
 cannet-client = { path = "../../../crates/cannet-client" }
 cannet-dbc = { path = "../../../crates/cannet-dbc" }
 # Phase 7: bridge wire-level LogMessage envelopes into the local bus.

@@ -1,0 +1,30 @@
+[package]
+name = "cannet-spill"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# This crate deliberately does NOT inherit the workspace's
+# `unsafe_code = "forbid"` lint: it is the one place memmap2's unavoidably
+# `unsafe` mapping calls live (ADR 0002). `unsafe` is `deny`-ed here so it
+# still cannot appear by accident — every site needs an explicit, justified
+# `#[allow(unsafe_code)]`. The clippy lints mirror the workspace set.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+
+[dependencies]
+cannet-core = { path = "../cannet-core" }
+# Cross-platform `mmap`: POSIX `mmap` on Unix, `CreateFileMapping` /
+# `MapViewOfFile` on Windows, behind one Rust API (ADR 0002). The disk
+# raw store maps its pre-allocated segment files for random-access reads.
+memmap2 = "0.9"
+
+[dev-dependencies]
+tempfile = "3"
