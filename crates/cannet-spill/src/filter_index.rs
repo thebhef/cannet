@@ -56,6 +56,13 @@ pub struct FilterIndex {
     /// Frame index (exclusive) the index has been built up to. Lets a
     /// growing capture be brought current without rescanning history.
     built_through: usize,
+    /// Low-water mark: the lowest still-live match-position (ADR 0002). `0`
+    /// until eviction front-trims the postings whose frames have dropped
+    /// below the raw store's `first_index`, after which it rises. The live
+    /// match-positions are `[first_pos, len)`; positions below it are
+    /// evicted. Match-positions stay absolute across a trim, so a below-mark
+    /// position is never read (its segment may be unmapped).
+    first_pos: usize,
 }
 
 impl FilterIndex {
@@ -69,6 +76,7 @@ impl FilterIndex {
             segs: Vec::new(),
             len: 0,
             built_through: 0,
+            first_pos: 0,
         })
     }
 
@@ -87,6 +95,14 @@ impl FilterIndex {
     #[must_use]
     pub fn built_through(&self) -> usize {
         self.built_through
+    }
+
+    /// The low-water mark — the lowest still-live match-position. `0` until
+    /// eviction front-trims the postings whose frames have dropped below the
+    /// raw store's `first_index`; the live positions are `[first_pos, len)`.
+    #[must_use]
+    pub fn first_pos(&self) -> usize {
+        self.first_pos
     }
 
     fn seg_path(&self, i: usize) -> PathBuf {
@@ -169,7 +185,9 @@ impl FilterIndex {
     /// slicing the index — no scan.
     #[must_use]
     pub fn position_of(&self, frame: usize) -> usize {
-        let (mut lo, mut hi) = (0usize, self.len);
+        // The lower bound starts at the low-water mark, so an evicted
+        // (front-trimmed) match-position is never read.
+        let (mut lo, mut hi) = (self.first_pos, self.len);
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
             if self.entry(mid) < frame {
@@ -186,8 +204,13 @@ impl FilterIndex {
     /// `O(limit)`.
     #[must_use]
     pub fn page(&self, offset: usize, limit: usize) -> Vec<usize> {
-        let start = offset.min(self.len);
+        // Clamp the start up to the low-water mark so an evicted prefix is
+        // dropped rather than read from a (would-be) unmapped segment.
+        let start = offset.max(self.first_pos).min(self.len);
         let end = offset.saturating_add(limit).min(self.len);
+        if end <= start {
+            return Vec::new();
+        }
         (start..end).map(|k| self.entry(k)).collect()
     }
 
@@ -198,6 +221,7 @@ impl FilterIndex {
         self.segs.clear();
         self.len = 0;
         self.built_through = 0;
+        self.first_pos = 0;
         remove_files_with_prefixes(&self.dir, &[FILTER_PREFIX])
     }
 }
@@ -376,6 +400,30 @@ mod tests {
             idx.len(),
             page[0],
         );
+    }
+
+    #[test]
+    fn reads_below_the_low_water_position_are_evicted_not_panics() {
+        // The evicted-read contract for the filter index (ADR 0002): once
+        // its postings are front-trimmed (Step 6d, when the matched frames
+        // drop below the raw store's `first_index`), `position_of` / `page`
+        // must not read a below-mark match-position. Build the index, raise
+        // the mark directly, and assert the reads honor it.
+        let store = seeded(30); // id 0x100 → frames 0,3,6,…,27 (10 matches)
+        let dir = TempDir::new().unwrap();
+        let mut idx = FilterIndex::new(dir.path()).unwrap();
+        idx.extend_membership(&store, &[(0x100, false)], store.len());
+        assert_eq!(idx.len(), 10);
+        idx.first_pos = 4; // simulate the oldest 4 match-positions evicted
+
+        // `position_of` never descends below the mark…
+        assert_eq!(idx.position_of(0), 4);
+        assert_eq!(idx.position_of(1000), 10);
+        // …and a page straddling the mark drops the evicted prefix.
+        let page = idx.page(0, idx.len());
+        assert_eq!(page, vec![12, 15, 18, 21, 24, 27]); // positions 4..10
+        // A page entirely below the mark comes back empty (no panic).
+        assert!(idx.page(0, 4).is_empty());
     }
 
     #[test]

@@ -57,6 +57,14 @@ pub struct SampleSeq {
     /// is located in `O(log segs)`.
     cum_cap: Vec<usize>,
     len: usize,
+    /// Low-water mark: the lowest still-live slot (ADR 0002). `0` until the
+    /// pyramid is front-trimmed to honor the scratch cap, after which it
+    /// rises to the first surviving slot. The live range is
+    /// `[first_slot, len)`; slots below it are evicted. Absolute slot
+    /// numbering is preserved across a trim (mirroring the raw store's
+    /// `first_index`), so the serve path's binary search and the host's
+    /// slot bookkeeping stay valid — only the floor moves.
+    first_slot: usize,
 }
 
 impl SampleSeq {
@@ -69,10 +77,13 @@ impl SampleSeq {
             segs: Vec::new(),
             cum_cap: Vec::new(),
             len: 0,
+            first_slot: 0,
         }
     }
 
-    /// Number of pairs stored.
+    /// Number of pairs stored — the append count, including any slots
+    /// evicted below [`Self::first_slot`]. Slot indices remain absolute, so
+    /// this is the exclusive upper bound of the slot space.
     pub fn len(&self) -> usize {
         self.len
     }
@@ -80,6 +91,28 @@ impl SampleSeq {
     /// Whether the sequence holds no pairs.
     pub fn is_empty(&self) -> bool {
         self.len == 0
+    }
+
+    /// The low-water mark — the lowest still-live slot. `0` until eviction
+    /// front-trims the sequence; the live range is `[first_slot, len)`.
+    pub fn first_slot(&self) -> usize {
+        self.first_slot
+    }
+
+    /// Count of still-live pairs (those in `[first_slot, len)`).
+    pub fn live_len(&self) -> usize {
+        self.len - self.first_slot
+    }
+
+    /// Raise the low-water mark to `first_slot`, evicting the slots below it
+    /// (clamped to `[self.first_slot, len]`, so the floor only ever rises).
+    /// Absolute slot numbering is preserved — a live read still addresses a
+    /// surviving slot by its original index — so this only narrows the live
+    /// range. Dropping the now-dead leading segment *files* is the
+    /// windowed-ring eviction's job; this sets the logical floor the serve
+    /// path reads so a below-mark slot is never touched.
+    pub fn evict_below(&mut self, first_slot: usize) {
+        self.first_slot = first_slot.clamp(self.first_slot, self.len);
     }
 
     fn capacity(&self) -> usize {
@@ -93,10 +126,14 @@ impl SampleSeq {
         (seg, (k - base) * ENTRY_BYTES)
     }
 
-    /// The `(t_seconds, value)` pair at slot `k` (`k < len`).
+    /// The `(t_seconds, value)` pair at the live slot `k`
+    /// (`first_slot <= k < len`).
     ///
     /// # Panics
-    /// Panics if `k >= len` (the slot's segment isn't mapped).
+    /// Panics if `k >= len` (the slot's segment isn't mapped). Reading an
+    /// evicted slot (`k < first_slot`) is a logic error — the serve path
+    /// stays within `[first_slot, len)`; after the leading segments are
+    /// dropped it would touch an unmapped segment.
     pub fn get(&self, k: usize) -> (f64, f64) {
         let (seg, off) = self.locate(k);
         let bytes = &self.segs[seg].map[off..off + ENTRY_BYTES];
@@ -189,6 +226,33 @@ mod tests {
         assert_eq!(l1.len(), 1);
         assert_eq!(l1.get(0), (7.0, 9.0));
         assert_eq!(l0.get(50), (50.0, 1.0));
+    }
+
+    #[test]
+    fn evict_below_raises_the_live_floor_preserving_absolute_slots() {
+        // The low-water mark for a pyramid level (ADR 0002): front-trim
+        // raises the floor, narrowing the live range, but surviving slots
+        // keep their absolute index so the serve path's binary search stays
+        // valid.
+        let dir = TempDir::new().unwrap();
+        let mut seq = SampleSeq::new(dir.path(), "sig.l0");
+        for i in 0..100u32 {
+            seq.push(f64::from(i), f64::from(i) * 2.0);
+        }
+        seq.evict_below(40);
+        assert_eq!(seq.first_slot(), 40);
+        assert_eq!(seq.live_len(), 60);
+        assert_eq!(seq.len(), 100, "len stays the absolute slot bound");
+        // Live slots still read by their original absolute index.
+        assert_eq!(seq.get(40), (40.0, 80.0));
+        assert_eq!(seq.get(99), (99.0, 198.0));
+        // The floor only rises — a lower request is ignored.
+        seq.evict_below(20);
+        assert_eq!(seq.first_slot(), 40);
+        // …and clamps to len (a fully-evicted sequence has no live slots).
+        seq.evict_below(1000);
+        assert_eq!(seq.first_slot(), 100);
+        assert_eq!(seq.live_len(), 0);
     }
 
     #[test]

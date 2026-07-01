@@ -102,6 +102,12 @@ pub struct DiskRawStore {
     dir: PathBuf,
     cfg: DiskConfig,
     len: usize,
+    /// Low-water mark: the lowest still-addressable row index (ADR 0002).
+    /// `0` until windowed-ring eviction drops the oldest segments, after
+    /// which it rises to the first surviving row. Reads below it return
+    /// the evicted result (`None`) rather than indexing a dropped segment;
+    /// the live range is `[first_index, len)`.
+    first_index: usize,
     /// Global next-write byte offset into the logical payload blob.
     payload_cursor: u64,
     meta_segs: Vec<Segment>,
@@ -145,6 +151,7 @@ impl DiskRawStore {
             dir,
             cfg,
             len: 0,
+            first_index: 0,
             payload_cursor: 0,
             meta_segs: Vec::new(),
             payload_segs: Vec::new(),
@@ -173,6 +180,7 @@ impl DiskRawStore {
             dir,
             cfg: DiskConfig::default(),
             len: 0,
+            first_index: 0,
             payload_cursor: 0,
             meta_segs: Vec::new(),
             payload_segs: Vec::new(),
@@ -213,6 +221,7 @@ impl DiskRawStore {
             dir,
             cfg,
             len,
+            first_index: 0,
             payload_cursor: manifest.payload_cursor,
             meta_segs: Vec::new(),
             payload_segs: Vec::new(),
@@ -398,8 +407,10 @@ impl DiskRawStore {
     }
 
     /// Read the timestamp of frame `idx` without rebuilding the payload.
+    /// Returns `None` for an evicted row (`idx < first_index`) or one past
+    /// the tip (`idx >= len`).
     fn read_ts(&self, idx: usize) -> Option<u64> {
-        if idx >= self.len {
+        if idx < self.first_index || idx >= self.len {
             return None;
         }
         if idx >= self.ring_start() {
@@ -417,7 +428,7 @@ impl DiskRawStore {
     // `payload_seg_bytes`, so the within-segment casts cannot truncate.
     #[allow(clippy::cast_possible_truncation)]
     fn read_frame(&self, idx: usize) -> Option<RawTraceFrame> {
-        if idx >= self.len {
+        if idx < self.first_index || idx >= self.len {
             return None;
         }
         if idx >= self.ring_start() {
@@ -509,20 +520,23 @@ impl RawStore for DiskRawStore {
     }
 
     fn frame_timestamps(&self, start: usize, end: usize) -> (Option<u64>, Option<u64>) {
-        if start >= self.len {
+        // Clamp the start up to the low-water mark so a range straddling
+        // evicted rows still reports the first *live* timestamp.
+        let start = start.max(self.first_index);
+        let end = end.min(self.len);
+        if start >= end {
             return (None, None);
         }
-        let end = end.min(self.len);
         let first = self.read_ts(start);
-        let last = end.checked_sub(1).and_then(|i| self.read_ts(i));
+        let last = self.read_ts(end - 1);
         (first, last)
     }
 
     fn first_last_ts(&self) -> (Option<u64>, Option<u64>) {
-        if self.len == 0 {
+        if self.first_index >= self.len {
             return (None, None);
         }
-        (self.read_ts(0), self.read_ts(self.len - 1))
+        (self.read_ts(self.first_index), self.read_ts(self.len - 1))
     }
 
     fn matching_frames_indexed(
@@ -646,6 +660,39 @@ mod tests {
         // The whole-buffer span and a mid-range timestamp pair.
         assert_eq!(s.first_last_ts(), (Some(0), Some(49)));
         assert_eq!(s.frame_timestamps(10, 13), (Some(10), Some(12)));
+    }
+
+    #[test]
+    fn reads_below_the_low_water_mark_are_evicted_not_panics() {
+        // The read contract once windowed-ring eviction starts dropping the
+        // oldest segments (ADR 0002). 6c raises the mark when it deletes the
+        // files; here we set it directly and assert the read path tolerates
+        // a row below it — returns the evicted result (`None`), never
+        // indexes a (would-be) dropped segment and panics.
+        let dir = TempDir::new().unwrap();
+        let mut s = DiskRawStore::with_config(dir.path(), tiny()).unwrap();
+        for i in 0u32..20 {
+            s.append(frame(u64::from(i) * 10, i));
+        }
+        s.first_index = 8; // simulate the oldest 8 rows evicted
+        for i in 0..8 {
+            assert!(s.read_frame(i).is_none(), "row {i} below mark must be evicted");
+            assert!(s.read_ts(i).is_none(), "ts {i} below mark must be evicted");
+        }
+        for i in 8..20 {
+            assert!(s.read_frame(i).is_some(), "row {i} at/above mark must read");
+        }
+        // The whole-buffer span starts at the mark, not the hardcoded 0.
+        assert_eq!(s.first_last_ts(), (Some(80), Some(190)));
+        // A slice straddling the mark drops the evicted prefix and returns
+        // only the live tail.
+        let got = s.slice(0, 20);
+        assert_eq!(got.len(), 12);
+        assert_eq!(got[0].id, 8);
+        // frame_timestamps over a straddling range clamps to the mark.
+        assert_eq!(s.frame_timestamps(0, 20), (Some(80), Some(190)));
+        // A by-id read whose hits are all below the mark comes back empty.
+        assert!(s.matching_frames_indexed(3, false, 0, 20).is_empty());
     }
 
     #[test]

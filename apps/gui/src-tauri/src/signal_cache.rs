@@ -234,7 +234,7 @@ impl SignalCache {
     /// length. `max_points == 0` disables decimation and returns the raw
     /// level-0 window slice.
     fn window(&self, from: f64, to: f64, max_points: usize) -> Vec<SamplePoint> {
-        if self.levels[0].is_empty() {
+        if self.levels[0].live_len() == 0 {
             return Vec::new();
         }
         // Coarsest level still holding > max_points points in the window.
@@ -259,11 +259,13 @@ impl SignalCache {
     }
 }
 
-/// Smallest slot `k` in `[0, level.len())` whose `t_seconds` is `>= target`
-/// — the partition point of the (non-decreasing) `t_seconds` order, by
-/// binary search over [`SampleSeq::get`].
+/// Smallest live slot `k` in `[first_slot, level.len())` whose `t_seconds`
+/// is `>= target` — the partition point of the (non-decreasing) `t_seconds`
+/// order, by binary search over [`SampleSeq::get`]. The lower bound starts
+/// at the level's low-water mark, so an evicted (front-trimmed) slot is
+/// never read.
 fn partition_by_t(level: &SampleSeq, target: f64) -> usize {
-    let mut lo = 0;
+    let mut lo = level.first_slot();
     let mut hi = level.len();
     while lo < hi {
         let mid = lo + (hi - lo) / 2;
@@ -292,7 +294,9 @@ fn window_count(level: &SampleSeq, from: f64, to: f64) -> usize {
 fn window_slice(level: &SampleSeq, from: f64, to: f64) -> Vec<SamplePoint> {
     let lo = partition_by_t(level, from);
     let hi = partition_by_t(level, to);
-    let lo_inclusive = lo.saturating_sub(2);
+    // Widen by two boundary points each side, but never below the level's
+    // low-water mark — a slot under it has been front-trimmed.
+    let lo_inclusive = lo.saturating_sub(2).max(level.first_slot());
     let hi_inclusive = std::cmp::min(level.len(), hi.saturating_add(2));
     (lo_inclusive..hi_inclusive)
         .map(|k| {
@@ -813,5 +817,35 @@ mod tests {
         // A subsequent serve rebuilds the pyramid from the raw store.
         let rebuilt = cache.slice(None, 256, false, "X", 0.0, 1000.0, 0, &store, dbs);
         assert_eq!(rebuilt.len(), 200);
+    }
+
+    #[test]
+    fn serve_skips_an_evicted_pyramid_front_without_panicking() {
+        // The evicted-read contract for the signal cache (ADR 0002): once a
+        // pyramid level is front-trimmed to honor the scratch cap, the serve
+        // path must read only the live tail and never touch a slot below the
+        // level's low-water mark. (Step 6d raises the mark when it drops the
+        // segment files; here we raise it directly to assert the read path
+        // already tolerates it.)
+        let dir = TempDir::new().unwrap();
+        let mut cache = SignalCache::new(dir.path(), "sig");
+        for i in 0..100u32 {
+            cache.levels[0].push(f64::from(i), f64::from(i));
+        }
+        cache.levels[0].evict_below(40); // drop the oldest 40 (t = 0..40)
+        assert_eq!(cache.levels[0].first_slot(), 40);
+
+        // A whole-span serve returns only the live tail, in order, no panic.
+        let pts = cache.window(0.0, 1000.0, 0);
+        assert_eq!(pts.len(), 60);
+        assert_eq!(pts.first().map(|p| p.t_seconds), Some(40.0));
+        assert_eq!(pts.last().map(|p| p.t_seconds), Some(99.0));
+        // A window straddling the floor never reads below it (the ±2
+        // boundary widening clamps to the mark, not to slot 38/39).
+        let straddle = cache.window(0.0, 50.0, 0);
+        assert!(straddle.iter().all(|p| p.t_seconds >= 40.0));
+        // A fully-evicted level serves empty rather than reading a dead slot.
+        cache.levels[0].evict_below(100);
+        assert!(cache.window(0.0, 1000.0, 0).is_empty());
     }
 }
