@@ -212,13 +212,15 @@ struct RateSample {
     count: usize,
 }
 
-/// Per-bus rate state: the bus's own running frame count plus its
-/// rate-sample history. Sampled and pruned exactly like the aggregate
-/// [`Inner::rate_samples`], so [`TraceStore::frames_per_second_by_bus`]
-/// reads a per-bus rate the same way [`TraceStore::frames_per_second`]
-/// reads the aggregate.
+/// A rolling frames/second tracker: a running frame count plus its
+/// rate-sample history, sampled and pruned exactly like the aggregate
+/// [`Inner::rate_samples`]. One per bucket — used per-bus
+/// ([`TraceStore::frames_per_second_by_bus`]) and per-direction
+/// ([`TraceStore::frames_per_second_by_direction`]) — so each reads a
+/// scoped rate the same way [`TraceStore::frames_per_second`] reads the
+/// aggregate.
 #[derive(Default)]
-struct BusRate {
+struct RateTrack {
     count: usize,
     samples: VecDeque<RateSample>,
 }
@@ -255,7 +257,14 @@ struct Inner {
     /// unassigned, its own bucket). Maintained `O(1)` on append; backs
     /// [`TraceStore::frames_per_second_by_bus`], the per-bus throughput
     /// readout used to localise where a high-rate stream is slowing.
-    per_bus: HashMap<Option<String>, BusRate>,
+    per_bus: HashMap<Option<String>, RateTrack>,
+    /// Append rate split by [`Direction`]: received frames and
+    /// transmit-confirmed frames tracked separately, so a stall on one
+    /// direction is visible even when the aggregate looks healthy.
+    /// Maintained `O(1)` on append; backs
+    /// [`TraceStore::frames_per_second_by_direction`].
+    rx_rate: RateTrack,
+    tx_rate: RateTrack,
     /// Frames rejected by the session-start guard ([`Self::append`]
     /// returning `None`). Counted so that silent path is visible in the
     /// diagnostic readout.
@@ -273,6 +282,8 @@ impl TraceStore {
                 rates: HashMap::new(),
                 by_id: HashMap::new(),
                 per_bus: HashMap::new(),
+                rx_rate: RateTrack::default(),
+                tx_rate: RateTrack::default(),
                 dropped_before_session: 0,
             }),
         }
@@ -304,6 +315,7 @@ impl TraceStore {
             frame.extended,
         );
         let bus_for_rate = key.0.clone();
+        let direction = frame.direction;
         let mut inner = self.inner.lock().expect("trace store mutex poisoned");
         if ts_ns < inner.session_start_ns {
             inner.dropped_before_session = inner.dropped_before_session.saturating_add(1);
@@ -345,6 +357,24 @@ impl TraceStore {
                 count: bus_count,
             });
             prune_rate_samples(&mut bus_rate.samples, now);
+        }
+        let dir_rate = match direction {
+            Direction::Rx => &mut inner.rx_rate,
+            Direction::Tx => &mut inner.tx_rate,
+        };
+        dir_rate.count += 1;
+        let dir_due = match dir_rate.samples.back() {
+            Some(last) => now.duration_since(last.wall) >= RATE_SAMPLE_INTERVAL,
+            None => true,
+        };
+        if dir_due {
+            let dir_count = dir_rate.count;
+            dir_rate.samples.push_back(RateSample {
+                wall: now,
+                ts_ns,
+                count: dir_count,
+            });
+            prune_rate_samples(&mut dir_rate.samples, now);
         }
         Some(u64::try_from(count - 1).unwrap_or(u64::MAX))
     }
@@ -521,6 +551,8 @@ impl TraceStore {
         inner.rates = HashMap::new();
         inner.by_id = HashMap::new();
         inner.per_bus = HashMap::new();
+        inner.rx_rate = RateTrack::default();
+        inner.tx_rate = RateTrack::default();
         inner.dropped_before_session = 0;
     }
 
@@ -646,6 +678,23 @@ impl TraceStore {
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out
     }
+
+    /// Estimated current append rate split by [`Direction`], as
+    /// `(rx, tx)` frames per second. Read the same way as the aggregate
+    /// [`Self::frames_per_second`] — off the rolling sample window — but
+    /// on direction-scoped buckets, so a transmit stall (tx falling while
+    /// rx holds, or vice versa) is visible where the merged aggregate
+    /// would hide it.
+    #[must_use]
+    pub fn frames_per_second_by_direction(&self) -> (f64, f64) {
+        let now = Instant::now();
+        let mut inner = self.inner.lock().expect("trace store mutex poisoned");
+        prune_rate_samples(&mut inner.rx_rate.samples, now);
+        prune_rate_samples(&mut inner.tx_rate.samples, now);
+        let rx = rate_from_samples(&inner.rx_rate.samples);
+        let tx = rate_from_samples(&inner.tx_rate.samples);
+        (rx, tx)
+    }
 }
 
 fn prune_rate_samples(samples: &mut VecDeque<RateSample>, now: Instant) {
@@ -691,6 +740,12 @@ mod tests {
     fn dummy_on_bus(ts_ns: u64, id: u32, bus: &str) -> RawTraceFrame {
         let mut f = dummy(ts_ns, id);
         f.bus_id = Some(bus.into());
+        f
+    }
+
+    fn dummy_tx(ts_ns: u64, id: u32) -> RawTraceFrame {
+        let mut f = dummy(ts_ns, id);
+        f.direction = Direction::Tx;
         f
     }
 
@@ -1087,6 +1142,37 @@ mod tests {
             .expect("bus A present")
             .1;
         assert!((rate - 10.0).abs() < 1.0, "expected ~10/s, got {rate}");
+    }
+
+    #[test]
+    fn frames_per_second_by_direction_splits_rx_and_tx() {
+        // Rx and Tx are tracked in separate buckets. Two frames per
+        // direction, the second taken after a wall gap longer than
+        // RATE_SAMPLE_INTERVAL so it actually records; the rate reads off
+        // the frame-time deltas. Rx steps 100 ms (→10/s); Tx steps 50 ms
+        // (→20/s) — distinct rates prove the buckets don't bleed.
+        let store = TraceStore::new();
+        store.append(dummy(0, 1));
+        store.append(dummy_tx(0, 2));
+        std::thread::sleep(Duration::from_millis(30));
+        store.append(dummy(100_000_000, 1));
+        store.append(dummy_tx(50_000_000, 2));
+        let (rx, tx) = store.frames_per_second_by_direction();
+        assert!((rx - 10.0).abs() < 2.0, "expected rx ~10/s, got {rx}");
+        assert!((tx - 20.0).abs() < 3.0, "expected tx ~20/s, got {tx}");
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)] // 0.0 is the exact "no frames this direction" sentinel.
+    fn frames_per_second_by_direction_is_zero_for_an_unseen_direction() {
+        // Only Rx frames have arrived: rx estimates, tx is exactly zero.
+        let store = TraceStore::new();
+        store.append(dummy(0, 1));
+        std::thread::sleep(Duration::from_millis(30));
+        store.append(dummy(100_000_000, 1));
+        let (rx, tx) = store.frames_per_second_by_direction();
+        assert!(rx > 0.0, "rx should estimate, got {rx}");
+        assert_eq!(tx, 0.0);
     }
 
     #[test]

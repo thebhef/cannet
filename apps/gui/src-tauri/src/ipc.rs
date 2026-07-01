@@ -165,6 +165,12 @@ pub struct TraceGrew {
     /// Estimated current frame rate (frames per second over the last
     /// second of appends).
     pub frames_per_second: f64,
+    /// Estimated current receive (`Direction::Rx`) frame rate.
+    pub frames_per_second_rx: f64,
+    /// Estimated current transmit-confirmed (`Direction::Tx`) frame rate.
+    /// Split from rx so a transmit stall shows even when the aggregate
+    /// looks healthy.
+    pub frames_per_second_tx: f64,
     /// Per-bus breakdown of the current frame rate — what localises a
     /// slowdown to a specific bus on a multi-bus stream.
     pub frames_per_second_by_bus: Vec<BusFps>,

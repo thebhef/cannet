@@ -77,6 +77,20 @@ pub struct GaugeSpread {
     pub last: f64,
 }
 
+/// A throughput gauge reduced for regression gating: its run mean plus
+/// the first-half / second-half split and their ratio. The render tier's
+/// counterpart to the host harness's `fps_retention` (runner.rs) — a
+/// retention near 1.0 means throughput held as the buffer grew; the
+/// diagnosed lock-contention regression drove it toward 0.5. `overall`
+/// is gated against an expected floor; `retention` against a decay floor.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct RateReport {
+    pub overall: f64,
+    pub first_half: f64,
+    pub second_half: f64,
+    pub retention: f64,
+}
+
 /// The render-tier counterpart to the host harness's report: UX-facing
 /// metrics reduced from a capture's per-second samples.
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -100,6 +114,13 @@ pub struct RenderReport {
     pub jank_fraction: f64,
     /// Mean estimated dropped frames per second (long-task ms ÷ frame budget).
     pub frames_late_per_s_mean: f64,
+    /// Receive throughput (the `fps.rx` gauge) reduced for gating —
+    /// overall level and first/second-half retention.
+    pub rx_fps: RateReport,
+    /// Transmit-confirmed throughput (the `fps.tx` gauge), same reduction.
+    /// Split from rx so a transmit-only stall is gated even when receive
+    /// holds.
+    pub tx_fps: RateReport,
     /// Per-counter per-second spread (render / resample / invoke counts).
     pub counters_per_s: BTreeMap<String, Spread>,
     /// Per-gauge spread over the run.
@@ -199,8 +220,40 @@ pub fn summarize(label: &str, samples: &[DiagSample]) -> RenderReport {
         jank_seconds,
         jank_fraction,
         frames_late_per_s_mean: mean(&frames_late),
+        rx_fps: rate_report(samples, "fps.rx"),
+        tx_fps: rate_report(samples, "fps.tx"),
         counters_per_s,
         gauges,
+    }
+}
+
+/// Reduce one throughput gauge's per-second series to a [`RateReport`].
+/// Absent readings (seconds before the rate gauge first reported) are
+/// skipped; the present readings are split in half by order so the
+/// first-half / second-half ratio measures decay as the buffer grew —
+/// the same retention shape the host harness gates (runner.rs).
+fn rate_report(samples: &[DiagSample], key: &str) -> RateReport {
+    let vals: Vec<f64> = samples
+        .iter()
+        .filter_map(|s| s.gauges.get(key).copied())
+        .collect();
+    let overall = mean(&vals);
+    let (first_half, second_half) = if vals.len() >= 2 {
+        let mid = vals.len() / 2;
+        (mean(&vals[..mid]), mean(&vals[mid..]))
+    } else {
+        (overall, overall)
+    };
+    let retention = if first_half > 0.0 {
+        second_half / first_half
+    } else {
+        0.0
+    };
+    RateReport {
+        overall,
+        first_half,
+        second_half,
+        retention,
     }
 }
 
@@ -480,6 +533,37 @@ mod tests {
         approx(r.counters_per_s["render.PlotArea"].mean, 100.0);
         approx(r.counters_per_s["render.PlotArea"].max, 200.0);
         approx(r.counters_per_s["plotarea.resample"].mean, 4.0);
+    }
+
+    #[test]
+    fn rx_tx_fps_retention_splits_first_and_second_half() {
+        // fps.rx halves from 1000→500 across the run (the contention
+        // signature); fps.tx holds flat at 800. Retention catches the rx
+        // decay (0.5) while tx stays ~1.0. Absent early readings are
+        // skipped, so warmup before the first rate gauge doesn't skew it.
+        let mut s = Vec::new();
+        let rx = [1000.0, 1000.0, 500.0, 500.0];
+        for (i, &r) in rx.iter().enumerate() {
+            #[allow(clippy::cast_precision_loss)]
+            let mut d = sample(i as f64 * 1000.0, 0.0, 0.0);
+            d.gauges.insert("fps.rx".into(), r);
+            d.gauges.insert("fps.tx".into(), 800.0);
+            s.push(d);
+        }
+        let r = summarize("x", &s);
+        approx(r.rx_fps.first_half, 1000.0);
+        approx(r.rx_fps.second_half, 500.0);
+        approx(r.rx_fps.retention, 0.5);
+        approx(r.rx_fps.overall, 750.0);
+        approx(r.tx_fps.retention, 1.0);
+        approx(r.tx_fps.overall, 800.0);
+    }
+
+    #[test]
+    fn rate_report_is_zero_when_the_gauge_never_reported() {
+        let r = summarize("idle", &[sample(0.0, 0.0, 0.0), sample(1000.0, 0.0, 0.0)]);
+        approx(r.rx_fps.overall, 0.0);
+        approx(r.rx_fps.retention, 0.0);
     }
 
     #[test]

@@ -10,7 +10,7 @@ use std::process::ExitCode;
 use clap::{Args, Parser, Subcommand};
 
 use cannet_perf_measurement::check::{
-    self, Baseline, Metrics, ModeBaseline, BASELINE_VERSION,
+    self, Baseline, Expected, Metrics, ModeBaseline, BASELINE_VERSION,
 };
 use cannet_perf_measurement::frontend::{self, FrontendBaseline, FrontendMetrics};
 use cannet_perf_measurement::grpc::{self, GrpcConfig};
@@ -40,6 +40,16 @@ struct Cli {
     /// against them. Omit to leave the frontend tier out of the run.
     #[arg(long, global = true)]
     frontend_report: Option<PathBuf>,
+    /// Expected receive rate (frames/s) for the live ev-demo sim, gated by
+    /// `check` on the frontend tier as an absolute floor (measured ≥ 0.85×
+    /// expected) independent of the baseline. Host modes gate ingest
+    /// against their own configured offered rate instead.
+    #[arg(long, global = true)]
+    expected_rx_fps: Option<f64>,
+    /// Expected transmit rate (frames/s) for the live ev-demo sim, gated on
+    /// the frontend tier (the only tier that measures tx separately).
+    #[arg(long, global = true)]
+    expected_tx_fps: Option<f64>,
     #[command(subcommand)]
     command: Command,
 }
@@ -178,7 +188,15 @@ fn main() -> ExitCode {
         Command::Grpc(args) => run_grpc(&dir, args),
         Command::HardwarePeak(args) => run_hardware_peak(&dir, args),
         Command::Baseline => run_baseline(&dir, cli.baseline, cli.frontend_report),
-        Command::Check => run_check(&dir, cli.baseline, cli.frontend_report),
+        Command::Check => run_check(
+            &dir,
+            cli.baseline,
+            cli.frontend_report,
+            Expected {
+                rx_fps: cli.expected_rx_fps,
+                tx_fps: cli.expected_tx_fps,
+            },
+        ),
     };
     match result {
         Ok(code) => code,
@@ -259,6 +277,7 @@ fn run_check(
     dir: &std::path::Path,
     explicit: Option<PathBuf>,
     frontend_report: Option<PathBuf>,
+    expected: Expected,
 ) -> Result<ExitCode, String> {
     let baseline_path = explicit.unwrap_or_else(default_baseline_path);
     if !baseline_path.exists() {
@@ -283,6 +302,12 @@ fn run_check(
     let mut verdicts = Vec::new();
     let mut skipped: Vec<(&str, String)> = Vec::new();
 
+    // Host modes are gated *relative to their baseline* — their real
+    // expectation. They're transport-limited stress runs that don't reach
+    // their nominal offered rate (e.g. grpc sustains ~3.1k against an
+    // offered 5k), so an absolute "expected" floor doesn't fit them. The
+    // CLI `--expected-*` band describes the live ev-demo sim, whose
+    // schedule rate is deterministic, and gates only the frontend tier.
     if let Some(mb) = &baseline.tracebuffer {
         let rep = tracebuffer::run(&ex, &mb.config);
         verdicts.extend(check::check_mode("tracebuffer", &mb.metrics, &rep));
@@ -305,7 +330,7 @@ fn run_check(
         match frontend_report {
             Some(p) => {
                 let current = FrontendMetrics::from(&frontend::load_report(&p)?);
-                verdicts.extend(frontend::check_frontend(&fb.metrics, &current));
+                verdicts.extend(frontend::check_frontend(&fb.metrics, &current, expected));
             }
             None => skipped.push(("frontend", "no --frontend-report supplied".to_string())),
         }

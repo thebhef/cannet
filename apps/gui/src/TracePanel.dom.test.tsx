@@ -150,9 +150,12 @@ describe("TracePanel chronological filtering", () => {
         offset: 0,
         limit: 512,
         fromEnd: true,
-        // A row page ignores the incremental-count checkpoint.
-        prevCount: null,
-        prevCountEnd: null,
+        // The follow-live tail resumes from the incremental checkpoint; on
+        // the first fetch under a descriptor it's the freshly-reset empty
+        // count at the window start (so the host counts the window once and
+        // seeds the cursor, then later ticks resume in O(Δ)).
+        prevCount: 0,
+        prevCountEnd: 0,
       }),
     );
   });

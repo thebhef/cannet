@@ -50,6 +50,11 @@ the order below is the order of work, top first.
     — generalize the DBC auto-reload watcher to project (`.cannet_prj`)
     and RBS (`.cannet_rbs`) files so external edits are picked up
     automatically.
+10. [Task 28 — RBS External Value-Source Binding](0028-rbs-external-value-source.md)
+    — cannet connects out to a value-source server that streams sparse
+    `(signal, value)` updates by name; RBS applies them as overrides and
+    keeps its own cadence/CRC/counters. Lets an external, out-of-repo sim
+    (e.g. an EV drive cycle) drive the RBS.
 
 ## Notes
 

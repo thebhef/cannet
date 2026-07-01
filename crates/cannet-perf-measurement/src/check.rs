@@ -73,7 +73,7 @@ pub struct Baseline {
 
 /// Gating tolerances. Relative where the metric scales with the host
 /// (throughput, scan time); absolute floors absorb scheduler jitter.
-mod tol {
+pub mod tol {
     /// Ingest throughput may not drop below this fraction of baseline.
     pub const INGEST_FPS_MIN_FRACTION: f64 = 0.85;
     /// FPS retention may not drop below this fraction of baseline …
@@ -84,6 +84,29 @@ mod tol {
     pub const LATENCY_MAX_FACTOR: f64 = 2.0;
     /// … plus this floor (ms), so tiny baselines don't false-trip.
     pub const LATENCY_FLOOR_MS: f64 = 5.0;
+    /// Half-width of the band a measured rate must stay inside, around
+    /// the operator-supplied *expected* rate ([`Expected`]). The sim emits
+    /// a deterministic schedule, so the steady-state average is known:
+    /// **too few _or_ too many frames is wrong**, so this gates both sides,
+    /// not just a floor. ±15 % absorbs connect ramp-up and rate-estimator
+    /// smoothing while still catching the diagnosed ~20 % shortfall (and a
+    /// runaway/duplication overshoot).
+    pub const EXPECTED_FPS_BAND: f64 = 0.15;
+}
+
+/// Operator-supplied absolute throughput expectations for the sim, handed
+/// to `check` on the command line (not stored in the baseline, which is
+/// host-relative). A measured rate below
+/// `expected * `[`tol::EXPECTED_FPS_MIN_FRACTION`] gates independently of
+/// the baseline comparison — so a uniformly-slow run is caught even when
+/// it hasn't *regressed* against a slow baseline. `None` leaves that
+/// direction ungated. RX applies to every tier; TX only to tiers that
+/// measure it separately (the frontend), since the host modes track a
+/// single ingest rate.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Expected {
+    pub rx_fps: Option<f64>,
+    pub tx_fps: Option<f64>,
 }
 
 /// One metric's verdict within a mode.
@@ -94,6 +117,38 @@ pub struct Verdict {
     pub current: f64,
     pub limit: f64,
     pub pass: bool,
+}
+
+/// Verdict for a two-sided expected-rate band: `measured` must land within
+/// `±`[`tol::EXPECTED_FPS_BAND`] of `expected`. A deterministic sim emits a
+/// known average, so both a shortfall (frames dropped / stalled) and an
+/// overshoot (duplication / runaway) are failures. The `baseline` column
+/// carries the expected target; `limit` carries the violated edge (the
+/// lower edge when in band, for reference).
+#[must_use]
+pub fn expected_band_verdict(
+    mode: &'static str,
+    metric: &'static str,
+    measured: f64,
+    expected: f64,
+) -> Verdict {
+    let lo = expected * (1.0 - tol::EXPECTED_FPS_BAND);
+    let hi = expected * (1.0 + tol::EXPECTED_FPS_BAND);
+    let (limit, pass) = if measured < lo {
+        (lo, false)
+    } else if measured > hi {
+        (hi, false)
+    } else {
+        (lo, true)
+    };
+    Verdict {
+        mode,
+        metric,
+        baseline: expected,
+        current: measured,
+        limit,
+        pass,
+    }
 }
 
 /// Compare a mode's fresh report against its baseline metrics.
