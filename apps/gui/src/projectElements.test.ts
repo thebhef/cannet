@@ -168,6 +168,25 @@ describe("normalizeElement", () => {
     expect((normalizeElement(bare) as { sources?: unknown }).sources).toBeUndefined();
   });
 
+  it("preserves a well-formed `config` blob on a view-backed element", () => {
+    const el = {
+      kind: "plot",
+      id: "p",
+      sources: ["*"],
+      config: { areas: [{ id: "a", signals: [] }], followLive: false },
+    } as unknown as ProjectElement;
+    const out = normalizeElement(el) as { config?: Record<string, unknown> };
+    expect(out.config).toEqual({ areas: [{ id: "a", signals: [] }], followLive: false });
+  });
+
+  it("drops a malformed `config` (non-object) rather than carrying it", () => {
+    for (const bad of [42, "x", [1, 2], null]) {
+      const el = { kind: "trace", id: "t", sources: ["*"], config: bad } as unknown as ProjectElement;
+      const out = normalizeElement(el) as { config?: unknown };
+      expect(out.config).toBeUndefined();
+    }
+  });
+
   it("normalises a filter, preserving its name + predicate", () => {
     const f: ProjectElement = {
       kind: "filter",
@@ -231,6 +250,58 @@ describe("applyElementPatch", () => {
     };
     const before = [tx];
     expect(applyElementPatch(before, "x", { sinks: ["b1"] })).toBe(before);
+  });
+
+  it("returns the same entries ref when a nested `config` patch changes nothing", () => {
+    // The plot/trace persist effect rebuilds a fresh `config` object
+    // every render. A deep, not identity-based, no-op check must hold so
+    // a mount whose state equals the stored config doesn't churn the
+    // registry (which would mark a freshly-opened project dirty).
+    const plot: RegistryEntry = {
+      element: {
+        kind: "plot",
+        id: "p",
+        sources: ["*"],
+        config: { areas: [{ id: "a", signals: [] }], followLive: true },
+      },
+      trace: freshTrace(0),
+    };
+    const before = [plot];
+    const same = applyElementPatch(before, "p", {
+      config: { areas: [{ id: "a", signals: [] }], followLive: true },
+    });
+    expect(same).toBe(before);
+  });
+
+  it("treats an undefined-valued config key as absent (JSON round-trip stability)", () => {
+    // A config rebuilt in memory carries `signalFilter: undefined`; the
+    // same config saved + reloaded drops the key. They must compare
+    // equal, else opening a project marks it dirty.
+    const plot: RegistryEntry = {
+      element: {
+        kind: "plot",
+        id: "p",
+        sources: ["*"],
+        config: { areas: [{ id: "a", signals: [] }] }, // loaded shape: no signalFilter
+      },
+      trace: freshTrace(0),
+    };
+    const before = [plot];
+    const same = applyElementPatch(before, "p", {
+      config: { areas: [{ id: "a", signals: [], signalFilter: undefined }] }, // rebuilt shape
+    });
+    expect(same).toBe(before);
+  });
+
+  it("applies a `config` patch that changes a nested value", () => {
+    const plot: RegistryEntry = {
+      element: { kind: "plot", id: "p", sources: ["*"], config: { followLive: true } },
+      trace: freshTrace(0),
+    };
+    const before = [plot];
+    const after = applyElementPatch(before, "p", { config: { followLive: false } });
+    expect(after).not.toBe(before);
+    expect((after[0].element as { config?: { followLive?: boolean } }).config?.followLive).toBe(false);
   });
 
   it("refuses a kind/id mismatch (stale closure protection)", () => {

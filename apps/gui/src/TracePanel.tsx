@@ -46,8 +46,9 @@ function elementIdFromParams(params: unknown): string {
  * column layout (resize a divider; right-click a header to show / hide
  * columns) and the trace controls; the element lives in the registry,
  * so closing the panel doesn't destroy it. The mode (default by ID),
- * auto-scroll (chronological), and the column layout are this *panel*'s
- * state, persisted in the dockview panel `params`.
+ * auto-scroll (chronological), and the column layout are this view's
+ * config, persisted on the element (so they survive closing and
+ * reopening the panel) and mirrored into the dockview `params`.
  */
 export function TracePanel(props: IDockviewPanelProps) {
   diagCount("render.TracePanel"); // DIAG
@@ -74,9 +75,17 @@ export function TracePanel(props: IDockviewPanelProps) {
   useEffect(() => {
     ensure(elementId, "trace");
   }, [ensure, elementId]);
+  // Hydrate the state initializers below from the config persisted on
+  // the *element* (survives closing and reopening this panel within a
+  // session); fall back to the dockview `params` for older projects and
+  // the unsaved-workspace `localStorage` layout. Read once at mount.
+  const [savedConfig] = useState<typeof params>(() => {
+    const cfg = (registry.get(elementId)?.element as { config?: typeof params } | undefined)?.config;
+    return cfg ?? params;
+  });
 
   const [mode, setMode] = useState<TraceMode>(() =>
-    params?.mode === "chronological" ? "chronological" : "by-id",
+    savedConfig?.mode === "chronological" ? "chronological" : "by-id",
   );
   const switchMode = useCallback((m: TraceMode) => setMode(m), []);
 
@@ -84,10 +93,10 @@ export function TracePanel(props: IDockviewPanelProps) {
 
   // Per-panel: auto-scroll (chronological) and the column layout.
   const [autoScroll, setAutoScroll] = useState(() =>
-    typeof params?.autoScroll === "boolean" ? params.autoScroll : true,
+    typeof savedConfig?.autoScroll === "boolean" ? savedConfig.autoScroll : true,
   );
   const handleAutoScrollDisabled = useCallback(() => setAutoScroll(false), []);
-  const [columns, setColumns] = useState<ColumnState[]>(() => columnsFromParams(params?.columns));
+  const [columns, setColumns] = useState<ColumnState[]>(() => columnsFromParams(savedConfig?.columns));
   const handleColumnResize = useCallback(
     (key: ColumnKey, width: number) => setColumns((cs) => resizeColumn(cs, key, width)),
     [],
@@ -102,11 +111,17 @@ export function TracePanel(props: IDockviewPanelProps) {
     [],
   );
 
-  // Mirror this panel's persistable state into its dockview params so
-  // it's in `toJSON()` (the project file / the localStorage layout).
+  // Dual-write this panel's persistable state: onto the element (model
+  // state — survives closing and reopening the panel within a session,
+  // and is what `Save` serializes) and into the dockview `params` (the
+  // unsaved-workspace `localStorage` layout restores from `params` on
+  // app restart, and it doesn't persist the registry).
+  const { update } = registry;
   useEffect(() => {
-    api.updateParameters({ elementId, mode, autoScroll, columns });
-  }, [api, elementId, mode, autoScroll, columns]);
+    const config = { mode, autoScroll, columns };
+    update(elementId, { config });
+    api.updateParameters({ elementId, ...config });
+  }, [api, update, elementId, mode, autoScroll, columns]);
 
   // By-id mode state.
   const [rows, setRows] = useState<ByIdSnapshotRecord[]>([]);

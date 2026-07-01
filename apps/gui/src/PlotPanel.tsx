@@ -93,10 +93,12 @@ import {
  * Event markers (the window-start "T0" plus notes) draw as vertical
  * lines; the event log renames (click) and removes notes.
  *
- * Persistable state (the trace `elementId`, areas + signal→area
- * assignment, y-ranges, follow-live, cursor mode, measurement
- * toggle/selection, notes; cursor positions best-effort) is mirrored
- * into the dockview panel `params`. Pixel-level overlay drawing and the
+ * Persistable state (areas + signal→area assignment, y-ranges,
+ * follow-live, cursor mode, measurement toggle/selection; cursor
+ * positions best-effort — notes are session-scoped in the host) is
+ * persisted on the element (so it survives closing and reopening the
+ * panel within a session) and mirrored into the dockview panel `params`.
+ * Pixel-level overlay drawing and the
  * canvas event wiring aren't unit-tested; the cursor/measurement maths
  * (`plotCursors.ts`) and the decimation (`signal_sampler`) are.
  *
@@ -462,6 +464,17 @@ export function PlotPanel(props: IDockviewPanelProps) {
   useEffect(() => {
     ensure(elementId, "plot");
   }, [ensure, elementId]);
+  // Hydrate the state initializers below from the config persisted on
+  // the *element* (survives closing and reopening this panel within a
+  // session); fall back to the dockview `params` for older projects and
+  // the unsaved-workspace `localStorage` layout, which still carry it
+  // there. Read once at mount — `registry.get` resolves synchronously
+  // because the element is restored before its panel mounts (project
+  // open) or already exists (Elements-list reopen / fresh add).
+  const [savedConfig] = useState<PlotPanelParams | undefined>(() => {
+    const cfg = (registry.get(elementId)?.element as { config?: PlotPanelParams } | undefined)?.config;
+    return cfg ?? params;
+  });
   const plotElement = registry.get(elementId)?.element;
   // `sources` may be missing on a legacy mocked element (test
   // fixture) or an old project that hasn't gone through
@@ -490,38 +503,38 @@ export function PlotPanel(props: IDockviewPanelProps) {
   const winStart = trace.offset;
   const winEnd = trace.offset + trace.frameCount;
 
-  const [areas, setAreas] = useState<PlotAreaConfig[]>(() => areasFromParams(params?.areas));
+  const [areas, setAreas] = useState<PlotAreaConfig[]>(() => areasFromParams(savedConfig?.areas));
   const [followLive, setFollowLive] = useState(() =>
-    typeof params?.followLive === "boolean" ? params.followLive : true,
+    typeof savedConfig?.followLive === "boolean" ? savedConfig.followLive : true,
   );
-  const [cursorMode, setCursorMode] = useState<CursorMode>(() => cursorModeFromRaw(params?.cursorMode));
+  const [cursorMode, setCursorMode] = useState<CursorMode>(() => cursorModeFromRaw(savedConfig?.cursorMode));
   const [measEnabled, setMeasEnabled] = useState(() =>
-    typeof params?.measEnabled === "boolean" ? params.measEnabled : false,
+    typeof savedConfig?.measEnabled === "boolean" ? savedConfig.measEnabled : false,
   );
-  const [measKeys, setMeasKeys] = useState<MeasurementKey[]>(() => measKeysFromRaw(params?.measKeys));
+  const [measKeys, setMeasKeys] = useState<MeasurementKey[]>(() => measKeysFromRaw(savedConfig?.measKeys));
   /** Show the per-row y / t-range diagnostic readout under each
    * signal's value. Off by default — useful for development and for
    * users debugging cache / auto-norm issues, but visually noisy in
    * normal use. Persisted in panel params. */
   const [showDiag, setShowDiag] = useState(() =>
-    typeof params?.showDiag === "boolean" ? params.showDiag : false,
+    typeof savedConfig?.showDiag === "boolean" ? savedConfig.showDiag : false,
   );
-  const [maxRateHz, setMaxRateHz] = useState(() => maxRateFromRaw(params?.maxRateHz));
+  const [maxRateHz, setMaxRateHz] = useState(() => maxRateFromRaw(savedConfig?.maxRateHz));
   const resampleIntervalMs = Math.max(1, Math.round(1000 / maxRateHz));
-  const [showPoints, setShowPoints] = useState<ShowPointsMode>(() => showPointsFromRaw(params?.showPoints));
+  const [showPoints, setShowPoints] = useState<ShowPointsMode>(() => showPointsFromRaw(savedConfig?.showPoints));
   /** Pixel width of every area's side panel — user-resizable via a
-   * drag handle, persisted in panel params. */
-  const [signalsWidth, setSignalsWidth] = useState(() => signalsWidthFromRaw(params?.signalsWidthPx));
+   * drag handle, persisted in panel config. */
+  const [signalsWidth, setSignalsWidth] = useState(() => signalsWidthFromRaw(savedConfig?.signalsWidthPx));
   const [focusedAreaId, setFocusedAreaId] = useState<string>(() => areas[0]?.id ?? "");
   const [catalog, setCatalog] = useState<SignalDescriptorRecord[]>([]);
 
   const [cursorX, setCursorX] = useState<XCursors>(() => {
-    const o = params?.cursorX as { a?: unknown; b?: unknown } | undefined;
+    const o = savedConfig?.cursorX as { a?: unknown; b?: unknown } | undefined;
     return { a: typeof o?.a === "number" ? o.a : null, b: typeof o?.b === "number" ? o.b : null };
   });
   const [cursorYByArea, setCursorYByArea] = useState<Record<string, { h1: number | null; h2: number | null }>>(
     () => {
-      const o = params?.cursorYByArea;
+      const o = savedConfig?.cursorYByArea;
       const out: Record<string, { h1: number | null; h2: number | null }> = {};
       if (typeof o === "object" && o !== null) {
         for (const [k, v] of Object.entries(o as Record<string, unknown>)) {
@@ -727,11 +740,11 @@ export function PlotPanel(props: IDockviewPanelProps) {
   }, [areas, focusedAreaId]);
 
   const { api } = props;
+  const { update } = registry;
   useEffect(() => {
     // `notes` is no longer persisted on the panel — it's
     // session-scoped in the host.
-    api.updateParameters({
-      elementId,
+    const config = {
       areas,
       followLive,
       cursorMode,
@@ -743,9 +756,18 @@ export function PlotPanel(props: IDockviewPanelProps) {
       maxRateHz,
       signalsWidthPx: signalsWidth,
       showPoints,
-    });
+    };
+    // Dual-write: onto the element (survives panel close + reopen and is
+    // what `Save` serializes) and into the dockview `params` (the
+    // unsaved-workspace `localStorage` layout restores from `params` on
+    // app restart, and it doesn't persist the registry). The element's
+    // no-op patch check is deep, so a mount whose state already equals
+    // the stored config doesn't churn the registry or mark dirty.
+    update(elementId, { config });
+    api.updateParameters({ elementId, ...config });
   }, [
     api,
+    update,
     elementId,
     areas,
     followLive,
