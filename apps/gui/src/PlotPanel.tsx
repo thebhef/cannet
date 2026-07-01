@@ -22,6 +22,7 @@ import { useNotes } from "./notesContext";
 import { TRUNCATION_EVENT_ID } from "./notes";
 import { GOTO_EVENT, type GotoPayload } from "./gotoEvent";
 import { enumSegments, groupScaleRanges, mergeSeries, signalKey } from "./plotData";
+import { followXWindow } from "./followWindow";
 import { showPointsFromRaw, showPointsToUplot, type ShowPointsMode } from "./plotPoints";
 import { elementLabel } from "./elementLabel";
 import { usePanelCommands } from "./panelCommands";
@@ -570,10 +571,13 @@ export function PlotPanel(props: IDockviewPanelProps) {
   const dpr = typeof devicePixelRatio === "number" ? devicePixelRatio : 1;
 
   // Shared x-window + the per-area uPlot registry + the per-area data
-  // extent (longest plotted signal across the panel).
+  // extent (longest plotted signal across the panel) and window-start
+  // (session-relative time of each area's first frame — the x-window's
+  // floor, ADR 0024).
   const xSyncRef = useRef<XSync>({ suppress: false, xMin: null, xMax: null });
   const instancesRef = useRef<Map<string, uPlot>>(new Map());
   const extentByAreaRef = useRef<Map<string, number>>(new Map());
+  const startByAreaRef = useRef<Map<string, number>>(new Map());
 
   const registerInstance = useCallback((id: string, u: uPlot | null) => {
     if (u) {
@@ -587,6 +591,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     } else {
       instancesRef.current.delete(id);
       extentByAreaRef.current.delete(id);
+      startByAreaRef.current.delete(id);
     }
   }, []);
 
@@ -594,6 +599,15 @@ export function PlotPanel(props: IDockviewPanelProps) {
     let m: number | null = null;
     for (const v of extentByAreaRef.current.values()) m = m == null ? v : Math.max(m, v);
     return m;
+  }, []);
+
+  // The x-window floor across the panel: the *earliest* window-start of any
+  // area (areas share one x-axis). `0` before any area reports — so a plot
+  // over a session-origin trace floors at 0, its long-standing behaviour.
+  const sharedStart = useCallback((): number => {
+    let m: number | null = null;
+    for (const v of startByAreaRef.current.values()) m = m == null ? v : Math.min(m, v);
+    return m ?? 0;
   }, []);
 
   const applyXAll = useCallback((min: number, max: number, exceptId: string | null) => {
@@ -611,6 +625,14 @@ export function PlotPanel(props: IDockviewPanelProps) {
     sync.suppress = prev;
   }, []);
 
+  // Bumped on any programmatic x-window change (user pan/zoom, Fit Data,
+  // goto-event) so every area re-samples the new slice. The self-paced
+  // resample loop only ticks while running (ADR 0024); a *stopped* trace
+  // otherwise never refetches after its window moves, leaving uPlot
+  // holding the old off-screen slice — the "jump lands on empty" bug.
+  const [xEpoch, setXEpoch] = useState(0);
+  const bumpXEpoch = useCallback(() => setXEpoch((n) => n + 1), []);
+
   // A user changed an area's x window (drag-select / ⌘+wheel / shift-pan):
   // record it as the shared window, propagate, drop out of follow-live.
   const onUserXChange = useCallback(
@@ -622,39 +644,45 @@ export function PlotPanel(props: IDockviewPanelProps) {
       diagCount("plot.userXChange"); // DIAG
       applyXAll(min, max, fromId);
       setFollowLive(false);
+      bumpXEpoch();
     },
-    [applyXAll],
+    [applyXAll, bumpXEpoch],
   );
 
-  // An area finished a re-sample: update the panel's data extent and, if
-  // following live, slide the shared x-window to the new edge.
+  // An area finished a re-sample: update the panel's data extent and
+  // reposition the shared x-window per `followXWindow` — slide to the live
+  // edge only while *running*; a restored stopped trace fits its full span
+  // once instead of a trailing default-width slice.
   const followLiveRef = useRef(followLive);
   useEffect(() => {
     followLiveRef.current = followLive;
   });
+  const runningRef = useRef(live);
+  useEffect(() => {
+    runningRef.current = live;
+  });
   const onAreaResampled = useCallback(
-    (areaId: string, lastT: number | null) => {
+    (areaId: string, firstT: number | null, lastT: number | null) => {
       diagCount("plot.areaResampled"); // DIAG
       if (lastT != null) extentByAreaRef.current.set(areaId, lastT);
       else extentByAreaRef.current.delete(areaId);
+      if (firstT != null) startByAreaRef.current.set(areaId, firstT);
+      else startByAreaRef.current.delete(areaId);
       const ext = sharedExtent();
       if (ext == null) return;
       const sync = xSyncRef.current;
-      if (followLiveRef.current) {
-        // Slide a fixed-width window so the right edge tracks the live
-        // edge. Width = whatever the user last zoomed/panned to (else a
-        // default); until the capture is that long the left edge stays
-        // pinned at 0 and the window just grows.
-        const width =
-          sync.xMin != null && sync.xMax != null && sync.xMax > sync.xMin
-            ? sync.xMax - sync.xMin
-            : DEFAULT_FOLLOW_WIDTH_SECONDS;
-        applyXAll(Math.max(0, ext - width), ext, null);
-      } else if (sync.xMax == null) {
-        applyXAll(0, ext, null);
-      }
+      const win = followXWindow(
+        followLiveRef.current,
+        runningRef.current,
+        sync.xMin,
+        sync.xMax,
+        ext,
+        DEFAULT_FOLLOW_WIDTH_SECONDS,
+        sharedStart(),
+      );
+      if (win) applyXAll(win.min, win.max, null);
     },
-    [sharedExtent, applyXAll],
+    [sharedExtent, sharedStart, applyXAll],
   );
 
   /** Bumped to ask every PlotArea to invalidate its per-trace
@@ -669,9 +697,13 @@ export function PlotPanel(props: IDockviewPanelProps) {
 
   const fitData = useCallback(() => {
     const ext = sharedExtent();
-    applyXAll(0, ext != null && ext > 0 ? ext : 1, null);
+    // Fit the full span from the window's session-relative start (ADR
+    // 0024 — a Clear re-anchors but doesn't re-zero), not a literal 0.
+    const start = sharedStart();
+    applyXAll(start, ext != null && ext > start ? ext : start + 1, null);
     setResetYEpoch((n) => n + 1);
-  }, [sharedExtent, applyXAll]);
+    bumpXEpoch();
+  }, [sharedExtent, sharedStart, applyXAll, bumpXEpoch]);
 
   // Hotkey / palette implementations for this panel instance
   // (ADR 0018): with the panel focused, `f` re-runs fit-data and `l`
@@ -705,6 +737,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     xSyncRef.current.xMin = null;
     xSyncRef.current.xMax = null;
     extentByAreaRef.current.clear();
+    startByAreaRef.current.clear();
     if (prevWinStartRef.current !== winStart) {
       setCursorX({ a: null, b: null });
       setCursorYByArea({});
@@ -1057,8 +1090,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
       );
       applyXAll(min, max, null);
       setFollowLive(false);
+      bumpXEpoch();
     },
-    [applyXAll],
+    [applyXAll, bumpXEpoch],
   );
   // Cross-panel "goto" (ADR 0035): the events view broadcasts a target
   // timestamp; centre the x-window on it. The payload is absolute ns, so
@@ -1510,6 +1544,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
               onReportCache={reportCache}
               onReportBase={reportBase}
               resetYEpoch={resetYEpoch}
+              xEpoch={xEpoch}
               fitYEpoch={fitYEpoch}
               showDiag={showDiag}
               onSetPrimarySignal={(k) => setAreaPrimarySignal(parent.id, k)}
@@ -1717,7 +1752,7 @@ interface PlotAreaProps {
   xSyncRef: MutableRefObject<XSync>;
   registerInstance: (id: string, u: uPlot | null) => void;
   onUserXChange: (min: number, max: number, fromId: string) => void;
-  onAreaResampled: (areaId: string, lastT: number | null) => void;
+  onAreaResampled: (areaId: string, firstT: number | null, lastT: number | null) => void;
   onPlaceCursorX: (which: "a" | "b", t: number) => void;
   onPlaceCursorY: (which: "h1" | "h2", v: number) => void;
   onAddNote: (t: number) => void;
@@ -1740,6 +1775,10 @@ interface PlotAreaProps {
   /** Panel-level bump → invalidate the per-trace auto-normalise range
    * (Fit Data / Clear use this so y rescales fresh on the next tick). */
   resetYEpoch: number;
+  /** Panel-level bump on any programmatic x-window change → re-sample the
+   * new slice. Needed for a *stopped* trace, whose self-paced resample
+   * loop is off, so a goto / Fit Data / pan otherwise never refetches. */
+  xEpoch: number;
   /** Toolbar's "fit y" — incremented to ask every area to refit y
    * from its currently rendered data. */
   fitYEpoch: number;
@@ -1834,6 +1873,7 @@ function PlotArea(p: PlotAreaProps) {
     onReportCache,
     onReportBase,
     resetYEpoch,
+    xEpoch,
     fitYEpoch,
     showDiag,
     onSetPrimarySignal,
@@ -2085,7 +2125,7 @@ function PlotArea(p: PlotAreaProps) {
         seriesRef.current = new Map();
         presentRef.current = new Map();
         lr.onReportSeries(areaId, new Map());
-        lr.onAreaResampled(areaId, null);
+        lr.onAreaResampled(areaId, null, null);
         lr.onReportBase(areaId, null);
         lr.onReportCache(areaId, 0);
         recordRate();
@@ -2157,7 +2197,7 @@ function PlotArea(p: PlotAreaProps) {
         seriesRef.current = new Map();
         presentRef.current = new Map();
         lr.onReportSeries(areaId, new Map());
-        lr.onAreaResampled(areaId, null);
+        lr.onAreaResampled(areaId, null, null);
         lr.onReportCache(areaId, 0);
         recordRate();
         lr.onReportRate(areaId, rateEmaRef.current);
@@ -2173,7 +2213,7 @@ function PlotArea(p: PlotAreaProps) {
       if (outcome.kind === "unchanged") {
         // Same request as last fetch — keep the rendered data, just feed
         // the follow-live edge and tick the rate readout.
-        lr.onAreaResampled(areaId, outcome.lastT);
+        lr.onAreaResampled(areaId, outcome.firstT, outcome.lastT);
         recordRate();
         lr.onReportRate(areaId, rateEmaRef.current);
         return;
@@ -2282,6 +2322,11 @@ function PlotArea(p: PlotAreaProps) {
       // before `last_seconds` has landed.
       const liveEdgeT =
         snapshot.lastT ?? (xs.length > 0 ? xs[xs.length - 1] : null);
+      // Window-start floor for the shared x-window (ADR 0024): the trace
+      // window's first-frame session-relative time (`snapshot.firstT`),
+      // with the merged data's first x as the pre-`from_seconds` fallback.
+      const windowStartT =
+        snapshot.firstT ?? (xs.length > 0 ? xs[0] : null);
 
       withSuppressed(() => {
         // `setData(data, false)` keeps the current scales — we set
@@ -2335,7 +2380,7 @@ function PlotArea(p: PlotAreaProps) {
         primaryAxisRef.current = null;
       }
       lr.onReportSeries(areaId, sm);
-      lr.onAreaResampled(areaId, liveEdgeT);
+      lr.onAreaResampled(areaId, windowStartT, liveEdgeT);
       lr.onReportPerf(areaId, performance.now() - t0);
       recordRate();
       lr.onReportRate(areaId, rateEmaRef.current);
@@ -2990,6 +3035,14 @@ function PlotArea(p: PlotAreaProps) {
   useEffect(() => {
     void resampleRef.current();
   }, [followLive]);
+
+  // Forced re-sample on any programmatic x-window change (goto-event, Fit
+  // Data, user pan/zoom). A running trace already refetches via the
+  // resample loop; this is what keeps a *stopped* trace from jumping its
+  // x-window without pulling the slice at the destination (ADR 0024).
+  useEffect(() => {
+    void resampleRef.current();
+  }, [xEpoch]);
 
   // Panel asked us to refit y — drop any manual Fit Y override so the
   // next tick uses the host extent (follow-live) / visible slice fresh.

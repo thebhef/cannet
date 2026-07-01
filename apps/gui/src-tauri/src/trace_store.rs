@@ -1820,6 +1820,30 @@ mod tests {
     }
 
     #[test]
+    fn clear_wipes_the_scratch_so_a_reopen_restores_nothing() {
+        // The contract "clear scratch cache on exit" relies on (ADR 0002
+        // DS-7): the Clear reset (`start_session`) drops the raw store's
+        // segments and reopen manifest in place — while the store is still
+        // mapped, no unmap needed — so a later reopen finds nothing to
+        // restore. The host runs exactly this on exit when the setting is on.
+        let dir = std::env::temp_dir().join(format!("cannet-clearexit-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        {
+            let store = TraceStore::new_disk(&dir).unwrap();
+            for i in 0u32..5 {
+                store.append(dummy(u64::from(i) * 1_000, i));
+            }
+            store.flush().unwrap();
+            store.start_session(1); // the Clear / clear-on-exit reset
+        }
+        let restored_len = cannet_spill::DiskRawStore::reopen(&dir)
+            .unwrap()
+            .map_or(0, |s| s.len());
+        assert_eq!(restored_len, 0, "clear must leave nothing to reload");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn scratch_breakdown_buckets_by_family() {
         // The cache diagnostic (ADR 0002 DS-8): frames vs pyramid vs other,
         // file counts, and the deepest pyramid parsed from the level names.

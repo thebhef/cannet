@@ -71,6 +71,12 @@ export interface DecimatedSnapshot {
   /// (`DecimatedRequest.origin`, ADR 0024), or the window's first-frame
   /// timestamp before a session start is known.
   base: number;
+  /// The trace window's first-frame time relative to `base` — the floor
+  /// the x-window may never drop below (ADR 0024: a Clear re-anchors the
+  /// window but doesn't re-zero the display, so this is `0` only when the
+  /// window starts at the session origin). `null` before the first
+  /// non-empty fetch.
+  firstT: number | null;
   /// The window's last-frame time relative to `base` (the live edge), or
   /// `null` before the first non-empty fetch.
   lastT: number | null;
@@ -90,7 +96,7 @@ export interface DecimatedSnapshot {
 export type DecimatedOutcome<X = unknown> =
   | { kind: "empty" }
   | { kind: "pending" }
-  | { kind: "unchanged"; lastT: number | null }
+  | { kind: "unchanged"; firstT: number | null; lastT: number | null }
   | { kind: "sampled"; snapshot: DecimatedSnapshot; extra: X | null };
 
 export interface DecimatedRange {
@@ -116,6 +122,7 @@ interface Cache {
   descriptor: string;
   anchorStart: number;
   base: number | null;
+  firstT: number | null;
   lastT: number | null;
   byKey: Map<string, Series>;
   /// `${winStart}:${winEnd}:${fromSeconds}:${toSeconds}:${maxPoints}` —
@@ -132,7 +139,7 @@ export function useDecimatedRange(): DecimatedRange {
 
   const snapshotOf = (c: Cache | null): DecimatedSnapshot | null =>
     c && c.base != null
-      ? { base: c.base, lastT: c.lastT, byKey: c.byKey, sliceMs: c.sliceMs, decodeMs: c.decodeMs }
+      ? { base: c.base, firstT: c.firstT, lastT: c.lastT, byKey: c.byKey, sliceMs: c.sliceMs, decodeMs: c.decodeMs }
       : null;
 
   const current = useCallback((): DecimatedSnapshot | null => snapshotOf(cacheRef.current), []);
@@ -156,6 +163,7 @@ export function useDecimatedRange(): DecimatedRange {
           descriptor: req.descriptor,
           anchorStart: req.winStart,
           base: null,
+          firstT: null,
           lastT: null,
           byKey: new Map(),
           fetchKey: "",
@@ -179,7 +187,7 @@ export function useDecimatedRange(): DecimatedRange {
       const fetchKey = `${req.winStart}:${req.winEnd}:${fromSeconds}:${toSeconds}:${req.maxPoints}`;
 
       if (cache.fetchKey === fetchKey && cache.byKey.size > 0) {
-        return { kind: "unchanged", lastT: cache.lastT };
+        return { kind: "unchanged", firstT: cache.firstT, lastT: cache.lastT };
       }
       if (req.winEnd <= req.winStart) {
         cache.byKey = new Map();
@@ -229,6 +237,12 @@ export function useDecimatedRange(): DecimatedRange {
         byKey.set(s.key, { t, v: got.v.slice() });
       });
       cache.byKey = byKey;
+      // `res.from_seconds` is the *window's* first-frame timestamp (the
+      // frame at `winStart`, not the fetched slice's left edge), so the
+      // window-start floor stays right on a zoomed-in panel. It is `0`
+      // relative to `base` only when the window starts at the session
+      // origin (ADR 0024).
+      if (res.from_seconds != null) cache.firstT = res.from_seconds - base;
       // `res.last_seconds` is the *window's* last-frame timestamp (not
       // the fetched slice's edge), so the live edge stays accurate on a
       // zoomed-in panel.

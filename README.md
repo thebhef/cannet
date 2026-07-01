@@ -347,8 +347,10 @@ panel keeps its own scroll position, auto-scroll toggle (trace mode),
 and column layout — drag the divider at a column header's right edge to
 resize, and **right-click the header** to show / hide columns. Trace
 panels carry the trace controls: the data lives in a session buffer
-that fills while connected (lost when you disconnect / reconnect or
-quit), and a *trace* is each panel's own window over it — **Pause**
+that fills while connected (reset when you disconnect / reconnect;
+a quit or crash instead **persists** it to disk and reloads it on the
+next launch — see *Indefinite-length capture* below), and a *trace* is
+each panel's own window over it — **Pause**
 freezes the view (**Resume** continues, including frames received while
 paused), **Stop** freezes it (**Start** then begins a fresh, growing
 trace), and **Clear** empties the window keeping whatever state it's in
@@ -357,6 +359,36 @@ The session buffer keeps filling underneath regardless.
 (Tearing a panel out into a separate OS window isn't supported yet —
 docking is within the one window; the tear-out item is in
 `plans/backlog.md`.)
+
+### Indefinite-length capture
+
+The session buffer is not held in RAM — it is a **memory-mapped store**
+on disk, so a capture can run indefinitely (hours to days, well past
+physical memory) with every historical frame still addressable for
+scrolling, filtering, and plotting. Each frame is written straight
+through to memory-mapped segment files under an OS cache directory
+(`$XDG_CACHE_HOME/cannet/current/` on Linux, the platform equivalent
+elsewhere); the kernel page cache keeps the hot part resident and pages
+cold history out under pressure, so host RAM stays roughly flat while
+the on-disk cache grows (the status line shows both — `… host` and
+`… disk`). Decoded-signal plot data and the search indexes are built on
+demand and memory-mapped the same way. See
+[`docs/adr/0001-indefinite-length-capture.md`](docs/adr/0001-indefinite-length-capture.md)
+and [`docs/adr/0002-disk-spill-store.md`](docs/adr/0002-disk-spill-store.md).
+
+Because it lives outside the process, the capture **survives a quit or
+crash**: on the next launch the prior session reloads as a *stopped*
+historical trace so nothing is lost. It is wiped when you replace it —
+**Start** a new capture or **Clear** — or, opt-in, on a clean exit
+(**Settings → clear scratch cache on exit**, off by default). This
+scratch is ephemeral working storage, not an archive: to keep a capture
+permanently, use **Save Capture** to write a durable `.blf`.
+
+By default the scratch is **unbounded** (limited only by free disk). To
+cap it, set a byte limit in **Settings**; over the cap the store drops
+the oldest frames first (a windowed ring), keeping the most recent
+history within budget. A reloaded capture that was truncated this way
+shows a marker at the point where older history was dropped.
 
 A `.json` *project* file holds the panel layout (including each trace
 panel's column layout and auto-scroll toggle), the project's elements

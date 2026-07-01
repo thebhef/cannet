@@ -246,9 +246,13 @@ pub fn reload_one(app: &AppHandle, path: &str) {
         slot.db = db;
     }
     sys_info!(app, "dbc-watch", "auto-reloaded DBC {path}");
-    // Signal placements may have moved — rebuild RBS rows and
-    // re-resolve every TX entry's calculated fields against the
-    // fresh parse.
+    // Signal placements may have moved — drop the derived decode caches so
+    // the new parse takes effect (see `crate::invalidate_derived_caches`),
+    // rebuild RBS rows, and re-resolve every TX entry's calculated fields.
+    {
+        let state: State<'_, crate::AppState> = app.state();
+        crate::invalidate_derived_caches(&state);
+    }
     crate::rbs::refresh_all_elements(app);
     let _ = app.emit("dbc-changed", path);
 }

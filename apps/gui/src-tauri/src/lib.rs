@@ -616,13 +616,19 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while running cannet")
         .run(|app_handle, event| {
-            // Harden the scratch on clean shutdown: the periodic flusher
-            // only queues writeback (async msync, ADR 0002 DS-2), so one
-            // synchronous flush on exit makes the trailing window durable
-            // against a power loss right after quit.
             if let tauri::RunEvent::ExitRequested { .. } = event {
-                let state = app_handle.state::<AppState>();
-                if let Err(e) = state.trace_store.flush() {
+                // Opt-in "clear scratch cache on exit" (Settings, ADR 0002
+                // DS-7): wipe the session buffer so the prior session isn't
+                // reloaded next launch. This is the same reset the Clear
+                // command runs — it clears the live, still-mapped scratch in
+                // place (dropping segments + manifest + identity/derived), so
+                // no unmap dance is needed. Otherwise harden the scratch with
+                // one synchronous flush, since the periodic flusher only
+                // queues async writeback (ADR 0002 DS-2) and a power loss
+                // right after quit could lose the trailing window.
+                if settings::get_settings(app_handle.clone()).clear_scratch_on_exit {
+                    clear_trace_store(app_handle.clone(), app_handle.state());
+                } else if let Err(e) = app_handle.state::<AppState>().trace_store.flush() {
                     tracing::warn!(error = %e, "shutdown trace flush failed");
                 }
             }
@@ -1309,6 +1315,7 @@ fn add_dbc(
             w.watch_dbc(std::path::Path::new(&path));
         }
     }
+    invalidate_derived_caches(state.inner());
     rbs::refresh_all_elements(&app);
     Ok(dbc_list(state.inner()))
 }
@@ -1332,6 +1339,7 @@ fn set_dbc_buses(
             slot.buses = buses;
         }
     }
+    invalidate_derived_caches(state.inner());
     rbs::refresh_all_elements(&app);
     dbc_list(state.inner())
 }
@@ -1357,6 +1365,7 @@ fn remove_dbc(app: AppHandle, state: State<'_, AppState>, path: String) -> Vec<D
         {
             w.unwatch_dbc(std::path::Path::new(&path));
         }
+        invalidate_derived_caches(state.inner());
         rbs::refresh_all_elements(&app);
     }
     dbc_list(state.inner())
@@ -1375,6 +1384,7 @@ fn clear_dbcs(app: AppHandle, state: State<'_, AppState>) {
     };
     if count > 0 {
         sys_info!(&app, "dbc", "cleared {count} loaded DBC(s)");
+        invalidate_derived_caches(state.inner());
         rbs::refresh_all_elements(&app);
     }
     if let Some(w) = state
@@ -1385,6 +1395,24 @@ fn clear_dbcs(app: AppHandle, state: State<'_, AppState>) {
     {
         w.unwatch_all();
     }
+}
+
+/// Drop the derived, lazily-built decode state after a DBC-set change:
+/// the per-signal decoded-sample caches (pyramids) and the active filter
+/// index. Both are functions of the current DBCs applied to the raw store,
+/// but each advances its own decode cursor to the store tip unconditionally
+/// (`SignalCache::catch_up`, `TraceStore::refresh_filter_index`) — so a
+/// frame the *old* DBC set couldn't decode is skipped once and never
+/// revisited. A DBC loaded, removed, re-scoped, or reloaded therefore
+/// leaves a stale cache: on a stopped/reloaded capture (no new appends to
+/// trigger a rebuild) the plot and filtered view stay empty/partial forever.
+/// Clearing forces a full rebuild on the next serve. DBC-set changes are
+/// rare, so clear-and-rebuild is cheaper and safer than tracking per-frame
+/// decode dependencies (ADR 0033: build dependent state in order, and
+/// rebuild it when its inputs change).
+pub(crate) fn invalidate_derived_caches(state: &AppState) {
+    state.signal_caches.clear();
+    *state.filter_index.lock().expect("filter index mutex poisoned") = None;
 }
 
 /// Pull a `[start, end)` slice out of the trace store and decode each
@@ -4451,6 +4479,55 @@ mod tests {
             db: Database::parse(dbc_text).expect("test DBC parses"),
             buses: buses.iter().map(|s| (*s).into()).collect(),
         }
+    }
+
+    #[test]
+    fn dbc_set_change_invalidates_stale_derived_caches() {
+        // A signal cache built while the DBC was absent advances its decode
+        // cursor to the store tip; without invalidation a DBC loaded later
+        // never back-fills (`catch_up` finds no new frames), so a stopped,
+        // reloaded capture's plot and filtered view stay empty. Regression
+        // for the DBC-arrives-late gap (ADR 0033).
+        let state = test_state();
+        // Ten 8-byte id-256 frames the DBC's byte-0 signal `S` decodes, at
+        // distinct timestamps so they form a real series.
+        for i in 0..10u8 {
+            let mut f = frame_with_data(256);
+            f.timestamp_ns = u64::from(i) * 1_000_000_000;
+            if let CanFramePayload::Classic(ref mut d) = f.payload {
+                d[0] = i;
+            }
+            state.trace_store.append(f);
+        }
+        let slice = |dbs: &[&Database]| {
+            state
+                .signal_caches
+                .slice(None, 256, false, "S", 0.0, 100.0, 0, &state.trace_store, dbs)
+        };
+        // Serve with NO DBC loaded: the cache catches up empty and pins its
+        // decode cursor at the tip.
+        assert!(slice(&[]).is_empty(), "no DBC -> nothing decodes");
+
+        // The DBC arrives; plant an active filter index too (a filtered view
+        // would have one) so we can see it reset.
+        let db = Database::parse(&tiny_dbc(256, "Msg", "S")).unwrap();
+        let fi_dir = std::env::temp_dir().join(format!("cannet-inval-fi-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&fi_dir).unwrap();
+        *state.filter_index.lock().unwrap() = Some(ActiveFilterIndex {
+            predicate: serde_json::from_str(r#"{"bus": "p"}"#).unwrap(),
+            session_start_ns: 0,
+            index: cannet_spill::FilterIndex::new(&fi_dir).unwrap(),
+        });
+
+        invalidate_derived_caches(&state);
+
+        assert!(
+            state.filter_index.lock().unwrap().is_none(),
+            "filter index reset on DBC change"
+        );
+        // The rebuilt cache now decodes the whole series.
+        assert_eq!(slice(&[&db]).len(), 10, "DBC now back-fills the full series");
+        std::fs::remove_dir_all(&fi_dir).ok();
     }
 
     #[test]

@@ -48,6 +48,8 @@ import {
   reconcileSnapshot,
   unreadWarnOrError,
 } from "./systemLog";
+import { splitStatus, type LogState, type RemoteStatus, type TransientStatus } from "./statusLine";
+import { useTransientStatus } from "./useTransientStatus";
 import { NotesContext, type NotesContextValue } from "./notesContext";
 import type { Note } from "./notes";
 import { sortNotesChronologically } from "./notes";
@@ -81,7 +83,6 @@ import {
   restoredTrace,
 } from "./trace";
 import { defaultBusColor } from "./busColor";
-import { formatFrameCount } from "./format";
 import { assignDefaultNames, defaultElementName, elementLabel } from "./elementLabel";
 import {
   BY_ID_PANEL_COMPONENT,
@@ -137,17 +138,11 @@ import {
 
 // BLF + global error state. Remote sessions are tracked separately
 // (multi-server: one entry per address in `remoteSessions`).
-type LogState =
-  | { kind: "idle" }
-  | { kind: "loading"; result: OpenLogResult }
-  | { kind: "running"; result: OpenLogResult }
-  | { kind: "done"; result: OpenLogResult; total: number }
-  | { kind: "error"; message: string };
 
-type RemoteStatus =
-  | { kind: "connecting" }
-  | { kind: "running"; result: RemoteSessionResult }
-  | { kind: "error"; message: string };
+/// How long a transient status notice stays frozen in the header before
+/// the bar reverts to the resting residency line (ADR 0002 DS-8). The
+/// notice is mirrored to the system log so it outlives the flash.
+const STATUS_TRANSIENT_DWELL_MS = 3000;
 
 // Self-driving perf automation config, served by the host's
 // `diag_autostart` command from the launch flags (ADR 0031). `null` for
@@ -2080,9 +2075,9 @@ export function App() {
     [seedDefaultLayout, applyProject, rememberProject],
   );
 
-  const status = useMemo(
+  const { resting: restingStatus, transient: transientStatus } = useMemo(
     () =>
-      renderStatus(
+      splitStatus({
         state,
         remoteSessions,
         dbcPaths,
@@ -2092,7 +2087,7 @@ export function App() {
         bufferSeconds,
         scratchBytes,
         memBytes,
-      ),
+      }),
     [
       state,
       remoteSessions,
@@ -2104,6 +2099,27 @@ export function App() {
       scratchBytes,
       memBytes,
     ],
+  );
+  // Transient status notices (errors, completions, remote connect/error
+  // summaries) flash in the header for a few seconds and mirror to the
+  // system log, then the bar reverts to the resting residency line — a
+  // notice is never lost (the log keeps it) but the label settles back
+  // to the disk-spill readout (ADR 0002 DS-8). Keyed by level+text so an
+  // unchanged notice logs once; a new/different one re-fires.
+  const emitStatusToLog = useCallback((t: TransientStatus) => {
+    void invoke("gui_emit_system_log", {
+      level: t.level,
+      source: "status",
+      message: t.text,
+    }).catch(() => {
+      /* best effort - the bar still reverts on its own */
+    });
+  }, []);
+  const status = useTransientStatus(
+    restingStatus,
+    transientStatus,
+    emitStatusToLog,
+    STATUS_TRANSIENT_DWELL_MS,
   );
 
   const traceData: TraceData = useMemo(() => {
@@ -2423,123 +2439,3 @@ export function App() {
   );
 }
 
-function renderStatus(
-  state: LogState,
-  remoteSessions: ReadonlyMap<string, RemoteStatus>,
-  dbcPaths: readonly string[],
-  frameCount: number,
-  firstIndex: number,
-  framesPerSecond: number,
-  bufferSeconds: number,
-  scratchBytes: number | null,
-  memBytes: number | null,
-): string {
-  const frames = formatFrameCount(frameCount, firstIndex);
-  const dbc =
-    dbcPaths.length === 0
-      ? "no DBC attached"
-      : dbcPaths.length === 1
-        ? `DBC: ${shortenPath(dbcPaths[0])}`
-        : `${dbcPaths.length} DBCs`;
-  const fps = framesPerSecond > 0 ? ` · ${formatRate(framesPerSecond)}` : "";
-  const buf = bufferSeconds > 0 ? ` · ${formatDuration(bufferSeconds)} elapsed` : "";
-  // Disk-spill residency split (ADR 0002 DS-8): host RAM vs on-disk cache.
-  // Each shows only when present (`null` / zero hides it) — in-RAM stores
-  // report no cache, and memory lands once the first health sample arrives.
-  const mem = memBytes != null && memBytes > 0 ? ` · ${formatBytes(memBytes)} RAM` : "";
-  const cache =
-    scratchBytes != null && scratchBytes > 0 ? ` · ${formatBytes(scratchBytes)} disk` : "";
-
-  // Remote sessions take priority over the BLF idle/done line — the
-  // user is actively streaming. (BLF in-progress states render their
-  // own line; remote and BLF rarely overlap because Connect clears
-  // the trace store.)
-  if (remoteSessions.size > 0) {
-    const running = Array.from(remoteSessions.entries()).filter(
-      ([, s]) => s.kind === "running",
-    );
-    const connecting = Array.from(remoteSessions.values()).filter(
-      (s) => s.kind === "connecting",
-    ).length;
-    const errored = Array.from(remoteSessions.entries()).filter(
-      ([, s]) => s.kind === "error",
-    );
-    const totalInterfaces = running.reduce((acc, [, s]) => {
-      return s.kind === "running" ? acc + s.result.interfaces.length : acc;
-    }, 0);
-    const parts: string[] = [];
-    if (running.length > 0) {
-      parts.push(
-        `Streaming from ${running.length} server${running.length === 1 ? "" : "s"} (${totalInterfaces} interface${totalInterfaces === 1 ? "" : "s"}, ${frames}${fps}${buf}${mem}${cache})`,
-      );
-    }
-    if (connecting > 0) parts.push(`${connecting} connecting`);
-    if (errored.length > 0) {
-      const first = errored[0];
-      parts.push(
-        errored[0][1].kind === "error"
-          ? `${errored.length} error${errored.length === 1 ? "" : "s"} (${first[0]}: ${errored[0][1].message})`
-          : `${errored.length} error${errored.length === 1 ? "" : "s"}`,
-      );
-    }
-    return `${parts.join(" · ")}. ${dbc}.`;
-  }
-
-  switch (state.kind) {
-    case "idle":
-      return `Open a BLF log or connect to a server to begin. ${dbc}.`;
-    case "loading":
-      return `Opening ${shortenPath(state.result.blf_path)} … ${dbc}.`;
-    case "running":
-      return `Streaming ${shortenPath(state.result.blf_path)} (${frames}${fps}${buf}${mem}${cache}). ${dbc}.`;
-    case "done":
-      return `Done: ${formatNumber(state.total)} frames from ${shortenPath(state.result.blf_path)}. ${dbc}.`;
-    case "error":
-      return `Error: ${state.message}`;
-  }
-}
-
-function formatRate(fps: number): string {
-  if (fps >= 10_000) return `${(fps / 1000).toFixed(1)}k fps`;
-  if (fps >= 100) return `${Math.round(fps)} fps`;
-  return `${fps.toFixed(1)} fps`;
-}
-
-/// Buffered-span readout as a `d:hh:mm:ss` clock, trimmed to the largest
-/// non-zero segment (mm:ss minimum): `0:05`, `2:05`, `1:02:05`,
-/// `3:01:02:05`. Lower segments are zero-padded once a higher one shows.
-function formatDuration(seconds: number): string {
-  const t = Math.floor(seconds);
-  const d = Math.floor(t / 86400);
-  const h = Math.floor((t % 86400) / 3600);
-  const m = Math.floor((t % 3600) / 60);
-  const s = t % 60;
-  const p = (n: number) => n.toString().padStart(2, "0");
-  if (d > 0) return `${d}:${p(h)}:${p(m)}:${p(s)}`;
-  if (h > 0) return `${h}:${p(m)}:${p(s)}`;
-  return `${m}:${p(s)}`;
-}
-
-function formatNumber(n: number): string {
-  return n.toLocaleString();
-}
-
-/// Byte count as a compact binary-unit size for the status line: `512 KB`,
-/// `3.4 MB`, `1.2 GB`. Sub-kilobyte sizes show as `B`; larger units keep one
-/// decimal once past 9.9 so the readout stays short.
-function formatBytes(bytes: number): string {
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let value = bytes;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  const digits = unit === 0 || value >= 100 ? 0 : 1;
-  return `${value.toFixed(digits)} ${units[unit]}`;
-}
-
-function shortenPath(path: string): string {
-  const slash = path.lastIndexOf("/");
-  return slash >= 0 ? path.slice(slash + 1) : path;
-}
