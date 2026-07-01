@@ -61,10 +61,38 @@ session present at launch is loaded as a stopped historical trace
   (whole-span serve: raw materialize+decimate vs pyramid serve), and three
   `signal_cache` unit tests cover bounded output, spike survival, and
   window-relative level choice.
-- **Steps 5–7 — not started.**
+- **Step 5 — in progress, sliced into three independently-landable
+  parts** (the roadmap's Step 5 is large; each slice keeps the app
+  working and tested):
+  - **Step 5.1 — done.** Production now boots on the disk store: the
+    `AppState` in `run()` constructs `TraceStore::new_disk(<OS cache
+    dir>/cannet/current)` via `open_trace_store` / `scratch_current_dir`
+    (the in-RAM store stays the unit-test/perf double). If the scratch
+    dir can't be resolved or opened, it logs and falls back to the in-RAM
+    store so the app still boots (capture bounded by RAM). `dirs` is now a
+    direct dependency (resolves the per-OS cache dir). The existing
+    chunked-scan `fetch_filtered_trace` keeps working through the
+    store-independent facade, so the app stays green.
+  - **Step 5.2 — not started.** Rewrite `fetch_filtered_trace` onto the
+    filter index (`refresh_filter_index` + `FilterIndex::page`), with the
+    active index held on `AppState`.
+  - **Step 5.3 — not started.** The DS-7 scratch lifecycle: `project_id`
+    UUID identity gate in `open_project`, reset-on-Clear/Start, and
+    load-prior-as-stopped (needs a new disk-store *reload* capability —
+    `DiskRawStore::new` currently wipes stale segments on construction).
+- **Steps 6–7 — not started.**
 
 Decisions and deviations recorded so far (to fold into ADR 0002 at
 Step 6):
+
+- **Intermediate state after Step 5.1: the scratch is wiped on launch,
+  not reloaded.** `DiskRawStore::new` clears stale `current/` segments on
+  construction, so a prior session is *not yet* reloaded as a stopped
+  trace — that (and the `project_id` identity gate that makes a single
+  shared `current/` safe across instances) is Step 5.3. Until then the
+  observable behaviour matches today's in-RAM store (a session is lost on
+  exit); the only new gap is that two concurrent instances would share and
+  stomp one `current/` dir, which the 5.3 identity gate closes.
 
 - **`memmap2`'s `unsafe` is contained to the dedicated `cannet-spill`
   crate**, which alone relaxes the workspace `unsafe_code = "forbid"` to
@@ -92,11 +120,11 @@ Step 6):
   pyramids in `current/` (DS-7), which lands with the live switchover in
   Step 5 — the pyramid's append-only level layout is already
   reload-compatible by construction.
-- **Production still runs on `MemRawStore`.** The disk store is built,
-  unit-tested, and perf-characterized in isolation; the live switchover
-  (constructing `DiskRawStore` in `AppState`), the `fetch_filtered_trace`
-  rewrite to use the filter index, and the DS-7 scratch lifecycle all
-  land together in **Step 5**.
+- **Production runs on `DiskRawStore` as of Step 5.1.** `AppState`
+  constructs the disk store rooted at `<OS cache dir>/cannet/current`;
+  `MemRawStore` is the unit-test / perf double. The `fetch_filtered_trace`
+  rewrite onto the filter index (5.2) and the DS-7 scratch lifecycle (5.3)
+  remain.
 
 Steps — each lands independently, leaves the app working and tested
 (`cargo test -p cannet-gui`, `pnpm --dir apps/gui test`), and keeps

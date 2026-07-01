@@ -164,6 +164,14 @@ crate retained long-term).
   `unsafe`, and containing it to one focused crate keeps the
   failure-mode-rich surface reviewable and every other crate
   `unsafe`-free.
+- **`dirs`** crate (Rust, MIT / Apache-2.0) — `adopted`. Resolves the
+  per-OS cache directory the disk-spill scratch lives under
+  (`<cache>/cannet/current`, ADR 0002 DS-7). Already in the dependency
+  graph transitively via `tauri`; the GUI host makes it a direct
+  dependency. Picking the per-OS cache location (XDG on Linux,
+  `Library/Caches` on macOS, `LocalAppData` on Windows) is a
+  failure-mode-rich job better delegated to a vetted crate than
+  hand-rolled from environment variables.
 - **`notify`** crate (Rust, CC0-1.0 / Apache-2.0) — `adopted` in
   Phase 12 follow-up for the GUI host's DBC file watcher
   (`apps/gui/src-tauri/src/dbc_watcher.rs`). Wraps the OS-native

@@ -438,6 +438,7 @@ dependencies = [
  "cannet-spill",
  "cannet-wire",
  "chrono",
+ "dirs",
  "notify",
  "regex",
  "serde",

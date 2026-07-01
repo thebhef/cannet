@@ -68,6 +68,12 @@ sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 # dependency direct. `std` (not `clock`) is all we need to format an
 # epoch-ms value — we don't read the wall clock through chrono.
 chrono = { version = "0.4", default-features = false, features = ["std"] }
+# Resolves the OS cache directory the disk-spill scratch lives under
+# (`<cache>/cannet/current`, ADR 0002 DS-7). Already in the graph
+# transitively via tauri; this makes it direct. Picking the per-OS cache
+# location is exactly the kind of failure-mode-rich thing to delegate to a
+# vetted crate rather than hand-roll from env vars.
+dirs = "6"
 
 [dev-dependencies]
 # Phase 9: round-trip the Save Capture writer through real files

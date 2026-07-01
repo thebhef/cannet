@@ -1,0 +1,134 @@
+{
+  "mode": "frontend",
+  "label": "disk-store-golive",
+  "duration_s": 59.007799999952326,
+  "sample_count": 60,
+  "longtask_ms_per_s": {
+    "mean": 1.4333333333333333,
+    "max": 86.0,
+    "p95": 0.0
+  },
+  "lag_ms": {
+    "mean": 0.0383333325386048,
+    "max": 30.5
+  },
+  "jank_seconds": 1,
+  "jank_fraction": 0.016666666666666666,
+  "frames_late_per_s_mean": 0.086,
+  "rx_fps": {
+    "overall": 511.4933333333334,
+    "first_half": 512.6299999999999,
+    "second_half": 510.35666666666674,
+    "retention": 0.9955653525284647
+  },
+  "tx_fps": {
+    "overall": 510.8649999999999,
+    "first_half": 512.2399999999998,
+    "second_half": 509.4899999999999,
+    "retention": 0.9946314227705765
+  },
+  "counters_per_s": {
+    "event.system-log-appended": {
+      "mean": 2.95,
+      "max": 5.0
+    },
+    "event.trace-grew": {
+      "mean": 10.0,
+      "max": 10.0
+    },
+    "invoke.fetch_by_id_page": {
+      "mean": 8.0,
+      "max": 8.0
+    },
+    "invoke.fetch_filtered_trace": {
+      "mean": 4.0,
+      "max": 4.0
+    },
+    "invoke.sample_signals": {
+      "mean": 131.33333333333334,
+      "max": 155.0
+    },
+    "memo.traceData": {
+      "mean": 20.0,
+      "max": 20.0
+    },
+    "plot.areaResampled": {
+      "mean": 131.35,
+      "max": 152.0
+    },
+    "plot.reportSeries": {
+      "mean": 131.31666666666666,
+      "max": 152.0
+    },
+    "plotarea.resample": {
+      "mean": 131.36666666666667,
+      "max": 155.0
+    },
+    "render.App": {
+      "mean": 43.43333333333333,
+      "max": 50.0
+    },
+    "render.ByIdTable": {
+      "mean": 55.93333333333333,
+      "max": 56.0
+    },
+    "render.PlotArea": {
+      "mean": 879.8333333333334,
+      "max": 1074.0
+    },
+    "render.PlotPanel": {
+      "mean": 159.43333333333334,
+      "max": 194.0
+    },
+    "render.TracePanel": {
+      "mean": 103.53333333333333,
+      "max": 106.0
+    },
+    "render.TraceView": {
+      "mean": 75.6,
+      "max": 80.0
+    }
+  },
+  "gauges": {
+    "count": {
+      "mean": 32822.63333333333,
+      "max": 62937.0,
+      "last": 62937.0
+    },
+    "drop.before_session": {
+      "mean": 0.0,
+      "max": 0.0,
+      "last": 0.0
+    },
+    "fps": {
+      "mean": 1020.0566666666666,
+      "max": 1049.0,
+      "last": 1016.1
+    },
+    "fps.batt": {
+      "mean": 511.5016666666667,
+      "max": 539.6,
+      "last": 501.5
+    },
+    "fps.pt": {
+      "mean": 513.1366666666667,
+      "max": 522.5,
+      "last": 509.3
+    },
+    "fps.rx": {
+      "mean": 511.4933333333334,
+      "max": 544.1,
+      "last": 507.7
+    },
+    "fps.tx": {
+      "mean": 510.8649999999999,
+      "max": 518.9,
+      "last": 508.3
+    },
+    "jsheap_mb": {
+      "mean": 104.96499999999999,
+      "max": 171.1,
+      "last": 168.7
+    }
+  }
+}
