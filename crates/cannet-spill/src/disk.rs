@@ -22,19 +22,61 @@
 //! The always-on `by-id` index is materialized on disk too (DS-3), in
 //! [`crate::byid`]; only the small per-id directory of segment handles
 //! stays in RAM.
+//!
+//! ## Reopen (DS-4 watermark, DS-7 lifecycle)
+//!
+//! Segments are pre-allocated to full size and zero-padded, so the bytes
+//! alone don't say how many records are live. On every [`DiskRawStore::flush`]
+//! the store writes a small `manifest.json` — the valid-length watermarks
+//! (`len`, `payload_cursor`), the RAM-only bus-intern table, and the by-id
+//! directory. [`DiskRawStore::reopen`] reads it back and remaps the
+//! existing files without truncating them, so a prior session reloads in
+//! `O(segments)` with no capture rebuild scan. The un-flushed RAM-ring
+//! tail is not in the manifest: a crash loses only frames appended since
+//! the last flush.
 
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 use crate::byid::{ByIdIndex, BYID_PREFIX};
 use crate::record::{rebuild_payload, split_payload, MetaRecord, BUS_NONE, RECORD_SIZE};
-use crate::seg::{create_segment, remove_files_with_prefixes, Segment};
+use crate::seg::{create_segment, open_segment, remove_files_with_prefixes, Segment};
 use crate::{RawStore, RawTraceFrame};
+
+/// File name of the reopen manifest (ADR 0002 DS-4/DS-7), written into the
+/// store directory on flush.
+const MANIFEST_NAME: &str = "manifest.json";
+
+/// Persisted reopen record (ADR 0002 DS-4/DS-7). Captures exactly the
+/// state a [`DiskRawStore`] cannot re-derive arithmetically from its
+/// segment files: the valid-length watermarks (`len`, `payload_cursor`),
+/// the bus-intern table, and the by-id directory. The segment *bytes*
+/// live in the mapped files; this says how many of them are real. Written
+/// on every flush so a clean exit (or the last flush before a crash) can
+/// be remapped without an O(capture) rebuild scan.
+#[derive(Debug, Serialize, Deserialize)]
+struct Manifest {
+    /// Schema version; bumped if the manifest layout changes.
+    version: u32,
+    /// Segment sizing — persisted so reopen reads back with the exact
+    /// geometry the files were written with, not whatever `Default` is.
+    cfg: DiskConfig,
+    len: u64,
+    payload_cursor: u64,
+    bus_intern: Vec<String>,
+    /// One `(id, extended, len)` per by-id posting list.
+    byid: Vec<(u32, bool, u64)>,
+}
+
+/// Current [`Manifest::version`].
+const MANIFEST_VERSION: u32 = 1;
 
 /// Segment sizing and the RAM-ring depth. Defaults suit production; tests
 /// shrink them to exercise rollover and ring eviction cheaply.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct DiskConfig {
     /// Metadata records per segment file.
     pub records_per_seg: usize,
@@ -105,6 +147,90 @@ impl DiskRawStore {
         Ok(store)
     }
 
+    /// Reopen a prior store from its on-disk manifest (ADR 0002 DS-7),
+    /// remapping the existing segment files **without wiping them**.
+    /// Returns `Ok(None)` when `dir` holds no manifest (nothing to
+    /// reload); `Err` when a manifest is present but it — or a segment
+    /// file it references — is unreadable, which the caller treats as an
+    /// unusable scratch (wipe and start fresh).
+    ///
+    /// The store comes back exactly as the last flush left it: the
+    /// un-flushed RAM-ring tail (DS-2) is not part of the manifest, so a
+    /// crash loses only the frames appended since that flush.
+    pub fn reopen(dir: impl AsRef<Path>) -> io::Result<Option<Self>> {
+        let dir = dir.as_ref().to_path_buf();
+        let manifest_path = dir.join(MANIFEST_NAME);
+        if !manifest_path.exists() {
+            return Ok(None);
+        }
+        let manifest: Manifest = serde_json::from_slice(&std::fs::read(&manifest_path)?)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let len = usize::try_from(manifest.len).unwrap_or(usize::MAX);
+        let cfg = manifest.cfg;
+        let mut bus_rev = HashMap::new();
+        for (i, name) in manifest.bus_intern.iter().enumerate() {
+            bus_rev.insert(name.clone(), u16::try_from(i).unwrap_or(u16::MAX));
+        }
+        let mut store = Self {
+            by_id: ByIdIndex::reopen(&dir, &manifest.byid)?,
+            dir,
+            cfg,
+            len,
+            payload_cursor: manifest.payload_cursor,
+            meta_segs: Vec::new(),
+            payload_segs: Vec::new(),
+            ring: VecDeque::new(),
+            bus_intern: manifest.bus_intern,
+            bus_rev,
+        };
+        // Map the metadata and payload segment chains the watermarks imply.
+        let meta_segs = len.div_ceil(cfg.records_per_seg);
+        for i in 0..meta_segs {
+            let path = store.meta_seg_path(i);
+            store.meta_segs.push(open_segment(&path)?);
+        }
+        let payload_segs = if manifest.payload_cursor == 0 {
+            0
+        } else {
+            usize::try_from((manifest.payload_cursor - 1) / cfg.payload_seg_bytes as u64)
+                .unwrap_or(usize::MAX)
+                + 1
+        };
+        for i in 0..payload_segs {
+            let path = store.payload_seg_path(i);
+            store.payload_segs.push(open_segment(&path)?);
+        }
+        // Refill the RAM ring from the durable tail so a follow-live read
+        // behaves the same as it would on a never-exited store. Collect
+        // from the mappings *first* (with the ring still empty, so every
+        // `read_frame` resolves to a mapping), then install — pushing as we
+        // read would move `ring_start` down and make later reads hit the
+        // half-filled ring.
+        let ring_from = len.saturating_sub(cfg.ring_capacity);
+        let tail: Vec<RawTraceFrame> = (ring_from..len).filter_map(|i| store.read_frame(i)).collect();
+        store.ring.extend(tail);
+        Ok(Some(store))
+    }
+
+    /// Serialize the current watermarks and directory to the manifest.
+    /// Written via a temp file + rename so a crash mid-write cannot leave
+    /// a half-written manifest that would fail (or misread) on reopen.
+    fn write_manifest(&self) -> io::Result<()> {
+        let manifest = Manifest {
+            version: MANIFEST_VERSION,
+            cfg: self.cfg,
+            len: self.len as u64,
+            payload_cursor: self.payload_cursor,
+            bus_intern: self.bus_intern.clone(),
+            byid: self.by_id.directory(),
+        };
+        let bytes = serde_json::to_vec(&manifest)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let tmp = self.dir.join(format!("{MANIFEST_NAME}.tmp"));
+        std::fs::write(&tmp, &bytes)?;
+        std::fs::rename(&tmp, self.dir.join(MANIFEST_NAME))
+    }
+
     fn meta_seg_path(&self, i: usize) -> PathBuf {
         self.dir.join(format!("meta.{i:06}"))
     }
@@ -113,13 +239,15 @@ impl DiskRawStore {
         self.dir.join(format!("payload.{i:06}"))
     }
 
-    /// Drop every mapping and delete the segment files from `dir`. Maps
-    /// are dropped first so Windows lets the files be removed.
+    /// Drop every mapping and delete the segment files from `dir`,
+    /// including the reopen manifest so a wiped store never reloads a
+    /// stale prior session. Maps are dropped first so Windows lets the
+    /// files be removed.
     fn remove_segment_files(&mut self) -> io::Result<()> {
         self.meta_segs.clear();
         self.payload_segs.clear();
         self.by_id.clear();
-        remove_files_with_prefixes(&self.dir, &["meta.", "payload.", BYID_PREFIX])
+        remove_files_with_prefixes(&self.dir, &["meta.", "payload.", BYID_PREFIX, "manifest."])
     }
 
     fn ensure_meta_seg(&mut self, seg: usize) {
@@ -368,13 +496,18 @@ impl RawStore for DiskRawStore {
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        if let Some(s) = self.meta_segs.last() {
+        // Flush every mapped segment, not just the active tail: the
+        // manifest written below names the whole chain, so the bytes it
+        // points at must all be durable before it lands. Already-clean
+        // (sealed) pages make this near-free after their first flush.
+        for s in &self.meta_segs {
             s.map.flush()?;
         }
-        if let Some(s) = self.payload_segs.last() {
+        for s in &self.payload_segs {
             s.map.flush()?;
         }
-        Ok(())
+        self.by_id.flush()?;
+        self.write_manifest()
     }
 }
 
@@ -578,5 +711,144 @@ mod tests {
         }
         s.flush().unwrap();
         assert_eq!(s.slice(0, 10).len(), 10);
+    }
+
+    #[test]
+    fn reopen_round_trips_frames_payloads_and_buses() {
+        // Append a mix (FD / remote / error / interned buses, plus plain
+        // frames spanning several metadata segments and overflowing the
+        // RAM ring), flush, drop, and reopen the same directory. Every row
+        // — ring tail and mapped body alike — must read back identically,
+        // and the bus-intern table (RAM-only, manifest-restored) too.
+        let dir = TempDir::new().unwrap();
+        let mut fd = frame(1, 0x10);
+        fd.payload = CanFramePayload::Fd {
+            data: vec![1, 2, 3, 4],
+            flags: CanFdFlags {
+                bitrate_switch: true,
+                error_state_indicator: false,
+            },
+        };
+        fd.extended = true;
+        fd.direction = Direction::Tx;
+        fd.bus_id = Some("pt".into());
+        let mut rem = frame(2, 0x11);
+        rem.payload = CanFramePayload::Remote { dlc: 6 };
+        rem.bus_id = Some("body".into());
+        let mut err = frame(3, 0x12);
+        err.payload = CanFramePayload::Error;
+        err.bus_id = Some("pt".into());
+        {
+            let mut s = DiskRawStore::with_config(dir.path(), tiny()).unwrap();
+            s.append(fd.clone());
+            s.append(rem.clone());
+            s.append(err.clone());
+            for i in 0u32..12 {
+                s.append(frame(u64::from(i) + 100, i));
+            }
+            s.flush().unwrap();
+        } // store dropped — mappings released, only the files remain
+
+        let s = DiskRawStore::reopen(dir.path()).unwrap().expect("manifest present");
+        assert_eq!(s.len(), 15);
+        assert_eq!(s.read_frame(0), Some(fd));
+        assert_eq!(s.read_frame(1), Some(rem));
+        assert_eq!(s.read_frame(2), Some(err));
+        for i in 0u32..12 {
+            let f = &s.slice(3 + i as usize, 4 + i as usize)[0];
+            assert_eq!(f.id, i);
+            assert_eq!(f.timestamp_ns, u64::from(i) + 100);
+        }
+        assert_eq!(s.bus_intern, vec!["pt".to_string(), "body".to_string()]);
+        assert_eq!(s.first_last_ts(), (Some(1), Some(111)));
+    }
+
+    #[test]
+    fn reopen_rebuilds_geometric_byid_chains() {
+        // 300 frames of id 7 overflow the first by-id segments (64, 128,
+        // 256, …) — the geometric chain. Reopen must rebuild it from the
+        // persisted length alone and serve the same windowed by-id reads.
+        let dir = TempDir::new().unwrap();
+        {
+            let mut s = DiskRawStore::with_config(dir.path(), tiny()).unwrap();
+            for i in 0u32..300 {
+                s.append(frame(u64::from(i), if i % 3 == 0 { 9 } else { 7 }));
+            }
+            s.flush().unwrap();
+        }
+        let s = DiskRawStore::reopen(dir.path()).unwrap().expect("manifest present");
+        assert_eq!(s.len(), 300);
+        // id 7 is every index not divisible by 3.
+        let want: Vec<usize> = (0..300).filter(|i| i % 3 != 0).collect();
+        let got: Vec<usize> = s
+            .matching_frames_indexed(7, false, 0, 300)
+            .into_iter()
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(got, want);
+        // A windowed by-id read across a segment boundary still pages.
+        let mid: Vec<usize> = s
+            .matching_frames_indexed(9, false, 100, 200)
+            .into_iter()
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(mid, (100..200).filter(|i| i % 3 == 0).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn reopen_then_append_continues_from_the_watermark() {
+        let dir = TempDir::new().unwrap();
+        {
+            let mut s = DiskRawStore::with_config(dir.path(), tiny()).unwrap();
+            for i in 0u32..5 {
+                s.append(frame(u64::from(i), i));
+            }
+            s.flush().unwrap();
+        }
+        let mut s = DiskRawStore::reopen(dir.path()).unwrap().unwrap();
+        let idx = s.append(frame(500, 99));
+        assert_eq!(idx, 5);
+        assert_eq!(s.len(), 6);
+        assert_eq!(s.slice(5, 6)[0].id, 99);
+        // The earlier rows are still intact alongside the new one.
+        assert_eq!(s.slice(0, 1)[0].id, 0);
+    }
+
+    #[test]
+    fn reopen_without_a_manifest_is_none() {
+        // Empty dir: nothing to reload.
+        let dir = TempDir::new().unwrap();
+        assert!(DiskRawStore::reopen(dir.path()).unwrap().is_none());
+        // Frames appended but never flushed leave no manifest either.
+        let other = TempDir::new().unwrap();
+        let mut s = DiskRawStore::with_config(other.path(), tiny()).unwrap();
+        s.append(frame(0, 1));
+        drop(s);
+        assert!(DiskRawStore::reopen(other.path()).unwrap().is_none());
+    }
+
+    #[test]
+    fn clear_removes_the_manifest_so_a_cleared_store_does_not_reload() {
+        let dir = TempDir::new().unwrap();
+        let mut s = DiskRawStore::with_config(dir.path(), tiny()).unwrap();
+        for i in 0u32..5 {
+            s.append(frame(0, i));
+        }
+        s.flush().unwrap();
+        s.clear();
+        drop(s);
+        assert!(DiskRawStore::reopen(dir.path()).unwrap().is_none());
+    }
+
+    #[test]
+    fn reopen_rejects_a_corrupt_manifest() {
+        let dir = TempDir::new().unwrap();
+        {
+            let mut s = DiskRawStore::with_config(dir.path(), tiny()).unwrap();
+            s.append(frame(0, 1));
+            s.flush().unwrap();
+        }
+        std::fs::write(dir.path().join("manifest.json"), b"{ not json").unwrap();
+        assert!(DiskRawStore::reopen(dir.path()).is_err());
     }
 }

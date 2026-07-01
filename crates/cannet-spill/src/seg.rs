@@ -40,6 +40,22 @@ pub(crate) fn create_segment(path: &Path, bytes: usize) -> io::Result<Segment> {
     Ok(Segment { _file: file, map })
 }
 
+/// Map an *existing* segment file whole, read-write, **without
+/// truncating it** — the reopen path (ADR 0002 DS-7). The file keeps its
+/// on-disk bytes (its pre-allocated capacity); only the store's persisted
+/// valid-length watermark says how many of them are live data.
+pub(crate) fn open_segment(path: &Path) -> io::Result<Segment> {
+    let file = OpenOptions::new().read(true).write(true).open(path)?;
+    // SAFETY: same contract as `create_segment` — the file handle is kept
+    // alive in the returned `Segment` for the mapping's lifetime, and the
+    // map is only touched behind the store mutex. The file already exists
+    // at its full pre-allocated size, so no resize is needed (or allowed
+    // while mapped, on Windows).
+    #[allow(unsafe_code)]
+    let map = unsafe { MmapMut::map_mut(&file)? };
+    Ok(Segment { _file: file, map })
+}
+
 /// Remove every file in `dir` whose name starts with one of `prefixes`,
 /// after the caller has dropped the mappings (so Windows allows removal).
 pub(crate) fn remove_files_with_prefixes(dir: &Path, prefixes: &[&str]) -> io::Result<()> {

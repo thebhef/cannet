@@ -26,6 +26,10 @@ and the license / platform constraints we need to be aware of.
 - **`serde_json`** (Rust) / native JSON (frontend) — adopted Phase 3
   for the project file. Already in the dep graph via Tauri IPC; no
   new crate. See [`../docs/adr/0011-project-file-format.md`](../docs/adr/0011-project-file-format.md).
+  Also used by `cannet-spill` for the disk-store reopen manifest
+  (`current/manifest.json`: valid-length watermarks, bus-intern table,
+  by-id directory) so a prior scratch remaps without an O(capture)
+  rebuild scan (ADR 0002 DS-4/DS-7) — same crate, no new dependency.
 - **`@tanstack/react-virtual`** — `adopted` in Phase 1, `removed` in
   Phase 2. The library's count-based virtualizer doesn't handle the
   browser's CSS dimension cap (≈17M-33M px depending on the engine):

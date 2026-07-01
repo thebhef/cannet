@@ -86,11 +86,62 @@ session present at launch is loaded as a stopped historical trace
     The old chunked-scan helpers (`PageSelector`, `scan_chunk_filtered`,
     `tail_page`) are retired. Verified: gui + spill unit suites, frontend
     suite (wire contract unchanged), and a render-tier perf run/gate.
-  - **Step 5.3 — not started.** The DS-7 scratch lifecycle: `project_id`
-    UUID identity gate in `open_project`, reset-on-Clear/Start, and
-    load-prior-as-stopped (needs a new disk-store *reload* capability —
-    `DiskRawStore::new` currently wipes stale segments on construction).
+  - **Step 5.3 — the DS-7 scratch lifecycle, sliced into four
+    independently-landable parts** (it spans a new disk-store reopen
+    surface, a `Project` schema migration, host wiring, and the pyramid
+    residency bound — too much for one reviewable diff):
+    - **Step 5.3a — done.** Disk-store persistent watermark + reopen
+      (cannet-spill only, no GUI change). `DiskRawStore::flush` now writes
+      a `manifest.json` (schema `version`, `DiskConfig`, the `len` /
+      `payload_cursor` valid-length watermarks, the RAM-only `bus_intern`
+      table, and the by-id `(id, extended, len)` directory).
+      `DiskRawStore::reopen(dir)` remaps the existing segment files
+      **without truncating them** (new `seg::open_segment`), restores the
+      watermarks and bus table, rebuilds each by-id chain from its
+      persisted length (`byid::reopen`, geometry deterministic in the
+      segment index), and refills the RAM ring from the durable tail —
+      `O(segments)`, no capture rebuild scan. Returns `Ok(None)` when no
+      manifest exists, `Err` on a corrupt one (caller wipes). `clear` /
+      `new` now also drop the manifest so a wiped store never reloads
+      stale. `serde`/`serde_json` added to the crate for the manifest (no
+      new workspace dependency). 7 new tests (round-trip incl.
+      FD/remote/error/bus interning + ring tail; geometric by-id rebuild;
+      append-continues-from-watermark; absent / corrupt manifest;
+      clear-removes-manifest).
+    - **Step 5.3b — not started.** `project_id: Uuid` on the `Project`
+      schema + ADR-0011 migration (generate on first parse of an older
+      file, write back on next save).
+    - **Step 5.3c — not started.** Host wiring (lib.rs / trace_store.rs):
+      `current/` records the project identity (host-side, separate from
+      the spill manifest); `open_project` reopens-as-stopped only on an
+      identity match (else leaves the scratch on disk); reset-on-Clear/Start
+      wipes `current/` incl. the filter index; the facade reconstructs its
+      RAM-only derived state (newest-per-id, counts) from the by-id index
+      on reopen.
+    - **Step 5.3d — not started.** Disk-back the DS-5 pyramids in
+      `current/` (residency bound; layout already reload-compatible).
 - **Steps 6–7 — not started.**
+
+Deviations / decisions in 5.3a:
+
+- **DS-4's "valid-length watermark" lands as the reopen manifest.** 5.1
+  shipped the disk store with `len` / `payload_cursor` / `bus_intern`
+  RAM-only (a session was lost on exit); 5.3a persists them so the
+  formats are reload-compatible *in practice*, not just in principle.
+- **The manifest is a JSON file, not a binary footer.** The reopen
+  state is tiny and id-space-bounded; serde_json keeps the
+  failure-mode-rich (de)serialization off the hand-written surface and
+  the file human-inspectable for debugging.
+- **By-id chains rebuild from length alone.** The segment geometry
+  (64, 128, … capped at 65 536) is deterministic in the segment index,
+  so the manifest stores only each id's `len`; reopen recomputes the
+  chain. A shared `seg_capacity(i)` helper replaced the inline
+  `(BASE_ENTRIES << i).min(MAX)` at the append site too — same values,
+  and it removes a latent left-shift overflow that would have hit an id
+  with 58+ segments (~3M occurrences).
+- **The project-identity gate file is a *host* concern, not the spill
+  manifest.** Keeping `cannet-spill` ignorant of projects: 5.3c writes
+  the `project_id` + path record into `current/` separately.
 
 Decisions and deviations recorded so far (to fold into ADR 0002 at
 Step 6):

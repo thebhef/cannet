@@ -26,14 +26,31 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::seg::{create_segment, Segment};
+use crate::seg::{create_segment, open_segment, Segment};
 
 /// Entries in the first (smallest) per-id segment.
 const BASE_ENTRIES: usize = 64;
 /// Cap on per-id segment size; segments double up to here, then stay.
 const MAX_SEG_ENTRIES: usize = 65_536;
+/// `seg` index at which `BASE_ENTRIES << seg` first reaches the cap
+/// (`64 << 10 == 65_536`). Beyond it every segment is `MAX_SEG_ENTRIES`.
+const CAP_SEG: usize = 10;
 /// Bytes per posting entry (a `u64` frame index).
 const ENTRY_BYTES: usize = 8;
+
+/// Entry capacity of posting segment `seg`: `BASE_ENTRIES` doubled per
+/// step, capped at `MAX_SEG_ENTRIES`. Branching on [`CAP_SEG`] (rather
+/// than `(BASE_ENTRIES << seg).min(MAX_SEG_ENTRIES)`) keeps the shift in
+/// range — a hot id needing 58+ segments would otherwise overflow the
+/// `<<`. The geometry is deterministic in `seg`, so the reopen path
+/// rebuilds an id's chain from its persisted length alone.
+fn seg_capacity(seg: usize) -> usize {
+    if seg >= CAP_SEG {
+        MAX_SEG_ENTRIES
+    } else {
+        BASE_ENTRIES << seg
+    }
+}
 
 /// File-name prefix for every by-id segment (used to wipe them on clear).
 pub(crate) const BYID_PREFIX: &str = "byid.";
@@ -83,6 +100,56 @@ impl ByIdIndex {
         }
     }
 
+    /// Reopen the index from its persisted per-id directory (ADR 0002
+    /// DS-7). Each `(id, extended, len)` entry's segment chain is
+    /// rebuilt from `len` alone — the geometry ([`seg_capacity`]) is
+    /// deterministic — by mapping the existing files whole without
+    /// truncating them. A missing or short segment file surfaces as an
+    /// I/O error, which the caller treats as an unusable scratch.
+    pub(crate) fn reopen(
+        dir: impl AsRef<Path>,
+        entries: &[(u32, bool, u64)],
+    ) -> std::io::Result<Self> {
+        let dir = dir.as_ref().to_path_buf();
+        let mut map = HashMap::new();
+        for &(id, extended, len) in entries {
+            let len = usize::try_from(len).unwrap_or(usize::MAX);
+            let mut post = IdPostings::default();
+            while post.capacity() < len {
+                let i = post.segs.len();
+                let cap = seg_capacity(i);
+                let seg = open_segment(&seg_path(&dir, id, extended, i))?;
+                post.segs.push(seg);
+                let prev = post.cum_cap.last().copied().unwrap_or(0);
+                post.cum_cap.push(prev + cap);
+            }
+            post.len = len;
+            map.insert((id, extended), post);
+        }
+        Ok(Self { dir, map })
+    }
+
+    /// The persisted directory: one `(id, extended, len)` per posting
+    /// list with at least one entry. Written into the store manifest on
+    /// flush so [`Self::reopen`] can rebuild the chains.
+    pub(crate) fn directory(&self) -> Vec<(u32, bool, u64)> {
+        self.map
+            .iter()
+            .map(|(&(id, ext), post)| (id, ext, post.len as u64))
+            .collect()
+    }
+
+    /// Flush every mapped posting segment so the postings are durable
+    /// before the manifest that references them is written.
+    pub(crate) fn flush(&self) -> std::io::Result<()> {
+        for post in self.map.values() {
+            for seg in &post.segs {
+                seg.map.flush()?;
+            }
+        }
+        Ok(())
+    }
+
     /// Record that frame `frame_idx` carries `(id, extended)`. Appends to
     /// that id's posting list, growing it by a new (doubled) segment when
     /// the current chain is full.
@@ -93,7 +160,7 @@ impl ByIdIndex {
         let post = self.map.entry((id, extended)).or_default();
         if post.len == post.capacity() {
             let i = post.segs.len();
-            let cap = (BASE_ENTRIES << i).min(MAX_SEG_ENTRIES);
+            let cap = seg_capacity(i);
             let seg = create_segment(&seg_path(dir, id, extended, i), cap * ENTRY_BYTES)
                 .expect("cannet-spill: by-id segment I/O failed");
             post.segs.push(seg);

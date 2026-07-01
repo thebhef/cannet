@@ -498,6 +498,8 @@ version = "0.0.0"
 dependencies = [
  "cannet-core",
  "memmap2",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 
