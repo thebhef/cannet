@@ -18,6 +18,19 @@ release time.
 - `pnpm --dir apps/gui test`
 - `pnpm --dir apps/gui build`
 
+A **backend perf smoke** job also runs the perf harness's two
+virtual-hardware modes (`tracebuffer`, `grpc`) plus `validate` end-to-end,
+failing only if the harness errors. On a PR it posts the run's metrics as
+a sticky comment, each figure beside the committed baseline as
+`current (reference)`. That comparison is deliberately **display-only**,
+not a `check` gate: the baseline came from a developer machine, not the
+runner, and perf baselines are environment-relative (a baseline is only
+meaningful on the machine that captured it — ADR 0031), so automated
+absolute-number gating on an ephemeral shared runner would be flaky or
+meaningless. `fps_retention` (a ratio) is the one figure that survives the
+machine change. The `hardware-peak` mode is excluded — no PEAK adapters on
+the runner.
+
 ## Release (`.github/workflows/release.yml`)
 
 Triggered **manually** (`workflow_dispatch`) from the Actions tab with

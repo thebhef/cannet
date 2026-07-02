@@ -72,6 +72,14 @@ trip over it.
   wrong-case key. Evaluate properly (and land in
   [technology-inventory.md](technology-inventory.md)) before adopting.
 
+- `[ci]` **Guard the checked-in Python proto gencode against drift.**
+  `servers/cannet-python-can/cannet_python_can/_proto/cannet_pb2.py` is
+  committed but nothing in CI regenerates it from the canonical
+  `cannet.proto` and diffs — a proto change that skips the manual regen
+  ships a silently stale sidecar. Add a CI step (or test) that runs the
+  generator and fails on diff. (Surfaced by the 2026-07-02 quality
+  audit, task 30.)
+
 - `[ci]` **Server-implementation conformance check.** Every server
   that speaks `cannet-wire` (today: `cannet-server`'s BLF replay and
   virtual-bus modes, `cannet-python-can`; tomorrow: other vendor
@@ -131,6 +139,14 @@ trip over it.
   guard (likely a `uplotRef.current` staleness window in
   `PlotPanel.tsx`'s create/destroy effect).
 
+- `[bug]` `cannet-gui` plot panel: **`plotFilter.ts` colours filter-resolved
+  signals off a stale palette.** `plotFilter.ts:10–19` carries an 8-colour
+  copy under a "Keep in sync" comment, but `PlotPanel.tsx:119–136` moved to
+  a 16-colour wheel (ADR 0026) — the two have already diverged, so signals
+  resolved through filters get colours the panel no longer uses. Fix by
+  extracting the shared signal-identity + palette module (task 30,
+  PlotPanel sketch); until then, sync the copy. (2026-07-02 audit.)
+
 ### DBC view
 
 - `[feat]` `cannet-gui` DBC view: **ECU view mode** — group the message
@@ -139,6 +155,15 @@ trip over it.
   the RBS `.cannet_rbs` schema.)
 
 ### Transmit panel
+
+- `[bug]` `cannet-gui` `TransmitPanel.tsx`: **missing post-listener refetch
+  (launch race).** RbsPanel refreshes again once its change listener is
+  attached (RbsPanel.tsx:108–114, with a comment explaining the race);
+  TransmitPanel's otherwise-identical mount effect (90–115) skips that
+  step, so a registry change landing between the snapshot fetch and the
+  subscribe is silently missed. Closed for free by the shared
+  `useHostMirror` hook (task 30 item 17), or add the refetch directly.
+  (2026-07-02 audit.)
 
 - `[perf]` `cannet-gui` `run_transmit_scheduler`: per-bus
   `FrameBatch` batching. The scheduler currently fires each due
@@ -358,6 +383,18 @@ next pass on this surface can address them as one piece.
   would make the split honest. Low value / fragile cross-platform — mmap
   paging already bounds store residency and the `host` label no longer
   implies otherwise. Pick up only if residency needs real metering.
+- `[perf]` `cannet-gui` `save_capture` **materializes the entire capture in
+  RAM** (lib.rs:925–947, 1058–1113): it pulls the whole store into one
+  `Vec` before writing the BLF, under a comment saying "which we'll
+  revisit when disk-spill lands" — disk-spill has landed (ADR 0002;
+  windowed-ring eviction shipped in task 18), so saving a large spilled
+  capture now defeats the spill. Stream the write in chunks off the
+  store's paged read path instead. (2026-07-02 audit.)
+- `[perf]` `cannet-python-can` server: **TX hot path re-resolves the
+  interface through the registry per frame** (server.py:788, 848,
+  878–908) even though the session already holds the handle
+  (635–640) — a per-frame dict/lock round-trip on the highest-rate
+  path. Cache the handle on the session. (2026-07-02 audit.)
 - `[perf]` `cannet-core`: revisit `CanFramePayload::Classic`/`Fd` to share
   a fixed-size inline buffer instead of `Vec<u8>` once the trace store /
   perf benchmark shows allocator pressure.
