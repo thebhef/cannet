@@ -122,10 +122,13 @@ without reshaping callers.
 
 - **`python-can`** (Apache-2.0) — `adopted` in Phase 8. Wrapped
   by the `cannet-python-can` sidecar. See [`../docs/adr/0008-python-can-sidecar.md`](../docs/adr/0008-python-can-sidecar.md).
-- **`uv`** (Rust, Apache-2.0 / MIT) — `adopted` in Phase 8.
-  Astral's Python package & project manager. Manages the
-  sidecar's venv; `uv sync` materialises it lazily on first
-  launch, `uv run` starts the sidecar. Fetching strategy: see
+- **`uv`** (Rust, Apache-2.0 / MIT) — `adopted` in Phase 8, now
+  **developer-only**. Astral's Python package & project manager. Manages
+  the sidecar's venv for local dev (`uv run cannet-python-can`) and feeds
+  the frozen sidecar build (Task 31). No longer an end-user runtime
+  dependency — end users get the frozen sidecar binary. See
+  [ADR 0036](../docs/adr/0036-frozen-python-can-sidecar.md), which
+  supersedes the end-user-fetch part of
   [ADR 0015](../docs/adr/0015-fetched-runtime-binaries.md).
 - **`grpcio`** + **`grpcio-tools`** (Python, Apache-2.0) —
   `adopted` in Phase 8 as the sidecar's gRPC runtime. See
@@ -243,6 +246,14 @@ crate retained long-term).
   the installer/bundle version is injected from the release tag in CI.
   `gitcl` shells out to the `git` already required to build. MIT /
   Apache-2.0.
+- **PyInstaller** (Python, GPL-2.0-with-bootloader-exception; the
+  exception lets the frozen output ship under any license) — `adopted`
+  in Task 31 to freeze the `cannet-python-can` sidecar into a
+  self-contained onedir binary (embedded CPython + `grpcio` / `protobuf`
+  / `python-can`), so an installed cannet launches the sidecar with no
+  Python, `uv`, or network. Run via `uv run --with pyinstaller`; the
+  dynamic-import collection recipe is pinned in `scripts/build-sidecar`.
+  See [ADR 0036](../docs/adr/0036-frozen-python-can-sidecar.md).
 - **Code signing / notarization** — `proposed` (deferred). First alpha
   bundles ship **unsigned**; macOS Gatekeeper / Windows SmartScreen warn
   on first run. Signing needs external accounts (Apple Developer Program;
