@@ -200,8 +200,9 @@ All platforms need:
   `tools/uv/uv[.exe]` or on `PATH`. For local development, run
   [`scripts/fetch-uv.sh`](scripts/fetch-uv.sh) to drop the pinned
   binary into `tools/uv/`, or install `uv` per the upstream
-  instructions. The end-user fetch mechanism (installer post-step
-  vs. first-run host downloader) is a Phase-18 deliverable.
+  instructions. `uv` is **developer-only**: shipped builds run a
+  frozen self-contained sidecar and fetch nothing
+  (see [`docs/adr/0036-frozen-python-can-sidecar.md`](docs/adr/0036-frozen-python-can-sidecar.md)).
 - A vendor SDK (only if you have the matching hardware): Vector XL
   Driver Library, Kvaser CANlib, or PEAK PCAN-Basic. None of these
   are bundled; see the Phase-8 section below for links.
@@ -982,8 +983,9 @@ The host launcher resolves `uv` in this order:
 1. **Local fetch** — `tools/uv/uv[.exe]` next to the GUI executable.
    [`scripts/fetch-uv.sh`](scripts/fetch-uv.sh) downloads the pinned
    binary for the current OS / arch into `tools/uv/` for local dev.
-   The end-user fetch mechanism that populates this same path on an
-   installed copy is a Phase-18 deliverable.
+   This is a **developer** convenience; shipped builds run a frozen
+   sidecar instead (see
+   [`docs/adr/0036-frozen-python-can-sidecar.md`](docs/adr/0036-frozen-python-can-sidecar.md)).
 2. **`uv` on `PATH`** — install via
    [`https://docs.astral.sh/uv/`](https://docs.astral.sh/uv/).
 3. **`python3 -m cannet_python_can`** — last-resort fallback when

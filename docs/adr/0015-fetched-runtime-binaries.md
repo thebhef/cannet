@@ -1,6 +1,11 @@
 # ADR 0015 — External runtime binaries are fetched at a pinned version, not committed or bundled
 
-Status: accepted (2026-05-23)
+Status: accepted (2026-05-23); superseded in part by
+[ADR 0036](0036-frozen-python-can-sidecar.md) — the python-can sidecar
+now ships as a frozen self-contained binary, so `uv` is a developer-only
+dependency and no end-user `uv`/Python fetch flow is needed. The general
+rule below still governs any *external* runtime binary we depend on but
+do not build.
 
 ## Decision
 
@@ -19,14 +24,15 @@ sidecar Python package) is bundled as usual. The split is **by who
 maintains it**, not by language or runtime role.
 
 The **pin** — the specific upstream version cannet expects — is
-the single source of truth across every fetch flow (dev-side,
-end-user installer, host first-run). It lives in one place;
-revisiting the pin is one edit.
+the single source of truth for the fetch. It lives in one place;
+revisiting the pin is one edit. (For `uv` today that is only the
+dev-side fetch; per [ADR 0036](0036-frozen-python-can-sidecar.md)
+there is no end-user `uv` fetch.)
 
-The host's runtime lookup chain treats every fetch flow uniformly:
+The host's runtime lookup chain treats the fetched tool uniformly:
 a known install-dir location, then a copy on `PATH`, then a
-documented fallback. The host does not care which flow populated
-the install-dir copy.
+documented fallback. The host does not care who wrote the
+install-dir copy.
 
 ## Why
 
@@ -50,15 +56,11 @@ different version replaces it in place.
 
 ## Consequences
 
-- **Two fetch flows are needed**: a dev-side fetch (today
-  `scripts/fetch-uv.sh`) and an end-user fetch as part of the
-  installer or first-run host flow. The end-user-side mechanism is
-  still TBD — see `plans/phased-implementation.md` §
-  "Third-party runtime tool fetching strategy" for the remaining
-  implementation choice and per-OS specifics.
-- **An offline first-run on a fresh install must surface a clear
-  error** with the manual install instructions; "tool not found"
-  cannot fail silently.
+- **Only a dev-side fetch remains** (`scripts/fetch-uv.sh`). The
+  end-user side this ADR originally anticipated — fetching `uv` as an
+  installer or first-run step — is **not built and no longer planned**:
+  [ADR 0036](0036-frozen-python-can-sidecar.md) ships the sidecar as a
+  frozen self-contained binary, so end users fetch nothing.
 - **The pin is brittle by design.** When upstream yanks or breaks
   the pinned version, the fetch fails everywhere at once. That's
   preferable to a stale committed snapshot that silently keeps

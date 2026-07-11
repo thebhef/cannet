@@ -32,14 +32,14 @@
 //!
 //! Resolved in order:
 //!
+//! These are all **developer-machine** paths. End-user builds run a
+//! frozen self-contained sidecar binary instead of resolving `uv`
+//! (see ADR 0036); `uv` is dev-only.
+//!
 //! 1. **Local `uv`** at `tools/uv/<os>-<arch>/uv[.exe]` relative to
-//!    the GUI binary's parent directory. `uv` is fetched, not
-//!    bundled — `scripts/fetch-uv.sh` populates this path for dev
-//!    builds, and an install-time or first-run fetch will
-//!    populate it for end-user builds (see
-//!    ADR 0015). The runtime
-//!    contract — "look here first" — is stable regardless of who
-//!    wrote the file.
+//!    the GUI binary's parent directory. `scripts/fetch-uv.sh`
+//!    populates this path for dev builds. The runtime contract —
+//!    "look here first" — is stable regardless of who wrote the file.
 //! 2. **`uv` on `PATH`** — the developer-machine fallback.
 //! 3. **`python3 -m cannet_python_can`** — last resort if `uv` is
 //!    not installed at all. Logs a warn-level System Message so the

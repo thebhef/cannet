@@ -94,10 +94,11 @@ deliberately, fixing any newly-surfaced lints in the same change.
   the alpha isn't blocked on procurement.
 - **Auto-update** (`tauri-plugin-updater`) — needs a separate update
   keypair and a release feed.
-- **`uv` runtime in the bundle.** A distributed build still needs `uv`
-  at runtime for the python-can sidecar (live hardware / virtual buses);
-  that end-user fetch flow is Task 24. BLF/file workflows work without
-  it.
+- **Sidecar in the bundle.** A distributed build needs the python-can
+  sidecar for live hardware / virtual buses (BLF/file workflows work
+  without it). [Task 31](0031-frozen-sidecar-binary.md) delivers it as a
+  frozen self-contained binary built on each release runner — no
+  end-user `uv`/Python fetch.
 
 ## Exit criteria
 
