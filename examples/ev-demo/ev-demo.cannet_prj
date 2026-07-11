@@ -137,11 +137,7 @@
         "params": {
           "expanded": [
             "bus:pt",
-            "dbc:pt::C:\\Users\\thebh\\repo\\cannet\\examples\\ev-demo\\dbc/vcu.dbc",
-            "dbc:pt::C:\\Users\\thebh\\repo\\cannet\\examples\\ev-demo\\dbc/traction-motor.dbc",
-            "bus:batt",
-            "dbc:batt::C:\\Users\\thebh\\repo\\cannet\\examples\\ev-demo\\dbc/bms.dbc",
-            "dbc:batt::C:\\Users\\thebh\\repo\\cannet\\examples\\ev-demo\\dbc/thermal.dbc"
+            "bus:batt"
           ],
           "filter": "",
           "showDetails": false
@@ -973,7 +969,7 @@
       "id": "vehicle",
       "kind": "rbs",
       "name": "Vehicle RBS",
-      "path": "C:\\Users\\thebh\\repo\\cannet\\examples\\ev-demo\\ev-demo.cannet_rbs",
+      "path": "ev-demo.cannet_rbs",
       "run": true
     },
     {
@@ -1335,25 +1331,25 @@
   ],
   "dbcs": [
     {
-      "path": "C:\\Users\\thebh\\repo\\cannet\\examples\\ev-demo\\dbc/vcu.dbc",
+      "path": "dbc/vcu.dbc",
       "buses": [
         "pt"
       ]
     },
     {
-      "path": "C:\\Users\\thebh\\repo\\cannet\\examples\\ev-demo\\dbc/traction-motor.dbc",
+      "path": "dbc/traction-motor.dbc",
       "buses": [
         "pt"
       ]
     },
     {
-      "path": "C:\\Users\\thebh\\repo\\cannet\\examples\\ev-demo\\dbc/bms.dbc",
+      "path": "dbc/bms.dbc",
       "buses": [
         "batt"
       ]
     },
     {
-      "path": "C:\\Users\\thebh\\repo\\cannet\\examples\\ev-demo\\dbc/thermal.dbc",
+      "path": "dbc/thermal.dbc",
       "buses": [
         "batt"
       ]
