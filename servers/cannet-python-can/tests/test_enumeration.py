@@ -332,58 +332,127 @@ def test_kvaser_omits_sn_chunk_when_serial_missing() -> None:
 # ---- PCAN -------------------------------------------------------------------
 
 
-class _PcanInfo:
-    """Mirrors the subset of ``TPCANChannelInformation`` the enumerator
-    reads. Notably absent: there is no ``channel_name`` attribute on
-    the real struct, and ``device_name`` is a bytes buffer."""
+def _install_fake_pcan(devices, detected=None):
+    """Plant a fake PCAN-Basic module and stub python-can's channel
+    detector.
 
-    def __init__(
-        self,
-        channel_handle: int,
-        device_name=b"PCAN-USB FD",
-        device_id: int = 0,
-        controller_number: int = 0,
-    ):
-        self.channel_handle = channel_handle
-        self.device_name = device_name
-        self.device_id = device_id
-        self.controller_number = controller_number
+    ``devices`` maps a channel handle int (e.g. ``0x51``) to a dict with
+    optional keys ``controller``, ``device_id``, ``hardware_name``
+    (bytes), and ``supports_fd``. The fake ``PCANBasic`` answers
+    per-handle ``GetValue`` for those fields — mirroring how the
+    enumerator enriches each detected channel (and how the macOS PCBUSB
+    driver *does* support per-handle reads even though it rejects the
+    bulk ``PCAN_ATTACHED_CHANNELS`` query).
 
+    The stubbed ``can.detect_available_configs`` reports one channel per
+    device by default; pass ``detected`` to override the reported list.
+    Notably, this fake exposes **no** ``PCAN_ATTACHED_CHANNELS`` attribute
+    — the enumerator must not depend on it.
 
-def _install_fake_pcan(channels):
-    PCAN_ATTACHED_CHANNELS = object()
+    Returns the original ``can.detect_available_configs`` for restoration
+    via :func:`_uninstall_fake_pcan`.
+    """
+    import can  # noqa: WPS433
+
+    PCAN_CONTROLLER_NUMBER = "controller_number"
+    PCAN_DEVICE_ID = "device_id"
+    PCAN_HARDWARE_NAME = "hardware_name"
 
     class _Api:
         def GetValue(self, handle, what):  # noqa: N802 - matches PCANBasic
-            if what is PCAN_ATTACHED_CHANNELS:
-                return (0, list(channels))
+            h = int(getattr(handle, "value", handle))
+            dev = devices.get(h)
+            if dev is None:
+                return (1, None)
+            if what == PCAN_CONTROLLER_NUMBER:
+                return (0, dev.get("controller", 0))
+            if what == PCAN_DEVICE_ID:
+                return (0, dev.get("device_id", 0))
+            if what == PCAN_HARDWARE_NAME:
+                return (0, dev.get("hardware_name", b"PCAN"))
             return (1, None)
 
     mod_pcan = types.ModuleType("can.interfaces.pcan")
     mod_basic = types.ModuleType("can.interfaces.pcan.basic")
     mod_basic.PCANBasic = _Api
-    mod_basic.PCAN_ATTACHED_CHANNELS = PCAN_ATTACHED_CHANNELS
-    # Plant the standard USB bus handle constants so the reverse
-    # lookup in _pcan_handle_name can find them.
+    mod_basic.PCAN_CONTROLLER_NUMBER = PCAN_CONTROLLER_NUMBER
+    mod_basic.PCAN_DEVICE_ID = PCAN_DEVICE_ID
+    mod_basic.PCAN_HARDWARE_NAME = PCAN_HARDWARE_NAME
+    # Plant the standard USB bus handle constants so a channel name
+    # ("PCAN_USBBUS1") reported by the detector resolves back to its
+    # handle int.
+    handle_to_name = {}
     for i in range(1, 9):
-        setattr(mod_basic, f"PCAN_USBBUS{i}", 0x50 + i)
+        val = 0x50 + i
+        setattr(mod_basic, f"PCAN_USBBUS{i}", val)
+        handle_to_name[val] = f"PCAN_USBBUS{i}"
     sys.modules["can.interfaces.pcan"] = mod_pcan
     sys.modules["can.interfaces.pcan.basic"] = mod_basic
 
+    if detected is None:
+        detected = [
+            {
+                "interface": "pcan",
+                "channel": handle_to_name[h],
+                "supports_fd": dev.get("supports_fd", False),
+            }
+            for h, dev in devices.items()
+        ]
+    original = can.detect_available_configs
+    can.detect_available_configs = lambda interfaces=None: list(detected)
+    return original
+
+
+def _uninstall_fake_pcan(original_detect) -> None:
+    import can  # noqa: WPS433
+
+    can.detect_available_configs = original_detect
+    _remove_fake_modules("can.interfaces.pcan", "can.interfaces.pcan.basic")
+
+
+def test_pcan_enumerates_via_python_can_detector() -> None:
+    """Regression (macOS): the PCBUSB driver doesn't implement the bulk
+    ``PCAN_ATTACHED_CHANNELS`` query — it returns PCAN_ERROR_ILLOPERATION
+    — so an enumerator that relies on that call finds zero channels on a
+    Mac even with a PEAK adapter plugged in. Discovery is delegated to
+    python-can's detector (which probes each handle individually on
+    Darwin); the enumerator surfaces what it reports and enriches it via
+    per-handle GetValue. The fake here exposes no ATTACHED_CHANNELS
+    surface at all, so this only passes if the enumerator doesn't use
+    it."""
+    original = _install_fake_pcan(
+        {0x51: {"hardware_name": b"PCAN-USB", "controller": 0, "device_id": 14}}
+    )
+    try:
+        m = _fresh_driver_module()
+        import can.interfaces.pcan.basic as basic  # noqa: WPS433
+
+        assert not hasattr(basic, "PCAN_ATTACHED_CHANNELS")
+        chans = m._list_pcan()
+        assert len(chans) == 1
+        assert chans[0].id == "pcan:PCAN_USBBUS1(h:0x51, ch:0, uid:14)"
+        assert chans[0].display_name == (
+            "PEAK PCAN-USB (PCAN_USBBUS1, h:0x51, ch:0, uid:14)"
+        )
+        assert chans[0].fd_capable is False
+    finally:
+        _uninstall_fake_pcan(original)
+
 
 def test_pcan_two_factory_default_devices_get_distinct_ids() -> None:
-    """The regression we're fixing: two PCAN-USB FDs at handles
-    PCAN_USBBUS1 / PCAN_USBBUS2, both with factory-default ``device_id=0``,
-    must produce distinct ids (and visibly distinct labels) so the
-    GUI's one-bus-per-interface constraint doesn't block the second.
-    The id body is the named slot constant (so python-can can open it
-    via the same string it always has); the paren metadata carries
-    the raw hex handle and the controller number."""
-    chs = [
-        _PcanInfo(channel_handle=0x51, device_name=b"PCAN-USB FD"),
-        _PcanInfo(channel_handle=0x52, device_name=b"PCAN-USB FD"),
-    ]
-    _install_fake_pcan(chs)
+    """Two PCAN-USB FDs at handles PCAN_USBBUS1 / PCAN_USBBUS2, both with
+    factory-default ``device_id=0``, must produce distinct ids (and
+    visibly distinct labels) so the GUI's one-bus-per-interface
+    constraint doesn't block the second. The id body is the named slot
+    constant (so python-can can open it via the same string it always
+    has); the paren metadata carries the raw hex handle and the
+    controller number."""
+    original = _install_fake_pcan(
+        {
+            0x51: {"hardware_name": b"PCAN-USB FD", "supports_fd": True},
+            0x52: {"hardware_name": b"PCAN-USB FD", "supports_fd": True},
+        }
+    )
     try:
         m = _fresh_driver_module()
         chans = m._list_pcan()
@@ -399,19 +468,13 @@ def test_pcan_two_factory_default_devices_get_distinct_ids() -> None:
             "PEAK PCAN-USB FD (PCAN_USBBUS2, h:0x52, ch:0, uid:0)",
         ]
     finally:
-        _remove_fake_modules("can.interfaces.pcan", "can.interfaces.pcan.basic")
+        _uninstall_fake_pcan(original)
 
 
 def test_pcan_device_id_set_by_user_appears_in_id_paren_list_and_label() -> None:
-    chs = [
-        _PcanInfo(
-            channel_handle=0x51,
-            device_name=b"PCAN-USB FD",
-            device_id=42,
-            controller_number=0,
-        ),
-    ]
-    _install_fake_pcan(chs)
+    original = _install_fake_pcan(
+        {0x51: {"hardware_name": b"PCAN-USB FD", "device_id": 42}}
+    )
     try:
         m = _fresh_driver_module()
         chans = m._list_pcan()
@@ -421,24 +484,26 @@ def test_pcan_device_id_set_by_user_appears_in_id_paren_list_and_label() -> None
             "PEAK PCAN-USB FD (PCAN_USBBUS1, h:0x51, ch:0, uid:42)"
         )
     finally:
-        _remove_fake_modules("can.interfaces.pcan", "can.interfaces.pcan.basic")
+        _uninstall_fake_pcan(original)
 
 
-def test_pcan_unknown_handle_falls_back_to_hex_body() -> None:
-    """If the handle doesn't match any planted PCAN_*BUS constant, the
-    id body uses a stable hex fallback rather than colliding on a
-    default name; the paren list still carries the same hex handle."""
-    chs = [_PcanInfo(channel_handle=0xFF, device_name=b"PCAN-Mystery")]
-    _install_fake_pcan(chs)
+def test_pcan_fd_capability_follows_detector() -> None:
+    """``fd_capable`` reflects python-can's own ``supports_fd``
+    determination rather than being assumed true — a classic PCAN-USB is
+    not FD-capable."""
+    original = _install_fake_pcan(
+        {
+            0x51: {"hardware_name": b"PCAN-USB", "supports_fd": False},
+            0x52: {"hardware_name": b"PCAN-USB FD", "supports_fd": True},
+        }
+    )
     try:
         m = _fresh_driver_module()
-        chans = m._list_pcan()
-        assert chans[0].id == "pcan:handle=0xFF(h:0xFF, ch:0, uid:0)"
-        # No named slot for this handle → the display drops the
-        # would-be slot prefix and shows just the paren metadata.
-        assert chans[0].display_name == ("PEAK PCAN-Mystery (h:0xFF, ch:0, uid:0)")
+        chans = {c.id: c for c in m._list_pcan()}
+        assert chans["pcan:PCAN_USBBUS1(h:0x51, ch:0, uid:0)"].fd_capable is False
+        assert chans["pcan:PCAN_USBBUS2(h:0x52, ch:0, uid:0)"].fd_capable is True
     finally:
-        _remove_fake_modules("can.interfaces.pcan", "can.interfaces.pcan.basic")
+        _uninstall_fake_pcan(original)
 
 
 # ---- _bus_kwargs_for round-trip --------------------------------------------
@@ -580,7 +645,7 @@ def test_open_pcan_disables_status_frames() -> None:
     ``PCAN_ALLOW_STATUS_FRAMES`` → ``PCAN_PARAMETER_OFF``. Bus state
     transitions (passive / bus-off) are still observable through the
     sidecar's 500 ms ``GetStatus`` poll, so no information is lost."""
-    _install_fake_pcan([_PcanInfo(channel_handle=0x51)])
+    orig_detect = _install_fake_pcan({0x51: {}})
     fake_param = object()
     fake_off = object()
     mod_basic = sys.modules["can.interfaces.pcan.basic"]
@@ -614,7 +679,7 @@ def test_open_pcan_disables_status_frames() -> None:
         )
     finally:
         _restore_can_interface_bus(original)
-        _remove_fake_modules("can.interfaces.pcan", "can.interfaces.pcan.basic")
+        _uninstall_fake_pcan(orig_detect)
 
     assert setvalue_calls == [("handle-stub", fake_param, fake_off)]
 
