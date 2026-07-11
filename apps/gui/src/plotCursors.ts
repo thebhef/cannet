@@ -101,6 +101,28 @@ export function isMeasurementKey(k: unknown): k is MeasurementKey {
   return typeof k === "string" && MEASUREMENT_QUANTITIES.some((q) => q.key === k);
 }
 
+/** The plot panel's shared mouse-crosshair position: one x value (panel
+ * time domain) plus the plot area that produced it (the "owner"). */
+export interface PanelHover {
+  /** Id of the plot area the pointer is over. */
+  areaId: string;
+  /** Crosshair x in the panel's time domain (display-relative seconds). */
+  x: number;
+}
+
+/**
+ * Fold one area's cursor report into the panel-level hover state. A
+ * report with an `x` takes the hover (that area becomes the owner); a
+ * clear (`x == null`) only applies when it comes from the owner —
+ * uPlot fires a cursor reset from *every* area on `setData`, and a
+ * non-hovered area's reset must not clobber the hover the pointer is
+ * still holding elsewhere.
+ */
+export function nextHover(prev: PanelHover | null, areaId: string, x: number | null): PanelHover | null {
+  if (x != null) return { areaId, x };
+  return prev && prev.areaId !== areaId ? prev : null;
+}
+
 /**
  * The new `[min, max]` x-window for a "goto" jump centred on `t`.
  * Preserves the current window's width when it's set and positive

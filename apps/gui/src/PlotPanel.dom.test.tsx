@@ -19,9 +19,15 @@ vi.mock("uplot", () => {
     scales = { x: {}, y: {} } as Record<string, { min?: number; max?: number }>;
     data: unknown = [[]];
     width = 600;
-    constructor(_opts: unknown, data: unknown, el: HTMLElement) {
+    cursor = { left: -10 };
+    opts: { hooks?: Record<string, ((u: FakeUPlot) => void)[]> };
+    root: HTMLElement;
+    constructor(opts: FakeUPlot["opts"], data: unknown, el: HTMLElement) {
+      this.opts = opts;
+      this.root = el;
       this.data = data;
       el.appendChild(document.createElement("canvas"));
+      instances.push(this);
     }
     setData(d: unknown) {
       this.data = d;
@@ -32,14 +38,20 @@ vi.mock("uplot", () => {
     setSize() {}
     redraw() {}
     destroy() {}
-    posToVal() {
-      return 0;
+    /** px → x value; linear so tests can pick a deterministic x. */
+    posToVal(px: number) {
+      return px / 100;
     }
     valToPos() {
       return 0;
     }
+    /** Fire a registered hook as the real uPlot would. */
+    fire(hook: string) {
+      for (const f of this.opts.hooks?.[hook] ?? []) f(this);
+    }
   }
-  return { default: FakeUPlot };
+  const instances: FakeUPlot[] = [];
+  return { default: FakeUPlot, __instances: instances };
 });
 vi.mock("uplot/dist/uPlot.min.css", () => ({}));
 
@@ -99,6 +111,16 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async () => () => {}),
 }));
+
+import * as uplotModule from "uplot";
+
+/** The FakeUPlot surface the hover test drives (see the mock above). */
+type FakeUPlotInst = {
+  cursor: { left: number };
+  root: HTMLElement;
+  fire: (hook: string) => void;
+};
+const uplotInstances = (uplotModule as unknown as { __instances: FakeUPlotInst[] }).__instances;
 
 import { PlotPanel } from "./PlotPanel";
 import { PanelCommandsContext, createPanelCommandRegistry } from "./panelCommands";
@@ -218,6 +240,7 @@ function renderPanel(opts?: { params?: Record<string, unknown>; registry?: Eleme
 
 beforeEach(() => {
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+  uplotInstances.length = 0;
 });
 afterEach(() => {
   cleanup();
@@ -486,6 +509,73 @@ describe("PlotPanel", () => {
     });
     renderPanel({ params: { elementId: "el-reopen" }, registry });
     expect(screen.getByText("EngineSpeed")).toBeInTheDocument();
+  });
+
+  it("hovering one area drives the crosshair readout in every area (shared hoverX)", async () => {
+    // The mouse crosshair is panel-level: a hover reported by *any*
+    // area's uPlot flips every area's side-panel readout to
+    // "value at crosshair" at the shared x. The canvas line itself
+    // isn't drawable in jsdom; this exercises the state lift + the
+    // owner-aware clear (a cursor reset fired by a non-hovered area's
+    // setData must not clobber the shared hover).
+    // rAF deferred to a microtask (not run synchronously): the panel's
+    // throttle stores the returned id *after* requestAnimationFrame
+    // returns, so a synchronous callback would leave the guard stuck.
+    // Microtasks flush inside `await act(...)`, keeping the test
+    // deterministic.
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      queueMicrotask(() => cb(0));
+      return 1;
+    });
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    // The construction effect refuses a 0×0 canvas (jsdom's default) —
+    // give every element real dimensions so uPlot actually constructs.
+    const cw = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(600);
+    const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
+    try {
+      renderPanel();
+      await waitFor(() =>
+        expect(screen.getByRole("option", { name: /EngineData\.EngineSpeed/ })).toBeInTheDocument(),
+      );
+      fireEvent.change(screen.getByLabelText("add signal to focused plot area"), {
+        target: { value: "*|s:256:EngineSpeed" },
+      });
+      await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
+      fireEvent.click(screen.getByRole("button", { name: "add plot area" }));
+      const area1 = screen.getByText("Area 1").closest(".plot-area")!;
+      const area2 = screen.getByText("Area 2").closest(".plot-area")!;
+      const instFor = (areaEl: Element) => {
+        const list = uplotInstances.filter((i) => areaEl.contains(i.root));
+        return list[list.length - 1];
+      };
+      await waitFor(() => expect(instFor(area2)).toBeTruthy());
+      const readout = () => document.querySelector(".plot-signal-value") as HTMLElement;
+      expect(readout().title).toBe("latest value");
+      // Hover over *area 2* (empty — the signal lives in area 1): the
+      // signal readout in area 1 must switch to the crosshair value.
+      const u2 = instFor(area2)!;
+      await act(async () => {
+        u2.cursor.left = 150;
+        u2.fire("setCursor");
+      });
+      expect(readout().title).toBe("value at crosshair");
+      // A cursor reset from the non-owner area is ignored…
+      const u1 = instFor(area1)!;
+      await act(async () => {
+        u1.cursor.left = -10;
+        u1.fire("setCursor");
+      });
+      expect(readout().title).toBe("value at crosshair");
+      // …while a leave from the owning area clears the shared hover.
+      await act(async () => {
+        u2.cursor.left = -10;
+        u2.fire("setCursor");
+      });
+      expect(readout().title).toBe("latest value");
+    } finally {
+      cw.mockRestore();
+      ch.mockRestore();
+    }
   });
 
   it("mirrors its config onto the element via the registry", async () => {

@@ -6,6 +6,7 @@ import {
   centerWindowOn,
   indexAtOrBefore,
   isMeasurementKey,
+  nextHover,
   statsOver,
   valueAt,
 } from "./plotCursors";
@@ -73,6 +74,22 @@ describe("centerWindowOn", () => {
   it("clamps the left edge to >= 0 (preserves width by sliding right)", () => {
     expect(centerWindowOn(1, { min: 0, max: 10 }, 5)).toEqual([0, 10]);
     expect(centerWindowOn(-2, { min: 0, max: 4 }, 5)).toEqual([0, 4]);
+  });
+});
+
+describe("nextHover", () => {
+  it("a reported x takes the hover (and its area becomes the owner)", () => {
+    expect(nextHover(null, "a1", 1.5)).toEqual({ areaId: "a1", x: 1.5 });
+    expect(nextHover({ areaId: "a1", x: 1.5 }, "a2", 2.0)).toEqual({ areaId: "a2", x: 2.0 });
+  });
+  it("the owner area's clear clears the hover", () => {
+    expect(nextHover({ areaId: "a1", x: 1.5 }, "a1", null)).toBeNull();
+  });
+  it("a clear from a non-owner area is ignored (uPlot fires cursor resets on setData in every area)", () => {
+    expect(nextHover({ areaId: "a2", x: 2.0 }, "a1", null)).toEqual({ areaId: "a2", x: 2.0 });
+  });
+  it("a clear with no hover stays cleared", () => {
+    expect(nextHover(null, "a1", null)).toBeNull();
   });
 });
 

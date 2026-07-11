@@ -32,9 +32,11 @@ import {
   DEFAULT_MEASUREMENTS,
   MEASUREMENT_QUANTITIES,
   type MeasurementKey,
+  type PanelHover,
   type Series,
   centerWindowOn,
   isMeasurementKey,
+  nextHover,
   statsOver,
   valueAt,
 } from "./plotCursors";
@@ -57,7 +59,10 @@ import {
  * plus a **side signal panel**: per signal a colour swatch (click to
  * hide / show the line — the value keeps updating), name, and value (at
  * cursor A when one is placed, else at the mouse crosshair, else the
- * latest sample) with a Δ(A − B) line under it once both X cursors are
+ * latest sample). The crosshair is panel-level like cursor A/B: one
+ * shared x across the stack, drawn in every area, so hovering anywhere
+ * reads out each series' value in *all* areas at that time. The value
+ * carries a Δ(A − B) line under it once both X cursors are
  * placed; an "y: auto / min…max" control; and the H1/H2 Y-cursor
  * read-out when those are placed. Picking a `(message, signal)` from the
  * toolbar drops it into the focused area; **drag a signal row** to
@@ -137,6 +142,11 @@ const TRACE_COLORS = [
 ];
 const CURSOR_A_COLOR = "#ffd93d";
 const CURSOR_B_COLOR = "#ff5577";
+/// The mouse crosshair's line colour — uPlot's default cursor grey, kept
+/// now that the line is drawn by the panel's own overlay (in *every*
+/// stacked area, at the shared hover x) instead of uPlot's per-instance
+/// native cursor.
+const CROSSHAIR_COLOR = "#607d8b";
 const EVENT_COLOR = "#4ecbff";
 /// The derived truncation marker's cursor colour (ADR 0035) — a muted
 /// amber, distinct from the note-event blue. Matches the trace floor row.
@@ -1038,6 +1048,32 @@ export function PlotPanel(props: IDockviewPanelProps) {
   }, []);
 
   // --- cursors / notes ---
+  // The mouse crosshair is panel-level, like cursor A/B: one shared x
+  // for the whole stack, so every area draws the crosshair line and
+  // reads its side-panel values at the same time — not just the area
+  // under the pointer. Areas report their uPlot cursor through
+  // `reportHoverX` (raw, per mousemove); a single panel-level rAF
+  // coalesces those into at most one state commit per frame. The
+  // owner-aware fold (`nextHover`) keeps a non-hovered area's
+  // setData-triggered cursor reset from clearing the hover.
+  const [hoverX, setHoverX] = useState<number | null>(null);
+  const hoverRef = useRef<PanelHover | null>(null);
+  const hoverRafRef = useRef(0);
+  const reportHoverX = useCallback((areaId: string, x: number | null) => {
+    hoverRef.current = nextHover(hoverRef.current, areaId, x);
+    if (hoverRafRef.current) return;
+    hoverRafRef.current = requestAnimationFrame(() => {
+      hoverRafRef.current = 0;
+      setHoverX(hoverRef.current?.x ?? null);
+    });
+  }, []);
+  useEffect(
+    () => () => {
+      if (hoverRafRef.current) cancelAnimationFrame(hoverRafRef.current);
+      hoverRafRef.current = 0;
+    },
+    [],
+  );
   const placeCursorX = useCallback((which: "a" | "b", t: number) => setCursorX((p) => ({ ...p, [which]: t })), []);
   const placeCursorY = useCallback((areaId: string, which: "h1" | "h2", v: number) => {
     setCursorYByArea((p) => ({
@@ -1532,6 +1568,8 @@ export function PlotPanel(props: IDockviewPanelProps) {
               cursorXb={cursorX.b}
               cursorYh1={yc?.h1 ?? null}
               cursorYh2={yc?.h2 ?? null}
+              hoverX={hoverX}
+              onHoverX={reportHoverX}
               events={events}
               xSyncRef={xSyncRef}
               registerInstance={registerInstance}
@@ -1751,6 +1789,15 @@ interface PlotAreaProps {
   cursorXb: number | null;
   cursorYh1: number | null;
   cursorYh2: number | null;
+  /** Panel-level mouse-crosshair x (shared across the whole area
+   * stack), or `null` when the pointer isn't over any area. Every
+   * area draws the crosshair line at this x and derives its
+   * side-panel value readouts from it. */
+  hoverX: number | null;
+  /** Report this area's uPlot cursor to the panel: an x value while
+   * the pointer is over the area, `null` when it leaves. Throttling
+   * (one rAF per panel) and owner-aware clearing happen panel-side. */
+  onHoverX: (areaId: string, x: number | null) => void;
   events: NoteEvent[];
   xSyncRef: MutableRefObject<XSync>;
   registerInstance: (id: string, u: uPlot | null) => void;
@@ -1861,6 +1908,8 @@ function PlotArea(p: PlotAreaProps) {
     cursorXb,
     cursorYh1,
     cursorYh2,
+    hoverX,
+    onHoverX,
     events,
     xSyncRef,
     registerInstance,
@@ -1937,8 +1986,6 @@ function PlotArea(p: PlotAreaProps) {
   const postMountRebuildDoneRef = useRef(false);
   const lastResampleTsRef = useRef(0);
   const rateEmaRef = useRef(0);
-  const hoverRafRef = useRef(0);
-  const [hoverX, setHoverX] = useState<number | null>(null);
   const [valueTick, setValueTick] = useState(0); // bump → re-render side panel
   /** Filter-editor visibility (ADR 0020). Closed by default;
    * the "filter…" button in the side-panel head toggles it. The
@@ -2065,8 +2112,10 @@ function PlotArea(p: PlotAreaProps) {
     cursorXb,
     cursorYh1,
     cursorYh2,
+    hoverX,
     events,
     onUserXChange,
+    onHoverX,
     onAreaResampled,
     onPlaceCursorX,
     onPlaceCursorY,
@@ -2089,8 +2138,10 @@ function PlotArea(p: PlotAreaProps) {
       cursorXb,
       cursorYh1,
       cursorYh2,
+      hoverX,
       events,
       onUserXChange,
+      onHoverX,
       onAreaResampled,
       onPlaceCursorX,
       onPlaceCursorY,
@@ -2530,8 +2581,13 @@ function PlotArea(p: PlotAreaProps) {
       legend: { show: false },
       // uPlot's built-in drag-select (left-button) is off — we do
       // box-zoom on right-drag instead (see the `ready` hook), so
-      // left-clicks are free for placing cursors / notes.
-      cursor: { drag: { x: false, y: false } },
+      // left-clicks are free for placing cursors / notes. The native
+      // vertical cursor line (`x`) is off too: the crosshair is
+      // panel-level (one shared x across the stacked areas), drawn by
+      // our own draw-hook overlay in every area — the native line
+      // would double it up in the hovered one. The horizontal line
+      // stays: y is meaningful only under the pointer.
+      cursor: { x: false, drag: { x: false, y: false } },
       axes: [xAxis, yAxis],
       series: [
         {},
@@ -2571,16 +2627,10 @@ function PlotArea(p: PlotAreaProps) {
         ],
         setCursor: [
           (u: uPlot) => {
-            if (hoverRafRef.current) return;
-            hoverRafRef.current = requestAnimationFrame(() => {
-              hoverRafRef.current = 0;
-              const leftPx = u.cursor.left;
-              if (leftPx == null || leftPx < 0) {
-                setHoverX((prev) => (prev == null ? prev : null));
-                return;
-              }
-              setHoverX(u.posToVal(leftPx, "x"));
-            });
+            // Raw report — the panel rAF-throttles (once per panel,
+            // not per area) and folds owner-aware clears.
+            const leftPx = u.cursor.left;
+            liveRef.current.onHoverX(areaId, leftPx == null || leftPx < 0 ? null : u.posToVal(leftPx, "x"));
           },
         ],
         draw: [
@@ -2635,6 +2685,14 @@ function PlotArea(p: PlotAreaProps) {
             }
             if (lr.cursorXb != null) {
               vline(lr.cursorXb, CURSOR_B_COLOR, [4, 3], `B ${formatElapsed(lr.cursorXb, xDigits)}`, false);
+            }
+            // The shared mouse crosshair (panel-level, like A/B): drawn
+            // in *every* stacked area at the same x, so the hover in
+            // one area lines up with the readouts everywhere. No label
+            // — it tracks the pointer; `vline` clips it when the x
+            // falls outside this area's window, same as A/B.
+            if (lr.hoverX != null) {
+              vline(lr.hoverX, CROSSHAIR_COLOR, [4, 3], null, false);
             }
             const hline = (yVal: number, color: string, lbl: string) => {
               const yp = u.valToPos(yVal, "y", true);
@@ -2991,8 +3049,11 @@ function PlotArea(p: PlotAreaProps) {
       cancelAnimationFrame(raf);
       if (postMountRebuildTimer) window.clearTimeout(postMountRebuildTimer);
       ro.disconnect();
-      if (hoverRafRef.current) cancelAnimationFrame(hoverRafRef.current);
-      hoverRafRef.current = 0;
+      // A destroyed instance can't report a pointer-leave — clear the
+      // shared hover so removing the hovered area doesn't leave a
+      // frozen crosshair in the others (owner-aware: a rebuild of a
+      // non-hovered area is a no-op).
+      liveRef.current.onHoverX(areaId, null);
       registerInstance(areaId, null);
       diagCount("uplot.destroy"); // DIAG
       u.destroy();
@@ -3133,10 +3194,11 @@ function PlotArea(p: PlotAreaProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hiddenKey]);
 
-  // Redraw the overlay when cursors / events change (no resample).
+  // Redraw the overlay when cursors / the shared crosshair / events
+  // change (no resample).
   useEffect(() => {
     uplotRef.current?.redraw(false, false);
-  }, [cursorXa, cursorXb, cursorYh1, cursorYh2, events, isFirst, isLast]);
+  }, [cursorXa, cursorXb, cursorYh1, cursorYh2, hoverX, events, isFirst, isLast]);
 
   const dh = cursorYh1 != null && cursorYh2 != null ? cursorYh2 - cursorYh1 : null;
 
