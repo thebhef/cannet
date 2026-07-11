@@ -44,28 +44,31 @@ export function formatFrameCount(total: number, firstIndex: number): string {
 }
 
 /// Elapsed time as `[d:][hh:][mm:]ss.ffff` — only the segments needed to
-/// span the magnitude, with a fixed four fractional digits (0.1 ms). The
-/// leading segment carries no padding (`5.8710`, `1:05.0000`); lower
-/// segments are two-digit zero-padded once a higher one is present
-/// (`1:05.0000`, `2:00:03.5000`). Negative inputs (a frame stamped before
-/// the origin — a bug, but render defensively) get a leading `-`.
-export function formatElapsed(seconds: number): string {
+/// span the magnitude, with `fracDigits` fractional digits (default 4,
+/// i.e. 0.1 ms — what the trace shows; the plot widens it per
+/// `fracDigitsForSpan` when zoomed in). The leading segment carries no
+/// padding (`5.8710`, `1:05.0000`); lower segments are two-digit
+/// zero-padded once a higher one is present (`1:05.0000`,
+/// `2:00:03.5000`). Negative inputs (a frame stamped before the origin —
+/// a bug, but render defensively) get a leading `-`.
+export function formatElapsed(seconds: number, fracDigits = 4): string {
   const sign = seconds < 0 ? "-" : "";
-  // Work in integer ten-thousandths so the fractional rounding can't carry
-  // a 59.99996 up to a bare "60" seconds segment.
-  let rem = Math.round(Math.abs(seconds) * 1e4);
-  const TTS_PER_DAY = 864_000_000;
-  const TTS_PER_HOUR = 36_000_000;
-  const TTS_PER_MIN = 600_000;
-  const TTS_PER_SEC = 10_000;
-  const days = Math.floor(rem / TTS_PER_DAY);
-  rem -= days * TTS_PER_DAY;
-  const hours = Math.floor(rem / TTS_PER_HOUR);
-  rem -= hours * TTS_PER_HOUR;
-  const mins = Math.floor(rem / TTS_PER_MIN);
-  rem -= mins * TTS_PER_MIN;
-  const secs = Math.floor(rem / TTS_PER_SEC);
-  const frac = String(rem - secs * TTS_PER_SEC).padStart(4, "0");
+  // Work in integer units of 10^-fracDigits so the fractional rounding
+  // can't carry a 59.99996 up to a bare "60" seconds segment. Safe in a
+  // double even at 9 digits: a day is 8.64e13 units, well under 2^53.
+  const scale = 10 ** fracDigits;
+  let rem = Math.round(Math.abs(seconds) * scale);
+  const perDay = 86_400 * scale;
+  const perHour = 3_600 * scale;
+  const perMin = 60 * scale;
+  const days = Math.floor(rem / perDay);
+  rem -= days * perDay;
+  const hours = Math.floor(rem / perHour);
+  rem -= hours * perHour;
+  const mins = Math.floor(rem / perMin);
+  rem -= mins * perMin;
+  const secs = Math.floor(rem / scale);
+  const frac = String(rem - secs * scale).padStart(fracDigits, "0");
   const p2 = (n: number) => String(n).padStart(2, "0");
   let body: string;
   if (days > 0) body = `${days}:${p2(hours)}:${p2(mins)}:${p2(secs)}`;
@@ -73,6 +76,27 @@ export function formatElapsed(seconds: number): string {
   else if (mins > 0) body = `${mins}:${p2(secs)}`;
   else body = `${secs}`;
   return `${sign}${body}.${frac}`;
+}
+
+/// Fractional digits for a timeline-position label when the visible
+/// x-window spans `spanSeconds`: the trace's 4-digit default for spans of
+/// 1 s or more, plus one digit per decade of zoom below that (so adjacent
+/// labels stay distinguishable down to pixel granularity), capped at 9
+/// (nanosecond — the capture's native resolution). Degenerate spans
+/// (zero, negative, non-finite) fall back to the default.
+export function fracDigitsForSpan(spanSeconds: number): number {
+  if (!Number.isFinite(spanSeconds) || spanSeconds <= 0) return 4;
+  return Math.min(9, Math.max(4, 4 - Math.floor(Math.log10(spanSeconds))));
+}
+
+/// A *duration* (cursor Δt, a period) in plain seconds: fixed unit `s`,
+/// never SI-rescaled to ms/µs, so durations read on one scale everywhere.
+/// Rounded at nanosecond resolution, trailing zeros trimmed
+/// (`0.05 s`, `0.00003 s`, `2 s`). Missing / non-finite values render as
+/// an em dash.
+export function formatDurationSeconds(seconds: number | null | undefined): string {
+  if (seconds == null || !Number.isFinite(seconds)) return "—";
+  return `${seconds.toFixed(9).replace(/\.?0+$/, "")} s`;
 }
 
 /// Render a frame/event timestamp for a trace-style view: elapsed time since

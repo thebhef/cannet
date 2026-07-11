@@ -65,6 +65,7 @@ vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
     onCloseRequested: async () => () => {},
     onResized: async () => () => {},
+    setTitle: async () => {},
     isMaximized: async () => false,
     minimize: async () => {},
     toggleMaximize: async () => {},

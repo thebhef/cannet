@@ -17,12 +17,15 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
+import type { BlfChannelMaps } from "./blfChannelMap";
+
 /// Mirror of the host `UiState` struct (snake_case to match serde).
 export interface UiState {
   last_project: string | null;
   layout: unknown | null;
   recent_blfs: string[];
   recent_commands: string[];
+  blf_channel_maps: BlfChannelMaps;
 }
 
 function emptyState(): UiState {
@@ -31,6 +34,7 @@ function emptyState(): UiState {
     layout: null,
     recent_blfs: [],
     recent_commands: [],
+    blf_channel_maps: {},
   };
 }
 
@@ -79,5 +83,10 @@ export function setRecentBlfs(list: readonly string[]): void {
 
 export function setRecentCommands(list: readonly string[]): void {
   cache = { ...cache, recent_commands: [...list] };
+  flush();
+}
+
+export function setBlfChannelMaps(maps: BlfChannelMaps): void {
+  cache = { ...cache, blf_channel_maps: maps };
   flush();
 }

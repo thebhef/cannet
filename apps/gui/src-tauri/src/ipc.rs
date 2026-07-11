@@ -88,7 +88,7 @@ pub struct SignalRecord {
     pub value: f64,
     pub unit: String,
     /// `VAL_` label matching this decoded value, if any. The trace
-    /// view's decoded-signal grid renders `<value> "<label>"` when
+    /// view's decoded-signal lines render `<value> "<label>"` when
     /// this is present; otherwise just `<value>`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
@@ -531,11 +531,13 @@ pub struct SignalDescriptorRecord {
     pub message_name: String,
     pub signal_name: String,
     pub unit: String,
-    /// True if the DBC defines a `VAL_` table for this signal. Lets
-    /// the plot panel pick stepped/symbolic rendering and the
-    /// transmit panel offer a dropdown without a separate
-    /// `value_table` round-trip.
-    pub has_value_table: bool,
+    /// True if the signal's `VAL_` table makes it an enum — per
+    /// `cannet_dbc::is_enum`, at least two members. A single-member
+    /// table (an SNA sentinel) leaves this false: the signal renders
+    /// numerically and its lone label applies only on an exact raw
+    /// match. Lets the plot panel pick stepped/symbolic rendering
+    /// without a separate `value_table` round-trip.
+    pub is_enum: bool,
 }
 
 /// One row of a signal's `VAL_` table — mirrors

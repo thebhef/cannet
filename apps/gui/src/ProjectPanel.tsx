@@ -4,12 +4,12 @@ import {
   useMemo,
   useReducer,
   useState,
-  type ChangeEvent,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { IDockviewPanel, IDockviewPanelProps } from "dockview";
 
+import { Combobox, type ComboboxOption } from "./Combobox";
 import { useProjectContext } from "./projectContext";
 import { useElementRegistry } from "./projectElements";
 import {
@@ -52,7 +52,7 @@ import {
 /// `interfaces::INTERFACES_CHANGED_EVENT` host-side.
 const INTERFACES_CHANGED_EVENT = "interfaces-changed";
 
-/// Sentinel `<option>` values for the per-bus interface combo. Real
+/// Sentinel option values for the per-bus interface combo. Real
 /// picks encode `${server}\x00${interface}`; these two are control
 /// values the onChange handler intercepts.
 const COMBO_NONE = "";
@@ -872,8 +872,7 @@ export function BusInterfaceCombo({
     .filter((a) => a !== sidecarAddress)
     .sort();
 
-  const handleChange = (e: ChangeEvent<HTMLSelectElement>) => {
-    const v = e.target.value;
+  const handlePick = (v: string) => {
     if (v === COMBO_ADD_SERVER) {
       onAddServer();
       return;
@@ -897,98 +896,73 @@ export function BusInterfaceCombo({
     if (decoded) onPick({ kind: "remote", server: decoded.server, iface: decoded.iface });
   };
 
+  const comboOptions: ComboboxOption[] = [
+    { value: COMBO_NONE, label: "— no interface —" },
+    // Local interfaces (sidecar).
+    ...localList.map((r) => interfaceOption(LOCAL_SERVER, r, "Local")),
+    // Remote servers group under their address.
+    ...remoteAddrs.flatMap((addr): ComboboxOption[] => {
+      const state = discoveries[addr];
+      if (state.status === "ok") {
+        return state.interfaces.length === 0
+          ? [{ value: `${addr}::empty`, label: "(no interfaces)", path: [addr], disabled: true }]
+          : state.interfaces.map((r) => ({ ...interfaceOption(addr, r, addr), path: [addr] }));
+      }
+      return [
+        {
+          value: `${addr}::status`,
+          label: state.status === "err" ? `(unreachable: ${state.error})` : "(discovering…)",
+          path: [addr],
+          disabled: true,
+        },
+      ];
+    }),
+    // Virtual buses are a peer source, listed under their own group.
+    // "+ Add virtual bus" creates a fresh one and binds this bus to it.
+    ...(localVirtualBuses.length === 0
+      ? [{ value: "vbus::empty", label: "(none)", path: ["Virtual buses"], disabled: true }]
+      : localVirtualBuses.map((v) => ({
+          value: encodeVbusOption(v.id),
+          label: v.name,
+          path: ["Virtual buses"],
+        }))),
+    { value: COMBO_ADD_VBUS, label: "+ Add virtual bus", path: ["Virtual buses"] },
+    // Currently-selected interface not in any discovery snapshot —
+    // surface a synthetic option so `value=` still resolves.
+    ...(binding &&
+    (binding.kind ?? "remote") === "remote" &&
+    !optionInDiscoveries(binding, sidecarAddress, discoveries)
+      ? [
+          {
+            value: selectedValue,
+            label: `${labelFor(binding.server, binding.interface, sidecarAddress)} (offline)`,
+          },
+        ]
+      : []),
+    ...(() => {
+      if (!binding) return [];
+      const vbusId = localVbusId(binding);
+      if (vbusId === null) return [];
+      if (localVirtualBuses.some((v) => v.id === vbusId)) return [];
+      return [{ value: selectedValue, label: `(missing vbus ${vbusId})` }];
+    })(),
+    { value: COMBO_ADD_SERVER, label: "+ Add server…" },
+  ];
+
   return (
-    <select
+    <Combobox
       className="project-bus-iface-combo"
+      options={comboOptions}
       value={selectedValue}
-      onChange={handleChange}
-      aria-label={`bus ${bus.id} interface`}
-    >
-      <option value={COMBO_NONE}>— no interface —</option>
-      {/* Local interfaces (sidecar). */}
-      {localList.map((r) =>
-        renderInterfaceOption(LOCAL_SERVER, r, "Local", binding),
-      )}
-      {remoteAddrs.map((addr) => {
-        const state = discoveries[addr];
-        if (state.status === "ok") {
-          return (
-            <optgroup label={addr} key={addr}>
-              {state.interfaces.length === 0 ? (
-                <option value={`${addr}::empty`} disabled>
-                  (no interfaces)
-                </option>
-              ) : (
-                state.interfaces.map((r) =>
-                  renderInterfaceOption(addr, r, addr, binding),
-                )
-              )}
-            </optgroup>
-          );
-        }
-        return (
-          <optgroup label={addr} key={addr}>
-            <option value={`${addr}::status`} disabled>
-              {state.status === "err"
-                ? `(unreachable: ${state.error})`
-                : "(discovering…)"}
-            </option>
-          </optgroup>
-        );
-      })}
-      {/* Virtual buses are a peer source, listed under their own
-          group. "+ Add virtual bus" creates a fresh one and binds
-          this bus to it. */}
-      <optgroup label="Virtual buses">
-        {localVirtualBuses.length === 0 && (
-          <option value="vbus::empty" disabled>
-            (none)
-          </option>
-        )}
-        {localVirtualBuses.map((v) => (
-          <option value={encodeVbusOption(v.id)} key={v.id}>
-            {v.name}
-          </option>
-        ))}
-        <option value={COMBO_ADD_VBUS}>+ Add virtual bus</option>
-      </optgroup>
-      {/* Currently-selected interface not in any discovery snapshot
-          — surface a synthetic option so `value=` still resolves. */}
-      {binding &&
-        (binding.kind ?? "remote") === "remote" &&
-        !optionInDiscoveries(binding, sidecarAddress, discoveries) && (
-          <option value={selectedValue}>
-            {labelFor(binding.server, binding.interface, sidecarAddress)}{" "}
-            (offline)
-          </option>
-        )}
-      {(() => {
-        if (!binding) return null;
-        const vbusId = localVbusId(binding);
-        if (vbusId === null) return null;
-        if (localVirtualBuses.some((v) => v.id === vbusId)) return null;
-        return (
-          <option value={selectedValue}>(missing vbus {vbusId})</option>
-        );
-      })()}
-      <option value={COMBO_ADD_SERVER}>+ Add server…</option>
-    </select>
+      onChange={handlePick}
+      ariaLabel={`bus ${bus.id} interface`}
+    />
   );
 }
 
-function renderInterfaceOption(
-  server: string,
-  rec: InterfaceRecord,
-  serverLabel: string,
-  _selectedBinding: InterfaceBinding | null,
-) {
-  const value = encodeOption(server, rec.id);
+function interfaceOption(server: string, rec: InterfaceRecord, serverLabel: string): ComboboxOption {
   const name = rec.display_name || rec.id;
-  return (
-    <option value={value} key={value}>
-      {serverLabel} / {name}
-    </option>
-  );
+  return { value: encodeOption(server, rec.id), label: `${serverLabel} / ${name}` };
 }
 
 function encodeOption(server: string, iface: string): string {
@@ -1106,25 +1080,20 @@ export function AddServerInline({ busLabel, onCancel, onPick }: AddServerInlineP
       </div>
       {records !== null && (
         <div className="project-binding-form-row">
-          <select
+          <Combobox
+            options={
+              records.length === 0
+                ? [{ value: "", label: "— no interfaces —" }]
+                : [
+                    { value: "", label: "— pick interface —" },
+                    ...records.map((r) => ({ value: r.id, label: r.display_name || r.id })),
+                  ]
+            }
             value={iface}
-            onChange={(e) => setIface(e.target.value)}
-            aria-label="interface id"
+            onChange={setIface}
+            ariaLabel="interface id"
             disabled={records.length === 0}
-          >
-            {records.length === 0 ? (
-              <option value="">— no interfaces —</option>
-            ) : (
-              <>
-                <option value="">— pick interface —</option>
-                {records.map((r) => (
-                  <option value={r.id} key={r.id}>
-                    {r.display_name || r.id}
-                  </option>
-                ))}
-              </>
-            )}
-          </select>
+          />
           <button
             type="button"
             onClick={handleConfirm}

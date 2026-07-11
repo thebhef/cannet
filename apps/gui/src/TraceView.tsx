@@ -7,8 +7,8 @@ import { formatSignalValueWithLabel, formatTimestamp } from "./format";
 import { type ColorResolver, colorMapTint } from "./colorMap";
 import { setSignalDragData } from "./dragSignals";
 import {
-  EXPANDED_ROW_HEIGHT,
   ROW_HEIGHT,
+  SIGNAL_LINE_HEIGHT,
   buildPlacements,
   maxAnchorRow,
   maxWheelRows,
@@ -279,7 +279,13 @@ export function TraceView({
   const visible = useMemo(() => visibleColumns(shown), [shown]);
   const gridTemplate = useMemo(() => gridTemplateColumns(shown), [shown]);
 
-  const placements = buildPlacements(firstVisibleRow, count, rows, expanded);
+  // Signal count for expanded-row sizing: only frames have signals; an
+  // event row or a not-yet-loaded frame sizes as a plain row.
+  const signalCount = (absIdx: number) => {
+    const r = getRow(absIdx);
+    return r?.row === "frame" ? r.frame.decoded?.signals.length ?? 0 : 0;
+  };
+  const placements = buildPlacements(firstVisibleRow, count, rows, expanded, signalCount);
 
   return (
     <div className="trace">
@@ -305,7 +311,7 @@ export function TraceView({
               overflow: "hidden",
             }}
           >
-            {placements.map(({ posKey, absIdx, top, isExpanded }) => {
+            {placements.map(({ posKey, absIdx, top, isExpanded, height }) => {
               // Resolve the base-typed row once and hand the frame / event to
               // the single Row renderer as separate props — the inner objects
               // are ref-stable (chunk cache / events array), so `Row`'s memo
@@ -316,6 +322,7 @@ export function TraceView({
                 <Row
                   key={posKey}
                   top={top}
+                  height={height}
                   absoluteIndex={absIdx}
                   isExpanded={isExpanded}
                   frame={r?.row === "frame" ? r.frame : null}
@@ -339,6 +346,9 @@ export function TraceView({
 
 interface RowProps {
   top: number;
+  /// Row height from the placement (`RowPlacement.height`), so the
+  /// rendered box always matches the stacking arithmetic.
+  height: number;
   absoluteIndex: number;
   isExpanded: boolean;
   frame: TraceFrameRecord | null;
@@ -356,6 +366,7 @@ interface RowProps {
 
 const Row = memo(function Row({
   top,
+  height,
   absoluteIndex,
   isExpanded,
   frame,
@@ -373,7 +384,6 @@ const Row = memo(function Row({
   if (event) {
     return <EventRow top={top} event={event} baseTimestamp={baseTimestamp} actions={eventActions} />;
   }
-  const height = isExpanded ? EXPANDED_ROW_HEIGHT : ROW_HEIGHT;
   return (
     <div
       className={`trace-row ${isExpanded ? "expanded" : ""} ${frame ? "" : "loading"}${
@@ -550,7 +560,9 @@ function EventRow({
   );
 }
 
-/// One decoded signal cell inside an expanded trace row. It is
+/// One decoded signal sub-row inside an expanded trace row, sized to
+/// `SIGNAL_LINE_HEIGHT` so the line stack matches the placement
+/// arithmetic (`expandedRowHeight`). It is
 /// a drag source — dragging onto a plot area adds the
 /// signal as a series. Click events still fall through to the row
 /// (`stopPropagation` would prevent the expand-collapse toggle from
@@ -580,6 +592,7 @@ function DecodedSignalCell({
   return (
     <div
       className="signal"
+      style={{ height: SIGNAL_LINE_HEIGHT }}
       draggable
       onDragStart={(e) => {
         // Stop the parent row's drag from also firing — there isn't

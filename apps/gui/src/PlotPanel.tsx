@@ -5,7 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 
-import type { Bus, SignalDescriptorRecord, SignalExtent, ValueTableEntryRecord } from "./types";
+import { isEnumValueTable, type Bus, type SignalDescriptorRecord, type SignalExtent, type ValueTableEntryRecord } from "./types";
 import { useTraceData } from "./traceData";
 import { useProjectContext } from "./projectContext";
 import { defaultBusColor } from "./busColor";
@@ -24,16 +24,20 @@ import { GOTO_EVENT, type GotoPayload } from "./gotoEvent";
 import { enumSegments, groupScaleRanges, mergeSeries, signalKey } from "./plotData";
 import { followXWindow } from "./followWindow";
 import { showPointsFromRaw, showPointsToUplot, type ShowPointsMode } from "./plotPoints";
+import { Combobox, type ComboboxOption } from "./Combobox";
 import { elementLabel } from "./elementLabel";
+import { formatDurationSeconds, formatElapsed, fracDigitsForSpan } from "./format";
 import { usePanelCommands } from "./panelCommands";
 import { SourcesMenuSection } from "./SourcesPicker";
 import {
   DEFAULT_MEASUREMENTS,
   MEASUREMENT_QUANTITIES,
   type MeasurementKey,
+  type PanelHover,
   type Series,
   centerWindowOn,
   isMeasurementKey,
+  nextHover,
   statsOver,
   valueAt,
 } from "./plotCursors";
@@ -56,7 +60,10 @@ import {
  * plus a **side signal panel**: per signal a colour swatch (click to
  * hide / show the line — the value keeps updating), name, and value (at
  * cursor A when one is placed, else at the mouse crosshair, else the
- * latest sample) with a Δ(A − B) line under it once both X cursors are
+ * latest sample). The crosshair is panel-level like cursor A/B: one
+ * shared x across the stack, drawn in every area, so hovering anywhere
+ * reads out each series' value in *all* areas at that time. The value
+ * carries a Δ(A − B) line under it once both X cursors are
  * placed; an "y: auto / min…max" control; and the H1/H2 Y-cursor
  * read-out when those are placed. Picking a `(message, signal)` from the
  * toolbar drops it into the focused area; **drag a signal row** to
@@ -136,6 +143,11 @@ const TRACE_COLORS = [
 ];
 const CURSOR_A_COLOR = "#ffd93d";
 const CURSOR_B_COLOR = "#ff5577";
+/// The mouse crosshair's line colour — uPlot's default cursor grey, kept
+/// now that the line is drawn by the panel's own overlay (in *every*
+/// stacked area, at the shared hover x) instead of uPlot's per-instance
+/// native cursor.
+const CROSSHAIR_COLOR = "#607d8b";
 const EVENT_COLOR = "#4ecbff";
 /// The derived truncation marker's cursor colour (ADR 0035) — a muted
 /// amber, distinct from the note-event blue. Matches the trace floor row.
@@ -155,6 +167,21 @@ const MIN_DECIMATION_POINTS = 200;
  * self-paced (next tick scheduled after the previous finishes), so a
  * slow tick just lowers the realised rate further. */
 const RATE_OPTIONS = [5, 10, 15, 30, 60] as const;
+const RATE_COMBO_OPTIONS: ComboboxOption[] = RATE_OPTIONS.map((hz) => ({
+  value: String(hz),
+  label: `${hz} Hz`,
+}));
+const SHOW_POINTS_OPTIONS: ComboboxOption[] = [
+  { value: "auto", label: "auto" },
+  { value: "off", label: "off" },
+  { value: "on", label: "on" },
+];
+const CURSOR_MODE_OPTIONS: ComboboxOption[] = [
+  { value: "off", label: "off" },
+  { value: "x", label: "X (A / B)" },
+  { value: "y", label: "Y (H1 / H2)" },
+  { value: "note", label: "+ note" },
+];
 const DEFAULT_MAX_RATE_HZ = 15;
 /** Width (seconds) of the follow-live x-window before the user has set
  * one by zooming/panning. The window grows from t=0 up to this and then
@@ -366,13 +393,6 @@ function measKeysFromRaw(raw: unknown): MeasurementKey[] {
   return [...DEFAULT_MEASUREMENTS];
 }
 
-function fmtTime(s: number | null | undefined): string {
-  if (s == null || !Number.isFinite(s)) return "—";
-  if (Math.abs(s) >= 1) return `${s.toFixed(4)} s`;
-  if (Math.abs(s) >= 1e-3) return `${(s * 1e3).toFixed(3)} ms`;
-  if (Math.abs(s) >= 1e-6) return `${(s * 1e6).toFixed(2)} µs`;
-  return `${(s * 1e9).toFixed(0)} ns`;
-}
 function fmtFreq(hz: number | null | undefined): string {
   if (hz == null || !Number.isFinite(hz)) return "—";
   if (Math.abs(hz) >= 1e6) return `${(hz / 1e6).toFixed(3)} MHz`;
@@ -438,6 +458,7 @@ import { useDecimatedRange } from "./useDecimatedRange";
 import { diagCount } from "./diag"; // DIAG
 
 const Y_AXIS_MODES: YAxisMode[] = ["unified", "per-unit", "individual"];
+const Y_AXIS_MODE_OPTIONS: ComboboxOption[] = Y_AXIS_MODES.map((m) => ({ value: m, label: m }));
 function yAxisModeFromRaw(v: unknown): YAxisMode {
   return v === "per-unit" || v === "individual" ? v : "unified";
 }
@@ -1044,6 +1065,32 @@ export function PlotPanel(props: IDockviewPanelProps) {
   }, []);
 
   // --- cursors / notes ---
+  // The mouse crosshair is panel-level, like cursor A/B: one shared x
+  // for the whole stack, so every area draws the crosshair line and
+  // reads its side-panel values at the same time — not just the area
+  // under the pointer. Areas report their uPlot cursor through
+  // `reportHoverX` (raw, per mousemove); a single panel-level rAF
+  // coalesces those into at most one state commit per frame. The
+  // owner-aware fold (`nextHover`) keeps a non-hovered area's
+  // setData-triggered cursor reset from clearing the hover.
+  const [hoverX, setHoverX] = useState<number | null>(null);
+  const hoverRef = useRef<PanelHover | null>(null);
+  const hoverRafRef = useRef(0);
+  const reportHoverX = useCallback((areaId: string, x: number | null) => {
+    hoverRef.current = nextHover(hoverRef.current, areaId, x);
+    if (hoverRafRef.current) return;
+    hoverRafRef.current = requestAnimationFrame(() => {
+      hoverRafRef.current = 0;
+      setHoverX(hoverRef.current?.x ?? null);
+    });
+  }, []);
+  useEffect(
+    () => () => {
+      if (hoverRafRef.current) cancelAnimationFrame(hoverRafRef.current);
+      hoverRafRef.current = 0;
+    },
+    [],
+  );
   const placeCursorX = useCallback((which: "a" | "b", t: number) => setCursorX((p) => ({ ...p, [which]: t })), []);
   const placeCursorY = useCallback((areaId: string, which: "h1" | "h2", v: number) => {
     setCursorYByArea((p) => ({
@@ -1252,14 +1299,13 @@ export function PlotPanel(props: IDockviewPanelProps) {
             ? null
             : busNameLookup.get(s.bus_id) ?? s.bus_id;
         return {
-          key: signalKey(s.bus_id, s.message_id, s.extended, s.signal_name),
-          // Include the bus prefix so two signals named the same on
-          // different buses are pickable separately, and the message
-          // name explicitly groups its signals. Example:
-          //   "Powertrain · EngineData.RPM [rpm]"
-          label: `${busLabel ? `${busLabel} · ` : ""}${s.message_name}.${s.signal_name}${
-            s.unit ? ` [${s.unit}]` : ""
-          }`,
+          value: signalKey(s.bus_id, s.message_id, s.extended, s.signal_name),
+          // The bus → message ancestry renders as combobox group
+          // headers, so two signals named the same on different buses
+          // are pickable separately and the message name explicitly
+          // groups its signals.
+          path: busLabel ? [busLabel, s.message_name] : [s.message_name],
+          label: `${s.signal_name}${s.unit ? ` [${s.unit}]` : ""}`,
           desc: s,
         };
       }),
@@ -1319,6 +1365,15 @@ export function PlotPanel(props: IDockviewPanelProps) {
     [notes, truncation],
   );
   const dt = cursorX.a != null && cursorX.b != null ? cursorX.b - cursorX.a : null;
+  // Cursor *positions* render in the trace's elapsed-time format
+  // (ADR 0024 — one string for one timeline position across views), with
+  // precision adapted to the shared x-window's span like the axis ticks.
+  // Reading the ref during render is fine here: every x-window change
+  // that could alter the span re-renders the panel (xEpoch bump).
+  const { xMin, xMax } = xSyncRef.current;
+  const xLabelDigits = xMin != null && xMax != null ? fracDigitsForSpan(xMax - xMin) : 4;
+  const fmtPos = (t: number | null): string =>
+    t == null ? "—" : formatElapsed(t, xLabelDigits);
 
   /** Right-click anywhere on the panel toolbar opens this menu —
    * currently just the diagnostic-readout toggle, but the shape is
@@ -1370,22 +1425,16 @@ export function PlotPanel(props: IDockviewPanelProps) {
           onClear={handlePlotClear}
         />
         <span className="plot-toolbar-sep" />
-        <select
+        <Combobox
+          options={catalogOptions}
           value=""
-          onChange={(e) => {
-            const opt = catalogOptions.find((o) => o.key === e.target.value);
+          onChange={(v) => {
+            const opt = catalogOptions.find((o) => o.value === v);
             if (opt) addSignalToFocused(opt.desc);
-            e.currentTarget.selectedIndex = 0;
           }}
-          aria-label="add signal to focused plot area"
-        >
-          <option value="">{catalog.length === 0 ? "no DBC attached" : "add signal…"}</option>
-          {catalogOptions.map((o) => (
-            <option key={o.key} value={o.key}>
-              {o.label}
-            </option>
-          ))}
-        </select>
+          placeholder={catalog.length === 0 ? "no DBC attached" : "add signal…"}
+          ariaLabel="add signal to focused plot area"
+        />
         <button onClick={refreshCatalog} title="reload signal list from the attached DBC">
           ↻
         </button>
@@ -1403,25 +1452,21 @@ export function PlotPanel(props: IDockviewPanelProps) {
           title="draw sample points on every series: auto = let uPlot decide based on sample density; off = never draw points; on = always draw points"
         >
           points
-          <select
+          <Combobox
+            options={SHOW_POINTS_OPTIONS}
             value={showPoints}
-            onChange={(e) => setShowPoints(e.target.value as ShowPointsMode)}
-            aria-label="show points"
-          >
-            <option value="auto">auto</option>
-            <option value="off">off</option>
-            <option value="on">on</option>
-          </select>
+            onChange={(v) => setShowPoints(v as ShowPointsMode)}
+            ariaLabel="show points"
+          />
         </label>
         <span className="plot-toolbar-sep" />
         <label className="plot-cursor-ctl">
           cursors
-          <select value={cursorMode} onChange={(e) => setCursorMode(e.target.value as CursorMode)}>
-            <option value="off">off</option>
-            <option value="x">X (A / B)</option>
-            <option value="y">Y (H1 / H2)</option>
-            <option value="note">+ note</option>
-          </select>
+          <Combobox
+            options={CURSOR_MODE_OPTIONS}
+            value={cursorMode}
+            onChange={(v) => setCursorMode(v as CursorMode)}
+          />
         </label>
         <button onClick={clearCursors} title="remove all placed cursors">
           clear cursors
@@ -1434,13 +1479,11 @@ export function PlotPanel(props: IDockviewPanelProps) {
         <span className="plot-toolbar-sep" />
         <label className="plot-cursor-ctl" title="cap how often the plot re-samples — lower it under a fast capture">
           max
-          <select value={maxRateHz} onChange={(e) => setMaxRateHz(Number(e.target.value))}>
-            {RATE_OPTIONS.map((hz) => (
-              <option key={hz} value={hz}>
-                {hz} Hz
-              </option>
-            ))}
-          </select>
+          <Combobox
+            options={RATE_COMBO_OPTIONS}
+            value={String(maxRateHz)}
+            onChange={(v) => setMaxRateHz(Number(v))}
+          />
         </label>
         <span
           className="plot-perf"
@@ -1529,6 +1572,8 @@ export function PlotPanel(props: IDockviewPanelProps) {
               cursorXb={cursorX.b}
               cursorYh1={yc?.h1 ?? null}
               cursorYh2={yc?.h2 ?? null}
+              hoverX={hoverX}
+              onHoverX={reportHoverX}
               events={events}
               xSyncRef={xSyncRef}
               registerInstance={registerInstance}
@@ -1570,9 +1615,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
 
       {measEnabled && (
         <div className="plot-meas-strip">
-          {measKeys.includes("a") && <MeasCell k="A (t)" v={fmtTime(cursorX.a)} cls="gold" />}
-          {measKeys.includes("b") && <MeasCell k="B (t)" v={fmtTime(cursorX.b)} cls="pink" />}
-          {measKeys.includes("dt") && <MeasCell k="Δt" v={fmtTime(dt)} />}
+          {measKeys.includes("a") && <MeasCell k="A (t)" v={fmtPos(cursorX.a)} cls="gold" />}
+          {measKeys.includes("b") && <MeasCell k="B (t)" v={fmtPos(cursorX.b)} cls="pink" />}
+          {measKeys.includes("dt") && <MeasCell k="Δt" v={formatDurationSeconds(dt)} />}
           {measKeys.includes("freq") && <MeasCell k="1/Δt" v={dt ? fmtFreq(1 / dt) : "—"} />}
           {plottedSignals.map(({ key, ref, color, areaId }) => {
             const s = seriesFor(areaId, key) ?? { t: [], v: [] };
@@ -1748,6 +1793,15 @@ interface PlotAreaProps {
   cursorXb: number | null;
   cursorYh1: number | null;
   cursorYh2: number | null;
+  /** Panel-level mouse-crosshair x (shared across the whole area
+   * stack), or `null` when the pointer isn't over any area. Every
+   * area draws the crosshair line at this x and derives its
+   * side-panel value readouts from it. */
+  hoverX: number | null;
+  /** Report this area's uPlot cursor to the panel: an x value while
+   * the pointer is over the area, `null` when it leaves. Throttling
+   * (one rAF per panel) and owner-aware clearing happen panel-side. */
+  onHoverX: (areaId: string, x: number | null) => void;
   events: NoteEvent[];
   xSyncRef: MutableRefObject<XSync>;
   registerInstance: (id: string, u: uPlot | null) => void;
@@ -1858,6 +1912,8 @@ function PlotArea(p: PlotAreaProps) {
     cursorXb,
     cursorYh1,
     cursorYh2,
+    hoverX,
+    onHoverX,
     events,
     xSyncRef,
     registerInstance,
@@ -1934,8 +1990,6 @@ function PlotArea(p: PlotAreaProps) {
   const postMountRebuildDoneRef = useRef(false);
   const lastResampleTsRef = useRef(0);
   const rateEmaRef = useRef(0);
-  const hoverRafRef = useRef(0);
-  const [hoverX, setHoverX] = useState<number | null>(null);
   const [valueTick, setValueTick] = useState(0); // bump → re-render side panel
   /** Filter-editor visibility (ADR 0020). Closed by default;
    * the "filter…" button in the side-panel head toggles it. The
@@ -1986,15 +2040,18 @@ function PlotArea(p: PlotAreaProps) {
   }, [resolveColor]);
 
   // Value-table support for enum / state signals. When the
-  // area shows *exactly one* signal *and* that signal has a `VAL_`
-  // table, the area switches to "enum mode": auto-normalisation is
-  // bypassed (the values are discrete enum codes, no rescaling),
-  // the series is rendered stepped (not linearly interpolated
-  // between codes), and the y-axis ticks become symbolic labels
-  // from the table. Multi-signal areas keep current behaviour for
-  // the axis itself; the per-signal table cache below feeds the
-  // side panel so an enum value reads as `<label> (<raw>)` for
-  // every signal regardless of axis mode.
+  // area shows *exactly one* signal *and* that signal's `VAL_`
+  // table makes it an enum (>= 2 members — `isEnumValueTable`; a
+  // single-member SNA sentinel stays numeric), the area switches to
+  // "enum mode": auto-normalisation is bypassed (the values are
+  // discrete enum codes, no rescaling), the series is rendered
+  // stepped (not linearly interpolated between codes), and the
+  // y-axis ticks become symbolic labels from the table.
+  // Multi-signal areas keep current behaviour for the axis itself;
+  // the per-signal table cache below feeds the side panel so a
+  // labelled value reads as `<label> (<raw>)` on an exact raw match
+  // for every signal regardless of axis mode — single-member tables
+  // included.
   const [valueTables, setValueTables] = useState<Map<string, ValueTableEntryRecord[]>>(new Map());
   useEffect(() => {
     let cancelled = false;
@@ -2029,7 +2086,7 @@ function PlotArea(p: PlotAreaProps) {
     if (signals.length !== 1) return null;
     return valueTables.get(signalRefKey(signals[0])) ?? null;
   }, [signals, valueTables]);
-  const enumMode = valueTable != null && valueTable.length > 0 && signals.length === 1;
+  const enumMode = isEnumValueTable(valueTable) && signals.length === 1;
   // Ref mirrors so the resample callback (closure over the initial
   // signal set) sees the up-to-date enum-mode state without being
   // recreated on every value-table tick.
@@ -2062,8 +2119,10 @@ function PlotArea(p: PlotAreaProps) {
     cursorXb,
     cursorYh1,
     cursorYh2,
+    hoverX,
     events,
     onUserXChange,
+    onHoverX,
     onAreaResampled,
     onPlaceCursorX,
     onPlaceCursorY,
@@ -2086,8 +2145,10 @@ function PlotArea(p: PlotAreaProps) {
       cursorXb,
       cursorYh1,
       cursorYh2,
+      hoverX,
       events,
       onUserXChange,
+      onHoverX,
       onAreaResampled,
       onPlaceCursorX,
       onPlaceCursorY,
@@ -2497,7 +2558,20 @@ function PlotArea(p: PlotAreaProps) {
     // label and the numbers — they're identical on every area, so
     // repeating them just wastes vertical space.
     const xAxis: uPlot.Axis = isLast
-      ? { ...axisCommon, label: "time (s)", labelSize: 16, size: 34 }
+      ? {
+          ...axisCommon,
+          label: "time (s)",
+          labelSize: 16,
+          size: 34,
+          // Ticks share the trace's elapsed-time format (ADR 0024) so
+          // the same timeline position reads identically in both views;
+          // precision adapts to the visible span so zoomed-in ticks stay
+          // distinguishable.
+          values: (u, splits) => {
+            const d = fracDigitsForSpan((u.scales.x.max ?? 0) - (u.scales.x.min ?? 0));
+            return splits.map((v) => formatElapsed(v, d));
+          },
+        }
       : { ...axisCommon, size: 18, values: (_u, splits) => splits.map(() => "") };
     const opts: uPlot.Options = {
       width: el.clientWidth || 600,
@@ -2514,8 +2588,13 @@ function PlotArea(p: PlotAreaProps) {
       legend: { show: false },
       // uPlot's built-in drag-select (left-button) is off — we do
       // box-zoom on right-drag instead (see the `ready` hook), so
-      // left-clicks are free for placing cursors / notes.
-      cursor: { drag: { x: false, y: false } },
+      // left-clicks are free for placing cursors / notes. The native
+      // vertical cursor line (`x`) is off too: the crosshair is
+      // panel-level (one shared x across the stacked areas), drawn by
+      // our own draw-hook overlay in every area — the native line
+      // would double it up in the hovered one. The horizontal line
+      // stays: y is meaningful only under the pointer.
+      cursor: { x: false, drag: { x: false, y: false } },
       axes: [xAxis, yAxis],
       series: [
         {},
@@ -2555,16 +2634,10 @@ function PlotArea(p: PlotAreaProps) {
         ],
         setCursor: [
           (u: uPlot) => {
-            if (hoverRafRef.current) return;
-            hoverRafRef.current = requestAnimationFrame(() => {
-              hoverRafRef.current = 0;
-              const leftPx = u.cursor.left;
-              if (leftPx == null || leftPx < 0) {
-                setHoverX((prev) => (prev == null ? prev : null));
-                return;
-              }
-              setHoverX(u.posToVal(leftPx, "x"));
-            });
+            // Raw report — the panel rAF-throttles (once per panel,
+            // not per area) and folds owner-aware clears.
+            const leftPx = u.cursor.left;
+            liveRef.current.onHoverX(areaId, leftPx == null || leftPx < 0 ? null : u.posToVal(leftPx, "x"));
           },
         ],
         draw: [
@@ -2611,12 +2684,22 @@ function PlotArea(p: PlotAreaProps) {
             // every axis (it used to render only on the last area, so
             // adding a plot area visually hid the labels). Format as
             // "<letter> <time>" so a glance at any axis tells you both
-            // which cursor and where.
+            // which cursor and where — positions in the trace's
+            // elapsed-time format, at the axis ticks' adaptive precision.
+            const xDigits = fracDigitsForSpan((u.scales.x.max ?? 0) - (u.scales.x.min ?? 0));
             if (lr.cursorXa != null) {
-              vline(lr.cursorXa, CURSOR_A_COLOR, [4, 3], `A ${fmtTime(lr.cursorXa)}`, false);
+              vline(lr.cursorXa, CURSOR_A_COLOR, [4, 3], `A ${formatElapsed(lr.cursorXa, xDigits)}`, false);
             }
             if (lr.cursorXb != null) {
-              vline(lr.cursorXb, CURSOR_B_COLOR, [4, 3], `B ${fmtTime(lr.cursorXb)}`, false);
+              vline(lr.cursorXb, CURSOR_B_COLOR, [4, 3], `B ${formatElapsed(lr.cursorXb, xDigits)}`, false);
+            }
+            // The shared mouse crosshair (panel-level, like A/B): drawn
+            // in *every* stacked area at the same x, so the hover in
+            // one area lines up with the readouts everywhere. No label
+            // — it tracks the pointer; `vline` clips it when the x
+            // falls outside this area's window, same as A/B.
+            if (lr.hoverX != null) {
+              vline(lr.hoverX, CROSSHAIR_COLOR, [4, 3], null, false);
             }
             const hline = (yVal: number, color: string, lbl: string) => {
               const yp = u.valToPos(yVal, "y", true);
@@ -2661,7 +2744,7 @@ function PlotArea(p: PlotAreaProps) {
             if (lr.cursorXa != null && lr.cursorXb != null && isLast) {
               const xp = u.valToPos((lr.cursorXa + lr.cursorXb) / 2, "x", true);
               if (xp > left && xp < left + width) {
-                chip(xp, top + height - 18 * ratio, `Δt ${fmtTime(Math.abs(lr.cursorXb - lr.cursorXa))}`, "#cbd5e1");
+                chip(xp, top + height - 18 * ratio, `Δt ${formatDurationSeconds(Math.abs(lr.cursorXb - lr.cursorXa))}`, "#cbd5e1");
               }
             }
             if (lr.cursorYh1 != null && lr.cursorYh2 != null) {
@@ -2973,8 +3056,11 @@ function PlotArea(p: PlotAreaProps) {
       cancelAnimationFrame(raf);
       if (postMountRebuildTimer) window.clearTimeout(postMountRebuildTimer);
       ro.disconnect();
-      if (hoverRafRef.current) cancelAnimationFrame(hoverRafRef.current);
-      hoverRafRef.current = 0;
+      // A destroyed instance can't report a pointer-leave — clear the
+      // shared hover so removing the hovered area doesn't leave a
+      // frozen crosshair in the others (owner-aware: a rebuild of a
+      // non-hovered area is a no-op).
+      liveRef.current.onHoverX(areaId, null);
       registerInstance(areaId, null);
       diagCount("uplot.destroy"); // DIAG
       u.destroy();
@@ -3107,18 +3193,29 @@ function PlotArea(p: PlotAreaProps) {
 
   // Show / hide series in place when the per-signal `hidden` flags
   // change — no uPlot re-create needed (`signalSetKey` excludes it).
+  // `setSeries` alone left the area blank until the next pan/zoom
+  // forced a resample, so take that proven path directly: drop the
+  // fetch memo and resample, which re-sets the data and re-pins the
+  // scales the same way a zoom does. One host fetch per toggle — a
+  // user gesture, not a hot path.
   const hiddenKey = signals.map((s) => (s.hidden ? "1" : "0")).join("");
+  const hiddenKeyPrevRef = useRef(hiddenKey);
   useEffect(() => {
+    if (hiddenKeyPrevRef.current === hiddenKey) return;
+    hiddenKeyPrevRef.current = hiddenKey;
     const u = uplotRef.current;
     if (!u) return;
     signals.forEach((s, i) => u.setSeries(i + 1, { show: !s.hidden }));
+    resetRange();
+    void resampleRef.current();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hiddenKey]);
 
-  // Redraw the overlay when cursors / events change (no resample).
+  // Redraw the overlay when cursors / the shared crosshair / events
+  // change (no resample).
   useEffect(() => {
     uplotRef.current?.redraw(false, false);
-  }, [cursorXa, cursorXb, cursorYh1, cursorYh2, events, isFirst, isLast]);
+  }, [cursorXa, cursorXb, cursorYh1, cursorYh2, hoverX, events, isFirst, isLast]);
 
   const dh = cursorYh1 != null && cursorYh2 != null ? cursorYh2 - cursorYh1 : null;
 
@@ -3262,20 +3359,19 @@ function PlotArea(p: PlotAreaProps) {
             fit y
           </button>
           {isParentHead && (
-            <select
-              className="plot-area-y-mode"
-              title="y-axis mode: unified (one axis), per-unit (one axis per unit), individual (one axis per series)"
-              value={area.yAxisMode ?? "unified"}
-              aria-label="y-axis mode"
-              onClick={(e) => e.stopPropagation()}
-              onChange={(e) => onSetYAxisMode(e.target.value as YAxisMode)}
-            >
-              {Y_AXIS_MODES.map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
+            // `display: contents` span: keeps the trigger a direct flex
+            // item of the head while swallowing clicks (the head's own
+            // click handler must not fire when using the picker).
+            <span style={{ display: "contents" }} onClick={(e) => e.stopPropagation()}>
+              <Combobox
+                className="plot-area-y-mode"
+                title="y-axis mode: unified (one axis), per-unit (one axis per unit), individual (one axis per series)"
+                options={Y_AXIS_MODE_OPTIONS}
+                value={area.yAxisMode ?? "unified"}
+                ariaLabel="y-axis mode"
+                onChange={(v) => onSetYAxisMode(v as YAxisMode)}
+              />
+            </span>
           )}
           {isParentHead && (
             <button
@@ -3454,13 +3550,16 @@ function PlotArea(p: PlotAreaProps) {
                     {/* Unit suffix is only meaningful for numeric
                      * readouts — an enum row already self-labels via
                      * `<label> (<raw>)` and tacking on a unit string
-                     * (often the empty string anyway) reads as noise. */}
-                    {!valueTables.has(key) && s.unit ? ` ${s.unit}` : ""}
+                     * (often the empty string anyway) reads as noise.
+                     * A single-member table is not an enum
+                     * (`isEnumValueTable`), so its signal keeps the
+                     * unit. */}
+                    {!isEnumValueTable(valueTables.get(key)) && s.unit ? ` ${s.unit}` : ""}
                   </span>
                   {showAbDelta && (
                     <small className="plot-signal-delta" title="Δ value (cursor A − cursor B)">
                       Δ {fmtVal(deltaAbFor(key))}
-                      {!valueTables.has(key) && s.unit ? ` ${s.unit}` : ""}
+                      {!isEnumValueTable(valueTables.get(key)) && s.unit ? ` ${s.unit}` : ""}
                     </small>
                   )}
                 </div>

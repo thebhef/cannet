@@ -2,10 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
 
+import { Combobox } from "./Combobox";
 import { useElementRegistry } from "./projectElements";
 import { useProjectContext } from "./projectContext";
 import { rulesFromValueTable } from "./colorMap";
-import type { ColorRule, ProjectElement, SignalDescriptorRecord, ValueTableEntryRecord } from "./types";
+import { isEnumValueTable, type ColorRule, type ProjectElement, type SignalDescriptorRecord, type ValueTableEntryRecord } from "./types";
 
 type ColorMapElement = Extract<ProjectElement, { kind: "colormap" }>;
 
@@ -72,7 +73,9 @@ export function ColorMapPanel(props: IDockviewPanelProps) {
   }, [buses]);
 
   // The target signal's value table (enum names), re-fetched when the
-  // target changes. Empty ⇒ a numeric signal (range editor).
+  // target changes. Not an enum (`isEnumValueTable`: fewer than two
+  // members, single-member SNA sentinels included) ⇒ a numeric signal
+  // (range editor).
   const signalName = element?.signalName ?? "";
   const messageId = element?.messageId ?? 0;
   const extended = element?.extended ?? false;
@@ -118,13 +121,25 @@ export function ColorMapPanel(props: IDockviewPanelProps) {
           extended: d.extended,
           signalName: d.signal_name,
         });
-        update(elementId, { rules: rows.length > 0 ? rulesFromValueTable(rows) : [] });
+        update(elementId, { rules: isEnumValueTable(rows) ? rulesFromValueTable(rows) : [] });
       } catch {
         update(elementId, { rules: [] });
       }
     },
     [catalog, update, elementId],
   );
+
+  // Bus → message ancestry renders as combobox group headers; the
+  // closed state keeps the full context ("Chassis · GearBox.Gear").
+  const catalogOptions = catalog.map((d) => {
+    const bus = d.bus_id ? busName.get(d.bus_id) ?? d.bus_id : "any bus";
+    return {
+      value: descKey(d),
+      label: d.signal_name,
+      path: [bus, d.message_name],
+      selectedLabel: `${bus} · ${d.message_name}.${d.signal_name}`,
+    };
+  });
 
   if (!element) return <div className="colormap-panel">loading…</div>;
 
@@ -147,28 +162,17 @@ export function ColorMapPanel(props: IDockviewPanelProps) {
     <div className="colormap-panel">
       <label className="colormap-field">
         <span>Signal</span>
-        <select
+        <Combobox
+          options={catalogOptions}
           value={element.signalName ? elementTargetKey(element) : ""}
-          onChange={(e) => void onPickSignal(e.target.value)}
-        >
-          <option value="" disabled>
-            {catalog.length === 0 ? "no DBC signals" : "pick a signal…"}
-          </option>
-          {catalog.map((d) => {
-            const k = descKey(d);
-            const bus = d.bus_id ? busName.get(d.bus_id) ?? d.bus_id : "any bus";
-            return (
-              <option key={k} value={k}>
-                {bus} · {d.message_name}.{d.signal_name}
-              </option>
-            );
-          })}
-        </select>
+          onChange={(v) => void onPickSignal(v)}
+          placeholder={catalog.length === 0 ? "no DBC signals" : "pick a signal…"}
+        />
       </label>
 
       {!element.signalName ? (
         <div className="colormap-empty">Pick a signal to colour its values.</div>
-      ) : valueTable.length > 0 ? (
+      ) : isEnumValueTable(valueTable) ? (
         // Enum signal: one sparse row per value — its name + a colour.
         <ul className="colormap-rules">
           {valueTable.map((v) => (

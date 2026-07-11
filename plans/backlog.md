@@ -108,7 +108,7 @@ trip over it.
   coloured / lit by current value, with DBC-derived signal overlays
   showing which bits belong to which signal and named flag labels for
   single-bit booleans. Most natural as a row-expansion mode in the
-  trace view (toggle between the decoded-signal grid and a bit grid),
+  trace view (toggle between the decoded-signal lines and a bit grid),
   or as a small standalone panel for watching one ID's status flags.
   Useful for messages that pack many flags into a byte where the bare
   decoded-signal list is harder to read at a glance.
@@ -244,8 +244,9 @@ name/colour/remove on any editable event row. Remaining follow-ups:
   interaction (transport controls, speed, loop) and how it coexists
   with a live capture on the same buses. Note: this is *not* the fix for
   a view added after load coming up empty — that's the subscribe-on-
-  create bug in [Task 32](tasks/0032-initial-use-feedback.md) (item 6);
-  replay is a standalone playback feature, kept here on its own merits.
+  create fix that shipped in the initial-feedback batch (former Task
+  32); replay is a standalone playback feature, kept here on its own
+  merits.
 
 - `[feat]` **Persist ephemeral view state with the project/scratch.** A
   reopened session restores the capture and its origin (ADR 0002 DS-7 +

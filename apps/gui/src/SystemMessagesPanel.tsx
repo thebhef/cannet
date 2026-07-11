@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
 
+import { Combobox } from "./Combobox";
 import {
   DEFAULT_MIN_LEVEL,
   applySystemLogFilter,
@@ -13,6 +14,11 @@ import type { SystemLogLevel, SystemMessage } from "./types";
 import { useSystemLog } from "./systemLogContext";
 
 const ROW_HEIGHT = 22;
+const MIN_LEVEL_OPTIONS = [
+  { value: "info", label: "info" },
+  { value: "warn", label: "warn" },
+  { value: "error", label: "error" },
+];
 /// Rows rendered outside the visible window on either side so brisk
 /// scrolling doesn't bottom out into blanks before the next paint.
 const OVERSCAN = 6;
@@ -124,28 +130,22 @@ export function SystemMessagesPanel(props: IDockviewPanelProps) {
       <div className="system-messages-toolbar">
         <label>
           Source:{" "}
-          <select
+          <Combobox
+            options={[
+              { value: "", label: "All" },
+              ...sources.map((s) => ({ value: s, label: s })),
+            ]}
             value={filterSource}
-            onChange={(e) => setFilterSource(e.target.value)}
-          >
-            <option value="">All</option>
-            {sources.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
+            onChange={setFilterSource}
+          />
         </label>
         <label>
           Min level:{" "}
-          <select
+          <Combobox
+            options={MIN_LEVEL_OPTIONS}
             value={minLevel}
-            onChange={(e) => setMinLevel(e.target.value as SystemLogLevel)}
-          >
-            <option value="info">info</option>
-            <option value="warn">warn</option>
-            <option value="error">error</option>
-          </select>
+            onChange={(v) => setMinLevel(v as SystemLogLevel)}
+          />
         </label>
         <button type="button" onClick={copyAll} disabled={filtered.length === 0}>
           Copy all

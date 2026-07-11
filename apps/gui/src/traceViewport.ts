@@ -8,11 +8,19 @@
 /// Pixel height of one trace row.
 export const ROW_HEIGHT = 22;
 
+/// Pixel height of one decoded-signal sub-row inside an expanded row.
+/// The signal lines set this as an inline style (see `DecodedSignalCell`
+/// in `TraceView.tsx` / `ByIdTable.tsx`) so the CSS can't drift from
+/// the placement arithmetic.
+export const SIGNAL_LINE_HEIGHT = 18;
+
 /// Pixel height of a row whose decoded signals are expanded: the
-/// message line plus a fixed six lines of signal grid (see `.signals`
-/// in `index.css`). Messages with more signals get clipped — the
-/// signals-on-their-own-lines follow-up is deferred.
-export const EXPANDED_ROW_HEIGHT = ROW_HEIGHT + 18 * 6;
+/// message line plus one sub-row per signal, uncapped. A frame that
+/// isn't loaded yet has no signals to count — `0` degrades to a plain
+/// row's height.
+export function expandedRowHeight(signalCount: number): number {
+  return ROW_HEIGHT + signalCount * SIGNAL_LINE_HEIGHT;
+}
 
 /// Cap on the rendered scroll-container height. Browsers cap CSS
 /// dimensions around 17M (Firefox) – 33M (WebKit/Chromium) px; 16M is
@@ -118,16 +126,23 @@ export interface RowPlacement {
   /// Top offset within the sticky viewport element, in px.
   top: number;
   isExpanded: boolean;
+  /// The row's own height, in px — `expandedRowHeight(signals)` when
+  /// expanded, `ROW_HEIGHT` otherwise. Carried on the placement so the
+  /// row renderer and the stacking arithmetic can't disagree.
+  height: number;
 }
 
 /// Build the list of rows to render, stacked from the top of the
 /// sticky viewport. Stops at the end of the trace; an expanded row
-/// contributes `EXPANDED_ROW_HEIGHT` to the running offset.
+/// contributes [`expandedRowHeight`] of its `signalCount(absIdx)`
+/// decoded signals to the running offset (`0` — e.g. an unloaded
+/// frame — degrades to a plain row).
 export function buildPlacements(
   firstVisibleRow: number,
   count: number,
   rowsToRender: number,
   expanded: ReadonlySet<number>,
+  signalCount: (absIdx: number) => number,
 ): RowPlacement[] {
   const placements: RowPlacement[] = [];
   let top = 0;
@@ -135,8 +150,9 @@ export function buildPlacements(
     const absIdx = firstVisibleRow + pos;
     if (absIdx >= count) break;
     const isExpanded = expanded.has(absIdx);
-    placements.push({ posKey: pos, absIdx, top, isExpanded });
-    top += isExpanded ? EXPANDED_ROW_HEIGHT : ROW_HEIGHT;
+    const height = isExpanded ? expandedRowHeight(signalCount(absIdx)) : ROW_HEIGHT;
+    placements.push({ posKey: pos, absIdx, top, isExpanded, height });
+    top += height;
   }
   return placements;
 }

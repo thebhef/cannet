@@ -315,7 +315,10 @@ pub fn open_project(
     }
 }
 
-/// Serialize `project` (pretty-printed) and write it to `path`.
+/// Serialize `project` (pretty-printed) and write it to `path`. Returns
+/// the saved file's `project_id` (anchored to the id already on disk, or
+/// the freshly generated one for a brand-new file) so the frontend can
+/// key per-project state without reopening the file.
 ///
 /// Emits `project`-tagged messages on the system log —
 /// `info` on success, `error` on serialise / write failure.
@@ -326,7 +329,7 @@ pub fn save_project(
     state: tauri::State<'_, crate::AppState>,
     path: String,
     mut project: Project,
-) -> Result<(), String> {
+) -> Result<String, String> {
     // Anchor the project identity to the target file: keep the id already
     // on disk, so it stays stable across saves even though the frontend's
     // save payload omits it (the serde default would otherwise mint a new
@@ -354,7 +357,7 @@ pub fn save_project(
     match std::fs::write(&path, text) {
         Ok(()) => {
             crate::sys_info!(&app, "project", "saved project to {path}");
-            Ok(())
+            Ok(project.project_id.to_string())
         }
         Err(e) => {
             let msg = format!("failed to write project to {path}: {e}");

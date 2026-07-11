@@ -24,6 +24,7 @@
 //! owns it in its own `.window-state.json` beside this file (see
 //! [`crate::window_state`]).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -55,6 +56,30 @@ pub struct UiState {
     /// Most-recently-used command-palette ids (frontend-capped MRU list).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub recent_commands: Vec<String>,
+    /// Last-accepted BLF channel→bus mappings, so reopening a BLF
+    /// pre-fills the channel↔bus dialog. Keyed by `project_id` (bus ids
+    /// are project-scoped). Unlike the spill caches this is user-authored
+    /// and not recomputable, so it must not be evicted.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub blf_channel_maps: BTreeMap<String, ProjectBlfChannelMaps>,
+}
+
+/// One project's remembered BLF channel→bus mappings. Both maps go
+/// channel number → `Bus.id` (JSON object keys, so both outer keys are
+/// strings); `""` records a deliberately skipped channel.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProjectBlfChannelMaps {
+    /// Exact match: absolute BLF path → mapping. Pre-fill for reopening
+    /// the very same file.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub by_path: BTreeMap<String, BTreeMap<String, String>>,
+    /// Fallback: distinct-channel count → the mapping last accepted for
+    /// a BLF with that many channels. An unrecognized file is assumed to
+    /// come from the same source as the last same-shaped one, as a
+    /// starting point.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub by_channel_count: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 /// Parse state JSON, tolerating junk. A malformed or partial file yields
@@ -127,6 +152,25 @@ mod tests {
             layout: Some(serde_json::json!({ "grid": {}, "panels": {} })),
             recent_blfs: vec!["/a.blf".into(), "/b.blf".into()],
             recent_commands: vec!["open-project".into()],
+            blf_channel_maps: BTreeMap::from([(
+                "5f2d7c1e-9a41-4a5e-8b1c-2e6f0d3a9b70".to_string(),
+                ProjectBlfChannelMaps {
+                    by_path: BTreeMap::from([(
+                        "/captures/drive.blf".to_string(),
+                        BTreeMap::from([
+                            ("0".to_string(), "bus-pt".to_string()),
+                            ("1".to_string(), String::new()),
+                        ]),
+                    )]),
+                    by_channel_count: BTreeMap::from([(
+                        "2".to_string(),
+                        BTreeMap::from([
+                            ("0".to_string(), "bus-pt".to_string()),
+                            ("1".to_string(), String::new()),
+                        ]),
+                    )]),
+                },
+            )]),
         }
     }
 
@@ -156,6 +200,20 @@ mod tests {
         assert_eq!(s.last_project.as_deref(), Some("/x.cannet_prj"));
         assert!(s.recent_blfs.is_empty());
         assert!(s.layout.is_none());
+    }
+
+    #[test]
+    fn blf_channel_maps_parse_from_nested_json() {
+        let s = parse_state(
+            r#"{"blf_channel_maps": {"pid": {
+                "by_path": {"/a.blf": {"0": "bus-a", "2": ""}},
+                "by_channel_count": {"3": {"0": "bus-a"}}
+            }}}"#,
+        );
+        let p = &s.blf_channel_maps["pid"];
+        assert_eq!(p.by_path["/a.blf"]["0"], "bus-a");
+        assert_eq!(p.by_path["/a.blf"]["2"], "");
+        assert_eq!(p.by_channel_count["3"]["0"], "bus-a");
     }
 
     #[test]

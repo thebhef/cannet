@@ -112,6 +112,21 @@ struct SignalEntry {
     start_value_raw: Option<f64>,
 }
 
+/// Whether a `VAL_` table makes its signal an *enum* — the central
+/// "is an enum" vs "has labels" distinction: a table needs **at least
+/// two members** to be an enum. A single-member table is typically an
+/// SNA / "not available" sentinel on an otherwise numeric signal; its
+/// label still applies on an exact raw match, but the signal must be
+/// rendered numerically (numeric plot axis, unit kept), not as an
+/// enum. Every consumer deciding "render as enum?" goes through this
+/// predicate; consumers that only need the labels use the table
+/// itself (e.g. [`Database::value_table_for_signal`], which returns
+/// single-member tables unchanged).
+#[must_use]
+pub fn is_enum(value_table: &[ValueTableEntry]) -> bool {
+    value_table.len() >= 2
+}
+
 /// One row of a signal's `VAL_` value table: a raw value and its
 /// symbolic label.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -318,7 +333,7 @@ impl Database {
                     message_name: entry.name.clone(),
                     signal_name: sig.signal.name.clone(),
                     unit: sig.signal.unit.clone(),
-                    has_value_table: !sig.value_table.is_empty(),
+                    is_enum: is_enum(&sig.value_table),
                 })
             })
             .collect();
@@ -1236,12 +1251,15 @@ pub struct SignalDescriptor {
     pub message_name: String,
     pub signal_name: String,
     pub unit: String,
-    /// True if the DBC defines a `VAL_` table for this signal — i.e.
-    /// it's an enum / state signal whose decoded value should be
-    /// rendered symbolically. A picker / plotter can use this without a
+    /// True if the signal's `VAL_` table makes it an enum / state
+    /// signal whose decoded value should be rendered symbolically —
+    /// per [`is_enum`], the table needs at least two members. A
+    /// single-member table (an SNA sentinel) leaves this false: the
+    /// signal renders numerically, and the lone label only shows on
+    /// an exact raw match. A picker / plotter can use this without a
     /// separate `value_table` round-trip to decide between numeric and
     /// symbolic rendering.
-    pub has_value_table: bool,
+    pub is_enum: bool,
 }
 
 /// One DBC message as the GUI's DBC panel renders it: the
@@ -1435,6 +1453,11 @@ pub struct SignalDescriptorRich {
     pub signed: bool,
     pub mux: SignalMux,
     pub float_kind: FloatKind,
+    /// True if the signal has a non-empty `VAL_` table — "has
+    /// labels", deliberately *not* [`is_enum`]: the transmit panel's
+    /// value-label dropdown should offer even a single-member table's
+    /// lone label. Enum-ness (>= 2 members) is a separate question,
+    /// answered by [`SignalDescriptor::is_enum`] / [`is_enum`].
     pub has_value_table: bool,
     /// The DBC's `GenSigStartValue` attribute, verbatim — the
     /// signal's initial value in *raw* (pre-scale) units. Consumers
@@ -1783,9 +1806,11 @@ BO_ 256 Gear: 8 ECU1
  SG_ Mode : 0|8@1+ (1,0) [0|0] "" ECU1
  SG_ Direction : 8|8@1- (1,0) [-1|1] "" ECU1
  SG_ Rpm : 16|16@1+ (1,0) [0|0] "rpm" ECU1
+ SG_ Counter : 32|16@1+ (1,0) [0|65535] "count" ECU1
 
 VAL_ 256 Mode 0 "Park" 1 "Reverse" 2 "Neutral" 3 "Drive" ;
 VAL_ 256 Direction -1 "Backward" 0 "Stopped" 1 "Forward" ;
+VAL_ 256 Counter 65535 "SNA" ;
 "#;
 
     #[test]
@@ -1820,13 +1845,47 @@ VAL_ 256 Direction -1 "Backward" 0 "Stopped" 1 "Forward" ;
     }
 
     #[test]
-    fn signals_descriptor_marks_value_table_presence() {
+    fn signals_descriptor_is_enum_requires_two_members() {
         let db = Database::parse(VAL_DBC).unwrap();
         let sigs = db.signals();
         let mode = sigs.iter().find(|s| s.signal_name == "Mode").unwrap();
-        assert!(mode.has_value_table);
+        assert!(mode.is_enum, "multi-member VAL_ table -> enum");
         let rpm = sigs.iter().find(|s| s.signal_name == "Rpm").unwrap();
-        assert!(!rpm.has_value_table);
+        assert!(!rpm.is_enum, "no VAL_ table -> not an enum");
+        let counter = sigs.iter().find(|s| s.signal_name == "Counter").unwrap();
+        assert!(
+            !counter.is_enum,
+            "single-member VAL_ table (SNA sentinel) -> not an enum"
+        );
+    }
+
+    #[test]
+    fn is_enum_requires_at_least_two_members() {
+        let row = |raw: i64| ValueTableEntry {
+            raw,
+            label: format!("L{raw}"),
+        };
+        assert!(!is_enum(&[]));
+        assert!(!is_enum(&[row(65535)]));
+        assert!(is_enum(&[row(0), row(1)]));
+    }
+
+    #[test]
+    fn single_member_value_table_label_only_on_exact_match() {
+        let db = Database::parse(VAL_DBC).unwrap();
+        // Counter = bytes 4..6 little-endian. 65535 -> the SNA label.
+        let frame = make_frame(256, false, vec![0, 0, 0, 0, 0xFF, 0xFF, 0, 0]);
+        let decoded = db.decode(&frame).unwrap();
+        let counter = signal_by_name(&decoded, "Counter");
+        assert_eq!(counter.label, Some("SNA"));
+
+        // Any other value decodes numerically, keeps its unit, no label.
+        let frame = make_frame(256, false, vec![0, 0, 0, 0, 5, 0, 0, 0]);
+        let decoded = db.decode(&frame).unwrap();
+        let counter = signal_by_name(&decoded, "Counter");
+        assert_eq!(counter.label, None, "ordinary value must not get the SNA label");
+        assert!((counter.value - 5.0).abs() < 1e-12);
+        assert_eq!(counter.unit, "count");
     }
 
     #[test]
@@ -1841,6 +1900,12 @@ VAL_ 256 Direction -1 "Backward" 0 "Stopped" 1 "Forward" ;
         // Signed table: rows sorted ascending, including the negative one.
         let signed = db.value_table_for_signal(256, false, "Direction").unwrap();
         assert_eq!(signed.iter().map(|e| e.raw).collect::<Vec<_>>(), vec![-1, 0, 1]);
+        // Single-member table: still returned — the label stays
+        // available even though the signal is not an enum.
+        let single = db.value_table_for_signal(256, false, "Counter").unwrap();
+        assert_eq!(single.len(), 1);
+        assert_eq!(single[0].raw, 65535);
+        assert_eq!(single[0].label, "SNA");
         // No table -> None.
         assert!(db.value_table_for_signal(256, false, "Rpm").is_none());
         assert!(db.value_table_for_signal(999, false, "Mode").is_none());

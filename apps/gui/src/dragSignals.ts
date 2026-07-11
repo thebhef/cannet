@@ -1,6 +1,6 @@
 /// Drag-and-drop plumbing for signals across the GUI. Every panel
 /// that produces a draggable signal (the DBC discovery panel, the
-/// trace expanded-row decoded grid, the by-id panel signal row, and
+/// trace expanded-row decoded signal lines, the by-id panel signal row, and
 /// the plot panel's own side-panel signal rows) sets
 /// the same mime type with the same payload shape, so any drop target
 /// reads them through one parser.

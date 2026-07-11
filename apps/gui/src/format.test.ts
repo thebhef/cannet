@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  formatDurationSeconds,
   formatElapsed,
   formatFrameCount,
   formatSignalValue,
   formatSignalValueWithLabel,
   formatTimestamp,
+  fracDigitsForSpan,
 } from "./format";
 
 describe("formatElapsed", () => {
@@ -32,6 +34,75 @@ describe("formatElapsed", () => {
 
   it("renders a (defensive) negative elapsed with a leading minus", () => {
     expect(formatElapsed(-1.25)).toBe("-1.2500");
+  });
+
+  it("renders the requested number of fractional digits", () => {
+    expect(formatElapsed(5.871, 6)).toBe("5.871000");
+    expect(formatElapsed(65.5, 5)).toBe("1:05.50000");
+    expect(formatElapsed(0.1234567, 7)).toBe("0.1234567");
+    expect(formatElapsed(0, 9)).toBe("0.000000000");
+  });
+
+  it("carries fractional rounding into the minutes segment at any precision", () => {
+    expect(formatElapsed(59.9999996, 6)).toBe("1:00.000000");
+    expect(formatElapsed(59.9999999996, 9)).toBe("1:00.000000000");
+  });
+});
+
+describe("fracDigitsForSpan", () => {
+  it("keeps the trace's 4-digit default for spans of a second or more", () => {
+    expect(fracDigitsForSpan(1)).toBe(4);
+    expect(fracDigitsForSpan(60)).toBe(4);
+    expect(fracDigitsForSpan(86_400)).toBe(4);
+  });
+
+  it("adds one digit per decade of zoom below a 1 s span", () => {
+    expect(fracDigitsForSpan(0.5)).toBe(5);
+    expect(fracDigitsForSpan(0.1)).toBe(5);
+    expect(fracDigitsForSpan(0.05)).toBe(6);
+    expect(fracDigitsForSpan(0.001)).toBe(7);
+  });
+
+  it("caps at 9 digits (nanosecond resolution)", () => {
+    expect(fracDigitsForSpan(1e-7)).toBe(9);
+  });
+
+  it("falls back to 4 for degenerate spans", () => {
+    expect(fracDigitsForSpan(0)).toBe(4);
+    expect(fracDigitsForSpan(-5)).toBe(4);
+    expect(fracDigitsForSpan(NaN)).toBe(4);
+    expect(fracDigitsForSpan(Infinity)).toBe(4);
+  });
+});
+
+describe("formatDurationSeconds", () => {
+  it("renders plain seconds with trailing zeros trimmed — no SI scaling", () => {
+    expect(formatDurationSeconds(0.05)).toBe("0.05 s");
+    expect(formatDurationSeconds(0.00003)).toBe("0.00003 s");
+    expect(formatDurationSeconds(1.5)).toBe("1.5 s");
+  });
+
+  it("drops the decimal point for whole seconds", () => {
+    expect(formatDurationSeconds(2)).toBe("2 s");
+    expect(formatDurationSeconds(0)).toBe("0 s");
+  });
+
+  it("keeps seconds even for long durations (no mm:ss segments)", () => {
+    expect(formatDurationSeconds(90.25)).toBe("90.25 s");
+  });
+
+  it("renders a signed duration as-is", () => {
+    expect(formatDurationSeconds(-0.25)).toBe("-0.25 s");
+  });
+
+  it("rounds at nanosecond resolution", () => {
+    expect(formatDurationSeconds(0.1234567894)).toBe("0.123456789 s");
+  });
+
+  it("renders a dash for missing values", () => {
+    expect(formatDurationSeconds(null)).toBe("—");
+    expect(formatDurationSeconds(undefined)).toBe("—");
+    expect(formatDurationSeconds(NaN)).toBe("—");
   });
 });
 

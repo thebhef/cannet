@@ -9,6 +9,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
+import {
+  comboboxOptionLabels,
+  comboboxValue,
+  openCombobox,
+  pickCombobox,
+} from "./comboboxTestKit";
+
 const { invokeMock } = vi.hoisted(() => ({
   invokeMock: vi.fn(async () => [] as unknown[]),
 }));
@@ -135,10 +142,9 @@ describe("BusInterfaceCombo", () => {
         {...NO_OPS}
       />,
     );
-    const combo = screen.getByLabelText("bus b1 interface") as HTMLSelectElement;
-    const optionTexts = Array.from(combo.querySelectorAll("option")).map(
-      (o) => o.textContent ?? "",
-    );
+    const combo = screen.getByLabelText("bus b1 interface");
+    openCombobox(combo);
+    const optionTexts = comboboxOptionLabels();
     expect(optionTexts).toContain("— no interface —");
     expect(optionTexts).toContain("Local / can0");
     expect(optionTexts).toContain("Local / vcan0");
@@ -146,7 +152,7 @@ describe("BusInterfaceCombo", () => {
     expect(optionTexts).toContain("+ Add server…");
   });
 
-  it("calls onPick with kind:remote on a hardware-interface selection", () => {
+  it("calls onPick with kind:remote on a hardware-interface selection", async () => {
     const onPick = vi.fn();
     render(
       <BusInterfaceCombo
@@ -162,8 +168,8 @@ describe("BusInterfaceCombo", () => {
         onAddVirtualBus={() => {}}
       />,
     );
-    const combo = screen.getByLabelText("bus b1 interface") as HTMLSelectElement;
-    fireEvent.change(combo, { target: { value: `${LOCAL_SERVER}\x00can0` } });
+    const combo = screen.getByLabelText("bus b1 interface");
+    await pickCombobox(combo, `${LOCAL_SERVER}\x00can0`);
     expect(onPick).toHaveBeenCalledWith({
       kind: "remote",
       server: LOCAL_SERVER,
@@ -171,7 +177,7 @@ describe("BusInterfaceCombo", () => {
     });
   });
 
-  it("lists virtual buses as a peer source and reports the right pick", () => {
+  it("lists virtual buses as a peer source and reports the right pick", async () => {
     const onPick = vi.fn();
     render(
       <BusInterfaceCombo
@@ -185,20 +191,19 @@ describe("BusInterfaceCombo", () => {
         onAddVirtualBus={() => {}}
       />,
     );
-    const combo = screen.getByLabelText("bus b1 interface") as HTMLSelectElement;
-    const labels = Array.from(combo.querySelectorAll("option")).map(
-      (o) => o.textContent ?? "",
-    );
+    const combo = screen.getByLabelText("bus b1 interface");
+    openCombobox(combo);
+    const labels = comboboxOptionLabels();
     expect(labels).toContain("Bench");
     expect(labels).toContain("+ Add virtual bus");
-    fireEvent.change(combo, { target: { value: "vbus\x00vbus1" } });
+    await pickCombobox(combo, "vbus\x00vbus1");
     expect(onPick).toHaveBeenCalledWith({
       kind: "local-virtual-bus",
       virtual_bus_id: "vbus1",
     });
   });
 
-  it("calls onAddVirtualBus when '+ Add virtual bus' is chosen", () => {
+  it("calls onAddVirtualBus when '+ Add virtual bus' is chosen", async () => {
     const onAddVirtualBus = vi.fn();
     render(
       <BusInterfaceCombo
@@ -212,13 +217,11 @@ describe("BusInterfaceCombo", () => {
         onAddVirtualBus={onAddVirtualBus}
       />,
     );
-    fireEvent.change(screen.getByLabelText("bus b1 interface"), {
-      target: { value: "__add_vbus__" },
-    });
+    await pickCombobox(screen.getByLabelText("bus b1 interface"), "__add_vbus__");
     expect(onAddVirtualBus).toHaveBeenCalledTimes(1);
   });
 
-  it("calls onAddServer (not onPick) when '+ Add server…' is chosen", () => {
+  it("calls onAddServer (not onPick) when '+ Add server…' is chosen", async () => {
     const onPick = vi.fn();
     const onAddServer = vi.fn();
     render(
@@ -234,12 +237,12 @@ describe("BusInterfaceCombo", () => {
       />,
     );
     const combo = screen.getByLabelText("bus b1 interface");
-    fireEvent.change(combo, { target: { value: "__add_server__" } });
+    await pickCombobox(combo, "__add_server__");
     expect(onAddServer).toHaveBeenCalledTimes(1);
     expect(onPick).not.toHaveBeenCalled();
   });
 
-  it("calls onPick(null) when '— no interface —' is chosen", () => {
+  it("calls onPick(null) when '— no interface —' is chosen", async () => {
     const onPick = vi.fn();
     render(
       <BusInterfaceCombo
@@ -258,9 +261,7 @@ describe("BusInterfaceCombo", () => {
         onAddVirtualBus={() => {}}
       />,
     );
-    fireEvent.change(screen.getByLabelText("bus b1 interface"), {
-      target: { value: "" },
-    });
+    await pickCombobox(screen.getByLabelText("bus b1 interface"), "");
     expect(onPick).toHaveBeenCalledWith(null);
   });
 
@@ -278,6 +279,7 @@ describe("BusInterfaceCombo", () => {
         {...NO_OPS}
       />,
     );
+    openCombobox(screen.getByLabelText("bus b1 interface"));
     expect(screen.getByText("(discovering…)")).toBeInTheDocument();
   });
 
@@ -298,11 +300,12 @@ describe("BusInterfaceCombo", () => {
         {...NO_OPS}
       />,
     );
+    const combo = screen.getByLabelText("bus b1 interface");
+    openCombobox(combo);
     expect(
       screen.queryByRole("option", { name: /\(offline\)/ }),
     ).not.toBeInTheDocument();
-    const combo = screen.getByLabelText("bus b1 interface") as HTMLSelectElement;
-    expect(combo.value).toBe(`${LOCAL_SERVER}\x00can0`);
+    expect(comboboxValue(combo)).toBe(`${LOCAL_SERVER}\x00can0`);
   });
 
   it("renders an (offline) fallback option when the bound interface isn't in any discovery", () => {
@@ -324,6 +327,7 @@ describe("BusInterfaceCombo", () => {
         {...NO_OPS}
       />,
     );
+    openCombobox(screen.getByLabelText("bus b1 interface"));
     expect(
       screen.getByRole("option", { name: `${REMOTE} / can0 (offline)` }),
     ).toBeInTheDocument();
@@ -347,8 +351,8 @@ describe("AddServerInline", () => {
     await Promise.resolve();
 
     const ifaceSelect = await screen.findByLabelText("interface id");
-    expect((ifaceSelect as HTMLSelectElement).value).toBe("can0");
-    fireEvent.change(ifaceSelect, { target: { value: "vcan0" } });
+    expect(comboboxValue(ifaceSelect)).toBe("can0");
+    await pickCombobox(ifaceSelect, "vcan0");
     fireEvent.click(screen.getByRole("button", { name: "Bind to Bus 1" }));
     expect(onPick).toHaveBeenCalledWith({ server: "127.0.0.1:50051", iface: "vcan0" });
   });

@@ -30,7 +30,7 @@ import {
 } from "./types";
 import { useSidecarStatus } from "./sidecarStatus";
 import { projectDir, resolveProjectPath } from "./projectPaths";
-import { TitleBar } from "./TitleBar";
+import { windowTitle } from "./windowTitle";
 import { TracePanel } from "./TracePanel";
 import { ProjectPanel } from "./ProjectPanel";
 import { ProjectGraphPanel } from "./ProjectGraphPanel";
@@ -60,7 +60,9 @@ import {
   setRecentCommands as persistRecentCommands,
   setLastProject as persistLastProject,
   setLayout as persistLayout,
+  setBlfChannelMaps as persistBlfChannelMaps,
 } from "./hostState";
+import { recordBlfChannelMap, savedBlfChannelMap } from "./blfChannelMap";
 import type { SystemMessage } from "./types";
 import { TraceDataContext, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
@@ -258,6 +260,11 @@ export function App() {
   >(() => new Map());
   // Path of the open project file, or null for an unsaved workspace.
   const [projectPath, setProjectPath] = useState<string | null>(null);
+  // Stable id of the open project (host-managed, carried on what
+  // `open_project` / `save_project` return). Keys the per-project
+  // remembered BLF channel↔bus mappings; null (unsaved, never-saved
+  // workspace) means those mappings have nothing durable to bind to.
+  const [projectId, setProjectId] = useState<string | null>(null);
   // True when the workspace has changed since it was last saved/opened.
   const [dirty, setDirty] = useState(false);
   // Set while the "unsaved changes — Save / Discard / Cancel?" modal is
@@ -317,11 +324,14 @@ export function App() {
   // close-on-quit handler. Updated on every render below.
   const dirtyRef = useRef(false);
   const handleSaveProjectRef = useRef<() => Promise<boolean>>(() => Promise.resolve(false));
-  // Current session frame count, mirrored into a ref so `create` /
-  // `ensure` can anchor a new (empty, stopped) trace at *now*
-  // without taking `count` as a dependency (it changes every tick).
+  // Current session frame count and session start, mirrored into refs
+  // so `create` / `ensure` can tell whether a session buffer exists —
+  // and hook a new view straight into it — without taking `count`
+  // (changes every tick) or `sessionStartSeconds` as dependencies.
   const countRef = useRef(0);
   countRef.current = count;
+  const sessionStartSecondsRef = useRef<number | null>(null);
+  sessionStartSecondsRef.current = sessionStartSeconds;
   // Perf self-driving config (ADR 0031), fetched once from the host on
   // boot and handed to the orchestration effect below. `null` = normal
   // launch. The mirrored refs let that once-mounted effect read live
@@ -375,6 +385,16 @@ export function App() {
         return { kind, id, name, sources: ["*"] };
     }
   };
+  // The trace window a brand-new element starts with. When a session
+  // buffer exists (live or already holding frames), the new view hooks
+  // straight into it — anchored at 0, spanning the buffer, following
+  // live — exactly the state `startAllElements` gives views present at
+  // session start. With no session yet it's an empty stopped window;
+  // the session-start event will start it along with everything else.
+  const newElementTrace = (): TraceState =>
+    sessionStartSecondsRef.current !== null || countRef.current > 0
+      ? freshTrace(0)
+      : clearedTrace(0);
   const create = useCallback((kind: ProjectElementKind): string => {
     diagCount("registry.create"); // DIAG
     const id = crypto.randomUUID();
@@ -382,7 +402,7 @@ export function App() {
       const name = defaultElementName(kind, prev.map((e) => e.element));
       return [
         ...prev,
-        { element: buildFreshElement(kind, id, name), trace: clearedTrace(countRef.current) },
+        { element: buildFreshElement(kind, id, name), trace: newElementTrace() },
       ];
     });
     return id;
@@ -395,7 +415,7 @@ export function App() {
         diagCount("registry.ensure.append"); // DIAG
         return [
           ...prev,
-          { element: buildFreshElement(kind, id, name), trace: clearedTrace(countRef.current) },
+          { element: buildFreshElement(kind, id, name), trace: newElementTrace() },
         ];
       }
       if (prev[i].element.kind === kind) return prev;
@@ -537,9 +557,7 @@ export function App() {
   // (Re)starting the session buffer — opening a BLF, connecting to a
   // server, or Clear — also (re)starts every trace / plot element:
   // they all anchor at 0 and run, following the new capture from its
-  // start. (A trace/plot *created* mid-session still starts stopped —
-  // see `create` — so it doesn't retroactively span the buffer; this is
-  // about the session-start event itself.)
+  // start.
   const startAllElements = useCallback(() => {
     setRegistry((prev) => prev.map((e) => ({ ...e, trace: freshTrace(0) })));
   }, []);
@@ -747,6 +765,12 @@ export function App() {
       if (!pendingBlf) return;
       const { blfPath, channels } = pendingBlf;
       setPendingBlf(null);
+      // Remember the accepted mapping (exact path + channel-count
+      // fallback) so the next open of this BLF — or a same-shaped one —
+      // pre-fills the dialog with it.
+      persistBlfChannelMaps(
+        recordBlfChannelMap(hostState().blf_channel_maps, projectId, blfPath, choices),
+      );
       try {
         await invoke("clear_trace_store");
         invalidateCache();
@@ -771,7 +795,7 @@ export function App() {
         dropRecentBlf(blfPath);
       }
     },
-    [pendingBlf, invalidateCache, startAllElements, rememberRecentBlf, dropRecentBlf],
+    [pendingBlf, projectId, invalidateCache, startAllElements, rememberRecentBlf, dropRecentBlf],
   );
 
   // Add one or more DBCs to the loaded set (each goes through the host's
@@ -1046,6 +1070,7 @@ export function App() {
   // into the fields; hit Connect to switch.
   const applyProject = useCallback(
     async (project: Project, projectFilePath: string) => {
+      setProjectId(project.project_id ?? null);
       // DBC and `.cannet_rbs` references in the project may be relative
       // to the project file's own directory (ADR 0030); resolve them to
       // absolute before they reach the host commands, which read from
@@ -1161,6 +1186,7 @@ export function App() {
     }
     seedDefaultLayout();
     rememberProject(null);
+    setProjectId(null);
     void loadDbcSet([], {});
     setDbcBuses({});
     setBuses([]);
@@ -1207,7 +1233,8 @@ export function App() {
   const saveProjectTo = useCallback(
     async (path: string): Promise<boolean> => {
       try {
-        await invoke("save_project", { path, project: gatherProject() });
+        const id = await invoke<string>("save_project", { path, project: gatherProject() });
+        setProjectId(id);
         rememberProject(path);
         setDirty(false);
         return true;
@@ -1367,6 +1394,17 @@ export function App() {
       cancelled = true;
     };
   }, [automation]);
+
+  // Native window title: `<project name> — cannet` while a project is
+  // open, bare `cannet` otherwise. The OS chrome is the only title
+  // surface (no custom title bar).
+  useEffect(() => {
+    void getCurrentWindow()
+      .setTitle(windowTitle(projectPath))
+      .catch(() => {
+        /* headless test host — no window to title */
+      });
+  }, [projectPath]);
 
   useEffect(() => {
     const win = getCurrentWindow();
@@ -2281,17 +2319,8 @@ export function App() {
     ],
   );
 
-  const pendingHwConfigBusNames = useMemo(
-    () =>
-      busesWithPendingHwConfig
-        .map((id) => buses.find((b) => b.id === id)?.name)
-        .filter((name): name is string => name != null),
-    [busesWithPendingHwConfig, buses],
-  );
-
   return (
     <main className="app">
-      <TitleBar pendingHwConfigBusNames={pendingHwConfigBusNames} />
       <header>
         <div className="toolbar">
           <button onClick={handleOpenProject}>Open project…</button>
@@ -2431,6 +2460,13 @@ export function App() {
           blfPath={pendingBlf.blfPath}
           channels={pendingBlf.channels}
           buses={buses}
+          initial={savedBlfChannelMap(
+            hostState().blf_channel_maps,
+            projectId,
+            pendingBlf.blfPath,
+            pendingBlf.channels.length,
+            new Set(buses.map((b) => b.id)),
+          )}
           onConfirm={handleBlfMapConfirm}
           onCancel={() => setPendingBlf(null)}
         />

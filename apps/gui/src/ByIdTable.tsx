@@ -5,8 +5,7 @@ import { formatSignalValueWithLabel } from "./format";
 import { type ColorResolver, colorMapTint } from "./colorMap";
 import { setSignalDragData } from "./dragSignals";
 import {
-  EXPANDED_ROW_HEIGHT,
-  ROW_HEIGHT,
+  SIGNAL_LINE_HEIGHT,
   buildPlacements,
   maxAnchorRow,
   rowFromScroll,
@@ -149,7 +148,17 @@ export function ByIdTable({
     // changes behind `getRow`).
   }, [rows, firstVisibleRow, count, getRow, expanded, version]);
 
-  const placements = buildPlacements(firstVisibleRow, count, rows, expandedPositions);
+  // Signal count for expanded-row sizing; a not-yet-loaded row sizes as
+  // a plain row.
+  const signalCount = (absIdx: number) =>
+    getRow(absIdx)?.frame.decoded?.signals.length ?? 0;
+  const placements = buildPlacements(
+    firstVisibleRow,
+    count,
+    rows,
+    expandedPositions,
+    signalCount,
+  );
 
   return (
     <div className="trace">
@@ -168,12 +177,13 @@ export function ByIdTable({
           {/* Sticky viewport: the compositor keeps this pinned so the rows
               never lag the scrollbar — React only swaps their content. */}
           <div style={{ position: "sticky", top: 0, height: viewportHeight, overflow: "hidden" }}>
-            {placements.map(({ posKey, absIdx, top, isExpanded }) => {
+            {placements.map(({ posKey, absIdx, top, isExpanded, height }) => {
               const row = getRow(absIdx);
               return (
                 <ByIdRow
                   key={posKey}
                   top={top}
+                  height={height}
                   row={row}
                   isExpanded={isExpanded}
                   columns={visible}
@@ -194,6 +204,9 @@ export function ByIdTable({
 
 interface ByIdRowProps {
   top: number;
+  /// Row height from the placement (`RowPlacement.height`), so the
+  /// rendered box always matches the stacking arithmetic.
+  height: number;
   row: ByIdSnapshotRecord | null;
   isExpanded: boolean;
   columns: readonly ColumnState[];
@@ -206,6 +219,7 @@ interface ByIdRowProps {
 
 const ByIdRow = memo(function ByIdRow({
   top,
+  height,
   row,
   isExpanded,
   columns,
@@ -215,7 +229,6 @@ const ByIdRow = memo(function ByIdRow({
   resolveColor,
   onToggle,
 }: ByIdRowProps) {
-  const height = isExpanded ? EXPANDED_ROW_HEIGHT : ROW_HEIGHT;
   const frame = row?.frame ?? null;
   const rowKey = frame ? byIdRowKey(frame) : undefined;
   return (
@@ -246,7 +259,8 @@ const ByIdRow = memo(function ByIdRow({
   );
 });
 
-/// One decoded signal cell in a by-id row's expanded grid. Drag
+/// One decoded signal sub-row in an expanded by-id row, sized to
+/// `SIGNAL_LINE_HEIGHT` to match the placement arithmetic. Drag
 /// source identical to the chronological trace's version — same
 /// payload shape, same single-ref form, scoped to the frame's
 /// own `bus_id`. Shared component would force a cross-file import
@@ -275,6 +289,7 @@ function DecodedSignalCell({
   return (
     <div
       className="signal"
+      style={{ height: SIGNAL_LINE_HEIGHT }}
       draggable
       onDragStart={(e) => {
         e.stopPropagation();

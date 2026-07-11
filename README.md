@@ -594,7 +594,7 @@ Where a sent frame goes:
 
 **Enum / state signals** render symbolically wherever they appear:
 
-- A trace row's expanded signal grid shows `<value> "<label>"` for
+- A trace row's expanded signal lines show `<value> "<label>"` for
   signals with a matching `VAL_` row; numeric signals are unchanged.
 - The transmit panel's signals table renders enum signals as a
   combobox of labelled values (above).
@@ -1165,8 +1165,8 @@ arm64 and Windows x64 bundles on native GitHub Actions runners and
 publishes them to a draft pre-release (see § Downloads and
 [`.github/workflows/release.yml`](.github/workflows/release.yml)). The
 committed version stays `0.0.0`; the binary stamps its own
-`git describe` version (shown in the title bar) and the installer takes
-its version from the tag.
+`git describe` version (shown in the settings panel's About section)
+and the installer takes its version from the tag.
 
 ## Tests and lint
 

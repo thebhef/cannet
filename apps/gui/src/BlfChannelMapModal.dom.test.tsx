@@ -32,8 +32,8 @@ describe("BlfChannelMapModal", () => {
         onCancel={noop}
       />,
     );
-    const ch0 = screen.getByLabelText("channel 0 bus") as HTMLSelectElement;
-    const ch1 = screen.getByLabelText("channel 1 bus") as HTMLSelectElement;
+    const ch0 = screen.getByLabelText("channel 0 bus") as HTMLButtonElement;
+    const ch1 = screen.getByLabelText("channel 1 bus") as HTMLButtonElement;
     expect(ch0.value).toBe("p");
     expect(ch1.value).toBe("c");
   });
@@ -48,7 +48,7 @@ describe("BlfChannelMapModal", () => {
         onCancel={noop}
       />,
     );
-    const ch2 = screen.getByLabelText("channel 2 bus") as HTMLSelectElement;
+    const ch2 = screen.getByLabelText("channel 2 bus") as HTMLButtonElement;
     expect(ch2.value).toBe("");
   });
 
@@ -63,8 +63,8 @@ describe("BlfChannelMapModal", () => {
         onCancel={noop}
       />,
     );
-    const ch0 = screen.getByLabelText("channel 0 bus") as HTMLSelectElement;
-    const ch1 = screen.getByLabelText("channel 1 bus") as HTMLSelectElement;
+    const ch0 = screen.getByLabelText("channel 0 bus") as HTMLButtonElement;
+    const ch1 = screen.getByLabelText("channel 1 bus") as HTMLButtonElement;
     expect(ch0.value).toBe("c");
     expect(ch1.value).toBe("");
   });

@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  EXPANDED_ROW_HEIGHT,
   MAX_SCROLL_HEIGHT_PX,
   ROW_HEIGHT,
+  SIGNAL_LINE_HEIGHT,
   buildPlacements,
+  expandedRowHeight,
   maxAnchorRow,
   maxWheelRows,
   rowFromScroll,
@@ -101,33 +102,53 @@ describe("wheelDeltaPx / maxWheelRows", () => {
   });
 });
 
+describe("expandedRowHeight", () => {
+  it("is the message row plus one signal line per signal, uncapped", () => {
+    expect(expandedRowHeight(1)).toBe(ROW_HEIGHT + SIGNAL_LINE_HEIGHT);
+    expect(expandedRowHeight(40)).toBe(ROW_HEIGHT + 40 * SIGNAL_LINE_HEIGHT);
+  });
+
+  it("degrades to a plain row for zero signals (unloaded frame)", () => {
+    expect(expandedRowHeight(0)).toBe(ROW_HEIGHT);
+  });
+});
+
+const noSignals = () => 0;
+
 describe("buildPlacements", () => {
   it("stacks contiguous rows from the top of the viewport", () => {
-    const p = buildPlacements(100, 1_000, 4, new Set());
+    const p = buildPlacements(100, 1_000, 4, new Set(), noSignals);
     expect(p).toEqual([
-      { posKey: 0, absIdx: 100, top: 0, isExpanded: false },
-      { posKey: 1, absIdx: 101, top: ROW_HEIGHT, isExpanded: false },
-      { posKey: 2, absIdx: 102, top: 2 * ROW_HEIGHT, isExpanded: false },
-      { posKey: 3, absIdx: 103, top: 3 * ROW_HEIGHT, isExpanded: false },
+      { posKey: 0, absIdx: 100, top: 0, isExpanded: false, height: ROW_HEIGHT },
+      { posKey: 1, absIdx: 101, top: ROW_HEIGHT, isExpanded: false, height: ROW_HEIGHT },
+      { posKey: 2, absIdx: 102, top: 2 * ROW_HEIGHT, isExpanded: false, height: ROW_HEIGHT },
+      { posKey: 3, absIdx: 103, top: 3 * ROW_HEIGHT, isExpanded: false, height: ROW_HEIGHT },
     ]);
   });
 
   it("stops at the end of the trace", () => {
-    const p = buildPlacements(8, 10, 5, new Set());
+    const p = buildPlacements(8, 10, 5, new Set(), noSignals);
     expect(p.map((r) => r.absIdx)).toEqual([8, 9]);
   });
 
   it("returns nothing for an empty trace", () => {
-    expect(buildPlacements(0, 0, 5, new Set())).toEqual([]);
+    expect(buildPlacements(0, 0, 5, new Set(), noSignals)).toEqual([]);
   });
 
-  it("an expanded row pushes the rows below it down by the extra height", () => {
-    const p = buildPlacements(0, 100, 3, new Set([1]));
+  it("an expanded row pushes the rows below it down by one line per signal", () => {
+    const p = buildPlacements(0, 100, 3, new Set([1]), (abs) => (abs === 1 ? 4 : 7));
     expect(p.map((r) => r.top)).toEqual([
       0,
       ROW_HEIGHT,
-      ROW_HEIGHT + EXPANDED_ROW_HEIGHT,
+      ROW_HEIGHT + expandedRowHeight(4),
     ]);
     expect(p.map((r) => r.isExpanded)).toEqual([false, true, false]);
+    expect(p.map((r) => r.height)).toEqual([ROW_HEIGHT, expandedRowHeight(4), ROW_HEIGHT]);
+  });
+
+  it("an expanded row whose frame isn't loaded yet takes a plain row's height", () => {
+    const p = buildPlacements(0, 100, 2, new Set([0]), noSignals);
+    expect(p.map((r) => r.top)).toEqual([0, ROW_HEIGHT]);
+    expect(p[0].height).toBe(ROW_HEIGHT);
   });
 });

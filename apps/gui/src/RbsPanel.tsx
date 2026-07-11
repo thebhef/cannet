@@ -43,6 +43,7 @@ import type {
 import { useElementRegistry } from "./projectElements";
 import { useProjectContext } from "./projectContext";
 import { CalcFieldEditor } from "./CalcFieldEditor";
+import { Combobox } from "./Combobox";
 import { ValidatedInput, parsePositiveInt } from "./ValidatedInput";
 
 /// Address of one message row, as the `rbs_*` commands take it.
@@ -312,17 +313,12 @@ export function RbsPanel(props: IDockviewPanelProps) {
         ))}
         {addableBuses.length > 0 && (
           <div className="rbs-add-bus">
-            <select
+            <Combobox
+              options={addableBuses.map((n) => ({ value: n, label: n }))}
               value={busToAdd || addableBuses[0]}
-              onChange={(e) => setBusToAdd(e.target.value)}
-              aria-label="bus to add"
-            >
-              {addableBuses.map((n) => (
-                <option key={n} value={n}>
-                  {n}
-                </option>
-              ))}
-            </select>
+              onChange={setBusToAdd}
+              ariaLabel="bus to add"
+            />
             <button type="button" onClick={handleAddBus}>
               Add bus to simulation
             </button>

@@ -323,7 +323,8 @@ fn build_version() -> &'static str {
     }
 }
 
-/// Report the running build's version for display in the title bar.
+/// Report the running build's version for display in the settings
+/// panel's About section.
 #[tauri::command]
 fn app_version() -> &'static str {
     build_version()
@@ -2337,7 +2338,7 @@ fn list_signals(
                     message_name: d.message_name.clone(),
                     signal_name: d.signal_name.clone(),
                     unit: d.unit.clone(),
-                    has_value_table: d.has_value_table,
+                    is_enum: d.is_enum,
                 });
             }
         }

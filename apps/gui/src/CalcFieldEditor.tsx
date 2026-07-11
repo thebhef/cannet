@@ -15,6 +15,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
+import { Combobox } from "./Combobox";
 import type { CalcFieldsSpec, CounterSpec, CrcSpec } from "./types";
 
 export interface CalcFieldEditorProps {
@@ -221,17 +222,12 @@ export function CalcFieldEditor({
             <div className="calc-grid">
               <label>
                 signal
-                <select
+                <Combobox
+                  options={signalNames.map((n) => ({ value: n, label: n }))}
                   value={counterSignal}
-                  onChange={(e) => setCounterSignal(e.target.value)}
-                  aria-label="counter signal"
-                >
-                  {signalNames.map((n) => (
-                    <option key={n} value={n}>
-                      {n}
-                    </option>
-                  ))}
-                </select>
+                  onChange={setCounterSignal}
+                  ariaLabel="counter signal"
+                />
               </label>
               <label>
                 increment
@@ -271,17 +267,12 @@ export function CalcFieldEditor({
             <div className="calc-grid">
               <label>
                 signal
-                <select
+                <Combobox
+                  options={signalNames.map((n) => ({ value: n, label: n }))}
                   value={crcSignal}
-                  onChange={(e) => setCrcSignal(e.target.value)}
-                  aria-label="crc signal"
-                >
-                  {signalNames.map((n) => (
-                    <option key={n} value={n}>
-                      {n}
-                    </option>
-                  ))}
-                </select>
+                  onChange={setCrcSignal}
+                  ariaLabel="crc signal"
+                />
               </label>
               <label className="calc-raw-toggle">
                 <input
@@ -330,17 +321,15 @@ export function CalcFieldEditor({
               ) : (
                 <label>
                   algorithm
-                  <select
+                  <Combobox
+                    options={(algorithms.length > 0 ? algorithms : [algorithm]).map((n) => ({
+                      value: n,
+                      label: n,
+                    }))}
                     value={algorithm}
-                    onChange={(e) => setAlgorithm(e.target.value)}
-                    aria-label="crc algorithm"
-                  >
-                    {(algorithms.length > 0 ? algorithms : [algorithm]).map((n) => (
-                      <option key={n} value={n}>
-                        {n}
-                      </option>
-                    ))}
-                  </select>
+                    onChange={setAlgorithm}
+                    ariaLabel="crc algorithm"
+                  />
                 </label>
               )}
               <label>
