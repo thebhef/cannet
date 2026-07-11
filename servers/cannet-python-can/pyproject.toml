@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Auto-launched python-can sidecar exposing Vector, Kvaser, and PEAK hardware over the cannet wire protocol."
 readme = "README.md"
 requires-python = ">=3.13"
-license = { text = "MIT OR Apache-2.0" }
+license = { text = "MIT" }
 
 # Hard runtime deps. `python-can` covers the three Phase-8 vendors
 # (Vector / Kvaser / PEAK) via its built-in backends. `grpcio` /

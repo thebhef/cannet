@@ -496,6 +496,23 @@ next pass on this surface can address them as one piece.
 
 ### Packaging and naming
 
+- `[sidecar]` **Configurable sidecar entrypoint path(s).** The host
+  resolves the sidecar launcher (or additional launchers?) by fixed probe order
+  (frozen binary next to the GUI exe, then `uv`/`python3` dev paths) in
+  [`apps/gui/src-tauri/src/sidecar.rs`](apps/gui/src-tauri/src/sidecar.rs). Add
+  an override (env var and/or setting) that points cannet at a user-chosen
+  sidecar executable. Reinforces the LGPL §4 replace story (see
+  [`servers/cannet-python-can/LICENSING.md`](../servers/cannet-python-can/LICENSING.md)):
+  a user who swaps in a modified sidecar / `python-can` can point cannet
+  straight at it instead of editing files inside the frozen onedir.
+
+- `[docs]` **Runtime "about" third-party attribution surface.** The
+  frozen sidecar redistributes `python-can` (LGPL-3.0), `grpcio`,
+  `protobuf`, and CPython; Task 31 ships their notices as a
+  `THIRD-PARTY-LICENSES` file in the installer. Add an in-app about-box
+  (or equivalent) that also surfaces this attribution, completing the
+  LGPL §4a–c "prominent notice" side. See LICENSING.md § `python-can`.
+
 - `[naming]` `sidecar.rs` internal identifiers `LaunchPath::BundledUv`
   and `bundled_uv_path()` predate the "fetched, not bundled" decision
   and should be renamed (e.g. `LocalUv` / `local_uv_path`) for

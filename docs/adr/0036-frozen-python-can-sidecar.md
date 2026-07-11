@@ -64,6 +64,17 @@ though the artifact happens to contain an interpreter.
 
 - **Installer grows ~40 MB** (embedded CPython + `grpc` + `python-can`).
   Acceptable — small next to the vendor SDKs the user already installs.
+- **cannet now redistributes LGPL-3.0 `python-can`.** Freezing it in
+  makes cannet a distributor of a Combined Work under LGPL-3.0 §4 (the
+  developer `uv` flow redistributed nothing). Because `python-can` is
+  pure Python, the onedir layout satisfies §4's relink/replace
+  condition directly — a user edits the collected `can/` modules in
+  place — so compliance is shipping the LGPL-3.0 + GPL-3.0 texts (and,
+  later, a runtime attribution surface). `grpcio`/`protobuf`/CPython
+  are permissive and only need their notices retained; PyInstaller's
+  GPL-with-exception terms cover the freeze tooling, not the artifact.
+  See
+  [`servers/cannet-python-can/LICENSING.md`](../../servers/cannet-python-can/LICENSING.md).
 - **Per-OS build.** PyInstaller cannot cross-compile; this matches
   Tauri's own constraint (see the distribution/CI task). Each platform's
   frozen sidecar is built on its native runner alongside the Tauri

@@ -109,7 +109,7 @@ implementations consulted as cross-checks, not copied from:
   object header framing, and `LOG_CONTAINER` / compression.
 - **`blf_asc` 0.2.0** — CAN FD message-decoding reference, since
   it's the only Rust crate that decodes object types 100 / 101.
-- **`python-can`'s BLF I/O** (Apache-2.0) — cross-check on
+- **`python-can`'s BLF I/O** (LGPL-3.0-only) — cross-check on
   semantics where `ablf` and `blf_asc` differ or are silent.
 - **Vector CANalyzer output** — the user runs CANalyzer to generate
   reference BLFs we round-trip.

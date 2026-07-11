@@ -6,7 +6,7 @@ Status: accepted (2026-05-24)
 
 Hardware CAN drivers — Vector, Kvaser, PEAK — are reached through
 a **separate sidecar process**, `cannet-python-can`, which wraps
-**`python-can`** (Apache-2.0) for all three vendor families. The
+**`python-can`** (LGPL-3.0-only) for all three vendor families. The
 GUI host auto-launches the sidecar.
 
 The sidecar speaks the **gRPC wire protocol**
