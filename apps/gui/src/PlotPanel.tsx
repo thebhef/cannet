@@ -25,6 +25,7 @@ import { enumSegments, groupScaleRanges, mergeSeries, signalKey } from "./plotDa
 import { followXWindow } from "./followWindow";
 import { showPointsFromRaw, showPointsToUplot, type ShowPointsMode } from "./plotPoints";
 import { elementLabel } from "./elementLabel";
+import { formatDurationSeconds, formatElapsed, fracDigitsForSpan } from "./format";
 import { usePanelCommands } from "./panelCommands";
 import { SourcesMenuSection } from "./SourcesPicker";
 import {
@@ -366,13 +367,6 @@ function measKeysFromRaw(raw: unknown): MeasurementKey[] {
   return [...DEFAULT_MEASUREMENTS];
 }
 
-function fmtTime(s: number | null | undefined): string {
-  if (s == null || !Number.isFinite(s)) return "—";
-  if (Math.abs(s) >= 1) return `${s.toFixed(4)} s`;
-  if (Math.abs(s) >= 1e-3) return `${(s * 1e3).toFixed(3)} ms`;
-  if (Math.abs(s) >= 1e-6) return `${(s * 1e6).toFixed(2)} µs`;
-  return `${(s * 1e9).toFixed(0)} ns`;
-}
 function fmtFreq(hz: number | null | undefined): string {
   if (hz == null || !Number.isFinite(hz)) return "—";
   if (Math.abs(hz) >= 1e6) return `${(hz / 1e6).toFixed(3)} MHz`;
@@ -1319,6 +1313,15 @@ export function PlotPanel(props: IDockviewPanelProps) {
     [notes, truncation],
   );
   const dt = cursorX.a != null && cursorX.b != null ? cursorX.b - cursorX.a : null;
+  // Cursor *positions* render in the trace's elapsed-time format
+  // (ADR 0024 — one string for one timeline position across views), with
+  // precision adapted to the shared x-window's span like the axis ticks.
+  // Reading the ref during render is fine here: every x-window change
+  // that could alter the span re-renders the panel (xEpoch bump).
+  const { xMin, xMax } = xSyncRef.current;
+  const xLabelDigits = xMin != null && xMax != null ? fracDigitsForSpan(xMax - xMin) : 4;
+  const fmtPos = (t: number | null): string =>
+    t == null ? "—" : formatElapsed(t, xLabelDigits);
 
   /** Right-click anywhere on the panel toolbar opens this menu —
    * currently just the diagnostic-readout toggle, but the shape is
@@ -1570,9 +1573,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
 
       {measEnabled && (
         <div className="plot-meas-strip">
-          {measKeys.includes("a") && <MeasCell k="A (t)" v={fmtTime(cursorX.a)} cls="gold" />}
-          {measKeys.includes("b") && <MeasCell k="B (t)" v={fmtTime(cursorX.b)} cls="pink" />}
-          {measKeys.includes("dt") && <MeasCell k="Δt" v={fmtTime(dt)} />}
+          {measKeys.includes("a") && <MeasCell k="A (t)" v={fmtPos(cursorX.a)} cls="gold" />}
+          {measKeys.includes("b") && <MeasCell k="B (t)" v={fmtPos(cursorX.b)} cls="pink" />}
+          {measKeys.includes("dt") && <MeasCell k="Δt" v={formatDurationSeconds(dt)} />}
           {measKeys.includes("freq") && <MeasCell k="1/Δt" v={dt ? fmtFreq(1 / dt) : "—"} />}
           {plottedSignals.map(({ key, ref, color, areaId }) => {
             const s = seriesFor(areaId, key) ?? { t: [], v: [] };
@@ -2497,7 +2500,20 @@ function PlotArea(p: PlotAreaProps) {
     // label and the numbers — they're identical on every area, so
     // repeating them just wastes vertical space.
     const xAxis: uPlot.Axis = isLast
-      ? { ...axisCommon, label: "time (s)", labelSize: 16, size: 34 }
+      ? {
+          ...axisCommon,
+          label: "time (s)",
+          labelSize: 16,
+          size: 34,
+          // Ticks share the trace's elapsed-time format (ADR 0024) so
+          // the same timeline position reads identically in both views;
+          // precision adapts to the visible span so zoomed-in ticks stay
+          // distinguishable.
+          values: (u, splits) => {
+            const d = fracDigitsForSpan((u.scales.x.max ?? 0) - (u.scales.x.min ?? 0));
+            return splits.map((v) => formatElapsed(v, d));
+          },
+        }
       : { ...axisCommon, size: 18, values: (_u, splits) => splits.map(() => "") };
     const opts: uPlot.Options = {
       width: el.clientWidth || 600,
@@ -2611,12 +2627,14 @@ function PlotArea(p: PlotAreaProps) {
             // every axis (it used to render only on the last area, so
             // adding a plot area visually hid the labels). Format as
             // "<letter> <time>" so a glance at any axis tells you both
-            // which cursor and where.
+            // which cursor and where — positions in the trace's
+            // elapsed-time format, at the axis ticks' adaptive precision.
+            const xDigits = fracDigitsForSpan((u.scales.x.max ?? 0) - (u.scales.x.min ?? 0));
             if (lr.cursorXa != null) {
-              vline(lr.cursorXa, CURSOR_A_COLOR, [4, 3], `A ${fmtTime(lr.cursorXa)}`, false);
+              vline(lr.cursorXa, CURSOR_A_COLOR, [4, 3], `A ${formatElapsed(lr.cursorXa, xDigits)}`, false);
             }
             if (lr.cursorXb != null) {
-              vline(lr.cursorXb, CURSOR_B_COLOR, [4, 3], `B ${fmtTime(lr.cursorXb)}`, false);
+              vline(lr.cursorXb, CURSOR_B_COLOR, [4, 3], `B ${formatElapsed(lr.cursorXb, xDigits)}`, false);
             }
             const hline = (yVal: number, color: string, lbl: string) => {
               const yp = u.valToPos(yVal, "y", true);
@@ -2661,7 +2679,7 @@ function PlotArea(p: PlotAreaProps) {
             if (lr.cursorXa != null && lr.cursorXb != null && isLast) {
               const xp = u.valToPos((lr.cursorXa + lr.cursorXb) / 2, "x", true);
               if (xp > left && xp < left + width) {
-                chip(xp, top + height - 18 * ratio, `Δt ${fmtTime(Math.abs(lr.cursorXb - lr.cursorXa))}`, "#cbd5e1");
+                chip(xp, top + height - 18 * ratio, `Δt ${formatDurationSeconds(Math.abs(lr.cursorXb - lr.cursorXa))}`, "#cbd5e1");
               }
             }
             if (lr.cursorYh1 != null && lr.cursorYh2 != null) {
