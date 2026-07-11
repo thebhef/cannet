@@ -1291,18 +1291,20 @@ button.trace-event-swatch {
   color: #475569;
 }
 
+/* Expanded-row decoded signals: one indented sub-row per signal. Each
+   `.signal` line's height is set inline from `SIGNAL_LINE_HEIGHT`
+   (traceViewport.ts) so it can't drift from the row-placement math. */
 .signals {
   grid-column: 1 / -1;
-  padding: 0.25rem 0 0.4rem 1rem;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 2px 18px;
+  padding-left: 1.5rem;
 }
 
 .signal {
   display: flex;
   justify-content: space-between;
+  align-items: center;
   gap: 0.5rem;
+  max-width: 32rem;
   border-bottom: 1px dashed #1f2630;
 }
 

@@ -108,7 +108,7 @@ trip over it.
   coloured / lit by current value, with DBC-derived signal overlays
   showing which bits belong to which signal and named flag labels for
   single-bit booleans. Most natural as a row-expansion mode in the
-  trace view (toggle between the decoded-signal grid and a bit grid),
+  trace view (toggle between the decoded-signal lines and a bit grid),
   or as a small standalone panel for watching one ID's status flags.
   Useful for messages that pack many flags into a byte where the bare
   decoded-signal list is harder to read at a glance.

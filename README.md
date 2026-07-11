@@ -594,7 +594,7 @@ Where a sent frame goes:
 
 **Enum / state signals** render symbolically wherever they appear:
 
-- A trace row's expanded signal grid shows `<value> "<label>"` for
+- A trace row's expanded signal lines show `<value> "<label>"` for
   signals with a matching `VAL_` row; numeric signals are unchanged.
 - The transmit panel's signals table renders enum signals as a
   combobox of labelled values (above).

@@ -88,7 +88,7 @@ pub struct SignalRecord {
     pub value: f64,
     pub unit: String,
     /// `VAL_` label matching this decoded value, if any. The trace
-    /// view's decoded-signal grid renders `<value> "<label>"` when
+    /// view's decoded-signal lines render `<value> "<label>"` when
     /// this is present; otherwise just `<value>`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
