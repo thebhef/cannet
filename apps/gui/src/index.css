@@ -274,6 +274,114 @@ header {
   font-style: italic;
 }
 
+/* Shared fzf combobox (Combobox.tsx) — the select-like control every
+   picker uses. Closed it looks like a <select>; open, its dropdown is
+   a portal (fixed-positioned, above modals and clipped toolbars). */
+.combobox-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: #0f172a;
+  color: #e2e8f0;
+  border: 1px solid #2c3444;
+  border-radius: 4px;
+  padding: 0.15rem 0.4rem;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+  min-width: 0;
+}
+
+.combobox-trigger::after {
+  content: "▾";
+  font-size: 0.7em;
+  opacity: 0.7;
+  margin-left: auto;
+}
+
+.combobox-trigger:disabled {
+  color: #64748b;
+  cursor: default;
+}
+
+.combobox-trigger-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.combobox-pop {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.25rem;
+  max-height: 40vh;
+  max-width: 90vw;
+  background: #111827;
+  border: 1px solid #2c3444;
+  border-radius: 4px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.5);
+  color: #e2e8f0;
+  font-size: 0.85rem;
+}
+
+.combobox-input {
+  font: inherit;
+  box-sizing: border-box;
+  background: #0f172a;
+  color: #e2e8f0;
+  border: 1px solid #2c3444;
+  border-radius: 4px;
+  padding: 0.2rem 0.5rem;
+}
+
+.combobox-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+}
+
+.combobox-option {
+  padding: 0.15rem 0.5rem;
+  border-radius: 3px;
+  color: #cbd5e1;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.combobox-option.active {
+  background: #1d4ed8;
+  color: #f8fafc;
+}
+
+.combobox-option.disabled {
+  color: #64748b;
+  font-style: italic;
+  cursor: default;
+}
+
+.combobox-option.disabled.active {
+  background: transparent;
+}
+
+.combobox-group {
+  padding: 0.2rem 0.5rem 0.05rem;
+  color: #94a3b8;
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.combobox-empty {
+  padding: 0.2rem 0.5rem;
+  color: #64748b;
+  font-style: italic;
+}
+
 /* Phase-6 modal overlay variant (BLF channel-map). Same look as
    `.modal-backdrop` but the modal is wider and the rows scroll. */
 .modal-overlay {
