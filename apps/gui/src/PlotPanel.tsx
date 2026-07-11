@@ -24,6 +24,7 @@ import { GOTO_EVENT, type GotoPayload } from "./gotoEvent";
 import { enumSegments, groupScaleRanges, mergeSeries, signalKey } from "./plotData";
 import { followXWindow } from "./followWindow";
 import { showPointsFromRaw, showPointsToUplot, type ShowPointsMode } from "./plotPoints";
+import { Combobox, type ComboboxOption } from "./Combobox";
 import { elementLabel } from "./elementLabel";
 import { formatDurationSeconds, formatElapsed, fracDigitsForSpan } from "./format";
 import { usePanelCommands } from "./panelCommands";
@@ -166,6 +167,21 @@ const MIN_DECIMATION_POINTS = 200;
  * self-paced (next tick scheduled after the previous finishes), so a
  * slow tick just lowers the realised rate further. */
 const RATE_OPTIONS = [5, 10, 15, 30, 60] as const;
+const RATE_COMBO_OPTIONS: ComboboxOption[] = RATE_OPTIONS.map((hz) => ({
+  value: String(hz),
+  label: `${hz} Hz`,
+}));
+const SHOW_POINTS_OPTIONS: ComboboxOption[] = [
+  { value: "auto", label: "auto" },
+  { value: "off", label: "off" },
+  { value: "on", label: "on" },
+];
+const CURSOR_MODE_OPTIONS: ComboboxOption[] = [
+  { value: "off", label: "off" },
+  { value: "x", label: "X (A / B)" },
+  { value: "y", label: "Y (H1 / H2)" },
+  { value: "note", label: "+ note" },
+];
 const DEFAULT_MAX_RATE_HZ = 15;
 /** Width (seconds) of the follow-live x-window before the user has set
  * one by zooming/panning. The window grows from t=0 up to this and then
@@ -442,6 +458,7 @@ import { useDecimatedRange } from "./useDecimatedRange";
 import { diagCount } from "./diag"; // DIAG
 
 const Y_AXIS_MODES: YAxisMode[] = ["unified", "per-unit", "individual"];
+const Y_AXIS_MODE_OPTIONS: ComboboxOption[] = Y_AXIS_MODES.map((m) => ({ value: m, label: m }));
 function yAxisModeFromRaw(v: unknown): YAxisMode {
   return v === "per-unit" || v === "individual" ? v : "unified";
 }
@@ -1282,14 +1299,13 @@ export function PlotPanel(props: IDockviewPanelProps) {
             ? null
             : busNameLookup.get(s.bus_id) ?? s.bus_id;
         return {
-          key: signalKey(s.bus_id, s.message_id, s.extended, s.signal_name),
-          // Include the bus prefix so two signals named the same on
-          // different buses are pickable separately, and the message
-          // name explicitly groups its signals. Example:
-          //   "Powertrain · EngineData.RPM [rpm]"
-          label: `${busLabel ? `${busLabel} · ` : ""}${s.message_name}.${s.signal_name}${
-            s.unit ? ` [${s.unit}]` : ""
-          }`,
+          value: signalKey(s.bus_id, s.message_id, s.extended, s.signal_name),
+          // The bus → message ancestry renders as combobox group
+          // headers, so two signals named the same on different buses
+          // are pickable separately and the message name explicitly
+          // groups its signals.
+          path: busLabel ? [busLabel, s.message_name] : [s.message_name],
+          label: `${s.signal_name}${s.unit ? ` [${s.unit}]` : ""}`,
           desc: s,
         };
       }),
@@ -1409,22 +1425,16 @@ export function PlotPanel(props: IDockviewPanelProps) {
           onClear={handlePlotClear}
         />
         <span className="plot-toolbar-sep" />
-        <select
+        <Combobox
+          options={catalogOptions}
           value=""
-          onChange={(e) => {
-            const opt = catalogOptions.find((o) => o.key === e.target.value);
+          onChange={(v) => {
+            const opt = catalogOptions.find((o) => o.value === v);
             if (opt) addSignalToFocused(opt.desc);
-            e.currentTarget.selectedIndex = 0;
           }}
-          aria-label="add signal to focused plot area"
-        >
-          <option value="">{catalog.length === 0 ? "no DBC attached" : "add signal…"}</option>
-          {catalogOptions.map((o) => (
-            <option key={o.key} value={o.key}>
-              {o.label}
-            </option>
-          ))}
-        </select>
+          placeholder={catalog.length === 0 ? "no DBC attached" : "add signal…"}
+          ariaLabel="add signal to focused plot area"
+        />
         <button onClick={refreshCatalog} title="reload signal list from the attached DBC">
           ↻
         </button>
@@ -1442,25 +1452,21 @@ export function PlotPanel(props: IDockviewPanelProps) {
           title="draw sample points on every series: auto = let uPlot decide based on sample density; off = never draw points; on = always draw points"
         >
           points
-          <select
+          <Combobox
+            options={SHOW_POINTS_OPTIONS}
             value={showPoints}
-            onChange={(e) => setShowPoints(e.target.value as ShowPointsMode)}
-            aria-label="show points"
-          >
-            <option value="auto">auto</option>
-            <option value="off">off</option>
-            <option value="on">on</option>
-          </select>
+            onChange={(v) => setShowPoints(v as ShowPointsMode)}
+            ariaLabel="show points"
+          />
         </label>
         <span className="plot-toolbar-sep" />
         <label className="plot-cursor-ctl">
           cursors
-          <select value={cursorMode} onChange={(e) => setCursorMode(e.target.value as CursorMode)}>
-            <option value="off">off</option>
-            <option value="x">X (A / B)</option>
-            <option value="y">Y (H1 / H2)</option>
-            <option value="note">+ note</option>
-          </select>
+          <Combobox
+            options={CURSOR_MODE_OPTIONS}
+            value={cursorMode}
+            onChange={(v) => setCursorMode(v as CursorMode)}
+          />
         </label>
         <button onClick={clearCursors} title="remove all placed cursors">
           clear cursors
@@ -1473,13 +1479,11 @@ export function PlotPanel(props: IDockviewPanelProps) {
         <span className="plot-toolbar-sep" />
         <label className="plot-cursor-ctl" title="cap how often the plot re-samples — lower it under a fast capture">
           max
-          <select value={maxRateHz} onChange={(e) => setMaxRateHz(Number(e.target.value))}>
-            {RATE_OPTIONS.map((hz) => (
-              <option key={hz} value={hz}>
-                {hz} Hz
-              </option>
-            ))}
-          </select>
+          <Combobox
+            options={RATE_COMBO_OPTIONS}
+            value={String(maxRateHz)}
+            onChange={(v) => setMaxRateHz(Number(v))}
+          />
         </label>
         <span
           className="plot-perf"
@@ -3342,20 +3346,19 @@ function PlotArea(p: PlotAreaProps) {
             fit y
           </button>
           {isParentHead && (
-            <select
-              className="plot-area-y-mode"
-              title="y-axis mode: unified (one axis), per-unit (one axis per unit), individual (one axis per series)"
-              value={area.yAxisMode ?? "unified"}
-              aria-label="y-axis mode"
-              onClick={(e) => e.stopPropagation()}
-              onChange={(e) => onSetYAxisMode(e.target.value as YAxisMode)}
-            >
-              {Y_AXIS_MODES.map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
+            // `display: contents` span: keeps the trigger a direct flex
+            // item of the head while swallowing clicks (the head's own
+            // click handler must not fire when using the picker).
+            <span style={{ display: "contents" }} onClick={(e) => e.stopPropagation()}>
+              <Combobox
+                className="plot-area-y-mode"
+                title="y-axis mode: unified (one axis), per-unit (one axis per unit), individual (one axis per series)"
+                options={Y_AXIS_MODE_OPTIONS}
+                value={area.yAxisMode ?? "unified"}
+                ariaLabel="y-axis mode"
+                onChange={(v) => onSetYAxisMode(v as YAxisMode)}
+              />
+            </span>
           )}
           {isParentHead && (
             <button

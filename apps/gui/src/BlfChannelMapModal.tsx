@@ -1,5 +1,6 @@
 import { useState } from "react";
 
+import { Combobox } from "./Combobox";
 import type { Bus } from "./types";
 
 /// One row's worth of state in the modal: which logical bus the user
@@ -59,18 +60,15 @@ export function BlfChannelMapModal(props: {
           {channels.map((ch) => (
             <div className="blf-map-row" key={ch}>
               <span className="blf-map-channel">Channel {ch}</span>
-              <select
+              <Combobox
+                options={[
+                  { value: "", label: "(skip)" },
+                  ...buses.map((b) => ({ value: b.id, label: b.name })),
+                ]}
                 value={choices[ch] ?? ""}
-                onChange={(e) => set(ch, e.target.value)}
-                aria-label={`channel ${ch} bus`}
-              >
-                <option value="">(skip)</option>
-                {buses.map((b) => (
-                  <option value={b.id} key={b.id}>
-                    {b.name}
-                  </option>
-                ))}
-              </select>
+                onChange={(v) => set(ch, v)}
+                ariaLabel={`channel ${ch} bus`}
+              />
             </div>
           ))}
         </div>

@@ -13,6 +13,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
+import { comboboxValue, pickCombobox } from "./comboboxTestKit";
+
 vi.mock("uplot", () => {
   class FakeUPlot {
     over = document.createElement("div");
@@ -273,13 +275,10 @@ describe("PlotPanel", () => {
 
   it("picks a signal into the focused area; a repeat pick is a no-op", async () => {
     renderPanel();
-    await waitFor(() =>
-      expect(screen.getByRole("option", { name: /EngineData\.EngineSpeed/ })).toBeInTheDocument(),
-    );
-    const picker = screen.getByLabelText("add signal to focused plot area") as HTMLSelectElement;
-    fireEvent.change(picker, { target: { value: "*|s:256:EngineSpeed" } });
+    const picker = screen.getByLabelText("add signal to focused plot area");
+    await pickCombobox(picker, "*|s:256:EngineSpeed");
     await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
-    fireEvent.change(picker, { target: { value: "*|s:256:EngineSpeed" } });
+    await pickCombobox(picker, "*|s:256:EngineSpeed");
     expect(screen.getAllByText("EngineSpeed").length).toBe(1);
   });
 
@@ -288,12 +287,10 @@ describe("PlotPanel", () => {
     // as `sourcePanelId`. The drop handler treats it as a move:
     // signal leaves area 1 and lands in area 2.
     renderPanel();
-    await waitFor(() =>
-      expect(screen.getByRole("option", { name: /EngineData\.EngineSpeed/ })).toBeInTheDocument(),
+    await pickCombobox(
+      screen.getByLabelText("add signal to focused plot area"),
+      "*|s:256:EngineSpeed",
     );
-    fireEvent.change(screen.getByLabelText("add signal to focused plot area"), {
-      target: { value: "*|s:256:EngineSpeed" },
-    });
     await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "add plot area" }));
     // Pull the panel's elementId off the live signal row that just
@@ -331,12 +328,10 @@ describe("PlotPanel", () => {
     // below if one exists; the helper logic is tested via the
     // dragSignals + plotFilter unit suites).
     renderPanel();
-    await waitFor(() =>
-      expect(screen.getByRole("option", { name: /EngineData\.EngineSpeed/ })).toBeInTheDocument(),
+    await pickCombobox(
+      screen.getByLabelText("add signal to focused plot area"),
+      "*|s:256:EngineSpeed",
     );
-    fireEvent.change(screen.getByLabelText("add signal to focused plot area"), {
-      target: { value: "*|s:256:EngineSpeed" },
-    });
     await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "add plot area" }));
     // Drop the signal onto Area 2. The drag payload is the full SignalRef.
@@ -358,12 +353,10 @@ describe("PlotPanel", () => {
 
   it("clicking a signal's swatch toggles it hidden", async () => {
     renderPanel();
-    await waitFor(() =>
-      expect(screen.getByRole("option", { name: /EngineData\.EngineSpeed/ })).toBeInTheDocument(),
+    await pickCombobox(
+      screen.getByLabelText("add signal to focused plot area"),
+      "*|s:256:EngineSpeed",
     );
-    fireEvent.change(screen.getByLabelText("add signal to focused plot area"), {
-      target: { value: "*|s:256:EngineSpeed" },
-    });
     await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
     const swatch = screen.getByTitle(/^hide this signal/);
     fireEvent.click(swatch);
@@ -384,13 +377,10 @@ describe("PlotPanel", () => {
     // Drop two signals onto Area 1 in succession; the second should get
     // a different colour from the first (target.signals.length grows).
     renderPanel();
-    await waitFor(() =>
-      expect(screen.getByRole("option", { name: /EngineData\.EngineSpeed/ })).toBeInTheDocument(),
-    );
-    const picker = screen.getByLabelText("add signal to focused plot area") as HTMLSelectElement;
-    fireEvent.change(picker, { target: { value: "*|s:256:EngineSpeed" } });
+    const picker = screen.getByLabelText("add signal to focused plot area");
+    await pickCombobox(picker, "*|s:256:EngineSpeed");
     await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
-    fireEvent.change(picker, { target: { value: "*|s:256:EngineTemp" } });
+    await pickCombobox(picker, "*|s:256:EngineTemp");
     await waitFor(() => expect(screen.getByText("EngineTemp")).toBeInTheDocument());
     const swatches = document.querySelectorAll(".plot-signal-swatch");
     expect(swatches.length).toBe(2);
@@ -403,12 +393,10 @@ describe("PlotPanel", () => {
 
   it("changing a series' colour via the swatch picker updates the swatch", async () => {
     renderPanel();
-    await waitFor(() =>
-      expect(screen.getByRole("option", { name: /EngineData\.EngineSpeed/ })).toBeInTheDocument(),
+    await pickCombobox(
+      screen.getByLabelText("add signal to focused plot area"),
+      "*|s:256:EngineSpeed",
     );
-    fireEvent.change(screen.getByLabelText("add signal to focused plot area"), {
-      target: { value: "*|s:256:EngineSpeed" },
-    });
     await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
     const picker = screen.getByLabelText("pick series colour") as HTMLInputElement;
     fireEvent.change(picker, { target: { value: "#123456" } });
@@ -420,27 +408,24 @@ describe("PlotPanel", () => {
 
   it("y-axis-mode selector switches an area between unified / per-unit / individual; per-unit splits by unit", async () => {
     renderPanel();
-    await waitFor(() =>
-      expect(screen.getByRole("option", { name: /EngineData\.EngineSpeed/ })).toBeInTheDocument(),
-    );
-    const picker = screen.getByLabelText("add signal to focused plot area") as HTMLSelectElement;
-    fireEvent.change(picker, { target: { value: "*|s:256:EngineSpeed" } });
+    const picker = screen.getByLabelText("add signal to focused plot area");
+    await pickCombobox(picker, "*|s:256:EngineSpeed");
     await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
-    fireEvent.change(picker, { target: { value: "*|s:256:EngineTemp" } });
+    await pickCombobox(picker, "*|s:256:EngineTemp");
     await waitFor(() => expect(screen.getByText("EngineTemp")).toBeInTheDocument());
     // One area, two signals, unified mode → one canvas.
     expect(document.querySelectorAll(".plot-area").length).toBe(1);
-    const modeSel = screen.getByLabelText("y-axis mode") as HTMLSelectElement;
-    expect(modeSel.value).toBe("unified");
+    const modeSel = screen.getByLabelText("y-axis mode");
+    expect(comboboxValue(modeSel)).toBe("unified");
     // Switch to per-unit. The fixture has two distinct units (rpm,
     // degC) so the derived axes split into two.
-    fireEvent.change(modeSel, { target: { value: "per-unit" } });
+    await pickCombobox(modeSel, "per-unit");
     expect(document.querySelectorAll(".plot-area").length).toBe(2);
     expect(screen.getByText(/Area 1 · \[rpm\]/)).toBeInTheDocument();
     expect(screen.getByText(/Area 1 · \[degC\]/)).toBeInTheDocument();
     // Switch to individual: same as per-unit here (one per signal).
     // Re-query the selector — react may have re-mounted it.
-    fireEvent.change(screen.getByLabelText("y-axis mode"), { target: { value: "individual" } });
+    await pickCombobox(screen.getByLabelText("y-axis mode"), "individual");
     expect(document.querySelectorAll(".plot-area").length).toBe(2);
     expect(screen.getByText(/Area 1 · EngineSpeed/)).toBeInTheDocument();
   });
@@ -452,33 +437,30 @@ describe("PlotPanel", () => {
     // in exactly one derived axis, so per-unit mode shows one cell
     // set per signal — not zero (lookup miss) and not duplicates.
     renderPanel();
-    await waitFor(() =>
-      expect(screen.getByRole("option", { name: /EngineData\.EngineSpeed/ })).toBeInTheDocument(),
-    );
-    const picker = screen.getByLabelText("add signal to focused plot area") as HTMLSelectElement;
-    fireEvent.change(picker, { target: { value: "*|s:256:EngineSpeed" } });
+    const picker = screen.getByLabelText("add signal to focused plot area");
+    await pickCombobox(picker, "*|s:256:EngineSpeed");
     await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
-    fireEvent.change(picker, { target: { value: "*|s:256:EngineTemp" } });
+    await pickCombobox(picker, "*|s:256:EngineTemp");
     await waitFor(() => expect(screen.getByText("EngineTemp")).toBeInTheDocument());
-    fireEvent.change(screen.getByLabelText("y-axis mode"), { target: { value: "per-unit" } });
+    await pickCombobox(screen.getByLabelText("y-axis mode"), "per-unit");
     fireEvent.click(screen.getByRole("checkbox", { name: /measurements/i }));
     // Default measurement keys include the per-trace value@A cell.
     expect(screen.getAllByText(/EngineData\.EngineSpeed @A/).length).toBe(1);
     expect(screen.getAllByText(/EngineData\.EngineTemp @A/).length).toBe(1);
   });
 
-  it("show-points tri-state defaults to auto and persists to panel params", () => {
+  it("show-points tri-state defaults to auto and persists to panel params", async () => {
     const { api } = renderPanel();
-    const sel = screen.getByLabelText("show points") as HTMLSelectElement;
-    expect(sel.value).toBe("auto");
-    fireEvent.change(sel, { target: { value: "on" } });
-    expect(sel.value).toBe("on");
+    const sel = screen.getByLabelText("show points");
+    expect(comboboxValue(sel)).toBe("auto");
+    await pickCombobox(sel, "on");
+    expect(comboboxValue(sel)).toBe("on");
     // Last updateParameters call carries the new mode.
     const calls = api.updateParameters.mock.calls;
     const lastCall = calls[calls.length - 1]?.[0] ?? {};
     expect(lastCall.showPoints).toBe("on");
-    fireEvent.change(sel, { target: { value: "off" } });
-    expect((screen.getByLabelText("show points") as HTMLSelectElement).value).toBe("off");
+    await pickCombobox(sel, "off");
+    expect(comboboxValue(screen.getByLabelText("show points"))).toBe("off");
   });
 
   it("restores its signals from the element's config when reopened with bare params", () => {
@@ -534,12 +516,10 @@ describe("PlotPanel", () => {
     const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
     try {
       renderPanel();
-      await waitFor(() =>
-        expect(screen.getByRole("option", { name: /EngineData\.EngineSpeed/ })).toBeInTheDocument(),
+      await pickCombobox(
+        screen.getByLabelText("add signal to focused plot area"),
+        "*|s:256:EngineSpeed",
       );
-      fireEvent.change(screen.getByLabelText("add signal to focused plot area"), {
-        target: { value: "*|s:256:EngineSpeed" },
-      });
       await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
       fireEvent.click(screen.getByRole("button", { name: "add plot area" }));
       const area1 = screen.getByText("Area 1").closest(".plot-area")!;
@@ -583,12 +563,10 @@ describe("PlotPanel", () => {
       params: { elementId: "el-persist" },
       registry: makeRegistry({ id: "el-persist" }),
     });
-    await waitFor(() =>
-      expect(screen.getByRole("option", { name: /EngineData\.EngineSpeed/ })).toBeInTheDocument(),
+    await pickCombobox(
+      screen.getByLabelText("add signal to focused plot area"),
+      "*|s:256:EngineSpeed",
     );
-    fireEvent.change(screen.getByLabelText("add signal to focused plot area"), {
-      target: { value: "*|s:256:EngineSpeed" },
-    });
     await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
     const cfg = (registry.get("el-persist")!.element as {
       config?: { areas?: Array<{ signals: unknown[] }> };

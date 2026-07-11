@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 
+import { Combobox } from "./Combobox";
 import type { FilterPredicate } from "./types";
 
 /// One of the leaf shapes the inline editor exposes. The
@@ -51,6 +52,15 @@ function defaultOf(variant: Variant, busIds: readonly string[]): FilterPredicate
       return { signal_equals: { name: "", value: 0 } };
   }
 }
+
+const VARIANT_OPTIONS = [
+  { value: "none", label: "(none — pass through)" },
+  { value: "bus", label: "bus" },
+  { value: "id_range", label: "id range" },
+  { value: "id_list", label: "id list" },
+  { value: "name_regex", label: "message name regex" },
+  { value: "signal_equals", label: "signal equals" },
+];
 
 /// What leaf variant is this predicate? Composition shapes are
 /// reported as `none` so the inline editor can render the
@@ -113,31 +123,20 @@ export function FilterPredicateEditor({ predicate, name, busIds, onChange }: Pro
       </label>
       <label className="filter-predicate-row">
         <span>Predicate</span>
-        <select
+        <Combobox
+          options={VARIANT_OPTIONS}
           value={variant}
-          onChange={(e) => pickVariant(e.target.value as Variant)}
-        >
-          <option value="none">(none — pass through)</option>
-          <option value="bus">bus</option>
-          <option value="id_range">id range</option>
-          <option value="id_list">id list</option>
-          <option value="name_regex">message name regex</option>
-          <option value="signal_equals">signal equals</option>
-        </select>
+          onChange={(v) => pickVariant(v as Variant)}
+        />
       </label>
       {variant === "bus" && draft && "bus" in draft && (
         <label className="filter-predicate-row">
           <span>bus id</span>
-          <select
+          <Combobox
+            options={busIds.map((id) => ({ value: id, label: id }))}
             value={draft.bus}
-            onChange={(e) => commit({ bus: e.target.value })}
-          >
-            {busIds.map((id) => (
-              <option key={id} value={id}>
-                {id}
-              </option>
-            ))}
-          </select>
+            onChange={(v) => commit({ bus: v })}
+          />
         </label>
       )}
       {variant === "id_range" && draft && "id_range" in draft && (

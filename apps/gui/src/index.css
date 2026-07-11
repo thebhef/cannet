@@ -627,7 +627,7 @@ header {
   color: #94a3b8;
 }
 .filter-predicate-row > input,
-.filter-predicate-row > select {
+.filter-predicate-row > .combobox-trigger {
   flex: 1 1 auto;
   min-width: 0;
 }
@@ -1342,7 +1342,7 @@ button.trace-event-swatch {
   overflow-x: hidden;
 }
 
-.plot-panel-toolbar select,
+.plot-panel-toolbar .combobox-trigger,
 .plot-panel-toolbar button {
   background: #0f141d;
   color: #e2e8f0;
@@ -1668,7 +1668,7 @@ button.trace-event-swatch {
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
-.colormap-field select {
+.colormap-field .combobox-trigger {
   background: #11161e;
   color: #e2e8f0;
   border: 1px solid #1c252b;
@@ -2397,7 +2397,7 @@ button.trace-event-swatch {
   color: #94a3b8;
   font-size: 0.78rem;
 }
-.tx-shape-field select,
+.tx-shape-field .combobox-trigger,
 .tx-shape-field input[type="number"] {
   background: #0f141d;
   color: #e2e8f0;
@@ -2406,7 +2406,7 @@ button.trace-event-swatch {
   font: inherit;
   padding: 0.1rem 0.25rem;
 }
-.tx-shape-field select:disabled,
+.tx-shape-field .combobox-trigger:disabled,
 .tx-shape-field input:disabled {
   opacity: 0.55;
   cursor: not-allowed;
@@ -2512,7 +2512,7 @@ button.trace-event-swatch {
   border-bottom: 1px solid #1e293b;
   background: #111827;
 }
-.system-messages-toolbar select {
+.system-messages-toolbar .combobox-trigger {
   background: #1e293b;
   color: #e2e8f0;
   border: 1px solid #334155;
@@ -2959,7 +2959,7 @@ button.trace-event-swatch {
   color: #94a3b8;
 }
 .calc-grid input,
-.calc-grid select {
+.calc-grid .combobox-trigger {
   background: #0f172a;
   border: 1px solid #334155;
   color: #e2e8f0;

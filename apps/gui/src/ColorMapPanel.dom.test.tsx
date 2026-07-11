@@ -8,7 +8,9 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+
+import { openCombobox } from "./comboboxTestKit";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string) => {
@@ -95,17 +97,22 @@ describe("ColorMapPanel", () => {
   it("lists DBC signals and, on pick, patches the target + seeds enum rules", async () => {
     const { update } = renderPanel();
 
-    // The catalog loads from list_signals → the signal appears as an option.
+    // The catalog loads from list_signals → with the picker open, the
+    // signal appears as an option under its bus → message ancestry.
+    openCombobox(screen.getByRole("combobox"));
     const option = await waitFor(() => {
-      const el = document.querySelector('option[value="b1|256|s|Gear"]');
+      const el = document.querySelector('[role="option"][data-value="b1|256|s|Gear"]');
       if (!el) throw new Error("option not yet rendered");
-      return el as HTMLOptionElement;
+      return el as HTMLElement;
     });
-    expect(option.textContent).toContain("Chassis");
-    expect(option.textContent).toContain("GearBox.Gear");
+    expect(option.textContent).toBe("Gear");
+    const headers = Array.from(document.querySelectorAll(".combobox-group")).map(
+      (h) => h.textContent,
+    );
+    expect(headers).toContain("Chassis");
+    expect(headers).toContain("GearBox");
 
-    const select = document.querySelector("select") as HTMLSelectElement;
-    fireEvent.change(select, { target: { value: "b1|256|s|Gear" } });
+    fireEvent.click(option);
 
     // Picking the signal patches the target fields…
     await waitFor(() =>

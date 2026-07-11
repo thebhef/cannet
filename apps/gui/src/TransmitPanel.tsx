@@ -29,6 +29,7 @@ import type {
 } from "./types";
 import { useElementRegistry } from "./projectElements";
 import { CalcFieldEditor } from "./CalcFieldEditor";
+import { Combobox, type ComboboxOption } from "./Combobox";
 import { useProjectContext } from "./projectContext";
 import { effectiveBusColor } from "./busColor";
 import { SIGNAL_DND_MIME, parseSignalDragData } from "./dragSignals";
@@ -520,7 +521,7 @@ function TransmitFrameRow({
     const target = e.target as HTMLElement;
     if (
       target.closest(
-        "input, select, button, textarea, label, [contenteditable], [draggable=true]",
+        "input, button, textarea, label, [contenteditable], [draggable=true]",
       )
     ) {
       return;
@@ -565,23 +566,14 @@ function TransmitFrameRow({
             placeholder="description"
             aria-label="frame description"
           />
-          <select
+          <Combobox
             className={`tx-bus ${frame.busId ? "" : "tx-warn"}`}
+            options={buses.map((b) => ({ value: b.id, label: b.name }))}
             value={frame.busId ?? ""}
-            onChange={(e) => set("busId", e.target.value || null)}
-            aria-label="destination bus"
-          >
-            {!frame.busId && (
-              <option value="">
-                {buses.length === 0 ? "(no buses)" : "(pick a bus)"}
-              </option>
-            )}
-            {buses.map((b) => (
-              <option value={b.id} key={b.id}>
-                {b.name}
-              </option>
-            ))}
-          </select>
+            onChange={(v) => set("busId", v || null)}
+            placeholder={buses.length === 0 ? "(no buses)" : "(pick a bus)"}
+            ariaLabel="destination bus"
+          />
           <CanIdInput
             canId={frame.canId}
             extended={frame.extended}
@@ -709,6 +701,13 @@ interface FrameShapeStripProps {
   onChange: (mut: (f: TransmitFrameConfig) => TransmitFrameConfig) => void;
 }
 
+const FRAME_KIND_OPTIONS: ComboboxOption[] = [
+  { value: "classic", label: "classic" },
+  { value: "fd", label: "FD" },
+  { value: "remote", label: "remote" },
+  { value: "error", label: "error" },
+];
+
 /// Frame-shape strip — kind, BRS (FD only), DLC (remote only). The
 /// standard/extended toggle lives on the identity line next to the
 /// CAN id (see `CanIdInput`), not here. `kind` and `brs` come from the
@@ -730,23 +729,17 @@ function FrameShapeStrip({ frame, descriptor, onChange }: FrameShapeStripProps) 
     <div className="tx-shape-strip">
       <label className="tx-shape-field">
         <span>kind</span>
-        <select
+        <Combobox
+          options={FRAME_KIND_OPTIONS}
           value={frame.kind}
-          onChange={(e) =>
-            set("kind", e.target.value as TransmitFrameConfig["kind"])
-          }
+          onChange={(v) => set("kind", v as TransmitFrameConfig["kind"])}
           disabled={dbcOverridesKind}
           title={
             dbcOverridesKind
               ? "DBC determines this (FD vs. classic via VFrameFormat / message size)"
               : undefined
           }
-        >
-          <option value="classic">classic</option>
-          <option value="fd">FD</option>
-          <option value="remote">remote</option>
-          <option value="error">error</option>
-        </select>
+        />
       </label>
       {frame.kind === "fd" && (
         <label className="tx-shape-field tx-shape-checkbox">

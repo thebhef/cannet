@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
 
+import { Combobox } from "./Combobox";
 import { useElementRegistry } from "./projectElements";
 import { useProjectContext } from "./projectContext";
 import { rulesFromValueTable } from "./colorMap";
@@ -126,6 +127,18 @@ export function ColorMapPanel(props: IDockviewPanelProps) {
     [catalog, update, elementId],
   );
 
+  // Bus → message ancestry renders as combobox group headers; the
+  // closed state keeps the full context ("Chassis · GearBox.Gear").
+  const catalogOptions = catalog.map((d) => {
+    const bus = d.bus_id ? busName.get(d.bus_id) ?? d.bus_id : "any bus";
+    return {
+      value: descKey(d),
+      label: d.signal_name,
+      path: [bus, d.message_name],
+      selectedLabel: `${bus} · ${d.message_name}.${d.signal_name}`,
+    };
+  });
+
   if (!element) return <div className="colormap-panel">loading…</div>;
 
   const rules = element.rules;
@@ -147,23 +160,12 @@ export function ColorMapPanel(props: IDockviewPanelProps) {
     <div className="colormap-panel">
       <label className="colormap-field">
         <span>Signal</span>
-        <select
+        <Combobox
+          options={catalogOptions}
           value={element.signalName ? elementTargetKey(element) : ""}
-          onChange={(e) => void onPickSignal(e.target.value)}
-        >
-          <option value="" disabled>
-            {catalog.length === 0 ? "no DBC signals" : "pick a signal…"}
-          </option>
-          {catalog.map((d) => {
-            const k = descKey(d);
-            const bus = d.bus_id ? busName.get(d.bus_id) ?? d.bus_id : "any bus";
-            return (
-              <option key={k} value={k}>
-                {bus} · {d.message_name}.{d.signal_name}
-              </option>
-            );
-          })}
-        </select>
+          onChange={(v) => void onPickSignal(v)}
+          placeholder={catalog.length === 0 ? "no DBC signals" : "pick a signal…"}
+        />
       </label>
 
       {!element.signalName ? (
