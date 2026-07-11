@@ -24,9 +24,14 @@ open is wrong) and not the project file. It is durable machine-local
 state — unlike the spill caches it is user-authored and not
 recomputable, so it must not be evictable.
 
-- Shape: nested map `project_id (UUID) → { absolute BLF path →
-  { channel → bus_id } }`. Bus identity is `Bus.id` (stable across
-  renames), not `name`.
+- Shape: nested map `project_id (UUID) → { by_path: { absolute BLF
+  path → { channel → bus_id } }, by_channel_count: { channel count →
+  { channel → bus_id } } }`. Bus identity is `Bus.id` (stable across
+  renames), not `name`. `""` records a deliberately skipped channel.
+- Pre-fill resolution: exact path match first; an unrecognized file
+  falls back to the mapping last accepted for a BLF with the same
+  distinct-channel count (assume it came from the same source as a
+  starting point). Accepting stores back under both keys.
 - A stored `bus_id` no longer present in the project degrades to
   unmapped for that channel.
 - UX: the mapping **pre-fills the channel↔bus selection dialog** as
@@ -205,8 +210,10 @@ effect fires and with what indices, then fix with a regression test.
 ## Exit criteria
 
 - A reloaded BLF pre-fills the channel↔bus dialog from `state.json`
-  (keyed `project_id` → absolute BLF path → `channel → bus_id`); the
-  last-accepted mapping is stored back; covered by a test.
+  (keyed `project_id` → absolute BLF path → `channel → bus_id`, with a
+  per-project channel-count fallback for unrecognized paths); the
+  last-accepted mapping is stored back under both keys; covered by a
+  test.
 - Trace-row expanded signals render as inline lines under the row (grid
   removed); covered by a frontend test.
 - Trace and plot render the same relative-time string for the same

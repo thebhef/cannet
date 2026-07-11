@@ -510,6 +510,11 @@ export interface CrcSpec {
 /// `projectElements.ts::isProjectElement`).
 export interface Project {
   schema_version: number;
+  /// Stable per-project identity, host-managed (see
+  /// `project.rs::Project::project_id`). Present on what `open_project`
+  /// returns; deliberately omitted from the save payload — `save_project`
+  /// anchors it to the id already on disk.
+  project_id?: string;
   layout: unknown;
   elements: unknown[];
   /// Logical buses. Empty for a freshly-created project.
