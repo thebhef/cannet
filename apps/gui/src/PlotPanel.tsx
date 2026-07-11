@@ -5,7 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 
-import type { Bus, SignalDescriptorRecord, SignalExtent, ValueTableEntryRecord } from "./types";
+import { isEnumValueTable, type Bus, type SignalDescriptorRecord, type SignalExtent, type ValueTableEntryRecord } from "./types";
 import { useTraceData } from "./traceData";
 import { useProjectContext } from "./projectContext";
 import { defaultBusColor } from "./busColor";
@@ -2040,15 +2040,18 @@ function PlotArea(p: PlotAreaProps) {
   }, [resolveColor]);
 
   // Value-table support for enum / state signals. When the
-  // area shows *exactly one* signal *and* that signal has a `VAL_`
-  // table, the area switches to "enum mode": auto-normalisation is
-  // bypassed (the values are discrete enum codes, no rescaling),
-  // the series is rendered stepped (not linearly interpolated
-  // between codes), and the y-axis ticks become symbolic labels
-  // from the table. Multi-signal areas keep current behaviour for
-  // the axis itself; the per-signal table cache below feeds the
-  // side panel so an enum value reads as `<label> (<raw>)` for
-  // every signal regardless of axis mode.
+  // area shows *exactly one* signal *and* that signal's `VAL_`
+  // table makes it an enum (>= 2 members — `isEnumValueTable`; a
+  // single-member SNA sentinel stays numeric), the area switches to
+  // "enum mode": auto-normalisation is bypassed (the values are
+  // discrete enum codes, no rescaling), the series is rendered
+  // stepped (not linearly interpolated between codes), and the
+  // y-axis ticks become symbolic labels from the table.
+  // Multi-signal areas keep current behaviour for the axis itself;
+  // the per-signal table cache below feeds the side panel so a
+  // labelled value reads as `<label> (<raw>)` on an exact raw match
+  // for every signal regardless of axis mode — single-member tables
+  // included.
   const [valueTables, setValueTables] = useState<Map<string, ValueTableEntryRecord[]>>(new Map());
   useEffect(() => {
     let cancelled = false;
@@ -2083,7 +2086,7 @@ function PlotArea(p: PlotAreaProps) {
     if (signals.length !== 1) return null;
     return valueTables.get(signalRefKey(signals[0])) ?? null;
   }, [signals, valueTables]);
-  const enumMode = valueTable != null && valueTable.length > 0 && signals.length === 1;
+  const enumMode = isEnumValueTable(valueTable) && signals.length === 1;
   // Ref mirrors so the resample callback (closure over the initial
   // signal set) sees the up-to-date enum-mode state without being
   // recreated on every value-table tick.
@@ -3537,13 +3540,16 @@ function PlotArea(p: PlotAreaProps) {
                     {/* Unit suffix is only meaningful for numeric
                      * readouts — an enum row already self-labels via
                      * `<label> (<raw>)` and tacking on a unit string
-                     * (often the empty string anyway) reads as noise. */}
-                    {!valueTables.has(key) && s.unit ? ` ${s.unit}` : ""}
+                     * (often the empty string anyway) reads as noise.
+                     * A single-member table is not an enum
+                     * (`isEnumValueTable`), so its signal keeps the
+                     * unit. */}
+                    {!isEnumValueTable(valueTables.get(key)) && s.unit ? ` ${s.unit}` : ""}
                   </span>
                   {showAbDelta && (
                     <small className="plot-signal-delta" title="Δ value (cursor A − cursor B)">
                       Δ {fmtVal(deltaAbFor(key))}
-                      {!valueTables.has(key) && s.unit ? ` ${s.unit}` : ""}
+                      {!isEnumValueTable(valueTables.get(key)) && s.unit ? ` ${s.unit}` : ""}
                     </small>
                   )}
                 </div>

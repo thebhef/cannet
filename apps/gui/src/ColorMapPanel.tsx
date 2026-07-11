@@ -6,7 +6,7 @@ import { Combobox } from "./Combobox";
 import { useElementRegistry } from "./projectElements";
 import { useProjectContext } from "./projectContext";
 import { rulesFromValueTable } from "./colorMap";
-import type { ColorRule, ProjectElement, SignalDescriptorRecord, ValueTableEntryRecord } from "./types";
+import { isEnumValueTable, type ColorRule, type ProjectElement, type SignalDescriptorRecord, type ValueTableEntryRecord } from "./types";
 
 type ColorMapElement = Extract<ProjectElement, { kind: "colormap" }>;
 
@@ -73,7 +73,9 @@ export function ColorMapPanel(props: IDockviewPanelProps) {
   }, [buses]);
 
   // The target signal's value table (enum names), re-fetched when the
-  // target changes. Empty ⇒ a numeric signal (range editor).
+  // target changes. Not an enum (`isEnumValueTable`: fewer than two
+  // members, single-member SNA sentinels included) ⇒ a numeric signal
+  // (range editor).
   const signalName = element?.signalName ?? "";
   const messageId = element?.messageId ?? 0;
   const extended = element?.extended ?? false;
@@ -119,7 +121,7 @@ export function ColorMapPanel(props: IDockviewPanelProps) {
           extended: d.extended,
           signalName: d.signal_name,
         });
-        update(elementId, { rules: rows.length > 0 ? rulesFromValueTable(rows) : [] });
+        update(elementId, { rules: isEnumValueTable(rows) ? rulesFromValueTable(rows) : [] });
       } catch {
         update(elementId, { rules: [] });
       }
@@ -170,7 +172,7 @@ export function ColorMapPanel(props: IDockviewPanelProps) {
 
       {!element.signalName ? (
         <div className="colormap-empty">Pick a signal to colour its values.</div>
-      ) : valueTable.length > 0 ? (
+      ) : isEnumValueTable(valueTable) ? (
         // Enum signal: one sparse row per value — its name + a colour.
         <ul className="colormap-rules">
           {valueTable.map((v) => (

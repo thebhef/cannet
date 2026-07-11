@@ -2338,7 +2338,7 @@ fn list_signals(
                     message_name: d.message_name.clone(),
                     signal_name: d.signal_name.clone(),
                     unit: d.unit.clone(),
-                    has_value_table: d.has_value_table,
+                    is_enum: d.is_enum,
                 });
             }
         }

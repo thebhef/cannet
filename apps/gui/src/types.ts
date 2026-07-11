@@ -545,10 +545,12 @@ export interface SignalDescriptorRecord {
   message_name: string;
   signal_name: string;
   unit: string;
-  /// True if the DBC defines a `VAL_` table for this signal. The plot
-  /// panel uses it to switch to stepped + symbolic rendering; the
-  /// transmit panel uses it to offer a value-label dropdown.
-  has_value_table?: boolean;
+  /// True if the signal's `VAL_` table makes it an enum — per
+  /// `cannet_dbc::is_enum`, at least two members. A single-member
+  /// table (an SNA sentinel) leaves this false: the signal renders
+  /// numerically and its lone label applies only on an exact raw
+  /// match. The plot panel keys stepped + symbolic rendering on this.
+  is_enum?: boolean;
 }
 
 /// One `(raw_value, label)` row of a signal's `VAL_` table — mirrors
@@ -556,6 +558,18 @@ export interface SignalDescriptorRecord {
 export interface ValueTableEntryRecord {
   raw: number;
   label: string;
+}
+
+/// Frontend mirror of `cannet_dbc::is_enum`: a `VAL_` table makes its
+/// signal an enum only with **at least two members**. A single-member
+/// table is typically an SNA sentinel on an otherwise numeric signal —
+/// its label still applies on an exact raw match, but every "render as
+/// enum?" decision (plot enum mode, per-unit axis break-out, unit
+/// suppression, colormap enum editor) must go through this predicate.
+export function isEnumValueTable(
+  rows: readonly ValueTableEntryRecord[] | null | undefined,
+): boolean {
+  return (rows?.length ?? 0) >= 2;
 }
 
 /// One loaded DBC's full discovery-shaped content, as returned by the

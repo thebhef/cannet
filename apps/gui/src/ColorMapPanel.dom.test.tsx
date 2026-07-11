@@ -13,7 +13,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { openCombobox } from "./comboboxTestKit";
 
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(async (cmd: string) => {
+  invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
     if (cmd === "list_signals") {
       return [
         {
@@ -23,11 +23,23 @@ vi.mock("@tauri-apps/api/core", () => ({
           message_name: "GearBox",
           signal_name: "Gear",
           unit: "",
-          has_value_table: true,
+          is_enum: true,
+        },
+        {
+          bus_id: "b1",
+          message_id: 0x100,
+          extended: false,
+          message_name: "GearBox",
+          signal_name: "Counter",
+          unit: "count",
+          is_enum: false,
         },
       ];
     }
     if (cmd === "list_value_tables") {
+      // A single-member table (SNA sentinel) for Counter — labels stay
+      // available, but the signal is not an enum.
+      if (args?.signalName === "Counter") return [{ raw: 65535, label: "SNA" }];
       return [
         { raw: 0, label: "Park" },
         { raw: 1, label: "Reverse" },
@@ -162,5 +174,22 @@ describe("ColorMapPanel", () => {
     expect((colors[2] as HTMLInputElement).value).toBe("#333333");
     // The sparse enum editor has no numeric range inputs.
     expect(document.querySelectorAll('input[type="number"]').length).toBe(0);
+  });
+
+  it("a single-member value table is not an enum — the numeric range editor renders", async () => {
+    renderPanel({
+      busId: "b1",
+      messageId: 0x100,
+      extended: false,
+      signalName: "Counter",
+      rules: [],
+    });
+
+    // The one-row (SNA) table must not switch the panel into the
+    // sparse enum editor: the numeric range empty-state shows instead.
+    await waitFor(() =>
+      expect(document.body.textContent).toContain("No ranges yet"),
+    );
+    expect(document.body.textContent).not.toContain("SNA");
   });
 });
