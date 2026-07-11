@@ -359,94 +359,117 @@ def _decode_pcan_bytes(value) -> str:
     return str(value)
 
 
-def _pcan_handle_name(pcan_basic, handle: int) -> Optional[str]:
-    """Reverse-lookup a PCAN channel handle to its module constant name
-    (e.g. ``0x51`` → ``"PCAN_USBBUS1"``).
-
-    Iterates the ``PCAN-Basic`` module for ``PCAN_*BUS<N>`` attributes
-    whose value matches ``handle``. The constants are typically
-    ``ctypes.c_ushort`` (so we unwrap ``.value``); plain ints are also
-    accepted. Returns ``None`` if no constant matches — which happens
-    on exotic transports we don't have a name for, in which case the
-    caller substitutes a raw-hex fallback.
-    """
-    for name in dir(pcan_basic):
-        if not name.startswith("PCAN_") or "BUS" not in name:
+def _pcan_read_int(api, handle, pcan_basic, *param_names: str, default: int = 0) -> int:
+    """Read the first available integer PCAN-Basic parameter from
+    ``param_names`` for ``handle``, unwrapping ctypes values. Returns
+    ``default`` if none is present or readable."""
+    for pname in param_names:
+        param = getattr(pcan_basic, pname, None)
+        if param is None:
             continue
         try:
-            value = getattr(pcan_basic, name)
+            err, val = api.GetValue(handle, param)
         except Exception:  # noqa: BLE001
             continue
-        if hasattr(value, "value"):
-            value = value.value
-        if isinstance(value, int) and value == handle:
-            return name
-    return None
+        if err == 0 and val is not None:
+            return int(getattr(val, "value", val))
+    return default
+
+
+def _pcan_read_str(api, handle, pcan_basic, *param_names: str) -> str:
+    """Read the first available string PCAN-Basic parameter from
+    ``param_names`` for ``handle``, decoded to ``str``. Returns ``""``
+    if none is present or readable."""
+    for pname in param_names:
+        param = getattr(pcan_basic, pname, None)
+        if param is None:
+            continue
+        try:
+            err, val = api.GetValue(handle, param)
+        except Exception:  # noqa: BLE001
+            continue
+        if err == 0 and val:
+            return _decode_pcan_bytes(val)
+    return ""
 
 
 def _list_pcan() -> List[Channel]:
     """PEAK PCAN-Basic channels.
 
-    Identifies each attached channel by its ``channel_handle`` (the
-    integer ``TPCANHandle`` python-can uses internally), reverse-mapped
-    to its readable constant name (``PCAN_USBBUS1`` etc.) for the id
-    body. This is the only field on ``TPCANChannelInformation`` that's
-    actually unique per attached channel slot — earlier versions of
-    this enumerator keyed on ``channel_name``, which doesn't exist on
-    the struct, so every device collapsed onto the same id.
+    Channel *discovery* is delegated to python-can's own detector
+    (:func:`can.detect_available_configs`). That call branches on the
+    OS: on macOS the PCBUSB driver doesn't implement the bulk
+    ``PCAN_ATTACHED_CHANNELS`` query (it returns PCAN_ERROR_ILLOPERATION),
+    so python-can probes each candidate handle individually with
+    ``PCAN_CHANNEL_CONDITION`` instead. Reimplementing that
+    platform-specific probe here is what previously made PEAK adapters
+    invisible on macOS — delegating keeps the single, maintained code
+    path working on every OS.
 
-    PCAN-Basic doesn't standardly expose a per-device factory serial
-    (``PCAN_DEVICE_PART_NUMBER`` returns the model SKU, not a serial),
-    so the disambiguator inside the paren metadata is the channel
-    handle integer, the ``controller_number`` (the per-card channel on
-    multi-channel devices like PCAN-USB Pro FD), and the user-settable
-    ``device_id`` from PCAN-View when set non-zero (``uid:``).
+    Each detected channel is then *enriched* with the identity metadata
+    the GUI needs, via per-handle ``GetValue`` (which works uniformly on
+    Windows/Linux/macOS): the ``controller_number`` (the per-card channel
+    on multi-channel devices like PCAN-USB Pro FD), the user-settable
+    ``device_id`` from PCAN-View (``uid:``), and the model name. The id
+    body is the named slot constant (``PCAN_USBBUS1`` …) python-can
+    reports and opens with; the paren metadata carries the raw hex
+    handle, controller number, and device id.
     """
+    if not _HAVE_PYTHON_CAN:
+        return []
     try:
         from can.interfaces.pcan import basic as pcan_basic  # type: ignore[import-untyped]
     except Exception:  # noqa: BLE001
         return []
     PCANBasic = getattr(pcan_basic, "PCANBasic", None)
-    PCAN_ATTACHED_CHANNELS = getattr(pcan_basic, "PCAN_ATTACHED_CHANNELS", None)
-    if PCANBasic is None or PCAN_ATTACHED_CHANNELS is None:
+    if PCANBasic is None:
         return []
     try:
+        detected = can.detect_available_configs(interfaces=["pcan"])
         api = PCANBasic()
-        result, channels = api.GetValue(0, PCAN_ATTACHED_CHANNELS)
-        if result != 0 or not channels:
-            return []
     except Exception as e:  # noqa: BLE001
         _log.info("pcan enumeration failed (%s); skipping", e)
         return []
     out: List[Channel] = []
-    for ch in channels:
-        handle = int(getattr(ch, "channel_handle", 0) or 0)
-        ctrl = int(getattr(ch, "controller_number", 0) or 0)
-        dev_id = int(getattr(ch, "device_id", 0) or 0)
-        model = _decode_pcan_bytes(getattr(ch, "device_name", b"")) or "PCAN"
+    for cfg in detected:
+        # `channel` is the slot constant name python-can opens with
+        # (e.g. "PCAN_USBBUS1"); resolve it back to the numeric handle
+        # for the per-handle enrichment reads and the `h:` metadata.
+        name = cfg.get("channel")
+        if not isinstance(name, str):
+            continue
+        handle = getattr(pcan_basic, name, None)
+        if handle is None:
+            continue
+        handle_int = int(getattr(handle, "value", handle))
 
-        handle_name = _pcan_handle_name(pcan_basic, handle)
-        # `body` is what python-can opens the channel with. When we
-        # have a named slot constant, use it (string); otherwise fall
-        # back to a stable hex form keyed back to int on open.
-        body = handle_name or f"handle=0x{handle:X}"
+        ctrl = _pcan_read_int(api, handle, pcan_basic, "PCAN_CONTROLLER_NUMBER")
+        dev_id = _pcan_read_int(
+            api, handle, pcan_basic, "PCAN_DEVICE_ID", "PCAN_DEVICE_NUMBER"
+        )
+        model = _pcan_read_str(api, handle, pcan_basic, "PCAN_HARDWARE_NAME") or "PCAN"
 
         # `uid:` is the user-settable PCAN-View device id. It's always
         # shown, including the factory-default 0 — having it always
         # present makes the format predictable and tells the user
         # whether anyone has set a non-zero id on this adapter.
-        meta = [f"h:0x{handle:X}", f"ch:{ctrl}", f"uid:{dev_id}"]
+        meta = [f"h:0x{handle_int:X}", f"ch:{ctrl}", f"uid:{dev_id}"]
         meta_str = ", ".join(meta)
 
         # The display prepends the named slot to the meta list, so the
         # user sees both "which port" (slot) and the underlying handle
-        # integer / controller in one paren group. When there's no
-        # named slot, the hex handle in `h:` already covers it.
-        display_meta = f"{handle_name}, {meta_str}" if handle_name else meta_str
+        # integer / controller in one paren group.
+        display_meta = f"{name}, {meta_str}"
 
-        cid = f"pcan:{body}({meta_str})"
+        cid = f"pcan:{name}({meta_str})"
         label = f"PEAK {model} ({display_meta})"
-        out.append(Channel(id=cid, display_name=label, fd_capable=True))
+        out.append(
+            Channel(
+                id=cid,
+                display_name=label,
+                fd_capable=bool(cfg.get("supports_fd", False)),
+            )
+        )
     return out
 
 
