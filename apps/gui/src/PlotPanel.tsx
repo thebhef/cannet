@@ -3193,11 +3193,21 @@ function PlotArea(p: PlotAreaProps) {
 
   // Show / hide series in place when the per-signal `hidden` flags
   // change — no uPlot re-create needed (`signalSetKey` excludes it).
+  // `setSeries` alone left the area blank until the next pan/zoom
+  // forced a resample, so take that proven path directly: drop the
+  // fetch memo and resample, which re-sets the data and re-pins the
+  // scales the same way a zoom does. One host fetch per toggle — a
+  // user gesture, not a hot path.
   const hiddenKey = signals.map((s) => (s.hidden ? "1" : "0")).join("");
+  const hiddenKeyPrevRef = useRef(hiddenKey);
   useEffect(() => {
+    if (hiddenKeyPrevRef.current === hiddenKey) return;
+    hiddenKeyPrevRef.current = hiddenKey;
     const u = uplotRef.current;
     if (!u) return;
     signals.forEach((s, i) => u.setSeries(i + 1, { show: !s.hidden }));
+    resetRange();
+    void resampleRef.current();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hiddenKey]);
 

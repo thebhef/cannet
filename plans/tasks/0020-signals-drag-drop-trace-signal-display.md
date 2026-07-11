@@ -6,8 +6,8 @@ this task is the **signal view** panel (a user-chosen set of signals
 with their latest values — distinct from the DBC panel, which is a
 database navigator).
 
-The **trace view's inline decoded signals** moved to
-[Task 32](0032-initial-use-feedback.md); the **DBC panel performance
+The **trace view's inline decoded signals** shipped in the
+initial-feedback batch (former Task 32); the **DBC panel performance
 and FZF-search-hiding** work moved to
 [Task 33](0033-dbc-view-rework.md).
 
