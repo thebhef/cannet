@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
+import { invoke } from "@tauri-apps/api/core";
 
 import {
   defaultSettings,
@@ -24,11 +25,26 @@ const MIN_CAP_MB = 100;
  * cap and clear-on-exit), distinct from the machine state in `hostState`.
  * The file is the durable contract; this panel loads it on mount and
  * writes the whole struct back on each edit. A singleton panel (one
- * instance, fixed dockview id), opened from the command palette.
+ * instance, fixed dockview id), opened from the command palette. Also
+ * hosts the read-only About section (build version).
  */
 export function SettingsPanel(_props: IDockviewPanelProps) {
   const [settings, setSettings] = useState<Settings>(defaultSettings);
   const [loaded, setLoaded] = useState(false);
+  const [version, setVersion] = useState("");
+
+  // The host stamps the binary with `git describe` at build time; the
+  // About section is where an alpha build is identified (the native
+  // title bar carries only the project name).
+  useEffect(() => {
+    let live = true;
+    invoke<string>("app_version")
+      .then((v) => live && setVersion(v))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
 
   useEffect(() => {
     let live = true;
@@ -106,6 +122,13 @@ export function SettingsPanel(_props: IDockviewPanelProps) {
             reloading the prior session on the next launch.
           </span>
         </label>
+      </fieldset>
+      <fieldset className="settings-group">
+        <legend>About</legend>
+        <div className="settings-field">
+          <span className="settings-label">Version</span>
+          <span className="settings-desc">{version || "unknown"}</span>
+        </div>
       </fieldset>
     </div>
   );

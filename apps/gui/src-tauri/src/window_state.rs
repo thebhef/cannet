@@ -6,13 +6,11 @@
 //! covered by any monitor — the laptop was undocked, an external display
 //! was unplugged, or the monitor arrangement changed between runs.
 //!
-//! That is dangerous here because the window is borderless
-//! (`decorations: false`, with the custom `TitleBar`): a window whose
-//! title bar lands off-screen leaves the user no OS chrome to drag it
-//! back, so it is effectively lost. The fix is to guarantee a grabbable
-//! strip of the *title bar* (not just any pixel of the window) survives
-//! on a connected monitor, and to recentre on the primary monitor when
-//! it doesn't.
+//! A window whose title bar lands off-screen leaves the user nothing
+//! to drag it back by, so it is effectively lost. The fix is to
+//! guarantee a grabbable strip of the *title bar* (not just any pixel
+//! of the window) survives on a connected monitor, and to recentre on
+//! the primary monitor when it doesn't.
 //!
 //! [`corrected_origin`] is the pure geometry that makes that decision;
 //! [`ensure_on_screen`] is the thin Tauri wrapper that feeds it the live
@@ -20,9 +18,9 @@
 
 use tauri::{Manager, PhysicalPosition};
 
-/// Title-bar height in logical pixels. Must match the `.titlebar`
-/// `height` in `apps/gui/src/index.css`; the band that has to stay
-/// grabbable is this tall.
+/// Title-bar height in logical pixels — an approximation of the native
+/// title bar's height (~30 logical px on every supported OS); the band
+/// that has to stay grabbable is this tall.
 const TITLEBAR_HEIGHT_LOGICAL: u32 = 30;
 
 /// Minimum width (physical px) of the title-bar band that must remain
@@ -215,9 +213,8 @@ mod tests {
 
     #[test]
     fn body_visible_but_title_bar_above_screen_is_recentred() {
-        // The decorations:false trap — most of the window is on-screen
-        // but its title bar sits above the monitor's top edge, so there
-        // is nothing to grab.
+        // Most of the window is on-screen but its title bar sits above
+        // the monitor's top edge, so there is nothing to grab.
         let mons = one_monitor();
         let win = Rect { x: 200, y: -200, w: 1200, h: 800 };
         assert!(corrected_origin(win, BAND, &mons, mons[0]).is_some());

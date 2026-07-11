@@ -30,7 +30,7 @@ import {
 } from "./types";
 import { useSidecarStatus } from "./sidecarStatus";
 import { projectDir, resolveProjectPath } from "./projectPaths";
-import { TitleBar } from "./TitleBar";
+import { windowTitle } from "./windowTitle";
 import { TracePanel } from "./TracePanel";
 import { ProjectPanel } from "./ProjectPanel";
 import { ProjectGraphPanel } from "./ProjectGraphPanel";
@@ -1384,6 +1384,17 @@ export function App() {
     };
   }, [automation]);
 
+  // Native window title: `<project name> — cannet` while a project is
+  // open, bare `cannet` otherwise. The OS chrome is the only title
+  // surface (no custom title bar).
+  useEffect(() => {
+    void getCurrentWindow()
+      .setTitle(windowTitle(projectPath))
+      .catch(() => {
+        /* headless test host — no window to title */
+      });
+  }, [projectPath]);
+
   useEffect(() => {
     const win = getCurrentWindow();
     let unlisten: (() => void) | undefined;
@@ -2297,17 +2308,8 @@ export function App() {
     ],
   );
 
-  const pendingHwConfigBusNames = useMemo(
-    () =>
-      busesWithPendingHwConfig
-        .map((id) => buses.find((b) => b.id === id)?.name)
-        .filter((name): name is string => name != null),
-    [busesWithPendingHwConfig, buses],
-  );
-
   return (
     <main className="app">
-      <TitleBar pendingHwConfigBusNames={pendingHwConfigBusNames} />
       <header>
         <div className="toolbar">
           <button onClick={handleOpenProject}>Open project…</button>

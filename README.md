@@ -1165,8 +1165,8 @@ arm64 and Windows x64 bundles on native GitHub Actions runners and
 publishes them to a draft pre-release (see § Downloads and
 [`.github/workflows/release.yml`](.github/workflows/release.yml)). The
 committed version stays `0.0.0`; the binary stamps its own
-`git describe` version (shown in the title bar) and the installer takes
-its version from the tag.
+`git describe` version (shown in the settings panel's About section)
+and the installer takes its version from the tag.
 
 ## Tests and lint
 

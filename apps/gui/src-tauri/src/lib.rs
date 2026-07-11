@@ -323,7 +323,8 @@ fn build_version() -> &'static str {
     }
 }
 
-/// Report the running build's version for display in the title bar.
+/// Report the running build's version for display in the settings
+/// panel's About section.
 #[tauri::command]
 fn app_version() -> &'static str {
     build_version()
