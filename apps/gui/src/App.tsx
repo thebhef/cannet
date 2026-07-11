@@ -324,11 +324,14 @@ export function App() {
   // close-on-quit handler. Updated on every render below.
   const dirtyRef = useRef(false);
   const handleSaveProjectRef = useRef<() => Promise<boolean>>(() => Promise.resolve(false));
-  // Current session frame count, mirrored into a ref so `create` /
-  // `ensure` can anchor a new (empty, stopped) trace at *now*
-  // without taking `count` as a dependency (it changes every tick).
+  // Current session frame count and session start, mirrored into refs
+  // so `create` / `ensure` can tell whether a session buffer exists —
+  // and hook a new view straight into it — without taking `count`
+  // (changes every tick) or `sessionStartSeconds` as dependencies.
   const countRef = useRef(0);
   countRef.current = count;
+  const sessionStartSecondsRef = useRef<number | null>(null);
+  sessionStartSecondsRef.current = sessionStartSeconds;
   // Perf self-driving config (ADR 0031), fetched once from the host on
   // boot and handed to the orchestration effect below. `null` = normal
   // launch. The mirrored refs let that once-mounted effect read live
@@ -382,6 +385,16 @@ export function App() {
         return { kind, id, name, sources: ["*"] };
     }
   };
+  // The trace window a brand-new element starts with. When a session
+  // buffer exists (live or already holding frames), the new view hooks
+  // straight into it — anchored at 0, spanning the buffer, following
+  // live — exactly the state `startAllElements` gives views present at
+  // session start. With no session yet it's an empty stopped window;
+  // the session-start event will start it along with everything else.
+  const newElementTrace = (): TraceState =>
+    sessionStartSecondsRef.current !== null || countRef.current > 0
+      ? freshTrace(0)
+      : clearedTrace(0);
   const create = useCallback((kind: ProjectElementKind): string => {
     diagCount("registry.create"); // DIAG
     const id = crypto.randomUUID();
@@ -389,7 +402,7 @@ export function App() {
       const name = defaultElementName(kind, prev.map((e) => e.element));
       return [
         ...prev,
-        { element: buildFreshElement(kind, id, name), trace: clearedTrace(countRef.current) },
+        { element: buildFreshElement(kind, id, name), trace: newElementTrace() },
       ];
     });
     return id;
@@ -402,7 +415,7 @@ export function App() {
         diagCount("registry.ensure.append"); // DIAG
         return [
           ...prev,
-          { element: buildFreshElement(kind, id, name), trace: clearedTrace(countRef.current) },
+          { element: buildFreshElement(kind, id, name), trace: newElementTrace() },
         ];
       }
       if (prev[i].element.kind === kind) return prev;
@@ -544,9 +557,7 @@ export function App() {
   // (Re)starting the session buffer — opening a BLF, connecting to a
   // server, or Clear — also (re)starts every trace / plot element:
   // they all anchor at 0 and run, following the new capture from its
-  // start. (A trace/plot *created* mid-session still starts stopped —
-  // see `create` — so it doesn't retroactively span the buffer; this is
-  // about the session-start event itself.)
+  // start.
   const startAllElements = useCallback(() => {
     setRegistry((prev) => prev.map((e) => ({ ...e, trace: freshTrace(0) })));
   }, []);
