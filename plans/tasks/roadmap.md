@@ -17,46 +17,58 @@ the order below is the order of work, top first.
 
 ## Implementation order
 
-1. [Task 31 — Frozen python-can Sidecar Binary](0031-frozen-sidecar-binary.md)
+1. [Task 32 — Initial Hands-On Feedback](0032-initial-use-feedback.md)
+   — the first round of fixes from real use: persistent BLF channel↔bus
+   mapping, trace-row inline signals rework, consistent trace/plot time
+   labels, plot cursor values across all plot areas, and native window
+   controls (macOS maximize fix).
+2. [Task 33 — DBC View Rework](0033-dbc-view-rework.md)
+   — one focused pass over the DBC view: paging/responsiveness, search
+   that hides non-matches and collapses, bus/DBC/ECU/message tree
+   organisation, keyboard navigation, and the large-DBC test fixture.
+   Absorbs the DBC items formerly in Tasks 20 and 25 and the backlog.
+3. [Task 31 — Frozen python-can Sidecar Binary](0031-frozen-sidecar-binary.md)
    — ship the sidecar as a frozen self-contained binary (PyInstaller
    onedir) so an installed cannet launches it with no Python, `uv`, or
    network. Fixes the installer that ships only the GUI exe; replaces the
    never-built end-user `uv`-fetch flow. See ADR 0036.
-2. [Task 29 — TX Timing Robustness & Counter-Per-Wire-Frame](0029-tx-timing-robustness-counter.md)
+4. [Task 29 — TX Timing Robustness & Counter-Per-Wire-Frame](0029-tx-timing-robustness-counter.md)
    — fix periodic-TX drift and high-rate bunching, and re-bind the
    rolling counter / CRC to the actual wire send (one increment per
    frame) instead of the scheduler tick; both share one root.
-3. [Task 20 — Signals, Drag/Drop & Trace Signal Display](0020-signals-drag-drop-trace-signal-display.md)
-   — the signal-view panel and inline trace-row signals, plus the
-   large-DBC panel performance and FZF-search-hiding fixes.
-4. [Task 19 — Argument-Taking Palette Commands](0019-command-palette-goto.md)
+5. [Task 20 — Signal View Panel](0020-signals-drag-drop-trace-signal-display.md)
+   — the signal-view panel (a user-chosen set of signals with their
+   latest values). Trace-row inline signals moved to Task 32; DBC-panel
+   performance and FZF-search-hiding moved to Task 33.
+6. [Task 19 — Argument-Taking Palette Commands](0019-command-palette-goto.md)
    — the specialised, argument-taking commands (go-to-row / -time,
    set-visible-range, save-with-picker) on top of the command palette
    and go-to-view framework already shipped in task 16.
-5. [Task 25 — CAN HW + Virtual-Bus Bug Fixes](0025-can-hw-vbus-bugfixes.md)
+7. [Task 25 — CAN HW + Virtual-Bus Bug Fixes](0025-can-hw-vbus-bugfixes.md)
    — the hardware/virtual-bus verify-and-fix pass (timestamp handling,
-   post-clear negative timestamps) plus DBC-view performance/search and
-   the plot-colour bug.
-6. [Task 22 — CANopen](0022-canopen.md)
+   post-clear negative timestamps) plus the plot-colour bug and the
+   `decimatePoints` dead-code removal.
+8. [Task 22 — CANopen](0022-canopen.md)
    — EDS ingestion and SDO / PDO decoding.
-7. [Task 23 — Plot Measurements and Triggers](0023-plot-measurements-and-triggers.md)
+9. [Task 23 — Plot Measurements and Triggers](0023-plot-measurements-and-triggers.md)
    — triggers, math channels, manual per-series y, export, drag a
    plot area.
-8. [Task 24 — Cross-Cutting Polish](0024-cross-cutting-polish.md)
-   — the small UX / infrastructure tail; note the end-user runtime-tool
-   fetch flow this task used to own is obsoleted by Task 31 (frozen
-   sidecar). Several items now overlap Task 20 and the backlog, so
-   re-derive the real remainder when it comes current.
-9. [Task 27 — Live Disk-Watch for Project & RBS Files](0027-project-rbs-disk-watch.md)
+10. [Task 24 — Cross-Cutting Polish](0024-cross-cutting-polish.md)
+   — the small UX / infrastructure tail (now including undo/redo on
+   view-state changes); note the end-user runtime-tool fetch flow this
+   task used to own is obsoleted by Task 31 (frozen sidecar). Several
+   items now overlap Task 20 and the backlog, so re-derive the real
+   remainder when it comes current.
+11. [Task 27 — Live Disk-Watch for Project & RBS Files](0027-project-rbs-disk-watch.md)
     — generalize the DBC auto-reload watcher to project (`.cannet_prj`)
     and RBS (`.cannet_rbs`) files so external edits are picked up
     automatically.
-10. [Task 28 — RBS External Value-Source Binding](0028-rbs-external-value-source.md)
+12. [Task 28 — RBS External Value-Source Binding](0028-rbs-external-value-source.md)
     — cannet connects out to a value-source server that streams sparse
     `(signal, value)` updates by name; RBS applies them as overrides and
     keeps its own cadence/CRC/counters. Lets an external, out-of-repo sim
     (e.g. an EV drive cycle) drive the RBS.
-11. [Task 30 — Code-Quality Debt: Deduplication & God-File Split](0030-code-quality-dedup.md)
+13. [Task 30 — Code-Quality Debt: Deduplication & God-File Split](0030-code-quality-dedup.md)
     — pay down the copy-pasted hot-path implementations (CAN-ID
     extraction ×5, DBC bit-walkers ×3, decoder boilerplate) and the
     frontend fetch/format dups that also break the thin-view rule, plus

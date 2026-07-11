@@ -139,36 +139,7 @@ Cheap documented-contract work that lands with the fix:
   — it claims "the trace clear cascades to the host" but
   `trace.clear()` is purely a frontend state update.
 
-### 2. DBC view performance, search, and scrolling
-
-The DBC view is slow with a large database: scrolling is sluggish and
-search is poor, both in responsiveness and in result quality. This
-needs an iterative pass on the **search behaviour** as well as the
-render path.
-
-- **Scrolling / render** — the view should page like the other
-  data-bearing views (thin view over a model; see
-  [`../../CLAUDE.md`](../../CLAUDE.md) § GUI architecture), not hold
-  and render the whole database at once.
-- **Search** — iterate on match quality and latency with a realistic
-  large database in hand. (The DBC panel already uses the `fzf`
-  matcher; this is about how it scales and ranks, not picking a new
-  library.)
-
-#### Test fixture: a massive DBC
-
-To exercise the above we need a deliberately large, realistic fixture:
-
-- **Two unique DBCs**, each with **150+ messages**.
-- Some messages with **500+ multiplexed signals**.
-- **Unique but realistic** message and signal names (not
-  `Sig_0001` filler) so search ranking is exercised the way a real
-  database stresses it.
-
-Generate it deterministically (like the existing
-`examples/generate_blf.py` fixture) so the suite stays reproducible.
-
-### 3. Plot signal colours don't advance
+### 2. Plot signal colours don't advance
 
 Signals added **one-by-one** from the DBC view to a plot panel all
 come up with the **first** colour in the palette (all green) instead
@@ -176,7 +147,7 @@ of advancing through it (second orange, third blue, …). Adding several
 at once presumably cycles correctly, so the bug is in the
 add-one-at-a-time path not consulting / advancing the palette index.
 
-### 4. Dead code: `decimatePoints`
+### 3. Dead code: `decimatePoints`
 
 `plotData.ts`'s `decimatePoints` is referenced only by its own test.
 Its doc claims it is *"used to keep a plot area's accumulated cache
@@ -192,11 +163,6 @@ stale comment.
   documented hardware repro in `SMOKE.md`.
 - The post-clear negative-timestamp bug is root-caused (per the
   experiment above) and fixed, with a regression test.
-- The DBC view pages its content and stays responsive with the large
-  fixture open; search latency and ranking are demonstrably improved
-  against that fixture.
-- The large two-DBC fixture is generated deterministically and checked
-  into `examples/`.
 - Adding plot signals one at a time advances the colour palette;
   covered by a test.
 - The trace timing model is documented per ADR 0024: rustdoc on

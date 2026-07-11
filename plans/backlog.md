@@ -149,10 +149,10 @@ trip over it.
 
 ### DBC view
 
-- `[feat]` `cannet-gui` DBC view: **ECU view mode** — group the message
-  tree by transmitting node (ECU) instead of flat by message, mirroring
-  the per-ECU grouping the RBS panel uses. (Surfaced while designing
-  the RBS `.cannet_rbs` schema.)
+- (empty — the DBC-view items now live in
+  [Task 33 — DBC View Rework](tasks/0033-dbc-view-rework.md), which
+  absorbed the former "ECU view mode" entry as its bus/DBC/ECU/message
+  tree organisation.)
 
 ### Transmit panel
 
@@ -227,6 +227,25 @@ name/colour/remove on any editable event row. Remaining follow-ups:
     historical-mode trace views
 
 ### GUI chrome and cross-cutting
+
+- `[perf]` `cannet-gui`: **idle render churn — ~120 FPS on macOS with
+  nothing changing.** With no capture running and no scroll/pan/zoom in
+  flight, the GUI still re-renders at display rate (observed ~120 FPS on
+  macOS). Nothing needs to redraw when no view state changed. Find the
+  always-dirty source (a per-frame effect / rAF loop / unstable state)
+  and gate rendering on actual change so idle cost drops to ~0. Relates
+  to the FPS/responsiveness readout item below.
+
+- `[feat]` **Replay an already-loaded BLF.** Once a BLF is loaded into
+  the session buffer, offer to replay it through the pipeline
+  (time-accurate, from its own start time) without re-opening the file
+  — a playback control over the capture already in the model, so
+  consumers (trace / plot / graph) see it stream as if live. Decide the
+  interaction (transport controls, speed, loop) and how it coexists
+  with a live capture on the same buses. Note: this is *not* the fix for
+  a view added after load coming up empty — that's the subscribe-on-
+  create bug in [Task 32](tasks/0032-initial-use-feedback.md) (item 6);
+  replay is a standalone playback feature, kept here on its own merits.
 
 - `[feat]` **Persist ephemeral view state with the project/scratch.** A
   reopened session restores the capture and its origin (ADR 0002 DS-7 +
