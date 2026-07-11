@@ -228,6 +228,14 @@ name/colour/remove on any editable event row. Remaining follow-ups:
 
 ### GUI chrome and cross-cutting
 
+- `[ui]` `cannet-gui` Settings panel: **remove the read-only section.**
+  The custom settings panel
+  ([ADR 0034](../docs/adr/0034-settings-vs-state-and-custom-settings-panel.md))
+  shows a read-only block (machine-local state / derived info the user
+  can't edit). Non-editable rows don't belong in a settings panel —
+  drop the section (relocate anything worth surfacing to
+  About/diagnostics). Deferred by priority, not an open question.
+
 - `[perf]` `cannet-gui`: **idle render churn — ~120 FPS on macOS with
   nothing changing.** With no capture running and no scroll/pan/zoom in
   flight, the GUI still re-renders at display rate (observed ~120 FPS on
@@ -248,6 +256,23 @@ name/colour/remove on any editable event row. Remaining follow-ups:
   32); replay is a standalone playback feature, kept here on its own
   merits.
 
+- `[bug]` `cannet-gui` `state.json`: **project-scoped plot/panel
+  definitions leak into the no-project layout snapshot.** `state.layout`
+  is the opaque dockview blob the host round-trips verbatim
+  ([state.rs:48–52](apps/gui/src-tauri/src/state.rs#L48)); dockview
+  serializes every open panel's full `params`, so a project's plot panels
+  (`plot-<element>`, e.g. `plot-battery` / `plot-powertrain`) get their
+  complete definitions — areas, `busId`-scoped signal keys like
+  `batt|s:768:PackCurrent`, colours — baked into machine-local
+  `state.json`, byte-identical to the `.cannet_prj` copy. That's
+  project-owned data (thin-views principle) mirrored into UI state, and
+  stale-by-construction: the signals reference project-scoped buses that
+  don't exist with no project open, so the plot resolves empty in the
+  exact "no project" case the snapshot is *for*. Decide whether the
+  no-project snapshot should strip project-scoped panels (or skip
+  capturing them while a project is open) at the `set_state` layout-write
+  path. Relates to the ephemeral-view-state item below — both concern
+  what `state.json` legitimately owns. (Surfaced 2026-07-11.)
 - `[feat]` **Persist ephemeral view state with the project/scratch.** A
   reopened session restores the capture and its origin (ADR 0002 DS-7 +
   ADR 0024) but not *where each view was looking* — plot x-windows,
@@ -353,7 +378,7 @@ next pass on this surface can address them as one piece.
   base cap evicts by age only; notes are kept but may dangle below the floor.
 - `[bug]` `cannet-gui` disk-spill scratch: **two app instances share and
   stomp one `current/` dir.** The scratch lives at a single fixed path
-  (`<OS cache>/cannet/current/`), and nothing arbitrates exclusive
+  (`<OS cache>/dev.cannet.app/current/`), and nothing arbitrates exclusive
   ownership. [ADR 0002 DS-7](../docs/adr/0002-disk-spill-store.md)'s
   `project_id` identity gate decides what a launch *reloads*, but it does
   not stop a second concurrent instance from opening the same dir and

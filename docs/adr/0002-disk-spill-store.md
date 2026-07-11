@@ -189,9 +189,11 @@ not two production paths to keep in sync.
 ### DS-7 — Scratch lifecycle: cache directory, reset-on-new-trace
 
 The scratch files live in a single directory under the OS cache
-directory: `$XDG_CACHE_HOME/cannet/current/` on Linux, the OS
-equivalents on macOS and Windows (Tauri's `PathResolver::app_cache_dir()`
-is the natural source). There is at most one trace in scope at a
+directory, resolved through Tauri's `PathResolver::app_cache_dir()`:
+`$XDG_CACHE_HOME/dev.cannet.app/current/` on Linux and the OS
+equivalents on macOS and Windows. Rooting under the app-identifier
+namespace keeps the cache next to the config (`app_config_dir`) and
+log (`app_log_dir`) roots. There is at most one trace in scope at a
 time, so one directory — not a per-session subdirectory — is the
 honest data model.
 

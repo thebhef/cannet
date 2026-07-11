@@ -368,8 +368,8 @@ on disk, so a capture can run indefinitely (hours to days, well past
 physical memory) with every historical frame still addressable for
 scrolling, filtering, and plotting. Each frame is written straight
 through to memory-mapped segment files under an OS cache directory
-(`$XDG_CACHE_HOME/cannet/current/` on Linux, the platform equivalent
-elsewhere); the kernel page cache keeps the hot part resident and pages
+(`$XDG_CACHE_HOME/dev.cannet.app/current/` on Linux, the platform
+equivalent elsewhere); the kernel page cache keeps the hot part resident and pages
 cold history out under pressure, so host RAM stays roughly flat while
 the on-disk cache grows (the status line shows both — `… host` and
 `… disk`). Decoded-signal plot data and the search indexes are built on

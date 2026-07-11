@@ -340,16 +340,24 @@ fn report_js_heap(bytes: u64) {
     crash::record_js_heap(bytes);
 }
 
-/// The live disk-spill scratch directory: `<OS cache dir>/cannet/current`
-/// (ADR 0002 DS-7). Created if absent. This is the single working store
-/// location — ephemeral scratch, not an export — wiped only when the
-/// session buffer is (Clear / Start), so a prior session present at launch
-/// can be reloaded as a stopped historical trace.
-fn scratch_current_dir() -> std::io::Result<std::path::PathBuf> {
-    let base = dirs::cache_dir().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::NotFound, "no OS cache directory")
+/// The live disk-spill scratch directory: `<app cache dir>/current`
+/// (ADR 0002 DS-7), where `<app cache dir>` is Tauri's `app_cache_dir()`
+/// — `$XDG_CACHE_HOME/dev.cannet.app` on Linux and the per-OS
+/// equivalents. Rooting under the app-identifier namespace keeps the
+/// cache alongside the config (`app_config_dir`) and log (`app_log_dir`)
+/// roots instead of a bare `cannet/` sibling. Created if absent. This is
+/// the single working store location — ephemeral scratch, not an export
+/// — wiped only when the session buffer is (Clear / Start), so a prior
+/// session present at launch can be reloaded as a stopped historical
+/// trace.
+fn scratch_current_dir(app: &tauri::App) -> std::io::Result<std::path::PathBuf> {
+    let base = app.path().app_cache_dir().map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("no app cache directory: {e}"),
+        )
     })?;
-    let dir = base.join("cannet").join("current");
+    let dir = base.join("current");
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
 }
@@ -434,17 +442,6 @@ pub fn run() {
     // webview fetches the result via `diag_autostart` on boot. `None` on a
     // normal launch leaves boot behaviour untouched.
     let autostart = diag::AutomationConfig::from_args(std::env::args());
-    // The disk-spill scratch and the filter-index dir under it are resolved
-    // once here; the trace store opens on the disk backend (or falls back to
-    // RAM). The filter-index dir is derived before `scratch` is moved into
-    // `open_trace_store`.
-    let scratch = scratch_current_dir();
-    let scratch_path = scratch.as_ref().ok().map(std::path::PathBuf::as_path);
-    let filter_dir = filter_index_dir(scratch_path);
-    let signal_dir = signal_cache_dir(scratch_path);
-    // Owned copy for the notes store — `open_trace_store` moves `scratch`.
-    let notes_dir = scratch_path.map(std::path::Path::to_path_buf);
-    let trace_store = open_trace_store(scratch);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         // Persist the main window's size, position, and maximized /
@@ -461,29 +458,6 @@ pub fn run() {
                 )
                 .build(),
         )
-        .manage(AppState {
-            databases: Mutex::new(Vec::new()),
-            remote_sessions: Mutex::new(HashMap::new()),
-            trace_store,
-            signal_caches: SignalCacheStore::new(signal_dir),
-            system_log: SystemLog::new(),
-            // Notes share the scratch `current/` dir with the trace store's
-            // identity/derived files (ADR 0002 DS-7); they persist on every
-            // edit, so a marker added to a stopped trace survives reopen.
-            notes: match notes_dir {
-                Some(p) => NotesStore::with_scratch(p),
-                None => NotesStore::new(),
-            },
-            dbc_watcher: Mutex::new(None),
-            local_buses: local_buses::LocalBusRegistry::default(),
-            transmit_frames: Mutex::new(transmit_frames::TransmitFrameRegistry::default()),
-            transmit_scheduler,
-            rbs: Mutex::new(rbs::RbsRuntime::default()),
-            verifier: verification::VerificationState::default(),
-            filter_index_dir: filter_dir,
-            filter_index: Mutex::new(None),
-            active_project_id: Mutex::new(None),
-        })
         .manage(diag::HostMetrics::default())
         .manage(sidecar::SidecarState::default())
         .manage(interfaces::InterfacesState::default())
@@ -573,6 +547,48 @@ pub fn run() {
             report_js_heap,
         ])
         .setup(move |app| {
+            // Resolve the disk-spill scratch (ADR 0002 DS-7) now that the
+            // `AppHandle` exists, so it roots under Tauri's
+            // `app_cache_dir()` (`<cache>/dev.cannet.app/current`) — the
+            // same identifier namespace as the config and log dirs. The
+            // trace store opens on the disk backend, or falls back to RAM
+            // (logging why) if the cache dir can't be resolved or opened.
+            // The filter index, signal pyramids, and notes hang off the
+            // same scratch. `AppState` is managed here rather than on the
+            // builder because that resolution needs the handle; no command
+            // can run before `setup` returns, so it is in place for every
+            // consumer (including `apply_scratch_cap` and the DBC watcher
+            // below).
+            let scratch = scratch_current_dir(app);
+            let scratch_path = scratch.as_ref().ok().map(std::path::PathBuf::as_path);
+            let filter_dir = filter_index_dir(scratch_path);
+            let signal_dir = signal_cache_dir(scratch_path);
+            let notes_dir = scratch_path.map(std::path::Path::to_path_buf);
+            let trace_store = open_trace_store(scratch);
+            app.manage(AppState {
+                databases: Mutex::new(Vec::new()),
+                remote_sessions: Mutex::new(HashMap::new()),
+                trace_store,
+                signal_caches: SignalCacheStore::new(signal_dir),
+                system_log: SystemLog::new(),
+                // Notes share the scratch `current/` dir with the trace
+                // store's identity/derived files (ADR 0002 DS-7); they
+                // persist on every edit, so a marker added to a stopped
+                // trace survives reopen.
+                notes: match notes_dir {
+                    Some(p) => NotesStore::with_scratch(p),
+                    None => NotesStore::new(),
+                },
+                dbc_watcher: Mutex::new(None),
+                local_buses: local_buses::LocalBusRegistry::default(),
+                transmit_frames: Mutex::new(transmit_frames::TransmitFrameRegistry::default()),
+                transmit_scheduler,
+                rbs: Mutex::new(rbs::RbsRuntime::default()),
+                verifier: verification::VerificationState::default(),
+                filter_index_dir: filter_dir,
+                filter_index: Mutex::new(None),
+                active_project_id: Mutex::new(None),
+            });
             // Make sure the main window has the id our capabilities expect.
             // Tauri assigns "main" by default for the first window in the
             // config; we rely on that here.
