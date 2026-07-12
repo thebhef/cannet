@@ -1,0 +1,290 @@
+{
+  "schema_version": 1,
+  "fill_bit": 0,
+  "disabled_messages": [
+    "Pack/0x10D"
+  ],
+  "buses": {
+    "Pack": {
+      "enabled": true,
+      "ecus": {
+        "BMS": {
+          "enabled": true,
+          "messages": {
+            "0x100": {
+              "signals": {
+                "PackVoltage": 396.4,
+                "PackCurrent": 84.5,
+                "StateOfCharge": 71.8,
+                "PackState": "Drive",
+                "FaultLevel": "None"
+              }
+            },
+            "0x101": {
+              "signals": {
+                "MaxDischargeCurrent": 420.0,
+                "MaxRegenCurrent": 150.0,
+                "MaxDischargePower": 160.0,
+                "MaxChargePower": 60.0
+              }
+            },
+            "0x102": {
+              "signals": {
+                "MinCellVoltage": 3.412,
+                "MaxCellVoltage": 3.468,
+                "MinCellIndex": 117.0,
+                "MaxCellIndex": 42.0,
+                "MinCellTemp": 29.0,
+                "MaxCellTemp": 33.0
+              }
+            },
+            "0x103": {
+              "signals": {
+                "MainPositiveState": "Closed",
+                "MainNegativeState": "Closed",
+                "PrechargeState": "Open",
+                "ContactorCycleCount": 1287.0
+              }
+            },
+            "0x105": {
+              "signals": {
+                "RemainingEnergy": 54.2,
+                "FullChargeEnergy": 75.4,
+                "LifetimeDischargedEnergy": 12840.0
+              }
+            },
+            "0x106": {
+              "signals": {
+                "StateOfHealth": 96.5,
+                "CapacityFadeEstimate": 3.5,
+                "ResistanceGrowthEstimate": 5.1
+              }
+            },
+            "0x108": {
+              "signals": {
+                "InterlockLoopClosed": 1.0,
+                "InterlockOpenLocation": "None"
+              }
+            },
+            "0x109": {
+              "signals": {
+                "InstantPower": 33.5,
+                "Peak10sPower": 128.0,
+                "Peak10sRegen": 60.0
+              }
+            },
+            "0x120": {
+              "signals": {
+                "StringVoltage": 396.2,
+                "StringCurrent": 21.1,
+                "StringContactorClosed": 1.0,
+                "StringFuseOk": 1.0
+              }
+            },
+            "0x18F00001x": {
+              "signals": {
+                "CellVoltage001": 3.4421,
+                "CellVoltage002": 3.4389,
+                "CellVoltage003": 3.4456,
+                "CellTemp001": 31.0,
+                "CellTemp002": 30.0,
+                "CellBalance001": "Off"
+              }
+            }
+          }
+        },
+        "VehicleControlUnit": {
+          "enabled": true,
+          "messages": {
+            "0xC0": {
+              "signals": {
+                "PackEnableRequest": "Drive",
+                "MaxDischargeCurrentRequest": 420.0,
+                "MaxRegenCurrentRequest": 150.0
+              }
+            },
+            "0xC1": {
+              "signals": {
+                "ChargeCurrentTarget": 0.0,
+                "ChargeVoltageTarget": 0.0,
+                "TargetSoc": 80.0
+              }
+            },
+            "0xC2": {
+              "signals": {
+                "CabinHeatRequest": 1.5,
+                "BatteryCoolingRequest": 2.0
+              }
+            }
+          }
+        },
+        "ChargerObc": {
+          "enabled": true,
+          "messages": {
+            "0x18FF8001x": {
+              "signals": {
+                "ObcState": "Idle"
+              }
+            },
+            "0x18FF8006x": {
+              "signals": {
+                "PortLedState": "Off"
+              }
+            }
+          }
+        },
+        "DcdcConverter": {
+          "enabled": true,
+          "messages": {
+            "0x340": {
+              "signals": {
+                "DcdcState": "Active",
+                "LvOutputVoltage": 13.8,
+                "LvOutputCurrent": 42.5
+              }
+            }
+          }
+        },
+        "InsulationMonitor": {
+          "enabled": true,
+          "messages": {
+            "0x104": {
+              "signals": {
+                "IsolationResistance": 2500.0,
+                "IsolationValid": 1.0
+              }
+            },
+            "0x350": {
+              "signals": {
+                "PositiveRailResistance": 5000.0,
+                "NegativeRailResistance": 5200.0
+              }
+            }
+          }
+        },
+        "PackSensorFront": {
+          "enabled": false
+        },
+        "PackSensorRear": {
+          "enabled": false
+        },
+        "ThermalControl": {
+          "enabled": false
+        }
+      }
+    },
+    "Zonal": {
+      "enabled": true,
+      "ecus": {
+        "ZoneFrontLeft": {
+          "enabled": true,
+          "messages": {
+            "0x400": {
+              "signals": {
+                "LockState": "Locked"
+              }
+            },
+            "0x407": {
+              "signals": {
+                "TirePressure": 2.475,
+                "TireTemp": 28.0,
+                "SensorBattery": 87.0
+              }
+            },
+            "0x408": {
+              "signals": {
+                "WheelSpeed": 64.8,
+                "WheelDirection": "Forward"
+              }
+            }
+          }
+        },
+        "ZoneFrontRight": {
+          "enabled": true,
+          "messages": {
+            "0x447": {
+              "signals": {
+                "TirePressure": 2.5,
+                "TireTemp": 29.0,
+                "SensorBattery": 91.0
+              }
+            },
+            "0x448": {
+              "signals": {
+                "WheelSpeed": 65.1,
+                "WheelDirection": "Forward"
+              }
+            }
+          }
+        },
+        "ZoneRearLeft": {
+          "enabled": true,
+          "messages": {
+            "0x487": {
+              "signals": {
+                "TirePressure": 2.425,
+                "TireTemp": 27.0,
+                "SensorBattery": 78.0
+              }
+            },
+            "0x488": {
+              "signals": {
+                "WheelSpeed": 64.9,
+                "WheelDirection": "Forward"
+              }
+            }
+          }
+        },
+        "ZoneRearRight": {
+          "enabled": true,
+          "messages": {
+            "0x4C7": {
+              "signals": {
+                "TirePressure": 2.45,
+                "TireTemp": 28.0,
+                "SensorBattery": 83.0
+              }
+            },
+            "0x4C8": {
+              "signals": {
+                "WheelSpeed": 65.0,
+                "WheelDirection": "Forward"
+              }
+            }
+          }
+        },
+        "BodyGateway": {
+          "enabled": true,
+          "messages": {
+            "0x66D": {
+              "signals": {
+                "RainIntensity": 0.0,
+                "AmbientLightLevel": 820.0
+              }
+            },
+            "0x66E": {
+              "signals": {
+                "CabinTemp": 22.0,
+                "CabinHumidity": 45.0,
+                "EvaporatorTemp": 8.0
+              }
+            },
+            "0x670": {
+              "signals": {
+                "Co2Level": 640.0,
+                "VocIndex": 25.0,
+                "Pm25Level": 4.2
+              }
+            }
+          }
+        },
+        "CentralCompute": {
+          "enabled": false
+        },
+        "AdasDomain": {
+          "enabled": false
+        }
+      }
+    }
+  }
+}

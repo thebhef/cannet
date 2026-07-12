@@ -57,6 +57,27 @@ describe("useTransientStatus", () => {
     expect(emit).toHaveBeenCalledTimes(2);
   });
 
+  it("still reverts when the transient source clears before the dwell elapses", () => {
+    // Regression: a short-lived notice (e.g. "1 connecting." while a
+    // session transitions to running within the dwell window) must still
+    // flash for its full dwell and then revert. The revert timer must not
+    // be cancelled just because the underlying transient went null early.
+    const emit = vi.fn();
+    const notice: TransientStatus = { text: "1 connecting.", level: "info" };
+    const { result, rerender } = renderHook(
+      ({ t }: { t: TransientStatus | null }) => useTransientStatus("resting", t, emit, DWELL),
+      { initialProps: { t: notice as TransientStatus | null } },
+    );
+    expect(result.current).toBe("1 connecting.");
+    // The source clears before the dwell elapses (session went running).
+    rerender({ t: null });
+    // Still flashing during the dwell...
+    expect(result.current).toBe("1 connecting.");
+    // ...but it MUST revert once the dwell elapses.
+    act(() => vi.advanceTimersByTime(DWELL));
+    expect(result.current).toBe("resting");
+  });
+
   it("an identical notice re-fires only after the bar returns to rest", () => {
     const emit = vi.fn();
     const err: TransientStatus = { text: "Error: boom", level: "error" };

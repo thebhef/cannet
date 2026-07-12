@@ -29,13 +29,18 @@ import {
  * The toolbar button toggles show/focus.
  *
  * The host owns the DBC set; the panel is a pure viewer over
- * [`list_dbc_content`]. Search runs against an
- * [`fzf`](https://github.com/ajitid/fzf-for-js)-backed matcher; the
- * matched set auto-expands ancestors and the rest of the visible tree
- * dims.
+ * [`list_dbc_content`]. The tree is organised
+ * bus → DBC → ECU → message → signal (the ECU level mirrors the RBS
+ * panel's per-transmitter grouping). Search runs against an
+ * [`fzf`](https://github.com/ajitid/fzf-for-js)-backed matcher; while
+ * a filter is active only matches, the paths to them, and expanded
+ * children of matches render — everything else is removed, so a
+ * filtered render is bounded by the match set however large the
+ * database is.
  *
- * Rows are drag sources for signals (see {@link setSignalDragData})
- * and support multi-select.
+ * Rows are drag sources for signals (see {@link setSignalDragData}),
+ * support multi-select, and the whole tree is keyboard-navigable
+ * (arrow keys move / expand / collapse, Enter selects).
  */
 
 interface PanelParams {
@@ -84,6 +89,12 @@ function busNodeId(busId: string): string {
 function dbcNodeId(busId: string, path: string): string {
   return `dbc:${busId}::${path}`;
 }
+/// `ecu` is the DBC transmitter name, or the `:::none` sentinel for
+/// messages whose `BO_` line carries the `Vector__XXX` placeholder
+/// (`:::` can't collide with a real node name).
+function ecuNodeId(busId: string, path: string, ecu: string): string {
+  return `ecu:${busId}::${path}::${ecu}`;
+}
 function messageNodeId(
   busId: string,
   path: string,
@@ -107,6 +118,50 @@ function signalNodeId(
 const UNASSIGNED_BUS_ID = ":::unassigned";
 const ALL_BUSES_BUS_ID = ":::all";
 
+/// Sentinel ECU key + display label for messages with no `BO_`
+/// transmitter (`Vector__XXX`). The label matches the RBS panel's
+/// fallback so the two per-ECU groupings read the same.
+const NO_TRANSMITTER_ECU_KEY = ":::none";
+const NO_TRANSMITTER_LABEL = "(no transmitter)";
+
+/// One per-transmitter group of a DBC's messages — the ECU tree
+/// level. `key` feeds the node id (stable across renames of the
+/// display label); `transmitter` is `null` for the no-sender group.
+interface EcuGroup {
+  key: string;
+  label: string;
+  transmitter: string | null;
+  messages: DbcMessageContentRecord[];
+}
+
+/// Group a DBC's host-ordered message list per transmitter ECU,
+/// mirroring the RBS panel's grouping. ECUs sort alphabetically
+/// (case-insensitive); the "(no transmitter)" group, when present,
+/// sorts last. Message order within a group stays the host's
+/// `(extended, messageId)` order.
+function groupByEcu(messages: readonly DbcMessageContentRecord[]): EcuGroup[] {
+  const byEcu = new Map<string, EcuGroup>();
+  for (const m of messages) {
+    const key = m.transmitter ?? NO_TRANSMITTER_ECU_KEY;
+    let g = byEcu.get(key);
+    if (!g) {
+      g = {
+        key,
+        label: m.transmitter ?? NO_TRANSMITTER_LABEL,
+        transmitter: m.transmitter,
+        messages: [],
+      };
+      byEcu.set(key, g);
+    }
+    g.messages.push(m);
+  }
+  return [...byEcu.values()].sort((a, b) => {
+    if (a.transmitter === null) return b.transmitter === null ? 0 : 1;
+    if (b.transmitter === null) return -1;
+    return a.label.localeCompare(b.label, undefined, { sensitivity: "base" });
+  });
+}
+
 /// Last path component for display — DBC file paths can get long; the
 /// basename is what the user actually recognises. Falls back to the
 /// whole path when there's no separator.
@@ -121,18 +176,24 @@ function basename(path: string): string {
 /// the phase-12 spec requires we match against, joined with spaces.
 /// fzf's matcher then does the fuzzy work over this single string.
 ///
-/// `busPrefix` (when non-empty) is woven in as `${bus}.${msg}.${sig}`
-/// so queries like `chassis.BrakeStatus.Speed` (or fzf's abbreviation
-/// form `c.BrSt.Sp`, `c.brsps`, etc.) home in on a single (bus, message,
-/// signal) triple. Bus-prefix is empty for the sentinel groups
-/// ("(All DBCs)", "(Unassigned)") where there's no real bus context.
+/// The dotted ancestry is woven in as `${bus}.${ecu}.${msg}.${sig}`
+/// — the same hierarchy the tree renders — so queries like
+/// `chassis.BrakeStatus.Speed`, `bmsstatus` (ECU + message-name
+/// fragment), or fzf's abbreviation form (`c.BrSt.Sp`, `c.brsps`)
+/// home in on the right node. The ADR-0020 plot-target shape
+/// (`bus.msg.sig`) remains a subsequence of this, so target-shaped
+/// queries keep working. Bus-prefix is empty for the sentinel groups
+/// ("(All DBCs)", "(Unassigned)") where there's no real bus context;
+/// the ECU segment is absent for `Vector__XXX` messages.
 function messageHaystack(busPrefix: string, m: DbcMessageContentRecord): string {
   const decId = m.messageId.toString(10);
   const hexId = `0x${m.messageId.toString(16).toUpperCase()}`;
   const attrs = m.attributes
     .map((a) => `${a.name}=${a.value}`)
     .join(" ");
-  const dotted = busPrefix ? `${busPrefix}.${m.name}` : m.name;
+  const dotted = [busPrefix, m.transmitter ?? "", m.name]
+    .filter((p) => p !== "")
+    .join(".");
   return `${dotted} ${m.comment} ${decId} ${hexId} ${attrs}`.trim();
 }
 function signalHaystack(
@@ -144,13 +205,11 @@ function signalHaystack(
     .map((e) => `${e.raw} ${e.label}`)
     .join(" ");
   const attrs = s.attributes.map((a) => `${a.name}=${a.value}`).join(" ");
-  const dotted = busPrefix
-    ? `${busPrefix}.${m.name}.${s.name}`
-    : `${m.name}.${s.name}`;
-  // The dotted form is the fzf-target shape — same as the
-  // filter-defined plot area target (ADR 0020). Other fields are
-  // appended so a query against units / comments / value-table
-  // labels / attribute names still hits.
+  const dotted = [busPrefix, m.transmitter ?? "", m.name, s.name]
+    .filter((p) => p !== "")
+    .join(".");
+  // Other fields are appended so a query against units / comments /
+  // value-table labels / attribute names still hits.
   return `${dotted} ${s.unit} ${s.comment} ${vals} ${attrs}`.trim();
 }
 
@@ -163,25 +222,26 @@ function busSearchPrefix(g: BusGroup): string {
   return g.label;
 }
 
-/// One row the panel renders. Carries `dim` (filter active, not in
-/// match set) and `expanded`/`hasChildren` flags so the row renderer
-/// is a flat map. The `kind` discriminator picks between the four
-/// row layouts; signal / message / dbc rows carry their owning DBC
-/// path so the drag handler can resolve per-DBC bus scoping at drag
-/// time.
+/// One row the panel renders. Carries `expanded`/`hasChildren` flags
+/// so the row renderer is a flat map. The `kind` discriminator picks
+/// between the five row layouts; signal / message / dbc rows carry
+/// their owning DBC path so the drag handler can resolve per-DBC bus
+/// scoping at drag time. While a filter is active, rows outside the
+/// match set (and not on a path to / under a match) are not built at
+/// all — hiding is structural, not a style.
 interface RenderRow {
   id: string;
   depth: number;
   expanded: boolean;
   hasChildren: boolean;
-  dim: boolean;
-  /// True when this row is in the panel's selection set. Bus and DBC
-  /// rows are never selectable (clicking expands/collapses them);
-  /// message / signal rows can be selected and dragged.
+  /// True when this row is in the panel's selection set. Bus, DBC,
+  /// and ECU rows are never selectable (clicking expands/collapses
+  /// them); message / signal rows can be selected and dragged.
   selected: boolean;
   kind:
     | { tag: "bus"; busId: string; label: string; unscopedNote: boolean }
     | { tag: "dbc"; path: string; scopeLabel: string | null }
+    | { tag: "ecu"; label: string }
     | {
         tag: "message";
         /// Bus context — set from the bus group this row was
@@ -272,20 +332,30 @@ function groupByBus(
 
 /// Walk the bus-grouped content tree, applying `effectiveExpanded`
 /// (= user's expand state ∪ ancestors-of-matches when filtering),
-/// and produce a flat row list ready to render. `matchSet` is the
-/// fzf-matched node ids; rows not in it are dimmed (when
-/// `filterActive`). `selection` flips rows' `selected` flag for the
-/// highlight class.
+/// and produce a flat row list ready to render.
+///
+/// While a filter is active the walk *removes* everything outside the
+/// match structure instead of rendering it dimmed: a container (bus /
+/// DBC / ECU) renders only when its subtree holds a match
+/// (`ancestorsOfMatches`); a message renders when it matched or a
+/// signal under it matched; a signal renders when it matched or its
+/// message matched (so expanding a matched message still reveals its
+/// children). This bounds a filtered render by the match set — the
+/// task-33 responsiveness rule.
+///
+/// `selection` flips rows' `selected` flag for the highlight class.
 function buildRows(
   groups: readonly BusGroup[],
   effectiveExpanded: ReadonlySet<string>,
   matchSet: ReadonlySet<string>,
+  ancestorsOfMatches: ReadonlySet<string>,
   filterActive: boolean,
   selection: ReadonlySet<string>,
 ): RenderRow[] {
   const out: RenderRow[] = [];
   for (const g of groups) {
     const bId = busNodeId(g.busId);
+    if (filterActive && !ancestorsOfMatches.has(bId)) continue;
     const bExpanded = effectiveExpanded.has(bId);
     // `dragBusId` is what message / signal rows under this group
     // carry as their `busId` — the destination bus a drag from this
@@ -298,7 +368,6 @@ function buildRows(
       depth: 0,
       expanded: bExpanded,
       hasChildren: g.dbcs.length > 0,
-      dim: filterActive && !matchSet.has(bId),
       selected: false,
       kind: {
         tag: "bus",
@@ -310,13 +379,13 @@ function buildRows(
     if (!bExpanded) continue;
     for (const { dbc, unscoped } of g.dbcs) {
       const dId = dbcNodeId(g.busId, dbc.dbcPath);
+      if (filterActive && !ancestorsOfMatches.has(dId)) continue;
       const dExpanded = effectiveExpanded.has(dId);
       out.push({
         id: dId,
         depth: 1,
         expanded: dExpanded,
         hasChildren: dbc.messages.length > 0,
-        dim: filterActive && !matchSet.has(dId),
         selected: false,
         kind: {
           tag: "dbc",
@@ -325,44 +394,64 @@ function buildRows(
         },
       });
       if (!dExpanded) continue;
-      for (const m of dbc.messages) {
-        const mId = messageNodeId(g.busId, dbc.dbcPath, m.messageId, m.extended);
-        const mExpanded = effectiveExpanded.has(mId);
+      for (const ecu of groupByEcu(dbc.messages)) {
+        const eId = ecuNodeId(g.busId, dbc.dbcPath, ecu.key);
+        if (filterActive && !ancestorsOfMatches.has(eId)) continue;
+        const eExpanded = effectiveExpanded.has(eId);
         out.push({
-          id: mId,
+          id: eId,
           depth: 2,
-          expanded: mExpanded,
-          hasChildren: m.signals.length > 0,
-          dim: filterActive && !matchSet.has(mId),
-          selected: selection.has(mId),
-          kind: { tag: "message", busId: dragBusId, dbcPath: dbc.dbcPath, message: m },
+          expanded: eExpanded,
+          hasChildren: ecu.messages.length > 0,
+          selected: false,
+          kind: { tag: "ecu", label: ecu.label },
         });
-        if (!mExpanded) continue;
-        for (const s of m.signals) {
-          const sId = signalNodeId(
-            g.busId,
-            dbc.dbcPath,
-            m.messageId,
-            m.extended,
-            s.name,
-          );
+        if (!eExpanded) continue;
+        for (const m of ecu.messages) {
+          const mId = messageNodeId(g.busId, dbc.dbcPath, m.messageId, m.extended);
+          const mMatched = matchSet.has(mId);
+          if (filterActive && !mMatched && !ancestorsOfMatches.has(mId)) {
+            continue;
+          }
+          const mExpanded = effectiveExpanded.has(mId);
           out.push({
-            id: sId,
+            id: mId,
             depth: 3,
-            expanded: false,
-            hasChildren: false,
-            dim: filterActive && !matchSet.has(sId),
-            selected: selection.has(sId),
-            kind: {
-              tag: "signal",
-              busId: dragBusId,
-              dbcPath: dbc.dbcPath,
-              messageId: m.messageId,
-              extended: m.extended,
-              messageName: m.name,
-              signal: s,
-            },
+            expanded: mExpanded,
+            hasChildren: m.signals.length > 0,
+            selected: selection.has(mId),
+            kind: { tag: "message", busId: dragBusId, dbcPath: dbc.dbcPath, message: m },
           });
+          if (!mExpanded) continue;
+          for (const s of m.signals) {
+            const sId = signalNodeId(
+              g.busId,
+              dbc.dbcPath,
+              m.messageId,
+              m.extended,
+              s.name,
+            );
+            // Under a matched message every signal shows (the user
+            // explicitly expanded it); under a merely-expanded
+            // message only matched signals do.
+            if (filterActive && !mMatched && !matchSet.has(sId)) continue;
+            out.push({
+              id: sId,
+              depth: 4,
+              expanded: false,
+              hasChildren: false,
+              selected: selection.has(sId),
+              kind: {
+                tag: "signal",
+                busId: dragBusId,
+                dbcPath: dbc.dbcPath,
+                messageId: m.messageId,
+                extended: m.extended,
+                messageName: m.name,
+                signal: s,
+              },
+            });
+          }
         }
       }
     }
@@ -387,16 +476,21 @@ function buildSearchIndex(groups: readonly BusGroup[]): SearchEntry[] {
     for (const { dbc } of g.dbcs) {
       const dId = dbcNodeId(g.busId, dbc.dbcPath);
       for (const m of dbc.messages) {
+        const eId = ecuNodeId(
+          g.busId,
+          dbc.dbcPath,
+          m.transmitter ?? NO_TRANSMITTER_ECU_KEY,
+        );
         const mId = messageNodeId(g.busId, dbc.dbcPath, m.messageId, m.extended);
         out.push({
           id: mId,
-          ancestors: [bId, dId],
+          ancestors: [bId, dId, eId],
           haystack: messageHaystack(prefix, m),
         });
         for (const s of m.signals) {
           out.push({
             id: signalNodeId(g.busId, dbc.dbcPath, m.messageId, m.extended, s.name),
-            ancestors: [bId, dId, mId],
+            ancestors: [bId, dId, eId, mId],
             haystack: signalHaystack(prefix, m, s),
           });
         }
@@ -406,11 +500,23 @@ function buildSearchIndex(groups: readonly BusGroup[]): SearchEntry[] {
   return out;
 }
 
+/// Score floor, as a fraction of the best match's score. fzf accepts
+/// any subsequence, so on a large database a query like "pressure"
+/// also "matches" text where the letters merely appear scattered
+/// across word boundaries — and unlike a ranked list, the tree shows
+/// every member of the match set with equal prominence. fzf scores
+/// contiguous, boundary-aligned matches far above scattered ones
+/// (measured on the ev-zonal fixture: literal hits ≥0.8× top, junk
+/// ≤0.5×), so a relative floor keeps the real matches — including
+/// abbreviation queries, whose score spread is narrow — and drops
+/// the noise.
+const MIN_RELATIVE_SCORE = 0.7;
+
 /// Run `query` against `index` via fzf; return `(matched ids,
-/// ancestors-of-matches ids)`. The render layer uses the union as
-/// "effectively expanded" and the matched set as "not-dim". An empty
-/// query short-circuits to empty sets — the caller's
-/// `filterActive` flag turns dimming off.
+/// ancestors-of-matches ids)`. The render layer shows the matched
+/// set plus the paths to it and uses the ancestor set as "effectively
+/// expanded". An empty query short-circuits to empty sets — the
+/// caller's `filterActive` flag turns hiding off.
 function searchMatches(
   index: readonly SearchEntry[],
   query: string,
@@ -427,26 +533,33 @@ function searchMatches(
     selector: (e) => e.haystack,
     casing: "case-insensitive",
   });
-  for (const res of fzf.find(query)) {
+  const results = fzf.find(query);
+  const floor = (results[0]?.score ?? 0) * MIN_RELATIVE_SCORE;
+  for (const res of results) {
+    // Results arrive score-descending; everything past the floor is
+    // scattered-subsequence noise.
+    if (res.score < floor) break;
     matchSet.add(res.item.id);
     for (const a of res.item.ancestors) ancestorsOfMatches.add(a);
   }
   return { matchSet, ancestorsOfMatches };
 }
 
-const DEFAULT_EXPANDED_DEPTH_ON_LOAD = 1;
-
-/// Auto-expand every bus group AND its immediate DBC children when
-/// the panel first loads content, so the user sees the messages
-/// without an extra click. Used once on mount / content-arrival;
-/// subsequent toggle clicks override.
+/// Auto-expand every bus group, its DBC children, and their ECU
+/// groups when the panel first loads content, so the user sees the
+/// messages without an extra click (messages themselves stay
+/// collapsed — the rendered row count is bounded by the message
+/// count, not the signal count). Used once on mount /
+/// content-arrival; subsequent toggle clicks override.
 function initialExpandedRoots(groups: readonly BusGroup[]): Set<string> {
   const out = new Set<string>();
-  if (DEFAULT_EXPANDED_DEPTH_ON_LOAD < 1) return out;
   for (const g of groups) {
     out.add(busNodeId(g.busId));
     for (const { dbc } of g.dbcs) {
       out.add(dbcNodeId(g.busId, dbc.dbcPath));
+      for (const ecu of groupByEcu(dbc.messages)) {
+        out.add(ecuNodeId(g.busId, dbc.dbcPath, ecu.key));
+      }
     }
   }
   return out;
@@ -472,7 +585,9 @@ function rowToSignalRefs(
   row: RenderRow,
   content: readonly DbcContentRecord[],
 ): DraggableSignalRef[] {
-  if (row.kind.tag === "bus" || row.kind.tag === "dbc") return [];
+  if (row.kind.tag === "bus" || row.kind.tag === "dbc" || row.kind.tag === "ecu") {
+    return [];
+  }
   const busId = row.kind.busId;
   if (row.kind.tag === "signal") {
     const s = row.kind.signal;
@@ -510,10 +625,10 @@ function rowToSignalRefs(
 
 /// The set of selectable rows in display order — used by Shift-click
 /// range-extend to walk from the anchor to the clicked row. Bus /
-/// DBC rows are filtered out because they aren't selectable.
+/// DBC / ECU rows are filtered out because they aren't selectable.
 function selectableIdsInOrder(rows: readonly RenderRow[]): string[] {
   return rows
-    .filter((r) => r.kind.tag !== "bus" && r.kind.tag !== "dbc")
+    .filter((r) => r.kind.tag === "message" || r.kind.tag === "signal")
     .map((r) => r.id);
 }
 
@@ -611,8 +726,16 @@ export function DbcPanel(props: IDockviewPanelProps) {
   }, [expanded, ancestorsOfMatches, filterActive]);
 
   const rows = useMemo(
-    () => buildRows(busGroups, effectiveExpanded, matchSet, filterActive, selection),
-    [busGroups, effectiveExpanded, matchSet, filterActive, selection],
+    () =>
+      buildRows(
+        busGroups,
+        effectiveExpanded,
+        matchSet,
+        ancestorsOfMatches,
+        filterActive,
+        selection,
+      ),
+    [busGroups, effectiveExpanded, matchSet, ancestorsOfMatches, filterActive, selection],
   );
 
   const toggle = useCallback((id: string) => {
@@ -624,8 +747,24 @@ export function DbcPanel(props: IDockviewPanelProps) {
     });
   }, []);
 
+  /// Keyboard cursor — the node id the arrow keys operate on. Kept
+  /// as an id (not an index) so it survives re-renders; when the row
+  /// it points at is filtered/collapsed away, the next arrow press
+  /// restarts from the top. View-local, deliberately not persisted.
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const treeRef = useRef<HTMLDivElement | null>(null);
+
+  // Keep the keyboard cursor visible while arrowing through a long
+  // tree.
+  useEffect(() => {
+    if (activeId == null) return;
+    const el = treeRef.current?.querySelector('[data-active="true"]');
+    (el as HTMLElement | null)?.scrollIntoView?.({ block: "nearest" });
+  }, [activeId]);
+
   const onRowClick = useCallback(
     (id: string, modifiers: { shift: boolean; meta: boolean }) => {
+      setActiveId(id);
       if (modifiers.shift) {
         // Range-extend from the anchor (or from `id` itself if no
         // anchor is set) through the clicked row, over the currently
@@ -657,6 +796,73 @@ export function DbcPanel(props: IDockviewPanelProps) {
       selectionAnchorRef.current = id;
     },
     [rows],
+  );
+
+  /// Container-row click / chevron click: toggle expansion and move
+  /// the keyboard cursor there so arrowing continues from where the
+  /// mouse left off.
+  const toggleAndActivate = useCallback(
+    (id: string) => {
+      setActiveId(id);
+      toggle(id);
+    },
+    [toggle],
+  );
+
+  /// Arrow-key tree navigation (task 33): Up/Down move the cursor
+  /// over the visible rows, Right expands (then steps into the first
+  /// child), Left collapses (or walks to the parent), Enter / Space
+  /// selects a message / signal row (with the same shift / meta
+  /// modifiers as a click) or toggles a container row.
+  const onTreeKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (rows.length === 0) return;
+      const idx = activeId == null ? -1 : rows.findIndex((r) => r.id === activeId);
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setActiveId(rows[Math.min(idx + 1, rows.length - 1)].id);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setActiveId(rows[Math.max(idx < 0 ? 0 : idx - 1, 0)].id);
+      } else if (e.key === "ArrowRight") {
+        if (idx < 0) return;
+        e.preventDefault();
+        const row = rows[idx];
+        if (row.hasChildren && !row.expanded) {
+          toggle(row.id);
+        } else if (
+          row.expanded &&
+          idx + 1 < rows.length &&
+          rows[idx + 1].depth === row.depth + 1
+        ) {
+          setActiveId(rows[idx + 1].id);
+        }
+      } else if (e.key === "ArrowLeft") {
+        if (idx < 0) return;
+        e.preventDefault();
+        const row = rows[idx];
+        if (row.hasChildren && row.expanded) {
+          toggle(row.id);
+        } else {
+          for (let i = idx - 1; i >= 0; i -= 1) {
+            if (rows[i].depth < row.depth) {
+              setActiveId(rows[i].id);
+              break;
+            }
+          }
+        }
+      } else if (e.key === "Enter" || e.key === " ") {
+        if (idx < 0) return;
+        e.preventDefault();
+        const row = rows[idx];
+        if (row.kind.tag === "message" || row.kind.tag === "signal") {
+          onRowClick(row.id, { shift: e.shiftKey, meta: e.metaKey || e.ctrlKey });
+        } else if (row.hasChildren) {
+          toggle(row.id);
+        }
+      }
+    },
+    [rows, activeId, toggle, onRowClick],
   );
 
   const handleDragStart = useCallback(
@@ -702,7 +908,14 @@ export function DbcPanel(props: IDockviewPanelProps) {
           details
         </label>
       </div>
-      <div className="dbc-panel-tree" role="tree">
+      <div
+        ref={treeRef}
+        className="dbc-panel-tree"
+        role="tree"
+        tabIndex={0}
+        aria-activedescendant={activeId != null ? domRowId(activeId) : undefined}
+        onKeyDown={onTreeKeyDown}
+      >
         {content.length === 0 && (
           <div className="dbc-panel-empty">
             No DBC attached. Add one from the toolbar's <em>Add DBC…</em>.
@@ -712,8 +925,9 @@ export function DbcPanel(props: IDockviewPanelProps) {
           <DbcRow
             key={row.id}
             row={row}
+            active={row.id === activeId}
             showDetails={showDetails}
-            onToggle={toggle}
+            onToggle={toggleAndActivate}
             onClick={onRowClick}
             onDragStart={handleDragStart}
           />
@@ -723,28 +937,37 @@ export function DbcPanel(props: IDockviewPanelProps) {
   );
 }
 
+/// DOM id for one tree row — what `aria-activedescendant` points at.
+/// Node ids can carry arbitrary text (DBC paths, bus labels), so
+/// URI-encode to keep the id whitespace-free.
+function domRowId(nodeId: string): string {
+  return `dbcnode-${encodeURIComponent(nodeId)}`;
+}
+
 interface DbcRowProps {
   row: RenderRow;
+  active: boolean;
   showDetails: boolean;
   onToggle: (id: string) => void;
   onClick: (id: string, modifiers: { shift: boolean; meta: boolean }) => void;
   onDragStart: (e: React.DragEvent, row: RenderRow) => void;
 }
 
-function DbcRow({ row, showDetails, onToggle, onClick, onDragStart }: DbcRowProps) {
+function DbcRow({ row, active, showDetails, onToggle, onClick, onDragStart }: DbcRowProps) {
   const indent = `${row.depth * 14}px`;
-  // Bus / DBC rows: clicking anywhere toggles expand (they aren't
-  // selectable). Message / signal rows: row body selects, chevron
-  // toggles expand separately. A draggable row carries the drag-
-  // source handlers.
-  const isContainerRow = row.kind.tag === "bus" || row.kind.tag === "dbc";
+  // Bus / DBC / ECU rows: clicking anywhere toggles expand (they
+  // aren't selectable). Message / signal rows: row body selects,
+  // chevron toggles expand separately. A draggable row carries the
+  // drag-source handlers.
+  const isContainerRow =
+    row.kind.tag === "bus" || row.kind.tag === "dbc" || row.kind.tag === "ecu";
   const selectable = !isContainerRow;
   const draggable = !isContainerRow;
   const baseClass = [
     "dbc-row",
     `dbc-row-${row.kind.tag}`,
-    row.dim ? "dbc-row-dim" : "",
     row.selected ? "dbc-row-selected" : "",
+    active ? "dbc-row-active" : "",
   ]
     .filter(Boolean)
     .join(" ");
@@ -766,11 +989,13 @@ function DbcRow({ row, showDetails, onToggle, onClick, onDragStart }: DbcRowProp
   return (
     <>
       <div
+        id={domRowId(row.id)}
         className={baseClass}
         role="treeitem"
         aria-selected={selectable ? row.selected : undefined}
         aria-expanded={row.hasChildren ? row.expanded : undefined}
         aria-level={row.depth + 1}
+        data-active={active || undefined}
         style={{ paddingLeft: indent }}
         onClick={onRowClick}
         draggable={draggable}
@@ -947,6 +1172,9 @@ function DbcRowContent({ kind }: { kind: RenderRow["kind"] }) {
         )}
       </>
     );
+  }
+  if (kind.tag === "ecu") {
+    return <span className="dbc-row-label">{kind.label}</span>;
   }
   if (kind.tag === "message") {
     const m = kind.message;

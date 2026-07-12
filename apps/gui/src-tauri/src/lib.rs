@@ -2352,6 +2352,7 @@ fn list_signals(
                     message_id: d.message_id,
                     extended: d.extended,
                     message_name: d.message_name.clone(),
+                    transmitter: d.transmitter.clone(),
                     signal_name: d.signal_name.clone(),
                     unit: d.unit.clone(),
                     is_enum: d.is_enum,
@@ -2424,6 +2425,7 @@ fn message_record(m: cannet_dbc::DbcMessageContent) -> DbcMessageContentRecord {
         brs: m.brs,
         uses_extended_mux: m.uses_extended_mux,
         attributes: m.attributes.into_iter().map(attribute_record).collect(),
+        transmitter: m.transmitter,
         signals: m.signals.into_iter().map(signal_record).collect(),
     }
 }

@@ -1,46 +1,60 @@
 # Task 34 — BLF Release-Build Crash
 
-Split out of the (shipped) Task 32 feedback batch: the one item that
-couldn't land because it isn't reproduced yet. Kept off the roadmap
-until a repro exists — it's a bug to chase, not scheduled work.
+Split out of the (shipped) Task 32 feedback batch. The crash mechanism
+is now confirmed from the field log; the remaining unknown is the
+original ingest panic.
 
-Loading a BLF crashes the app in a **release** build (not seen in dev).
-Reproduce against a release build, capture the failure, and fix — a
-release-only crash on the primary load path is a blocker for the alpha.
-Lands with a regression test (or a documented repro if it turns out to
-be a release-profile-only path).
+## Confirmed mechanism (macOS `cannet.log`, 2026-07-10 18:24)
 
-## Observations so far
+While ingesting a third-party (TSMaster-written) BLF — healthy at
+~33k frames, ~4,900 fps — a thread panicked while holding the trace
+store's inner mutex, poisoning it. The panic hook recorded **19
+subsequent panic blocks, all** `trace store mutex poisoned:
+PoisonError` — tokio workers (`len_and_low_water`,
+`latest_in_window`, `session_start_ns`, …), the health recorder, and
+finally the **main thread in `TraceStore::start_session`
+(`trace_store.rs:714`) when the user opened a second BLF** — the
+`SIGABRT` in the crash report. The "stalled load" was the
+already-dead loader thread; the app was a zombie from the first
+poison onward.
 
-macOS crash report
-(`crash-report-open-blf-while-previous-blf-stalled.txt`): trigger was
-opening a BLF **while a previous BLF load was stalled**. Main thread,
-`SIGABRT` from a Rust panic: `core::result::unwrap_failed` inside
-`TraceStore::start_session`, called from `clear_trace_store`. The
-original BLF is not available; severity unknown until reproduced.
+The same overlap (second open mid-load) was reproduced on Windows
+(release) without a crash — consistent: without the antecedent ingest
+panic there is no poison, and racing two healthy loads can't produce
+one. Not release-only and not macOS-only; the release build is just
+where a poisoned mutex escalates to a visible abort.
 
-## Hypotheses
+## What remains unknown
 
-Both consistent with the stack; neither confirmed.
+- **The poisoning panic itself is not in the log.** The whole session
+  is in one un-rotated file; no panic block exists between the last
+  healthy tick and the first poison observer. The hook missed the one
+  panic that mattered — a forensics gap to close.
+- **The root ingest panic is unidentified.** The TSMaster BLF is not
+  available; something in it panics the ingest path mid-append.
 
-- **H1 — poisoned store mutex:** the stalled loader thread panicked
-  while holding the lock; `start_session`'s
-  `expect("trace store mutex poisoned")` (`trace_store.rs`) fires on
-  the next open.
-- **H2 — scratch-clear I/O failure:** `raw.clear()` →
-  `DiskRawStore::clear`'s
-  `expect("cannet-spill: clearing scratch segments failed")`
-  (`cannet-spill/src/disk.rs`), racing the stalled load's in-flight
-  segment writes.
+## Fix plan (robust to the root panic staying unidentified)
 
-## Experiment first, then fix
+- **Poison tolerance in `trace_store.rs`:** replace the
+  `.expect("trace store mutex poisoned")` sites with
+  `unwrap_or_else(PoisonError::into_inner)` recovery (mechanical, no
+  new dependency), so a dead loader can never take the app down —
+  worst case is one failed load. Regression test: deliberately poison
+  the mutex, verify `start_session` and the accessors recover.
+- **Catch panics on the load path:** wrap the BLF pump loop in
+  `catch_unwind`; on panic emit `sys_error` + a `log-finished` error
+  event so the UI shows "load failed: `<panic message>`" instead of
+  silently stalling — and the message lands durably in `cannet.log`,
+  closing the forensics gap for the next occurrence.
 
-Reproduce against a release build with a large/slow BLF — open a second
-BLF mid-load — capturing stderr; the panic *message* discriminates H1
-from H2 (and H1 implies a prior loader-thread panic whose message is
-the real root cause). No fix until the repro exists.
+The ingest panic then self-documents the next time a hostile BLF is
+loaded; fixing it becomes a follow-up with a named panic site.
 
 ## Exit criteria
 
-- The release-build crash is reproduced and fixed, with a regression
-  test (or a documented repro if it's release-profile-only).
+- A poisoned trace-store mutex no longer aborts the app: accessors and
+  `start_session` recover, covered by a regression test.
+- A loader-thread panic surfaces as a failed load (system log + UI
+  error) and its message/backtrace lands in `cannet.log`.
+- The original ingest panic, once captured, gets its own repro/fix
+  follow-up.

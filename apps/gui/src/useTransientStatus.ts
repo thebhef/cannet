@@ -19,6 +19,7 @@ export function useTransientStatus(
 ): string {
   const [frozen, setFrozen] = useState<string | null>(null);
   const lastKeyRef = useRef<string | null>(null);
+  const timerRef = useRef<number | null>(null);
   const emitRef = useRef(emit);
   emitRef.current = emit;
   const transientRef = useRef(transient);
@@ -26,7 +27,11 @@ export function useTransientStatus(
   const key = transient != null ? `${transient.level} ${transient.text}` : null;
   useEffect(() => {
     if (key == null) {
-      // At rest — let a later identical notice re-fire and re-log.
+      // At rest — let a later identical notice re-fire and re-log. Don't
+      // touch the pending revert timer: a short-lived notice (e.g. a
+      // session transitioning connecting→running inside the dwell window)
+      // still owns the bar for the rest of its dwell, then reverts on its
+      // own. Cancelling here would strand `frozen` on the stale notice.
       lastKeyRef.current = null;
       return;
     }
@@ -36,8 +41,19 @@ export function useTransientStatus(
     if (t == null) return;
     setFrozen(t.text);
     emitRef.current(t);
-    const timer = window.setTimeout(() => setFrozen(null), dwellMs);
-    return () => window.clearTimeout(timer);
+    // A new distinct notice replaces any in-flight dwell with its own.
+    if (timerRef.current != null) window.clearTimeout(timerRef.current);
+    timerRef.current = window.setTimeout(() => {
+      timerRef.current = null;
+      setFrozen(null);
+    }, dwellMs);
   }, [key, dwellMs]);
+  // Cancel any pending revert on unmount.
+  useEffect(
+    () => () => {
+      if (timerRef.current != null) window.clearTimeout(timerRef.current);
+    },
+    [],
+  );
   return frozen ?? resting;
 }

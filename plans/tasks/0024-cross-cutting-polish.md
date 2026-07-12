@@ -9,11 +9,13 @@ approach), the **auto-scroll re-pin race** under fast streams, the
 **GUI-wide dark "scope" restyle**, **dock / undock** a panel as a
 separate OS window, a **global UI FPS / responsiveness readout**,
 **`cannet-server` multi-client** support, the **plot vs trace divider
-drag** fix, **undo/redo on view-state changes** (relates to the
-"Persist ephemeral view state" backlog item — a reopened session and
-an undo both want a captured view-state snapshot), and the **BLF
-f64-timestamp precision** documentation note (if it hasn't already
-been folded into a user-facing surface message by then).
+drag** fix, and the **BLF f64-timestamp precision** documentation note
+(if it hasn't already been folded into a user-facing surface message
+by then).
+
+**Undo/redo on view-state changes** moved to
+[Task 35](0035-view-nav-undo-keyboard.md), which owns view navigation
+history and the keyboard view actions.
 
 The **end-user runtime-tool fetch flow** that used to live here (fetch
 `uv` at install time or first launch) is **removed** — it was never

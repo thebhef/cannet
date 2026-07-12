@@ -1291,26 +1291,35 @@ export function PlotPanel(props: IDockviewPanelProps) {
     lastMatchCountsRef.current = next;
     lastBusesRef.current = buses;
   }, [effectiveAreas, buses]);
-  const catalogOptions = useMemo(
-    () =>
-      catalog.map((s) => {
-        const busLabel =
-          s.bus_id == null
-            ? null
-            : busNameLookup.get(s.bus_id) ?? s.bus_id;
-        return {
-          value: signalKey(s.bus_id, s.message_id, s.extended, s.signal_name),
-          // The bus → message ancestry renders as combobox group
-          // headers, so two signals named the same on different buses
-          // are pickable separately and the message name explicitly
-          // groups its signals.
-          path: busLabel ? [busLabel, s.message_name] : [s.message_name],
-          label: `${s.signal_name}${s.unit ? ` [${s.unit}]` : ""}`,
-          desc: s,
-        };
-      }),
-    [catalog, busNameLookup],
-  );
+  const catalogOptions = useMemo(() => {
+    const opts = catalog.map((s) => {
+      const busLabel =
+        s.bus_id == null
+          ? null
+          : busNameLookup.get(s.bus_id) ?? s.bus_id;
+      // The bus → ECU → message ancestry renders as combobox group
+      // headers (the same hierarchy the DBC panel's tree uses), so
+      // two signals named the same on different buses are pickable
+      // separately and the message name explicitly groups its
+      // signals. "(no transmitter)" mirrors the DBC/RBS panels'
+      // fallback for `Vector__XXX` messages.
+      const ecu = s.transmitter ?? "(no transmitter)";
+      return {
+        value: signalKey(s.bus_id, s.message_id, s.extended, s.signal_name),
+        path: busLabel ? [busLabel, ecu, s.message_name] : [ecu, s.message_name],
+        label: `${s.signal_name}${s.unit ? ` [${s.unit}]` : ""}`,
+        desc: s,
+      };
+    });
+    // The catalog arrives (bus, message-id)-ordered, which interleaves
+    // ECUs; sort by ancestry path (stable, so signals keep their
+    // host order within a message) so each group renders one header.
+    return opts.sort((a, b) => {
+      const pa = a.path.join(" ");
+      const pb = b.path.join(" ");
+      return pa < pb ? -1 : pa > pb ? 1 : 0;
+    });
+  }, [catalog, busNameLookup]);
   const areaLabels = useMemo(() => new Map(areas.map((a, i) => [a.id, `Area ${i + 1}`])), [areas]);
 
   // Iterate the *derived* axes, not the parent areas: `reportSeries`

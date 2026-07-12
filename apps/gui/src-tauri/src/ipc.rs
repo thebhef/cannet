@@ -529,6 +529,10 @@ pub struct SignalDescriptorRecord {
     pub message_id: u32,
     pub extended: bool,
     pub message_name: String,
+    /// The owning message's `BO_` transmitting node, or `None` for
+    /// the `Vector__XXX` "no sender" placeholder. The signal picker
+    /// groups its options per ECU by this.
+    pub transmitter: Option<String>,
     pub signal_name: String,
     pub unit: String,
     /// True if the signal's `VAL_` table makes it an enum — per
@@ -594,6 +598,10 @@ pub struct DbcMessageContentRecord {
     pub uses_extended_mux: bool,
     /// `BA_ "<name>" BO_ <id> <value>` attribute values, sorted by name.
     pub attributes: Vec<DbcAttributeRecord>,
+    /// The `BO_` transmitting node, or `None` for the `Vector__XXX`
+    /// "no sender" placeholder. The discovery panel's per-ECU tree
+    /// level groups messages by this.
+    pub transmitter: Option<String>,
     pub signals: Vec<DbcSignalContentRecord>,
 }
 

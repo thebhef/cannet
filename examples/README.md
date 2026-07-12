@@ -4,6 +4,14 @@ A small but feature-complete CAN log for exercising `cannet-blf`,
 `cannet-dbc`, and the GUI end-to-end. Open `cannet-demo.blf` in the
 GUI and attach `cannet-demo.dbc` as the database.
 
+Two example *projects* live alongside this trace fixture:
+
+- [`ev-demo/`](ev-demo/README.md) — a small, realistic EV model; the
+  reproducible workload the `cannet-perf-measurement` harness runs.
+- [`ev-zonal/`](ev-zonal/README.md) — a deliberately large two-DBC
+  fixture (150+ messages each, one message with 600 multiplexed
+  signals) for exercising DBC-view search and scaling.
+
 ## Files
 
 | File | Purpose |

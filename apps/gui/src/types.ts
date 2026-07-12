@@ -543,6 +543,10 @@ export interface SignalDescriptorRecord {
   message_id: number;
   extended: boolean;
   message_name: string;
+  /// The owning message's `BO_` transmitting node, or `null` for the
+  /// `Vector__XXX` "no sender" placeholder. The signal picker groups
+  /// its options per ECU by this.
+  transmitter: string | null;
   signal_name: string;
   unit: string;
   /// True if the signal's `VAL_` table makes it an enum — per
@@ -603,6 +607,10 @@ export interface DbcMessageContentRecord {
   /// True when any signal uses nested / extended multiplexing.
   usesExtendedMux: boolean;
   attributes: DbcAttributeRecord[];
+  /// The `BO_` transmitting node, or `null` for the `Vector__XXX`
+  /// "no sender" placeholder. The DBC panel's per-ECU tree level
+  /// groups messages by this.
+  transmitter: string | null;
   signals: DbcSignalContentRecord[];
 }
 

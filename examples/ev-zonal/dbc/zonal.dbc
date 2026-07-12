@@ -1,0 +1,1120 @@
+VERSION "ev-zonal zonal 1.0"
+
+NS_ :
+	NS_DESC_
+	CM_
+	BA_DEF_
+	BA_
+	VAL_
+	CAT_DEF_
+	CAT_
+	FILTER
+	BA_DEF_DEF_
+	EV_DATA_
+	ENVVAR_DATA_
+	SGTYPE_
+	SGTYPE_VAL_
+	BA_DEF_SGTYPE_
+	BA_SGTYPE_
+	SIG_TYPE_REF_
+	VAL_TABLE_
+	SIG_GROUP_
+	SIG_VALTYPE_
+	SIGTYPE_VALTYPE_
+	BO_TX_BU_
+	BA_DEF_REL_
+	BA_REL_
+	BA_DEF_DEF_REL_
+	BU_SG_REL_
+	BU_EV_REL_
+	BU_BO_REL_
+	SG_MUL_VAL_
+
+BS_:
+
+BU_: ZoneFrontLeft ZoneFrontRight ZoneRearLeft ZoneRearRight CentralCompute AdasDomain BodyGateway
+
+BO_ 1024 ZoneFL_DoorStatus: 8 ZoneFrontLeft
+ SG_ DoorAjar : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ LockState : 1|3@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ HandleTouched : 4|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ ChildLockActive : 5|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1025 ZoneFL_WindowStatus: 8 ZoneFrontLeft
+ SG_ WindowPosition : 0|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+ SG_ WindowMoving : 8|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ PinchDetected : 9|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1026 ZoneFL_LatchStatus: 8 ZoneFrontLeft
+ SG_ LatchEngaged : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ LatchMotorCurrent : 1|8@1+ (0.05,0) [0|0] "A" Vector__XXX
+ SG_ CinchState : 9|2@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1027 ZoneFL_MirrorStatus: 8 ZoneFrontLeft
+ SG_ MirrorFolded : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ MirrorHeaterOn : 1|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ MirrorTiltX : 2|8@1+ (1,-128) [0|0] "" Vector__XXX
+ SG_ MirrorTiltY : 10|8@1+ (1,-128) [0|0] "" Vector__XXX
+
+BO_ 1028 ZoneFL_SeatStatus: 8 ZoneFrontLeft
+ SG_ OccupantDetected : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ SeatbeltLatched : 1|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ SeatHeaterLevel : 2|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ SeatPositionTrack : 4|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+
+BO_ 1029 ZoneFL_LightingStatus: 8 ZoneFrontLeft
+ SG_ TurnIndicatorOn : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ PuddleLampOn : 1|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ LedFaultMask : 2|8@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1030 ZoneFL_HvacBlowerStatus: 8 ZoneFrontLeft
+ SG_ BlowerSpeed : 0|8@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ VentTemp : 8|8@1+ (1,-40) [0|0] "degC" Vector__XXX
+ SG_ FlapPosition : 16|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+
+BO_ 1031 ZoneFL_TirePressure: 8 ZoneFrontLeft
+ SG_ TirePressure : 0|10@1+ (0.025,0) [0|0] "bar" Vector__XXX
+ SG_ TireTemp : 10|8@1+ (1,-40) [0|0] "degC" Vector__XXX
+ SG_ SensorBattery : 18|7@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ SensorMissing : 25|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1032 ZoneFL_WheelSpeed: 8 ZoneFrontLeft
+ SG_ WheelSpeed : 0|14@1+ (0.03125,0) [0|0] "km/h" Vector__XXX
+ SG_ WheelDirection : 14|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ PulseCount : 16|16@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1033 ZoneFL_BrakeActuatorStatus: 8 ZoneFrontLeft
+ SG_ CaliperPressure : 0|12@1+ (0.1,0) [0|0] "bar" Vector__XXX
+ SG_ PadWearEstimate : 12|7@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ ActuatorTemp : 19|8@1+ (1,-40) [0|0] "degC" Vector__XXX
+
+BO_ 1034 ZoneFL_SuspensionStatus: 8 ZoneFrontLeft
+ SG_ RideHeight : 0|10@1+ (0.5,-256) [0|0] "mm" Vector__XXX
+ SG_ DamperCurrent : 10|8@1+ (0.05,0) [0|0] "A" Vector__XXX
+ SG_ AccelVertical : 18|12@1- (0.01,0) [0|0] "g" Vector__XXX
+
+BO_ 1035 ZoneFL_PowerDistStatus: 8 ZoneFrontLeft
+ SG_ RailVoltage : 0|10@1+ (0.02,0) [0|0] "V" Vector__XXX
+ SG_ TotalLoadCurrent : 10|10@1+ (0.1,0) [0|0] "A" Vector__XXX
+ SG_ EfuseTrippedMask : 20|8@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1036 ZoneFL_LoadCurrents: 8 ZoneFrontLeft
+ SG_ Channel1Current : 0|8@1+ (0.1,0) [0|0] "A" Vector__XXX
+ SG_ Channel2Current : 8|8@1+ (0.1,0) [0|0] "A" Vector__XXX
+ SG_ Channel3Current : 16|8@1+ (0.1,0) [0|0] "A" Vector__XXX
+ SG_ Channel4Current : 24|8@1+ (0.1,0) [0|0] "A" Vector__XXX
+
+BO_ 1037 ZoneFL_Temperature: 8 ZoneFrontLeft
+ SG_ BoardTemp : 0|8@1+ (1,-40) [0|0] "degC" Vector__XXX
+ SG_ ConnectorTemp : 8|8@1+ (1,-40) [0|0] "degC" Vector__XXX
+
+BO_ 1038 ZoneFL_Heartbeat: 8 ZoneFrontLeft
+ SG_ AliveCounter : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ EcuState : 8|2@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1039 ZoneFL_Faults: 8 ZoneFrontLeft
+ SG_ CommTimeoutFault : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ OverTempFault : 1|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ EfuseFault : 2|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ ActuatorStallFault : 3|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ SensorPlausibilityFault : 4|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1040 ZoneFL_SwVersion: 8 ZoneFrontLeft
+ SG_ MajorVersion : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ MinorVersion : 8|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ PatchVersion : 16|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ BuildNumber : 24|16@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1280 ZoneFL_DoorCommand: 8 CentralCompute
+ SG_ LockRequest : 0|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ PresentHandle : 2|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1281 ZoneFL_WindowCommand: 8 CentralCompute
+ SG_ WindowTargetPosition : 0|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+ SG_ ExpressMode : 8|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1282 ZoneFL_MirrorCommand: 8 CentralCompute
+ SG_ FoldRequest : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ HeaterRequest : 1|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ TiltXTarget : 2|8@1+ (1,-128) [0|0] "" Vector__XXX
+ SG_ TiltYTarget : 10|8@1+ (1,-128) [0|0] "" Vector__XXX
+
+BO_ 1283 ZoneFL_SeatCommand: 8 CentralCompute
+ SG_ SeatHeaterRequest : 0|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ SeatTrackTarget : 2|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+
+BO_ 1284 ZoneFL_LightingCommand: 8 CentralCompute
+ SG_ TurnIndicatorRequest : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ PuddleLampRequest : 1|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ DimmingLevel : 2|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+
+BO_ 1285 ZoneFL_HvacBlowerCommand: 8 CentralCompute
+ SG_ BlowerSpeedRequest : 0|8@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ FlapPositionRequest : 8|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+
+BO_ 1286 ZoneFL_BrakeActuatorCommand: 8 CentralCompute
+ SG_ CaliperPressureRequest : 0|12@1+ (0.1,0) [0|0] "bar" Vector__XXX
+ SG_ ParkBrakeRequest : 12|2@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1287 ZoneFL_SuspensionCommand: 8 CentralCompute
+ SG_ RideHeightTarget : 0|10@1+ (0.5,-256) [0|0] "mm" Vector__XXX
+ SG_ DamperFirmness : 10|8@1+ (1,0) [0|0] "%" Vector__XXX
+
+BO_ 1288 ZoneFL_PowerDistCommand: 8 CentralCompute
+ SG_ EfuseEnableMask : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ SleepRequest : 8|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1289 ZoneFL_AmbientLightCommand: 8 CentralCompute
+ SG_ AmbientHue : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ AmbientBrightness : 8|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+
+BO_ 1088 ZoneFR_DoorStatus: 8 ZoneFrontRight
+ SG_ DoorAjar : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ LockState : 1|3@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ HandleTouched : 4|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ ChildLockActive : 5|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1089 ZoneFR_WindowStatus: 8 ZoneFrontRight
+ SG_ WindowPosition : 0|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+ SG_ WindowMoving : 8|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ PinchDetected : 9|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1090 ZoneFR_LatchStatus: 8 ZoneFrontRight
+ SG_ LatchEngaged : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ LatchMotorCurrent : 1|8@1+ (0.05,0) [0|0] "A" Vector__XXX
+ SG_ CinchState : 9|2@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1091 ZoneFR_MirrorStatus: 8 ZoneFrontRight
+ SG_ MirrorFolded : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ MirrorHeaterOn : 1|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ MirrorTiltX : 2|8@1+ (1,-128) [0|0] "" Vector__XXX
+ SG_ MirrorTiltY : 10|8@1+ (1,-128) [0|0] "" Vector__XXX
+
+BO_ 1092 ZoneFR_SeatStatus: 8 ZoneFrontRight
+ SG_ OccupantDetected : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ SeatbeltLatched : 1|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ SeatHeaterLevel : 2|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ SeatPositionTrack : 4|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+
+BO_ 1093 ZoneFR_LightingStatus: 8 ZoneFrontRight
+ SG_ TurnIndicatorOn : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ PuddleLampOn : 1|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ LedFaultMask : 2|8@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1094 ZoneFR_HvacBlowerStatus: 8 ZoneFrontRight
+ SG_ BlowerSpeed : 0|8@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ VentTemp : 8|8@1+ (1,-40) [0|0] "degC" Vector__XXX
+ SG_ FlapPosition : 16|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+
+BO_ 1095 ZoneFR_TirePressure: 8 ZoneFrontRight
+ SG_ TirePressure : 0|10@1+ (0.025,0) [0|0] "bar" Vector__XXX
+ SG_ TireTemp : 10|8@1+ (1,-40) [0|0] "degC" Vector__XXX
+ SG_ SensorBattery : 18|7@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ SensorMissing : 25|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1096 ZoneFR_WheelSpeed: 8 ZoneFrontRight
+ SG_ WheelSpeed : 0|14@1+ (0.03125,0) [0|0] "km/h" Vector__XXX
+ SG_ WheelDirection : 14|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ PulseCount : 16|16@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1097 ZoneFR_BrakeActuatorStatus: 8 ZoneFrontRight
+ SG_ CaliperPressure : 0|12@1+ (0.1,0) [0|0] "bar" Vector__XXX
+ SG_ PadWearEstimate : 12|7@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ ActuatorTemp : 19|8@1+ (1,-40) [0|0] "degC" Vector__XXX
+
+BO_ 1098 ZoneFR_SuspensionStatus: 8 ZoneFrontRight
+ SG_ RideHeight : 0|10@1+ (0.5,-256) [0|0] "mm" Vector__XXX
+ SG_ DamperCurrent : 10|8@1+ (0.05,0) [0|0] "A" Vector__XXX
+ SG_ AccelVertical : 18|12@1- (0.01,0) [0|0] "g" Vector__XXX
+
+BO_ 1099 ZoneFR_PowerDistStatus: 8 ZoneFrontRight
+ SG_ RailVoltage : 0|10@1+ (0.02,0) [0|0] "V" Vector__XXX
+ SG_ TotalLoadCurrent : 10|10@1+ (0.1,0) [0|0] "A" Vector__XXX
+ SG_ EfuseTrippedMask : 20|8@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1100 ZoneFR_LoadCurrents: 8 ZoneFrontRight
+ SG_ Channel1Current : 0|8@1+ (0.1,0) [0|0] "A" Vector__XXX
+ SG_ Channel2Current : 8|8@1+ (0.1,0) [0|0] "A" Vector__XXX
+ SG_ Channel3Current : 16|8@1+ (0.1,0) [0|0] "A" Vector__XXX
+ SG_ Channel4Current : 24|8@1+ (0.1,0) [0|0] "A" Vector__XXX
+
+BO_ 1101 ZoneFR_Temperature: 8 ZoneFrontRight
+ SG_ BoardTemp : 0|8@1+ (1,-40) [0|0] "degC" Vector__XXX
+ SG_ ConnectorTemp : 8|8@1+ (1,-40) [0|0] "degC" Vector__XXX
+
+BO_ 1102 ZoneFR_Heartbeat: 8 ZoneFrontRight
+ SG_ AliveCounter : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ EcuState : 8|2@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1103 ZoneFR_Faults: 8 ZoneFrontRight
+ SG_ CommTimeoutFault : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ OverTempFault : 1|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ EfuseFault : 2|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ ActuatorStallFault : 3|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ SensorPlausibilityFault : 4|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1104 ZoneFR_SwVersion: 8 ZoneFrontRight
+ SG_ MajorVersion : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ MinorVersion : 8|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ PatchVersion : 16|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ BuildNumber : 24|16@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1312 ZoneFR_DoorCommand: 8 CentralCompute
+ SG_ LockRequest : 0|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ PresentHandle : 2|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1313 ZoneFR_WindowCommand: 8 CentralCompute
+ SG_ WindowTargetPosition : 0|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+ SG_ ExpressMode : 8|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1314 ZoneFR_MirrorCommand: 8 CentralCompute
+ SG_ FoldRequest : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ HeaterRequest : 1|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ TiltXTarget : 2|8@1+ (1,-128) [0|0] "" Vector__XXX
+ SG_ TiltYTarget : 10|8@1+ (1,-128) [0|0] "" Vector__XXX
+
+BO_ 1315 ZoneFR_SeatCommand: 8 CentralCompute
+ SG_ SeatHeaterRequest : 0|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ SeatTrackTarget : 2|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+
+BO_ 1316 ZoneFR_LightingCommand: 8 CentralCompute
+ SG_ TurnIndicatorRequest : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ PuddleLampRequest : 1|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ DimmingLevel : 2|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+
+BO_ 1317 ZoneFR_HvacBlowerCommand: 8 CentralCompute
+ SG_ BlowerSpeedRequest : 0|8@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ FlapPositionRequest : 8|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+
+BO_ 1318 ZoneFR_BrakeActuatorCommand: 8 CentralCompute
+ SG_ CaliperPressureRequest : 0|12@1+ (0.1,0) [0|0] "bar" Vector__XXX
+ SG_ ParkBrakeRequest : 12|2@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1319 ZoneFR_SuspensionCommand: 8 CentralCompute
+ SG_ RideHeightTarget : 0|10@1+ (0.5,-256) [0|0] "mm" Vector__XXX
+ SG_ DamperFirmness : 10|8@1+ (1,0) [0|0] "%" Vector__XXX
+
+BO_ 1320 ZoneFR_PowerDistCommand: 8 CentralCompute
+ SG_ EfuseEnableMask : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ SleepRequest : 8|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1321 ZoneFR_AmbientLightCommand: 8 CentralCompute
+ SG_ AmbientHue : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ AmbientBrightness : 8|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+
+BO_ 1152 ZoneRL_DoorStatus: 8 ZoneRearLeft
+ SG_ DoorAjar : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ LockState : 1|3@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ HandleTouched : 4|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ ChildLockActive : 5|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1153 ZoneRL_WindowStatus: 8 ZoneRearLeft
+ SG_ WindowPosition : 0|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+ SG_ WindowMoving : 8|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ PinchDetected : 9|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1154 ZoneRL_LatchStatus: 8 ZoneRearLeft
+ SG_ LatchEngaged : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ LatchMotorCurrent : 1|8@1+ (0.05,0) [0|0] "A" Vector__XXX
+ SG_ CinchState : 9|2@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1155 ZoneRL_MirrorStatus: 8 ZoneRearLeft
+ SG_ MirrorFolded : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ MirrorHeaterOn : 1|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ MirrorTiltX : 2|8@1+ (1,-128) [0|0] "" Vector__XXX
+ SG_ MirrorTiltY : 10|8@1+ (1,-128) [0|0] "" Vector__XXX
+
+BO_ 1156 ZoneRL_SeatStatus: 8 ZoneRearLeft
+ SG_ OccupantDetected : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ SeatbeltLatched : 1|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ SeatHeaterLevel : 2|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ SeatPositionTrack : 4|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+
+BO_ 1157 ZoneRL_LightingStatus: 8 ZoneRearLeft
+ SG_ TurnIndicatorOn : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ PuddleLampOn : 1|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ LedFaultMask : 2|8@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1158 ZoneRL_HvacBlowerStatus: 8 ZoneRearLeft
+ SG_ BlowerSpeed : 0|8@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ VentTemp : 8|8@1+ (1,-40) [0|0] "degC" Vector__XXX
+ SG_ FlapPosition : 16|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+
+BO_ 1159 ZoneRL_TirePressure: 8 ZoneRearLeft
+ SG_ TirePressure : 0|10@1+ (0.025,0) [0|0] "bar" Vector__XXX
+ SG_ TireTemp : 10|8@1+ (1,-40) [0|0] "degC" Vector__XXX
+ SG_ SensorBattery : 18|7@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ SensorMissing : 25|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1160 ZoneRL_WheelSpeed: 8 ZoneRearLeft
+ SG_ WheelSpeed : 0|14@1+ (0.03125,0) [0|0] "km/h" Vector__XXX
+ SG_ WheelDirection : 14|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ PulseCount : 16|16@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1161 ZoneRL_BrakeActuatorStatus: 8 ZoneRearLeft
+ SG_ CaliperPressure : 0|12@1+ (0.1,0) [0|0] "bar" Vector__XXX
+ SG_ PadWearEstimate : 12|7@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ ActuatorTemp : 19|8@1+ (1,-40) [0|0] "degC" Vector__XXX
+
+BO_ 1162 ZoneRL_SuspensionStatus: 8 ZoneRearLeft
+ SG_ RideHeight : 0|10@1+ (0.5,-256) [0|0] "mm" Vector__XXX
+ SG_ DamperCurrent : 10|8@1+ (0.05,0) [0|0] "A" Vector__XXX
+ SG_ AccelVertical : 18|12@1- (0.01,0) [0|0] "g" Vector__XXX
+
+BO_ 1163 ZoneRL_PowerDistStatus: 8 ZoneRearLeft
+ SG_ RailVoltage : 0|10@1+ (0.02,0) [0|0] "V" Vector__XXX
+ SG_ TotalLoadCurrent : 10|10@1+ (0.1,0) [0|0] "A" Vector__XXX
+ SG_ EfuseTrippedMask : 20|8@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1164 ZoneRL_LoadCurrents: 8 ZoneRearLeft
+ SG_ Channel1Current : 0|8@1+ (0.1,0) [0|0] "A" Vector__XXX
+ SG_ Channel2Current : 8|8@1+ (0.1,0) [0|0] "A" Vector__XXX
+ SG_ Channel3Current : 16|8@1+ (0.1,0) [0|0] "A" Vector__XXX
+ SG_ Channel4Current : 24|8@1+ (0.1,0) [0|0] "A" Vector__XXX
+
+BO_ 1165 ZoneRL_Temperature: 8 ZoneRearLeft
+ SG_ BoardTemp : 0|8@1+ (1,-40) [0|0] "degC" Vector__XXX
+ SG_ ConnectorTemp : 8|8@1+ (1,-40) [0|0] "degC" Vector__XXX
+
+BO_ 1166 ZoneRL_Heartbeat: 8 ZoneRearLeft
+ SG_ AliveCounter : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ EcuState : 8|2@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1167 ZoneRL_Faults: 8 ZoneRearLeft
+ SG_ CommTimeoutFault : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ OverTempFault : 1|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ EfuseFault : 2|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ ActuatorStallFault : 3|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ SensorPlausibilityFault : 4|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1168 ZoneRL_SwVersion: 8 ZoneRearLeft
+ SG_ MajorVersion : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ MinorVersion : 8|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ PatchVersion : 16|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ BuildNumber : 24|16@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1344 ZoneRL_DoorCommand: 8 CentralCompute
+ SG_ LockRequest : 0|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ PresentHandle : 2|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1345 ZoneRL_WindowCommand: 8 CentralCompute
+ SG_ WindowTargetPosition : 0|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+ SG_ ExpressMode : 8|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1346 ZoneRL_MirrorCommand: 8 CentralCompute
+ SG_ FoldRequest : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ HeaterRequest : 1|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ TiltXTarget : 2|8@1+ (1,-128) [0|0] "" Vector__XXX
+ SG_ TiltYTarget : 10|8@1+ (1,-128) [0|0] "" Vector__XXX
+
+BO_ 1347 ZoneRL_SeatCommand: 8 CentralCompute
+ SG_ SeatHeaterRequest : 0|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ SeatTrackTarget : 2|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+
+BO_ 1348 ZoneRL_LightingCommand: 8 CentralCompute
+ SG_ TurnIndicatorRequest : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ PuddleLampRequest : 1|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ DimmingLevel : 2|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+
+BO_ 1349 ZoneRL_HvacBlowerCommand: 8 CentralCompute
+ SG_ BlowerSpeedRequest : 0|8@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ FlapPositionRequest : 8|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+
+BO_ 1350 ZoneRL_BrakeActuatorCommand: 8 CentralCompute
+ SG_ CaliperPressureRequest : 0|12@1+ (0.1,0) [0|0] "bar" Vector__XXX
+ SG_ ParkBrakeRequest : 12|2@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1351 ZoneRL_SuspensionCommand: 8 CentralCompute
+ SG_ RideHeightTarget : 0|10@1+ (0.5,-256) [0|0] "mm" Vector__XXX
+ SG_ DamperFirmness : 10|8@1+ (1,0) [0|0] "%" Vector__XXX
+
+BO_ 1352 ZoneRL_PowerDistCommand: 8 CentralCompute
+ SG_ EfuseEnableMask : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ SleepRequest : 8|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1353 ZoneRL_AmbientLightCommand: 8 CentralCompute
+ SG_ AmbientHue : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ AmbientBrightness : 8|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+
+BO_ 1216 ZoneRR_DoorStatus: 8 ZoneRearRight
+ SG_ DoorAjar : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ LockState : 1|3@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ HandleTouched : 4|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ ChildLockActive : 5|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1217 ZoneRR_WindowStatus: 8 ZoneRearRight
+ SG_ WindowPosition : 0|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+ SG_ WindowMoving : 8|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ PinchDetected : 9|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1218 ZoneRR_LatchStatus: 8 ZoneRearRight
+ SG_ LatchEngaged : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ LatchMotorCurrent : 1|8@1+ (0.05,0) [0|0] "A" Vector__XXX
+ SG_ CinchState : 9|2@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1219 ZoneRR_MirrorStatus: 8 ZoneRearRight
+ SG_ MirrorFolded : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ MirrorHeaterOn : 1|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ MirrorTiltX : 2|8@1+ (1,-128) [0|0] "" Vector__XXX
+ SG_ MirrorTiltY : 10|8@1+ (1,-128) [0|0] "" Vector__XXX
+
+BO_ 1220 ZoneRR_SeatStatus: 8 ZoneRearRight
+ SG_ OccupantDetected : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ SeatbeltLatched : 1|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ SeatHeaterLevel : 2|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ SeatPositionTrack : 4|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+
+BO_ 1221 ZoneRR_LightingStatus: 8 ZoneRearRight
+ SG_ TurnIndicatorOn : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ PuddleLampOn : 1|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ LedFaultMask : 2|8@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1222 ZoneRR_HvacBlowerStatus: 8 ZoneRearRight
+ SG_ BlowerSpeed : 0|8@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ VentTemp : 8|8@1+ (1,-40) [0|0] "degC" Vector__XXX
+ SG_ FlapPosition : 16|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+
+BO_ 1223 ZoneRR_TirePressure: 8 ZoneRearRight
+ SG_ TirePressure : 0|10@1+ (0.025,0) [0|0] "bar" Vector__XXX
+ SG_ TireTemp : 10|8@1+ (1,-40) [0|0] "degC" Vector__XXX
+ SG_ SensorBattery : 18|7@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ SensorMissing : 25|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1224 ZoneRR_WheelSpeed: 8 ZoneRearRight
+ SG_ WheelSpeed : 0|14@1+ (0.03125,0) [0|0] "km/h" Vector__XXX
+ SG_ WheelDirection : 14|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ PulseCount : 16|16@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1225 ZoneRR_BrakeActuatorStatus: 8 ZoneRearRight
+ SG_ CaliperPressure : 0|12@1+ (0.1,0) [0|0] "bar" Vector__XXX
+ SG_ PadWearEstimate : 12|7@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ ActuatorTemp : 19|8@1+ (1,-40) [0|0] "degC" Vector__XXX
+
+BO_ 1226 ZoneRR_SuspensionStatus: 8 ZoneRearRight
+ SG_ RideHeight : 0|10@1+ (0.5,-256) [0|0] "mm" Vector__XXX
+ SG_ DamperCurrent : 10|8@1+ (0.05,0) [0|0] "A" Vector__XXX
+ SG_ AccelVertical : 18|12@1- (0.01,0) [0|0] "g" Vector__XXX
+
+BO_ 1227 ZoneRR_PowerDistStatus: 8 ZoneRearRight
+ SG_ RailVoltage : 0|10@1+ (0.02,0) [0|0] "V" Vector__XXX
+ SG_ TotalLoadCurrent : 10|10@1+ (0.1,0) [0|0] "A" Vector__XXX
+ SG_ EfuseTrippedMask : 20|8@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1228 ZoneRR_LoadCurrents: 8 ZoneRearRight
+ SG_ Channel1Current : 0|8@1+ (0.1,0) [0|0] "A" Vector__XXX
+ SG_ Channel2Current : 8|8@1+ (0.1,0) [0|0] "A" Vector__XXX
+ SG_ Channel3Current : 16|8@1+ (0.1,0) [0|0] "A" Vector__XXX
+ SG_ Channel4Current : 24|8@1+ (0.1,0) [0|0] "A" Vector__XXX
+
+BO_ 1229 ZoneRR_Temperature: 8 ZoneRearRight
+ SG_ BoardTemp : 0|8@1+ (1,-40) [0|0] "degC" Vector__XXX
+ SG_ ConnectorTemp : 8|8@1+ (1,-40) [0|0] "degC" Vector__XXX
+
+BO_ 1230 ZoneRR_Heartbeat: 8 ZoneRearRight
+ SG_ AliveCounter : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ EcuState : 8|2@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1231 ZoneRR_Faults: 8 ZoneRearRight
+ SG_ CommTimeoutFault : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ OverTempFault : 1|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ EfuseFault : 2|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ ActuatorStallFault : 3|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ SensorPlausibilityFault : 4|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1232 ZoneRR_SwVersion: 8 ZoneRearRight
+ SG_ MajorVersion : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ MinorVersion : 8|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ PatchVersion : 16|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ BuildNumber : 24|16@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1376 ZoneRR_DoorCommand: 8 CentralCompute
+ SG_ LockRequest : 0|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ PresentHandle : 2|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1377 ZoneRR_WindowCommand: 8 CentralCompute
+ SG_ WindowTargetPosition : 0|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+ SG_ ExpressMode : 8|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1378 ZoneRR_MirrorCommand: 8 CentralCompute
+ SG_ FoldRequest : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ HeaterRequest : 1|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ TiltXTarget : 2|8@1+ (1,-128) [0|0] "" Vector__XXX
+ SG_ TiltYTarget : 10|8@1+ (1,-128) [0|0] "" Vector__XXX
+
+BO_ 1379 ZoneRR_SeatCommand: 8 CentralCompute
+ SG_ SeatHeaterRequest : 0|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ SeatTrackTarget : 2|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+
+BO_ 1380 ZoneRR_LightingCommand: 8 CentralCompute
+ SG_ TurnIndicatorRequest : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ PuddleLampRequest : 1|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ DimmingLevel : 2|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+
+BO_ 1381 ZoneRR_HvacBlowerCommand: 8 CentralCompute
+ SG_ BlowerSpeedRequest : 0|8@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ FlapPositionRequest : 8|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+
+BO_ 1382 ZoneRR_BrakeActuatorCommand: 8 CentralCompute
+ SG_ CaliperPressureRequest : 0|12@1+ (0.1,0) [0|0] "bar" Vector__XXX
+ SG_ ParkBrakeRequest : 12|2@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1383 ZoneRR_SuspensionCommand: 8 CentralCompute
+ SG_ RideHeightTarget : 0|10@1+ (0.5,-256) [0|0] "mm" Vector__XXX
+ SG_ DamperFirmness : 10|8@1+ (1,0) [0|0] "%" Vector__XXX
+
+BO_ 1384 ZoneRR_PowerDistCommand: 8 CentralCompute
+ SG_ EfuseEnableMask : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ SleepRequest : 8|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1385 ZoneRR_AmbientLightCommand: 8 CentralCompute
+ SG_ AmbientHue : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ AmbientBrightness : 8|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+
+BO_ 1536 VehicleMode: 8 CentralCompute
+ SG_ DriveMode : 0|3@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ PowerState : 3|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ AliveCounter : 5|4@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1537 PowerModeCommand: 8 CentralCompute
+ SG_ RequestedPowerState : 0|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ WakeReason : 2|4@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1538 CrashNotification: 8 CentralCompute
+ SG_ CrashSeverity : 0|3@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ RestraintDeployed : 3|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ HvShutdownRequested : 4|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1539 VehicleSpeed: 8 CentralCompute
+ SG_ Speed : 0|14@1+ (0.01,0) [0|0] "km/h" Vector__XXX
+ SG_ SpeedValid : 14|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1540 Odometer: 8 CentralCompute
+ SG_ TotalDistance : 0|24@1+ (0.1,0) [0|0] "km" Vector__XXX
+ SG_ TripDistance : 24|20@1+ (0.01,0) [0|0] "km" Vector__XXX
+
+BO_ 1541 TimeSync: 8 CentralCompute
+ SG_ UnixTimeSeconds : 0|32@1+ (1,0) [0|0] "s" Vector__XXX
+ SG_ TimeSource : 32|2@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1542 EnergyBudget: 8 CentralCompute
+ SG_ HvacAllocation : 0|8@1+ (0.1,0) [0|0] "kW" Vector__XXX
+ SG_ DriveAllocation : 8|10@1+ (0.1,0) [0|0] "kW" Vector__XXX
+ SG_ ChargeReserve : 18|8@1+ (0.1,0) [0|0] "kW" Vector__XXX
+
+BO_ 1543 RouteInfo: 8 CentralCompute
+ SG_ DistanceToDestination : 0|16@1+ (0.1,0) [0|0] "km" Vector__XXX
+ SG_ ChargeStopsPlanned : 16|4@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ ArrivalSocEstimate : 20|7@1+ (1,0) [0|0] "%" Vector__XXX
+
+BO_ 1544 DriveModeStatus: 8 CentralCompute
+ SG_ SelectedProfile : 0|3@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ RegenLevel : 3|3@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ OnePedalActive : 6|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1545 RegenSetting: 8 CentralCompute
+ SG_ RegenLevelRequest : 0|3@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ CreepModeEnable : 3|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 800 AdasLaneLeft: 8 AdasDomain
+ SG_ LaneLeftC0 : 0|32@1+ (1,0) [0|0] "m" Vector__XXX
+ SG_ LaneLeftC1 : 32|32@1+ (1,0) [0|0] "rad" Vector__XXX
+
+BO_ 801 AdasLaneRight: 8 AdasDomain
+ SG_ LaneRightC0 : 0|32@1+ (1,0) [0|0] "m" Vector__XXX
+ SG_ LaneRightC1 : 32|32@1+ (1,0) [0|0] "rad" Vector__XXX
+
+BO_ 802 AdasStatus: 8 AdasDomain
+ SG_ AdasAvailable : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ DriverAttentive : 1|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ ActiveFeatureMask : 2|8@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 803 AdasWarnings: 8 AdasDomain
+ SG_ ForwardCollisionWarning : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ LaneDepartureWarning : 1|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ BlindSpotWarningLeft : 2|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ BlindSpotWarningRight : 3|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ DriverDrowsyWarning : 4|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 804 FrontRadarStatus: 8 AdasDomain
+ SG_ RadarBlocked : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ RadarTemp : 1|8@1+ (1,-40) [0|0] "degC" Vector__XXX
+ SG_ TrackCount : 9|6@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 805 FrontCameraStatus: 8 AdasDomain
+ SG_ CameraBlocked : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ LowSunGlare : 1|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ CalibrationState : 2|2@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 806 UltrasonicFront: 8 AdasDomain
+ SG_ SensorFL : 0|9@1+ (1,0) [0|0] "cm" Vector__XXX
+ SG_ SensorFCL : 9|9@1+ (1,0) [0|0] "cm" Vector__XXX
+ SG_ SensorFCR : 18|9@1+ (1,0) [0|0] "cm" Vector__XXX
+ SG_ SensorFR : 27|9@1+ (1,0) [0|0] "cm" Vector__XXX
+
+BO_ 807 UltrasonicRear: 8 AdasDomain
+ SG_ SensorRL : 0|9@1+ (1,0) [0|0] "cm" Vector__XXX
+ SG_ SensorRCL : 9|9@1+ (1,0) [0|0] "cm" Vector__XXX
+ SG_ SensorRCR : 18|9@1+ (1,0) [0|0] "cm" Vector__XXX
+ SG_ SensorRR : 27|9@1+ (1,0) [0|0] "cm" Vector__XXX
+
+BO_ 808 BlindSpotLeft: 8 AdasDomain
+ SG_ TargetPresent : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ TargetDistance : 1|9@1+ (0.1,0) [0|0] "m" Vector__XXX
+ SG_ TargetClosingSpeed : 10|8@1- (0.1,0) [0|0] "m/s" Vector__XXX
+
+BO_ 809 BlindSpotRight: 8 AdasDomain
+ SG_ TargetPresent : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ TargetDistance : 1|9@1+ (0.1,0) [0|0] "m" Vector__XXX
+ SG_ TargetClosingSpeed : 10|8@1- (0.1,0) [0|0] "m/s" Vector__XXX
+
+BO_ 810 AebStatus: 8 AdasDomain
+ SG_ AebState : 0|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ BrakeRequestLevel : 2|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+
+BO_ 811 AccStatus: 8 AdasDomain
+ SG_ AccActive : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ SetSpeed : 1|8@1+ (1,0) [0|0] "km/h" Vector__XXX
+ SG_ FollowGapSetting : 9|3@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ LeadVehicleDetected : 12|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 812 LkaStatus: 8 AdasDomain
+ SG_ LkaActive : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ SteeringTorqueRequest : 1|10@1- (0.01,0) [0|0] "Nm" Vector__XXX
+ SG_ HandsOnWheel : 11|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 784 AdasObjectList: 16 AdasDomain
+ SG_ ObjectIndex M : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Obj00DistX m0 : 8|16@1- (0.01,0) [0|0] "m" Vector__XXX
+ SG_ Obj00DistY m0 : 24|16@1- (0.01,0) [0|0] "m" Vector__XXX
+ SG_ Obj00VelX m0 : 40|16@1- (0.01,0) [0|0] "m/s" Vector__XXX
+ SG_ Obj00VelY m0 : 56|16@1- (0.01,0) [0|0] "m/s" Vector__XXX
+ SG_ Obj00Class m0 : 72|4@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Obj00Confidence m0 : 76|7@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ Obj01DistX m1 : 8|16@1- (0.01,0) [0|0] "m" Vector__XXX
+ SG_ Obj01DistY m1 : 24|16@1- (0.01,0) [0|0] "m" Vector__XXX
+ SG_ Obj01VelX m1 : 40|16@1- (0.01,0) [0|0] "m/s" Vector__XXX
+ SG_ Obj01VelY m1 : 56|16@1- (0.01,0) [0|0] "m/s" Vector__XXX
+ SG_ Obj01Class m1 : 72|4@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Obj01Confidence m1 : 76|7@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ Obj02DistX m2 : 8|16@1- (0.01,0) [0|0] "m" Vector__XXX
+ SG_ Obj02DistY m2 : 24|16@1- (0.01,0) [0|0] "m" Vector__XXX
+ SG_ Obj02VelX m2 : 40|16@1- (0.01,0) [0|0] "m/s" Vector__XXX
+ SG_ Obj02VelY m2 : 56|16@1- (0.01,0) [0|0] "m/s" Vector__XXX
+ SG_ Obj02Class m2 : 72|4@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Obj02Confidence m2 : 76|7@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ Obj03DistX m3 : 8|16@1- (0.01,0) [0|0] "m" Vector__XXX
+ SG_ Obj03DistY m3 : 24|16@1- (0.01,0) [0|0] "m" Vector__XXX
+ SG_ Obj03VelX m3 : 40|16@1- (0.01,0) [0|0] "m/s" Vector__XXX
+ SG_ Obj03VelY m3 : 56|16@1- (0.01,0) [0|0] "m/s" Vector__XXX
+ SG_ Obj03Class m3 : 72|4@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Obj03Confidence m3 : 76|7@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ Obj04DistX m4 : 8|16@1- (0.01,0) [0|0] "m" Vector__XXX
+ SG_ Obj04DistY m4 : 24|16@1- (0.01,0) [0|0] "m" Vector__XXX
+ SG_ Obj04VelX m4 : 40|16@1- (0.01,0) [0|0] "m/s" Vector__XXX
+ SG_ Obj04VelY m4 : 56|16@1- (0.01,0) [0|0] "m/s" Vector__XXX
+ SG_ Obj04Class m4 : 72|4@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Obj04Confidence m4 : 76|7@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ Obj05DistX m5 : 8|16@1- (0.01,0) [0|0] "m" Vector__XXX
+ SG_ Obj05DistY m5 : 24|16@1- (0.01,0) [0|0] "m" Vector__XXX
+ SG_ Obj05VelX m5 : 40|16@1- (0.01,0) [0|0] "m/s" Vector__XXX
+ SG_ Obj05VelY m5 : 56|16@1- (0.01,0) [0|0] "m/s" Vector__XXX
+ SG_ Obj05Class m5 : 72|4@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Obj05Confidence m5 : 76|7@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ Obj06DistX m6 : 8|16@1- (0.01,0) [0|0] "m" Vector__XXX
+ SG_ Obj06DistY m6 : 24|16@1- (0.01,0) [0|0] "m" Vector__XXX
+ SG_ Obj06VelX m6 : 40|16@1- (0.01,0) [0|0] "m/s" Vector__XXX
+ SG_ Obj06VelY m6 : 56|16@1- (0.01,0) [0|0] "m/s" Vector__XXX
+ SG_ Obj06Class m6 : 72|4@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Obj06Confidence m6 : 76|7@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ Obj07DistX m7 : 8|16@1- (0.01,0) [0|0] "m" Vector__XXX
+ SG_ Obj07DistY m7 : 24|16@1- (0.01,0) [0|0] "m" Vector__XXX
+ SG_ Obj07VelX m7 : 40|16@1- (0.01,0) [0|0] "m/s" Vector__XXX
+ SG_ Obj07VelY m7 : 56|16@1- (0.01,0) [0|0] "m/s" Vector__XXX
+ SG_ Obj07Class m7 : 72|4@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Obj07Confidence m7 : 76|7@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ Obj08DistX m8 : 8|16@1- (0.01,0) [0|0] "m" Vector__XXX
+ SG_ Obj08DistY m8 : 24|16@1- (0.01,0) [0|0] "m" Vector__XXX
+ SG_ Obj08VelX m8 : 40|16@1- (0.01,0) [0|0] "m/s" Vector__XXX
+ SG_ Obj08VelY m8 : 56|16@1- (0.01,0) [0|0] "m/s" Vector__XXX
+ SG_ Obj08Class m8 : 72|4@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Obj08Confidence m8 : 76|7@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ Obj09DistX m9 : 8|16@1- (0.01,0) [0|0] "m" Vector__XXX
+ SG_ Obj09DistY m9 : 24|16@1- (0.01,0) [0|0] "m" Vector__XXX
+ SG_ Obj09VelX m9 : 40|16@1- (0.01,0) [0|0] "m/s" Vector__XXX
+ SG_ Obj09VelY m9 : 56|16@1- (0.01,0) [0|0] "m/s" Vector__XXX
+ SG_ Obj09Class m9 : 72|4@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Obj09Confidence m9 : 76|7@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ Obj10DistX m10 : 8|16@1- (0.01,0) [0|0] "m" Vector__XXX
+ SG_ Obj10DistY m10 : 24|16@1- (0.01,0) [0|0] "m" Vector__XXX
+ SG_ Obj10VelX m10 : 40|16@1- (0.01,0) [0|0] "m/s" Vector__XXX
+ SG_ Obj10VelY m10 : 56|16@1- (0.01,0) [0|0] "m/s" Vector__XXX
+ SG_ Obj10Class m10 : 72|4@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Obj10Confidence m10 : 76|7@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ Obj11DistX m11 : 8|16@1- (0.01,0) [0|0] "m" Vector__XXX
+ SG_ Obj11DistY m11 : 24|16@1- (0.01,0) [0|0] "m" Vector__XXX
+ SG_ Obj11VelX m11 : 40|16@1- (0.01,0) [0|0] "m/s" Vector__XXX
+ SG_ Obj11VelY m11 : 56|16@1- (0.01,0) [0|0] "m/s" Vector__XXX
+ SG_ Obj11Class m11 : 72|4@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Obj11Confidence m11 : 76|7@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ Obj12DistX m12 : 8|16@1- (0.01,0) [0|0] "m" Vector__XXX
+ SG_ Obj12DistY m12 : 24|16@1- (0.01,0) [0|0] "m" Vector__XXX
+ SG_ Obj12VelX m12 : 40|16@1- (0.01,0) [0|0] "m/s" Vector__XXX
+ SG_ Obj12VelY m12 : 56|16@1- (0.01,0) [0|0] "m/s" Vector__XXX
+ SG_ Obj12Class m12 : 72|4@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Obj12Confidence m12 : 76|7@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ Obj13DistX m13 : 8|16@1- (0.01,0) [0|0] "m" Vector__XXX
+ SG_ Obj13DistY m13 : 24|16@1- (0.01,0) [0|0] "m" Vector__XXX
+ SG_ Obj13VelX m13 : 40|16@1- (0.01,0) [0|0] "m/s" Vector__XXX
+ SG_ Obj13VelY m13 : 56|16@1- (0.01,0) [0|0] "m/s" Vector__XXX
+ SG_ Obj13Class m13 : 72|4@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Obj13Confidence m13 : 76|7@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ Obj14DistX m14 : 8|16@1- (0.01,0) [0|0] "m" Vector__XXX
+ SG_ Obj14DistY m14 : 24|16@1- (0.01,0) [0|0] "m" Vector__XXX
+ SG_ Obj14VelX m14 : 40|16@1- (0.01,0) [0|0] "m/s" Vector__XXX
+ SG_ Obj14VelY m14 : 56|16@1- (0.01,0) [0|0] "m/s" Vector__XXX
+ SG_ Obj14Class m14 : 72|4@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Obj14Confidence m14 : 76|7@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ Obj15DistX m15 : 8|16@1- (0.01,0) [0|0] "m" Vector__XXX
+ SG_ Obj15DistY m15 : 24|16@1- (0.01,0) [0|0] "m" Vector__XXX
+ SG_ Obj15VelX m15 : 40|16@1- (0.01,0) [0|0] "m/s" Vector__XXX
+ SG_ Obj15VelY m15 : 56|16@1- (0.01,0) [0|0] "m/s" Vector__XXX
+ SG_ Obj15Class m15 : 72|4@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Obj15Confidence m15 : 76|7@1+ (1,0) [0|0] "%" Vector__XXX
+
+BO_ 1632 ExteriorLightingStatus: 8 BodyGateway
+ SG_ LowBeamOn : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ HighBeamOn : 1|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ DrlOn : 2|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ FogRearOn : 3|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ BrakeLightOn : 4|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1633 ExteriorLightingCommand: 8 BodyGateway
+ SG_ LowBeamRequest : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ HighBeamRequest : 1|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ AutoHighBeamEnable : 2|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1634 WiperStatus: 8 BodyGateway
+ SG_ WiperSpeedActual : 0|3@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ WiperParked : 3|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ WasherFluidLow : 4|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1635 WiperCommand: 8 BodyGateway
+ SG_ WiperSpeedRequest : 0|3@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ SingleWipeRequest : 3|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1636 WasherStatus: 8 BodyGateway
+ SG_ WasherPumpActive : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ WasherFluidLevel : 1|7@1+ (1,0) [0|0] "%" Vector__XXX
+
+BO_ 1637 HornCommand: 8 BodyGateway
+ SG_ HornRequest : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1638 AlarmStatus: 8 BodyGateway
+ SG_ AlarmArmed : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ AlarmTriggered : 1|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ TriggerSource : 2|4@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1639 ImmobilizerStatus: 8 BodyGateway
+ SG_ KeyAuthenticated : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ ChallengeCounter : 1|8@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1640 KeyfobEvent: 8 BodyGateway
+ SG_ ButtonPressed : 0|4@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ FobBatteryLow : 4|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ FobRssi : 5|8@1- (1,0) [0|0] "dBm" Vector__XXX
+
+BO_ 1641 SunroofStatus: 8 BodyGateway
+ SG_ SunroofPosition : 0|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+ SG_ ShadePosition : 8|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+
+BO_ 1642 SunroofCommand: 8 BodyGateway
+ SG_ SunroofTarget : 0|8@1+ (0.5,0) [0|0] "%" Vector__XXX
+ SG_ VentRequest : 8|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1643 TrailerStatus: 8 BodyGateway
+ SG_ TrailerConnected : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ TrailerLampFault : 1|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ TrailerBrakeGain : 2|6@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1644 ChargeFlapStatus: 8 BodyGateway
+ SG_ FlapOpen : 0|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ FlapLockState : 1|2@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1645 RainLightSensor: 8 BodyGateway
+ SG_ RainIntensity : 0|8@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ AmbientLightLevel : 8|10@1+ (1,0) [0|0] "lx" Vector__XXX
+ SG_ TunnelDetected : 18|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1646 CabinClimateStatus: 8 BodyGateway
+ SG_ CabinTemp : 0|8@1+ (0.5,-40) [0|0] "degC" Vector__XXX
+ SG_ CabinHumidity : 8|7@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ EvaporatorTemp : 15|8@1+ (1,-40) [0|0] "degC" Vector__XXX
+
+BO_ 1647 CabinClimateCommand: 8 BodyGateway
+ SG_ CabinTempTarget : 0|8@1+ (0.5,-40) [0|0] "degC" Vector__XXX
+ SG_ AcRequest : 8|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ RecircRequest : 9|1@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 1648 AirQuality: 8 BodyGateway
+ SG_ Co2Level : 0|12@1+ (1,0) [0|0] "ppm" Vector__XXX
+ SG_ VocIndex : 12|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Pm25Level : 20|10@1+ (0.1,0) [0|0] "ug/m3" Vector__XXX
+
+BO_ 1649 HumiditySensor: 8 BodyGateway
+ SG_ WindshieldHumidity : 0|7@1+ (1,0) [0|0] "%" Vector__XXX
+ SG_ DewPointEstimate : 7|8@1+ (1,-40) [0|0] "degC" Vector__XXX
+ SG_ FogRiskLevel : 15|2@1+ (1,0) [0|0] "" Vector__XXX
+
+CM_ SG_ 1024 DoorAjar "1 while the door is not fully latched.";
+CM_ SG_ 1025 PinchDetected "Anti-pinch reversal triggered this cycle.";
+CM_ SG_ 1029 LedFaultMask "Bit per LED string, 1 = open circuit.";
+CM_ SG_ 1032 PulseCount "Raw tooth count since power-on, wraps.";
+CM_ SG_ 1035 EfuseTrippedMask "Bit per e-fuse channel, 1 = tripped.";
+CM_ SG_ 1288 EfuseEnableMask "Bit per e-fuse channel, 1 = enable.";
+CM_ SG_ 1088 DoorAjar "1 while the door is not fully latched.";
+CM_ SG_ 1089 PinchDetected "Anti-pinch reversal triggered this cycle.";
+CM_ SG_ 1093 LedFaultMask "Bit per LED string, 1 = open circuit.";
+CM_ SG_ 1096 PulseCount "Raw tooth count since power-on, wraps.";
+CM_ SG_ 1099 EfuseTrippedMask "Bit per e-fuse channel, 1 = tripped.";
+CM_ SG_ 1320 EfuseEnableMask "Bit per e-fuse channel, 1 = enable.";
+CM_ SG_ 1152 DoorAjar "1 while the door is not fully latched.";
+CM_ SG_ 1153 PinchDetected "Anti-pinch reversal triggered this cycle.";
+CM_ SG_ 1157 LedFaultMask "Bit per LED string, 1 = open circuit.";
+CM_ SG_ 1160 PulseCount "Raw tooth count since power-on, wraps.";
+CM_ SG_ 1163 EfuseTrippedMask "Bit per e-fuse channel, 1 = tripped.";
+CM_ SG_ 1352 EfuseEnableMask "Bit per e-fuse channel, 1 = enable.";
+CM_ SG_ 1216 DoorAjar "1 while the door is not fully latched.";
+CM_ SG_ 1217 PinchDetected "Anti-pinch reversal triggered this cycle.";
+CM_ SG_ 1221 LedFaultMask "Bit per LED string, 1 = open circuit.";
+CM_ SG_ 1224 PulseCount "Raw tooth count since power-on, wraps.";
+CM_ SG_ 1227 EfuseTrippedMask "Bit per e-fuse channel, 1 = tripped.";
+CM_ SG_ 1384 EfuseEnableMask "Bit per e-fuse channel, 1 = enable.";
+CM_ SG_ 1538 HvShutdownRequested "Set with any deployment -- pack must open contactors.";
+CM_ SG_ 800 LaneLeftC0 "Polynomial offset coefficient, IEEE float.";
+CM_ SG_ 802 ActiveFeatureMask "Bit per feature: ACC, LKA, AEB, BSD...";
+CM_ SG_ 784 ObjectIndex "Multiplex selector -- which tracked object this frame carries.";
+CM_ SG_ 784 Obj00DistX "Object 0 longitudinal distance.";
+CM_ SG_ 784 Obj01DistX "Object 1 longitudinal distance.";
+CM_ SG_ 784 Obj02DistX "Object 2 longitudinal distance.";
+CM_ SG_ 784 Obj03DistX "Object 3 longitudinal distance.";
+CM_ SG_ 784 Obj04DistX "Object 4 longitudinal distance.";
+CM_ SG_ 784 Obj05DistX "Object 5 longitudinal distance.";
+CM_ SG_ 784 Obj06DistX "Object 6 longitudinal distance.";
+CM_ SG_ 784 Obj07DistX "Object 7 longitudinal distance.";
+CM_ SG_ 784 Obj08DistX "Object 8 longitudinal distance.";
+CM_ SG_ 784 Obj09DistX "Object 9 longitudinal distance.";
+CM_ SG_ 784 Obj10DistX "Object 10 longitudinal distance.";
+CM_ SG_ 784 Obj11DistX "Object 11 longitudinal distance.";
+CM_ SG_ 784 Obj12DistX "Object 12 longitudinal distance.";
+CM_ SG_ 784 Obj13DistX "Object 13 longitudinal distance.";
+CM_ SG_ 784 Obj14DistX "Object 14 longitudinal distance.";
+CM_ SG_ 784 Obj15DistX "Object 15 longitudinal distance.";
+CM_ BO_ 784 "Fused front object list -- cycles ObjectIndex over active tracks.";
+BA_DEF_ BO_ "GenMsgCycleTime" INT 0 100000;
+BA_DEF_DEF_ "GenMsgCycleTime" 0;
+BA_ "GenMsgCycleTime" BO_ 1024 100;
+BA_ "GenMsgCycleTime" BO_ 1025 100;
+BA_ "GenMsgCycleTime" BO_ 1026 100;
+BA_ "GenMsgCycleTime" BO_ 1027 100;
+BA_ "GenMsgCycleTime" BO_ 1028 100;
+BA_ "GenMsgCycleTime" BO_ 1029 100;
+BA_ "GenMsgCycleTime" BO_ 1030 100;
+BA_ "GenMsgCycleTime" BO_ 1031 100;
+BA_ "GenMsgCycleTime" BO_ 1032 100;
+BA_ "GenMsgCycleTime" BO_ 1033 100;
+BA_ "GenMsgCycleTime" BO_ 1034 100;
+BA_ "GenMsgCycleTime" BO_ 1035 100;
+BA_ "GenMsgCycleTime" BO_ 1036 100;
+BA_ "GenMsgCycleTime" BO_ 1037 100;
+BA_ "GenMsgCycleTime" BO_ 1038 100;
+BA_ "GenMsgCycleTime" BO_ 1039 100;
+BA_ "GenMsgCycleTime" BO_ 1040 100;
+BA_ "GenMsgCycleTime" BO_ 1280 50;
+BA_ "GenMsgCycleTime" BO_ 1281 50;
+BA_ "GenMsgCycleTime" BO_ 1282 50;
+BA_ "GenMsgCycleTime" BO_ 1283 50;
+BA_ "GenMsgCycleTime" BO_ 1284 50;
+BA_ "GenMsgCycleTime" BO_ 1285 50;
+BA_ "GenMsgCycleTime" BO_ 1286 50;
+BA_ "GenMsgCycleTime" BO_ 1287 50;
+BA_ "GenMsgCycleTime" BO_ 1288 50;
+BA_ "GenMsgCycleTime" BO_ 1289 50;
+BA_ "GenMsgCycleTime" BO_ 1088 100;
+BA_ "GenMsgCycleTime" BO_ 1089 100;
+BA_ "GenMsgCycleTime" BO_ 1090 100;
+BA_ "GenMsgCycleTime" BO_ 1091 100;
+BA_ "GenMsgCycleTime" BO_ 1092 100;
+BA_ "GenMsgCycleTime" BO_ 1093 100;
+BA_ "GenMsgCycleTime" BO_ 1094 100;
+BA_ "GenMsgCycleTime" BO_ 1095 100;
+BA_ "GenMsgCycleTime" BO_ 1096 100;
+BA_ "GenMsgCycleTime" BO_ 1097 100;
+BA_ "GenMsgCycleTime" BO_ 1098 100;
+BA_ "GenMsgCycleTime" BO_ 1099 100;
+BA_ "GenMsgCycleTime" BO_ 1100 100;
+BA_ "GenMsgCycleTime" BO_ 1101 100;
+BA_ "GenMsgCycleTime" BO_ 1102 100;
+BA_ "GenMsgCycleTime" BO_ 1103 100;
+BA_ "GenMsgCycleTime" BO_ 1104 100;
+BA_ "GenMsgCycleTime" BO_ 1312 50;
+BA_ "GenMsgCycleTime" BO_ 1313 50;
+BA_ "GenMsgCycleTime" BO_ 1314 50;
+BA_ "GenMsgCycleTime" BO_ 1315 50;
+BA_ "GenMsgCycleTime" BO_ 1316 50;
+BA_ "GenMsgCycleTime" BO_ 1317 50;
+BA_ "GenMsgCycleTime" BO_ 1318 50;
+BA_ "GenMsgCycleTime" BO_ 1319 50;
+BA_ "GenMsgCycleTime" BO_ 1320 50;
+BA_ "GenMsgCycleTime" BO_ 1321 50;
+BA_ "GenMsgCycleTime" BO_ 1152 100;
+BA_ "GenMsgCycleTime" BO_ 1153 100;
+BA_ "GenMsgCycleTime" BO_ 1154 100;
+BA_ "GenMsgCycleTime" BO_ 1155 100;
+BA_ "GenMsgCycleTime" BO_ 1156 100;
+BA_ "GenMsgCycleTime" BO_ 1157 100;
+BA_ "GenMsgCycleTime" BO_ 1158 100;
+BA_ "GenMsgCycleTime" BO_ 1159 100;
+BA_ "GenMsgCycleTime" BO_ 1160 100;
+BA_ "GenMsgCycleTime" BO_ 1161 100;
+BA_ "GenMsgCycleTime" BO_ 1162 100;
+BA_ "GenMsgCycleTime" BO_ 1163 100;
+BA_ "GenMsgCycleTime" BO_ 1164 100;
+BA_ "GenMsgCycleTime" BO_ 1165 100;
+BA_ "GenMsgCycleTime" BO_ 1166 100;
+BA_ "GenMsgCycleTime" BO_ 1167 100;
+BA_ "GenMsgCycleTime" BO_ 1168 100;
+BA_ "GenMsgCycleTime" BO_ 1344 50;
+BA_ "GenMsgCycleTime" BO_ 1345 50;
+BA_ "GenMsgCycleTime" BO_ 1346 50;
+BA_ "GenMsgCycleTime" BO_ 1347 50;
+BA_ "GenMsgCycleTime" BO_ 1348 50;
+BA_ "GenMsgCycleTime" BO_ 1349 50;
+BA_ "GenMsgCycleTime" BO_ 1350 50;
+BA_ "GenMsgCycleTime" BO_ 1351 50;
+BA_ "GenMsgCycleTime" BO_ 1352 50;
+BA_ "GenMsgCycleTime" BO_ 1353 50;
+BA_ "GenMsgCycleTime" BO_ 1216 100;
+BA_ "GenMsgCycleTime" BO_ 1217 100;
+BA_ "GenMsgCycleTime" BO_ 1218 100;
+BA_ "GenMsgCycleTime" BO_ 1219 100;
+BA_ "GenMsgCycleTime" BO_ 1220 100;
+BA_ "GenMsgCycleTime" BO_ 1221 100;
+BA_ "GenMsgCycleTime" BO_ 1222 100;
+BA_ "GenMsgCycleTime" BO_ 1223 100;
+BA_ "GenMsgCycleTime" BO_ 1224 100;
+BA_ "GenMsgCycleTime" BO_ 1225 100;
+BA_ "GenMsgCycleTime" BO_ 1226 100;
+BA_ "GenMsgCycleTime" BO_ 1227 100;
+BA_ "GenMsgCycleTime" BO_ 1228 100;
+BA_ "GenMsgCycleTime" BO_ 1229 100;
+BA_ "GenMsgCycleTime" BO_ 1230 100;
+BA_ "GenMsgCycleTime" BO_ 1231 100;
+BA_ "GenMsgCycleTime" BO_ 1232 100;
+BA_ "GenMsgCycleTime" BO_ 1376 50;
+BA_ "GenMsgCycleTime" BO_ 1377 50;
+BA_ "GenMsgCycleTime" BO_ 1378 50;
+BA_ "GenMsgCycleTime" BO_ 1379 50;
+BA_ "GenMsgCycleTime" BO_ 1380 50;
+BA_ "GenMsgCycleTime" BO_ 1381 50;
+BA_ "GenMsgCycleTime" BO_ 1382 50;
+BA_ "GenMsgCycleTime" BO_ 1383 50;
+BA_ "GenMsgCycleTime" BO_ 1384 50;
+BA_ "GenMsgCycleTime" BO_ 1385 50;
+BA_ "GenMsgCycleTime" BO_ 1536 100;
+BA_ "GenMsgCycleTime" BO_ 1537 100;
+BA_ "GenMsgCycleTime" BO_ 1538 100;
+BA_ "GenMsgCycleTime" BO_ 1539 100;
+BA_ "GenMsgCycleTime" BO_ 1540 100;
+BA_ "GenMsgCycleTime" BO_ 1541 100;
+BA_ "GenMsgCycleTime" BO_ 1542 100;
+BA_ "GenMsgCycleTime" BO_ 1543 100;
+BA_ "GenMsgCycleTime" BO_ 1544 100;
+BA_ "GenMsgCycleTime" BO_ 1545 100;
+BA_ "GenMsgCycleTime" BO_ 800 40;
+BA_ "GenMsgCycleTime" BO_ 801 40;
+BA_ "GenMsgCycleTime" BO_ 802 40;
+BA_ "GenMsgCycleTime" BO_ 803 40;
+BA_ "GenMsgCycleTime" BO_ 804 40;
+BA_ "GenMsgCycleTime" BO_ 805 40;
+BA_ "GenMsgCycleTime" BO_ 806 40;
+BA_ "GenMsgCycleTime" BO_ 807 40;
+BA_ "GenMsgCycleTime" BO_ 808 40;
+BA_ "GenMsgCycleTime" BO_ 809 40;
+BA_ "GenMsgCycleTime" BO_ 810 40;
+BA_ "GenMsgCycleTime" BO_ 811 40;
+BA_ "GenMsgCycleTime" BO_ 812 40;
+BA_ "GenMsgCycleTime" BO_ 784 40;
+BA_ "GenMsgCycleTime" BO_ 1632 200;
+BA_ "GenMsgCycleTime" BO_ 1633 200;
+BA_ "GenMsgCycleTime" BO_ 1634 200;
+BA_ "GenMsgCycleTime" BO_ 1635 200;
+BA_ "GenMsgCycleTime" BO_ 1636 200;
+BA_ "GenMsgCycleTime" BO_ 1637 200;
+BA_ "GenMsgCycleTime" BO_ 1638 200;
+BA_ "GenMsgCycleTime" BO_ 1639 200;
+BA_ "GenMsgCycleTime" BO_ 1640 200;
+BA_ "GenMsgCycleTime" BO_ 1641 200;
+BA_ "GenMsgCycleTime" BO_ 1642 200;
+BA_ "GenMsgCycleTime" BO_ 1643 200;
+BA_ "GenMsgCycleTime" BO_ 1644 200;
+BA_ "GenMsgCycleTime" BO_ 1645 200;
+BA_ "GenMsgCycleTime" BO_ 1646 200;
+BA_ "GenMsgCycleTime" BO_ 1647 200;
+BA_ "GenMsgCycleTime" BO_ 1648 200;
+BA_ "GenMsgCycleTime" BO_ 1649 200;
+VAL_ 1024 LockState 0 "Unlocked" 1 "Locked" 2 "DoubleLocked" 3 "Moving" 4 "Fault" ;
+VAL_ 1026 CinchState 0 "Idle" 1 "Cinching" 2 "Done" 3 "Fault" ;
+VAL_ 1032 WheelDirection 0 "Stopped" 1 "Forward" 2 "Reverse" 3 "Invalid" ;
+VAL_ 1038 EcuState 0 "Init" 1 "Run" 2 "Degraded" 3 "Shutdown" ;
+VAL_ 1280 LockRequest 0 "NoRequest" 1 "Lock" 2 "Unlock" 3 "DoubleLock" ;
+VAL_ 1286 ParkBrakeRequest 0 "NoRequest" 1 "Apply" 2 "Release" 3 "Reserved" ;
+VAL_ 1088 LockState 0 "Unlocked" 1 "Locked" 2 "DoubleLocked" 3 "Moving" 4 "Fault" ;
+VAL_ 1090 CinchState 0 "Idle" 1 "Cinching" 2 "Done" 3 "Fault" ;
+VAL_ 1096 WheelDirection 0 "Stopped" 1 "Forward" 2 "Reverse" 3 "Invalid" ;
+VAL_ 1102 EcuState 0 "Init" 1 "Run" 2 "Degraded" 3 "Shutdown" ;
+VAL_ 1312 LockRequest 0 "NoRequest" 1 "Lock" 2 "Unlock" 3 "DoubleLock" ;
+VAL_ 1318 ParkBrakeRequest 0 "NoRequest" 1 "Apply" 2 "Release" 3 "Reserved" ;
+VAL_ 1152 LockState 0 "Unlocked" 1 "Locked" 2 "DoubleLocked" 3 "Moving" 4 "Fault" ;
+VAL_ 1154 CinchState 0 "Idle" 1 "Cinching" 2 "Done" 3 "Fault" ;
+VAL_ 1160 WheelDirection 0 "Stopped" 1 "Forward" 2 "Reverse" 3 "Invalid" ;
+VAL_ 1166 EcuState 0 "Init" 1 "Run" 2 "Degraded" 3 "Shutdown" ;
+VAL_ 1344 LockRequest 0 "NoRequest" 1 "Lock" 2 "Unlock" 3 "DoubleLock" ;
+VAL_ 1350 ParkBrakeRequest 0 "NoRequest" 1 "Apply" 2 "Release" 3 "Reserved" ;
+VAL_ 1216 LockState 0 "Unlocked" 1 "Locked" 2 "DoubleLocked" 3 "Moving" 4 "Fault" ;
+VAL_ 1218 CinchState 0 "Idle" 1 "Cinching" 2 "Done" 3 "Fault" ;
+VAL_ 1224 WheelDirection 0 "Stopped" 1 "Forward" 2 "Reverse" 3 "Invalid" ;
+VAL_ 1230 EcuState 0 "Init" 1 "Run" 2 "Degraded" 3 "Shutdown" ;
+VAL_ 1376 LockRequest 0 "NoRequest" 1 "Lock" 2 "Unlock" 3 "DoubleLock" ;
+VAL_ 1382 ParkBrakeRequest 0 "NoRequest" 1 "Apply" 2 "Release" 3 "Reserved" ;
+VAL_ 1536 DriveMode 0 "Park" 1 "Reverse" 2 "Neutral" 3 "Drive" 4 "Valet" 5 "Transport" ;
+VAL_ 1536 PowerState 0 "Off" 1 "Accessory" 2 "On" 3 "Ready" ;
+VAL_ 1537 WakeReason 0 "None" 1 "Keyfob" 2 "Door" 3 "Charge" 4 "Preconditioning" 5 "Telematics" ;
+VAL_ 1538 CrashSeverity 0 "None" 1 "Low" 2 "Medium" 3 "High" ;
+VAL_ 1541 TimeSource 0 "Rtc" 1 "Gnss" 2 "Cellular" 3 "Manual" ;
+VAL_ 1544 SelectedProfile 0 "Comfort" 1 "Sport" 2 "Eco" 3 "Snow" 4 "Custom" ;
+VAL_ 805 CalibrationState 0 "Ok" 1 "Drifting" 2 "Required" 3 "Running" ;
+VAL_ 810 AebState 0 "Standby" 1 "Warning" 2 "Braking" 3 "Inhibited" ;
+VAL_ 784 Obj00Class 0 "Unknown" 1 "Car" 2 "Truck" 3 "Motorcycle" 4 "Bicycle" 5 "Pedestrian" 6 "Animal" 7 "Debris" ;
+VAL_ 784 Obj01Class 0 "Unknown" 1 "Car" 2 "Truck" 3 "Motorcycle" 4 "Bicycle" 5 "Pedestrian" 6 "Animal" 7 "Debris" ;
+VAL_ 784 Obj02Class 0 "Unknown" 1 "Car" 2 "Truck" 3 "Motorcycle" 4 "Bicycle" 5 "Pedestrian" 6 "Animal" 7 "Debris" ;
+VAL_ 784 Obj03Class 0 "Unknown" 1 "Car" 2 "Truck" 3 "Motorcycle" 4 "Bicycle" 5 "Pedestrian" 6 "Animal" 7 "Debris" ;
+VAL_ 784 Obj04Class 0 "Unknown" 1 "Car" 2 "Truck" 3 "Motorcycle" 4 "Bicycle" 5 "Pedestrian" 6 "Animal" 7 "Debris" ;
+VAL_ 784 Obj05Class 0 "Unknown" 1 "Car" 2 "Truck" 3 "Motorcycle" 4 "Bicycle" 5 "Pedestrian" 6 "Animal" 7 "Debris" ;
+VAL_ 784 Obj06Class 0 "Unknown" 1 "Car" 2 "Truck" 3 "Motorcycle" 4 "Bicycle" 5 "Pedestrian" 6 "Animal" 7 "Debris" ;
+VAL_ 784 Obj07Class 0 "Unknown" 1 "Car" 2 "Truck" 3 "Motorcycle" 4 "Bicycle" 5 "Pedestrian" 6 "Animal" 7 "Debris" ;
+VAL_ 784 Obj08Class 0 "Unknown" 1 "Car" 2 "Truck" 3 "Motorcycle" 4 "Bicycle" 5 "Pedestrian" 6 "Animal" 7 "Debris" ;
+VAL_ 784 Obj09Class 0 "Unknown" 1 "Car" 2 "Truck" 3 "Motorcycle" 4 "Bicycle" 5 "Pedestrian" 6 "Animal" 7 "Debris" ;
+VAL_ 784 Obj10Class 0 "Unknown" 1 "Car" 2 "Truck" 3 "Motorcycle" 4 "Bicycle" 5 "Pedestrian" 6 "Animal" 7 "Debris" ;
+VAL_ 784 Obj11Class 0 "Unknown" 1 "Car" 2 "Truck" 3 "Motorcycle" 4 "Bicycle" 5 "Pedestrian" 6 "Animal" 7 "Debris" ;
+VAL_ 784 Obj12Class 0 "Unknown" 1 "Car" 2 "Truck" 3 "Motorcycle" 4 "Bicycle" 5 "Pedestrian" 6 "Animal" 7 "Debris" ;
+VAL_ 784 Obj13Class 0 "Unknown" 1 "Car" 2 "Truck" 3 "Motorcycle" 4 "Bicycle" 5 "Pedestrian" 6 "Animal" 7 "Debris" ;
+VAL_ 784 Obj14Class 0 "Unknown" 1 "Car" 2 "Truck" 3 "Motorcycle" 4 "Bicycle" 5 "Pedestrian" 6 "Animal" 7 "Debris" ;
+VAL_ 784 Obj15Class 0 "Unknown" 1 "Car" 2 "Truck" 3 "Motorcycle" 4 "Bicycle" 5 "Pedestrian" 6 "Animal" 7 "Debris" ;
+VAL_ 1634 WiperSpeedActual 0 "Off" 1 "Intermittent" 2 "Low" 3 "High" ;
+VAL_ 1638 TriggerSource 0 "None" 1 "Door" 2 "Motion" 3 "Tilt" 4 "Glass" ;
+VAL_ 1640 ButtonPressed 0 "None" 1 "Lock" 2 "Unlock" 3 "Trunk" 4 "Panic" ;
+VAL_ 1649 FogRiskLevel 0 "None" 1 "Low" 2 "Medium" 3 "High" ;
+SIG_VALTYPE_ 800 LaneLeftC0 : 1;
+SIG_VALTYPE_ 800 LaneLeftC1 : 1;
+SIG_VALTYPE_ 801 LaneRightC0 : 1;
+SIG_VALTYPE_ 801 LaneRightC1 : 1;

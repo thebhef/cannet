@@ -2641,14 +2641,17 @@ button.trace-event-swatch {
 .dbc-row:hover {
   background: rgba(51, 65, 85, 0.45);
 }
-.dbc-row-dim {
-  opacity: 0.35;
-}
 .dbc-row-selected {
   background: rgba(99, 102, 241, 0.35);
 }
 .dbc-row-selected:hover {
   background: rgba(99, 102, 241, 0.45);
+}
+/* Keyboard cursor (arrow-key navigation). Distinct from selection —
+   the cursor moves without selecting until Enter. */
+.dbc-row-active {
+  outline: 1px solid rgba(99, 102, 241, 0.9);
+  outline-offset: -1px;
 }
 .dbc-row-chevron {
   display: inline-block;
@@ -2661,6 +2664,10 @@ button.trace-event-swatch {
 }
 .dbc-row-dbc .dbc-row-label {
   color: #a5b4fc;
+  font-weight: 600;
+}
+.dbc-row-ecu .dbc-row-label {
+  color: #5eead4;
   font-weight: 600;
 }
 .dbc-row-scope {
