@@ -2,299 +2,121 @@
   "schema_version": 7,
   "project_id": "7a1e9c2d-4b3f-4e8a-9c5d-2f6b8a0d1e37",
   "layout": {
-    "activeGroup": "g-plots",
+    "activeGroup": "2",
     "grid": {
+      "height": 2040,
+      "orientation": "HORIZONTAL",
       "root": {
-        "type": "branch",
         "data": [
           {
-            "type": "branch",
-            "size": 600,
             "data": [
               {
-                "type": "leaf",
-                "size": 560,
                 "data": {
+                  "activeView": "project",
+                  "id": "1",
                   "views": [
-                    "project",
-                    "rbs-vehicle"
-                  ],
-                  "activeView": "rbs-vehicle",
-                  "id": "1"
-                }
+                    "project"
+                  ]
+                },
+                "size": 1020,
+                "type": "leaf"
               },
               {
-                "type": "leaf",
-                "size": 760,
                 "data": {
-                  "views": [
-                    "dbc"
-                  ],
                   "activeView": "dbc",
-                  "id": "2"
-                }
-              },
-              {
-                "type": "leaf",
-                "size": 1240,
-                "data": {
+                  "id": "2",
                   "views": [
-                    "trace-chrono"
-                  ],
-                  "activeView": "trace-chrono",
-                  "id": "3"
-                }
+                    "dbc",
+                    "rbs-vehicle",
+                    "system-messages"
+                  ]
+                },
+                "size": 1020,
+                "type": "leaf"
               }
-            ]
+            ],
+            "size": 659,
+            "type": "branch"
           },
           {
-            "type": "branch",
-            "size": 640,
             "data": [
               {
-                "type": "leaf",
-                "size": 900,
-                "data": {
-                  "views": [
-                    "trace-byid-pack",
-                    "trace-byid-zonal"
-                  ],
-                  "activeView": "trace-byid-pack",
-                  "id": "4"
-                }
+                "data": [
+                  {
+                    "data": {
+                      "activeView": "trace-byid-pack",
+                      "id": "4",
+                      "views": [
+                        "trace-byid-pack",
+                        "trace-byid-zonal"
+                      ]
+                    },
+                    "size": 895,
+                    "type": "leaf"
+                  },
+                  {
+                    "data": {
+                      "activeView": "trace-chrono",
+                      "id": "3",
+                      "views": [
+                        "trace-chrono"
+                      ]
+                    },
+                    "size": 896,
+                    "type": "leaf"
+                  }
+                ],
+                "size": 680,
+                "type": "branch"
               },
               {
-                "type": "leaf",
-                "size": 1660,
                 "data": {
+                  "activeView": "plot-zonal",
+                  "id": "5",
                   "views": [
-                    "plot-pack",
                     "plot-zonal"
-                  ],
+                  ]
+                },
+                "size": 680,
+                "type": "leaf"
+              },
+              {
+                "data": {
                   "activeView": "plot-pack",
-                  "id": "g-plots"
-                }
+                  "id": "g-plots",
+                  "views": [
+                    "plot-pack"
+                  ]
+                },
+                "size": 680,
+                "type": "leaf"
               }
-            ]
+            ],
+            "size": 1791,
+            "type": "branch"
           }
-        ]
+        ],
+        "size": 2040,
+        "type": "branch"
       },
-      "width": 2560,
-      "height": 1240,
-      "orientation": "HORIZONTAL"
+      "width": 2450
     },
     "panels": {
-      "project": {
-        "contentComponent": "project",
-        "id": "project",
-        "title": "Project"
-      },
       "dbc": {
         "contentComponent": "dbc",
         "id": "dbc",
-        "title": "DBC",
         "params": {
+          "expanded": [
+            "bus:pack",
+            "bus:zonal",
+            "dbc:pack::0:pack.dbc",
+            "dbc:zonal::1:zonal.dbc",
+            "ecu:pack::0:pack.dbc::DcdcConverter"
+          ],
           "filter": "",
-          "expanded": [],
           "showDetails": false
-        }
-      },
-      "rbs-vehicle": {
-        "contentComponent": "rbs",
-        "id": "rbs-vehicle",
-        "params": {
-          "elementId": "vehicle"
         },
-        "title": "EV Zonal RBS"
-      },
-      "trace-chrono": {
-        "contentComponent": "trace",
-        "id": "trace-chrono",
-        "params": {
-          "autoScroll": true,
-          "columns": [
-            {
-              "key": "idx",
-              "visible": true,
-              "width": 64
-            },
-            {
-              "key": "time",
-              "visible": true,
-              "width": 110
-            },
-            {
-              "key": "rate",
-              "visible": true,
-              "width": 64
-            },
-            {
-              "key": "bus",
-              "visible": true,
-              "width": 100
-            },
-            {
-              "key": "id",
-              "visible": true,
-              "width": 96
-            },
-            {
-              "key": "msg",
-              "visible": true,
-              "width": 220
-            },
-            {
-              "key": "len",
-              "visible": true,
-              "width": 44
-            },
-            {
-              "key": "data",
-              "visible": true,
-              "width": 360
-            },
-            {
-              "key": "dir",
-              "visible": true,
-              "width": 40
-            },
-            {
-              "key": "kind",
-              "visible": false,
-              "width": 110
-            }
-          ],
-          "mode": "chronological",
-          "showEvents": true,
-          "elementId": "chrono"
-        },
-        "title": "All buses"
-      },
-      "trace-byid-pack": {
-        "contentComponent": "trace",
-        "id": "trace-byid-pack",
-        "params": {
-          "autoScroll": true,
-          "columns": [
-            {
-              "key": "idx",
-              "visible": true,
-              "width": 64
-            },
-            {
-              "key": "time",
-              "visible": true,
-              "width": 110
-            },
-            {
-              "key": "rate",
-              "visible": true,
-              "width": 64
-            },
-            {
-              "key": "bus",
-              "visible": true,
-              "width": 100
-            },
-            {
-              "key": "id",
-              "visible": true,
-              "width": 96
-            },
-            {
-              "key": "msg",
-              "visible": true,
-              "width": 220
-            },
-            {
-              "key": "len",
-              "visible": true,
-              "width": 44
-            },
-            {
-              "key": "data",
-              "visible": true,
-              "width": 360
-            },
-            {
-              "key": "dir",
-              "visible": true,
-              "width": 40
-            },
-            {
-              "key": "kind",
-              "visible": false,
-              "width": 110
-            }
-          ],
-          "mode": "by-id",
-          "showEvents": true,
-          "elementId": "byid-pack"
-        },
-        "title": "Pack by ID"
-      },
-      "trace-byid-zonal": {
-        "contentComponent": "trace",
-        "id": "trace-byid-zonal",
-        "params": {
-          "autoScroll": true,
-          "columns": [
-            {
-              "key": "idx",
-              "visible": true,
-              "width": 64
-            },
-            {
-              "key": "time",
-              "visible": true,
-              "width": 110
-            },
-            {
-              "key": "rate",
-              "visible": true,
-              "width": 64
-            },
-            {
-              "key": "bus",
-              "visible": true,
-              "width": 100
-            },
-            {
-              "key": "id",
-              "visible": true,
-              "width": 96
-            },
-            {
-              "key": "msg",
-              "visible": true,
-              "width": 220
-            },
-            {
-              "key": "len",
-              "visible": true,
-              "width": 44
-            },
-            {
-              "key": "data",
-              "visible": true,
-              "width": 360
-            },
-            {
-              "key": "dir",
-              "visible": true,
-              "width": 40
-            },
-            {
-              "key": "kind",
-              "visible": false,
-              "width": 110
-            }
-          ],
-          "mode": "by-id",
-          "showEvents": true,
-          "elementId": "byid-zonal"
-        },
-        "title": "Zonal by ID"
+        "title": "DBC"
       },
       "plot-pack": {
         "contentComponent": "plot",
@@ -385,6 +207,7 @@
             "b": null
           },
           "cursorYByArea": {},
+          "elementId": "plot-pack",
           "followLive": true,
           "maxRateHz": 15,
           "measEnabled": false,
@@ -399,8 +222,7 @@
           ],
           "showDiag": false,
           "showPoints": "auto",
-          "signalsWidthPx": 340,
-          "elementId": "plot-pack"
+          "signalsWidthPx": 340
         },
         "title": "Pack"
       },
@@ -502,6 +324,7 @@
             "b": null
           },
           "cursorYByArea": {},
+          "elementId": "plot-zonal",
           "followLive": true,
           "maxRateHz": 15,
           "measEnabled": false,
@@ -516,10 +339,220 @@
           ],
           "showDiag": false,
           "showPoints": "auto",
-          "signalsWidthPx": 340,
-          "elementId": "plot-zonal"
+          "signalsWidthPx": 340
         },
         "title": "Zonal"
+      },
+      "project": {
+        "contentComponent": "project",
+        "id": "project",
+        "title": "Project"
+      },
+      "rbs-vehicle": {
+        "contentComponent": "rbs",
+        "id": "rbs-vehicle",
+        "params": {
+          "elementId": "vehicle"
+        },
+        "title": "EV Zonal RBS"
+      },
+      "system-messages": {
+        "contentComponent": "system-messages",
+        "id": "system-messages",
+        "params": {
+          "filterSource": "",
+          "minLevel": "warn"
+        },
+        "title": "System messages"
+      },
+      "trace-byid-pack": {
+        "contentComponent": "trace",
+        "id": "trace-byid-pack",
+        "params": {
+          "autoScroll": true,
+          "columns": [
+            {
+              "key": "idx",
+              "visible": true,
+              "width": 64
+            },
+            {
+              "key": "time",
+              "visible": true,
+              "width": 110
+            },
+            {
+              "key": "rate",
+              "visible": true,
+              "width": 64
+            },
+            {
+              "key": "bus",
+              "visible": true,
+              "width": 100
+            },
+            {
+              "key": "id",
+              "visible": true,
+              "width": 96
+            },
+            {
+              "key": "msg",
+              "visible": true,
+              "width": 220
+            },
+            {
+              "key": "len",
+              "visible": true,
+              "width": 44
+            },
+            {
+              "key": "data",
+              "visible": true,
+              "width": 360
+            },
+            {
+              "key": "dir",
+              "visible": true,
+              "width": 40
+            },
+            {
+              "key": "kind",
+              "visible": false,
+              "width": 110
+            }
+          ],
+          "elementId": "byid-pack",
+          "mode": "by-id",
+          "showEvents": true
+        },
+        "title": "Pack by ID"
+      },
+      "trace-byid-zonal": {
+        "contentComponent": "trace",
+        "id": "trace-byid-zonal",
+        "params": {
+          "autoScroll": true,
+          "columns": [
+            {
+              "key": "idx",
+              "visible": true,
+              "width": 64
+            },
+            {
+              "key": "time",
+              "visible": true,
+              "width": 110
+            },
+            {
+              "key": "rate",
+              "visible": true,
+              "width": 64
+            },
+            {
+              "key": "bus",
+              "visible": true,
+              "width": 100
+            },
+            {
+              "key": "id",
+              "visible": true,
+              "width": 96
+            },
+            {
+              "key": "msg",
+              "visible": true,
+              "width": 220
+            },
+            {
+              "key": "len",
+              "visible": true,
+              "width": 44
+            },
+            {
+              "key": "data",
+              "visible": true,
+              "width": 360
+            },
+            {
+              "key": "dir",
+              "visible": true,
+              "width": 40
+            },
+            {
+              "key": "kind",
+              "visible": false,
+              "width": 110
+            }
+          ],
+          "elementId": "byid-zonal",
+          "mode": "by-id",
+          "showEvents": true
+        },
+        "title": "Zonal by ID"
+      },
+      "trace-chrono": {
+        "contentComponent": "trace",
+        "id": "trace-chrono",
+        "params": {
+          "autoScroll": true,
+          "columns": [
+            {
+              "key": "idx",
+              "visible": true,
+              "width": 64
+            },
+            {
+              "key": "time",
+              "visible": true,
+              "width": 110
+            },
+            {
+              "key": "rate",
+              "visible": true,
+              "width": 64
+            },
+            {
+              "key": "bus",
+              "visible": true,
+              "width": 100
+            },
+            {
+              "key": "id",
+              "visible": true,
+              "width": 96
+            },
+            {
+              "key": "msg",
+              "visible": true,
+              "width": 220
+            },
+            {
+              "key": "len",
+              "visible": true,
+              "width": 44
+            },
+            {
+              "key": "data",
+              "visible": true,
+              "width": 360
+            },
+            {
+              "key": "dir",
+              "visible": true,
+              "width": 40
+            },
+            {
+              "key": "kind",
+              "visible": false,
+              "width": 110
+            }
+          ],
+          "elementId": "chrono",
+          "mode": "chronological",
+          "showEvents": true
+        },
+        "title": "All buses"
       }
     }
   },
@@ -962,39 +995,39 @@
       "kind": "colormap",
       "messageId": 256,
       "name": "Pack state",
-      "signalName": "PackState",
       "rules": [
         {
           "color": "#6b7280",
-          "min": 0,
-          "max": 0
+          "max": 0,
+          "min": 0
         },
         {
           "color": "#3b82f6",
-          "min": 1,
-          "max": 1
+          "max": 1,
+          "min": 1
         },
         {
           "color": "#eab308",
-          "min": 2,
-          "max": 2
+          "max": 2,
+          "min": 2
         },
         {
           "color": "#22c55e",
-          "min": 3,
-          "max": 3
+          "max": 3,
+          "min": 3
         },
         {
           "color": "#14b8a6",
-          "min": 4,
-          "max": 4
+          "max": 4,
+          "min": 4
         },
         {
           "color": "#ef4444",
-          "min": 5,
-          "max": 5
+          "max": 5,
+          "min": 5
         }
-      ]
+      ],
+      "signalName": "PackState"
     },
     {
       "busId": null,
@@ -1003,29 +1036,29 @@
       "kind": "colormap",
       "messageId": 259,
       "name": "Main contactor",
-      "signalName": "MainPositiveState",
       "rules": [
         {
           "color": "#6b7280",
-          "min": 0,
-          "max": 0
+          "max": 0,
+          "min": 0
         },
         {
           "color": "#22c55e",
-          "min": 1,
-          "max": 1
+          "max": 1,
+          "min": 1
         },
         {
           "color": "#f97316",
-          "min": 2,
-          "max": 2
+          "max": 2,
+          "min": 2
         },
         {
           "color": "#ef4444",
-          "min": 3,
-          "max": 3
+          "max": 3,
+          "min": 3
         }
-      ]
+      ],
+      "signalName": "MainPositiveState"
     },
     {
       "busId": null,
@@ -1034,34 +1067,34 @@
       "kind": "colormap",
       "messageId": 1024,
       "name": "FL lock state",
-      "signalName": "LockState",
       "rules": [
         {
           "color": "#eab308",
-          "min": 0,
-          "max": 0
+          "max": 0,
+          "min": 0
         },
         {
           "color": "#22c55e",
-          "min": 1,
-          "max": 1
+          "max": 1,
+          "min": 1
         },
         {
           "color": "#14b8a6",
-          "min": 2,
-          "max": 2
+          "max": 2,
+          "min": 2
         },
         {
           "color": "#3b82f6",
-          "min": 3,
-          "max": 3
+          "max": 3,
+          "min": 3
         },
         {
           "color": "#ef4444",
-          "min": 4,
-          "max": 4
+          "max": 4,
+          "min": 4
         }
-      ]
+      ],
+      "signalName": "LockState"
     }
   ],
   "buses": [

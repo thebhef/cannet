@@ -1,0 +1,83 @@
+# Local commit gate. Every hook is repo:local / language:system — it runs a
+# tool this project already pins (uv, cargo, pnpm) or a small script in
+# scripts/, so there are no third-party hook repos to keep in sync and the
+# checks mirror .github/workflows/ci.yml. Enable in a clone with
+# `pre-commit install` (needs the `pre-commit` tool: `uv tool install
+# pre-commit` or `pipx install pre-commit`).
+minimum_pre_commit_version: "3.5.0"
+
+repos:
+  - repo: local
+    hooks:
+      # --- machine-local path guards (run first) ---
+
+      # Rewrite absolute paths in example project files to paths relative to
+      # the project file's own directory (ADR 0030), so a checked-in example
+      # opens from any clone location.
+      - id: relativize-project-paths
+        name: relativize cannet project paths
+        language: system
+        files: '\.cannet_prj$'
+        entry: python scripts/relativize_project_paths.py
+
+      # Block any remaining machine-local absolute path in staged text.
+      - id: check-local-paths
+        name: block machine-local paths
+        language: system
+        types: [text]
+        entry: python scripts/check_local_paths.py
+
+      # --- Python sidecar (servers/cannet-python-can) ---
+
+      # ruff takes file arguments, so these run on the staged files only.
+      - id: ruff-check
+        name: ruff check (sidecar)
+        language: system
+        files: '^servers/cannet-python-can/.*\.py$'
+        exclude: '/_proto/'
+        entry: uv run --project servers/cannet-python-can --frozen --extra dev ruff check --force-exclude
+      - id: ruff-format
+        name: ruff format (sidecar)
+        language: system
+        files: '^servers/cannet-python-can/.*\.py$'
+        exclude: '/_proto/'
+        entry: uv run --project servers/cannet-python-can --frozen --extra dev ruff format --check --force-exclude
+
+      # mypy / pytest need the sidecar as their working directory (config
+      # discovery), so they run the whole sidecar when any of its files change.
+      - id: mypy
+        name: mypy (sidecar)
+        language: system
+        files: '^servers/cannet-python-can/.*\.py$'
+        pass_filenames: false
+        entry: "bash -c 'cd servers/cannet-python-can && uv run --frozen --extra dev mypy'"
+      - id: pytest
+        name: pytest (sidecar)
+        language: system
+        files: '^servers/cannet-python-can/.*\.py$'
+        pass_filenames: false
+        entry: "bash -c 'cd servers/cannet-python-can && uv run --frozen --extra dev pytest'"
+
+      # --- Rust workspace ---
+      # cargo has no per-file granularity; these run the workspace when any
+      # Rust source or manifest changes.
+      - id: cargo-clippy
+        name: cargo clippy (workspace)
+        language: system
+        files: '\.rs$|(^|/)Cargo\.(toml|lock)$|^rust-toolchain\.toml$'
+        pass_filenames: false
+        entry: cargo clippy --workspace --all-targets -- -D warnings
+      - id: cargo-test
+        name: cargo test (workspace)
+        language: system
+        files: '\.rs$|(^|/)Cargo\.(toml|lock)$|^rust-toolchain\.toml$'
+        pass_filenames: false
+        entry: cargo test --workspace
+
+      # --- Frontend (apps/gui, excluding the Rust src-tauri crate) ---
+      - id: frontend
+        name: frontend vitest + build
+        language: system
+        files: '^apps/gui/(?!src-tauri/).*'
+        pass_filenames: false
+        entry: "bash -c 'pnpm --dir apps/gui test && pnpm --dir apps/gui build'"
