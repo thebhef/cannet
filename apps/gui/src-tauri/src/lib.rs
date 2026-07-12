@@ -916,13 +916,26 @@ fn open_log(
         .spawn(move || {
             // The BLF pump ends at end-of-file; nothing signals it to
             // stop early, so the flag is just a never-set placeholder.
-            run_pump(
-                &app_for_thread,
-                source,
-                Arc::new(AtomicBool::new(false)),
-                channel_to_bus,
-                true, // replay_origin: BLF anchors the session at the first frame's ts
-            );
+            //
+            // A panic on the ingest path (a hostile BLF) must end the
+            // load with a visible error, not a silently dead thread the
+            // UI waits on forever. The panic hook has already written
+            // the message and backtrace to `cannet.log` by the time
+            // `catch_unwind` returns.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_pump(
+                    &app_for_thread,
+                    source,
+                    Arc::new(AtomicBool::new(false)),
+                    channel_to_bus,
+                    true, // replay_origin: BLF anchors the session at the first frame's ts
+                );
+            }));
+            if let Err(payload) = result {
+                let msg = format!("load failed: {}", panic_message(payload.as_ref()));
+                sys_error!(&app_for_thread, "blf-import", "{msg}");
+                let _ = app_for_thread.emit("log-finished", LogFinished::Error { message: msg });
+            }
         })
         .map_err(|e| format!("failed to spawn pump thread: {e}"))?;
 
@@ -3149,6 +3162,16 @@ fn route_channel(channel: u8, mapping: &[(u8, Option<String>)]) -> Result<Option
     }
 }
 
+/// Human-readable text of a `catch_unwind` payload: the `&str` or
+/// `String` a `panic!` carries, or a placeholder for anything else.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("non-string panic payload")
+}
+
 // `source` is owned by this thread for its lifetime; clippy's
 // "pass by reference" suggestion doesn't fit the thread-spawn site.
 //
@@ -4732,6 +4755,16 @@ mod tests {
         assert_eq!(route_channel(1, &m), Err(()));
         // Channel without an entry: unassigned.
         assert_eq!(route_channel(7, &m), Ok(None));
+    }
+
+    #[test]
+    fn panic_message_extracts_str_and_string_payloads() {
+        let p = std::panic::catch_unwind(|| panic!("plain str")).unwrap_err();
+        assert_eq!(panic_message(p.as_ref()), "plain str");
+        let p = std::panic::catch_unwind(|| panic!("formatted {}", 42)).unwrap_err();
+        assert_eq!(panic_message(p.as_ref()), "formatted 42");
+        let p = std::panic::catch_unwind(|| std::panic::panic_any(7u32)).unwrap_err();
+        assert_eq!(panic_message(p.as_ref()), "non-string panic payload");
     }
 
     #[test]

@@ -541,8 +541,8 @@ mod tests {
     #[test]
     fn name_regex_and_signal_equals_use_dbc_ids_and_need_decode() {
         let none = |_: &str| Vec::new();
-        let regex = |p: &str| (p == "^Eng").then(|| vec![(0x10, false)]).unwrap_or_default();
-        let signal = |n: &str| (n == "Rpm").then(|| vec![(0x10, false)]).unwrap_or_default();
+        let regex = |p: &str| if p == "^Eng" { vec![(0x10, false)] } else { vec![] };
+        let signal = |n: &str| if n == "Rpm" { vec![(0x10, false)] } else { vec![] };
         let inp = inputs(&[], &none, &regex, &signal);
         let nr = resolve_candidates(&parse(r#"{"name_regex": "^Eng"}"#), &inp).unwrap();
         assert!(!nr.membership);
