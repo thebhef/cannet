@@ -33,28 +33,31 @@ where a poisoned mutex escalates to a visible abort.
 - **The root ingest panic is unidentified.** The TSMaster BLF is not
   available; something in it panics the ingest path mid-append.
 
-## Fix plan (robust to the root panic staying unidentified)
+## Fix (implemented; robust to the root panic staying unidentified)
 
-- **Poison tolerance in `trace_store.rs`:** replace the
-  `.expect("trace store mutex poisoned")` sites with
-  `unwrap_or_else(PoisonError::into_inner)` recovery (mechanical, no
-  new dependency), so a dead loader can never take the app down —
-  worst case is one failed load. Regression test: deliberately poison
-  the mutex, verify `start_session` and the accessors recover.
-- **Catch panics on the load path:** wrap the BLF pump loop in
-  `catch_unwind`; on panic emit `sys_error` + a `log-finished` error
-  event so the UI shows "load failed: `<panic message>`" instead of
-  silently stalling — and the message lands durably in `cannet.log`,
+- **Poison tolerance in `trace_store.rs`:** every
+  `.expect("trace store mutex poisoned")` site now goes through a
+  `lock_inner()` helper that recovers via
+  `unwrap_or_else(PoisonError::into_inner)`, so a dead loader can
+  never take the app down — worst case is one failed load. Regression
+  test `poisoned_mutex_recovers_instead_of_panicking` deliberately
+  poisons the mutex and verifies the accessors, `start_session`, and
+  a fresh `append` all keep working.
+- **Panics caught on the load path:** the BLF pump thread wraps
+  `run_pump` in `catch_unwind`; on panic it emits `sys_error` + a
+  `log-finished` error event so the UI shows "load failed:
+  `<panic message>`" instead of silently stalling. The panic hook has
+  already written the message and backtrace to `cannet.log` by then,
   closing the forensics gap for the next occurrence.
 
-The ingest panic then self-documents the next time a hostile BLF is
+The ingest panic self-documents the next time a hostile BLF is
 loaded; fixing it becomes a follow-up with a named panic site.
 
 ## Exit criteria
 
-- A poisoned trace-store mutex no longer aborts the app: accessors and
-  `start_session` recover, covered by a regression test.
-- A loader-thread panic surfaces as a failed load (system log + UI
-  error) and its message/backtrace lands in `cannet.log`.
+- ~~A poisoned trace-store mutex no longer aborts the app: accessors
+  and `start_session` recover, covered by a regression test.~~ Done.
+- ~~A loader-thread panic surfaces as a failed load (system log + UI
+  error) and its message/backtrace lands in `cannet.log`.~~ Done.
 - The original ingest panic, once captured, gets its own repro/fix
   follow-up.

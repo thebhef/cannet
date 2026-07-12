@@ -59,7 +59,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use cannet_core::{CanFdFlags, CanFramePayload, Direction};
@@ -375,6 +375,19 @@ impl TraceStore {
         Ok(Self::with_raw(raw, Some(dir)))
     }
 
+    /// Lock the inner state, recovering from poisoning. A thread that
+    /// panics while holding this mutex (a pump mid-append, say) must
+    /// cost at most its own load: treating poison as fatal here turned
+    /// one ingest panic into an app-wide cascade — every accessor
+    /// panicking in turn, and finally a main-thread abort when the user
+    /// started the next session. Worst case after recovery is a
+    /// partially applied update from the panicking critical section
+    /// (e.g. a frame in the raw store missing from the newest-per-id
+    /// index), which the next session start wipes.
+    fn lock_inner(&self) -> MutexGuard<'_, Inner> {
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     fn with_raw(raw: Box<dyn RawStore>, scratch_dir: Option<PathBuf>) -> Self {
         Self {
             inner: Mutex::new(Inner {
@@ -399,7 +412,7 @@ impl TraceStore {
     /// or `None` for the in-RAM double (which has no scratch dir). Drives the
     /// status readout (ADR 0002 DS-8).
     pub fn scratch_footprint_bytes(&self) -> Option<u64> {
-        let inner = self.inner.lock().expect("trace store mutex poisoned");
+        let inner = self.lock_inner();
         inner.scratch_dir.is_some().then_some(inner.footprint_bytes)
     }
 
@@ -409,7 +422,7 @@ impl TraceStore {
     /// after an eviction. The mark is `0` and the timestamp the whole-buffer
     /// start until eviction first advances them.
     pub fn low_water(&self) -> (usize, Option<f64>) {
-        let inner = self.inner.lock().expect("trace store mutex poisoned");
+        let inner = self.lock_inner();
         let mark = inner.raw.first_index();
         #[allow(clippy::cast_precision_loss)]
         let ts = inner.raw.first_last_ts().0.map(|ns| ns as f64 / 1e9);
@@ -425,7 +438,7 @@ impl TraceStore {
     /// `first_index <= len`. The oldest-retained ts is where the frontend
     /// places the truncation marker (ADR 0035) when `first_index > 0`.
     pub fn len_and_low_water(&self) -> (usize, usize, Option<u64>) {
-        let inner = self.inner.lock().expect("trace store mutex poisoned");
+        let inner = self.lock_inner();
         (
             inner.raw.len(),
             inner.raw.first_index(),
@@ -439,7 +452,7 @@ impl TraceStore {
     /// lock, then released).
     pub fn scratch_breakdown(&self) -> Option<ScratchBreakdown> {
         let dir = {
-            let inner = self.inner.lock().expect("trace store mutex poisoned");
+            let inner = self.lock_inner();
             inner.scratch_dir.clone()?
         };
         Some(scratch_breakdown(&dir))
@@ -450,7 +463,7 @@ impl TraceStore {
     /// `None` is unbounded. A no-op in effect for the in-RAM double (it has
     /// no scratch dir, so flush never measures or evicts).
     pub fn set_scratch_cap(&self, cap: Option<u64>) {
-        let mut inner = self.inner.lock().expect("trace store mutex poisoned");
+        let mut inner = self.lock_inner();
         inner.scratch_cap_bytes = cap;
     }
 
@@ -481,7 +494,7 @@ impl TraceStore {
         );
         let bus_for_rate = key.0.clone();
         let direction = frame.direction;
-        let mut inner = self.inner.lock().expect("trace store mutex poisoned");
+        let mut inner = self.lock_inner();
         if ts_ns < inner.session_start_ns {
             inner.dropped_before_session = inner.dropped_before_session.saturating_add(1);
             return None;
@@ -550,9 +563,7 @@ impl TraceStore {
     /// Number of frames currently stored.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.inner
-            .lock()
-            .expect("trace store mutex poisoned")
+        self.lock_inner()
             .raw
             .len()
     }
@@ -563,9 +574,7 @@ impl TraceStore {
     /// returns an empty `Vec`.
     #[must_use]
     pub fn slice(&self, start: usize, end: usize) -> Vec<RawTraceFrame> {
-        self.inner
-            .lock()
-            .expect("trace store mutex poisoned")
+        self.lock_inner()
             .raw
             .slice(start, end)
     }
@@ -577,9 +586,7 @@ impl TraceStore {
     /// per-signal decoded-sample slice the cache produces.
     #[must_use]
     pub fn frame_timestamps(&self, start: usize, end: usize) -> (Option<u64>, Option<u64>) {
-        self.inner
-            .lock()
-            .expect("trace store mutex poisoned")
+        self.lock_inner()
             .raw
             .frame_timestamps(start, end)
     }
@@ -593,7 +600,7 @@ impl TraceStore {
     /// this is an `O(log n)` binary search over `[first_index, len)`.
     #[must_use]
     pub fn frame_index_at_ns(&self, ts: u64) -> usize {
-        let inner = self.inner.lock().expect("trace store mutex poisoned");
+        let inner = self.lock_inner();
         let (mut lo, mut hi) = (inner.raw.first_index(), inner.raw.len());
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
@@ -616,7 +623,7 @@ impl TraceStore {
     /// so `first` is the oldest and `last` the newest.
     #[must_use]
     pub fn buffer_seconds(&self) -> f64 {
-        let inner = self.inner.lock().expect("trace store mutex poisoned");
+        let inner = self.lock_inner();
         match inner.raw.first_last_ts() {
             (Some(first), Some(last)) => {
                 let span = last.saturating_sub(first);
@@ -644,9 +651,7 @@ impl TraceStore {
         start: usize,
         end: usize,
     ) -> Vec<(usize, RawTraceFrame)> {
-        self.inner
-            .lock()
-            .expect("trace store mutex poisoned")
+        self.lock_inner()
             .raw
             .matching_frames_indexed(id_raw, extended, start, end)
     }
@@ -671,9 +676,7 @@ impl TraceStore {
         end: usize,
         keep: impl Fn(&RawTraceFrame) -> bool,
     ) -> Vec<usize> {
-        self.inner
-            .lock()
-            .expect("trace store mutex poisoned")
+        self.lock_inner()
             .raw
             .scan_chunk(start, end, &keep)
     }
@@ -686,9 +689,7 @@ impl TraceStore {
     /// match set.
     #[must_use]
     pub fn frames_at(&self, idxs: &[usize]) -> Vec<(usize, RawTraceFrame)> {
-        self.inner
-            .lock()
-            .expect("trace store mutex poisoned")
+        self.lock_inner()
             .raw
             .frames_at(idxs)
     }
@@ -711,7 +712,7 @@ impl TraceStore {
     /// doesn't carry the previous footprint. The raw store does the same
     /// in its own [`RawStore::clear`].)
     pub fn start_session(&self, session_start_ns: u64) {
-        let mut inner = self.inner.lock().expect("trace store mutex poisoned");
+        let mut inner = self.lock_inner();
         inner.session_start_ns = session_start_ns;
         inner.raw.clear();
         inner.rate_samples = VecDeque::new();
@@ -759,7 +760,7 @@ impl TraceStore {
     }
 
     fn flush_with(&self, sync: bool) -> std::io::Result<()> {
-        let mut inner = self.inner.lock().expect("trace store mutex poisoned");
+        let mut inner = self.lock_inner();
         // Windowed-ring cap (ADR 0002 DS-8): shed the oldest raw segments
         // *before* the raw flush, so the manifest that flush writes reflects
         // the post-eviction floor and segment set. A manifest written before
@@ -825,7 +826,7 @@ impl TraceStore {
     /// scratch then belongs to no project and never reloads). Called by
     /// the host when a capture starts.
     pub fn write_scratch_identity(&self, project_id: Option<Uuid>) {
-        let inner = self.inner.lock().expect("trace store mutex poisoned");
+        let inner = self.lock_inner();
         let Some(dir) = inner.scratch_dir.clone() else {
             return;
         };
@@ -851,7 +852,7 @@ impl TraceStore {
     /// `false`. The reloaded trace's per-id rates read zero — it isn't
     /// live.
     pub fn try_reload(&self, project_id: Uuid) -> bool {
-        let mut inner = self.inner.lock().expect("trace store mutex poisoned");
+        let mut inner = self.lock_inner();
         let Some(dir) = inner.scratch_dir.clone() else {
             return false;
         };
@@ -902,9 +903,7 @@ impl TraceStore {
     /// has been configured yet", and the store accepts every frame.
     #[must_use]
     pub fn session_start_ns(&self) -> u64 {
-        self.inner
-            .lock()
-            .expect("trace store mutex poisoned")
+        self.lock_inner()
             .session_start_ns
     }
 
@@ -940,7 +939,7 @@ impl TraceStore {
     #[must_use]
     pub fn latest_in_window(&self, start: usize, end: usize) -> Vec<LatestById> {
         let now = Instant::now();
-        let inner = self.inner.lock().expect("trace store mutex poisoned");
+        let inner = self.lock_inner();
         let len = inner.raw.len();
         let end = end.min(len);
         if start >= end {
@@ -1030,7 +1029,7 @@ impl TraceStore {
     /// is reported once regardless of how many wire channels carried it.
     #[must_use]
     pub fn seen_bus_ids(&self) -> Vec<(Option<String>, u32, bool)> {
-        let inner = self.inner.lock().expect("trace store mutex poisoned");
+        let inner = self.lock_inner();
         let mut out: Vec<(Option<String>, u32, bool)> = inner
             .latest
             .keys()
@@ -1046,9 +1045,7 @@ impl TraceStore {
     /// otherwise-silent path is visible in the diagnostic readout.
     #[must_use]
     pub fn frames_dropped_before_session(&self) -> u64 {
-        self.inner
-            .lock()
-            .expect("trace store mutex poisoned")
+        self.lock_inner()
             .dropped_before_session
     }
 
@@ -1056,7 +1053,7 @@ impl TraceStore {
     #[must_use]
     pub fn frames_per_second(&self) -> f64 {
         let now = Instant::now();
-        let mut inner = self.inner.lock().expect("trace store mutex poisoned");
+        let mut inner = self.lock_inner();
         prune_rate_samples(&mut inner.rate_samples, now);
         rate_from_samples(&inner.rate_samples)
     }
@@ -1069,7 +1066,7 @@ impl TraceStore {
     #[must_use]
     pub fn frames_per_second_by_bus(&self) -> Vec<(Option<String>, f64)> {
         let now = Instant::now();
-        let mut inner = self.inner.lock().expect("trace store mutex poisoned");
+        let mut inner = self.lock_inner();
         let mut out: Vec<(Option<String>, f64)> = inner
             .per_bus
             .iter_mut()
@@ -1091,7 +1088,7 @@ impl TraceStore {
     #[must_use]
     pub fn frames_per_second_by_direction(&self) -> (f64, f64) {
         let now = Instant::now();
-        let mut inner = self.inner.lock().expect("trace store mutex poisoned");
+        let mut inner = self.lock_inner();
         prune_rate_samples(&mut inner.rx_rate.samples, now);
         prune_rate_samples(&mut inner.tx_rate.samples, now);
         let rx = rate_from_samples(&inner.rx_rate.samples);
@@ -1110,9 +1107,7 @@ impl CandidateSource for TraceStore {
     }
 
     fn candidate_indices(&self, ids: &[(u32, bool)], start: usize, end: usize) -> Vec<usize> {
-        self.inner
-            .lock()
-            .expect("trace store mutex poisoned")
+        self.lock_inner()
             .raw
             .candidate_indices(ids, start, end)
     }
@@ -1351,6 +1346,31 @@ mod tests {
         let slice = store.slice(2, 5);
         let ids: Vec<u32> = slice.iter().map(|f| f.id).collect();
         assert_eq!(ids, vec![2, 3, 4]);
+    }
+
+    #[test]
+    fn poisoned_mutex_recovers_instead_of_panicking() {
+        // A pump thread that panics while holding the inner mutex poisons
+        // it. That must cost at most the panicking thread's own load —
+        // every later accessor, and a subsequent session start, must keep
+        // working on the pre-panic state rather than cascading the panic.
+        let store = TraceStore::new();
+        store.append(dummy(1_000, 1));
+        std::thread::scope(|s| {
+            let handle = s.spawn(|| {
+                let _guard = store.inner.lock().unwrap();
+                panic!("deliberate poison");
+            });
+            assert!(handle.join().is_err());
+        });
+        assert!(store.inner.is_poisoned());
+        assert_eq!(store.len(), 1);
+        assert_eq!(store.len_and_low_water().0, 1);
+        assert_eq!(store.slice(0, 10).len(), 1);
+        store.start_session(0);
+        assert_eq!(store.len(), 0);
+        store.append(dummy(2_000, 2));
+        assert_eq!(store.len(), 1);
     }
 
     #[test]
