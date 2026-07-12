@@ -1199,6 +1199,31 @@ uv run mypy
 uv run pytest
 ```
 
+### Pre-commit hook
+
+A [`pre-commit`](https://pre-commit.com/) config
+([`.pre-commit-config.yaml`](.pre-commit-config.yaml)) runs the same
+tools as CI as a local commit gate. Every hook is a local
+`language: system` hook that invokes the tools this repo already pins
+(`uv`, `cargo`, `pnpm`) — there are no third-party hook repos to keep in
+sync, and the checks match `ci.yml`. Two extra hooks stop machine-local
+paths leaking into the repo: one **rewrites** absolute paths in
+`.cannet_prj` files to project-relative form (ADR 0030), and one
+**blocks** any staged file still carrying an absolute path from your
+home directory or clone location.
+
+Enable it once per clone (needs the `pre-commit` tool — e.g.
+`uv tool install pre-commit` or `pipx install pre-commit`):
+
+```sh
+pre-commit install
+```
+
+Linters that take file arguments (ruff) run only on the staged files;
+the whole-project checks (mypy, pytest, `cargo clippy`/`test`, the
+frontend `vitest`/`build`) run when files in their area are staged. Run
+everything on demand with `pre-commit run --all-files`.
+
 ## License
 
 cannet is free software, distributed under the terms of the

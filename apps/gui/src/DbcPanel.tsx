@@ -61,11 +61,16 @@ function filterFromParams(raw: unknown): string {
   return typeof raw === "string" ? raw : "";
 }
 
-function expandedFromParams(raw: unknown): Set<string> {
+export function expandedFromParams(raw: unknown): Set<string> {
   if (!Array.isArray(raw)) return new Set();
   const out = new Set<string>();
   for (const v of raw) {
-    if (typeof v === "string") out.add(v);
+    // Drop legacy ids that embedded the DBC's on-disk path. Node ids are
+    // now keyed by index + filename, which never contains a path
+    // separator, so such an id matches no current node — and
+    // re-persisting it would write a machine-local absolute path back
+    // into the project file on the next save.
+    if (typeof v === "string" && !/[/\\]/.test(v)) out.add(v);
   }
   return out;
 }
@@ -74,10 +79,25 @@ function showDetailsFromParams(raw: unknown): boolean {
   return typeof raw === "boolean" ? raw : false;
 }
 
+/// Stable, project-local identity for a DBC in the tree: its index in
+/// the loaded DBC list plus its filename. The filename is the
+/// meaningful handle — rename the file on disk and the project loses
+/// the reference anyway — and the index disambiguates two loaded DBCs
+/// that happen to share a filename. Deliberately *not* the on-disk
+/// path: node ids are persisted into the saved layout's `expanded` set
+/// (below), and an absolute path would bake a machine-specific location
+/// into the committed project file. The index is stable across a
+/// save/load round-trip because the layout and the DBC list live in the
+/// same project file and are written together.
+export function dbcKey(index: number, path: string): string {
+  return `${index}:${basename(path)}`;
+}
+
 /// Stable id for one tree node. The bus-prefix in every node id below
 /// the bus root scopes the rest — a DBC under bus-a is a distinct
 /// expand-state key from the same DBC under bus-b, so the user's
-/// expand/collapse choices per bus group survive a layout save.
+/// expand/collapse choices per bus group survive a layout save. The DBC
+/// segment is a `dbcKey`, never a path.
 ///
 /// Bus ids: `bus:<bus_id>` for a project bus, `bus:::unassigned` for
 /// the orphan group (DBCs scoped to no current bus), and `bus:::all`
@@ -86,31 +106,31 @@ function showDetailsFromParams(raw: unknown): boolean {
 function busNodeId(busId: string): string {
   return `bus:${busId}`;
 }
-function dbcNodeId(busId: string, path: string): string {
-  return `dbc:${busId}::${path}`;
+export function dbcNodeId(busId: string, key: string): string {
+  return `dbc:${busId}::${key}`;
 }
 /// `ecu` is the DBC transmitter name, or the `:::none` sentinel for
 /// messages whose `BO_` line carries the `Vector__XXX` placeholder
 /// (`:::` can't collide with a real node name).
-function ecuNodeId(busId: string, path: string, ecu: string): string {
-  return `ecu:${busId}::${path}::${ecu}`;
+function ecuNodeId(busId: string, key: string, ecu: string): string {
+  return `ecu:${busId}::${key}::${ecu}`;
 }
 function messageNodeId(
   busId: string,
-  path: string,
+  key: string,
   messageId: number,
   extended: boolean,
 ): string {
-  return `msg:${busId}::${path}::${extended ? "x" : "s"}${messageId}`;
+  return `msg:${busId}::${key}::${extended ? "x" : "s"}${messageId}`;
 }
 function signalNodeId(
   busId: string,
-  path: string,
+  key: string,
   messageId: number,
   extended: boolean,
   signalName: string,
 ): string {
-  return `sig:${busId}::${path}::${extended ? "x" : "s"}${messageId}::${signalName}`;
+  return `sig:${busId}::${key}::${extended ? "x" : "s"}${messageId}::${signalName}`;
 }
 
 /// Sentinel bus ids. Real project bus ids are UUIDs, so the `:::`
@@ -279,10 +299,10 @@ interface BusGroup {
   /// invisibly merged into every per-bus group). The DBC row gets a
   /// small "(applies to all buses)" label so the user knows why it's
   /// duplicated across bus groups.
-  dbcs: Array<{ dbc: DbcContentRecord; unscoped: boolean }>;
+  dbcs: Array<{ dbc: DbcContentRecord; unscoped: boolean; key: string }>;
 }
 
-function groupByBus(
+export function groupByBus(
   content: readonly DbcContentRecord[],
   buses: readonly { id: string; name: string }[],
   dbcBuses: Readonly<Record<string, string[]>>,
@@ -293,7 +313,7 @@ function groupByBus(
       {
         busId: ALL_BUSES_BUS_ID,
         label: "All DBCs (no buses configured)",
-        dbcs: content.map((d) => ({ dbc: d, unscoped: true })),
+        dbcs: content.map((d, i) => ({ dbc: d, unscoped: true, key: dbcKey(i, d.dbcPath) })),
       },
     ];
   }
@@ -309,21 +329,22 @@ function groupByBus(
     label: "(Unassigned — scoped to a bus that's no longer in the project)",
     dbcs: [],
   };
-  for (const d of content) {
+  for (const [i, d] of content.entries()) {
+    const key = dbcKey(i, d.dbcPath);
     const scope = dbcBuses[d.dbcPath] ?? [];
     if (scope.length === 0) {
       // Unscoped: applies to every project bus.
-      for (const g of groups) g.dbcs.push({ dbc: d, unscoped: true });
+      for (const g of groups) g.dbcs.push({ dbc: d, unscoped: true, key });
       continue;
     }
     const liveScope = scope.filter((b) => knownBusIds.has(b));
     if (liveScope.length === 0) {
-      unassigned.dbcs.push({ dbc: d, unscoped: false });
+      unassigned.dbcs.push({ dbc: d, unscoped: false, key });
       continue;
     }
     for (const busId of liveScope) {
       const g = groupByBusId.get(busId);
-      if (g) g.dbcs.push({ dbc: d, unscoped: false });
+      if (g) g.dbcs.push({ dbc: d, unscoped: false, key });
     }
   }
   if (unassigned.dbcs.length > 0) groups.push(unassigned);
@@ -377,8 +398,8 @@ function buildRows(
       },
     });
     if (!bExpanded) continue;
-    for (const { dbc, unscoped } of g.dbcs) {
-      const dId = dbcNodeId(g.busId, dbc.dbcPath);
+    for (const { dbc, unscoped, key } of g.dbcs) {
+      const dId = dbcNodeId(g.busId, key);
       if (filterActive && !ancestorsOfMatches.has(dId)) continue;
       const dExpanded = effectiveExpanded.has(dId);
       out.push({
@@ -395,7 +416,7 @@ function buildRows(
       });
       if (!dExpanded) continue;
       for (const ecu of groupByEcu(dbc.messages)) {
-        const eId = ecuNodeId(g.busId, dbc.dbcPath, ecu.key);
+        const eId = ecuNodeId(g.busId, key, ecu.key);
         if (filterActive && !ancestorsOfMatches.has(eId)) continue;
         const eExpanded = effectiveExpanded.has(eId);
         out.push({
@@ -408,7 +429,7 @@ function buildRows(
         });
         if (!eExpanded) continue;
         for (const m of ecu.messages) {
-          const mId = messageNodeId(g.busId, dbc.dbcPath, m.messageId, m.extended);
+          const mId = messageNodeId(g.busId, key, m.messageId, m.extended);
           const mMatched = matchSet.has(mId);
           if (filterActive && !mMatched && !ancestorsOfMatches.has(mId)) {
             continue;
@@ -426,7 +447,7 @@ function buildRows(
           for (const s of m.signals) {
             const sId = signalNodeId(
               g.busId,
-              dbc.dbcPath,
+              key,
               m.messageId,
               m.extended,
               s.name,
@@ -468,20 +489,20 @@ interface SearchEntry {
   haystack: string;
 }
 
-function buildSearchIndex(groups: readonly BusGroup[]): SearchEntry[] {
+export function buildSearchIndex(groups: readonly BusGroup[]): SearchEntry[] {
   const out: SearchEntry[] = [];
   for (const g of groups) {
     const bId = busNodeId(g.busId);
     const prefix = busSearchPrefix(g);
-    for (const { dbc } of g.dbcs) {
-      const dId = dbcNodeId(g.busId, dbc.dbcPath);
+    for (const { dbc, key } of g.dbcs) {
+      const dId = dbcNodeId(g.busId, key);
       for (const m of dbc.messages) {
         const eId = ecuNodeId(
           g.busId,
-          dbc.dbcPath,
+          key,
           m.transmitter ?? NO_TRANSMITTER_ECU_KEY,
         );
-        const mId = messageNodeId(g.busId, dbc.dbcPath, m.messageId, m.extended);
+        const mId = messageNodeId(g.busId, key, m.messageId, m.extended);
         out.push({
           id: mId,
           ancestors: [bId, dId, eId],
@@ -489,7 +510,7 @@ function buildSearchIndex(groups: readonly BusGroup[]): SearchEntry[] {
         });
         for (const s of m.signals) {
           out.push({
-            id: signalNodeId(g.busId, dbc.dbcPath, m.messageId, m.extended, s.name),
+            id: signalNodeId(g.busId, key, m.messageId, m.extended, s.name),
             ancestors: [bId, dId, eId, mId],
             haystack: signalHaystack(prefix, m, s),
           });
@@ -555,10 +576,10 @@ function initialExpandedRoots(groups: readonly BusGroup[]): Set<string> {
   const out = new Set<string>();
   for (const g of groups) {
     out.add(busNodeId(g.busId));
-    for (const { dbc } of g.dbcs) {
-      out.add(dbcNodeId(g.busId, dbc.dbcPath));
+    for (const { dbc, key } of g.dbcs) {
+      out.add(dbcNodeId(g.busId, key));
       for (const ecu of groupByEcu(dbc.messages)) {
-        out.add(ecuNodeId(g.busId, dbc.dbcPath, ecu.key));
+        out.add(ecuNodeId(g.busId, key, ecu.key));
       }
     }
   }

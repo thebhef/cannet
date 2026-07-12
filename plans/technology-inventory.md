@@ -257,6 +257,17 @@ crate retained long-term).
   Python, `uv`, or network. Run via `uv run --with pyinstaller`; the
   dynamic-import collection recipe is pinned in `scripts/build-sidecar`.
   See [ADR 0036](../docs/adr/0036-frozen-python-can-sidecar.md).
+- **`pre-commit`** (Python, MIT) — `adopted` as the local commit-gate
+  runner ([`../.pre-commit-config.yaml`](../.pre-commit-config.yaml)).
+  Used purely as an orchestrator: every hook is `repo: local` /
+  `language: system` and invokes the tools already pinned elsewhere
+  (`uv`, `cargo`, `pnpm`), so no third-party hook repos / versions are
+  imported and the checks mirror `ci.yml`. Also carries two local
+  guard hooks (`scripts/check_local_paths.py`,
+  `scripts/relativize_project_paths.py`) that keep machine-local
+  absolute paths out of the repo. Installed per-clone via
+  `pre-commit install`; the tool itself is a dev-only dependency
+  (`uv tool install pre-commit` / `pipx`).
 - **Code signing / notarization** — `proposed` (deferred). First alpha
   bundles ship **unsigned**; macOS Gatekeeper / Windows SmartScreen warn
   on first run. Signing needs external accounts (Apple Developer Program;
