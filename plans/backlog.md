@@ -149,10 +149,14 @@ trip over it.
 
 ### DBC view
 
-- (empty — the DBC-view items now live in
-  [Task 33 — DBC View Rework](tasks/0033-dbc-view-rework.md), which
-  absorbed the former "ECU view mode" entry as its bus/DBC/ECU/message
-  tree organisation.)
+- `[perf]` `cannet-gui` `DbcPanel.tsx`: **window the flat row list if
+  broad filters prove janky.** The task-33 rework bounds a filtered
+  render by the match set and the unfiltered tree by the expanded set,
+  but a broad query (e.g. "bms" over `examples/ev-zonal` → ~1.3k
+  matches) or a deliberate expand-all still renders every matching row.
+  `buildRows` already yields a flat `RenderRow[]`, so viewport
+  windowing is a render-only change. Measure first — no jank observed
+  at ev-zonal scale so far.
 
 ### Transmit panel
 

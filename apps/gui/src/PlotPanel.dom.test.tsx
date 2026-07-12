@@ -58,8 +58,8 @@ vi.mock("uplot", () => {
 vi.mock("uplot/dist/uPlot.min.css", () => ({}));
 
 const SIGNALS = [
-  { message_id: 256, extended: false, message_name: "EngineData", signal_name: "EngineSpeed", unit: "rpm" },
-  { message_id: 256, extended: false, message_name: "EngineData", signal_name: "EngineTemp", unit: "degC" },
+  { message_id: 256, extended: false, message_name: "EngineData", transmitter: "EngineEcu", signal_name: "EngineSpeed", unit: "rpm" },
+  { message_id: 256, extended: false, message_name: "EngineData", transmitter: "EngineEcu", signal_name: "EngineTemp", unit: "degC" },
 ];
 /** Inline encoder mirroring `lib.rs::encode_signals_sample` — keeps the
  * fixture self-contained so the test doesn't depend on Rust. Layout
@@ -271,6 +271,20 @@ describe("PlotPanel", () => {
     fireEvent.click(screen.getAllByTitle("remove this plot area")[1]);
     expect(screen.queryByText("Area 2")).not.toBeInTheDocument();
     expect(screen.queryAllByTitle("remove this plot area").length).toBe(0);
+  });
+
+  it("groups picker options under transmitter-ECU and message headers", async () => {
+    renderPanel();
+    const picker = screen.getByLabelText("add signal to focused plot area");
+    fireEvent.click(picker);
+    // No project buses in this harness -> the hierarchy is
+    // ECU -> message (the bus level joins in when buses exist).
+    await waitFor(() => {
+      const headers = Array.from(document.querySelectorAll(".combobox-group")).map(
+        (el) => el.textContent,
+      );
+      expect(headers).toEqual(["EngineEcu", "EngineData"]);
+    });
   });
 
   it("picks a signal into the focused area; a repeat pick is a no-op", async () => {

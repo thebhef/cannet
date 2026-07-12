@@ -331,6 +331,7 @@ impl Database {
                     message_id,
                     extended,
                     message_name: entry.name.clone(),
+                    transmitter: entry.transmitter.clone(),
                     signal_name: sig.signal.name.clone(),
                     unit: sig.signal.unit.clone(),
                     is_enum: is_enum(&sig.value_table),
@@ -539,6 +540,7 @@ impl Database {
                     brs: entry.brs,
                     uses_extended_mux,
                     attributes: entry.attributes.clone(),
+                    transmitter: entry.transmitter.clone(),
                     signals,
                 }
             })
@@ -1249,6 +1251,10 @@ pub struct SignalDescriptor {
     /// Whether `message_id` is a 29-bit extended id.
     pub extended: bool,
     pub message_name: String,
+    /// The owning message's `BO_` transmitting node, or `None` for the
+    /// `Vector__XXX` "no sender" placeholder. Lets a picker group its
+    /// options per ECU without a second lookup.
+    pub transmitter: Option<String>,
     pub signal_name: String,
     pub unit: String,
     /// True if the signal's `VAL_` table makes it an enum / state
@@ -1309,6 +1315,10 @@ pub struct DbcMessageContent {
     /// (excluding the long-symbol attributes — see the rustdoc on
     /// [`Database::dbc_content`]). Sorted by attribute name.
     pub attributes: Vec<DbcAttribute>,
+    /// The `BO_` line's transmitting node, or `None` for the
+    /// `Vector__XXX` "no sender" placeholder. The discovery tree
+    /// groups messages per ECU by this.
+    pub transmitter: Option<String>,
     /// Signals in `SG_` declared order — the same order the DBC
     /// author wrote them, which matches their mental model of the
     /// message's bit layout.
@@ -2574,6 +2584,46 @@ VAL_ 256 Mode 0 "Park" 1 "Reverse" 2 "Neutral" 3 "Drive" ;
             content[0].signals[0].name,
             "AVeryLongSignalNameThatExceedsThirtyTwoChars",
         );
+    }
+
+    /// Two messages, one with a named transmitter and one with the
+    /// `Vector__XXX` "no sender" placeholder — the discovery tree's
+    /// per-ECU grouping needs to distinguish them.
+    const TRANSMITTER_DBC: &str = r#"VERSION ""
+
+NS_ :
+
+BS_:
+
+BU_: ECU1
+
+BO_ 256 Sent: 8 ECU1
+ SG_ A : 0|8@1+ (1,0) [0|0] "" ECU1
+
+BO_ 257 Orphan: 8 Vector__XXX
+ SG_ B : 0|8@1+ (1,0) [0|0] "" ECU1
+"#;
+
+    #[test]
+    fn dbc_content_carries_the_transmitter() {
+        let db = Database::parse(TRANSMITTER_DBC).unwrap();
+        let content = db.dbc_content();
+        let sent = content.iter().find(|m| m.name == "Sent").unwrap();
+        assert_eq!(sent.transmitter.as_deref(), Some("ECU1"));
+        // The `Vector__XXX` placeholder means "no sender", not an ECU
+        // named Vector__XXX.
+        let orphan = content.iter().find(|m| m.name == "Orphan").unwrap();
+        assert_eq!(orphan.transmitter, None);
+    }
+
+    #[test]
+    fn signals_carry_the_transmitter() {
+        let db = Database::parse(TRANSMITTER_DBC).unwrap();
+        let sigs = db.signals();
+        let a = sigs.iter().find(|s| s.signal_name == "A").unwrap();
+        assert_eq!(a.transmitter.as_deref(), Some("ECU1"));
+        let b = sigs.iter().find(|s| s.signal_name == "B").unwrap();
+        assert_eq!(b.transmitter, None);
     }
 
     /// Fixture exercising the ADR 0027 attribute surface: cannet

@@ -411,6 +411,24 @@ mod tests {
     }
 
     #[test]
+    fn parses_the_checked_in_ev_zonal_example_project() {
+        // The ev-zonal fixture project (the task-33 large-DBC
+        // workload) must stay openable: two buses, one relative-path
+        // DBC ref scoped to each (ADR 0030 resolves the relative
+        // paths frontend-side).
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../examples/ev-zonal/ev-zonal.cannet_prj");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let p = parse_project(&text).expect("fixture project must parse");
+        assert_eq!(p.buses.len(), 2);
+        assert_eq!(p.dbcs.len(), 2);
+        assert!(p.dbcs.iter().all(|d| d.buses.len() == 1));
+        assert!(p.dbcs.iter().any(|d| d.path == "dbc/pack.dbc"));
+        assert!(p.dbcs.iter().any(|d| d.path == "dbc/zonal.dbc"));
+    }
+
+    #[test]
     fn parse_defaults_the_optional_fields() {
         let p = parse_project(r#"{"schema_version": 7, "layout": {"grid": {}, "panels": {}}}"#)
             .unwrap();

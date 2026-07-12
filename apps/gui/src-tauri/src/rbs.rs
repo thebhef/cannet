@@ -1502,6 +1502,73 @@ pub fn rbs_crc_algorithms() -> Vec<&'static str> {
 mod tests {
     use super::*;
 
+    /// The checked-in ev-zonal example RBS must stay consistent with
+    /// its DBCs: every entry's message key resolves, sits under the
+    /// DBC's transmitter ECU (a mismatch would warn at load), and its
+    /// signal-value overrides encode warning-free. Every
+    /// `disabled_messages` key must name a real message too.
+    #[test]
+    fn ev_zonal_fixture_rbs_resolves_against_its_dbcs() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../examples/ev-zonal");
+        let read = |p: std::path::PathBuf| {
+            std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+        };
+        let file = RbsFile::parse(&read(root.join("ev-zonal.cannet_rbs"))).unwrap();
+        let dbs: std::collections::BTreeMap<&str, cannet_dbc::Database> =
+            [("Pack", "pack.dbc"), ("Zonal", "zonal.dbc")]
+                .into_iter()
+                .map(|(bus, f)| {
+                    let db =
+                        cannet_dbc::Database::parse(&read(root.join("dbc").join(f))).unwrap();
+                    (bus, db)
+                })
+                .collect();
+
+        let resolve = |bus_key: &str, msg_key: &str| {
+            let db = dbs
+                .get(bus_key)
+                .unwrap_or_else(|| panic!("unknown bus key {bus_key}"));
+            let (id, ext) = parse_message_key(msg_key)
+                .unwrap_or_else(|e| panic!("{bus_key}/{msg_key}: {e}"));
+            let can_id = if ext {
+                cannet_core::CanId::extended(id)
+            } else {
+                cannet_core::CanId::standard(id)
+            }
+            .unwrap();
+            let desc = db
+                .describe_message(can_id)
+                .unwrap_or_else(|| panic!("{bus_key}/{msg_key}: no such message in DBC"));
+            (db, can_id, desc)
+        };
+
+        for (bus_key, bus) in &file.buses {
+            for (ecu_key, ecu) in &bus.ecus {
+                for (msg_key, msg) in &ecu.messages {
+                    let (db, can_id, desc) = resolve(bus_key, msg_key);
+                    assert_eq!(
+                        desc.transmitter.as_deref(),
+                        Some(ecu_key.as_str()),
+                        "{bus_key}/{ecu_key}/{msg_key}: entry filed under the wrong ECU",
+                    );
+                    let (_, warnings) =
+                        reconstruct_payload(db, can_id, &desc, msg, file.fill_bit);
+                    assert!(
+                        warnings.is_empty(),
+                        "{bus_key}/{ecu_key}/{msg_key}: {warnings:?}",
+                    );
+                }
+            }
+        }
+        for key in &file.disabled_messages {
+            let (bus_key, msg_key) = key
+                .split_once('/')
+                .unwrap_or_else(|| panic!("malformed disabled_messages key {key}"));
+            resolve(bus_key, msg_key);
+        }
+    }
+
     #[test]
     fn message_keys_round_trip_and_reject_garbage() {
         assert_eq!(parse_message_key("0x123"), Ok((0x123, false)));

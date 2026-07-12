@@ -325,11 +325,17 @@ reopen or remove it from there. **Project panel** toggles the project
 panel itself (it's a show/hide singleton). **DBC panel** opens (or
 focuses, if it's already open) the discovery panel — a
 tree-with-fuzzy-search over every loaded DBC, grouped by bus
-(`bus → DBC → message → signal`; unscoped DBCs appear under each
-bus group labelled "applies to all buses"). Type any fragment of a
-signal name, comment, value-table label, message id (hex or decimal),
-or attribute, and the matching rows surface with their ancestors
-auto-expanded and unrelated rows dimmed. The toolbar's **details**
+(`bus → DBC → ECU → message → signal`, per-transmitter grouping
+like the RBS panel; messages with no `BO_` transmitter fall under
+"(no transmitter)"; unscoped DBCs appear under each bus group
+labelled "applies to all buses"). Type any fragment of a signal
+name, ECU, comment, value-table label, message id (hex or decimal),
+or attribute, and the tree filters to the matches: ancestors of a
+match auto-expand and everything else is hidden, so a filtered
+render stays bounded by the match set however large the database.
+The whole tree is keyboard-navigable — arrow up/down move, right
+expands, left collapses (or walks to the parent), Enter selects.
+The toolbar's **details**
 toggle reveals the full per-signal detail (bit positions, scale,
 range, mux indicator, float kind, attributes, value table) and
 per-message detail (length, FD/BRS, mux flag, attributes). Drag a
