@@ -105,6 +105,25 @@ jobs:
 
       - run: pnpm --dir apps/gui install --frozen-lockfile
 
+      # Freeze the python-can sidecar for THIS runner's OS/arch before
+      # the bundle step picks it up as a Tauri resource (ADR 0036).
+      # PyInstaller cannot cross-compile, so each native runner freezes
+      # its own; uv provisions the pinned CPython and the locked deps —
+      # no separate setup-python. The build script smoke-runs the frozen
+      # launcher by default (asserts the `sidecar\tlistening` banner, and
+      # on macOS the exec bit + ad-hoc arm64 signature), so a collection
+      # or signing regression fails the release here instead of shipping
+      # a dead sidecar.
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.9.21"
+          enable-cache: true
+          cache-dependency-glob: servers/cannet-python-can/uv.lock
+
+      - name: Build frozen sidecar
+        shell: bash
+        run: uv run --no-project scripts/build-sidecar.py
+
       - name: Build and publish bundle
         uses: tauri-apps/tauri-action@v0
         env:

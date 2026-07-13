@@ -91,3 +91,29 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run mypy
       - run: uv run pytest
+
+  sidecar-freeze:
+    name: Frozen sidecar (freeze + smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # uv provisions the CPython pinned by
+      # servers/cannet-python-can/.python-version and the sidecar's
+      # locked deps; the build script drives PyInstaller from there.
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.9.21"
+          enable-cache: true
+          cache-dependency-glob: servers/cannet-python-can/uv.lock
+
+      # Freeze the onedir and smoke-run the frozen launcher (the script's
+      # default). Executing the artifact is the only thing that exercises
+      # the --collect-submodules / importlib driver-load paths and proves
+      # the embedded interpreter boots, so a collection regression fails
+      # here — per-PR, cheaply, and OS-independently — instead of on a
+      # release runner or a user's machine. The outer script is
+      # stdlib-only; the pinned interpreter comes from the inner
+      # `uv run --project` it spawns.
+      - name: Freeze + smoke-test the sidecar
+        run: uv run --no-project scripts/build-sidecar.py
