@@ -588,14 +588,34 @@ next pass on this surface can address them as one piece.
 
 ### Packaging and naming
 
-- `[docs]` **Attribute the GUI's own dependencies in the license
-  manifest.** `scripts/gen-licenses.py` populates only the `python-can
-  sidecar` component (ADR 0036). Add the GUI's Rust host crates (via
-  `cargo-about`) and the frontend npm packages (via `pnpm licenses list
-  --json`) as additional components in the same manifest, and add the
-  GPL-3.0 supplement to python-can's LGPL notice. Why: the About view is
-  the runtime attribution surface, and today it under-attributes what
-  cannet actually redistributes.
+- `[docs]` **Complete the third-party attribution the license manifest
+  under-counts.** `scripts/gen-licenses.py` populates only the
+  `python-can sidecar` component and, within it, reads only the five
+  Python packages' `dist-info` LICENSEs (ADR 0036). Three gaps, in
+  priority order:
+  1. **The GUI's own dependencies** — the Rust host crates (via
+     `cargo-about`) and the frontend npm packages (via `pnpm licenses
+     list --json`), added as their own manifest components.
+  2. **Native libraries bundled *inside* the frozen sidecar** that the
+     dist-info reader misses. The onedir also ships **OpenSSL**
+     (`libcrypto-3`/`libssl-3`, Apache-2.0), **libffi**, and **Expat**
+     (`pyexpat`), whose notices are *not* in CPython's bundled
+     `LICENSE.txt` (verified) and are *not* on disk in the uv interpreter
+     install — so they need small **committed canonical license assets**
+     (a deliberate, narrow exception to "don't commit texts," since they
+     can't be generated from build inputs). SQLite (`sqlite3.dll`) is
+     public-domain — optional. Already covered, no action: **bzip2** and
+     **Zstandard** (in CPython's LICENSE) and grpcio's static
+     **BoringSSL / abseil / c-ares** (in grpcio's own LICENSE).
+  3. Add the **GPL-3.0 supplement** to python-can's LGPL notice (the dep
+     ships only the LGPL text, which incorporates the GPL by reference).
+
+  Not an OSS-notice item: the **MS VC++ / UCRT runtime** (`VCRUNTIME140*`,
+  `ucrtbase`, `api-ms-win-*`) is redistributed in the sidecar onedir but
+  under Microsoft's redistributable terms, which permit app-local
+  bundling and carry no attribution obligation — nothing to add to the
+  manifest. Why: the About view is the runtime attribution surface, and
+  today it under-attributes what cannet actually redistributes.
 
 - `[feat]` **Code signing, notarization, and auto-update.** Deferred
   from the distribution work (former Task 26) so the alpha isn't

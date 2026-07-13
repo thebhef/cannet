@@ -285,6 +285,27 @@ pub fn build_frozen_command(launcher: &std::path::Path) -> Command {
     Command::new(launcher)
 }
 
+/// Windows: suppress the console window a console-subsystem child would
+/// otherwise pop up. The release GUI is built `windows_subsystem =
+/// "windows"` (see `main.rs`), so it has no console of its own; spawning
+/// a console-subsystem executable — the frozen `PyInstaller` launcher, or
+/// `uv`/`python` on the dev paths — makes Windows allocate a fresh console
+/// window for it. `CREATE_NO_WINDOW` runs the child with no console at
+/// all; stdin/stdout/stderr are piped regardless (see `spawn_blocking_inner`),
+/// so the tab-separated banner protocol is unaffected. No-op off Windows,
+/// where a console app never spawns a stray window.
+#[cfg_attr(not(windows), allow(unused_variables, clippy::needless_pass_by_ref_mut))]
+fn suppress_console_window(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW from winbase.h; inlined to avoid a whole
+        // winapi dependency for a single constant.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+}
+
 /// Resolve the absolute path to the `cannet-python-can` package
 /// directory, deliberately **independent of the GUI's CWD**.
 ///
@@ -475,6 +496,9 @@ fn spawn_blocking_inner(app: &AppHandle) {
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // Keep the console-subsystem child from popping a terminal window
+    // (Windows only); stdio stays piped so the banner protocol works.
+    suppress_console_window(&mut cmd);
     // Capture the resolved invocation so we can both log it at info
     // level on the happy path AND attach it to the error-level
     // failure message when the sidecar exits non-zero — the panel's
