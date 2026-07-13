@@ -6,6 +6,9 @@ apps/gui/dist
 apps/gui/src-tauri/gen/
 apps/gui/tsconfig.tsbuildinfo
 
+# Frozen sidecar build output (scripts/build-sidecar.py)
+apps/gui/src-tauri/sidecar-dist/
+
 # Editor / OS
 .DS_Store
 *.swp
