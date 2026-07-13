@@ -21,7 +21,10 @@ the order below is the order of work, top first.
    — ship the sidecar as a frozen self-contained binary (PyInstaller
    onedir) so an installed cannet launches it with no Python, `uv`, or
    network. Fixes the installer that ships only the GUI exe; replaces the
-   never-built end-user `uv`-fetch flow. See ADR 0036.
+   never-built end-user `uv`-fetch flow. Scope runs through the CI that
+   produces versioned Windows x64 + macOS arm64 installers, and folds in
+   a singleton About view carrying the third-party attribution. See
+   ADR 0036.
 2. [Task 29 — TX Timing Robustness & Counter-Per-Wire-Frame](0029-tx-timing-robustness-counter.md)
    — fix periodic-TX drift and high-rate bunching, and re-bind the
    rolling counter / CRC to the actual wire send (one increment per

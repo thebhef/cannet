@@ -28,10 +28,15 @@ per-launch self-extraction step, which is faster and avoids the
 make onefile *less* robust on Windows — the opposite of this decision's
 goal.
 
-The onedir folder is bundled into the installer next to the GUI binary
-(as `cannet-python-can/`). The host's launcher resolves it first, ahead
-of the existing `uv` / `python3` paths, which stay as developer
-fallbacks.
+The onedir folder is bundled into the installer as a Tauri **resource**
+(`cannet-python-can/`), and the host resolves it through Tauri's
+framework-canonical resource directory — **not** by assuming it sits
+literally next to the GUI executable. That distinction matters on
+macOS, where the `.app` puts the executable in `Contents/MacOS/` and
+resources in `Contents/Resources/` (a *sibling* of the exe's directory,
+never an ancestor), so a plain "look next to / above the exe" probe
+would never find it. The frozen path resolves first, ahead of the
+existing `uv` / `python3` paths, which stay as developer fallbacks.
 
 ## Why
 
@@ -79,6 +84,27 @@ though the artifact happens to contain an interpreter.
   Tauri's own constraint (see the distribution/CI task). Each platform's
   frozen sidecar is built on its native runner alongside the Tauri
   bundle, from the same pinned toolchain.
+- **The frozen interpreter is pinned minor-only.** The sidecar's
+  `uv.lock` fixes package versions and wheel hashes, but its
+  `requires-python` is a *range* — universal resolution deliberately
+  lets one lock work across CPython minors — so the lockfile is **not**
+  an interpreter pin. Without a separate pin, each native runner would
+  freeze whatever CPython its `uv` default resolves to, diverging by
+  minor (and per-minor wheel availability for `grpcio`/`python-can` is
+  exactly where that bites). A committed `.python-version` (minor only,
+  e.g. `3.14`) is the single interpreter pin honoured by the dev `uv`
+  venv, the freeze, and CI alike; the patch floats so security fixes
+  land without a pin bump.
+- **On macOS the nested frozen binary must be executable and signed to
+  run.** Apple Silicon refuses to execute any mach-o lacking at least an
+  ad-hoc signature (PyInstaller ad-hoc-signs its output), and Tauri's
+  resource copy does not reliably preserve the executable bit — the
+  build guarantees both. Bundles ship unsigned for now, so a downloaded
+  `.app` is Gatekeeper-quarantined and the user does the standard
+  right-click-Open; the nested sidecar inherits that admission.
+  Developer ID signing + notarization (which removes the friction) is a
+  deferred follow-up and re-signs the same onedir tree, so nothing in
+  this layout blocks it.
 - **Dynamic imports must be force-collected.** `python-can` discovers
   backends via entry points, and the sidecar loads its driver through
   `importlib.import_module`, so PyInstaller's static graph misses both.
