@@ -33,7 +33,8 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "sidecar-dist/cannet-python-can": "cannet-python-can"
+      "sidecar-dist/cannet-python-can": "cannet-python-can",
+      "THIRD-PARTY-LICENSES": "THIRD-PARTY-LICENSES"
     }
   }
 }
