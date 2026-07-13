@@ -22,6 +22,7 @@ import { useNotes } from "./notesContext";
 import { TRUNCATION_EVENT_ID } from "./notes";
 import { GOTO_EVENT, type GotoPayload } from "./gotoEvent";
 import { enumSegments, groupScaleRanges, mergeSeries, signalKey } from "./plotData";
+import { SIGNAL_WHEEL, stableSignalColor } from "./palette";
 import { followXWindow } from "./followWindow";
 import { showPointsFromRaw, showPointsToUplot, type ShowPointsMode } from "./plotPoints";
 import { Combobox, type ComboboxOption } from "./Combobox";
@@ -119,28 +120,14 @@ import {
  * scale; enum/state signals; triggers; CSV/image export.
  */
 
-/** The colour wheel used to seed a new series' colour. Per ADR 0026
- * task 15 the wheel is at least 16 colours deep; the index for a
- * fresh series is `(signals already in that plot area) % len`, so
- * the first 16 series in any one area get distinct hues. */
-const TRACE_COLORS = [
-  "#c6f24e",
-  "#4ecbff",
-  "#ffaa3d",
-  "#b48cff",
-  "#ff7e5a",
-  "#ffd93d",
-  "#5ddb7c",
-  "#e15dcf",
-  "#8ce0d4",
-  "#ff9bd2",
-  "#a0bfff",
-  "#d0ff7a",
-  "#ff6b6b",
-  "#7be3ff",
-  "#ffcf85",
-  "#c39bff",
-];
+/** The shared signal colour wheel (ADR 0026, `palette.ts`) seeds a new
+ * series' colour: the index for a fresh series is `(signals already in
+ * that plot area) % len`, so the first 16 series in any one area get
+ * distinct hues. */
+const TRACE_COLORS = SIGNAL_WHEEL;
+
+/** Stable empty set for areas with no manual picks yet. */
+const EMPTY_KEY_SET: ReadonlySet<string> = new Set();
 const CURSOR_A_COLOR = "#ffd93d";
 const CURSOR_B_COLOR = "#ff5577";
 /// The mouse crosshair's line colour — uPlot's default cursor grey, kept
@@ -224,18 +211,15 @@ export interface PlotAreaConfig {
    * what `primarySignalForArea` resolves it to. Click a signal row in
    * the side panel to promote that signal to primary. */
   primarySignalKey?: string | null;
-  /** Filter-defined plot area (ADR 0020): when present, this
-   * area is in **filter mode** — its `signals` list is *computed* from
-   * every catalog signal whose `${busName}.${messageName}.${signalName}`
-   * matches the regex (case-sensitive JS `RegExp`). The persisted
-   * `signals` list is left untouched while in filter mode so toggling
-   * back to manual mode promotes the computed set without losing the
-   * user's last manual selection.
-   *
-   * Mode-exclusive — see ADR 0020. The UI disables "add signal" while
-   * a filter is set, and the regex editor takes the place of the
-   * manual signals list. */
-  signalFilter?: string;
+  /** Pattern-defined series (ADR 0020 / ADR 0038): regex patterns
+   * evaluated against the canonical signal path
+   * `bus/ecu/message/signal`, OR-combined with the manual `signals`
+   * list (`signalSelection.ts`). The renderer treats the area's
+   * series as `signals` + the pattern matches not already picked
+   * manually — manual picks win, so their colour / order / hidden
+   * state is authoritative. Not mode-exclusive: adds, drops, and
+   * removes keep working alongside patterns. */
+  patterns?: string[];
 }
 
 interface NoteEvent {
@@ -368,12 +352,23 @@ function areasFromParams(raw: unknown): PlotAreaConfig[] {
       // `yMode` from a v7-and-earlier panel is ignored — y scales are
       // always auto-derived (ADR 0026). The field is tolerated on
       // parse so old projects don't reject; saving drops it.
+      // A pre-patterns panel persisted a single `signalFilter` regex
+      // (exclusive filter mode); it migrates to a one-entry pattern
+      // list. Note the regex *subject* changed with ADR 0038 (dotted
+      // `bus.message.signal` → `bus/ecu/message/signal`), so an old
+      // filter may need a touch-up — its pattern is preserved verbatim
+      // for the user to edit rather than guessed at.
+      const patterns = Array.isArray(o.patterns)
+        ? o.patterns.filter((p): p is string => typeof p === "string")
+        : typeof o.signalFilter === "string"
+          ? [o.signalFilter]
+          : [];
       out.push({
         id,
         signals,
         yAxisMode: yAxisModeFromRaw(o.yAxisMode),
         primarySignalKey: typeof o.primarySignalKey === "string" ? o.primarySignalKey : null,
-        signalFilter: typeof o.signalFilter === "string" ? o.signalFilter : undefined,
+        patterns: patterns.length > 0 ? patterns : undefined,
       });
     }
     if (out.length > 0) return out;
@@ -452,7 +447,14 @@ function elementIdFromParams(raw: unknown): string {
 
 // Filter helpers live in `./plotFilter` so the pure-logic
 // tests can import them without dragging uplot into a jsdom run.
-import { applyAreaFilters } from "./plotFilter";
+import {
+  applyAreaSelections,
+  effectiveSourceBuses,
+  resolvePatterns,
+  scopeCatalog,
+  type PatternResolution,
+} from "./signalSelection";
+import { SignalPatternEditor } from "./SignalPatternEditor";
 import { deriveAxesForArea, type YAxisMode } from "./plotAxisDerivation";
 import { useDecimatedRange } from "./useDecimatedRange";
 import { diagCount } from "./diag"; // DIAG
@@ -885,36 +887,30 @@ export function PlotPanel(props: IDockviewPanelProps) {
     setAreas((prev) => prev.map((a) => (a.id === id ? { ...a, primarySignalKey: key } : a)));
   }, []);
 
-  /// Set or clear an area's regex filter. `undefined` reverts the
-  /// area to manual mode (per ADR 0020, the most recently computed
-  /// signals list becomes the new manual list — the persisted
-  /// `area.signals` is left untouched while in filter mode so the
-  /// user's earlier manual selection survives a filter-on toggle as
-  /// long as they didn't explicitly promote-and-clear). Setting a
-  /// string enters filter mode; the renderer computes the signals
-  /// from the catalog at every change to `catalog`, `buses`, or the
-  /// regex itself.
-  const setAreaSignalFilter = useCallback(
-    (id: string, signalFilter: string | undefined) => {
+  /// Replace an area's regex pattern list (`signalSelection.ts`).
+  /// Empty / `undefined` leaves just the manual picks; the renderer
+  /// re-resolves patterns against the catalog on every change to
+  /// `catalog`, `buses`, or the patterns themselves.
+  const setAreaPatterns = useCallback(
+    (id: string, patterns: string[] | undefined) => {
       setAreas((prev) =>
-        prev.map((a) => (a.id === id ? { ...a, signalFilter } : a)),
+        prev.map((a) =>
+          a.id === id ? { ...a, patterns: patterns?.length ? patterns : undefined } : a,
+        ),
       );
     },
     [],
   );
 
-  /// Promote a filter-mode area's currently computed signals into
-  /// the persisted manual list, then clear `signalFilter` so the
-  /// area is in manual mode. Called by the "switch to manual" path:
-  /// the user's mental "this is the set I want" survives the mode
-  /// switch instead of vanishing.
-  const promoteFilterToManual = useCallback(
-    (id: string, computed: SignalRef[]) => {
+  /// Convert regex → manual (one-way): materialize the area's current
+  /// *effective* series (manual + pattern matches) into the persisted
+  /// manual list and clear the patterns. The user's mental "this is
+  /// the set I want" becomes explicit picks.
+  const materializePatterns = useCallback(
+    (id: string, effective: SignalRef[]) => {
       setAreas((prev) =>
         prev.map((a) =>
-          a.id === id
-            ? { ...a, signals: computed, signalFilter: undefined }
-            : a,
+          a.id === id ? { ...a, signals: effective, patterns: undefined } : a,
         ),
       );
     },
@@ -925,13 +921,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     (desc: SignalDescriptorRecord) => {
       setAreas((prev) => {
         const targetId = prev.some((a) => a.id === focusedAreaId) ? focusedAreaId : prev[0]?.id;
-        // Filter-mode areas (ADR 0020) manage their signals via the
-        // regex — manual add is a no-op so the regex stays the
-        // source of truth. The toolbar dropdown is already disabled
-        // for this case; the guard is here for any other code path
-        // that might call this.
         const target = prev.find((a) => a.id === targetId);
-        if (target?.signalFilter != null) return prev;
         // Colour-wheel index is the count of signals *already in this
         // plot area*, per ADR 0026 — so the first 16 series in any
         // one area get distinct hues regardless of what other areas
@@ -954,12 +944,13 @@ export function PlotPanel(props: IDockviewPanelProps) {
     [focusedAreaId],
   );
   const removeSignal = useCallback((areaId: string, key: string) => {
+    // Only manual picks are removable row-by-row; a pattern-derived
+    // row has no manual entry (this is then a no-op) and is removed by
+    // editing the pattern or converting to manual — the row's UI hides
+    // its × for that case.
     setAreas((prev) =>
       prev.map((a) => {
         if (a.id !== areaId) return a;
-        // Filter-mode area: signals are computed; ignore manual
-        // remove gestures.
-        if (a.signalFilter != null) return a;
         return { ...a, signals: a.signals.filter((s) => signalRefKey(s) !== key) };
       }),
     );
@@ -978,27 +969,30 @@ export function PlotPanel(props: IDockviewPanelProps) {
   //   area already has the same signal, drop is a no-op (no
   //   duplicates within one area).
   //
-  // Filter-mode target areas reject the drop (manual signal
-  // management is disabled in filter mode — ADR 0020).
   const placeSignal = useCallback(
     (ref: SignalRef, toAreaId: string, beforeKey: string | null, isInternalMove: boolean) => {
       const key = signalRefKey(ref);
       if (beforeKey === key) return; // dropped a row on itself — no-op
       setAreas((prev) => {
         const target = prev.find((a) => a.id === toAreaId);
-        if (target == null || target.signalFilter != null) return prev;
+        if (target == null) return prev;
         if (isInternalMove) {
           // Move: the ref already lives in some area of this panel.
           // Strip it from its origin area (could be the target — that's
           // a reorder), and insert at the new position. Preserves the
-          // original colour by reusing the in-state ref.
+          // original colour by reusing the in-state ref. (Dragging a
+          // pattern-derived row has no manual entry to strip — the
+          // insert below materializes it as a manual pick, keeping the
+          // dragged ref's stable colour.)
           const existing = prev.flatMap((a) => a.signals).find((s) => signalRefKey(s) === key);
-          const moved = existing ?? ref;
-          const stripped = prev.map((a) =>
-            a.signalFilter == null
-              ? { ...a, signals: a.signals.filter((s) => signalRefKey(s) !== key) }
-              : a,
-          );
+          // The drag payload carries no colour; a materializing
+          // pattern row keeps the stable-by-identity colour it was
+          // already rendered with.
+          const moved = existing ?? { ...ref, color: ref.color || stableSignalColor(key) };
+          const stripped = prev.map((a) => ({
+            ...a,
+            signals: a.signals.filter((s) => signalRefKey(s) !== key),
+          }));
           return stripped.map((a) => {
             if (a.id !== toAreaId) return a;
             if (beforeKey == null) return { ...a, signals: [...a.signals, moved] };
@@ -1032,35 +1026,40 @@ export function PlotPanel(props: IDockviewPanelProps) {
     },
     [],
   );
-  /** Set a series' colour after it's been added (per ADR 0026). Touches
-   * only the named signal's `color` field; everything else (order,
-   * hidden, primary-signal selection) stays put. Filter-mode areas
-   * mutate the *computed* `signals` array — the colour change is
-   * effectively session-only there because the next catalog re-eval
-   * rebuilds the list; that matches the existing hidden-flag behaviour
-   * documented in `toggleSignalHidden`. */
-  const setSignalColor = useCallback((areaId: string, key: string, color: string) => {
+  /** Set a series' colour after it's been added (per ADR 0026). A
+   * manual pick updates in place; a pattern-derived row (no manual
+   * entry) is materialized as a manual pick carrying the new colour —
+   * that's what makes a per-signal colour override stick across
+   * pattern re-evaluations and project reloads. */
+  const setSignalColor = useCallback((areaId: string, ref: SignalRef, color: string) => {
+    const key = signalRefKey(ref);
     setAreas((prev) =>
-      prev.map((a) =>
-        a.id === areaId
-          ? { ...a, signals: a.signals.map((s) => (signalRefKey(s) === key ? { ...s, color } : s)) }
-          : a,
-      ),
+      prev.map((a) => {
+        if (a.id !== areaId) return a;
+        if (a.signals.some((s) => signalRefKey(s) === key)) {
+          return { ...a, signals: a.signals.map((s) => (signalRefKey(s) === key ? { ...s, color } : s)) };
+        }
+        return { ...a, signals: [...a.signals, { ...ref, color }] };
+      }),
     );
   }, []);
-  const toggleSignalHidden = useCallback((areaId: string, key: string) => {
-    // Hidden flag toggles even in filter mode — it's display-only
-    // and doesn't mutate the set the regex defines. The hidden flag
-    // lives on the computed `SignalRef[]`, which is rebuilt on
-    // every catalog change, so toggles only stick for the current
-    // panel session. That's acceptable for a temporary "hide this
-    // line while I look at the others" gesture.
+  /** Toggle a series' hidden flag. Same materialization rule as
+   * `setSignalColor`: hiding a pattern-derived row pins it as a manual
+   * pick (hidden), so the choice persists instead of being rebuilt
+   * away on the next catalog re-evaluation. */
+  const toggleSignalHidden = useCallback((areaId: string, ref: SignalRef) => {
+    const key = signalRefKey(ref);
     setAreas((prev) =>
-      prev.map((a) =>
-        a.id === areaId
-          ? { ...a, signals: a.signals.map((s) => (signalRefKey(s) === key ? { ...s, hidden: !s.hidden } : s)) }
-          : a,
-      ),
+      prev.map((a) => {
+        if (a.id !== areaId) return a;
+        if (a.signals.some((s) => signalRefKey(s) === key)) {
+          return {
+            ...a,
+            signals: a.signals.map((s) => (signalRefKey(s) === key ? { ...s, hidden: !s.hidden } : s)),
+          };
+        }
+        return { ...a, signals: [...a.signals, { ...ref, hidden: true }] };
+      }),
     );
   }, []);
 
@@ -1210,15 +1209,46 @@ export function PlotPanel(props: IDockviewPanelProps) {
     [registry.entries],
   );
 
-  /// Areas with `signalFilter` resolved into a computed `signals`
-  /// list (ADR 0020). For manual areas this is identical to the
-  /// stored `area`. For filter areas the `signals` field is replaced
-  /// with the regex's match set against the catalog. Storage state
-  /// (`areas`) is unchanged so toggling back to manual restores the
-  /// last manually-managed list.
+  /// The catalog restricted to the plot's effective `sources` wiring
+  /// (`signalSelection.ts`): the picker and the patterns only offer /
+  /// match signals on buses this plot can actually sample. Unwired or
+  /// `"*"` = the full catalog.
+  const scopedCatalog = useMemo(() => {
+    const filterSources = new Map<string, readonly string[]>(
+      registry.entries
+        .filter((e) => e.element.kind === "filter")
+        .map((e) => [e.element.id, (e.element as { sources?: string[] }).sources ?? []]),
+    );
+    const busSet = effectiveSourceBuses(currentSources, buses.map((b) => b.id), filterSources);
+    return scopeCatalog(catalog, busSet);
+  }, [catalog, currentSources, buses, registry.entries]);
+
+  /// Areas with their `patterns` resolved against the catalog
+  /// (`signalSelection.ts`): the effective series list is the manual
+  /// picks plus the pattern matches not already picked. Storage state
+  /// (`areas`) holds only the manual picks + the pattern strings.
   const effectiveAreas = useMemo(
-    () => applyAreaFilters(areas, catalog, busNameLookup),
-    [areas, catalog, busNameLookup],
+    () => applyAreaSelections(areas, scopedCatalog, busNameLookup),
+    [areas, scopedCatalog, busNameLookup],
+  );
+
+  /// Per-area manual-pick keys (from *stored* state, not the effective
+  /// list) — how the row renderer tells a manual pick from a
+  /// pattern-derived row (which gets no per-row × and a pattern badge).
+  const manualKeysByArea = useMemo(
+    () => new Map(areas.map((a) => [a.id, new Set(a.signals.map((s) => signalRefKey(s)))])),
+    [areas],
+  );
+
+  /// Per-area pattern resolutions for the filter UI (match counts,
+  /// invalid flags) — evaluated against the same catalog the effective
+  /// series come from.
+  const patternResolutionsByArea = useMemo(
+    () =>
+      new Map(
+        areas.map((a) => [a.id, resolvePatterns(a.patterns ?? [], scopedCatalog, busNameLookup)]),
+      ),
+    [areas, scopedCatalog, busNameLookup],
   );
 
   /// Expand each effective area into one or more derived axes, based on
@@ -1239,7 +1269,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
       const axes = deriveAxesForArea(a.id, a.signals, mode);
       axes.forEach((ax, i) => {
         // The derived `PlotAreaConfig` carries the axis's slice of
-        // signals. `signalFilter` is preserved only on the first
+        // signals. `patterns` is preserved only on the first
         // derived axis so the filter UI / status bar doesn't render N
         // times for one logical area.
         const derivedArea: PlotAreaConfig = {
@@ -1247,7 +1277,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
           signals: ax.signals,
           yAxisMode: a.yAxisMode,
           primarySignalKey: a.primarySignalKey,
-          signalFilter: i === 0 ? a.signalFilter : undefined,
+          patterns: i === 0 ? a.patterns : undefined,
         };
         out.push({
           area: derivedArea,
@@ -1273,26 +1303,29 @@ export function PlotPanel(props: IDockviewPanelProps) {
     const prev = lastMatchCountsRef.current;
     const next = new Map<string, number>();
     const busesChanged = lastBusesRef.current !== buses;
-    for (const a of effectiveAreas) {
-      if (a.signalFilter == null) continue;
-      const count = a.signals.length;
-      next.set(a.id, count);
-      const wasCount = prev.get(a.id);
-      if (busesChanged && wasCount != null && wasCount > 0 && count === 0) {
-        void invoke("gui_emit_system_log", {
-          level: "warn",
-          source: "plot",
-          message: `Plot panel filter "${a.signalFilter}" no longer matches any signal — a bus rename or removal invalidated it.`,
-        }).catch(() => {
-          /* best effort — the panel still renders correctly */
-        });
+    for (const [areaId, resolutions] of patternResolutionsByArea) {
+      for (const res of resolutions) {
+        if (!res.valid) continue;
+        const id = `${areaId}:${res.pattern}`;
+        const count = res.matches.length;
+        next.set(id, count);
+        const wasCount = prev.get(id);
+        if (busesChanged && wasCount != null && wasCount > 0 && count === 0) {
+          void invoke("gui_emit_system_log", {
+            level: "warn",
+            source: "plot",
+            message: `Plot panel pattern "${res.pattern}" no longer matches any signal — a bus rename or removal invalidated it.`,
+          }).catch(() => {
+            /* best effort — the panel still renders correctly */
+          });
+        }
       }
     }
     lastMatchCountsRef.current = next;
     lastBusesRef.current = buses;
-  }, [effectiveAreas, buses]);
+  }, [patternResolutionsByArea, buses]);
   const catalogOptions = useMemo(() => {
-    const opts = catalog.map((s) => {
+    const opts = scopedCatalog.map((s) => {
       const busLabel =
         s.bus_id == null
           ? null
@@ -1319,7 +1352,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
       const pb = b.path.join(" ");
       return pa < pb ? -1 : pa > pb ? 1 : 0;
     });
-  }, [catalog, busNameLookup]);
+  }, [scopedCatalog, busNameLookup]);
   const areaLabels = useMemo(() => new Map(areas.map((a, i) => [a.id, `Area ${i + 1}`])), [areas]);
 
   // Iterate the *derived* axes, not the parent areas: `reportSeries`
@@ -1609,10 +1642,13 @@ export function PlotPanel(props: IDockviewPanelProps) {
               onDropSignal={(ref, beforeKey, isInternalMove) =>
                 placeSignal(ref, parent.id, beforeKey, isInternalMove)
               }
-              onToggleHidden={(key) => toggleSignalHidden(parent.id, key)}
-              onSetSignalColor={(key, color) => setSignalColor(parent.id, key, color)}
-              onSetSignalFilter={(f) => setAreaSignalFilter(parent.id, f)}
-              onPromoteFilterToManual={() => promoteFilterToManual(parent.id, parent.signals)}
+              onToggleHidden={(ref) => toggleSignalHidden(parent.id, ref)}
+              onSetSignalColor={(ref, color) => setSignalColor(parent.id, ref, color)}
+              onSetPatterns={(ps) => setAreaPatterns(parent.id, ps)}
+              onMaterializePatterns={() => materializePatterns(parent.id, parent.signals)}
+              manualKeys={manualKeysByArea.get(parent.id) ?? EMPTY_KEY_SET}
+              patternResolutions={patternResolutionsByArea.get(parent.id) ?? []}
+              catalog={scopedCatalog}
               busNameLookup={busNameLookup}
               busColorLookup={busColorLookup}
               resolveColor={resolveColor}
@@ -1864,20 +1900,25 @@ interface PlotAreaProps {
    * insert at target). Otherwise drop is an add (DBC panel, trace
    * cell, by-id cell, another plot panel). */
   onDropSignal: (ref: SignalRef, beforeKey: string | null, isInternalMove: boolean) => void;
-  onToggleHidden: (key: string) => void;
+  onToggleHidden: (ref: SignalRef) => void;
   /** Set a series' colour to the given `#rrggbb` value (ADR 0026
    * per-series colour picker). */
-  onSetSignalColor: (key: string, color: string) => void;
-  /** Set or clear this area's `signalFilter` (ADR 0020). Pass
-   * `undefined` to revert the area to manual mode without promoting
-   * the computed signals; the parent's `onPromoteFilterToManual`
-   * does the promote-and-clear variant. */
-  onSetSignalFilter: (filter: string | undefined) => void;
-  /** Move the currently computed filter-mode signals into the
-   * persisted manual list, then clear `signalFilter`. The "switch to
-   * manual" affordance in the side panel calls this so the user
-   * doesn't lose their current set on the mode switch. */
-  onPromoteFilterToManual: () => void;
+  onSetSignalColor: (ref: SignalRef, color: string) => void;
+  /** Replace this area's regex pattern list (`signalSelection.ts`);
+   * `undefined` / empty clears it, leaving just the manual picks. */
+  onSetPatterns: (patterns: string[] | undefined) => void;
+  /** Convert regex → manual: materialize the area's current effective
+   * series into the persisted manual list and clear the patterns. */
+  onMaterializePatterns: () => void;
+  /** Keys of this area's *manual* picks — how the row renderer tells
+   * a manual pick (removable) from a pattern-derived row (removed by
+   * editing the pattern; shows a pattern badge instead of ×). */
+  manualKeys: ReadonlySet<string>;
+  /** The area's patterns evaluated against the catalog: per-pattern
+   * match counts / invalid flags for the filter status line. */
+  patternResolutions: readonly PatternResolution[];
+  /** The signal catalog, for the pattern editor's live match counts. */
+  catalog: readonly SignalDescriptorRecord[];
   /** Bus-id → bus-name resolution for the per-signal side panel.
    * Each signal row displays its bus name so a `(message, signal)`
    * shown on two different buses is unambiguous. */
@@ -1949,8 +1990,11 @@ function PlotArea(p: PlotAreaProps) {
     onDropSignal,
     onToggleHidden,
     onSetSignalColor,
-    onSetSignalFilter,
-    onPromoteFilterToManual,
+    onSetPatterns,
+    onMaterializePatterns,
+    manualKeys,
+    patternResolutions,
+    catalog,
     busNameLookup,
     busColorLookup,
     resolveColor,
@@ -3386,16 +3430,16 @@ function PlotArea(p: PlotAreaProps) {
             <button
               className="plot-area-filter"
               title={
-                area.signalFilter == null
-                  ? "filter this area's signals by regex"
-                  : "edit the regex driving this area"
+                !area.patterns?.length
+                  ? "add signals by regex pattern (bus/ecu/message/signal)"
+                  : "edit the patterns adding signals to this area"
               }
               onClick={(e) => {
                 e.stopPropagation();
                 setFilterEditOpen((v) => !v);
               }}
             >
-              {area.signalFilter == null ? "filter…" : "filter ✎"}
+              {!area.patterns?.length ? "patterns…" : `patterns (${area.patterns.length}) ✎`}
             </button>
           )}
           {removable && (
@@ -3411,30 +3455,32 @@ function PlotArea(p: PlotAreaProps) {
             </button>
           )}
         </div>
-        {area.signalFilter != null && (
-          <div className="plot-area-filter-status" title="filter-defined plot area (ADR 0020)">
-            <span className="plot-area-filter-regex">
-              /{area.signalFilter}/
-            </span>
-            <span className="plot-area-filter-count">
-              {signals.length} signal{signals.length === 1 ? "" : "s"}
-            </span>
+        {!filterEditOpen && (area.patterns?.length ?? 0) > 0 && (
+          <div className="plot-area-filter-status" title="pattern-defined series (ADR 0020 / ADR 0038)">
+            {patternResolutions.map((res) => (
+              <span className="plot-area-filter-regex" key={res.pattern} title={res.pattern}>
+                /{res.pattern}/{" "}
+                <span className={res.valid ? "plot-area-filter-count" : "plot-area-filter-error"}>
+                  {res.valid ? res.matches.length : "bad regex"}
+                </span>
+              </span>
+            ))}
             <button
               className="plot-area-filter-promote"
-              title="convert to manual: keep these signals as a fixed list and clear the regex"
+              title="convert to manual: keep the matched signals as explicit picks and clear the patterns (one-way)"
               onClick={(e) => {
                 e.stopPropagation();
-                onPromoteFilterToManual();
+                onMaterializePatterns();
               }}
             >
               ⇨ manual
             </button>
             <button
               className="plot-area-filter-clear"
-              title="discard the regex and revert to manual mode (signals you had before the filter come back)"
+              title="discard the patterns (manual picks stay)"
               onClick={(e) => {
                 e.stopPropagation();
-                onSetSignalFilter(undefined);
+                onSetPatterns(undefined);
               }}
             >
               ×
@@ -3442,15 +3488,18 @@ function PlotArea(p: PlotAreaProps) {
           </div>
         )}
         {filterEditOpen && (
-          <SignalFilterEditor
-            initial={area.signalFilter ?? ""}
-            hasManualSignals={!area.signalFilter && area.signals.length > 0}
-            onApply={(re) => {
-              onSetSignalFilter(re || undefined);
-              setFilterEditOpen(false);
-            }}
-            onCancel={() => setFilterEditOpen(false)}
-          />
+          <div onClick={(e) => e.stopPropagation()}>
+            <SignalPatternEditor
+              patterns={area.patterns ?? []}
+              catalog={catalog}
+              busNames={busNameLookup}
+              onChange={(ps) => onSetPatterns(ps.length ? ps : undefined)}
+              onMaterialize={() => {
+                onMaterializePatterns();
+                setFilterEditOpen(false);
+              }}
+            />
+          </div>
         )}
         {(cursorYh1 != null || cursorYh2 != null) && (
           <div className="plot-area-ycursors">
@@ -3528,8 +3577,8 @@ function PlotArea(p: PlotAreaProps) {
                 <SignalSwatch
                   hidden={!!s.hidden}
                   color={s.color}
-                  onToggleHidden={() => onToggleHidden(key)}
-                  onPickColor={(c) => onSetSignalColor(key, c)}
+                  onToggleHidden={() => onToggleHidden(s)}
+                  onPickColor={(c) => onSetSignalColor(s, c)}
                 />
                 <div className="plot-signal-text">
                   <span
@@ -3572,16 +3621,25 @@ function PlotArea(p: PlotAreaProps) {
                     </small>
                   )}
                 </div>
-                <button
-                  className="plot-signal-remove"
-                  title="remove this signal"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onRemoveSignal(key);
-                  }}
-                >
-                  ×
-                </button>
+                {manualKeys.has(key) ? (
+                  <button
+                    className="plot-signal-remove"
+                    title="remove this signal"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onRemoveSignal(key);
+                    }}
+                  >
+                    ×
+                  </button>
+                ) : (
+                  <span
+                    className="plot-signal-pattern-badge"
+                    title="added by a pattern — edit the area's patterns to remove, or drag/recolour to pin it as a manual pick"
+                  >
+                    ◇
+                  </span>
+                )}
                 {showDiag && (() => {
                   const r = rangeFor(key);
                   const t = cacheTRangeFor(key);
@@ -3614,72 +3672,4 @@ function PlotArea(p: PlotAreaProps) {
   );
 }
 
-/// Inline regex editor for a plot area's `signalFilter` (ADR 0020).
-/// Sits below the area's side-panel head when open. Apply
-/// validates the regex by attempting to construct a `RegExp` and
-/// surfaces a "bad regex" hint on failure; the area's filter is
-/// only set when the regex compiles.
-function SignalFilterEditor({
-  initial,
-  hasManualSignals,
-  onApply,
-  onCancel,
-}: {
-  initial: string;
-  /// True when the area currently has manually-managed signals that
-  /// will be discarded by entering filter mode. Surfaces a small
-  /// hint so the user isn't surprised.
-  hasManualSignals: boolean;
-  /// Apply receives the new regex string. An empty string means
-  /// "clear the filter / stay in manual mode"; otherwise filter
-  /// mode is entered.
-  onApply: (regex: string) => void;
-  onCancel: () => void;
-}) {
-  const [value, setValue] = useState(initial);
-  const [error, setError] = useState<string | null>(null);
-  const submit = useCallback(() => {
-    if (value === "") {
-      onApply("");
-      return;
-    }
-    try {
-      new RegExp(value);
-      onApply(value);
-    } catch (e) {
-      setError(String(e instanceof Error ? e.message : e));
-    }
-  }, [value, onApply]);
-  return (
-    <div className="plot-filter-editor" onMouseDown={(e) => e.stopPropagation()}>
-      <input
-        type="text"
-        autoFocus
-        value={value}
-        placeholder="^busName\\.MessageName\\..*Speed$"
-        onChange={(e) => {
-          setValue(e.target.value);
-          setError(null);
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") submit();
-          else if (e.key === "Escape") onCancel();
-        }}
-        aria-label="signal filter regex"
-      />
-      <button onClick={submit}>apply</button>
-      <button onClick={onCancel}>×</button>
-      {hasManualSignals && (
-        <div className="plot-filter-editor-hint">
-          Applying a filter discards this area's manual signal list.
-        </div>
-      )}
-      {error && (
-        <div className="plot-filter-editor-error" role="alert">
-          {error}
-        </div>
-      )}
-    </div>
-  );
-}
 

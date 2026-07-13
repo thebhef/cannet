@@ -81,6 +81,8 @@ const projectCtx: ProjectContextValue = {
   onAddVirtualBus: noop,
   onRemoveVirtualBus: noop,
   onUpdateVirtualBus: noop,
+  signalColors: {},
+  onSetSignalColor: noop,
 };
 
 function makeRegistry(create: ReturnType<typeof vi.fn>): ElementRegistry {

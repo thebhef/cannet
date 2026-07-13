@@ -3,13 +3,15 @@ import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 
 import type { TraceFrameRecord } from "./types";
 import {
+  COLUMN_DEFS,
   type BusLookup,
+  type ColumnDef,
   type ColumnKey,
   type ColumnState,
   type SortState,
   busDisplayName,
-  columnDef,
-  gridTemplateColumns,
+  columnDefFor,
+  gridTemplateColumnsFor,
   visibleColumns,
 } from "./traceColumns";
 import { formatData, formatId, formatKind, formatMsgRate, formatTimestamp } from "./format";
@@ -47,6 +49,10 @@ export function cellContent(
       return formatTimestamp(frame.timestamp_seconds, baseTimestamp);
     case "bus":
       return busDisplayName(frame.bus_id, busLookup);
+    case "ecu":
+      // Blank for undecoded rows and the `Vector__XXX` "no sender"
+      // placeholder — unlike bus, there's no meaningful fallback name.
+      return frame.decoded?.transmitter ?? "";
     case "dir":
       return frame.direction;
     case "id":
@@ -67,19 +73,23 @@ export function cellContent(
   }
 }
 
-interface TraceHeaderProps {
+interface TraceHeaderProps<K extends string> {
   /// The full column set (visible + hidden), so the right-click menu can
   /// re-show hidden ones.
-  columns: readonly ColumnState[];
-  onColumnResize: (key: ColumnKey, width: number) => void;
-  onColumnToggle: (key: ColumnKey) => void;
+  columns: readonly ColumnState<K>[];
+  /// The column definitions the state refers to. Defaults to the trace
+  /// set; the signal view passes its own (`signalColumns.ts`) so both
+  /// tables share this one header implementation.
+  defs?: readonly ColumnDef<K>[];
+  onColumnResize: (key: K, width: number) => void;
+  onColumnToggle: (key: K) => void;
   /// Drag-to-reorder: move `key` to immediately before `beforeKey`
   /// (`null` = to the end). Omitted ⇒ headers aren't draggable.
-  onColumnReorder?: (key: ColumnKey, beforeKey: ColumnKey | null) => void;
+  onColumnReorder?: (key: K, beforeKey: K | null) => void;
   /// If given, column headers are clickable to sort (cycled by the
   /// caller via `onSortColumn`) and the active one shows ▲ / ▼.
-  sort?: SortState;
-  onSortColumn?: (key: ColumnKey) => void;
+  sort?: SortState<K>;
+  onSortColumn?: (key: K) => void;
   /// Render the by-id variant of each column's label where one exists
   /// (e.g. `idx` shows "count" instead of "index"). Defaults to the
   /// chronological labels.
@@ -89,33 +99,34 @@ interface TraceHeaderProps {
 /// The trace-table header row: column labels, drag-to-resize dividers,
 /// a right-click menu to show / hide columns, and — in per-id mode —
 /// click-to-sort with a direction marker.
-export function TraceHeader({
+export function TraceHeader<K extends string = ColumnKey>({
   columns,
+  defs = COLUMN_DEFS as unknown as readonly ColumnDef<K>[],
   onColumnResize,
   onColumnToggle,
   onColumnReorder,
   sort,
   onSortColumn,
   byId,
-}: TraceHeaderProps) {
+}: TraceHeaderProps<K>) {
   const visible = visibleColumns(columns);
   const visibleKeys = visible.map((c) => c.key);
-  const gridTemplate = gridTemplateColumns(columns);
+  const gridTemplate = gridTemplateColumnsFor(defs, columns);
 
   // Drag-to-reorder: the column currently being dragged (for the dimmed
   // affordance). Drop on a header's left/right half inserts the dragged
   // column before/after it.
-  const [dragKey, setDragKey] = useState<ColumnKey | null>(null);
+  const [dragKey, setDragKey] = useState<K | null>(null);
 
   // Column-resize drag: which column, the pointer X at drag start, and
   // that column's width then. The handle takes pointer capture.
-  const [resize, setResize] = useState<{ key: ColumnKey; startX: number; startWidth: number } | null>(
+  const [resize, setResize] = useState<{ key: K; startX: number; startWidth: number } | null>(
     null,
   );
-  const onResizeDown = (key: ColumnKey, e: ReactPointerEvent<HTMLSpanElement>) => {
+  const onResizeDown = (key: K, e: ReactPointerEvent<HTMLSpanElement>) => {
     e.preventDefault();
     e.stopPropagation();
-    const startWidth = columns.find((c) => c.key === key)?.width ?? columnDef(key).defaultWidth;
+    const startWidth = columns.find((c) => c.key === key)?.width ?? columnDefFor(defs, key).defaultWidth;
     setResize({ key, startX: e.clientX, startWidth });
     e.currentTarget.setPointerCapture(e.pointerId);
   };
@@ -161,7 +172,7 @@ export function TraceHeader({
       }}
     >
       {visible.map((c) => {
-        const def = columnDef(c.key);
+        const def = columnDefFor(defs, c.key);
         const label = byId ? def.byIdLabel ?? def.label : def.label;
         const sortable = !!onSortColumn;
         const active = sort?.key === c.key;
@@ -195,7 +206,7 @@ export function TraceHeader({
             onDrop={
               draggable
                 ? (e) => {
-                    const moved = e.dataTransfer.getData(COLUMN_DND_MIME) as ColumnKey;
+                    const moved = e.dataTransfer.getData(COLUMN_DND_MIME) as K;
                     if (!moved) return;
                     e.preventDefault();
                     e.stopPropagation();
@@ -232,7 +243,7 @@ export function TraceHeader({
           onMouseDown={(e) => e.stopPropagation()}
         >
           {columns.map((c) => {
-            const def = columnDef(c.key);
+            const def = columnDefFor(defs, c.key);
             return (
               <label key={c.key} className="checkbox">
                 <input

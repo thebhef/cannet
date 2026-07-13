@@ -540,6 +540,10 @@ header {
   background: #134e4a;
   border-color: #14b8a6;
 }
+.graph-node-signals {
+  background: #1e3a5f;
+  border-color: #38bdf8;
+}
 .graph-node-filter {
   background: #3f3f46;
   border-color: #a1a1aa;
@@ -1523,15 +1527,120 @@ button.trace-event-swatch {
 .plot-area-filter-clear:hover {
   background: #334155;
 }
-.plot-filter-editor {
+.plot-area-filter-error {
+  color: #f87171;
+}
+/* A pattern-derived signal row's badge (in place of the manual ×). */
+.plot-signal-pattern-badge {
+  color: #64748b;
+  font-size: 0.7rem;
+  padding: 0 0.3rem;
+  cursor: default;
+}
+
+/* Signal view panel (SignalsPanel.tsx). The table reuses the trace
+ * chrome (.trace / .trace-header / .trace-row). */
+.signals-panel .signals-add {
+  min-width: 12rem;
+}
+.signals-error {
+  color: #f87171;
+  font-size: 0.75rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 24rem;
+}
+.signals-selection-editor {
+  border-bottom: 1px solid #1e293b;
+}
+.signals-manual-list {
   display: flex;
   flex-wrap: wrap;
   gap: 0.3rem;
   padding: 0.3rem 0.4rem;
-  border-bottom: 1px solid #1e293b;
   background: #111827;
 }
-.plot-filter-editor input {
+.signals-manual-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  border: 1px solid #334155;
+  border-radius: 3px;
+  padding: 0 0.15rem 0 0.35rem;
+  font-size: 0.75rem;
+}
+.signals-manual-pick button {
+  background: none;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  font-size: 0.75rem;
+}
+.signals-manual-pick button:hover {
+  color: #e2e8f0;
+}
+.signals-name {
+  cursor: grab;
+}
+.col-value .signal-value-cell {
+  border-radius: 3px;
+  padding: 0 0.25rem;
+}
+.col-unit {
+  color: #94a3b8;
+}
+
+/* DBC panel live value column (shared SignalValueCell renderer). */
+.dbc-row-value {
+  margin-left: auto;
+  padding-right: 0.5rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+  color: #e2e8f0;
+  white-space: nowrap;
+}
+.dbc-row-value .signal-value-cell {
+  border-radius: 3px;
+  padding: 0 0.25rem;
+}
+
+/* Shared regex-pattern list editor (SignalPatternEditor.tsx) — used by
+ * the plot's per-area popover and the signal view's selection editor. */
+.pattern-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.3rem 0.4rem;
+  border-bottom: 1px solid #1e293b;
+  background: #111827;
+  font-size: 0.75rem;
+}
+.pattern-editor-row {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+.pattern-editor-regex {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #e2e8f0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1 1 0;
+}
+.pattern-editor-count {
+  color: #94a3b8;
+  white-space: nowrap;
+}
+.pattern-editor-error {
+  color: #f87171;
+  white-space: nowrap;
+}
+.pattern-editor-add {
+  display: flex;
+  gap: 0.3rem;
+}
+.pattern-editor-add input {
   flex: 1 1 0;
   min-width: 8rem;
   background: #1e293b;
@@ -1542,7 +1651,7 @@ button.trace-event-swatch {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.75rem;
 }
-.plot-filter-editor button {
+.pattern-editor button {
   background: #1e293b;
   color: #e2e8f0;
   border: 1px solid #334155;
@@ -1551,19 +1660,12 @@ button.trace-event-swatch {
   cursor: pointer;
   font-size: 0.75rem;
 }
-.plot-filter-editor button:hover {
+.pattern-editor button:hover {
   background: #334155;
 }
-.plot-filter-editor-hint {
-  width: 100%;
-  color: #94a3b8;
-  font-size: 0.7rem;
-  font-style: italic;
-}
-.plot-filter-editor-error {
-  width: 100%;
-  color: #f87171;
-  font-size: 0.7rem;
+.pattern-editor button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* Two-row layout per signal: signal name (large) + value on top, message

@@ -69,10 +69,11 @@
                       },
                       {
                         "data": {
-                          "activeView": "trace-dd6c1363-0e44-44ac-97fe-ca4d8126bbea",
+                          "activeView": "signals-battery-signals",
                           "id": "8",
                           "views": [
-                            "trace-dd6c1363-0e44-44ac-97fe-ca4d8126bbea"
+                            "trace-dd6c1363-0e44-44ac-97fe-ca4d8126bbea",
+                            "signals-battery-signals"
                           ]
                         },
                         "size": 245,
@@ -321,9 +322,11 @@
             {
               "id": "pt-motors",
               "primarySignalKey": null,
-              "signalFilter": "^Powertrain\\.(MotorFrontStatus|MotorRearStatus|VcuTorqueCmd)\\.",
               "signals": [],
-              "yAxisMode": "per-unit"
+              "yAxisMode": "per-unit",
+              "patterns": [
+                "^Powertrain/[^/]*/(MotorFrontStatus|MotorRearStatus|VcuTorqueCmd)/"
+              ]
             }
           ],
           "cursorMode": "note",
@@ -405,6 +408,11 @@
               "width": 100
             },
             {
+              "key": "ecu",
+              "visible": true,
+              "width": 110
+            },
+            {
               "key": "id",
               "visible": true,
               "width": 96
@@ -466,6 +474,11 @@
               "key": "bus",
               "visible": true,
               "width": 100
+            },
+            {
+              "key": "ecu",
+              "visible": true,
+              "width": 110
             },
             {
               "key": "id",
@@ -531,6 +544,11 @@
               "width": 100
             },
             {
+              "key": "ecu",
+              "visible": true,
+              "width": 110
+            },
+            {
               "key": "id",
               "visible": true,
               "width": 96
@@ -594,6 +612,11 @@
               "width": 100
             },
             {
+              "key": "ecu",
+              "visible": true,
+              "width": 110
+            },
+            {
               "key": "id",
               "visible": true,
               "width": 96
@@ -629,6 +652,20 @@
           "showEvents": true
         },
         "title": "Filtered"
+      },
+      "signals-battery-signals": {
+        "contentComponent": "signals",
+        "id": "signals-battery-signals",
+        "params": {
+          "elementId": "battery-signals",
+          "selection": {
+            "keys": [],
+            "patterns": [
+              "^Battery/BMS/"
+            ]
+          }
+        },
+        "title": "Battery Signals"
       }
     }
   },
@@ -656,6 +693,11 @@
             "key": "bus",
             "visible": true,
             "width": 100
+          },
+          {
+            "key": "ecu",
+            "visible": true,
+            "width": 110
           },
           {
             "key": "id",
@@ -723,6 +765,11 @@
             "width": 100
           },
           {
+            "key": "ecu",
+            "visible": true,
+            "width": 110
+          },
+          {
             "key": "id",
             "visible": true,
             "width": 96
@@ -769,9 +816,11 @@
           {
             "id": "pt-motors",
             "primarySignalKey": null,
-            "signalFilter": "^Powertrain\\.(MotorFrontStatus|MotorRearStatus|VcuTorqueCmd)\\.",
             "signals": [],
-            "yAxisMode": "per-unit"
+            "yAxisMode": "per-unit",
+            "patterns": [
+              "^Powertrain/[^/]*/(MotorFrontStatus|MotorRearStatus|VcuTorqueCmd)/"
+            ]
           }
         ],
         "cursorMode": "note",
@@ -1186,6 +1235,11 @@
             "width": 100
           },
           {
+            "key": "ecu",
+            "visible": true,
+            "width": 110
+          },
+          {
             "key": "id",
             "visible": true,
             "width": 96
@@ -1251,6 +1305,11 @@
             "width": 100
           },
           {
+            "key": "ecu",
+            "visible": true,
+            "width": 110
+          },
+          {
             "key": "id",
             "visible": true,
             "width": 96
@@ -1301,6 +1360,22 @@
       "sources": [
         "*"
       ]
+    },
+    {
+      "kind": "signals",
+      "id": "battery-signals",
+      "name": "Battery Signals",
+      "sources": [
+        "batt"
+      ],
+      "config": {
+        "selection": {
+          "keys": [],
+          "patterns": [
+            "^Battery/BMS/"
+          ]
+        }
+      }
     }
   ],
   "buses": [

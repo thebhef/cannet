@@ -112,6 +112,11 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 import { DbcPanel } from "./DbcPanel";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
+import { ElementRegistryContext, type ElementRegistry } from "./projectElements";
+
+/// Minimal registry stub — the panel only reads `entries` (for the
+/// ambient colormap resolver behind the value column).
+const emptyRegistry = { entries: [] } as unknown as ElementRegistry;
 
 const projectCtx: ProjectContextValue = {
   projectPath: null,
@@ -148,6 +153,8 @@ const projectCtx: ProjectContextValue = {
   onAddVirtualBus: () => {},
   onRemoveVirtualBus: () => {},
   onUpdateVirtualBus: () => {},
+  signalColors: {},
+  onSetSignalColor: () => {},
 };
 
 function renderPanel() {
@@ -155,7 +162,9 @@ function renderPanel() {
   const props = { params: {}, api } as unknown as Parameters<typeof DbcPanel>[0];
   render(
     <ProjectContext.Provider value={projectCtx}>
-      <DbcPanel {...props} />
+      <ElementRegistryContext.Provider value={emptyRegistry}>
+        <DbcPanel {...props} />
+      </ElementRegistryContext.Provider>
     </ProjectContext.Provider>,
   );
   return api;
@@ -456,7 +465,9 @@ describe("DbcPanel", () => {
     const props = { params: {}, api } as unknown as Parameters<typeof DbcPanel>[0];
     render(
       <ProjectContext.Provider value={scopedCtx}>
-        <DbcPanel {...props} />
+        <ElementRegistryContext.Provider value={emptyRegistry}>
+          <DbcPanel {...props} />
+        </ElementRegistryContext.Provider>
       </ProjectContext.Provider>,
     );
     const allEng = await screen.findAllByText("EngineData");
@@ -495,7 +506,9 @@ describe("DbcPanel", () => {
     const props = { params: {}, api } as unknown as Parameters<typeof DbcPanel>[0];
     render(
       <ProjectContext.Provider value={ctx}>
-        <DbcPanel {...props} />
+        <ElementRegistryContext.Provider value={emptyRegistry}>
+          <DbcPanel {...props} />
+        </ElementRegistryContext.Provider>
       </ProjectContext.Provider>,
     );
     const allEng = await screen.findAllByText("EngineData");
@@ -575,7 +588,9 @@ describe("DbcPanel", () => {
     const props = { params: {}, api } as unknown as Parameters<typeof DbcPanel>[0];
     render(
       <ProjectContext.Provider value={ctx}>
-        <DbcPanel {...props} />
+        <ElementRegistryContext.Provider value={emptyRegistry}>
+          <DbcPanel {...props} />
+        </ElementRegistryContext.Provider>
       </ProjectContext.Provider>,
     );
     await screen.findByText("powertrain");
@@ -608,7 +623,9 @@ describe("DbcPanel", () => {
     const props = { params: {}, api } as unknown as Parameters<typeof DbcPanel>[0];
     render(
       <ProjectContext.Provider value={ctx}>
-        <DbcPanel {...props} />
+        <ElementRegistryContext.Provider value={emptyRegistry}>
+          <DbcPanel {...props} />
+        </ElementRegistryContext.Provider>
       </ProjectContext.Provider>,
     );
     // Both bus group rows are visible at the top.
@@ -842,9 +859,59 @@ describe("DbcPanel", () => {
     (core.invoke as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => []);
     render(
       <ProjectContext.Provider value={noDbcCtx}>
-        <DbcPanel {...props} />
+        <ElementRegistryContext.Provider value={emptyRegistry}>
+          <DbcPanel {...props} />
+        </ElementRegistryContext.Provider>
       </ProjectContext.Provider>,
     );
     expect(await screen.findByText(/No DBC attached/i)).toBeInTheDocument();
+  });
+  it("the values toggle fetches and renders live values for rendered signal rows", async () => {
+    const core = await import("@tauri-apps/api/core");
+    (core.invoke as ReturnType<typeof vi.fn>).mockImplementation(async (cmd: string) => {
+      if (cmd === "list_dbc_content") return DBC_CONTENT;
+      if (cmd === "fetch_signal_page") {
+        return {
+          count: 2,
+          start: 0,
+          rows: [
+            {
+              bus_id: null,
+              transmitter: "EngineEcu",
+              message_id: 256,
+              extended: false,
+              message_name: "EngineData",
+              signal_name: "EngineSpeed",
+              unit: "rpm",
+              is_enum: false,
+              value: 1165,
+              raw: 4660,
+              rate: 10,
+              count: 3,
+              time_seconds: 1,
+            },
+          ],
+        };
+      }
+      return undefined;
+    });
+    renderPanel();
+    // Expand EngineData so its signal rows render.
+    const msg = await screen.findByText("EngineData");
+    fireEvent.click(msg);
+    const row = msg.closest(".dbc-row")!;
+    fireEvent.click(row.querySelector(".dbc-row-chevron")!);
+    await screen.findByText("EngineSpeed");
+    // Toggle the live value column on.
+    fireEvent.click(screen.getByLabelText(/values/i));
+    // The shared value renderer shows the fetched value with its unit;
+    // the not-yet-seen sibling stays blank.
+    expect(await screen.findByText(/1165 rpm/)).toBeInTheDocument();
+    const calls = (core.invoke as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (c) => c[0] === "fetch_signal_page",
+    );
+    expect(calls.length).toBeGreaterThan(0);
+    const sel = (calls[0][1] as { selection: { keys: { signalName: string }[] } }).selection;
+    expect(sel.keys.map((k) => k.signalName).sort()).toEqual(["EngineSpeed", "EngineTemp"]);
   });
 });

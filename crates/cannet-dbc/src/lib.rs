@@ -87,6 +87,11 @@ struct MessageEntry {
     /// *default* layer — a `.cannet_rbs` file or the GUI may override
     /// it wholesale per message.
     calc_fields: calc::CalculatedFieldsConfig,
+    /// Index into `signals` of the `Multiplexor` signal, if the message
+    /// is multiplexed. Precomputed at parse so per-frame selector
+    /// extraction ([`Database::decode_mux_selector`], run on the trace
+    /// append path) doesn't re-scan the signal list.
+    multiplexor: Option<usize>,
     signals: Vec<SignalEntry>,
 }
 
@@ -250,6 +255,7 @@ impl Database {
                 transmitter,
                 attributes,
                 calc_fields,
+                multiplexor: multiplexor_index(&signals),
                 signals,
             });
         }
@@ -335,6 +341,11 @@ impl Database {
                     signal_name: sig.signal.name.clone(),
                     unit: sig.signal.unit.clone(),
                     is_enum: is_enum(&sig.value_table),
+                    mux_selector: match sig.signal.multiplexer_indicator {
+                        MultiplexIndicator::MultiplexedSignal(s)
+                        | MultiplexIndicator::MultiplexorAndMultiplexedSignal(s) => Some(s),
+                        MultiplexIndicator::Plain | MultiplexIndicator::Multiplexor => None,
+                    },
                 })
             })
             .collect();
@@ -392,6 +403,28 @@ impl Database {
         let key = canid_to_message_id(id)?;
         let entry = self.messages.get(&key)?;
         Some(decode_message(entry, data))
+    }
+
+    /// Decode just the multiplexor-selector value from `(id, data)` —
+    /// a couple of bit operations, cheap enough for a per-frame append
+    /// path. Returns `None` when no message matches `id`, the message
+    /// has no multiplexor, or the payload is too short to carry it.
+    /// Pairs with [`SignalDescriptor::mux_selector`]: a frame carries a
+    /// multiplexed signal iff this value equals the signal's group.
+    #[must_use]
+    pub fn decode_mux_selector(&self, id: cannet_core::CanId, data: &[u8]) -> Option<u64> {
+        let key = canid_to_message_id(id)?;
+        let entry = self.messages.get(&key)?;
+        let mux = entry.signals.get(entry.multiplexor?)?;
+        decode_signal(mux, data).map(|d| d.raw_unsigned)
+    }
+
+    /// Whether any message in this database is multiplexed. Lets the
+    /// host skip installing a per-frame selector extractor entirely
+    /// when no loaded DBC needs one.
+    #[must_use]
+    pub fn has_multiplexor(&self) -> bool {
+        self.messages.values().any(|e| e.multiplexor.is_some())
     }
 
     /// Rich descriptor for one message — everything the transmit
@@ -1121,6 +1154,14 @@ fn canid_to_message_id(id: cannet_core::CanId) -> Option<MessageId> {
     }
 }
 
+/// Index of the `Multiplexor` signal within a message's signal list,
+/// precomputed at parse for [`MessageEntry::multiplexor`].
+fn multiplexor_index(signals: &[SignalEntry]) -> Option<usize> {
+    signals
+        .iter()
+        .position(|s| s.signal.multiplexer_indicator == MultiplexIndicator::Multiplexor)
+}
+
 fn decode_message<'a>(entry: &'a MessageEntry, data: &[u8]) -> DecodedMessage<'a> {
     // First pass: find the multiplexor signal value, if any, so we can
     // filter multiplexed signals to the matching selector.
@@ -1149,6 +1190,7 @@ fn decode_message<'a>(entry: &'a MessageEntry, data: &[u8]) -> DecodedMessage<'a
 
     DecodedMessage {
         name: &entry.name,
+        transmitter: entry.transmitter.as_deref(),
         expected_len: entry.expected_len,
         actual_len: data.len(),
         signals,
@@ -1220,6 +1262,10 @@ fn decode_signal<'a>(entry: &'a SignalEntry, data: &[u8]) -> Option<DecodedSigna
 #[derive(Debug, Clone)]
 pub struct DecodedMessage<'a> {
     pub name: &'a str,
+    /// The owning message's `BO_` transmitting node, or `None` for the
+    /// `Vector__XXX` "no sender" placeholder — same convention as
+    /// [`SignalDescriptor::transmitter`].
+    pub transmitter: Option<&'a str>,
     pub expected_len: usize,
     pub actual_len: usize,
     pub signals: Vec<DecodedSignal<'a>>,
@@ -1266,6 +1312,13 @@ pub struct SignalDescriptor {
     /// separate `value_table` round-trip to decide between numeric and
     /// symbolic rendering.
     pub is_enum: bool,
+    /// The multiplexor-selector group this signal belongs to, or `None`
+    /// for plain signals and the multiplexor itself. A frame carries
+    /// this signal only when the message's multiplexor decodes to this
+    /// value ([`Database::decode_mux_selector`]) — latest-value queries
+    /// must track "latest frame whose selector matched", not the
+    /// message's latest frame.
+    pub mux_selector: Option<u64>,
 }
 
 /// One DBC message as the GUI's DBC panel renders it: the
@@ -2624,6 +2677,47 @@ BO_ 257 Orphan: 8 Vector__XXX
         assert_eq!(a.transmitter.as_deref(), Some("ECU1"));
         let b = sigs.iter().find(|s| s.signal_name == "B").unwrap();
         assert_eq!(b.transmitter, None);
+    }
+
+    #[test]
+    fn signals_carry_the_mux_selector() {
+        let db = Database::parse(SAMPLE_DBC).unwrap();
+        let sigs = db.signals();
+        let sel = |name: &str| sigs.iter().find(|s| s.signal_name == name).unwrap().mux_selector;
+        // Multiplexed signals carry their selector group; the
+        // multiplexor itself and plain signals carry none.
+        assert_eq!(sel("Mode0Field"), Some(0));
+        assert_eq!(sel("Mode1Field"), Some(1));
+        assert_eq!(sel("Mux"), None);
+        assert_eq!(sel("Always"), None);
+        assert_eq!(sel("EngineSpeed"), None);
+    }
+
+    #[test]
+    fn decode_mux_selector_reads_only_the_multiplexor() {
+        let db = Database::parse(SAMPLE_DBC).unwrap();
+        assert!(db.has_multiplexor());
+        assert!(!Database::parse(TRANSMITTER_DBC).unwrap().has_multiplexor());
+        let id = cannet_core::CanId::standard(512).unwrap();
+        assert_eq!(db.decode_mux_selector(id, &[0, 0xAA, 0xBB, 0, 0, 0, 0, 0]), Some(0));
+        assert_eq!(db.decode_mux_selector(id, &[1, 0x12, 0x34, 0, 0, 0, 0, 0]), Some(1));
+        // A message without a multiplexor has no selector.
+        let plain = cannet_core::CanId::standard(256).unwrap();
+        assert_eq!(db.decode_mux_selector(plain, &[0; 8]), None);
+        // Unknown id / payload too short for the multiplexor: None.
+        let unknown = cannet_core::CanId::standard(0x600).unwrap();
+        assert_eq!(db.decode_mux_selector(unknown, &[0; 8]), None);
+        assert_eq!(db.decode_mux_selector(id, &[]), None);
+    }
+
+    #[test]
+    fn decode_carries_the_transmitter() {
+        let db = Database::parse(TRANSMITTER_DBC).unwrap();
+        let sent = db.decode(&make_frame(256, false, vec![0; 8])).unwrap();
+        assert_eq!(sent.transmitter, Some("ECU1"));
+        // `Vector__XXX` means "no sender", not an ECU named Vector__XXX.
+        let orphan = db.decode(&make_frame(257, false, vec![0; 8])).unwrap();
+        assert_eq!(orphan.transmitter, None);
     }
 
     /// Fixture exercising the ADR 0027 attribute surface: cannet

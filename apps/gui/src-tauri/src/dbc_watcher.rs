@@ -243,7 +243,7 @@ pub fn reload_one(app: &AppHandle, path: &str) {
             // `remove_dbc`'s pass.
             return;
         };
-        slot.db = db;
+        slot.db = std::sync::Arc::new(db);
     }
     sys_info!(app, "dbc-watch", "auto-reloaded DBC {path}");
     // Signal placements may have moved — drop the derived decode caches so

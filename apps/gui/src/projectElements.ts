@@ -63,6 +63,7 @@ export function isProjectElement(v: unknown): v is ProjectElement {
   return (
     (o.kind === "trace" ||
       o.kind === "plot" ||
+      o.kind === "signals" ||
       o.kind === "transmit" ||
       o.kind === "filter" ||
       o.kind === "rbs" ||
@@ -73,7 +74,7 @@ export function isProjectElement(v: unknown): v is ProjectElement {
 
 /// Normalise a project element fresh from disk so callers can rely
 /// on the normalised shape: every consumer (`trace` / `plot` /
-/// `filter`) has a `sources: string[]` (defaulting to `["*"]` — fan
+/// `signals` / `filter`) has a `sources: string[]` (defaulting to `["*"]` — fan
 /// in from every bus), and every `transmit` has a `sinks: string[]`
 /// (defaulting to `[]` — empty for a migrated project; freshly
 /// created transmits pre-fill from the current bus list elsewhere).

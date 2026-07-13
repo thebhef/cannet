@@ -118,7 +118,12 @@ apps/
                      project / elements / bus / DBC panel; `PlotPanel.tsx`
                      the Phase-4 signal plot (uPlot), with `plotData.ts`
                      merging independently-sampled series onto one
-                     timeline. Each trace-style panel shows one *trace
+                     timeline; `SignalsPanel.tsx` the signal view — a
+                     latest-per-signal snapshot table (mux-aware) whose
+                     selection is manual picks + regex patterns over the
+                     canonical `bus/ecu/message/signal` path (ADR 0038,
+                     `signalSelection.ts`), evaluated host-side
+                     (`fetch_signal_page`). Each trace-style panel shows one *trace
                      element* — a window over the host-side session
                      buffer with pause / stop / clear; the elements live
                      in an in-memory registry (`projectElements.ts`),

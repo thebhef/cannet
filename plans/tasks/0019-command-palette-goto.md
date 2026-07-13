@@ -14,5 +14,3 @@ decision on what belongs in the palette (broad, project-wide,
 keyboard-accessible) vs. what stays local-only (right-click menus,
 panel toolbars) — the model has to be deliberate about that
 boundary.
-
-Also add `cannet.close`, `cannet.closeProject`

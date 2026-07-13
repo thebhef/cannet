@@ -11,6 +11,7 @@ export type GraphNodeKind =
   | "transmit"
   | "trace"
   | "plot"
+  | "signals"
   | "filter"
   | "rbs";
 
@@ -31,7 +32,7 @@ export interface GatewayGraphNode extends GraphNodeBase {
 }
 
 export interface ElementGraphNode extends GraphNodeBase {
-  kind: "transmit" | "trace" | "plot" | "filter" | "rbs";
+  kind: "transmit" | "trace" | "plot" | "signals" | "filter" | "rbs";
   element: ProjectElement;
 }
 

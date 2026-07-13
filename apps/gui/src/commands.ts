@@ -16,6 +16,7 @@ import { parseChord, type ParsedBinding } from "./keybindings";
 export type FocusedPanelKind =
   | "trace"
   | "plot"
+  | "signals"
   | "transmit"
   | "rbs"
   | "project"
@@ -78,6 +79,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "capture.save", label: "Save capture…", category: "Capture" },
   { id: "panel.add.trace", label: "Add trace panel", category: "Panels" },
   { id: "panel.add.plot", label: "Add plot panel", category: "Panels" },
+  { id: "panel.add.signals", label: "Add signal view panel", category: "Panels" },
   { id: "panel.add.transmit", label: "Add transmit panel", category: "Panels" },
   { id: "panel.add.rbs", label: "Add RBS panel", category: "Panels" },
   { id: "panel.add.colormap", label: "Add color map", category: "Panels" },
@@ -241,6 +243,7 @@ function enumerateContexts(): CommandContext[] {
     null,
     "trace",
     "plot",
+    "signals",
     "transmit",
     "rbs",
     "project",

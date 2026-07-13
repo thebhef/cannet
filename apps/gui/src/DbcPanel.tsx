@@ -10,7 +10,12 @@ import type {
   DbcSignalContentRecord,
   DbcSignalMux,
 } from "./types";
+import type { SignalSnapshotRecord } from "./types";
 import { useProjectContext } from "./projectContext";
+import { useElementRegistry } from "./projectElements";
+import { buildColorResolver, type ColorResolver } from "./colorMap";
+import { SignalValueCell } from "./SignalValueCell";
+import { signalKey } from "./plotData";
 import {
   dedupeSignalRefs,
   setSignalDragData,
@@ -665,6 +670,15 @@ export function DbcPanel(props: IDockviewPanelProps) {
   const [showDetails, setShowDetails] = useState<boolean>(() =>
     showDetailsFromParams(params?.showDetails),
   );
+  /// Live value column (Task 20): when on, every rendered signal row
+  /// shows its live-latest decoded value via the shared value renderer
+  /// (`SignalValueCell`) — the same `fetch_signal_page` rows the signal
+  /// view reads, so the two surfaces cannot drift. Live-only: the DBC
+  /// panel is a singleton navigator with no trace-window state
+  /// (pausing belongs to signal-view elements).
+  const [showValues, setShowValues] = useState<boolean>(
+    () => (params as { showValues?: unknown } | undefined)?.showValues === true,
+  );
   const [content, setContent] = useState<DbcContentRecord[]>([]);
   /// Per-panel selection set (panel-local; not persisted in params —
   /// selection is transient discovery state, like a text-input
@@ -730,8 +744,8 @@ export function DbcPanel(props: IDockviewPanelProps) {
   // deliberately doesn't ride along — it's transient state, like an
   // editor's text caret.
   useEffect(() => {
-    api.updateParameters({ filter, expanded: Array.from(expanded), showDetails });
-  }, [api, filter, expanded, showDetails]);
+    api.updateParameters({ filter, expanded: Array.from(expanded), showDetails, showValues });
+  }, [api, filter, expanded, showDetails, showValues]);
 
   const searchIndex = useMemo(() => buildSearchIndex(busGroups), [busGroups]);
   const { matchSet, ancestorsOfMatches } = useMemo(
@@ -758,6 +772,75 @@ export function DbcPanel(props: IDockviewPanelProps) {
       ),
     [busGroups, effectiveExpanded, matchSet, ancestorsOfMatches, filterActive, selection],
   );
+
+  // --- live value column (Task 20) ---
+  const registry = useElementRegistry();
+  const resolveColor = useMemo(
+    () => buildColorResolver(registry.entries.map((e) => e.element)),
+    [registry.entries],
+  );
+  /// The rendered signal rows' descriptor keys — exactly what the tree
+  /// shows (the panel's rows are structurally bounded), refreshed as
+  /// expansion / filtering changes.
+  const renderedSignalKeys = useMemo(() => {
+    if (!showValues) return [];
+    return rows
+      .filter((r) => r.kind.tag === "signal")
+      .map((r) => {
+        const k = r.kind as Extract<RenderRow["kind"], { tag: "signal" }>;
+        return {
+          busId: k.busId,
+          messageId: k.messageId,
+          extended: k.extended,
+          signalName: k.signal.name,
+        };
+      });
+  }, [rows, showValues]);
+  const [valuesByKey, setValuesByKey] = useState<ReadonlyMap<string, SignalSnapshotRecord>>(
+    new Map(),
+  );
+  useEffect(() => {
+    if (!showValues || renderedSignalKeys.length === 0) {
+      setValuesByKey(new Map());
+      return;
+    }
+    let live = true;
+    const fetchValues = () => {
+      void invoke<{ rows: SignalSnapshotRecord[] }>("fetch_signal_page", {
+        selection: { keys: renderedSignalKeys, patterns: [] },
+        // Live-latest only: scan to the buffer tip (host clamps).
+        scanStart: 0,
+        scanEnd: Number.MAX_SAFE_INTEGER,
+        sortKey: null,
+        sortDir: null,
+        busNames: buses.map((b) => [b.id, b.name]),
+        projectBuses: buses.map((b) => b.id),
+        sourceBuses: null,
+        offset: 0,
+        limit: renderedSignalKeys.length,
+      })
+        .then((page) => {
+          if (!live) return;
+          setValuesByKey(
+            new Map(
+              page.rows.map((r) => [
+                signalKey(r.bus_id, r.message_id, r.extended, r.signal_name),
+                r,
+              ]),
+            ),
+          );
+        })
+        .catch(() => {
+          /* best effort — the tree renders without values */
+        });
+    };
+    fetchValues();
+    const id = window.setInterval(fetchValues, 500);
+    return () => {
+      live = false;
+      window.clearInterval(id);
+    };
+  }, [showValues, renderedSignalKeys, buses]);
 
   const toggle = useCallback((id: string) => {
     setExpanded((prev) => {
@@ -928,6 +1011,14 @@ export function DbcPanel(props: IDockviewPanelProps) {
           />
           details
         </label>
+        <label className="dbc-panel-details-toggle" title="show each signal's live decoded value (latest frame; mux-aware)">
+          <input
+            type="checkbox"
+            checked={showValues}
+            onChange={(e) => setShowValues(e.target.checked)}
+          />
+          values
+        </label>
       </div>
       <div
         ref={treeRef}
@@ -948,6 +1039,19 @@ export function DbcPanel(props: IDockviewPanelProps) {
             row={row}
             active={row.id === activeId}
             showDetails={showDetails}
+            value={
+              showValues && row.kind.tag === "signal"
+                ? valuesByKey.get(
+                    signalKey(
+                      row.kind.busId,
+                      row.kind.messageId,
+                      row.kind.extended,
+                      row.kind.signal.name,
+                    ),
+                  ) ?? null
+                : undefined
+            }
+            resolveColor={resolveColor}
             onToggle={toggleAndActivate}
             onClick={onRowClick}
             onDragStart={handleDragStart}
@@ -969,12 +1073,17 @@ interface DbcRowProps {
   row: RenderRow;
   active: boolean;
   showDetails: boolean;
+  /// The signal row's live snapshot when the value column is on:
+  /// a record (render its value), `null` (no update yet — blank), or
+  /// `undefined` (column off / not a signal row).
+  value?: SignalSnapshotRecord | null;
+  resolveColor: ColorResolver | null;
   onToggle: (id: string) => void;
   onClick: (id: string, modifiers: { shift: boolean; meta: boolean }) => void;
   onDragStart: (e: React.DragEvent, row: RenderRow) => void;
 }
 
-function DbcRow({ row, active, showDetails, onToggle, onClick, onDragStart }: DbcRowProps) {
+function DbcRow({ row, active, showDetails, value, resolveColor, onToggle, onClick, onDragStart }: DbcRowProps) {
   const indent = `${row.depth * 14}px`;
   // Bus / DBC / ECU rows: clicking anywhere toggles expand (they
   // aren't selectable). Message / signal rows: row body selects,
@@ -1030,6 +1139,22 @@ function DbcRow({ row, active, showDetails, onToggle, onClick, onDragStart }: Db
           {row.hasChildren ? (row.expanded ? "▼" : "▶") : ""}
         </span>
         <DbcRowContent kind={row.kind} />
+        {value !== undefined && row.kind.tag === "signal" && (
+          <span className="dbc-row-value">
+            <SignalValueCell
+              value={value?.value}
+              unit={value?.unit ?? ""}
+              label={value?.label}
+              target={{
+                messageId: row.kind.messageId,
+                extended: row.kind.extended,
+                signalName: row.kind.signal.name,
+                busId: row.kind.busId,
+              }}
+              resolveColor={resolveColor}
+            />
+          </span>
+        )}
       </div>
       {showDetails && row.kind.tag === "message" && (
         <MessageDetails message={row.kind.message} indent={detailIndent} />
