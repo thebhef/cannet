@@ -349,10 +349,8 @@ mod tests {
     fn color_and_kind_round_trip_through_scratch_json() {
         // A pre-kind notes.json (no `kind`/`color`) still parses, and a
         // coloured note survives a persist + restore (ADR 0002 DS-7 / 0035).
-        let legacy: Note = serde_json::from_str(
-            r#"{"id":"x","timestampNs":5,"label":"old"}"#,
-        )
-        .expect("a pre-kind note still deserializes");
+        let legacy: Note = serde_json::from_str(r#"{"id":"x","timestampNs":5,"label":"old"}"#)
+            .expect("a pre-kind note still deserializes");
         assert_eq!(legacy.kind, EventKind::Note);
         assert_eq!(legacy.color, None);
 

@@ -422,13 +422,7 @@ fn dbc_scoped_to(d: &crate::LoadedDbc, bus_id: &str) -> bool {
 /// bus carries.
 fn for_each_scoped_message<F>(dbs: &[crate::LoadedDbc], bus_id: &str, mut visit: F)
 where
-    F: FnMut(
-        &cannet_dbc::Database,
-        &str,
-        cannet_core::CanId,
-        &cannet_dbc::MessageDescriptor,
-        &str,
-    ),
+    F: FnMut(&cannet_dbc::Database, &str, cannet_core::CanId, &cannet_dbc::MessageDescriptor, &str),
 {
     let mut seen: HashSet<String> = HashSet::new();
     for loaded in dbs.iter().filter(|d| dbc_scoped_to(d, bus_id)) {
@@ -1509,8 +1503,8 @@ mod tests {
     /// `disabled_messages` key must name a real message too.
     #[test]
     fn ev_zonal_fixture_rbs_resolves_against_its_dbcs() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../examples/ev-zonal");
+        let root =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../examples/ev-zonal");
         let read = |p: std::path::PathBuf| {
             std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
         };
@@ -1519,8 +1513,7 @@ mod tests {
             [("Pack", "pack.dbc"), ("Zonal", "zonal.dbc")]
                 .into_iter()
                 .map(|(bus, f)| {
-                    let db =
-                        cannet_dbc::Database::parse(&read(root.join("dbc").join(f))).unwrap();
+                    let db = cannet_dbc::Database::parse(&read(root.join("dbc").join(f))).unwrap();
                     (bus, db)
                 })
                 .collect();
@@ -1529,8 +1522,8 @@ mod tests {
             let db = dbs
                 .get(bus_key)
                 .unwrap_or_else(|| panic!("unknown bus key {bus_key}"));
-            let (id, ext) = parse_message_key(msg_key)
-                .unwrap_or_else(|e| panic!("{bus_key}/{msg_key}: {e}"));
+            let (id, ext) =
+                parse_message_key(msg_key).unwrap_or_else(|e| panic!("{bus_key}/{msg_key}: {e}"));
             let can_id = if ext {
                 cannet_core::CanId::extended(id)
             } else {
@@ -1552,8 +1545,7 @@ mod tests {
                         Some(ecu_key.as_str()),
                         "{bus_key}/{ecu_key}/{msg_key}: entry filed under the wrong ECU",
                     );
-                    let (_, warnings) =
-                        reconstruct_payload(db, can_id, &desc, msg, file.fill_bit);
+                    let (_, warnings) = reconstruct_payload(db, can_id, &desc, msg, file.fill_bit);
                     assert!(
                         warnings.is_empty(),
                         "{bus_key}/{ecu_key}/{msg_key}: {warnings:?}",

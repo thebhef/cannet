@@ -185,7 +185,11 @@ pub fn resolve_candidates(
     };
     match p {
         TaggedPredicate::IdList(ids) => Some(CandidateSet {
-            keys: normalize(ids.iter().flat_map(|&id| [(id, false), (id, true)]).collect()),
+            keys: normalize(
+                ids.iter()
+                    .flat_map(|&id| [(id, false), (id, true)])
+                    .collect(),
+            ),
             membership: true,
         }),
         TaggedPredicate::IdRange([lo, hi]) => Some(CandidateSet {
@@ -220,10 +224,7 @@ pub fn resolve_candidates(
 /// narrowable child bounds it; intersect the narrowable children's keys
 /// (a non-narrowable child doesn't shrink the bound). Membership only
 /// survives if *every* child is a narrowable membership child.
-fn resolve_all(
-    children: &[FilterPredicate],
-    inputs: &CandidateInputs<'_>,
-) -> Option<CandidateSet> {
+fn resolve_all(children: &[FilterPredicate], inputs: &CandidateInputs<'_>) -> Option<CandidateSet> {
     let mut acc: Option<Vec<(u32, bool)>> = None;
     let mut membership = true;
     for c in children {
@@ -244,10 +245,7 @@ fn resolve_all(
 /// `any`: the match set is the union of the children's. If any child is
 /// non-narrowable the union spans all ids, so the `any` is too; otherwise
 /// union the keys. Membership survives only if every child is membership.
-fn resolve_any(
-    children: &[FilterPredicate],
-    inputs: &CandidateInputs<'_>,
-) -> Option<CandidateSet> {
+fn resolve_any(children: &[FilterPredicate], inputs: &CandidateInputs<'_>) -> Option<CandidateSet> {
     let mut keys: Vec<(u32, bool)> = Vec::new();
     let mut membership = true;
     for c in children {
@@ -542,15 +540,29 @@ mod tests {
     #[test]
     fn name_regex_and_signal_equals_use_dbc_ids_and_need_decode() {
         let none = |_: &str| Vec::new();
-        let regex = |p: &str| if p == "^Eng" { vec![(0x10, false)] } else { vec![] };
-        let signal = |n: &str| if n == "Rpm" { vec![(0x10, false)] } else { vec![] };
+        let regex = |p: &str| {
+            if p == "^Eng" {
+                vec![(0x10, false)]
+            } else {
+                vec![]
+            }
+        };
+        let signal = |n: &str| {
+            if n == "Rpm" {
+                vec![(0x10, false)]
+            } else {
+                vec![]
+            }
+        };
         let inp = inputs(&[], &none, &regex, &signal);
         let nr = resolve_candidates(&parse(r#"{"name_regex": "^Eng"}"#), &inp).unwrap();
         assert!(!nr.membership);
         assert_eq!(nr.keys, vec![(0x10, false)]);
-        let se =
-            resolve_candidates(&parse(r#"{"signal_equals":{"name":"Rpm","value":1}}"#), &inp)
-                .unwrap();
+        let se = resolve_candidates(
+            &parse(r#"{"signal_equals":{"name":"Rpm","value":1}}"#),
+            &inp,
+        )
+        .unwrap();
         assert!(!se.membership);
         assert_eq!(se.keys, vec![(0x10, false)]);
     }
@@ -599,11 +611,10 @@ mod tests {
         assert_eq!(set.keys, vec![(1, false), (1, true), (2, false), (2, true)]);
         // An empty `all` is vacuous-true (any id) ⇒ that `any` branch is
         // non-narrowable ⇒ the whole `any` is None.
-        assert!(resolve_candidates(
-            &parse(r#"{"any": [{"id_list": [1]}, {"all": []}]}"#),
-            &inp,
-        )
-        .is_none());
+        assert!(
+            resolve_candidates(&parse(r#"{"any": [{"id_list": [1]}, {"all": []}]}"#), &inp,)
+                .is_none()
+        );
     }
 
     #[test]

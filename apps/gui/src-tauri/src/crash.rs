@@ -281,10 +281,7 @@ fn webview_kind(name_lower: &str, cmd_joined: &str) -> Option<WebviewKind> {
     let kind = match cmd_joined.split("--type=").nth(1) {
         None => WebviewKind::Browser, // no `--type` ⇒ the main browser process
         Some(rest) => {
-            let ty = rest
-                .split([' ', '"'])
-                .next()
-                .unwrap_or("");
+            let ty = rest.split([' ', '"']).next().unwrap_or("");
             match ty {
                 "renderer" => WebviewKind::Renderer,
                 "gpu-process" => WebviewKind::Gpu,
@@ -656,7 +653,10 @@ mod tests {
     #[test]
     fn webview_kind_classifies_by_type_arg() {
         let bw = "C:/x/msedgewebview2.exe";
-        assert_eq!(webview_kind(bw, "msedgewebview2.exe --embedded"), Some(WebviewKind::Browser));
+        assert_eq!(
+            webview_kind(bw, "msedgewebview2.exe --embedded"),
+            Some(WebviewKind::Browser)
+        );
         assert_eq!(
             webview_kind(bw, "msedgewebview2.exe --type=renderer --lang=en"),
             Some(WebviewKind::Renderer)
@@ -670,7 +670,10 @@ mod tests {
             Some(WebviewKind::Other)
         );
         // Not a webview process at all.
-        assert_eq!(webview_kind("python.exe", "python -m cannet --type=renderer"), None);
+        assert_eq!(
+            webview_kind("python.exe", "python -m cannet --type=renderer"),
+            None
+        );
     }
 
     #[test]

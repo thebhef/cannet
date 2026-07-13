@@ -698,7 +698,8 @@ mod tests {
         let samples: Vec<DiagSample> = (0..10)
             .map(|i| {
                 let mut s = sample(f64::from(i) * 1000.0, 0.0, 0.0);
-                s.gauges.insert("mem.host_mb".into(), 50.0 + f64::from(i) * 100.0);
+                s.gauges
+                    .insert("mem.host_mb".into(), 50.0 + f64::from(i) * 100.0);
                 s
             })
             .collect();

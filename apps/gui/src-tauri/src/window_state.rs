@@ -187,17 +187,37 @@ mod tests {
 
     #[test]
     fn intersection_area_multiplies_both_axes() {
-        let a = Rect { x: 0, y: 0, w: 100, h: 100 };
-        let b = Rect { x: 50, y: 50, w: 100, h: 100 };
+        let a = Rect {
+            x: 0,
+            y: 0,
+            w: 100,
+            h: 100,
+        };
+        let b = Rect {
+            x: 50,
+            y: 50,
+            w: 100,
+            h: 100,
+        };
         assert_eq!(a.intersection_area(b), 50 * 50);
-        let c = Rect { x: 1000, y: 0, w: 10, h: 10 };
+        let c = Rect {
+            x: 1000,
+            y: 0,
+            w: 10,
+            h: 10,
+        };
         assert_eq!(a.intersection_area(c), 0);
     }
 
     #[test]
     fn fully_on_screen_window_is_left_alone() {
         let mons = one_monitor();
-        let win = Rect { x: 100, y: 100, w: 1200, h: 800 };
+        let win = Rect {
+            x: 100,
+            y: 100,
+            w: 1200,
+            h: 800,
+        };
         assert_eq!(corrected_origin(win, BAND, &mons, mons[0]), None);
     }
 
@@ -205,7 +225,12 @@ mod tests {
     fn window_fully_off_all_monitors_is_recentred() {
         let mons = one_monitor();
         // Far to the left of any monitor — the undocked-laptop case.
-        let win = Rect { x: -5000, y: 300, w: 1200, h: 800 };
+        let win = Rect {
+            x: -5000,
+            y: 300,
+            w: 1200,
+            h: 800,
+        };
         let origin = corrected_origin(win, BAND, &mons, mons[0]);
         // Centred on the 1920×1080 primary.
         assert_eq!(origin, Some(((1920 - 1200) / 2, (1080 - 800) / 2)));
@@ -216,7 +241,12 @@ mod tests {
         // Most of the window is on-screen but its title bar sits above
         // the monitor's top edge, so there is nothing to grab.
         let mons = one_monitor();
-        let win = Rect { x: 200, y: -200, w: 1200, h: 800 };
+        let win = Rect {
+            x: 200,
+            y: -200,
+            w: 1200,
+            h: 800,
+        };
         assert!(corrected_origin(win, BAND, &mons, mons[0]).is_some());
     }
 
@@ -225,7 +255,12 @@ mod tests {
         // Only 50px of the title bar's width pokes onto the monitor —
         // below MIN_GRAB_W (120), so it's not realistically grabbable.
         let mons = one_monitor();
-        let win = Rect { x: 1920 - 50, y: 100, w: 1200, h: 800 };
+        let win = Rect {
+            x: 1920 - 50,
+            y: 100,
+            w: 1200,
+            h: 800,
+        };
         assert!(corrected_origin(win, BAND, &mons, mons[0]).is_some());
     }
 
@@ -233,7 +268,12 @@ mod tests {
     fn enough_title_bar_visible_is_left_alone() {
         // 200px of title-bar width on-screen (> MIN_GRAB_W) — keep it.
         let mons = one_monitor();
-        let win = Rect { x: 1920 - 200, y: 100, w: 1200, h: 800 };
+        let win = Rect {
+            x: 1920 - 200,
+            y: 100,
+            w: 1200,
+            h: 800,
+        };
         assert_eq!(corrected_origin(win, BAND, &mons, mons[0]), None);
     }
 
@@ -242,10 +282,25 @@ mod tests {
         // Two side-by-side 1920-wide monitors; the title bar spans the
         // seam with plenty visible across both, so no correction.
         let mons = vec![
-            Rect { x: 0, y: 0, w: 1920, h: 1080 },
-            Rect { x: 1920, y: 0, w: 1920, h: 1080 },
+            Rect {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1080,
+            },
+            Rect {
+                x: 1920,
+                y: 0,
+                w: 1920,
+                h: 1080,
+            },
         ];
-        let win = Rect { x: 1920 - 600, y: 100, w: 1200, h: 800 };
+        let win = Rect {
+            x: 1920 - 600,
+            y: 100,
+            w: 1200,
+            h: 800,
+        };
         assert_eq!(corrected_origin(win, BAND, &mons, mons[0]), None);
     }
 
@@ -253,8 +308,18 @@ mod tests {
     fn oversized_window_recentres_to_the_top_left_corner() {
         // A window larger than the primary monitor clamps to the corner
         // instead of pushing its title bar above the top edge.
-        let mons = vec![Rect { x: 0, y: 0, w: 1000, h: 700 }];
-        let win = Rect { x: -9000, y: -9000, w: 1200, h: 800 };
+        let mons = vec![Rect {
+            x: 0,
+            y: 0,
+            w: 1000,
+            h: 700,
+        }];
+        let win = Rect {
+            x: -9000,
+            y: -9000,
+            w: 1200,
+            h: 800,
+        };
         assert_eq!(corrected_origin(win, BAND, &mons, mons[0]), Some((0, 0)));
     }
 
@@ -263,11 +328,26 @@ mod tests {
         // Primary is the right-hand monitor; the window strayed far below
         // everything. Recovery centres on the primary's coordinates.
         let mons = vec![
-            Rect { x: 0, y: 0, w: 1920, h: 1080 },
-            Rect { x: 1920, y: 0, w: 1920, h: 1080 },
+            Rect {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1080,
+            },
+            Rect {
+                x: 1920,
+                y: 0,
+                w: 1920,
+                h: 1080,
+            },
         ];
         let primary = mons[1];
-        let win = Rect { x: 500, y: 5000, w: 1200, h: 800 };
+        let win = Rect {
+            x: 500,
+            y: 5000,
+            w: 1200,
+            h: 800,
+        };
         assert_eq!(
             corrected_origin(win, BAND, &mons, primary),
             Some((1920 + (1920 - 1200) / 2, (1080 - 800) / 2)),

@@ -632,7 +632,9 @@ mod tests {
         let cache = SignalCacheStore::new(tmp.path());
         // Unknown id and unknown signal both have no decoded samples.
         assert!(cache.min_max(None, 999, false, "X", &store, dbs).is_none());
-        assert!(cache.min_max(None, 256, false, "Nope", &store, dbs).is_none());
+        assert!(cache
+            .min_max(None, 256, false, "Nope", &store, dbs)
+            .is_none());
     }
 
     #[test]
@@ -755,10 +757,9 @@ mod tests {
         );
         // The spike's timestamp is preserved too (not snapped to a bucket
         // edge): its bucket's argmax is the spike sample itself.
-        assert!(
-            fit.iter()
-                .any(|p| (p.t_seconds - (spike_at * S) as f64 / 1e9).abs() < 0.5),
-        );
+        assert!(fit
+            .iter()
+            .any(|p| (p.t_seconds - (spike_at * S) as f64 / 1e9).abs() < 0.5),);
     }
 
     #[test]
@@ -890,7 +891,11 @@ mod tests {
         cache.fold(); // build the higher levels
         let before = std::fs::read_dir(dir.path()).unwrap().count();
         cache.evict_below(100.0);
-        assert_eq!(cache.levels[0].first_slot(), 100, "level-0 floor rose to t=100");
+        assert_eq!(
+            cache.levels[0].first_slot(),
+            100,
+            "level-0 floor rose to t=100"
+        );
         let pts = cache.window(0.0, 200.0, 0);
         assert!(!pts.is_empty());
         assert!(
