@@ -588,6 +588,35 @@ next pass on this surface can address them as one piece.
 
 ### Packaging and naming
 
+- `[docs]` **Complete the third-party attribution the license manifest
+  under-counts.** `scripts/gen-licenses.py` populates only the
+  `python-can sidecar` component and, within it, reads only the five
+  Python packages' `dist-info` LICENSEs (ADR 0036). Three gaps, in
+  priority order:
+  1. **The GUI's own dependencies** — the Rust host crates (via
+     `cargo-about`) and the frontend npm packages (via `pnpm licenses
+     list --json`), added as their own manifest components.
+  2. **Native libraries bundled *inside* the frozen sidecar** that the
+     dist-info reader misses. The onedir also ships **OpenSSL**
+     (`libcrypto-3`/`libssl-3`, Apache-2.0), **libffi**, and **Expat**
+     (`pyexpat`), whose notices are *not* in CPython's bundled
+     `LICENSE.txt` (verified) and are *not* on disk in the uv interpreter
+     install — so they need small **committed canonical license assets**
+     (a deliberate, narrow exception to "don't commit texts," since they
+     can't be generated from build inputs). SQLite (`sqlite3.dll`) is
+     public-domain — optional. Already covered, no action: **bzip2** and
+     **Zstandard** (in CPython's LICENSE) and grpcio's static
+     **BoringSSL / abseil / c-ares** (in grpcio's own LICENSE).
+  3. Add the **GPL-3.0 supplement** to python-can's LGPL notice (the dep
+     ships only the LGPL text, which incorporates the GPL by reference).
+
+  Not an OSS-notice item: the **MS VC++ / UCRT runtime** (`VCRUNTIME140*`,
+  `ucrtbase`, `api-ms-win-*`) is redistributed in the sidecar onedir but
+  under Microsoft's redistributable terms, which permit app-local
+  bundling and carry no attribution obligation — nothing to add to the
+  manifest. Why: the About view is the runtime attribution surface, and
+  today it under-attributes what cannet actually redistributes.
+
 - `[feat]` **Code signing, notarization, and auto-update.** Deferred
   from the distribution work (former Task 26) so the alpha isn't
   blocked on procurement: macOS needs an Apple Developer Program
@@ -607,13 +636,6 @@ next pass on this surface can address them as one piece.
   [`servers/cannet-python-can/LICENSING.md`](../servers/cannet-python-can/LICENSING.md)):
   a user who swaps in a modified sidecar / `python-can` can point cannet
   straight at it instead of editing files inside the frozen onedir.
-
-- `[docs]` **Runtime "about" third-party attribution surface.** The
-  frozen sidecar redistributes `python-can` (LGPL-3.0), `grpcio`,
-  `protobuf`, and CPython; Task 31 ships their notices as a
-  `THIRD-PARTY-LICENSES` file in the installer. Add an in-app about-box
-  (or equivalent) that also surfaces this attribution, completing the
-  LGPL §4a–c "prominent notice" side. See LICENSING.md § `python-can`.
 
 - `[naming]` `sidecar.rs` internal identifiers `LaunchPath::BundledUv`
   and `bundled_uv_path()` predate the "fetched, not bundled" decision

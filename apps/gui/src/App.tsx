@@ -42,6 +42,7 @@ import { ColorMapPanel } from "./ColorMapPanel";
 import { SystemMessagesPanel } from "./SystemMessagesPanel";
 import { DbcPanel } from "./DbcPanel";
 import { SettingsPanel } from "./SettingsPanel";
+import { AboutPanel } from "./AboutPanel";
 import { EventsPanel } from "./EventsPanel";
 import { SystemLogContext, type SystemLogContextValue } from "./systemLogContext";
 import {
@@ -105,6 +106,8 @@ import {
   RBS_PANEL_COMPONENT,
   SETTINGS_PANEL_COMPONENT,
   SETTINGS_PANEL_ID,
+  ABOUT_PANEL_COMPONENT,
+  ABOUT_PANEL_ID,
   EVENTS_PANEL_COMPONENT,
   EVENTS_PANEL_ID,
   SHORTCUTS_PANEL_COMPONENT,
@@ -211,6 +214,7 @@ const DOCK_COMPONENTS = {
   [SYSTEM_MESSAGES_PANEL_COMPONENT]: SystemMessagesPanel,
   [DBC_PANEL_COMPONENT]: DbcPanel,
   [SETTINGS_PANEL_COMPONENT]: SettingsPanel,
+  [ABOUT_PANEL_COMPONENT]: AboutPanel,
   [EVENTS_PANEL_COMPONENT]: EventsPanel,
   [SHORTCUTS_PANEL_COMPONENT]: ShortcutsPanel,
 };
@@ -1916,6 +1920,18 @@ export function App() {
     [showSingletonPanel],
   );
 
+  // About view — singleton, app-global. Opened from the command palette;
+  // shows the build version and the bundled third-party license notices.
+  const showAboutPanel = useCallback(
+    () =>
+      showSingletonPanel({
+        id: ABOUT_PANEL_ID,
+        component: ABOUT_PANEL_COMPONENT,
+        title: "About",
+      }),
+    [showSingletonPanel],
+  );
+
   // Keyboard-shortcuts editor — singleton, app-global (ADR 0018). Opened
   // from the command palette; lists and rebinds every command.
   const showShortcutsPanel = useCallback(
@@ -2105,6 +2121,7 @@ export function App() {
     "panel.show.projectGraph": showProjectGraphPanel,
     "panel.show.dbc": showDbcPanel,
     "panel.show.settings": showSettingsPanel,
+    "panel.show.about": showAboutPanel,
     "panel.show.events": showEventsPanel,
     "panel.show.shortcuts": showShortcutsPanel,
     // Renaming happens in the project panel (the canonical edit
@@ -2320,6 +2337,7 @@ export function App() {
     singleton(DBC_PANEL_ID, "DBC", showDbcPanel);
     singleton(SYSTEM_MESSAGES_PANEL_ID, "System messages", showSystemMessagesPanel);
     singleton(SETTINGS_PANEL_ID, "Settings", showSettingsPanel);
+    singleton(ABOUT_PANEL_ID, "About", showAboutPanel);
     singleton(EVENTS_PANEL_ID, "Events", showEventsPanel);
     singleton(SHORTCUTS_PANEL_ID, "Keyboard shortcuts", showShortcutsPanel);
     return views;
@@ -2331,6 +2349,7 @@ export function App() {
     showDbcPanel,
     showSystemMessagesPanel,
     showSettingsPanel,
+    showAboutPanel,
     showEventsPanel,
     showShortcutsPanel,
   ]);

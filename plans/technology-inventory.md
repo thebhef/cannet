@@ -120,8 +120,18 @@ without reshaping callers.
 
 ### Hardware Drivers
 
-- **`python-can`** (Apache-2.0) — `adopted` in Phase 8. Wrapped
-  by the `cannet-python-can` sidecar. See [`../docs/adr/0008-python-can-sidecar.md`](../docs/adr/0008-python-can-sidecar.md).
+- **`python-can`** (LGPL-3.0-only) — `adopted` in Phase 8. Wrapped
+  by the `cannet-python-can` sidecar. Now **redistributed** — frozen
+  into the sidecar onedir, making the installer a Combined Work under
+  LGPL-3.0 §4. See [`../docs/adr/0008-python-can-sidecar.md`](../docs/adr/0008-python-can-sidecar.md),
+  [ADR 0036](../docs/adr/0036-frozen-python-can-sidecar.md), and
+  [`../servers/cannet-python-can/LICENSING.md`](../servers/cannet-python-can/LICENSING.md).
+- **PyInstaller** (GPL-2.0-or-later **with** the bootloader exception)
+  — `adopted` in Task 31 as the freeze tool that builds the sidecar
+  onedir. A build tool only: its terms do not attach to our shipped
+  artifact (the bootloader exception permits distributing the frozen
+  output under any license). See
+  [ADR 0036](../docs/adr/0036-frozen-python-can-sidecar.md).
 - **`uv`** (Rust, Apache-2.0 / MIT) — `adopted` in Phase 8, now
   **developer-only**. Astral's Python package & project manager. Manages
   the sidecar's venv for local dev (`uv run cannet-python-can`) and feeds
@@ -131,7 +141,8 @@ without reshaping callers.
   supersedes the end-user-fetch part of
   [ADR 0015](../docs/adr/0015-fetched-runtime-binaries.md).
 - **`grpcio`** + **`grpcio-tools`** (Python, Apache-2.0) —
-  `adopted` in Phase 8 as the sidecar's gRPC runtime. See
+  `adopted` in Phase 8 as the sidecar's gRPC runtime. `grpcio` is now
+  **redistributed** (frozen into the sidecar onedir). See
   ADR 0008.
 - **Vector XL Driver Library** / **Kvaser CANlib** /
   **PEAK PCAN-Basic** — `adopted` as runtime, user-installed

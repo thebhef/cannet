@@ -630,9 +630,7 @@ impl TraceStore {
     /// Number of frames currently stored.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.lock_inner()
-            .raw
-            .len()
+        self.lock_inner().raw.len()
     }
 
     /// Cloned slice of frames in `[start, end)`. Clamped to the store's
@@ -641,9 +639,7 @@ impl TraceStore {
     /// returns an empty `Vec`.
     #[must_use]
     pub fn slice(&self, start: usize, end: usize) -> Vec<RawTraceFrame> {
-        self.lock_inner()
-            .raw
-            .slice(start, end)
+        self.lock_inner().raw.slice(start, end)
     }
 
     /// First-and-last frame timestamps for the (clamped) range
@@ -653,9 +649,7 @@ impl TraceStore {
     /// per-signal decoded-sample slice the cache produces.
     #[must_use]
     pub fn frame_timestamps(&self, start: usize, end: usize) -> (Option<u64>, Option<u64>) {
-        self.lock_inner()
-            .raw
-            .frame_timestamps(start, end)
+        self.lock_inner().raw.frame_timestamps(start, end)
     }
 
     /// The absolute index of the first *retained* frame whose timestamp is
@@ -673,7 +667,11 @@ impl TraceStore {
             let mid = lo + (hi - lo) / 2;
             // `frame_timestamps(mid, mid+1).0` is the timestamp at `mid`,
             // read from the meta mapping without cloning the frame.
-            let mid_ts = inner.raw.frame_timestamps(mid, mid + 1).0.unwrap_or(u64::MAX);
+            let mid_ts = inner
+                .raw
+                .frame_timestamps(mid, mid + 1)
+                .0
+                .unwrap_or(u64::MAX);
             if mid_ts < ts {
                 lo = mid + 1;
             } else {
@@ -743,9 +741,7 @@ impl TraceStore {
         end: usize,
         keep: impl Fn(&RawTraceFrame) -> bool,
     ) -> Vec<usize> {
-        self.lock_inner()
-            .raw
-            .scan_chunk(start, end, &keep)
+        self.lock_inner().raw.scan_chunk(start, end, &keep)
     }
 
     /// Clone the frames at the given absolute indices, each paired with
@@ -756,9 +752,7 @@ impl TraceStore {
     /// match set.
     #[must_use]
     pub fn frames_at(&self, idxs: &[usize]) -> Vec<(usize, RawTraceFrame)> {
-        self.lock_inner()
-            .raw
-            .frames_at(idxs)
+        self.lock_inner().raw.frames_at(idxs)
     }
 
     /// Begin a new session: empty the buffer **and** raise the
@@ -959,9 +953,10 @@ impl TraceStore {
                     bus_id: e.bus_id.clone(),
                 };
                 let key: FrameKey = (e.bus_id, e.channel, e.id, e.extended);
-                inner
-                    .latest
-                    .insert(key.clone(), usize::try_from(e.last_index).unwrap_or(usize::MAX));
+                inner.latest.insert(
+                    key.clone(),
+                    usize::try_from(e.last_index).unwrap_or(usize::MAX),
+                );
                 inner.latest_frame.insert(key.clone(), frame);
                 let mut est = RateEstimate::first_seen(0, now);
                 est.count = e.count;
@@ -976,8 +971,7 @@ impl TraceStore {
     /// has been configured yet", and the store accepts every frame.
     #[must_use]
     pub fn session_start_ns(&self) -> u64 {
-        self.lock_inner()
-            .session_start_ns
+        self.lock_inner().session_start_ns
     }
 
     /// For each distinct [`FrameKey`] whose most recent occurrence is at
@@ -1041,7 +1035,10 @@ impl TraceStore {
         } else {
             let mut last: HashMap<FrameKey, usize> = HashMap::new();
             for (offset, f) in inner.raw.slice(start, end).iter().enumerate() {
-                last.insert((f.bus_id.clone(), f.channel, f.id, f.extended), start + offset);
+                last.insert(
+                    (f.bus_id.clone(), f.channel, f.id, f.extended),
+                    start + offset,
+                );
             }
             let mut keyed: Vec<(FrameKey, usize)> = last.into_iter().collect();
             keyed.sort_unstable();
@@ -1142,7 +1139,8 @@ impl TraceStore {
         };
         if !missing.is_empty() {
             let end = end.min(len);
-            let found = self.scan_latest_mux(bus_id, id, extended, &missing, start, end, &extractor);
+            let found =
+                self.scan_latest_mux(bus_id, id, extended, &missing, start, end, &extractor);
             // Tip-window hits are "latest at the tip" — backfill them so
             // the next live query takes the O(groups) path. (Bounded
             // windows below the tip stay scan-served; their result is
@@ -1200,7 +1198,9 @@ impl TraceStore {
             // hit per selector wins, so most hits are never cloned.
             for batch in hits.rchunks(64) {
                 for (idx, frame) in self.frames_at(batch).into_iter().rev() {
-                    let Some(sel) = extractor(&frame) else { continue };
+                    let Some(sel) = extractor(&frame) else {
+                        continue;
+                    };
                     if wanted.contains(&sel) {
                         wanted.retain(|s| *s != sel);
                         found.insert(sel, (idx, frame));
@@ -1285,8 +1285,7 @@ impl TraceStore {
     /// otherwise-silent path is visible in the diagnostic readout.
     #[must_use]
     pub fn frames_dropped_before_session(&self) -> u64 {
-        self.lock_inner()
-            .dropped_before_session
+        self.lock_inner().dropped_before_session
     }
 
     /// Estimated current append rate in frames per second.
@@ -1347,9 +1346,7 @@ impl CandidateSource for TraceStore {
     }
 
     fn candidate_indices(&self, ids: &[(u32, bool)], start: usize, end: usize) -> Vec<usize> {
-        self.lock_inner()
-            .raw
-            .candidate_indices(ids, start, end)
+        self.lock_inner().raw.candidate_indices(ids, start, end)
     }
 
     fn frames_at(&self, idxs: &[usize]) -> Vec<(usize, RawTraceFrame)> {
@@ -1746,8 +1743,16 @@ mod tests {
             store.append(dummy(u64::from(i) * 1_000, i)); // ts 0,1000,..,5000
         }
         assert_eq!(store.frame_index_at_ns(0), 0, "exact first");
-        assert_eq!(store.frame_index_at_ns(2_500), 3, "between 2000 and 3000 → 3");
-        assert_eq!(store.frame_index_at_ns(3_000), 3, "exact hit is the lower bound");
+        assert_eq!(
+            store.frame_index_at_ns(2_500),
+            3,
+            "between 2000 and 3000 → 3"
+        );
+        assert_eq!(
+            store.frame_index_at_ns(3_000),
+            3,
+            "exact hit is the lower bound"
+        );
         assert_eq!(store.frame_index_at_ns(99_000), 6, "after the last → len()");
     }
 
@@ -1843,13 +1848,25 @@ mod tests {
         store.append(muxed(3_000, 0x10, 0)); // idx 2
         store.append(dummy(4_000, 0x20)); // other id, no payload → no selector
         let got = store.latest_mux_in_window(None, 0x10, false, &[0, 1, 2], 0, usize::MAX);
-        assert_eq!(got.get(&0).map(|(i, f)| (*i, f.timestamp_ns)), Some((2, 3_000)));
-        assert_eq!(got.get(&1).map(|(i, f)| (*i, f.timestamp_ns)), Some((1, 2_000)));
+        assert_eq!(
+            got.get(&0).map(|(i, f)| (*i, f.timestamp_ns)),
+            Some((2, 3_000))
+        );
+        assert_eq!(
+            got.get(&1).map(|(i, f)| (*i, f.timestamp_ns)),
+            Some((1, 2_000))
+        );
         // Selector 2 never appeared — absent, not blank-with-a-row here.
         assert!(!got.contains_key(&2));
         // Per-group update statistics.
-        assert_eq!(store.mux_stats(None, 0x10, false, 0).map(|(_, c)| c), Some(2));
-        assert_eq!(store.mux_stats(None, 0x10, false, 1).map(|(_, c)| c), Some(1));
+        assert_eq!(
+            store.mux_stats(None, 0x10, false, 0).map(|(_, c)| c),
+            Some(2)
+        );
+        assert_eq!(
+            store.mux_stats(None, 0x10, false, 1).map(|(_, c)| c),
+            Some(1)
+        );
         assert_eq!(store.mux_stats(None, 0x10, false, 2), None);
     }
 
@@ -1918,7 +1935,10 @@ mod tests {
         store.append(muxed(2_000, 0x10, 0));
         let got = store.latest_mux_in_window(None, 0x10, false, &[0], 0, usize::MAX);
         assert_eq!(got.get(&0).map(|(i, _)| *i), Some(0));
-        assert_eq!(store.mux_stats(None, 0x10, false, 0).map(|(_, c)| c), Some(1));
+        assert_eq!(
+            store.mux_stats(None, 0x10, false, 0).map(|(_, c)| c),
+            Some(1)
+        );
     }
 
     #[test]
@@ -2251,7 +2271,9 @@ mod tests {
             store.append(dummy(u64::from(i) * 1_000, i));
         }
         store.flush().unwrap();
-        let fp = store.scratch_footprint_bytes().expect("disk store reports a footprint");
+        let fp = store
+            .scratch_footprint_bytes()
+            .expect("disk store reports a footprint");
         assert!(fp > 0, "footprint reflects the written scratch");
         assert_eq!(fp, dir_footprint(&dir), "cached value matches a fresh walk");
         std::fs::remove_dir_all(&dir).ok();
@@ -2275,7 +2297,10 @@ mod tests {
             store.append(dummy(u64::from(i) * 1_000, 0x100));
         }
         store.flush().unwrap(); // unbounded: no eviction
-        assert!(!store.slice(0, 1).is_empty(), "row 0 present before the cap");
+        assert!(
+            !store.slice(0, 1).is_empty(),
+            "row 0 present before the cap"
+        );
         let full = dir_footprint(&dir);
         // Cap well below the footprint: the next flush sheds the oldest.
         store.set_scratch_cap(Some(full / 2));
@@ -2283,8 +2308,16 @@ mod tests {
         let after = dir_footprint(&dir);
         assert!(after < full, "flush reclaimed disk: {after} < {full}");
         assert!(store.slice(0, 1).is_empty(), "oldest rows were evicted");
-        assert_eq!(store.len(), 40, "the tip is unchanged — only the floor moved");
-        assert_eq!(store.slice(39, 40)[0].id, 0x100, "the live tail still reads");
+        assert_eq!(
+            store.len(),
+            40,
+            "the tip is unchanged — only the floor moved"
+        );
+        assert_eq!(
+            store.slice(39, 40)[0].id,
+            0x100,
+            "the live tail still reads"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -2329,7 +2362,11 @@ mod tests {
             .iter()
             .find(|r| r.frame.id == 0x7AA)
             .expect("the evicted rare id is still in the by-id grid");
-        assert_eq!(rare.frame.payload.data(), &[0xAB], "its last value survives");
+        assert_eq!(
+            rare.frame.payload.data(),
+            &[0xAB],
+            "its last value survives"
+        );
         // The common id is also present and correct (no zip misalignment).
         assert!(rows.iter().any(|r| r.frame.id == 0x100));
         std::fs::remove_dir_all(&dir).ok();
@@ -2387,10 +2424,13 @@ mod tests {
         // must be scaled to the raw share so raw + the cascade land at the cap
         // together.
         use cannet_spill::{DiskConfig, DiskRawStore};
-        let dir =
-            std::env::temp_dir().join(format!("cannet-cap-share-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("cannet-cap-share-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let cfg = DiskConfig { records_per_seg: 4, payload_seg_bytes: 64, ring_capacity: 3 };
+        let cfg = DiskConfig {
+            records_per_seg: 4,
+            payload_seg_bytes: 64,
+            ring_capacity: 3,
+        };
         let raw = Box::new(DiskRawStore::with_config(&dir, cfg).unwrap());
         let store = TraceStore::with_raw(raw, Some(dir.clone()));
         for i in 0u32..40 {

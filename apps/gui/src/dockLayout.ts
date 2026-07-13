@@ -40,6 +40,9 @@ export const COLORMAP_PANEL_COMPONENT = "colormap";
 /// Singleton (same pattern as the project / graph / system-messages /
 /// DBC panels) — settings are app-global, so one instance suffices.
 export const SETTINGS_PANEL_COMPONENT = "settings";
+/// Read-only About view — a singleton panel holding the build version
+/// and the bundled third-party license notices (ADR 0036).
+export const ABOUT_PANEL_COMPONENT = "about";
 /// The timeline-events view (ADR 0035) — a singleton panel.
 export const EVENTS_PANEL_COMPONENT = "events";
 /// The keyboard-shortcuts editor (ADR 0018) — a singleton panel that
@@ -62,6 +65,10 @@ export const SYSTEM_MESSAGES_PANEL_ID = "system-messages";
 /// The settings panel is a singleton too — one app-global instance,
 /// opened from the command palette.
 export const SETTINGS_PANEL_ID = "settings";
+
+/// The About panel is a singleton too — one app-global instance,
+/// opened from the command palette.
+export const ABOUT_PANEL_ID = "about";
 
 /// The timeline-events panel (ADR 0035) is a singleton — one app-global
 /// instance, opened from the command palette.
@@ -102,6 +109,8 @@ export function panelKindForFocus(
       return "dbc";
     case SETTINGS_PANEL_ID:
       return "settings";
+    case ABOUT_PANEL_ID:
+      return "about";
     case EVENTS_PANEL_ID:
       return "events";
     case SHORTCUTS_PANEL_ID:

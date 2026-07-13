@@ -49,7 +49,12 @@ pub fn scoped_descriptors<'a>(
 fn descriptor_key(
     (bus, d): &(Option<String>, SignalDescriptor),
 ) -> (Option<&str>, u32, bool, &str) {
-    (bus.as_deref(), d.message_id, d.extended, d.signal_name.as_str())
+    (
+        bus.as_deref(),
+        d.message_id,
+        d.extended,
+        d.signal_name.as_str(),
+    )
 }
 
 /// The canonical signal path `bus/ecu/message/signal` (ADR 0038) — the
@@ -255,7 +260,7 @@ mod tests {
         // Two buses in scope → each signal appears once per bus.
         let all = all_on(&["chassis", "power"]);
         assert_eq!(all.len(), 6); // 3 signals × 2 buses
-        // Unscoped DBC + no project buses → the None-bus degenerate.
+                                  // Unscoped DBC + no project buses → the None-bus degenerate.
         let db = db();
         let all = scoped_descriptors([(&db, &[] as &[String])], &[]);
         assert_eq!(all.len(), 3);
@@ -283,8 +288,7 @@ mod tests {
             patterns: vec!["^Powertrain/Bms/".to_string()],
         };
         let hit = select_descriptors(&all, &sel, &names).unwrap();
-        let picked: Vec<&str> =
-            hit.iter().map(|&i| all[i].1.signal_name.as_str()).collect();
+        let picked: Vec<&str> = hit.iter().map(|&i| all[i].1.signal_name.as_str()).collect();
         // Pattern catches both Bms-sent PackStatus signals; the manual
         // key adds TorqueReq. Deduped, in descriptor order.
         assert_eq!(picked, vec!["PackTemp", "PackVolts", "TorqueReq"]);

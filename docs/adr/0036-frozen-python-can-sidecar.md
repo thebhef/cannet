@@ -28,10 +28,15 @@ per-launch self-extraction step, which is faster and avoids the
 make onefile *less* robust on Windows — the opposite of this decision's
 goal.
 
-The onedir folder is bundled into the installer next to the GUI binary
-(as `cannet-python-can/`). The host's launcher resolves it first, ahead
-of the existing `uv` / `python3` paths, which stay as developer
-fallbacks.
+The onedir folder is bundled into the installer as a Tauri **resource**
+(`cannet-python-can/`), and the host resolves it through Tauri's
+framework-canonical resource directory — **not** by assuming it sits
+literally next to the GUI executable. That distinction matters on
+macOS, where the `.app` puts the executable in `Contents/MacOS/` and
+resources in `Contents/Resources/` (a *sibling* of the exe's directory,
+never an ancestor), so a plain "look next to / above the exe" probe
+would never find it. The frozen path resolves first, ahead of the
+existing `uv` / `python3` paths, which stay as developer fallbacks.
 
 ## Why
 
@@ -69,16 +74,41 @@ though the artifact happens to contain an interpreter.
   developer `uv` flow redistributed nothing). Because `python-can` is
   pure Python, the onedir layout satisfies §4's relink/replace
   condition directly — a user edits the collected `can/` modules in
-  place — so compliance is shipping the LGPL-3.0 + GPL-3.0 texts (and,
-  later, a runtime attribution surface). `grpcio`/`protobuf`/CPython
-  are permissive and only need their notices retained; PyInstaller's
-  GPL-with-exception terms cover the freeze tooling, not the artifact.
+  place — so compliance is a runtime attribution surface (the About
+  view) that reproduces each frozen dependency's own shipped license
+  text. That manifest is **generated at build time** from the frozen
+  deps' dist-info license files, **bundled as a resource**, and read at
+  runtime — no license text is committed to the repo. The bundled texts
+  satisfy §4a-c. `grpcio`/`protobuf`/CPython are permissive and only
+  need their notices retained; PyInstaller's GPL-with-exception terms
+  cover the freeze tooling, not the artifact.
   See
   [`servers/cannet-python-can/LICENSING.md`](../../servers/cannet-python-can/LICENSING.md).
 - **Per-OS build.** PyInstaller cannot cross-compile; this matches
   Tauri's own constraint (see the distribution/CI task). Each platform's
   frozen sidecar is built on its native runner alongside the Tauri
   bundle, from the same pinned toolchain.
+- **The frozen interpreter is pinned minor-only.** The sidecar's
+  `uv.lock` fixes package versions and wheel hashes, but its
+  `requires-python` is a *range* — universal resolution deliberately
+  lets one lock work across CPython minors — so the lockfile is **not**
+  an interpreter pin. Without a separate pin, each native runner would
+  freeze whatever CPython its `uv` default resolves to, diverging by
+  minor (and per-minor wheel availability for `grpcio`/`python-can` is
+  exactly where that bites). A committed `.python-version` (minor only,
+  e.g. `3.14`) is the single interpreter pin honoured by the dev `uv`
+  venv, the freeze, and CI alike; the patch floats so security fixes
+  land without a pin bump.
+- **On macOS the nested frozen binary must be executable and signed to
+  run.** Apple Silicon refuses to execute any mach-o lacking at least an
+  ad-hoc signature (PyInstaller ad-hoc-signs its output), and Tauri's
+  resource copy does not reliably preserve the executable bit — the
+  build guarantees both. Bundles ship unsigned for now, so a downloaded
+  `.app` is Gatekeeper-quarantined and the user does the standard
+  right-click-Open; the nested sidecar inherits that admission.
+  Developer ID signing + notarization (which removes the friction) is a
+  deferred follow-up and re-signs the same onedir tree, so nothing in
+  this layout blocks it.
 - **Dynamic imports must be force-collected.** `python-can` discovers
   backends via entry points, and the sidecar loads its driver through
   `importlib.import_module`, so PyInstaller's static graph misses both.
@@ -86,8 +116,13 @@ though the artifact happens to contain an interpreter.
   cannet_python_can`, `--collect-submodules can`, `--collect-all grpc`,
   and the matching `--copy-metadata` flags). A **smoke-run of the frozen
   binary in CI** — assert it emits its `sidecar\tlistening\t<addr>`
-  banner — guards against a silent collection regression on a dependency
-  bump.
+  banner — catches a *core* collection failure (the binary fails to boot
+  or never emits the banner). It does **not** catch a silent prune of an
+  individual vendor backend: `_list_vector`/`_list_kvaser`/`_list_pcan`
+  each catch `ImportError` and return `[]`, so a dropped backend just
+  enumerates zero channels and the banner still fires. No per-backend
+  import guard is added, by deliberate decision — that residual risk is
+  accepted.
 - **Vendor DLLs stay user-installed.** `vxlapi`/`canlib`/`PCANBasic` are
   loaded via `ctypes` from the user's hardware SDK at runtime; they are
   **not** frozen in (licensing, and they are the user's driver install).

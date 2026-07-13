@@ -30,18 +30,28 @@
 //!
 //! ## Launch strategy
 //!
-//! Resolved in order:
+//! Resolved in priority order; the first that applies wins.
 //!
-//! These are all **developer-machine** paths. End-user builds run a
-//! frozen self-contained sidecar binary instead of resolving `uv`
-//! (see ADR 0036); `uv` is dev-only.
+//! 1. **Frozen self-contained binary** — the top-priority, end-user
+//!    path. The `PyInstaller` onedir sidecar launcher, bundled into the
+//!    installer as a Tauri resource and resolved through the
+//!    framework-canonical `resource_dir()` (see ADR 0036 — *not* the
+//!    exe walk-up the dev paths use, since on macOS the resources land
+//!    in `Contents/Resources/`, a sibling of the exe's `Contents/MacOS/`
+//!    and never an ancestor). The frozen artifact embeds its own
+//!    `CPython` and dependencies, so it runs with no `uv`, no Python, and
+//!    no `sidecar_dir` resolution. When it is present it wins outright.
 //!
-//! 1. **Local `uv`** at `tools/uv/<os>-<arch>/uv[.exe]` relative to
+//! The paths below are all **developer-machine** fallbacks, used when
+//! the frozen artifact isn't bundled (the dev tree). They resolve
+//! `uv`/`python3` against the sidecar *source* tree; `uv` is dev-only.
+//!
+//! 2. **Local `uv`** at `tools/uv/<os>-<arch>/uv[.exe]` relative to
 //!    the GUI binary's parent directory. `scripts/fetch-uv.sh`
 //!    populates this path for dev builds. The runtime contract —
 //!    "look here first" — is stable regardless of who wrote the file.
-//! 2. **`uv` on `PATH`** — the developer-machine fallback.
-//! 3. **`python3 -m cannet_python_can`** — last resort if `uv` is
+//! 3. **`uv` on `PATH`** — the developer-machine fallback.
+//! 4. **`python3 -m cannet_python_can`** — last resort if `uv` is
 //!    not installed at all. Logs a warn-level System Message so the
 //!    user knows to install `uv` for full functionality.
 //!
@@ -167,9 +177,12 @@ pub struct SidecarStatus {
     pub address: Option<String>,
 }
 
-/// What the user-facing fallback path is. The variants exist as
-/// discrete states so the launcher can tell the user what flow they
-/// just got — the System Messages text is different per branch.
+/// Which **developer-machine** launcher to use. The frozen end-user
+/// path is resolved separately ([`frozen_launcher_path`] →
+/// [`build_frozen_command`]) and never routed through this enum, so its
+/// variants are exactly the dev fallbacks. They exist as discrete states
+/// so the launcher can tell the user what flow they just got — the
+/// System Messages text is different per branch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LaunchPath {
     /// Bundled `uv` binary under `tools/uv/...` next to the GUI.
@@ -235,6 +248,62 @@ pub fn build_command(launcher: LaunchPath, sidecar_dir: &std::path::Path) -> Com
 /// `None` for any other input. Pure; testable without spawning.
 pub fn parse_listening_address(line: &str) -> Option<&str> {
     line.strip_prefix("sidecar\tlistening\t")
+}
+
+/// Absolute path to the frozen sidecar launcher inside the Tauri
+/// resource directory, or `None` if the frozen artifact isn't present
+/// (the developer flow). Resolved through Tauri's framework-canonical
+/// `resource_dir()` -- not the exe walk-up -- because on macOS the
+/// bundled resources live in `Contents/Resources/`, a sibling of the
+/// exe's `Contents/MacOS/` and never an ancestor (see ADR 0036).
+fn frozen_launcher_path(app: &AppHandle) -> Option<PathBuf> {
+    let launcher = app
+        .path()
+        .resource_dir()
+        .ok()?
+        .join("cannet-python-can")
+        .join(frozen_launcher_name());
+    launcher.is_file().then_some(launcher)
+}
+
+/// The frozen launcher's file name — platform-suffixed to match what
+/// `PyInstaller` emits (`.exe` on Windows, bare elsewhere).
+fn frozen_launcher_name() -> &'static str {
+    if cfg!(windows) {
+        "cannet-python-can.exe"
+    } else {
+        "cannet-python-can"
+    }
+}
+
+/// Build the `Command` for the frozen self-contained launcher. Pure;
+/// no spawning. The frozen onedir bundles its own interpreter and deps,
+/// so unlike the dev paths there is no `--directory` / `PYTHONPATH` /
+/// `--bind` -- the sidecar's own `127.0.0.1:0` default still applies and
+/// the bound address is read back from the `listening` banner.
+pub fn build_frozen_command(launcher: &std::path::Path) -> Command {
+    Command::new(launcher)
+}
+
+/// Windows: suppress the console window a console-subsystem child would
+/// otherwise pop up. The release GUI is built `windows_subsystem =
+/// "windows"` (see `main.rs`), so it has no console of its own; spawning
+/// a console-subsystem executable — the frozen `PyInstaller` launcher, or
+/// `uv`/`python` on the dev paths — makes Windows allocate a fresh console
+/// window for it. `CREATE_NO_WINDOW` runs the child with no console at
+/// all; stdin/stdout/stderr are piped regardless (see `spawn_blocking_inner`),
+/// so the tab-separated banner protocol is unaffected. No-op off Windows,
+/// where a console app never spawns a stray window.
+#[cfg_attr(not(windows), allow(unused_variables, clippy::needless_pass_by_ref_mut))]
+fn suppress_console_window(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW from winbase.h; inlined to avoid a whole
+        // winapi dependency for a single constant.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
 }
 
 /// Resolve the absolute path to the `cannet-python-can` package
@@ -349,15 +418,33 @@ pub fn spawn_sidecar(app: &AppHandle) {
     });
 }
 
-#[allow(clippy::too_many_lines)]
-fn spawn_blocking_inner(app: &AppHandle) {
+/// Resolve the sidecar invocation to a ready-to-configure [`Command`]
+/// plus a human-readable "source" line for the invocation summary
+/// (there is no `sidecar_dir` on the frozen path, so the frozen and dev
+/// branches converge here and share the whole spawn tail below).
+/// `None` — after logging an error-level System Message — when no
+/// launcher could be resolved at all.
+fn resolve_command(app: &AppHandle) -> Option<(Command, String)> {
+    // Frozen self-contained binary first (ADR 0036): if the bundled
+    // onedir launcher is present in the resource dir, run it directly.
+    // It embeds its own interpreter and deps, so no `sidecar_dir`/`uv`
+    // resolution applies.
+    if let Some(launcher) = frozen_launcher_path(app) {
+        sys_info!(app, SOURCE, "starting sidecar via frozen binary");
+        return Some((
+            build_frozen_command(&launcher),
+            "source: frozen self-contained binary".to_string(),
+        ));
+    }
+    // Developer-machine fallbacks: uv / python3 against the sidecar
+    // source tree.
     let Some(launcher) = resolve_launch_path() else {
         sys_error!(
             app,
             SOURCE,
-            "no sidecar launcher found (local uv, PATH uv, or python3); install uv: https://docs.astral.sh/uv/"
+            "no sidecar launcher found (frozen binary, local uv, PATH uv, or python3); install uv: https://docs.astral.sh/uv/"
         );
-        return;
+        return None;
     };
     // Resolve the sidecar source directory to an absolute path
     // BEFORE we build the command — uv's `--directory` and Python's
@@ -372,7 +459,7 @@ fn spawn_blocking_inner(app: &AppHandle) {
             "could not locate the cannet-python-can package directory. Searched: {}",
             sidecar_dir_search_summary()
         );
-        return;
+        return None;
     };
     match launcher {
         LaunchPath::BundledUv => sys_info!(app, SOURCE, "starting sidecar via local uv"),
@@ -384,8 +471,18 @@ fn spawn_blocking_inner(app: &AppHandle) {
         ),
     }
     sys_info!(app, SOURCE, "sidecar dir: {}", sidecar_dir.display());
+    Some((
+        build_command(launcher, &sidecar_dir),
+        format!("sidecar dir: {}", sidecar_dir.display()),
+    ))
+}
+
+#[allow(clippy::too_many_lines)]
+fn spawn_blocking_inner(app: &AppHandle) {
+    let Some((mut cmd, source_summary)) = resolve_command(app) else {
+        return;
+    };
     set_phase(app, SidecarPhase::Starting, None);
-    let mut cmd = build_command(launcher, &sidecar_dir);
     // stdin is piped so we hold the write end for the lifetime of the
     // child; we never write to it. When the host process dies (clean
     // exit, panic, OS kill, …), Rust drops the `Child`, the pipe
@@ -399,6 +496,9 @@ fn spawn_blocking_inner(app: &AppHandle) {
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // Keep the console-subsystem child from popping a terminal window
+    // (Windows only); stdio stays piped so the banner protocol works.
+    suppress_console_window(&mut cmd);
     // Capture the resolved invocation so we can both log it at info
     // level on the happy path AND attach it to the error-level
     // failure message when the sidecar exits non-zero — the panel's
@@ -413,9 +513,8 @@ fn spawn_blocking_inner(app: &AppHandle) {
     let cwd = std::env::current_dir()
         .map_or_else(|e| format!("<unknown: {e}>"), |p| p.display().to_string());
     let invocation_summary = format!(
-        "exec: {program} {}\ncwd:  {cwd}\nsidecar dir: {}",
-        args.join(" "),
-        sidecar_dir.display()
+        "exec: {program} {}\ncwd:  {cwd}\n{source_summary}",
+        args.join(" ")
     );
     sys_info!(app, SOURCE, "exec: {program} {}", args.join(" "));
     sys_info!(app, SOURCE, "cwd:  {cwd}");
@@ -905,6 +1004,37 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn build_frozen_command_runs_the_launcher_with_no_args() {
+        // The frozen onedir is self-contained: the launcher embeds its
+        // own interpreter and deps, so the command is just the launcher
+        // path — no `--directory`, no `--bind`, no `run` subcommand.
+        let launcher = std::env::temp_dir().join(frozen_launcher_name());
+        let cmd = build_frozen_command(&launcher);
+        assert_eq!(cmd.get_program(), launcher.as_os_str());
+        assert_eq!(
+            cmd.get_args().count(),
+            0,
+            "frozen launcher takes no args; got {:?}",
+            cmd.get_args().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn frozen_launcher_name_matches_target_os_suffix() {
+        #[cfg(windows)]
+        assert_eq!(frozen_launcher_name(), "cannet-python-can.exe");
+        #[cfg(not(windows))]
+        assert_eq!(frozen_launcher_name(), "cannet-python-can");
+    }
+
+    // Note: `frozen_launcher_path` itself isn't unit-tested — it needs a
+    // live `AppHandle` to reach `resource_dir()`, which can't be
+    // constructed in a plain unit test (same constraint that keeps
+    // `CANNET_SIDECAR_DIR` eyeball-verified below). Its two moving
+    // parts — the platform suffix and the "no args" launch shape — are
+    // covered by the two tests above.
 
     #[test]
     fn parse_listening_address_strips_the_banner_prefix() {

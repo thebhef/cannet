@@ -6,8 +6,6 @@ import { cleanup, render, screen } from "@testing-library/react";
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string) => {
     switch (cmd) {
-      case "app_version":
-        return "v0.1.0-3-gabc1234";
       case "get_settings":
         return { scratch_cap_bytes: null, clear_scratch_on_exit: false };
       default:
@@ -23,9 +21,9 @@ import { SettingsPanel } from "./SettingsPanel";
 afterEach(cleanup);
 
 describe("SettingsPanel", () => {
-  it("shows the build version in the About section", async () => {
+  it("renders the disk-spill cache group and no About section", async () => {
     render(<SettingsPanel {...({} as IDockviewPanelProps)} />);
-    expect(await screen.findByText("v0.1.0-3-gabc1234")).toBeInTheDocument();
-    expect(screen.getByText("About")).toBeInTheDocument();
+    expect(await screen.findByText("Disk-spill Cache")).toBeInTheDocument();
+    expect(screen.queryByText("About")).not.toBeInTheDocument();
   });
 });

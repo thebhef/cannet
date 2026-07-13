@@ -6,6 +6,12 @@ apps/gui/dist
 apps/gui/src-tauri/gen/
 apps/gui/tsconfig.tsbuildinfo
 
+# Frozen sidecar build output (scripts/build-sidecar.py)
+apps/gui/src-tauri/sidecar-dist/
+# Generated at build time from the frozen deps' dist-info (ADR 0036);
+# bundled as a resource, never committed.
+apps/gui/src-tauri/licenses.json
+
 # Editor / OS
 .DS_Store
 *.swp

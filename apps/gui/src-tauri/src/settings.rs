@@ -197,7 +197,10 @@ mod tests {
         assert!(text.contains("\"commandId\":\"palette.show\""), "{text}");
         assert!(text.contains("\"skipEditable\":true"), "{text}");
         // The first binding has no skip_editable, so it must not serialize one.
-        assert!(!text.contains("\"chord\":\"Mod+k\",\"commandId\":\"palette.show\",\"skipEditable\""), "{text}");
+        assert!(
+            !text.contains("\"chord\":\"Mod+k\",\"commandId\":\"palette.show\",\"skipEditable\""),
+            "{text}"
+        );
     }
 
     #[test]
@@ -230,7 +233,10 @@ mod tests {
         // Unbounded passes through; a below-floor cap is raised to the floor;
         // at-or-above is untouched (ADR 0002 DS-8).
         assert_eq!(floored_scratch_cap(None), None);
-        assert_eq!(floored_scratch_cap(Some(15 * 1024 * 1024)), Some(MIN_SCRATCH_CAP_BYTES));
+        assert_eq!(
+            floored_scratch_cap(Some(15 * 1024 * 1024)),
+            Some(MIN_SCRATCH_CAP_BYTES)
+        );
         assert_eq!(floored_scratch_cap(Some(0)), Some(MIN_SCRATCH_CAP_BYTES));
         assert_eq!(
             floored_scratch_cap(Some(MIN_SCRATCH_CAP_BYTES)),

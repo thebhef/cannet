@@ -125,7 +125,9 @@ fn config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub fn get_state(app: tauri::AppHandle) -> UiState {
-    config_dir(&app).map(|dir| read_state(&dir)).unwrap_or_default()
+    config_dir(&app)
+        .map(|dir| read_state(&dir))
+        .unwrap_or_default()
 }
 
 /// Persist the whole UI-state struct, replacing the file. Errors (with a
