@@ -3197,6 +3197,23 @@ button.trace-event-swatch {
   word-break: break-word;
 }
 
+.about-license-group > summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 0.25rem 0;
+}
+
+.about-license-dep {
+  margin: 0.25rem 0 0.25rem 1rem;
+}
+
+.about-license-dep > summary {
+  cursor: pointer;
+  padding: 0.15rem 0;
+  color: #cbd5e1;
+  font-size: 0.82rem;
+}
+
 /* Keyboard-shortcuts editor (ADR 0018) */
 .shortcuts-header {
   display: flex;

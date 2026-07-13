@@ -34,7 +34,7 @@
     ],
     "resources": {
       "sidecar-dist/cannet-python-can": "cannet-python-can",
-      "THIRD-PARTY-LICENSES": "THIRD-PARTY-LICENSES"
+      "licenses.json": "licenses.json"
     }
   }
 }

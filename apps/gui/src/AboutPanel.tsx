@@ -2,6 +2,19 @@ import { useEffect, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
 
+type DependencyLicense = {
+  name: string;
+  version: string;
+  spdx: string;
+  origin: string;
+  licenseText: string;
+};
+
+type ComponentLicenses = {
+  component: string;
+  dependencies: DependencyLicense[];
+};
+
 /**
  * About panel — a read-only singleton (one instance, fixed dockview id),
  * opened from the command palette. Shows the build version and the
@@ -9,12 +22,13 @@ import { invoke } from "@tauri-apps/api/core";
  *
  * The license block is the runtime "prominent notice" surface for the
  * redistributed frozen-sidecar dependencies (LGPL-3.0 §4a–c); the host
- * `include_str!`'s the committed `THIRD-PARTY-LICENSES` and hands it over
- * verbatim through `third_party_licenses` (ADR 0036).
+ * serves the build-generated, bundled `licenses.json` manifest through
+ * `third_party_licenses` (ADR 0036). A developer `cargo run` has no
+ * bundled manifest, so the section is empty there.
  */
 export function AboutPanel(_props: IDockviewPanelProps) {
   const [version, setVersion] = useState("");
-  const [licenses, setLicenses] = useState("");
+  const [components, setComponents] = useState<ComponentLicenses[]>([]);
 
   // The host stamps the binary with `git describe` at build time; the
   // About section is where an alpha build is identified (the native
@@ -24,8 +38,8 @@ export function AboutPanel(_props: IDockviewPanelProps) {
     invoke<string>("app_version")
       .then((v) => live && setVersion(v))
       .catch(() => {});
-    invoke<string>("third_party_licenses")
-      .then((t) => live && setLicenses(t))
+    invoke<ComponentLicenses[]>("third_party_licenses")
+      .then((c) => live && setComponents(c))
       .catch(() => {});
     return () => {
       live = false;
@@ -43,11 +57,27 @@ export function AboutPanel(_props: IDockviewPanelProps) {
       </fieldset>
       <fieldset className="settings-group">
         <legend>Third-party licenses</legend>
-        <div className="settings-desc">
-          Notices for the dependencies bundled with the sidecar
-          (python-can, grpcio, protobuf, uptime, CPython).
-        </div>
-        <pre className="about-licenses">{licenses || "loading…"}</pre>
+        {components.length === 0 ? (
+          <div className="settings-desc">
+            Bundled attribution is generated in packaged builds.
+          </div>
+        ) : (
+          components.map((component) => (
+            <details key={component.component} className="about-license-group">
+              <summary>
+                {component.component} ({component.dependencies.length})
+              </summary>
+              {component.dependencies.map((dep) => (
+                <details key={dep.name} className="about-license-dep">
+                  <summary>
+                    {dep.name} {dep.version} · {dep.spdx} · {dep.origin}
+                  </summary>
+                  <pre className="about-licenses">{dep.licenseText}</pre>
+                </details>
+              ))}
+            </details>
+          ))
+        )}
       </fieldset>
     </div>
   );

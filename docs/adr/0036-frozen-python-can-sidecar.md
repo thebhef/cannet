@@ -74,10 +74,14 @@ though the artifact happens to contain an interpreter.
   developer `uv` flow redistributed nothing). Because `python-can` is
   pure Python, the onedir layout satisfies §4's relink/replace
   condition directly — a user edits the collected `can/` modules in
-  place — so compliance is shipping the LGPL-3.0 + GPL-3.0 texts (and,
-  later, a runtime attribution surface). `grpcio`/`protobuf`/CPython
-  are permissive and only need their notices retained; PyInstaller's
-  GPL-with-exception terms cover the freeze tooling, not the artifact.
+  place — so compliance is a runtime attribution surface (the About
+  view) that reproduces each frozen dependency's own shipped license
+  text. That manifest is **generated at build time** from the frozen
+  deps' dist-info license files, **bundled as a resource**, and read at
+  runtime — no license text is committed to the repo. The bundled texts
+  satisfy §4a-c. `grpcio`/`protobuf`/CPython are permissive and only
+  need their notices retained; PyInstaller's GPL-with-exception terms
+  cover the freeze tooling, not the artifact.
   See
   [`servers/cannet-python-can/LICENSING.md`](../../servers/cannet-python-can/LICENSING.md).
 - **Per-OS build.** PyInstaller cannot cross-compile; this matches

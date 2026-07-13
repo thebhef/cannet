@@ -25,6 +25,7 @@ reflects both the build and the smoke result.
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import subprocess
 import sys
@@ -37,6 +38,10 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 SIDECAR_PROJECT = REPO_ROOT / "servers" / "cannet-python-can"
 ENTRY = SIDECAR_PROJECT / "pyinstaller_entry.py"
+# The bundled third-party attribution manifest and its generator. Every
+# build refreshes the manifest from the frozen deps' dist-info (ADR 0036).
+GEN_LICENSES = SCRIPT_DIR / "gen-licenses.py"
+LICENSES_JSON = REPO_ROOT / "apps" / "gui" / "src-tauri" / "licenses.json"
 DIST_DIR = REPO_ROOT / "apps" / "gui" / "src-tauri" / "sidecar-dist"
 # Scratch dirs for PyInstaller's intermediate work and spec file; kept
 # out of git (see .gitignore) and out of the shipped onedir.
@@ -109,6 +114,30 @@ def build() -> None:
     print(f"built: {LAUNCHER}", file=sys.stderr)
 
     _macos_finalize()
+    _generate_licenses()
+
+
+def _generate_licenses() -> None:
+    """Refresh the bundled attribution manifest from the frozen deps.
+
+    Run inside the sidecar's pinned uv env so the generator's
+    ``importlib.metadata`` sees exactly the frozen dependency set. Every
+    onedir build regenerates it (ADR 0036) — it is never committed.
+    """
+    cmd = [
+        "uv",
+        "run",
+        "--project",
+        str(SIDECAR_PROJECT),
+        "--frozen",
+        "python",
+        str(GEN_LICENSES),
+    ]
+    print(f"generating license manifest: {' '.join(cmd)}", file=sys.stderr)
+    subprocess.run(cmd, check=True)
+    manifest = json.loads(LICENSES_JSON.read_text(encoding="utf-8"))
+    deps = sum(len(c["dependencies"]) for c in manifest["components"])
+    print(f"license manifest: {LICENSES_JSON} ({deps} dependencies)", file=sys.stderr)
 
 
 def _macos_finalize() -> None:

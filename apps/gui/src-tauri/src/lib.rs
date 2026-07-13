@@ -51,13 +51,14 @@ mod interfaces;
 // panics/empty/default doc lints are suppressed here rather than
 // papered over the whole module with boilerplate.
 mod ipc;
+mod licenses;
 mod local_buses;
 mod notes;
-mod settings;
-mod state;
 mod project;
 mod rbs;
+mod settings;
 mod sidecar;
+mod state;
 // `signal_cache` and `signal_sampler` are `pub` so the
 // `cannet-perf-measurement` harness can drive the real per-signal
 // decimation pyramid (ADR 0002 DS-5) — the same `SignalCacheStore`
@@ -333,16 +334,6 @@ fn app_version() -> &'static str {
     build_version()
 }
 
-/// The bundled third-party license notices, served verbatim to the About
-/// view. This is the runtime "prominent notice" attribution surface for
-/// the redistributed frozen-sidecar dependencies (LGPL-3.0 §4a–c); the
-/// same committed `THIRD-PARTY-LICENSES` is also shipped as an installer
-/// resource (ADR 0036).
-#[tauri::command]
-fn third_party_licenses() -> &'static str {
-    include_str!("../THIRD-PARTY-LICENSES")
-}
-
 /// Record the frontend's current JS-heap size (bytes) for the health
 /// recorder's log line. The host can't read the `WebView`'s V8 heap, so
 /// the renderer pushes `performance.memory.usedJSHeapSize` here ~1 Hz;
@@ -554,7 +545,7 @@ pub fn run() {
             rbs::rbs_crc_algorithms,
             fetch_field_validity,
             app_version,
-            third_party_licenses,
+            licenses::third_party_licenses,
             diag::diag_capture_start,
             diag::diag_push,
             diag::diag_capture_finish,
@@ -1458,7 +1449,10 @@ fn clear_dbcs(app: AppHandle, state: State<'_, AppState>) {
 /// rebuild it when its inputs change).
 pub(crate) fn invalidate_derived_caches(state: &AppState) {
     state.signal_caches.clear();
-    *state.filter_index.lock().expect("filter index mutex poisoned") = None;
+    *state
+        .filter_index
+        .lock()
+        .expect("filter index mutex poisoned") = None;
     refresh_mux_extractor(state);
 }
 
@@ -1481,20 +1475,24 @@ fn refresh_mux_extractor(state: &AppState) {
         state.trace_store.set_mux_extractor(None);
         return;
     }
-    state.trace_store.set_mux_extractor(Some(Arc::new(move |f: &RawTraceFrame| {
-        let id = if f.extended {
-            CanId::extended(f.id).ok()?
-        } else {
-            CanId::standard(f.id).ok()?
-        };
-        snap.iter()
-            .filter(|(_, buses)| {
-                // Same per-bus scoping rule as `dbc_applies_to_frame`.
-                buses.is_empty()
-                    || f.bus_id.as_ref().is_some_and(|b| buses.iter().any(|x| x == b))
-            })
-            .find_map(|(db, _)| db.decode_mux_selector(id, f.payload.data()))
-    })));
+    state
+        .trace_store
+        .set_mux_extractor(Some(Arc::new(move |f: &RawTraceFrame| {
+            let id = if f.extended {
+                CanId::extended(f.id).ok()?
+            } else {
+                CanId::standard(f.id).ok()?
+            };
+            snap.iter()
+                .filter(|(_, buses)| {
+                    // Same per-bus scoping rule as `dbc_applies_to_frame`.
+                    buses.is_empty()
+                        || f.bus_id
+                            .as_ref()
+                            .is_some_and(|b| buses.iter().any(|x| x == b))
+                })
+                .find_map(|(db, _)| db.decode_mux_selector(id, f.payload.data()))
+        })));
 }
 
 /// Pull a `[start, end)` slice out of the trace store and decode each
@@ -1673,7 +1671,10 @@ fn bus_sort_key(bus_id: Option<&str>, names: &HashMap<String, String>) -> String
 /// Undecoded rows and the `Vector__XXX` "no sender" placeholder sort
 /// after any real ECU ascending, same convention as [`bus_sort_key`].
 fn ecu_sort_key(f: &TraceFrameRecord) -> &str {
-    f.decoded.as_ref().and_then(|d| d.transmitter.as_deref()).unwrap_or("~")
+    f.decoded
+        .as_ref()
+        .and_then(|d| d.transmitter.as_deref())
+        .unwrap_or("~")
 }
 
 /// The `kind` column's sort key — the frame-kind discriminant, matching
@@ -1701,9 +1702,8 @@ fn by_id_cmp(
         "rate" => a.rate.total_cmp(&b.rate),
         "idx" => fa.index.cmp(&fb.index),
         "time" => fa.timestamp_seconds.total_cmp(&fb.timestamp_seconds),
-        "bus" => {
-            bus_sort_key(fa.bus_id.as_deref(), names).cmp(&bus_sort_key(fb.bus_id.as_deref(), names))
-        }
+        "bus" => bus_sort_key(fa.bus_id.as_deref(), names)
+            .cmp(&bus_sort_key(fb.bus_id.as_deref(), names)),
         "dir" => fa.direction.cmp(fb.direction),
         "id" => fa.id.cmp(&fb.id),
         "kind" => kind_sort_key(&fa.kind).cmp(kind_sort_key(&fb.kind)),
@@ -1805,7 +1805,9 @@ async fn fetch_by_id_page(
     sort_by_id(&mut snaps, sort_key.as_deref(), sort_dir.as_deref(), &names);
 
     let count = u64::try_from(snaps.len()).unwrap_or(u64::MAX);
-    let off = usize::try_from(offset).unwrap_or(usize::MAX).min(snaps.len());
+    let off = usize::try_from(offset)
+        .unwrap_or(usize::MAX)
+        .min(snaps.len());
     let lim = usize::try_from(limit).unwrap_or(usize::MAX);
     let page: Vec<ByIdSnapshot> = snaps.into_iter().skip(off).take(lim).collect();
     RowPage {
@@ -1828,7 +1830,11 @@ async fn fetch_by_id_page(
 /// selection over its visible slice) — one decode path, one row shape,
 /// so the two surfaces cannot drift.
 #[tauri::command]
-#[allow(clippy::unused_async, clippy::too_many_arguments, clippy::needless_pass_by_value)]
+#[allow(
+    clippy::unused_async,
+    clippy::too_many_arguments,
+    clippy::needless_pass_by_value
+)]
 async fn fetch_signal_page(
     app: AppHandle,
     selection: SignalSelection,
@@ -1879,10 +1885,14 @@ fn fetch_signal_page_inner(
     // windowed queries run without holding the databases lock.
     let dbs: Vec<(Arc<Database>, Vec<String>)> = {
         let guard = state.databases.lock().expect("databases mutex poisoned");
-        guard.iter().map(|d| (d.db.clone(), d.buses.clone())).collect()
+        guard
+            .iter()
+            .map(|d| (d.db.clone(), d.buses.clone()))
+            .collect()
     };
     let mut all = signal_snapshot::scoped_descriptors(
-        dbs.iter().map(|(db, buses)| (db.as_ref(), buses.as_slice())),
+        dbs.iter()
+            .map(|(db, buses)| (db.as_ref(), buses.as_slice())),
         project_buses,
     );
     // The view's `sources` wiring bounds what exists for it: restricted
@@ -1897,7 +1907,9 @@ fn fetch_signal_page_inner(
     signal_snapshot::sort_rows(&mut rows, sort_key, sort_dir, &names);
 
     let count = u64::try_from(rows.len()).unwrap_or(u64::MAX);
-    let off = usize::try_from(offset).unwrap_or(usize::MAX).min(rows.len());
+    let off = usize::try_from(offset)
+        .unwrap_or(usize::MAX)
+        .min(rows.len());
     let lim = usize::try_from(limit).unwrap_or(usize::MAX);
     let page: Vec<SignalSnapshotRecord> = rows.into_iter().skip(off).take(lim).collect();
     Ok(RowPage {
@@ -1948,17 +1960,24 @@ fn extract_snapshot_cells(
     time_seconds: f64,
 ) {
     for &i in idxs {
-        let Some(sig) = decoded.signals.iter().find(|s| s.name == all[i].1.signal_name) else {
+        let Some(sig) = decoded
+            .signals
+            .iter()
+            .find(|s| s.name == all[i].1.signal_name)
+        else {
             continue;
         };
-        cells.insert(i, SnapshotCell {
-            value: sig.value,
-            raw: sig.raw_signed,
-            label: sig.label.map(str::to_string),
-            rate,
-            count,
-            time_seconds,
-        });
+        cells.insert(
+            i,
+            SnapshotCell {
+                value: sig.value,
+                raw: sig.raw_signed,
+                label: sig.label.map(str::to_string),
+                rate,
+                count,
+                time_seconds,
+            },
+        );
     }
 }
 
@@ -1973,7 +1992,9 @@ fn collect_signal_rows(
     let mut streams: HashMap<StreamKey, WantedSignals> = HashMap::new();
     for &i in selected {
         let (bus, d) = &all[i];
-        let w = streams.entry((bus.clone(), d.message_id, d.extended)).or_default();
+        let w = streams
+            .entry((bus.clone(), d.message_id, d.extended))
+            .or_default();
         match d.mux_selector {
             None => w.plain.push(i),
             Some(sel) => w.mux.entry(sel).or_default().push(i),
@@ -2028,7 +2049,9 @@ fn collect_signal_rows(
                 end,
             );
             for (sel, (_, frame)) in &latest {
-                let Some(decoded) = decode_snapshot_frame(dbs, frame) else { continue };
+                let Some(decoded) = decode_snapshot_frame(dbs, frame) else {
+                    continue;
+                };
                 let (rate, count) = state
                     .trace_store
                     .mux_stats(bus.as_deref(), *id, *extended, *sel)
@@ -2087,7 +2110,11 @@ fn decode_snapshot_frame<'a>(
     };
     dbs.iter()
         .filter(|(_, buses)| {
-            buses.is_empty() || frame.bus_id.as_ref().is_some_and(|b| buses.iter().any(|x| x == b))
+            buses.is_empty()
+                || frame
+                    .bus_id
+                    .as_ref()
+                    .is_some_and(|b| buses.iter().any(|x| x == b))
         })
         .find_map(|(db, _)| db.decode_raw(id, frame.payload.data()))
 }
@@ -2138,7 +2165,9 @@ fn windowed_filter_page(
         (count, page_pos, page_len, start_match)
     } else {
         // The `[offset, offset + limit)` slice within the window.
-        let off = usize::try_from(offset).unwrap_or(usize::MAX).min(count_usize);
+        let off = usize::try_from(offset)
+            .unwrap_or(usize::MAX)
+            .min(count_usize);
         let page_len = lim.min(count_usize - off);
         let page_pos = p_start + off;
         let start_match = u64::try_from(off).unwrap_or(u64::MAX);
@@ -2157,7 +2186,8 @@ fn materialize_filtered_rows(state: &AppState, page_idxs: &[usize]) -> Vec<Trace
         .into_iter()
         .map(|(i, frame)| {
             let index = u64::try_from(i).unwrap_or(u64::MAX);
-            let mut record = TraceFrameRecord::from_raw(index, &frame, decode_against(&dbs, &frame));
+            let mut record =
+                TraceFrameRecord::from_raw(index, &frame, decode_against(&dbs, &frame));
             record.violation = state.verifier.violation_at(index);
             record
         })
@@ -2391,7 +2421,10 @@ fn all_ids_tested(store: &TraceStore) -> filter::CandidateSet {
 /// `start_session` already wiped the raw store, the reopen manifest, and
 /// the prior identity / derived files; this writes the fresh identity.
 fn restamp_scratch_for_capture(state: &AppState) {
-    *state.filter_index.lock().expect("filter index mutex poisoned") = None;
+    *state
+        .filter_index
+        .lock()
+        .expect("filter index mutex poisoned") = None;
     let active = *state
         .active_project_id
         .lock()
@@ -2471,7 +2504,11 @@ fn restore_scratch_capture(app: AppHandle, state: State<'_, AppState>) -> Restor
     if let Some(restored) = state.notes.restore() {
         let _ = app.emit("notes-changed", restored);
     }
-    sys_info!(&app, "project", "restored {count} frames from prior capture");
+    sys_info!(
+        &app,
+        "project",
+        "restored {count} frames from prior capture"
+    );
     #[allow(clippy::cast_precision_loss)]
     RestoredCapture {
         count: u64::try_from(count).unwrap_or(u64::MAX),
@@ -2603,8 +2640,12 @@ async fn filtered_positions_at_ns(
     let active = guard.as_mut().expect("active filter index ensured");
     // The window start's match position is the local zero: an event's
     // window-local row is `position_of(its frame) - position_of(scan_start)`.
-    let base = i64::try_from(active.index.position_of(usize::try_from(scan_start).unwrap_or(usize::MAX)))
-        .unwrap_or(i64::MAX);
+    let base = i64::try_from(
+        active
+            .index
+            .position_of(usize::try_from(scan_start).unwrap_or(usize::MAX)),
+    )
+    .unwrap_or(i64::MAX);
     timestamps
         .into_iter()
         .map(|ts| {
@@ -4730,42 +4771,72 @@ mod tests {
     #[test]
     fn sort_by_id_orders_by_a_column_stable_and_no_op_for_none() {
         let names = HashMap::new();
-        let rows = [snap(0x200, 1, 0.0, None), snap(0x100, 0, 0.0, None), snap(0x100, 2, 0.0, None)];
+        let rows = [
+            snap(0x200, 1, 0.0, None),
+            snap(0x100, 0, 0.0, None),
+            snap(0x100, 2, 0.0, None),
+        ];
         // None key leaves the input order (the host default).
-        assert_eq!(sorted_ids(&rows, None, None, &names), vec![0x200, 0x100, 0x100]);
+        assert_eq!(
+            sorted_ids(&rows, None, None, &names),
+            vec![0x200, 0x100, 0x100]
+        );
         // Stable: the two 0x100 rows keep their input order (channels 0, 2).
         let mut v = rows.to_vec();
         sort_by_id(&mut v, Some("id"), Some("asc"), &names);
         assert_eq!(
-            v.iter().map(|r| (r.frame.id, r.frame.channel)).collect::<Vec<_>>(),
+            v.iter()
+                .map(|r| (r.frame.id, r.frame.channel))
+                .collect::<Vec<_>>(),
             vec![(0x100, 0), (0x100, 2), (0x200, 1)],
         );
-        assert_eq!(sorted_ids(&rows, Some("id"), Some("desc"), &names), vec![0x200, 0x100, 0x100]);
+        assert_eq!(
+            sorted_ids(&rows, Some("id"), Some("desc"), &names),
+            vec![0x200, 0x100, 0x100]
+        );
     }
 
     #[test]
     fn sort_by_id_orders_by_rate() {
         let names = HashMap::new();
-        let rows = [snap(0x100, 0, 5.0, None), snap(0x200, 0, 50.0, None), snap(0x300, 0, 0.5, None)];
-        assert_eq!(sorted_ids(&rows, Some("rate"), Some("asc"), &names), vec![0x300, 0x100, 0x200]);
-        assert_eq!(sorted_ids(&rows, Some("rate"), Some("desc"), &names), vec![0x200, 0x100, 0x300]);
+        let rows = [
+            snap(0x100, 0, 5.0, None),
+            snap(0x200, 0, 50.0, None),
+            snap(0x300, 0, 0.5, None),
+        ];
+        assert_eq!(
+            sorted_ids(&rows, Some("rate"), Some("asc"), &names),
+            vec![0x300, 0x100, 0x200]
+        );
+        assert_eq!(
+            sorted_ids(&rows, Some("rate"), Some("desc"), &names),
+            vec![0x200, 0x100, 0x300]
+        );
     }
 
     #[test]
     fn sort_by_id_orders_by_bus_name_unassigned_last() {
         // Sorts by the resolved bus *name*, with the unassigned bucket
         // after any real bus ascending (and before them descending).
-        let names: HashMap<String, String> =
-            [("p".to_string(), "Powertrain".to_string()), ("c".to_string(), "Chassis".to_string())]
-                .into_iter()
-                .collect();
+        let names: HashMap<String, String> = [
+            ("p".to_string(), "Powertrain".to_string()),
+            ("c".to_string(), "Chassis".to_string()),
+        ]
+        .into_iter()
+        .collect();
         let rows = [
             snap(0x100, 0, 0.0, Some("p")), // Powertrain
             snap(0x200, 0, 0.0, None),      // unassigned
             snap(0x300, 0, 0.0, Some("c")), // Chassis
         ];
-        assert_eq!(sorted_ids(&rows, Some("bus"), Some("asc"), &names), vec![0x300, 0x100, 0x200]);
-        assert_eq!(sorted_ids(&rows, Some("bus"), Some("desc"), &names), vec![0x200, 0x100, 0x300]);
+        assert_eq!(
+            sorted_ids(&rows, Some("bus"), Some("asc"), &names),
+            vec![0x300, 0x100, 0x200]
+        );
+        assert_eq!(
+            sorted_ids(&rows, Some("bus"), Some("desc"), &names),
+            vec![0x200, 0x100, 0x300]
+        );
     }
 
     #[test]
@@ -4865,9 +4936,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(page.count, 0); // fixture descriptors are unassigned-bus
-        let unrestricted =
-            fetch_signal_page_inner(&state, &sel, 0, u64::MAX, None, None, vec![], &[], None, 0, 100)
-                .unwrap();
+        let unrestricted = fetch_signal_page_inner(
+            &state,
+            &sel,
+            0,
+            u64::MAX,
+            None,
+            None,
+            vec![],
+            &[],
+            None,
+            0,
+            100,
+        )
+        .unwrap();
         assert_eq!(unrestricted.count, 4);
     }
 
@@ -4877,12 +4959,16 @@ mod tests {
         // frame would blank every mux group but the last one seen. Each
         // group must hold its own latest value at the same time.
         let state = mux_snapshot_state();
-        state.trace_store.append(modes_frame(1_000_000_000, 0, 0x1234, 5));
-        state.trace_store.append(modes_frame(2_000_000_000, 1, 0x5678, 9));
+        state
+            .trace_store
+            .append(modes_frame(1_000_000_000, 0, 0x1234, 5));
+        state
+            .trace_store
+            .append(modes_frame(2_000_000_000, 1, 0x5678, 9));
         let rows = fetch_all_signals(&state, u64::MAX);
         let by_name = |n: &str| rows.iter().find(|r| r.signal_name == n).unwrap();
         assert_eq!(rows.len(), 4); // Always, ModeA, ModeB, Mux — all present
-        // Both groups hold values simultaneously, each from *its* frame.
+                                   // Both groups hold values simultaneously, each from *its* frame.
         let mode_a = by_name("ModeA");
         assert_eq!(mode_a.value, Some(f64::from(0x1234u16)));
         assert_eq!(mode_a.count, Some(1));
@@ -4901,9 +4987,13 @@ mod tests {
     #[test]
     fn fetch_signal_page_bounds_mux_groups_to_the_window() {
         let state = mux_snapshot_state();
-        state.trace_store.append(modes_frame(1_000_000_000, 0, 0x1234, 5)); // idx 0
-        state.trace_store.append(modes_frame(2_000_000_000, 1, 0x5678, 9)); // idx 1
-        // Window [0, 1): only the selector-0 frame is visible.
+        state
+            .trace_store
+            .append(modes_frame(1_000_000_000, 0, 0x1234, 5)); // idx 0
+        state
+            .trace_store
+            .append(modes_frame(2_000_000_000, 1, 0x5678, 9)); // idx 1
+                                                               // Window [0, 1): only the selector-0 frame is visible.
         let rows = fetch_all_signals(&state, 1);
         let by_name = |n: &str| rows.iter().find(|r| r.signal_name == n).unwrap();
         assert_eq!(rows.len(), 4); // blank rows stay present
@@ -4927,16 +5017,29 @@ mod tests {
     #[test]
     fn fetch_signal_page_pages_and_sorts_host_side() {
         let state = mux_snapshot_state();
-        state.trace_store.append(modes_frame(1_000_000_000, 0, 40, 5));
+        state
+            .trace_store
+            .append(modes_frame(1_000_000_000, 0, 40, 5));
         let sel = SignalSelection {
             keys: vec![],
             patterns: vec!["^/Zonal/Modes/".to_string()],
         };
         // Sort by value ascending: Mux(0), Always(5), ModeA(40), then
         // blank ModeB last; page [1, 3) of that order.
-        let page =
-            fetch_signal_page_inner(&state, &sel, 0, u64::MAX, Some("value"), Some("asc"), vec![], &[], None, 1, 2)
-                .unwrap();
+        let page = fetch_signal_page_inner(
+            &state,
+            &sel,
+            0,
+            u64::MAX,
+            Some("value"),
+            Some("asc"),
+            vec![],
+            &[],
+            None,
+            1,
+            2,
+        )
+        .unwrap();
         assert_eq!(page.count, 4);
         assert_eq!(page.start, 1);
         let names: Vec<&str> = page.rows.iter().map(|r| r.signal_name.as_str()).collect();
@@ -4946,7 +5049,11 @@ mod tests {
     #[test]
     fn decode_against_carries_the_transmitter() {
         let db = Database::parse(&tiny_dbc(0x100, "M", "S")).unwrap();
-        let dbs = vec![LoadedDbc { path: "t.dbc".into(), db: Arc::new(db), buses: Vec::new() }];
+        let dbs = vec![LoadedDbc {
+            path: "t.dbc".into(),
+            db: Arc::new(db),
+            buses: Vec::new(),
+        }];
         let decoded = decode_against(&dbs, &frame_with_data(0x100)).unwrap();
         assert_eq!(decoded.transmitter.as_deref(), Some("ECU"));
     }
@@ -5033,9 +5140,17 @@ mod tests {
             state.trace_store.append(f);
         }
         let slice = |dbs: &[&Database]| {
-            state
-                .signal_caches
-                .slice(None, 256, false, "S", 0.0, 100.0, 0, &state.trace_store, dbs)
+            state.signal_caches.slice(
+                None,
+                256,
+                false,
+                "S",
+                0.0,
+                100.0,
+                0,
+                &state.trace_store,
+                dbs,
+            )
         };
         // Serve with NO DBC loaded: the cache catches up empty and pins its
         // decode cursor at the tip.
@@ -5059,7 +5174,11 @@ mod tests {
             "filter index reset on DBC change"
         );
         // The rebuilt cache now decodes the whole series.
-        assert_eq!(slice(&[&db]).len(), 10, "DBC now back-fills the full series");
+        assert_eq!(
+            slice(&[&db]).len(),
+            10,
+            "DBC now back-fills the full series"
+        );
         std::fs::remove_dir_all(&fi_dir).ok();
     }
 

@@ -588,6 +588,15 @@ next pass on this surface can address them as one piece.
 
 ### Packaging and naming
 
+- `[docs]` **Attribute the GUI's own dependencies in the license
+  manifest.** `scripts/gen-licenses.py` populates only the `python-can
+  sidecar` component (ADR 0036). Add the GUI's Rust host crates (via
+  `cargo-about`) and the frontend npm packages (via `pnpm licenses list
+  --json`) as additional components in the same manifest, and add the
+  GPL-3.0 supplement to python-can's LGPL notice. Why: the About view is
+  the runtime attribution surface, and today it under-attributes what
+  cannet actually redistributes.
+
 - `[feat]` **Code signing, notarization, and auto-update.** Deferred
   from the distribution work (former Task 26) so the alpha isn't
   blocked on procurement: macOS needs an Apple Developer Program

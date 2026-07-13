@@ -9,7 +9,20 @@ vi.mock("@tauri-apps/api/core", () => ({
       case "app_version":
         return "v0.1.0-3-gabc1234";
       case "third_party_licenses":
-        return "python-can — LGPL-3.0-only\nFAKE LICENSE TEXT BODY";
+        return [
+          {
+            component: "python-can sidecar",
+            dependencies: [
+              {
+                name: "uptime",
+                version: "3.0.1",
+                spdx: "BSD-2-Clause",
+                origin: "python",
+                licenseText: "FAKE LICENSE TEXT BODY",
+              },
+            ],
+          },
+        ];
       default:
         return null;
     }
@@ -29,11 +42,16 @@ describe("AboutPanel", () => {
     expect(screen.getByText("About")).toBeInTheDocument();
   });
 
-  it("renders the third-party licenses text", async () => {
+  it("renders the component and its dependency license text", async () => {
     render(<AboutPanel {...({} as IDockviewPanelProps)} />);
+    // Component summary carries the name + dependency count.
     expect(
-      await screen.findByText(/FAKE LICENSE TEXT BODY/),
+      await screen.findByText(/python-can sidecar \(1\)/),
     ).toBeInTheDocument();
     expect(screen.getByText("Third-party licenses")).toBeInTheDocument();
+    // The dep summary and its verbatim text are in the DOM regardless of
+    // whether the <details> are open.
+    expect(screen.getByText(/uptime 3\.0\.1/)).toBeInTheDocument();
+    expect(screen.getByText(/FAKE LICENSE TEXT BODY/)).toBeInTheDocument();
   });
 });
