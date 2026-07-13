@@ -12,6 +12,7 @@ import {
 const ctx = (over: Partial<CommandContext> = {}): CommandContext => ({
   focusedPanelKind: null,
   hasProjectOpen: false,
+  hasMaximizedView: false,
   ...over,
 });
 
@@ -46,6 +47,15 @@ describe("the shipped command set", () => {
     expect(available(ctx({ focusedPanelKind: "plot" }))).toContain("plot.fitXAxis");
     expect(available(ctx({ focusedPanelKind: "trace" }))).not.toContain("plot.fitXAxis");
     expect(available(ctx())).not.toContain("plot.followLive.enable");
+  });
+
+  it("exit-full-screen (Escape) is gated to a maximized view", () => {
+    const available = (c: CommandContext) =>
+      commandsAvailableIn(COMMANDS, c).map((s) => s.id);
+    expect(available(ctx({ hasMaximizedView: true }))).toContain("view.exitFullscreen");
+    expect(available(ctx())).not.toContain("view.exitFullscreen");
+    // The toggle itself is always available.
+    expect(available(ctx())).toContain("view.fullscreen");
   });
 });
 

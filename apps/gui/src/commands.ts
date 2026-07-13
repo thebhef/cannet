@@ -28,6 +28,10 @@ export type FocusedPanelKind =
 export interface CommandContext {
   focusedPanelKind: FocusedPanelKind | null;
   hasProjectOpen: boolean;
+  /// A view is currently maximized full-screen (dockview
+  /// maximized-group). Gates the `Escape` binding so the key is only
+  /// claimed while there's a full-screen state to exit.
+  hasMaximizedView: boolean;
 }
 
 /// One registered command. `run` lives separately (the provider maps
@@ -44,6 +48,9 @@ export interface CommandSpec {
 export interface BindingSpec {
   chord: string;
   commandId: string;
+  /// Suppressed while a text-entry surface has focus (see
+  /// `ParsedBinding.skipEditable`).
+  skipEditable?: boolean;
 }
 
 const plotFocused = (ctx: CommandContext) => ctx.focusedPanelKind === "plot";
@@ -85,6 +92,20 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "app.exit", label: "Exit", category: "App" },
   { id: "palette.show", label: "Show command palette", category: "Palette" },
   { id: "goto.view", label: "Go to view…", category: "Palette" },
+  { id: "view.back", label: "Previous view", category: "View" },
+  { id: "view.forward", label: "Next view", category: "View" },
+  { id: "view.close", label: "Close view", category: "View" },
+  { id: "tab.next", label: "Next tab in group", category: "View" },
+  { id: "tab.previous", label: "Previous tab in group", category: "View" },
+  { id: "view.undo", label: "Undo view change", category: "View" },
+  { id: "view.redo", label: "Redo view change", category: "View" },
+  { id: "view.fullscreen", label: "Toggle full-screen view", category: "View" },
+  {
+    id: "view.exitFullscreen",
+    label: "Exit full-screen view",
+    category: "View",
+    context: (ctx) => ctx.hasMaximizedView,
+  },
   { id: "plot.fitXAxis", label: "Plot: fit x axis", category: "Plot", context: plotFocused },
   {
     id: "plot.followLive.enable",
@@ -101,12 +122,32 @@ export const BINDINGS: readonly BindingSpec[] = [
   { chord: "Mod+P", commandId: "goto.view" },
   { chord: "f", commandId: "plot.fitXAxis" },
   { chord: "l", commandId: "plot.followLive.enable" },
+  // View navigation and layout undo/redo. The browser back/forward
+  // chords skip editables (Alt+arrow is word-nav in mac text fields),
+  // and undo/redo skips them so a focused input keeps its native
+  // text undo. `view.redo` deliberately carries both conventional
+  // chords.
+  { chord: "Alt+ArrowLeft", commandId: "view.back", skipEditable: true },
+  { chord: "Alt+ArrowRight", commandId: "view.forward", skipEditable: true },
+  { chord: "Mod+w", commandId: "view.close" },
+  { chord: "Ctrl+Tab", commandId: "tab.next" },
+  { chord: "Ctrl+Shift+Tab", commandId: "tab.previous" },
+  { chord: "Mod+z", commandId: "view.undo", skipEditable: true },
+  { chord: "Mod+y", commandId: "view.redo", skipEditable: true },
+  { chord: "Mod+Shift+Z", commandId: "view.redo", skipEditable: true },
+  { chord: "Mod+Enter", commandId: "view.fullscreen" },
+  // Plain Escape, but context-gated to `hasMaximizedView` — while
+  // nothing is maximized the key passes through untouched (modals,
+  // in-panel handlers), and the palette's own input suppresses
+  // plain-key bindings anyway.
+  { chord: "Escape", commandId: "view.exitFullscreen" },
 ];
 
 /// The binding map, parsed once for the dispatcher.
 export const PARSED_BINDINGS: readonly ParsedBinding[] = BINDINGS.map((b) => ({
   chord: parseChord(b.chord),
   commandId: b.commandId,
+  skipEditable: b.skipEditable,
 }));
 
 /// The commands whose context predicate passes in `ctx` (the palette
@@ -137,7 +178,9 @@ function enumerateContexts(): CommandContext[] {
   const out: CommandContext[] = [];
   for (const focusedPanelKind of kinds) {
     for (const hasProjectOpen of [false, true]) {
-      out.push({ focusedPanelKind, hasProjectOpen });
+      for (const hasMaximizedView of [false, true]) {
+        out.push({ focusedPanelKind, hasProjectOpen, hasMaximizedView });
+      }
     }
   }
   return out;
@@ -162,9 +205,12 @@ export function findBindingConflicts(
       const [shorter, longer] = a.steps.length <= b.steps.length ? [a, b] : [b, a];
       const prefixes = shorter.steps.every((step, k) => {
         const other = longer.steps[k];
+        // `Mod` and `Ctrl` are the same physical key on non-mac, so
+        // `Mod+X` vs `Ctrl+X` is a collision there — compare the
+        // merged control-ish set, which also covers exact equality.
         return (
           step.key === other.key &&
-          step.mod === other.mod &&
+          (step.mod || step.ctrl) === (other.mod || other.ctrl) &&
           step.shift === other.shift &&
           step.alt === other.alt
         );

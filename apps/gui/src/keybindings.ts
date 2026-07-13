@@ -5,7 +5,10 @@
 // Chord syntax (code-declared, see `commands.ts`):
 // - a bare key: `"f"`
 // - modifiers joined by `+`: `"Mod+Shift+P"` — `Mod` is Cmd on mac
-//   and Ctrl elsewhere; only `Mod` / `Shift` / `Alt` are accepted
+//   and Ctrl elsewhere; `Ctrl` is the literal Control key on every
+//   platform (for chords like `Ctrl+Tab` where the mac convention is
+//   Control, not Cmd); only `Mod` / `Ctrl` / `Shift` / `Alt` are
+//   accepted
 // - sequence steps separated by spaces: `"g r"`
 
 /// One step of a chord, normalised (lowercase key).
@@ -13,6 +16,8 @@ export interface ChordStep {
   key: string;
   /// Platform primary modifier: Cmd on mac, Ctrl elsewhere.
   mod: boolean;
+  /// The literal Control key, on every platform.
+  ctrl: boolean;
   shift: boolean;
   alt: boolean;
 }
@@ -39,9 +44,16 @@ export function parseChord(chord: string): KeyChord {
     const tokens = step.split("+");
     const key = tokens[tokens.length - 1];
     if (key.length === 0) throw new Error(`malformed chord step: ${JSON.stringify(step)}`);
-    const out: ChordStep = { key: key.toLowerCase(), mod: false, shift: false, alt: false };
+    const out: ChordStep = {
+      key: key.toLowerCase(),
+      mod: false,
+      ctrl: false,
+      shift: false,
+      alt: false,
+    };
     for (const token of tokens.slice(0, -1)) {
       if (token === "Mod") out.mod = true;
+      else if (token === "Ctrl") out.ctrl = true;
       else if (token === "Shift") out.shift = true;
       else if (token === "Alt") out.alt = true;
       else throw new Error(`unknown modifier ${JSON.stringify(token)} in ${JSON.stringify(step)}`);
@@ -53,31 +65,45 @@ export function parseChord(chord: string): KeyChord {
 /// Does a keystroke match one chord step? Modifiers must match
 /// exactly — `f` does not fire on `Ctrl+f`, and a `Mod` binding only
 /// fires on the platform's primary modifier (the other one pressed
-/// disqualifies the stroke).
+/// disqualifies the stroke). On non-mac, `Mod` and `Ctrl` are the
+/// same physical key, so either token accepts a Control stroke there.
 export function strokeMatchesStep(stroke: KeyStroke, step: ChordStep, isMac: boolean): boolean {
-  const primary = isMac ? stroke.meta : stroke.ctrl;
-  const secondary = isMac ? stroke.ctrl : stroke.meta;
-  return (
-    stroke.key.toLowerCase() === step.key &&
-    primary === step.mod &&
-    secondary === false &&
-    stroke.shift === step.shift &&
-    stroke.alt === step.alt
-  );
+  if (stroke.key.toLowerCase() !== step.key) return false;
+  if (stroke.shift !== step.shift || stroke.alt !== step.alt) return false;
+  if (isMac) {
+    return stroke.meta === step.mod && stroke.ctrl === step.ctrl;
+  }
+  return stroke.ctrl === (step.mod || step.ctrl) && stroke.meta === false;
 }
+
+/// Display names for keys whose `KeyboardEvent.key` value reads
+/// poorly in a hint (`arrowleft`, `tab`, …).
+const KEY_DISPLAY: Record<string, string> = {
+  arrowleft: "←",
+  arrowright: "→",
+  arrowup: "↑",
+  arrowdown: "↓",
+  tab: "Tab",
+  enter: "Enter",
+  escape: "Esc",
+  " ": "Space",
+};
 
 /// Render a chord for display (palette hints): `⇧⌘P` on mac,
 /// `Ctrl+Shift+P` elsewhere; sequence steps joined by a space.
 export function formatChord(chord: KeyChord, isMac: boolean): string {
   return chord
     .map((step) => {
-      const modified = step.mod || step.shift || step.alt;
-      const key = step.key.length === 1 && modified ? step.key.toUpperCase() : step.key;
+      const modified = step.mod || step.ctrl || step.shift || step.alt;
+      const key =
+        KEY_DISPLAY[step.key] ??
+        (step.key.length === 1 && modified ? step.key.toUpperCase() : step.key);
       if (isMac) {
-        return `${step.alt ? "⌥" : ""}${step.shift ? "⇧" : ""}${step.mod ? "⌘" : ""}${key}`;
+        // Apple modifier order: Control, Option, Shift, Command.
+        return `${step.ctrl ? "⌃" : ""}${step.alt ? "⌥" : ""}${step.shift ? "⇧" : ""}${step.mod ? "⌘" : ""}${key}`;
       }
       const parts: string[] = [];
-      if (step.mod) parts.push("Ctrl");
+      if (step.mod || step.ctrl) parts.push("Ctrl");
       if (step.shift) parts.push("Shift");
       if (step.alt) parts.push("Alt");
       parts.push(key);
@@ -90,6 +116,10 @@ export function formatChord(chord: KeyChord, isMac: boolean): string {
 export interface ParsedBinding {
   chord: KeyChord;
   commandId: string;
+  /// Never fire while a text-entry surface has focus — for chords
+  /// the platform's editing surfaces own (`Mod+Z` undo, `Alt+←`
+  /// word-nav on mac). Modifier chords otherwise fire in editables.
+  skipEditable?: boolean;
 }
 
 export interface DispatchResult {
@@ -117,8 +147,9 @@ export function dispatchStroke(
   if (opts.inEditable && !stroke.ctrl && !stroke.meta && !stroke.alt) {
     return { pending: [], commandId: null, handled: false };
   }
+  const usable = opts.inEditable ? bindings.filter((b) => !b.skipEditable) : bindings;
   const strokes = [...pending, stroke];
-  const matches = bindings.filter(
+  const matches = usable.filter(
     (b) =>
       b.chord.length >= strokes.length &&
       strokes.every((s, i) => strokeMatchesStep(s, b.chord[i], opts.isMac)),

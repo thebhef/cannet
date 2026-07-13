@@ -63,6 +63,29 @@ but the chord syntax only knows `Mod`/`Shift`/`Alt`, where `Mod` is Cmd
 on mac — the parser needs a literal-`Ctrl` token (or equivalent) for
 this binding to be expressible on mac.
 
+### 5. Middle-click closes a tab
+
+Middle-clicking a panel tab closes that view. Dockview's default tab
+component implements the close (on middle-button pointer-up), but the
+browser's middle-button autoscroll is `mousedown`'s default action
+and engages first — the app cancels the default for presses on
+`.dv-tab` elements only, so the close wins and autoscroll keeps its
+default everywhere else. A custom tab component, if one ever lands,
+must preserve the close behaviour.
+
+### 6. Full-screen view toggle
+
+- **Toggle full-screen view** — `Mod+Enter` maximizes the focused
+  view (dockview's maximized-group), or exits if one is maximized.
+- **`Escape` exits full screen**, returning to the previous layout.
+  The Escape binding is context-gated (`hasMaximizedView`) so it
+  claims the key only while a view is maximized.
+- **Full-screen state is not persisted.** Dockview serializes the
+  maximized view's location into `toJSON` (`grid.maximizedNode`);
+  strip it before the layout reaches the host workspace state or a
+  saved project, and keep it out of the undo history's structural
+  compare so maximizing is never an undo step.
+
 ## Design questions
 
 - **Arrow keys vs letters for back/forward.** Default assumption is
@@ -86,6 +109,10 @@ this binding to be expressible on mac.
   close path (confirm modal, clean shutdown) is unaffected.
 - `Ctrl+Tab` / `Ctrl+Shift+Tab` cycle within the focused tab group,
   wrapping, on all platforms.
+- Middle-clicking a tab closes that view.
+- `Mod+Enter` toggles the focused view full-screen; `Escape` exits;
+  neither the saved workspace layout, a saved project, nor the undo
+  history ever carries the maximized state.
 - All new actions are palette-visible commands with code-declared
   bindings; the boot-time binding-conflict assertion still passes.
 - Task 24's prose no longer carries the undo/redo item.

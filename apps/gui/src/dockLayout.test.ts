@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import type { SerializedDockview } from "dockview";
+
 import {
   DBC_PANEL_ID,
   PROJECT_GRAPH_PANEL_ID,
@@ -7,6 +9,7 @@ import {
   SYSTEM_MESSAGES_PANEL_ID,
   elementPanelComponent,
   panelKindForFocus,
+  stripMaximizedNode,
   validateLayout,
 } from "./dockLayout";
 
@@ -27,6 +30,26 @@ describe("validateLayout", () => {
   it("returns the value when it has the dockview layout shape", () => {
     const layout = { grid: { root: {}, width: 800, height: 600 }, panels: {} };
     expect(validateLayout(layout)).toEqual(layout);
+  });
+});
+
+describe("stripMaximizedNode", () => {
+  const base = {
+    grid: { root: {}, width: 800, height: 600, orientation: "HORIZONTAL" },
+    panels: { p1: { id: "p1" } },
+    activeGroup: "g1",
+  } as unknown as SerializedDockview;
+
+  it("drops grid.maximizedNode, leaving the rest untouched", () => {
+    const maximized = {
+      ...base,
+      grid: { ...base.grid, maximizedNode: { location: [0] } },
+    } as SerializedDockview;
+    expect(stripMaximizedNode(maximized)).toEqual(base);
+  });
+
+  it("returns a layout without one unchanged", () => {
+    expect(stripMaximizedNode(base)).toBe(base);
   });
 });
 

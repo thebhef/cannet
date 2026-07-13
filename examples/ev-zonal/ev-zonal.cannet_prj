@@ -9,34 +9,19 @@
       "root": {
         "data": [
           {
-            "data": [
-              {
-                "data": {
-                  "activeView": "project",
-                  "id": "1",
-                  "views": [
-                    "project"
-                  ]
-                },
-                "size": 1020,
-                "type": "leaf"
-              },
-              {
-                "data": {
-                  "activeView": "dbc",
-                  "id": "2",
-                  "views": [
-                    "dbc",
-                    "rbs-vehicle",
-                    "system-messages"
-                  ]
-                },
-                "size": 1020,
-                "type": "leaf"
-              }
-            ],
+            "data": {
+              "activeView": "project",
+              "id": "2",
+              "views": [
+                "dbc",
+                "rbs-vehicle",
+                "system-messages",
+                "events",
+                "project"
+              ]
+            },
             "size": 659,
-            "type": "branch"
+            "type": "leaf"
           },
           {
             "data": [
@@ -47,11 +32,21 @@
                       "activeView": "trace-byid-pack",
                       "id": "4",
                       "views": [
-                        "trace-byid-pack",
+                        "trace-byid-pack"
+                      ]
+                    },
+                    "size": 597,
+                    "type": "leaf"
+                  },
+                  {
+                    "data": {
+                      "activeView": "trace-byid-zonal",
+                      "id": "1",
+                      "views": [
                         "trace-byid-zonal"
                       ]
                     },
-                    "size": 895,
+                    "size": 597,
                     "type": "leaf"
                   },
                   {
@@ -62,33 +57,23 @@
                         "trace-chrono"
                       ]
                     },
-                    "size": 896,
+                    "size": 597,
                     "type": "leaf"
                   }
                 ],
-                "size": 680,
+                "size": 1020,
                 "type": "branch"
               },
               {
                 "data": {
-                  "activeView": "plot-zonal",
+                  "activeView": "plot-pack",
                   "id": "5",
                   "views": [
-                    "plot-zonal"
-                  ]
-                },
-                "size": 680,
-                "type": "leaf"
-              },
-              {
-                "data": {
-                  "activeView": "plot-pack",
-                  "id": "g-plots",
-                  "views": [
+                    "plot-zonal",
                     "plot-pack"
                   ]
                 },
-                "size": 680,
+                "size": 1020,
                 "type": "leaf"
               }
             ],
@@ -117,6 +102,11 @@
           "showDetails": false
         },
         "title": "DBC"
+      },
+      "events": {
+        "contentComponent": "events",
+        "id": "events",
+        "title": "Events"
       },
       "plot-pack": {
         "contentComponent": "plot",
