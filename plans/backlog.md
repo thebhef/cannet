@@ -608,13 +608,6 @@ next pass on this surface can address them as one piece.
   a user who swaps in a modified sidecar / `python-can` can point cannet
   straight at it instead of editing files inside the frozen onedir.
 
-- `[docs]` **Runtime "about" third-party attribution surface.** The
-  frozen sidecar redistributes `python-can` (LGPL-3.0), `grpcio`,
-  `protobuf`, and CPython; Task 31 ships their notices as a
-  `THIRD-PARTY-LICENSES` file in the installer. Add an in-app about-box
-  (or equivalent) that also surfaces this attribution, completing the
-  LGPL §4a–c "prominent notice" side. See LICENSING.md § `python-can`.
-
 - `[naming]` `sidecar.rs` internal identifiers `LaunchPath::BundledUv`
   and `bundled_uv_path()` predate the "fetched, not bundled" decision
   and should be renamed (e.g. `LocalUv` / `local_uv_path`) for

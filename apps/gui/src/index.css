@@ -3180,6 +3180,22 @@ button.trace-event-swatch {
   color: #94a3b8;
   font-size: 0.78rem;
 }
+/* About panel: the bundled third-party license text (~100 KB) scrolls
+   within its own region so it never grows the panel or the body. */
+.about-licenses {
+  max-height: 60vh;
+  overflow: auto;
+  margin: 0.5rem 0 0;
+  padding: 0.5rem;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 3px;
+  color: #cbd5e1;
+  font-family: ui-monospace, monospace;
+  font-size: 0.72rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 
 /* Keyboard-shortcuts editor (ADR 0018) */
 .shortcuts-header {

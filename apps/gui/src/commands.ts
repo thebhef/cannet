@@ -24,6 +24,7 @@ export type FocusedPanelKind =
   | "system-messages"
   | "dbc"
   | "settings"
+  | "about"
   | "events"
   | "shortcuts";
 
@@ -94,6 +95,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "panel.show.projectGraph", label: "Show project graph", category: "Panels" },
   { id: "panel.show.dbc", label: "Show DBC panel", category: "Panels" },
   { id: "panel.show.settings", label: "Show settings", category: "Panels" },
+  { id: "panel.show.about", label: "Show about", category: "Panels" },
   { id: "panel.show.events", label: "Show events", category: "Panels" },
   { id: "panel.show.shortcuts", label: "Show keyboard shortcuts", category: "Panels" },
   { id: "panel.rename", label: "Rename panel…", category: "Panels" },
@@ -251,6 +253,7 @@ function enumerateContexts(): CommandContext[] {
     "system-messages",
     "dbc",
     "settings",
+    "about",
     "events",
     "shortcuts",
   ];

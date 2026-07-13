@@ -327,11 +327,20 @@ fn build_version() -> &'static str {
     }
 }
 
-/// Report the running build's version for display in the settings
-/// panel's About section.
+/// Report the running build's version for display in the About view.
 #[tauri::command]
 fn app_version() -> &'static str {
     build_version()
+}
+
+/// The bundled third-party license notices, served verbatim to the About
+/// view. This is the runtime "prominent notice" attribution surface for
+/// the redistributed frozen-sidecar dependencies (LGPL-3.0 §4a–c); the
+/// same committed `THIRD-PARTY-LICENSES` is also shipped as an installer
+/// resource (ADR 0036).
+#[tauri::command]
+fn third_party_licenses() -> &'static str {
+    include_str!("../THIRD-PARTY-LICENSES")
 }
 
 /// Record the frontend's current JS-heap size (bytes) for the health
@@ -545,6 +554,7 @@ pub fn run() {
             rbs::rbs_crc_algorithms,
             fetch_field_validity,
             app_version,
+            third_party_licenses,
             diag::diag_capture_start,
             diag::diag_push,
             diag::diag_capture_finish,
