@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { DockviewDefaultTab, DockviewReact, themeAbyss } from "dockview";
@@ -53,6 +53,11 @@ import { useTransientStatus } from "./useTransientStatus";
 import { NotesContext, type NotesContextValue } from "./notesContext";
 import type { Note } from "./notes";
 import { sortNotesChronologically } from "./notes";
+import { GOTO_EVENT, gotoEventItems } from "./gotoEvent";
+import { elementViewEntries } from "./gotoViews";
+import { ShortcutsPanel } from "./ShortcutsPanel";
+import { KeybindingsContext, type KeybindingsController } from "./keybindingsContext";
+import { loadSettings, saveSettings } from "./hostSettings";
 import { recordRecentBlf, forgetRecentBlf } from "./recentBlfs";
 import {
   hostState,
@@ -101,10 +106,13 @@ import {
   SETTINGS_PANEL_ID,
   EVENTS_PANEL_COMPONENT,
   EVENTS_PANEL_ID,
+  SHORTCUTS_PANEL_COMPONENT,
+  SHORTCUTS_PANEL_ID,
   SYSTEM_MESSAGES_PANEL_COMPONENT,
   SYSTEM_MESSAGES_PANEL_ID,
   TRACE_PANEL_COMPONENT,
   TRANSMIT_PANEL_COMPONENT,
+  elementPanelComponent,
   isTabMiddlePress,
   panelKindForFocus,
   stripMaximizedNode,
@@ -112,8 +120,10 @@ import {
 } from "./dockLayout";
 import {
   COMMANDS,
-  PARSED_BINDINGS,
   commandsAvailableIn,
+  parseBindings,
+  resolveBindings,
+  type BindingSpec,
   type CommandContext,
 } from "./commands";
 import {
@@ -199,6 +209,7 @@ const DOCK_COMPONENTS = {
   [DBC_PANEL_COMPONENT]: DbcPanel,
   [SETTINGS_PANEL_COMPONENT]: SettingsPanel,
   [EVENTS_PANEL_COMPONENT]: EventsPanel,
+  [SHORTCUTS_PANEL_COMPONENT]: ShortcutsPanel,
 };
 
 export function App() {
@@ -550,9 +561,16 @@ export function App() {
       : null;
     return panelKindForFocus(activePanel.id, elementKind);
   }, [activePanel, registry]);
-  // Which palette is open: the command palette (Mod+Shift+P) or
-  // go-to-view (Mod+P).
-  const [openPalette, setOpenPalette] = useState<"commands" | "goto" | null>(null);
+  // Which palette is open: the command palette (Mod+Shift+P),
+  // go-to-view (Mod+P), or go-to-event.
+  const [openPalette, setOpenPalette] = useState<"commands" | "goto" | "gotoEvent" | null>(
+    null,
+  );
+  // User keybinding customisation (ADR 0018): `null` = the built-in
+  // defaults are in effect. Loaded from `settings.json` on mount and
+  // persisted on each edit from the shortcuts panel. The effective,
+  // sanitised binding set the dispatcher runs is derived from it.
+  const [userBindings, setUserBindings] = useState<BindingSpec[] | null>(null);
   // The last few commands run (MRU, capped — see recentCommands.ts);
   // the command palette floats them to the top, VS Code-style.
   const [recentCommands, setRecentCommands] = useState<string[]>(
@@ -1856,6 +1874,18 @@ export function App() {
     [showSingletonPanel],
   );
 
+  // Keyboard-shortcuts editor — singleton, app-global (ADR 0018). Opened
+  // from the command palette; lists and rebinds every command.
+  const showShortcutsPanel = useCallback(
+    () =>
+      showSingletonPanel({
+        id: SHORTCUTS_PANEL_ID,
+        component: SHORTCUTS_PANEL_COMPONENT,
+        title: "Keyboard shortcuts",
+      }),
+    [showSingletonPanel],
+  );
+
   // Timeline-events view — singleton, app-global (ADR 0035). Opened from
   // the command palette; renders the host notes + derived markers.
   const showEventsPanel = useCallback(
@@ -2019,6 +2049,7 @@ export function App() {
     "connection.connect": () => void handleConnect(),
     "connection.disconnect": () => void handleDisconnect(),
     "capture.clear": () => void handleClear(),
+    "capture.save": () => void handleSaveCapture(),
     "panel.add.trace": addTracePanel,
     "panel.add.plot": addPlotPanel,
     "panel.add.transmit": addTransmitPanel,
@@ -2026,16 +2057,19 @@ export function App() {
     "panel.add.colormap": addColorMapPanel,
     "project.saveAll": () => void handleSaveAllRef.current(),
     "rbs.killSwitch": toggleRbsKillSwitch,
+    "panel.show.project": showProjectPanel,
     "panel.show.systemMessages": showSystemMessagesPanel,
     "panel.show.projectGraph": showProjectGraphPanel,
     "panel.show.dbc": showDbcPanel,
     "panel.show.settings": showSettingsPanel,
     "panel.show.events": showEventsPanel,
+    "panel.show.shortcuts": showShortcutsPanel,
     // Renaming happens in the project panel (the canonical edit
     // surface — ADR 0019); the command surfaces it.
     "panel.rename": showProjectPanel,
     "palette.show": () => setOpenPalette("commands"),
     "goto.view": () => setOpenPalette("goto"),
+    "goto.event": () => setOpenPalette("gotoEvent"),
     // Quit via the window's own close path: runs the unsaved-changes
     // prompt (`onCloseRequested`) and the clean-shutdown flush, exactly
     // like clicking the title-bar close button.
@@ -2078,6 +2112,46 @@ export function App() {
   const commandContextRef = useRef(commandContext);
   commandContextRef.current = commandContext;
 
+  // Effective bindings (ADR 0018): the user's customisation overlaid on the
+  // defaults, sanitised. The dispatcher and the palette hints read these,
+  // not a compile-time constant, so a shortcuts-panel edit takes effect
+  // immediately. Parsed once per change; read through a ref so the
+  // once-registered keydown listener always sees the latest.
+  const effectiveBindings = useMemo(() => resolveBindings(userBindings), [userBindings]);
+  const parsedBindings = useMemo(() => parseBindings(effectiveBindings), [effectiveBindings]);
+  const parsedBindingsRef = useRef(parsedBindings);
+  parsedBindingsRef.current = parsedBindings;
+
+  // Load the persisted keybindings once on mount. Absent / null = defaults.
+  useEffect(() => {
+    let live = true;
+    void loadSettings().then((s) => {
+      if (live) setUserBindings(s.keybindings);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  // Persist a keybinding change: load the current settings and write the
+  // whole struct back with the new `keybindings`, so a concurrent settings
+  // edit isn't clobbered. `null` resets to the built-in defaults. The host
+  // is authoritative; a failed write is logged host-side.
+  const persistUserBindings = useCallback((next: readonly BindingSpec[] | null) => {
+    const value = next == null ? null : [...next];
+    setUserBindings(value);
+    void loadSettings()
+      .then((s) => saveSettings({ ...s, keybindings: value }))
+      .catch(() => {
+        /* host logs the failure; the in-memory value still holds */
+      });
+  }, []);
+
+  const keybindingsController: KeybindingsController = useMemo(
+    () => ({ user: userBindings, effective: effectiveBindings, setUser: persistUserBindings }),
+    [userBindings, effectiveBindings, persistUserBindings],
+  );
+
   // The global keydown dispatcher: resolve binding → check context →
   // run, or silently no-op. Registered once, on the capture phase so
   // a focused panel's own handlers can't shadow the global chords;
@@ -2098,7 +2172,7 @@ export function App() {
       const result = dispatchStroke(
         pending,
         { key: e.key, ctrl: e.ctrlKey, meta: e.metaKey, shift: e.shiftKey, alt: e.altKey },
-        PARSED_BINDINGS.filter((b) => available.has(b.commandId)),
+        parsedBindingsRef.current.filter((b) => available.has(b.commandId)),
         { isMac, inEditable: isEditableTarget(e.target) },
       );
       pending = result.pending;
@@ -2136,14 +2210,13 @@ export function App() {
 
   // Palette items. Commands: everything available in the current
   // context, hinted with the key binding (or category). Go-to-view:
-  // every open dockview panel by its display name — the tab titles
-  // are kept in lockstep with `elementLabel` above, so this is the
-  // same label everywhere (ADR 0019).
+  // every view — open or not — by its model-owned display name
+  // (`gotoViews` below), so a closed element view is still reachable.
   const commandPaletteItems: PaletteItem[] = useMemo(() => {
     if (openPalette !== "commands") return [];
     const isMac = isMacPlatform();
     const items = commandsAvailableIn(COMMANDS, commandContext).map((c) => {
-      const binding = PARSED_BINDINGS.find((b) => b.commandId === c.id);
+      const binding = parsedBindings.find((b) => b.commandId === c.id);
       return {
         id: c.id,
         label: c.label,
@@ -2153,16 +2226,90 @@ export function App() {
     // Recently-used first (the fzf ranking takes over once the user
     // types — this orders only the unfiltered list).
     return sortRecentFirst(items, recentCommands);
-  }, [openPalette, commandContext, recentCommands]);
+  }, [openPalette, commandContext, recentCommands, parsedBindings]);
+  // Open-or-focus the dockview panel for a project element — the reopen
+  // path go-to-view uses for a closed element view (mirrors ProjectPanel's
+  // open). A filter has no panel of its own, so surface the graph instead.
+  const openElementView = useCallback(
+    (element: ProjectElement) => {
+      const api = dockApiRef.current;
+      if (!api) return;
+      const component = elementPanelComponent(element.kind);
+      if (component === null) {
+        showProjectGraphPanel();
+        return;
+      }
+      const id = `${component}-${element.id}`;
+      const existing = api.getPanel(id);
+      if (existing) {
+        existing.api.setActive();
+        return;
+      }
+      api.addPanel({
+        id,
+        component,
+        title: elementLabel(element),
+        params:
+          element.kind === "trace"
+            ? { elementId: element.id, mode: "by-id" }
+            : { elementId: element.id },
+      });
+    },
+    [showProjectGraphPanel],
+  );
+  // Every reachable view for go-to-view (Ctrl+P): each project element that
+  // has a panel, plus every singleton. Open panels are focused, closed ones
+  // are opened on pick — the palette must reach a view you closed (e.g. a
+  // color map), not just the ones currently on screen. Labels are the
+  // model-owned element names (ADR 0019), same as the tabs.
+  const gotoViews = useMemo(() => {
+    const views: { id: string; label: string; open: () => void }[] = [];
+    for (const entry of registry) {
+      // Element views keyed exactly as `gotoViews`'s openers expect
+      // (`elementViewEntries` filters out panel-less kinds like `filter`).
+      const [view] = elementViewEntries([entry.element]);
+      if (view) views.push({ ...view, open: () => openElementView(entry.element) });
+    }
+    const singleton = (id: string, label: string, open: () => void) =>
+      views.push({ id, label, open });
+    singleton(PROJECT_PANEL_ID, "Project", showProjectPanel);
+    singleton(PROJECT_GRAPH_PANEL_ID, "Graph", showProjectGraphPanel);
+    singleton(DBC_PANEL_ID, "DBC", showDbcPanel);
+    singleton(SYSTEM_MESSAGES_PANEL_ID, "System messages", showSystemMessagesPanel);
+    singleton(SETTINGS_PANEL_ID, "Settings", showSettingsPanel);
+    singleton(EVENTS_PANEL_ID, "Events", showEventsPanel);
+    singleton(SHORTCUTS_PANEL_ID, "Keyboard shortcuts", showShortcutsPanel);
+    return views;
+  }, [
+    registry,
+    openElementView,
+    showProjectPanel,
+    showProjectGraphPanel,
+    showDbcPanel,
+    showSystemMessagesPanel,
+    showSettingsPanel,
+    showEventsPanel,
+    showShortcutsPanel,
+  ]);
   const gotoPaletteItems: PaletteItem[] = useMemo(() => {
     if (openPalette !== "goto") return [];
-    const api = dockApiRef.current;
-    if (!api) return [];
-    return api.panels.map((p) => ({ id: p.id, label: p.title ?? p.id }));
-  }, [openPalette]);
-  const focusPanelById = useCallback((panelId: string) => {
-    dockApiRef.current?.panels.find((p) => p.id === panelId)?.api.setActive();
-  }, []);
+    return gotoViews.map((v) => ({ id: v.id, label: v.label }));
+  }, [openPalette, gotoViews]);
+  // Go-to-event palette: every timeline event by label, hinted with its
+  // time relative to the session start. Selecting one broadcasts the same
+  // cross-panel jump the events view's per-row goto button emits (ADR 0035),
+  // so no events panel need be open.
+  const gotoEventPaletteItems: PaletteItem[] = useMemo(() => {
+    if (openPalette !== "gotoEvent") return [];
+    const truncationTsNs = firstIndex > 0 ? firstIndexTsNs : null;
+    return gotoEventItems(notes, truncationTsNs, sessionStartSeconds);
+  }, [openPalette, notes, firstIndex, firstIndexTsNs, sessionStartSeconds]);
+  const openViewById = useCallback(
+    (id: string) => {
+      gotoViews.find((v) => v.id === id)?.open();
+    },
+    [gotoViews],
+  );
 
   const handleDockReady = useCallback(
     (event: DockviewReadyEvent) => {
@@ -2472,95 +2619,125 @@ export function App() {
     ],
   );
 
+  // Command-backed toolbar (ADR 0037): an ordered list of command ids —
+  // every button dispatches through `runCommand`, so a click gets the same
+  // recent-tracking and context gate as the palette and keyboard. The few
+  // buttons that carry view-extras (the Connect/Disconnect toggle, the
+  // disabled-while-empty Clear/Save, the Recent-BLFs dropdown, the unread
+  // badge) stay bespoke, keyed by a sentinel and interleaved in order.
+  type ToolbarItem =
+    | "sep"
+    | "connection"
+    | "recentBlfs"
+    | "systemMessages"
+    | { id: string; label: string; disabled?: boolean };
+  const toolbarItems: ToolbarItem[] = [
+    { id: "project.open", label: "Open project…" },
+    { id: "project.save", label: "Save project" },
+    "sep",
+    { id: "blf.open", label: "Open BLF…" },
+    "recentBlfs",
+    { id: "dbc.add", label: "Add DBC…" },
+    "sep",
+    "connection",
+    "sep",
+    { id: "capture.clear", label: "Clear", disabled: count === 0 },
+    { id: "capture.save", label: "Save capture…", disabled: count === 0 },
+    "sep",
+    { id: "panel.add.trace", label: "Add trace" },
+    { id: "panel.add.plot", label: "Add plot panel" },
+    { id: "panel.add.transmit", label: "Add transmit panel" },
+    { id: "panel.add.rbs", label: "Add RBS panel" },
+    { id: "panel.add.colormap", label: "Add color map" },
+    { id: "panel.show.dbc", label: "DBC panel" },
+    { id: "panel.show.projectGraph", label: "Graph panel" },
+    { id: "panel.show.events", label: "Events panel" },
+    { id: "panel.show.project", label: "Project panel" },
+    "systemMessages",
+  ];
+  const renderToolbarItem = (item: ToolbarItem, i: number) => {
+    if (item === "sep") {
+      return <span key={`sep-${i}`} className="toolbar-separator" aria-hidden="true" />;
+    }
+    if (item === "recentBlfs") {
+      if (recentBlfs.length === 0) return null;
+      return (
+        <details key="recent-blfs" className="recent-blfs">
+          <summary
+            role="button"
+            aria-label={`Recent BLFs (${recentBlfs.length})`}
+            title="Recent BLFs"
+          >
+            Recent
+          </summary>
+          <ul role="menu" className="recent-blfs-menu">
+            {recentBlfs.map((p) => (
+              <li key={p} role="menuitem">
+                <button
+                  onClick={(e) => {
+                    // Close the <details> panel; React state drives the rest.
+                    const el = (e.currentTarget as HTMLElement).closest("details");
+                    if (el instanceof HTMLDetailsElement) el.open = false;
+                    void handleOpenLog(p);
+                  }}
+                  title={p}
+                >
+                  {p}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </details>
+      );
+    }
+    if (item === "connection") {
+      return remoteConnected ? (
+        <button key="connection" onClick={() => runCommand("connection.disconnect")}>
+          Disconnect
+        </button>
+      ) : (
+        <button
+          key="connection"
+          onClick={() => runCommand("connection.connect")}
+          disabled={interfaceBindings.length === 0}
+          title={
+            interfaceBindings.length === 0
+              ? "Add interface bindings in the project panel first"
+              : undefined
+          }
+        >
+          Connect
+        </button>
+      );
+    }
+    if (item === "systemMessages") {
+      return (
+        <button
+          key="system-messages"
+          onClick={() => runCommand("panel.show.systemMessages")}
+          className="system-messages-button"
+          aria-label={unread > 0 ? `System messages (${unread} unread)` : "System messages"}
+        >
+          System messages
+          {unread > 0 && (
+            <span className="system-messages-badge" aria-hidden="true">
+              {unread > 99 ? "99+" : unread}
+            </span>
+          )}
+        </button>
+      );
+    }
+    return (
+      <button key={item.id} onClick={() => runCommand(item.id)} disabled={item.disabled}>
+        {item.label}
+      </button>
+    );
+  };
+
   return (
     <main className="app">
       <header>
-        <div className="toolbar">
-          <button onClick={handleOpenProject}>Open project…</button>
-          <button onClick={handleSaveProject}>Save project</button>
-          <span className="toolbar-separator" aria-hidden="true" />
-          <button onClick={() => void handleOpenLog()}>Open BLF…</button>
-          {recentBlfs.length > 0 && (
-            <details className="recent-blfs">
-              <summary
-                role="button"
-                aria-label={`Recent BLFs (${recentBlfs.length})`}
-                title="Recent BLFs"
-              >
-                Recent
-              </summary>
-              <ul role="menu" className="recent-blfs-menu">
-                {recentBlfs.map((p) => (
-                  <li key={p} role="menuitem">
-                    <button
-                      onClick={(e) => {
-                        // Close the <details> panel; React state
-                        // drives the rest of the click.
-                        const el = (e.currentTarget as HTMLElement)
-                          .closest("details");
-                        if (el instanceof HTMLDetailsElement) el.open = false;
-                        void handleOpenLog(p);
-                      }}
-                      title={p}
-                    >
-                      {p}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </details>
-          )}
-          <button onClick={handleAddDbc}>Add DBC…</button>
-          <span className="toolbar-separator" aria-hidden="true" />
-          {remoteConnected ? (
-            <button onClick={handleDisconnect}>Disconnect</button>
-          ) : (
-            <button
-              onClick={handleConnect}
-              disabled={interfaceBindings.length === 0}
-              title={
-                interfaceBindings.length === 0
-                  ? "Add interface bindings in the project panel first"
-                  : undefined
-              }
-            >
-              Connect
-            </button>
-          )}
-          <span className="toolbar-separator" aria-hidden="true" />
-          <button onClick={handleClear} disabled={count === 0}>
-            Clear
-          </button>
-          <button onClick={handleSaveCapture} disabled={count === 0}>
-            Save capture…
-          </button>
-          <span className="toolbar-separator" aria-hidden="true" />
-          <button onClick={addTracePanel}>Add trace</button>
-          <button onClick={addPlotPanel}>Add plot panel</button>
-          <button onClick={addTransmitPanel}>Add transmit panel</button>
-          <button onClick={addRbsPanel}>Add RBS panel</button>
-          <button onClick={addColorMapPanel}>Add color map</button>
-          <button onClick={showDbcPanel}>DBC panel</button>
-          <button onClick={showProjectGraphPanel}>Graph panel</button>
-          <button onClick={showEventsPanel}>Events panel</button>
-          <button onClick={showProjectPanel}>Project panel</button>
-          <button
-            onClick={showSystemMessagesPanel}
-            className="system-messages-button"
-            aria-label={
-              unread > 0
-                ? `System messages (${unread} unread)`
-                : "System messages"
-            }
-          >
-            System messages
-            {unread > 0 && (
-              <span className="system-messages-badge" aria-hidden="true">
-                {unread > 99 ? "99+" : unread}
-              </span>
-            )}
-          </button>
-        </div>
+        <div className="toolbar">{toolbarItems.map(renderToolbarItem)}</div>
         <div className="status">{status}</div>
       </header>
       <ProjectContext.Provider value={projectContextValue}>
@@ -2568,6 +2745,7 @@ export function App() {
           <SystemLogContext.Provider value={systemLogValue}>
             <NotesContext.Provider value={notesValue}>
               <TraceDataContext.Provider value={traceData}>
+                <KeybindingsContext.Provider value={keybindingsController}>
                 <PanelCommandsContext.Provider value={panelCommands}>
                   {/* dockview drags tabs with the HTML5 drag-and-drop API, which
                       Tauri's OS-level drag-drop handler breaks on WebView2 — hence
@@ -2587,6 +2765,7 @@ export function App() {
                     onReady={handleDockReady}
                   />
                 </PanelCommandsContext.Provider>
+                </KeybindingsContext.Provider>
               </TraceDataContext.Provider>
             </NotesContext.Provider>
           </SystemLogContext.Provider>
@@ -2609,7 +2788,20 @@ export function App() {
           items={gotoPaletteItems}
           onPick={(item) => {
             setOpenPalette(null);
-            focusPanelById(item.id);
+            openViewById(item.id);
+          }}
+          onClose={() => setOpenPalette(null)}
+        />
+      )}
+      {openPalette === "gotoEvent" && (
+        <PaletteModal
+          placeholder="Go to event…"
+          items={gotoEventPaletteItems}
+          onPick={(item) => {
+            setOpenPalette(null);
+            // `item.id` is the event's absolute ns; broadcast the same
+            // cross-panel jump the events view's goto button emits (ADR 0035).
+            void emit(GOTO_EVENT, Number(item.id));
           }}
           onClose={() => setOpenPalette(null)}
         />

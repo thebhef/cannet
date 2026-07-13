@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  chordFromEvent,
   dispatchStroke,
   formatChord,
   parseChord,
@@ -206,5 +207,35 @@ describe("dispatchStroke", () => {
     const r = dispatchStroke([], plain("z"), bindings, { isMac: false, inEditable: false });
     expect(r.commandId).toBeNull();
     expect(r.handled).toBe(false);
+  });
+});
+
+describe("chordFromEvent", () => {
+  const stroke = (over: Partial<KeyStroke> & { key: string }): KeyStroke => ({
+    ctrl: false,
+    meta: false,
+    shift: false,
+    alt: false,
+    ...over,
+  });
+
+  it("returns null for a bare modifier press", () => {
+    expect(chordFromEvent(stroke({ key: "Shift", shift: true }), false)).toBeNull();
+    expect(chordFromEvent(stroke({ key: "Control", ctrl: true }), false)).toBeNull();
+  });
+
+  it("maps Ctrl to Mod off mac and round-trips through parseChord", () => {
+    const chord = chordFromEvent(stroke({ key: "p", ctrl: true, shift: true }), false);
+    expect(chord).toBe("Mod+Shift+P");
+    expect(parseChord(chord!)).toEqual(parseChord("Mod+Shift+P"));
+  });
+
+  it("distinguishes Cmd (Mod) from Control on mac", () => {
+    expect(chordFromEvent(stroke({ key: "k", meta: true }), true)).toBe("Mod+K");
+    expect(chordFromEvent(stroke({ key: "Tab", ctrl: true }), true)).toBe("Ctrl+Tab");
+  });
+
+  it("keeps named keys and adds Alt", () => {
+    expect(chordFromEvent(stroke({ key: "ArrowLeft", alt: true }), false)).toBe("Alt+ArrowLeft");
   });
 });

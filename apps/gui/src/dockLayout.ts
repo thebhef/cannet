@@ -39,6 +39,9 @@ export const COLORMAP_PANEL_COMPONENT = "colormap";
 export const SETTINGS_PANEL_COMPONENT = "settings";
 /// The timeline-events view (ADR 0035) — a singleton panel.
 export const EVENTS_PANEL_COMPONENT = "events";
+/// The keyboard-shortcuts editor (ADR 0018) — a singleton panel that
+/// lists and rebinds every command.
+export const SHORTCUTS_PANEL_COMPONENT = "shortcuts";
 /// Singleton id — toolbar's "DBC panel" button uses this to
 /// show-or-focus a single instance.
 export const DBC_PANEL_ID = "dbc";
@@ -60,6 +63,10 @@ export const SETTINGS_PANEL_ID = "settings";
 /// The timeline-events panel (ADR 0035) is a singleton — one app-global
 /// instance, opened from the command palette.
 export const EVENTS_PANEL_ID = "events";
+
+/// The keyboard-shortcuts editor (ADR 0018) is a singleton — one
+/// app-global instance, opened from the command palette.
+export const SHORTCUTS_PANEL_ID = "shortcuts";
 
 /// What `CommandContext.focusedPanelKind` should report for the
 /// active dockview panel: element-backed panels report their element
@@ -93,6 +100,8 @@ export function panelKindForFocus(
       return "settings";
     case EVENTS_PANEL_ID:
       return "events";
+    case SHORTCUTS_PANEL_ID:
+      return "shortcuts";
     default:
       return null;
   }

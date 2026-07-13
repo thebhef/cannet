@@ -6,9 +6,10 @@ launches the sidecar with no Python, no `uv`, and no network on the
 user's machine. See [ADR 0036](../../docs/adr/0036-frozen-python-can-sidecar.md).
 
 This is the robust replacement for the never-built "fetch `uv` at
-install/first-run" flow that Task 24 and Task 26 (§ Out of scope) still
-reference. The triggering bug: an installer built today ships only the
-GUI exe — no sidecar source, no `uv` — so the sidecar never launches.
+install/first-run" flow the earlier distribution planning (former
+Task 26) deferred. The triggering bug: an installer built today ships
+only the GUI exe — no sidecar source, no `uv` — so the sidecar never
+launches.
 
 ## Background — the pinned freeze recipe
 
@@ -61,7 +62,7 @@ Artifact (~40 MB): `dist/cannet-python-can/cannet-python-can[.exe]` +
    alongside the Tauri bundle, and **smoke-run it** (assert the
    `listening` banner) so a dependency bump that breaks dynamic-import
    collection fails the build, not the user's first launch. Folds into
-   the Task 26 release workflow.
+   the release workflow (`release.yml`, former Task 26).
 5. **Docs** — README: replace the fetch-`uv` prose (§ sidecar,
    Downloads) with the frozen-sidecar story; note `uv` is now dev-only.
    **Add the `technology-inventory.md` PyInstaller entry and update the
@@ -97,8 +98,8 @@ Artifact (~40 MB): `dist/cannet-python-can/cannet-python-can[.exe]` +
 
 ## Out of scope
 
-- Code signing / notarization of the frozen binary — rides on the Task
-  26 signing follow-up.
+- Code signing / notarization of the frozen binary — rides on the
+  signing follow-up in the backlog (§ Packaging and naming).
 - Removing the `uv`/`python3` launch paths — they remain the dev flow.
 
 ## Exit criteria
@@ -108,7 +109,7 @@ Artifact (~40 MB): `dist/cannet-python-can/cannet-python-can[.exe]` +
 - An installed cannet (from `tauri build`) launches the frozen sidecar
   with no `uv`/Python present on `PATH` and no network.
 - CI builds and smoke-runs the frozen sidecar on the release runners.
-- Task 24 / Task 26 references to the end-user `uv` fetch flow are
+- Remaining planning-doc references to the end-user `uv` fetch flow are
   reconciled to point at this task's frozen approach.
 - README + `technology-inventory.md` match the shipped behavior (the
   PyInstaller and updated `python-can` entries land here); ADR 0036

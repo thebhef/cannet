@@ -129,15 +129,23 @@ apps/
                      `traceColumns.ts` / `trace.ts` / `plotData.ts`
                      (unit-tested alongside). A command / hotkey
                      framework (`commands.ts`, `keybindings.ts`,
-                     `PaletteModal.tsx` — ADR 0018) lifts every toolbar
-                     action into a `Ctrl/Cmd+Shift+P` command palette
+                     `PaletteModal.tsx` — ADR 0018) drives every toolbar
+                     button, the `Ctrl/Cmd+Shift+P` command palette
                      (recently used commands float to the top),
-                     adds `Ctrl/Cmd+P` go-to-view (open panels by
-                     display name), and the plot-panel hotkeys `f`
-                     (fit x axis) / `l` (follow live). Element display
-                     names are model-owned and resolved everywhere by
-                     `elementLabel.ts` (ADR 0019), editable inline in
-                     the project panel.
+                     `Ctrl/Cmd+P` go-to-view (open panels by display
+                     name), and go-to-event (jump the trace/plot to a
+                     timeline event) off one command registry — toolbar,
+                     palette, and keyboard all dispatch the same
+                     commands. Key bindings are user-editable and
+                     persisted to `settings.json` (ADR 0034): the
+                     shortcuts panel (`ShortcutsPanel.tsx`)
+                     lists every command and lets you rebind, remove, or
+                     add a chord (reused chords allowed only where they
+                     can't both fire; conflicts refused), with reset to
+                     the built-in defaults. It is the living reference for
+                     what's bound. Element display names are model-owned
+                     and resolved everywhere by `elementLabel.ts`
+                     (ADR 0019), editable inline in the project panel.
     src-tauri/       Rust host (`cannet-gui` crate). Owns the trace
                      model (`trace_store.rs` — the session buffer, plus
                      an O(1)-maintained latest-frame-per-id index and a
