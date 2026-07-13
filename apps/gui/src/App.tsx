@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { DockviewReact, themeAbyss } from "dockview";
+import { DockviewDefaultTab, DockviewReact, themeAbyss } from "dockview";
 import type { AddPanelOptions, DockviewApi, DockviewReadyEvent } from "dockview";
 
 import type {
@@ -105,7 +105,9 @@ import {
   SYSTEM_MESSAGES_PANEL_ID,
   TRACE_PANEL_COMPONENT,
   TRANSMIT_PANEL_COMPONENT,
+  isTabMiddlePress,
   panelKindForFocus,
+  stripMaximizedNode,
   validateLayout,
 } from "./dockLayout";
 import {
@@ -121,6 +123,17 @@ import {
   isMacPlatform,
   type KeyStroke,
 } from "./keybindings";
+import {
+  EMPTY_FOCUS_HISTORY,
+  initLayoutHistory,
+  navigateFocus,
+  recordFocus,
+  recordLayout,
+  redoLayout,
+  undoLayout,
+  type FocusHistory,
+  type LayoutHistory,
+} from "./viewHistory";
 import { PaletteModal, type PaletteItem } from "./PaletteModal";
 import {
   recordRecentCommand,
@@ -320,6 +333,18 @@ export function App() {
 
   // The dockview layout API, populated once `onReady` fires.
   const dockApiRef = useRef<DockviewApi | null>(null);
+  // View navigation history + layout undo/redo (Task-35 commands;
+  // pure state in `viewHistory.ts`). `applyingLayoutRef` marks a
+  // programmatic `fromJSON` so the layout-change echo it fires isn't
+  // recorded as an undo step. `layoutHistoryRef` stays `null` until
+  // the initial restore/seed settles.
+  const focusHistoryRef = useRef<FocusHistory>(EMPTY_FOCUS_HISTORY);
+  const layoutHistoryRef = useRef<LayoutHistory | null>(null);
+  const applyingLayoutRef = useRef(false);
+  // A view is maximized full-screen (dockview maximized-group).
+  // Transient — never persisted (see `stripMaximizedNode`); gates the
+  // Escape binding in the command context.
+  const [hasMaximizedView, setHasMaximizedView] = useState(false);
   // Current `dirty` / `handleSaveProject`, read by the (once-registered)
   // close-on-quit handler. Updated on every render below.
   const dirtyRef = useRef(false);
@@ -1012,21 +1037,33 @@ export function App() {
     if (!api) return;
     setRegistry([]);
     const elementId = create("trace");
-    api.clear();
-    api.addPanel({
-      id: `trace-${elementId}`,
-      component: TRACE_PANEL_COMPONENT,
-      title: "Trace 1",
-      params: { elementId, mode: "by-id" },
-    });
-    api.addPanel({
-      // Fixed id — there's only ever one project panel; the toolbar's
-      // "Project panel" button toggles it (show/hide).
-      id: PROJECT_PANEL_ID,
-      component: PROJECT_PANEL_COMPONENT,
-      title: "Project",
-      position: { direction: "left" },
-    });
+    // A seeded workspace is a fresh starting point, not a step in the
+    // old one — build it under the applying guard and restart both
+    // view histories from it.
+    applyingLayoutRef.current = true;
+    try {
+      api.clear();
+      api.addPanel({
+        id: `trace-${elementId}`,
+        component: TRACE_PANEL_COMPONENT,
+        title: "Trace 1",
+        params: { elementId, mode: "by-id" },
+      });
+      api.addPanel({
+        // Fixed id — there's only ever one project panel; the toolbar's
+        // "Project panel" button toggles it (show/hide).
+        id: PROJECT_PANEL_ID,
+        component: PROJECT_PANEL_COMPONENT,
+        title: "Project",
+        position: { direction: "left" },
+      });
+    } finally {
+      applyingLayoutRef.current = false;
+    }
+    layoutHistoryRef.current = initLayoutHistory(JSON.stringify(api.toJSON()));
+    focusHistoryRef.current = api.activePanel
+      ? recordFocus(EMPTY_FOCUS_HISTORY, api.activePanel.id)
+      : EMPTY_FOCUS_HISTORY;
   }, [create]);
 
   /// Snapshot the current workspace into a `Project` (the elements, not
@@ -1040,7 +1077,11 @@ export function App() {
       }));
       return {
         schema_version: PROJECT_SCHEMA_VERSION,
-        layout: dockApiRef.current?.toJSON() ?? { grid: {}, panels: {} },
+        // Full-screen (`grid.maximizedNode`) is transient view state —
+        // a saved project must not reopen maximized.
+        layout: dockApiRef.current
+          ? stripMaximizedNode(dockApiRef.current.toJSON())
+          : { grid: {}, panels: {} },
         elements: registry.map((e) => e.element),
         buses,
         interface_bindings: interfaceBindings,
@@ -1132,11 +1173,22 @@ export function App() {
       const api = dockApiRef.current;
       const layout = validateLayout(project.layout);
       if (api && layout) {
+        // An opened project replaces the workspace wholesale; its
+        // layout is a fresh baseline, not an undoable step from the
+        // previous one — apply under the guard and restart both view
+        // histories (same as `seedDefaultLayout`).
+        applyingLayoutRef.current = true;
         try {
           api.fromJSON(layout);
         } catch {
           /* keep the current layout if the saved one won't load */
+        } finally {
+          applyingLayoutRef.current = false;
         }
+        layoutHistoryRef.current = initLayoutHistory(JSON.stringify(api.toJSON()));
+        focusHistoryRef.current = api.activePanel
+          ? recordFocus(EMPTY_FOCUS_HISTORY, api.activePanel.id)
+          : EMPTY_FOCUS_HISTORY;
       }
       // Rebuild host-side virtual buses from project defs
       // (ADR 0021). Per-binding session participants are opened on
@@ -1903,6 +1955,57 @@ export function App() {
     },
     [panelCommands],
   );
+  // View navigation: walk the focus history (skipping panels closed
+  // since), browser back/forward style. The `setActive` echo lands in
+  // `recordFocus` as a no-op, so the jump doesn't re-record itself.
+  const navigateViewHistory = useCallback((dir: -1 | 1) => {
+    const api = dockApiRef.current;
+    if (!api) return;
+    const r = navigateFocus(focusHistoryRef.current, dir, (id) => api.getPanel(id) != null);
+    if (!r) return;
+    focusHistoryRef.current = r.history;
+    api.getPanel(r.panelId)?.api.setActive();
+  }, []);
+  // Layout undo/redo: swap the whole serialized layout back in. The
+  // applying guard keeps the resulting layout-change echo from being
+  // recorded as a fresh step.
+  const applyLayoutHistory = useCallback((dir: "undo" | "redo") => {
+    const api = dockApiRef.current;
+    const history = layoutHistoryRef.current;
+    if (!api || !history) return;
+    const r = dir === "undo" ? undoLayout(history) : redoLayout(history);
+    if (!r) return;
+    const layout = validateLayout(JSON.parse(r.layout));
+    if (!layout) return;
+    applyingLayoutRef.current = true;
+    try {
+      api.fromJSON(layout);
+    } catch {
+      return; // snapshot won't load — leave the history untouched
+    } finally {
+      applyingLayoutRef.current = false;
+    }
+    layoutHistoryRef.current = r.history;
+  }, []);
+  const cycleTabInGroup = useCallback((dir: -1 | 1) => {
+    const group = dockApiRef.current?.activeGroup;
+    if (!group || group.panels.length < 2) return;
+    const active = group.activePanel;
+    const idx = active ? group.panels.indexOf(active) : -1;
+    const next = group.panels[(idx + dir + group.panels.length) % group.panels.length];
+    next.api.setActive();
+  }, []);
+  // Full-screen toggle over dockview's maximized-group. Runtime-only
+  // view state: the persisted layouts strip it (`stripMaximizedNode`).
+  const toggleFullscreenView = useCallback(() => {
+    const api = dockApiRef.current;
+    if (!api) return;
+    if (api.hasMaximizedGroup()) {
+      api.exitMaximizedGroup();
+    } else if (api.activePanel) {
+      api.maximizeGroup(api.activePanel);
+    }
+  }, []);
   const commandHandlersRef = useRef<Record<string, () => void>>({});
   commandHandlersRef.current = {
     "project.open": () => void handleOpenProject(),
@@ -1939,6 +2042,19 @@ export function App() {
     "app.exit": () => void getCurrentWindow().close(),
     "plot.fitXAxis": () => runFocusedPanelCommand("plot.fitXAxis"),
     "plot.followLive.enable": () => runFocusedPanelCommand("plot.followLive.enable"),
+    "view.back": () => navigateViewHistory(-1),
+    "view.forward": () => navigateViewHistory(1),
+    // Close the focused panel only — the chord (`Mod+W`) must never
+    // fall through to the webview's close-the-window default; the
+    // dispatcher's preventDefault sees to that, and an accidental
+    // close is undoable (`view.undo`).
+    "view.close": () => dockApiRef.current?.activePanel?.api.close(),
+    "tab.next": () => cycleTabInGroup(1),
+    "tab.previous": () => cycleTabInGroup(-1),
+    "view.undo": () => applyLayoutHistory("undo"),
+    "view.redo": () => applyLayoutHistory("redo"),
+    "view.fullscreen": toggleFullscreenView,
+    "view.exitFullscreen": () => dockApiRef.current?.exitMaximizedGroup(),
   };
   const runCommand = useCallback((id: string) => {
     const handler = commandHandlersRef.current[id];
@@ -1956,8 +2072,8 @@ export function App() {
   }, []);
 
   const commandContext: CommandContext = useMemo(
-    () => ({ focusedPanelKind, hasProjectOpen: projectPath !== null }),
-    [focusedPanelKind, projectPath],
+    () => ({ focusedPanelKind, hasProjectOpen: projectPath !== null, hasMaximizedView }),
+    [focusedPanelKind, projectPath, hasMaximizedView],
   );
   const commandContextRef = useRef(commandContext);
   commandContextRef.current = commandContext;
@@ -2005,6 +2121,19 @@ export function App() {
     };
   }, [runCommand]);
 
+  // Middle-clicking a tab closes the view (dockview default-tab
+  // behaviour on pointer-up), but the browser's middle-button
+  // autoscroll is `mousedown`'s default action and engages first —
+  // cancel the default for tab presses only, on the capture phase.
+  // `preventDefault` doesn't touch dockview's own pointer handlers.
+  useEffect(() => {
+    const onMouseDown = (e: MouseEvent) => {
+      if (isTabMiddlePress(e.button, e.target)) e.preventDefault();
+    };
+    document.addEventListener("mousedown", onMouseDown, true);
+    return () => document.removeEventListener("mousedown", onMouseDown, true);
+  }, []);
+
   // Palette items. Commands: everything available in the current
   // context, hinted with the key binding (or category). Go-to-view:
   // every open dockview panel by its display name — the tab titles
@@ -2040,13 +2169,16 @@ export function App() {
       const api = event.api;
       dockApiRef.current = api;
 
-      // Track the focused panel for the command context (ADR 0018).
+      // Track the focused panel for the command context (ADR 0018)
+      // and the back/forward navigation history (`recordFocus` is a
+      // no-op when a programmatic back/forward jump echoes here).
       api.onDidActivePanelChange((panel) => {
         diagCount("app.setActivePanel"); // DIAG
         if (!panel) {
           setActivePanel(null);
           return;
         }
+        focusHistoryRef.current = recordFocus(focusHistoryRef.current, panel.id);
         const elementId = (panel.params as { elementId?: unknown } | undefined)
           ?.elementId;
         setActivePanel({
@@ -2074,11 +2206,32 @@ export function App() {
       // "no project open" layout — a reopened named project (below)
       // overwrites it. Any layout change (panels added / dragged /
       // closed, columns resized) also marks the workspace dirty.
+      // Full-screen state for the command context (gates Escape).
+      api.onDidMaximizedGroupChange(() => {
+        setHasMaximizedView(api.hasMaximizedGroup());
+      });
+
       api.onDidLayoutChange(() => {
         diagCount("dockview.layoutChange"); // DIAG
-        persistLayout(api.toJSON());
+        // Strip the transient full-screen marker so neither the
+        // workspace state nor the undo history reopens maximized.
+        const json = stripMaximizedNode(api.toJSON());
+        persistLayout(json);
         setDirty(true);
+        // Feed the undo stack — except while a programmatic
+        // `fromJSON`/seed is echoing (the guard) or before the initial
+        // layout has settled (`null` history).
+        if (!applyingLayoutRef.current && layoutHistoryRef.current) {
+          layoutHistoryRef.current = recordLayout(
+            layoutHistoryRef.current,
+            JSON.stringify(json),
+          );
+        }
       });
+      // The restore/seed above is the baseline the first undo steps
+      // back toward. (`seedDefaultLayout` set this itself; a restored
+      // saved layout hasn't yet.)
+      layoutHistoryRef.current = initLayoutHistory(JSON.stringify(api.toJSON()));
 
       // Perf self-driving flags (ADR 0031) override the last-opened
       // pointer: `--project` names the project deterministically. Fetch
@@ -2420,10 +2573,17 @@ export function App() {
                       Tauri's OS-level drag-drop handler breaks on WebView2 — hence
                       `dragDropEnabled: false` in tauri.conf.json. The GUI takes
                       files via the dialog plugin, not by drop, so nothing is lost. */}
+                  {/* `defaultTabComponent`: dockview-core's built-in tab
+                      closes only via its close button; the React default
+                      tab (same DOM, same class names) adds close on
+                      middle-click. The `mousedown` capture listener above
+                      keeps the browser's middle-button autoscroll from
+                      eating the press. */}
                   <DockviewReact
                     className="dock-area"
                     theme={themeAbyss}
                     components={DOCK_COMPONENTS}
+                    defaultTabComponent={DockviewDefaultTab}
                     onReady={handleDockReady}
                   />
                 </PanelCommandsContext.Provider>

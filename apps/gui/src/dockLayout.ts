@@ -123,6 +123,33 @@ export function elementPanelComponent(kind: ProjectElementKind): string | null {
 }
 
 /**
+ * Is this press a middle-button press on a dockview tab (`.dv-tab`)?
+ * Middle-clicking a tab closes the view (dockview default-tab
+ * behaviour, on pointer-up) — but middle-button autoscroll is the
+ * browser's `mousedown` default action and engages first, so the
+ * app cancels the default exactly for these presses.
+ */
+export function isTabMiddlePress(button: number, target: EventTarget | null): boolean {
+  return button === 1 && target instanceof Element && target.closest(".dv-tab") !== null;
+}
+
+/**
+ * Drop the maximized-view marker from a serialized layout. Dockview's
+ * `toJSON` records a maximized group as `grid.maximizedNode` (untyped
+ * in `SerializedDockview`), which would make the workspace state, a
+ * saved project, or an undo snapshot reopen full-screen. Full-screen
+ * is a transient view mode, so every persistence path strips it.
+ */
+export function stripMaximizedNode(layout: SerializedDockview): SerializedDockview {
+  if (!("maximizedNode" in layout.grid)) return layout;
+  const grid = { ...layout.grid } as SerializedDockview["grid"] & {
+    maximizedNode?: unknown;
+  };
+  delete grid.maximizedNode;
+  return { ...layout, grid };
+}
+
+/**
  * Sanity-check an already-parsed value as a dockview layout. Returns
  * `null` for anything structurally unrecognised so a corrupt blob
  * falls back to the default layout instead of bricking startup. The
