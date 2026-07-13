@@ -64,8 +64,10 @@ vendor's, not cannet's.
   to generate stubs from `cannet-wire`'s `.proto`. No realistic
   alternative for gRPC in Python.
 - **Sidecar lifecycle and venv management ride on `uv`** per
-  ADR 0015. The sidecar's first launch materialises the venv;
-  subsequent launches reuse it.
+  ADR 0015 — the **developer** flow. The sidecar's first launch
+  materialises the venv; subsequent launches reuse it. End users
+  instead run the frozen self-contained binary, which needs no venv,
+  `uv`, or network ([ADR 0036](0036-frozen-python-can-sidecar.md)).
 - **Adding a future second sidecar is a separate process
   speaking the same wire.** No host changes, no protocol changes
   — just a new binary that implements the `.proto`.

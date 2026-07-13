@@ -34,9 +34,10 @@ These bundles are **unsigned**. On first launch:
   anyway**.
 
 Signing/notarization is a planned follow-up. Building from source (below)
-avoids the warnings entirely. Live hardware / virtual-bus capture also
-needs `uv` present at runtime (see § `uv` resolution); BLF/file workflows
-work without it.
+avoids the warnings entirely. Live hardware / virtual-bus capture works
+out of the box — these bundles ship a frozen, self-contained sidecar, so
+no `uv` or Python is needed at runtime (`uv` is developer-only; see
+§ `uv` resolution).
 
 ## Repository layout
 
@@ -208,9 +209,9 @@ All platforms need:
 - [`uv`](https://docs.astral.sh/uv/) — manages the
   [`cannet-python-can`](servers/cannet-python-can/) sidecar's Python
   environment and installs Python on the fly. We do **not** commit
-  `uv` binaries or pack them into the installer artefact; the host
-  expects a `uv` to be available, either next to the GUI binary at
-  `tools/uv/uv[.exe]` or on `PATH`. For local development, run
+  `uv` binaries or pack them into the installer artefact; in a
+  **development** build the host expects a `uv` to be available, either
+  next to the GUI binary at `tools/uv/uv[.exe]` or on `PATH`. For local development, run
   [`scripts/fetch-uv.sh`](scripts/fetch-uv.sh) to drop the pinned
   binary into `tools/uv/`, or install `uv` per the upstream
   instructions. `uv` is **developer-only**: shipped builds run a

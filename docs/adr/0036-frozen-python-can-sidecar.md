@@ -112,8 +112,13 @@ though the artifact happens to contain an interpreter.
   cannet_python_can`, `--collect-submodules can`, `--collect-all grpc`,
   and the matching `--copy-metadata` flags). A **smoke-run of the frozen
   binary in CI** — assert it emits its `sidecar\tlistening\t<addr>`
-  banner — guards against a silent collection regression on a dependency
-  bump.
+  banner — catches a *core* collection failure (the binary fails to boot
+  or never emits the banner). It does **not** catch a silent prune of an
+  individual vendor backend: `_list_vector`/`_list_kvaser`/`_list_pcan`
+  each catch `ImportError` and return `[]`, so a dropped backend just
+  enumerates zero channels and the banner still fires. No per-backend
+  import guard is added, by deliberate decision — that residual risk is
+  accepted.
 - **Vendor DLLs stay user-installed.** `vxlapi`/`canlib`/`PCANBasic` are
   loaded via `ctypes` from the user's hardware SDK at runtime; they are
   **not** frozen in (licensing, and they are the user's driver install).
