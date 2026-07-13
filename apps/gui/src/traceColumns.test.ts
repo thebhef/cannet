@@ -76,8 +76,9 @@ describe("resizeColumn", () => {
 
   it("is a no-op for an unknown key", () => {
     const before = defaultColumns();
-    // @ts-expect-error -- exercising the runtime guard with a bad key
-    expect(resizeColumn(before, "nope", 9)).toEqual(before);
+    // A bad key is type-legal now that the helpers are generic over
+    // the key set — the runtime guard still has to hold.
+    expect(resizeColumn(before, "nope" as never, 9)).toEqual(before);
   });
 });
 
@@ -101,15 +102,32 @@ describe("columnsFromParams", () => {
     expect(columnsFromParams(null)).toEqual(defaultColumns());
     expect(columnsFromParams("nope")).toEqual(defaultColumns());
     expect(columnsFromParams([])).toEqual(defaultColumns());
-    expect(columnsFromParams(defaultColumns().slice(0, 3))).toEqual(defaultColumns());
     expect(columnsFromParams([{ key: "idx", width: "x", visible: true }])).toEqual(defaultColumns());
-    // Right length but a duplicate key (and so a missing one): rejected.
+    // A duplicate key: rejected.
     const dup = defaultColumns().map((c) => ({ ...c, key: "idx" as const }));
     expect(columnsFromParams(dup)).toEqual(defaultColumns());
-    // Right length but an unknown key: rejected.
+    // An unknown key: rejected.
     const unknown = defaultColumns().slice();
     unknown[0] = { ...unknown[0], key: "bogus" as unknown as typeof unknown[0]["key"] };
     expect(columnsFromParams(unknown)).toEqual(defaultColumns());
+    // More entries than columns exist: rejected.
+    expect(columnsFromParams([...defaultColumns(), ...defaultColumns()])).toEqual(defaultColumns());
+  });
+
+  it("fills in columns missing from an older saved layout at their canonical slot", () => {
+    // A layout saved before a column existed (e.g. `ecu`) must keep the
+    // user's widths/order and gain the new column where a fresh panel
+    // would put it — not reset to defaults.
+    const legacy = reorderColumn(resizeColumn(defaultColumns(), "id", 180), "data", "idx").filter(
+      (c) => c.key !== "ecu",
+    );
+    const out = columnsFromParams(legacy);
+    expect(out.map((c) => c.key)).toEqual([
+      "data", "idx", "time", "rate", "bus", "ecu", "id", "msg", "len", "dir", "kind",
+    ]);
+    expect(out.find((c) => c.key === "id")?.width).toBe(180); // user width kept
+    const ecu = out.find((c) => c.key === "ecu");
+    expect(ecu?.visible).toBe(true); // visible by default, like bus/message
   });
 });
 
@@ -118,7 +136,7 @@ describe("reorderColumn", () => {
 
   it("moves a column to before another", () => {
     const cols = reorderColumn(defaultColumns(), "data", "idx");
-    expect(keys(cols)).toEqual(["data", "idx", "time", "rate", "bus", "id", "msg", "len", "dir", "kind"]);
+    expect(keys(cols)).toEqual(["data", "idx", "time", "rate", "bus", "ecu", "id", "msg", "len", "dir", "kind"]);
   });
 
   it("moves a column to the end when beforeKey is null", () => {
@@ -137,8 +155,7 @@ describe("reorderColumn", () => {
   it("is a copy / no-op for an unknown key or a self-move", () => {
     const before = defaultColumns();
     expect(reorderColumn(before, "idx", "idx")).toEqual(before);
-    // @ts-expect-error -- exercising the runtime guard with a bad key
-    expect(reorderColumn(before, "nope", "idx")).toEqual(before);
+    expect(reorderColumn(before, "nope" as never, "idx")).toEqual(before);
   });
 });
 

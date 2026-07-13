@@ -178,6 +178,17 @@ const RATE_SAMPLE_INTERVAL: Duration = Duration::from_millis(20);
 /// inter-arrival time). Smaller = steadier, slower to react.
 const PER_ID_RATE_ALPHA: f64 = 0.6;
 
+/// How many frames [`TraceStore::latest_mux_in_window`]'s backward scan
+/// examines before giving up on a selector group (which then reads as
+/// blank). Generous enough to cover several seconds of a busy bus while
+/// keeping a cold-index page fetch bounded.
+const MUX_SCAN_BOUND: usize = 262_144;
+
+/// Chunk size for that backward scan — the unit over which the inner
+/// mutex is held, mirroring the filtered-trace scan's chunking so a
+/// history walk never starves `append`.
+const MUX_SCAN_CHUNK: usize = 65_536;
+
 /// Identifies a "kind of frame" for the latest-by-id view: the
 /// logical bus (`None` = unassigned, a distinct bucket from any named
 /// bus), the wire channel, the arbitration id, and whether it's an
@@ -186,6 +197,22 @@ const PER_ID_RATE_ALPHA: f64 = 0.6;
 /// servers report frames on the same wire channel — without it, the
 /// per-id snapshot would collapse them into one row.
 type FrameKey = (Option<String>, u8, u32, bool);
+
+/// Identifies one multiplexor-selector group of a message stream for
+/// the per-signal latest-value view: the logical bus, the arbitration
+/// id + addressing mode, and the selector value. Unlike [`FrameKey`]
+/// there is no wire-channel component — signal identity is
+/// `(bus, message id, extended)` (the descriptor key), matching the
+/// per-signal decoded-sample cache.
+type MuxKey = (Option<String>, u32, bool, u64);
+
+/// Extracts a frame's multiplexor-selector value, or `None` when the
+/// frame's message has no multiplexor (or no DBC decodes it). Injected
+/// by the host ([`TraceStore::set_mux_extractor`]) so the store stays
+/// DBC-free; the host builds it over the loaded DBC set
+/// (`Database::decode_mux_selector` — a couple of bit reads, cheap
+/// enough for the append path).
+pub type MuxSelectorFn = dyn Fn(&RawTraceFrame) -> Option<u64> + Send + Sync;
 
 /// Per-id message-rate estimate. Tracks the EMA of the *frame-time*
 /// inter-arrival (the bus-side cadence) plus the wall-clock time of
@@ -321,6 +348,31 @@ struct Inner {
     latest_frame: HashMap<FrameKey, RawTraceFrame>,
     /// Per-id message-rate estimate, also maintained `O(1)` on append.
     rates: HashMap<FrameKey, RateEstimate>,
+    /// The host-injected multiplexor-selector extractor, or `None`
+    /// while no loaded DBC declares a multiplexor. Swapped whenever the
+    /// DBC set changes ([`TraceStore::set_mux_extractor`]).
+    mux_selector_of: Option<std::sync::Arc<MuxSelectorFn>>,
+    /// Newest `(index, frame)` per [`MuxKey`] — the per-selector-group
+    /// analog of `latest` + `latest_frame`, backing the per-signal
+    /// latest-value view (a mux signal's "latest" is the last frame
+    /// whose selector matched its group, not the message's last frame).
+    /// Maintained `O(1)` on append while an extractor is installed;
+    /// entries found by [`TraceStore::latest_mux_in_window`]'s backward
+    /// scan are backfilled here. Bounded by (id × selector) space. Not
+    /// persisted in `derived.json` — a reopened session rebuilds lazily
+    /// via the bounded scan.
+    latest_mux: HashMap<MuxKey, (usize, RawTraceFrame)>,
+    /// Per-selector-group update statistics — what the signal view's
+    /// count / msg-per-s columns show for mux signals. Counted from
+    /// extractor installation onward (frames appended before a DBC
+    /// arrived aren't retro-counted).
+    mux_rates: HashMap<MuxKey, RateEstimate>,
+    /// Append index from which `latest_mux` is complete: every frame at
+    /// `>= mux_index_from` passed through the current extractor. Below
+    /// it the map may be missing groups (extractor installed
+    /// mid-session), so a query over an uncovered window falls back to
+    /// the bounded backward scan.
+    mux_index_from: usize,
     /// Per-bus rate state, keyed by the frame's logical bus (`None` =
     /// unassigned, its own bucket). Maintained `O(1)` on append; backs
     /// [`TraceStore::frames_per_second_by_bus`], the per-bus throughput
@@ -397,6 +449,10 @@ impl TraceStore {
                 latest: HashMap::new(),
                 latest_frame: HashMap::new(),
                 rates: HashMap::new(),
+                mux_selector_of: None,
+                latest_mux: HashMap::new(),
+                mux_rates: HashMap::new(),
+                mux_index_from: 0,
                 per_bus: HashMap::new(),
                 rx_rate: RateTrack::default(),
                 tx_rate: RateTrack::default(),
@@ -505,6 +561,17 @@ impl TraceStore {
         // front-truncation, so an evicted index never blanks a by-id row.
         let idx = inner.raw.append(frame.clone());
         let count = idx + 1;
+        // Mux-group latest: one extra id×selector-bounded clone, only
+        // for frames the extractor recognises as multiplexed.
+        if let Some(sel) = inner.mux_selector_of.as_ref().and_then(|ext| ext(&frame)) {
+            let mkey: MuxKey = (frame.bus_id.clone(), frame.id, frame.extended, sel);
+            inner.latest_mux.insert(mkey.clone(), (idx, frame.clone()));
+            inner
+                .mux_rates
+                .entry(mkey)
+                .or_insert_with(|| RateEstimate::first_seen(ts_ns, now))
+                .observe(ts_ns, now);
+        }
         inner.latest.insert(key.clone(), idx);
         inner.latest_frame.insert(key.clone(), frame);
         inner
@@ -719,6 +786,12 @@ impl TraceStore {
         inner.latest = HashMap::new();
         inner.latest_frame = HashMap::new();
         inner.rates = HashMap::new();
+        // The mux index empties with the buffer; the extractor itself
+        // survives (the DBC set didn't change) and covers the fresh
+        // buffer from index 0.
+        inner.latest_mux = HashMap::new();
+        inner.mux_rates = HashMap::new();
+        inner.mux_index_from = 0;
         inner.per_bus = HashMap::new();
         inner.rx_rate = RateTrack::default();
         inner.tx_rate = RateTrack::default();
@@ -992,6 +1065,173 @@ impl TraceStore {
                 }
             })
             .collect()
+    }
+
+    /// Install (or clear, with `None`) the multiplexor-selector
+    /// extractor. Called whenever the loaded-DBC set changes; the mux
+    /// index and its statistics reset — selector groups may mean
+    /// something different under the new DBCs — and coverage restarts
+    /// at the current tip ([`Inner::mux_index_from`]); history below it
+    /// is served by [`Self::latest_mux_in_window`]'s backward scan.
+    pub fn set_mux_extractor(&self, extractor: Option<std::sync::Arc<MuxSelectorFn>>) {
+        let mut inner = self.lock_inner();
+        inner.mux_selector_of = extractor;
+        inner.latest_mux = HashMap::new();
+        inner.mux_rates = HashMap::new();
+        inner.mux_index_from = inner.raw.len();
+    }
+
+    /// Latest `(index, frame)` within `[start, end)` for each requested
+    /// selector group of one message stream — the per-signal analog of
+    /// [`Self::latest_in_window`]: a mux signal's latest value is the
+    /// last frame *whose selector matched its group*, so decoding only
+    /// the message's latest frame would blank every other group.
+    ///
+    /// Selectors whose group has no frame in the window are absent from
+    /// the result (the caller renders a blank row). Served from the
+    /// incrementally-maintained index where it covers the window;
+    /// otherwise by a backward scan over the raw store bounded to
+    /// [`MUX_SCAN_BOUND`] frames — a group further back than that reads
+    /// as blank (the documented give-up). Scan hits at the buffer tip
+    /// are backfilled into the index so repeated live queries converge
+    /// to the O(groups) path. Returns empty with no extractor installed
+    /// (nothing can classify frames into groups).
+    #[must_use]
+    pub fn latest_mux_in_window(
+        &self,
+        bus_id: Option<&str>,
+        id: u32,
+        extended: bool,
+        selectors: &[u64],
+        start: usize,
+        end: usize,
+    ) -> HashMap<u64, (usize, RawTraceFrame)> {
+        let mut out = HashMap::new();
+        let mut missing: Vec<u64> = Vec::new();
+        let (len, extractor) = {
+            let inner = self.lock_inner();
+            let len = inner.raw.len();
+            let end = end.min(len);
+            if start >= end {
+                return out;
+            }
+            let Some(extractor) = inner.mux_selector_of.clone() else {
+                return out;
+            };
+            let covered = inner.mux_index_from <= start;
+            for &sel in selectors {
+                let mkey: MuxKey = (bus_id.map(str::to_string), id, extended, sel);
+                match inner.latest_mux.get(&mkey) {
+                    // A map entry is the group's latest at the tip. If it
+                    // sits inside the window it is also the latest within
+                    // the window (nothing newer exists at all, so nothing
+                    // newer exists below `end` either).
+                    Some((idx, f)) if *idx >= start && *idx < end => {
+                        out.insert(sel, (*idx, f.clone()));
+                    }
+                    // Entry below the window with full coverage: any
+                    // in-window match would have overwritten it → none.
+                    Some((idx, _)) if *idx < start && covered => {}
+                    // Entry past the window end, or no entry: the map
+                    // can't answer; scan — unless coverage proves absence.
+                    None if covered => {}
+                    _ => missing.push(sel),
+                }
+            }
+            (len, extractor)
+        };
+        if !missing.is_empty() {
+            let end = end.min(len);
+            let found = self.scan_latest_mux(bus_id, id, extended, &missing, start, end, &extractor);
+            // Tip-window hits are "latest at the tip" — backfill them so
+            // the next live query takes the O(groups) path. (Bounded
+            // windows below the tip stay scan-served; their result is
+            // not the tip's latest.)
+            if end == len && !found.is_empty() {
+                let mut inner = self.lock_inner();
+                for (sel, (idx, frame)) in &found {
+                    let mkey: MuxKey = (bus_id.map(str::to_string), id, extended, *sel);
+                    // Never regress an entry a concurrent append advanced.
+                    match inner.latest_mux.get(&mkey) {
+                        Some((have, _)) if *have >= *idx => {}
+                        _ => {
+                            inner.latest_mux.insert(mkey, (*idx, frame.clone()));
+                        }
+                    }
+                }
+            }
+            out.extend(found);
+        }
+        out
+    }
+
+    /// The bounded backward scan behind [`Self::latest_mux_in_window`]:
+    /// walk `[start, end)` from the back in chunks (the inner mutex is
+    /// held per chunk, never across the walk), classify matching frames
+    /// with `extractor`, and record the first (= latest) hit per wanted
+    /// selector. Stops when every selector is found, the window is
+    /// exhausted, or [`MUX_SCAN_BOUND`] frames have been examined.
+    #[allow(clippy::too_many_arguments)] // internal helper mirroring the public query's key
+    fn scan_latest_mux(
+        &self,
+        bus_id: Option<&str>,
+        id: u32,
+        extended: bool,
+        selectors: &[u64],
+        start: usize,
+        end: usize,
+        extractor: &std::sync::Arc<MuxSelectorFn>,
+    ) -> HashMap<u64, (usize, RawTraceFrame)> {
+        let mut found = HashMap::new();
+        let mut wanted: Vec<u64> = selectors.to_vec();
+        let floor = start.max(end.saturating_sub(MUX_SCAN_BOUND));
+        let mut chunk_end = end;
+        while chunk_end > floor && !wanted.is_empty() {
+            let chunk_start = chunk_end.saturating_sub(MUX_SCAN_CHUNK).max(floor);
+            let want = wanted.clone();
+            let ext = extractor.clone();
+            let hits = self.scan_chunk(chunk_start, chunk_end, move |f| {
+                f.id == id
+                    && f.extended == extended
+                    && f.bus_id.as_deref() == bus_id
+                    && ext(f).is_some_and(|s| want.contains(&s))
+            });
+            // Materialise from the back in small batches — the newest
+            // hit per selector wins, so most hits are never cloned.
+            for batch in hits.rchunks(64) {
+                for (idx, frame) in self.frames_at(batch).into_iter().rev() {
+                    let Some(sel) = extractor(&frame) else { continue };
+                    if wanted.contains(&sel) {
+                        wanted.retain(|s| *s != sel);
+                        found.insert(sel, (idx, frame));
+                    }
+                }
+                if wanted.is_empty() {
+                    break;
+                }
+            }
+            chunk_end = chunk_start;
+        }
+        found
+    }
+
+    /// Update statistics for one selector group: `(rate, count)` — the
+    /// per-signal counterparts of the by-id view's msg/s and count
+    /// columns, counting only frames whose selector matched. `None`
+    /// until the group has been observed (which also means: counted
+    /// from extractor installation onward, not retroactively).
+    #[must_use]
+    pub fn mux_stats(
+        &self,
+        bus_id: Option<&str>,
+        id: u32,
+        extended: bool,
+        selector: u64,
+    ) -> Option<(f64, u64)> {
+        let now = Instant::now();
+        let inner = self.lock_inner();
+        let mkey: MuxKey = (bus_id.map(str::to_string), id, extended, selector);
+        inner.mux_rates.get(&mkey).map(|r| (r.rate(now), r.count))
     }
 
     /// Bring `index` current against this store for a resolved predicate,
@@ -1575,6 +1815,110 @@ mod tests {
         );
         // start >= end → empty.
         assert!(store.latest_in_window(5, 3).is_empty());
+    }
+
+    // --- mux-group latest index (Task-20 signal snapshot backing) ---
+
+    /// A classic frame whose first payload byte doubles as the mux
+    /// selector under [`byte0_extractor`].
+    fn muxed(ts_ns: u64, id: u32, sel: u8) -> RawTraceFrame {
+        RawTraceFrame {
+            payload: CanFramePayload::Classic(vec![sel]),
+            ..dummy(ts_ns, id)
+        }
+    }
+
+    /// Test extractor: payload byte 0 is the selector; empty payload =
+    /// not a mux message.
+    fn byte0_extractor() -> std::sync::Arc<MuxSelectorFn> {
+        std::sync::Arc::new(|f: &RawTraceFrame| f.payload.data().first().copied().map(u64::from))
+    }
+
+    #[test]
+    fn mux_latest_tracks_per_selector_on_append() {
+        let store = TraceStore::new();
+        store.set_mux_extractor(Some(byte0_extractor()));
+        store.append(muxed(1_000, 0x10, 0)); // idx 0
+        store.append(muxed(2_000, 0x10, 1)); // idx 1
+        store.append(muxed(3_000, 0x10, 0)); // idx 2
+        store.append(dummy(4_000, 0x20)); // other id, no payload → no selector
+        let got = store.latest_mux_in_window(None, 0x10, false, &[0, 1, 2], 0, usize::MAX);
+        assert_eq!(got.get(&0).map(|(i, f)| (*i, f.timestamp_ns)), Some((2, 3_000)));
+        assert_eq!(got.get(&1).map(|(i, f)| (*i, f.timestamp_ns)), Some((1, 2_000)));
+        // Selector 2 never appeared — absent, not blank-with-a-row here.
+        assert!(!got.contains_key(&2));
+        // Per-group update statistics.
+        assert_eq!(store.mux_stats(None, 0x10, false, 0).map(|(_, c)| c), Some(2));
+        assert_eq!(store.mux_stats(None, 0x10, false, 1).map(|(_, c)| c), Some(1));
+        assert_eq!(store.mux_stats(None, 0x10, false, 2), None);
+    }
+
+    #[test]
+    fn mux_latest_bounds_to_the_window_end() {
+        // A paused window must not leak a selector's later frame in.
+        let store = TraceStore::new();
+        store.set_mux_extractor(Some(byte0_extractor()));
+        store.append(muxed(1_000, 0x10, 0)); // idx 0
+        store.append(muxed(2_000, 0x10, 1)); // idx 1
+        store.append(muxed(3_000, 0x10, 0)); // idx 2
+        let got = store.latest_mux_in_window(None, 0x10, false, &[0, 1], 0, 2);
+        assert_eq!(got.get(&0).map(|(i, _)| *i), Some(0)); // not idx 2
+        assert_eq!(got.get(&1).map(|(i, _)| *i), Some(1));
+        // Window [0, 1): selector 1 hasn't appeared yet.
+        let got = store.latest_mux_in_window(None, 0x10, false, &[0, 1], 0, 1);
+        assert_eq!(got.get(&0).map(|(i, _)| *i), Some(0));
+        assert!(!got.contains_key(&1));
+    }
+
+    #[test]
+    fn mux_latest_backfills_when_the_extractor_arrives_late() {
+        // Frames appended before the extractor is installed (DBC
+        // attached mid-session, BLF imported first) aren't in the
+        // incremental map — the query must find them by the bounded
+        // backward scan, and later appends must keep them current.
+        let store = TraceStore::new();
+        store.append(muxed(1_000, 0x10, 0)); // idx 0
+        store.append(muxed(2_000, 0x10, 1)); // idx 1
+        store.set_mux_extractor(Some(byte0_extractor()));
+        let got = store.latest_mux_in_window(None, 0x10, false, &[0, 1], 0, usize::MAX);
+        assert_eq!(got.get(&0).map(|(i, _)| *i), Some(0));
+        assert_eq!(got.get(&1).map(|(i, _)| *i), Some(1));
+        // A post-install append updates the group incrementally.
+        store.append(muxed(3_000, 0x10, 1)); // idx 2
+        let got = store.latest_mux_in_window(None, 0x10, false, &[0, 1], 0, usize::MAX);
+        assert_eq!(got.get(&0).map(|(i, _)| *i), Some(0));
+        assert_eq!(got.get(&1).map(|(i, _)| *i), Some(2));
+    }
+
+    #[test]
+    fn mux_latest_is_scoped_per_bus() {
+        let store = TraceStore::new();
+        store.set_mux_extractor(Some(byte0_extractor()));
+        let mut on_a = muxed(1_000, 0x10, 0);
+        on_a.bus_id = Some("a".into());
+        store.append(on_a); // idx 0
+        store.append(muxed(2_000, 0x10, 0)); // idx 1, unassigned
+        let a = store.latest_mux_in_window(Some("a"), 0x10, false, &[0], 0, usize::MAX);
+        assert_eq!(a.get(&0).map(|(i, _)| *i), Some(0));
+        let unassigned = store.latest_mux_in_window(None, 0x10, false, &[0], 0, usize::MAX);
+        assert_eq!(unassigned.get(&0).map(|(i, _)| *i), Some(1));
+    }
+
+    #[test]
+    fn start_session_clears_the_mux_index_but_keeps_the_extractor() {
+        let store = TraceStore::new();
+        store.set_mux_extractor(Some(byte0_extractor()));
+        store.append(muxed(1_000, 0x10, 0));
+        store.start_session(0);
+        assert!(store
+            .latest_mux_in_window(None, 0x10, false, &[0], 0, usize::MAX)
+            .is_empty());
+        assert_eq!(store.mux_stats(None, 0x10, false, 0), None);
+        // The extractor survives the clear — the DBC set didn't change.
+        store.append(muxed(2_000, 0x10, 0));
+        let got = store.latest_mux_in_window(None, 0x10, false, &[0], 0, usize::MAX);
+        assert_eq!(got.get(&0).map(|(i, _)| *i), Some(0));
+        assert_eq!(store.mux_stats(None, 0x10, false, 0).map(|(_, c)| c), Some(1));
     }
 
     #[test]

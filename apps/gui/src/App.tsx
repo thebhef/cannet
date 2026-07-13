@@ -35,6 +35,7 @@ import { TracePanel } from "./TracePanel";
 import { ProjectPanel } from "./ProjectPanel";
 import { ProjectGraphPanel } from "./ProjectGraphPanel";
 import { PlotPanel } from "./PlotPanel";
+import { SignalsPanel } from "./SignalsPanel";
 import { TransmitPanel } from "./TransmitPanel";
 import { RbsPanel } from "./RbsPanel";
 import { ColorMapPanel } from "./ColorMapPanel";
@@ -108,6 +109,7 @@ import {
   EVENTS_PANEL_ID,
   SHORTCUTS_PANEL_COMPONENT,
   SHORTCUTS_PANEL_ID,
+  SIGNALS_PANEL_COMPONENT,
   SYSTEM_MESSAGES_PANEL_COMPONENT,
   SYSTEM_MESSAGES_PANEL_ID,
   TRACE_PANEL_COMPONENT,
@@ -201,6 +203,7 @@ const DOCK_COMPONENTS = {
   [BY_ID_PANEL_COMPONENT]: TracePanel,
   [PROJECT_PANEL_COMPONENT]: ProjectPanel,
   [PLOT_PANEL_COMPONENT]: PlotPanel,
+  [SIGNALS_PANEL_COMPONENT]: SignalsPanel,
   [TRANSMIT_PANEL_COMPONENT]: TransmitPanel,
   [RBS_PANEL_COMPONENT]: RbsPanel,
   [COLORMAP_PANEL_COMPONENT]: ColorMapPanel,
@@ -267,6 +270,10 @@ export function App() {
   const [localVirtualBuses, setLocalVirtualBuses] = useState<LocalVirtualBusDef[]>(
     [],
   );
+  // Per-signal colour overrides for the signal views (descriptor key →
+  // #rrggbb). Project-level so a signal keeps its colour across views
+  // and sessions; empty = every signal renders its stable wheel colour.
+  const [signalColors, setSignalColors] = useState<Record<string, string>>({});
   // Multi-server remote-session tracking, keyed by address. Connect/
   // Disconnect drives this; entries clear on a server-side hang up via
   // `log-finished` (which doesn't carry an address — we treat it as
@@ -1109,9 +1116,10 @@ export function App() {
         // null for v3 schema compatibility.
         remote_address: null,
         local_virtual_buses: localVirtualBuses,
+        signal_colors: signalColors,
       };
     },
-    [registry, dbcPaths, dbcBuses, buses, interfaceBindings, localVirtualBuses],
+    [registry, dbcPaths, dbcBuses, buses, interfaceBindings, localVirtualBuses, signalColors],
   );
 
   // Record which project is "open" — both the React state and the
@@ -1153,6 +1161,11 @@ export function App() {
       setBuses(incomingBuses);
       setInterfaceBindings(incomingBindings);
       setLocalVirtualBuses(incomingVbuses);
+      setSignalColors(
+        project.signal_colors != null && typeof project.signal_colors === "object"
+          ? { ...project.signal_colors }
+          : {},
+      );
       const scoping: Record<string, string[]> = {};
       for (const d of incomingDbcs) scoping[d.path] = d.buses ?? [];
       setDbcBuses(scoping);
@@ -1262,6 +1275,7 @@ export function App() {
     setBuses([]);
     setInterfaceBindings([]);
     setLocalVirtualBuses([]);
+    setSignalColors({});
     void invoke("disconnect_remote_server", { address: null }).catch(() => {});
     setRemoteSessions(new Map());
     setBusConfigInFlight(new Map());
@@ -1636,6 +1650,21 @@ export function App() {
     [],
   );
 
+  /// Set (or clear, with `null`) one signal's project-level colour
+  /// override — a model edit, so it marks the project dirty.
+  const handleSetSignalColor = useCallback((key: string, color: string | null) => {
+    setSignalColors((prev) => {
+      if (color == null) {
+        if (!(key in prev)) return prev;
+        const { [key]: _dropped, ...rest } = prev;
+        return rest;
+      }
+      if (prev[key] === color) return prev;
+      return { ...prev, [key]: color };
+    });
+    setDirty(true);
+  }, []);
+
   // Tab titles come from the element's model-owned name (ADR 0019):
   // the handler computes the same `${Kind} ${n}` default `create`
   // assigns (against the registry the element is joining), and the
@@ -1662,6 +1691,19 @@ export function App() {
     api.addPanel({
       id: `plot-${elementId}`,
       component: PLOT_PANEL_COMPONENT,
+      title,
+      params: { elementId },
+    });
+  }, [create]);
+
+  const addSignalsPanel = useCallback(() => {
+    const api = dockApiRef.current;
+    if (!api) return;
+    const title = defaultElementName("signals", registryRef.current.map((e) => e.element));
+    const elementId = create("signals");
+    api.addPanel({
+      id: `signals-${elementId}`,
+      component: SIGNALS_PANEL_COMPONENT,
       title,
       params: { elementId },
     });
@@ -2052,6 +2094,7 @@ export function App() {
     "capture.save": () => void handleSaveCapture(),
     "panel.add.trace": addTracePanel,
     "panel.add.plot": addPlotPanel,
+    "panel.add.signals": addSignalsPanel,
     "panel.add.transmit": addTransmitPanel,
     "panel.add.rbs": addRbsPanel,
     "panel.add.colormap": addColorMapPanel,
@@ -2580,6 +2623,8 @@ export function App() {
       onAddVirtualBus: handleAddVirtualBus,
       onRemoveVirtualBus: handleRemoveVirtualBus,
       onUpdateVirtualBus: handleUpdateVirtualBus,
+      signalColors,
+      onSetSignalColor: handleSetSignalColor,
     }),
     [
       projectPath,
@@ -2616,6 +2661,8 @@ export function App() {
       handleAddVirtualBus,
       handleRemoveVirtualBus,
       handleUpdateVirtualBus,
+      signalColors,
+      handleSetSignalColor,
     ],
   );
 
@@ -2646,6 +2693,7 @@ export function App() {
     "sep",
     { id: "panel.add.trace", label: "Add trace" },
     { id: "panel.add.plot", label: "Add plot panel" },
+    { id: "panel.add.signals", label: "Add signal view" },
     { id: "panel.add.transmit", label: "Add transmit panel" },
     { id: "panel.add.rbs", label: "Add RBS panel" },
     { id: "panel.add.colormap", label: "Add color map" },

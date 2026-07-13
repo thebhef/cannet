@@ -16,6 +16,8 @@ export function elementKindLabel(kind: ProjectElementKind): string {
       return "Trace";
     case "plot":
       return "Plot";
+    case "signals":
+      return "Signals";
     case "transmit":
       return "Transmit";
     case "filter":

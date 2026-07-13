@@ -222,6 +222,8 @@ const projectCtx: ProjectContextValue = {
   onAddVirtualBus: () => {},
   onRemoveVirtualBus: () => {},
   onUpdateVirtualBus: () => {},
+  signalColors: {},
+  onSetSignalColor: () => {},
 };
 
 function renderPanel(opts?: { params?: Record<string, unknown>; registry?: ElementRegistry }) {

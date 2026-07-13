@@ -12,6 +12,9 @@ export const TRACE_PANEL_COMPONENT = "trace";
 export const BY_ID_PANEL_COMPONENT = "by-id";
 export const PROJECT_PANEL_COMPONENT = "project";
 export const PLOT_PANEL_COMPONENT = "plot";
+/// The signal view panel (Task-20 latest-per-signal snapshot).
+/// Element-backed, like trace/plot.
+export const SIGNALS_PANEL_COMPONENT = "signals";
 export const TRANSMIT_PANEL_COMPONENT = "transmit";
 /// Spatial / wiring view onto the project state. Distinct
 /// from the list-oriented `PROJECT_PANEL_COMPONENT`.
@@ -81,6 +84,7 @@ export function panelKindForFocus(
   if (
     elementKind === "trace" ||
     elementKind === "plot" ||
+    elementKind === "signals" ||
     elementKind === "transmit" ||
     elementKind === "rbs"
   ) {
@@ -120,6 +124,8 @@ export function elementPanelComponent(kind: ProjectElementKind): string | null {
       return TRACE_PANEL_COMPONENT;
     case "plot":
       return PLOT_PANEL_COMPONENT;
+    case "signals":
+      return SIGNALS_PANEL_COMPONENT;
     case "transmit":
       return TRANSMIT_PANEL_COMPONENT;
     case "rbs":

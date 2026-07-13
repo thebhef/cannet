@@ -235,6 +235,13 @@ name/colour/remove on any editable event row. Remaining follow-ups:
 
 ### GUI chrome and cross-cutting
 
+- `[ui]` **Missing scroll controls on scrollable panels.** Panels that
+  overflow their viewport have no visible/usable scroll affordance for
+  the overflow axis: the trace view can't be scrolled horizontally
+  (left/right) to reach off-screen columns, and the project panel can't
+  be scrolled vertically (up/down) to reach off-screen rows. Add the
+  missing scrollbars / wheel handling so all overflow is reachable.
+
 - `[ui]` `cannet-gui` Settings panel: **remove the read-only section.**
   The custom settings panel
   ([ADR 0034](../docs/adr/0034-settings-vs-state-and-custom-settings-panel.md))

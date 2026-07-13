@@ -78,6 +78,11 @@ pub enum CanFrameKind {
 #[derive(serde::Serialize, Clone)]
 pub struct DecodedRecord {
     pub name: String,
+    /// The decoded message's `BO_` transmitting node (the sending ECU),
+    /// or `None` for the `Vector__XXX` "no sender" placeholder. Feeds
+    /// the trace views' ECU column.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transmitter: Option<String>,
     pub signals: Vec<SignalRecord>,
 }
 
@@ -550,6 +555,56 @@ pub struct SignalDescriptorRecord {
 pub struct ValueTableEntryRecord {
     pub raw: i64,
     pub label: String,
+}
+
+/// A signal view's selection: manual descriptor keys + regex patterns,
+/// OR-combined, deduped on descriptor key. Patterns evaluate host-side
+/// against the canonical signal path `bus/ecu/message/signal`
+/// (ADR 0038). `camelCase` on the wire (nested command arg).
+#[derive(serde::Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SignalSelection {
+    pub keys: Vec<SignalQuery>,
+    pub patterns: Vec<String>,
+}
+
+/// One signal-view row: a descriptor joined with its latest in-window
+/// value and per-signal update statistics. Returned (paged) by
+/// `fetch_signal_page`; the DBC panel's value column uses the same rows
+/// keyed by descriptor, so the two surfaces cannot drift.
+///
+/// The window-dependent fields are all `None` for a descriptor that
+/// hasn't appeared in the window — the row is still present (a
+/// dashboard that silently drops a dead ECU's rows hides exactly the
+/// failure being watched for).
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct SignalSnapshotRecord {
+    pub bus_id: Option<String>,
+    /// Sending ECU (`BO_` transmitter); `None` for `Vector__XXX`.
+    pub transmitter: Option<String>,
+    pub message_id: u32,
+    pub extended: bool,
+    pub message_name: String,
+    pub signal_name: String,
+    pub unit: String,
+    pub is_enum: bool,
+    /// Physical value of the signal's latest in-window update — for a
+    /// mux signal, the last frame *whose selector matched its group*.
+    pub value: Option<f64>,
+    /// Sign-extended raw value (`raw_signed`) — what enum `VAL_` rows
+    /// key on, and the enum sort key.
+    pub raw: Option<i64>,
+    /// `VAL_` label for `raw`, when the DBC defines one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Updates/second — the signal's own cadence: mux signals count
+    /// selector-matched frames only (plain signals reduce to the
+    /// message rate, same figure as the by-id view).
+    pub rate: Option<f64>,
+    /// Session update count, same population as `rate`.
+    pub count: Option<u64>,
+    /// Timestamp (seconds) of the latest in-window update.
+    pub time_seconds: Option<f64>,
 }
 
 /// The full content of one loaded DBC, shaped for the DBC

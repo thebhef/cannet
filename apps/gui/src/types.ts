@@ -19,6 +19,10 @@ export interface SignalRecord {
 
 export interface DecodedRecord {
   name: string;
+  /// The decoded message's transmitting ECU, if the DBC names one
+  /// (absent for the `Vector__XXX` "no sender" placeholder). Feeds
+  /// the trace views' "ecu" column.
+  transmitter?: string | null;
   signals: SignalRecord[];
 }
 
@@ -366,6 +370,7 @@ export type PanelViewConfig = Record<string, unknown>;
 export type ProjectElement =
   | { kind: "trace"; id: string; name?: string; sources: string[]; config?: PanelViewConfig }
   | { kind: "plot"; id: string; name?: string; sources: string[]; config?: PanelViewConfig }
+  | { kind: "signals"; id: string; name?: string; sources: string[]; config?: PanelViewConfig }
   | {
       /// A standalone, ambient signal value→color map (ADR 0029): not a
       /// graph node, not wired through `sources`. Any view rendering the
@@ -527,6 +532,9 @@ export interface Project {
   /// In-process virtual buses (ADR 0021). Bindings with
   /// `kind = local-virtual-bus` reference one by id.
   local_virtual_buses?: LocalVirtualBusDef[];
+  /// Per-signal colour overrides for the signal views: descriptor key
+  /// (`plotData.ts::signalKey`) → `#rrggbb`. Absent/empty = none.
+  signal_colors?: Record<string, string>;
 }
 
 export const PROJECT_SCHEMA_VERSION = 7;
@@ -555,6 +563,42 @@ export interface SignalDescriptorRecord {
   /// numerically and its lone label applies only on an exact raw
   /// match. The plot panel keys stepped + symbolic rendering on this.
   is_enum?: boolean;
+}
+
+/// A signal view's selection, sent to `fetch_signal_page`: manual
+/// descriptor keys + regex patterns over the canonical path
+/// `bus/ecu/message/signal` (ADR 0038), OR-combined. Mirrors
+/// `ipc.rs::SignalSelection` (camelCase on the wire).
+export interface SignalSelectionWire {
+  keys: {
+    busId: string | null;
+    messageId: number;
+    extended: boolean;
+    signalName: string;
+  }[];
+  patterns: string[];
+}
+
+/// One signal-view row: a descriptor joined with its latest in-window
+/// value and per-signal update statistics. Mirrors
+/// `ipc.rs::SignalSnapshotRecord`. The window-dependent fields are all
+/// absent for a descriptor not seen in the window — the row still
+/// renders (blank), it never disappears.
+export interface SignalSnapshotRecord {
+  bus_id: string | null;
+  transmitter: string | null;
+  message_id: number;
+  extended: boolean;
+  message_name: string;
+  signal_name: string;
+  unit: string;
+  is_enum: boolean;
+  value: number | null;
+  raw: number | null;
+  label?: string | null;
+  rate: number | null;
+  count: number | null;
+  time_seconds: number | null;
 }
 
 /// One `(raw_value, label)` row of a signal's `VAL_` table — mirrors

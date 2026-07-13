@@ -46,6 +46,13 @@ export interface ProjectContextValue {
   connectedBusIds: string[];
   /// Path of a loaded BLF replay, if one is the active source.
   blfPath: string | null;
+  /// Per-signal colour overrides for the signal views: descriptor key
+  /// (`plotData.ts::signalKey`) → `#rrggbb`. Project-level so a signal
+  /// keeps its colour across views and sessions; signals without an
+  /// entry render their stable wheel colour (`palette.ts`).
+  signalColors: Record<string, string>;
+  /// Set (or clear, with `null`) one signal's colour override.
+  onSetSignalColor: (key: string, color: string | null) => void;
 
   onNewProject: () => void;
   onOpenProject: () => void;

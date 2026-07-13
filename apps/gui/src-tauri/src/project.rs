@@ -214,6 +214,13 @@ pub struct Project {
     /// Additive; no schema-version bump.
     #[serde(default)]
     pub transmit_frames: Vec<crate::transmit_frames::TransmitFrame>,
+    /// Per-signal colour overrides for the signal views: descriptor
+    /// key → `#rrggbb`. Project-level (not per-panel) so a signal
+    /// keeps its colour across views and sessions; the frontend owns
+    /// the key format (`plotData.ts::signalKey`) and the host just
+    /// round-trips the map. Additive; no schema-version bump.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub signal_colors: std::collections::HashMap<String, String>,
 }
 
 /// A fresh random project identity. The serde default for
@@ -398,6 +405,7 @@ mod tests {
             remote_address: Some("127.0.0.1:50051".into()),
             local_virtual_buses: Vec::new(),
             transmit_frames: Vec::new(),
+            signal_colors: std::collections::HashMap::new(),
         }
     }
 
@@ -532,6 +540,7 @@ mod tests {
                 }],
             }],
             transmit_frames: Vec::new(),
+            signal_colors: std::collections::HashMap::new(),
         };
         let text = serde_json::to_string_pretty(&p).unwrap();
         let parsed = parse_project(&text).unwrap();
@@ -566,6 +575,7 @@ mod tests {
             remote_address: None,
             local_virtual_buses: Vec::new(),
             transmit_frames: Vec::new(),
+            signal_colors: std::collections::HashMap::new(),
         };
         let text = serde_json::to_string_pretty(&p).unwrap();
         let parsed = parse_project(&text).unwrap();

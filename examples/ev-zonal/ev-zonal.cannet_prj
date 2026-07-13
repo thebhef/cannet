@@ -29,10 +29,11 @@
                 "data": [
                   {
                     "data": {
-                      "activeView": "trace-byid-pack",
+                      "activeView": "signals-pack-signals",
                       "id": "4",
                       "views": [
-                        "trace-byid-pack"
+                        "trace-byid-pack",
+                        "signals-pack-signals"
                       ]
                     },
                     "size": 597,
@@ -382,6 +383,11 @@
               "width": 100
             },
             {
+              "key": "ecu",
+              "visible": true,
+              "width": 110
+            },
+            {
               "key": "id",
               "visible": true,
               "width": 96
@@ -443,6 +449,11 @@
               "key": "bus",
               "visible": true,
               "width": 100
+            },
+            {
+              "key": "ecu",
+              "visible": true,
+              "width": 110
             },
             {
               "key": "id",
@@ -508,6 +519,11 @@
               "width": 100
             },
             {
+              "key": "ecu",
+              "visible": true,
+              "width": 110
+            },
+            {
               "key": "id",
               "visible": true,
               "width": 96
@@ -543,6 +559,21 @@
           "showEvents": true
         },
         "title": "All buses"
+      },
+      "signals-pack-signals": {
+        "contentComponent": "signals",
+        "id": "signals-pack-signals",
+        "params": {
+          "elementId": "pack-signals",
+          "selection": {
+            "keys": [],
+            "patterns": [
+              "^Pack/BMS/PackStatus/",
+              "^Pack/BMS/BmsCellDetail/CellVoltage00[1-9]$"
+            ]
+          }
+        },
+        "title": "Pack Signals"
       }
     }
   },
@@ -570,6 +601,11 @@
             "key": "bus",
             "visible": true,
             "width": 100
+          },
+          {
+            "key": "ecu",
+            "visible": true,
+            "width": 110
           },
           {
             "key": "id",
@@ -637,6 +673,11 @@
             "width": 100
           },
           {
+            "key": "ecu",
+            "visible": true,
+            "width": 110
+          },
+          {
             "key": "id",
             "visible": true,
             "width": 96
@@ -700,6 +741,11 @@
             "key": "bus",
             "visible": true,
             "width": 100
+          },
+          {
+            "key": "ecu",
+            "visible": true,
+            "width": 110
           },
           {
             "key": "id",
@@ -1085,6 +1131,23 @@
         }
       ],
       "signalName": "LockState"
+    },
+    {
+      "kind": "signals",
+      "id": "pack-signals",
+      "name": "Pack Signals",
+      "sources": [
+        "pack"
+      ],
+      "config": {
+        "selection": {
+          "keys": [],
+          "patterns": [
+            "^Pack/BMS/PackStatus/",
+            "^Pack/BMS/BmsCellDetail/CellVoltage00[1-9]$"
+          ]
+        }
+      }
     }
   ],
   "buses": [

@@ -375,6 +375,7 @@ mod tests {
     fn decoded(name: &str, signals: &[(&str, f64)]) -> DecodedRecord {
         DecodedRecord {
             name: name.into(),
+            transmitter: None,
             signals: signals
                 .iter()
                 .map(|(n, v)| SignalRecord {

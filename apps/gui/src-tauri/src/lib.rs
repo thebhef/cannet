@@ -67,6 +67,7 @@ mod sidecar;
 #[allow(clippy::missing_panics_doc, clippy::new_without_default)]
 pub mod signal_cache;
 pub mod signal_sampler;
+mod signal_snapshot;
 mod system_log;
 #[allow(
     clippy::missing_panics_doc,
@@ -104,8 +105,8 @@ use ipc::{
     BusFps, ByIdSnapshot, DbcAttributeRecord, DbcContentRecord, DbcInfo, DbcMessageContentRecord,
     DbcSignalContentRecord, DecimatedRange, DecodedRecord, FilteredTracePage, InterfaceRecord,
     LogFinished, OpenLogResult, RemoteSessionResult, RowPage, SampledPoints,
-    SignalDescriptorRecord, SignalExtent, SignalQuery, SignalRecord, TraceFrameRecord, TraceGrew,
-    ValueTableEntryRecord,
+    SignalDescriptorRecord, SignalExtent, SignalQuery, SignalRecord, SignalSelection,
+    SignalSnapshotRecord, TraceFrameRecord, TraceGrew, ValueTableEntryRecord,
 };
 use notes::{Note, NotesStore};
 use signal_cache::SignalCacheStore;
@@ -119,7 +120,10 @@ use trace_store::{RawTraceFrame, TraceStore};
 /// the frame's `bus_id`. An empty set is "applies to every bus".
 struct LoadedDbc {
     path: String,
-    db: Database,
+    /// `Arc` so the trace store's per-frame mux-selector extractor can
+    /// hold a snapshot of the loaded set without cloning parse results
+    /// or locking `databases` on the append path.
+    db: Arc<Database>,
     /// Scoped bus ids; empty = unscoped (applies to all buses).
     buses: Vec<String>,
 }
@@ -472,6 +476,7 @@ pub fn run() {
             set_dbc_buses,
             fetch_trace_range,
             fetch_by_id_page,
+            fetch_signal_page,
             fetch_filtered_trace,
             clear_trace_store,
             restore_scratch_capture,
@@ -1316,6 +1321,7 @@ fn add_dbc(
     for w in db.parse_warnings() {
         sys_warn!(&app, "dbc", "{path}: {w}");
     }
+    let db = Arc::new(db);
     let reloaded = {
         let mut list = state.databases.lock().expect("databases mutex poisoned");
         if let Some(slot) = list.iter_mut().find(|d| d.path == path) {
@@ -1443,6 +1449,42 @@ fn clear_dbcs(app: AppHandle, state: State<'_, AppState>) {
 pub(crate) fn invalidate_derived_caches(state: &AppState) {
     state.signal_caches.clear();
     *state.filter_index.lock().expect("filter index mutex poisoned") = None;
+    refresh_mux_extractor(state);
+}
+
+/// (Re)install the trace store's multiplexor-selector extractor from
+/// the current DBC set — the append-path hook behind the per-signal
+/// latest-value view's mux index ([`TraceStore::latest_mux_in_window`]).
+/// The closure holds `Arc` snapshots of the loaded databases, so the
+/// append path never takes the `databases` lock; a DBC-set change just
+/// swaps the closure (and resets the index) here. `None` when no loaded
+/// DBC has a multiplexed message — the common case pays nothing.
+fn refresh_mux_extractor(state: &AppState) {
+    let snap: Vec<(Arc<Database>, Vec<String>)> = {
+        let dbs = state.databases.lock().expect("databases mutex poisoned");
+        dbs.iter()
+            .filter(|d| d.db.has_multiplexor())
+            .map(|d| (d.db.clone(), d.buses.clone()))
+            .collect()
+    };
+    if snap.is_empty() {
+        state.trace_store.set_mux_extractor(None);
+        return;
+    }
+    state.trace_store.set_mux_extractor(Some(Arc::new(move |f: &RawTraceFrame| {
+        let id = if f.extended {
+            CanId::extended(f.id).ok()?
+        } else {
+            CanId::standard(f.id).ok()?
+        };
+        snap.iter()
+            .filter(|(_, buses)| {
+                // Same per-bus scoping rule as `dbc_applies_to_frame`.
+                buses.is_empty()
+                    || f.bus_id.as_ref().is_some_and(|b| buses.iter().any(|x| x == b))
+            })
+            .find_map(|(db, _)| db.decode_mux_selector(id, f.payload.data()))
+    })));
 }
 
 /// Pull a `[start, end)` slice out of the trace store and decode each
@@ -1617,6 +1659,13 @@ fn bus_sort_key(bus_id: Option<&str>, names: &HashMap<String, String>) -> String
     }
 }
 
+/// The `ecu` column's sort key — the decoded message's transmitter.
+/// Undecoded rows and the `Vector__XXX` "no sender" placeholder sort
+/// after any real ECU ascending, same convention as [`bus_sort_key`].
+fn ecu_sort_key(f: &TraceFrameRecord) -> &str {
+    f.decoded.as_ref().and_then(|d| d.transmitter.as_deref()).unwrap_or("~")
+}
+
 /// The `kind` column's sort key — the frame-kind discriminant, matching
 /// the `snake_case` tag the frontend column shows.
 fn kind_sort_key(kind: &ipc::CanFrameKind) -> &'static str {
@@ -1655,6 +1704,7 @@ fn by_id_cmp(
             let nb = fb.decoded.as_ref().map_or("", |d| d.name.as_str());
             na.cmp(nb)
         }
+        "ecu" => ecu_sort_key(fa).cmp(ecu_sort_key(fb)),
         _ => std::cmp::Ordering::Equal,
     }
 }
@@ -1753,6 +1803,283 @@ async fn fetch_by_id_page(
         start: u64::try_from(off).unwrap_or(0),
         rows: page,
     }
+}
+
+/// A *paged* latest-per-signal snapshot of the trace window
+/// `[scan_start, scan_end)` — the signal view's accessor, and the by-id
+/// page's per-signal sibling (same ADR 0025 row-page contract). One row
+/// per *selected descriptor*, always present: a signal with no
+/// in-window update still gets a row, just with blank value/statistics.
+/// Selection (manual keys + regex over the ADR 0038 canonical path),
+/// sort, and paging all evaluate host-side. `Err` carries an invalid
+/// regex's compile error for the panel to surface.
+///
+/// The DBC panel's live value column calls this too (keys-only
+/// selection over its visible slice) — one decode path, one row shape,
+/// so the two surfaces cannot drift.
+#[tauri::command]
+#[allow(clippy::unused_async, clippy::too_many_arguments, clippy::needless_pass_by_value)]
+async fn fetch_signal_page(
+    app: AppHandle,
+    selection: SignalSelection,
+    scan_start: u64,
+    scan_end: u64,
+    sort_key: Option<String>,
+    sort_dir: Option<String>,
+    bus_names: Vec<(String, String)>,
+    project_buses: Vec<String>,
+    source_buses: Option<Vec<String>>,
+    offset: u64,
+    limit: u64,
+) -> Result<RowPage<SignalSnapshotRecord>, String> {
+    let state: State<'_, AppState> = app.state();
+    fetch_signal_page_inner(
+        state.inner(),
+        &selection,
+        scan_start,
+        scan_end,
+        sort_key.as_deref(),
+        sort_dir.as_deref(),
+        bus_names,
+        &project_buses,
+        source_buses.as_deref(),
+        offset,
+        limit,
+    )
+}
+
+#[allow(clippy::too_many_arguments)] // the command's IPC payload, unwrapped for tests
+fn fetch_signal_page_inner(
+    state: &AppState,
+    selection: &SignalSelection,
+    scan_start: u64,
+    scan_end: u64,
+    sort_key: Option<&str>,
+    sort_dir: Option<&str>,
+    bus_names: Vec<(String, String)>,
+    project_buses: &[String],
+    source_buses: Option<&[String]>,
+    offset: u64,
+    limit: u64,
+) -> Result<RowPage<SignalSnapshotRecord>, String> {
+    let start = usize::try_from(scan_start).unwrap_or(usize::MAX);
+    let end = usize::try_from(scan_end).unwrap_or(usize::MAX);
+    let names: HashMap<String, String> = bus_names.into_iter().collect();
+    // Snapshot the DBC set (Arc clones) so decode and the store's
+    // windowed queries run without holding the databases lock.
+    let dbs: Vec<(Arc<Database>, Vec<String>)> = {
+        let guard = state.databases.lock().expect("databases mutex poisoned");
+        guard.iter().map(|d| (d.db.clone(), d.buses.clone())).collect()
+    };
+    let mut all = signal_snapshot::scoped_descriptors(
+        dbs.iter().map(|(db, buses)| (db.as_ref(), buses.as_slice())),
+        project_buses,
+    );
+    // The view's `sources` wiring bounds what exists for it: restricted
+    // to specific buses, other buses' descriptors (and the
+    // unassigned-bus degenerate) are out of scope — for the regex too,
+    // not just the rows. `None` = unwired / "*" = everything.
+    if let Some(scope) = source_buses {
+        all.retain(|(bus, _)| bus.as_ref().is_some_and(|b| scope.contains(b)));
+    }
+    let selected = signal_snapshot::select_descriptors(&all, selection, &names)?;
+    let mut rows = collect_signal_rows(state, &dbs, &all, &selected, start, end);
+    signal_snapshot::sort_rows(&mut rows, sort_key, sort_dir, &names);
+
+    let count = u64::try_from(rows.len()).unwrap_or(u64::MAX);
+    let off = usize::try_from(offset).unwrap_or(usize::MAX).min(rows.len());
+    let lim = usize::try_from(limit).unwrap_or(usize::MAX);
+    let page: Vec<SignalSnapshotRecord> = rows.into_iter().skip(off).take(lim).collect();
+    Ok(RowPage {
+        count,
+        start: u64::try_from(off).unwrap_or(0),
+        rows: page,
+    })
+}
+
+/// Join the selected descriptors with the trace window: one decoded
+/// latest frame per *message stream and mux group* — never per signal —
+/// then one row per descriptor extracted from those decodes. Rows come
+/// back in `selected` order (the deterministic descriptor order);
+/// blanks stay in place.
+/// A message stream's identity in the snapshot join: `(bus, id,
+/// extended)` — the descriptor key minus the signal name.
+type StreamKey = (Option<String>, u32, bool);
+
+/// The selected descriptor indices one message stream owes rows for,
+/// split by how their latest frame resolves.
+#[derive(Default)]
+struct WantedSignals {
+    plain: Vec<usize>,
+    mux: HashMap<u64, Vec<usize>>,
+}
+
+/// One resolved (non-blank) snapshot cell: a descriptor's decoded
+/// latest value + its update statistics.
+struct SnapshotCell {
+    value: f64,
+    raw: i64,
+    label: Option<String>,
+    rate: f64,
+    count: u64,
+    time_seconds: f64,
+}
+
+/// Extract cells for `idxs` (descriptor indices into `all`) from one
+/// decoded frame, all sharing that frame's statistics. A signal absent
+/// from the decode (payload too short) simply stays blank.
+fn extract_snapshot_cells(
+    cells: &mut HashMap<usize, SnapshotCell>,
+    all: &[(Option<String>, cannet_dbc::SignalDescriptor)],
+    idxs: &[usize],
+    decoded: &cannet_dbc::DecodedMessage<'_>,
+    rate: f64,
+    count: u64,
+    time_seconds: f64,
+) {
+    for &i in idxs {
+        let Some(sig) = decoded.signals.iter().find(|s| s.name == all[i].1.signal_name) else {
+            continue;
+        };
+        cells.insert(i, SnapshotCell {
+            value: sig.value,
+            raw: sig.raw_signed,
+            label: sig.label.map(str::to_string),
+            rate,
+            count,
+            time_seconds,
+        });
+    }
+}
+
+fn collect_signal_rows(
+    state: &AppState,
+    dbs: &[(Arc<Database>, Vec<String>)],
+    all: &[(Option<String>, cannet_dbc::SignalDescriptor)],
+    selected: &[usize],
+    start: usize,
+    end: usize,
+) -> Vec<SignalSnapshotRecord> {
+    let mut streams: HashMap<StreamKey, WantedSignals> = HashMap::new();
+    for &i in selected {
+        let (bus, d) = &all[i];
+        let w = streams.entry((bus.clone(), d.message_id, d.extended)).or_default();
+        match d.mux_selector {
+            None => w.plain.push(i),
+            Some(sel) => w.mux.entry(sel).or_default().push(i),
+        }
+    }
+
+    // One windowed by-key snapshot serves every plain signal; merge the
+    // per-channel FrameKeys down to (bus, id, extended), keeping the
+    // newest occurrence (same-bus multi-channel ids are a degenerate
+    // config — the newest channel's frame and statistics represent it).
+    let mut plain_latest: HashMap<StreamKey, trace_store::LatestById> = HashMap::new();
+    for row in state.trace_store.latest_in_window(start, end) {
+        let key = (row.frame.bus_id.clone(), row.frame.id, row.frame.extended);
+        match plain_latest.get(&key) {
+            Some(have) if have.index >= row.index => {}
+            _ => {
+                plain_latest.insert(key, row);
+            }
+        }
+    }
+
+    // Per descriptor index: the decoded value + statistics, or absent
+    // (blank row). Decodes happen per (stream, group): a 500-signal mux
+    // message costs one decode per selector group, not per signal.
+    let mut cells: HashMap<usize, SnapshotCell> = HashMap::new();
+    #[allow(clippy::cast_precision_loss)]
+    let secs = |ns: u64| (ns as f64) / 1e9;
+    for ((bus, id, extended), wanted) in &streams {
+        if !wanted.plain.is_empty() {
+            if let Some(latest) = plain_latest.get(&(bus.clone(), *id, *extended)) {
+                if let Some(decoded) = decode_snapshot_frame(dbs, &latest.frame) {
+                    extract_snapshot_cells(
+                        &mut cells,
+                        all,
+                        &wanted.plain,
+                        &decoded,
+                        latest.rate,
+                        latest.count,
+                        secs(latest.frame.timestamp_ns),
+                    );
+                }
+            }
+        }
+        if !wanted.mux.is_empty() {
+            let selectors: Vec<u64> = wanted.mux.keys().copied().collect();
+            let latest = state.trace_store.latest_mux_in_window(
+                bus.as_deref(),
+                *id,
+                *extended,
+                &selectors,
+                start,
+                end,
+            );
+            for (sel, (_, frame)) in &latest {
+                let Some(decoded) = decode_snapshot_frame(dbs, frame) else { continue };
+                let (rate, count) = state
+                    .trace_store
+                    .mux_stats(bus.as_deref(), *id, *extended, *sel)
+                    .unwrap_or((0.0, 0));
+                extract_snapshot_cells(
+                    &mut cells,
+                    all,
+                    &wanted.mux[sel],
+                    &decoded,
+                    rate,
+                    count,
+                    secs(frame.timestamp_ns),
+                );
+            }
+        }
+    }
+
+    selected
+        .iter()
+        .map(|&i| {
+            let (bus, d) = &all[i];
+            let cell = cells.remove(&i);
+            SignalSnapshotRecord {
+                bus_id: bus.clone(),
+                transmitter: d.transmitter.clone(),
+                message_id: d.message_id,
+                extended: d.extended,
+                message_name: d.message_name.clone(),
+                signal_name: d.signal_name.clone(),
+                unit: d.unit.clone(),
+                is_enum: d.is_enum,
+                value: cell.as_ref().map(|c| c.value),
+                raw: cell.as_ref().map(|c| c.raw),
+                label: cell.as_ref().and_then(|c| c.label.clone()),
+                rate: cell.as_ref().map(|c| c.rate),
+                count: cell.as_ref().map(|c| c.count),
+                time_seconds: cell.as_ref().map(|c| c.time_seconds),
+            }
+        })
+        .collect()
+}
+
+/// Decode a raw frame against the DBC-set snapshot — the same
+/// first-applicable-DBC-wins and per-bus-scoping rules as
+/// [`decode_against`], but returning the borrow-rich
+/// [`cannet_dbc::DecodedMessage`] (the snapshot rows need `raw_signed`,
+/// which the wire-shape [`DecodedRecord`] doesn't carry).
+fn decode_snapshot_frame<'a>(
+    dbs: &'a [(Arc<Database>, Vec<String>)],
+    frame: &RawTraceFrame,
+) -> Option<cannet_dbc::DecodedMessage<'a>> {
+    let id = if frame.extended {
+        CanId::extended(frame.id).ok()?
+    } else {
+        CanId::standard(frame.id).ok()?
+    };
+    dbs.iter()
+        .filter(|(_, buses)| {
+            buses.is_empty() || frame.bus_id.as_ref().is_some_and(|b| buses.iter().any(|x| x == b))
+        })
+        .find_map(|(db, _)| db.decode_raw(id, frame.payload.data()))
 }
 
 /// The filter index `AppState` keeps live for the trace's current filtered
@@ -2345,55 +2672,25 @@ fn list_signals(
     project_buses: Vec<String>,
 ) -> Vec<SignalDescriptorRecord> {
     let dbs = state.databases.lock().expect("databases mutex poisoned");
-    let mut out: Vec<SignalDescriptorRecord> = Vec::new();
-    for loaded in dbs.iter() {
-        // A DBC's effective scope: explicit `buses` if set, else
-        // every project bus. With no project buses at all, fall back
-        // to a single `bus_id: None` so an early-bring-up plot still
-        // sees something.
-        let scope: Vec<Option<String>> = if !loaded.buses.is_empty() {
-            loaded.buses.iter().map(|b| Some(b.clone())).collect()
-        } else if !project_buses.is_empty() {
-            project_buses.iter().map(|b| Some(b.clone())).collect()
-        } else {
-            vec![None]
-        };
-        for d in loaded.db.signals() {
-            for bus_id in &scope {
-                out.push(SignalDescriptorRecord {
-                    bus_id: bus_id.clone(),
-                    message_id: d.message_id,
-                    extended: d.extended,
-                    message_name: d.message_name.clone(),
-                    transmitter: d.transmitter.clone(),
-                    signal_name: d.signal_name.clone(),
-                    unit: d.unit.clone(),
-                    is_enum: d.is_enum,
-                });
-            }
-        }
-    }
-    out.sort_by(|a, b| {
-        (
-            a.bus_id.as_deref(),
-            a.message_id,
-            a.extended,
-            a.signal_name.as_str(),
-        )
-            .cmp(&(
-                b.bus_id.as_deref(),
-                b.message_id,
-                b.extended,
-                b.signal_name.as_str(),
-            ))
-    });
-    out.dedup_by(|a, b| {
-        a.bus_id == b.bus_id
-            && a.message_id == b.message_id
-            && a.extended == b.extended
-            && a.signal_name == b.signal_name
-    });
-    out
+    // Shared enumeration with `fetch_signal_page` (per-bus scope
+    // expansion + descriptor-key dedup), so the picker catalog and the
+    // signal-view rows can't disagree about what exists.
+    signal_snapshot::scoped_descriptors(
+        dbs.iter().map(|l| (l.db.as_ref(), l.buses.as_slice())),
+        &project_buses,
+    )
+    .into_iter()
+    .map(|(bus_id, d)| SignalDescriptorRecord {
+        bus_id,
+        message_id: d.message_id,
+        extended: d.extended,
+        message_name: d.message_name,
+        transmitter: d.transmitter,
+        signal_name: d.signal_name,
+        unit: d.unit,
+        is_enum: d.is_enum,
+    })
+    .collect()
 }
 
 /// Snapshot every loaded DBC's content for the DBC
@@ -2634,7 +2931,7 @@ fn sample_signals_inner(
     // the win at long captures + high rate: per-tick host work no
     // longer scales with capture length.
     let dbs_guard = state.databases.lock().expect("databases mutex poisoned");
-    let db_refs: Vec<&Database> = dbs_guard.iter().map(|l| &l.db).collect();
+    let db_refs: Vec<&Database> = dbs_guard.iter().map(|l| l.db.as_ref()).collect();
     // The cache decimates internally now: it reads the coarsest pyramid
     // level above `max_points` (ADR 0002 DS-5), so a "fit data" over a
     // huge capture serves `O(max_points)` points instead of
@@ -2693,7 +2990,7 @@ fn sample_signals_inner(
 async fn signal_min_max(app: AppHandle, signals: Vec<SignalQuery>) -> Vec<Option<SignalExtent>> {
     let state: State<'_, AppState> = app.state();
     let dbs_guard = state.databases.lock().expect("databases mutex poisoned");
-    let db_refs: Vec<&Database> = dbs_guard.iter().map(|l| &l.db).collect();
+    let db_refs: Vec<&Database> = dbs_guard.iter().map(|l| l.db.as_ref()).collect();
     let out = signals
         .iter()
         .map(|q| {
@@ -2723,6 +3020,7 @@ fn decode_raw_frame(db: &Database, frame: &RawTraceFrame) -> Option<DecodedRecor
     let data = frame.payload.data();
     db.decode_raw(id, data).map(|m| DecodedRecord {
         name: m.name.to_string(),
+        transmitter: m.transmitter.map(str::to_string),
         signals: m.signals.iter().map(signal_to_wire).collect(),
     })
 }
@@ -4460,6 +4758,189 @@ mod tests {
         assert_eq!(sorted_ids(&rows, Some("bus"), Some("desc"), &names), vec![0x200, 0x100, 0x300]);
     }
 
+    #[test]
+    fn sort_by_id_orders_by_ecu_no_transmitter_last() {
+        // Sorts by the decoded message's transmitter, with undecoded /
+        // no-sender rows after any real ECU ascending (mirrors "bus").
+        let names = HashMap::new();
+        let with_ecu = |mut s: ByIdSnapshot, tx: Option<&str>| {
+            s.frame.decoded = Some(DecodedRecord {
+                name: "M".to_string(),
+                transmitter: tx.map(Into::into),
+                signals: vec![],
+            });
+            s
+        };
+        let rows = [
+            with_ecu(snap(0x100, 0, 0.0, None), Some("Zonal")),
+            snap(0x200, 0, 0.0, None), // undecoded
+            with_ecu(snap(0x300, 0, 0.0, None), Some("Bms")),
+            with_ecu(snap(0x400, 0, 0.0, None), None), // Vector__XXX
+        ];
+        assert_eq!(
+            sorted_ids(&rows, Some("ecu"), Some("asc"), &names),
+            vec![0x300, 0x100, 0x200, 0x400],
+        );
+        assert_eq!(
+            sorted_ids(&rows, Some("ecu"), Some("desc"), &names),
+            vec![0x200, 0x400, 0x100, 0x300],
+        );
+    }
+
+    /// A multiplexed message in the ev-zonal shape: a selector byte
+    /// gating two per-mode fields, plus an unconditional field.
+    const MUX_SNAPSHOT_DBC: &str = "VERSION \"\"\n\nNS_ :\n\nBS_:\n\nBU_: Zonal\n\n\
+        BO_ 512 Modes: 8 Zonal\n\
+        \x20SG_ Mux M : 0|8@1+ (1,0) [0|0] \"\" Zonal\n\
+        \x20SG_ ModeA m0 : 8|16@1+ (1,0) [0|0] \"\" Zonal\n\
+        \x20SG_ ModeB m1 : 8|16@1+ (0.5,0) [0|0] \"\" Zonal\n\
+        \x20SG_ Always : 24|8@1+ (1,0) [0|0] \"\" Zonal\n";
+
+    /// A `Modes` frame: selector byte + a little-endian 16-bit field +
+    /// the unconditional byte.
+    fn modes_frame(ts_ns: u64, sel: u8, field: u16, always: u8) -> RawTraceFrame {
+        let [lo, hi] = field.to_le_bytes();
+        RawTraceFrame {
+            timestamp_ns: ts_ns,
+            payload: CanFramePayload::Classic(vec![sel, lo, hi, always, 0, 0, 0, 0]),
+            ..dummy_frame(ts_ns, 512)
+        }
+    }
+
+    fn mux_snapshot_state() -> AppState {
+        let state = test_state();
+        state
+            .databases
+            .lock()
+            .unwrap()
+            .push(loaded("modes.dbc", MUX_SNAPSHOT_DBC));
+        // What add_dbc does after a DBC-set change — installs the
+        // trace store's mux-selector extractor.
+        invalidate_derived_caches(&state);
+        state
+    }
+
+    fn fetch_all_signals(state: &AppState, end: u64) -> Vec<SignalSnapshotRecord> {
+        let sel = SignalSelection {
+            keys: vec![],
+            patterns: vec!["^/Zonal/Modes/".to_string()],
+        };
+        fetch_signal_page_inner(state, &sel, 0, end, None, None, vec![], &[], None, 0, 100)
+            .expect("valid pattern")
+            .rows
+    }
+
+    #[test]
+    fn fetch_signal_page_scopes_to_source_buses() {
+        // A signal view is a sink with `sources` wiring: restricted to
+        // specific buses, descriptors outside them (including the
+        // unassigned-bus degenerate) don't exist for it.
+        let state = mux_snapshot_state();
+        let sel = SignalSelection {
+            keys: vec![],
+            patterns: vec![".".to_string()],
+        };
+        let page = fetch_signal_page_inner(
+            &state,
+            &sel,
+            0,
+            u64::MAX,
+            None,
+            None,
+            vec![],
+            &[],
+            Some(&["powertrain".to_string()]),
+            0,
+            100,
+        )
+        .unwrap();
+        assert_eq!(page.count, 0); // fixture descriptors are unassigned-bus
+        let unrestricted =
+            fetch_signal_page_inner(&state, &sel, 0, u64::MAX, None, None, vec![], &[], None, 0, 100)
+                .unwrap();
+        assert_eq!(unrestricted.count, 4);
+    }
+
+    #[test]
+    fn fetch_signal_page_holds_every_mux_group_simultaneously() {
+        // The Task-20 stress case: decoding only the message's latest
+        // frame would blank every mux group but the last one seen. Each
+        // group must hold its own latest value at the same time.
+        let state = mux_snapshot_state();
+        state.trace_store.append(modes_frame(1_000_000_000, 0, 0x1234, 5));
+        state.trace_store.append(modes_frame(2_000_000_000, 1, 0x5678, 9));
+        let rows = fetch_all_signals(&state, u64::MAX);
+        let by_name = |n: &str| rows.iter().find(|r| r.signal_name == n).unwrap();
+        assert_eq!(rows.len(), 4); // Always, ModeA, ModeB, Mux — all present
+        // Both groups hold values simultaneously, each from *its* frame.
+        let mode_a = by_name("ModeA");
+        assert_eq!(mode_a.value, Some(f64::from(0x1234u16)));
+        assert_eq!(mode_a.count, Some(1));
+        assert_eq!(mode_a.time_seconds, Some(1.0));
+        let mode_b = by_name("ModeB");
+        assert_eq!(mode_b.value, Some(f64::from(0x5678u16) * 0.5));
+        assert_eq!(mode_b.count, Some(1));
+        assert_eq!(mode_b.time_seconds, Some(2.0));
+        // Plain signals ride the message's latest frame + statistics.
+        let always = by_name("Always");
+        assert_eq!(always.value, Some(9.0));
+        assert_eq!(always.count, Some(2));
+        assert_eq!(always.transmitter.as_deref(), Some("Zonal"));
+    }
+
+    #[test]
+    fn fetch_signal_page_bounds_mux_groups_to_the_window() {
+        let state = mux_snapshot_state();
+        state.trace_store.append(modes_frame(1_000_000_000, 0, 0x1234, 5)); // idx 0
+        state.trace_store.append(modes_frame(2_000_000_000, 1, 0x5678, 9)); // idx 1
+        // Window [0, 1): only the selector-0 frame is visible.
+        let rows = fetch_all_signals(&state, 1);
+        let by_name = |n: &str| rows.iter().find(|r| r.signal_name == n).unwrap();
+        assert_eq!(rows.len(), 4); // blank rows stay present
+        assert_eq!(by_name("ModeA").value, Some(f64::from(0x1234u16)));
+        let mode_b = by_name("ModeB");
+        assert_eq!(mode_b.value, None);
+        assert_eq!(mode_b.count, None);
+        assert_eq!(by_name("Always").value, Some(5.0)); // not the later 9
+    }
+
+    #[test]
+    fn fetch_signal_page_lists_never_seen_descriptors_as_blank_rows() {
+        // An empty capture still yields one row per selected
+        // descriptor — a dashboard's dead-ECU rows must not vanish.
+        let state = mux_snapshot_state();
+        let rows = fetch_all_signals(&state, u64::MAX);
+        assert_eq!(rows.len(), 4);
+        assert!(rows.iter().all(|r| r.value.is_none() && r.count.is_none()));
+    }
+
+    #[test]
+    fn fetch_signal_page_pages_and_sorts_host_side() {
+        let state = mux_snapshot_state();
+        state.trace_store.append(modes_frame(1_000_000_000, 0, 40, 5));
+        let sel = SignalSelection {
+            keys: vec![],
+            patterns: vec!["^/Zonal/Modes/".to_string()],
+        };
+        // Sort by value ascending: Mux(0), Always(5), ModeA(40), then
+        // blank ModeB last; page [1, 3) of that order.
+        let page =
+            fetch_signal_page_inner(&state, &sel, 0, u64::MAX, Some("value"), Some("asc"), vec![], &[], None, 1, 2)
+                .unwrap();
+        assert_eq!(page.count, 4);
+        assert_eq!(page.start, 1);
+        let names: Vec<&str> = page.rows.iter().map(|r| r.signal_name.as_str()).collect();
+        assert_eq!(names, vec!["Always", "ModeA"]);
+    }
+
+    #[test]
+    fn decode_against_carries_the_transmitter() {
+        let db = Database::parse(&tiny_dbc(0x100, "M", "S")).unwrap();
+        let dbs = vec![LoadedDbc { path: "t.dbc".into(), db: Arc::new(db), buses: Vec::new() }];
+        let decoded = decode_against(&dbs, &frame_with_data(0x100)).unwrap();
+        assert_eq!(decoded.transmitter.as_deref(), Some("ECU"));
+    }
+
     /// A classic frame with a full 8-byte payload — enough that an
     /// 8-bit signal at byte 0 actually decodes (an empty payload would
     /// be skipped as "outside the payload").
@@ -4510,7 +4991,7 @@ mod tests {
     pub(crate) fn loaded(path: &str, dbc_text: &str) -> LoadedDbc {
         LoadedDbc {
             path: path.into(),
-            db: Database::parse(dbc_text).expect("test DBC parses"),
+            db: Arc::new(Database::parse(dbc_text).expect("test DBC parses")),
             buses: Vec::new(),
         }
     }
@@ -4518,7 +4999,7 @@ mod tests {
     pub(crate) fn loaded_scoped(path: &str, dbc_text: &str, buses: &[&str]) -> LoadedDbc {
         LoadedDbc {
             path: path.into(),
-            db: Database::parse(dbc_text).expect("test DBC parses"),
+            db: Arc::new(Database::parse(dbc_text).expect("test DBC parses")),
             buses: buses.iter().map(|s| (*s).into()).collect(),
         }
     }
@@ -5023,7 +5504,7 @@ mod tests {
         // The signal cache for `(bus=p, id=0x123, "Sig")` must include
         // the tx-confirm's decoded value (42).
         let dbs_guard = state.databases.lock().unwrap();
-        let db_refs: Vec<&Database> = dbs_guard.iter().map(|l| &l.db).collect();
+        let db_refs: Vec<&Database> = dbs_guard.iter().map(|l| l.db.as_ref()).collect();
         let samples = state.signal_caches.slice(
             Some("p"),
             0x123,
@@ -5162,7 +5643,7 @@ mod tests {
         );
 
         let dbs_guard = state.databases.lock().unwrap();
-        let db_refs: Vec<&Database> = dbs_guard.iter().map(|l| &l.db).collect();
+        let db_refs: Vec<&Database> = dbs_guard.iter().map(|l| l.db.as_ref()).collect();
 
         // Plot scoped to "p" sees the tx-confirm.
         let samples_p = state.signal_caches.slice(

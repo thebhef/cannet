@@ -644,6 +644,25 @@ function PlotNode({ data }: NodeProps) {
   );
 }
 
+function SignalsNode({ data }: NodeProps) {
+  const node = unwrap(data);
+  const registry = useElementRegistry();
+  if (node.kind !== "signals") return null;
+  return (
+    <div className="graph-node graph-node-signals" style={{ width: NODE_WIDTH }}>
+      <Handle type="target" position={Position.Left} />
+      <SignalsGlyph />
+      <div className="graph-node-label">
+        <span className="graph-node-kind">Signals (sink)</span>
+        <span className="graph-node-title">{node.label}</span>
+        <InsertFilterButton
+          onClick={() => insertFilterUpstream(registry, node.element.id)}
+        />
+      </div>
+    </div>
+  );
+}
+
 /// Small "+ filter" button rendered on each consumer node in the
 /// graph. Clicking it creates a fresh filter, transfers the
 /// consumer's input streams onto the filter, then re-routes the
@@ -722,6 +741,7 @@ const NODE_TYPES = {
   transmit: TransmitNode,
   trace: TraceNode,
   plot: PlotNode,
+  signals: SignalsNode,
   filter: FilterNode,
 };
 
@@ -780,6 +800,25 @@ function TraceGlyph() {
       <line x1="4" y1="10" x2="20" y2="10" stroke="currentColor" strokeWidth="1.5" />
       <line x1="4" y1="14" x2="20" y2="14" stroke="currentColor" strokeWidth="1.5" />
       <line x1="4" y1="18" x2="20" y2="18" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+}
+
+function SignalsGlyph() {
+  return (
+    <svg
+      className="graph-node-glyph"
+      width="24"
+      height="24"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+    >
+      <line x1="4" y1="7" x2="12" y2="7" stroke="currentColor" strokeWidth="1.5" />
+      <circle cx="18" cy="7" r="2.4" fill="currentColor" />
+      <line x1="4" y1="12" x2="10" y2="12" stroke="currentColor" strokeWidth="1.5" />
+      <circle cx="16" cy="12" r="2.4" fill="currentColor" />
+      <line x1="4" y1="17" x2="13" y2="17" stroke="currentColor" strokeWidth="1.5" />
+      <circle cx="19" cy="17" r="2.4" fill="currentColor" />
     </svg>
   );
 }

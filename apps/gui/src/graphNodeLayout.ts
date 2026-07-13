@@ -27,6 +27,7 @@ const LANE_X: Record<GraphNodeKind, number> = {
   filter: 760,
   plot: 1080,
   trace: 1080,
+  signals: 1080,
 };
 const LANE_Y_OFFSET: Record<GraphNodeKind, number> = {
   gateway: 0, // top-left lane
@@ -36,6 +37,7 @@ const LANE_Y_OFFSET: Record<GraphNodeKind, number> = {
   filter: 80,
   plot: 0, // sinks stack from the top of the right lane
   trace: 0,
+  signals: 0,
 };
 
 /// Which lane-counter slot a node kind shares. Kinds reusing the same
@@ -50,6 +52,7 @@ const LANE_SLOT: Record<GraphNodeKind, string> = {
   filter: "middle-right",
   plot: "right",
   trace: "right",
+  signals: "right",
 };
 
 export const GRAPH_ROW_HEIGHT = 110;
