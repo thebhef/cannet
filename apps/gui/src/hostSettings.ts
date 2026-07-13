@@ -14,6 +14,8 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
+import type { BindingSpec } from "./commands";
+
 /// Mirror of the host `Settings` struct (snake_case to match serde).
 export interface Settings {
   /// Max bytes the disk-spill scratch may grow to before oldest history
@@ -21,10 +23,15 @@ export interface Settings {
   scratch_cap_bytes: number | null;
   /// Wipe the scratch on a clean exit.
   clear_scratch_on_exit: boolean;
+  /// User keybinding customisation (ADR 0018). `null` = use the app's
+  /// built-in defaults; a list is the whole effective binding set that
+  /// replaces the defaults. Resolve to the effective bindings with
+  /// `resolveBindings` from `commands.ts`.
+  keybindings: BindingSpec[] | null;
 }
 
 export function defaultSettings(): Settings {
-  return { scratch_cap_bytes: null, clear_scratch_on_exit: false };
+  return { scratch_cap_bytes: null, clear_scratch_on_exit: false, keybindings: null };
 }
 
 /// Load the persisted settings. Tolerant of a host that returns `null` /

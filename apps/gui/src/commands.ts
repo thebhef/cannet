@@ -1,10 +1,12 @@
-// The command registry (ADR 0018): every palette-visible command,
-// the code-declared binding map, and the boot-time binding-conflict
-// assertion. Pure data + pure checks — the React wiring (handlers,
-// dispatch, palette UI) lives in `CommandsProvider.tsx`; this module
-// stays importable from tests and asserts its own consistency at
-// import time, so a binding collision fails the test suite and the
-// app boot rather than reaching a user's keystroke.
+// The command registry (ADR 0018): every palette-visible command, the
+// shipped default binding map, the effective-binding resolution
+// (defaults overlaid by the user's persisted customisation), and the
+// boot-time binding-conflict assertion. Pure data + pure checks — the
+// React wiring (handlers, dispatch, palette UI) lives in `App.tsx`;
+// this module stays importable from tests and asserts its own
+// consistency at import time, so a collision in the *defaults* fails
+// the test suite and the app boot rather than reaching a user's
+// keystroke.
 
 import { parseChord, type ParsedBinding } from "./keybindings";
 
@@ -21,7 +23,8 @@ export type FocusedPanelKind =
   | "system-messages"
   | "dbc"
   | "settings"
-  | "events";
+  | "events"
+  | "shortcuts";
 
 /// The small, fixed context object command predicates range over
 /// (ADR 0018) — deliberately not a general expression language.
@@ -72,6 +75,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "connection.connect", label: "Connect", category: "Connection" },
   { id: "connection.disconnect", label: "Disconnect", category: "Connection" },
   { id: "capture.clear", label: "Clear capture", category: "Capture" },
+  { id: "capture.save", label: "Save capture…", category: "Capture" },
   { id: "panel.add.trace", label: "Add trace panel", category: "Panels" },
   { id: "panel.add.plot", label: "Add plot panel", category: "Panels" },
   { id: "panel.add.transmit", label: "Add transmit panel", category: "Panels" },
@@ -83,15 +87,18 @@ export const COMMANDS: readonly CommandSpec[] = [
     label: "RBS: toggle global kill-switch",
     category: "Panels",
   },
+  { id: "panel.show.project", label: "Show project panel", category: "Panels" },
   { id: "panel.show.systemMessages", label: "Show system messages", category: "Panels" },
   { id: "panel.show.projectGraph", label: "Show project graph", category: "Panels" },
   { id: "panel.show.dbc", label: "Show DBC panel", category: "Panels" },
   { id: "panel.show.settings", label: "Show settings", category: "Panels" },
   { id: "panel.show.events", label: "Show events", category: "Panels" },
+  { id: "panel.show.shortcuts", label: "Show keyboard shortcuts", category: "Panels" },
   { id: "panel.rename", label: "Rename panel…", category: "Panels" },
   { id: "app.exit", label: "Exit", category: "App" },
   { id: "palette.show", label: "Show command palette", category: "Palette" },
   { id: "goto.view", label: "Go to view…", category: "Palette" },
+  { id: "goto.event", label: "Go to event…", category: "Palette" },
   { id: "view.back", label: "Previous view", category: "View" },
   { id: "view.forward", label: "Next view", category: "View" },
   { id: "view.close", label: "Close view", category: "View" },
@@ -115,9 +122,11 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
 ];
 
-/// The binding map. Code-declared only — user customisation is an
-/// explicit non-goal here (ADR 0018).
-export const BINDINGS: readonly BindingSpec[] = [
+/// The shipped default binding map (ADR 0018). This is the seed: the
+/// *effective* bindings the dispatcher runs are these overlaid by the
+/// user's customisation (`resolveBindings`), which persists in
+/// `settings.json`. Reset-to-default returns to exactly this list.
+export const DEFAULT_BINDINGS: readonly BindingSpec[] = [
   { chord: "Mod+Shift+P", commandId: "palette.show" },
   { chord: "Mod+P", commandId: "goto.view" },
   { chord: "f", commandId: "plot.fitXAxis" },
@@ -143,12 +152,74 @@ export const BINDINGS: readonly BindingSpec[] = [
   { chord: "Escape", commandId: "view.exitFullscreen" },
 ];
 
-/// The binding map, parsed once for the dispatcher.
-export const PARSED_BINDINGS: readonly ParsedBinding[] = BINDINGS.map((b) => ({
-  chord: parseChord(b.chord),
-  commandId: b.commandId,
-  skipEditable: b.skipEditable,
-}));
+/// Parse a binding list for the dispatcher / palette hints. Throws if
+/// any chord is malformed — callers that accept untrusted (persisted /
+/// user-entered) bindings must `sanitizeBindings` first.
+export function parseBindings(bindings: readonly BindingSpec[]): ParsedBinding[] {
+  return bindings.map((b) => ({
+    chord: parseChord(b.chord),
+    commandId: b.commandId,
+    skipEditable: b.skipEditable,
+  }));
+}
+
+/// Drop bindings that can't be trusted (ADR 0018): unknown command ids,
+/// unparseable chords, and any that would collide with a
+/// previously-accepted binding. Order-preserving and greedy — the first
+/// binding to claim a chord/context keeps it. Used on load so a
+/// hand-edited or stale `settings.json` can never brick dispatch or
+/// smuggle in the keystroke ambiguity the framework forbids.
+export function sanitizeBindings(
+  bindings: readonly BindingSpec[],
+  commands: readonly CommandSpec[],
+): BindingSpec[] {
+  const known = new Set(commands.map((c) => c.id));
+  const accepted: BindingSpec[] = [];
+  for (const b of bindings) {
+    if (!known.has(b.commandId)) continue;
+    try {
+      parseChord(b.chord);
+    } catch {
+      continue;
+    }
+    if (findBindingConflicts(commands, [...accepted, b]).length > 0) continue;
+    accepted.push(b);
+  }
+  return accepted;
+}
+
+/// The effective binding set: the user's customisation if present
+/// (sanitised), else the shipped defaults. `null` — the default — means
+/// "use `DEFAULT_BINDINGS`" (ADR 0018's whole-list storage: reset writes
+/// `null`).
+export function resolveBindings(
+  user: readonly BindingSpec[] | null,
+): readonly BindingSpec[] {
+  if (user == null) return DEFAULT_BINDINGS;
+  return sanitizeBindings(user, COMMANDS);
+}
+
+/// The outcome of an editor attempt to add a binding (ADR 0018).
+export type BindingEditResult =
+  | { ok: true; bindings: BindingSpec[] }
+  | { ok: false; conflict: string };
+
+/// Add `candidate` to `bindings`, refusing it if it would introduce a
+/// keystroke collision (equal chord or prefix overlap) in an *overlapping*
+/// context. This is the shortcuts editor's guard and the enforcement point
+/// of the context-aware chord-reuse invariant (ADR 0037): a chord reused in
+/// a disjoint context is accepted, an overlapping one is rejected with the
+/// colliding binding named. Never persists an ambiguous map.
+export function addBinding(
+  bindings: readonly BindingSpec[],
+  candidate: BindingSpec,
+  commands: readonly CommandSpec[],
+): BindingEditResult {
+  const next = [...bindings, candidate];
+  const conflicts = findBindingConflicts(commands, next);
+  if (conflicts.length > 0) return { ok: false, conflict: conflicts[0] };
+  return { ok: true, bindings: next };
+}
 
 /// The commands whose context predicate passes in `ctx` (the palette
 /// listing and the dispatcher's gate share this).
@@ -161,7 +232,10 @@ export function commandsAvailableIn(
 
 /// Every value the context can take. The space is small and finite,
 /// so "do two predicates overlap?" is decided by enumeration rather
-/// than by restricting predicates to a declarative subset.
+/// than by restricting predicates to a declarative subset. This list
+/// must stay complete — every `FocusedPanelKind` and context dimension —
+/// or a genuinely-overlapping binding pair can look disjoint and slip
+/// past the conflict check (ADR 0037, invariant 3).
 function enumerateContexts(): CommandContext[] {
   const kinds: (FocusedPanelKind | null)[] = [
     null,
@@ -174,6 +248,8 @@ function enumerateContexts(): CommandContext[] {
     "system-messages",
     "dbc",
     "settings",
+    "events",
+    "shortcuts",
   ];
   const out: CommandContext[] = [];
   for (const focusedPanelKind of kinds) {
@@ -231,11 +307,13 @@ export function findBindingConflicts(
   return conflicts;
 }
 
-// Boot-time conflict assertion (ADR 0018): importing this module
-// with a colliding binding map throws, so the collision fails the
-// test suite and the app boot, never a user's keystroke.
+// Boot-time conflict assertion (ADR 0018): importing this module with a
+// colliding *default* binding map throws, so a collision in the shipped
+// defaults fails the test suite and the app boot. User customisations are
+// validated separately (at edit time and on load via `sanitizeBindings`),
+// never at import.
 {
-  const conflicts = findBindingConflicts(COMMANDS, BINDINGS);
+  const conflicts = findBindingConflicts(COMMANDS, DEFAULT_BINDINGS);
   if (conflicts.length > 0) {
     throw new Error(`key-binding conflicts:\n${conflicts.join("\n")}`);
   }

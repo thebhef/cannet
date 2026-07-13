@@ -36,6 +36,25 @@ pub struct Settings {
     /// `false`: a prior session is kept and reloads on the next launch
     /// (ADR 0002 DS-7).
     pub clear_scratch_on_exit: bool,
+    /// User keybinding customisation (ADR 0018). `None` (the default) means
+    /// "use the app's built-in default bindings"; `Some(list)` is the whole
+    /// effective binding set, which replaces the defaults. The host only
+    /// stores and round-trips this — the frontend reads it, merges it over
+    /// the defaults, and applies the result; the host never dispatches keys.
+    pub keybindings: Option<Vec<Binding>>,
+}
+
+/// One persisted keybinding — the on-disk mirror of the frontend's
+/// `BindingSpec` (ADR 0018). camelCase to match the TypeScript shape the
+/// frontend reads and writes; `skip_editable` is omitted when unset so a
+/// hand-edited file stays close to what the app writes.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Binding {
+    pub chord: String,
+    pub command_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_editable: Option<bool>,
 }
 
 /// Minimum effective windowed-ring scratch cap (ADR 0002 DS-8). Below this
@@ -130,6 +149,18 @@ mod tests {
         Settings {
             scratch_cap_bytes: Some(8 * 1024 * 1024 * 1024),
             clear_scratch_on_exit: true,
+            keybindings: Some(vec![
+                Binding {
+                    chord: "Mod+k".into(),
+                    command_id: "palette.show".into(),
+                    skip_editable: None,
+                },
+                Binding {
+                    chord: "Mod+z".into(),
+                    command_id: "view.undo".into(),
+                    skip_editable: Some(true),
+                },
+            ]),
         }
     }
 
@@ -152,6 +183,27 @@ mod tests {
         let d = Settings::default();
         assert_eq!(d.scratch_cap_bytes, None);
         assert!(!d.clear_scratch_on_exit);
+        assert_eq!(d.keybindings, None);
+    }
+
+    #[test]
+    fn keybindings_round_trip_with_camelcase_and_optional_skip_editable() {
+        let dir = tempfile::tempdir().unwrap();
+        write_settings(dir.path(), &sample()).unwrap();
+        assert_eq!(read_settings(dir.path()), sample());
+        // The on-disk shape matches the frontend `BindingSpec`: camelCase
+        // `commandId`, and `skipEditable` present only when set.
+        let text = serde_json::to_string(&sample()).unwrap();
+        assert!(text.contains("\"commandId\":\"palette.show\""), "{text}");
+        assert!(text.contains("\"skipEditable\":true"), "{text}");
+        // The first binding has no skip_editable, so it must not serialize one.
+        assert!(!text.contains("\"chord\":\"Mod+k\",\"commandId\":\"palette.show\",\"skipEditable\""), "{text}");
+    }
+
+    #[test]
+    fn missing_keybindings_key_reads_as_none() {
+        let s = parse_settings(r#"{"scratch_cap_bytes": 1024}"#);
+        assert_eq!(s.keybindings, None);
     }
 
     #[test]
@@ -195,6 +247,7 @@ mod tests {
         let text = serde_json::to_string(&Settings::default()).unwrap();
         assert!(text.contains("scratch_cap_bytes"), "{text}");
         assert!(text.contains("clear_scratch_on_exit"), "{text}");
+        assert!(text.contains("keybindings"), "{text}");
     }
 
     #[test]

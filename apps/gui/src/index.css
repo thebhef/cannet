@@ -3078,3 +3078,89 @@ button.trace-event-swatch {
   color: #94a3b8;
   font-size: 0.78rem;
 }
+
+/* Keyboard-shortcuts editor (ADR 0018) */
+.shortcuts-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.shortcuts-reset {
+  flex: none;
+  background: #1e293b;
+  color: #e2e8f0;
+  border: 1px solid #334155;
+  border-radius: 3px;
+  padding: 0.2rem 0.5rem;
+  cursor: pointer;
+}
+.shortcuts-reset:hover {
+  background: #334155;
+}
+.shortcuts-error {
+  margin: 0 0 0.75rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid #7f1d1d;
+  border-radius: 3px;
+  background: #450a0a;
+  color: #fecaca;
+  font-size: 0.8rem;
+}
+.shortcut-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.2rem 0;
+}
+.shortcut-label {
+  color: #e2e8f0;
+}
+.shortcut-chords {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+.shortcut-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+.shortcut-chip kbd {
+  font-family: ui-monospace, monospace;
+  font-size: 0.75rem;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 3px;
+  padding: 0.05rem 0.3rem;
+  color: #a5b4fc;
+}
+.shortcut-remove {
+  background: none;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 0 0.15rem;
+  line-height: 1;
+}
+.shortcut-remove:hover {
+  color: #fecaca;
+}
+.shortcut-record {
+  background: #1e293b;
+  color: #cbd5e1;
+  border: 1px solid #334155;
+  border-radius: 3px;
+  padding: 0.1rem 0.4rem;
+  cursor: pointer;
+  font-size: 0.78rem;
+}
+.shortcut-record:hover {
+  background: #334155;
+}
+.shortcut-recording {
+  color: #fcd34d;
+  font-size: 0.78rem;
+}

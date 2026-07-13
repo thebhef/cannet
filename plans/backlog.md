@@ -95,6 +95,9 @@ trip over it.
 
 ### Trace view
 
+- `[perf]` by-ID view: **paused-snapshot tighten** (former Task 24) —
+  a paused by-ID snapshot should return the latest of each id within
+  `[since, end)` rather than reading the global latest index.
 - `[ui]` by-ID view (`useByIdView.ts`): while *running*, the live refresh
   re-pages page 0, so a by-ID view scrolled into a later page is yanked
   back to the top each tick. Only reachable with an unusually large id
@@ -139,15 +142,15 @@ trip over it.
   guard (likely a `uplotRef.current` staleness window in
   `PlotPanel.tsx`'s create/destroy effect).
 
-- `[bug]` `cannet-gui` plot panel: **`plotFilter.ts` colours filter-resolved
-  signals off a stale palette.** `plotFilter.ts:10–19` carries an 8-colour
-  copy under a "Keep in sync" comment, but `PlotPanel.tsx:119–136` moved to
-  a 16-colour wheel (ADR 0026) — the two have already diverged, so signals
-  resolved through filters get colours the panel no longer uses. Fix by
-  extracting the shared signal-identity + palette module (task 30,
-  PlotPanel sketch); until then, sync the copy. (2026-07-02 audit.)
-
 ### DBC view
+
+- `[ui]` **DBC panel table-tree rework.** The current per-signal detail
+  presentation isn't liked — rework the tree into more of a table
+  (hierarchy rows + aligned detail columns for factor/offset/range/
+  unit/comment, instead of the current detail rendering). Decided
+  during Task 20 spec grilling: the signal *value* column ships with
+  Task 20 on the existing tree; this item is the presentation rework
+  on top.
 
 - `[perf]` `cannet-gui` `DbcPanel.tsx`: **window the flat row list if
   broad filters prove janky.** The task-33 rework bounds a filtered
@@ -285,8 +288,28 @@ name/colour/remove on any editable event row. Remaining follow-ups:
   but they're project-relevant: reopening lands you at a different view
   than you left. Decide what to snapshot (per-element view state) and
   where it rides (scratch alongside `session_start_ns`, or the project
-  file) so "exit and reopen" returns you to the same framing. Surfaced
-  during the plot window-start-origin fix (ADR 0024).
+  file) so "exit and reopen" returns you to the same framing. The
+  layout-undo snapshot stack (`apps/gui/src/viewHistory.ts`, view
+  undo/redo) captures serialized layouts already — a candidate base for
+  the snapshot mechanism. Surfaced during the plot window-start-origin
+  fix (ADR 0024).
+
+- `[test]` **View-chord interception on macOS / Linux webviews.** The
+  view keyboard actions are verified on Windows (WebView2 honours
+  `preventDefault` for its browser accelerators). Unverified elsewhere:
+  on macOS, Tauri's default app menu may claim `Cmd+W` before the
+  webview ever sees the keydown (fix would be removing/rebinding that
+  menu item), and `Ctrl+Tab` / `Mod+W` interception is untested in
+  WKWebView and WebKitGTK. If a mac/Linux user reports a dead chord,
+  this is the diagnosis; verify when hardware is in reach.
+
+- `[feat]` **Multi-step sequence capture in the shortcuts panel.** The
+  keybinding framework parses and dispatches sequence chords (e.g.
+  `g r`), and `DEFAULT_BINDINGS` may declare them, but the shortcuts
+  panel's chord capture (ADR 0018 / `ShortcutsPanel.tsx`) records only a
+  single step — a user can't bind a sequence from the UI. Extend capture
+  to buffer multiple steps (with a visible in-progress hint and a commit
+  key). Deferred from the shortcuts-editor work.
 
 - `[feat]` `cannet-gui` Save Capture: **time-range export.** Phase 9's
   Save Capture writes the entire session buffer to a `.blf`. Add the
@@ -299,6 +322,16 @@ name/colour/remove on any editable event row. Remaining follow-ups:
   timestamps fall inside the range come along; the written
   `FileStatistics.measurement_start_time` is the chosen start, not
   the session start.
+- `[ui]` **Dock / undock a panel as a separate OS window** (former
+  Task 24). Dockview's popout-group support is the natural mechanism;
+  needs a Tauri multi-window story (the popout opens a browser window
+  today).
+- `[bug]` **Plot vs trace divider drag fix** (former Task 24) — the
+  divider between the plot area and its trace/event list doesn't drag
+  reliably.
+- `[docs]` **BLF f64-timestamp precision note** (former Task 24) —
+  document the precision limit of BLF's f64 seconds timestamps in a
+  user-facing surface, if it hasn't already been folded into one.
 - `[ui]` `cannet-gui`: a global UI frame-rate / responsiveness readout
   (rAF-based FPS, maybe long-task / dropped-frame counts) — the plot
   panel shows its own re-sample rate now; generalise that to a small
@@ -354,13 +387,6 @@ next pass on this surface can address them as one piece.
   hand-rolled "rail per bus" pass; today's `LANE_X`/`LANE_Y_OFFSET`
   in [graphNodeLayout.ts](apps/gui/src/graphNodeLayout.ts)
   is a workable pipeline layout but doesn't read as a bus topology.
-- `[ui]` **Plot panel signal catalog scoped by `sources`.** The
-  per-bus signal model and the message picker work end-to-end, but
-  the catalog dropdown still shows every signal from every loaded
-  DBC across every bus — even ones the plot's `sources` exclude.
-  Filter `catalogOptions` in PlotPanel.tsx by the consumer's
-  effective `sources` so the picker only offers signals it can
-  actually sample.
 - `[ui]` **Drag-to-wire from anywhere on a node body.** Drag-from-
   handle works (xyflow `onConnect` is wired to `addEdgeToRegistry`),
   but the user has to land on the small handle dots. Long-term,
@@ -415,6 +441,16 @@ next pass on this surface can address them as one piece.
     reload-all, watcher reload, bus-rescope) for the bump — a missed
     invalidation is a wrong-results bug, which is why this wasn't done
     inline with the gate itself.
+- `[bug]` `cannet-gui` BLF ingest: **root panic behind the 2026-07-10
+  poisoned-mutex crash is still unidentified.** A third-party
+  (TSMaster-written) BLF panicked the ingest path mid-append (file not
+  available for repro). The mitigation shipped (former Task 34):
+  `trace_store.rs` recovers poisoned mutexes, and the BLF pump wraps
+  `run_pump` in `catch_unwind` so the next hostile BLF surfaces "load
+  failed: \<panic message\>" in the UI and lands the message + backtrace
+  in `cannet.log`. When that log appears, file the repro/fix follow-up
+  against the named panic site.
+
 - `[ui]` `cannet-python-can` sidecar: **suppress the `xlReceive failed
   (XL_ERROR)` warning emitted on normal close.** Closing a Vector
   channel while `_rx_pump` is blocked in `ch.recv` surfaces as a
@@ -544,6 +580,16 @@ next pass on this surface can address them as one piece.
     same rig as the rest of this sign-off pass.
 
 ### Packaging and naming
+
+- `[feat]` **Code signing, notarization, and auto-update.** Deferred
+  from the distribution work (former Task 26) so the alpha isn't
+  blocked on procurement: macOS needs an Apple Developer Program
+  membership ($99/yr) + notarization; Windows an OV/EV cert or Azure
+  Trusted Signing — wiring is straightforward once the secrets exist
+  (`tauri-action` takes the signing env vars). Auto-update
+  (`tauri-plugin-updater`) additionally needs an update keypair and a
+  release feed; until then users download manually and click through
+  Gatekeeper/SmartScreen warnings.
 
 - `[sidecar]` **Configurable sidecar entrypoint path(s).** The host
   resolves the sidecar launcher (or additional launchers?) by fixed probe order

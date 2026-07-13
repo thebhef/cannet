@@ -112,6 +112,31 @@ export function formatChord(chord: KeyChord, isMac: boolean): string {
     .join(" ");
 }
 
+/// Turn a captured `keydown` into a single-step chord string (the shortcuts
+/// editor's capture box, ADR 0018), or `null` when the press is a bare
+/// modifier (nothing to bind yet). Emits `Mod` for the platform's primary
+/// modifier (Cmd on mac, Ctrl elsewhere) and `Ctrl` for the literal Control
+/// key on mac, matching `parseChord`'s vocabulary so the result round-trips.
+/// The named keys (`ArrowLeft`, `Tab`, …) keep their `KeyboardEvent.key`
+/// spelling; single characters are upper-cased for a stable chord id.
+export function chordFromEvent(stroke: KeyStroke, isMac: boolean): string | null {
+  const key = stroke.key;
+  if (key === "Control" || key === "Meta" || key === "Shift" || key === "Alt") {
+    return null;
+  }
+  const parts: string[] = [];
+  if (isMac) {
+    if (stroke.meta) parts.push("Mod");
+    if (stroke.ctrl) parts.push("Ctrl");
+  } else if (stroke.ctrl) {
+    parts.push("Mod");
+  }
+  if (stroke.shift) parts.push("Shift");
+  if (stroke.alt) parts.push("Alt");
+  parts.push(key.length === 1 ? key.toUpperCase() : key);
+  return parts.join("+");
+}
+
 /// A parsed binding: the chord plus the command it triggers.
 export interface ParsedBinding {
   chord: KeyChord;

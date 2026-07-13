@@ -79,6 +79,13 @@ both a place to persist them and a way to edit them.
   this rationale, so the decision is traceable if settings grow.
 - **A command-palette entry opens the panel**, alongside the
   separately-added `project.close`.
+- **Keybinding customisation rides this file.** Per
+  [ADR 0018](0018-command-keybinding-framework.md), user-edited
+  keybindings persist as a `keybindings` field in `settings.json` (they
+  are a user choice, not observed state) rather than a separate
+  `keybindings.json`. They are edited from the shortcuts panel, not the
+  settings panel, but share the same durable, hand-editable contract:
+  `null`/absent = use the built-in defaults.
 
 ## Rejected alternatives
 
