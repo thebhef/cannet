@@ -204,6 +204,26 @@ def test_burst_of_buffered_frames_drains_into_one_envelope() -> None:
         shared._stop.set()
 
 
+def test_frame_that_fails_to_encode_is_dropped_not_fatal() -> None:
+    """A frame the wire format can't encode (here: ``timestamp_ns``
+    over protobuf's uint64 max) must be dropped, and frames after it
+    must still flow. Before this was locked in, one such frame killed
+    the pack pump thread for the life of the connection — the
+    interface stayed "connected" while every subsequent frame was
+    silently discarded."""
+    import dataclasses
+
+    # timestamp_ns one past uint64 max — proto encode raises
+    bad = dataclasses.replace(_frame(0), timestamp_ns=2**64)
+    good = _frame(1)
+    shared, outbox, _ch = _attach_with_frames(frames=[bad, good])
+    try:
+        [env] = _drain_frame_batches(outbox, until=1)
+        assert env.frame_batch.frames[0].can_id == good.can_id
+    finally:
+        shared._stop.set()
+
+
 def test_burst_over_cap_splits_into_multiple_envelopes() -> None:
     """A burst larger than ``_BATCH_MAX_FRAMES`` must produce more
     than one envelope, each capped at the limit."""

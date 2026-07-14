@@ -76,7 +76,12 @@ def load_driver() -> drv.Driver:
 
 
 def _now_ns() -> int:
-    return time.monotonic_ns()
+    # Wall clock, not monotonic: self-stamped envelopes (TX-frame
+    # fallback, log messages) must share the Unix-epoch ns scale of
+    # hardware-stamped RX frames, or consumers that anchor on the
+    # first frame's timestamp see the streams ~3 orders of magnitude
+    # apart.
+    return time.time_ns()
 
 
 def _frame_to_proto(frame: drv.Frame) -> pb.Frame:
@@ -496,13 +501,38 @@ class _SharedInterface:
         latency from delaying the next ``ch.recv`` call, which is what
         was letting PCAN's queue back up and collapse timestamps."""
         cid = self._channel_id
+        dropped = 0
+
+        def _encode(frame: drv.Frame):
+            # A frame the wire format can't encode (e.g. a garbage
+            # driver timestamp over uint64 max) must cost one frame,
+            # not the pump thread — a dead pump leaves the interface
+            # "connected" while silently discarding all traffic. Log
+            # the first drop only; a driver emitting garbage on every
+            # frame would otherwise flood the system log.
+            nonlocal dropped
+            try:
+                return _frame_to_proto(frame)
+            except ValueError as e:
+                dropped += 1
+                if dropped == 1:
+                    _log.warning("dropping unencodable frame on %s: %s", cid, e)
+                    err = _log_envelope(
+                        pb.LOG_LEVEL_ERROR,
+                        f"dropping unencodable frame on {cid}: {e} "
+                        f"(further drops suppressed)",
+                    )
+                    for ob in self._outbox_snapshot():
+                        ob.put(err)
+                return None
+
         try:
             while not self._stop.is_set():
                 try:
                     first = self._rx_queue.get(timeout=0.25)
                 except queue.Empty:
                     continue
-                batch_frames = [_frame_to_proto(first)]
+                batch_frames = [_encode(first)]
                 deadline = time.monotonic_ns() + _BATCH_FLUSH_NS
                 while len(batch_frames) < _BATCH_MAX_FRAMES:
                     if self._stop.is_set():
@@ -514,7 +544,10 @@ class _SharedInterface:
                         nxt = self._rx_queue.get(timeout=remaining_ns / 1_000_000_000)
                     except queue.Empty:
                         break
-                    batch_frames.append(_frame_to_proto(nxt))
+                    batch_frames.append(_encode(nxt))
+                batch_frames = [f for f in batch_frames if f is not None]
+                if not batch_frames:
+                    continue
                 env = pb.Envelope(
                     frame_batch=pb.FrameBatch(interface_id=cid, frames=batch_frames)
                 )

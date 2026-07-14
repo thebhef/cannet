@@ -62,9 +62,37 @@ def test_hardware_timestamp_passes_through_unchanged() -> None:
     ``msg.timestamp`` from PCAN's microsecond hardware counter, plus
     Unix-epoch boot offset) must convert to the same ns value."""
     # Late-2025-ish Unix-epoch seconds; precision well within f64.
-    msg = _FakeMsg(timestamp=1780261000.123456, data=b"\x01\x02\x03")
+    # A realistic hardware stamp: slightly in the past, well within
+    # the plausibility window.
+    ts = round(time.time() - 0.25, 6)
+    msg = _FakeMsg(timestamp=ts, data=b"\x01\x02\x03")
     frame = _msg_to_frame(msg)
-    assert frame.timestamp_ns == int(1780261000.123456 * 1_000_000_000)
+    assert frame.timestamp_ns == int(ts * 1_000_000_000)
+
+
+def test_implausible_timestamp_falls_back_to_wall_clock() -> None:
+    """A hardware timestamp wildly outside the plausible wall-clock
+    window must be replaced with the wall-clock fallback, not passed
+    through.
+
+    Observed in the field: PEAK's macOS PCBUSB library handed
+    python-can a classic-CAN timestamp of ~239723374713.5 s
+    (~year 9570), which converts to ~2.4e20 ns — over uint64 max, so
+    the wire encode (`Frame.timestamp_ns` is a protobuf uint64) raised
+    and killed the pack pump. Smaller garbage (a few-thousand-year
+    timestamp that still fits uint64) wouldn't crash but would break
+    the trace view's first-frame-is-zero timing, so the boundary check
+    is a plausibility window around now, not a fits-in-uint64 check.
+    """
+    # The exact value from the field crash: 239723374713510395904 ns.
+    bogus_s = 239723374713.5103959
+    before = time.time_ns()
+    frame = _msg_to_frame(_FakeMsg(timestamp=bogus_s))
+    after = time.time_ns()
+    assert before <= frame.timestamp_ns <= after, (
+        f"implausible hardware timestamp ({bogus_s} s) was not replaced "
+        f"with the wall-clock fallback: got {frame.timestamp_ns}"
+    )
 
 
 def test_missing_timestamp_falls_back_to_unix_epoch_ns_not_monotonic() -> None:

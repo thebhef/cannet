@@ -30,28 +30,35 @@
 //!
 //! ## Launch strategy
 //!
-//! Resolved in priority order; the first that applies wins.
+//! Two launch flavours exist; which is preferred depends on the build
+//! profile (`plan_launch`), with the other as fallback:
 //!
-//! 1. **Frozen self-contained binary** — the top-priority, end-user
-//!    path. The `PyInstaller` onedir sidecar launcher, bundled into the
-//!    installer as a Tauri resource and resolved through the
-//!    framework-canonical `resource_dir()` (see ADR 0036 — *not* the
-//!    exe walk-up the dev paths use, since on macOS the resources land
-//!    in `Contents/Resources/`, a sibling of the exe's `Contents/MacOS/`
-//!    and never an ancestor). The frozen artifact embeds its own
-//!    `CPython` and dependencies, so it runs with no `uv`, no Python, and
-//!    no `sidecar_dir` resolution. When it is present it wins outright.
+//! - **Release builds prefer the frozen self-contained binary** — the
+//!   end-user path. The `PyInstaller` onedir sidecar launcher, bundled
+//!   into the installer as a Tauri resource and resolved through the
+//!   framework-canonical `resource_dir()` (see ADR 0036 — *not* the
+//!   exe walk-up the dev paths use, since on macOS the resources land
+//!   in `Contents/Resources/`, a sibling of the exe's `Contents/MacOS/`
+//!   and never an ancestor). The frozen artifact embeds its own
+//!   `CPython` and dependencies, so it runs with no `uv`, no Python, and
+//!   no `sidecar_dir` resolution.
+//! - **Dev builds (`tauri dev`; Tauri emits the `dev` cfg) prefer the
+//!   sidecar source tree**, so edits to `servers/cannet-python-can`
+//!   take effect on the next sidecar restart without re-running
+//!   `scripts/build-sidecar.py` — the frozen resource is bundled in
+//!   dev too (Tauri copies it next to the dev binary) and would
+//!   otherwise shadow live source.
 //!
-//! The paths below are all **developer-machine** fallbacks, used when
-//! the frozen artifact isn't bundled (the dev tree). They resolve
-//! `uv`/`python3` against the sidecar *source* tree; `uv` is dev-only.
+//! The source-tree launchers, in priority order
+//! (`resolve_launch_path`); they resolve `uv`/`python3` against the
+//! sidecar *source* tree:
 //!
-//! 2. **Local `uv`** at `tools/uv/<os>-<arch>/uv[.exe]` relative to
+//! 1. **Local `uv`** at `tools/uv/<os>-<arch>/uv[.exe]` relative to
 //!    the GUI binary's parent directory. `scripts/fetch-uv.sh`
 //!    populates this path for dev builds. The runtime contract —
 //!    "look here first" — is stable regardless of who wrote the file.
-//! 3. **`uv` on `PATH`** — the developer-machine fallback.
-//! 4. **`python3 -m cannet_python_can`** — last resort if `uv` is
+//! 2. **`uv` on `PATH`** — the developer-machine fallback.
+//! 3. **`python3 -m cannet_python_can`** — last resort if `uv` is
 //!    not installed at all. Logs a warn-level System Message so the
 //!    user knows to install `uv` for full functionality.
 //!
@@ -192,6 +199,37 @@ pub enum LaunchPath {
     /// `python3 -m cannet_python_can` — last-resort fallback when
     /// `uv` is not available.
     SystemPython,
+}
+
+/// The resolved launch decision: which flavour of sidecar to run,
+/// with everything needed to build its `Command`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LaunchPlan {
+    /// Run the frozen self-contained launcher at this path.
+    Frozen(PathBuf),
+    /// Run a developer launcher against this sidecar source directory.
+    Source(LaunchPath, PathBuf),
+}
+
+/// Pick between the frozen binary and the source tree, given what's
+/// actually resolvable. Dev builds prefer the editable source tree so
+/// edits to `servers/cannet-python-can` take effect on the next
+/// sidecar restart without re-freezing — the frozen artifact is
+/// bundled as a Tauri resource even in dev, and would otherwise
+/// shadow them. Release builds prefer the frozen binary (ADR 0036).
+/// Either way the other flavour is the fallback. Pure; testable.
+fn plan_launch(
+    dev: bool,
+    frozen: Option<PathBuf>,
+    source: Option<(LaunchPath, PathBuf)>,
+) -> Option<LaunchPlan> {
+    let frozen = frozen.map(LaunchPlan::Frozen);
+    let source = source.map(|(launcher, dir)| LaunchPlan::Source(launcher, dir));
+    if dev {
+        source.or(frozen)
+    } else {
+        frozen.or(source)
+    }
 }
 
 /// Resolve which launcher to use without spawning the child yet.
@@ -422,59 +460,62 @@ pub fn spawn_sidecar(app: &AppHandle) {
 /// plus a human-readable "source" line for the invocation summary
 /// (there is no `sidecar_dir` on the frozen path, so the frozen and dev
 /// branches converge here and share the whole spawn tail below).
-/// `None` — after logging an error-level System Message — when no
-/// launcher could be resolved at all.
+/// Frozen-vs-source preference is [`plan_launch`]'s call: dev builds
+/// (Tauri emits the `dev` cfg) prefer the editable source tree,
+/// release builds the frozen binary. `None` — after logging an
+/// error-level System Message — when neither flavour resolves.
 fn resolve_command(app: &AppHandle) -> Option<(Command, String)> {
-    // Frozen self-contained binary first (ADR 0036): if the bundled
-    // onedir launcher is present in the resource dir, run it directly.
-    // It embeds its own interpreter and deps, so no `sidecar_dir`/`uv`
-    // resolution applies.
-    if let Some(launcher) = frozen_launcher_path(app) {
-        sys_info!(app, SOURCE, "starting sidecar via frozen binary");
-        return Some((
-            build_frozen_command(&launcher),
-            "source: frozen self-contained binary".to_string(),
-        ));
-    }
-    // Developer-machine fallbacks: uv / python3 against the sidecar
-    // source tree.
-    let Some(launcher) = resolve_launch_path() else {
-        sys_error!(
-            app,
-            SOURCE,
-            "no sidecar launcher found (frozen binary, local uv, PATH uv, or python3); install uv: https://docs.astral.sh/uv/"
-        );
-        return None;
-    };
+    let frozen = frozen_launcher_path(app);
+    let launcher = resolve_launch_path();
     // Resolve the sidecar source directory to an absolute path
     // BEFORE we build the command — uv's `--directory` and Python's
     // `PYTHONPATH` are then independent of whatever CWD the GUI was
     // launched with. The previous relative-path version blew up with
     // a terse "No such file or directory" any time the GUI's CWD
     // wasn't the workspace root.
-    let Some(sidecar_dir) = resolve_sidecar_dir() else {
-        sys_error!(
-            app,
-            SOURCE,
-            "could not locate the cannet-python-can package directory. Searched: {}",
-            sidecar_dir_search_summary()
-        );
-        return None;
-    };
-    match launcher {
-        LaunchPath::BundledUv => sys_info!(app, SOURCE, "starting sidecar via local uv"),
-        LaunchPath::PathUv => sys_info!(app, SOURCE, "starting sidecar via PATH uv"),
-        LaunchPath::SystemPython => sys_warn!(
-            app,
-            SOURCE,
-            "uv not found; falling back to python3 -m cannet_python_can. Install uv for the supported flow."
-        ),
+    let source = launcher.zip(resolve_sidecar_dir());
+    match plan_launch(cfg!(dev), frozen, source) {
+        Some(LaunchPlan::Frozen(path)) => {
+            sys_info!(app, SOURCE, "starting sidecar via frozen binary");
+            Some((
+                build_frozen_command(&path),
+                "source: frozen self-contained binary".to_string(),
+            ))
+        }
+        Some(LaunchPlan::Source(launcher, sidecar_dir)) => {
+            match launcher {
+                LaunchPath::BundledUv => sys_info!(app, SOURCE, "starting sidecar via local uv"),
+                LaunchPath::PathUv => sys_info!(app, SOURCE, "starting sidecar via PATH uv"),
+                LaunchPath::SystemPython => sys_warn!(
+                    app,
+                    SOURCE,
+                    "uv not found; falling back to python3 -m cannet_python_can. Install uv for the supported flow."
+                ),
+            }
+            sys_info!(app, SOURCE, "sidecar dir: {}", sidecar_dir.display());
+            Some((
+                build_command(launcher, &sidecar_dir),
+                format!("sidecar dir: {}", sidecar_dir.display()),
+            ))
+        }
+        None if launcher.is_none() => {
+            sys_error!(
+                app,
+                SOURCE,
+                "no sidecar launcher found (frozen binary, local uv, PATH uv, or python3); install uv: https://docs.astral.sh/uv/"
+            );
+            None
+        }
+        None => {
+            sys_error!(
+                app,
+                SOURCE,
+                "could not locate the cannet-python-can package directory. Searched: {}",
+                sidecar_dir_search_summary()
+            );
+            None
+        }
     }
-    sys_info!(app, SOURCE, "sidecar dir: {}", sidecar_dir.display());
-    Some((
-        build_command(launcher, &sidecar_dir),
-        format!("sidecar dir: {}", sidecar_dir.display()),
-    ))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1035,6 +1076,57 @@ mod tests {
     // `CANNET_SIDECAR_DIR` eyeball-verified below). Its two moving
     // parts — the platform suffix and the "no args" launch shape — are
     // covered by the two tests above.
+
+    fn frozen_path() -> PathBuf {
+        PathBuf::from("/res/cannet-python-can/launcher")
+    }
+
+    fn source_tree() -> (LaunchPath, PathBuf) {
+        (
+            LaunchPath::BundledUv,
+            PathBuf::from("/repo/servers/cannet-python-can"),
+        )
+    }
+
+    #[test]
+    fn plan_launch_dev_prefers_source_tree_over_frozen() {
+        // The regression this locks in: with the frozen resource bundled
+        // (it is, since the sidecar became a Tauri resource), a dev build
+        // must still run the editable source tree so sidecar edits take
+        // effect without re-freezing.
+        let (launcher, dir) = source_tree();
+        assert_eq!(
+            plan_launch(true, Some(frozen_path()), Some(source_tree())),
+            Some(LaunchPlan::Source(launcher, dir)),
+        );
+    }
+
+    #[test]
+    fn plan_launch_release_prefers_frozen_over_source_tree() {
+        assert_eq!(
+            plan_launch(false, Some(frozen_path()), Some(source_tree())),
+            Some(LaunchPlan::Frozen(frozen_path())),
+        );
+    }
+
+    #[test]
+    fn plan_launch_falls_back_when_the_preferred_flavour_is_missing() {
+        assert_eq!(
+            plan_launch(true, Some(frozen_path()), None),
+            Some(LaunchPlan::Frozen(frozen_path())),
+        );
+        let (launcher, dir) = source_tree();
+        assert_eq!(
+            plan_launch(false, None, Some(source_tree())),
+            Some(LaunchPlan::Source(launcher, dir)),
+        );
+    }
+
+    #[test]
+    fn plan_launch_none_when_nothing_is_resolvable() {
+        assert_eq!(plan_launch(true, None, None), None);
+        assert_eq!(plan_launch(false, None, None), None);
+    }
 
     #[test]
     fn parse_listening_address_strips_the_banner_prefix() {
