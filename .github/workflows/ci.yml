@@ -24,7 +24,7 @@ jobs:
     name: Rust (test + clippy)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install WebView host libraries
         run: |
@@ -50,13 +50,13 @@ jobs:
     name: Frontend (vitest + build)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 11.5.2
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           # Exact Node version pinned in .node-version (read by local
           # version managers too), so CI and local match.
@@ -75,12 +75,12 @@ jobs:
       run:
         working-directory: servers/cannet-python-can
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # uv version is pinned for reproducibility; the tool + dependency
       # versions themselves come from the committed uv.lock. uv installs
       # the Python 3.13 the sidecar requires on its own.
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v8.3.2
         with:
           version: "0.9.21"
           enable-cache: true
@@ -96,12 +96,12 @@ jobs:
     name: Frozen sidecar (freeze + smoke)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # uv provisions the CPython pinned by
       # servers/cannet-python-can/.python-version and the sidecar's
       # locked deps; the build script drives PyInstaller from there.
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v8.3.2
         with:
           version: "0.9.21"
           enable-cache: true
