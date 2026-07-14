@@ -80,6 +80,19 @@ trip over it.
   generator and fails on diff. (Surfaced by the 2026-07-02 quality
   audit, task 30.)
 
+- `[test]` **Five App dom-tests fail under Node 26 — `localStorage`
+  undefined in jsdom.** `App.midSessionCreate.dom.test.tsx`,
+  `App.renameLockup.dom.test.tsx`, and `App.viewActions.dom.test.tsx`
+  fail in `beforeEach` at `localStorage.clear()` ("Cannot read
+  properties of undefined") on Node 26.5 + jsdom 29, alongside Node's
+  "localStorage is not available because --localstorage-file was not
+  provided" ExperimentalWarning — Node's own experimental
+  `localStorage` global appears to shadow/suppress jsdom's. Verified
+  pre-existing on 2026-07-13 (fails identically against HEAD's
+  `App.tsx`); other jsdom suites pass. Fix candidates: stub
+  `localStorage` in vitest setup, pass `--localstorage-file`, or pin
+  the tested Node version in CI.
+
 - `[ci]` **Server-implementation conformance check.** Every server
   that speaks `cannet-wire` (today: `cannet-server`'s BLF replay and
   virtual-bus modes, `cannet-python-can`; tomorrow: other vendor
@@ -458,6 +471,19 @@ next pass on this surface can address them as one piece.
   in `cannet.log`. When that log appears, file the repro/fix follow-up
   against the named panic site.
 
+- `[bug]` `cannet-python-can` / upstream: **PEAK macOS PCBUSB hands
+  python-can garbage classic-CAN timestamps** — observed 2026-07-13: a
+  hardware frame carried `msg.timestamp ≈ 239723374713.5 s`
+  (~year 9570), deterministically on every connect (python-can 4.6.1,
+  PCAN-USB on macOS). The sidecar now sanitizes at the driver boundary
+  (`_TS_PLAUSIBLE_SLACK_S` in driver_python_can.py) so this no longer
+  kills the frame stream, but the upstream cause is uncharacterized —
+  likely python-can's `TPCANTimestamp` struct math vs what PCBUSB
+  actually returns (the magnitude suggests garbage in
+  `millis_overflow`). With hardware attached, dump raw
+  `millis`/`millis_overflow`/`micros` per frame, identify the
+  mechanism, and file against python-can and/or mac-can PCBUSB.
+
 - `[ui]` `cannet-python-can` sidecar: **suppress the `xlReceive failed
   (XL_ERROR)` warning emitted on normal close.** Closing a Vector
   channel while `_rx_pump` is blocked in `ch.recv` surfaces as a
@@ -538,20 +564,6 @@ next pass on this surface can address them as one piece.
   `classify_stderr_line` → `LogLevel::Info`), preserving the breadcrumb
   without raising the panel. Test the filter directly with synthesized
   `LogRecord`s in a new sidecar test.
-
-- `[bug]` `cannet-python-can` server: **frame timestamps fall back to
-  `time.monotonic_ns()`** when `msg.timestamp` is absent
-  ([driver_python_can.py:444](servers/cannet-python-can/cannet_python_can/driver_python_can.py#L444),
-  and `_now_ns()` for TX echoes / synthesized frames at
-  [server.py:79](servers/cannet-python-can/cannet_python_can/server.py#L79)).
-  `monotonic_ns` is a third clock alongside wall-clock `msg.timestamp`
-  and the GUI's wall-clock stamps — a capture that mixes them
-  reproduces the same "trace shows rows, plot is empty" bug the vbus
-  had (the plot anchors its x-axis on the first frame's timestamp, so a
-  series on a divergent clock lands off-canvas). The vbus was fixed by
-  stamping wall clock everywhere; the server should do the same
-  (prefer wall clock, only fall back to monotonic when truly nothing
-  else is available — and if so, normalize it host-side).
 
 - `[test]` **Phase 13 live / hardware sign-off (deferred from the Phase 13
   exit criteria).** The virtual-bus + bridge surface is code-complete and

@@ -622,6 +622,15 @@ def _build_fd_timing(config: OpenConfig):
     )
 
 
+#: Hardware timestamps further than this from the current wall clock
+#: are treated as garbage and replaced with the wall-clock fallback.
+#: Generous enough for any real buffering delay or clock skew; tight
+#: enough to reject driver garbage (PEAK's macOS PCBUSB library has
+#: been seen handing python-can classic-CAN timestamps millennia in
+#: the future, which overflow the wire format's uint64 ns field).
+_TS_PLAUSIBLE_SLACK_S = 86_400.0
+
+
 def _msg_to_frame(msg) -> Frame:
     """python-can ``Message`` → driver ``Frame``.
 
@@ -633,9 +642,18 @@ def _msg_to_frame(msg) -> Frame:
     the trace view's "first frame is the zero point" assumption and
     showed up as wildly-negative deltas the moment a fallback-stamped
     frame slipped in after a hardware-stamped one.
+
+    Timestamps outside ``_TS_PLAUSIBLE_SLACK_S`` of the current wall
+    clock take the same fallback: they are driver garbage, and passing
+    them through either overflows the wire encode (killing the frame
+    stream) or wrecks the trace view's timing the same way a
+    mixed-clock stamp does.
     """
     ts_s = float(getattr(msg, "timestamp", 0.0) or 0.0)
-    timestamp_ns = int(ts_s * 1_000_000_000) if ts_s else int(time.time_ns())
+    if ts_s and abs(ts_s - time.time()) <= _TS_PLAUSIBLE_SLACK_S:
+        timestamp_ns = int(ts_s * 1_000_000_000)
+    else:
+        timestamp_ns = int(time.time_ns())
     data = bytes(getattr(msg, "data", b"") or b"")
     return Frame(
         timestamp_ns=timestamp_ns,

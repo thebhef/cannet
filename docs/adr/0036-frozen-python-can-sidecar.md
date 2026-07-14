@@ -35,8 +35,14 @@ literally next to the GUI executable. That distinction matters on
 macOS, where the `.app` puts the executable in `Contents/MacOS/` and
 resources in `Contents/Resources/` (a *sibling* of the exe's directory,
 never an ancestor), so a plain "look next to / above the exe" probe
-would never find it. The frozen path resolves first, ahead of the
-existing `uv` / `python3` paths, which stay as developer fallbacks.
+would never find it. In **release builds** the frozen path resolves
+first, ahead of the existing `uv` / `python3` source-tree paths, which
+stay as fallbacks. In **dev builds** the order is inverted: the frozen
+resource is bundled next to the dev binary too, and letting it win
+there shadowed live sidecar source — edits did nothing until a
+re-freeze — so dev prefers the source tree and treats the frozen
+binary as the fallback (`plan_launch` in `sidecar.rs`; amended
+2026-07-13).
 
 ## Why
 
@@ -129,10 +135,11 @@ though the artifact happens to contain an interpreter.
   A missing SDK degrades that one backend gracefully, unchanged from
   today.
 - **The host keeps `uv`/`python3` launch paths** for the developer flow;
-  the frozen path simply takes priority when the artifact is present
-  next to the GUI binary. The host↔sidecar contract (piped stdin as the
-  parent-death signal, tab-separated stdout banner) is unchanged — a
-  frozen exe gets the same pipes.
+  the frozen path takes priority in release builds, and the source tree
+  takes priority in dev builds (see the amendment above). The
+  host↔sidecar contract (piped stdin as the parent-death signal,
+  tab-separated stdout banner) is unchanged — a frozen exe gets the
+  same pipes.
 - **`uv` is dev-only now.** ADR 0015's general rule still governs any
   *external* runtime binary we depend on but do not build; its specific
   consequence — "an end-user `uv`/Python fetch flow is needed" — no

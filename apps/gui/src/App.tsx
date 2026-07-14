@@ -11,6 +11,7 @@ import type {
   DbcInfo,
   DbcRef,
   InterfaceBinding,
+  InterfaceRecord,
   LocalVirtualBusDef,
   LogFinished,
   OpenLogResult,
@@ -24,10 +25,12 @@ import type {
 } from "./types";
 import {
   PROJECT_SCHEMA_VERSION,
+  bindingKind,
   isLocalBinding,
   localVbusId,
   resolveServer,
 } from "./types";
+import { resolveBindingInterface } from "./bindingResolution";
 import { useSidecarStatus } from "./sidecarStatus";
 import { projectDir, resolveProjectPath } from "./projectPaths";
 import { windowTitle } from "./windowTitle";
@@ -980,6 +983,72 @@ export function App() {
       return;
     }
 
+    // Pre-flight stale-binding guard. Bindings persist the full
+    // channel id, but parts of it are positional (PCAN slot names /
+    // handles shift with USB port), so an exact id can go stale while
+    // the device is right there on another slot. Check each remote
+    // binding against the server's attached-channel snapshot:
+    // re-resolve by device identity when possible (and update the
+    // binding), abort with a pointer at the project panel when the
+    // interface is genuinely absent — instead of subscribing to
+    // nothing and looking connected.
+    let effectiveBindings = interfaceBindings;
+    const missing: string[] = [];
+    const busName = (busId: string) =>
+      buses.find((bb) => bb.id === busId)?.name ?? busId;
+    for (const address of servers) {
+      let attachedIds: string[];
+      try {
+        const records = await invoke<InterfaceRecord[]>("get_interfaces", {
+          address,
+        });
+        attachedIds = records.map((r) => r.id);
+      } catch {
+        continue; // no snapshot for this server — let subscribe decide
+      }
+      // An empty list is ambiguous ("no snapshot yet" vs "nothing
+      // attached"); only classify against a real enumeration.
+      if (attachedIds.length === 0) continue;
+      const snapshot = effectiveBindings;
+      const rebinds = new Map<InterfaceBinding, string>();
+      for (const b of snapshot) {
+        if (bindingKind(b) !== "remote") continue;
+        if (resolveServer(b.server, sidecarAddress) !== address) continue;
+        const res = resolveBindingInterface(b.interface, attachedIds);
+        if (res.kind === "rebound") {
+          rebinds.set(b, res.interface);
+          void invoke("gui_emit_system_log", {
+            level: "warn",
+            source: "connection",
+            message:
+              `bound interface ${b.interface} is not attached; ` +
+              `rebinding ${busName(b.bus_id)} to ${res.interface} ` +
+              `(same device identity on a different slot)`,
+          }).catch(() => {});
+        } else if (res.kind === "missing") {
+          missing.push(`${busName(b.bus_id)} → ${b.interface}`);
+        }
+      }
+      if (rebinds.size > 0) {
+        effectiveBindings = snapshot.map((b) => {
+          const to = rebinds.get(b);
+          return to === undefined ? b : { ...b, interface: to };
+        });
+      }
+    }
+    if (missing.length > 0) {
+      setState({
+        kind: "error",
+        message:
+          `Bound interface not attached: ${missing.join("; ")}. ` +
+          `Rebind the bus in the project panel (or reattach the device), then Connect.`,
+      });
+      return;
+    }
+    if (effectiveBindings !== interfaceBindings) {
+      setInterfaceBindings(effectiveBindings);
+    }
+
     try {
       await invoke("clear_trace_store");
       invalidateCache();
@@ -999,7 +1068,7 @@ export function App() {
     });
 
     for (const address of servers) {
-      const bindings = interfaceBindings
+      const bindings = effectiveBindings
         .filter((b) => resolveServer(b.server, sidecarAddress) === address)
         .map((b) => {
           const bus = buses.find((bb) => bb.id === b.bus_id);
