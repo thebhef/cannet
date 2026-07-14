@@ -424,6 +424,39 @@ mod tests {
         assert!(!idx.range(7, false, 0, 1000).is_empty(), "the live id stays");
     }
 
+    #[cfg(unix)]
+    fn open_fd_count() -> usize {
+        // Every open descriptor shows up as an entry under /dev/fd (a
+        // /proc/self/fd symlink on Linux, a real dir on macOS).
+        std::fs::read_dir("/dev/fd").map_or(0, Iterator::count)
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn segments_do_not_retain_file_descriptors() {
+        // A mmap'd segment must not keep its file descriptor open for the
+        // mapping's lifetime: the by-id index holds one segment chain per
+        // distinct id, so retaining an fd per segment exhausts RLIMIT_NOFILE
+        // (EMFILE) mid-import on a capture with many ids. Push across 400
+        // ids, each past the first segment boundary (>64 entries → ≥2
+        // segments), and assert the open-fd count stays bounded — not O(ids).
+        let dir = TempDir::new().unwrap();
+        let mut idx = ByIdIndex::new(dir.path());
+        let before = open_fd_count();
+        for id in 0u32..400 {
+            for f in 0u64..100 {
+                idx.push(id, false, f);
+            }
+        }
+        let after = open_fd_count();
+        // 400 ids × ≥2 segments = ≥800 fds if each segment retains one; a
+        // margin of 64 absorbs incidental fds from parallel tests.
+        assert!(
+            after <= before + 64,
+            "open fds grew from {before} to {after}; segments retain file descriptors"
+        );
+    }
+
     #[test]
     fn clear_empties_the_index() {
         let dir = TempDir::new().unwrap();
