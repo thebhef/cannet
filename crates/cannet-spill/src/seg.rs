@@ -6,16 +6,21 @@
 //! Windows forbids). This module owns the crate's single `unsafe` site —
 //! the `mmap` call itself.
 
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::io;
 use std::path::Path;
 
 use memmap2::MmapMut;
 
-/// One pre-allocated, whole-mapped segment file. The `File` handle is
-/// kept alive for the mapping's lifetime.
+/// One pre-allocated, whole-mapped segment file.
+///
+/// The `File` handle is **not** retained: once `mmap` succeeds the OS
+/// mapping object holds its own reference to the underlying file, so the
+/// mapping stays valid after the descriptor is closed (on both POSIX and
+/// Windows). Retaining it would cost one open fd per live segment, and the
+/// by-id index holds one segment chain per distinct id — enough to exhaust
+/// `RLIMIT_NOFILE` (EMFILE) mid-import on a wide capture.
 pub(crate) struct Segment {
-    _file: File,
     pub(crate) map: MmapMut,
 }
 
@@ -28,16 +33,16 @@ pub(crate) fn create_segment(path: &Path, bytes: usize) -> io::Result<Segment> {
         .truncate(true)
         .open(path)?;
     file.set_len(bytes as u64)?;
-    // SAFETY: `file` was just created and sized to `bytes`; we keep its
-    // handle alive in the returned `Segment` for the mapping's whole
-    // lifetime, so it cannot be truncated out from under the map by this
-    // process. The map is only ever accessed behind the host's store
-    // mutex, so there is no concurrent mutation. External truncation of
-    // the scratch volume would raise SIGBUS / EXCEPTION_IN_PAGE_ERROR,
-    // which ADR 0002 accepts for an ephemeral store.
+    // SAFETY: `file` was just created and sized to `bytes`; the mapping
+    // outlives the handle (the OS keeps the file alive for the mapping),
+    // and the map is only ever accessed behind the host's store mutex, so
+    // there is no concurrent mutation. External truncation of the scratch
+    // volume would raise SIGBUS / EXCEPTION_IN_PAGE_ERROR, which ADR 0002
+    // accepts for an ephemeral store. The handle is dropped at end of scope
+    // to avoid holding one fd per live segment.
     #[allow(unsafe_code)]
     let map = unsafe { MmapMut::map_mut(&file)? };
-    Ok(Segment { _file: file, map })
+    Ok(Segment { map })
 }
 
 /// Map an *existing* segment file whole, read-write, **without
@@ -46,14 +51,14 @@ pub(crate) fn create_segment(path: &Path, bytes: usize) -> io::Result<Segment> {
 /// valid-length watermark says how many of them are live data.
 pub(crate) fn open_segment(path: &Path) -> io::Result<Segment> {
     let file = OpenOptions::new().read(true).write(true).open(path)?;
-    // SAFETY: same contract as `create_segment` — the file handle is kept
-    // alive in the returned `Segment` for the mapping's lifetime, and the
-    // map is only touched behind the store mutex. The file already exists
-    // at its full pre-allocated size, so no resize is needed (or allowed
-    // while mapped, on Windows).
+    // SAFETY: same contract as `create_segment` — the mapping outlives the
+    // handle (dropped at end of scope so no fd is held per segment), and the
+    // map is only touched behind the store mutex. The file already exists at
+    // its full pre-allocated size, so no resize is needed (or allowed while
+    // mapped, on Windows).
     #[allow(unsafe_code)]
     let map = unsafe { MmapMut::map_mut(&file)? };
-    Ok(Segment { _file: file, map })
+    Ok(Segment { map })
 }
 
 /// Remove every file in `dir` whose name starts with one of `prefixes`,
