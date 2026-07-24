@@ -674,3 +674,16 @@ next pass on this surface can address them as one piece.
   `127.0.0.1:50051` is a fixed *default* (already overridable by flag);
   consider an ephemeral default so two standalone servers don't collide
   out of the box.
+
+- `[cannet-blf]` **A single-`LOG_CONTAINER` BLF inflates its whole
+  payload into memory at once.** Some writers emit the entire log as
+  one container (observed: a 465 MB file = 1 container of 465,623,864
+  bytes, vs. a normal file's ~1400 containers averaging ~24 KB). The
+  reader ([`crates/cannet-blf/src/format/reader.rs`](crates/cannet-blf/src/format/reader.rs)
+  `pull_one_container`) inflates a container fully into the `tail`
+  carry-over buffer before decoding objects, so such a file holds
+  hundreds of MB transiently. The per-object quadratic drain that made
+  these files effectively un-loadable is fixed (offset-based `tail`
+  consumption); this remaining item is the memory spike. If it bites,
+  stream-inflate the container body in bounded chunks rather than
+  materialising the whole uncompressed payload.

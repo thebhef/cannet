@@ -876,7 +876,19 @@ fn open_log(
             return Err(msg);
         }
     };
-    sys_info!(&app, "blf-import", "opened BLF {blf_path}");
+    // Log the file's own header stats so an unusual capture (huge
+    // object count, an uncompressed single-container Kvaser log, etc.)
+    // is visible in the system log before the pump even starts.
+    let stats = source.file_statistics();
+    let uncompressed_mib = stats.uncompressed_file_size / (1024 * 1024);
+    sys_info!(
+        &app,
+        "blf-import",
+        "opened BLF {blf_path}: {objects} objects, {uncompressed_mib} MiB uncompressed, \
+         app_id={app_id}",
+        objects = stats.object_count,
+        app_id = stats.application_id,
+    );
 
     // Notes live inside the BLF as `GLOBAL_MARKER` records (ADR 0010 —
     // no sidecar files). Pull them out of the file in a quick pre-pass
