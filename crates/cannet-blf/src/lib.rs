@@ -68,6 +68,14 @@ impl BlfCanFrameSource {
             start_unix_nanos,
         })
     }
+
+    /// The file's `FileStatistics` header (object count, compressed /
+    /// uncompressed sizes, measurement start time, application id).
+    /// Parsed once at open; lets a host log a load summary without
+    /// re-reading the file.
+    pub fn file_statistics(&self) -> &format::header::FileStatistics {
+        self.reader.file_statistics()
+    }
 }
 
 impl CanFrameSource for BlfCanFrameSource {

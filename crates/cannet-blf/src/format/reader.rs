@@ -172,9 +172,17 @@ pub struct BlfReader {
     /// [`Self::file_statistics`] so the host can surface
     /// `measurement_start_time` etc. without re-parsing.
     file_statistics: FileStatistics,
-    /// Inflated bytes that have not yet been parsed into objects.
-    /// Refilled by [`Self::pull_one_container`] as needed.
+    /// Inflated bytes, some already consumed. Refilled by
+    /// [`Self::pull_one_container`] as needed. Objects are consumed by
+    /// advancing `tail_pos` rather than draining from the front — a
+    /// front-drain is O(remaining) per object, which is quadratic when a
+    /// container inflates to hundreds of MB (some writers emit the whole
+    /// log as a single container). The consumed prefix is reclaimed once
+    /// per container pull, not once per object.
     tail: Vec<u8>,
+    /// Offset into `tail` of the next unparsed object. Everything before
+    /// it is consumed and reclaimed at the next [`Self::pull_one_container`].
+    tail_pos: usize,
     /// True once disk EOF has been reached. Decoding continues
     /// while `tail` still has whole objects; `next_object` returns
     /// `Ok(None)` once both are exhausted.
@@ -200,6 +208,7 @@ impl BlfReader {
             file,
             file_statistics,
             tail: Vec::new(),
+            tail_pos: 0,
             disk_eof: false,
         })
     }
@@ -231,25 +240,26 @@ impl BlfReader {
     pub fn next_object(&mut self) -> Result<Option<BlfObject>, BlfReadError> {
         loop {
             // Make sure we have at least the 16-byte base header.
-            if self.tail.len() < OBJECT_HEADER_BASE_BYTES {
+            if self.tail.len() - self.tail_pos < OBJECT_HEADER_BASE_BYTES {
                 if !self.pull_one_container()? {
                     return Ok(None);
                 }
                 continue;
             }
-            let base = ObjectHeaderBase::parse(&self.tail).map_err(BlfReadError::InnerHeader)?;
+            let base = ObjectHeaderBase::parse(&self.tail[self.tail_pos..])
+                .map_err(BlfReadError::InnerHeader)?;
             let object_size = base.object_size as usize;
             // `advance_bytes` is bounded by `object_size + 3`, well
             // under usize::MAX on any platform we target.
             let advance = usize::try_from(base.advance_bytes())
                 .expect("advance_bytes ≤ object_size + 3 fits in usize");
             // Make sure we have the full object + its padding.
-            while self.tail.len() < advance {
+            while self.tail.len() - self.tail_pos < advance {
                 if !self.pull_one_container()? {
                     return Err(BlfReadError::UnexpectedEof);
                 }
             }
-            let object_bytes = &self.tail[..object_size];
+            let object_bytes = &self.tail[self.tail_pos..self.tail_pos + object_size];
             let decoded = match base.object_type {
                 object_type::CAN_MESSAGE => BlfObject::CanMessage(decode_can_message(object_bytes)?),
                 object_type::CAN_MESSAGE2 => {
@@ -284,8 +294,10 @@ impl BlfReader {
                 }
                 _ => BlfObject::Other(base),
             };
-            // Advance the tail past this object and its 4-byte padding.
-            self.tail.drain(..advance);
+            // Advance past this object and its 4-byte padding. The
+            // consumed prefix is reclaimed in `pull_one_container`, so
+            // this is O(1) rather than a per-object front-drain.
+            self.tail_pos += advance;
             return Ok(Some(decoded));
         }
     }
@@ -298,6 +310,13 @@ impl BlfReader {
     fn pull_one_container(&mut self) -> Result<bool, BlfReadError> {
         if self.disk_eof {
             return Ok(false);
+        }
+        // Reclaim the consumed prefix before growing `tail` again. This
+        // is the only place bytes shift down — once per container pull,
+        // not once per object (see `tail`/`tail_pos`).
+        if self.tail_pos > 0 {
+            self.tail.drain(..self.tail_pos);
+            self.tail_pos = 0;
         }
         loop {
             let mut base_buf = [0u8; OBJECT_HEADER_BASE_BYTES];
