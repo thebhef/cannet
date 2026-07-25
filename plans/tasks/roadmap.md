@@ -17,10 +17,14 @@ the order below is the order of work, top first.
 
 ## Implementation order
 
-1. [Task 29 — TX Timing Robustness & Counter-Per-Wire-Frame](0029-tx-timing-robustness-counter.md)
-   — fix periodic-TX drift and high-rate bunching, and re-bind the
-   rolling counter / CRC to the actual wire send (one increment per
-   frame) instead of the scheduler tick; both share one root.
+1. [Task 29 — TX Timing Robustness](0029-tx-timing-robustness-counter.md)
+   — fix periodic-TX drift and high-rate bunching from OS timer wake
+   lateness, settle the missed-period policy, and record the
+   periodic-emission semantics in an ADR. The counter-per-wire-frame
+   half of this task has shipped (one increment per emitted frame,
+   staged-on-prepare / committed-on-emit; [ADR 0027](../../docs/adr/0027-calculated-fields-counter-crc.md));
+   what remains is the wake-lateness and missed-period work, blocked on
+   a jitter-target decision.
 2. [Task 31 — macOS Integration Issues](0031-macos-integration-issues.md)
    — crash on exit (wry/WebKit layer-tree teardown race) and missing
    Spotlight bundle metadata. Independently-shippable macOS fixes.
