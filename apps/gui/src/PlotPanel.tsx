@@ -252,6 +252,9 @@ interface PlotPanelParams {
   maxRateHz?: unknown;
   signalsWidthPx?: unknown;
   showPoints?: unknown;
+  /** Per-derived-axis vertical weight (flex-grow), keyed by axis id.
+   * See {@link AxisWeights}. Absent axes default to weight 1. */
+  axisWeights?: unknown;
 }
 
 /** Per-area side-panel width range (pixels). Default and clamps for
@@ -456,6 +459,12 @@ import {
 } from "./signalSelection";
 import { SignalPatternEditor } from "./SignalPatternEditor";
 import { deriveAxesForArea, type YAxisMode } from "./plotAxisDerivation";
+import {
+  type AxisWeights,
+  axisWeightsFromRaw,
+  pruneAxisWeights,
+  resolveAxisWeights,
+} from "./plotAreaLayout";
 import { useDecimatedRange } from "./useDecimatedRange";
 import { diagCount } from "./diag"; // DIAG
 
@@ -538,6 +547,12 @@ export function PlotPanel(props: IDockviewPanelProps) {
   /** Pixel width of every area's side panel — user-resizable via a
    * drag handle, persisted in panel config. */
   const [signalsWidth, setSignalsWidth] = useState(() => signalsWidthFromRaw(savedConfig?.signalsWidthPx));
+  /** Per-derived-axis vertical weights (flex-grow), keyed by axis id.
+   * Persisted in panel config; pruned to the live axis set below and
+   * resolved (defaults filled) at render (ADR 0026). */
+  const [axisWeights, setAxisWeights] = useState<AxisWeights>(() =>
+    axisWeightsFromRaw(savedConfig?.axisWeights),
+  );
   const [focusedAreaId, setFocusedAreaId] = useState<string>(() => areas[0]?.id ?? "");
   const [catalog, setCatalog] = useState<SignalDescriptorRecord[]>([]);
 
@@ -802,6 +817,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
       maxRateHz,
       signalsWidthPx: signalsWidth,
       showPoints,
+      axisWeights,
     };
     // Dual-write: onto the element (survives panel close + reopen and is
     // what `Save` serializes) and into the dockview `params` (the
@@ -826,6 +842,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     maxRateHz,
     signalsWidth,
     showPoints,
+    axisWeights,
   ]);
 
   const refreshCatalog = useCallback(() => {
@@ -1290,6 +1307,24 @@ export function PlotPanel(props: IDockviewPanelProps) {
     return out;
   }, [effectiveAreas]);
 
+  // Fit-to-panel weights (ADR 0026): resolve a flex-grow for every
+  // live derived axis (stored value or default 1), and prune stored
+  // entries whose axis no longer exists so the config doesn't
+  // accumulate stale ids. `pruneAxisWeights` returns the same
+  // reference when nothing is removed, so the setState is a no-op then
+  // and the effect can't loop.
+  const derivedAxisIds = useMemo(
+    () => derivedAreaConfigs.map((d) => d.area.id),
+    [derivedAreaConfigs],
+  );
+  const resolvedAxisWeights = useMemo(
+    () => resolveAxisWeights(derivedAxisIds, axisWeights),
+    [derivedAxisIds, axisWeights],
+  );
+  useEffect(() => {
+    setAxisWeights((prev) => pruneAxisWeights(prev, derivedAxisIds));
+  }, [derivedAxisIds]);
+
   /// Bus-rename invalidation (ADR 0020). Track the previous match
   /// count for each filter-mode area; when a buses-list change drops
   /// any area's count from non-zero to zero, emit a System Messages
@@ -1578,6 +1613,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
             <PlotArea
               key={d.area.id}
               area={d.area}
+              flexGrow={resolvedAxisWeights[d.area.id]}
               label={
                 d.subtitle == null
                   ? areaLabels.get(parent.id) ?? "Area"
@@ -1803,6 +1839,10 @@ function MeasurementMenu({
 
 interface PlotAreaProps {
   area: PlotAreaConfig;
+  /** Vertical flex-grow weight for this axis (ADR 0026 fit-to-panel).
+   * Applied inline on the root; the browser distributes stack height
+   * proportionally. Undefined falls back to the CSS default (1). */
+  flexGrow?: number;
   label: string;
   isFirst: boolean;
   isLast: boolean;
@@ -1942,6 +1982,7 @@ function PlotArea(p: PlotAreaProps) {
   diagCount("render.PlotArea"); // DIAG
   const {
     area,
+    flexGrow,
     label,
     isFirst,
     isLast,
@@ -2628,7 +2669,7 @@ function PlotArea(p: PlotAreaProps) {
       : { ...axisCommon, size: 18, values: (_u, splits) => splits.map(() => "") };
     const opts: uPlot.Options = {
       width: el.clientWidth || 600,
-      height: Math.max(60, el.clientHeight - 2),
+      height: Math.max(24, el.clientHeight - 2),
       // Both axes are `auto: false` — we own the range entirely, and
       // every code path that wants to move it does so via an explicit
       // `setScale`. Leaving `auto: true` (uPlot's default) means
@@ -3071,10 +3112,10 @@ function PlotArea(p: PlotAreaProps) {
     // of setting the canvas size can subtly shift its bbox by a
     // sub-pixel, which the user perceives as the plot area "wiggling".
     let lastW = el.clientWidth || 600;
-    let lastH = Math.max(60, el.clientHeight - 2);
+    let lastH = Math.max(24, el.clientHeight - 2);
     const ro = new ResizeObserver(() => {
       const w = el.clientWidth || 600;
-      const h = Math.max(60, el.clientHeight - 2);
+      const h = Math.max(24, el.clientHeight - 2);
       if (w === lastW && h === lastH) return;
       lastW = w;
       lastH = h;
@@ -3339,6 +3380,7 @@ function PlotArea(p: PlotAreaProps) {
   return (
     <div
       className={`plot-area${focused ? " focused" : ""}`}
+      style={flexGrow == null ? undefined : { flexGrow }}
       onMouseDown={onFocus}
       onDragOver={(e) => {
         if (e.dataTransfer.types.includes(SIGNAL_DND_MIME)) {

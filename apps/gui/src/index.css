@@ -1370,19 +1370,25 @@ button.trace-event-swatch {
 .plot-panel-areas {
   flex: 1 1 0;
   min-height: 0;
-  overflow-y: auto;
+  /* Fit-to-panel (ADR 0026): derived axes always fit the stack — no
+     scroll list. Height is traded between areas via per-axis flex-grow
+     weights and the splitter drags. `hidden` (not `auto`) so a
+     pathologically short panel clips rather than growing a scrollbar. */
+  overflow: hidden;
   display: flex;
   flex-direction: column;
 }
 
 /* One plot area: a uPlot canvas on the left, a side signal panel on
-   the right. One area fills the stack; N areas split it evenly, each
-   clamped to a usable minimum. The canvas's ResizeObserver follows
+   the right. Areas split the stack by their flex-grow weight (set
+   inline, default 1). `min-height` is the pathological floor where
+   `overflow: hidden` clips; splitter drags clamp at the friendlier
+   AXIS_MIN_PX (ADR 0026). The canvas's ResizeObserver follows
    whatever height it gets. */
 .plot-area {
   display: flex;
   flex: 1 1 0;
-  min-height: 90px;
+  min-height: 24px;
   border-bottom: 1px solid #1f2630;
 }
 .plot-area:last-child {

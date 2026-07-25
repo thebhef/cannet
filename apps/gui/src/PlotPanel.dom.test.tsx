@@ -574,6 +574,40 @@ describe("PlotPanel", () => {
     }
   });
 
+  it("each derived axis carries a resolved flex-grow weight (default 1)", () => {
+    renderPanel();
+    const area = screen.getByText("Area 1").closest(".plot-area") as HTMLElement;
+    expect(area.style.flexGrow).toBe("1");
+  });
+
+  it("restores per-axis weights from config and applies them as flex-grow", () => {
+    const registry = makeRegistry({
+      id: "el-weights",
+      config: {
+        areas: [{ id: "a1", signals: [] }],
+        axisWeights: { a1: 2.5 },
+      },
+    });
+    renderPanel({ params: { elementId: "el-weights" }, registry });
+    const area = screen.getByText("Area 1").closest(".plot-area") as HTMLElement;
+    // Unified mode → derived axis id == area id, so the stored weight
+    // resolves onto this axis.
+    expect(area.style.flexGrow).toBe("2.5");
+  });
+
+  it("round-trips axisWeights through updateParameters", () => {
+    const { api } = renderPanel({
+      params: { elementId: "el-w2" },
+      registry: makeRegistry({
+        id: "el-w2",
+        config: { areas: [{ id: "a1", signals: [] }], axisWeights: { a1: 3 } },
+      }),
+    });
+    const calls = api.updateParameters.mock.calls;
+    const lastCall = calls[calls.length - 1]?.[0] ?? {};
+    expect(lastCall.axisWeights).toEqual({ a1: 3 });
+  });
+
   it("mirrors its config onto the element via the registry", async () => {
     const { registry } = renderPanel({
       params: { elementId: "el-persist" },
