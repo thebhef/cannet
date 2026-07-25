@@ -95,8 +95,12 @@ function encodeSample(series: { t: number[]; v: number[] }[]): ArrayBuffer {
   }
   return buf;
 }
+// Per-signal value tables a test can populate (keyed by signal name);
+// empty by default so signals read as numeric. Prefixed `mock` so the
+// hoisted `vi.mock` factory may reference it lazily.
+const mockValueTables: Record<string, { raw: number; label: string }[]> = {};
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(async (cmd: string, args?: { signals?: unknown[] }) => {
+  invoke: vi.fn(async (cmd: string, args?: { signals?: unknown[]; signalName?: string }) => {
     if (cmd === "list_signals") return SIGNALS;
     if (cmd === "sample_signals")
       return encodeSample((args?.signals ?? []).map(() => ({ t: [0, 1, 2], v: [10, 20, 15] })));
@@ -104,6 +108,7 @@ vi.mock("@tauri-apps/api/core", () => ({
       // Host-owned all-time per-signal extent (ADR 0025) — matches the
       // sampled values' min/max so follow-live auto-norm has a range.
       return (args?.signals ?? []).map(() => ({ lo: 10, hi: 20 }));
+    if (cmd === "list_value_tables") return mockValueTables[args?.signalName ?? ""] ?? [];
     return undefined;
   }),
 }));
@@ -250,6 +255,7 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   vi.clearAllMocks();
+  for (const k of Object.keys(mockValueTables)) delete mockValueTables[k];
 });
 
 describe("PlotPanel", () => {
@@ -606,6 +612,26 @@ describe("PlotPanel", () => {
     const calls = api.updateParameters.mock.calls;
     const lastCall = calls[calls.length - 1]?.[0] ?? {};
     expect(lastCall.axisWeights).toEqual({ a1: 3 });
+  });
+
+  it("per-unit mode collects an area's enums onto one shared enum-lanes axis", async () => {
+    // Both fixture signals carry a >=2-member value table → both are
+    // enums. In per-unit mode they must fold into a single combined
+    // axis (subtitle "(enums)"), not two separate unit axes.
+    mockValueTables.EngineSpeed = [{ raw: 0, label: "Idle" }, { raw: 1, label: "Run" }];
+    mockValueTables.EngineTemp = [{ raw: 0, label: "Cold" }, { raw: 1, label: "Hot" }];
+    renderPanel();
+    const picker = screen.getByLabelText("add signal to focused plot area");
+    await pickCombobox(picker, "*|s:256:EngineSpeed");
+    await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
+    await pickCombobox(picker, "*|s:256:EngineTemp");
+    await waitFor(() => expect(screen.getByText("EngineTemp")).toBeInTheDocument());
+    await pickCombobox(screen.getByLabelText("y-axis mode"), "per-unit");
+    // One combined enum axis, not two per-unit axes.
+    await waitFor(() => {
+      expect(document.querySelectorAll(".plot-area").length).toBe(1);
+    });
+    expect(screen.getByText(/Area 1 · \(enums\)/)).toBeInTheDocument();
   });
 
   it("renders N-1 splitters between N stacked axes", async () => {

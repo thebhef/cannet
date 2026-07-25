@@ -459,6 +459,7 @@ import {
 } from "./signalSelection";
 import { SignalPatternEditor } from "./SignalPatternEditor";
 import { deriveAxesForArea, type YAxisMode } from "./plotAxisDerivation";
+import { useValueTables } from "./useValueTables";
 import {
   type AxisWeights,
   applySplitterDelta,
@@ -1270,22 +1271,46 @@ export function PlotPanel(props: IDockviewPanelProps) {
     [areas, scopedCatalog, busNameLookup],
   );
 
+  /// Panel-level enum detection (ADR 0026). One `list_value_tables`
+  /// fetch over every signal in the panel (via the shared
+  /// `useValueTables` hook), reduced to the set of enum keys — signals
+  /// whose `VAL_` table has >= 2 members. `deriveAxesForArea` consults
+  /// this to collect a per-unit area's enums onto the shared
+  /// enum-lanes axis. The per-area side-panel readout keeps its own
+  /// `useValueTables` call inside `PlotArea`; folding the two fetches
+  /// into one downward-passed map is a follow-up.
+  const allPanelSignals = useMemo(
+    () => effectiveAreas.flatMap((a) => a.signals),
+    [effectiveAreas],
+  );
+  const panelValueTables = useValueTables(allPanelSignals);
+  const enumKeys = useMemo(() => {
+    const set = new Set<string>();
+    for (const [key, table] of panelValueTables) {
+      if (isEnumValueTable(table)) set.add(key);
+    }
+    return set;
+  }, [panelValueTables]);
+
   /// Expand each effective area into one or more derived axes, based on
   /// the area's `yAxisMode` (ADR 0026). Unified produces one entry per
-  /// area (identical to today); per-unit groups signals by unit; and
-  /// individual is one entry per signal. Each derived entry carries
-  /// the parent area so panel-level callbacks (add signal, set primary,
-  /// set mode, remove area) can route to the right place.
+  /// area (identical to today); per-unit groups signals by unit (with
+  /// all enums on one shared enum-lanes axis); and individual is one
+  /// entry per signal. Each derived entry carries the parent area so
+  /// panel-level callbacks (add signal, set primary, set mode, remove
+  /// area) can route to the right place.
   const derivedAreaConfigs = useMemo(() => {
     const out: Array<{
       area: PlotAreaConfig;
       parentArea: PlotAreaConfig;
       isFirstOfParent: boolean;
       subtitle: string | null;
+      enumLanes: boolean;
     }> = [];
+    const isEnum = (k: string) => enumKeys.has(k);
     for (const a of effectiveAreas) {
       const mode = a.yAxisMode ?? "unified";
-      const axes = deriveAxesForArea(a.id, a.signals, mode);
+      const axes = deriveAxesForArea(a.id, a.signals, mode, isEnum);
       axes.forEach((ax, i) => {
         // The derived `PlotAreaConfig` carries the axis's slice of
         // signals. `patterns` is preserved only on the first
@@ -1303,11 +1328,12 @@ export function PlotPanel(props: IDockviewPanelProps) {
           parentArea: a,
           isFirstOfParent: i === 0,
           subtitle: ax.subtitle,
+          enumLanes: ax.kind === "enum-lanes",
         });
       });
     }
     return out;
-  }, [effectiveAreas]);
+  }, [effectiveAreas, enumKeys]);
 
   // Fit-to-panel weights (ADR 0026): resolve a flex-grow for every
   // live derived axis (stored value or default 1), and prune stored
@@ -1685,6 +1711,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
               <PlotArea
                 area={d.area}
                 flexGrow={resolvedAxisWeights[d.area.id]}
+                enumLanes={d.enumLanes}
               label={
                 d.subtitle == null
                   ? areaLabels.get(parent.id) ?? "Area"
@@ -1915,6 +1942,11 @@ interface PlotAreaProps {
    * Applied inline on the root; the browser distributes stack height
    * proportionally. Undefined falls back to the CSS default (1). */
   flexGrow?: number;
+  /** True when this axis is the shared per-unit enum-lanes axis (all of
+   * an area's enums stacked as logic-analyzer lanes, ADR 0026). The
+   * lane render lands in a later slice; today the axis draws as plain
+   * numeric lines. */
+  enumLanes?: boolean;
   label: string;
   isFirst: boolean;
   isLast: boolean;
@@ -2218,32 +2250,7 @@ function PlotArea(p: PlotAreaProps) {
   // labelled value reads as `<label> (<raw>)` on an exact raw match
   // for every signal regardless of axis mode — single-member tables
   // included.
-  const [valueTables, setValueTables] = useState<Map<string, ValueTableEntryRecord[]>>(new Map());
-  useEffect(() => {
-    let cancelled = false;
-    const accum = new Map<string, ValueTableEntryRecord[]>();
-    Promise.all(
-      signals.map(async (s) => {
-        try {
-          diagCount("invoke.list_value_tables"); // DIAG
-          const rows = await invoke<ValueTableEntryRecord[]>("list_value_tables", {
-            messageId: s.messageId,
-            extended: s.extended,
-            signalName: s.signalName,
-          });
-          if (rows.length > 0) accum.set(signalRefKey(s), rows);
-        } catch {
-          /* signal stays numeric */
-        }
-      }),
-    ).then(() => {
-      if (cancelled) return;
-      setValueTables(accum);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [signals]);
+  const valueTables = useValueTables(signals);
   // Axis-level enum mode is still gated on `signals.length === 1`
   // (the stepped path + symbolic y-axis ticks + label band only
   // make sense on a single-enum axis); derive that from the
