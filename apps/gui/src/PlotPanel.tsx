@@ -437,6 +437,17 @@ function measureAxisSize(values: string[] | null | undefined): number {
   // axis doesn't collapse.
   return Math.max(52, Math.ceil(widest) + 18);
 }
+/** Width (px) of a single tick label in the axis font. Reuses the same
+ * offscreen context as {@link measureAxisSize}. */
+function measureLabelWidth(text: string): number {
+  if (axisMeasureCtx == null) {
+    const c = document.createElement("canvas").getContext("2d");
+    if (!c) return text.length * 7;
+    axisMeasureCtx = c;
+  }
+  axisMeasureCtx.font = AXIS_FONT;
+  return axisMeasureCtx.measureText(text).width;
+}
 function fmtCount(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
@@ -2877,6 +2888,17 @@ function PlotArea(p: PlotAreaProps) {
           stroke: () => primaryColorRef.current ?? AXIS_STROKE,
           ticks: { stroke: () => primaryColorRef.current ?? AXIS_TICKS, width: 1 },
         };
+    // Elapsed-time labels widen as you zoom in (more fractional digits,
+    // ADR 0024), so a fixed tick spacing lets them collide. Space the
+    // ticks by the widest label the current span produces plus a gap, so
+    // they never overlap. Applied to *every* stacked area (not just the
+    // labelled bottom one) so all areas pick the same tick increment and
+    // their shared x-gridlines stay aligned.
+    const xTickSpace: uPlot.Axis["space"] = (_u, _axisIdx, min, max) => {
+      const d = fracDigitsForSpan((max ?? 0) - (min ?? 0));
+      const widest = measureLabelWidth(formatElapsed(max ?? 0, d));
+      return Math.max(50, Math.ceil(widest) + 22);
+    };
     // Only the bottom-most stacked area carries the "time (s)" label and
     // numeric ticks. Upper areas keep gridlines + tick marks (so the
     // shared x-grid still reads across the whole stack) but drop the
@@ -2888,6 +2910,7 @@ function PlotArea(p: PlotAreaProps) {
           label: "time (s)",
           labelSize: 16,
           size: 34,
+          space: xTickSpace,
           // Ticks share the trace's elapsed-time format (ADR 0024) so
           // the same timeline position reads identically in both views;
           // precision adapts to the visible span so zoomed-in ticks stay
@@ -2897,7 +2920,7 @@ function PlotArea(p: PlotAreaProps) {
             return splits.map((v) => formatElapsed(v, d));
           },
         }
-      : { ...axisCommon, size: 18, values: (_u, splits) => splits.map(() => "") };
+      : { ...axisCommon, size: 18, space: xTickSpace, values: (_u, splits) => splits.map(() => "") };
     const opts: uPlot.Options = {
       width: el.clientWidth || 600,
       height: Math.max(24, el.clientHeight - 2),
