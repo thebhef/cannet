@@ -2341,6 +2341,13 @@ function PlotArea(p: PlotAreaProps) {
   laneModeRef.current = laneMode;
   const valueTablesRef = useRef(valueTables);
   valueTablesRef.current = valueTables;
+  // The lane draw hook reads tables live from `valueTablesRef`, so it
+  // needs no uPlot rebuild when they resolve — but a stopped trace
+  // won't redraw on its own. Nudge one so lane labels appear once the
+  // tables land. Cheap and a no-op on numeric axes.
+  useEffect(() => {
+    uplotRef.current?.redraw();
+  }, [valueTables]);
   const enumMode = !laneMode && isEnumValueTable(valueTable) && signals.length === 1;
   // Ref mirrors so the resample callback (closure over the initial
   // signal set) sees the up-to-date enum-mode state without being
@@ -2778,13 +2785,11 @@ function PlotArea(p: PlotAreaProps) {
     const enumActiveAtConstruct = enumMode && valueTable != null;
     // Combined enum-lanes axis (ADR 0026): stepped paths for every
     // series, a blank y gutter (tiles carry the labels, the side panel
-    // carries identity), and per-signal tables/targets captured for the
-    // draw hook. Rebuilds when the lane tables resolve (the effect deps
-    // include `valueTables`).
+    // carries identity), and per-signal colour targets for the draw
+    // hook. The lane *tables* are read live from `valueTablesRef` in
+    // the draw hook (a redraw effect below shows labels once they
+    // resolve), so this instance need not rebuild when they land.
     const laneModeAtConstruct = laneMode;
-    const laneTablesAtConstruct: (ValueTableEntryRecord[] | null)[] = laneModeAtConstruct
-      ? signals.map((s) => valueTables.get(signalRefKey(s)) ?? null)
-      : [];
     const laneTargetsAtConstruct: (ColorTarget | null)[] = laneModeAtConstruct
       ? signals.map((s) => ({
           messageId: s.messageId,
@@ -3106,7 +3111,7 @@ function PlotArea(p: PlotAreaProps) {
                 const tileNorm = laneTileBand(laneNorm, laneBotPx - laneTopPx);
                 drawEnumTiles(ctx, u, {
                   seriesIdx: i + 1,
-                  table: laneTablesAtConstruct[i] ?? [],
+                  table: valueTablesRef.current.get(signalRefKey(s)) ?? [],
                   target: laneTargetsAtConstruct[i],
                   resolveColor: colorResolverRef.current,
                   bandTop: u.valToPos(tileNorm.hi, "y", true),
@@ -3335,7 +3340,7 @@ function PlotArea(p: PlotAreaProps) {
       if (uplotRef.current === u) uplotRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [signalSetKey, areaId, resizeTick, valueTable, valueTables, laneMode, showPoints, isLast]);
+  }, [signalSetKey, areaId, resizeTick, valueTable, showPoints, isLast]);
 
   // While the trace is running, re-sample on a self-paced loop at the
   // configured rate (each tick scheduled after the previous one

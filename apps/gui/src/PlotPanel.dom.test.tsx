@@ -638,6 +638,49 @@ describe("PlotPanel", () => {
     expect(screen.getByText(/Area 1 · \(enums\)/)).toBeInTheDocument();
   });
 
+  it("a numeric area does not rebuild its uPlot when value tables resolve", async () => {
+    // Regression: keying uPlot construction on the whole `valueTables`
+    // map tore down + rebuilt every numeric area when its (empty) tables
+    // resolved, and the post-rebuild resample was skipped by the
+    // descriptor-memo on a stopped trace — leaving a blank canvas (no
+    // scale, no lines). The draw hook reads tables live instead, so a
+    // table resolution must not recreate the instance.
+    const cw = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(600);
+    const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
+    try {
+      // Seed the signal in config so the panel mounts *with* it — one
+      // construction, not the empty-area + signal-added pair. Any extra
+      // instance then is the table-resolution rebuild we're guarding.
+      const registry = makeRegistry({
+        id: "el-numrebuild",
+        config: {
+          areas: [
+            {
+              id: "a1",
+              signals: [
+                { busId: null, messageId: 256, extended: false, signalName: "EngineSpeed", messageName: "EngineData", unit: "rpm", color: "#abc" },
+              ],
+            },
+          ],
+        },
+      });
+      renderPanel({ params: { elementId: "el-numrebuild" }, registry });
+      await waitFor(() => expect(uplotInstances.length).toBeGreaterThanOrEqual(1));
+      // Flush the async value-table fetch (empty for this numeric signal)
+      // and its state update.
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      // Still exactly one instance: the empty-table resolution redraws,
+      // it does not tear down + rebuild uPlot.
+      expect(uplotInstances.length).toBe(1);
+    } finally {
+      cw.mockRestore();
+      ch.mockRestore();
+    }
+  });
+
   it("a lanes axis constructs uPlot with stepped series and a blank y axis", async () => {
     mockValueTables.EngineSpeed = [{ raw: 0, label: "Idle" }, { raw: 1, label: "Run" }];
     mockValueTables.EngineTemp = [{ raw: 0, label: "Cold" }, { raw: 1, label: "Hot" }];
