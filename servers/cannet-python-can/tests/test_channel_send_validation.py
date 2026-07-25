@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 
 def _ensure_on_path() -> None:
@@ -36,7 +37,7 @@ class _RecordingBus:
 
 
 def _frame(*, data: bytes = b"", **overrides) -> Frame:
-    base = {
+    base: dict[str, Any] = {
         "timestamp_ns": 0,
         "can_id": 0x100,
         "extended": False,
@@ -97,21 +98,21 @@ def test_classic_rtr_with_nonzero_dlc_passes_through() -> None:
     frames, so the dlc/data-mismatch check must not fire on them."""
     ch = _channel(fd=False)
     ch.send(_frame(is_remote=True, dlc=8))  # no exception
-    bus = ch._bus  # type: ignore[attr-defined]
+    bus = cast(_RecordingBus, ch._bus)  # type: ignore[attr-defined]
     assert len(bus.sent) == 1
 
 
 def test_classic_well_formed_frame_passes() -> None:
     ch = _channel(fd=False)
     ch.send(_frame(data=b"\x01\x02\x03"))
-    bus = ch._bus  # type: ignore[attr-defined]
+    bus = cast(_RecordingBus, ch._bus)  # type: ignore[attr-defined]
     assert len(bus.sent) == 1
 
 
 def test_fd_well_formed_frame_passes() -> None:
     ch = _channel(fd=True)
     ch.send(_frame(fd=True, data=bytes(12)))
-    bus = ch._bus  # type: ignore[attr-defined]
+    bus = cast(_RecordingBus, ch._bus)  # type: ignore[attr-defined]
     assert len(bus.sent) == 1
 
 
