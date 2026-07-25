@@ -1330,6 +1330,11 @@ export function PlotPanel(props: IDockviewPanelProps) {
       isFirstOfParent: boolean;
       subtitle: string | null;
       enumLanes: boolean;
+      // Every signal on this axis is hidden — the axis draws nothing, so
+      // it's excluded from the fit-to-panel height distribution and its
+      // canvas collapses. Its rows stay in the side panel so they remain
+      // un-hideable (ADR 0026 hidden-signal handling).
+      collapsed: boolean;
     }> = [];
     const isEnum = (k: string) => enumKeys.has(k);
     for (const a of effectiveAreas) {
@@ -1353,6 +1358,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
           isFirstOfParent: i === 0,
           subtitle: ax.subtitle,
           enumLanes: ax.kind === "enum-lanes",
+          collapsed: ax.signals.length > 0 && ax.signals.every((s) => s.hidden),
         });
       });
     }
@@ -1681,9 +1687,13 @@ export function PlotPanel(props: IDockviewPanelProps) {
           // at drag start keeps the weight math independent of the
           // panel's absolute size.
           const above = idx > 0 ? derivedAreaConfigs[idx - 1] : null;
+          // A splitter trades vertical weight between two axes; it's
+          // meaningless next to a collapsed (fully-hidden) axis, which
+          // claims no height, so drop it when either neighbour collapses.
+          const showSplitter = above != null && !above.collapsed && !d.collapsed;
           return (
             <Fragment key={d.area.id}>
-              {above && (
+              {showSplitter && above && (
                 <div
                   className="plot-area-splitter"
                   role="separator"
@@ -1746,7 +1756,8 @@ export function PlotPanel(props: IDockviewPanelProps) {
               )}
               <PlotArea
                 area={d.area}
-                flexGrow={resolvedAxisWeights[d.area.id]}
+                flexGrow={d.collapsed ? 0 : resolvedAxisWeights[d.area.id]}
+                collapsed={d.collapsed}
                 enumLanes={d.enumLanes}
               label={
                 d.subtitle == null
@@ -1978,6 +1989,10 @@ interface PlotAreaProps {
    * Applied inline on the root; the browser distributes stack height
    * proportionally. Undefined falls back to the CSS default (1). */
   flexGrow?: number;
+  /** True when every signal on this axis is hidden. The canvas collapses
+   * (no reserved plot height) while the side-panel rows stay visible so
+   * they remain un-hideable (ADR 0026). */
+  collapsed?: boolean;
   /** True when this axis is the shared per-unit enum-lanes axis (all of
    * an area's enums stacked as logic-analyzer lanes, ADR 0026). The
    * lane render lands in a later slice; today the axis draws as plain
@@ -2191,6 +2206,7 @@ function PlotArea(p: PlotAreaProps) {
   const {
     area,
     flexGrow,
+    collapsed,
     enumLanes,
     label,
     isFirst,
@@ -3619,7 +3635,7 @@ function PlotArea(p: PlotAreaProps) {
 
   return (
     <div
-      className={`plot-area${focused ? " focused" : ""}`}
+      className={`plot-area${focused ? " focused" : ""}${collapsed ? " collapsed" : ""}`}
       style={flexGrow == null ? undefined : { flexGrow }}
       onMouseDown={onFocus}
       onDragOver={(e) => {

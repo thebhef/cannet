@@ -146,16 +146,18 @@ trip over it.
 
 ### Plot panel
 
-- `[ui]` `cannet-gui` `PlotPanel.tsx`: **hidden traces still take
-  vertical plot space.** A hidden signal keeps its full axis/lane slot
-  (per-unit / individual axes, and the enum-lanes bands, all reserve
-  space for hidden members). The signal row should stay in the side
-  panel (so it's un-hideable) but not consume canvas height — collapse
-  a fully-hidden derived axis, and drop a hidden enum lane's band.
-  Needs a design pass: the side panel is per-derived-axis today, so
-  collapsing an axis also hides its rows; decide whether to exclude
-  hidden signals from axis sizing/lane allocation or re-home their rows.
-  (Task 32 QA.)
+- `[ui]` `cannet-gui` `PlotPanel.tsx`: **a hidden enum keeps its lane
+  band within a still-visible enum-lanes axis.** The fully-hidden-axis
+  case is done — a derived axis whose signals are *all* hidden now
+  collapses (`.plot-area.collapsed`: canvas dropped, excluded from the
+  fit-to-panel distribution, rows kept in the side panel), covering both
+  numeric and enum-lanes axes. Residual: when only *some* enums on a
+  lanes axis are hidden, the visible lanes don't reclaim the hidden
+  ones' bands. `visibleLaneBands`-style layout (bands over the visible
+  count) fixes the geometry, but the tile draw hook captures
+  construction-time `signals` and toggling `hidden` doesn't rebuild the
+  uPlot instance (`signalSetKey` excludes hidden), so a live per-lane
+  re-flow needs a `signalsRef` threaded into the draw hook. (Task 32 QA.)
 - `[bug]` `cannet-gui` `PlotPanel.tsx`: **cursor A/B marker chips and
   the x-axis intermittently don't render.** Reachable state where the
   cursor marker titles/text disappear, and possibly where the x-axis

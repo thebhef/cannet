@@ -637,6 +637,37 @@ describe("PlotPanel", () => {
     expect(lastCall.noteColor).toBe("#112233");
   });
 
+  it("collapses a fully-hidden axis and suppresses its splitter", () => {
+    // Individual mode → one axis per signal. The all-hidden signal's
+    // axis collapses (flex-grow 0, `.collapsed`) so it claims no plot
+    // height; the visible signal's axis keeps a real weight, and the
+    // splitter that would sit between the two is dropped.
+    const registry = makeRegistry({
+      id: "el-hidden",
+      config: {
+        areas: [
+          {
+            id: "a1",
+            yAxisMode: "individual",
+            signals: [
+              { busId: null, messageId: 256, extended: false, signalName: "EngineSpeed", messageName: "EngineData", unit: "rpm", color: "#abc", hidden: true },
+              { busId: null, messageId: 256, extended: false, signalName: "EngineTemp", messageName: "EngineData", unit: "V", color: "#def" },
+            ],
+          },
+        ],
+      },
+    });
+    renderPanel({ params: { elementId: "el-hidden" }, registry });
+    const areas = Array.from(document.querySelectorAll(".plot-area")) as HTMLElement[];
+    expect(areas.length).toBe(2);
+    const collapsed = areas.filter((a) => a.classList.contains("collapsed"));
+    expect(collapsed.length).toBe(1);
+    expect(collapsed[0].style.flexGrow).toBe("0");
+    // Two axes normally get one splitter between them; the collapsed
+    // neighbour suppresses it.
+    expect(document.querySelectorAll(".plot-area-splitter").length).toBe(0);
+  });
+
   it("per-unit mode collects an area's enums onto one shared enum-lanes axis", async () => {
     // Both fixture signals carry a >=2-member value table → both are
     // enums. In per-unit mode they must fold into a single combined

@@ -1447,6 +1447,26 @@ button.trace-event-swatch {
   box-shadow: inset 2px 0 0 #4ecbff;
 }
 
+/* A fully-hidden axis (every signal hidden): drop the canvas so it
+   claims no plot height, and let the side-panel rows stay visible (and
+   un-hideable) as a compact strip. `flex: 0 0 auto` sizes the strip to
+   its rows; a max-height bounds a pathologically long hidden list to an
+   internal scroll rather than starving the visible axes. (ADR 0026
+   hidden-signal handling.) */
+.plot-area.collapsed {
+  flex: 0 0 auto;
+  min-height: 0;
+}
+.plot-area.collapsed .plot-area-canvas,
+.plot-area.collapsed .plot-area-resizer {
+  display: none;
+}
+.plot-area.collapsed .plot-area-signals {
+  flex: 1 1 auto;
+  border-left: none;
+  max-height: 8rem;
+}
+
 .plot-area-canvas {
   flex: 1 1 auto;
   min-width: 0;
