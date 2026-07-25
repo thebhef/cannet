@@ -35,12 +35,31 @@ power-loss tail — ADR 0002 DS-2 updated). Confirmed by self-driving
 run: `flush_ms` max 33→5.7 ms, `tx_late_ms` max 32→5.2 ms,
 flush-seconds indistinguishable from clean seconds. Dev-build numbers.
 
-**Remaining:** regenerate the perf baseline so the new
-`flush_ms_max` / `tx_late_ms_max` gates arm; re-measure on release
-build + the 2-dongle rig (expect residual ≤ ~5 ms + manifest ~2 ms);
-then the small policy tail — missed-period policy + periodic-emission
-ADR, and whether any timer-wake work is still worth it (~98% of wakes
-were <2 ms late even before the fix; rig metric below decides).
+**Rig re-measure (2026-07-25, 2×PCAN, 100 Hz ids, 60 s, dev build):**
+host TX cadence fixed — σ 7.5→2.5 ms, `flush_ms` mean 50→5.4 / max
+176→12.7. **On-wire (receiving dongle) still bursty and now the
+dominant residual:** median 9.56 ms but p95 33 / p99 45 ms, 28% of
+gaps <5 ms (0.98 ms burst floor), σ 9.5 — unchanged by the host fix.
+Attribution: sidecar TX path ≈0.8–1 ms per serialized `ch.send`
+(sidecar `max_send` ≈0.8 ms with `max_gap` spikes = idle-then-burst);
+at ~800 TX/s per dongle that is near saturation, so frames queue and
+drain in ~1 kHz trains, and occasional backpressure reaches the
+scheduler (`tx_late_ms` max 73.7 while flush maxed 12.7 — not the
+store). Analysis tooling: `jitter_stats.py`-style offline parse of the
+spill scratch's meta segments (27 B records → per-id gap stats).
+
+**Remaining:**
+
+- **Sidecar TX throughput** — the new primary. Batch host→sidecar
+  sends (Task 30 #10: `cannet-wire/batch.rs` exists with zero
+  production consumers) and/or cut per-`ch.send` overhead. Verify
+  PCAN rx timestamps are device-stamped before trusting fine rx
+  percentiles (send-side `max_gap` already corroborates the
+  attribution).
+- Regenerate the perf baseline so `flush_ms_max` / `tx_late_ms_max`
+  arm; release-build re-measure before pinning targets.
+- Policy tail: missed-period policy + periodic-emission ADR; the rig
+  metric (below) as the gate.
 
 ## Symptoms (observed; root cause measured 2026-07-25)
 
