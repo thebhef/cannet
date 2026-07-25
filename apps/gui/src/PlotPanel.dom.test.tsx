@@ -618,6 +618,25 @@ describe("PlotPanel", () => {
     expect(lastCall.axisWeights).toEqual({ a1: 3 });
   });
 
+  it("shows the new-note colour swatch only in note mode and round-trips noteColor", () => {
+    // Not in note mode → no swatch.
+    renderPanel();
+    expect(screen.queryByLabelText("new note colour")).toBeNull();
+
+    const { api } = renderPanel({
+      params: { elementId: "el-note" },
+      registry: makeRegistry({
+        id: "el-note",
+        config: { areas: [{ id: "a1", signals: [] }], cursorMode: "note", noteColor: "#112233" },
+      }),
+    });
+    const swatch = screen.getByLabelText("new note colour") as HTMLInputElement;
+    expect(swatch.value).toBe("#112233");
+    const calls = api.updateParameters.mock.calls;
+    const lastCall = calls[calls.length - 1]?.[0] ?? {};
+    expect(lastCall.noteColor).toBe("#112233");
+  });
+
   it("per-unit mode collects an area's enums onto one shared enum-lanes axis", async () => {
     // Both fixture signals carry a >=2-member value table → both are
     // enums. In per-unit mode they must fold into a single combined

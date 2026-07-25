@@ -242,6 +242,7 @@ interface PlotPanelParams {
   areas?: unknown;
   followLive?: unknown;
   cursorMode?: unknown;
+  noteColor?: unknown;
   measEnabled?: unknown;
   measKeys?: unknown;
   showDiag?: unknown;
@@ -381,6 +382,12 @@ function areasFromParams(raw: unknown): PlotAreaConfig[] {
 
 function cursorModeFromRaw(raw: unknown): CursorMode {
   return raw === "x" || raw === "y" || raw === "note" ? raw : "off";
+}
+
+/** Sanitize a persisted note-creation colour to a `#RRGGBB` string,
+ * falling back to the default note-event blue. */
+function noteColorFromRaw(raw: unknown): string {
+  return typeof raw === "string" && /^#[0-9a-fA-F]{6}$/.test(raw) ? raw : EVENT_COLOR;
 }
 
 function measKeysFromRaw(raw: unknown): MeasurementKey[] {
@@ -545,6 +552,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
     typeof savedConfig?.followLive === "boolean" ? savedConfig.followLive : true,
   );
   const [cursorMode, setCursorMode] = useState<CursorMode>(() => cursorModeFromRaw(savedConfig?.cursorMode));
+  // Colour applied to a note dropped in "+ note" mode — picked from the
+  // toolbar swatch, persisted so it survives restart.
+  const [noteColor, setNoteColor] = useState<string>(() => noteColorFromRaw(savedConfig?.noteColor));
   const [measEnabled, setMeasEnabled] = useState(() =>
     typeof savedConfig?.measEnabled === "boolean" ? savedConfig.measEnabled : false,
   );
@@ -824,6 +834,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
       areas,
       followLive,
       cursorMode,
+      noteColor,
       measEnabled,
       measKeys,
       showDiag,
@@ -849,6 +860,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     areas,
     followLive,
     cursorMode,
+    noteColor,
     measEnabled,
     measKeys,
     showDiag,
@@ -1150,9 +1162,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
     (t: number) => {
       if (baseSeconds == null || !Number.isFinite(baseSeconds)) return;
       const timestampNs = Math.round((baseSeconds + t) * 1e9);
-      dispatchAddNote(crypto.randomUUID(), timestampNs, `note ${sessionNotes.length + 1}`);
+      dispatchAddNote(crypto.randomUUID(), timestampNs, `note ${sessionNotes.length + 1}`, noteColor);
     },
-    [baseSeconds, dispatchAddNote, sessionNotes.length],
+    [baseSeconds, dispatchAddNote, sessionNotes.length, noteColor],
   );
   // Jump the panel's x-window so the note at display-relative time
   // `t` is centred. Preserves the current zoom width; drops out of
@@ -1585,6 +1597,18 @@ export function PlotPanel(props: IDockviewPanelProps) {
             onChange={(v) => setCursorMode(v as CursorMode)}
           />
         </label>
+        {cursorMode === "note" && (
+          <label className="plot-cursor-ctl" title="colour applied to new notes">
+            colour
+            <input
+              type="color"
+              className="plot-note-color"
+              aria-label="new note colour"
+              value={noteColor}
+              onChange={(e) => setNoteColor(e.target.value)}
+            />
+          </label>
+        )}
         <button onClick={clearCursors} title="remove all placed cursors">
           clear cursors
         </button>

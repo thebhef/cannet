@@ -234,10 +234,6 @@ name/colour/remove on any editable event row. Remaining follow-ups:
   `PlotPanel`). The trace + events panel have it; the plot's note list still
   only renames/removes. Add a colour swatch there for parity (the host
   `recolor_note` command + `recolorNote` context dispatcher already exist).
-- `[ui]` **Create note cursors / events with a colour wheel.** New
-  events/notes get an assigned colour today; let the user pick it from a
-  colour wheel at creation time (not only edit-time). Pairs with the
-  colour-editing items above — share one colour-picker component.
 - `[bug]` **macOS: the event colour picker opens in the wrong location.**
   The native colour picker for events appears in odd positions on macOS
   (the plot series colour picker seems to open correctly, so compare the
