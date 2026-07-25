@@ -1139,10 +1139,17 @@ button.trace-event-swatch {
   flex: 0 0 auto;
 }
 .trace-event-swatch-input {
+  /* Cover the swatch's real footprint (inset:0 stretches the absolutely
+   * positioned input to fill the relative wrap) rather than collapsing to
+   * a zero-size point. The native colour picker anchors to the input's
+   * rendered rect; giving it the swatch box keeps the popover on the
+   * swatch. On macOS a zero-size anchor inside a virtualized,
+   * absolutely-positioned event row lands in the wrong place — this is a
+   * candidate fix for that, pending verification on a Mac. `opacity:0` +
+   * `pointer-events:none` keep it invisible and let the button take the
+   * click (which forwards to `input.click()`). */
   position: absolute;
   inset: 0;
-  width: 0;
-  height: 0;
   opacity: 0;
   pointer-events: none;
   border: 0;

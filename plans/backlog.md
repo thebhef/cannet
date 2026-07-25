@@ -239,6 +239,12 @@ name/colour/remove on any editable event row. Remaining follow-ups:
   (the plot series colour picker seems to open correctly, so compare the
   two anchoring paths). Likely a popover/anchor-positioning difference in
   the event colour control vs. the plot swatch. (Task 32 QA.)
+  **Candidate fix landed (unverified on macOS):** `.trace-event-swatch-input`
+  now fills the swatch's real footprint (`inset:0`, no `width/height:0`)
+  instead of collapsing to a zero-size point, so the native picker has a
+  concrete anchor rect at the swatch. If a Mac confirms this resolves the
+  mis-positioning, close the item; if not, revert the CSS and investigate
+  the virtualized-row scroll-offset anchor path instead.
 - `[feat]` **Interleave events into the *filtered* chronological trace.** The
   unfiltered view interleaves; a filtered view pages its own (filtered) index
   space, which the raw-frame anchors don't map to — events would need
