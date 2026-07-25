@@ -3878,16 +3878,7 @@ fn transmit_frame_once(
         .expect("transmit_frames mutex poisoned")
         .send_request(&id)
         .ok_or_else(|| format!("no transmit frame with id {id}"))?;
-    let result = transmit_frame_inner(state.inner(), &request)?;
-    // The frame was emitted (a tx-confirm always lands, even offline) —
-    // commit the staged counter so the sequence advances once per wire
-    // frame (ADR 0027). An earlier error return leaves it uncommitted.
-    state
-        .transmit_frames
-        .lock()
-        .expect("transmit_frames mutex poisoned")
-        .commit_send(&id);
-    Ok(result)
+    transmit_frame_inner(state.inner(), &request)
 }
 
 /// Start a message's periodic schedule. Rejects non-periodic messages
@@ -4124,18 +4115,7 @@ fn run_transmit_scheduler(
                 resolve_bus_route(&sessions, &request.bus_id).is_some()
             };
             if connected {
-                // A live route: the frame goes out (and a tx-confirm
-                // lands). Commit the staged counter so it advances once
-                // per wire frame. A tick with no route neither emits nor
-                // commits, so the counter stays in lock-step with the
-                // wire instead of running ahead (ADR 0027).
-                if transmit_frame_inner(state.inner(), &request).is_ok() {
-                    state
-                        .transmit_frames
-                        .lock()
-                        .expect("transmit_frames mutex poisoned")
-                        .commit_send(&id);
-                }
+                let _ = transmit_frame_inner(state.inner(), &request);
             }
             let period = Duration::from_millis(u64::from(cycle_ms));
             let next = next_tick_deadline(fired_at, std::time::Instant::now(), period);

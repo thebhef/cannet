@@ -139,16 +139,6 @@ struct Entry {
     running: bool,
     resolved_calc: Option<ResolvedCalculatedFields>,
     counter: u64,
-    /// The next counter value staged by [`Entry::prepare_send`] but not
-    /// yet committed. The sequence advances **once per frame that
-    /// actually goes on the wire** (ADR 0027): `prepare_send` computes
-    /// the payload from a *copy* of `counter` and parks the stepped value
-    /// here; [`Entry::commit_send`] promotes it only after the send
-    /// succeeds. A prepared-but-unsent tick (e.g. the scheduler skipping
-    /// an entry whose bus route is down) therefore re-uses the same
-    /// counter value on the next tick instead of running ahead of the
-    /// wire.
-    pending_counter: Option<u64>,
 }
 
 impl Entry {
@@ -158,7 +148,6 @@ impl Entry {
             running: false,
             resolved_calc: None,
             counter: 0,
-            pending_counter: None,
         }
     }
 
@@ -167,16 +156,14 @@ impl Entry {
         self.running = false;
     }
 
-    /// ADR 0027 fire path: recompute the calculated fields *into the
-    /// entry's payload buffer* (the buffer is the source of truth — ADR
-    /// 0017) and hand back the request to send. The stepped counter is
-    /// staged in [`Entry::pending_counter`] but **not** committed — the
-    /// caller commits with [`Entry::commit_send`] once the frame is
-    /// actually emitted, so a prepared-but-unsent tick doesn't advance
-    /// the sequence past the wire. Best-effort: a buffer too short for
-    /// the resolved placements (the user shrank the payload after
-    /// registration) sends the bytes unmodified rather than dropping the
-    /// frame.
+    /// ADR 0027 fire path: step the counter and recompute the CRC
+    /// *into the entry's payload buffer* (the buffer is the source of
+    /// truth — ADR 0017), then hand back the request to send. The
+    /// counter steps once per prepared send regardless of emission
+    /// outcome — a prepared frame that dies is a real E2E gap
+    /// (ADR 0027). Best-effort: a buffer too short for the resolved
+    /// placements (the user shrank the payload after registration)
+    /// sends the bytes unmodified rather than dropping the frame.
     fn prepare_send(&mut self) -> TransmitRequest {
         if let Some(resolved) = &self.resolved_calc {
             let mut counter = self.counter;
@@ -184,21 +171,10 @@ impl Entry {
                 .apply(&mut counter, &mut self.frame.request.data)
                 .is_ok()
             {
-                self.pending_counter = Some(counter);
+                self.counter = counter;
             }
         }
         self.frame.request.clone()
-    }
-
-    /// Commit the counter value staged by the last [`Entry::prepare_send`]
-    /// — call this once the prepared frame has gone on the wire so the
-    /// sequence advances exactly once per emitted frame (ADR 0027). A
-    /// no-op when nothing is staged (no calculated fields, or the buffer
-    /// was too short to apply them).
-    fn commit_send(&mut self) {
-        if let Some(counter) = self.pending_counter.take() {
-            self.counter = counter;
-        }
     }
 }
 
@@ -258,38 +234,21 @@ impl TransmitFrameRegistry {
     /// The request the manual-send path (`transmit_frame_once`) should
     /// emit for `id` right now — with the entry's calculated fields
     /// applied into its payload buffer first ("every transmit
-    /// recomputes both", ADR 0027). The stepped counter is staged, not
-    /// committed: the caller calls [`commit_send`](Self::commit_send)
-    /// once the frame is emitted so the sequence advances per wire frame,
-    /// not per prepared request. `None` if the entry was removed.
+    /// recomputes both", ADR 0027). `None` if the entry was removed.
     pub fn send_request(&mut self, id: &str) -> Option<TransmitRequest> {
         let i = self.position(id)?;
         Some(self.entries[i].prepare_send())
     }
 
-    /// Commit the counter staged by the last `send_request` / `fire_info`
-    /// for `id` — call once the prepared frame has gone on the wire so
-    /// the rolling counter (and its CRC input) advances exactly once per
-    /// emitted frame (ADR 0027). A no-op for an unknown id or when
-    /// nothing was staged.
-    pub fn commit_send(&mut self, id: &str) {
-        if let Some(i) = self.position(id) {
-            self.entries[i].commit_send();
-        }
-    }
-
     /// What the scheduler should emit for `id` this tick: the current
-    /// request (calculated fields freshly applied — CRC recomputed into
-    /// the payload buffer and the counter *staged*) and period, or
-    /// `None` if the entry should leave the schedule — removed, stopped
+    /// request (calculated fields freshly applied — counter stepped,
+    /// CRC recomputed into the payload buffer) and period, or `None`
+    /// if the entry should leave the schedule — removed, stopped
     /// (`running == false`), parked to `Manual`, or `cycle_ms == 0`.
-    /// The counter is committed separately via
-    /// [`commit_send`](Self::commit_send) once the frame reaches the
-    /// wire, so a tick whose bus route is down doesn't run the counter
-    /// ahead of the emitted frames (ADR 0027). Re-read on every tick so
-    /// a live edit to the payload or period lands on the next emission
-    /// (property 4), and a stop / park drops the entry from the schedule
-    /// without any thread to tear down.
+    /// Re-read on every tick so a live edit to the payload or period
+    /// lands on the next emission (property 4), and a stop / park
+    /// drops the entry from the schedule without any thread to tear
+    /// down.
     pub fn fire_info(&mut self, id: &str) -> Option<(TransmitRequest, u32)> {
         let e = self.entries.iter_mut().find(|e| e.frame.id == id)?;
         if !e.running || e.frame.mode != TransmitMode::Periodic || e.frame.cycle_ms == 0 {
@@ -317,10 +276,7 @@ impl TransmitFrameRegistry {
     /// (ADR 0028): only the *owner's* start resets.
     pub fn reset_counter(&mut self, id: &str) {
         if let Some(i) = self.position(id) {
-            // Clear any staged-but-uncommitted step too, so a later
-            // commit can't resurrect the pre-reset value (ADR 0027).
             self.entries[i].counter = 0;
-            self.entries[i].pending_counter = None;
         }
     }
 
@@ -723,10 +679,6 @@ mod tests {
         let outcome = resolved_calc().verify(&first.data, None);
         assert!(outcome.violations.is_empty());
 
-        // The frame went out — commit so the next fire advances (ADR 0027;
-        // without the commit the counter re-uses 1, see the route-down
-        // regression test below).
-        reg.commit_send("a");
         let (second, _) = reg.fire_info("a").unwrap();
         assert_eq!(second.data[6] & 0x0F, 2);
         let outcome = resolved_calc().verify(&second.data, Some(1));
@@ -737,41 +689,6 @@ mod tests {
     }
 
     #[test]
-    fn counter_advances_once_per_committed_send_not_per_tick() {
-        // ADR 0027: the rolling counter must track frames on the wire,
-        // not scheduler ticks. A prepared-but-uncommitted tick (the
-        // scheduler skipping an entry whose bus route is down) must not
-        // advance the sequence; N committed sends carry N consecutive
-        // values.
-        let mut reg = TransmitFrameRegistry::default();
-        reg.set(frame_with_payload("a", 100));
-        reg.set_resolved_calc("a", Some(resolved_calc()));
-        assert!(reg.begin_periodic("a").unwrap());
-
-        // Two ticks with no commit (route down) re-use the same value.
-        let (t1, _) = reg.fire_info("a").unwrap();
-        assert_eq!(t1.data[6] & 0x0F, 1);
-        let (t2, _) = reg.fire_info("a").unwrap();
-        assert_eq!(t2.data[6] & 0x0F, 1, "no commit → counter stays put");
-
-        // Commit (frame emitted) → the next tick advances, and stays 1:1
-        // with committed sends thereafter.
-        reg.commit_send("a");
-        let (t3, _) = reg.fire_info("a").unwrap();
-        assert_eq!(t3.data[6] & 0x0F, 2);
-        reg.commit_send("a");
-        let (t4, _) = reg.fire_info("a").unwrap();
-        assert_eq!(t4.data[6] & 0x0F, 3);
-
-        // A trailing commit with nothing newly staged after the last
-        // fire is harmless (idempotent take).
-        reg.commit_send("a");
-        reg.commit_send("a");
-        let (t5, _) = reg.fire_info("a").unwrap();
-        assert_eq!(t5.data[6] & 0x0F, 4);
-    }
-
-    #[test]
     fn manual_send_request_recomputes_fields_too() {
         let mut reg = TransmitFrameRegistry::default();
         reg.set(TransmitFrame {
@@ -779,12 +696,8 @@ mod tests {
             ..frame_with_payload("a", 0)
         });
         reg.set_resolved_calc("a", Some(resolved_calc()));
-        // Each manual send commits (the tx-confirm always lands), so the
-        // counter advances 1, 2 across the pair (ADR 0027).
         let first = reg.send_request("a").unwrap();
-        reg.commit_send("a");
         let second = reg.send_request("a").unwrap();
-        reg.commit_send("a");
         assert_eq!(first.data[6] & 0x0F, 1);
         assert_eq!(second.data[6] & 0x0F, 2);
         // Without a resolved config the request passes through as-is.
@@ -799,26 +712,20 @@ mod tests {
         reg.set(frame_with_payload("a", 100));
         reg.set_resolved_calc("a", Some(resolved_calc()));
         assert!(reg.begin_periodic("a").unwrap());
-        // Two committed sends → counter at 2 (each fire stages, each
-        // commit advances, ADR 0027).
         reg.fire_info("a").unwrap();
-        reg.commit_send("a");
         reg.fire_info("a").unwrap();
-        reg.commit_send("a");
 
         // An in-place edit keeps the counter (live edit semantics) …
         reg.set(frame_with_payload("a", 50));
         reg.set_resolved_calc("a", Some(resolved_calc()));
         let (after_edit, _) = reg.fire_info("a").unwrap();
         assert_eq!(after_edit.data[6] & 0x0F, 3);
-        reg.commit_send("a");
 
         // … and a stop → start (mute / unmute) resumes it (ADR 0028).
         reg.stop_periodic("a");
         assert!(reg.begin_periodic("a").unwrap());
         let (after_restart, _) = reg.fire_info("a").unwrap();
         assert_eq!(after_restart.data[6] & 0x0F, 4);
-        reg.commit_send("a");
 
         // Only the owner's explicit reset re-seeds at 0.
         reg.reset_counter("a");

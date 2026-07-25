@@ -29,17 +29,14 @@ config; the scheduler's fire path applies it on each send:
    bytes, so trace decode and plots show the real field values with
    no special handling.
 
-**The counter advances once per frame that actually reaches the wire,
-not once per scheduler tick.** Step 1 computes from a *copy* of the
-counter and stages the stepped value; the registry commits it only
-after the send succeeds (`prepare_send` / `send_request` /
-`fire_info` stage; `commit_send` promotes). A tick the scheduler
-prepares but does not emit — its bus route is down, so no frame and no
-`Tx` row go out — leaves the counter untouched and re-uses the same
-value on the next tick, keeping the sequence in lock-step with the
-wire instead of running ahead of it. The manual-send path stages the
-same way and commits once its (always-emitted) `Tx` row lands, so both
-paths share one contract: one increment per emitted frame.
+**The counter advances once per prepared send — every scheduler tick
+and every manual send — regardless of whether the frame reaches the
+wire.** A prepared frame that dies (bus route down, transport
+failure) is a *real* E2E gap: a receiver's continuity check should
+see the skip, exactly as it would for a frame lost on a physical
+bus. Receivers that track the sequence reseed from the next frame
+they do see — cannet's own verifier included (see Decode-side
+verification) — so the gap costs one violation, not a desync.
 
 Configs are resolved **at registration time** down to bit placement
 (start bit, width, byte order from the destination signal's DBC
@@ -131,6 +128,12 @@ first sighting seeds, subsequent frames must equal
   trace view queries it for the visible window and flags those rows
   (rendered red). Per-`(bus, id)` validity state (valid / invalid)
   is queryable by any view.
+- **Validity is a live state, not a latch.** A violation reseeds the
+  continuity state from the observed value, so one dropped frame
+  flags one row rather than cascading; the next in-sequence frame
+  returns the `(bus, id)` to valid. Recovery takes a single clean
+  transition — no N-good-cycles hysteresis (adopt one later if a
+  fuller E2E state machine is ever wanted).
 - A valid→invalid transition logs an Info system message,
   rate-limited to one per second per `(bus, id)`.
 - Frames cannet itself transmitted are exempt (we computed the
@@ -180,3 +183,12 @@ curation.
   line editor is the eventual shape; reading-only ships first.
 - **Frontend-computed fields.** Wrong side of the model/view
   boundary; the scheduler fires without the frontend awake.
+- **Commit-on-emit counter staging.** Briefly shipped: `prepare_send`
+  staged the stepped counter and a `commit_send` promoted it only
+  after a successful send, keeping the sequence in lock-step with
+  emitted frames. Reverted — receivers (including cannet's verifier)
+  reseed from the next observed frame anyway, so the lock-step
+  guarantee bought nothing observable while adding commit plumbing to
+  every send path, an untestable gate at each call-site, and a
+  stage/stage interleaving race between the manual and scheduled
+  paths.
