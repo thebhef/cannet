@@ -61,6 +61,39 @@ pub(crate) fn open_segment(path: &Path) -> io::Result<Segment> {
     Ok(Segment { map })
 }
 
+impl Segment {
+    /// Queue writeback of `len` bytes at `offset` without waiting — the
+    /// periodic-flush flavor (ADR 0002 DS-2).
+    ///
+    /// On Unix this is `msync(MS_ASYNC)` on the range: a genuinely cheap
+    /// queue-and-return. On Windows it is a **no-op**: the nearest API,
+    /// `FlushViewOfFile`, pushes the dirty pages through the filesystem
+    /// stack before returning (measured ~0.3–0.5 ms per call, 2026-07-25
+    /// — dozens of calls per flush tick stalled the transmit scheduler),
+    /// and the OS modified-page writer already writes dirty mapped pages
+    /// within seconds on its own. Skipping the call keeps the same
+    /// in-session guarantees (the page cache backs every read and a
+    /// same-machine reopen); only the power-loss tail is bounded by the
+    /// OS writer instead of the flush tick — the DS-2 relaxation the
+    /// ephemeral scratch already accepts. Durability that must survive
+    /// power loss goes through [`memmap2::MmapMut::flush`] (the `sync`
+    /// shutdown path), which waits for the device on both platforms.
+    // The signature is fixed by the Unix arm; on Windows `self` and the
+    // `Result` are vestigial by design.
+    #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
+    pub(crate) fn queue_writeback(&self, offset: usize, len: usize) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            self.map.flush_async_range(offset, len)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (offset, len);
+            Ok(())
+        }
+    }
+}
+
 /// Remove every file in `dir` whose name starts with one of `prefixes`,
 /// after the caller has dropped the mappings (so Windows allows removal).
 pub(crate) fn remove_files_with_prefixes(dir: &Path, prefixes: &[&str]) -> io::Result<()> {

@@ -716,3 +716,12 @@ next pass on this surface can address them as one piece.
   consumption); this remaining item is the memory spike. If it bites,
   stream-inflate the container body in bounded chunks rather than
   materialising the whole uncompressed payload.
+
+- `[cannet-gui]` **Project save absolutizes DBC paths.** Opening and
+  closing a project rewrites its `.cannet_prj` with each DBC's path
+  expanded to an absolute machine-specific one (`dbc/pack.dbc` →
+  `C:\Users\...\dbc/pack.dbc`), observed 2026-07-25 when a GUI session
+  against `examples/ev-zonal` dirtied the checked-in example and broke
+  `parses_the_checked_in_ev_zonal_example_project`. Paths that arrived
+  relative should persist relative (portability; examples are
+  checked in). Find the save path that resolves before serializing.

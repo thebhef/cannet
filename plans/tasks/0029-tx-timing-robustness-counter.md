@@ -23,32 +23,67 @@ rejected alternative recorded in
 decode-side recovery semantics (single-clean-transition, no
 hysteresis) documented there same change.
 
-**Remaining: timing robustness.** Timer wake lateness, missed-period
-policy, periodic-emission ADR. **Blocked on jitter-target / metrics
-decision** (what wake lateness good enough; drop vs spread vs burst;
-rig metric below).
+**Timing half: dominant stall FIXED (2026-07-25).** Root cause was
+never timer granularity — measured: the 2 s `TraceStore` flush held
+the store lock while Windows `FlushViewOfFile` pushed dirty pages
+per-id/per-segment (~0.3–0.5 ms per call), stalling the fire loop's
+tx-confirm `append` 10–45 ms at sim rate / ~150 ms at hardware rate.
+Fix: byte-granular flush watermarks + platform-split
+`Segment::queue_writeback` (Unix `msync(MS_ASYNC)` ranges; Windows
+periodic data-msync = documented no-op, OS lazy writer bounds the
+power-loss tail — ADR 0002 DS-2 updated). Confirmed by self-driving
+run: `flush_ms` max 33→5.7 ms, `tx_late_ms` max 32→5.2 ms,
+flush-seconds indistinguishable from clean seconds. Dev-build numbers.
 
-## Symptoms (observed)
+**Remaining:** regenerate the perf baseline so the new
+`flush_ms_max` / `tx_late_ms_max` gates arm; re-measure on release
+build + the 2-dongle rig (expect residual ≤ ~5 ms + manifest ~2 ms);
+then the small policy tail — missed-period policy + periodic-emission
+ADR, and whether any timer-wake work is still worth it (~98% of wakes
+were <2 ms late even before the fix; rig metric below decides).
 
-- **Drift** — periodic TX "not quite on period." Grid logic
-  (`next_tick_deadline`) fixed-rate, correct. Cause: OS timer
-  granularity — `recv_timeout` on Windows up to ~15 ms late.
-  `tx-sched` probe (`SchedDiag`) buckets it; cluster in 8–18 ms bucket
-  = tell.
-- **Bunching at high rate** — late wake → several deadlines expired →
-  fire loop services back-to-back (catch-up doubles) → frames meant
-  one period apart go out ~sub-ms apart. Sidecar `max_gap` ~2–4.5×
-  nominal period, worse at higher rate.
+## Symptoms (observed; root cause measured 2026-07-25)
+
+**Dominant artifact: ~150 ms scheduler stall every 2 s = trace-store
+flush lock contention.** Confirmed by experiment, not inference:
+temporary `tx-flush` probe beside `record_flush_ms` correlated 1:1,
+phase-locked with `tx-sched` spike seconds (`flush_ms` 21/27/33/24 →
+same-second `max_fire` 18/26/25/22; non-flush seconds ≤2.6 ms).
+Mechanism: `TraceStore::flush_with` holds the store's inner lock
+(`trace_store.rs:829`); fire loop's tx-confirm `append` blocks behind
+it; expired deadlines then fire back-to-back = the visible burst.
+Cadence = `TRACE_FLUSH_TICK` (2 s, lib.rs). Stall scales with buffer
+growth per interval: ~20 ms @ 515 f/s (ev-demo sim), ~150 ms @
+~1600 f/s (2×PCAN rig, user cursor-measured ~2 s / ~140–150 ms).
+Corroborated by sidecar `max_gap` 62–390 ms with sub-ms `max_send`
+(host-side delivery stall, not device). ADR 0031's `flush_ms` /
+`tx_late_ms` gates watch this mechanism but gate the **mean** — spikes
+this size passed clean, which is the rig-metric gap below. Dev-build
+numbers; re-measure release before setting targets.
+
+- **Timer-granularity drift — minor residual.** 8–18 ms bucket nearly
+  empty in measurement (~98% of wakes <2 ms late); occasional
+  12–20 ms singles. The old "up to ~15 ms `recv_timeout` lateness"
+  framing overstated it as the lead cause.
+- **Bunching** — not an independent defect: catch-up after the flush
+  stall (dominant) or after a late wake (minor). Fix the stall, most
+  bunching goes.
 
 ## Scope
 
-- **Reduce wake lateness.** Evaluate finer Windows timer granularity
-  (`timeBeginPeriod` / higher-res wait) vs cost (system-wide timer
-  effect, power). Set jitter target; gate against it.
+- **[done] Shrink flush lock-hold** — shipped as byte-granular flush
+  watermarks + platform-split `queue_writeback` (Windows periodic
+  data-msync no-op; ADR 0002). Residual under the lock: manifest +
+  derived write ≈ 5 ms/tick, rate-independent. Revisit only if the
+  rig metric still shows it.
+- **Reduce wake lateness** (residual): evaluate finer Windows timer
+  granularity (`timeBeginPeriod` / higher-res wait) vs cost
+  (system-wide timer effect, power) — only after the stall fix;
+  today's data shows ≤2 ms typical.
 - **Missed-period policy.** Late wake → drop (latest-value wins) /
   spread / burst? Current implicit policy (collapse + catch-up
-  double) = the bunching. Capture as ADR — durable periodic-emission
-  semantics.
+  double) = the burst after a stall. Capture as ADR — durable
+  periodic-emission semantics.
 - **Rig metric** (prerequisite for the gate): see design question.
 - Keep hand-written surface small + single-thread model (already
   beats old thread-per-message jitter). Work = the wait + per-tick

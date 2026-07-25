@@ -778,6 +778,11 @@ fn spawn_trace_flusher(app: AppHandle) {
                     last_flushed_len = len;
                     let ms = started.elapsed().as_secs_f64() * 1000.0;
                     app.state::<diag::HostMetrics>().record_flush_ms(ms);
+                    // Dev-log twin of the gauge (ADR 0031): timestamp-
+                    // correlatable with the `tx-sched` lateness lines, so
+                    // a flush-vs-scheduler stall can be diagnosed from one
+                    // stderr capture without a perf run.
+                    tracing::info!(target: "tx-flush", "flush_ms={ms:.1}");
                 }
                 Err(e) => tracing::warn!(error = %e, "trace store flush failed"),
             }

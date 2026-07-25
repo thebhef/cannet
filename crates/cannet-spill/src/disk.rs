@@ -129,15 +129,16 @@ pub struct DiskRawStore {
     /// arithmetic addressing of DS-1 while the dropped files free disk.
     meta_seg_base: usize,
     payload_seg_base: usize,
-    /// Index of the first meta / payload segment that may hold un-flushed
-    /// bytes — the segment that was active at the previous flush. Sealed
-    /// segments below it were made durable while they were the tail, so a
-    /// flush only re-syncs from here to the current tail (incremental
-    /// flush): `O(segments dirtied since last flush)`, not `O(all
-    /// segments)`, which is what keeps the periodic flush off the append
-    /// lock's critical path at deep history.
-    flushed_meta: usize,
-    flushed_payload: usize,
+    /// Global logical byte offsets already handed to writeback — the
+    /// meta / payload write cursors as of the previous flush. A flush
+    /// syncs exactly the bytes appended since (`[watermark, cursor)`,
+    /// split across the segments the range spans), never a whole
+    /// re-map: whole-map re-syncs made the periodic flush cost grow
+    /// with segment fill, the 2 s scheduler-stall signature measured
+    /// 2026-07-25. Byte granularity keeps the flush
+    /// `O(bytes since last flush)` regardless of history depth.
+    flushed_meta_bytes: u64,
+    flushed_payload_bytes: u64,
     ring: VecDeque<RawTraceFrame>,
     bus_intern: Vec<String>,
     bus_rev: HashMap<String, u16>,
@@ -174,8 +175,8 @@ impl DiskRawStore {
             payload_segs: Vec::new(),
             meta_seg_base: 0,
             payload_seg_base: 0,
-            flushed_meta: 0,
-            flushed_payload: 0,
+            flushed_meta_bytes: 0,
+            flushed_payload_bytes: 0,
             ring: VecDeque::new(),
             bus_intern: Vec::new(),
             bus_rev: HashMap::new(),
@@ -205,8 +206,8 @@ impl DiskRawStore {
             payload_segs: Vec::new(),
             meta_seg_base: 0,
             payload_seg_base: 0,
-            flushed_meta: 0,
-            flushed_payload: 0,
+            flushed_meta_bytes: 0,
+            flushed_payload_bytes: 0,
             ring: VecDeque::new(),
             bus_intern: Vec::new(),
             bus_rev: HashMap::new(),
@@ -252,8 +253,8 @@ impl DiskRawStore {
             payload_segs: Vec::new(),
             meta_seg_base,
             payload_seg_base: 0, // set once the first live meta record maps
-            flushed_meta: 0,
-            flushed_payload: 0,
+            flushed_meta_bytes: 0,
+            flushed_payload_bytes: 0,
             ring: VecDeque::new(),
             bus_intern: manifest.bus_intern,
             bus_rev,
@@ -295,10 +296,10 @@ impl DiskRawStore {
         let ring_from = len.saturating_sub(cfg.ring_capacity);
         let tail: Vec<RawTraceFrame> = (ring_from..len).filter_map(|i| store.read_frame(i)).collect();
         store.ring.extend(tail);
-        // Reopened segments are already durable on disk, so the first flush
-        // need only re-sync from the active tail forward.
-        store.flushed_meta = meta_segs_count.saturating_sub(1).max(meta_seg_base);
-        store.flushed_payload = payload_segs_count.saturating_sub(1).max(store.payload_seg_base);
+        // Reopened bytes are already durable on disk, so the first flush
+        // need only sync what is appended after this point.
+        store.flushed_meta_bytes = store.len as u64 * RECORD_SIZE as u64;
+        store.flushed_payload_bytes = store.payload_cursor;
         Ok(Some(store))
     }
 
@@ -334,47 +335,92 @@ impl DiskRawStore {
     /// including the reopen manifest so a wiped store never reloads a
     /// stale prior session. Maps are dropped first so Windows lets the
     /// files be removed.
-    /// Incremental flush: re-sync only the segments dirtied since the last
-    /// flush — the tail that was active then (it may have sealed and grown)
-    /// through the current tail. Sealed segments below `flushed_*` were
-    /// synced while they were the tail and never change again, so the
-    /// manifest written below still names only durable bytes. This makes
-    /// the hold `O(segments since last flush)`, normally one.
+    /// Incremental flush at byte granularity: sync exactly the bytes
+    /// appended since the previous flush (`[watermark, cursor)` per
+    /// family, split across the segments the range spans). Bytes below
+    /// the watermarks were handed to writeback while they were the tail
+    /// and never change again, so the manifest written below still names
+    /// only durable bytes. This keeps the flush `O(bytes since last
+    /// flush)` — a whole-map re-sync's cost grows with segment fill and
+    /// was the measured cause of the periodic transmit-scheduler stall.
     ///
     /// `sync` chooses the msync flavor: `true` waits for the device
-    /// (`FlushFileBuffers` on Windows) — the crash-hardening shutdown path;
-    /// `false` queues writeback (`FlushViewOfFile` / `MS_ASYNC`) and
-    /// returns at memcpy speed — the periodic path, where waiting on the
-    /// device would pin the append lock. Either way the OS page cache makes
-    /// the writes visible to a reopen in the same session (ADR 0002 DS-2).
+    /// (`FlushFileBuffers` on Windows) and flushes the spanned segments
+    /// whole — the crash-hardening shutdown path; `false` queues
+    /// writeback of just the appended ranges (`FlushViewOfFile` /
+    /// `MS_ASYNC`) and returns at memcpy speed — the periodic path,
+    /// where waiting on the device would pin the append lock. Either way
+    /// the OS page cache makes the writes visible to a reopen in the
+    /// same session (ADR 0002 DS-2).
     fn flush_inner(&mut self, sync: bool) -> io::Result<()> {
-        // `flushed_*` are absolute segment numbers; index the front-trimmed
-        // `Vec`s relative to the dropped base (DS-8).
-        for s in &self.meta_segs[self.flushed_meta - self.meta_seg_base..] {
-            if sync {
-                s.map.flush()?;
-            } else {
-                s.map.flush_async()?;
-            }
-        }
-        for s in &self.payload_segs[self.flushed_payload - self.payload_seg_base..] {
-            if sync {
-                s.map.flush()?;
-            } else {
-                s.map.flush_async()?;
-            }
-        }
-        self.flushed_meta = self.meta_seg_base + self.meta_segs.len().saturating_sub(1);
-        self.flushed_payload = self.payload_seg_base + self.payload_segs.len().saturating_sub(1);
+        let meta_seg_bytes = (self.cfg.records_per_seg * RECORD_SIZE) as u64;
+        let meta_cursor = self.len as u64 * RECORD_SIZE as u64;
+        Self::flush_family(
+            &self.meta_segs,
+            self.meta_seg_base,
+            meta_seg_bytes,
+            self.flushed_meta_bytes,
+            meta_cursor,
+            sync,
+        )?;
+        self.flushed_meta_bytes = meta_cursor;
+        Self::flush_family(
+            &self.payload_segs,
+            self.payload_seg_base,
+            self.cfg.payload_seg_bytes as u64,
+            self.flushed_payload_bytes,
+            self.payload_cursor,
+            sync,
+        )?;
+        self.flushed_payload_bytes = self.payload_cursor;
         self.by_id.flush(sync)?;
         self.write_manifest()
+    }
+
+    /// Flush one segment family. Async (`sync == false`) queues
+    /// writeback of the `[from, to)` global byte range — clamped to the
+    /// surviving base (bytes below it live in evicted segments, DS-8) —
+    /// via [`Segment::queue_writeback`] (a platform-split no-op on
+    /// Windows; see its docs). `sync` flushes **every live segment**
+    /// whole and waits for the device, deliberately ignoring the
+    /// watermarks so the shutdown guarantee never depends on what the
+    /// async flavor did or didn't queue.
+    fn flush_family(
+        segs: &[Segment],
+        seg_base: usize,
+        seg_bytes: u64,
+        from: u64,
+        to: u64,
+        sync: bool,
+    ) -> io::Result<()> {
+        if sync {
+            for seg in segs {
+                seg.map.flush()?;
+            }
+            return Ok(());
+        }
+        let from = from.max(seg_base as u64 * seg_bytes);
+        if to <= from {
+            return Ok(());
+        }
+        let first_seg = usize::try_from(from / seg_bytes).unwrap_or(usize::MAX);
+        let last_seg = usize::try_from((to - 1) / seg_bytes).unwrap_or(usize::MAX);
+        for seg_no in first_seg..=last_seg {
+            let seg = &segs[seg_no - seg_base];
+            let seg_start = seg_no as u64 * seg_bytes;
+            let lo = usize::try_from(from.max(seg_start) - seg_start).unwrap_or(0);
+            let hi = usize::try_from(to.min(seg_start + seg_bytes) - seg_start)
+                .unwrap_or(seg.map.len());
+            seg.queue_writeback(lo, hi - lo)?;
+        }
+        Ok(())
     }
 
     fn remove_segment_files(&mut self) -> io::Result<()> {
         self.meta_segs.clear();
         self.payload_segs.clear();
-        self.flushed_meta = 0;
-        self.flushed_payload = 0;
+        self.flushed_meta_bytes = 0;
+        self.flushed_payload_bytes = 0;
         self.meta_seg_base = 0;
         self.payload_seg_base = 0;
         self.first_index = 0;
@@ -566,9 +612,9 @@ impl DiskRawStore {
                 self.payload_seg_base += 1;
             }
         }
-        // The incremental-flush watermarks must not point below the new base.
-        self.flushed_meta = self.flushed_meta.max(self.meta_seg_base);
-        self.flushed_payload = self.flushed_payload.max(self.payload_seg_base);
+        // The incremental-flush byte watermarks need no adjustment here:
+        // they track the (still-monotonic) global write cursors, and the
+        // flush path clamps its start to the surviving segment base.
         // Front-trim the always-on by-id index to the same mark — it is part
         // of the raw family's footprint and grows O(capture) (DS-8 / 6d).
         self.by_id.evict_below(first_index as u64);
@@ -1135,6 +1181,38 @@ mod tests {
         }
         s.flush().unwrap();
         assert_eq!(s.slice(0, 10).len(), 10);
+    }
+
+    #[test]
+    fn interleaved_incremental_flushes_reopen_with_every_frame() {
+        // The flush syncs only the bytes appended since the previous one
+        // (`[watermark, cursor)` per family). Interleave appends that roll
+        // meta and payload segments with async flushes, finish with a sync
+        // flush, and reopen: every frame from every inter-flush batch must
+        // read back — the manifest and the range bookkeeping stay
+        // consistent across the whole sequence.
+        let dir = TempDir::new().unwrap();
+        let mut s = DiskRawStore::with_config(dir.path(), tiny()).unwrap();
+        let mut appended = 0u32;
+        for batch in 0..6 {
+            for _ in 0..7 {
+                s.append(frame(u64::from(appended), appended));
+                appended += 1;
+            }
+            if batch % 2 == 0 {
+                s.flush_async().unwrap();
+            } else {
+                s.flush().unwrap();
+            }
+        }
+        s.flush_async().unwrap(); // clean store: nothing new, still Ok
+        s.flush().unwrap();
+        drop(s);
+        let s = DiskRawStore::reopen(dir.path()).unwrap().unwrap();
+        assert_eq!(s.len(), appended as usize);
+        let all = s.slice(0, appended as usize);
+        assert_eq!(all.len(), appended as usize);
+        assert!(all.iter().enumerate().all(|(i, f)| f.id == i as u32));
     }
 
     #[test]
