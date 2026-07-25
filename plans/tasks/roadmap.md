@@ -54,7 +54,17 @@ the order below is the order of work, top first.
    `(signal, value)` updates by name; RBS applies them as overrides and
    keeps its own cadence/CRC/counters. Lets an external, out-of-repo sim
    (e.g. an EV drive cycle) drive the RBS.
-10. [Task 30 — Code-Quality Debt: Deduplication & God-File Split](0030-code-quality-dedup.md)
+10. [Task 38 — MDF (MF4) Logger-File Import](0038-mdf-import.md)
+   — import ASAM MDF 4.x bus-logging files (CANedge, Vector loggers)
+   through the existing `CanFrameSource` seam; library
+   evaluate-dependency pass is the blocking prerequisite. Signal-shape
+   MF4 and MF4 export are explicitly later.
+11. [Task 39 — Automotive Ethernet Signals](0039-ethernet-signals.md)
+   — staged: pcapng import (CAN linktypes, no model change), step/hold
+   plot semantics for on-change series, then the multi-protocol trace
+   model and ARXML/FIBEX-described SOME/IP + signal-PDU decode.
+   Research detail in [`0039-ethernet-signals/`](0039-ethernet-signals/).
+12. [Task 30 — Code-Quality Debt: Deduplication & God-File Split](0030-code-quality-dedup.md)
    — pay down the copy-pasted hot-path implementations (CAN-ID
    extraction ×5, DBC bit-walkers ×3, decoder boilerplate) and the
    frontend fetch/format dups that also break the thin-view rule, plus
