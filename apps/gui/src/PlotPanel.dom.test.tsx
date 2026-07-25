@@ -17,6 +17,10 @@ import { comboboxValue, pickCombobox } from "./comboboxTestKit";
 
 vi.mock("uplot", () => {
   class FakeUPlot {
+    // `uPlot.paths.stepped(...)` is consulted at construction to give
+    // enum / lane series a stepped path; return a marker function so
+    // tests can assert a series is stepped.
+    static paths = { stepped: (_opts: unknown) => () => {} };
     over = document.createElement("div");
     scales = { x: {}, y: {} } as Record<string, { min?: number; max?: number }>;
     data: unknown = [[]];
@@ -632,6 +636,39 @@ describe("PlotPanel", () => {
       expect(document.querySelectorAll(".plot-area").length).toBe(1);
     });
     expect(screen.getByText(/Area 1 · \(enums\)/)).toBeInTheDocument();
+  });
+
+  it("a lanes axis constructs uPlot with stepped series and a blank y axis", async () => {
+    mockValueTables.EngineSpeed = [{ raw: 0, label: "Idle" }, { raw: 1, label: "Run" }];
+    mockValueTables.EngineTemp = [{ raw: 0, label: "Cold" }, { raw: 1, label: "Hot" }];
+    // uPlot only constructs against a real-sized canvas.
+    const cw = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(600);
+    const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
+    try {
+      renderPanel();
+      const picker = screen.getByLabelText("add signal to focused plot area");
+      await pickCombobox(picker, "*|s:256:EngineSpeed");
+      await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
+      await pickCombobox(picker, "*|s:256:EngineTemp");
+      await waitFor(() => expect(screen.getByText("EngineTemp")).toBeInTheDocument());
+      await pickCombobox(screen.getByLabelText("y-axis mode"), "per-unit");
+      await waitFor(() => expect(document.querySelectorAll(".plot-area").length).toBe(1));
+      await waitFor(() => expect(uplotInstances.length).toBeGreaterThan(0));
+      const inst = uplotInstances[uplotInstances.length - 1] as unknown as {
+        opts: { series: { paths?: unknown }[]; axes: { splits: () => number[]; grid?: { show?: boolean } }[] };
+      };
+      // x + two lane series, both stepped.
+      expect(inst.opts.series).toHaveLength(3);
+      expect(typeof inst.opts.series[1].paths).toBe("function");
+      expect(typeof inst.opts.series[2].paths).toBe("function");
+      // Blank y gutter: no splits, no grid.
+      const yAxis = inst.opts.axes[1];
+      expect(yAxis.splits()).toEqual([]);
+      expect(yAxis.grid?.show).toBe(false);
+    } finally {
+      cw.mockRestore();
+      ch.mockRestore();
+    }
   });
 
   it("renders N-1 splitters between N stacked axes", async () => {
