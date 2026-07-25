@@ -29,6 +29,18 @@ config; the scheduler's fire path applies it on each send:
    bytes, so trace decode and plots show the real field values with
    no special handling.
 
+**The counter advances once per frame that actually reaches the wire,
+not once per scheduler tick.** Step 1 computes from a *copy* of the
+counter and stages the stepped value; the registry commits it only
+after the send succeeds (`prepare_send` / `send_request` /
+`fire_info` stage; `commit_send` promotes). A tick the scheduler
+prepares but does not emit — its bus route is down, so no frame and no
+`Tx` row go out — leaves the counter untouched and re-uses the same
+value on the next tick, keeping the sequence in lock-step with the
+wire instead of running ahead of it. The manual-send path stages the
+same way and commits once its (always-emitted) `Tx` row lands, so both
+paths share one contract: one increment per emitted frame.
+
 Configs are resolved **at registration time** down to bit placement
 (start bit, width, byte order from the destination signal's DBC
 layout) so the fire path does no DBC lookups. The counter's current
