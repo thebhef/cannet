@@ -61,15 +61,34 @@ describe("deriveAxesForArea", () => {
     expect(out[0].signals).toHaveLength(2);
   });
 
-  it("per-unit mode: each enum signal gets its own axis", () => {
+  it("per-unit mode: all enums collect onto one shared enum-lanes axis", () => {
     const sigs = [s("V1", "V"), s("State", ""), s("Mode", "")];
     const isEnum = (key: string): boolean => key.includes("State") || key.includes("Mode");
     const out = deriveAxesForArea("a", sigs, "per-unit", isEnum);
-    // V1 → unit V axis; State + Mode each get their own enum axis.
-    expect(out).toHaveLength(3);
+    // V1 → unit V axis; State + Mode share one enum-lanes axis.
+    expect(out).toHaveLength(2);
     expect(out.find((x) => x.subtitle === "[V]")?.signals.map((y) => y.signalName)).toEqual(["V1"]);
-    expect(out.find((x) => x.subtitle === "State (enum)")?.signals).toHaveLength(1);
-    expect(out.find((x) => x.subtitle === "Mode (enum)")?.signals).toHaveLength(1);
+    const enumAxis = out.find((x) => x.kind === "enum-lanes");
+    expect(enumAxis?.id).toBe("a/u:enum");
+    expect(enumAxis?.subtitle).toBe("(enums)");
+    expect(enumAxis?.signals.map((y) => y.signalName)).toEqual(["State", "Mode"]);
+  });
+
+  it("per-unit mode: the enum-lanes axis sits at the first enum's position", () => {
+    // State appears before I1, so the shared enum axis comes before the
+    // [A] axis in area order (lane order = config order, top first).
+    const sigs = [s("V1", "V"), s("State", ""), s("I1", "A")];
+    const isEnum = (key: string): boolean => key.includes("State");
+    const out = deriveAxesForArea("a", sigs, "per-unit", isEnum);
+    expect(out.map((x) => x.kind)).toEqual(["numeric", "enum-lanes", "numeric"]);
+    expect(out.map((x) => x.subtitle)).toEqual(["[V]", "State (enum)", "[A]"]);
+  });
+
+  it("per-unit mode: a lone enum axis is subtitled with its signal name", () => {
+    const sigs = [s("V1", "V"), s("Mode", "")];
+    const isEnum = (key: string): boolean => key.includes("Mode");
+    const out = deriveAxesForArea("a", sigs, "per-unit", isEnum);
+    expect(out.find((x) => x.kind === "enum-lanes")?.subtitle).toBe("Mode (enum)");
   });
 
   it("per-unit mode: a single-member value table is not an enum — the signal stays on its numeric unit axis", () => {
@@ -89,8 +108,8 @@ describe("deriveAxesForArea", () => {
       "C1",
       "Counter",
     ]);
-    // The two-member table still breaks out onto its own enum axis.
-    expect(out.find((x) => x.subtitle === "Mode (enum)")?.signals).toHaveLength(1);
+    // The two-member table breaks out onto the shared enum-lanes axis.
+    expect(out.find((x) => x.kind === "enum-lanes")?.signals.map((y) => y.signalName)).toEqual(["Mode"]);
   });
 
   it("isEnumValueTable requires at least two members", () => {
