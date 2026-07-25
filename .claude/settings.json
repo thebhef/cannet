@@ -8,6 +8,8 @@
       "Bash(cargo fmt --check *)",
       "Bash(pnpm --dir apps/gui test)",
       "Bash(pnpm --dir apps/gui build)",
+      "Bash(pnpm --dir apps/gui exec vitest run)",
+      "Bash(pnpm --dir apps/gui exec vitest run *)",
       "Bash(pnpm --dir apps/gui exec tsc)",
       "Bash(pnpm --dir apps/gui exec tsc *)",
       "Bash(uv run --extra dev pytest *)",
