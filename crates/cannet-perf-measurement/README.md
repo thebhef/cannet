@@ -206,6 +206,7 @@ rate gates below are what close that blind spot.
 | `jsheap_mb_drift_per_min` / `renderer_mb_drift_per_min` / `tree_mb_drift_per_min` | ≤ 2× baseline + 5 MB/min |
 | `flush_ms_mean` | ≤ 25 ms (absolute) |
 | `tx_late_ms_mean` | ≤ 18 ms (absolute) |
+| `flush_ms_max` / `tx_late_ms_max` | ≤ 2× baseline + 25 ms (inert until a baseline carries them) |
 
 The memory rows (ADR 0031) gate the renderer's growth — the JS heap
 (`jsheap_mb`, reported by the frontend) and the WebView renderer process RSS
@@ -234,6 +235,16 @@ per-flush stall (every tick slow), which moves the mean cleanly, whereas a
 peak gate would flap on one-off OS writeback noise. Gated against an
 **absolute** ceiling (a flush should average a few ms regardless of the
 machine), always active — an absent gauge reads 0, which passes.
+
+The `flush_ms_max` / `tx_late_ms_max` rows guard the class the mean rows
+deliberately absorb: a **periodic sub-second stall with clean seconds in
+between** (measured 2026-07-25 — a whole-map msync per flush tick stalled
+the transmit scheduler ~150 ms every 2 s at hardware rate while both mean
+rows and `tx_fps` retention stayed green). They gate the run-worst value,
+baseline-relative with a generous +25 ms floor so a one-off writeback
+hiccup still doesn't flap, and stay **inert until a baseline carries the
+fields** — regenerate the baseline (post-fix, on quiet hardware) to arm
+them.
 
 The expected-rate gate is a **two-sided band**: the sim emits a deterministic
 schedule (515 frames/s for ev-demo, echoed both directions), so a shortfall

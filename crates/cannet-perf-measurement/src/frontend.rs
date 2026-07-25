@@ -157,6 +157,18 @@ pub struct FrontendMetrics {
     pub flush_ms_mean: f64,
     #[serde(default)]
     pub tx_late_ms_mean: f64,
+    /// The **run-worst** flush duration / wake lateness — the
+    /// spike-class signal the mean rows absorb. Measured 2026-07-25: a
+    /// ~150 ms flush stall every 2 s (clean seconds in between) sailed
+    /// under both mean ceilings while the transmit scheduler visibly
+    /// burst. Baseline-armed like the memory tier (zero baseline ⇒
+    /// inert), gated `baseline × FACTOR + STALL_MAX_FLOOR_MS` — the
+    /// generous floor keeps one-off OS writeback noise from flapping
+    /// what the mean rows were deliberately designed not to gate.
+    #[serde(default)]
+    pub flush_ms_max: f64,
+    #[serde(default)]
+    pub tx_late_ms_max: f64,
 }
 
 impl From<&FrontendReport> for FrontendMetrics {
@@ -179,6 +191,8 @@ impl From<&FrontendReport> for FrontendMetrics {
             tree_mb_drift_per_min: r.gauge("mem.tree_mb").slope_per_min,
             flush_ms_mean: r.gauge("flush_ms").mean,
             tx_late_ms_mean: r.gauge("tx_late_ms").mean,
+            flush_ms_max: r.gauge("flush_ms").max,
+            tx_late_ms_max: r.gauge("tx_late_ms").max,
         }
     }
 }
@@ -243,6 +257,12 @@ mod ftol {
     /// Absolute ceiling (ms) on the **mean** transmit-scheduler wake
     /// lateness (regression mean ~27 ms; healthy ~9 ms).
     pub const TX_LATE_MS_CEILING: f64 = 18.0;
+    /// Floor (ms) for the run-worst flush / wake-lateness spike rows —
+    /// wide enough that a one-off OS writeback hiccup (10–20 ms class)
+    /// never flaps them, tight enough that the measured 2 s periodic
+    /// stall class (~150 ms at hardware rate, ~33 ms at sim rate over a
+    /// healthy ~5 ms baseline) fails.
+    pub const STALL_MAX_FLOOR_MS: f64 = 25.0;
 }
 
 /// Compare a fresh frontend report's metrics against the baseline's, and
@@ -389,6 +409,38 @@ pub fn check_frontend(
         });
     }
 
+    // Spike-class stall rows (run-worst flush / wake lateness): the mean
+    // rows above deliberately absorb one-off peaks, which also blinds
+    // them to a *periodic* sub-second stall with clean seconds between —
+    // the measured 2 s flush-lock signature. Baseline-relative with a
+    // generous floor, and inert until a baseline carries the fields
+    // (pre-existing baselines hold 0), like the memory tier.
+    for (metric, base, cur) in [
+        (
+            "flush_ms_max",
+            baseline.flush_ms_max,
+            current.flush_ms_max,
+        ),
+        (
+            "tx_late_ms_max",
+            baseline.tx_late_ms_max,
+            current.tx_late_ms_max,
+        ),
+    ] {
+        if base <= 0.0 {
+            continue; // inert until the baseline carries the spike tier
+        }
+        let limit = base * ftol::FACTOR + ftol::STALL_MAX_FLOOR_MS;
+        verdicts.push(Verdict {
+            mode: "frontend",
+            metric,
+            baseline: base,
+            current: cur,
+            limit,
+            pass: cur <= limit,
+        });
+    }
+
     // Higher-is-better retention floors (mirror the host `fps_retention`
     // gate): no worse than 0.90× baseline, and never below 0.80 absolute.
     for (metric, base, cur) in [
@@ -520,6 +572,10 @@ mod tests {
             // the contention-specific test drives these.
             flush_ms_mean: 0.0,
             tx_late_ms_mean: 0.0,
+            // Spike tier absent by default (base ≤ 0 ⇒ inert); the
+            // spike-specific test populates it.
+            flush_ms_max: 0.0,
+            tx_late_ms_max: 0.0,
         }
     }
 
@@ -646,6 +702,58 @@ mod tests {
                 .filter(|v| v.metric == "flush_ms_mean" || v.metric == "tx_late_ms_mean")
                 .all(|v| v.pass),
             "a few-ms mean flush / lateness passes",
+        );
+    }
+
+    #[test]
+    fn stall_spike_gates_catch_what_the_mean_absorbs() {
+        // The 29b measurement: a ~150 ms flush stall every 2 s (half the
+        // seconds clean) keeps the *mean* under its ceiling while the
+        // scheduler visibly bursts. The max rows are the spike-class
+        // guard — baseline-armed, generous floor so one-off OS writeback
+        // noise doesn't flap them.
+        let mut base = metrics(1.0, 12.0, 27.0, 0.03);
+        base.flush_ms_max = 5.0; // healthy post-fix baseline
+        base.tx_late_ms_max = 4.0;
+        let mut cur = base.clone();
+        cur.flush_ms_max = 150.0; // > 5*2 + 25 = 35 ⇒ fails
+        cur.tx_late_ms_max = 140.0; // > 4*2 + 25 = 33 ⇒ fails
+        cur.flush_ms_mean = 20.0; // still under the 25 ms mean ceiling
+        cur.tx_late_ms_mean = 15.0; // still under the 18 ms mean ceiling
+        let verdicts = check_frontend(&base, &cur, Expected::default());
+        let fmax = verdicts.iter().find(|v| v.metric == "flush_ms_max").unwrap();
+        let lmax = verdicts.iter().find(|v| v.metric == "tx_late_ms_max").unwrap();
+        assert!(!fmax.pass, "150ms spike must fail (mean gate passed it)");
+        assert!(!lmax.pass, "140ms wake spike must fail");
+        assert!(
+            verdicts
+                .iter()
+                .filter(|v| v.metric == "flush_ms_mean" || v.metric == "tx_late_ms_mean")
+                .all(|v| v.pass),
+            "the mean gates are blind to this spike class — that's the point",
+        );
+
+        // Modest one-off writeback noise stays green (no flapping).
+        let mut noisy = base.clone();
+        noisy.flush_ms_max = 20.0; // < 35 limit
+        noisy.tx_late_ms_max = 18.0; // < 33 limit
+        let verdicts = check_frontend(&base, &noisy, Expected::default());
+        assert!(
+            verdicts
+                .iter()
+                .filter(|v| v.metric == "flush_ms_max" || v.metric == "tx_late_ms_max")
+                .all(|v| v.pass),
+            "one-off writeback noise must not flap the spike gates",
+        );
+
+        // Inert until a baseline carries the fields (pre-fix baselines
+        // hold 0), so the gate can land before the fix's baseline exists.
+        let verdicts = check_frontend(&metrics(1.0, 12.0, 27.0, 0.03), &cur, Expected::default());
+        assert!(
+            !verdicts
+                .iter()
+                .any(|v| v.metric == "flush_ms_max" || v.metric == "tx_late_ms_max"),
+            "zero-baseline runs must not emit spike verdicts",
         );
     }
 
