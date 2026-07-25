@@ -2711,20 +2711,30 @@ function PlotArea(p: PlotAreaProps) {
       seriesRef.current = sm;
       presentRef.current = pv;
       effectiveRangesRef.current = effective;
-      // Refresh the primary signal's range/unit so the y-axis value
-      // formatter can convert normalised tick positions back to raw
-      // signal units on the next draw. Read through the ref — this
-      // callback's closure has a stale `primaryKey` once the user
-      // promotes a new signal.
+      // Refresh the range/unit the y-axis value formatter converts
+      // normalised tick positions back through. Prefer the parent
+      // area's primary signal, but only when it's actually on *this*
+      // derived axis — in per-unit mode each axis is a different unit
+      // group, so the primary lives on at most one of them. For every
+      // other axis (and when no primary is set) fall back to this
+      // axis's first ranged signal, so labels read real units (V, A, %)
+      // instead of the normalised [0, 1]. Read through the ref — the
+      // closure's `primaryKey` goes stale on promotion.
       const pk = primaryKeyRef.current;
-      if (pk) {
-        const r = effective.get(pk);
-        if (r) {
-          const sig = signals.find((s) => signalRefKey(s) === pk);
-          primaryAxisRef.current = { lo: r.lo, hi: r.hi, unit: sig?.unit ?? null };
-        } else {
-          primaryAxisRef.current = null;
+      let labelKey: string | null = pk && effective.has(pk) ? pk : null;
+      if (!labelKey) {
+        for (const s of signals) {
+          const k = signalRefKey(s);
+          if (effective.has(k)) {
+            labelKey = k;
+            break;
+          }
         }
+      }
+      if (labelKey) {
+        const r = effective.get(labelKey)!;
+        const sig = signals.find((s) => signalRefKey(s) === labelKey);
+        primaryAxisRef.current = { lo: r.lo, hi: r.hi, unit: sig?.unit ?? null };
       } else {
         primaryAxisRef.current = null;
       }
