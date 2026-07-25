@@ -608,6 +608,92 @@ describe("PlotPanel", () => {
     expect(lastCall.axisWeights).toEqual({ a1: 3 });
   });
 
+  it("renders N-1 splitters between N stacked axes", async () => {
+    renderPanel();
+    // One area → no splitter.
+    expect(document.querySelectorAll(".plot-area-splitter").length).toBe(0);
+    const picker = screen.getByLabelText("add signal to focused plot area");
+    await pickCombobox(picker, "*|s:256:EngineSpeed");
+    await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
+    await pickCombobox(picker, "*|s:256:EngineTemp");
+    await waitFor(() => expect(screen.getByText("EngineTemp")).toBeInTheDocument());
+    await pickCombobox(screen.getByLabelText("y-axis mode"), "per-unit");
+    // Two units → two axes → exactly one splitter between them.
+    expect(document.querySelectorAll(".plot-area").length).toBe(2);
+    expect(document.querySelectorAll(".plot-area-splitter").length).toBe(1);
+  });
+
+  it("dragging a splitter shifts weight between exactly the two neighbours, conserving their sum", async () => {
+    // Both neighbours report a 200px height; a 50px downward drag of the
+    // 400px pair moves them to 250/150 → weights 1.25 / 0.75 (sum 2).
+    const rect = vi
+      .spyOn(Element.prototype, "getBoundingClientRect")
+      .mockReturnValue({ height: 200, width: 600, top: 0, left: 0, right: 600, bottom: 200, x: 0, y: 0, toJSON() {} } as DOMRect);
+    try {
+      const { api } = renderPanel();
+      const picker = screen.getByLabelText("add signal to focused plot area");
+      await pickCombobox(picker, "*|s:256:EngineSpeed");
+      await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
+      await pickCombobox(picker, "*|s:256:EngineTemp");
+      await waitFor(() => expect(screen.getByText("EngineTemp")).toBeInTheDocument());
+      await pickCombobox(screen.getByLabelText("y-axis mode"), "per-unit");
+      const sep = document.querySelector(".plot-area-splitter") as HTMLElement;
+      fireEvent.mouseDown(sep, { clientY: 0 });
+      act(() => {
+        window.dispatchEvent(new MouseEvent("mousemove", { clientY: 50 }));
+      });
+      act(() => {
+        window.dispatchEvent(new MouseEvent("mouseup"));
+      });
+      const areas = document.querySelectorAll(".plot-area");
+      const g0 = parseFloat((areas[0] as HTMLElement).style.flexGrow);
+      const g1 = parseFloat((areas[1] as HTMLElement).style.flexGrow);
+      expect(g0 + g1).toBeCloseTo(2);
+      expect(g0).toBeCloseTo(1.25);
+      expect(g1).toBeCloseTo(0.75);
+      // Persisted: exactly the two neighbours, summing to their pair.
+      const calls = api.updateParameters.mock.calls;
+      const last = (calls[calls.length - 1]?.[0] ?? {}) as { axisWeights: Record<string, number> };
+      const vals = Object.values(last.axisWeights);
+      expect(vals).toHaveLength(2);
+      expect(vals.reduce((a, b) => a + b, 0)).toBeCloseTo(2);
+    } finally {
+      rect.mockRestore();
+    }
+  });
+
+  it("double-clicking a splitter equalises the pair", async () => {
+    const registry = makeRegistry({
+      id: "el-eq",
+      config: {
+        areas: [
+          {
+            id: "a1",
+            yAxisMode: "per-unit",
+            signals: [
+              { busId: null, messageId: 256, extended: false, signalName: "EngineSpeed", messageName: "EngineData", unit: "rpm", color: "#111" },
+              { busId: null, messageId: 256, extended: false, signalName: "EngineTemp", messageName: "EngineData", unit: "degC", color: "#222" },
+            ],
+          },
+        ],
+        // Lopsided starting weights on the two derived per-unit axes.
+        axisWeights: { "a1/u:unit:rpm": 3, "a1/u:unit:degC": 1 },
+      },
+    });
+    const { api } = renderPanel({ params: { elementId: "el-eq" }, registry });
+    const areas = document.querySelectorAll(".plot-area");
+    expect(parseFloat((areas[0] as HTMLElement).style.flexGrow)).toBeCloseTo(3);
+    const sep = document.querySelector(".plot-area-splitter") as HTMLElement;
+    fireEvent.doubleClick(sep);
+    const after = document.querySelectorAll(".plot-area");
+    expect(parseFloat((after[0] as HTMLElement).style.flexGrow)).toBeCloseTo(2);
+    expect(parseFloat((after[1] as HTMLElement).style.flexGrow)).toBeCloseTo(2);
+    const calls = api.updateParameters.mock.calls;
+    const last = (calls[calls.length - 1]?.[0] ?? {}) as { axisWeights: Record<string, number> };
+    expect(last.axisWeights["a1/u:unit:rpm"]).toBeCloseTo(2);
+    expect(last.axisWeights["a1/u:unit:degC"]).toBeCloseTo(2);
+  });
+
   it("mirrors its config onto the element via the registry", async () => {
     const { registry } = renderPanel({
       params: { elementId: "el-persist" },

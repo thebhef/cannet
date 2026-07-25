@@ -1395,6 +1395,31 @@ button.trace-event-swatch {
   border-bottom: none;
 }
 
+/* Draggable separator between two stacked plot axes (ADR 0026). It's a
+   0-height flex child so it takes no room in the fit-to-panel
+   distribution; its grab target is an overlaid pseudo-element
+   straddling the shared border (row-resize cursor, hit-slop margins,
+   the same idiom as the side-panel resizer). */
+.plot-area-splitter {
+  flex: 0 0 0px;
+  position: relative;
+  height: 0;
+  z-index: 5;
+  cursor: row-resize;
+}
+.plot-area-splitter::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -4px;
+  height: 8px;
+}
+.plot-area-splitter:hover::before,
+.plot-area-splitter:active::before {
+  background: rgba(78, 203, 255, 0.25);
+}
+
 .plot-area-ycursors {
   display: flex;
   gap: 0.5rem;

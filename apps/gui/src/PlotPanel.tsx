@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -461,7 +461,9 @@ import { SignalPatternEditor } from "./SignalPatternEditor";
 import { deriveAxesForArea, type YAxisMode } from "./plotAxisDerivation";
 import {
   type AxisWeights,
+  applySplitterDelta,
   axisWeightsFromRaw,
+  equalizePair,
   pruneAxisWeights,
   resolveAxisWeights,
 } from "./plotAreaLayout";
@@ -1609,11 +1611,80 @@ export function PlotPanel(props: IDockviewPanelProps) {
           // own H1/H2). Look it up by the derived id.
           const yc = cursorYByArea[d.area.id];
           const parent = d.parentArea;
+          // A splitter sits before every axis but the first, trading
+          // vertical weight between it and the axis above (ADR 0026).
+          // It's a 0-height flex child (its hit area is an overlaid
+          // pseudo-element) so it doesn't perturb the fit-to-panel
+          // distribution. Measuring the neighbours' live pixel heights
+          // at drag start keeps the weight math independent of the
+          // panel's absolute size.
+          const above = idx > 0 ? derivedAreaConfigs[idx - 1] : null;
           return (
-            <PlotArea
-              key={d.area.id}
-              area={d.area}
-              flexGrow={resolvedAxisWeights[d.area.id]}
+            <Fragment key={d.area.id}>
+              {above && (
+                <div
+                  className="plot-area-splitter"
+                  role="separator"
+                  aria-orientation="horizontal"
+                  title="drag to resize; double-click to equalize"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const sep = e.currentTarget;
+                    const aboveEl = sep.previousElementSibling as HTMLElement | null;
+                    const belowEl = sep.nextElementSibling as HTMLElement | null;
+                    if (!aboveEl || !belowEl) return;
+                    const idAbove = above.area.id;
+                    const idBelow = d.area.id;
+                    const abovePx0 = aboveEl.getBoundingClientRect().height;
+                    const belowPx0 = belowEl.getBoundingClientRect().height;
+                    const startY = e.clientY;
+                    // Seed the pair's resolved weights so the drag has
+                    // real numbers even for axes still at the default.
+                    const base: AxisWeights = {
+                      ...axisWeights,
+                      [idAbove]: resolvedAxisWeights[idAbove],
+                      [idBelow]: resolvedAxisWeights[idBelow],
+                    };
+                    const onMove = (ev: MouseEvent) => {
+                      setAxisWeights(
+                        applySplitterDelta(
+                          base,
+                          idAbove,
+                          idBelow,
+                          ev.clientY - startY,
+                          abovePx0,
+                          belowPx0,
+                        ),
+                      );
+                    };
+                    const onUp = () => {
+                      window.removeEventListener("mousemove", onMove);
+                      window.removeEventListener("mouseup", onUp);
+                    };
+                    window.addEventListener("mousemove", onMove);
+                    window.addEventListener("mouseup", onUp);
+                  }}
+                  onDoubleClick={() => {
+                    const idAbove = above.area.id;
+                    const idBelow = d.area.id;
+                    setAxisWeights((prev) =>
+                      equalizePair(
+                        {
+                          ...prev,
+                          [idAbove]: resolvedAxisWeights[idAbove],
+                          [idBelow]: resolvedAxisWeights[idBelow],
+                        },
+                        idAbove,
+                        idBelow,
+                      ),
+                    );
+                  }}
+                />
+              )}
+              <PlotArea
+                area={d.area}
+                flexGrow={resolvedAxisWeights[d.area.id]}
               label={
                 d.subtitle == null
                   ? areaLabels.get(parent.id) ?? "Area"
@@ -1689,7 +1760,8 @@ export function PlotPanel(props: IDockviewPanelProps) {
               busColorLookup={busColorLookup}
               resolveColor={resolveColor}
               panelElementId={elementId}
-            />
+              />
+            </Fragment>
           );
         })}
       </div>
