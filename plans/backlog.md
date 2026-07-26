@@ -201,15 +201,6 @@ trip over it.
 
 ### Transmit panel
 
-- `[bug]` `cannet-gui` `TransmitPanel.tsx`: **missing post-listener refetch
-  (launch race).** RbsPanel refreshes again once its change listener is
-  attached (RbsPanel.tsx:108–114, with a comment explaining the race);
-  TransmitPanel's otherwise-identical mount effect (90–115) skips that
-  step, so a registry change landing between the snapshot fetch and the
-  subscribe is silently missed. Closed for free by the shared
-  `useHostMirror` hook (task 30 item 17), or add the refetch directly.
-  (2026-07-02 audit.)
-
 - `[perf]` `cannet-gui` `run_transmit_scheduler`: per-bus
   `FrameBatch` batching. The scheduler currently fires each due
   message through `transmit_frame_inner` individually (one
