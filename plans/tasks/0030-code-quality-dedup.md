@@ -40,7 +40,7 @@ the area is already test-covered; each region's tests move with it.
 | ~~5701~~ | ~~`apps/gui/src-tauri/src/lib.rs`~~ | **Done — see sketch below** |
 | ~~3857~~ | ~~`apps/gui/src/PlotPanel.tsx`~~ | **Done — see sketch below** |
 | ~~2650~~ | ~~`crates/cannet-dbc/src/lib.rs`~~ | **Done — see sketch below** |
-| 2441 | `apps/gui/src/App.tsx` | see sketch below |
+| ~~2441~~ | ~~`apps/gui/src/App.tsx`~~ | **Done — see sketch below** |
 | 2158 | `apps/gui/src-tauri/src/trace_store.rs` | five separable concerns (impl 60–1302, tests 1304–2158): store facade, rate tracking, scratch breakdown, by-id, flush |
 | 2093 | `apps/gui/src-tauri/src/rbs.rs` | directory split along its own section banners (43/257/655/1132): file model / runtime reconciliation / view shaping / 15 commands. Pure relocation — `generate_handler` tolerates re-exported commands; helpers stay `pub(super)` |
 | 1642 | `apps/gui/src/TransmitPanel.tsx` | 13 components in one file — extract the row/editor subcomponents |
@@ -233,6 +233,30 @@ new-project fire-and-forgets), collapse the five bus-field setters
 exists at `handleUpdateVirtualBus`), and the five `add*Panel` handlers
 (1535–1599) into one `addPanel(kind)` over a kind→component registry
 next to `DOCK_COMPONENTS` (App.tsx:174).
+
+**Done (task-0030/14-split-app-tsx).** App.tsx: **3,000 → 2,437 lines**.
+Landed as four staged commits, each green (`pnpm test` — 770 tests — +
+`build`). All four sub-tasks completed as sketched:
+
+- **`addPanel(kind)`** (commit `11d3eda`) — the six `add*Panel` handlers
+  collapsed into one `addPanel(kind)` over a kind→component registry.
+- **`onUpdateBus(id, patch)`** (commit `5f434fd`) — the five bus-field
+  setters collapsed into one patch-shaped updater.
+- **`useSessionReset`** (commit `53e1111`) — the 5-step session
+  (re)start sequence extracted to a shared helper, with each call site
+  keeping its own clear-error policy (the differences are intentional:
+  clear continues, connect/BLF-map abort, new-project fire-and-forgets).
+- **`useCommands`** (commit `18b24a6`) — the command/hotkey/palette
+  subsystem (ADR 0018) extracted to the provider App was always meant to
+  delegate to: effective-binding resolution + persistence, the global
+  keydown dispatcher, the command registry, the singleton view-show
+  helpers, the command context, and the three palette modals (~340
+  lines, the biggest single chunk — new `useCommands.tsx` is 626 lines).
+  App keeps the dockview layout lifecycle and the app-domain command
+  implementations, passing the latter in as `appCommands`. An in-progress
+  extraction left by an interrupted session was sound and was finished
+  (old inline block removed, providers/palettes rewired to the hook's
+  return values, dead imports swept) rather than redone.
 
 ## Duplicate implementations to consolidate
 
