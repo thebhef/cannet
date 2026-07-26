@@ -102,11 +102,11 @@ next to `DOCK_COMPONENTS` (App.tsx:174).
    signal_cache.rs:283). → one segment-chain module parameterized by
    entry type **and eviction policy** (the policies deliberately
    differ — keep that explicit, don't flatten it).
-- **2. CAN-ID extraction copy-pasted 5×** in
+- ~~**2. CAN-ID extraction copy-pasted 5×** in
    `crates/cannet-blf/src/format/can.rs` (bit-31 test + 11/29-bit
    mask), plus `is_extended_id()`/`can_id()` duplicated on all five
    CAN structs. → one free fn / trait method; test that all callers
-   agree.
+   agree.~~ **Done (task-0030/01-canid-dedup).**
 - **3. BLF object-decode preamble ~11×** across can.rs / text.rs /
    diagnostics.rs / marker.rs: the same ~20-line
    parse-base→type-check→TooSmall/Truncated→parse-V1→body-slice
