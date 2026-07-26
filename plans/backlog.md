@@ -172,6 +172,13 @@ trip over it.
   Looks like a draw on a destroyed / rebuilt instance. Reproduce and
   guard (likely a `uplotRef.current` staleness window in
   `PlotPanel.tsx`'s create/destroy effect).
+  **2026-07-25 update:** the null is `axis._found` destructured in
+  `drawAxesGrid` — a shown axis drawn without axis-calc. Deterministic
+  trigger found and removed (StrictMode double boot-open storming
+  dbc-changed mid-stream; fixed by `bootOpenRanRef`), but the draw
+  itself is still unguarded — a dbc-refresh storm or reload mid-stream
+  can still reach it, and one throw in an effect unmounts the whole
+  React root (blank app). Guard the draw path when picked up.
 
 ### DBC view
 

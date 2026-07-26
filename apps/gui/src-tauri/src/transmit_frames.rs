@@ -350,6 +350,23 @@ impl TransmitFrameRegistry {
         self.position(id).is_some_and(|i| self.entries[i].running)
     }
 
+    /// The message's configured period, if it exists. Read alongside
+    /// `begin_periodic` (same lock hold) so the scheduler's `Start`
+    /// command can carry the period for phase placement (ADR 0039).
+    #[must_use]
+    pub fn cycle_ms(&self, id: &str) -> Option<u32> {
+        self.position(id).map(|i| self.entries[i].frame.cycle_ms)
+    }
+
+    /// The message's target bus, if it exists. Read *without* preparing
+    /// a send — the scheduler's route check must not step the sequence
+    /// counter (park keeps it frozen, ADR 0039).
+    #[must_use]
+    pub fn bus_id(&self, id: &str) -> Option<String> {
+        self.position(id)
+            .map(|i| self.entries[i].frame.request.bus_id.clone())
+    }
+
     /// Insert a new message or update an existing one in place. If the
     /// update parks the message (`Manual` mode or `cycle_ms == 0`), it
     /// is marked stopped; the scheduler drops it on its next tick (the

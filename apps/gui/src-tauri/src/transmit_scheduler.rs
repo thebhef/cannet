@@ -20,7 +20,7 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// A command to the scheduler thread. `Start` / `Stop` mirror the
 /// `start_periodic_transmit` / `stop_periodic_transmit` IPC commands;
@@ -28,10 +28,17 @@ use std::time::Instant;
 /// dropped (app shutdown), so no explicit shutdown variant is needed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SchedulerCmd {
-    /// Begin firing `id` now (and every period thereafter).
-    Start(String),
+    /// Begin firing `id`, first fire at `now + stagger_offset(id,
+    /// cycle_ms)` and every period thereafter. `cycle_ms` rides along
+    /// (read under the registry lock the caller already holds) so the
+    /// driver can place the phase offset without a registry lookup.
+    Start { id: String, cycle_ms: u32 },
     /// Stop firing `id`.
     Stop(String),
+    /// A bus route may have come up (a session registered). Best-effort
+    /// hint so parked periodics resume promptly instead of waiting for
+    /// the slow retry probe; the driver re-checks routes on receipt.
+    RoutesChanged,
 }
 
 /// Handle the command layer uses to talk to the scheduler thread.
@@ -48,15 +55,15 @@ impl TransmitScheduler {
         Self { tx: Mutex::new(tx) }
     }
 
-    /// Schedule `id` to start firing. Best-effort: a send failure means
-    /// the scheduler thread is gone (app shutting down), which is
-    /// harmless to ignore.
-    pub fn start(&self, id: String) {
+    /// Schedule `id` to start firing on a `cycle_ms` period. Best-effort:
+    /// a send failure means the scheduler thread is gone (app shutting
+    /// down), which is harmless to ignore.
+    pub fn start(&self, id: String, cycle_ms: u32) {
         let _ = self
             .tx
             .lock()
             .expect("transmit scheduler sender poisoned")
-            .send(SchedulerCmd::Start(id));
+            .send(SchedulerCmd::Start { id, cycle_ms });
     }
 
     /// Unschedule `id`. Best-effort (see [`Self::start`]).
@@ -67,6 +74,17 @@ impl TransmitScheduler {
             .expect("transmit scheduler sender poisoned")
             .send(SchedulerCmd::Stop(id));
     }
+
+    /// Hint that a bus route may have come up. Best-effort (see
+    /// [`Self::start`]); correctness doesn't depend on it — the driver's
+    /// retry probe covers a missed hint.
+    pub fn routes_changed(&self) {
+        let _ = self
+            .tx
+            .lock()
+            .expect("transmit scheduler sender poisoned")
+            .send(SchedulerCmd::RoutesChanged);
+    }
 }
 
 /// Build a scheduler handle plus the receiver the driver thread owns.
@@ -74,6 +92,29 @@ impl TransmitScheduler {
 pub fn channel() -> (TransmitScheduler, Receiver<SchedulerCmd>) {
     let (tx, rx) = std::sync::mpsc::channel();
     (TransmitScheduler::new(tx), rx)
+}
+
+/// Deterministic per-message phase offset in `[0, period)` (ADR 0039).
+///
+/// Every periodic's first fire lands at `start + offset` so same-period
+/// messages spread across the period instead of firing as one aligned
+/// cohort — a bulk RBS start would otherwise put every cycle group on a
+/// shared epoch and the fixed-rate grid would keep them phase-locked,
+/// draining as periodic multi-frame bursts on the wire. Keyed on the
+/// message's registry row id: stable across restarts and start order
+/// within a build (fixed-key `DefaultHasher`); never persisted, so
+/// cross-version hash drift is harmless.
+#[must_use]
+pub fn stagger_offset(id: &str, period: Duration) -> Duration {
+    use std::hash::{Hash, Hasher};
+    // Period arrives as u32 milliseconds, so this never saturates.
+    let period_ms = u64::try_from(period.as_millis()).unwrap_or(u64::MAX);
+    if period_ms == 0 {
+        return Duration::ZERO;
+    }
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    id.hash(&mut h);
+    Duration::from_millis(h.finish() % period_ms)
 }
 
 /// One queued firing: the absolute `deadline`, the message `id`, and the
@@ -114,6 +155,10 @@ pub struct PeriodicSchedule {
     heap: BinaryHeap<Reverse<Pending>>,
     /// id → the seq of its one live queued entry. Absent ⇒ unscheduled.
     live: HashMap<String, u64>,
+    /// Ids parked on route loss (ADR 0039): still running as far as the
+    /// registry is concerned, but off the heap — no per-period wakes, no
+    /// preparation — until [`Self::resume`] puts them back.
+    parked: std::collections::HashSet<String>,
     seq: u64,
 }
 
@@ -124,8 +169,10 @@ impl PeriodicSchedule {
     }
 
     /// Start (or restart) `id`, due at `at`. Any previously-queued entry
-    /// for `id` is invalidated by the fresh generation.
+    /// for `id` is invalidated by the fresh generation; a parked `id` is
+    /// unparked (a fresh Start supersedes the outage).
     pub fn schedule(&mut self, id: String, at: Instant) {
+        self.parked.remove(&id);
         self.seq += 1;
         let seq = self.seq;
         self.live.insert(id.clone(), seq);
@@ -136,10 +183,40 @@ impl PeriodicSchedule {
         }));
     }
 
-    /// Stop `id`. Its queued heap entry (if any) becomes stale and is
-    /// skipped when popped.
+    /// Stop `id` — parked or not. Its queued heap entry (if any) becomes
+    /// stale and is skipped when popped.
     pub fn unschedule(&mut self, id: &str) {
         self.live.remove(id);
+        self.parked.remove(id);
+    }
+
+    /// Park `id` on route loss (ADR 0039): drop it from the firing
+    /// schedule but remember it, so a route-up can [`Self::resume`] it.
+    pub fn park(&mut self, id: &str) {
+        self.live.remove(id);
+        self.parked.insert(id.to_string());
+    }
+
+    /// Whether anything is parked — while true, the driver arms the
+    /// slow route-retry probe.
+    #[must_use]
+    pub fn any_parked(&self) -> bool {
+        !self.parked.is_empty()
+    }
+
+    /// Snapshot of the parked ids, for the driver's route re-check.
+    #[must_use]
+    pub fn parked_ids(&self) -> Vec<String> {
+        self.parked.iter().cloned().collect()
+    }
+
+    /// Put a parked `id` back on the schedule, first fire at `at`. A
+    /// no-op for ids that aren't parked (stopped or removed while the
+    /// route was down).
+    pub fn resume(&mut self, id: &str, at: Instant) {
+        if self.parked.remove(id) {
+            self.schedule(id.to_string(), at);
+        }
     }
 
     /// Re-queue `id`'s next firing at `at`, keeping its current
@@ -211,6 +288,34 @@ mod tests {
     }
 
     #[test]
+    fn stagger_offset_is_deterministic_and_bounded() {
+        let p = Duration::from_millis(100);
+        for id in ["a", "b", "row-uuid-1"] {
+            let o = stagger_offset(id, p);
+            assert_eq!(o, stagger_offset(id, p), "offset must be stable per id");
+            assert!(o < p, "offset {o:?} must stay inside the period");
+        }
+        // Degenerate period: no offset (never scheduled in practice —
+        // begin_periodic rejects cycle_ms == 0 — but never panic).
+        assert_eq!(stagger_offset("a", Duration::ZERO), Duration::ZERO);
+    }
+
+    #[test]
+    fn stagger_offset_spreads_a_cohort_across_the_period() {
+        // 100 same-period rows must not collapse onto a few phases —
+        // the point is breaking the bulk-start cohort (ADR 0039).
+        let p = Duration::from_millis(100);
+        let distinct: std::collections::HashSet<_> = (0..100)
+            .map(|i| stagger_offset(&format!("row-{i}"), p))
+            .collect();
+        assert!(
+            distinct.len() >= 50,
+            "only {} distinct offsets across 100 rows",
+            distinct.len()
+        );
+    }
+
+    #[test]
     fn fires_then_reschedules_on_a_fixed_grid() {
         let base = Instant::now();
         let period = Duration::from_millis(10);
@@ -270,6 +375,70 @@ mod tests {
         assert_eq!(ids(&due), ["fast"]);
         // slow isn't due yet.
         assert!(s.take_due(base + Duration::from_millis(2)).is_empty());
+    }
+
+    #[test]
+    fn parked_message_stops_firing_until_resumed() {
+        let base = Instant::now();
+        let mut s = PeriodicSchedule::new();
+        s.schedule("a".into(), base);
+        assert_eq!(ids(&s.take_due(base)), ["a"]);
+
+        // Route went down: park instead of rescheduling.
+        s.park("a");
+        assert!(s.any_parked());
+        assert_eq!(s.parked_ids(), ["a"]);
+        assert_eq!(s.next_deadline(), None);
+        assert!(s.take_due(base + Duration::from_secs(10)).is_empty());
+
+        // Route back: resume fires once at the given instant, then
+        // reschedules normally.
+        let resume_at = base + Duration::from_secs(11);
+        s.resume("a", resume_at);
+        assert!(!s.any_parked());
+        let due = s.take_due(resume_at);
+        assert_eq!(ids(&due), ["a"]);
+        s.reschedule("a", resume_at + Duration::from_millis(10));
+        assert_eq!(
+            s.next_deadline(),
+            Some(resume_at + Duration::from_millis(10))
+        );
+    }
+
+    #[test]
+    fn stop_while_parked_clears_it() {
+        let base = Instant::now();
+        let mut s = PeriodicSchedule::new();
+        s.schedule("a".into(), base);
+        s.park("a");
+        s.unschedule("a");
+        assert!(!s.any_parked());
+        // A later resume for the stopped id is a no-op.
+        s.resume("a", base + Duration::from_secs(1));
+        assert!(s.take_due(base + Duration::from_secs(2)).is_empty());
+    }
+
+    #[test]
+    fn start_while_parked_supersedes_the_parked_entry() {
+        let base = Instant::now();
+        let mut s = PeriodicSchedule::new();
+        s.schedule("a".into(), base);
+        s.park("a");
+        // Fresh Start while parked: unparks, fires exactly once.
+        s.schedule("a".into(), base + Duration::from_millis(5));
+        assert!(!s.any_parked());
+        let due = s.take_due(base + Duration::from_millis(5));
+        assert_eq!(ids(&due), ["a"]);
+        assert!(s.take_due(base + Duration::from_millis(5)).is_empty());
+    }
+
+    #[test]
+    fn resume_ignores_ids_that_were_never_parked() {
+        let base = Instant::now();
+        let mut s = PeriodicSchedule::new();
+        s.resume("ghost", base);
+        assert_eq!(s.next_deadline(), None);
+        assert!(s.take_due(base).is_empty());
     }
 
     #[test]

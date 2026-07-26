@@ -568,8 +568,8 @@ fn rebuild_element_rows(state: &AppState, element_id: &str) -> Vec<String> {
 /// Reconcile every RBS row's scheduled state with what the model says
 /// it should be: `element.run && bus.enabled && ecu.enabled &&
 /// !muted && !kill_switch` (per-bus *connectivity* gates inside the
-/// scheduler, not here — a disconnected bus keeps its schedule
-/// ticking and resumes on reconnect). Derives desired-state from the
+/// scheduler, not here — a disconnected bus parks its rows and they
+/// resume when the route returns, ADR 0039). Derives desired-state from the
 /// row keys the registry's provenance carries — no DBC lock, so the
 /// hot enable / run / kill-switch paths stay light. Idempotent.
 fn sync_schedules(state: &AppState) {
@@ -589,7 +589,8 @@ fn sync_schedules(state: &AppState) {
             });
         if want {
             if registry.begin_periodic(&row.id) == Ok(true) {
-                state.transmit_scheduler.start(row.id);
+                let cycle_ms = registry.cycle_ms(&row.id).unwrap_or(0);
+                state.transmit_scheduler.start(row.id, cycle_ms);
             }
         } else if registry.stop_periodic(&row.id) {
             state.transmit_scheduler.stop(row.id);
