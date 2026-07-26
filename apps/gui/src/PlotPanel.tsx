@@ -22,7 +22,30 @@ import { useNotes } from "./notesContext";
 import { TRUNCATION_EVENT_ID } from "./notes";
 import { GOTO_EVENT, type GotoPayload } from "./gotoEvent";
 import { enumSegments, groupScaleRanges, mergeSeries, signalKey } from "./plotData";
-import { SIGNAL_WHEEL, stableSignalColor, wheelColor } from "./palette";
+import { stableSignalColor, wheelColor } from "./palette";
+import {
+  RATE_OPTIONS,
+  SIGNALS_WIDTH_MAX,
+  SIGNALS_WIDTH_MIN,
+  TRACE_COLORS,
+  areasFromParams,
+  cursorModeFromRaw,
+  fmtCount,
+  fmtFreq,
+  fmtVal,
+  maxRateFromRaw,
+  measKeysFromRaw,
+  parseDroppedSignals,
+  signalRefKey,
+  signalsWidthFromRaw,
+  type CursorMode,
+  type NoteEvent,
+  type PlotAreaConfig,
+  type PlotPanelParams,
+  type SignalRef,
+  type XCursors,
+  type XSync,
+} from "./plotPanelConfig";
 import { followXWindow } from "./followWindow";
 import { showPointsFromRaw, showPointsToUplot, type ShowPointsMode } from "./plotPoints";
 import { Combobox, type ComboboxOption } from "./Combobox";
@@ -33,13 +56,11 @@ import { useElementPanel, useElementSources } from "./useElementPanel";
 import { useDismissableMenu } from "./useDismissableMenu";
 import { busLookup } from "./traceColumns";
 import {
-  DEFAULT_MEASUREMENTS,
   MEASUREMENT_QUANTITIES,
   type MeasurementKey,
   type PanelHover,
   type Series,
   centerWindowOn,
-  isMeasurementKey,
   nextHover,
   statsOver,
   valueAt,
@@ -122,12 +143,6 @@ import {
  * scale; enum/state signals; triggers; CSV/image export.
  */
 
-/** The shared signal colour wheel (ADR 0026, `palette.ts`) seeds a new
- * series' colour: the index for a fresh series is `(signals already in
- * that plot area) % len`, so the first 16 series in any one area get
- * distinct hues. */
-const TRACE_COLORS = SIGNAL_WHEEL;
-
 /** Stable empty set for areas with no manual picks yet. */
 const EMPTY_KEY_SET: ReadonlySet<string> = new Set();
 const CURSOR_A_COLOR = "#ffd93d";
@@ -151,11 +166,6 @@ const ZOOM_STEP = 1.15;
  * min/max plot can show; the floor catches early-mount cases where
  * `clientWidth` is still small. */
 const MIN_DECIMATION_POINTS = 200;
-/** Plot update-rate options (Hz) offered in the toolbar, and the
- * default. Lower = less CPU under a fast capture; the re-sample loop is
- * self-paced (next tick scheduled after the previous finishes), so a
- * slow tick just lowers the realised rate further. */
-const RATE_OPTIONS = [5, 10, 15, 30, 60] as const;
 const RATE_COMBO_OPTIONS: ComboboxOption[] = RATE_OPTIONS.map((hz) => ({
   value: String(hz),
   label: `${hz} Hz`,
@@ -171,238 +181,19 @@ const CURSOR_MODE_OPTIONS: ComboboxOption[] = [
   { value: "y", label: "Y (H1 / H2)" },
   { value: "note", label: "+ note" },
 ];
-const DEFAULT_MAX_RATE_HZ = 15;
 /** Width (seconds) of the follow-live x-window before the user has set
  * one by zooming/panning. The window grows from t=0 up to this and then
  * slides; once the user picks a width, that width is what follow-live
  * keeps. */
 const DEFAULT_FOLLOW_WIDTH_SECONDS = 10;
 
-type CursorMode = "off" | "x" | "y" | "note";
-
-export interface SignalRef {
-  /** Logical bus this signal is bound to. `null` is the legacy
-   * "any bus" path — kept so plots from projects that pre-date
-   * per-bus signal binding still sample. New picks always carry a
-   * concrete `busId`. */
-  busId: string | null;
-  messageId: number;
-  extended: boolean;
-  signalName: string;
-  messageName: string;
-  unit: string;
-  /** Plot colour — assigned when the signal is added and carried with
-   * it (so re-ordering / moving between areas doesn't recolour it). */
-  color: string;
-  /** Hidden = line not drawn on the plot (swatch dimmed); the
-   * side-panel value still updates. Absent ⇒ visible. */
-  hidden?: boolean;
-}
-
-export interface PlotAreaConfig {
-  id: string;
-  signals: SignalRef[];
-  /** How the area's series lay out across axes (ADR 0026). `unified`
-   * (default) draws one axis with all series overlaid; `per-unit`
-   * stacks one axis per unit (each enum series gets its own); and
-   * `individual` stacks one axis per series. Y scales are always
-   * auto-derived (no fixed-range option). */
-  yAxisMode?: YAxisMode;
-  /** Which signal's raw range / unit drives the y-axis labels for this
-   * area. `null` falls back to the first non-hidden signal — that's
-   * what `primarySignalForArea` resolves it to. Click a signal row in
-   * the side panel to promote that signal to primary. */
-  primarySignalKey?: string | null;
-  /** Pattern-defined series (ADR 0020 / ADR 0038): regex patterns
-   * evaluated against the canonical signal path
-   * `bus/ecu/message/signal`, OR-combined with the manual `signals`
-   * list (`signalSelection.ts`). The renderer treats the area's
-   * series as `signals` + the pattern matches not already picked
-   * manually — manual picks win, so their colour / order / hidden
-   * state is authoritative. Not mode-exclusive: adds, drops, and
-   * removes keep working alongside patterns. */
-  patterns?: string[];
-}
-
-interface NoteEvent {
-  id: string;
-  /** Time in display-relative seconds. */
-  t: number;
-  label: string;
-  /** Cursor colour; defaults to the note event blue. The derived
-   *  truncation marker (ADR 0035) overrides it. */
-  color?: string;
-}
-
-interface XCursors {
-  a: number | null;
-  b: number | null;
-}
-
-interface PlotPanelParams {
-  [key: string]: unknown;
-  elementId?: unknown;
-  areas?: unknown;
-  followLive?: unknown;
-  cursorMode?: unknown;
-  measEnabled?: unknown;
-  measKeys?: unknown;
-  showDiag?: unknown;
-  cursorX?: unknown;
-  cursorYByArea?: unknown;
-  // `notes` retired from panel params — see the session-scoped notes
-  // store. A tolerant parser ignores the extra field on older blobs.
-  maxRateHz?: unknown;
-  signalsWidthPx?: unknown;
-  showPoints?: unknown;
-  /** Per-derived-axis vertical weight (flex-grow), keyed by axis id.
-   * See {@link AxisWeights}. Absent axes default to weight 1. */
-  axisWeights?: unknown;
-}
-
-/** Per-area side-panel width range (pixels). Default and clamps for
- * the user-resizable column. */
-const SIGNALS_WIDTH_DEFAULT = 220;
-const SIGNALS_WIDTH_MIN = 120;
-const SIGNALS_WIDTH_MAX = 600;
-
-function signalsWidthFromRaw(v: unknown): number {
-  if (typeof v !== "number" || !Number.isFinite(v)) return SIGNALS_WIDTH_DEFAULT;
-  return Math.max(SIGNALS_WIDTH_MIN, Math.min(SIGNALS_WIDTH_MAX, Math.round(v)));
-}
-
-/** A persisted max-rate value, clamped to one of {@link RATE_OPTIONS}. */
-function maxRateFromRaw(v: unknown): number {
-  return typeof v === "number" && (RATE_OPTIONS as readonly number[]).includes(v) ? v : DEFAULT_MAX_RATE_HZ;
-}
-
-/** The shared current x-window + a suppress flag so a programmatic
- * scale change doesn't bounce back through an area's `setScale` hook
- * as "the user zoomed". `xMin`/`xMax` are `null` until the first data
- * establishes a window. */
-interface XSync {
-  suppress: boolean;
-  xMin: number | null;
-  xMax: number | null;
-}
-
-function signalRefKey(s: SignalRef): string {
-  return signalKey(s.busId, s.messageId, s.extended, s.signalName);
-}
-
-function isSignalRefCore(v: unknown): v is Omit<SignalRef, "color"> {
-  if (typeof v !== "object" || v === null) return false;
-  const o = v as Record<string, unknown>;
-  // `busId` is the new field. Old saved layouts (no `busId`) load
-  // with `busId: null`, the legacy "any bus" path.
-  return (
-    typeof o.messageId === "number" &&
-    typeof o.extended === "boolean" &&
-    typeof o.signalName === "string" &&
-    typeof o.messageName === "string" &&
-    typeof o.unit === "string" &&
-    (o.busId == null || typeof o.busId === "string")
-  );
-}
-function withColor(
-  s: Omit<SignalRef, "color"> & { color?: unknown; busId?: unknown },
-  fallbackIdx: number,
-): SignalRef {
-  return {
-    ...s,
-    busId: typeof s.busId === "string" ? s.busId : null,
-    color:
-      typeof s.color === "string" ? s.color : TRACE_COLORS[fallbackIdx % TRACE_COLORS.length],
-  };
-}
-
 /** Drag-and-drop MIME for a `SignalRef` (within or across plot panels —
  * the payload is the full ref so the receiving panel can add it even if
  * it's not one of its own signals). The mime + parser are hoisted
  * into [`dragSignals.ts`](./dragSignals.ts) so the DBC panel and the
  * trace / by-id signal rows can produce the same payload shape. */
-import {
-  SIGNAL_DND_MIME,
-  parseSignalDragData,
-  setSignalDragData,
-} from "./dragSignals";
+import { SIGNAL_DND_MIME, setSignalDragData } from "./dragSignals";
 
-/** Parse a drop event's mime data into colored `SignalRef`s + the
- * source panel id (when the payload set one). The plot panel uses
- * `sourcePanelId` to discriminate:
- *
- * - `sourcePanelId === this panel's elementId` → drag started inside
- *   this panel → **move** semantics (reorder / shift between areas).
- * - Otherwise (DBC panel, trace cell, by-id cell, a different plot
- *   panel) → **add** semantics: drop a fresh copy without disturbing
- *   the source. */
-function parseDroppedSignals(s: string): {
-  refs: SignalRef[];
-  sourcePanelId: string | null;
-} {
-  const parsed = parseSignalDragData(s);
-  return {
-    refs: parsed.signals.map((r, i) => withColor(r, i)),
-    sourcePanelId: parsed.sourcePanelId,
-  };
-}
-
-function areasFromParams(raw: unknown): PlotAreaConfig[] {
-  if (Array.isArray(raw)) {
-    const out: PlotAreaConfig[] = [];
-    for (const a of raw) {
-      if (typeof a !== "object" || a === null) continue;
-      const o = a as Record<string, unknown>;
-      const id = typeof o.id === "string" ? o.id : crypto.randomUUID();
-      const signals = (Array.isArray(o.signals) ? o.signals.filter(isSignalRefCore) : []).map((s, i) => withColor(s, i));
-      // `yMode` from a v7-and-earlier panel is ignored — y scales are
-      // always auto-derived (ADR 0026). The field is tolerated on
-      // parse so old projects don't reject; saving drops it.
-      // A pre-patterns panel persisted a single `signalFilter` regex
-      // (exclusive filter mode); it migrates to a one-entry pattern
-      // list. Note the regex *subject* changed with ADR 0038 (dotted
-      // `bus.message.signal` → `bus/ecu/message/signal`), so an old
-      // filter may need a touch-up — its pattern is preserved verbatim
-      // for the user to edit rather than guessed at.
-      const patterns = Array.isArray(o.patterns)
-        ? o.patterns.filter((p): p is string => typeof p === "string")
-        : typeof o.signalFilter === "string"
-          ? [o.signalFilter]
-          : [];
-      out.push({
-        id,
-        signals,
-        yAxisMode: yAxisModeFromRaw(o.yAxisMode),
-        primarySignalKey: typeof o.primarySignalKey === "string" ? o.primarySignalKey : null,
-        patterns: patterns.length > 0 ? patterns : undefined,
-      });
-    }
-    if (out.length > 0) return out;
-  }
-  return [{ id: crypto.randomUUID(), signals: [], primarySignalKey: null }];
-}
-
-function cursorModeFromRaw(raw: unknown): CursorMode {
-  return raw === "x" || raw === "y" || raw === "note" ? raw : "off";
-}
-
-function measKeysFromRaw(raw: unknown): MeasurementKey[] {
-  if (Array.isArray(raw)) {
-    const ks = raw.filter(isMeasurementKey);
-    if (ks.length > 0) return ks;
-  }
-  return [...DEFAULT_MEASUREMENTS];
-}
-
-function fmtFreq(hz: number | null | undefined): string {
-  if (hz == null || !Number.isFinite(hz)) return "—";
-  if (Math.abs(hz) >= 1e6) return `${(hz / 1e6).toFixed(3)} MHz`;
-  if (Math.abs(hz) >= 1e3) return `${(hz / 1e3).toFixed(3)} kHz`;
-  return `${hz.toFixed(2)} Hz`;
-}
-function fmtVal(v: number | null | undefined): string {
-  return v == null || !Number.isFinite(v) ? "—" : v.toPrecision(6);
-}
 /** Compact tick formatter for the y-axis: 3 significant figures
  * normally, scientific for very small / very large, trims trailing
  * zeros so "1.00" → "1". Distinct from `fmtVal` (6 sig figs) because
@@ -451,11 +242,6 @@ function measureLabelWidth(text: string): number {
   axisMeasureCtx.font = AXIS_FONT;
   return axisMeasureCtx.measureText(text).width;
 }
-function fmtCount(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-  return `${n}`;
-}
 
 // Filter helpers live in `./plotFilter` so the pure-logic
 // tests can import them without dragging uplot into a jsdom run.
@@ -483,9 +269,6 @@ import { diagCount } from "./diag"; // DIAG
 
 const Y_AXIS_MODES: YAxisMode[] = ["unified", "per-unit", "individual"];
 const Y_AXIS_MODE_OPTIONS: ComboboxOption[] = Y_AXIS_MODES.map((m) => ({ value: m, label: m }));
-function yAxisModeFromRaw(v: unknown): YAxisMode {
-  return v === "per-unit" || v === "individual" ? v : "unified";
-}
 
 export function PlotPanel(props: IDockviewPanelProps) {
   diagCount("render.PlotPanel"); // DIAG

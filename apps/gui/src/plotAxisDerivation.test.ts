@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { deriveAxesForArea } from "./plotAxisDerivation";
-import type { SignalRef } from "./PlotPanel";
+import type { SignalRef } from "./plotPanelConfig";
 import { isEnumValueTable } from "./types";
 
 function s(name: string, unit: string, color = "#fff"): SignalRef {
