@@ -1757,88 +1757,33 @@ export function App() {
     setDirty(true);
   }, []);
 
-  // Tab titles come from the element's model-owned name (ADR 0019):
-  // the handler computes the same `${Kind} ${n}` default `create`
-  // assigns (against the registry the element is joining), and the
-  // title-sync effect below keeps the tab current thereafter.
-  const addTracePanel = useCallback(() => {
-    const api = dockApiRef.current;
-    if (!api) return;
-    const title = defaultElementName("trace", registryRef.current.map((e) => e.element));
-    const elementId = create("trace");
-    // A new trace starts in by-id mode (toggle it in the panel toolbar).
-    api.addPanel({
-      id: `trace-${elementId}`,
-      component: TRACE_PANEL_COMPONENT,
-      title,
-      params: { elementId, mode: "by-id" },
-    });
-  }, [create]);
-
-  const addPlotPanel = useCallback(() => {
-    const api = dockApiRef.current;
-    if (!api) return;
-    const title = defaultElementName("plot", registryRef.current.map((e) => e.element));
-    const elementId = create("plot");
-    api.addPanel({
-      id: `plot-${elementId}`,
-      component: PLOT_PANEL_COMPONENT,
-      title,
-      params: { elementId },
-    });
-  }, [create]);
-
-  const addSignalsPanel = useCallback(() => {
-    const api = dockApiRef.current;
-    if (!api) return;
-    const title = defaultElementName("signals", registryRef.current.map((e) => e.element));
-    const elementId = create("signals");
-    api.addPanel({
-      id: `signals-${elementId}`,
-      component: SIGNALS_PANEL_COMPONENT,
-      title,
-      params: { elementId },
-    });
-  }, [create]);
-
-  const addTransmitPanel = useCallback(() => {
-    const api = dockApiRef.current;
-    if (!api) return;
-    const title = defaultElementName("transmit", registryRef.current.map((e) => e.element));
-    const elementId = create("transmit");
-    api.addPanel({
-      id: `transmit-${elementId}`,
-      component: TRANSMIT_PANEL_COMPONENT,
-      title,
-      params: { elementId },
-    });
-  }, [create]);
-
-  const addRbsPanel = useCallback(() => {
-    const api = dockApiRef.current;
-    if (!api) return;
-    const title = defaultElementName("rbs", registryRef.current.map((e) => e.element));
-    const elementId = create("rbs");
-    api.addPanel({
-      id: `rbs-${elementId}`,
-      component: RBS_PANEL_COMPONENT,
-      title,
-      params: { elementId },
-    });
-  }, [create]);
-
-  const addColorMapPanel = useCallback(() => {
-    const api = dockApiRef.current;
-    if (!api) return;
-    const title = defaultElementName("colormap", registryRef.current.map((e) => e.element));
-    const elementId = create("colormap");
-    api.addPanel({
-      id: `colormap-${elementId}`,
-      component: COLORMAP_PANEL_COMPONENT,
-      title,
-      params: { elementId },
-    });
-  }, [create]);
+  // Add a fresh element of `kind` and open its dockview panel. The
+  // kind→component map is `elementPanelComponent` (dockLayout), and the
+  // panel id is `${component}-${elementId}` — the same scheme
+  // `openElementView` and the saved-layout restore use, so a panel
+  // added here reopens to the same id. A new trace opens in by-id mode
+  // (toggle it in the panel toolbar). Tab titles come from the
+  // element's model-owned name (ADR 0019): the same `${Kind} ${n}`
+  // default `create` assigns (against the registry the element is
+  // joining); the title-sync effect below keeps the tab current
+  // thereafter.
+  const addPanel = useCallback(
+    (kind: ProjectElementKind) => {
+      const api = dockApiRef.current;
+      if (!api) return;
+      const component = elementPanelComponent(kind);
+      if (!component) return; // panel-less kind (`filter`)
+      const title = defaultElementName(kind, registryRef.current.map((e) => e.element));
+      const elementId = create(kind);
+      api.addPanel({
+        id: `${component}-${elementId}`,
+        component,
+        title,
+        params: kind === "trace" ? { elementId, mode: "by-id" } : { elementId },
+      });
+    },
+    [create],
+  );
 
   // --- RBS host lifecycle (ADR 0028) ---
   // The host resolves `.cannet_rbs` bus-name keys against the
@@ -2200,12 +2145,12 @@ export function App() {
     "connection.disconnect": () => void handleDisconnect(),
     "capture.clear": () => void handleClear(),
     "capture.save": () => void handleSaveCapture(),
-    "panel.add.trace": addTracePanel,
-    "panel.add.plot": addPlotPanel,
-    "panel.add.signals": addSignalsPanel,
-    "panel.add.transmit": addTransmitPanel,
-    "panel.add.rbs": addRbsPanel,
-    "panel.add.colormap": addColorMapPanel,
+    "panel.add.trace": () => addPanel("trace"),
+    "panel.add.plot": () => addPanel("plot"),
+    "panel.add.signals": () => addPanel("signals"),
+    "panel.add.transmit": () => addPanel("transmit"),
+    "panel.add.rbs": () => addPanel("rbs"),
+    "panel.add.colormap": () => addPanel("colormap"),
     "project.saveAll": () => void handleSaveAllRef.current(),
     "rbs.killSwitch": toggleRbsKillSwitch,
     "panel.show.project": showProjectPanel,
