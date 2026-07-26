@@ -1442,6 +1442,153 @@ mod tests {
         assert_eq!(parsed.event.timestamp_ns(), 123_000);
     }
 
+    // ----- Cross-struct id-extraction agreement ------------------
+
+    /// A dummy `(base, event)` pair for tests that only care about
+    /// body fields — the header contents don't affect id extraction.
+    fn dummy_header() -> (ObjectHeaderBase, ObjectHeaderV1) {
+        (
+            ObjectHeaderBase {
+                header_size: 32,
+                header_version: 1,
+                object_size: 0,
+                object_type: 0,
+            },
+            ObjectHeaderV1 {
+                object_flags: OBJECT_FLAG_TIME_ONE_NANS,
+                client_index: 0,
+                object_version: 0,
+                object_timestamp: 0,
+            },
+        )
+    }
+
+    fn dummy_can_message(id_raw: u32) -> CanMessage {
+        let (base, event) = dummy_header();
+        CanMessage { base, event, channel: 0, flags: 0, dlc: 0, id_raw, data: [0; 8] }
+    }
+
+    fn dummy_can_message2(id_raw: u32) -> CanMessage2 {
+        let (base, event) = dummy_header();
+        CanMessage2 {
+            base,
+            event,
+            channel: 0,
+            flags: 0,
+            dlc: 0,
+            id_raw,
+            data: Vec::new(),
+            frame_length_ns: 0,
+            bit_count: 0,
+        }
+    }
+
+    fn dummy_can_fd_message(id_raw: u32) -> CanFdMessage {
+        let (base, event) = dummy_header();
+        CanFdMessage {
+            base,
+            event,
+            channel: 0,
+            flags: 0,
+            dlc: 0,
+            id_raw,
+            frame_length_ns: 0,
+            arb_bit_count: 0,
+            can_fd_flags: 0,
+            valid_data_bytes: 0,
+            data: [0; CAN_FD_MESSAGE_DATA_BYTES],
+        }
+    }
+
+    fn dummy_can_fd_message_64(id_raw: u32) -> CanFdMessage64 {
+        let (base, event) = dummy_header();
+        CanFdMessage64 {
+            base,
+            event,
+            channel: 0,
+            dlc: 0,
+            valid_data_bytes: 0,
+            tx_count: 0,
+            id_raw,
+            frame_length_ns: 0,
+            flags: 0,
+            btr_cfg_arb: 0,
+            btr_cfg_data: 0,
+            time_offset_brs_ns: 0,
+            time_offset_crc_del_ns: 0,
+            bit_count: 0,
+            dir: 0,
+            ext_data_offset: 0,
+            crc: 0,
+            data: Vec::new(),
+            trailing: Vec::new(),
+        }
+    }
+
+    fn dummy_can_error_ext(id_raw: u32) -> CanErrorExt {
+        let (base, event) = dummy_header();
+        CanErrorExt {
+            base,
+            event,
+            channel: 0,
+            length: 0,
+            flags: 0,
+            ecc: 0,
+            position: 0,
+            dlc: 0,
+            frame_length_in_ns: 0,
+            id_raw,
+            flags_ext: 0,
+            data: Vec::new(),
+        }
+    }
+
+    /// All five CAN-class structs decode the same raw `id` field the
+    /// same way (bit 31 = extended marker, low 11/29 bits = value).
+    /// Regression guard for the shared extraction logic: a callsite
+    /// that silently reverts to hand-rolled bit-fiddling would still
+    /// compile but could drift from the others without this test.
+    #[test]
+    fn all_can_structs_agree_on_id_extraction() {
+        let cases: &[u32] = &[
+            0x000,
+            0x123,
+            0x7FF,                              // max standard id
+            CAN_ID_EXTENDED_BIT,                 // extended, value 0
+            0x01AB_CDEF | CAN_ID_EXTENDED_BIT,
+            0x1FFF_FFFF | CAN_ID_EXTENDED_BIT,   // max extended id
+        ];
+
+        for &id_raw in cases {
+            let want_extended = (id_raw & CAN_ID_EXTENDED_BIT) != 0;
+            let want_id = if want_extended {
+                id_raw & CAN_ID_EXTENDED_MASK
+            } else {
+                id_raw & CAN_ID_STANDARD_MASK
+            };
+
+            let cm = dummy_can_message(id_raw);
+            assert_eq!(cm.is_extended_id(), want_extended, "CanMessage id_raw={id_raw:#x}");
+            assert_eq!(cm.can_id(), want_id, "CanMessage id_raw={id_raw:#x}");
+
+            let cm2 = dummy_can_message2(id_raw);
+            assert_eq!(cm2.is_extended_id(), want_extended, "CanMessage2 id_raw={id_raw:#x}");
+            assert_eq!(cm2.can_id(), want_id, "CanMessage2 id_raw={id_raw:#x}");
+
+            let fd = dummy_can_fd_message(id_raw);
+            assert_eq!(fd.is_extended_id(), want_extended, "CanFdMessage id_raw={id_raw:#x}");
+            assert_eq!(fd.can_id(), want_id, "CanFdMessage id_raw={id_raw:#x}");
+
+            let fd64 = dummy_can_fd_message_64(id_raw);
+            assert_eq!(fd64.is_extended_id(), want_extended, "CanFdMessage64 id_raw={id_raw:#x}");
+            assert_eq!(fd64.can_id(), want_id, "CanFdMessage64 id_raw={id_raw:#x}");
+
+            let err = dummy_can_error_ext(id_raw);
+            assert_eq!(err.is_extended_id(), want_extended, "CanErrorExt id_raw={id_raw:#x}");
+            assert_eq!(err.can_id(), want_id, "CanErrorExt id_raw={id_raw:#x}");
+        }
+    }
+
     #[test]
     fn encode_can_fd_message_64_preserves_trailing_bytes() {
         let data_len = 4usize;
