@@ -41,7 +41,7 @@ the area is already test-covered; each region's tests move with it.
 | ~~3857~~ | ~~`apps/gui/src/PlotPanel.tsx`~~ | **Done — see sketch below** |
 | ~~2650~~ | ~~`crates/cannet-dbc/src/lib.rs`~~ | **Done — see sketch below** |
 | ~~2441~~ | ~~`apps/gui/src/App.tsx`~~ | **Done — see sketch below** |
-| 2158 | `apps/gui/src-tauri/src/trace_store.rs` | five separable concerns (impl 60–1302, tests 1304–2158): store facade, rate tracking, scratch breakdown, by-id, flush |
+| ~~2158~~ | ~~`apps/gui/src-tauri/src/trace_store.rs`~~ | **Done — see sketch below** |
 | 2093 | `apps/gui/src-tauri/src/rbs.rs` | directory split along its own section banners (43/257/655/1132): file model / runtime reconciliation / view shaping / 15 commands. Pure relocation — `generate_handler` tolerates re-exported commands; helpers stay `pub(super)` |
 | 1642 | `apps/gui/src/TransmitPanel.tsx` | 13 components in one file — extract the row/editor subcomponents |
 | 1603 | `apps/gui/src/ProjectPanel.tsx` | connection-management UI (lines 556–1603, two thirds of the file) → its own file |
@@ -258,6 +258,50 @@ Landed as four staged commits, each green (`pnpm test` — 770 tests — +
   (old inline block removed, providers/palettes rewired to the hook's
   return values, dead imports swept) rather than redone.
 
+**`trace_store.rs` sketch** (the file had drifted to **2,637** lines by
+the time of the split, impl 60–1567 + tests 1568–2637): five separable
+concerns — store facade, rate tracking, scratch breakdown, by-id, flush.
+
+**Done (task-0030/15-split-trace-store).** `trace_store.rs` became a
+directory module `trace_store/` (a directory split, not flat siblings,
+because the concerns all touch `Inner`'s private fields — the submodules
+are descendants of `mod.rs`, so they reach those fields without widening
+everything to `pub(crate)`). Landed as staged commits, each green
+(`cargo test`/`clippy -p cannet-gui` + the workspace pre-commit hook).
+Final production+test line counts:
+
+- `mod.rs` (859) — the facade: `TraceStore`/`Inner`/`PerKey`,
+  `FrameKey`/`MuxKey`/`MuxSelectorFn`, construction + `lock_inner`,
+  `append` (the write path that coordinates every concern), the core
+  read accessors (`len`/`slice`/`frame_timestamps`/`frame_index_at_ns`/
+  `buffer_seconds`/`matching_frames_indexed`/`scan_chunk`/`frames_at`/
+  `low_water`/`len_and_low_water`/`refresh_filter_index`/
+  `session_start_ns`/`frames_dropped_before_session`), the
+  `CandidateSource` impl, and the shared `#[cfg(test)] test_support`
+  frame-builders.
+- `rate.rs` (430) — `RateEstimate` / `RateSample` / `RateTrack`, the
+  sample-cadence helpers, the `RATE_WINDOW`/`RATE_SAMPLE_INTERVAL`
+  constants, and `frames_per_second{,_by_bus,_by_direction}`.
+- `byid.rs` (579) — `LatestById` (re-exported from the module root),
+  the mux scan bounds, and `latest_since` / `latest_in_window` /
+  `set_mux_extractor` / `latest_mux_in_window` / `scan_latest_mux` /
+  `mux_stats` / `seen_bus_ids`.
+- `scratch.rs` (209) — `ScratchBreakdown` (re-exported), `dir_footprint`,
+  `scratch_breakdown`, and `scratch_footprint_bytes` /
+  `scratch_breakdown` / `set_scratch_cap`.
+- `flush.rs` (669) — session lifecycle + persistence: the
+  IDENTITY/DERIVED sidecar consts, the persisted shapes, the crash-safe
+  `write_json`/`read_json` (re-exported `pub(crate)` for notes.rs), and
+  `start_session` / `flush` / `flush_async` / `flush_with` /
+  `write_scratch_identity` / `try_reload`.
+
+Each region's tests moved with it; the frame-builder fixtures the
+several test modules share live in a `#[cfg(test)] test_support` module
+in `mod.rs`. **Deviation from the prior two splits (lib.rs, cannet-dbc),
+which kept one wholesale `tests.rs`:** here the tests were split
+per-module as the god-file table directs, which stays cleaner because
+each submodule's tests reach only that submodule's items.
+
 ## Duplicate implementations to consolidate
 
 ### Rust — highest drift risk first
@@ -464,14 +508,55 @@ Landed as four staged commits, each green (`pnpm test` — 770 tests — +
     and all four production senders hand-roll one-frame batches; the
     lib.rs doc ("Application code never deals with batches directly")
     is false. → route senders through it or delete it and fix the doc.
-- **11. trace_store internals** — the sample-due/prune rate-sampling
+- ~~**11. trace_store internals** — the sample-due/prune rate-sampling
     block now appears four times (aggregate, per-bus, per-direction in
     `append()`, and `RateEstimate::observe` since the 2026-07-25
     windowed per-id rewrite) and the aggregate tracker bypasses
     `RateTrack`; three parallel `HashMap<FrameKey, _>` where one
     keyed struct belongs (312–323); the scratch-breakdown facade
     reverse-engineers other modules' private file naming (1189–1279 —
-    have each module report its own disk usage instead).
+    have each module report its own disk usage instead).~~ **Done
+    (task-0030/15-split-trace-store), alongside the split above.**
+    All three parts landed as separate commits under green tests:
+
+  + **Rate sampling unified.** The sample-due/prune block collapsed
+    into one `sample_if_due` helper + `RateTrack::observe`, used by the
+    aggregate, per-bus, and per-direction trackers. The aggregate no
+    longer bypasses `RateTrack`: `Inner.rate_samples` (a bare
+    `VecDeque` counted off the raw index) became `Inner.agg_rate:
+    RateTrack`. **Confirmed not load-bearing** — all four counts
+    advanced by 1 per accepted append, so `agg_rate.count` tracks the
+    former `idx+1` in lockstep and the reported rate is byte-identical;
+    the bypass was historical. `RateEstimate::observe` keeps its extra
+    last-delta/last-wall bookkeeping but shares the same `sample_if_due`
+    gate for its own deque. Added a green-baseline test for the
+    aggregate `frames_per_second()` first (only its zero case was
+    covered).
+  + **Three maps → one keyed struct.** `latest` / `latest_frame` /
+    `rates` (all `HashMap<FrameKey, _>`, advanced in lockstep) folded
+    into `HashMap<FrameKey, PerKey { last_index, last_frame, rate }>` —
+    one hash lookup + one entry per append, and the follow-live by-id
+    path reads a single entry instead of an index-map iter plus an
+    overlay get.
+  + **Scratch-breakdown self-reporting.** Each family's file naming
+    moved to its owning module: `cannet_spill::is_raw_frame_segment`
+    (with `META_PREFIX`/`PAYLOAD_PREFIX` now the single source, used by
+    the path builders + `clear()`) for the raw family, and
+    `signal_cache::{PYRAMID_SUBDIR, pyramid_scratch_usage}` (the moved
+    `.l{n}` level-grammar walk) for the pyramids; `lib.rs`'s
+    `signal_cache_dir` roots at the const. `trace_store::scratch`'s
+    `scratch_breakdown` now orchestrates — ask each owner, sum the rest
+    ("other": by-id, `filter/`, JSON sidecars) generically — instead of
+    hard-coding foreign prefixes. **Caveat:** full per-instance
+    self-reporting (each live `SignalCacheStore`/`FilterIndex` summing
+    itself) is out of scope — the `TraceStore` facade doesn't own those
+    instances (they live on `AppState`), and the diagnostic is a single
+    dir walk with only the scratch path in hand; that would be the
+    "host model trapped in the app crate" architecture item, not this
+    one. What landed removes the reverse-engineering (no module's
+    private naming is re-derived by the facade) while keeping the one
+    efficient walk.
+
 12. Smaller confirmed items: `error_envelope` verbatim in both
     servers; SignalMux/FloatKind wire mapping duplicated in gui lib.rs
     (2430 vs 3970) *and again* inside cannet-dbc
