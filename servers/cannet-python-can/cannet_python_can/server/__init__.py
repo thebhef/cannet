@@ -36,9 +36,9 @@ from typing import Iterator, Optional
 
 import grpc
 
-from . import driver as drv
-from ._proto import cannet_pb2 as pb
-from ._proto import cannet_pb2_grpc as pb_grpc
+from .. import driver as drv
+from .._proto import cannet_pb2 as pb
+from .._proto import cannet_pb2_grpc as pb_grpc
 
 _log = logging.getLogger(__name__)
 
