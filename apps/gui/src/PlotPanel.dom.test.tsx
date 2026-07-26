@@ -364,7 +364,7 @@ describe("PlotPanel", () => {
     // DBC-panel users who expected each drop to add a fresh series.
     // Within-area reorder still works (covered by a separate test
     // below if one exists; the helper logic is tested via the
-    // dragSignals + plotFilter unit suites).
+    // dragSignals + signalSelection unit suites).
     renderPanel();
     await pickCombobox(
       screen.getByLabelText("add signal to focused plot area"),

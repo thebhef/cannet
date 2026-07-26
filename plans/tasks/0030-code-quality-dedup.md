@@ -38,7 +38,7 @@ the area is already test-covered; each region's tests move with it.
 | LOC | File | Split into |
 | --- | --- | --- |
 | ~~5701~~ | ~~`apps/gui/src-tauri/src/lib.rs`~~ | **Done — see sketch below** |
-| 3577 | `apps/gui/src/PlotPanel.tsx` | see sketch below |
+| ~~3857~~ | ~~`apps/gui/src/PlotPanel.tsx`~~ | **Done — see sketch below** |
 | 2650 | `crates/cannet-dbc/src/lib.rs` | parse / model / decode / encode / view-builders modules (tests are lines 1491–2650) |
 | 2441 | `apps/gui/src/App.tsx` | see sketch below |
 | 2158 | `apps/gui/src-tauri/src/trace_store.rs` | five separable concerns (impl 60–1302, tests 1304–2158): store facade, rate tracking, scratch breakdown, by-id, flush |
@@ -100,6 +100,63 @@ logic is itself duplicated between area surface and row,
 (identity + palette) that both PlotPanel and `plotFilter.ts` import —
 kills the triplication under plotFilter's "keep in sync" comment (the
 palette has *already* drifted; bug entry in backlog).
+
+**Done (task-0030/12-split-plotpanel).** PlotPanel.tsx: **3,857 → 1,456
+lines**. The file had grown and been re-factored well past the
+2026-07-02 sketch, so this was reconciled against the current code
+(CLAUDE.md § "completing the plan as documented" — divergence noted here
+before diverging). Landed as staged commits, each green
+(`pnpm test` + `build`):
+
+- `plotPanelConfig.ts` (278) — the shared, uPlot-free config model
+  (`SignalRef`, `PlotAreaConfig`, `NoteEvent`, `XSync`, `CursorMode`,
+  `PlotPanelParams`, `PlotAreaReports`) + the parse/migration/format
+  helpers, with `plotPanelConfig.test.ts` (20 tests) for the previously
+  untested `areasFromParams` migration / clamp / formatter helpers.
+- **Interface cleanup** — the six `onReport*` callbacks collapsed into
+  one `reports: PlotAreaReports` object (panel↔area prop + `liveRef`
+  both shrink by five). The three x/y/fit **epoch counters and the
+  cursor read values were left individual on purpose**: the epochs carry
+  distinct trigger semantics, and the cursor values feed fine-grained
+  effect dependency arrays a recreated object prop would churn (§ "keep
+  the per-site differences").
+- `PlotArea.tsx` (2,127) — the whole `PlotArea` component + its
+  `PlotAreaProps`, `drawEnumTiles`, `SignalSwatch`, and area-only render
+  helpers, at the natural component seam.
+- **Drag/drop consolidation** — the drop-target duplication (area
+  surface vs. signal row) folded into two shared `signalDragOver` /
+  `signalDrop` functions parameterised by `beforeKey` + `stopEvent`.
+- `PlotMeasurements.tsx` (120) — `MeasCell`, the toolbar
+  `MeasurementMenu`, and the bottom `PlotMeasurementStrip`.
+
+**Deviations from the sketch (reconciled against current code):**
+
+- The `plotSignalIdentity.ts` extraction and the palette-drift bug were
+  **already resolved** by prior work: the palette lives in `palette.ts`
+  (ADR 0026), signal identity (`signalKey`) in `plotData.ts`, and
+  `plotFilter.ts` was renamed to `signalSelection.ts` (ADR 0038) and
+  already imports the shared palette. There is no triplication, no
+  "keep in sync" comment, and no palette-drift backlog entry left to
+  fix. Only a stale `./plotFilter` source comment remained — corrected.
+  This step folded the last duplication in that family by having
+  `signalSelection.ts` import the canonical `SignalRef` instead of its
+  own structurally-identical `FilterSignalRef`, and `plotAxisDerivation.ts`
+  import `signalRefKey` from `plotPanelConfig` instead of duplicating it.
+- **"event-log rows" no longer exist in PlotPanel** — note/event
+  management moved to the dedicated `EventsPanel` (ADR 0035); the panel
+  only draws event vlines in the area draw hook. Nothing to extract.
+- The **cursor/marker draw layer was deliberately not split** into its
+  own module (§ "extract what's genuinely separable"): uPlot installs
+  its hooks at construction time and the `draw` hook closes over
+  construction-time locals (enum/lane colour targets, the value-table
+  ref), so a separate module would be a bad seam, not a clean one. It
+  stays inline in `PlotArea.tsx`'s construction effect. For the same
+  reason the "uPlot lifecycle glue" and "signal-list sidebar" stayed
+  within `PlotArea.tsx` rather than each becoming its own file — the
+  sidebar's per-row value readouts are tightly coupled to the resample
+  refs, so a child component would carry a ~20-prop surface for no
+  readability gain. The honest split is at the panel↔area seam, which is
+  what landed.
 
 **`App.tsx` sketch**: one 2,250-line component owning eight subsystems.
 Extract the `CommandsProvider` it was always supposed to delegate to
