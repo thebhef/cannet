@@ -48,11 +48,9 @@ def _frame(i: int) -> drv.Frame:
         extended=False,
         is_rx=True,
         data=b"\x00",
-        fd=False,
+        kind=drv.FrameKind.CLASSIC,
         brs=False,
         esi=False,
-        is_remote=False,
-        is_error=False,
         dlc=1,
     )
 

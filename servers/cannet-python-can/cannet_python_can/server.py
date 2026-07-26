@@ -84,20 +84,26 @@ def _now_ns() -> int:
     return time.time_ns()
 
 
+#: The frame-kind seam. A driver :class:`~cannet_python_can.driver.FrameKind`
+#: maps 1:1 onto a wire ``FrameKind``; the priority ladder that collapses
+#: a backend's independent booleans lives in ``FrameKind.from_flags``, so
+#: both directions here are a straight lookup with no re-derivation.
+_KIND_TO_PROTO: dict[drv.FrameKind, int] = {
+    drv.FrameKind.CLASSIC: pb.FRAME_KIND_CLASSIC,
+    drv.FrameKind.FD: pb.FRAME_KIND_FD,
+    drv.FrameKind.REMOTE: pb.FRAME_KIND_REMOTE,
+    drv.FrameKind.ERROR: pb.FRAME_KIND_ERROR,
+}
+_PROTO_TO_KIND: dict[int, drv.FrameKind] = {v: k for k, v in _KIND_TO_PROTO.items()}
+
+
 def _frame_to_proto(frame: drv.Frame) -> pb.Frame:
-    kind = pb.FRAME_KIND_CLASSIC
-    if frame.is_error:
-        kind = pb.FRAME_KIND_ERROR
-    elif frame.is_remote:
-        kind = pb.FRAME_KIND_REMOTE
-    elif frame.fd:
-        kind = pb.FRAME_KIND_FD
     return pb.Frame(
         timestamp_ns=frame.timestamp_ns,
         can_id=frame.can_id,
         extended=frame.extended,
         direction=pb.DIRECTION_RX if frame.is_rx else pb.DIRECTION_TX,
-        kind=kind,
+        kind=_KIND_TO_PROTO[frame.kind],
         data=frame.data,
         brs=frame.brs,
         esi=frame.esi,
@@ -106,17 +112,26 @@ def _frame_to_proto(frame: drv.Frame) -> pb.Frame:
 
 
 def _proto_to_frame(p: pb.Frame) -> drv.Frame:
+    """Decode a wire ``Frame`` into a driver :class:`~cannet_python_can.driver.Frame`.
+
+    Raises :class:`ValueError` on ``FRAME_KIND_UNSPECIFIED`` or an
+    unrecognised kind tag rather than silently coercing it to classic —
+    mirroring the Rust decoder (``crates/cannet-wire/src/convert.rs``,
+    which errors with ``UnknownKind``). The ``_handle_tx`` path turns the
+    raise into a ``CODE_TX_REJECTED`` for the submitting session.
+    """
+    kind = _PROTO_TO_KIND.get(p.kind)
+    if kind is None:
+        raise ValueError(f"unspecified or unrecognised frame kind {p.kind}")
     return drv.Frame(
         timestamp_ns=p.timestamp_ns or _now_ns(),
         can_id=p.can_id,
         extended=p.extended,
         is_rx=p.direction == pb.DIRECTION_RX,
         data=bytes(p.data),
-        fd=p.kind == pb.FRAME_KIND_FD,
+        kind=kind,
         brs=p.brs,
         esi=p.esi,
-        is_remote=p.kind == pb.FRAME_KIND_REMOTE,
-        is_error=p.kind == pb.FRAME_KIND_ERROR,
         dlc=p.dlc,
     )
 
@@ -976,7 +991,19 @@ class CannetServerService(pb_grpc.CannetServerServicer):
             )
             return
         for proto_frame in batch.frames:
-            frame = _proto_to_frame(proto_frame)
+            try:
+                frame = _proto_to_frame(proto_frame)
+            except ValueError as e:
+                # A frame the wire model can't decode (unspecified /
+                # unrecognised kind) can't be transmitted — reject it
+                # rather than silently sending it as classic.
+                outbox.put(
+                    _error_envelope(
+                        pb.Error.CODE_TX_REJECTED,
+                        f"undecodable frame on {cid}: {e}",
+                    )
+                )
+                continue
             try:
                 self._registry.transmit(cid, frame, outbox)
             except drv.TxRejected as e:
