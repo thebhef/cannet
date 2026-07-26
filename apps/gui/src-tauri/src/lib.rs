@@ -1586,13 +1586,7 @@ fn refresh_mux_extractor(state: &AppState) {
         .set_mux_extractor(Some(Arc::new(move |f: &RawTraceFrame| {
             let id = CanId::new(f.id, f.extended).ok()?;
             snap.iter()
-                .filter(|(_, buses)| {
-                    // Same per-bus scoping rule as `dbc_applies_to_frame`.
-                    buses.is_empty()
-                        || f.bus_id
-                            .as_ref()
-                            .is_some_and(|b| buses.iter().any(|x| x == b))
-                })
+                .filter(|(_, buses)| filter::dbc_applies(buses, f.bus_id.as_deref()))
                 .find_map(|(db, _)| db.decode_mux_selector(id, f.payload.data()))
         })));
 }
@@ -1632,18 +1626,8 @@ fn collect_trace_records(state: &AppState, start: u64, end: u64) -> Vec<TraceFra
 /// no DBC decodes.
 fn decode_against(dbs: &[LoadedDbc], frame: &RawTraceFrame) -> Option<DecodedRecord> {
     dbs.iter()
-        .filter(|d| dbc_applies_to_frame(d, frame))
+        .filter(|d| filter::dbc_applies(&d.buses, frame.bus_id.as_deref()))
         .find_map(|d| decode_raw_frame(&d.db, frame))
-}
-
-fn dbc_applies_to_frame(dbc: &LoadedDbc, frame: &RawTraceFrame) -> bool {
-    if dbc.buses.is_empty() {
-        return true; // unscoped: every frame
-    }
-    match &frame.bus_id {
-        Some(bid) => dbc.buses.iter().any(|b| b == bid),
-        None => false, // scoped DBCs ignore unassigned frames
-    }
 }
 
 /// Resolve `filter`'s decode-dependent leaves against the loaded DBCs
@@ -1735,25 +1719,12 @@ fn apply_filter_records(
         .collect()
 }
 
-/// Evaluate a predicate against an already-decoded record. Mirrors
-/// [`FilterPredicate::matches`] but reads off `TraceFrameRecord`
-/// rather than re-creating a `RawTraceFrame`.
+/// Evaluate a predicate against an already-decoded record — the fetch
+/// path holds a `TraceFrameRecord`, so it reads the `(id, bus, decoded)`
+/// view the predicate needs directly instead of fabricating a
+/// `RawTraceFrame`.
 fn record_matches(predicate: &FilterPredicate, record: &TraceFrameRecord) -> bool {
-    use crate::trace_store::RawTraceFrame;
-    use cannet_core::CanFramePayload;
-    // Synthesise just enough of a `RawTraceFrame` for the evaluator;
-    // the predicate only touches `id`, `bus_id`, and the decoded
-    // record's name + signals.
-    let raw = RawTraceFrame {
-        timestamp_ns: 0,
-        channel: record.channel,
-        id: record.id,
-        extended: record.extended,
-        direction: cannet_core::Direction::Rx,
-        payload: CanFramePayload::Classic(Vec::new()),
-        bus_id: record.bus_id.clone(),
-    };
-    predicate.matches(&raw, record.decoded.as_ref())
+    predicate.matches_fields(record.id, record.bus_id.as_deref(), record.decoded.as_ref())
 }
 
 /// Sort key for the by-id "bus" column: the project bus *name* (so the

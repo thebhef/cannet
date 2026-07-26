@@ -87,9 +87,24 @@ impl FilterPredicate {
     /// is free.
     #[must_use]
     pub fn matches(&self, frame: &RawTraceFrame, decoded: Option<&DecodedRecord>) -> bool {
+        self.matches_fields(frame.id, frame.bus_id.as_deref(), decoded)
+    }
+
+    /// Evaluate against the raw fields a predicate actually reads — the
+    /// arbitration id, the logical bus, and the decoded message — without
+    /// materializing a [`RawTraceFrame`]. The fetch path already holds a
+    /// decoded record for each row, so it evaluates directly off that
+    /// rather than fabricating a dummy frame to satisfy [`Self::matches`].
+    #[must_use]
+    pub fn matches_fields(
+        &self,
+        id: u32,
+        bus_id: Option<&str>,
+        decoded: Option<&DecodedRecord>,
+    ) -> bool {
         match self {
             FilterPredicate::Invalid(_) => false,
-            FilterPredicate::Tagged(p) => p.matches(frame, decoded),
+            FilterPredicate::Tagged(p) => p.matches_fields(id, bus_id, decoded),
         }
     }
 
@@ -293,14 +308,31 @@ pub enum DecodeDependentLeaf<'a> {
     SignalName(&'a str),
 }
 
+/// Per-bus DBC scoping test. A DBC with an empty `buses` set applies to
+/// every frame; a scoped DBC applies only to frames whose `bus_id` is in
+/// its set (and never to an unassigned frame). Folded here from the
+/// former `lib.rs` `dbc_applies_to_frame` so the decode gate and the
+/// filter share one scoping rule, expressed over the fields it reads
+/// rather than a `LoadedDbc`.
+#[must_use]
+pub(crate) fn dbc_applies(buses: &[String], bus_id: Option<&str>) -> bool {
+    if buses.is_empty() {
+        return true; // unscoped: every frame
+    }
+    match bus_id {
+        Some(b) => buses.iter().any(|x| x == b),
+        None => false, // scoped DBCs ignore unassigned frames
+    }
+}
+
 impl TaggedPredicate {
-    fn matches(&self, frame: &RawTraceFrame, decoded: Option<&DecodedRecord>) -> bool {
+    fn matches_fields(&self, id: u32, bus_id: Option<&str>, decoded: Option<&DecodedRecord>) -> bool {
         match self {
-            Self::All(children) => children.iter().all(|c| c.matches(frame, decoded)),
-            Self::Any(children) => children.iter().any(|c| c.matches(frame, decoded)),
-            Self::Bus(id) => frame.bus_id.as_deref() == Some(id.as_str()),
-            Self::IdRange([lo, hi]) => frame.id >= *lo && frame.id <= *hi,
-            Self::IdList(ids) => ids.contains(&frame.id),
+            Self::All(children) => children.iter().all(|c| c.matches_fields(id, bus_id, decoded)),
+            Self::Any(children) => children.iter().any(|c| c.matches_fields(id, bus_id, decoded)),
+            Self::Bus(b) => bus_id == Some(b.as_str()),
+            Self::IdRange([lo, hi]) => id >= *lo && id <= *hi,
+            Self::IdList(ids) => ids.contains(&id),
             Self::NameRegex(pat) => match decoded {
                 Some(d) => regex_match(pat, &d.name),
                 None => false,
@@ -650,5 +682,49 @@ mod tests {
         assert!(parse(r#"{"unknown_kind": 42}"#)
             .decode_dependent_leaves()
             .is_empty());
+    }
+
+    #[test]
+    fn matches_fields_agrees_with_matches_over_raw_and_decoded_leaves() {
+        // The field-view entry point (used by the decoded-record fetch
+        // path) must return exactly what the RawTraceFrame path does, for
+        // both raw leaves (bus / id) and decode-dependent leaves
+        // (name_regex / signal_equals).
+        let d = decoded("EngineStatus", &[("Rpm", 800.0)]);
+        for (pred, id, bus, dec) in [
+            (r#"{"bus": "p"}"#, 5u32, Some("p"), None),
+            (r#"{"bus": "p"}"#, 5, Some("c"), None),
+            (r#"{"id_range": [1, 10]}"#, 5, None, None),
+            (r#"{"id_list": [5, 7]}"#, 5, None, None),
+            (r#"{"name_regex": "^Engine"}"#, 5, None, Some(&d)),
+            (r#"{"name_regex": "^Engine"}"#, 5, None, None),
+            (
+                r#"{"signal_equals": {"name": "Rpm", "value": 800}}"#,
+                5,
+                None,
+                Some(&d),
+            ),
+        ] {
+            let p = parse(pred);
+            let frame = frame_with(id, bus);
+            assert_eq!(
+                p.matches_fields(id, bus, dec),
+                p.matches(&frame, dec),
+                "field-view disagreed for {pred} id={id} bus={bus:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn dbc_applies_honours_scoping() {
+        // Unscoped: applies to every frame, assigned or not.
+        assert!(dbc_applies(&[], Some("p")));
+        assert!(dbc_applies(&[], None));
+        // Scoped: only frames on a listed bus; unassigned never matches.
+        let buses = vec!["p".to_string(), "c".to_string()];
+        assert!(dbc_applies(&buses, Some("p")));
+        assert!(dbc_applies(&buses, Some("c")));
+        assert!(!dbc_applies(&buses, Some("x")));
+        assert!(!dbc_applies(&buses, None));
     }
 }
