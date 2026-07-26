@@ -19,7 +19,6 @@ import type {
   EncodeFrameResponse,
   EncodeFrameSignal,
   MessageDescriptorRecord,
-  SignalDescriptorRecord,
   SignalDescriptorRichRecord,
   SignalRecord,
   TransmitFrameRecord,
@@ -31,6 +30,7 @@ import { useElementRegistry } from "./projectElements";
 import { CalcFieldEditor } from "./CalcFieldEditor";
 import { Combobox, type ComboboxOption } from "./Combobox";
 import { useProjectContext } from "./projectContext";
+import { useSignalCatalog } from "./signalCatalogContext";
 import { effectiveBusColor } from "./busColor";
 import { SIGNAL_DND_MIME, parseSignalDragData } from "./dragSignals";
 
@@ -149,17 +149,7 @@ export function TransmitPanel(props: IDockviewPanelProps) {
   // The DBC's `(message, signal)` list — used to look up the DBC
   // message name on a collapsed row. One record per (bus, signal); we
   // filter by frame's (bus_id, message_id, extended) at the row level.
-  const [signals, setSignals] = useState<SignalDescriptorRecord[]>([]);
-  const refreshSignals = useCallback(() => {
-    void invoke<SignalDescriptorRecord[]>("list_signals", {
-      projectBuses: project.buses.map((b) => b.id),
-    })
-      .then(setSignals)
-      .catch(() => setSignals([]));
-  }, [project.buses]);
-  useEffect(() => {
-    refreshSignals();
-  }, [refreshSignals]);
+  const { catalog: signals } = useSignalCatalog();
 
   // Persist one message to the host. Every cell edit lands here; the
   // host's `transmit-frames-changed` event re-fetches the pool, which

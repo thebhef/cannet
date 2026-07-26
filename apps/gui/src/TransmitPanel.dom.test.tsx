@@ -61,6 +61,7 @@ import {
 } from "./projectElements";
 import type { ProjectElement } from "./types";
 import type { TraceState } from "./trace";
+import { SignalCatalogProvider } from "./signalCatalogContext";
 
 function frame(
   id: string,
@@ -125,9 +126,11 @@ function renderPanel(elementId: string, frameIds: string[]) {
   >[0];
   render(
     <ProjectContext.Provider value={projectCtx}>
-      <ElementRegistryContext.Provider value={registry}>
-        <TransmitPanel {...props} />
-      </ElementRegistryContext.Provider>
+      <SignalCatalogProvider>
+        <ElementRegistryContext.Provider value={registry}>
+          <TransmitPanel {...props} />
+        </ElementRegistryContext.Provider>
+      </SignalCatalogProvider>
     </ProjectContext.Provider>,
   );
   return { updates };
