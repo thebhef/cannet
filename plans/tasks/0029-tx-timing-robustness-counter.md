@@ -1,15 +1,38 @@
-# Task 29 — TX Timing Robustness & Counter-Per-Wire-Frame
+# Task 29 — TX Timing Robustness
 
-Periodic transmit has two coupled defects, both rooted in the same
-place: **emission and the rolling counter are driven by the scheduler
-*tick*, not by the actual wire *send*.** Fixing the tick cadence and
-re-binding the counter to the transmit are one piece of work.
+Periodic transmit had two coupled defects, both rooted in the same
+place: **emission and the rolling counter were driven by the scheduler
+*tick*, not by the actual wire *send*.** Re-binding the counter to the
+transmit (the counter-per-wire-frame half) has shipped; fixing the tick
+cadence is the remaining work. See **Status** below.
 
 The periodic scheduler is the single-threaded driver in
 `apps/gui/src-tauri/src/lib.rs` (`take_due` → `fire_info` → transmit →
 `reschedule`), the schedule itself in `transmit_scheduler.rs`, and the
 counter/CRC fire path in `transmit_frames.rs` (`Entry::prepare_send`,
 governed by ADR 0027; counter seeding by ADR 0028).
+
+## Status
+
+The **counter-per-wire-frame** half is **done**. The rolling counter
+(and CRC) now advances once per frame that actually reaches the wire:
+`prepare_send` / `send_request` / `fire_info` compute from a copy and
+*stage* the stepped value; the registry *commits* it only after the
+send succeeds (`Entry::commit_send`). A tick that prepares but does not
+emit — its bus route is down — no longer runs the sequence ahead of the
+wire. Contract and rationale live in
+[ADR 0027](../../docs/adr/0027-calculated-fields-counter-crc.md); tests
+in `transmit_frames.rs`
+(`counter_advances_once_per_committed_send_not_per_tick` plus the
+updated multi-fire tests). Items below tagged **[done]** are covered by
+that change.
+
+What remains — and why this task is still open — is the **TX timing
+robustness** work: reducing OS timer wake lateness, choosing the
+missed-period policy, and the ADR recording the periodic-emission
+semantics. Implementation is **blocked on a jitter-target / metrics
+decision** (what "good enough" wake lateness is, and drop-vs-spread-vs-
+burst for missed periods) — see the design questions below.
 
 ## Symptoms (observed)
 
@@ -25,9 +48,9 @@ governed by ADR 0027; counter seeding by ADR 0028).
   by one period go out within ~sub-ms of each other. Corroborated by
   the sidecar's `max_gap` stat reaching ~2–4.5× the nominal period,
   worse the higher the rate.
-- **Counter not incrementing per send** — the rolling counter
-  (`CannetCounter` / RBS counter spec) doesn't advance 1:1 with frames
-  on the wire. Root: `fire_info` calls `prepare_send`, which steps the
+- **[done] Counter not incrementing per send** — the rolling counter
+  (`CannetCounter` / RBS counter spec) didn't advance 1:1 with frames
+  on the wire. Root: `fire_info` calls `prepare_send`, which stepped the
   counter and recomputes CRC, **unconditionally on every tick** — but
   the actual `transmit_frame_inner` is gated by whether the bus route
   resolves (`connected`). So a tick that steps-but-doesn't-send (route
@@ -39,11 +62,12 @@ governed by ADR 0027; counter seeding by ADR 0028).
 
 ## Scope
 
-- **Re-bind the counter (and CRC) step to the actual transmit**, so the
-  sequence advances exactly once per frame that goes on the wire. A
-  tick that does not send (no live route) must not advance the counter.
-  Keep the schedule ticking for cadence, but separate "what to send
-  this tick" from "mutate the sequence state."
+- **[done] Re-bind the counter (and CRC) step to the actual transmit**,
+  so the sequence advances exactly once per frame that goes on the wire.
+  A tick that does not send (no live route) must not advance the
+  counter. Keep the schedule ticking for cadence, but separate "what to
+  send this tick" from "mutate the sequence state." (Shipped via
+  stage-on-prepare / commit-on-emit.)
 - **Reduce wake lateness.** Evaluate finer timer granularity on Windows
   (e.g. `timeBeginPeriod` / a higher-resolution wait) against its
   cost (system-wide timer-resolution effect, power draw). Establish a
@@ -79,16 +103,18 @@ governed by ADR 0027; counter seeding by ADR 0028).
 
 ## Exit criteria
 
-- A failing-first test proving **one counter increment per wire frame**:
-  a tick while the route is unresolved does not advance the counter, and
-  N transmitted frames carry N consecutive counter values.
-- Counter and CRC are recomputed on the transmit, not on the tick;
-  manual-send and scheduled-send paths agree on the contract.
+- **[done]** A failing-first test proving **one counter increment per
+  wire frame**: a tick while the route is unresolved does not advance
+  the counter, and N transmitted frames carry N consecutive counter
+  values.
+- **[done]** Counter and CRC are recomputed on the transmit, not on the
+  tick; manual-send and scheduled-send paths agree on the contract.
 - A measurable bunching/jitter improvement: `max_gap` (sidecar) and the
   `tx-sched` lateness histogram stay within the agreed target on a
   high-rate periodic, demonstrated by a test or a recorded measurement.
-- An ADR records the periodic-emission semantics (missed-period policy,
-  counter-per-wire-frame, route-down behavior); ADR 0027/0028 updated if
-  the fire-path contract changes.
+- **[done]** ADR 0027 records the counter-per-wire-frame / route-down
+  fire-path contract. **Remaining:** an ADR recording the
+  periodic-emission *timing* semantics (missed-period policy — drop /
+  spread / burst — and the wake-lateness contract).
 - Docs updated in the same change: rustdoc on the scheduler / fire path
   reflects the new contract.
