@@ -2061,16 +2061,6 @@ button.trace-event-swatch {
   font-size: 0.8rem;
   color: #94a3b8;
 }
-/* Compact swatch for the new-note colour picker in the plot toolbar. */
-.plot-note-color {
-  width: 1.4rem;
-  height: 1.1rem;
-  padding: 0;
-  border: 1px solid #2c3444;
-  border-radius: 4px;
-  background: transparent;
-  cursor: pointer;
-}
 .plot-window-ctl input {
   width: 4.5rem;
   background: #0f141d;
