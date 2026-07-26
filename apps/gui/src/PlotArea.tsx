@@ -12,7 +12,7 @@
  * construction-time locals (enum/lane targets, the value-table ref),
  * so it does not cleanly separate into its own module.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type MutableRefObject } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import uPlot from "uplot";
 
@@ -113,6 +113,43 @@ function measureLabelWidth(text: string): number {
 
 const Y_AXIS_MODES: YAxisMode[] = ["unified", "per-unit", "individual"];
 const Y_AXIS_MODE_OPTIONS: ComboboxOption[] = Y_AXIS_MODES.map((m) => ({ value: m, label: m }));
+
+/** Shared drag-over affordance for a signal drop target — the plot-area
+ * surface and each signal row use the same one, rather than two
+ * hand-copied handlers. `stopEvent` is set on the row so its handler
+ * wins over the area surface beneath it. The "copy" cursor is the most
+ * legible "you can drop here" across browsers; the real move-vs-add
+ * decision happens at drop time via `sourcePanelId`, so the cursor need
+ * not match the post-drop semantics. */
+function signalDragOver(e: DragEvent<HTMLElement>, stopEvent: boolean): void {
+  if (!e.dataTransfer.types.includes(SIGNAL_DND_MIME)) return;
+  e.preventDefault();
+  if (stopEvent) e.stopPropagation();
+  e.dataTransfer.dropEffect = "copy";
+}
+
+/** Shared drop handler for a signal drop target. Parses the payload,
+ * discriminates move (drag started in this same panel — `sourcePanelId`
+ * matches) from add, and places each ref at `beforeKey` (`null` =
+ * append to the area). Forward iteration preserves drop order. Shared
+ * by the area surface (`beforeKey: null`) and each signal row
+ * (`beforeKey: <row key>`, `stopEvent: true`). */
+function signalDrop(
+  e: DragEvent<HTMLElement>,
+  opts: {
+    beforeKey: string | null;
+    stopEvent: boolean;
+    panelElementId: string;
+    onDropSignal: (ref: SignalRef, beforeKey: string | null, isInternalMove: boolean) => void;
+  },
+): void {
+  const { refs, sourcePanelId } = parseDroppedSignals(e.dataTransfer.getData(SIGNAL_DND_MIME));
+  if (refs.length === 0) return;
+  e.preventDefault();
+  if (opts.stopEvent) e.stopPropagation();
+  const isInternalMove = sourcePanelId === opts.panelElementId;
+  for (const r of refs) opts.onDropSignal(r, opts.beforeKey, isInternalMove);
+}
 
 /** Colour swatch in a plot-area signal row. Left-click toggles hidden
  * (preserves prior behaviour); right-click opens the browser's native
@@ -1798,29 +1835,8 @@ export function PlotArea(p: PlotAreaProps) {
       className={`plot-area${focused ? " focused" : ""}${collapsed ? " collapsed" : ""}`}
       style={flexGrow == null ? undefined : { flexGrow }}
       onMouseDown={onFocus}
-      onDragOver={(e) => {
-        if (e.dataTransfer.types.includes(SIGNAL_DND_MIME)) {
-          e.preventDefault();
-          // `copy` shows the "+" cursor — matches the transmit
-          // panel's drop affordance and is the more useful signal
-          // ("you can drop here"). The actual move-vs-add decision
-          // happens at drop time via `sourcePanelId`, so the cursor
-          // doesn't have to match the post-drop semantics.
-          e.dataTransfer.dropEffect = "copy";
-        }
-      }}
-      onDrop={(e) => {
-        const { refs, sourcePanelId } = parseDroppedSignals(
-          e.dataTransfer.getData(SIGNAL_DND_MIME),
-        );
-        if (refs.length === 0) return;
-        e.preventDefault();
-        const isInternalMove = sourcePanelId === panelElementId;
-        // Append each ref in order. For internal drags this is a
-        // move (strip from origin + insert); for external drags
-        // it's an add.
-        for (const r of refs) onDropSignal(r, null, isInternalMove);
-      }}
+      onDragOver={(e) => signalDragOver(e, false)}
+      onDrop={(e) => signalDrop(e, { beforeKey: null, stopEvent: false, panelElementId, onDropSignal })}
     >
       <div className="plot-area-canvas" ref={canvasRef} />
       <div
@@ -2007,30 +2023,8 @@ export function PlotArea(p: PlotAreaProps) {
                     panelElementId,
                   );
                 }}
-                onDragOver={(e) => {
-                  if (e.dataTransfer.types.includes(SIGNAL_DND_MIME)) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    // Same rationale as the area-level dragOver:
-                    // "copy" gives the most legible "yes, drop here"
-                    // cursor across browsers / editors. The real
-                    // move-vs-add decision happens at drop time.
-                    e.dataTransfer.dropEffect = "copy";
-                  }
-                }}
-                onDrop={(e) => {
-                  const { refs, sourcePanelId } = parseDroppedSignals(
-                    e.dataTransfer.getData(SIGNAL_DND_MIME),
-                  );
-                  if (refs.length === 0) return;
-                  e.preventDefault();
-                  e.stopPropagation();
-                  const isInternalMove = sourcePanelId === panelElementId;
-                  // Forward iteration preserves drop-order — each
-                  // `placeSignal(ref, areaId, key)` inserts before
-                  // the same row, so the first ref ends up first.
-                  for (const r of refs) onDropSignal(r, key, isInternalMove);
-                }}
+                onDragOver={(e) => signalDragOver(e, true)}
+                onDrop={(e) => signalDrop(e, { beforeKey: key, stopEvent: true, panelElementId, onDropSignal })}
               >
                 <SignalSwatch
                   hidden={!!s.hidden}
