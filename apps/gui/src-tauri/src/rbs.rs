@@ -34,7 +34,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::ipc::{CalcFieldsSpec, CounterSpec, CrcSpec, TransmitKind, TransmitRequest};
 use crate::transmit_frames::{TransmitFrame, TransmitMode, TransmitSource};
-use crate::{sys_info, sys_warn, AppState};
+use crate::app_state::AppState;
+use crate::{sys_info, sys_warn};
 
 /// Current `.cannet_rbs` schema version — current-only, no migrators
 /// (ADR 0011 semantics).
@@ -396,7 +397,7 @@ fn reconstruct_payload(
 
 /// Whether DBC `d` is scoped to bus `bus_id`. An empty scope is the
 /// "applies to all buses" default.
-fn dbc_scoped_to(d: &crate::LoadedDbc, bus_id: &str) -> bool {
+fn dbc_scoped_to(d: &crate::app_state::LoadedDbc, bus_id: &str) -> bool {
     d.buses.is_empty() || d.buses.iter().any(|b| b == bus_id)
 }
 
@@ -409,7 +410,7 @@ fn dbc_scoped_to(d: &crate::LoadedDbc, bus_id: &str) -> bool {
 /// the resolved transmitter (ECU) name. The row rebuild and the panel
 /// view share this so they can never disagree about which messages a
 /// bus carries.
-fn for_each_scoped_message<F>(dbs: &[crate::LoadedDbc], bus_id: &str, mut visit: F)
+fn for_each_scoped_message<F>(dbs: &[crate::app_state::LoadedDbc], bus_id: &str, mut visit: F)
 where
     F: FnMut(&cannet_dbc::Database, &str, cannet_core::CanId, &cannet_dbc::MessageDescriptor, &str),
 {
@@ -608,8 +609,8 @@ fn refresh_element(app: &AppHandle, element_id: &str) {
     for w in &warnings {
         sys_warn!(app, "rbs", "{element_id}: {w}");
     }
-    crate::refresh_calc_resolutions(app);
-    crate::rebuild_verification(&state);
+    crate::app_state::refresh_calc_resolutions(app);
+    crate::app_state::rebuild_verification(&state);
     sync_schedules(&state);
     let _ = app.emit("rbs-changed", element_id);
 }
@@ -630,8 +631,8 @@ pub(crate) fn refresh_all_elements(app: &AppHandle) {
             sys_warn!(app, "rbs", "{id}: {w}");
         }
     }
-    crate::refresh_calc_resolutions(app);
-    crate::rebuild_verification(&state);
+    crate::app_state::refresh_calc_resolutions(app);
+    crate::app_state::rebuild_verification(&state);
     sync_schedules(&state);
     let _ = app.emit("rbs-changed", "*");
 }

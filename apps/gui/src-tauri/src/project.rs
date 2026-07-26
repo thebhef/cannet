@@ -266,7 +266,7 @@ fn parse_project(text: &str) -> Result<Project, String> {
 #[allow(clippy::needless_pass_by_value)]
 pub fn open_project(
     app: tauri::AppHandle,
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, crate::app_state::AppState>,
     path: String,
 ) -> Result<Project, String> {
     let text = match std::fs::read_to_string(&path) {
@@ -300,7 +300,7 @@ pub fn open_project(
             // Usually a no-op here (the frontend re-adds the project's
             // DBCs after open, each add re-resolving), but covers a
             // load into an already-populated DBC set.
-            crate::refresh_calc_resolutions(&app);
+            crate::app_state::refresh_calc_resolutions(&app);
             crate::sys_info!(&app, "project", "opened project {path}");
             Ok(p)
         }
@@ -323,7 +323,7 @@ pub fn open_project(
 #[allow(clippy::needless_pass_by_value)]
 pub fn save_project(
     app: tauri::AppHandle,
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, crate::app_state::AppState>,
     path: String,
     mut project: Project,
 ) -> Result<String, String> {
