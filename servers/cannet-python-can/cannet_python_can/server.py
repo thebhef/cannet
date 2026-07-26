@@ -772,9 +772,9 @@ class _InterfaceRegistry:
 #: backend"; on PCAN the global ``GetValue(PCAN_ATTACHED_CHANNELS)`` call
 #: serialises against ``CAN_Write`` in the driver, so re-enumerating on a
 #: timer stalled active transmits (~150 ms hiccups every poll). The
-#: sidecar therefore enumerates only on subscribe (the seed) and on an
-#: explicit ``ListInterfaces`` pull (the GUI's "Discover" button), never
-#: on a timer while channels are open.
+#: sidecar therefore enumerates only on a ``WatchInterfaces`` subscribe
+#: and on an explicit ``ListInterfaces`` pull (the GUI's "Discover"
+#: button), never on a timer while channels are open.
 _WATCH_LIVENESS_RECHECK_S = 5.0
 
 
@@ -789,16 +789,6 @@ class CannetServerService(pb_grpc.CannetServerServicer):
     ) -> None:
         self._driver = driver
         self._registry = _InterfaceRegistry(driver)
-        # Shared snapshot cache + sequence counter, both guarded by
-        # `_watch_cond`. Watchers block on the condition until the
-        # sequence advances past their last-seen value. The cache is
-        # seeded once on first subscribe and re-published only by an
-        # explicit pull — nothing re-enumerates on a timer.
-        self._watch_cond = threading.Condition()
-        self._watch_snapshot: list[pb.Interface] = []
-        self._watch_seq: int = 0
-        self._watch_seeded = False
-        self._watch_lock = threading.Lock()
         # How often a parked watcher wakes to re-check `is_active()` — a
         # liveness safety-net, not an enumeration cadence. Tests override
         # it to keep the suite quick.
@@ -822,80 +812,40 @@ class CannetServerService(pb_grpc.CannetServerServicer):
     ) -> Iterator[pb.InterfaceList]:
         """Long-lived subscription to the interface set. ADR 0016.
 
-        Yields the current snapshot immediately, then a fresh snapshot
-        whenever the shared cache's sequence advances. On the PCAN
-        backend the cache is *not* re-enumerated on a timer (that call
-        contends with active transmits — see
-        ``_WATCH_LIVENESS_RECHECK_S``), so in practice a parked stream
-        yields once and then waits; a hot-plug is picked up by the next
-        explicit ``ListInterfaces`` pull rather than pushed here.
+        Emits the current snapshot once, then parks until the client
+        ends the call. This sidecar does **not** re-enumerate on a timer:
+        on the PCAN backend that global query contends with active
+        transmits (see ``_WATCH_LIVENESS_RECHECK_S``), so a hot-plug is
+        not pushed through the stream — a client picks it up with an
+        explicit ``ListInterfaces`` pull (the GUI's "Discover" button).
+        The stream therefore yields exactly once and then waits for
+        cancellation.
 
-        The client ending the call wakes any waiter through the
-        ``add_callback`` hook below — without it the watcher could
-        block in ``cond.wait`` past the point the stream is gone.
+        The wire contract (``cannet.proto``) permits a server to push a
+        fresh snapshot whenever its interface view changes; this server
+        detects no changes, so it emits only the initial snapshot — a
+        compliant degenerate case, not a re-publish.
+
+        gRPC invokes the ``add_callback`` hook on client cancel /
+        transport drop; it wakes the park loop so the generator returns
+        promptly instead of sitting out a full recheck interval.
         """
-        self._ensure_watch_seeded()
-        # Wake-on-disconnect: gRPC calls this on client cancel /
-        # transport drop. Notifying all watchers lets each re-check
-        # `context.is_active()` and exit its loop cleanly.
-        context.add_callback(self._wake_watchers)
-
-        # Snapshot under the lock, then yield outside it so a slow
-        # client can't block the poll thread.
-        with self._watch_cond:
-            last_seq = self._watch_seq
-            current = list(self._watch_snapshot)
-        yield pb.InterfaceList(interfaces=current)
-
+        yield pb.InterfaceList(interfaces=self._enumerate_interfaces())
+        # Wake-on-disconnect: gRPC fires this on client cancel / transport
+        # drop, so the park loop below exits without waiting out the full
+        # recheck interval. Registered after the first yield — that is the
+        # only point where the stream can block.
+        disconnected = threading.Event()
+        context.add_callback(disconnected.set)
         while context.is_active():
-            with self._watch_cond:
-                # `wait_for` rechecks the predicate on every wake-up,
-                # which folds the post-disconnect notify into the
-                # `is_active` check we run next.
-                self._watch_cond.wait_for(
-                    lambda: self._watch_seq != last_seq or not context.is_active(),
-                    timeout=self._watch_recheck_interval_s,
-                )
-                if not context.is_active():
-                    return
-                if self._watch_seq == last_seq:
-                    # Spurious wake-up or the timeout fired — loop
-                    # without yielding so we don't spam identical
-                    # snapshots.
-                    continue
-                last_seq = self._watch_seq
-                current = list(self._watch_snapshot)
-            yield pb.InterfaceList(interfaces=current)
+            if disconnected.wait(timeout=self._watch_recheck_interval_s):
+                return
 
     def _enumerate_interfaces(self) -> list[pb.Interface]:
         return [
             pb.Interface(id=c.id, display_name=c.display_name, fd_capable=c.fd_capable)
             for c in self._driver.list_channels()
         ]
-
-    def _ensure_watch_seeded(self) -> None:
-        """Seed the shared interface cache once, on the first subscribe.
-        Idempotent; runs a single enumeration for the service's lifetime.
-
-        This is the only enumeration the watch path triggers: ADR 0016
-        leaves the re-enumeration cadence to the server, and on PCAN a
-        periodic re-enumeration contends with active transmits (see
-        ``_WATCH_LIVENESS_RECHECK_S``), so subsequent refreshes come from
-        an explicit ``ListInterfaces`` pull, not a timer."""
-        with self._watch_lock:
-            if self._watch_seeded:
-                return
-            self._watch_seeded = True
-            # Seed the cache so the first watcher's immediate yield
-            # matches what `ListInterfaces` would have returned.
-            initial = self._enumerate_interfaces()
-            with self._watch_cond:
-                self._watch_snapshot = initial
-                self._watch_seq = 1
-
-    def _wake_watchers(self) -> None:
-        with self._watch_cond:
-            self._watch_cond.notify_all()
 
     # ----- Session ----------------------------------------------------------
 
