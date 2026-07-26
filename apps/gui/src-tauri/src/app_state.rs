@@ -35,7 +35,7 @@ use crate::{filter, ipc, local_buses, rbs, transmit_frames, transmit_scheduler, 
 // `transmit_commands` modules once those are split out; they resolve at
 // the crate root until then.
 use crate::trace_query::ActiveFilterIndex;
-use crate::resolve_effective_calc;
+use crate::transmit_commands::resolve_effective_calc;
 use crate::session::RemoteSession;
 
 /// A loaded DBC: its source path, the parsed database, and the set of

@@ -25,7 +25,8 @@ use cannet_dbc::{CalculatedFieldsConfig, FieldViolation, ResolvedCalculatedField
 use tauri::AppHandle;
 
 use crate::trace_store::RawTraceFrame;
-use crate::{sys_info, LoadedDbc};
+use crate::app_state::LoadedDbc;
+use crate::sys_info;
 
 /// Minimum spacing of valid→invalid Info messages per `(bus, id)`.
 const TRANSITION_LOG_INTERVAL: Duration = Duration::from_secs(1);
