@@ -421,10 +421,27 @@ pub struct SessionTransmitter {
 impl SessionTransmitter {
     /// Send `frame` over the session, addressed to `interface_id`.
     pub fn transmit(&self, interface_id: &str, frame: &CanFrame) -> Result<(), SessionClosed> {
+        self.transmit_batch(interface_id, std::slice::from_ref(frame))
+    }
+
+    /// Send `frames` over the session as **one** `FrameBatch` envelope,
+    /// addressed to `interface_id`, preserving order. The wire protocol
+    /// carries batches natively (the server iterates a batch's frames),
+    /// so a caller with several frames due at once — the transmit
+    /// scheduler's tick — pays channel and proto overhead once instead
+    /// of per frame. An empty slice sends nothing.
+    pub fn transmit_batch(
+        &self,
+        interface_id: &str,
+        frames: &[CanFrame],
+    ) -> Result<(), SessionClosed> {
+        if frames.is_empty() {
+            return Ok(());
+        }
         let envelope = Envelope {
             body: Some(Body::FrameBatch(FrameBatch {
                 interface_id: interface_id.to_string(),
-                frames: vec![frame_to_proto(frame)],
+                frames: frames.iter().map(frame_to_proto).collect(),
             })),
         };
         // `blocking_send` waits if the queue is full but errors if the
@@ -864,6 +881,47 @@ impl std::error::Error for ConnectionError {
 mod tests {
     use super::*;
     use cannet_wire::proto::error::Code;
+
+    #[test]
+    fn transmit_batch_sends_one_envelope_with_all_frames_in_order() {
+        // A scheduler tick's due frames for one interface ride one
+        // Envelope — not one per frame — so per-envelope channel and
+        // proto overhead stops scaling with message count.
+        let (tx, mut rx) = tokio_mpsc::channel::<Envelope>(4);
+        let t = SessionTransmitter { req_tx: tx };
+        let frames: Vec<CanFrame> = (0..3u32)
+            .map(|i| {
+                CanFrame::classic(
+                    u64::from(i),
+                    0,
+                    cannet_core::CanId::standard(0x100 + i).unwrap(),
+                    cannet_core::Direction::Tx,
+                    vec![u8::try_from(i).unwrap()],
+                )
+                .unwrap()
+            })
+            .collect();
+        t.transmit_batch("if0", &frames).unwrap();
+        let env = rx.try_recv().expect("one envelope");
+        let Some(Body::FrameBatch(batch)) = env.body else {
+            panic!("expected FrameBatch");
+        };
+        assert_eq!(batch.interface_id, "if0");
+        assert_eq!(batch.frames.len(), 3);
+        assert_eq!(
+            batch.frames.iter().map(|f| f.can_id).collect::<Vec<_>>(),
+            vec![0x100, 0x101, 0x102],
+        );
+        assert!(rx.try_recv().is_err(), "exactly one envelope");
+    }
+
+    #[test]
+    fn transmit_batch_of_nothing_sends_nothing() {
+        let (tx, mut rx) = tokio_mpsc::channel::<Envelope>(1);
+        let t = SessionTransmitter { req_tx: tx };
+        t.transmit_batch("if0", &[]).unwrap();
+        assert!(rx.try_recv().is_err(), "no empty batches on the wire");
+    }
 
     #[test]
     fn per_frame_codes_do_not_end_the_session() {
