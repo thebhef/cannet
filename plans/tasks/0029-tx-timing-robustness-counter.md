@@ -72,7 +72,29 @@ cycle groups on one epoch, grid keeps them phase-locked; at ~0.6–0.9 ms
 per sidecar send that's a 40–90 ms drain the 100 Hz ids queue behind.
 Cohort math — the A+B fixes can't touch it.
 
-**Grill rulings (2026-07-25) — periodic-emission ADR content:**
+**Stagger + park: LANDED (2026-07-25, ADR 0039).** Three commits:
+session-map seam + `RoutesChanged` hint (task 30 #8 slice), phase
+stagger (`stagger_offset`, first fire at `start + hash(row id) %
+period`), route-down park (route check before `fire_info`; counter
+frozen, no rows, no wakes; hint + 1 s probe resume).
+
+**Rig verdict (2×PCAN, ev-zonal, 60 s, dev build):** cohort mechanism
+dead — TX per 10 ms bin was 4-baseline with 73–148-frame spikes every
+100 ms; now uniform ~16, max 34. Wire (receiving dongle, 100 Hz ids):
+p95 12.3→11.9, p99 17.9→17.5, max 29.6→29, σ 2.05→1.86, sub-5 ms
+1.8→1.6%. Residual >15 ms gaps (~1.5/s) are now phase-locked mod-2s
+(trace-flush tick, `flush_ms` ~15 at 3200 f/s) + a 1 s cadence — not
+cohorts. Next levers: release-build re-measure, then flush-tick
+residual / per-`ch.send` cost if it still shows.
+
+En route (2nd round): every self-driving run came up blank — dockview
+`onReady` double-fires under StrictMode, the second boot `open_project`
+re-added DBCs and the refresh storm crashed uPlot
+(`axis._found` null) → React root unmount. And views were born stopped
+— automation connected while `applyProject` was still applying
+(un-awaited). Both fixed + dom-tested (`App.bootOpenOnce.dom.test.tsx`).
+
+Rulings that produced the design:
 
 - **Phase-stagger, always on:** first fire at
   `start + stable_hash(row id) % period`. Uniform rule for RBS bulk
@@ -96,8 +118,6 @@ Cohort math — the A+B fixes can't touch it.
 
 **Remaining:**
 
-- Implement stagger + park per rulings; write the periodic-emission
-  ADR same-change.
 - Regenerate the perf baseline so `flush_ms_max` / `tx_late_ms_max`
   arm; release-build re-measure before pinning targets.
 - Rig metric (below) as the machine gate.
