@@ -679,11 +679,33 @@ row is done.
    constraint (bridge_client.rs:43–48, ADR 0021). → first fix the
    stale module doc; consolidate only after cannet-client grows the
    timeout/dynamic-allocation capability.
-- **10. `cannet-wire/src/batch.rs` has zero production consumers** while
+- ~~**10. `cannet-wire/src/batch.rs` has zero production consumers** while
     virtual_bus.rs:312–331 re-implements `proto_to_batch`'s semantics
     and all four production senders hand-roll one-frame batches; the
     lib.rs doc ("Application code never deals with batches directly")
-    is false. → route senders through it or delete it and fix the doc.
+    is false. → route senders through it or delete it and fix the doc.~~
+    **Done (task-0030/20-trailing-small-items).** Re-confirmed:
+    `batch_frames`/`unbatch_frames` (the `chunks_timeout` stream
+    adapters in `batch.rs`) had **zero** production consumers — only the
+    `lib.rs` re-export and the `round_trip` tests. **Chose deletion**
+    (CLAUDE.md simplicity-first): all four production senders build a
+    `FrameBatch` imperatively — the transmit scheduler coalesces a
+    tick's frames (`SessionTransmitter::transmit_batch`), the bridge and
+    remote pumps send one frame per batch (`bridge_client::run_outbound`,
+    the vbus fan-out) — so a stream combinator is the wrong shape and
+    routing them through it would be contortion, not simplification.
+    Deleted `batch.rs`, its `pub mod`/`pub use`, and the batching tests;
+    corrected the false `lib.rs` doc claim to describe what senders /
+    receivers actually do; pruned the deps `batch.rs` orphaned
+    (`async-stream`/`futures-core`/`tokio-stream` from `[dependencies]`,
+    `futures`/`tokio` from `[dev-dependencies]`); updated ADR 0004's
+    async-stream rationale (it named the now-deleted `unbatch_frames`;
+    async-stream stays for the server's looping BLF replay). **Not
+    touched:** `convert.rs`'s `batch_to_proto`/`proto_to_batch` (the
+    honest single-shot slice converters, still test-covered) and
+    `virtual_bus.rs`'s inline decode loop — it needs its own per-frame
+    error-envelope reporting, which `proto_to_batch`'s whole-batch
+    `Result` can't express, so it's an honest non-duplicate.
 - ~~**11. trace_store internals** — the sample-due/prune rate-sampling
     block now appears four times (aggregate, per-bus, per-direction in
     `append()`, and `RateEstimate::observe` since the 2026-07-25
@@ -733,7 +755,7 @@ row is done.
     private naming is re-derived by the facade) while keeping the one
     efficient walk.
 
-12. Smaller confirmed items: `error_envelope` verbatim in both
+12. ~~Smaller confirmed items: `error_envelope` verbatim in both
     servers; SignalMux/FloatKind wire mapping duplicated in gui lib.rs
     (2430 vs 3970) *and again* inside cannet-dbc
     (`describe_message` vs `dbc_content`, lib.rs:399–413 vs 476–493 —
@@ -742,7 +764,52 @@ row is done.
     override-layering spelled twice (lib.rs:3262 vs 3333); 23 bare
     `.lock().expect(...)` + four first-loaded-DBC-wins scans → small
     `AppState` accessors (`resolve_effective_calc`'s scan is
-    bus-scoped — different decision, leave it).
+    bus-scoped — different decision, leave it).~~ **Done
+    (task-0030/20-trailing-small-items).** Each sub-item:
+
+    + **a. `error_envelope`.** The two *servers* were the two Rust
+      services in cannet-server (BLF replay `server.rs` + virtual bus
+      `virtual_bus.rs`), each with a byte-identical private
+      `fn error_envelope`. Hoisted one `pub(crate) fn error_envelope` to
+      the crate root; both import it, and virtual_bus's NoAcknowledger
+      arm (a third hand-rolled Error envelope) now routes through it too,
+      letting both `Error as ErrorMsg` imports go. The Python sidecar's
+      `_error_envelope` is already single-sourced in `server/helpers.py`
+      and is a different language — nothing to share cross-language, so
+      it's as consolidated as it can be.
+    + **b. SignalMux/FloatKind wire mapping.** In cannet-dbc
+      (`view_builders.rs`) `describe_message` and `dbc_content` each
+      re-spelled the `MultiplexIndicator`→`SignalMux` /
+      `SignalExtendedValueType`→`FloatKind` maps → extracted
+      `signal_mux_from_indicator` / `float_kind_from_extended` (callers
+      set `uses_extended_mux` via a `matches!` on the result). In the gui
+      (`dbc_commands.rs`) `signal_record` and `describe_message_inner`
+      re-spelled the `SignalMux`→`ipc::SignalMuxRecord` /
+      `FloatKind`→`&str` maps → extracted `signal_mux_record` /
+      `float_kind_str`. The documented non-superset relationship
+      (`SignalDescriptorRich.start_value_raw` has no `DbcSignalContent`
+      counterpart) is **preserved** — only the enum maps are shared, the
+      descriptor structs stay distinct.
+    + **c. Calc override-layering.** `resolve_effective_calc`
+      (`transmit_commands.rs`, imperative form) and `rebuild_verification`
+      (`app_state.rs`, `.or()` form) spelled the same per-field
+      "override replaces the DBC default" merge (provably identical) →
+      extracted `merge_calc_override`; both call it.
+    + **d. `.lock().expect(...)` + DBC scans.** Count had drifted well
+      past 23 (production `.lock().expect()` on AppState's own Mutex
+      fields, migrated wholesale). Added guard accessors on `AppState`
+      (`databases()` / `remote_sessions()` / `dbc_watcher()` /
+      `transmit_frames()` / `rbs()` / `filter_index()` /
+      `active_project_id()`), each wrapping its one lock with the
+      canonical poison message; migrated every production call site
+      (test sites keep their `.lock().unwrap()` idiom). Added
+      `first_dbc<T>(f)` for the four first-loaded-DBC-wins scans
+      (`list_value_tables` / `describe_message_inner` /
+      `decode_frame_inner` / `encode_frame_inner`) — all four converted
+      to `find_map`. `resolve_effective_calc`'s bus-scoped scan was
+      **left alone** as directed (it filters by bus first — a different
+      decision). Each accessor takes exactly one lock, so the documented
+      lock order is still enforced by call-site acquisition sequence.
 
 ### TypeScript — several double as thin-view wins
 
@@ -928,7 +995,7 @@ row is done.
     `busLookup()`, closing the June item. PlotPanel's separate
     bus-id→*colour* map (`busColorLookup`) is a different lookup and
     untouched.
-- **21. Smaller confirmed items: `buildSinkPredicate`/
+- ~~**21. Smaller confirmed items: `buildSinkPredicate`/
     `resolveFilterPredicate` duplicate the sources→predicate
     composition; `recordRecentBlf`/`recordRecentCommand` are the same
     MRU-push twice; `decimatePoints` (plotData.ts:234–268) is a dead
@@ -939,7 +1006,44 @@ row is done.
     threaded through the whole trace state machine (trace.ts, plus a
     dedicated App.tsx effect) feeding a field trace.ts:246–250 admits
     is unused — remove the thread and fix traceData.ts:33–36's stale
-    doc.
+    doc.~~ **Done (task-0030/20-trailing-small-items).** Each sub-item:
+
+  + **a. Predicate composition.** `buildSinkPredicate` and
+    `resolveFilterPredicate` both classify a sources list, then compose
+    the bus + filter predicates the same way → extracted `andAll`
+    (collapse a list to its AND: `[]`→null, one unwrapped, else `{all}`)
+    and `busesToPredicate` (the bus half: `[]`→null, one unwrapped, else
+    `{any:[Bus…]}`); both walks use them. The two top-level policies
+    (sink kind-guards / wildcard baseline vs. filter own-predicate +
+    cycle-visited) stay distinct — only the shared composition primitives
+    moved.
+  + **b. MRU push.** `recordRecentBlf`/`recordRecentCommand` were the
+    same bounded MRU push differing only in the cap → extracted
+    `pushRecent(current, value, limit)` into `recentMru.ts` (with its own
+    `recentMru.test.ts`); both recorders delegate.
+  + **c. `decimatePoints`.** Confirmed dead — zero production callers
+    (only its own test), a re-implementation the comment itself flagged
+    as mirroring the host's `signal_sampler::decimate_min_max`. Deleted
+    it and its test block.
+  + **d. Binding-conflict context space.** `commands.ts`'s
+    `enumerateContexts` hand-copied the `FocusedPanelKind` list — a
+    second list that could drift from the type and make an overlapping
+    binding pair look disjoint. Made `FOCUSED_PANEL_KINDS` a runtime
+    `as const` array the single source: `FocusedPanelKind` is now
+    `typeof [...][number]`, and the enumeration is
+    `[null, ...FOCUSED_PANEL_KINDS]` — same space, no second list to
+    drift. (The context space *is* the panel-kind set; predicate bodies
+    are opaque functions, so this is the honest de-drift.)
+  + **e. Vestigial `traceStartOffsetSeconds`.** Confirmed still
+    admitted-unused (trace.ts's comment: "no longer applied to the
+    rendered zero … vestigial for display"; every renderer roots the
+    time column at `data.sessionStartSeconds`, ADR 0024). Removed the
+    whole thread — the `TraceState` field, the offset params on
+    `freshTrace`/`clearedTrace`/`clearKeepingState`, the preservation in
+    `reanchor`/`stop`/`pause`/`resume`, the `clearTraceStartOffset`
+    function + `currentSessionOffsetSeconds`, and the dedicated App.tsx
+    session-restart effect — and fixed `traceData.ts`'s stale doc;
+    `trace.test.ts` drops the offset-specific cases and field assertions.
 
 ### Python sidecar
 
@@ -1052,3 +1156,35 @@ Each a standalone reviewable commit; order by risk-reduction:
 - This file and the roadmap are updated as items land (CLAUDE.md
   § Planning) — completed items struck through or removed, deferrals
   annotated.
+
+**Status (task-0030/20 close-out).** With items #10, #12, and #21 landed
+this branch, the numbered duplication list (1–24) and the god-file table
+are fully addressed:
+
+- **Consolidated/split or deferred (met).** Every numbered item is struck
+  through **except #9** (bridge_client ↔ cannet-client), which stays
+  **explicitly deferred** with its one-line reason: the consolidation is
+  gated on cannet-client growing a subscribe-timeout / dynamic-allocation
+  capability (bridge_client's `ALLOCATED_GRACE` is a documented ADR 0021
+  constraint cannet-client's indefinite wait can't yet honour). Not
+  silently dropped.
+- **Helpers have tests; green before/after (met).** This branch's new
+  shared surface is tested (`recentMru.test.ts` for `pushRecent`; the
+  Rust dedups ran under existing `resolve_effective_calc` /
+  `describe_message` / `first_dbc`-path coverage, green before and after);
+  the honoured verifier caveat here is `resolve_effective_calc`'s
+  bus-scoped scan, left untouched as directed.
+- **No new thin-view violations (met, strictly thinner).** #21 *removed*
+  frontend weight — a dead host-decimation re-implementation and a
+  vestigial per-view time-offset thread — with no view taking on model
+  work.
+- **`6d`/`Step 3` comment sweep — still OUTSTANDING.** These plan-ref
+  comments remain in cannet-spill / signal_cache / emitters / flush
+  (~20+ sites). That sweep is the last bullet of the **Architecture-level
+  (deliberate follow-ups)** section, deliberately out of scope for this
+  dedup pass; it is the one exit criterion not yet met and is left for
+  that follow-up.
+- **Docs updated as items land (met).** This file is updated in the same
+  change; the roadmap's task-30 entry is narrowed to the remaining scope
+  (gated #9 + the Architecture-level follow-ups) rather than removed,
+  since that work is still outstanding.
