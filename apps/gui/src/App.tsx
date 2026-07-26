@@ -387,6 +387,13 @@ export function App() {
   // launch. The mirrored refs let that once-mounted effect read live
   // connect preconditions without re-subscribing on every change.
   const [automation, setAutomation] = useState<AutomationConfig | null>(null);
+  // Process-lifetime latch: the automation run is a one-shot. Without
+  // it, StrictMode's dev double-invoke of the onReady init calls
+  // `setAutomation` twice with distinct object identities, the
+  // `[automation]` effect fires twice, and two racing `handleConnect`s
+  // leave the loser's "already connected" error as the visible status
+  // (observed 2026-07-25: every self-driving run double-connected).
+  const automationRanRef = useRef(false);
   const interfaceBindingsRef = useRef<InterfaceBinding[]>([]);
   const sidecarAddressRef = useRef<string | null>(null);
   const handleConnectRef = useRef<() => Promise<void>>(() => Promise.resolve());
@@ -1497,6 +1504,8 @@ export function App() {
   // persist: touch interfaces, and record.
   useEffect(() => {
     if (!automation) return;
+    if (automationRanRef.current) return; // one-shot (see the ref's docs)
+    automationRanRef.current = true;
     let cancelled = false;
     const sleep = (ms: number) =>
       new Promise<void>((resolve) => setTimeout(resolve, ms));

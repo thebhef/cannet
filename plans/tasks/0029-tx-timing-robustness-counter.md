@@ -48,18 +48,36 @@ scheduler (`tx_late_ms` max 73.7 while flush maxed 12.7 — not the
 store). Analysis tooling: `jitter_stats.py`-style offline parse of the
 spill scratch's meta segments (27 B records → per-id gap stats).
 
+**Sidecar TX path: FIXED (2026-07-25).** Two changes: (a) per-interface
+TX worker in the sidecar — `ch.send` off the session's single gRPC
+reader thread, interfaces send in parallel, bounded queue with
+visible-rejection backpressure; (b) the scheduler tick's due frames
+ride one `FrameBatch` per `(session, channel, interface)` instead of
+one envelope each (`build_and_confirm` shared with the single-frame
+path). Rig verdict (2×PCAN, 100 Hz ids, 60 s, receiving dongle):
+p95 33→12.3 ms, p99 45→17.9 ms, max 86→29.6 ms, σ 9.5→2.05 ms,
+sub-5 ms burst share 28%→1.8%. `tx_late_ms` max 73.7→18.2. (Rx
+timestamps verified device-derived — python-can pcan passes the
+plausibility gate in `_msg_to_frame`.)
+
+En route: self-driving runs double-connected (StrictMode double-init
+→ two `handleConnect`s; loser's "already connected" error overwrote
+the winner's UI status, masking live traffic and inviting
+capture-wrecking manual clicks). Fixed with a one-shot automation
+latch in `App.tsx`.
+
 **Remaining:**
 
-- **Sidecar TX throughput** — the new primary. Batch host→sidecar
-  sends (Task 30 #10: `cannet-wire/batch.rs` exists with zero
-  production consumers) and/or cut per-`ch.send` overhead. Verify
-  PCAN rx timestamps are device-stamped before trusting fine rx
-  percentiles (send-side `max_gap` already corroborates the
-  attribution).
+- Tail shape now: p99 ~18 ms / max ~30 ms on the wire — same-tick
+  serialization at ~1 ms/send in the sidecar plus timer-wake residual
+  plus ~5–18 ms flush collisions. Levers, in likely-value order:
+  phase-stagger same-period messages (policy — belongs in the
+  periodic-emission ADR), cut per-`ch.send` cost (profile GIL vs
+  `PCAN_Write`), `timeBeginPeriod`-class wake work.
 - Regenerate the perf baseline so `flush_ms_max` / `tx_late_ms_max`
   arm; release-build re-measure before pinning targets.
-- Policy tail: missed-period policy + periodic-emission ADR; the rig
-  metric (below) as the gate.
+- Missed-period policy + periodic-emission ADR; the rig metric
+  (below) as the machine gate.
 
 ## Symptoms (observed; root cause measured 2026-07-25)
 
