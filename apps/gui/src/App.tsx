@@ -2060,8 +2060,12 @@ export function App() {
   // optimistic local state, so a panel-A add shows up on panel B
   // through the same code path.
   const addNoteRemote = useCallback(
-    (id: string, timestampNs: number, label: string) => {
-      void invoke("add_note", { note: { id, timestampNs, label } }).catch(() => {
+    (id: string, timestampNs: number, label: string, color?: string) => {
+      // `color` rides the note payload directly — `Note.color` is
+      // `#[serde(default)]`, so omitting it yields `None` (the view
+      // default) with no host-side change.
+      const note = color ? { id, timestampNs, label, color } : { id, timestampNs, label };
+      void invoke("add_note", { note }).catch(() => {
         /* best effort — error surfaces in System Messages */
       });
     },

@@ -146,16 +146,18 @@ trip over it.
 
 ### Plot panel
 
-- `[ui]` `cannet-gui` `PlotPanel.tsx`: **hidden traces still take
-  vertical plot space.** A hidden signal keeps its full axis/lane slot
-  (per-unit / individual axes, and the enum-lanes bands, all reserve
-  space for hidden members). The signal row should stay in the side
-  panel (so it's un-hideable) but not consume canvas height — collapse
-  a fully-hidden derived axis, and drop a hidden enum lane's band.
-  Needs a design pass: the side panel is per-derived-axis today, so
-  collapsing an axis also hides its rows; decide whether to exclude
-  hidden signals from axis sizing/lane allocation or re-home their rows.
-  (Task 32 QA.)
+- `[ui]` `cannet-gui` `PlotPanel.tsx`: **a hidden enum keeps its lane
+  band within a still-visible enum-lanes axis.** The fully-hidden-axis
+  case is done — a derived axis whose signals are *all* hidden now
+  collapses (`.plot-area.collapsed`: canvas dropped, excluded from the
+  fit-to-panel distribution, rows kept in the side panel), covering both
+  numeric and enum-lanes axes. Residual: when only *some* enums on a
+  lanes axis are hidden, the visible lanes don't reclaim the hidden
+  ones' bands. `visibleLaneBands`-style layout (bands over the visible
+  count) fixes the geometry, but the tile draw hook captures
+  construction-time `signals` and toggling `hidden` doesn't rebuild the
+  uPlot instance (`signalSetKey` excludes hidden), so a live per-lane
+  re-flow needs a `signalsRef` threaded into the draw hook. (Task 32 QA.)
 - `[bug]` `cannet-gui` `PlotPanel.tsx`: **cursor A/B marker chips and
   the x-axis intermittently don't render.** Reachable state where the
   cursor marker titles/text disappear, and possibly where the x-axis
@@ -234,15 +236,17 @@ name/colour/remove on any editable event row. Remaining follow-ups:
   `PlotPanel`). The trace + events panel have it; the plot's note list still
   only renames/removes. Add a colour swatch there for parity (the host
   `recolor_note` command + `recolorNote` context dispatcher already exist).
-- `[ui]` **Create note cursors / events with a colour wheel.** New
-  events/notes get an assigned colour today; let the user pick it from a
-  colour wheel at creation time (not only edit-time). Pairs with the
-  colour-editing items above — share one colour-picker component.
 - `[bug]` **macOS: the event colour picker opens in the wrong location.**
   The native colour picker for events appears in odd positions on macOS
   (the plot series colour picker seems to open correctly, so compare the
   two anchoring paths). Likely a popover/anchor-positioning difference in
   the event colour control vs. the plot swatch. (Task 32 QA.)
+  **Candidate fix landed (unverified on macOS):** `.trace-event-swatch-input`
+  now fills the swatch's real footprint (`inset:0`, no `width/height:0`)
+  instead of collapsing to a zero-size point, so the native picker has a
+  concrete anchor rect at the swatch. If a Mac confirms this resolves the
+  mis-positioning, close the item; if not, revert the CSS and investigate
+  the virtualized-row scroll-offset anchor path instead.
 - `[feat]` **Interleave events into the *filtered* chronological trace.** The
   unfiltered view interleaves; a filtered view pages its own (filtered) index
   space, which the raw-frame anchors don't map to — events would need

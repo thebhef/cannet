@@ -220,10 +220,17 @@ What's still rough:
   signal — so in practice each axis labels itself sensibly, but the
   user can't pin a *different* explicit primary on two axes of the
   same area. Lift the key onto the derived axis if that ever bites.
-- **Hidden signals still reserve vertical space.** A hidden signal
-  keeps its axis / lane slot (the layout stays stable, the row stays
-  in the side panel) but draws nothing, so a fully-hidden axis and a
-  hidden enum lane still take height. Collapsing them is tracked in
+- **A fully-hidden axis collapses; a partly-hidden lane axis doesn't
+  reclaim per-lane space yet.** When every signal on a derived axis is
+  hidden, the axis is excluded from the fit-to-panel height
+  distribution and its canvas is dropped (`.plot-area.collapsed`), while
+  its rows stay in the side panel so they remain un-hideable. This
+  covers a fully-hidden numeric axis and a fully-hidden enum-lanes axis
+  alike. Still open: within a *still-visible* enum-lanes axis, a hidden
+  enum keeps its lane band (the band isn't reclaimed by the visible
+  lanes) — the tile draw hook captures construction-time signals and the
+  hidden toggle doesn't rebuild the instance, so a live per-lane re-flow
+  needs a signals ref threaded into the draw hook. Tracked in
   `plans/backlog.md`.
 - **Two value-table fetches coexist.** After the panel-level
   `useValueTables` roll-up landed, `PlotArea` still keeps its own

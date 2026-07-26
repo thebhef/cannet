@@ -242,6 +242,7 @@ interface PlotPanelParams {
   areas?: unknown;
   followLive?: unknown;
   cursorMode?: unknown;
+  noteColor?: unknown;
   measEnabled?: unknown;
   measKeys?: unknown;
   showDiag?: unknown;
@@ -381,6 +382,12 @@ function areasFromParams(raw: unknown): PlotAreaConfig[] {
 
 function cursorModeFromRaw(raw: unknown): CursorMode {
   return raw === "x" || raw === "y" || raw === "note" ? raw : "off";
+}
+
+/** Sanitize a persisted note-creation colour to a `#RRGGBB` string,
+ * falling back to the default note-event blue. */
+function noteColorFromRaw(raw: unknown): string {
+  return typeof raw === "string" && /^#[0-9a-fA-F]{6}$/.test(raw) ? raw : EVENT_COLOR;
 }
 
 function measKeysFromRaw(raw: unknown): MeasurementKey[] {
@@ -545,6 +552,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
     typeof savedConfig?.followLive === "boolean" ? savedConfig.followLive : true,
   );
   const [cursorMode, setCursorMode] = useState<CursorMode>(() => cursorModeFromRaw(savedConfig?.cursorMode));
+  // Colour applied to a note dropped in "+ note" mode — picked from the
+  // toolbar swatch, persisted so it survives restart.
+  const [noteColor, setNoteColor] = useState<string>(() => noteColorFromRaw(savedConfig?.noteColor));
   const [measEnabled, setMeasEnabled] = useState(() =>
     typeof savedConfig?.measEnabled === "boolean" ? savedConfig.measEnabled : false,
   );
@@ -824,6 +834,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
       areas,
       followLive,
       cursorMode,
+      noteColor,
       measEnabled,
       measKeys,
       showDiag,
@@ -849,6 +860,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     areas,
     followLive,
     cursorMode,
+    noteColor,
     measEnabled,
     measKeys,
     showDiag,
@@ -1150,9 +1162,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
     (t: number) => {
       if (baseSeconds == null || !Number.isFinite(baseSeconds)) return;
       const timestampNs = Math.round((baseSeconds + t) * 1e9);
-      dispatchAddNote(crypto.randomUUID(), timestampNs, `note ${sessionNotes.length + 1}`);
+      dispatchAddNote(crypto.randomUUID(), timestampNs, `note ${sessionNotes.length + 1}`, noteColor);
     },
-    [baseSeconds, dispatchAddNote, sessionNotes.length],
+    [baseSeconds, dispatchAddNote, sessionNotes.length, noteColor],
   );
   // Jump the panel's x-window so the note at display-relative time
   // `t` is centred. Preserves the current zoom width; drops out of
@@ -1318,6 +1330,11 @@ export function PlotPanel(props: IDockviewPanelProps) {
       isFirstOfParent: boolean;
       subtitle: string | null;
       enumLanes: boolean;
+      // Every signal on this axis is hidden — the axis draws nothing, so
+      // it's excluded from the fit-to-panel height distribution and its
+      // canvas collapses. Its rows stay in the side panel so they remain
+      // un-hideable (ADR 0026 hidden-signal handling).
+      collapsed: boolean;
     }> = [];
     const isEnum = (k: string) => enumKeys.has(k);
     for (const a of effectiveAreas) {
@@ -1341,6 +1358,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
           isFirstOfParent: i === 0,
           subtitle: ax.subtitle,
           enumLanes: ax.kind === "enum-lanes",
+          collapsed: ax.signals.length > 0 && ax.signals.every((s) => s.hidden),
         });
       });
     }
@@ -1585,6 +1603,18 @@ export function PlotPanel(props: IDockviewPanelProps) {
             onChange={(v) => setCursorMode(v as CursorMode)}
           />
         </label>
+        {cursorMode === "note" && (
+          <label className="plot-cursor-ctl" title="colour applied to new notes">
+            colour
+            <input
+              type="color"
+              className="plot-note-color"
+              aria-label="new note colour"
+              value={noteColor}
+              onChange={(e) => setNoteColor(e.target.value)}
+            />
+          </label>
+        )}
         <button onClick={clearCursors} title="remove all placed cursors">
           clear cursors
         </button>
@@ -1657,9 +1687,13 @@ export function PlotPanel(props: IDockviewPanelProps) {
           // at drag start keeps the weight math independent of the
           // panel's absolute size.
           const above = idx > 0 ? derivedAreaConfigs[idx - 1] : null;
+          // A splitter trades vertical weight between two axes; it's
+          // meaningless next to a collapsed (fully-hidden) axis, which
+          // claims no height, so drop it when either neighbour collapses.
+          const showSplitter = above != null && !above.collapsed && !d.collapsed;
           return (
             <Fragment key={d.area.id}>
-              {above && (
+              {showSplitter && above && (
                 <div
                   className="plot-area-splitter"
                   role="separator"
@@ -1722,7 +1756,8 @@ export function PlotPanel(props: IDockviewPanelProps) {
               )}
               <PlotArea
                 area={d.area}
-                flexGrow={resolvedAxisWeights[d.area.id]}
+                flexGrow={d.collapsed ? 0 : resolvedAxisWeights[d.area.id]}
+                collapsed={d.collapsed}
                 enumLanes={d.enumLanes}
               label={
                 d.subtitle == null
@@ -1954,6 +1989,10 @@ interface PlotAreaProps {
    * Applied inline on the root; the browser distributes stack height
    * proportionally. Undefined falls back to the CSS default (1). */
   flexGrow?: number;
+  /** True when every signal on this axis is hidden. The canvas collapses
+   * (no reserved plot height) while the side-panel rows stay visible so
+   * they remain un-hideable (ADR 0026). */
+  collapsed?: boolean;
   /** True when this axis is the shared per-unit enum-lanes axis (all of
    * an area's enums stacked as logic-analyzer lanes, ADR 0026). The
    * lane render lands in a later slice; today the axis draws as plain
@@ -2167,6 +2206,7 @@ function PlotArea(p: PlotAreaProps) {
   const {
     area,
     flexGrow,
+    collapsed,
     enumLanes,
     label,
     isFirst,
@@ -3595,7 +3635,7 @@ function PlotArea(p: PlotAreaProps) {
 
   return (
     <div
-      className={`plot-area${focused ? " focused" : ""}`}
+      className={`plot-area${focused ? " focused" : ""}${collapsed ? " collapsed" : ""}`}
       style={flexGrow == null ? undefined : { flexGrow }}
       onMouseDown={onFocus}
       onDragOver={(e) => {
