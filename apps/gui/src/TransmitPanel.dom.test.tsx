@@ -24,6 +24,9 @@ let DESCRIBE: unknown = null;
 // The `list_signals` catalog. Empty by default (no DBC-name resolution);
 // a test can set entries to exercise the collapsed row's DBC-name lookup.
 let SIGNALS: SignalDescriptorRecord[] = [];
+// The `list_value_tables` result, keyed by signal name — a test can
+// populate this to exercise an enum row's fetched datalist/commit path.
+const VALUE_TABLES: Record<string, { raw: number; label: string }[]> = {};
 const calls: Array<{ cmd: string; args: unknown }> = [];
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -38,6 +41,10 @@ vi.mock("@tauri-apps/api/core", () => ({
         return DESCRIBE;
       case "decode_frame":
         return null;
+      case "list_value_tables":
+        return VALUE_TABLES[(args as { signalName?: string })?.signalName ?? ""] ?? [];
+      case "encode_frame":
+        return { bytes: [0] };
       default:
         return undefined;
     }
@@ -144,6 +151,7 @@ beforeEach(() => {
   POOL = [];
   DESCRIBE = null;
   SIGNALS = [];
+  for (const k of Object.keys(VALUE_TABLES)) delete VALUE_TABLES[k];
   calls.length = 0;
 });
 afterEach(() => cleanup());
@@ -374,6 +382,54 @@ describe("payload sizing helpers", () => {
       expect(frameArg?.calc).toMatchObject({
         counter: { signal: "AliveCtr", increment: 1 },
       });
+    });
+  });
+
+  it("an enum signal fetches its VAL_ table and commits the matched raw on a typed label", async () => {
+    POOL = [frame("a")];
+    DESCRIBE = {
+      name: "Status",
+      expectedLen: 8,
+      isFd: false,
+      brs: false,
+      genMsgCycleTimeMs: 100,
+      genMsgSendType: null,
+      usesExtendedMux: false,
+      calcFields: {},
+      signals: [
+        {
+          name: "Mode",
+          unit: "",
+          factor: 1,
+          offset: 0,
+          min: 0,
+          max: 1,
+          size: 1,
+          signed: false,
+          mux: { kind: "plain" },
+          floatKind: "integer",
+          hasValueTable: true,
+          startValueRaw: null,
+        },
+      ],
+    };
+    VALUE_TABLES.Mode = [
+      { raw: 0, label: "Off" },
+      { raw: 1, label: "On" },
+    ];
+    renderPanel("el", ["a"]);
+    fireEvent.click(await screen.findByTitle("expand"));
+    const input = await screen.findByLabelText("Mode value (enum)");
+    // Typing a label the host's VAL_ table defines (not the currently
+    // decoded one — decode_frame returns null here) resolves through
+    // the fetched table to that label's raw value.
+    fireEvent.change(input, { target: { value: "On" } });
+    fireEvent.blur(input);
+    await waitFor(() => {
+      const call = lastCall("encode_frame");
+      expect(call).toBeDefined();
+      const args = call?.args as { signals?: { name: string; physical: number }[] };
+      expect(args.signals).toEqual([{ name: "Mode", physical: 1 }]);
     });
   });
 
