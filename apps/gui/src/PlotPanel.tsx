@@ -30,6 +30,7 @@ import { formatDurationSeconds, formatElapsed, fracDigitsForSpan } from "./forma
 import { usePanelCommands } from "./panelCommands";
 import { SourcesMenuSection } from "./SourcesPicker";
 import { useElementPanel, useElementSources } from "./useElementPanel";
+import { useDismissableMenu } from "./useDismissableMenu";
 import {
   DEFAULT_MEASUREMENTS,
   MEASUREMENT_QUANTITIES,
@@ -1443,24 +1444,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
    * buttons. `null` = closed; otherwise the viewport coords to anchor
    * the popup at. */
   const [toolbarMenuAt, setToolbarMenuAt] = useState<{ x: number; y: number } | null>(null);
-  useEffect(() => {
-    if (toolbarMenuAt == null) return;
-    const onDown = (e: MouseEvent) => {
-      // Outside-click dismiss. The menu element stops its own
-      // `mousedown` from bubbling, so any down that reaches the
-      // document is by definition outside.
-      if ((e.target as Element | null)?.closest(".plot-toolbar-menu") == null) {
-        setToolbarMenuAt(null);
-      }
-    };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setToolbarMenuAt(null);
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [toolbarMenuAt]);
+  const toolbarMenuRef = useDismissableMenu<HTMLDivElement>(toolbarMenuAt != null, () =>
+    setToolbarMenuAt(null),
+  );
 
   return (
     <div className="plot-panel">
@@ -1558,10 +1544,10 @@ export function PlotPanel(props: IDockviewPanelProps) {
       </div>
       {toolbarMenuAt && (
         <div
+          ref={toolbarMenuRef}
           className="plot-toolbar-menu"
           role="menu"
           style={{ left: toolbarMenuAt.x, top: toolbarMenuAt.y }}
-          onMouseDown={(e) => e.stopPropagation()}
         >
           <button
             type="button"
@@ -1862,20 +1848,7 @@ function MeasurementMenu({
   onChange: (k: MeasurementKey[]) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
+  const wrapRef = useDismissableMenu<HTMLDivElement>(open, () => setOpen(false));
   const toggle = (k: MeasurementKey) => onChange(measKeys.includes(k) ? measKeys.filter((x) => x !== k) : [...measKeys, k]);
   return (
     <div className="plot-meas-menu" ref={wrapRef}>
