@@ -36,7 +36,7 @@ pub(crate) fn collect_trace_records(state: &AppState, start: u64, end: u64) -> V
     let start_us = usize::try_from(start).unwrap_or(usize::MAX);
     let end_us = usize::try_from(end).unwrap_or(usize::MAX);
     let raw = state.trace_store.slice(start_us, end_us);
-    let dbs = state.databases.lock().expect("databases mutex poisoned");
+    let dbs = state.databases();
     let violations: std::collections::HashMap<u64, &'static str> = state
         .verifier
         .violations_in(start, end)
@@ -278,7 +278,7 @@ pub(crate) async fn fetch_by_id_page(
     let end = usize::try_from(scan_end).unwrap_or(usize::MAX);
     let rows = state.trace_store.latest_in_window(start, end);
     let mut snaps: Vec<ByIdSnapshot> = {
-        let dbs = state.databases.lock().expect("databases mutex poisoned");
+        let dbs = state.databases();
         rows.into_iter()
             .filter_map(|row| {
                 let decoded = decode_against(&dbs, &row.frame);
@@ -383,7 +383,7 @@ pub(crate) fn fetch_signal_page_inner(
     // Snapshot the DBC set (Arc clones) so decode and the store's
     // windowed queries run without holding the databases lock.
     let dbs: Vec<(Arc<Database>, Vec<String>)> = {
-        let guard = state.databases.lock().expect("databases mutex poisoned");
+        let guard = state.databases();
         guard
             .iter()
             .map(|d| (d.db.clone(), d.buses.clone()))
@@ -676,7 +676,7 @@ pub(crate) fn windowed_filter_page(
 /// full-scan and follow-live tail paths.
 fn materialize_filtered_rows(state: &AppState, page_idxs: &[usize]) -> Vec<TraceFrameRecord> {
     let pairs = state.trace_store.frames_at(page_idxs);
-    let dbs = state.databases.lock().expect("databases mutex poisoned");
+    let dbs = state.databases();
     pairs
         .into_iter()
         .map(|(i, frame)| {
@@ -705,9 +705,7 @@ fn ensure_active_filter_index<'a>(
     filter: &FilterPredicate,
 ) -> Option<std::sync::MutexGuard<'a, Option<ActiveFilterIndex>>> {
     let mut guard = state
-        .filter_index
-        .lock()
-        .expect("filter index mutex poisoned");
+        .filter_index();
     let session = state.trace_store.session_start_ns();
     let needs_rebuild = match guard.as_ref() {
         Some(a) => a.predicate != *filter || a.session_start_ns != session,
@@ -729,7 +727,7 @@ fn ensure_active_filter_index<'a>(
     }
     {
         let active = guard.as_mut().expect("active filter index just set");
-        let dbs = state.databases.lock().expect("databases mutex poisoned");
+        let dbs = state.databases();
         let candidates = resolve_candidates_for(filter, &state.trace_store, &dbs)
             .unwrap_or_else(|| all_ids_tested(&state.trace_store));
         let decode_ids = decode_candidate_ids(&dbs, filter);

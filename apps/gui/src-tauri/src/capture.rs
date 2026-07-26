@@ -474,13 +474,9 @@ pub(crate) async fn scan_blf_channels(app: AppHandle, blf_path: String) -> Resul
 /// the prior identity / derived files; this writes the fresh identity.
 pub(crate) fn restamp_scratch_for_capture(state: &AppState) {
     *state
-        .filter_index
-        .lock()
-        .expect("filter index mutex poisoned") = None;
+        .filter_index() = None;
     let active = *state
-        .active_project_id
-        .lock()
-        .expect("active project mutex poisoned");
+        .active_project_id();
     state.trace_store.write_scratch_identity(active);
     // Drop the scratch copy of notes too (ADR 0002 DS-7): a reset session
     // starts with no events. The live `NotesStore` is cleared / replaced by
@@ -537,9 +533,7 @@ pub struct RestoredCapture {
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn restore_scratch_capture(app: AppHandle, state: State<'_, AppState>) -> RestoredCapture {
     let active = *state
-        .active_project_id
-        .lock()
-        .expect("active project mutex poisoned");
+        .active_project_id();
     if !active.is_some_and(|pid| state.trace_store.try_reload(pid)) {
         return RestoredCapture {
             count: 0,

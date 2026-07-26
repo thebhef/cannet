@@ -36,9 +36,7 @@ pub async fn rbs_load(
     let fallback = |msg: String| {
         crate::sys_error!(&app, "rbs", "{msg}");
         let seeded = state
-            .rbs
-            .lock()
-            .expect("rbs mutex poisoned")
+            .rbs()
             .ensure_seeded(&element_id);
         if seeded {
             refresh_element(&app, &element_id);
@@ -54,7 +52,7 @@ pub async fn rbs_load(
         Err(e) => return Err(fallback(format!("RBS file at {path}: {e}"))),
     };
     {
-        let mut rbs = state.rbs.lock().expect("rbs mutex poisoned");
+        let mut rbs = state.rbs();
         let run = rbs.elements.get(&element_id).is_some_and(|e| e.run);
         rbs.elements.insert(
             element_id.clone(),
@@ -84,9 +82,7 @@ pub async fn rbs_init(
     element_id: String,
 ) -> Result<(), String> {
     let seeded = state
-        .rbs
-        .lock()
-        .expect("rbs mutex poisoned")
+        .rbs()
         .ensure_seeded(&element_id);
     if seeded {
         refresh_element(&app, &element_id);
@@ -103,13 +99,11 @@ pub async fn rbs_unload(
     element_id: String,
 ) -> Result<(), String> {
     {
-        let mut rbs = state.rbs.lock().expect("rbs mutex poisoned");
+        let mut rbs = state.rbs();
         rbs.elements.remove(&element_id);
     }
     let mut registry = state
-        .transmit_frames
-        .lock()
-        .expect("transmit_frames mutex poisoned");
+        .transmit_frames();
     for id in registry.rbs_row_ids(&element_id) {
         registry.remove(&id);
         state.transmit_scheduler.stop(id);
@@ -130,7 +124,7 @@ pub async fn rbs_sync_project_buses(
     buses: Vec<(String, String)>,
 ) -> Result<(), String> {
     {
-        let mut rbs = state.rbs.lock().expect("rbs mutex poisoned");
+        let mut rbs = state.rbs();
         rbs.project_buses = buses;
     }
     refresh_all_elements(&app);
@@ -149,7 +143,7 @@ pub async fn rbs_set_run(
     run: bool,
 ) -> Result<(), String> {
     let started = {
-        let mut rbs = state.rbs.lock().expect("rbs mutex poisoned");
+        let mut rbs = state.rbs();
         let Some(element) = rbs.elements.get_mut(&element_id) else {
             return Ok(());
         };
@@ -159,9 +153,7 @@ pub async fn rbs_set_run(
     };
     if started {
         let mut registry = state
-            .transmit_frames
-            .lock()
-            .expect("transmit_frames mutex poisoned");
+            .transmit_frames();
         for id in registry.rbs_row_ids(&element_id) {
             registry.reset_counter(&id);
         }
@@ -182,7 +174,7 @@ pub async fn rbs_set_kill_switch(
     on: bool,
 ) -> Result<(), String> {
     {
-        let mut rbs = state.rbs.lock().expect("rbs mutex poisoned");
+        let mut rbs = state.rbs();
         rbs.kill_switch = on;
     }
     sys_info!(
@@ -211,7 +203,7 @@ where
     F: FnOnce(&mut RbsFile) -> Result<(), String>,
 {
     {
-        let mut rbs = state.rbs.lock().expect("rbs mutex poisoned");
+        let mut rbs = state.rbs();
         let element = rbs
             .elements
             .get_mut(element_id)
@@ -258,7 +250,7 @@ pub async fn rbs_set_enabled(
     enabled: bool,
 ) -> Result<(), String> {
     let new_bus = {
-        let mut rbs = state.rbs.lock().expect("rbs mutex poisoned");
+        let mut rbs = state.rbs();
         let element = rbs
             .elements
             .get_mut(&element_id)
@@ -388,7 +380,7 @@ pub async fn rbs_save(
     element_id: String,
 ) -> Result<(), String> {
     let path = {
-        let rbs = state.rbs.lock().expect("rbs mutex poisoned");
+        let rbs = state.rbs();
         rbs.elements
             .get(&element_id)
             .ok_or_else(|| format!("no RBS element {element_id}"))?
@@ -410,7 +402,7 @@ pub async fn rbs_save_as(
     path: String,
 ) -> Result<(), String> {
     {
-        let mut rbs = state.rbs.lock().expect("rbs mutex poisoned");
+        let mut rbs = state.rbs();
         let element = rbs
             .elements
             .get_mut(&element_id)
@@ -435,7 +427,7 @@ fn write_element(
     path: &str,
 ) -> Result<(), String> {
     let file = {
-        let rbs = state.rbs.lock().expect("rbs mutex poisoned");
+        let rbs = state.rbs();
         let element = rbs
             .elements
             .get(element_id)
@@ -448,7 +440,7 @@ fn write_element(
         msg
     })?;
     {
-        let mut rbs = state.rbs.lock().expect("rbs mutex poisoned");
+        let mut rbs = state.rbs();
         if let Some(element) = rbs.elements.get_mut(element_id) {
             element.dirty = false;
         }
@@ -471,7 +463,7 @@ pub struct RbsDirtyRecord {
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value, clippy::unused_async)]
 pub async fn rbs_dirty(state: State<'_, AppState>) -> Result<Vec<RbsDirtyRecord>, String> {
-    let rbs = state.rbs.lock().expect("rbs mutex poisoned");
+    let rbs = state.rbs();
     let mut out: Vec<RbsDirtyRecord> = rbs
         .elements
         .iter()

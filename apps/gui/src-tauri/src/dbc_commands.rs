@@ -29,9 +29,7 @@ use crate::{sys_error, sys_info, sys_warn};
 /// authoritative set after a change.
 fn dbc_list(state: &AppState) -> Vec<DbcInfo> {
     state
-        .databases
-        .lock()
-        .expect("databases mutex poisoned")
+        .databases()
         .iter()
         .map(|d| DbcInfo {
             dbc_path: d.path.clone(),
@@ -79,7 +77,7 @@ pub(crate) fn add_dbc(
     }
     let db = Arc::new(db);
     let reloaded = {
-        let mut list = state.databases.lock().expect("databases mutex poisoned");
+        let mut list = state.databases();
         if let Some(slot) = list.iter_mut().find(|d| d.path == path) {
             slot.db = db;
             true
@@ -99,9 +97,7 @@ pub(crate) fn add_dbc(
         // Start watching this file's parent dir for FS
         // events (only on first-load — a reload is already watched).
         if let Some(w) = state
-            .dbc_watcher
-            .lock()
-            .expect("dbc_watcher mutex poisoned")
+            .dbc_watcher()
             .as_mut()
         {
             w.watch_dbc(std::path::Path::new(&path));
@@ -126,7 +122,7 @@ pub(crate) fn set_dbc_buses(
     buses: Vec<String>,
 ) -> Vec<DbcInfo> {
     {
-        let mut list = state.databases.lock().expect("databases mutex poisoned");
+        let mut list = state.databases();
         if let Some(slot) = list.iter_mut().find(|d| d.path == path) {
             slot.buses = buses;
         }
@@ -142,7 +138,7 @@ pub(crate) fn set_dbc_buses(
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn remove_dbc(app: AppHandle, state: State<'_, AppState>, path: String) -> Vec<DbcInfo> {
     let removed = {
-        let mut list = state.databases.lock().expect("databases mutex poisoned");
+        let mut list = state.databases();
         let before = list.len();
         list.retain(|d| d.path != path);
         before != list.len()
@@ -150,9 +146,7 @@ pub(crate) fn remove_dbc(app: AppHandle, state: State<'_, AppState>, path: Strin
     if removed {
         sys_info!(&app, "dbc", "removed DBC {path}");
         if let Some(w) = state
-            .dbc_watcher
-            .lock()
-            .expect("dbc_watcher mutex poisoned")
+            .dbc_watcher()
             .as_mut()
         {
             w.unwatch_dbc(std::path::Path::new(&path));
@@ -169,7 +163,7 @@ pub(crate) fn remove_dbc(app: AppHandle, state: State<'_, AppState>, path: Strin
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn clear_dbcs(app: AppHandle, state: State<'_, AppState>) {
     let count = {
-        let mut list = state.databases.lock().expect("databases mutex poisoned");
+        let mut list = state.databases();
         let n = list.len();
         list.clear();
         n
@@ -180,9 +174,7 @@ pub(crate) fn clear_dbcs(app: AppHandle, state: State<'_, AppState>) {
         rbs::refresh_all_elements(&app);
     }
     if let Some(w) = state
-        .dbc_watcher
-        .lock()
-        .expect("dbc_watcher mutex poisoned")
+        .dbc_watcher()
         .as_mut()
     {
         w.unwatch_all();
@@ -211,7 +203,7 @@ pub(crate) fn list_signals(
     state: State<'_, AppState>,
     project_buses: Vec<String>,
 ) -> Vec<SignalDescriptorRecord> {
-    let dbs = state.databases.lock().expect("databases mutex poisoned");
+    let dbs = state.databases();
     // Shared enumeration with `fetch_signal_page` (per-bus scope
     // expansion + descriptor-key dedup), so the picker catalog and the
     // signal-view rows can't disagree about what exists.
@@ -250,7 +242,7 @@ pub(crate) fn list_signals(
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn list_dbc_content(state: State<'_, AppState>) -> Vec<DbcContentRecord> {
-    let dbs = state.databases.lock().expect("databases mutex poisoned");
+    let dbs = state.databases();
     dbs.iter()
         .map(|loaded| DbcContentRecord {
             dbc_path: loaded.path.clone(),
@@ -365,22 +357,19 @@ pub(crate) fn list_value_tables(
     extended: bool,
     signal_name: String,
 ) -> Vec<ipc::ValueTableEntryRecord> {
-    let dbs = state.databases.lock().expect("databases mutex poisoned");
-    for loaded in dbs.iter() {
-        if let Some(rows) = loaded
-            .db
-            .value_table_for_signal(message_id, extended, &signal_name)
-        {
-            return rows
-                .iter()
-                .map(|e| ipc::ValueTableEntryRecord {
-                    raw: e.raw,
-                    label: e.label.clone(),
+    state
+        .first_dbc(|db| {
+            db.value_table_for_signal(message_id, extended, &signal_name)
+                .map(|rows| {
+                    rows.iter()
+                        .map(|e| ipc::ValueTableEntryRecord {
+                            raw: e.raw,
+                            label: e.label.clone(),
+                        })
+                        .collect()
                 })
-                .collect();
-        }
-    }
-    Vec::new()
+        })
+        .unwrap_or_default()
 }
 
 /// Run a batch of signal edits through
@@ -432,9 +421,8 @@ pub(crate) fn describe_message_inner(
     extended: bool,
 ) -> Option<ipc::MessageDescriptorRecord> {
     let id = cannet_core::CanId::new(message_id, extended).ok()?;
-    let dbs = state.databases.lock().expect("databases mutex poisoned");
-    for loaded in dbs.iter() {
-        if let Some(desc) = loaded.db.describe_message(id) {
+    state.first_dbc(|db| {
+        db.describe_message(id).map(|desc| {
             let signals: Vec<ipc::SignalDescriptorRichRecord> = desc
                 .signals
                 .into_iter()
@@ -458,7 +446,7 @@ pub(crate) fn describe_message_inner(
             } else {
                 Some(ipc::CalcFieldsSpec::from_config(&desc.calc_fields))
             };
-            return Some(ipc::MessageDescriptorRecord {
+            ipc::MessageDescriptorRecord {
                 name: desc.name,
                 expected_len: desc.expected_len,
                 is_fd: desc.is_fd,
@@ -468,10 +456,9 @@ pub(crate) fn describe_message_inner(
                 uses_extended_mux: desc.uses_extended_mux,
                 calc_fields,
                 signals,
-            });
-        }
-    }
-    None
+            }
+        })
+    })
 }
 
 /// Decode the current payload bytes of a hypothetical (panel-side)
@@ -498,16 +485,12 @@ pub(crate) fn decode_frame_inner(
     data: &[u8],
 ) -> Option<ipc::DecodedFrameRecord> {
     let id = cannet_core::CanId::new(message_id, extended).ok()?;
-    let dbs = state.databases.lock().expect("databases mutex poisoned");
-    for loaded in dbs.iter() {
-        if let Some(decoded) = loaded.db.decode_raw(id, data) {
-            return Some(ipc::DecodedFrameRecord {
-                name: decoded.name.to_string(),
-                signals: decoded.signals.iter().map(signal_to_wire).collect(),
-            });
-        }
-    }
-    None
+    state.first_dbc(|db| {
+        db.decode_raw(id, data).map(|decoded| ipc::DecodedFrameRecord {
+            name: decoded.name.to_string(),
+            signals: decoded.signals.iter().map(signal_to_wire).collect(),
+        })
+    })
 }
 
 pub(crate) fn encode_frame_inner(
@@ -520,15 +503,16 @@ pub(crate) fn encode_frame_inner(
     let mode = if extended { "extended" } else { "standard" };
     let id = cannet_core::CanId::new(message_id, extended)
         .map_err(|e| format!("invalid {mode} id: {e}"))?;
-    let dbs = state.databases.lock().expect("databases mutex poisoned");
     let mut bytes = base;
     let signal_pairs: Vec<(&str, f64)> = signals
         .iter()
         .map(|s| (s.name.as_str(), s.physical))
         .collect();
-    for loaded in dbs.iter() {
-        if let Some(report) = loaded.db.encode_frame(id, &signal_pairs, &mut bytes) {
-            let skipped = report
+    // `first_dbc` writes the encoded payload into `bytes` in place and
+    // yields the skipped-signal list; `bytes` is consumed after the scan.
+    let skipped = state.first_dbc(|db| {
+        db.encode_frame(id, &signal_pairs, &mut bytes).map(|report| {
+            report
                 .skipped
                 .into_iter()
                 .map(|s| ipc::EncodeFrameSkipped {
@@ -539,13 +523,15 @@ pub(crate) fn encode_frame_inner(
                         cannet_dbc::SkipReason::SizeOutOfRange => "size_out_of_range",
                     },
                 })
-                .collect();
-            return Ok(ipc::EncodeFrameResponse { bytes, skipped });
-        }
+                .collect()
+        })
+    });
+    match skipped {
+        Some(skipped) => Ok(ipc::EncodeFrameResponse { bytes, skipped }),
+        None => Err(format!(
+            "no DBC matches id 0x{message_id:X} (extended={extended})"
+        )),
     }
-    Err(format!(
-        "no DBC matches id 0x{message_id:X} (extended={extended})"
-    ))
 }
 
 fn signal_to_wire(sig: &DecodedSignal<'_>) -> SignalRecord {

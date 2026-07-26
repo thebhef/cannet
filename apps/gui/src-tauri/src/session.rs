@@ -135,9 +135,7 @@ impl AppState {
     pub(crate) fn register_session(&self, address: String, session: RemoteSession) -> Result<(), String> {
         {
             let mut guard = self
-                .remote_sessions
-                .lock()
-                .expect("remote_sessions mutex poisoned");
+                .remote_sessions();
             if guard.contains_key(&address) {
                 return Err(format!("already connected to {address}"));
             }
@@ -152,9 +150,7 @@ impl AppState {
     /// (stop flags, handle drops) outside the lock.
     pub(crate) fn unregister_sessions(&self, address: Option<&str>) -> Vec<(String, RemoteSession)> {
         let mut guard = self
-            .remote_sessions
-            .lock()
-            .expect("remote_sessions mutex poisoned");
+            .remote_sessions();
         match address {
             Some(addr) => guard
                 .remove(addr)
@@ -171,9 +167,7 @@ impl AppState {
     /// the first one out must not tear the whole session down.
     pub(crate) fn remove_vbus_session_if_dead(&self, address: &str) -> bool {
         let mut guard = self
-            .remote_sessions
-            .lock()
-            .expect("remote_sessions mutex poisoned");
+            .remote_sessions();
         let session_dead = guard.get(address).is_none_or(|s| match &s.tx {
             SessionTx::Vbus(sinks) => sinks.is_empty(),
             SessionTx::Remote(_) => false,

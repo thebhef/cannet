@@ -497,9 +497,7 @@ pub fn run() {
             let watcher = DbcWatcher::new(app.handle());
             let state: State<'_, AppState> = app.state();
             *state
-                .dbc_watcher
-                .lock()
-                .expect("dbc_watcher mutex poisoned") = Some(watcher);
+                .dbc_watcher() = Some(watcher);
             Ok(())
         })
         .build(tauri::generate_context!())
