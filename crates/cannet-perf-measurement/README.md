@@ -207,6 +207,8 @@ rate gates below are what close that blind spot.
 | `flush_ms_mean` | ≤ 25 ms (absolute) |
 | `tx_late_ms_mean` | ≤ 18 ms (absolute) |
 | `flush_ms_max` / `tx_late_ms_max` | ≤ 2× baseline + 25 ms (inert until a baseline carries them) |
+| `rx_gap_p95_ratio_worst` | ≤ 2× baseline + 0.5 (inert until a baseline carries it) |
+| `rx_gap_short_frac_worst` | ≤ 2× baseline + 0.03 (inert until a baseline carries it) |
 
 The memory rows (ADR 0031) gate the renderer's growth — the JS heap
 (`jsheap_mb`, reported by the frontend) and the WebView renderer process RSS
@@ -245,6 +247,19 @@ baseline-relative with a generous +25 ms floor so a one-off writeback
 hiccup still doesn't flap, and stay **inert until a baseline carries the
 fields** — regenerate the baseline (post-fix, on quiet hardware) to arm
 them.
+
+The `rx_gap_*` rows gate **on-wire receive cadence** (ADR 0039): the
+report's `rx_gap` block reduces the capture window's per-id receive
+gaps — from the receiving side's device-stamped timestamps, so it is
+ground truth for bunching — to the worst per-id `p95 / median` gap
+ratio (the lateness tail) and the worst fraction of gaps under half the
+median (the catch-up-pair signal). Every other row is blind to this
+class: a burst refills throughput within the second, and `tx_late_ms`
+measures the cause side only — the pre-stagger cohort regression sat at
+~3.5 / ~28% (healthy rig ~1.2 / ~2%) with all other rows green. Needs a
+two-node rig (real rx); a sim-only run reports no `rx_gap`, its
+baseline holds 0, and the rows stay **inert until a baseline carries
+them**.
 
 The expected-rate gate is a **two-sided band**: the sim emits a deterministic
 schedule (515 frames/s for ev-demo, echoed both directions), so a shortfall

@@ -185,6 +185,82 @@ pub struct RenderReport {
     pub counters_per_s: BTreeMap<String, Spread>,
     /// Per-gauge spread over the run.
     pub gauges: BTreeMap<String, GaugeSpread>,
+    /// On-wire receive cadence (worst per-id gap stats) over the capture
+    /// window, from the trace store's device-stamped rx timestamps.
+    /// `None` when no periodic rx id qualified (sim-only run, no
+    /// hardware). Stamped by the capture-finish command, not
+    /// [`summarize`] — it comes from the store, not the samples.
+    pub rx_gap: Option<RxGapReport>,
+}
+
+/// On-wire receive cadence over the capture (ADR 0031 / ADR 0039): the
+/// worst per-id gap statistics from the receiving side's device-stamped
+/// timestamps. This is the ground-truth bunching signal the throughput
+/// and lateness gauges are blind to — a catch-up burst refills `rx_fps`
+/// within the second, and `tx_late_ms` measures the cause side only.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct RxGapReport {
+    /// Ids that qualified (enough gaps, periodic-band median).
+    pub ids_measured: usize,
+    /// Worst per-id `p95 gap / median gap` — the lateness-tail ratio.
+    /// ~1.2 on a healthy rig; the pre-stagger cohort regression sat ~3.5.
+    pub worst_p95_ratio: f64,
+    /// `bus/0xID` that produced `worst_p95_ratio` (context for humans).
+    pub worst_p95_ratio_id: String,
+    /// Worst per-id fraction of gaps under half the median — the
+    /// catch-up-pair (bunching) signal. ~2% healthy; ~28% pre-stagger.
+    pub worst_short_frac: f64,
+    /// `bus/0xID` that produced `worst_short_frac`.
+    pub worst_short_frac_id: String,
+}
+
+/// Gaps needed before an id's statistics are trusted.
+const RX_GAP_MIN_GAPS: usize = 50;
+/// Periodic band for the median gap: 1 ms ..= 2 s. Outside it the id is
+/// event-driven or too slow to judge in a one-minute capture.
+const RX_GAP_PERIODIC_BAND_NS: std::ops::RangeInclusive<u64> = 1_000_000..=2_000_000_000;
+
+/// Reduce per-id rx timestamp series to the worst-id gap statistics, or
+/// `None` when nothing qualifies (no hardware rx in the capture). Pure —
+/// the capture-finish command feeds it the capture window's frames.
+#[must_use]
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub fn rx_gap_stats(series: &std::collections::HashMap<(String, u32), Vec<u64>>) -> Option<RxGapReport> {
+    let mut report: Option<RxGapReport> = None;
+    for ((bus, id), ts) in series {
+        if ts.len() < RX_GAP_MIN_GAPS + 1 {
+            continue;
+        }
+        let mut gaps: Vec<u64> = ts.windows(2).map(|w| w[1].saturating_sub(w[0])).collect();
+        gaps.sort_unstable();
+        let median = gaps[gaps.len() / 2];
+        if !RX_GAP_PERIODIC_BAND_NS.contains(&median) {
+            continue;
+        }
+        let p95_idx = (((gaps.len() as f64) * 0.95) as usize).min(gaps.len() - 1);
+        let p95 = gaps[p95_idx];
+        let ratio = p95 as f64 / median as f64;
+        let short = gaps.iter().filter(|&&g| g < median / 2).count();
+        let short_frac = short as f64 / gaps.len() as f64;
+        let label = format!("{bus}/0x{id:X}");
+        let r = report.get_or_insert(RxGapReport {
+            ids_measured: 0,
+            worst_p95_ratio: 0.0,
+            worst_p95_ratio_id: String::new(),
+            worst_short_frac: 0.0,
+            worst_short_frac_id: String::new(),
+        });
+        r.ids_measured += 1;
+        if ratio > r.worst_p95_ratio {
+            r.worst_p95_ratio = ratio;
+            r.worst_p95_ratio_id.clone_from(&label);
+        }
+        if short_frac > r.worst_short_frac {
+            r.worst_short_frac = short_frac;
+            r.worst_short_frac_id = label;
+        }
+    }
+    report
 }
 
 /// Reduce a capture's per-second samples to a [`RenderReport`]. Pure —
@@ -284,6 +360,7 @@ pub fn summarize(label: &str, samples: &[DiagSample]) -> RenderReport {
         tx_fps: rate_report(samples, "fps.tx"),
         counters_per_s,
         gauges,
+        rx_gap: None,
     }
 }
 
@@ -393,6 +470,9 @@ struct Capture {
     /// armed. The frontend can't read process RSS, so the host stamps the
     /// `mem.*_mb` split onto each pushed sample (ADR 0031).
     mem: Option<crate::crash::MemSampler>,
+    /// Trace-store length when the capture armed — the finish walk reads
+    /// only the frames appended during the capture (`rx_gap`).
+    store_len_at_start: usize,
 }
 
 /// What [`diag_capture_finish`] returns: the reduced report and, when a
@@ -409,6 +489,7 @@ pub struct FinishedCapture {
 pub fn diag_capture_start(
     state: State<'_, DiagState>,
     metrics: State<'_, HostMetrics>,
+    app_state: State<'_, crate::AppState>,
     label: String,
 ) {
     let mut cap = state.inner.lock().expect("diag mutex poisoned");
@@ -416,6 +497,7 @@ pub fn diag_capture_start(
     cap.label = label;
     cap.samples.clear();
     cap.mem = Some(crate::crash::MemSampler::new());
+    cap.store_len_at_start = app_state.trace_store.len();
     // Discard any max accrued before the capture so the first sample isn't
     // inflated by a pre-capture flush / scheduler stall.
     let _ = metrics.drain();
@@ -455,18 +537,24 @@ pub fn diag_push(
 #[allow(clippy::needless_pass_by_value)]
 pub fn diag_capture_finish(
     state: State<'_, DiagState>,
+    app_state: State<'_, crate::AppState>,
     path: Option<String>,
 ) -> Result<FinishedCapture, String> {
-    let (label, samples) = {
+    let (label, samples, store_len_at_start) = {
         let mut cap = state.inner.lock().expect("diag mutex poisoned");
         cap.active = false;
         cap.mem = None;
-        (cap.label.clone(), std::mem::take(&mut cap.samples))
+        (
+            cap.label.clone(),
+            std::mem::take(&mut cap.samples),
+            cap.store_len_at_start,
+        )
     };
     if samples.is_empty() {
         return Err("no diagnostic samples were captured".into());
     }
-    let report = summarize(&label, &samples);
+    let mut report = summarize(&label, &samples);
+    report.rx_gap = rx_gap_stats(&capture_rx_series(&app_state.trace_store, store_len_at_start));
     let written = match path {
         Some(p) => {
             let json = serde_json::to_string_pretty(&report)
@@ -480,6 +568,33 @@ pub fn diag_capture_finish(
         report,
         path: written,
     })
+}
+
+/// Collect the capture window's rx timestamps grouped per `(bus, id)`,
+/// walking the store in bounded chunks (the window is minutes of frames;
+/// never materialize it whole).
+fn capture_rx_series(
+    store: &crate::TraceStore,
+    from: usize,
+) -> std::collections::HashMap<(String, u32), Vec<u64>> {
+    const CHUNK: usize = 65_536;
+    let mut series: std::collections::HashMap<(String, u32), Vec<u64>> =
+        std::collections::HashMap::new();
+    let end = store.len();
+    let mut i = from.min(end);
+    while i < end {
+        let hi = (i + CHUNK).min(end);
+        for f in store.slice(i, hi) {
+            if f.direction == cannet_core::Direction::Rx {
+                series
+                    .entry((f.bus_id.unwrap_or_default(), f.id))
+                    .or_default()
+                    .push(f.timestamp_ns);
+            }
+        }
+        i = hi;
+    }
+    series
 }
 
 /// Self-driving perf automation config, parsed from the launch args
@@ -579,6 +694,71 @@ mod tests {
 
     fn approx(a: f64, b: f64) {
         assert!((a - b).abs() < 1e-6, "{a} != {b}");
+    }
+
+    /// Build a per-id rx timestamp series from a gap sequence (ms).
+    fn series(gaps_ms: &[u64]) -> Vec<u64> {
+        let mut ts = vec![0u64];
+        for g in gaps_ms {
+            ts.push(ts.last().unwrap() + g * 1_000_000);
+        }
+        ts
+    }
+
+    #[test]
+    fn rx_gap_flags_the_bursty_id_not_the_healthy_one() {
+        // Healthy: 10 ms grid with mild jitter. Bursty: the cohort
+        // signature — runs of sub-ms catch-up gaps then a long stall.
+        let healthy: Vec<u64> = series(&[10; 200]);
+        let bursty: Vec<u64> = series(
+            &std::iter::repeat_n([2u64, 2, 2, 2, 42], 40)
+                .flatten()
+                .collect::<Vec<_>>(),
+        );
+        let mut m = std::collections::HashMap::new();
+        m.insert(("pack".to_string(), 0x100u32), healthy);
+        m.insert(("pack".to_string(), 0x200u32), bursty);
+        let r = rx_gap_stats(&m).expect("two qualifying ids");
+        assert_eq!(r.ids_measured, 2);
+        // Bursty id: median 2 ms, p95 = 42 ms → ratio 21; short gaps
+        // (<1 ms) none — but the healthy id must not be the worst.
+        assert!(r.worst_p95_ratio > 5.0, "ratio {}", r.worst_p95_ratio);
+        assert_eq!(r.worst_p95_ratio_id, "pack/0x200");
+        // Short-gap fraction: bursty id's 2 ms gaps sit under half its
+        // *nominal* (the p95-side stall makes median 2 ms — so short is
+        // judged against the healthy grid below instead).
+        assert!(r.worst_short_frac_id.ends_with("0x200") || r.worst_short_frac <= 0.05);
+    }
+
+    #[test]
+    fn rx_gap_short_fraction_catches_catch_up_pairs() {
+        // 10 ms grid where every 10th frame arrives 1 ms after its
+        // predecessor (the catch-up double): median stays 10 ms, and
+        // ~10% of gaps are < 5 ms.
+        let mut gaps = Vec::new();
+        for _ in 0..40 {
+            gaps.extend_from_slice(&[10u64; 8]);
+            gaps.extend_from_slice(&[19, 1]);
+        }
+        let mut m = std::collections::HashMap::new();
+        m.insert(("pack".to_string(), 0x300u32), series(&gaps));
+        let r = rx_gap_stats(&m).expect("qualifying id");
+        assert!(
+            (r.worst_short_frac - 0.1).abs() < 0.02,
+            "short_frac {}",
+            r.worst_short_frac
+        );
+        assert_eq!(r.worst_short_frac_id, "pack/0x300");
+    }
+
+    #[test]
+    fn rx_gap_ignores_sparse_and_aperiodic_ids() {
+        let mut m = std::collections::HashMap::new();
+        // Too few gaps to judge.
+        m.insert(("a".to_string(), 1u32), series(&[10; 5]));
+        // Aperiodic: median gap beyond the periodic band.
+        m.insert(("a".to_string(), 2u32), series(&[5_000; 100]));
+        assert!(rx_gap_stats(&m).is_none());
     }
 
     #[test]
