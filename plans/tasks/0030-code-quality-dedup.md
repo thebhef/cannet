@@ -162,9 +162,11 @@ next to `DOCK_COMPONENTS` (App.tsx:174).
     and all four production senders hand-roll one-frame batches; the
     lib.rs doc ("Application code never deals with batches directly")
     is false. → route senders through it or delete it and fix the doc.
-- **11. trace_store internals** — `append()` triplicates the
-    rate-sampling block and the aggregate tracker bypasses `RateTrack`
-    (502–546, 271–289); three parallel `HashMap<FrameKey, _>` where one
+- **11. trace_store internals** — the sample-due/prune rate-sampling
+    block now appears four times (aggregate, per-bus, per-direction in
+    `append()`, and `RateEstimate::observe` since the 2026-07-25
+    windowed per-id rewrite) and the aggregate tracker bypasses
+    `RateTrack`; three parallel `HashMap<FrameKey, _>` where one
     keyed struct belongs (312–323); the scratch-breakdown facade
     reverse-engineers other modules' private file naming (1189–1279 —
     have each module report its own disk usage instead).
