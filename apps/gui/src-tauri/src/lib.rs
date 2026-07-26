@@ -240,6 +240,12 @@ const TRACE_GREW_TICK: Duration = Duration::from_millis(100);
 /// cadence.
 const TRACE_FLUSH_TICK: Duration = Duration::from_secs(2);
 
+/// How often the transmit scheduler re-checks routes for periodics
+/// parked on a down bus (ADR 0039). The `RoutesChanged` hint makes the
+/// common resume (reconnect) immediate; this probe bounds the resume
+/// latency if a route-up path ever misses the hint.
+const PARKED_ROUTE_PROBE: Duration = Duration::from_secs(1);
+
 /// How many trailing frames to ship with each `trace-grew` event so the
 /// auto-scrolling trace view can paint its live tail without a fetch
 /// round-trip. Comfortably larger than any plausible visible-row count
@@ -4105,18 +4111,20 @@ impl SchedDiag {
 /// Emission timing semantics are ADR 0039: each message's first fire
 /// carries a deterministic phase offset
 /// ([`transmit_scheduler::stagger_offset`]) so same-period messages
-/// don't fire as one aligned cohort, and a missed period is dropped
-/// (grid realigned via [`next_tick_deadline`]), never burst.
+/// don't fire as one aligned cohort; a missed period is dropped (grid
+/// realigned via [`next_tick_deadline`]), never burst; and a message
+/// whose bus route is down is *parked* — no preparation (counter
+/// frozen), no trace rows, no per-period wakes — until the route
+/// returns (`RoutesChanged` hint, [`PARKED_ROUTE_PROBE`] backstop).
 ///
-/// On each due entry it asks the registry [`fire_info`] what to emit
-/// (re-read every tick, so live payload / period edits land on the next
-/// emission — property 4), skips the actual transmit when the target bus
-/// has no live session (no tx-confirm while disconnected; the
-/// schedule keeps ticking and resumes on reconnect), and reschedules on
-/// a fixed-rate grid via [`next_tick_deadline`] (work time absorbed, no
-/// catch-up burst). A `fire_info` of `None` (stopped, parked, or
-/// removed) drops the entry from the schedule. The thread exits when
-/// every [`transmit_scheduler::TransmitScheduler`] sender is dropped
+/// On each due entry it checks the route, then asks the registry
+/// [`fire_info`] what to emit (re-read every tick, so live payload /
+/// period edits land on the next emission — property 4), and
+/// reschedules on a fixed-rate grid via [`next_tick_deadline`] (work
+/// time absorbed, no catch-up burst). A `fire_info` of `None`
+/// (stopped, parked to Manual, or removed) drops the entry from the
+/// schedule. The thread exits when every
+/// [`transmit_scheduler::TransmitScheduler`] sender is dropped
 /// (app shutdown).
 fn run_transmit_scheduler(
     app: &AppHandle,
@@ -4133,9 +4141,15 @@ fn run_transmit_scheduler(
     let mut diag = SchedDiag::new(std::time::Instant::now());
     loop {
         let planned = schedule.next_deadline();
-        let wait = planned.map_or(idle, |d| {
+        let mut wait = planned.map_or(idle, |d| {
             d.saturating_duration_since(std::time::Instant::now())
         });
+        // While anything is parked on a down route, wake at least every
+        // probe interval to re-check — the backstop for a missed
+        // RoutesChanged hint (ADR 0039).
+        if schedule.any_parked() {
+            wait = wait.min(PARKED_ROUTE_PROBE);
+        }
         let recv = rx.recv_timeout(wait);
         let now = std::time::Instant::now();
         match recv {
@@ -4149,8 +4163,8 @@ fn run_transmit_scheduler(
                 schedule.schedule(id, now + offset);
             }
             Ok(SchedulerCmd::Stop(id)) => schedule.unschedule(&id),
-            // Route-up hint: nothing parked yet — the parked-set resume
-            // lands with the route-down park behaviour.
+            // Route-up hint: nothing to do here — the resume attempt
+            // below runs on every wake while anything is parked.
             Ok(SchedulerCmd::RoutesChanged) => {}
             // A timeout is a scheduled wake: record how late past the
             // deadline `recv_timeout` actually returned (the jitter probe).
@@ -4164,25 +4178,42 @@ fn run_transmit_scheduler(
         }
 
         let state: State<'_, AppState> = app.state();
+
+        // Parked resume attempt (ADR 0039): on every wake while anything
+        // is parked — the RoutesChanged hint and the probe timeout both
+        // land here.
+        if schedule.any_parked() {
+            resume_parked_routes(&state, &mut schedule);
+        }
+
         let fire_start = std::time::Instant::now();
-        // Pass 1 — collect this tick's due requests (calculated fields
-        // freshly applied by `fire_info`) and reschedule each message.
+        // Pass 1 — route-gate, prep, reschedule. The route check comes
+        // *before* `fire_info` so a route-down message parks with its
+        // counter untouched and no trace row (ADR 0039).
+        let due_entries = schedule.take_due(now);
         let mut due: Vec<ipc::TransmitRequest> = Vec::new();
-        for (id, fired_at) in schedule.take_due(now) {
-            let Some((request, cycle_ms)) = state
-                .transmit_frames
-                .lock()
-                .expect("transmit_frames mutex poisoned")
-                .fire_info(&id)
-            else {
-                // Stopped, parked, or removed — drop it from the schedule.
-                schedule.unschedule(&id);
-                continue;
-            };
-            due.push(request);
-            let period = Duration::from_millis(u64::from(cycle_ms));
-            let next = next_tick_deadline(fired_at, std::time::Instant::now(), period);
-            schedule.reschedule(&id, next);
+        if !due_entries.is_empty() {
+            let routed = routes_up(&state, &due_entries);
+            for ((id, fired_at), has_route) in due_entries.into_iter().zip(routed) {
+                if !has_route {
+                    schedule.park(&id);
+                    continue;
+                }
+                let Some((request, cycle_ms)) = state
+                    .transmit_frames
+                    .lock()
+                    .expect("transmit_frames mutex poisoned")
+                    .fire_info(&id)
+                else {
+                    // Stopped, parked to Manual, or removed — drop it.
+                    schedule.unschedule(&id);
+                    continue;
+                };
+                due.push(request);
+                let period = Duration::from_millis(u64::from(cycle_ms));
+                let next = next_tick_deadline(fired_at, std::time::Instant::now(), period);
+                schedule.reschedule(&id, next);
+            }
         }
         let fired = due.len();
         // Pass 2 — emit the tick's frames, one `FrameBatch` per
@@ -4220,6 +4251,74 @@ fn run_transmit_scheduler(
             diag.record_fire(fire_start.elapsed(), fired);
         }
         diag.maybe_emit(std::time::Instant::now(), &metrics);
+    }
+}
+
+/// Whether each due entry's target bus currently has a live route —
+/// checked *before* `fire_info` so a route-down message parks with its
+/// counter untouched and no trace row (ADR 0039). An id with no
+/// registry row reports `true`: it falls through to `fire_info`'s
+/// None, which drops it from the schedule.
+fn routes_up(state: &AppState, due: &[(String, std::time::Instant)]) -> Vec<bool> {
+    // Lock order: `transmit_frames` before `remote_sessions`.
+    let registry = state
+        .transmit_frames
+        .lock()
+        .expect("transmit_frames mutex poisoned");
+    let sessions = state
+        .remote_sessions
+        .lock()
+        .expect("remote_sessions mutex poisoned");
+    due.iter()
+        .map(|(id, _)| match registry.bus_id(id) {
+            Some(bus) => resolve_bus_route(&sessions, &bus).is_some(),
+            None => true,
+        })
+        .collect()
+}
+
+/// Re-check routes for every parked periodic (ADR 0039). A recovered
+/// id re-anchors at now + its stagger offset; an id whose registry row
+/// is gone (removed while the route was down) is dropped for good; the
+/// rest stay parked until the next hint or probe.
+fn resume_parked_routes(
+    state: &AppState,
+    schedule: &mut transmit_scheduler::PeriodicSchedule,
+) {
+    // Lock order: `transmit_frames` before `remote_sessions`.
+    let resumable: Vec<(String, Option<u32>)> = {
+        let registry = state
+            .transmit_frames
+            .lock()
+            .expect("transmit_frames mutex poisoned");
+        let sessions = state
+            .remote_sessions
+            .lock()
+            .expect("remote_sessions mutex poisoned");
+        schedule
+            .parked_ids()
+            .into_iter()
+            .filter_map(|id| match (registry.bus_id(&id), registry.cycle_ms(&id)) {
+                (Some(bus), Some(cycle)) => resolve_bus_route(&sessions, &bus)
+                    .is_some()
+                    .then_some((id, Some(cycle))),
+                // Row gone — nothing left to resume.
+                _ => Some((id, None)),
+            })
+            .collect()
+    };
+    let resume_now = std::time::Instant::now();
+    for (id, cycle_ms) in resumable {
+        match cycle_ms {
+            Some(cycle_ms) => {
+                let offset = transmit_scheduler::stagger_offset(
+                    &id,
+                    Duration::from_millis(u64::from(cycle_ms)),
+                );
+                schedule.resume(&id, resume_now + offset);
+            }
+            None => schedule.unschedule(&id),
+        }
     }
 }
 

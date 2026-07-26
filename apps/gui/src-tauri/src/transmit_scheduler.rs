@@ -155,6 +155,10 @@ pub struct PeriodicSchedule {
     heap: BinaryHeap<Reverse<Pending>>,
     /// id → the seq of its one live queued entry. Absent ⇒ unscheduled.
     live: HashMap<String, u64>,
+    /// Ids parked on route loss (ADR 0039): still running as far as the
+    /// registry is concerned, but off the heap — no per-period wakes, no
+    /// preparation — until [`Self::resume`] puts them back.
+    parked: std::collections::HashSet<String>,
     seq: u64,
 }
 
@@ -165,8 +169,10 @@ impl PeriodicSchedule {
     }
 
     /// Start (or restart) `id`, due at `at`. Any previously-queued entry
-    /// for `id` is invalidated by the fresh generation.
+    /// for `id` is invalidated by the fresh generation; a parked `id` is
+    /// unparked (a fresh Start supersedes the outage).
     pub fn schedule(&mut self, id: String, at: Instant) {
+        self.parked.remove(&id);
         self.seq += 1;
         let seq = self.seq;
         self.live.insert(id.clone(), seq);
@@ -177,10 +183,40 @@ impl PeriodicSchedule {
         }));
     }
 
-    /// Stop `id`. Its queued heap entry (if any) becomes stale and is
-    /// skipped when popped.
+    /// Stop `id` — parked or not. Its queued heap entry (if any) becomes
+    /// stale and is skipped when popped.
     pub fn unschedule(&mut self, id: &str) {
         self.live.remove(id);
+        self.parked.remove(id);
+    }
+
+    /// Park `id` on route loss (ADR 0039): drop it from the firing
+    /// schedule but remember it, so a route-up can [`Self::resume`] it.
+    pub fn park(&mut self, id: &str) {
+        self.live.remove(id);
+        self.parked.insert(id.to_string());
+    }
+
+    /// Whether anything is parked — while true, the driver arms the
+    /// slow route-retry probe.
+    #[must_use]
+    pub fn any_parked(&self) -> bool {
+        !self.parked.is_empty()
+    }
+
+    /// Snapshot of the parked ids, for the driver's route re-check.
+    #[must_use]
+    pub fn parked_ids(&self) -> Vec<String> {
+        self.parked.iter().cloned().collect()
+    }
+
+    /// Put a parked `id` back on the schedule, first fire at `at`. A
+    /// no-op for ids that aren't parked (stopped or removed while the
+    /// route was down).
+    pub fn resume(&mut self, id: &str, at: Instant) {
+        if self.parked.remove(id) {
+            self.schedule(id.to_string(), at);
+        }
     }
 
     /// Re-queue `id`'s next firing at `at`, keeping its current
@@ -339,6 +375,70 @@ mod tests {
         assert_eq!(ids(&due), ["fast"]);
         // slow isn't due yet.
         assert!(s.take_due(base + Duration::from_millis(2)).is_empty());
+    }
+
+    #[test]
+    fn parked_message_stops_firing_until_resumed() {
+        let base = Instant::now();
+        let mut s = PeriodicSchedule::new();
+        s.schedule("a".into(), base);
+        assert_eq!(ids(&s.take_due(base)), ["a"]);
+
+        // Route went down: park instead of rescheduling.
+        s.park("a");
+        assert!(s.any_parked());
+        assert_eq!(s.parked_ids(), ["a"]);
+        assert_eq!(s.next_deadline(), None);
+        assert!(s.take_due(base + Duration::from_secs(10)).is_empty());
+
+        // Route back: resume fires once at the given instant, then
+        // reschedules normally.
+        let resume_at = base + Duration::from_secs(11);
+        s.resume("a", resume_at);
+        assert!(!s.any_parked());
+        let due = s.take_due(resume_at);
+        assert_eq!(ids(&due), ["a"]);
+        s.reschedule("a", resume_at + Duration::from_millis(10));
+        assert_eq!(
+            s.next_deadline(),
+            Some(resume_at + Duration::from_millis(10))
+        );
+    }
+
+    #[test]
+    fn stop_while_parked_clears_it() {
+        let base = Instant::now();
+        let mut s = PeriodicSchedule::new();
+        s.schedule("a".into(), base);
+        s.park("a");
+        s.unschedule("a");
+        assert!(!s.any_parked());
+        // A later resume for the stopped id is a no-op.
+        s.resume("a", base + Duration::from_secs(1));
+        assert!(s.take_due(base + Duration::from_secs(2)).is_empty());
+    }
+
+    #[test]
+    fn start_while_parked_supersedes_the_parked_entry() {
+        let base = Instant::now();
+        let mut s = PeriodicSchedule::new();
+        s.schedule("a".into(), base);
+        s.park("a");
+        // Fresh Start while parked: unparks, fires exactly once.
+        s.schedule("a".into(), base + Duration::from_millis(5));
+        assert!(!s.any_parked());
+        let due = s.take_due(base + Duration::from_millis(5));
+        assert_eq!(ids(&due), ["a"]);
+        assert!(s.take_due(base + Duration::from_millis(5)).is_empty());
+    }
+
+    #[test]
+    fn resume_ignores_ids_that_were_never_parked() {
+        let base = Instant::now();
+        let mut s = PeriodicSchedule::new();
+        s.resume("ghost", base);
+        assert_eq!(s.next_deadline(), None);
+        assert!(s.take_due(base).is_empty());
     }
 
     #[test]
