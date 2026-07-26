@@ -26,8 +26,6 @@ import {
   areasFromParams,
   cursorModeFromRaw,
   fmtCount,
-  fmtFreq,
-  fmtVal,
   maxRateFromRaw,
   measKeysFromRaw,
   signalRefKey,
@@ -44,21 +42,18 @@ import {
 import { followXWindow } from "./followWindow";
 import { showPointsFromRaw, type ShowPointsMode } from "./plotPoints";
 import { Combobox, type ComboboxOption } from "./Combobox";
-import { formatDurationSeconds, formatElapsed, fracDigitsForSpan } from "./format";
+import { formatElapsed, fracDigitsForSpan } from "./format";
 import { usePanelCommands } from "./panelCommands";
 import { SourcesMenuSection } from "./SourcesPicker";
 import { useElementPanel, useElementSources } from "./useElementPanel";
 import { useDismissableMenu } from "./useDismissableMenu";
 import { busLookup } from "./traceColumns";
 import {
-  MEASUREMENT_QUANTITIES,
   type MeasurementKey,
   type PanelHover,
   type Series,
   centerWindowOn,
   nextHover,
-  statsOver,
-  valueAt,
 } from "./plotCursors";
 
 /**
@@ -184,6 +179,7 @@ import {
 } from "./plotAreaLayout";
 import { diagCount } from "./diag"; // DIAG
 import { PlotArea } from "./PlotArea";
+import { MeasurementMenu, PlotMeasurementStrip } from "./PlotMeasurements";
 
 
 export function PlotPanel(props: IDockviewPanelProps) {
@@ -1136,7 +1132,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
     ],
     [notes, truncation],
   );
-  const dt = cursorX.a != null && cursorX.b != null ? cursorX.b - cursorX.a : null;
   // Cursor *positions* render in the trace's elapsed-time format
   // (ADR 0024 — one string for one timeline position across views), with
   // precision adapted to the shared x-window's span like the axis ticks.
@@ -1446,75 +1441,15 @@ export function PlotPanel(props: IDockviewPanelProps) {
       </div>
 
       {measEnabled && (
-        <div className="plot-meas-strip">
-          {measKeys.includes("a") && <MeasCell k="A (t)" v={fmtPos(cursorX.a)} cls="gold" />}
-          {measKeys.includes("b") && <MeasCell k="B (t)" v={fmtPos(cursorX.b)} cls="pink" />}
-          {measKeys.includes("dt") && <MeasCell k="Δt" v={formatDurationSeconds(dt)} />}
-          {measKeys.includes("freq") && <MeasCell k="1/Δt" v={dt ? fmtFreq(1 / dt) : "—"} />}
-          {plottedSignals.map(({ key, ref, color, areaId }) => {
-            const s = seriesFor(areaId, key) ?? { t: [], v: [] };
-            const va = cursorX.a != null ? valueAt(s, cursorX.a) : null;
-            const vb = cursorX.b != null ? valueAt(s, cursorX.b) : null;
-            const span = cursorX.a != null && cursorX.b != null ? statsOver(s, cursorX.a, cursorX.b) : null;
-            const name = `${ref.messageName}.${ref.signalName}`;
-            return (
-              <span key={key} style={{ display: "contents" }}>
-                {measKeys.includes("valA") && <MeasCell k={`${name} @A`} v={fmtVal(va)} swatch={color} />}
-                {measKeys.includes("valB") && <MeasCell k={`${name} @B`} v={fmtVal(vb)} swatch={color} />}
-                {measKeys.includes("delta") && (
-                  <MeasCell k={`${name} Δ`} v={va != null && vb != null ? fmtVal(vb - va) : "—"} swatch={color} />
-                )}
-                {measKeys.includes("min") && <MeasCell k={`${name} min`} v={fmtVal(span?.min ?? null)} swatch={color} />}
-                {measKeys.includes("max") && <MeasCell k={`${name} max`} v={fmtVal(span?.max ?? null)} swatch={color} />}
-                {measKeys.includes("mean") && <MeasCell k={`${name} mean`} v={fmtVal(span?.mean ?? null)} swatch={color} />}
-              </span>
-            );
-          })}
-        </div>
+        <PlotMeasurementStrip
+          measKeys={measKeys}
+          cursorX={cursorX}
+          plottedSignals={plottedSignals}
+          seriesFor={seriesFor}
+          fmtPos={fmtPos}
+        />
       )}
 
-    </div>
-  );
-}
-
-function MeasCell({ k, v, cls, swatch }: { k: string; v: string; cls?: string; swatch?: string }) {
-  return (
-    <div className="plot-meas-cell">
-      <div className="plot-meas-k">
-        {swatch && <span className="plot-signal-swatch" style={{ background: swatch }} />}
-        {k}
-      </div>
-      <div className={`plot-meas-v${cls ? ` ${cls}` : ""}`}>{v}</div>
-    </div>
-  );
-}
-
-function MeasurementMenu({
-  measKeys,
-  onChange,
-}: {
-  measKeys: MeasurementKey[];
-  onChange: (k: MeasurementKey[]) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const wrapRef = useDismissableMenu<HTMLDivElement>(open, () => setOpen(false));
-  const toggle = (k: MeasurementKey) => onChange(measKeys.includes(k) ? measKeys.filter((x) => x !== k) : [...measKeys, k]);
-  return (
-    <div className="plot-meas-menu" ref={wrapRef}>
-      <button onClick={() => setOpen((v) => !v)} aria-expanded={open}>
-        measurements ▾
-      </button>
-      {open && (
-        <div className="plot-meas-menu-pop" role="menu">
-          {MEASUREMENT_QUANTITIES.map((q) => (
-            <label key={q.key} className="checkbox">
-              <input type="checkbox" checked={measKeys.includes(q.key)} onChange={() => toggle(q.key)} />
-              {q.label}
-              {q.perTrace ? " (per trace)" : ""}
-            </label>
-          ))}
-        </div>
-      )}
     </div>
   );
 }
