@@ -42,7 +42,7 @@ the area is already test-covered; each region's tests move with it.
 | ~~2650~~ | ~~`crates/cannet-dbc/src/lib.rs`~~ | **Done — see sketch below** |
 | ~~2441~~ | ~~`apps/gui/src/App.tsx`~~ | **Done — see sketch below** |
 | ~~2158~~ | ~~`apps/gui/src-tauri/src/trace_store.rs`~~ | **Done — see sketch below** |
-| 2093 | `apps/gui/src-tauri/src/rbs.rs` | directory split along its own section banners (43/257/655/1132): file model / runtime reconciliation / view shaping / 15 commands. Pure relocation — `generate_handler` tolerates re-exported commands; helpers stay `pub(super)` |
+| ~~2093~~ | ~~`apps/gui/src-tauri/src/rbs.rs`~~ | **Done — see sketch below** |
 | 1642 | `apps/gui/src/TransmitPanel.tsx` | 13 components in one file — extract the row/editor subcomponents |
 | 1603 | `apps/gui/src/ProjectPanel.tsx` | connection-management UI (lines 556–1603, two thirds of the file) → its own file |
 | 1045 | `servers/cannet-python-can/.../server.py` | four modules: gRPC service / shared-interface + pumps / enumeration-watch / helpers |
@@ -301,6 +301,68 @@ in `mod.rs`. **Deviation from the prior two splits (lib.rs, cannet-dbc),
 which kept one wholesale `tests.rs`:** here the tests were split
 per-module as the god-file table directs, which stays cleaner because
 each submodule's tests reach only that submodule's items.
+
+**`rbs.rs` sketch**: directory split along its own section banners —
+file model / runtime reconciliation / view shaping / 15 commands. Pure
+relocation.
+
+**Done (task-0030/16-split-rbs).** `rbs.rs` (2,184 lines by the time of
+the split) became a directory module `rbs/` — a directory split, not
+flat siblings, matching the trace_store precedent: the four regions
+share private helpers, and as descendants of `mod.rs` the submodules
+reach them via `pub(super)` without widening anything to `pub(crate)`.
+Landed as staged commits, each green (`cargo test`/`clippy -p
+cannet-gui` + the workspace pre-commit hook). The four regions split
+**cleanly** — the "pure relocation" claim held; no entanglement forced
+a compromise. Final production+test line counts:
+
+- `mod.rs` (69) — the module doc plus wiring: the four `mod`
+  declarations and the public re-exports.
+- `file_model.rs` (317) — the "File model" banner: `RbsFile` / `RbsBus`
+  / `RbsEcu` / `RbsMessage` / `RbsValue`, `RBS_SCHEMA_VERSION`, and
+  `parse_message_key` / `format_message_key`, with the three file-model
+  parse/key tests.
+- `runtime.rs` (976) — the "Runtime state", "Buffer reconstruction",
+  and "Registration and schedule reconciliation" banners merged (the
+  doc's single "runtime reconciliation" region): `RbsElementState` /
+  `RbsRuntime`, `row_id`, `reconstruct_payload`,
+  `for_each_scoped_message` + `dbc_scoped_to`, `rebuild_element_rows`,
+  `sync_schedules`, `notify_schedule_change`, `refresh_element`,
+  `refresh_all_elements`, plus the eight runtime tests + DBC fixtures.
+- `view.rs` (379) — the "The view query" banner: the `RbsView` /
+  `RbsBusView` / `RbsEcuView` / `RbsMessageView` / `RbsSignalView` data
+  model, `MessageViewInputs`, `build_message_view`, and the `rbs_view`
+  / `rbs_crc_algorithms` query commands.
+- `commands.rs` (523) — the "IPC commands" banner: the other thirteen
+  `#[tauri::command]`s + the `edit_file` / `entry_mut` / `write_rbs_file`
+  / `write_element` helpers + `RbsTarget` / `RbsDirtyRecord`, with the
+  non-atomic-save regression test.
+
+**Deviations / notes.** (1) The doc's `43/257/655/1132` offsets and its
+"view shaping / 15 commands" labels described a since-drifted layout: the
+current file's banners run **IPC commands (13) then The view query (2
+more commands + the view types + the shaper)**. The honest banner-aligned
+split therefore keeps the two view-query commands with
+`build_message_view` in `view.rs` rather than prying them out to satisfy
+a literal "all 15 in one module" — so the fifteen commands live 13-in-
+`commands.rs` / 2-in-`view.rs`, all re-exported. (2) `generate_handler`
+tolerating re-exported commands needed one explicit step the doc
+understated: tauri's `#[command]` emits hidden `__cmd__NAME` /
+`__tauri_command_name_NAME` helpers next to each fn, and because lib.rs
+names commands through the `rbs` module (`generate_handler![rbs::rbs_load,
+…]`), those helpers must be `pub use`-re-exported alongside each command
+fn — a plain fn re-export alone does not resolve. (3) `seeded_file`
+moved into `runtime.rs` (its only non-test caller is
+`RbsRuntime::ensure_seeded`) rather than staying in the commands banner
+it was physically filed under — its honest home, same judgment the
+lib.rs split used for the local-virtual-bus commands. (4) Tests were
+split **per-module** (like the trace_store split, and as the god-file
+table directs) rather than into one wholesale `tests.rs`; each
+submodule's tests reach only that submodule's items. **`view.rs` has no
+tests** — `rbs_view` / `build_message_view` were never directly unit-
+tested (they are exercised only indirectly), so the view region carries
+no test module; not a regression, just a pre-existing coverage gap noted
+here.
 
 ## Duplicate implementations to consolidate
 
