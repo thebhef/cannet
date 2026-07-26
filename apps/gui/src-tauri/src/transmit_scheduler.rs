@@ -32,6 +32,10 @@ pub enum SchedulerCmd {
     Start(String),
     /// Stop firing `id`.
     Stop(String),
+    /// A bus route may have come up (a session registered). Best-effort
+    /// hint so parked periodics resume promptly instead of waiting for
+    /// the slow retry probe; the driver re-checks routes on receipt.
+    RoutesChanged,
 }
 
 /// Handle the command layer uses to talk to the scheduler thread.
@@ -66,6 +70,17 @@ impl TransmitScheduler {
             .lock()
             .expect("transmit scheduler sender poisoned")
             .send(SchedulerCmd::Stop(id));
+    }
+
+    /// Hint that a bus route may have come up. Best-effort (see
+    /// [`Self::start`]); correctness doesn't depend on it — the driver's
+    /// retry probe covers a missed hint.
+    pub fn routes_changed(&self) {
+        let _ = self
+            .tx
+            .lock()
+            .expect("transmit scheduler sender poisoned")
+            .send(SchedulerCmd::RoutesChanged);
     }
 }
 

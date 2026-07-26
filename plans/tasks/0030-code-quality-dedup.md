@@ -142,6 +142,12 @@ next to `DOCK_COMPONENTS` (App.tsx:174).
    `connect_local_vbus` (2911–3050), including a redundant re-lock to
    re-read data just inserted. → shared registration fn; collapses
    naturally into the `session.rs` split.
+   **Partial (2026-07-25, task 29b):** the session-*map* mutation is
+   now a choke point — `AppState::register_session` /
+   `unregister_sessions` / `remove_vbus_session_if_dead`; no raw
+   insert/remove at call sites (29b needed one place to emit the
+   scheduler's route-up hint). Remaining: the wider skeleton (subscribe
+   flow, pump spawn, status events) and the redundant re-lock.
 - **9. bridge_client.rs re-implements cannet-client's session
    machinery** — real duplication (subscribe envelope, allocated-id
    wait, pumps, twin error types), **but** the consolidation is gated:

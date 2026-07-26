@@ -339,6 +339,69 @@ struct AppState {
     active_project_id: Mutex<Option<uuid::Uuid>>,
 }
 
+/// Session-map mutation seam. Every insert/remove of `remote_sessions`
+/// goes through these — never through a raw lock at a call site — so
+/// route up-transitions have one place to hint the transmit scheduler
+/// and the map's lifecycle is auditable in one screen.
+impl AppState {
+    /// Insert a freshly-connected session. Fails (leaving the existing
+    /// entry untouched, and dropping `session` — which shuts its worker
+    /// down) if `address` already has one. On success, hints the
+    /// transmit scheduler that a route may have come up so parked
+    /// periodics resume promptly.
+    fn register_session(&self, address: String, session: RemoteSession) -> Result<(), String> {
+        {
+            let mut guard = self
+                .remote_sessions
+                .lock()
+                .expect("remote_sessions mutex poisoned");
+            if guard.contains_key(&address) {
+                return Err(format!("already connected to {address}"));
+            }
+            guard.insert(address, session);
+        }
+        self.transmit_scheduler.routes_changed();
+        Ok(())
+    }
+
+    /// Remove one session (`Some(addr)`) or all of them (`None`),
+    /// returning what was removed so the caller can run teardown
+    /// (stop flags, handle drops) outside the lock.
+    fn unregister_sessions(&self, address: Option<&str>) -> Vec<(String, RemoteSession)> {
+        let mut guard = self
+            .remote_sessions
+            .lock()
+            .expect("remote_sessions mutex poisoned");
+        match address {
+            Some(addr) => guard
+                .remove(addr)
+                .map(|s| (addr.to_string(), s))
+                .into_iter()
+                .collect(),
+            None => guard.drain().collect(),
+        }
+    }
+
+    /// Vbus pump-exit teardown: remove `address` only if its session is
+    /// dead (entry already gone, or a vbus session with no sinks left).
+    /// Returns whether the session is dead — pumps exit out of order and
+    /// the first one out must not tear the whole session down.
+    fn remove_vbus_session_if_dead(&self, address: &str) -> bool {
+        let mut guard = self
+            .remote_sessions
+            .lock()
+            .expect("remote_sessions mutex poisoned");
+        let session_dead = guard.get(address).is_none_or(|s| match &s.tx {
+            SessionTx::Vbus(sinks) => sinks.is_empty(),
+            SessionTx::Remote(_) => false,
+        });
+        if session_dead {
+            guard.remove(address);
+        }
+        session_dead
+    }
+}
+
 /// The build's version string: `git describe --tags` as captured by
 /// `build.rs` (vergen), e.g. `v0.1.0` on a release tag or
 /// `v0.1.0-3-gabc1234` for a build a few commits past one. Falls back to
@@ -3222,47 +3285,40 @@ async fn connect_remote_server(
     let (handle, receiver, transmitter) = source.into_parts();
     let stop = Arc::new(AtomicBool::new(false));
 
-    {
-        let state: State<'_, AppState> = app.state();
-        let mut guard = state
-            .remote_sessions
-            .lock()
-            .expect("remote_sessions mutex poisoned");
-        if guard.contains_key(&address) {
-            // Drop `handle` here, which sends shutdown to the worker we
-            // just spawned. The existing entry stays untouched.
-            let msg = format!("already connected to {address}");
-            sys_warn!(&app, "connection", "{msg}");
-            return Err(msg);
-        }
-        // Build the channel-to-bus mapping from the per-server
-        // bindings. We subscribed to exactly the bindings' interfaces
-        // above, so each subscription has a matching binding by
-        // interface id. Stored on the session so `transmit_frame` can
-        // use it for outgoing routing; the pump gets its own clone.
-        let channel_to_bus: Vec<(u8, Option<String>)> = subscriptions
-            .iter()
-            .filter_map(|sub| {
-                binding_lookup
-                    .iter()
-                    .find(|b| b.interface == sub.interface_id)
-                    .map(|b| (sub.channel, Some(b.bus_id.clone())))
-            })
-            .collect();
+    // Build the channel-to-bus mapping from the per-server
+    // bindings. We subscribed to exactly the bindings' interfaces
+    // above, so each subscription has a matching binding by
+    // interface id. Stored on the session so `transmit_frame` can
+    // use it for outgoing routing; the pump gets its own clone.
+    let channel_to_bus: Vec<(u8, Option<String>)> = subscriptions
+        .iter()
+        .filter_map(|sub| {
+            binding_lookup
+                .iter()
+                .find(|b| b.interface == sub.interface_id)
+                .map(|b| (sub.channel, Some(b.bus_id.clone())))
+        })
+        .collect();
 
-        guard.insert(
-            address.clone(),
-            RemoteSession {
-                handle: Some(handle),
-                tx: SessionTx::Remote(transmitter),
-                channel_to_interface: subscriptions
-                    .iter()
-                    .map(|s| (s.channel, s.interface_id.clone()))
-                    .collect(),
-                channel_to_bus,
-                stop: Arc::clone(&stop),
-            },
-        );
+    let state: State<'_, AppState> = app.state();
+    if let Err(msg) = state.register_session(
+        address.clone(),
+        RemoteSession {
+            handle: Some(handle),
+            tx: SessionTx::Remote(transmitter),
+            channel_to_interface: subscriptions
+                .iter()
+                .map(|s| (s.channel, s.interface_id.clone()))
+                .collect(),
+            channel_to_bus,
+            stop: Arc::clone(&stop),
+        },
+    ) {
+        // The rejected session (and its handle) was dropped inside
+        // `register_session`, which sends shutdown to the worker we
+        // just spawned. The existing entry stays untouched.
+        sys_warn!(&app, "connection", "{msg}");
+        return Err(msg);
     }
 
     // Pump's own copy of the same channel→bus list — pulled from the
@@ -3289,11 +3345,7 @@ async fn connect_remote_server(
             // Pump exited (server hung up or user disconnected). Drop
             // our entry so the address is free for a fresh connect.
             let state: State<'_, AppState> = app_for_thread.state();
-            state
-                .remote_sessions
-                .lock()
-                .expect("remote_sessions mutex poisoned")
-                .remove(&address_for_cleanup);
+            drop(state.unregister_sessions(Some(&address_for_cleanup)));
         })
         .map_err(|e| format!("failed to spawn remote pump thread: {e}"))?;
 
@@ -3392,26 +3444,18 @@ fn connect_local_vbus(
         pumps.push((channel, bus_id, source));
     }
 
-    {
-        let mut guard = state
-            .remote_sessions
-            .lock()
-            .expect("remote_sessions mutex poisoned");
-        if guard.contains_key(&address) {
-            let msg = format!("already connected to {address}");
-            sys_warn!(&app, "connection", "{msg}");
-            return Err(msg);
-        }
-        guard.insert(
-            address.clone(),
-            RemoteSession {
-                handle: None,
-                tx: SessionTx::Vbus(sinks),
-                channel_to_interface,
-                channel_to_bus: channel_to_bus.clone(),
-                stop: Arc::clone(&stop),
-            },
-        );
+    if let Err(msg) = state.register_session(
+        address.clone(),
+        RemoteSession {
+            handle: None,
+            tx: SessionTx::Vbus(sinks),
+            channel_to_interface,
+            channel_to_bus: channel_to_bus.clone(),
+            stop: Arc::clone(&stop),
+        },
+    ) {
+        sys_warn!(&app, "connection", "{msg}");
+        return Err(msg);
     }
 
     // Spawn one pump per participant. Each pump exits when the
@@ -3435,17 +3479,7 @@ fn connect_local_vbus(
                 // of order; the first one shouldn't tear the whole
                 // session down.
                 let state: State<'_, AppState> = app_for_thread.state();
-                let mut guard = state
-                    .remote_sessions
-                    .lock()
-                    .expect("remote_sessions mutex poisoned");
-                let session_dead = guard.get(&address_for_cleanup).is_none_or(|s| match &s.tx {
-                    SessionTx::Vbus(sinks) => sinks.is_empty(),
-                    SessionTx::Remote(_) => false,
-                });
-                if session_dead {
-                    guard.remove(&address_for_cleanup);
-                    drop(guard);
+                if state.remove_vbus_session_if_dead(&address_for_cleanup) {
                     sys_info!(
                         &app_for_thread,
                         "connection",
@@ -3516,16 +3550,7 @@ impl cannet_core::CanFrameSource for LocalSourceFrameSource {
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 fn disconnect_remote_server(app: AppHandle, state: State<'_, AppState>, address: Option<String>) {
-    let sessions: Vec<(String, RemoteSession)> = {
-        let mut guard = state
-            .remote_sessions
-            .lock()
-            .expect("remote_sessions mutex poisoned");
-        match address {
-            Some(addr) => guard.remove(&addr).map(|s| (addr, s)).into_iter().collect(),
-            None => guard.drain().collect(),
-        }
-    };
+    let sessions = state.unregister_sessions(address.as_deref());
     for (addr, session) in sessions {
         session.stop.store(true, Ordering::Relaxed);
         // Dropping the handle signals the worker to disconnect; the
@@ -4109,6 +4134,9 @@ fn run_transmit_scheduler(
         match recv {
             Ok(SchedulerCmd::Start(id)) => schedule.schedule(id, now),
             Ok(SchedulerCmd::Stop(id)) => schedule.unschedule(&id),
+            // Route-up hint: nothing parked yet — the parked-set resume
+            // lands with the route-down park behaviour.
+            Ok(SchedulerCmd::RoutesChanged) => {}
             // A timeout is a scheduled wake: record how late past the
             // deadline `recv_timeout` actually returned (the jitter probe).
             Err(RecvTimeoutError::Timeout) => {
@@ -5195,6 +5223,96 @@ mod tests {
             filter_index: Mutex::new(None),
             active_project_id: Mutex::new(None),
         }
+    }
+
+    /// A minimal vbus-flavoured session for exercising the session-map
+    /// seam without gRPC machinery.
+    fn seam_session(sinks: Vec<(u8, std::sync::Arc<std::sync::Mutex<cannet_core::LocalSink>>)>) -> RemoteSession {
+        RemoteSession {
+            handle: None,
+            tx: SessionTx::Vbus(sinks),
+            channel_to_interface: vec![(0, project::LOCAL_VBUS_INTERFACE.into())],
+            channel_to_bus: vec![(0, Some("p".into()))],
+            stop: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    #[test]
+    fn register_session_hints_routes_changed_and_rejects_duplicates() {
+        let (sched, rx) = transmit_scheduler::channel();
+        let mut state = test_state();
+        state.transmit_scheduler = sched;
+
+        state
+            .register_session("addr".into(), seam_session(Vec::new()))
+            .unwrap();
+        // A successful register hints the scheduler exactly once, so
+        // parked periodics can resume without waiting for the probe.
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            transmit_scheduler::SchedulerCmd::RoutesChanged
+        );
+
+        let err = state
+            .register_session("addr".into(), seam_session(Vec::new()))
+            .unwrap_err();
+        assert!(err.contains("already connected"), "got: {err}");
+        assert!(
+            rx.try_recv().is_err(),
+            "a rejected register must not hint routes-changed"
+        );
+        // The original entry survives the rejected duplicate.
+        assert!(state.remote_sessions.lock().unwrap().contains_key("addr"));
+    }
+
+    #[test]
+    fn unregister_sessions_removes_one_or_all() {
+        let state = test_state();
+        state
+            .register_session("a".into(), seam_session(Vec::new()))
+            .unwrap();
+        state
+            .register_session("b".into(), seam_session(Vec::new()))
+            .unwrap();
+
+        let removed = state.unregister_sessions(Some("a"));
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].0, "a");
+
+        let removed = state.unregister_sessions(None);
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].0, "b");
+        assert!(state.remote_sessions.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn remove_vbus_session_if_dead_keeps_live_sessions() {
+        let state = test_state();
+        state
+            .local_buses
+            .create("vbus", "v", cannet_core::BusConfig::classic_500k())
+            .unwrap();
+        let (sink, _source) = state.local_buses.attach_participant("vbus").unwrap();
+
+        // Live vbus session (one sink left): kept.
+        state
+            .register_session(
+                "live".into(),
+                seam_session(vec![(0, std::sync::Arc::new(std::sync::Mutex::new(sink)))]),
+            )
+            .unwrap();
+        assert!(!state.remove_vbus_session_if_dead("live"));
+        assert!(state.remote_sessions.lock().unwrap().contains_key("live"));
+
+        // Dead vbus session (no sinks): removed.
+        state
+            .register_session("dead".into(), seam_session(Vec::new()))
+            .unwrap();
+        assert!(state.remove_vbus_session_if_dead("dead"));
+        assert!(!state.remote_sessions.lock().unwrap().contains_key("dead"));
+
+        // Absent entry counts as dead (pumps may race teardown).
+        assert!(state.remove_vbus_session_if_dead("gone"));
     }
 
     pub(crate) fn loaded(path: &str, dbc_text: &str) -> LoadedDbc {
