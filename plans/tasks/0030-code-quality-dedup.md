@@ -176,12 +176,42 @@ next to `DOCK_COMPONENTS` (App.tsx:174).
    `bitwalk::walk`, consumed by decode/encode/calc; existing
    round-trip coverage (both byte orders, signed/float/offset/muxed)
    served as the green baseline.
-- **5. Frame/wire conversions in the wrong layer** —
+- ~~**5. Frame/wire conversions in the wrong layer** —
    `frame_to_object_bytes` (cannet-blf/src/lib.rs:505–675) hand-builds
    wire structs in the adapter crate root, duplicating header knowledge
    the format layer owns; extended/standard `CanId` construction is
    copy-pasted at 8 sites in gui lib.rs. → move framing down, one
-   `CanId` constructor helper.
+   `CanId` constructor helper.~~ **Done (task-0030/05-frame-conversions).**
+   Re-confirmed the header-duplication shape: `frame_to_object_bytes`
+   hand-assembled `CanMessage2`/`CanFdMessage64`/`CanErrorExt` plus
+   their `ObjectHeaderBase`/`ObjectHeaderV1` in the crate root. Added
+   `build_can_fd_message_64` and `build_can_error_ext` to
+   `format::can` alongside the pre-existing (but previously
+   test-only) `build_can_message2`, each with a round-trip test;
+   `frame_to_object_bytes` now only derives cannet-side framing values
+   (relative timestamp, 1-based channel, wire id, TX flag) and calls
+   the three builders. For the `CanId` half, the audit undercounted:
+   re-locating found **10** sites in gui lib.rs branching between
+   `CanId::extended`/`CanId::standard` on a runtime `extended` flag,
+   not 8 (`raw_to_core_frame`, the mux-extractor closure,
+   `decode_snapshot_frame`, `decode_raw_frame`,
+   `resolve_effective_calc`, `rebuild_verification`'s calc-override
+   scan, `build_and_confirm`, `describe_message_inner`,
+   `decode_frame_inner`, `encode_frame_inner`). Added
+   `CanId::new(raw, extended)` to cannet-core (TDD, its own unit
+   tests) as the one shared constructor and migrated all 10, each
+   keeping its existing error-handling idiom (per-mode `map_err`
+   message, `.ok()?`, or `let-else` on the `Result`).
+   `describe_message_inner`/`decode_frame_inner` had no prior direct
+   test coverage; added one regression test per function (both
+   addressing modes) ahead of the refactor. The other 8 sites were
+   already covered (BLF save round-trip, `decode_against` via the
+   snapshot/tx-confirm tests, and `resolve_effective_calc`'s /
+   `encode_frame_inner`'s own direct tests). **Not touched:** a
+   structurally identical `if extended {...} else {...}` pair inside
+   an `rbs.rs` unit test helper (`ev_zonal_fixture_...`'s `resolve`
+   closure) — out of this item's stated scope (gui lib.rs only) and
+   left as-is per the "surgical changes" rule.
 - **6. `record_matches` fabricates a `RawTraceFrame`** (gui
    lib.rs:1556–1575: dummy timestamp/direction/payload, undocumented
    "predicate only touches id/bus/record" invariant) to reuse
