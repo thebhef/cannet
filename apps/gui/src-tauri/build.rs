@@ -12,9 +12,11 @@ fn main() {
     // resource, and tauri-build fails on a missing resource path. Create
     // the (gitignored) directory so a fresh checkout can `tauri dev` —
     // at runtime dev builds prefer the sidecar source tree anyway (see
-    // `sidecar::plan_launch`). Release builds keep the hard failure:
-    // bundling an empty resource dir would ship an installer with no
-    // sidecar.
+    // `sidecar::plan_launch`). Release builds keep the hard failure as a
+    // backstop — `tauri build`'s beforeBuildCommand freezes the sidecar
+    // first, so hitting it means the freeze was bypassed (e.g. a direct
+    // `cargo build --release`), and bundling an empty resource dir would
+    // ship an installer with no sidecar.
     if std::env::var("PROFILE").as_deref() == Ok("debug") {
         let _ = std::fs::create_dir_all("sidecar-dist/cannet-python-can");
     }

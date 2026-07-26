@@ -204,7 +204,8 @@ All platforms need:
   `npm install -g pnpm`, or your OS package manager (`brew install pnpm`,
   `winget install pnpm`, etc.). Verify with `pnpm --version`.
 
-**Optional, for Phase 8 vendor drivers (Vector / Kvaser / PEAK):**
+**Required for `tauri build` (sidecar freeze) and Phase 8 vendor
+drivers (Vector / Kvaser / PEAK):**
 
 - [`uv`](https://docs.astral.sh/uv/) — manages the
   [`cannet-python-can`](servers/cannet-python-can/) sidecar's Python
@@ -271,6 +272,11 @@ pnpm --dir apps/gui install        # once, to fetch frontend deps
 pnpm --dir apps/gui tauri dev      # development build with hot reload
 pnpm --dir apps/gui tauri build    # release bundle
 ```
+
+`tauri build` first freezes the `cannet-python-can` sidecar
+([`scripts/build-sidecar.py`](scripts/build-sidecar.py), run by the
+`beforeBuildCommand` hook), so it needs `uv` on `PATH`. Rebuilds are
+incremental — an unchanged sidecar refreezes in seconds.
 
 `pnpm tauri dev` boots Vite, compiles the Rust host, and launches the
 cannet window. Use **Open BLF…** to pick a log; **Add DBC…** loads a
