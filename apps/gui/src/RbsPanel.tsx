@@ -45,6 +45,7 @@ import { ValidatedInput, parsePositiveInt } from "./ValidatedInput";
 import { useValueTables, type ValueTableSignal } from "./useValueTables";
 import { useElementPanel } from "./useElementPanel";
 import { useHostMirror } from "./useHostMirror";
+import { useDismissableMenu } from "./useDismissableMenu";
 
 /// Address of one message row, as the `rbs_*` commands take it.
 interface Target {
@@ -187,12 +188,7 @@ export function RbsPanel(props: IDockviewPanelProps) {
   // ---- modal / menu state ----
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [menu, setMenu] = useState<MenuState | null>(null);
-  useEffect(() => {
-    if (!menu) return;
-    const close = () => setMenu(null);
-    window.addEventListener("click", close);
-    return () => window.removeEventListener("click", close);
-  }, [menu]);
+  const menuRef = useDismissableMenu<HTMLDivElement>(menu != null, () => setMenu(null));
 
   const projectBusNames = project.buses.map((b) => b.name);
   const fileBusKeys = new Set(view?.buses.map((b) => b.key) ?? []);
@@ -299,6 +295,7 @@ export function RbsPanel(props: IDockviewPanelProps) {
 
       {menu && (
         <div
+          ref={menuRef}
           className="rbs-context-menu"
           style={{ left: menu.x, top: menu.y }}
           role="menu"
