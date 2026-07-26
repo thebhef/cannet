@@ -454,9 +454,6 @@ pub(crate) async fn scan_blf_channels(app: AppHandle, blf_path: String) -> Resul
     Ok(seen.into_iter().collect())
 }
 
-/// The loaded-DBC list as IPC records (each one's path + message
-/// count + bus scoping), in priority order. Returned from `add_dbc` /
-/// `remove_dbc` / `set_dbc_buses` so the frontend always gets the
 /// Drop every stored frame and start a fresh session timeline rooted
 /// at wall-clock now. The frontend's Clear button is the typical
 /// caller. Raising the session-start threshold to "now" is what makes
