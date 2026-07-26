@@ -28,7 +28,6 @@ import {
 } from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { Fzf } from "fzf";
 
@@ -45,6 +44,7 @@ import { Combobox } from "./Combobox";
 import { ValidatedInput, parsePositiveInt } from "./ValidatedInput";
 import { useValueTables, type ValueTableSignal } from "./useValueTables";
 import { useElementPanel } from "./useElementPanel";
+import { useHostMirror } from "./useHostMirror";
 
 /// Address of one message row, as the `rbs_*` commands take it.
 interface Target {
@@ -84,46 +84,23 @@ export function RbsPanel(props: IDockviewPanelProps) {
   const run = element?.kind === "rbs" ? element.run : false;
 
   // The assembled tree. `null` only until the host's `rbs_init` /
-  // `rbs_load` (driven by App's lifecycle effect) lands.
-  const [view, setView] = useState<RbsView | null>(null);
-  const refresh = useCallback(() => {
-    void invoke<RbsView | null>("rbs_view", { elementId })
-      .then(setView)
-      .catch(() => setView(null));
-  }, [elementId]);
-
-  useEffect(() => {
-    let active = true;
-    // Paint fast from whatever the host already has…
-    refresh();
-    const un = listen<string>("rbs-changed", (event) => {
-      if (event.payload === elementId || event.payload === "*") refresh();
-    });
-    // …and fetch again once the listener is attached: `listen` is
-    // async, and on app launch the host's `rbs_load` (driven by the
-    // project opening) can emit `rbs-changed` in the gap before
-    // registration — without this second fetch that emit is lost and
-    // the panel would sit empty until the next mutation.
-    void un.then(() => {
-      if (active) refresh();
-    });
-    return () => {
-      active = false;
-      void un.then((f) => f());
-    };
-  }, [refresh, elementId]);
-
-  // Live calculated fields: while the simulation runs, the fire path
-  // rewrites payload buffers (counter / CRC) without an `rbs-changed`
-  // per send. Poll at a display cadence so value cells track.
-  const anyRunning =
-    view?.run === true &&
-    view.buses.some((b) => b.ecus.some((e) => e.messages.some((m) => m.running)));
-  useEffect(() => {
-    if (!anyRunning) return;
-    const timer = window.setInterval(refresh, 500);
-    return () => window.clearInterval(timer);
-  }, [anyRunning, refresh]);
+  // `rbs_load` (driven by App's lifecycle effect) lands — re-fetched on
+  // `rbs-changed` (scoped to this element or a `"*"` broadcast) and,
+  // while the simulation runs, on a 500ms poll: the fire path rewrites
+  // payload buffers (counter / CRC) without an `rbs-changed` per send,
+  // so polling is what keeps value cells tracking.
+  const fetchView = useCallback(
+    () => invoke<RbsView | null>("rbs_view", { elementId }),
+    [elementId],
+  );
+  const { value: view } = useHostMirror<RbsView | null, string>({
+    fetch: fetchView,
+    fallback: null,
+    event: "rbs-changed",
+    matches: (payload) => payload === elementId || payload === "*",
+    pollWhile: (v) =>
+      v?.run === true && v.buses.some((b) => b.ecus.some((e) => e.messages.some((m) => m.running))),
+  });
 
   // ---- file picking ----
   const handleOpenFile = useCallback(async () => {
