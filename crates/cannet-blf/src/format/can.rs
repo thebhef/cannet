@@ -60,6 +60,25 @@ pub const CAN_ID_STANDARD_MASK: u32 = 0x0000_07FF;
 /// Mask for the extended-id portion of `id` (29 bits).
 pub const CAN_ID_EXTENDED_MASK: u32 = 0x1FFF_FFFF;
 
+/// True if a raw on-disk CAN `id` field marks a 29-bit extended id
+/// (bit 31 set). Shared by every CAN-class object's `is_extended_id()`.
+#[must_use]
+pub fn is_extended_can_id(id_raw: u32) -> bool {
+    (id_raw & CAN_ID_EXTENDED_BIT) != 0
+}
+
+/// Decode a raw on-disk CAN `id` field to its actual 11- or 29-bit
+/// value per [`is_extended_can_id`]. Shared by every CAN-class
+/// object's `can_id()`.
+#[must_use]
+pub fn decode_can_id(id_raw: u32) -> u32 {
+    if is_extended_can_id(id_raw) {
+        id_raw & CAN_ID_EXTENDED_MASK
+    } else {
+        id_raw & CAN_ID_STANDARD_MASK
+    }
+}
+
 /// Errors specific to decoding CAN-class objects.
 #[derive(Debug)]
 pub enum CanObjectError {
@@ -128,15 +147,11 @@ pub struct CanMessage2 {
 impl CanMessage2 {
     /// True if the source frame used a 29-bit extended id.
     pub fn is_extended_id(&self) -> bool {
-        (self.id_raw & CAN_ID_EXTENDED_BIT) != 0
+        is_extended_can_id(self.id_raw)
     }
     /// Decoded CAN id (low 11 or 29 bits per [`Self::is_extended_id`]).
     pub fn can_id(&self) -> u32 {
-        if self.is_extended_id() {
-            self.id_raw & CAN_ID_EXTENDED_MASK
-        } else {
-            self.id_raw & CAN_ID_STANDARD_MASK
-        }
+        decode_can_id(self.id_raw)
     }
     /// True iff the TX bit (0) is set in `flags`.
     pub fn is_tx(&self) -> bool {
@@ -310,14 +325,10 @@ pub struct CanMessage {
 
 impl CanMessage {
     pub fn is_extended_id(&self) -> bool {
-        (self.id_raw & CAN_ID_EXTENDED_BIT) != 0
+        is_extended_can_id(self.id_raw)
     }
     pub fn can_id(&self) -> u32 {
-        if self.is_extended_id() {
-            self.id_raw & CAN_ID_EXTENDED_MASK
-        } else {
-            self.id_raw & CAN_ID_STANDARD_MASK
-        }
+        decode_can_id(self.id_raw)
     }
     pub fn is_tx(&self) -> bool {
         (self.flags & CAN_FLAG_TX) != 0
@@ -450,14 +461,10 @@ pub struct CanFdMessage {
 
 impl CanFdMessage {
     pub fn is_extended_id(&self) -> bool {
-        (self.id_raw & CAN_ID_EXTENDED_BIT) != 0
+        is_extended_can_id(self.id_raw)
     }
     pub fn can_id(&self) -> u32 {
-        if self.is_extended_id() {
-            self.id_raw & CAN_ID_EXTENDED_MASK
-        } else {
-            self.id_raw & CAN_ID_STANDARD_MASK
-        }
+        decode_can_id(self.id_raw)
     }
     pub fn is_tx(&self) -> bool {
         (self.flags & CAN_FLAG_TX) != 0
@@ -636,14 +643,10 @@ pub struct CanFdMessage64 {
 
 impl CanFdMessage64 {
     pub fn is_extended_id(&self) -> bool {
-        (self.id_raw & CAN_ID_EXTENDED_BIT) != 0
+        is_extended_can_id(self.id_raw)
     }
     pub fn can_id(&self) -> u32 {
-        if self.is_extended_id() {
-            self.id_raw & CAN_ID_EXTENDED_MASK
-        } else {
-            self.id_raw & CAN_ID_STANDARD_MASK
-        }
+        decode_can_id(self.id_raw)
     }
     pub fn bitrate_switch(&self) -> bool {
         (self.flags & CAN_FD_64_FLAG_BRS) != 0
@@ -804,14 +807,10 @@ pub struct CanErrorExt {
 
 impl CanErrorExt {
     pub fn is_extended_id(&self) -> bool {
-        (self.id_raw & CAN_ID_EXTENDED_BIT) != 0
+        is_extended_can_id(self.id_raw)
     }
     pub fn can_id(&self) -> u32 {
-        if self.is_extended_id() {
-            self.id_raw & CAN_ID_EXTENDED_MASK
-        } else {
-            self.id_raw & CAN_ID_STANDARD_MASK
-        }
+        decode_can_id(self.id_raw)
     }
 }
 
