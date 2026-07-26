@@ -254,7 +254,7 @@ interface EnumValueCellProps {
 ///   3. neither → cancel the edit (keep the current value)
 ///
 /// The label table is loaded once per `(messageId, extended,
-/// signal_name)` via the shared `useValueTables` hook (task 30 item 14).
+/// signal_name)` via the shared `useValueTables` hook.
 function EnumValueCell({
   messageId,
   extended,

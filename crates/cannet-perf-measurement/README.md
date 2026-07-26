@@ -104,12 +104,12 @@ cargo run -p cannet-perf-measurement -- check         # exit non-zero on regress
 
 # Include the render tier: a self-driving GUI run (ADR 0031) writes a
 # RenderReport, which `baseline` stores and `check` compares. The expected
-# rx/tx rates gate the live ev-demo sim's throughput as a two-sided band
+# rx/tx rates gate the live example sim's throughput as a two-sided band
 # (too few *or* too many frames fails); they apply to the frontend tier
 # only — host modes gate ingest relative to their own baseline.
 cargo run -p cannet-perf-measurement -- \
     --frontend-report <render-report.json> \
-    --expected-rx-fps 515 --expected-tx-fps 515 check
+    --expected-rx-fps 1608 --expected-tx-fps 1608 check
 ```
 
 ### Per-mode flags
@@ -262,7 +262,9 @@ baseline holds 0, and the rows stay **inert until a baseline carries
 them**.
 
 The expected-rate gate is a **two-sided band**: the sim emits a deterministic
-schedule (515 frames/s for ev-demo, echoed both directions), so a shortfall
+schedule — the project DBCs' cycle-time sum, ~1608 frames/s for ev-zonal
+(the current frontend-baseline project), 515 for ev-demo, echoed both
+directions — so a shortfall
 *and* an overshoot are failures. It's baseline-independent — a uniformly-slow
 run is caught even against a slow baseline — whereas retention catches
 decay-with-buffer-growth regardless of the absolute level.

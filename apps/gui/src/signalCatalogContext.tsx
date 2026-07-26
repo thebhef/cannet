@@ -1,9 +1,9 @@
 // Signal catalog shared across every panel that lists (bus, message,
 // signal) triples the attached DBCs define — the plot picker, the
 // transmit row's DBC-name lookup, the colour-map target picker, the
-// signal view's manual-add picker (task 30 item 13). Each used to run
-// its own `list_signals` fetch + refetch-on-change; this fetches once
-// and every consumer reads it through `useSignalCatalog()`.
+// signal view's manual-add picker. Each used to run its own
+// `list_signals` fetch + refetch-on-change; this fetches once and
+// every consumer reads it through `useSignalCatalog()`.
 
 import {
   createContext,

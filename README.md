@@ -294,7 +294,7 @@ Pass the launch flags through to the binary (after a `--` separator under
 
 ```sh
 pnpm --dir apps/gui tauri dev -- -- \
-  --project examples/ev-demo/ev-demo.cannet_prj \
+  --project examples/ev-zonal/ev-zonal.cannet_prj \
   --connect-on-start \
   --perf-capture-secs 60 \
   --perf-out docs/performance-measurements/frontend/<date>-<hash>.json

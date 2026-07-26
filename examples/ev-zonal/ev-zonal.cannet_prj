@@ -2,7 +2,7 @@
   "schema_version": 7,
   "project_id": "7a1e9c2d-4b3f-4e8a-9c5d-2f6b8a0d1e37",
   "layout": {
-    "activeGroup": "5",
+    "activeGroup": "2",
     "grid": {
       "height": 2040,
       "orientation": "HORIZONTAL",
@@ -548,7 +548,7 @@
         "contentComponent": "trace",
         "id": "trace-chrono",
         "params": {
-          "autoScroll": true,
+          "autoScroll": false,
           "columns": [
             {
               "key": "idx",
@@ -617,7 +617,7 @@
   "elements": [
     {
       "config": {
-        "autoScroll": true,
+        "autoScroll": false,
         "columns": [
           {
             "key": "idx",
@@ -928,7 +928,6 @@
           "valB",
           "delta"
         ],
-        "noteColor": "#4ecbff",
         "showDiag": false,
         "showPoints": "auto",
         "signalsWidthPx": 340
@@ -1049,7 +1048,6 @@
           "valB",
           "delta"
         ],
-        "noteColor": "#4ecbff",
         "showDiag": false,
         "showPoints": "auto",
         "signalsWidthPx": 340
@@ -1263,13 +1261,13 @@
     {
       "kind": "remote",
       "server": "local",
-      "interface": "pcan:PCAN_USBBUS2(h:0x52, ch:0, uid:1)",
+      "interface": "pcan:PCAN_USBBUS1(h:0x51, ch:0, uid:0)",
       "bus_id": "pack"
     },
     {
       "kind": "remote",
       "server": "local",
-      "interface": "pcan:PCAN_USBBUS1(h:0x51, ch:0, uid:0)",
+      "interface": "pcan:PCAN_USBBUS2(h:0x52, ch:0, uid:1)",
       "bus_id": "zonal"
     }
   ],
