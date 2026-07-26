@@ -48,4 +48,10 @@ describe("useValueTables", () => {
     await waitFor(() => expect(result.current.size).toBe(1));
     expect(result.current.has(signalKey("b1", 100, false, "Good"))).toBe(true);
   });
+
+  it("an empty signal list never invokes and returns an empty map — the gate panels use to skip non-enum signals", async () => {
+    const { result } = renderHook(() => useValueTables([]));
+    expect(result.current.size).toBe(0);
+    expect(mockInvoke).not.toHaveBeenCalled();
+  });
 });
