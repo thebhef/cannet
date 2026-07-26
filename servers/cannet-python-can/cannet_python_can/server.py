@@ -431,9 +431,7 @@ class _SharedInterface:
             except Exception as e:  # noqa: BLE001
                 msg = f"reconfigure {self._channel_id} failed: {e}"
                 _log.warning(msg)
-                outboxes = list(self._outboxes)
-                for ob in outboxes:
-                    ob.put(_log_envelope(pb.LOG_LEVEL_ERROR, msg))
+                self._broadcast_error(pb.LOG_LEVEL_ERROR, msg, lock_held=True)
                 return
             self._channel = new
             self._reset_state_baseline_locked()
@@ -510,6 +508,22 @@ class _SharedInterface:
         with self._lock:
             return list(self._outboxes)
 
+    def _broadcast_error(
+        self, level: "pb.LogLevel.V", message: str, *, lock_held: bool = False
+    ) -> None:
+        """Fan a ``LogMessage`` envelope out to every subscribed outbox.
+
+        Builds the envelope once and puts it on each subscriber's outbox.
+        Callers that already hold :attr:`_lock` (only :meth:`reconfigure`,
+        which fans out mid-reconfigure) must pass ``lock_held=True``: the
+        helper then reads :attr:`_outboxes` directly instead of taking the
+        non-reentrant lock a second time, which would deadlock.
+        """
+        env = _log_envelope(level, message)
+        outboxes = list(self._outboxes) if lock_held else self._outbox_snapshot()
+        for ob in outboxes:
+            ob.put(env)
+
     def _rx_pump(self) -> None:
         """Reader thread. Stays minimal so PCAN's recv queue drains as
         fast as physically possible: block on ``ch.recv``, push the raw
@@ -576,9 +590,7 @@ class _SharedInterface:
                     next_stats_ns = now_ns + _RX_STATS_INTERVAL_NS
         except Exception as e:  # noqa: BLE001
             _log.warning("rx pump for %s crashed: %s", cid, e)
-            err = _log_envelope(pb.LOG_LEVEL_ERROR, f"rx pump for {cid} crashed: {e}")
-            for ob in self._outbox_snapshot():
-                ob.put(err)
+            self._broadcast_error(pb.LOG_LEVEL_ERROR, f"rx pump for {cid} crashed: {e}")
 
     def _pack_pump(self) -> None:
         """Packager thread. Drains the rx handoff queue, batches frames
@@ -604,13 +616,11 @@ class _SharedInterface:
                 dropped += 1
                 if dropped == 1:
                     _log.warning("dropping unencodable frame on %s: %s", cid, e)
-                    err = _log_envelope(
+                    self._broadcast_error(
                         pb.LOG_LEVEL_ERROR,
                         f"dropping unencodable frame on {cid}: {e} "
                         f"(further drops suppressed)",
                     )
-                    for ob in self._outbox_snapshot():
-                        ob.put(err)
                 return None
 
         try:
@@ -642,9 +652,9 @@ class _SharedInterface:
                     ob.put(env)
         except Exception as e:  # noqa: BLE001
             _log.warning("pack pump for %s crashed: %s", cid, e)
-            err = _log_envelope(pb.LOG_LEVEL_ERROR, f"pack pump for {cid} crashed: {e}")
-            for ob in self._outbox_snapshot():
-                ob.put(err)
+            self._broadcast_error(
+                pb.LOG_LEVEL_ERROR, f"pack pump for {cid} crashed: {e}"
+            )
 
     def _state_pump(self) -> None:
         cid = self._channel_id
