@@ -31,6 +31,7 @@ import { usePanelCommands } from "./panelCommands";
 import { SourcesMenuSection } from "./SourcesPicker";
 import { useElementPanel, useElementSources } from "./useElementPanel";
 import { useDismissableMenu } from "./useDismissableMenu";
+import { busLookup } from "./traceColumns";
 import {
   DEFAULT_MEASUREMENTS,
   MEASUREMENT_QUANTITIES,
@@ -1157,11 +1158,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     baseSecondsRef.current = baseSeconds;
   }, [baseSeconds]);
 
-  const busNameLookup = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const b of buses) m.set(b.id, b.name);
-    return m;
-  }, [buses]);
+  const busNameLookup = useMemo(() => busLookup(buses), [buses]);
 
   // Bus id → render colour (explicit `color`, else the palette colour
   // for the bus's list position) — mirrors `effectiveBusColor` so the
