@@ -394,6 +394,15 @@ export function App() {
   // leave the loser's "already connected" error as the visible status
   // (observed 2026-07-25: every self-driving run double-connected).
   const automationRanRef = useRef(false);
+  // Same family: dockview re-initializes under StrictMode, so `onReady`
+  // fires twice and the boot project-open would run twice — the second
+  // `open_project` re-adds every DBC and the dbc-changed refresh storm
+  // lands mid-boot (observed 2026-07-25: every self-driving run opened
+  // the project twice, and the storm racing live streaming blanked the
+  // app). Refs persist across StrictMode effect replays, so this
+  // one-shots the boot open; `applyProject` reads `dockApiRef.current`,
+  // so the surviving dockview instance still gets the layout.
+  const bootOpenRanRef = useRef(false);
   const interfaceBindingsRef = useRef<InterfaceBinding[]>([]);
   const sidecarAddressRef = useRef<string | null>(null);
   const handleConnectRef = useRef<() => Promise<void>>(() => Promise.resolve());
@@ -2527,6 +2536,10 @@ export function App() {
       // Perf self-driving flags (ADR 0031) override the last-opened
       // pointer: `--project` names the project deterministically. Fetch
       // the config first so the project it names is the one we open.
+      // One-shot (see `bootOpenRanRef`): the StrictMode re-init of
+      // dockview must not open the project a second time.
+      if (bootOpenRanRef.current) return;
+      bootOpenRanRef.current = true;
       void (async () => {
         let cfg: AutomationConfig | null = null;
         try {
@@ -2542,7 +2555,13 @@ export function App() {
         if (projectToOpen) {
           try {
             const p = await invoke<Project>("open_project", { path: projectToOpen });
-            void applyProject(p, projectToOpen);
+            // Awaited: the automation handoff below must not connect
+            // while the project is still applying — a capture started
+            // mid-apply flips views live and `applyProject`'s
+            // `setRegistry(clearedTrace)` then stomps them back to
+            // stopped (observed as every view born stopped in
+            // self-driving runs).
+            await applyProject(p, projectToOpen);
             rememberProject(projectToOpen);
             setDirty(false);
           } catch {
