@@ -165,6 +165,14 @@ def _state_name_to_proto(name: str) -> "pb.ControllerState.V":
 #: pump adds to a frame.
 _BATCH_FLUSH_NS = 5_000_000  # 5 ms
 
+#: Per-interface TX-worker queue depth. Deep enough to absorb a
+#: same-tick burst of periodics (hundreds of messages sharing a phase)
+#: without rejecting; shallow enough that sustained saturation surfaces
+#: as TX_REJECTED within ~a queue-drain rather than unbounded latency.
+_TX_QUEUE_MAX = 256
+#: How long ``transmit`` may block on a full TX queue before rejecting.
+_TX_ENQUEUE_GRACE_S = 0.25
+
 #: Hard cap on frames per ``FrameBatch`` envelope. Sized so a saturated
 #: multi-channel bus (~200k frames/s) still fits one batch inside the
 #: flush window — bigger means fewer envelopes per second, which is the
@@ -259,6 +267,19 @@ class _SharedInterface:
         # max_send). Reading both disambiguates where the stall lives.
         self._tx_last_done_ns = 0
         self._tx_max_gap_ns = 0
+        # Per-interface TX worker (measured 2026-07-25): ``ch.send`` costs
+        # ~0.3-1 ms (python-can + ctypes + GIL), and it used to run inline
+        # on the session's single gRPC reader thread - every interface's
+        # sends serialized there, saturating at ~1 kHz total and bursting
+        # the wire. ``transmit`` now enqueues; this worker owns the sends,
+        # so interfaces transmit in parallel and the reader never blocks
+        # on hardware. The queue is bounded: a full queue rejects the
+        # frame (TX_REJECTED) after a short block rather than stalling
+        # the reader indefinitely - saturation stays visible.
+        self._tx_queue: "queue.Queue[Optional[tuple[drv.Frame, queue.Queue[Optional[pb.Envelope]]]]]" = queue.Queue(
+            maxsize=_TX_QUEUE_MAX
+        )
+        self._tx_thread: Optional[threading.Thread] = None
 
     @property
     def channel_id(self) -> str:
@@ -313,30 +334,83 @@ class _SharedInterface:
         with self._lock:
             return bool(self._outboxes)
 
-    def transmit(self, frame: drv.Frame) -> None:
+    def transmit(
+        self,
+        frame: drv.Frame,
+        outbox: "queue.Queue[Optional[pb.Envelope]]",
+    ) -> None:
+        """Queue ``frame`` for the TX worker.
+
+        Raises :class:`drv.TxRejected` synchronously when the interface
+        is closed or the TX queue stays full past a short grace (the
+        worker is stalled or saturated). Send errors discovered on the
+        worker are routed back to ``outbox`` as ``TX_REJECTED``
+        envelopes.
+        """
         with self._lock:
             ch = self._channel
         if ch is None:
             raise drv.TxRejected(f"{self._channel_id}: interface closed")
-        # Time the send itself: a slow ``ch.send`` here means the
-        # driver's TX buffer is backing up (a sidecar-side stall),
-        # which the periodic tx-stats line surfaces as `max_send`.
-        t0 = time.monotonic_ns()
-        ch.send(frame)
-        done = time.monotonic_ns()
-        send_ns = done - t0
-        with self._tx_stats_lock:
-            self._tx_count += 1
-            self._tx_count_total += 1
-            if send_ns > self._tx_max_send_ns:
-                self._tx_max_send_ns = send_ns
-            # Idle since the previous send completed — the frame-delivery
-            # gap, uncontaminated by this or the prior send's duration.
-            if self._tx_last_done_ns:
-                gap_ns = t0 - self._tx_last_done_ns
-                if gap_ns > self._tx_max_gap_ns:
-                    self._tx_max_gap_ns = gap_ns
-            self._tx_last_done_ns = done
+        try:
+            self._tx_queue.put((frame, outbox), timeout=_TX_ENQUEUE_GRACE_S)
+        except queue.Full:
+            raise drv.TxRejected(
+                f"{self._channel_id}: tx queue full ({_TX_QUEUE_MAX} frames)"
+            ) from None
+
+    def _tx_pump(self) -> None:
+        """TX worker thread. Drains the per-interface queue and owns
+        every ``ch.send``: a slow send (device TX-buffer stall,
+        python-can overhead) delays only this interface's queue, never
+        the gRPC reader thread. Send timing feeds the periodic tx-stats
+        line: `max_send` is the worst single send in the interval,
+        `max_gap` the worst idle between sends (upstream delivery
+        burstiness) - reading both disambiguates where a stall lives."""
+        while True:
+            try:
+                item = self._tx_queue.get(timeout=0.1)
+            except queue.Empty:
+                if self._stop.is_set():
+                    return
+                continue
+            if item is None:
+                return
+            frame, outbox = item
+            ch = self._current_channel()
+            if ch is None:
+                outbox.put(
+                    _error_envelope(
+                        pb.Error.CODE_TX_REJECTED,
+                        f"{self._channel_id}: interface closed",
+                    )
+                )
+                continue
+            t0 = time.monotonic_ns()
+            try:
+                ch.send(frame)
+            except drv.TxRejected as e:
+                outbox.put(_error_envelope(pb.Error.CODE_TX_REJECTED, str(e)))
+                continue
+            except Exception as e:  # noqa: BLE001 - worker must survive
+                msg = f"send on {self._channel_id} failed: {e}"
+                _log.warning(msg)
+                outbox.put(_error_envelope(pb.Error.CODE_TX_REJECTED, msg))
+                continue
+            done = time.monotonic_ns()
+            send_ns = done - t0
+            with self._tx_stats_lock:
+                self._tx_count += 1
+                self._tx_count_total += 1
+                if send_ns > self._tx_max_send_ns:
+                    self._tx_max_send_ns = send_ns
+                # Idle since the previous send completed - the
+                # frame-delivery gap, uncontaminated by this or the
+                # prior send's duration.
+                if self._tx_last_done_ns:
+                    gap_ns = t0 - self._tx_last_done_ns
+                    if gap_ns > self._tx_max_gap_ns:
+                        self._tx_max_gap_ns = gap_ns
+                self._tx_last_done_ns = done
 
     def reconfigure(self, new_config: drv.OpenConfig) -> None:
         """Apply a new :class:`OpenConfig`.
@@ -374,10 +448,11 @@ class _SharedInterface:
         self._channel = self._driver.open(self._channel_id, self._config)
         self._stop.clear()
         self._reset_state_baseline_locked()
-        # Fresh handoff queue per open — a previous session's residue
+        # Fresh handoff queues per open — a previous session's residue
         # would otherwise prepend stale frames to the next one's first
-        # batch.
+        # batch / first send.
         self._rx_queue = queue.Queue()
+        self._tx_queue = queue.Queue(maxsize=_TX_QUEUE_MAX)
         self._rx_thread = threading.Thread(
             target=self._rx_pump,
             name=f"rx-{self._channel_id}",
@@ -393,12 +468,24 @@ class _SharedInterface:
             name=f"state-{self._channel_id}",
             daemon=True,
         )
+        self._tx_thread = threading.Thread(
+            target=self._tx_pump,
+            name=f"tx-{self._channel_id}",
+            daemon=True,
+        )
         self._rx_thread.start()
         self._pack_thread.start()
         self._state_thread.start()
+        self._tx_thread.start()
 
     def _close_locked(self) -> None:
         self._stop.set()
+        # Best-effort prompt wake for the TX worker; if the queue is
+        # full it exits on its next 100 ms stop-flag poll instead.
+        try:
+            self._tx_queue.put_nowait(None)
+        except queue.Full:
+            pass
         ch = self._channel
         self._channel = None
         if ch is not None:
@@ -665,12 +752,17 @@ class _InterfaceRegistry:
         if shared is not None:
             shared.reconfigure(config)
 
-    def transmit(self, channel_id: str, frame: drv.Frame) -> None:
+    def transmit(
+        self,
+        channel_id: str,
+        frame: drv.Frame,
+        outbox: "queue.Queue[Optional[pb.Envelope]]",
+    ) -> None:
         with self._lock:
             shared = self._interfaces.get(channel_id)
         if shared is None:
             raise KeyError(channel_id)
-        shared.transmit(frame)
+        shared.transmit(frame, outbox)
 
 
 #: How often a parked ``WatchInterfaces`` stream wakes to re-check
@@ -926,7 +1018,7 @@ class CannetServerService(pb_grpc.CannetServerServicer):
         for proto_frame in batch.frames:
             frame = _proto_to_frame(proto_frame)
             try:
-                self._registry.transmit(cid, frame)
+                self._registry.transmit(cid, frame, outbox)
             except drv.TxRejected as e:
                 outbox.put(_error_envelope(pb.Error.CODE_TX_REJECTED, str(e)))
             except KeyError:
