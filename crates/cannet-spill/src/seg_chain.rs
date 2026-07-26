@@ -79,6 +79,29 @@ pub(crate) fn geometric_push_grow(
     }
 }
 
+/// Drop every leading segment below `target_base`: unmap (drop the
+/// mapping) then delete its file — Windows forbids deleting a file while it
+/// is mapped, so the unmap must come first. `segs`/`seg_base` are the
+/// chain's segment `Vec` and its dropped-leading-segment count; `path(i)`
+/// names the file to remove for absolute segment `i`.
+///
+/// This is only the mechanical removal step, shared by every segment-chain
+/// type in the crate (5 near-identical copies before this extraction).
+/// *What* `target_base` should be — the eviction policy — is decided by
+/// the caller and deliberately differs per type; see the module docs.
+pub(crate) fn evict_leading(
+    segs: &mut Vec<Segment>,
+    seg_base: &mut usize,
+    target_base: usize,
+    path: impl Fn(usize) -> PathBuf,
+) {
+    while *seg_base < target_base {
+        drop(segs.remove(0)); // unmap before deleting (Windows)
+        let _ = std::fs::remove_file(path(*seg_base));
+        *seg_base += 1;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

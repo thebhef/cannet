@@ -27,7 +27,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::seg::{open_segment, Segment};
-use crate::seg_chain::{geometric_locate, geometric_push_grow, geometric_seg_capacity};
+use crate::seg_chain::{evict_leading, geometric_locate, geometric_push_grow, geometric_seg_capacity};
 
 /// Bytes per posting entry (a `u64` frame index).
 const ENTRY_BYTES: usize = 8;
@@ -103,11 +103,9 @@ impl IdPostings {
             // earlier ones (those whose cumulative capacity fits below it).
             self.cum_cap.partition_point(|&c| c <= floor_slot)
         };
-        while self.seg_base < target_base {
-            drop(self.segs.remove(0)); // unmap before deleting (Windows)
-            let _ = std::fs::remove_file(seg_path(dir, id, extended, self.seg_base));
-            self.seg_base += 1;
-        }
+        evict_leading(&mut self.segs, &mut self.seg_base, target_base, |i| {
+            seg_path(dir, id, extended, i)
+        });
         self.first_slot = if self.seg_base == 0 {
             0
         } else {

@@ -34,6 +34,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::seg::{create_segment, remove_files_with_prefixes, Segment};
+use crate::seg_chain::evict_leading;
 use crate::{CandidateSource, RawTraceFrame};
 
 /// Frame indices per index segment file (8 MiB at 8 bytes each).
@@ -255,11 +256,10 @@ impl FilterIndex {
         let floor = self.position_of(first_index);
         self.first_pos = floor.clamp(self.first_pos, self.len);
         let target_base = self.first_pos / self.seg_entries;
-        while self.seg_base < target_base {
-            drop(self.segs.remove(0)); // unmap before deleting (Windows)
-            let _ = std::fs::remove_file(self.seg_path(self.seg_base));
-            self.seg_base += 1;
-        }
+        let dir = &self.dir;
+        evict_leading(&mut self.segs, &mut self.seg_base, target_base, |i| {
+            dir.join(format!("{FILTER_PREFIX}{i:06}"))
+        });
     }
 
     /// Drop the index: unmap and delete its segment files, reset to empty.

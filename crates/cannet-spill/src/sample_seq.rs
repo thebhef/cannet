@@ -25,7 +25,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::seg::Segment;
-use crate::seg_chain::{geometric_locate, geometric_push_grow};
+use crate::seg_chain::{evict_leading, geometric_locate, geometric_push_grow};
 
 /// Bytes per entry: two `f64`s (`t_seconds`, `value`).
 const ENTRY_BYTES: usize = 16;
@@ -105,11 +105,11 @@ impl SampleSeq {
     pub fn evict_below(&mut self, first_slot: usize) {
         self.first_slot = first_slot.clamp(self.first_slot, self.len);
         let target_base = self.cum_cap.partition_point(|&c| c <= self.first_slot);
-        while self.seg_base < target_base {
-            drop(self.segs.remove(0)); // unmap before deleting (Windows)
-            let _ = std::fs::remove_file(self.seg_path(self.seg_base));
-            self.seg_base += 1;
-        }
+        let dir = &self.dir;
+        let prefix = &self.prefix;
+        evict_leading(&mut self.segs, &mut self.seg_base, target_base, |i| {
+            seg_path(dir, prefix, i)
+        });
     }
 
     /// `(segment index, byte offset within it)` for entry slot `k`.
@@ -146,7 +146,7 @@ impl SampleSeq {
         let dir = &self.dir;
         let prefix = &self.prefix;
         geometric_push_grow(&mut self.segs, &mut self.cum_cap, len, ENTRY_BYTES, |i| {
-            dir.join(format!("{prefix}.{i:04}"))
+            seg_path(dir, prefix, i)
         });
         let (seg, off) = self.locate(self.len);
         let map = &mut self.segs[seg - self.seg_base].map;
@@ -163,9 +163,10 @@ impl SampleSeq {
         Ok(())
     }
 
-    fn seg_path(&self, seg: usize) -> PathBuf {
-        self.dir.join(format!("{}.{seg:04}", self.prefix))
-    }
+}
+
+fn seg_path(dir: &Path, prefix: &str, seg: usize) -> PathBuf {
+    dir.join(format!("{prefix}.{seg:04}"))
 }
 
 #[cfg(test)]

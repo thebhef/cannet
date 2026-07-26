@@ -44,6 +44,7 @@ use serde::{Deserialize, Serialize};
 use crate::byid::{ByIdIndex, BYID_PREFIX};
 use crate::record::{rebuild_payload, split_payload, MetaRecord, BUS_NONE, RECORD_SIZE};
 use crate::seg::{create_segment, open_segment, remove_files_with_prefixes, Segment};
+use crate::seg_chain::evict_leading;
 use crate::{RawStore, RawTraceFrame};
 
 /// File name of the reopen manifest (ADR 0002 DS-4/DS-7), written into the
@@ -593,11 +594,10 @@ impl DiskRawStore {
         let rps = self.cfg.records_per_seg;
         let tail_meta_seg = self.len.saturating_sub(1) / rps;
         let target_meta_base = (first_index / rps).min(tail_meta_seg);
-        while self.meta_seg_base < target_meta_base {
-            drop(self.meta_segs.remove(0)); // unmap before deleting (Windows)
-            let _ = std::fs::remove_file(self.meta_seg_path(self.meta_seg_base));
-            self.meta_seg_base += 1;
-        }
+        let dir = &self.dir;
+        evict_leading(&mut self.meta_segs, &mut self.meta_seg_base, target_meta_base, |i| {
+            dir.join(format!("meta.{i:06}"))
+        });
         // The lowest live payload byte is the first live row's payload offset;
         // payload segments wholly below it are dead.
         if first_index < self.len {
@@ -606,11 +606,10 @@ impl DiskRawStore {
             let tail_payload_seg = self.payload_cursor.saturating_sub(1) / seg_bytes;
             let target_payload_base =
                 usize::try_from((min_off / seg_bytes).min(tail_payload_seg)).unwrap_or(0);
-            while self.payload_seg_base < target_payload_base {
-                drop(self.payload_segs.remove(0));
-                let _ = std::fs::remove_file(self.payload_seg_path(self.payload_seg_base));
-                self.payload_seg_base += 1;
-            }
+            let dir = &self.dir;
+            evict_leading(&mut self.payload_segs, &mut self.payload_seg_base, target_payload_base, |i| {
+                dir.join(format!("payload.{i:06}"))
+            });
         }
         // The incremental-flush byte watermarks need no adjustment here:
         // they track the (still-monotonic) global write cursors, and the
