@@ -54,6 +54,8 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async () => () => {}),
 }));
 
+import { listen } from "@tauri-apps/api/event";
+
 import {
   TransmitPanel,
   maxDataBytesForKind,
@@ -186,6 +188,42 @@ describe("TransmitPanel (thin view over host registry)", () => {
     // Two rows (c, a); "b" is not in this panel's group.
     await waitFor(() =>
       expect(screen.getAllByLabelText("frame description")).toHaveLength(2),
+    );
+  });
+
+  it("re-fetches the pool once the change-event listener is attached (launch race)", async () => {
+    // `listen` is async; a host-side pool change (e.g. project load
+    // seeding TX frames) that lands in the gap between the initial
+    // snapshot fetch and the listener actually being registered would
+    // otherwise be silently missed until the next `transmit-frames-changed`
+    // event or the running-poll — neither of which fires here.
+    let releaseListen: (() => void) | undefined;
+    vi.mocked(listen).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releaseListen = () => resolve(() => Promise.resolve());
+        }),
+    );
+
+    POOL = [];
+    renderPanel("el", ["f1"]);
+
+    // Let the initial snapshot fetch land (pool still empty at this point).
+    await waitFor(() =>
+      expect(calls.filter((c) => c.cmd === "list_transmit_frames")).toHaveLength(1),
+    );
+    expect(screen.queryAllByLabelText("frame description")).toHaveLength(0);
+
+    // The host publishes a frame in the gap before the listener attaches.
+    POOL = [frame("f1", { description: "Gear box" })];
+
+    // Attach completes.
+    releaseListen?.();
+
+    // The post-listener refetch must pick up the frame that arrived
+    // during the attach gap.
+    await waitFor(() =>
+      expect(screen.getAllByLabelText("frame description")).toHaveLength(1),
     );
   });
 

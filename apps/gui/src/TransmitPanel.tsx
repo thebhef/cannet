@@ -10,7 +10,6 @@ import {
 } from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 
 import type {
   Bus,
@@ -33,6 +32,7 @@ import { effectiveBusColor } from "./busColor";
 import { SIGNAL_DND_MIME, parseSignalDragData } from "./dragSignals";
 import { useValueTables, type ValueTableSignal } from "./useValueTables";
 import { useElementPanel } from "./useElementPanel";
+import { useHostMirror } from "./useHostMirror";
 
 /**
  * Transmit panel (thin view over the host model).
@@ -77,35 +77,21 @@ export function TransmitPanel(props: IDockviewPanelProps) {
   frameIdsRef.current = frameIds;
 
   // The host TX-message pool, re-fetched whenever the host signals a
-  // change. This panel renders only the entries in its `frameIds`
-  // group, in that order.
-  const [pool, setPool] = useState<TransmitFrameRecord[]>([]);
-  const refreshPool = useCallback(() => {
-    void invoke<TransmitFrameRecord[]>("list_transmit_frames")
-      .then(setPool)
-      .catch(() => setPool([]));
-  }, []);
-  useEffect(() => {
-    refreshPool();
-    const unlisten = listen("transmit-frames-changed", refreshPool);
-    return () => {
-      void unlisten.then((off) => off());
-    };
-  }, [refreshPool]);
-
-  // Live calculated fields: the fire path rewrites a running
+  // change (`transmit-frames-changed`) — plus, while anything in the
+  // pool is running, a 500ms poll: the fire path rewrites a running
   // message's payload buffer (counter step, CRC) on every emission
-  // without emitting `transmit-frames-changed` — that event at frame
-  // rate would storm the IPC. Poll at a display cadence instead while
-  // anything in the pool is running, so the byte cells and decoded
-  // signal values track the live buffer. Draft-in-progress cell edits
-  // are unaffected (cells render `draft ?? committed`).
-  const anyRunning = pool.some((r) => r.running);
-  useEffect(() => {
-    if (!anyRunning) return;
-    const timer = window.setInterval(refreshPool, 500);
-    return () => window.clearInterval(timer);
-  }, [anyRunning, refreshPool]);
+  // without emitting the change-event (that at frame rate would storm
+  // the IPC), so polling is what keeps the byte cells and decoded
+  // signal values tracking the live buffer. Draft-in-progress cell
+  // edits are unaffected (cells render `draft ?? committed`). This
+  // panel renders only the entries in its `frameIds` group, in order.
+  const fetchPool = useCallback(() => invoke<TransmitFrameRecord[]>("list_transmit_frames"), []);
+  const { value: pool } = useHostMirror<TransmitFrameRecord[]>({
+    fetch: fetchPool,
+    fallback: [],
+    event: "transmit-frames-changed",
+    pollWhile: (p) => p.some((r) => r.running),
+  });
 
   const poolById = useMemo(() => {
     const m = new Map<string, TransmitFrameRecord>();
