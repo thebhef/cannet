@@ -3944,21 +3944,22 @@ fn start_periodic_transmit(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
-    let newly_started = {
+    let started_cycle_ms = {
         let mut registry = state
             .transmit_frames
             .lock()
             .expect("transmit_frames mutex poisoned");
-        let newly_started = registry.begin_periodic(&id)?;
-        if newly_started {
+        if registry.begin_periodic(&id)? {
             // The owner is starting to transmit — the sequence counter
             // seeds at 0 (ADR 0027).
             registry.reset_counter(&id);
+            registry.cycle_ms(&id)
+        } else {
+            None
         }
-        newly_started
     };
-    if newly_started {
-        state.transmit_scheduler.start(id);
+    if let Some(cycle_ms) = started_cycle_ms {
+        state.transmit_scheduler.start(id, cycle_ms);
     }
     emit_transmit_frames_changed(&app);
     Ok(())
@@ -4101,6 +4102,12 @@ impl SchedDiag {
 /// scales to arbitrarily many low-rate messages across buses without the
 /// per-thread wake-up jitter the old thread-per-message model had.
 ///
+/// Emission timing semantics are ADR 0039: each message's first fire
+/// carries a deterministic phase offset
+/// ([`transmit_scheduler::stagger_offset`]) so same-period messages
+/// don't fire as one aligned cohort, and a missed period is dropped
+/// (grid realigned via [`next_tick_deadline`]), never burst.
+///
 /// On each due entry it asks the registry [`fire_info`] what to emit
 /// (re-read every tick, so live payload / period edits land on the next
 /// emission — property 4), skips the actual transmit when the target bus
@@ -4132,7 +4139,15 @@ fn run_transmit_scheduler(
         let recv = rx.recv_timeout(wait);
         let now = std::time::Instant::now();
         match recv {
-            Ok(SchedulerCmd::Start(id)) => schedule.schedule(id, now),
+            // First fire at `now + offset`: same-period messages spread
+            // across the period instead of sharing one epoch (ADR 0039).
+            Ok(SchedulerCmd::Start { id, cycle_ms }) => {
+                let offset = transmit_scheduler::stagger_offset(
+                    &id,
+                    Duration::from_millis(u64::from(cycle_ms)),
+                );
+                schedule.schedule(id, now + offset);
+            }
             Ok(SchedulerCmd::Stop(id)) => schedule.unschedule(&id),
             // Route-up hint: nothing parked yet — the parked-set resume
             // lands with the route-down park behaviour.

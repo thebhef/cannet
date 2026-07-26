@@ -589,7 +589,8 @@ fn sync_schedules(state: &AppState) {
             });
         if want {
             if registry.begin_periodic(&row.id) == Ok(true) {
-                state.transmit_scheduler.start(row.id);
+                let cycle_ms = registry.cycle_ms(&row.id).unwrap_or(0);
+                state.transmit_scheduler.start(row.id, cycle_ms);
             }
         } else if registry.stop_periodic(&row.id) {
             state.transmit_scheduler.stop(row.id);

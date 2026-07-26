@@ -20,7 +20,7 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// A command to the scheduler thread. `Start` / `Stop` mirror the
 /// `start_periodic_transmit` / `stop_periodic_transmit` IPC commands;
@@ -28,8 +28,11 @@ use std::time::Instant;
 /// dropped (app shutdown), so no explicit shutdown variant is needed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SchedulerCmd {
-    /// Begin firing `id` now (and every period thereafter).
-    Start(String),
+    /// Begin firing `id`, first fire at `now + stagger_offset(id,
+    /// cycle_ms)` and every period thereafter. `cycle_ms` rides along
+    /// (read under the registry lock the caller already holds) so the
+    /// driver can place the phase offset without a registry lookup.
+    Start { id: String, cycle_ms: u32 },
     /// Stop firing `id`.
     Stop(String),
     /// A bus route may have come up (a session registered). Best-effort
@@ -52,15 +55,15 @@ impl TransmitScheduler {
         Self { tx: Mutex::new(tx) }
     }
 
-    /// Schedule `id` to start firing. Best-effort: a send failure means
-    /// the scheduler thread is gone (app shutting down), which is
-    /// harmless to ignore.
-    pub fn start(&self, id: String) {
+    /// Schedule `id` to start firing on a `cycle_ms` period. Best-effort:
+    /// a send failure means the scheduler thread is gone (app shutting
+    /// down), which is harmless to ignore.
+    pub fn start(&self, id: String, cycle_ms: u32) {
         let _ = self
             .tx
             .lock()
             .expect("transmit scheduler sender poisoned")
-            .send(SchedulerCmd::Start(id));
+            .send(SchedulerCmd::Start { id, cycle_ms });
     }
 
     /// Unschedule `id`. Best-effort (see [`Self::start`]).
@@ -89,6 +92,29 @@ impl TransmitScheduler {
 pub fn channel() -> (TransmitScheduler, Receiver<SchedulerCmd>) {
     let (tx, rx) = std::sync::mpsc::channel();
     (TransmitScheduler::new(tx), rx)
+}
+
+/// Deterministic per-message phase offset in `[0, period)` (ADR 0039).
+///
+/// Every periodic's first fire lands at `start + offset` so same-period
+/// messages spread across the period instead of firing as one aligned
+/// cohort — a bulk RBS start would otherwise put every cycle group on a
+/// shared epoch and the fixed-rate grid would keep them phase-locked,
+/// draining as periodic multi-frame bursts on the wire. Keyed on the
+/// message's registry row id: stable across restarts and start order
+/// within a build (fixed-key `DefaultHasher`); never persisted, so
+/// cross-version hash drift is harmless.
+#[must_use]
+pub fn stagger_offset(id: &str, period: Duration) -> Duration {
+    use std::hash::{Hash, Hasher};
+    // Period arrives as u32 milliseconds, so this never saturates.
+    let period_ms = u64::try_from(period.as_millis()).unwrap_or(u64::MAX);
+    if period_ms == 0 {
+        return Duration::ZERO;
+    }
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    id.hash(&mut h);
+    Duration::from_millis(h.finish() % period_ms)
 }
 
 /// One queued firing: the absolute `deadline`, the message `id`, and the
@@ -223,6 +249,34 @@ mod tests {
 
     fn ids(due: &[(String, Instant)]) -> Vec<&str> {
         due.iter().map(|(id, _)| id.as_str()).collect()
+    }
+
+    #[test]
+    fn stagger_offset_is_deterministic_and_bounded() {
+        let p = Duration::from_millis(100);
+        for id in ["a", "b", "row-uuid-1"] {
+            let o = stagger_offset(id, p);
+            assert_eq!(o, stagger_offset(id, p), "offset must be stable per id");
+            assert!(o < p, "offset {o:?} must stay inside the period");
+        }
+        // Degenerate period: no offset (never scheduled in practice —
+        // begin_periodic rejects cycle_ms == 0 — but never panic).
+        assert_eq!(stagger_offset("a", Duration::ZERO), Duration::ZERO);
+    }
+
+    #[test]
+    fn stagger_offset_spreads_a_cohort_across_the_period() {
+        // 100 same-period rows must not collapse onto a few phases —
+        // the point is breaking the bulk-start cohort (ADR 0039).
+        let p = Duration::from_millis(100);
+        let distinct: std::collections::HashSet<_> = (0..100)
+            .map(|i| stagger_offset(&format!("row-{i}"), p))
+            .collect();
+        assert!(
+            distinct.len() >= 50,
+            "only {} distinct offsets across 100 rows",
+            distinct.len()
+        );
     }
 
     #[test]
