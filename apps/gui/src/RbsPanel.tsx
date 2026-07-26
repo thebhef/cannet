@@ -38,13 +38,13 @@ import type {
   RbsMessageView,
   RbsSignalView,
   RbsView,
-  ValueTableEntryRecord,
 } from "./types";
 import { useElementRegistry } from "./projectElements";
 import { useProjectContext } from "./projectContext";
 import { CalcFieldEditor } from "./CalcFieldEditor";
 import { Combobox } from "./Combobox";
 import { ValidatedInput, parsePositiveInt } from "./ValidatedInput";
+import { useValueTables, type ValueTableSignal } from "./useValueTables";
 
 /// Address of one message row, as the `rbs_*` commands take it.
 interface Target {
@@ -702,24 +702,16 @@ interface SignalRowProps {
 
 function SignalRow({ elementId, target, message, signal: s, inert, onMenu }: SignalRowProps) {
   // Enum signals get a datalist of labels (committed as the label
-  // string — the host resolves it through the VAL_ table).
-  const [labels, setLabels] = useState<ValueTableEntryRecord[]>([]);
-  useEffect(() => {
-    if (!s.hasValueTable) return;
-    let cancelled = false;
-    void invoke<ValueTableEntryRecord[]>("list_value_tables", {
-      messageId: message.messageId,
-      extended: message.extended,
-      signalName: s.name,
-    })
-      .then((rows) => {
-        if (!cancelled) setLabels(rows);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [s.hasValueTable, s.name, message.messageId, message.extended]);
+  // string — the host resolves it through the VAL_ table), fetched via
+  // the shared useValueTables hook (task 30 item 14).
+  const valueTableSignals = useMemo<ValueTableSignal[]>(
+    () =>
+      s.hasValueTable
+        ? [{ busId: null, messageId: message.messageId, extended: message.extended, signalName: s.name }]
+        : [],
+    [s.hasValueTable, s.name, message.messageId, message.extended],
+  );
+  const [labels = []] = useValueTables(valueTableSignals).values();
 
   const display = s.label ?? (s.value != null ? formatValue(s.value) : "—");
   const datalistId = `rbs-enum-${message.key}-${s.name}`;
