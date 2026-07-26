@@ -1,9 +1,12 @@
-//! Bit-level decode primitives shared between unit tests and the public
-//! `Database::decode` path.
+//! Runtime frame decoding: the bit-level primitives (`decode_signal_bits`
+//! / `sign_extend`), the per-message / per-signal decode walk, the
+//! decoded-value types, and the `Database` decode entry points.
 
-use can_dbc::ByteOrder;
+use can_dbc::{ByteOrder, MultiplexIndicator, SignalExtendedValueType, ValueType};
+use cannet_core::CanFrame;
 
 use crate::bitwalk;
+use crate::model::{canid_to_message_id, Database, MessageEntry, SignalEntry};
 
 /// Extract `size` bits from `data` starting at `start_bit`, interpreting
 /// the layout per `byte_order`. Returns `None` if any required bit lies
@@ -41,6 +44,168 @@ pub fn sign_extend(value: u64, bits: u32) -> i64 {
         let extension = u64::MAX << bits;
         (value | extension).cast_signed()
     }
+}
+
+impl Database {
+    /// Decode `frame` against this database. Returns `None` if no message
+    /// in the database matches the frame's id (and addressing mode).
+    pub fn decode<'a>(&'a self, frame: &CanFrame) -> Option<DecodedMessage<'a>> {
+        self.decode_raw(frame.id, frame.payload.data())
+    }
+
+    /// Decode by raw `(id, data)` without needing a `CanFrame`. The trace
+    /// view uses this to retro-decode already-displayed frames when the
+    /// user attaches a DBC after the fact.
+    pub fn decode_raw<'a>(
+        &'a self,
+        id: cannet_core::CanId,
+        data: &[u8],
+    ) -> Option<DecodedMessage<'a>> {
+        let key = canid_to_message_id(id)?;
+        let entry = self.messages.get(&key)?;
+        Some(decode_message(entry, data))
+    }
+
+    /// Decode just the multiplexor-selector value from `(id, data)` —
+    /// a couple of bit operations, cheap enough for a per-frame append
+    /// path. Returns `None` when no message matches `id`, the message
+    /// has no multiplexor, or the payload is too short to carry it.
+    /// Pairs with [`SignalDescriptor::mux_selector`]: a frame carries a
+    /// multiplexed signal iff this value equals the signal's group.
+    #[must_use]
+    pub fn decode_mux_selector(&self, id: cannet_core::CanId, data: &[u8]) -> Option<u64> {
+        let key = canid_to_message_id(id)?;
+        let entry = self.messages.get(&key)?;
+        let mux = entry.signals.get(entry.multiplexor?)?;
+        decode_signal(mux, data).map(|d| d.raw_unsigned)
+    }
+}
+
+fn decode_message<'a>(entry: &'a MessageEntry, data: &[u8]) -> DecodedMessage<'a> {
+    // First pass: find the multiplexor signal value, if any, so we can
+    // filter multiplexed signals to the matching selector.
+    let multiplexor_value = entry
+        .signals
+        .iter()
+        .find(|s| matches!(s.signal.multiplexer_indicator, MultiplexIndicator::Multiplexor))
+        .and_then(|s| decode_signal(s, data).map(|d| d.raw_unsigned));
+
+    let mut signals = Vec::with_capacity(entry.signals.len());
+    for sig in &entry.signals {
+        let include = match sig.signal.multiplexer_indicator {
+            MultiplexIndicator::Plain | MultiplexIndicator::Multiplexor => true,
+            MultiplexIndicator::MultiplexedSignal(selector)
+            | MultiplexIndicator::MultiplexorAndMultiplexedSignal(selector) => {
+                multiplexor_value == Some(selector)
+            }
+        };
+        if !include {
+            continue;
+        }
+        if let Some(decoded) = decode_signal(sig, data) {
+            signals.push(decoded);
+        }
+    }
+
+    DecodedMessage {
+        name: &entry.name,
+        transmitter: entry.transmitter.as_deref(),
+        expected_len: entry.expected_len,
+        actual_len: data.len(),
+        signals,
+    }
+}
+
+fn decode_signal<'a>(entry: &'a SignalEntry, data: &[u8]) -> Option<DecodedSignal<'a>> {
+    let sig = &entry.signal;
+    let start_bit = usize::try_from(sig.start_bit).ok()?;
+    let size = usize::try_from(sig.size).ok()?;
+    let raw_unsigned = decode_signal_bits(data, start_bit, size, sig.byte_order)?;
+
+    let raw_signed = if sig.value_type == ValueType::Signed {
+        let bits = u32::try_from(sig.size).ok()?;
+        sign_extend(raw_unsigned, bits)
+    } else {
+        // Unsigned signals never overflow i64 since size <= 64 and the
+        // high bit will only be set for size == 64; the cast then wraps
+        // intentionally — physical-value math uses raw_unsigned anyway.
+        raw_unsigned.cast_signed()
+    };
+
+    // f64 has 52-bit mantissa: signal sizes up to 53 bits round-trip
+    // exactly, larger ones lose precision but match the convention used
+    // by every other DBC tool. Allow the cast explicitly here.
+    #[allow(clippy::cast_precision_loss)]
+    let physical = match entry.extended_type {
+        SignalExtendedValueType::IEEEfloat32Bit if size == 32 => {
+            let bits = u32::try_from(raw_unsigned).ok()?;
+            f64::from(f32::from_bits(bits)).mul_add(sig.factor, sig.offset)
+        }
+        SignalExtendedValueType::IEEEdouble64bit if size == 64 => {
+            f64::from_bits(raw_unsigned).mul_add(sig.factor, sig.offset)
+        }
+        _ if sig.value_type == ValueType::Signed => {
+            (raw_signed as f64).mul_add(sig.factor, sig.offset)
+        }
+        _ => (raw_unsigned as f64).mul_add(sig.factor, sig.offset),
+    };
+
+    // Resolve the value-table label, if any. Signed signals compare
+    // against `raw_signed`; unsigned against `raw_unsigned` widened to
+    // `i64` (signal sizes are <=64 bits; values above `i64::MAX` would
+    // never match a DBC `VAL_` row anyway since `can-dbc` parses them
+    // as `i64`).
+    let lookup_key: i64 = if sig.value_type == ValueType::Signed {
+        raw_signed
+    } else {
+        i64::try_from(raw_unsigned).unwrap_or(i64::MAX)
+    };
+    let label = entry
+        .value_table
+        .iter()
+        .find(|e| e.raw == lookup_key)
+        .map(|e| e.label.as_str());
+
+    Some(DecodedSignal {
+        name: &sig.name,
+        unit: &sig.unit,
+        raw_unsigned,
+        raw_signed,
+        value: physical,
+        label,
+    })
+}
+
+/// A decoded CAN message: the message's name, its declared and observed
+/// payload lengths, and one entry per signal that fit the payload.
+#[derive(Debug, Clone)]
+pub struct DecodedMessage<'a> {
+    pub name: &'a str,
+    /// The owning message's `BO_` transmitting node, or `None` for the
+    /// `Vector__XXX` "no sender" placeholder — same convention as
+    /// [`SignalDescriptor::transmitter`].
+    pub transmitter: Option<&'a str>,
+    pub expected_len: usize,
+    pub actual_len: usize,
+    pub signals: Vec<DecodedSignal<'a>>,
+}
+
+/// A decoded signal value with both its raw bit-pattern and its physical
+/// value (raw * factor + offset).
+///
+/// `label` is `Some(&str)` only if the DBC's `VAL_` table for this
+/// signal has a row matching the decoded raw value (signed vs.
+/// unsigned chosen by the signal's `@…+` / `@…-` flag); otherwise
+/// `None`. The trace view and transmit panel use `label` to render
+/// enum signals symbolically.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DecodedSignal<'a> {
+    pub name: &'a str,
+    pub unit: &'a str,
+    pub raw_unsigned: u64,
+    pub raw_signed: i64,
+    pub value: f64,
+    pub label: Option<&'a str>,
 }
 
 #[cfg(test)]
