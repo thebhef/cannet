@@ -277,9 +277,10 @@ fn filter_index_dir(scratch: Option<&std::path::Path>) -> std::path::PathBuf {
 /// OS-temp fallback if the scratch is unavailable. `SignalCacheStore::new`
 /// wipes it on construction (a pyramid is derived state).
 fn signal_cache_dir(scratch: Option<&std::path::Path>) -> std::path::PathBuf {
+    let sub = signal_cache::PYRAMID_SUBDIR;
     match scratch {
-        Some(s) => s.join("signals"),
-        None => std::env::temp_dir().join("cannet").join("signals"),
+        Some(s) => s.join(sub),
+        None => std::env::temp_dir().join("cannet").join(sub),
     }
 }
 

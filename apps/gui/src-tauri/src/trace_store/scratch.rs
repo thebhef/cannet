@@ -84,9 +84,14 @@ pub struct ScratchBreakdown {
 }
 
 /// Bucket the `current/` scratch by family for the cache diagnostic. One
-/// walk: top-level `meta.*`/`payload.*` are frames, the `signals/` subdir is
-/// the pyramids (with its level depth), everything else (by-id, the
-/// `filter/` subdir, JSON sidecars) is "other".
+/// walk that delegates each family's naming to the module that owns it,
+/// rather than re-deriving foreign file names here: the raw-frame family is
+/// identified by [`cannet_spill::is_raw_frame_segment`], and the pyramid
+/// subdir + its level depth by [`crate::signal_cache`]
+/// ([`PYRAMID_SUBDIR`](crate::signal_cache::PYRAMID_SUBDIR) /
+/// [`pyramid_scratch_usage`](crate::signal_cache::pyramid_scratch_usage)).
+/// Everything else (by-id, the `filter/` subdir, JSON sidecars) is "other",
+/// summed generically.
 fn scratch_breakdown(dir: &Path) -> ScratchBreakdown {
     let mut b = ScratchBreakdown::default();
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -97,8 +102,9 @@ fn scratch_breakdown(dir: &Path) -> ScratchBreakdown {
         let name = name.to_string_lossy();
         let Ok(meta) = entry.metadata() else { continue };
         if meta.is_dir() {
-            if name == "signals" {
-                let (bytes, files, depth) = walk_pyramids(&entry.path());
+            if name == crate::signal_cache::PYRAMID_SUBDIR {
+                let (bytes, files, depth) =
+                    crate::signal_cache::pyramid_scratch_usage(&entry.path());
                 b.pyramid_bytes += bytes;
                 b.pyramid_files += files;
                 b.pyramid_depth = b.pyramid_depth.max(depth);
@@ -107,7 +113,7 @@ fn scratch_breakdown(dir: &Path) -> ScratchBreakdown {
                 b.other_bytes += bytes;
                 b.other_files += files;
             }
-        } else if name.starts_with("meta.") || name.starts_with("payload.") {
+        } else if cannet_spill::is_raw_frame_segment(&name) {
             b.frames_bytes += meta.len();
             b.frames_files += 1;
         } else {
@@ -119,7 +125,9 @@ fn scratch_breakdown(dir: &Path) -> ScratchBreakdown {
     b
 }
 
-/// Recursively sum `(bytes, file_count)` under `dir`.
+/// Recursively sum `(bytes, file_count)` under `dir` — the generic "other"
+/// family (by-id postings, the `filter/` subdir, JSON sidecars), which
+/// carries no per-family naming to attribute.
 fn walk_dir(dir: &Path) -> (u64, u64) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return (0, 0);
@@ -140,43 +148,6 @@ fn walk_dir(dir: &Path) -> (u64, u64) {
         }
     }
     (bytes, files)
-}
-
-/// Like [`walk_dir`] for the `signals/` pyramid dir, also returning the
-/// deepest pyramid (level count) seen — parsed from the `….l{n}.{seg}`
-/// segment file names.
-fn walk_pyramids(dir: &Path) -> (u64, u64, u64) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return (0, 0, 0);
-    };
-    let (mut bytes, mut files, mut depth) = (0, 0, 0);
-    for entry in entries.flatten() {
-        let Ok(m) = entry.metadata() else { continue };
-        if m.is_dir() {
-            let (b, f, d) = walk_pyramids(&entry.path());
-            bytes += b;
-            files += f;
-            depth = depth.max(d);
-        } else {
-            bytes += m.len();
-            files += 1;
-            if let Some(level) = pyramid_level(&entry.file_name().to_string_lossy()) {
-                depth = depth.max(level + 1);
-            }
-        }
-    }
-    (bytes, files, depth)
-}
-
-/// The level index `n` in a pyramid segment file name `….l{n}.{seg}`
-/// (`{base}.l0.0000`, `{base}.l2.0003`, …), or `None` if it doesn't match.
-fn pyramid_level(name: &str) -> Option<u64> {
-    let after = &name[name.rfind(".l")? + 2..];
-    let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
-    if digits.is_empty() {
-        return None;
-    }
-    digits.parse().ok()
 }
 
 #[cfg(test)]

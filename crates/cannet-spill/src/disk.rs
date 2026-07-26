@@ -108,12 +108,26 @@ impl Default for DiskConfig {
     }
 }
 
+/// File-name prefix for a raw meta (record-header) segment.
+const META_PREFIX: &str = "meta.";
+/// File-name prefix for a raw payload segment.
+const PAYLOAD_PREFIX: &str = "payload.";
+
 fn meta_seg_path(dir: &Path, i: usize) -> PathBuf {
-    dir.join(format!("meta.{i:06}"))
+    dir.join(format!("{META_PREFIX}{i:06}"))
 }
 
 fn payload_seg_path(dir: &Path, i: usize) -> PathBuf {
-    dir.join(format!("payload.{i:06}"))
+    dir.join(format!("{PAYLOAD_PREFIX}{i:06}"))
+}
+
+/// Whether `name` is one of this store's raw meta/payload segment files.
+/// The scratch-footprint diagnostic ([ADR 0002](../../../docs/adr/0002-disk-spill-store.md)
+/// DS-8) uses this to attribute the raw-frame family without re-deriving
+/// the segment prefixes this store owns.
+#[must_use]
+pub fn is_raw_frame_segment(name: &str) -> bool {
+    name.starts_with(META_PREFIX) || name.starts_with(PAYLOAD_PREFIX)
 }
 
 /// Disk-backed [`RawStore`]. See the module docs.
@@ -427,7 +441,10 @@ impl DiskRawStore {
         self.payload_seg_base = 0;
         self.first_index = 0;
         self.by_id.clear();
-        remove_files_with_prefixes(&self.dir, &["meta.", "payload.", BYID_PREFIX, "manifest."])
+        remove_files_with_prefixes(
+            &self.dir,
+            &[META_PREFIX, PAYLOAD_PREFIX, BYID_PREFIX, "manifest."],
+        )
     }
 
     // `seg` is an absolute segment number; the active tail lives at
@@ -793,6 +810,18 @@ mod tests {
     use super::*;
     use cannet_core::{CanFdFlags, CanFramePayload, Direction};
     use tempfile::TempDir;
+
+    #[test]
+    fn is_raw_frame_segment_matches_meta_and_payload_only() {
+        // The scratch-footprint diagnostic attributes the raw family by this
+        // predicate, so it must recognise exactly this store's segment names
+        // and nothing else (by-id postings, filter, JSON sidecars).
+        assert!(is_raw_frame_segment("meta.000000"));
+        assert!(is_raw_frame_segment("payload.000123"));
+        assert!(!is_raw_frame_segment("byid.s00000100.0000"));
+        assert!(!is_raw_frame_segment("manifest.json"));
+        assert!(!is_raw_frame_segment("filter.000000"));
+    }
 
     fn frame(ts: u64, id: u32) -> RawTraceFrame {
         RawTraceFrame {
