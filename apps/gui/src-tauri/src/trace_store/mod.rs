@@ -58,7 +58,7 @@
 //! the count delta over the frame-time the surviving samples span,
 //! falling back to `0.0` if there isn't yet enough signal to estimate.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
@@ -73,7 +73,7 @@ mod flush;
 mod rate;
 mod scratch;
 
-use rate::{prune_rate_samples, RateEstimate, RateSample, RateTrack, RATE_SAMPLE_INTERVAL};
+use rate::{RateEstimate, RateTrack};
 
 pub use byid::LatestById;
 pub use cannet_spill::RawTraceFrame;
@@ -129,7 +129,11 @@ struct Inner {
     /// production. Owns the always-on `by-id` index too (on disk for the
     /// disk store), so it serves [`Self::matching_frames_indexed`].
     raw: Box<dyn RawStore>,
-    rate_samples: VecDeque<RateSample>,
+    /// Aggregate append-rate tracker: the running total-frame count and its
+    /// rolling rate-sample window, folded in by [`Self::append`] and read by
+    /// [`Self::frames_per_second`]. A [`RateTrack`] like the per-bus and
+    /// per-direction buckets, so all four share one sampling path.
+    agg_rate: RateTrack,
     /// Frame index of the most recent frame seen for each [`FrameKey`] —
     /// `O(1)` to maintain on append, and what the per-message-ID view
     /// reads instead of walking the whole buffer.
@@ -242,7 +246,7 @@ impl TraceStore {
             inner: Mutex::new(Inner {
                 session_start_ns: 0,
                 raw,
-                rate_samples: VecDeque::new(),
+                agg_rate: RateTrack::default(),
                 latest: HashMap::new(),
                 latest_frame: HashMap::new(),
                 rates: HashMap::new(),
@@ -328,7 +332,6 @@ impl TraceStore {
         // small id-space-bounded clone per append keeps the trim itself pure
         // front-truncation, so an evicted index never blanks a by-id row.
         let idx = inner.raw.append(frame.clone());
-        let count = idx + 1;
         // Mux-group latest: one extra id×selector-bounded clone, only
         // for frames the extractor recognises as multiplexed.
         if let Some(sel) = inner.mux_selector_of.as_ref().and_then(|ext| ext(&frame)) {
@@ -347,51 +350,17 @@ impl TraceStore {
             .entry(key)
             .or_insert_with(|| RateEstimate::first_seen(ts_ns, now))
             .observe(ts_ns, now);
-        let due = match inner.rate_samples.back() {
-            Some(last) => now.duration_since(last.wall) >= RATE_SAMPLE_INTERVAL,
-            None => true,
-        };
-        if due {
-            inner.rate_samples.push_back(RateSample {
-                wall: now,
-                ts_ns,
-                count,
-            });
-            prune_rate_samples(&mut inner.rate_samples, now);
-        }
-        let bus_rate = inner.per_bus.entry(bus_for_rate).or_default();
-        bus_rate.count += 1;
-        let bus_due = match bus_rate.samples.back() {
-            Some(last) => now.duration_since(last.wall) >= RATE_SAMPLE_INTERVAL,
-            None => true,
-        };
-        if bus_due {
-            let bus_count = bus_rate.count;
-            bus_rate.samples.push_back(RateSample {
-                wall: now,
-                ts_ns,
-                count: bus_count,
-            });
-            prune_rate_samples(&mut bus_rate.samples, now);
-        }
-        let dir_rate = match direction {
+        // The aggregate, per-bus, and per-direction throughput trackers all
+        // fold in this frame the same way (bump the count, sample on the
+        // shared cadence gate) — the aggregate is a `RateTrack` like the
+        // others rather than a bypassing bare deque.
+        inner.agg_rate.observe(ts_ns, now);
+        inner.per_bus.entry(bus_for_rate).or_default().observe(ts_ns, now);
+        match direction {
             Direction::Rx => &mut inner.rx_rate,
             Direction::Tx => &mut inner.tx_rate,
-        };
-        dir_rate.count += 1;
-        let dir_due = match dir_rate.samples.back() {
-            Some(last) => now.duration_since(last.wall) >= RATE_SAMPLE_INTERVAL,
-            None => true,
-        };
-        if dir_due {
-            let dir_count = dir_rate.count;
-            dir_rate.samples.push_back(RateSample {
-                wall: now,
-                ts_ns,
-                count: dir_count,
-            });
-            prune_rate_samples(&mut dir_rate.samples, now);
         }
+        .observe(ts_ns, now);
         Some(u64::try_from(idx).unwrap_or(u64::MAX))
     }
 

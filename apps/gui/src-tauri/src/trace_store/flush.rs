@@ -10,7 +10,7 @@
 //! ([`IDENTITY_FILE`], [`DERIVED_FILE`]) are written via the crash-safe
 //! [`write_json`] temp-file+rename helper.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::Instant;
 
@@ -135,7 +135,7 @@ impl TraceStore {
         let mut inner = self.lock_inner();
         inner.session_start_ns = session_start_ns;
         inner.raw.clear();
-        inner.rate_samples = VecDeque::new();
+        inner.agg_rate = RateTrack::default();
         inner.latest = HashMap::new();
         inner.latest_frame = HashMap::new();
         inner.rates = HashMap::new();

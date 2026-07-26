@@ -74,18 +74,12 @@ impl RateEstimate {
         }
         self.last_ts_ns = ts_ns;
         self.last_wall = now;
-        let due = match self.samples.back() {
-            Some(last) => now.duration_since(last.wall) >= RATE_SAMPLE_INTERVAL,
-            None => true,
-        };
-        if due {
-            self.samples.push_back(RateSample {
-                wall: now,
-                ts_ns,
-                count: usize::try_from(self.count).unwrap_or(usize::MAX),
-            });
-            prune_rate_samples(&mut self.samples, now);
-        }
+        sample_if_due(
+            &mut self.samples,
+            now,
+            ts_ns,
+            usize::try_from(self.count).unwrap_or(usize::MAX),
+        );
     }
 
     /// Messages/second as of wall-time `now`: the count delta over the
@@ -131,16 +125,47 @@ pub(super) struct RateSample {
 }
 
 /// A rolling frames/second tracker: a running frame count plus its
-/// rate-sample history, sampled and pruned exactly like the aggregate
-/// [`super::Inner::rate_samples`]. One per bucket — used per-bus
-/// ([`TraceStore::frames_per_second_by_bus`]) and per-direction
-/// ([`TraceStore::frames_per_second_by_direction`]) — so each reads a
-/// scoped rate the same way [`TraceStore::frames_per_second`] reads the
-/// aggregate.
+/// rate-sample history, sampled and pruned via [`sample_if_due`]. One per
+/// bucket — the aggregate ([`super::Inner::agg_rate`]), per-bus
+/// ([`TraceStore::frames_per_second_by_bus`]), and per-direction
+/// ([`TraceStore::frames_per_second_by_direction`]) throughput readouts all
+/// share this one shape, so each reads a scoped rate the same way.
 #[derive(Default)]
 pub(super) struct RateTrack {
     pub(super) count: usize,
     pub(super) samples: VecDeque<RateSample>,
+}
+
+impl RateTrack {
+    /// Fold in one appended frame stamped at `ts_ns` (wall-time `now`):
+    /// bump the running count and record a rate sample if the cadence gate
+    /// allows. The single sampling path the aggregate, per-bus, and
+    /// per-direction trackers all use.
+    pub(super) fn observe(&mut self, ts_ns: u64, now: Instant) {
+        self.count += 1;
+        sample_if_due(&mut self.samples, now, ts_ns, self.count);
+    }
+}
+
+/// Record a `(now, ts_ns, count)` sample onto `samples` if at least
+/// [`RATE_SAMPLE_INTERVAL`] has passed since the last one, then prune the
+/// window to [`RATE_WINDOW`]. The shared sample-cadence gate behind every
+/// rate deque — the aggregate/bucket [`RateTrack`]s and the per-id
+/// [`RateEstimate`] alike — so the "sample at most every interval, prune on
+/// each touch" rule lives in exactly one place.
+fn sample_if_due(samples: &mut VecDeque<RateSample>, now: Instant, ts_ns: u64, count: usize) {
+    let due = match samples.back() {
+        Some(last) => now.duration_since(last.wall) >= RATE_SAMPLE_INTERVAL,
+        None => true,
+    };
+    if due {
+        samples.push_back(RateSample {
+            wall: now,
+            ts_ns,
+            count,
+        });
+        prune_rate_samples(samples, now);
+    }
 }
 
 pub(super) fn prune_rate_samples(samples: &mut VecDeque<RateSample>, now: Instant) {
@@ -172,8 +197,8 @@ impl TraceStore {
     pub fn frames_per_second(&self) -> f64 {
         let now = Instant::now();
         let mut inner = self.lock_inner();
-        prune_rate_samples(&mut inner.rate_samples, now);
-        rate_from_samples(&inner.rate_samples)
+        prune_rate_samples(&mut inner.agg_rate.samples, now);
+        rate_from_samples(&inner.agg_rate.samples)
     }
 
     /// Estimated current append rate per logical bus, in frames per
@@ -308,6 +333,22 @@ mod tests {
     fn rate_is_zero_with_no_samples() {
         let store = TraceStore::new();
         assert_eq!(store.frames_per_second(), 0.0);
+    }
+
+    #[test]
+    fn frames_per_second_reports_the_aggregate_rate() {
+        // Two aggregate samples, the second taken after a wall gap longer
+        // than RATE_SAMPLE_INTERVAL (so it actually records), with frame
+        // timestamps 100 ms apart and a count delta of 1 → (2 − 1) / 0.1 s
+        // = 10 frames/s. Like the per-bus/per-direction cases, the rate is
+        // read off the frame timestamps, not wall time; the sleep only
+        // guarantees the second sample is due.
+        let store = TraceStore::new();
+        store.append(dummy(0, 1));
+        std::thread::sleep(Duration::from_millis(30));
+        store.append(dummy(100_000_000, 2));
+        let rate = store.frames_per_second();
+        assert!((rate - 10.0).abs() < 1.0, "expected ~10/s, got {rate}");
     }
 
     #[test]
