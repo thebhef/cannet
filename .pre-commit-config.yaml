@@ -58,6 +58,18 @@ repos:
         pass_filenames: false
         entry: "bash -c 'cd servers/cannet-python-can && uv run --frozen --extra dev pytest'"
 
+      # The freeze is heavy relative to the other hooks (~15 s warm,
+      # ~60 s cold), so it fires only on the files that can actually
+      # break it: the sidecar's dependency set, the freeze entry point,
+      # and the build/licensing scripts themselves. CI runs it per-PR
+      # unconditionally.
+      - id: freeze-sidecar
+        name: freeze + smoke sidecar
+        language: system
+        files: '^servers/cannet-python-can/(pyproject\.toml|uv\.lock|pyinstaller_entry\.py)$|^scripts/(build-sidecar|gen-licenses)\.py$'
+        pass_filenames: false
+        entry: uv run --no-project scripts/build-sidecar.py
+
       # --- Rust workspace ---
       # cargo has no per-file granularity; these run the workspace when any
       # Rust source or manifest changes.
