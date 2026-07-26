@@ -47,6 +47,7 @@ import { useElementPanel } from "./useElementPanel";
 import { useHostMirror } from "./useHostMirror";
 import { useDismissableMenu } from "./useDismissableMenu";
 import { toggleInSet } from "./toggleSet";
+import { formatBytes } from "./format";
 
 /// Address of one message row, as the `rbs_*` commands take it.
 interface Target {
@@ -516,7 +517,7 @@ function MessageRow({
   onSignalMenu,
 }: MessageRowProps) {
   const unknown = m.name == null;
-  const dataHex = m.data.map((b) => b.toString(16).toUpperCase().padStart(2, "0")).join(" ");
+  const dataHex = formatBytes(m.data);
   const calcSummary = [
     m.counter ? `ctr:${m.counter.signal}` : null,
     m.crc ? `crc:${m.crc.signal}` : null,
