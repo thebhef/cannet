@@ -41,6 +41,7 @@ import {
   type CursorMode,
   type NoteEvent,
   type PlotAreaConfig,
+  type PlotAreaReports,
   type PlotPanelParams,
   type SignalRef,
   type XCursors,
@@ -342,7 +343,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
   // panel reads `notes` through `useNotes()` (absolute trace ns)
   // and converts to/from display-relative seconds against
   // `baseSeconds` (the panel's x-axis origin in absolute seconds,
-  // reported up from each area's windowed source via `onReportBase`).
+  // reported up from each area's windowed source via `reports.base`).
   // Edits go through the same context's
   // dispatchers, which forward to the host's `add_note` /
   // `rename_note` / `remove_note` Tauri commands — the
@@ -935,6 +936,20 @@ export function PlotPanel(props: IDockviewPanelProps) {
     (_areaId: string, secs: number | null) => setBaseSeconds(secs),
     [],
   );
+  // Group the area→panel readouts into one stable object so each
+  // PlotArea gets a single `reports` prop / liveRef entry rather than
+  // six parallel callbacks (`PlotAreaReports`).
+  const reports = useMemo<PlotAreaReports>(
+    () => ({
+      series: reportSeries,
+      perf: reportPerf,
+      hostMs: reportHostMs,
+      rate: reportRate,
+      cache: reportCache,
+      base: reportBase,
+    }),
+    [reportSeries, reportPerf, reportHostMs, reportRate, reportCache, reportBase],
+  );
   // Mirror the x-axis origin into a ref for the goto listener (above), which
   // subscribes once and so can't close over the live state value.
   useEffect(() => {
@@ -1485,12 +1500,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
               onPlaceCursorX={placeCursorX}
               onPlaceCursorY={(which, v) => placeCursorY(d.area.id, which, v)}
               onAddNote={addNote}
-              onReportSeries={reportSeries}
-              onReportPerf={reportPerf}
-              onReportHostMs={reportHostMs}
-              onReportRate={reportRate}
-              onReportCache={reportCache}
-              onReportBase={reportBase}
+              reports={reports}
               resetYEpoch={resetYEpoch}
               xEpoch={xEpoch}
               fitYEpoch={fitYEpoch}
@@ -1717,22 +1727,10 @@ interface PlotAreaProps {
   onPlaceCursorX: (which: "a" | "b", t: number) => void;
   onPlaceCursorY: (which: "h1" | "h2", v: number) => void;
   onAddNote: (t: number) => void;
-  onReportSeries: (areaId: string, series: Map<string, Series>) => void;
-  onReportPerf: (areaId: string, ms: number) => void;
-  /** Host-side ms reported by `sample_signals` (slice + decode + decimate). */
-  onReportHostMs: (areaId: string, ms: number) => void;
-  /** Effective re-sample rate (Hz, smoothed) — `0` when not running. */
-  onReportRate: (areaId: string, hz: number) => void;
-  /** Largest per-signal cache size (display + diagnostic). */
-  onReportCache: (areaId: string, points: number) => void;
-  /** Report the area's cache base (x-axis origin, in
-   * absolute seconds since the unix epoch — `res.from_seconds` from
-   * the host's `sample_signals` reply). The panel uses this to
-   * convert session-scoped notes' absolute ns to display-relative
-   * seconds and back. Areas share the same x scale, so a single
-   * panel-level base is fine — the panel takes whichever area
-   * reports first. */
-  onReportBase: (areaId: string, baseSeconds: number | null) => void;
+  /** The area→panel reporting surface (measurement series, perf
+   * timings, effective rate, cache size, x-axis base) — one grouped
+   * object instead of six parallel callbacks. See {@link PlotAreaReports}. */
+  reports: PlotAreaReports;
   /** Panel-level bump → invalidate the per-trace auto-normalise range
    * (Fit Data / Clear use this so y rescales fresh on the next tick). */
   resetYEpoch: number;
@@ -1905,12 +1903,7 @@ function PlotArea(p: PlotAreaProps) {
     onPlaceCursorX,
     onPlaceCursorY,
     onAddNote,
-    onReportSeries,
-    onReportPerf,
-    onReportHostMs,
-    onReportRate,
-    onReportCache,
-    onReportBase,
+    reports,
     resetYEpoch,
     xEpoch,
     fitYEpoch,
@@ -2107,12 +2100,7 @@ function PlotArea(p: PlotAreaProps) {
     onPlaceCursorX,
     onPlaceCursorY,
     onAddNote,
-    onReportSeries,
-    onReportPerf,
-    onReportHostMs,
-    onReportRate,
-    onReportCache,
-    onReportBase,
+    reports,
   });
   useEffect(() => {
     liveRef.current = {
@@ -2133,12 +2121,7 @@ function PlotArea(p: PlotAreaProps) {
       onPlaceCursorX,
       onPlaceCursorY,
       onAddNote,
-      onReportSeries,
-      onReportPerf,
-      onReportHostMs,
-      onReportRate,
-      onReportCache,
-      onReportBase,
+      reports,
     };
   });
 
@@ -2165,12 +2148,12 @@ function PlotArea(p: PlotAreaProps) {
         withSuppressed(() => u.setData([[]]));
         seriesRef.current = new Map();
         presentRef.current = new Map();
-        lr.onReportSeries(areaId, new Map());
+        lr.reports.series(areaId, new Map());
         lr.onAreaResampled(areaId, null, null);
-        lr.onReportBase(areaId, null);
-        lr.onReportCache(areaId, 0);
+        lr.reports.base(areaId, null);
+        lr.reports.cache(areaId, 0);
         recordRate();
-        lr.onReportRate(areaId, rateEmaRef.current);
+        lr.reports.rate(areaId, rateEmaRef.current);
         setValueTick((v) => v + 1);
         return;
       }
@@ -2240,11 +2223,11 @@ function PlotArea(p: PlotAreaProps) {
         withSuppressed(() => u.setData([[] as number[], ...signals.map(() => [] as number[])] as uPlot.AlignedData));
         seriesRef.current = new Map();
         presentRef.current = new Map();
-        lr.onReportSeries(areaId, new Map());
+        lr.reports.series(areaId, new Map());
         lr.onAreaResampled(areaId, null, null);
-        lr.onReportCache(areaId, 0);
+        lr.reports.cache(areaId, 0);
         recordRate();
-        lr.onReportRate(areaId, rateEmaRef.current);
+        lr.reports.rate(areaId, rateEmaRef.current);
         return;
       }
 
@@ -2252,14 +2235,14 @@ function PlotArea(p: PlotAreaProps) {
       const snap = currentRange();
       let biggestCache = 0;
       if (snap) for (const c of snap.byKey.values()) if (c.t.length > biggestCache) biggestCache = c.t.length;
-      lr.onReportCache(areaId, biggestCache);
+      lr.reports.cache(areaId, biggestCache);
 
       if (outcome.kind === "unchanged") {
         // Same request as last fetch — keep the rendered data, just feed
         // the follow-live edge and tick the rate readout.
         lr.onAreaResampled(areaId, outcome.firstT, outcome.lastT);
         recordRate();
-        lr.onReportRate(areaId, rateEmaRef.current);
+        lr.reports.rate(areaId, rateEmaRef.current);
         return;
       }
 
@@ -2267,10 +2250,10 @@ function PlotArea(p: PlotAreaProps) {
       const { snapshot } = outcome;
       const hostExtents = outcome.extra;
       const base = snapshot.base;
-      lr.onReportHostMs(areaId, snapshot.sliceMs + snapshot.decodeMs);
+      lr.reports.hostMs(areaId, snapshot.sliceMs + snapshot.decodeMs);
       // Areas share x, so a panel-level base from any area lets
       // session-scoped notes project onto this panel's x-axis.
-      lr.onReportBase(areaId, base);
+      lr.reports.base(areaId, base);
 
       const seriesRel: Series[] = signals.map((s) => snapshot.byKey.get(signalRefKey(s)) ?? { t: [], v: [] });
       // Auto-normalisation: each series is re-mapped to [0, 1] from
@@ -2456,11 +2439,11 @@ function PlotArea(p: PlotAreaProps) {
       } else {
         primaryAxisRef.current = null;
       }
-      lr.onReportSeries(areaId, sm);
+      lr.reports.series(areaId, sm);
       lr.onAreaResampled(areaId, windowStartT, liveEdgeT);
-      lr.onReportPerf(areaId, performance.now() - t0);
+      lr.reports.perf(areaId, performance.now() - t0);
       recordRate();
-      lr.onReportRate(areaId, rateEmaRef.current);
+      lr.reports.rate(areaId, rateEmaRef.current);
       setValueTick((v) => v + 1);
     } catch {
       /* a failed sample just leaves the last one on screen */

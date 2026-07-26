@@ -11,7 +11,7 @@
  */
 import { signalKey } from "./plotData";
 import { SIGNAL_WHEEL } from "./palette";
-import { DEFAULT_MEASUREMENTS, type MeasurementKey, isMeasurementKey } from "./plotCursors";
+import { DEFAULT_MEASUREMENTS, type MeasurementKey, type Series, isMeasurementKey } from "./plotCursors";
 import type { YAxisMode } from "./plotAxisDerivation";
 import { parseSignalDragData } from "./dragSignals";
 
@@ -101,6 +101,28 @@ export interface PlotPanelParams {
   /** Per-derived-axis vertical weight (flex-grow), keyed by axis id.
    * See {@link AxisWeights}. Absent axes default to weight 1. */
   axisWeights?: unknown;
+}
+
+/** The area→panel reporting surface: the readouts and data an area
+ * pushes up to its panel on each resample. Grouped into one object so
+ * the panel↔area interface (and the area's `liveRef` mirror) carry a
+ * single stable prop instead of six parallel `onReport*` callbacks.
+ * Each takes the reporting area's id (the panel keys per-area state by
+ * it; the scalar readouts fold across areas). */
+export interface PlotAreaReports {
+  /** Last-sampled per-signal series for the area (measurement strip). */
+  series: (areaId: string, series: Map<string, Series>) => void;
+  /** Worst recent total resample wall-clock (ms) — JS + IPC. */
+  perf: (areaId: string, ms: number) => void;
+  /** Host-side ms from `sample_signals` (slice + decode + decimate). */
+  hostMs: (areaId: string, ms: number) => void;
+  /** Effective re-sample rate (Hz, smoothed); `0` when not running. */
+  rate: (areaId: string, hz: number) => void;
+  /** Largest per-signal cache size (display + diagnostic). */
+  cache: (areaId: string, points: number) => void;
+  /** The area's cache base (x-axis origin, absolute seconds since the
+   * unix epoch) — the panel projects session-scoped notes through it. */
+  base: (areaId: string, baseSeconds: number | null) => void;
 }
 
 /** The shared current x-window + a suppress flag so a programmatic
