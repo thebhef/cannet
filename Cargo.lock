@@ -507,13 +507,9 @@ dependencies = [
 name = "cannet-wire"
 version = "0.0.0"
 dependencies = [
- "async-stream",
  "cannet-core",
- "futures",
- "futures-core",
  "prost",
  "protoc-bin-vendored",
- "tokio",
  "tokio-stream",
  "tonic",
  "tonic-build",
