@@ -27,64 +27,10 @@ pub use view_builders::{
     SignalDescriptorRich, SignalMux,
 };
 
-use model::{canid_to_message_id, message_id_parts, MessageEntry};
-
-impl Database {
-    /// The calculated-field designation the DBC itself declares for
-    /// the message addressed by `id` (the `CannetCounter` /
-    /// `CannetCrc` attributes — ADR 0027). The returned config is the
-    /// *default* layer; overrides replace it wholesale per field.
-    /// `None` when no message matches `id`; an empty config when the
-    /// message declares no calculated fields.
-    #[must_use]
-    pub fn dbc_calculated_fields(
-        &self,
-        id: cannet_core::CanId,
-    ) -> Option<&calc::CalculatedFieldsConfig> {
-        let key = canid_to_message_id(id)?;
-        self.messages.get(&key).map(|e| &e.calc_fields)
-    }
-
-    /// Every message that declares calculated fields via the cannet
-    /// attributes, as `(raw id, extended, config)` — what an
-    /// ingest-time verifier enumerates to build its per-id config
-    /// index. Sorted by `(extended, id)` for stable iteration.
-    #[must_use]
-    pub fn calculated_field_messages(&self) -> Vec<(u32, bool, &CalculatedFieldsConfig)> {
-        let mut out: Vec<(u32, bool, &CalculatedFieldsConfig)> = self
-            .messages
-            .iter()
-            .filter(|(_, e)| !e.calc_fields.is_empty())
-            .map(|(id, e)| {
-                let (raw, extended) = message_id_parts(*id);
-                (raw, extended, &e.calc_fields)
-            })
-            .collect();
-        out.sort_by_key(|(id, ext, _)| (*ext, *id));
-        out
-    }
-
-    /// Resolve a calculated-fields config against the message addressed
-    /// by `id`: destination signals become bit placements, the CRC
-    /// algorithm becomes a ready-built engine, and every config error
-    /// surfaces here (see [`CalcFieldError`]) so the per-send
-    /// [`ResolvedCalculatedFields::apply`] cannot fail on config.
-    /// See ADR 0027.
-    pub fn resolve_calculated_fields(
-        &self,
-        id: cannet_core::CanId,
-        config: &CalculatedFieldsConfig,
-    ) -> Result<ResolvedCalculatedFields, CalcFieldError> {
-        let entry = canid_to_message_id(id)
-            .and_then(|key| self.messages.get(&key))
-            .ok_or(CalcFieldError::MessageNotFound)?;
-        calc::resolve(entry, config)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::message_id_parts;
     use cannet_core::{CanId, Direction, CanFrame};
     use can_dbc::SignalExtendedValueType;
     use std::collections::HashMap;
