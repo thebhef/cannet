@@ -1,9 +1,18 @@
 import type { TraceFrameRecord } from "./types";
 
+/// Zero-padded hex digits for a CAN id — 8 digits for an extended
+/// (29-bit) id, 3 for standard (11-bit). The width rule `formatId`
+/// wraps in its `x:`/`s:`-prefixed string; also used bare wherever an
+/// editable id field seeds its own text from a raw `(id, extended)`
+/// pair (the prefix is its own control there, e.g. TransmitPanel's
+/// `CanIdInput`).
+export function formatCanIdHex(id: number, extended: boolean): string {
+  const width = extended ? 8 : 3;
+  return id.toString(16).toUpperCase().padStart(width, "0");
+}
+
 export function formatId(frame: TraceFrameRecord): string {
-  const width = frame.extended ? 8 : 3;
-  const hex = frame.id.toString(16).toUpperCase().padStart(width, "0");
-  return `${frame.extended ? "x" : "s"}:${hex}`;
+  return `${frame.extended ? "x" : "s"}:${formatCanIdHex(frame.id, frame.extended)}`;
 }
 
 export function formatKind(frame: TraceFrameRecord): string {
@@ -24,10 +33,16 @@ export function formatKind(frame: TraceFrameRecord): string {
   }
 }
 
+/// Space-separated uppercase hex bytes (`"AA BB CC"`). The shared body
+/// behind `formatData` (a trace frame's payload); also used directly
+/// wherever the raw byte array is already in hand without a
+/// `TraceFrameRecord` to wrap it (e.g. RBS's message payload).
+export function formatBytes(data: readonly number[]): string {
+  return data.map((b) => b.toString(16).toUpperCase().padStart(2, "0")).join(" ");
+}
+
 export function formatData(frame: TraceFrameRecord): string {
-  return frame.data
-    .map((b) => b.toString(16).toUpperCase().padStart(2, "0"))
-    .join(" ");
+  return formatBytes(frame.data);
 }
 
 /// The status-line frame-count phrase. Under windowed-ring eviction

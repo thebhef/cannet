@@ -1,14 +1,63 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  formatBytes,
+  formatCanIdHex,
+  formatData,
   formatDurationSeconds,
   formatElapsed,
   formatFrameCount,
+  formatId,
   formatSignalValue,
   formatSignalValueWithLabel,
   formatTimestamp,
   fracDigitsForSpan,
 } from "./format";
+import type { TraceFrameRecord } from "./types";
+
+describe("formatCanIdHex", () => {
+  it("pads a standard id to 3 hex digits", () => {
+    expect(formatCanIdHex(0x100, false)).toBe("100");
+    expect(formatCanIdHex(0, false)).toBe("000");
+  });
+
+  it("pads an extended id to 8 hex digits", () => {
+    expect(formatCanIdHex(0x100, true)).toBe("00000100");
+    expect(formatCanIdHex(0x1fffffff, true)).toBe("1FFFFFFF");
+  });
+});
+
+describe("formatId", () => {
+  it("prefixes a standard id with s: and 3 hex digits", () => {
+    const frame = { id: 0x100, extended: false } as TraceFrameRecord;
+    expect(formatId(frame)).toBe(`s:${formatCanIdHex(0x100, false)}`);
+    expect(formatId(frame)).toBe("s:100");
+  });
+
+  it("prefixes an extended id with x: and 8 hex digits", () => {
+    const frame = { id: 0x100, extended: true } as TraceFrameRecord;
+    expect(formatId(frame)).toBe(`x:${formatCanIdHex(0x100, true)}`);
+    expect(formatId(frame)).toBe("x:00000100");
+  });
+});
+
+describe("formatBytes", () => {
+  it("renders space-separated uppercase hex bytes", () => {
+    expect(formatBytes([0, 0xab, 255])).toBe("00 AB FF");
+  });
+
+  it("renders an empty payload as an empty string", () => {
+    expect(formatBytes([])).toBe("");
+  });
+});
+
+describe("formatData", () => {
+  it("formats a frame's payload the same way as formatBytes", () => {
+    const frame = { data: [1, 2, 0xff] } as TraceFrameRecord;
+    expect(formatData(frame)).toBe(formatBytes(frame.data));
+    expect(formatData(frame)).toBe("01 02 FF");
+  });
+});
 
 describe("formatElapsed", () => {
   it("shows only seconds (no leading zero) below a minute, 4 decimals", () => {
