@@ -22,7 +22,7 @@ use crate::trace_store;
 use crate::{sys_error, sys_info, sys_warn};
 // `run_pump` / `panic_message` live in `session` once it is split out;
 // they resolve at the crate root until then.
-use crate::{panic_message, run_pump};
+use crate::session::{panic_message, run_pump};
 
 /// Per-channel BLF bus mapping. One entry per channel the
 /// caller wants to route: `Some(bus_id)` to route it onto that logical

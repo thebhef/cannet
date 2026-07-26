@@ -1264,7 +1264,7 @@ pub async fn rbs_view(
         let bus_id = rbs.resolve_bus(bus_key);
         let connected = bus_id
             .as_deref()
-            .is_some_and(|b| crate::resolve_bus_route(&sessions, b).is_some());
+            .is_some_and(|b| crate::session::resolve_bus_route(&sessions, b).is_some());
 
         // ECU grouping: every message of every scoped DBC, grouped by
         // transmitter, merged with the file's (possibly DBC-unknown)
