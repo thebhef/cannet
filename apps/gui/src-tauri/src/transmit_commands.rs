@@ -38,6 +38,24 @@ fn emit_transmit_frames_changed(app: &AppHandle) {
     let _ = app.emit("transmit-frames-changed", ());
 }
 
+/// Layer a per-message calc override over the DBC default, per field
+/// (ADR 0027): a present override field replaces the DBC default
+/// wholesale, an absent one keeps the default. `None` override yields
+/// the default unchanged. Shared by [`resolve_effective_calc`] and the
+/// verifier's per-bus override rebuild.
+pub(crate) fn merge_calc_override(
+    dbc_default: cannet_dbc::CalculatedFieldsConfig,
+    override_config: Option<cannet_dbc::CalculatedFieldsConfig>,
+) -> cannet_dbc::CalculatedFieldsConfig {
+    match override_config {
+        Some(o) => cannet_dbc::CalculatedFieldsConfig {
+            counter: o.counter.or(dbc_default.counter),
+            crc: o.crc.or(dbc_default.crc),
+        },
+        None => dbc_default,
+    }
+}
+
 /// Resolve the *effective* calculated-fields config for one TX
 /// message (ADR 0027): the DBC-declared defaults (`CannetCounter` /
 /// `CannetCrc` attributes) with the message's override spec layered
@@ -78,16 +96,7 @@ pub(crate) fn resolve_effective_calc(
     let override_config = override_spec
         .map(ipc::CalcFieldsSpec::to_config)
         .transpose()?;
-    let (mut counter, mut crc) = (dbc_default.counter, dbc_default.crc);
-    if let Some(o) = override_config {
-        if o.counter.is_some() {
-            counter = o.counter;
-        }
-        if o.crc.is_some() {
-            crc = o.crc;
-        }
-    }
-    let merged = cannet_dbc::CalculatedFieldsConfig { counter, crc };
+    let merged = merge_calc_override(dbc_default, override_config);
     if merged.is_empty() {
         return Ok(None);
     }

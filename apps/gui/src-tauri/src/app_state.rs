@@ -35,7 +35,7 @@ use crate::{filter, ipc, local_buses, rbs, transmit_frames, transmit_scheduler, 
 // `transmit_commands` modules once those are split out; they resolve at
 // the crate root until then.
 use crate::trace_query::ActiveFilterIndex;
-use crate::transmit_commands::resolve_effective_calc;
+use crate::transmit_commands::{merge_calc_override, resolve_effective_calc};
 use crate::session::RemoteSession;
 
 /// A loaded DBC: its source path, the parsed database, and the set of
@@ -238,10 +238,7 @@ pub(crate) fn rebuild_verification(state: &AppState) {
                             .find_map(|d| d.db.dbc_calculated_fields(can_id))
                             .cloned()
                             .unwrap_or_default();
-                        let merged = cannet_dbc::CalculatedFieldsConfig {
-                            counter: override_config.counter.or(dbc_default.counter),
-                            crc: override_config.crc.or(dbc_default.crc),
-                        };
+                        let merged = merge_calc_override(dbc_default, Some(override_config));
                         if !merged.is_empty() {
                             out.push((bus_id.clone(), id, extended, merged));
                         }

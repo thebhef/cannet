@@ -280,6 +280,32 @@ fn message_record(m: cannet_dbc::DbcMessageContent) -> DbcMessageContentRecord {
     }
 }
 
+/// Map a [`cannet_dbc::SignalMux`] to its wire record. Shared by the
+/// discovery-tree ([`signal_record`]) and encoder-detail
+/// ([`describe_message_inner`]) descriptor builders.
+fn signal_mux_record(mux: cannet_dbc::SignalMux) -> ipc::SignalMuxRecord {
+    match mux {
+        cannet_dbc::SignalMux::Plain => ipc::SignalMuxRecord::Plain,
+        cannet_dbc::SignalMux::Multiplexor => ipc::SignalMuxRecord::Multiplexor,
+        cannet_dbc::SignalMux::Multiplexed { selector } => {
+            ipc::SignalMuxRecord::Multiplexed { selector }
+        }
+        cannet_dbc::SignalMux::MultiplexorAndMultiplexed { selector } => {
+            ipc::SignalMuxRecord::MultiplexorAndMultiplexed { selector }
+        }
+    }
+}
+
+/// Map a [`cannet_dbc::FloatKind`] to its wire tag. Shared by the two
+/// descriptor builders (see [`signal_mux_record`]).
+fn float_kind_str(float_kind: cannet_dbc::FloatKind) -> &'static str {
+    match float_kind {
+        cannet_dbc::FloatKind::Integer => "integer",
+        cannet_dbc::FloatKind::Float32 => "float32",
+        cannet_dbc::FloatKind::Float64 => "float64",
+    }
+}
+
 fn signal_record(s: cannet_dbc::DbcSignalContent) -> DbcSignalContentRecord {
     DbcSignalContentRecord {
         name: s.name,
@@ -296,21 +322,8 @@ fn signal_record(s: cannet_dbc::DbcSignalContent) -> DbcSignalContentRecord {
         offset: s.offset,
         min: s.min,
         max: s.max,
-        mux: match s.mux {
-            cannet_dbc::SignalMux::Plain => ipc::SignalMuxRecord::Plain,
-            cannet_dbc::SignalMux::Multiplexor => ipc::SignalMuxRecord::Multiplexor,
-            cannet_dbc::SignalMux::Multiplexed { selector } => {
-                ipc::SignalMuxRecord::Multiplexed { selector }
-            }
-            cannet_dbc::SignalMux::MultiplexorAndMultiplexed { selector } => {
-                ipc::SignalMuxRecord::MultiplexorAndMultiplexed { selector }
-            }
-        },
-        float_kind: match s.float_kind {
-            cannet_dbc::FloatKind::Integer => "integer",
-            cannet_dbc::FloatKind::Float32 => "float32",
-            cannet_dbc::FloatKind::Float64 => "float64",
-        },
+        mux: signal_mux_record(s.mux),
+        float_kind: float_kind_str(s.float_kind),
         attributes: s.attributes.into_iter().map(attribute_record).collect(),
         value_table: s
             .value_table
@@ -434,21 +447,8 @@ pub(crate) fn describe_message_inner(
                     max: s.max,
                     size: s.size,
                     signed: s.signed,
-                    mux: match s.mux {
-                        cannet_dbc::SignalMux::Plain => ipc::SignalMuxRecord::Plain,
-                        cannet_dbc::SignalMux::Multiplexor => ipc::SignalMuxRecord::Multiplexor,
-                        cannet_dbc::SignalMux::Multiplexed { selector } => {
-                            ipc::SignalMuxRecord::Multiplexed { selector }
-                        }
-                        cannet_dbc::SignalMux::MultiplexorAndMultiplexed { selector } => {
-                            ipc::SignalMuxRecord::MultiplexorAndMultiplexed { selector }
-                        }
-                    },
-                    float_kind: match s.float_kind {
-                        cannet_dbc::FloatKind::Integer => "integer",
-                        cannet_dbc::FloatKind::Float32 => "float32",
-                        cannet_dbc::FloatKind::Float64 => "float64",
-                    },
+                    mux: signal_mux_record(s.mux),
+                    float_kind: float_kind_str(s.float_kind),
                     has_value_table: s.has_value_table,
                     start_value_raw: s.start_value_raw,
                 })

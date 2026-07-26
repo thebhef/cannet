@@ -16,6 +16,30 @@ use crate::model::{
     canid_to_message_id, is_enum, message_id_parts, Database, DbcAttribute, ValueTableEntry,
 };
 
+/// Map can-dbc's `MultiplexIndicator` to this crate's [`SignalMux`].
+/// Shared by [`Database::describe_message`] and [`Database::dbc_content`],
+/// which build different descriptor shapes over the same mux facts.
+fn signal_mux_from_indicator(indicator: MultiplexIndicator) -> SignalMux {
+    match indicator {
+        MultiplexIndicator::Plain => SignalMux::Plain,
+        MultiplexIndicator::Multiplexor => SignalMux::Multiplexor,
+        MultiplexIndicator::MultiplexedSignal(sel) => SignalMux::Multiplexed { selector: sel },
+        MultiplexIndicator::MultiplexorAndMultiplexedSignal(sel) => {
+            SignalMux::MultiplexorAndMultiplexed { selector: sel }
+        }
+    }
+}
+
+/// Map can-dbc's `SignalExtendedValueType` to this crate's [`FloatKind`].
+/// Shared by the two descriptor builders (see [`signal_mux_from_indicator`]).
+fn float_kind_from_extended(extended: SignalExtendedValueType) -> FloatKind {
+    match extended {
+        SignalExtendedValueType::IEEEfloat32Bit => FloatKind::Float32,
+        SignalExtendedValueType::IEEEdouble64bit => FloatKind::Float64,
+        SignalExtendedValueType::SignedOrUnsignedInteger => FloatKind::Integer,
+    }
+}
+
 impl Database {
     /// Every message as `(message_id, extended, name)` — the 29/11-bit
     /// arbitration id with the extended-id flag split out, plus the
@@ -129,22 +153,9 @@ impl Database {
             .signals
             .iter()
             .map(|s| {
-                let mux = match s.signal.multiplexer_indicator {
-                    MultiplexIndicator::Plain => SignalMux::Plain,
-                    MultiplexIndicator::Multiplexor => SignalMux::Multiplexor,
-                    MultiplexIndicator::MultiplexedSignal(sel) => SignalMux::Multiplexed {
-                        selector: sel,
-                    },
-                    MultiplexIndicator::MultiplexorAndMultiplexedSignal(sel) => {
-                        uses_extended_mux = true;
-                        SignalMux::MultiplexorAndMultiplexed { selector: sel }
-                    }
-                };
-                let float_kind = match s.extended_type {
-                    SignalExtendedValueType::IEEEfloat32Bit => FloatKind::Float32,
-                    SignalExtendedValueType::IEEEdouble64bit => FloatKind::Float64,
-                    SignalExtendedValueType::SignedOrUnsignedInteger => FloatKind::Integer,
-                };
+                let mux = signal_mux_from_indicator(s.signal.multiplexer_indicator);
+                uses_extended_mux |= matches!(mux, SignalMux::MultiplexorAndMultiplexed { .. });
+                let float_kind = float_kind_from_extended(s.extended_type);
                 SignalDescriptorRich {
                     name: s.signal.name.clone(),
                     unit: s.signal.unit.clone(),
@@ -206,24 +217,10 @@ impl Database {
                     .signals
                     .iter()
                     .map(|s| {
-                        let mux = match s.signal.multiplexer_indicator {
-                            MultiplexIndicator::Plain => SignalMux::Plain,
-                            MultiplexIndicator::Multiplexor => SignalMux::Multiplexor,
-                            MultiplexIndicator::MultiplexedSignal(sel) => {
-                                SignalMux::Multiplexed { selector: sel }
-                            }
-                            MultiplexIndicator::MultiplexorAndMultiplexedSignal(sel) => {
-                                uses_extended_mux = true;
-                                SignalMux::MultiplexorAndMultiplexed { selector: sel }
-                            }
-                        };
-                        let float_kind = match s.extended_type {
-                            SignalExtendedValueType::IEEEfloat32Bit => FloatKind::Float32,
-                            SignalExtendedValueType::IEEEdouble64bit => FloatKind::Float64,
-                            SignalExtendedValueType::SignedOrUnsignedInteger => {
-                                FloatKind::Integer
-                            }
-                        };
+                        let mux = signal_mux_from_indicator(s.signal.multiplexer_indicator);
+                        uses_extended_mux |=
+                            matches!(mux, SignalMux::MultiplexorAndMultiplexed { .. });
+                        let float_kind = float_kind_from_extended(s.extended_type);
                         let byte_order = match s.signal.byte_order {
                             CanDbcByteOrder::LittleEndian => ByteOrder::Little,
                             CanDbcByteOrder::BigEndian => ByteOrder::Big,
