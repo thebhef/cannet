@@ -92,7 +92,7 @@ next to `DOCK_COMPONENTS` (App.tsx:174).
 
 ### Rust — highest drift risk first
 
-- **1. cannet-spill segment-chain machinery written 3–5×** —
+- ~~**1. cannet-spill segment-chain machinery written 3–5×** —
    `IdPostings` (byid.rs) and `SampleSeq` (sample_seq.rs) share
    identical constants, body-identical `seg_capacity()`/`locate()`,
    near-identical push-grow, and a verbatim evict loop (with the same
@@ -101,7 +101,35 @@ next to `DOCK_COMPONENTS` (App.tsx:174).
    lower-bound searches (byid.rs:307, filter_index.rs:209,
    signal_cache.rs:283). → one segment-chain module parameterized by
    entry type **and eviction policy** (the policies deliberately
-   differ — keep that explicit, don't flatten it).
+   differ — keep that explicit, don't flatten it).~~ **Done
+   (task-0030/03-spill-segment-chain).** Re-confirmed the "3–5×" shape:
+   `IdPostings`/`SampleSeq` did share identical geometric constants,
+   `seg_capacity()`/`locate()`, and push-grow; the leading-segment
+   evict loop (with the Windows unmap-before-delete comment) really
+   was copy-pasted 5× (those two, `FilterIndex`, and `DiskRawStore`'s
+   meta *and* payload families); the three lower-bound searches were
+   the same "binary search from a floor" shape, one of them
+   (`signal_cache.rs`, since renamed from the doc's line reference but
+   same file) living in the GUI crate rather than cannet-spill itself.
+   New `crates/cannet-spill/src/seg_chain.rs` holds the shared pieces
+   as plain functions — `geometric_seg_capacity`/`geometric_locate`/
+   `geometric_push_grow` (the geometric chains), `grow_fixed` (a
+   fourth duplicate found while extracting, beyond the doc's own
+   wording: `FilterIndex::push`/`DiskRawStore::ensure_meta_seg`/
+   `ensure_payload_seg` shared the same fixed-size "grow while short"
+   loop), `evict_leading` (the 5-copy mechanical unmap-and-delete
+   step), and a public `lower_bound` (re-exported so the GUI's
+   `signal_cache.rs` uses it too). Per the doc's own instruction,
+   eviction *policy* — what target base each type computes before
+   calling `evict_leading` — was deliberately **not** unified: it
+   stays inline in each type's own `evict_below`, visibly different
+   per type (a binary search for by-id/filter-index, a
+   directly-supplied slot for the sample sequence, a live-tail-
+   protecting clamp for the disk store's two families). The two
+   segment *geometries* (doubling vs. fixed-size) were likewise kept
+   as separate function families rather than forced under one trait,
+   since their addressing schemes genuinely differ (a `cum_cap` search
+   vs. plain arithmetic division).
 - ~~**2. CAN-ID extraction copy-pasted 5×** in
    `crates/cannet-blf/src/format/can.rs` (bit-31 test + 11/29-bit
    mask), plus `is_extended_id()`/`can_id()` duplicated on all five
