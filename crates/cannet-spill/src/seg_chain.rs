@@ -102,6 +102,34 @@ pub(crate) fn evict_leading(
     }
 }
 
+/// Smallest index `k` in `[lo, hi)` for which `at(k) >= target` (a
+/// lower-bound / partition-point binary search), given `at` is
+/// non-decreasing over `[lo, hi)`. `lo` is normally a chain's low-water
+/// mark, so an evicted (front-trimmed) slot is never read.
+///
+/// Shared by every hand-rolled lower-bound search over a segment-chain
+/// sequence in this crate — the by-id postings, the filter index — and, via
+/// the crate's public surface, the GUI's signal-cache pyramid: all three do
+/// the same "binary search from a floor" over their own entry accessor and
+/// target type (`u64`, `usize`, `f64` respectively).
+// `T` is always a small scalar at every call site (`u64`, `usize`, `f64`),
+// so pass-by-value is the natural, zero-cost ergonomic API — `&T` would
+// force every caller to take a reference to a temporary.
+#[allow(clippy::needless_pass_by_value)]
+pub fn lower_bound<T: PartialOrd>(lo: usize, hi: usize, target: T, at: impl Fn(usize) -> T) -> usize {
+    let mut lo = lo;
+    let mut hi = hi;
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if at(mid) < target {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    lo
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,5 +151,27 @@ mod tests {
         assert_eq!(geometric_locate(&cum_cap, 64), (1, 0));
         assert_eq!(geometric_locate(&cum_cap, 191), (1, 127));
         assert_eq!(geometric_locate(&cum_cap, 192), (2, 0));
+    }
+
+    #[test]
+    fn lower_bound_finds_the_partition_point() {
+        let v = [1, 3, 3, 5, 7, 9];
+        let at = |i: usize| v[i];
+        assert_eq!(lower_bound(0, v.len(), 0, at), 0);
+        assert_eq!(lower_bound(0, v.len(), 3, at), 1);
+        assert_eq!(lower_bound(0, v.len(), 4, at), 3);
+        assert_eq!(lower_bound(0, v.len(), 10, at), v.len());
+        // A raised floor never returns below it.
+        assert_eq!(lower_bound(2, v.len(), 0, at), 2);
+    }
+
+    #[test]
+    fn lower_bound_works_over_floats_too() {
+        // The GUI's signal-cache pyramid searches by `f64` timestamp.
+        let v = [0.0, 1.5, 1.5, 3.0, 4.25];
+        let at = |i: usize| v[i];
+        assert_eq!(lower_bound(0, v.len(), 1.5, at), 1);
+        assert_eq!(lower_bound(0, v.len(), 2.0, at), 3);
+        assert_eq!(lower_bound(0, v.len(), 100.0, at), v.len());
     }
 }

@@ -34,7 +34,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::seg::{create_segment, remove_files_with_prefixes, Segment};
-use crate::seg_chain::evict_leading;
+use crate::seg_chain::{evict_leading, lower_bound};
 use crate::{CandidateSource, RawTraceFrame};
 
 /// Frame indices per index segment file (8 MiB at 8 bytes each).
@@ -210,16 +210,7 @@ impl FilterIndex {
     pub fn position_of(&self, frame: usize) -> usize {
         // The lower bound starts at the low-water mark, so an evicted
         // (front-trimmed) match-position is never read.
-        let (mut lo, mut hi) = (self.first_pos, self.len);
-        while lo < hi {
-            let mid = lo + (hi - lo) / 2;
-            if self.entry(mid) < frame {
-                lo = mid + 1;
-            } else {
-                hi = mid;
-            }
-        }
-        lo
+        lower_bound(self.first_pos, self.len, frame, |k| self.entry(k))
     }
 
     /// The matching frame indices at match-positions `[offset, offset +

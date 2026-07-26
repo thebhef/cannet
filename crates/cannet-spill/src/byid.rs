@@ -27,7 +27,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::seg::{open_segment, Segment};
-use crate::seg_chain::{evict_leading, geometric_locate, geometric_push_grow, geometric_seg_capacity};
+use crate::seg_chain::{
+    evict_leading, geometric_locate, geometric_push_grow, geometric_seg_capacity, lower_bound,
+};
 
 /// Bytes per posting entry (a `u64` frame index).
 const ENTRY_BYTES: usize = 8;
@@ -305,17 +307,7 @@ fn seg_path(dir: &Path, id: u32, extended: bool, seg: usize) -> PathBuf {
 /// `>= target` (the partition point of an ascending list). Lower-bounding at
 /// `first_slot` keeps the search out of any dropped leading segment (DS-8).
 fn partition_point(post: &IdPostings, target: u64) -> usize {
-    let mut lo = post.first_slot;
-    let mut hi = post.len;
-    while lo < hi {
-        let mid = lo + (hi - lo) / 2;
-        if post.entry(mid) < target {
-            lo = mid + 1;
-        } else {
-            hi = mid;
-        }
-    }
-    lo
+    lower_bound(post.first_slot, post.len, target, |k| post.entry(k))
 }
 
 #[cfg(test)]

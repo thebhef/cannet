@@ -35,6 +35,7 @@ pub use disk::{DiskConfig, DiskRawStore};
 pub use filter_index::FilterIndex;
 pub use mem::MemRawStore;
 pub use sample_seq::SampleSeq;
+pub use seg_chain::lower_bound;
 
 // `CandidateSource` is defined below alongside `RawStore`.
 
