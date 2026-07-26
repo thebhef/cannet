@@ -8,6 +8,7 @@ import "uplot/dist/uPlot.min.css";
 import { isEnumValueTable, type Bus, type SignalDescriptorRecord, type SignalExtent, type ValueTableEntryRecord } from "./types";
 import { useTraceData } from "./traceData";
 import { useProjectContext } from "./projectContext";
+import { useSignalCatalog } from "./signalCatalogContext";
 import { defaultBusColor } from "./busColor";
 import {
   type ColorResolver,
@@ -492,7 +493,7 @@ function yAxisModeFromRaw(v: unknown): YAxisMode {
 export function PlotPanel(props: IDockviewPanelProps) {
   diagCount("render.PlotPanel"); // DIAG
   const data = useTraceData();
-  const { dbcPaths, buses } = useProjectContext();
+  const { buses } = useProjectContext();
   const registry = useElementRegistry();
   const { ensure } = registry;
 
@@ -569,7 +570,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     axisWeightsFromRaw(savedConfig?.axisWeights),
   );
   const [focusedAreaId, setFocusedAreaId] = useState<string>(() => areas[0]?.id ?? "");
-  const [catalog, setCatalog] = useState<SignalDescriptorRecord[]>([]);
+  const { catalog, refresh: refreshCatalog } = useSignalCatalog();
 
   const [cursorX, setCursorX] = useState<XCursors>(() => {
     const o = savedConfig?.cursorX as { a?: unknown; b?: unknown } | undefined;
@@ -859,28 +860,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
     showPoints,
     axisWeights,
   ]);
-
-  const refreshCatalog = useCallback(() => {
-    void invoke<SignalDescriptorRecord[]>("list_signals", {
-      // The host expands unscoped DBCs to one record per project
-      // bus, so the picker can offer the same signal on each bus the
-      // DBC applies to.
-      projectBuses: buses.map((b) => b.id),
-    }).then(setCatalog);
-  }, [buses]);
-  useEffect(refreshCatalog, [refreshCatalog, dbcPaths, buses]);
-
-  // Re-fetch the signal catalog when the host's
-  // filesystem watcher reports a DBC change. Filter-mode plot areas
-  // re-evaluate automatically off the new `catalog`.
-  useEffect(() => {
-    const unlisten = listen<string>("dbc-changed", () => {
-      refreshCatalog();
-    });
-    return () => {
-      void unlisten.then((fn) => fn());
-    };
-  }, [refreshCatalog]);
 
   // --- area ops ---
   const addArea = useCallback(() => {

@@ -140,6 +140,7 @@ import { TraceDataContext, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { ElementRegistryContext, type ElementRegistry } from "./projectElements";
 import { NotesContext, type NotesContextValue } from "./notesContext";
+import { SignalCatalogProvider } from "./signalCatalogContext";
 import { wheelColor } from "./palette";
 import { freshTrace } from "./trace";
 
@@ -249,9 +250,11 @@ function renderPanel(opts?: {
   let tree = (
     <TraceDataContext.Provider value={traceData}>
       <ProjectContext.Provider value={projectCtx}>
-        <ElementRegistryContext.Provider value={registry}>
-          <PlotPanel {...props} />
-        </ElementRegistryContext.Provider>
+        <SignalCatalogProvider>
+          <ElementRegistryContext.Provider value={registry}>
+            <PlotPanel {...props} />
+          </ElementRegistryContext.Provider>
+        </SignalCatalogProvider>
       </ProjectContext.Provider>
     </TraceDataContext.Provider>
   );
@@ -927,11 +930,13 @@ describe("PlotPanel command registration (f / l hotkeys)", () => {
     render(
       <TraceDataContext.Provider value={traceData}>
         <ProjectContext.Provider value={projectCtx}>
-          <ElementRegistryContext.Provider value={makeRegistry()}>
-            <PanelCommandsContext.Provider value={commands}>
-              <PlotPanel {...props} />
-            </PanelCommandsContext.Provider>
-          </ElementRegistryContext.Provider>
+          <SignalCatalogProvider>
+            <ElementRegistryContext.Provider value={makeRegistry()}>
+              <PanelCommandsContext.Provider value={commands}>
+                <PlotPanel {...props} />
+              </PanelCommandsContext.Provider>
+            </ElementRegistryContext.Provider>
+          </SignalCatalogProvider>
         </ProjectContext.Provider>
       </TraceDataContext.Provider>,
     );
