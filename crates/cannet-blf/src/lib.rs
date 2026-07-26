@@ -510,16 +510,16 @@ fn adjust_channel_to_one_based(cannet_channel: u8) -> u16 {
 /// caller (`BlfFileWriter::append_object`) tracks the absolute
 /// timestamp separately so it can stamp the `FileStatistics`
 /// `measurement_start_time` correctly.
-#[allow(clippy::too_many_lines)]
+///
+/// Header/body layout is owned by `format::can`'s `build_*`
+/// constructors — this function only derives cannet-side framing
+/// values (relative timestamp, 1-based channel, wire id, TX flag)
+/// and picks which object type + builder the payload maps to.
 fn frame_to_object_bytes(frame: &CanFrame, start_ns: Option<u64>) -> Vec<u8> {
     use format::can::{
-        encode_can_error_ext, encode_can_fd_message_64, encode_can_message2, CanErrorExt,
-        CanFdMessage64, CanMessage2, CAN_EVENT_HEADER_BYTES, CAN_FD_64_FLAG_BRS,
-        CAN_FD_64_FLAG_EDL, CAN_FD_64_FLAG_ESI, CAN_FD_MESSAGE_64_FIXED_PREFIX_BYTES,
-        CAN_FLAG_RTR, CAN_FLAG_TX, CAN_ID_EXTENDED_BIT,
-    };
-    use format::object::{
-        object_type, ObjectHeaderBase, ObjectHeaderV1, OBJECT_FLAG_TIME_ONE_NANS,
+        build_can_error_ext, build_can_fd_message_64, build_can_message2, encode_can_error_ext,
+        encode_can_fd_message_64, encode_can_message2, CAN_FD_64_FLAG_BRS, CAN_FD_64_FLAG_EDL,
+        CAN_FD_64_FLAG_ESI, CAN_FLAG_RTR, CAN_FLAG_TX, CAN_ID_EXTENDED_BIT,
     };
 
     let rel_ns = match start_ns {
@@ -540,63 +540,17 @@ fn frame_to_object_bytes(frame: &CanFrame, start_ns: Option<u64>) -> Vec<u8> {
     match &frame.payload {
         CanFramePayload::Classic(data) => {
             let dlc = u8::try_from(data.len()).unwrap_or(u8::MAX);
-            let mut m = CanMessage2 {
-                base: ObjectHeaderBase {
-                    header_size: 32,
-                    header_version: 1,
-                    object_size: 0, // filled in below
-                    object_type: object_type::CAN_MESSAGE2,
-                },
-                event: ObjectHeaderV1 {
-                    object_flags: OBJECT_FLAG_TIME_ONE_NANS,
-                    client_index: 0,
-                    object_version: 0,
-                    object_timestamp: rel_ns,
-                },
-                channel,
-                flags,
-                dlc,
-                id_raw,
-                data: data.clone(),
-                frame_length_ns: 0,
-                bit_count: 0,
-            };
-            m.base.object_size = u32::try_from(
-                CAN_EVENT_HEADER_BYTES + 16 + data.len(),
-            )
-            .unwrap_or(u32::MAX);
+            let m = build_can_message2(rel_ns, channel, flags, dlc, id_raw, data.clone());
             encode_can_message2(&m)
         }
         CanFramePayload::Remote { dlc } => {
             // Remote frames carry no data; emit a CAN_MESSAGE2 with
             // RTR bit set and an empty data slot.
-            let mut m = CanMessage2 {
-                base: ObjectHeaderBase {
-                    header_size: 32,
-                    header_version: 1,
-                    object_size: 0,
-                    object_type: object_type::CAN_MESSAGE2,
-                },
-                event: ObjectHeaderV1 {
-                    object_flags: OBJECT_FLAG_TIME_ONE_NANS,
-                    client_index: 0,
-                    object_version: 0,
-                    object_timestamp: rel_ns,
-                },
-                channel,
-                flags: flags | CAN_FLAG_RTR,
-                dlc: *dlc,
-                id_raw,
-                data: Vec::new(),
-                frame_length_ns: 0,
-                bit_count: 0,
-            };
-            m.base.object_size = u32::try_from(CAN_EVENT_HEADER_BYTES + 16).unwrap_or(u32::MAX);
+            let m = build_can_message2(rel_ns, channel, flags | CAN_FLAG_RTR, *dlc, id_raw, Vec::new());
             encode_can_message2(&m)
         }
         CanFramePayload::Fd { data, flags: fd_flags } => {
             let dlc = u8::try_from(data.len()).unwrap_or(u8::MAX);
-            let valid_data_bytes = dlc;
             let mut flags_32: u32 = CAN_FD_64_FLAG_EDL;
             if fd_flags.bitrate_switch {
                 flags_32 |= CAN_FD_64_FLAG_BRS;
@@ -609,41 +563,16 @@ fn frame_to_object_bytes(frame: &CanFrame, start_ns: Option<u64>) -> Vec<u8> {
             // cap the on-disk channel at 255 (effectively at
             // cannet's u8 channel + 1 saturating to u8::MAX).
             let channel_u8 = u8::try_from(channel).unwrap_or(u8::MAX);
-            let mut m = CanFdMessage64 {
-                base: ObjectHeaderBase {
-                    header_size: 32,
-                    header_version: 1,
-                    object_size: 0,
-                    object_type: object_type::CAN_FD_MESSAGE_64,
-                },
-                event: ObjectHeaderV1 {
-                    object_flags: OBJECT_FLAG_TIME_ONE_NANS,
-                    client_index: 0,
-                    object_version: 0,
-                    object_timestamp: rel_ns,
-                },
-                channel: channel_u8,
+            let m = build_can_fd_message_64(
+                rel_ns,
+                channel_u8,
                 dlc,
-                valid_data_bytes,
-                tx_count: 0,
+                dlc,
                 id_raw,
-                frame_length_ns: 0,
-                flags: flags_32,
-                btr_cfg_arb: 0,
-                btr_cfg_data: 0,
-                time_offset_brs_ns: 0,
-                time_offset_crc_del_ns: 0,
-                bit_count: 0,
+                flags_32,
                 dir,
-                ext_data_offset: 0,
-                crc: 0,
-                data: data.clone(),
-                trailing: Vec::new(),
-            };
-            m.base.object_size = u32::try_from(
-                CAN_EVENT_HEADER_BYTES + CAN_FD_MESSAGE_64_FIXED_PREFIX_BYTES + data.len(),
-            )
-            .unwrap_or(u32::MAX);
+                data.clone(),
+            );
             encode_can_fd_message_64(&m)
         }
         CanFramePayload::Error => {
@@ -652,31 +581,7 @@ fn frame_to_object_bytes(frame: &CanFrame, start_ns: Option<u64>) -> Vec<u8> {
             } else {
                 0
             };
-            let mut e = CanErrorExt {
-                base: ObjectHeaderBase {
-                    header_size: 32,
-                    header_version: 1,
-                    object_size: 0,
-                    object_type: object_type::CAN_ERROR_EXT,
-                },
-                event: ObjectHeaderV1 {
-                    object_flags: OBJECT_FLAG_TIME_ONE_NANS,
-                    client_index: 0,
-                    object_version: 0,
-                    object_timestamp: rel_ns,
-                },
-                channel,
-                length: 0,
-                flags: 0,
-                ecc: 0,
-                position: 0,
-                dlc: 0,
-                frame_length_in_ns: 0,
-                id_raw,
-                flags_ext,
-                data: Vec::new(),
-            };
-            e.base.object_size = u32::try_from(CAN_EVENT_HEADER_BYTES + 24).unwrap_or(u32::MAX);
+            let e = build_can_error_ext(rel_ns, channel, id_raw, flags_ext);
             encode_can_error_ext(&e)
         }
     }
