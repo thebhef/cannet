@@ -25,8 +25,8 @@
 //! [`ObjectHeaderV1`]: super::object::ObjectHeaderV1
 
 use super::object::{
-    object_type, ObjectHeaderBase, ObjectHeaderError, ObjectHeaderV1, OBJECT_FLAG_TIME_ONE_NANS,
-    OBJECT_HEADER_BASE_BYTES, OBJECT_HEADER_V1_BYTES,
+    decode_framed, object_type, ObjectHeaderBase, ObjectHeaderError, ObjectHeaderV1,
+    PreambleError, OBJECT_FLAG_TIME_ONE_NANS, OBJECT_HEADER_BASE_BYTES, OBJECT_HEADER_V1_BYTES,
 };
 
 /// Width of the per-event header (base + v1) that prefixes both
@@ -107,6 +107,20 @@ impl std::error::Error for TextError {
     }
 }
 
+impl From<PreambleError> for TextError {
+    fn from(e: PreambleError) -> Self {
+        match e {
+            PreambleError::WrongObjectType(expected, got) => {
+                Self::WrongObjectType(expected, got)
+            }
+            PreambleError::BaseHeader(e) => Self::BaseHeader(e),
+            PreambleError::EventHeader(e) => Self::EventHeader(e),
+            PreambleError::TooSmall(got, required) => Self::TooSmall(got, required),
+            PreambleError::Truncated(got, required) => Self::Truncated(got, required),
+        }
+    }
+}
+
 // =================================================================
 // EVENT_COMMENT (object type 92)
 // =================================================================
@@ -128,25 +142,12 @@ pub struct EventComment {
 // `try_into().unwrap()` is unreachable: every slice is length-checked.
 #[allow(clippy::missing_panics_doc)]
 pub fn decode_event_comment(object_bytes: &[u8]) -> Result<EventComment, TextError> {
-    let base = ObjectHeaderBase::parse(object_bytes).map_err(TextError::BaseHeader)?;
-    if base.object_type != object_type::EVENT_COMMENT {
-        return Err(TextError::WrongObjectType(
-            object_type::EVENT_COMMENT,
-            base.object_type,
-        ));
-    }
-    let required = TEXT_EVENT_HEADER_BYTES + EVENT_COMMENT_FIXED_PREFIX_BYTES;
-    if (base.object_size as usize) < required {
-        return Err(TextError::TooSmall(base.object_size, required));
-    }
-    if object_bytes.len() < base.object_size as usize {
-        return Err(TextError::Truncated(object_bytes.len(), base.object_size));
-    }
-    let event = ObjectHeaderV1::parse(
-        &object_bytes[OBJECT_HEADER_BASE_BYTES..OBJECT_HEADER_BASE_BYTES + OBJECT_HEADER_V1_BYTES],
-    )
-    .map_err(TextError::EventHeader)?;
-    let body = &object_bytes[TEXT_EVENT_HEADER_BYTES..base.object_size as usize];
+    let framed = decode_framed(
+        object_bytes,
+        object_type::EVENT_COMMENT,
+        EVENT_COMMENT_FIXED_PREFIX_BYTES,
+    )?;
+    let (base, event, body) = (framed.base, framed.event, framed.body);
     let commented_event_type = u32::from_le_bytes(body[0..4].try_into().unwrap());
     let text_length = u32::from_le_bytes(body[4..8].try_into().unwrap());
     // body[8..16] = reservedEventComment (u64)
@@ -245,25 +246,12 @@ pub struct AppText {
 // `try_into().unwrap()` is unreachable: every slice is length-checked.
 #[allow(clippy::missing_panics_doc)]
 pub fn decode_app_text(object_bytes: &[u8]) -> Result<AppText, TextError> {
-    let base = ObjectHeaderBase::parse(object_bytes).map_err(TextError::BaseHeader)?;
-    if base.object_type != object_type::APP_TEXT {
-        return Err(TextError::WrongObjectType(
-            object_type::APP_TEXT,
-            base.object_type,
-        ));
-    }
-    let required = TEXT_EVENT_HEADER_BYTES + APP_TEXT_FIXED_PREFIX_BYTES;
-    if (base.object_size as usize) < required {
-        return Err(TextError::TooSmall(base.object_size, required));
-    }
-    if object_bytes.len() < base.object_size as usize {
-        return Err(TextError::Truncated(object_bytes.len(), base.object_size));
-    }
-    let event = ObjectHeaderV1::parse(
-        &object_bytes[OBJECT_HEADER_BASE_BYTES..OBJECT_HEADER_BASE_BYTES + OBJECT_HEADER_V1_BYTES],
-    )
-    .map_err(TextError::EventHeader)?;
-    let body = &object_bytes[TEXT_EVENT_HEADER_BYTES..base.object_size as usize];
+    let framed = decode_framed(
+        object_bytes,
+        object_type::APP_TEXT,
+        APP_TEXT_FIXED_PREFIX_BYTES,
+    )?;
+    let (base, event, body) = (framed.base, framed.event, framed.body);
     let source = u32::from_le_bytes(body[0..4].try_into().unwrap());
     let reserved_app_text1 = u32::from_le_bytes(body[4..8].try_into().unwrap());
     let text_length = u32::from_le_bytes(body[8..12].try_into().unwrap());

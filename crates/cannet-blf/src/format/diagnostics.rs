@@ -15,8 +15,8 @@
 //! (32-byte base + `ObjectHeader` v1) with a fixed-size body.
 
 use super::object::{
-    object_type, ObjectHeaderBase, ObjectHeaderError, ObjectHeaderV1, OBJECT_FLAG_TIME_ONE_NANS,
-    OBJECT_HEADER_BASE_BYTES, OBJECT_HEADER_V1_BYTES,
+    decode_framed, object_type, ObjectHeaderBase, ObjectHeaderError, ObjectHeaderV1,
+    PreambleError, OBJECT_FLAG_TIME_ONE_NANS, OBJECT_HEADER_BASE_BYTES, OBJECT_HEADER_V1_BYTES,
 };
 
 /// Width of the per-event header (base + v1) that prefixes the
@@ -88,6 +88,20 @@ impl std::error::Error for DiagnosticError {
     }
 }
 
+impl From<PreambleError> for DiagnosticError {
+    fn from(e: PreambleError) -> Self {
+        match e {
+            PreambleError::WrongObjectType(expected, got) => {
+                Self::WrongObjectType(expected, got)
+            }
+            PreambleError::BaseHeader(e) => Self::BaseHeader(e),
+            PreambleError::EventHeader(e) => Self::EventHeader(e),
+            PreambleError::TooSmall(got, required) => Self::TooSmall(got, required),
+            PreambleError::Truncated(got, required) => Self::Truncated(got, required),
+        }
+    }
+}
+
 // =================================================================
 // CAN_STATISTIC (object type 4)
 // =================================================================
@@ -120,28 +134,12 @@ impl CanStatistic {
 // `try_into().unwrap()` is unreachable: every slice is length-checked.
 #[allow(clippy::missing_panics_doc)]
 pub fn decode_can_statistic(object_bytes: &[u8]) -> Result<CanStatistic, DiagnosticError> {
-    let base = ObjectHeaderBase::parse(object_bytes).map_err(DiagnosticError::BaseHeader)?;
-    if base.object_type != object_type::CAN_STATISTIC {
-        return Err(DiagnosticError::WrongObjectType(
-            object_type::CAN_STATISTIC,
-            base.object_type,
-        ));
-    }
-    let required = DIAG_EVENT_HEADER_BYTES + CAN_STATISTIC_BODY_BYTES;
-    if (base.object_size as usize) < required {
-        return Err(DiagnosticError::TooSmall(base.object_size, required));
-    }
-    if object_bytes.len() < base.object_size as usize {
-        return Err(DiagnosticError::Truncated(
-            object_bytes.len(),
-            base.object_size,
-        ));
-    }
-    let event = ObjectHeaderV1::parse(
-        &object_bytes[OBJECT_HEADER_BASE_BYTES..OBJECT_HEADER_BASE_BYTES + OBJECT_HEADER_V1_BYTES],
-    )
-    .map_err(DiagnosticError::EventHeader)?;
-    let body = &object_bytes[DIAG_EVENT_HEADER_BYTES..DIAG_EVENT_HEADER_BYTES + CAN_STATISTIC_BODY_BYTES];
+    let framed = decode_framed(
+        object_bytes,
+        object_type::CAN_STATISTIC,
+        CAN_STATISTIC_BODY_BYTES,
+    )?;
+    let (base, event, body) = (framed.base, framed.event, framed.body);
     Ok(CanStatistic {
         base,
         event,
@@ -227,28 +225,12 @@ pub struct DataLostBegin {
 // `try_into().unwrap()` is unreachable: every slice is length-checked.
 #[allow(clippy::missing_panics_doc)]
 pub fn decode_data_lost_begin(object_bytes: &[u8]) -> Result<DataLostBegin, DiagnosticError> {
-    let base = ObjectHeaderBase::parse(object_bytes).map_err(DiagnosticError::BaseHeader)?;
-    if base.object_type != object_type::DATA_LOST_BEGIN {
-        return Err(DiagnosticError::WrongObjectType(
-            object_type::DATA_LOST_BEGIN,
-            base.object_type,
-        ));
-    }
-    let required = DIAG_EVENT_HEADER_BYTES + DATA_LOST_BEGIN_BODY_BYTES;
-    if (base.object_size as usize) < required {
-        return Err(DiagnosticError::TooSmall(base.object_size, required));
-    }
-    if object_bytes.len() < base.object_size as usize {
-        return Err(DiagnosticError::Truncated(
-            object_bytes.len(),
-            base.object_size,
-        ));
-    }
-    let event = ObjectHeaderV1::parse(
-        &object_bytes[OBJECT_HEADER_BASE_BYTES..OBJECT_HEADER_BASE_BYTES + OBJECT_HEADER_V1_BYTES],
-    )
-    .map_err(DiagnosticError::EventHeader)?;
-    let body = &object_bytes[DIAG_EVENT_HEADER_BYTES..DIAG_EVENT_HEADER_BYTES + DATA_LOST_BEGIN_BODY_BYTES];
+    let framed = decode_framed(
+        object_bytes,
+        object_type::DATA_LOST_BEGIN,
+        DATA_LOST_BEGIN_BODY_BYTES,
+    )?;
+    let (base, event, body) = (framed.base, framed.event, framed.body);
     Ok(DataLostBegin {
         base,
         event,
@@ -310,28 +292,12 @@ pub struct DataLostEnd {
 // `try_into().unwrap()` is unreachable: every slice is length-checked.
 #[allow(clippy::missing_panics_doc)]
 pub fn decode_data_lost_end(object_bytes: &[u8]) -> Result<DataLostEnd, DiagnosticError> {
-    let base = ObjectHeaderBase::parse(object_bytes).map_err(DiagnosticError::BaseHeader)?;
-    if base.object_type != object_type::DATA_LOST_END {
-        return Err(DiagnosticError::WrongObjectType(
-            object_type::DATA_LOST_END,
-            base.object_type,
-        ));
-    }
-    let required = DIAG_EVENT_HEADER_BYTES + DATA_LOST_END_BODY_BYTES;
-    if (base.object_size as usize) < required {
-        return Err(DiagnosticError::TooSmall(base.object_size, required));
-    }
-    if object_bytes.len() < base.object_size as usize {
-        return Err(DiagnosticError::Truncated(
-            object_bytes.len(),
-            base.object_size,
-        ));
-    }
-    let event = ObjectHeaderV1::parse(
-        &object_bytes[OBJECT_HEADER_BASE_BYTES..OBJECT_HEADER_BASE_BYTES + OBJECT_HEADER_V1_BYTES],
-    )
-    .map_err(DiagnosticError::EventHeader)?;
-    let body = &object_bytes[DIAG_EVENT_HEADER_BYTES..DIAG_EVENT_HEADER_BYTES + DATA_LOST_END_BODY_BYTES];
+    let framed = decode_framed(
+        object_bytes,
+        object_type::DATA_LOST_END,
+        DATA_LOST_END_BODY_BYTES,
+    )?;
+    let (base, event, body) = (framed.base, framed.event, framed.body);
     Ok(DataLostEnd {
         base,
         event,
