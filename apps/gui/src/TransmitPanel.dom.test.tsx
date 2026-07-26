@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
-import type { TransmitFrameRecord } from "./types";
+import type { SignalDescriptorRecord, TransmitFrameRecord } from "./types";
 
 // The host pool the mocked `list_transmit_frames` returns. Tests mutate
 // this before rendering; `set_transmit_frame` etc. just record calls.
@@ -21,6 +21,9 @@ let POOL: TransmitFrameRecord[] = [];
 // What `describe_message` returns — `null` by default (no DBC match);
 // a test can set a descriptor to exercise the DBC-derived kind/brs path.
 let DESCRIBE: unknown = null;
+// The `list_signals` catalog. Empty by default (no DBC-name resolution);
+// a test can set entries to exercise the collapsed row's DBC-name lookup.
+let SIGNALS: SignalDescriptorRecord[] = [];
 const calls: Array<{ cmd: string; args: unknown }> = [];
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -30,7 +33,7 @@ vi.mock("@tauri-apps/api/core", () => ({
       case "list_transmit_frames":
         return POOL;
       case "list_signals":
-        return [];
+        return SIGNALS;
       case "describe_message":
         return DESCRIBE;
       case "decode_frame":
@@ -137,11 +140,35 @@ function lastCall(cmd: string) {
 beforeEach(() => {
   POOL = [];
   DESCRIBE = null;
+  SIGNALS = [];
   calls.length = 0;
 });
 afterEach(() => cleanup());
 
 describe("TransmitPanel (thin view over host registry)", () => {
+  it("resolves the collapsed row's DBC message name from the signal catalog", async () => {
+    // frame("a")'s request defaults to bus b1, id 0x100, classic,
+    // extended false — match it with one catalog entry on that
+    // (bus, message, extended) key.
+    POOL = [frame("a")];
+    SIGNALS = [
+      {
+        bus_id: "b1",
+        message_id: 0x100,
+        extended: false,
+        message_name: "EngineData",
+        transmitter: "EngineEcu",
+        signal_name: "EngineSpeed",
+        unit: "rpm",
+        is_enum: false,
+      },
+    ];
+    renderPanel("el", ["a"]);
+    await waitFor(() =>
+      expect(screen.getByTitle("DBC message name")).toHaveTextContent("EngineData"),
+    );
+  });
+
   it("renders only the messages in the element's frameIds group, in order", async () => {
     POOL = [frame("a"), frame("b"), frame("c")];
     renderPanel("el", ["c", "a"]); // group excludes "b", and reorders
