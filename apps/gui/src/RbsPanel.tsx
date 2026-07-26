@@ -46,6 +46,7 @@ import { useValueTables, type ValueTableSignal } from "./useValueTables";
 import { useElementPanel } from "./useElementPanel";
 import { useHostMirror } from "./useHostMirror";
 import { useDismissableMenu } from "./useDismissableMenu";
+import { toggleInSet } from "./toggleSet";
 
 /// Address of one message row, as the `rbs_*` commands take it.
 interface Target {
@@ -178,12 +179,6 @@ export function RbsPanel(props: IDockviewPanelProps) {
   const [expandedMessages, setExpandedMessages] = useState<Set<string>>(
     () => new Set(),
   );
-  const toggleSet = (set: Set<string>, key: string): Set<string> => {
-    const next = new Set(set);
-    if (next.has(key)) next.delete(key);
-    else next.add(key);
-    return next;
-  };
 
   // ---- modal / menu state ----
   const [editor, setEditor] = useState<EditorState | null>(null);
@@ -266,7 +261,7 @@ export function RbsPanel(props: IDockviewPanelProps) {
             elementId={elementId}
             bus={bus}
             collapsed={collapsed.has(`b:${bus.key}`)}
-            onToggleCollapse={() => setCollapsed((s) => toggleSet(s, `b:${bus.key}`))}
+            onToggleCollapse={() => setCollapsed((s) => toggleInSet(s, `b:${bus.key}`))}
             collapsedSet={collapsed}
             setCollapsed={setCollapsed}
             expandedMessages={expandedMessages}
@@ -458,7 +453,7 @@ function BusSection({
                 type="button"
                 className="rbs-caret"
           tabIndex={-1}
-                onClick={() => setCollapsed((s) => toggleSet2(s, `e:${bus.key}/${ecu.name}`))}
+                onClick={() => setCollapsed((s) => toggleInSet(s, `e:${bus.key}/${ecu.name}`))}
                 aria-label={`toggle ${ecu.name}`}
               >
                 {collapsedSet.has(`e:${bus.key}/${ecu.name}`) ? "▸" : "▾"}
@@ -482,7 +477,7 @@ function BusSection({
                   inert={inert}
                   expanded={expandedMessages.has(`${bus.key}/${m.key}`)}
                   onToggleExpand={() =>
-                    setExpandedMessages((s) => toggleSet2(s, `${bus.key}/${m.key}`))
+                    setExpandedMessages((s) => toggleInSet(s, `${bus.key}/${m.key}`))
                   }
                   onEnable={(enabled) => setEnabled(ecu.name, m.key, enabled)}
                   onConfigure={(preset) =>
@@ -495,13 +490,6 @@ function BusSection({
         ))}
     </section>
   );
-}
-
-function toggleSet2(set: Set<string>, key: string): Set<string> {
-  const next = new Set(set);
-  if (next.has(key)) next.delete(key);
-  else next.add(key);
-  return next;
 }
 
 interface MessageRowProps {

@@ -21,6 +21,7 @@ import {
   setSignalDragData,
   type DraggableSignalRef,
 } from "./dragSignals";
+import { toggleInSet } from "./toggleSet";
 
 /**
  * DBC discovery panel. Tree-with-fuzzy-search over every
@@ -843,12 +844,7 @@ export function DbcPanel(props: IDockviewPanelProps) {
   }, [showValues, renderedSignalKeys, buses]);
 
   const toggle = useCallback((id: string) => {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+    setExpanded((prev) => toggleInSet(prev, id));
   }, []);
 
   /// Keyboard cursor — the node id the arrow keys operate on. Kept
@@ -886,12 +882,7 @@ export function DbcPanel(props: IDockviewPanelProps) {
       if (modifiers.meta) {
         // Toggle this row's membership; update the anchor to the
         // toggled row so a follow-up shift-click extends from here.
-        setSelection((prev) => {
-          const next = new Set(prev);
-          if (next.has(id)) next.delete(id);
-          else next.add(id);
-          return next;
-        });
+        setSelection((prev) => toggleInSet(prev, id));
         selectionAnchorRef.current = id;
         return;
       }

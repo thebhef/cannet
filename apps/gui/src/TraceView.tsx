@@ -15,6 +15,7 @@ import {
   wheelDeltaPx,
 } from "./traceViewport";
 import { useTraceViewport } from "./useTraceViewport";
+import { toggleInSet } from "./toggleSet";
 import {
   type BusLookup,
   type ColumnKey,
@@ -239,12 +240,7 @@ export function TraceView({
   }, [autoScroll, onAutoScrollDisabled, count, viewportHeight]);
 
   const toggleExpanded = useCallback((absoluteIndex: number) => {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(absoluteIndex)) next.delete(absoluteIndex);
-      else next.add(absoluteIndex);
-      return next;
-    });
+    setExpanded((prev) => toggleInSet(prev, absoluteIndex));
   }, []);
 
   // The chronological view drops by-id-only columns (e.g. "msg/s" — a
