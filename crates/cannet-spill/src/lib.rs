@@ -29,6 +29,7 @@ mod mem;
 mod record;
 mod sample_seq;
 mod seg;
+mod seg_chain;
 
 pub use disk::{DiskConfig, DiskRawStore};
 pub use filter_index::FilterIndex;

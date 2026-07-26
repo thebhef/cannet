@@ -26,31 +26,11 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::seg::{create_segment, open_segment, Segment};
+use crate::seg::{open_segment, Segment};
+use crate::seg_chain::{geometric_locate, geometric_push_grow, geometric_seg_capacity};
 
-/// Entries in the first (smallest) per-id segment.
-const BASE_ENTRIES: usize = 64;
-/// Cap on per-id segment size; segments double up to here, then stay.
-const MAX_SEG_ENTRIES: usize = 65_536;
-/// `seg` index at which `BASE_ENTRIES << seg` first reaches the cap
-/// (`64 << 10 == 65_536`). Beyond it every segment is `MAX_SEG_ENTRIES`.
-const CAP_SEG: usize = 10;
 /// Bytes per posting entry (a `u64` frame index).
 const ENTRY_BYTES: usize = 8;
-
-/// Entry capacity of posting segment `seg`: `BASE_ENTRIES` doubled per
-/// step, capped at `MAX_SEG_ENTRIES`. Branching on [`CAP_SEG`] (rather
-/// than `(BASE_ENTRIES << seg).min(MAX_SEG_ENTRIES)`) keeps the shift in
-/// range — a hot id needing 58+ segments would otherwise overflow the
-/// `<<`. The geometry is deterministic in `seg`, so the reopen path
-/// rebuilds an id's chain from its persisted length alone.
-fn seg_capacity(seg: usize) -> usize {
-    if seg >= CAP_SEG {
-        MAX_SEG_ENTRIES
-    } else {
-        BASE_ENTRIES << seg
-    }
-}
 
 /// File-name prefix for every by-id segment (used to wipe them on clear).
 pub(crate) const BYID_PREFIX: &str = "byid.";
@@ -91,9 +71,8 @@ impl IdPostings {
 
     /// `(absolute segment index, byte offset within it)` for entry slot `k`.
     fn locate(&self, k: usize) -> (usize, usize) {
-        let seg = self.cum_cap.partition_point(|&c| c <= k);
-        let base = if seg == 0 { 0 } else { self.cum_cap[seg - 1] };
-        (seg, (k - base) * ENTRY_BYTES)
+        let (seg, off) = geometric_locate(&self.cum_cap, k);
+        (seg, off * ENTRY_BYTES)
     }
 
     /// The frame index stored at the live slot `k` (`first_slot <= k < len`).
@@ -175,7 +154,7 @@ impl ByIdIndex {
             // deterministic in the absolute segment index).
             while post.capacity() < len {
                 let i = post.cum_cap.len();
-                let cap = seg_capacity(i);
+                let cap = geometric_seg_capacity(i);
                 let prev = post.cum_cap.last().copied().unwrap_or(0);
                 post.cum_cap.push(prev + cap);
             }
@@ -272,15 +251,9 @@ impl ByIdIndex {
         // method on `self` would conflict with the `&mut` posting borrow).
         let dir = &self.dir;
         let post = self.map.entry((id, extended)).or_default();
-        if post.len == post.capacity() {
-            let i = post.cum_cap.len(); // absolute segment number (survives a trim)
-            let cap = seg_capacity(i);
-            let seg = create_segment(&seg_path(dir, id, extended, i), cap * ENTRY_BYTES)
-                .expect("cannet-spill: by-id segment I/O failed");
-            post.segs.push(seg);
-            let prev = post.cum_cap.last().copied().unwrap_or(0);
-            post.cum_cap.push(prev + cap);
-        }
+        geometric_push_grow(&mut post.segs, &mut post.cum_cap, post.len, ENTRY_BYTES, |i| {
+            seg_path(dir, id, extended, i)
+        });
         let (seg, off) = post.locate(post.len);
         post.segs[seg - post.seg_base].map[off..off + ENTRY_BYTES]
             .copy_from_slice(&frame_idx.to_le_bytes());
