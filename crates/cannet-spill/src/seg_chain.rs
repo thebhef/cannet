@@ -79,6 +79,31 @@ pub(crate) fn geometric_push_grow(
     }
 }
 
+/// Grow a *fixed*-size segment chain until absolute segment `target` is
+/// mapped, creating and mapping each new segment file in order. `seg_base`
+/// is the chain's current dropped-leading-segment count (read-only here —
+/// growth only ever appends); `seg_bytes(i)` sizes absolute segment `i`;
+/// `path(i)` names its file.
+///
+/// Shared by the filter index and the raw store's meta/payload families —
+/// three body-identical "grow while short" loops before this extraction.
+/// This is the fixed-size-segment counterpart to [`geometric_push_grow`];
+/// see the module docs for why the two geometries stay separate.
+pub(crate) fn grow_fixed(
+    segs: &mut Vec<Segment>,
+    seg_base: usize,
+    target: usize,
+    seg_bytes: impl Fn(usize) -> usize,
+    path: impl Fn(usize) -> PathBuf,
+) {
+    while seg_base + segs.len() <= target {
+        let i = seg_base + segs.len();
+        let seg = create_segment(&path(i), seg_bytes(i))
+            .expect("cannet-spill: segment I/O failed");
+        segs.push(seg);
+    }
+}
+
 /// Drop every leading segment below `target_base`: unmap (drop the
 /// mapping) then delete its file — Windows forbids deleting a file while it
 /// is mapped, so the unmap must come first. `segs`/`seg_base` are the

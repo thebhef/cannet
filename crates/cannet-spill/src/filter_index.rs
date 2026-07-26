@@ -33,8 +33,8 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::seg::{create_segment, remove_files_with_prefixes, Segment};
-use crate::seg_chain::{evict_leading, lower_bound};
+use crate::seg::{remove_files_with_prefixes, Segment};
+use crate::seg_chain::{evict_leading, grow_fixed, lower_bound};
 use crate::{CandidateSource, RawTraceFrame};
 
 /// Frame indices per index segment file (8 MiB at 8 bytes each).
@@ -124,18 +124,17 @@ impl FilterIndex {
         self.first_pos
     }
 
-    fn seg_path(&self, i: usize) -> PathBuf {
-        self.dir.join(format!("{FILTER_PREFIX}{i:06}"))
+    fn seg_path(dir: &Path, i: usize) -> PathBuf {
+        dir.join(format!("{FILTER_PREFIX}{i:06}"))
     }
 
     fn push(&mut self, frame_idx: usize) {
         let seg = self.len / self.seg_entries; // absolute segment number
-        while self.seg_base + self.segs.len() <= seg {
-            let i = self.seg_base + self.segs.len(); // absolute segment number
-            let s = create_segment(&self.seg_path(i), self.seg_entries * ENTRY_BYTES)
-                .expect("cannet-spill: filter-index segment I/O failed");
-            self.segs.push(s);
-        }
+        let seg_entries = self.seg_entries;
+        let dir = &self.dir;
+        grow_fixed(&mut self.segs, self.seg_base, seg, |_| seg_entries * ENTRY_BYTES, |i| {
+            Self::seg_path(dir, i)
+        });
         let off = (self.len % self.seg_entries) * ENTRY_BYTES;
         self.segs[seg - self.seg_base].map[off..off + ENTRY_BYTES]
             .copy_from_slice(&(frame_idx as u64).to_le_bytes());
@@ -248,9 +247,7 @@ impl FilterIndex {
         self.first_pos = floor.clamp(self.first_pos, self.len);
         let target_base = self.first_pos / self.seg_entries;
         let dir = &self.dir;
-        evict_leading(&mut self.segs, &mut self.seg_base, target_base, |i| {
-            dir.join(format!("{FILTER_PREFIX}{i:06}"))
-        });
+        evict_leading(&mut self.segs, &mut self.seg_base, target_base, |i| Self::seg_path(dir, i));
     }
 
     /// Drop the index: unmap and delete its segment files, reset to empty.
