@@ -231,7 +231,7 @@ export function ProjectPanel(props: IDockviewPanelProps) {
                   type="color"
                   className="project-bus-color"
                   value={bus.color ?? defaultBusColor(i)}
-                  onChange={(e) => p.onSetBusColor(bus.id, e.target.value)}
+                  onChange={(e) => p.onUpdateBus(bus.id, { color: e.target.value })}
                   aria-label={`bus ${bus.id} colour`}
                   title="Graph colour for this bus"
                 />
@@ -239,7 +239,7 @@ export function ProjectPanel(props: IDockviewPanelProps) {
                   type="text"
                   className="project-bus-name-input"
                   value={bus.name}
-                  onChange={(e) => p.onRenameBus(bus.id, e.target.value)}
+                  onChange={(e) => p.onUpdateBus(bus.id, { name: e.target.value })}
                   aria-label={`bus ${bus.id} name`}
                 />
                 {pendingHwConfig && (
@@ -275,9 +275,9 @@ export function ProjectPanel(props: IDockviewPanelProps) {
               {!isLocalVbus && (
                 <BusHardwareConfig
                   bus={bus}
-                  onSetSpeed={(v) => p.onSetBusSpeed(bus.id, v)}
-                  onSetFd={(v) => p.onSetBusFd(bus.id, v)}
-                  onSetFdDataSpeed={(v) => p.onSetBusFdDataSpeed(bus.id, v)}
+                  onSetSpeed={(v) => p.onUpdateBus(bus.id, { speed_bps: v })}
+                  onSetFd={(v) => p.onUpdateBus(bus.id, { fd: v })}
+                  onSetFdDataSpeed={(v) => p.onUpdateBus(bus.id, { fd_data_speed_bps: v })}
                 />
               )}
               {adding && (

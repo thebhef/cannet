@@ -1661,33 +1661,15 @@ export function App() {
     setDirty(true);
     invalidateCache();
   }, [invalidateCache]);
-  const handleRenameBus = useCallback((id: string, name: string) => {
-    setBuses((prev) => prev.map((b) => (b.id === id ? { ...b, name } : b)));
+  // Shallow patch of one bus's persisted fields — inline rename, graph
+  // colour, and the hardware-config knobs (nominal speed / FD toggle /
+  // data-phase speed) all go through here (mirrors
+  // `handleUpdateVirtualBus`'s patch shape). Pure project state; the
+  // host applies any hardware change on the next Connect.
+  const handleUpdateBus = useCallback((id: string, patch: Partial<Bus>) => {
+    setBuses((prev) => prev.map((b) => (b.id === id ? { ...b, ...patch } : b)));
     setDirty(true);
   }, []);
-  const handleSetBusColor = useCallback((id: string, color: string) => {
-    setBuses((prev) => prev.map((b) => (b.id === id ? { ...b, color } : b)));
-    setDirty(true);
-  }, []);
-  const handleSetBusSpeed = useCallback((id: string, speed_bps: number | null) => {
-    setBuses((prev) =>
-      prev.map((b) => (b.id === id ? { ...b, speed_bps } : b)),
-    );
-    setDirty(true);
-  }, []);
-  const handleSetBusFd = useCallback((id: string, fd: boolean | null) => {
-    setBuses((prev) => prev.map((b) => (b.id === id ? { ...b, fd } : b)));
-    setDirty(true);
-  }, []);
-  const handleSetBusFdDataSpeed = useCallback(
-    (id: string, fd_data_speed_bps: number | null) => {
-      setBuses((prev) =>
-        prev.map((b) => (b.id === id ? { ...b, fd_data_speed_bps } : b)),
-      );
-      setDirty(true);
-    },
-    [],
-  );
   // Interface-binding mutations. Each project bus has at
   // most one binding (key is `bus_id`); multiple bindings may target
   // the same source — the sidecar and the
@@ -2675,11 +2657,7 @@ export function App() {
       onSetDbcBuses: handleSetDbcBuses,
       onAddBus: handleAddBus,
       onRemoveBus: handleRemoveBus,
-      onRenameBus: handleRenameBus,
-      onSetBusColor: handleSetBusColor,
-      onSetBusSpeed: handleSetBusSpeed,
-      onSetBusFd: handleSetBusFd,
-      onSetBusFdDataSpeed: handleSetBusFdDataSpeed,
+      onUpdateBus: handleUpdateBus,
       busesWithPendingHwConfig,
       onAddBinding: handleAddBinding,
       onRemoveBinding: handleRemoveBinding,
@@ -2713,11 +2691,7 @@ export function App() {
       handleSetDbcBuses,
       handleAddBus,
       handleRemoveBus,
-      handleRenameBus,
-      handleSetBusColor,
-      handleSetBusSpeed,
-      handleSetBusFd,
-      handleSetBusFdDataSpeed,
+      handleUpdateBus,
       busesWithPendingHwConfig,
       handleAddBinding,
       handleRemoveBinding,
