@@ -369,6 +369,23 @@ describe("TransmitPanel (thin view over host registry)", () => {
     expect(await screen.findByText("stop")).toBeInTheDocument();
     expect(screen.queryByText("start")).toBeNull();
   });
+
+  it("editing a payload byte cell writes the new payload back to the host", async () => {
+    POOL = [frame("a")]; // classic, no DBC match — raw byte editing
+    renderPanel("el", ["a"]);
+    await screen.findByLabelText("frame description");
+    // Each byte cell is a hex `<input>` inside a `title="byte N"` label.
+    const input = screen.getByTitle("byte 0").querySelector("input")!;
+    fireEvent.change(input, { target: { value: "AB" } });
+    fireEvent.blur(input);
+    await waitFor(() => {
+      const c = lastCall("set_transmit_frame");
+      expect(c).toBeTruthy();
+      const data = (c!.args as { frame: { request: { data: number[] } } })
+        .frame.request.data;
+      expect(data[0]).toBe(0xab);
+    });
+  });
 });
 
 describe("payload sizing helpers", () => {
