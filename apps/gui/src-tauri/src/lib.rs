@@ -54,6 +54,7 @@ mod ipc;
 mod licenses;
 mod local_buses;
 mod notes;
+mod persisted_json;
 mod project;
 mod rbs;
 mod settings;
