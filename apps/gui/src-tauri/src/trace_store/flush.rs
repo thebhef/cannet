@@ -21,7 +21,7 @@ use uuid::Uuid;
 
 use super::rate::{RateEstimate, RateTrack};
 use super::scratch::dir_footprint;
-use super::{FrameKey, RawTraceFrame, TraceStore};
+use super::{FrameKey, PerKey, RawTraceFrame, TraceStore};
 
 /// File in the scratch dir recording which project the on-disk session
 /// belongs to (ADR 0002 DS-7). Written when a capture starts; read by
@@ -136,9 +136,7 @@ impl TraceStore {
         inner.session_start_ns = session_start_ns;
         inner.raw.clear();
         inner.agg_rate = RateTrack::default();
-        inner.latest = HashMap::new();
-        inner.latest_frame = HashMap::new();
-        inner.rates = HashMap::new();
+        inner.per_key = HashMap::new();
         // The mux index empties with the buffer; the extractor itself
         // survives (the DBC set didn't change) and covers the fresh
         // buffer from index 0.
@@ -219,18 +217,18 @@ impl TraceStore {
         }
         if let Some(dir) = inner.scratch_dir.clone() {
             let entries = inner
-                .latest_frame
+                .per_key
                 .iter()
-                .map(|(key, frame)| DerivedEntry {
+                .map(|(key, e)| DerivedEntry {
                     bus_id: key.0.clone(),
                     channel: key.1,
                     id: key.2,
                     extended: key.3,
-                    last_index: inner.latest.get(key).map_or(0, |&i| i as u64),
-                    count: inner.rates.get(key).map_or(0, |r| r.count),
-                    timestamp_ns: frame.timestamp_ns,
-                    tx: matches!(frame.direction, Direction::Tx),
-                    payload: PersistedPayload::from(&frame.payload),
+                    last_index: e.last_index as u64,
+                    count: e.rate.count,
+                    timestamp_ns: e.last_frame.timestamp_ns,
+                    tx: matches!(e.last_frame.direction, Direction::Tx),
+                    payload: PersistedPayload::from(&e.last_frame.payload),
                 })
                 .collect();
             let derived = DerivedState {
@@ -292,11 +290,10 @@ impl TraceStore {
         };
         inner.raw = Box::new(reopened);
         // Restore the derived state the by-id view and filter resolution
-        // read. Rates are left empty (a reloaded trace is stopped, so every
-        // rate reads zero); only the newest-index and count are recovered.
-        inner.latest = HashMap::new();
-        inner.latest_frame = HashMap::new();
-        inner.rates = HashMap::new();
+        // read. Rates are left with only their count (a reloaded trace is
+        // stopped, so every rate reads zero); the newest-index and frame are
+        // recovered from the overlay.
+        inner.per_key = HashMap::new();
         inner.session_start_ns = 0;
         if let Some(derived) = read_json::<DerivedState>(&dir.join(DERIVED_FILE)) {
             inner.session_start_ns = derived.session_start_ns;
@@ -312,14 +309,16 @@ impl TraceStore {
                     bus_id: e.bus_id.clone(),
                 };
                 let key: FrameKey = (e.bus_id, e.channel, e.id, e.extended);
-                inner.latest.insert(
-                    key.clone(),
-                    usize::try_from(e.last_index).unwrap_or(usize::MAX),
+                let mut rate = RateEstimate::first_seen(0, now);
+                rate.count = e.count;
+                inner.per_key.insert(
+                    key,
+                    PerKey {
+                        last_index: usize::try_from(e.last_index).unwrap_or(usize::MAX),
+                        last_frame: frame,
+                        rate,
+                    },
                 );
-                inner.latest_frame.insert(key.clone(), frame);
-                let mut est = RateEstimate::first_seen(0, now);
-                est.count = e.count;
-                inner.rates.insert(key, est);
             }
         }
         true

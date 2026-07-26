@@ -84,15 +84,10 @@ impl TraceStore {
         // addresses live rows.
         let mut rows: Vec<(FrameKey, usize, RawTraceFrame)> = if end == len {
             inner
-                .latest
+                .per_key
                 .iter()
-                .filter(|(_, &idx)| idx >= start)
-                .filter_map(|(key, &idx)| {
-                    inner
-                        .latest_frame
-                        .get(key)
-                        .map(|f| (key.clone(), idx, f.clone()))
-                })
+                .filter(|(_, e)| e.last_index >= start)
+                .map(|(key, e)| (key.clone(), e.last_index, e.last_frame.clone()))
                 .collect()
         } else {
             let mut last: HashMap<FrameKey, usize> = HashMap::new();
@@ -115,7 +110,7 @@ impl TraceStore {
         rows.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
         rows.into_iter()
             .map(|(key, idx, frame)| {
-                let est = inner.rates.get(&key);
+                let est = inner.per_key.get(&key).map(|e| &e.rate);
                 LatestById {
                     index: idx,
                     frame,
@@ -307,7 +302,7 @@ impl TraceStore {
     pub fn seen_bus_ids(&self) -> Vec<(Option<String>, u32, bool)> {
         let inner = self.lock_inner();
         let mut out: Vec<(Option<String>, u32, bool)> = inner
-            .latest
+            .per_key
             .keys()
             .map(|(bus, _ch, id, ext)| (bus.clone(), *id, *ext))
             .collect();

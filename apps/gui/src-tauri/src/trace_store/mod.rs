@@ -106,6 +106,26 @@ type MuxKey = (Option<String>, u32, bool, u64);
 /// enough for the append path).
 pub type MuxSelectorFn = dyn Fn(&RawTraceFrame) -> Option<u64> + Send + Sync;
 
+/// The newest-per-[`FrameKey`] state the by-id view reads, all maintained
+/// `O(1)` on append. One keyed struct rather than three parallel
+/// `HashMap<FrameKey, _>` — index, frame, and rate advance together for the
+/// same key, so they share one entry and one hash lookup per append.
+struct PerKey {
+    /// Frame index of the most recent frame seen for this key — what the
+    /// per-message-ID view reads instead of walking the whole buffer.
+    last_index: usize,
+    /// The newest *frame* seen for this key — the eager retention overlay
+    /// (ADR 0002 DS-8, one frame clone per append). The global latest-by-id
+    /// read serves frame content from here instead of reading the maintained
+    /// index back from the raw store, so a row whose newest frame has been
+    /// evicted below the low-water mark still shows its last value. Persisted
+    /// in `derived.json`, so the last value survives a reopen across an
+    /// eviction.
+    last_frame: RawTraceFrame,
+    /// Per-id message-rate estimate.
+    rate: RateEstimate,
+}
+
 /// The trace model. Single producer (per pump thread) is typical but
 /// not required; multiple producers serialise on the inner mutex.
 pub struct TraceStore {
@@ -134,21 +154,11 @@ struct Inner {
     /// [`Self::frames_per_second`]. A [`RateTrack`] like the per-bus and
     /// per-direction buckets, so all four share one sampling path.
     agg_rate: RateTrack,
-    /// Frame index of the most recent frame seen for each [`FrameKey`] —
-    /// `O(1)` to maintain on append, and what the per-message-ID view
-    /// reads instead of walking the whole buffer.
-    latest: HashMap<FrameKey, usize>,
-    /// The newest *frame* seen for each [`FrameKey`] — the eager retention
-    /// overlay (ADR 0002 DS-8). Maintained `O(1)` on append (one frame clone)
-    /// and bounded by id-space, not capture length. The global latest-by-id
-    /// read serves frame content from here instead of reading the maintained
-    /// index back from the raw store, so a row whose newest frame has been
-    /// evicted below the low-water mark still shows its last value. Persisted
-    /// in `derived.json`, so the last value survives a reopen across an
-    /// eviction.
-    latest_frame: HashMap<FrameKey, RawTraceFrame>,
-    /// Per-id message-rate estimate, also maintained `O(1)` on append.
-    rates: HashMap<FrameKey, RateEstimate>,
+    /// The newest-per-[`FrameKey`] state — index, frame, and rate estimate —
+    /// maintained `O(1)` on append and bounded by id-space, not capture
+    /// length. See [`PerKey`]; the by-id view reads it instead of walking the
+    /// whole buffer.
+    per_key: HashMap<FrameKey, PerKey>,
     /// The host-injected multiplexor-selector extractor, or `None`
     /// while no loaded DBC declares a multiplexor. Swapped whenever the
     /// DBC set changes ([`TraceStore::set_mux_extractor`]).
@@ -247,9 +257,7 @@ impl TraceStore {
                 session_start_ns: 0,
                 raw,
                 agg_rate: RateTrack::default(),
-                latest: HashMap::new(),
-                latest_frame: HashMap::new(),
-                rates: HashMap::new(),
+                per_key: HashMap::new(),
                 mux_selector_of: None,
                 latest_mux: HashMap::new(),
                 mux_rates: HashMap::new(),
@@ -343,13 +351,22 @@ impl TraceStore {
                 .or_insert_with(|| RateEstimate::first_seen(ts_ns, now))
                 .observe(ts_ns, now);
         }
-        inner.latest.insert(key.clone(), idx);
-        inner.latest_frame.insert(key.clone(), frame);
-        inner
-            .rates
-            .entry(key)
-            .or_insert_with(|| RateEstimate::first_seen(ts_ns, now))
-            .observe(ts_ns, now);
+        if let Some(e) = inner.per_key.get_mut(&key) {
+            e.last_index = idx;
+            e.last_frame = frame;
+            e.rate.observe(ts_ns, now);
+        } else {
+            let mut rate = RateEstimate::first_seen(ts_ns, now);
+            rate.observe(ts_ns, now);
+            inner.per_key.insert(
+                key,
+                PerKey {
+                    last_index: idx,
+                    last_frame: frame,
+                    rate,
+                },
+            );
+        }
         // The aggregate, per-bus, and per-direction throughput trackers all
         // fold in this frame the same way (bump the count, sample on the
         // shared cadence gate) — the aggregate is a `RateTrack` like the
