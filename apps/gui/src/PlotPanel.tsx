@@ -16,7 +16,6 @@ import {
   buildColorResolver,
   colorMapLaneFill,
 } from "./colorMap";
-import { useElementRegistry } from "./projectElements";
 import { useTrace } from "./trace";
 import { TraceControls } from "./TraceControls";
 import { useNotes } from "./notesContext";
@@ -27,10 +26,10 @@ import { SIGNAL_WHEEL, stableSignalColor, wheelColor } from "./palette";
 import { followXWindow } from "./followWindow";
 import { showPointsFromRaw, showPointsToUplot, type ShowPointsMode } from "./plotPoints";
 import { Combobox, type ComboboxOption } from "./Combobox";
-import { elementLabel } from "./elementLabel";
 import { formatDurationSeconds, formatElapsed, fracDigitsForSpan } from "./format";
 import { usePanelCommands } from "./panelCommands";
 import { SourcesMenuSection } from "./SourcesPicker";
+import { useElementPanel, useElementSources } from "./useElementPanel";
 import {
   DEFAULT_MEASUREMENTS,
   MEASUREMENT_QUANTITIES,
@@ -239,6 +238,7 @@ interface XCursors {
 }
 
 interface PlotPanelParams {
+  [key: string]: unknown;
   elementId?: unknown;
   areas?: unknown;
   followLive?: unknown;
@@ -455,11 +455,6 @@ function fmtCount(n: number): string {
   return `${n}`;
 }
 
-function elementIdFromParams(raw: unknown): string {
-  const o = raw as { elementId?: unknown } | undefined;
-  return typeof o?.elementId === "string" ? o.elementId : crypto.randomUUID();
-}
-
 // Filter helpers live in `./plotFilter` so the pure-logic
 // tests can import them without dragging uplot into a jsdom run.
 import {
@@ -494,47 +489,14 @@ export function PlotPanel(props: IDockviewPanelProps) {
   diagCount("render.PlotPanel"); // DIAG
   const data = useTraceData();
   const { buses } = useProjectContext();
-  const registry = useElementRegistry();
-  const { ensure } = registry;
-
-  const params = props.params as PlotPanelParams | undefined;
-  const [elementId] = useState(() => elementIdFromParams(params));
-  useEffect(() => {
-    ensure(elementId, "plot");
-  }, [ensure, elementId]);
-  // Hydrate the state initializers below from the config persisted on
-  // the *element* (survives closing and reopening this panel within a
-  // session); fall back to the dockview `params` for older projects and
-  // the unsaved-workspace `localStorage` layout, which still carry it
-  // there. Read once at mount — `registry.get` resolves synchronously
-  // because the element is restored before its panel mounts (project
-  // open) or already exists (Elements-list reopen / fresh add).
-  const [savedConfig] = useState<PlotPanelParams | undefined>(() => {
-    const cfg = (registry.get(elementId)?.element as { config?: PlotPanelParams } | undefined)?.config;
-    return cfg ?? params;
-  });
-  const plotElement = registry.get(elementId)?.element;
-  // `sources` may be missing on a legacy mocked element (test
-  // fixture) or an old project that hasn't gone through
-  // `normalizeElement` yet — fall back to the wildcard so the picker
-  // renders the default-all state instead of crashing.
-  const currentSources =
-    plotElement &&
-    plotElement.kind !== "transmit" &&
-    plotElement.kind !== "rbs" &&
-    plotElement.kind !== "colormap"
-      ? plotElement.sources ?? ["*"]
-      : ["*"];
-  const availableFilters = useMemo(
-    () =>
-      registry.entries
-        .filter((e) => e.element.kind === "filter")
-        .map((e) => ({ id: e.element.id, label: elementLabel(e.element) })),
-    [registry.entries],
+  const { elementId, registry, element, savedConfig, persist } = useElementPanel<PlotPanelParams>(
+    props,
+    "plot",
   );
-  const handleSourcesChange = useCallback(
-    (next: string[]) => registry.update(elementId, { sources: next }),
-    [registry, elementId],
+  const { currentSources, availableFilters, handleSourcesChange } = useElementSources(
+    registry,
+    elementId,
+    element,
   );
   const trace = useTrace(data, elementId);
   const live = trace.status === "running";
@@ -816,12 +778,11 @@ export function PlotPanel(props: IDockviewPanelProps) {
     if (!areas.some((a) => a.id === focusedAreaId)) setFocusedAreaId(areas[0]?.id ?? "");
   }, [areas, focusedAreaId]);
 
-  const { api } = props;
-  const { update } = registry;
+  // Dual-write this panel's config (`notes` excluded — session-scoped
+  // in the host) onto the element and into the dockview params — see
+  // `useElementPanel`'s `persist`.
   useEffect(() => {
-    // `notes` is no longer persisted on the panel — it's
-    // session-scoped in the host.
-    const config = {
+    persist({
       areas,
       followLive,
       cursorMode,
@@ -834,19 +795,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
       signalsWidthPx: signalsWidth,
       showPoints,
       axisWeights,
-    };
-    // Dual-write: onto the element (survives panel close + reopen and is
-    // what `Save` serializes) and into the dockview `params` (the
-    // unsaved-workspace `localStorage` layout restores from `params` on
-    // app restart, and it doesn't persist the registry). The element's
-    // no-op patch check is deep, so a mount whose state already equals
-    // the stored config doesn't churn the registry or mark dirty.
-    update(elementId, { config });
-    api.updateParameters({ elementId, ...config });
+    });
   }, [
-    api,
-    update,
-    elementId,
+    persist,
     areas,
     followLive,
     cursorMode,
