@@ -47,24 +47,16 @@ from .helpers import (
     load_driver,
 )
 from .helpers import _frame_to_proto as _frame_to_proto
+from .enumeration import (
+    _WATCH_LIVENESS_RECHECK_S,
+    enumerate_interfaces,
+    watch_interfaces,
+)
 from .shared_interface import _BATCH_MAX_FRAMES as _BATCH_MAX_FRAMES
 from .shared_interface import _InterfaceRegistry
 from .shared_interface import _SharedInterface as _SharedInterface
 
 _log = logging.getLogger(__name__)
-
-
-#: How often a parked ``WatchInterfaces`` stream wakes to re-check
-#: ``context.is_active()``. This is a liveness safety-net only — it does
-#: **not** drive enumeration. ADR 0016 leaves the re-enumeration cadence
-#: to the server "[depending on] how cheap enumeration is on this
-#: backend"; on PCAN the global ``GetValue(PCAN_ATTACHED_CHANNELS)`` call
-#: serialises against ``CAN_Write`` in the driver, so re-enumerating on a
-#: timer stalled active transmits (~150 ms hiccups every poll). The
-#: sidecar therefore enumerates only on a ``WatchInterfaces`` subscribe
-#: and on an explicit ``ListInterfaces`` pull (the GUI's "Discover"
-#: button), never on a timer while channels are open.
-_WATCH_LIVENESS_RECHECK_S = 5.0
 
 
 class CannetServerService(pb_grpc.CannetServerServicer):
@@ -83,58 +75,26 @@ class CannetServerService(pb_grpc.CannetServerServicer):
         # it to keep the suite quick.
         self._watch_recheck_interval_s = watch_recheck_interval_s
 
-    # ----- ListInterfaces ---------------------------------------------------
+    # ----- ListInterfaces / WatchInterfaces ---------------------------------
 
     def ListInterfaces(
         self, request: pb.ListInterfacesRequest, context: grpc.ServicerContext
     ) -> pb.InterfaceList:
-        ifaces = self._enumerate_interfaces()
+        ifaces = enumerate_interfaces(self._driver)
         _log.info("ListInterfaces -> %d channels", len(ifaces))
-        return pb.InterfaceList(interfaces=list(ifaces))
-
-    # ----- WatchInterfaces --------------------------------------------------
+        return pb.InterfaceList(interfaces=ifaces)
 
     def WatchInterfaces(
         self,
         request: pb.WatchInterfacesRequest,
         context: grpc.ServicerContext,
     ) -> Iterator[pb.InterfaceList]:
-        """Long-lived subscription to the interface set. ADR 0016.
-
-        Emits the current snapshot once, then parks until the client
-        ends the call. This sidecar does **not** re-enumerate on a timer:
-        on the PCAN backend that global query contends with active
-        transmits (see ``_WATCH_LIVENESS_RECHECK_S``), so a hot-plug is
-        not pushed through the stream — a client picks it up with an
-        explicit ``ListInterfaces`` pull (the GUI's "Discover" button).
-        The stream therefore yields exactly once and then waits for
-        cancellation.
-
-        The wire contract (``cannet.proto``) permits a server to push a
-        fresh snapshot whenever its interface view changes; this server
-        detects no changes, so it emits only the initial snapshot — a
-        compliant degenerate case, not a re-publish.
-
-        gRPC invokes the ``add_callback`` hook on client cancel /
-        transport drop; it wakes the park loop so the generator returns
-        promptly instead of sitting out a full recheck interval.
-        """
-        yield pb.InterfaceList(interfaces=self._enumerate_interfaces())
-        # Wake-on-disconnect: gRPC fires this on client cancel / transport
-        # drop, so the park loop below exits without waiting out the full
-        # recheck interval. Registered after the first yield — that is the
-        # only point where the stream can block.
-        disconnected = threading.Event()
-        context.add_callback(disconnected.set)
-        while context.is_active():
-            if disconnected.wait(timeout=self._watch_recheck_interval_s):
-                return
-
-    def _enumerate_interfaces(self) -> list[pb.Interface]:
-        return [
-            pb.Interface(id=c.id, display_name=c.display_name, fd_capable=c.fd_capable)
-            for c in self._driver.list_channels()
-        ]
+        """See :func:`.enumeration.watch_interfaces`."""
+        yield from watch_interfaces(
+            self._driver,
+            context,
+            recheck_interval_s=self._watch_recheck_interval_s,
+        )
 
     # ----- Session ----------------------------------------------------------
 
