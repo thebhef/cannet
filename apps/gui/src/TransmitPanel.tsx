@@ -33,6 +33,7 @@ import { SIGNAL_DND_MIME, parseSignalDragData } from "./dragSignals";
 import { useValueTables, type ValueTableSignal } from "./useValueTables";
 import { useElementPanel } from "./useElementPanel";
 import { useHostMirror } from "./useHostMirror";
+import { formatCanIdHex } from "./format";
 
 /**
  * Transmit panel (thin view over the host model).
@@ -1266,8 +1267,7 @@ interface CanIdInputProps {
 /// accepts only hex digits; invalid input is rejected at the keypress
 /// level.
 function CanIdInput({ canId, extended, onChange, onExtendedChange }: CanIdInputProps) {
-  const width = extended ? 8 : 3;
-  const text = canId.toString(16).toUpperCase().padStart(width, "0");
+  const text = formatCanIdHex(canId, extended);
   return (
     <div className="tx-canid">
       <button
