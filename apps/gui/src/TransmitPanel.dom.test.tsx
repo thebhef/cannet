@@ -56,12 +56,12 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 import { listen } from "@tauri-apps/api/event";
 
+import { TransmitPanel } from "./TransmitPanel";
 import {
-  TransmitPanel,
   maxDataBytesForKind,
   zeroDataHex,
   resizeDataHexPreserving,
-} from "./TransmitPanel";
+} from "./transmitFrameConfig";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import {
   ElementRegistryContext,
