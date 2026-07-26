@@ -76,6 +76,7 @@ import { recordBlfChannelMap, savedBlfChannelMap } from "./blfChannelMap";
 import type { SystemMessage } from "./types";
 import { TraceDataContext, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
+import { SignalCatalogProvider } from "./signalCatalogContext";
 import { CloseConfirmModal, type CloseChoice } from "./CloseConfirmModal";
 import { BlfChannelMapModal } from "./BlfChannelMapModal";
 import {
@@ -2909,35 +2910,37 @@ export function App() {
         <div className="status">{status}</div>
       </header>
       <ProjectContext.Provider value={projectContextValue}>
-        <ElementRegistryContext.Provider value={elementRegistryValue}>
-          <SystemLogContext.Provider value={systemLogValue}>
-            <NotesContext.Provider value={notesValue}>
-              <TraceDataContext.Provider value={traceData}>
-                <KeybindingsContext.Provider value={keybindingsController}>
-                <PanelCommandsContext.Provider value={panelCommands}>
-                  {/* dockview drags tabs with the HTML5 drag-and-drop API, which
-                      Tauri's OS-level drag-drop handler breaks on WebView2 — hence
-                      `dragDropEnabled: false` in tauri.conf.json. The GUI takes
-                      files via the dialog plugin, not by drop, so nothing is lost. */}
-                  {/* `defaultTabComponent`: dockview-core's built-in tab
-                      closes only via its close button; the React default
-                      tab (same DOM, same class names) adds close on
-                      middle-click. The `mousedown` capture listener above
-                      keeps the browser's middle-button autoscroll from
-                      eating the press. */}
-                  <DockviewReact
-                    className="dock-area"
-                    theme={themeAbyss}
-                    components={DOCK_COMPONENTS}
-                    defaultTabComponent={DockviewDefaultTab}
-                    onReady={handleDockReady}
-                  />
-                </PanelCommandsContext.Provider>
-                </KeybindingsContext.Provider>
-              </TraceDataContext.Provider>
-            </NotesContext.Provider>
-          </SystemLogContext.Provider>
-        </ElementRegistryContext.Provider>
+        <SignalCatalogProvider>
+          <ElementRegistryContext.Provider value={elementRegistryValue}>
+            <SystemLogContext.Provider value={systemLogValue}>
+              <NotesContext.Provider value={notesValue}>
+                <TraceDataContext.Provider value={traceData}>
+                  <KeybindingsContext.Provider value={keybindingsController}>
+                  <PanelCommandsContext.Provider value={panelCommands}>
+                    {/* dockview drags tabs with the HTML5 drag-and-drop API, which
+                        Tauri's OS-level drag-drop handler breaks on WebView2 — hence
+                        `dragDropEnabled: false` in tauri.conf.json. The GUI takes
+                        files via the dialog plugin, not by drop, so nothing is lost. */}
+                    {/* `defaultTabComponent`: dockview-core's built-in tab
+                        closes only via its close button; the React default
+                        tab (same DOM, same class names) adds close on
+                        middle-click. The `mousedown` capture listener above
+                        keeps the browser's middle-button autoscroll from
+                        eating the press. */}
+                    <DockviewReact
+                      className="dock-area"
+                      theme={themeAbyss}
+                      components={DOCK_COMPONENTS}
+                      defaultTabComponent={DockviewDefaultTab}
+                      onReady={handleDockReady}
+                    />
+                  </PanelCommandsContext.Provider>
+                  </KeybindingsContext.Provider>
+                </TraceDataContext.Provider>
+              </NotesContext.Provider>
+            </SystemLogContext.Provider>
+          </ElementRegistryContext.Provider>
+        </SignalCatalogProvider>
       </ProjectContext.Provider>
       {openPalette === "commands" && (
         <PaletteModal
