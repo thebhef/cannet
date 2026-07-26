@@ -27,9 +27,9 @@ the order below is the order of work, top first.
    close commands, and a list-select go-to-event palette shipped with
    Task 37; what's left is the typed-argument prompt infrastructure.
 3. [Task 25 — CAN HW + Virtual-Bus Bug Fixes](0025-can-hw-vbus-bugfixes.md)
-   — the hardware/virtual-bus verify-and-fix pass (timestamp handling,
-   post-clear negative timestamps) plus the plot-colour bug and the
-   `decimatePoints` dead-code removal.
+   — the hardware/virtual-bus verify-and-fix pass (post-clear negative
+   timestamps; the TX-timing/rate leg closed 2026-07-25) plus the
+   plot-colour bug and the `decimatePoints` dead-code removal.
 4. [Task 22 — CANopen](0022-canopen.md)
    — EDS ingestion and SDO / PDO decoding.
 5. [Task 23 — Plot Measurements and Triggers](0023-plot-measurements-and-triggers.md)
