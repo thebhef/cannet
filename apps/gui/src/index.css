@@ -1370,23 +1370,54 @@ button.trace-event-swatch {
 .plot-panel-areas {
   flex: 1 1 0;
   min-height: 0;
-  overflow-y: auto;
+  /* Fit-to-panel (ADR 0026): derived axes always fit the stack — no
+     scroll list. Height is traded between areas via per-axis flex-grow
+     weights and the splitter drags. `hidden` (not `auto`) so a
+     pathologically short panel clips rather than growing a scrollbar. */
+  overflow: hidden;
   display: flex;
   flex-direction: column;
 }
 
 /* One plot area: a uPlot canvas on the left, a side signal panel on
-   the right. One area fills the stack; N areas split it evenly, each
-   clamped to a usable minimum. The canvas's ResizeObserver follows
+   the right. Areas split the stack by their flex-grow weight (set
+   inline, default 1). `min-height` is the pathological floor where
+   `overflow: hidden` clips; splitter drags clamp at the friendlier
+   AXIS_MIN_PX (ADR 0026). The canvas's ResizeObserver follows
    whatever height it gets. */
 .plot-area {
   display: flex;
   flex: 1 1 0;
-  min-height: 90px;
+  min-height: 24px;
   border-bottom: 1px solid #1f2630;
 }
 .plot-area:last-child {
   border-bottom: none;
+}
+
+/* Draggable separator between two stacked plot axes (ADR 0026). It's a
+   0-height flex child so it takes no room in the fit-to-panel
+   distribution; its grab target is an overlaid pseudo-element
+   straddling the shared border (row-resize cursor, hit-slop margins,
+   the same idiom as the side-panel resizer). */
+.plot-area-splitter {
+  flex: 0 0 0px;
+  position: relative;
+  height: 0;
+  z-index: 5;
+  cursor: row-resize;
+}
+.plot-area-splitter::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -4px;
+  height: 8px;
+}
+.plot-area-splitter:hover::before,
+.plot-area-splitter:active::before {
+  background: rgba(78, 203, 255, 0.25);
 }
 
 .plot-area-ycursors {

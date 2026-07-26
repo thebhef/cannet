@@ -17,6 +17,10 @@ import { comboboxValue, pickCombobox } from "./comboboxTestKit";
 
 vi.mock("uplot", () => {
   class FakeUPlot {
+    // `uPlot.paths.stepped(...)` is consulted at construction to give
+    // enum / lane series a stepped path; return a marker function so
+    // tests can assert a series is stepped.
+    static paths = { stepped: (_opts: unknown) => () => {} };
     over = document.createElement("div");
     scales = { x: {}, y: {} } as Record<string, { min?: number; max?: number }>;
     data: unknown = [[]];
@@ -95,8 +99,12 @@ function encodeSample(series: { t: number[]; v: number[] }[]): ArrayBuffer {
   }
   return buf;
 }
+// Per-signal value tables a test can populate (keyed by signal name);
+// empty by default so signals read as numeric. Prefixed `mock` so the
+// hoisted `vi.mock` factory may reference it lazily.
+const mockValueTables: Record<string, { raw: number; label: string }[]> = {};
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(async (cmd: string, args?: { signals?: unknown[] }) => {
+  invoke: vi.fn(async (cmd: string, args?: { signals?: unknown[]; signalName?: string }) => {
     if (cmd === "list_signals") return SIGNALS;
     if (cmd === "sample_signals")
       return encodeSample((args?.signals ?? []).map(() => ({ t: [0, 1, 2], v: [10, 20, 15] })));
@@ -104,6 +112,7 @@ vi.mock("@tauri-apps/api/core", () => ({
       // Host-owned all-time per-signal extent (ADR 0025) — matches the
       // sampled values' min/max so follow-live auto-norm has a range.
       return (args?.signals ?? []).map(() => ({ lo: 10, hi: 20 }));
+    if (cmd === "list_value_tables") return mockValueTables[args?.signalName ?? ""] ?? [];
     return undefined;
   }),
 }));
@@ -250,6 +259,7 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   vi.clearAllMocks();
+  for (const k of Object.keys(mockValueTables)) delete mockValueTables[k];
 });
 
 describe("PlotPanel", () => {
@@ -572,6 +582,222 @@ describe("PlotPanel", () => {
       cw.mockRestore();
       ch.mockRestore();
     }
+  });
+
+  it("each derived axis carries a resolved flex-grow weight (default 1)", () => {
+    renderPanel();
+    const area = screen.getByText("Area 1").closest(".plot-area") as HTMLElement;
+    expect(area.style.flexGrow).toBe("1");
+  });
+
+  it("restores per-axis weights from config and applies them as flex-grow", () => {
+    const registry = makeRegistry({
+      id: "el-weights",
+      config: {
+        areas: [{ id: "a1", signals: [] }],
+        axisWeights: { a1: 2.5 },
+      },
+    });
+    renderPanel({ params: { elementId: "el-weights" }, registry });
+    const area = screen.getByText("Area 1").closest(".plot-area") as HTMLElement;
+    // Unified mode → derived axis id == area id, so the stored weight
+    // resolves onto this axis.
+    expect(area.style.flexGrow).toBe("2.5");
+  });
+
+  it("round-trips axisWeights through updateParameters", () => {
+    const { api } = renderPanel({
+      params: { elementId: "el-w2" },
+      registry: makeRegistry({
+        id: "el-w2",
+        config: { areas: [{ id: "a1", signals: [] }], axisWeights: { a1: 3 } },
+      }),
+    });
+    const calls = api.updateParameters.mock.calls;
+    const lastCall = calls[calls.length - 1]?.[0] ?? {};
+    expect(lastCall.axisWeights).toEqual({ a1: 3 });
+  });
+
+  it("per-unit mode collects an area's enums onto one shared enum-lanes axis", async () => {
+    // Both fixture signals carry a >=2-member value table → both are
+    // enums. In per-unit mode they must fold into a single combined
+    // axis (subtitle "(enums)"), not two separate unit axes.
+    mockValueTables.EngineSpeed = [{ raw: 0, label: "Idle" }, { raw: 1, label: "Run" }];
+    mockValueTables.EngineTemp = [{ raw: 0, label: "Cold" }, { raw: 1, label: "Hot" }];
+    renderPanel();
+    const picker = screen.getByLabelText("add signal to focused plot area");
+    await pickCombobox(picker, "*|s:256:EngineSpeed");
+    await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
+    await pickCombobox(picker, "*|s:256:EngineTemp");
+    await waitFor(() => expect(screen.getByText("EngineTemp")).toBeInTheDocument());
+    await pickCombobox(screen.getByLabelText("y-axis mode"), "per-unit");
+    // One combined enum axis, not two per-unit axes.
+    await waitFor(() => {
+      expect(document.querySelectorAll(".plot-area").length).toBe(1);
+    });
+    expect(screen.getByText(/Area 1 · \(enums\)/)).toBeInTheDocument();
+  });
+
+  it("a numeric area does not rebuild its uPlot when value tables resolve", async () => {
+    // Regression: keying uPlot construction on the whole `valueTables`
+    // map tore down + rebuilt every numeric area when its (empty) tables
+    // resolved, and the post-rebuild resample was skipped by the
+    // descriptor-memo on a stopped trace — leaving a blank canvas (no
+    // scale, no lines). The draw hook reads tables live instead, so a
+    // table resolution must not recreate the instance.
+    const cw = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(600);
+    const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
+    try {
+      // Seed the signal in config so the panel mounts *with* it — one
+      // construction, not the empty-area + signal-added pair. Any extra
+      // instance then is the table-resolution rebuild we're guarding.
+      const registry = makeRegistry({
+        id: "el-numrebuild",
+        config: {
+          areas: [
+            {
+              id: "a1",
+              signals: [
+                { busId: null, messageId: 256, extended: false, signalName: "EngineSpeed", messageName: "EngineData", unit: "rpm", color: "#abc" },
+              ],
+            },
+          ],
+        },
+      });
+      renderPanel({ params: { elementId: "el-numrebuild" }, registry });
+      await waitFor(() => expect(uplotInstances.length).toBeGreaterThanOrEqual(1));
+      // Flush the async value-table fetch (empty for this numeric signal)
+      // and its state update.
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      // Still exactly one instance: the empty-table resolution redraws,
+      // it does not tear down + rebuild uPlot.
+      expect(uplotInstances.length).toBe(1);
+    } finally {
+      cw.mockRestore();
+      ch.mockRestore();
+    }
+  });
+
+  it("a lanes axis constructs uPlot with stepped series and a blank y axis", async () => {
+    mockValueTables.EngineSpeed = [{ raw: 0, label: "Idle" }, { raw: 1, label: "Run" }];
+    mockValueTables.EngineTemp = [{ raw: 0, label: "Cold" }, { raw: 1, label: "Hot" }];
+    // uPlot only constructs against a real-sized canvas.
+    const cw = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(600);
+    const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
+    try {
+      renderPanel();
+      const picker = screen.getByLabelText("add signal to focused plot area");
+      await pickCombobox(picker, "*|s:256:EngineSpeed");
+      await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
+      await pickCombobox(picker, "*|s:256:EngineTemp");
+      await waitFor(() => expect(screen.getByText("EngineTemp")).toBeInTheDocument());
+      await pickCombobox(screen.getByLabelText("y-axis mode"), "per-unit");
+      await waitFor(() => expect(document.querySelectorAll(".plot-area").length).toBe(1));
+      await waitFor(() => expect(uplotInstances.length).toBeGreaterThan(0));
+      const inst = uplotInstances[uplotInstances.length - 1] as unknown as {
+        opts: { series: { paths?: unknown }[]; axes: { splits: () => number[]; grid?: { show?: boolean } }[] };
+      };
+      // x + two lane series, both stepped.
+      expect(inst.opts.series).toHaveLength(3);
+      expect(typeof inst.opts.series[1].paths).toBe("function");
+      expect(typeof inst.opts.series[2].paths).toBe("function");
+      // Blank y gutter: no splits, no grid.
+      const yAxis = inst.opts.axes[1];
+      expect(yAxis.splits()).toEqual([]);
+      expect(yAxis.grid?.show).toBe(false);
+    } finally {
+      cw.mockRestore();
+      ch.mockRestore();
+    }
+  });
+
+  it("renders N-1 splitters between N stacked axes", async () => {
+    renderPanel();
+    // One area → no splitter.
+    expect(document.querySelectorAll(".plot-area-splitter").length).toBe(0);
+    const picker = screen.getByLabelText("add signal to focused plot area");
+    await pickCombobox(picker, "*|s:256:EngineSpeed");
+    await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
+    await pickCombobox(picker, "*|s:256:EngineTemp");
+    await waitFor(() => expect(screen.getByText("EngineTemp")).toBeInTheDocument());
+    await pickCombobox(screen.getByLabelText("y-axis mode"), "per-unit");
+    // Two units → two axes → exactly one splitter between them.
+    expect(document.querySelectorAll(".plot-area").length).toBe(2);
+    expect(document.querySelectorAll(".plot-area-splitter").length).toBe(1);
+  });
+
+  it("dragging a splitter shifts weight between exactly the two neighbours, conserving their sum", async () => {
+    // Both neighbours report a 200px height; a 50px downward drag of the
+    // 400px pair moves them to 250/150 → weights 1.25 / 0.75 (sum 2).
+    const rect = vi
+      .spyOn(Element.prototype, "getBoundingClientRect")
+      .mockReturnValue({ height: 200, width: 600, top: 0, left: 0, right: 600, bottom: 200, x: 0, y: 0, toJSON() {} } as DOMRect);
+    try {
+      const { api } = renderPanel();
+      const picker = screen.getByLabelText("add signal to focused plot area");
+      await pickCombobox(picker, "*|s:256:EngineSpeed");
+      await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
+      await pickCombobox(picker, "*|s:256:EngineTemp");
+      await waitFor(() => expect(screen.getByText("EngineTemp")).toBeInTheDocument());
+      await pickCombobox(screen.getByLabelText("y-axis mode"), "per-unit");
+      const sep = document.querySelector(".plot-area-splitter") as HTMLElement;
+      fireEvent.mouseDown(sep, { clientY: 0 });
+      act(() => {
+        window.dispatchEvent(new MouseEvent("mousemove", { clientY: 50 }));
+      });
+      act(() => {
+        window.dispatchEvent(new MouseEvent("mouseup"));
+      });
+      const areas = document.querySelectorAll(".plot-area");
+      const g0 = parseFloat((areas[0] as HTMLElement).style.flexGrow);
+      const g1 = parseFloat((areas[1] as HTMLElement).style.flexGrow);
+      expect(g0 + g1).toBeCloseTo(2);
+      expect(g0).toBeCloseTo(1.25);
+      expect(g1).toBeCloseTo(0.75);
+      // Persisted: exactly the two neighbours, summing to their pair.
+      const calls = api.updateParameters.mock.calls;
+      const last = (calls[calls.length - 1]?.[0] ?? {}) as { axisWeights: Record<string, number> };
+      const vals = Object.values(last.axisWeights);
+      expect(vals).toHaveLength(2);
+      expect(vals.reduce((a, b) => a + b, 0)).toBeCloseTo(2);
+    } finally {
+      rect.mockRestore();
+    }
+  });
+
+  it("double-clicking a splitter equalises the pair", async () => {
+    const registry = makeRegistry({
+      id: "el-eq",
+      config: {
+        areas: [
+          {
+            id: "a1",
+            yAxisMode: "per-unit",
+            signals: [
+              { busId: null, messageId: 256, extended: false, signalName: "EngineSpeed", messageName: "EngineData", unit: "rpm", color: "#111" },
+              { busId: null, messageId: 256, extended: false, signalName: "EngineTemp", messageName: "EngineData", unit: "degC", color: "#222" },
+            ],
+          },
+        ],
+        // Lopsided starting weights on the two derived per-unit axes.
+        axisWeights: { "a1/u:unit:rpm": 3, "a1/u:unit:degC": 1 },
+      },
+    });
+    const { api } = renderPanel({ params: { elementId: "el-eq" }, registry });
+    const areas = document.querySelectorAll(".plot-area");
+    expect(parseFloat((areas[0] as HTMLElement).style.flexGrow)).toBeCloseTo(3);
+    const sep = document.querySelector(".plot-area-splitter") as HTMLElement;
+    fireEvent.doubleClick(sep);
+    const after = document.querySelectorAll(".plot-area");
+    expect(parseFloat((after[0] as HTMLElement).style.flexGrow)).toBeCloseTo(2);
+    expect(parseFloat((after[1] as HTMLElement).style.flexGrow)).toBeCloseTo(2);
+    const calls = api.updateParameters.mock.calls;
+    const last = (calls[calls.length - 1]?.[0] ?? {}) as { axisWeights: Record<string, number> };
+    expect(last.axisWeights["a1/u:unit:rpm"]).toBeCloseTo(2);
+    expect(last.axisWeights["a1/u:unit:degC"]).toBeCloseTo(2);
   });
 
   it("mirrors its config onto the element via the registry", async () => {

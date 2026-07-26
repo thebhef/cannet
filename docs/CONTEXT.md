@@ -115,10 +115,11 @@ _Avoid_: "axis" for a plot area — an area can hold several axes.
 A plot-area property choosing how the area's series map to **axes**
 and how each axis's y **scale** derives: **unified** (one axis,
 series grouped by unit on a shared y scale), **per-unit** (one axis
-per unit; each enum series gets its own axis), or **individual** (one
-axis per series). Despite the colloquial name, it tunes the _number
-of axes_ and the _y scale_, not a single "y axis". y scales are
-always auto-derived — there is no fixed-range mode.
+per unit, plus one shared **enum-lanes axis** collecting all the
+area's enums), or **individual** (one axis per series). Despite the
+colloquial name, it tunes the _number of axes_ and the _y scale_, not
+a single "y axis". y scales are always auto-derived — there is no
+fixed-range mode.
 
 **Axis**:
 A single drawing surface: data plotted against one y **scale** and
@@ -128,17 +129,25 @@ An axis renders its series in one of two styles: a normal **line**
 (with optional points), or a **logic-analyzer lane**.
 _Avoid_: "plot area" for a single axis; "axis" for a scale or ruler.
 
+**Enum-lanes axis**:
+The shared axis that per-unit mode gives an area's enum series. Each
+enum is a horizontal **lane** (config order, top-first) with its
+stepped waveform normalized into the lane's band and an opaque label
+tile on each constant-value segment. A lane's y range is a _table
+fact_ (the value table's raw min/max, padded), independent of
+observed data / follow-live / Fit Y. The axis has no y gutter — the
+tiles carry the labels, the side panel carries identity — and a
+colormap (ADR 0029) tints tiles by value.
+
 **Logic-analyzer lane**:
-The axis render style for an enum series: the enum is plotted
-numerically (points honour the show-points control) with a
-high-opacity label box overlaid on each constant-value segment
-showing the enum label. The boxes sit in a centered horizontal band
-down the middle of the plot (decoupled from the held value's y
-position so a value table with many entries doesn't collapse the
-labels to a few pixels); the stepped line still draws at the actual
-value. Used when an enum series has its own axis (per-unit /
-individual modes); under unified mode an enum plots as a plain
-numeric line with no labels.
+The lane render style described above. In an **enum-lanes axis** there
+is one lane per enum. A single enum on its own axis (`individual`
+mode, or a manual single-enum area) uses the older variant: one
+centered horizontal label ribbon down the middle of the plot,
+decoupled from the held value's y position so a tall value table
+doesn't collapse the labels to a few pixels, with the stepped line
+still drawn at the actual value. Under unified mode an enum plots as a
+plain numeric line with no labels.
 
 **Scale**:
 The value dimension of an axis — its **y scale** (signal values) or
@@ -155,10 +164,19 @@ naming is this overload, on the list to retire.
 
 **Primary signal**:
 The series whose unit and value range drive an axis's visible y
-**scale** labels. The user selects it by clicking a series; it
-defaults to the first. The labels always show the primary signal's
-real engineering values — never a 0–1 normalised ratio, even when
-other unit groups are overlaid on the same axis.
+**scale** labels. The user selects it by clicking a series (per plot
+area). An axis that doesn't hold the area's primary — e.g. every
+per-unit axis but one — labels through its own first ranged signal
+instead. Either way the labels show real engineering values, never a
+0–1 normalised ratio. (The blank-gutter **enum-lanes axis** is exempt:
+its tiles carry the labels.)
+
+**Axis weight** (fit-to-panel):
+The vertical share a derived **axis** takes of its panel's height. All
+of a panel's axes always fit (no stack scrolling); each carries a
+flex-grow weight (default 1, persisted per axis id). A draggable
+**splitter** between two adjacent axes trades weight between that pair
+(conserving their sum); double-click equalizes them.
 
 ## Flagged ambiguities
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -252,6 +252,9 @@ interface PlotPanelParams {
   maxRateHz?: unknown;
   signalsWidthPx?: unknown;
   showPoints?: unknown;
+  /** Per-derived-axis vertical weight (flex-grow), keyed by axis id.
+   * See {@link AxisWeights}. Absent axes default to weight 1. */
+  axisWeights?: unknown;
 }
 
 /** Per-area side-panel width range (pixels). Default and clamps for
@@ -434,6 +437,17 @@ function measureAxisSize(values: string[] | null | undefined): number {
   // axis doesn't collapse.
   return Math.max(52, Math.ceil(widest) + 18);
 }
+/** Width (px) of a single tick label in the axis font. Reuses the same
+ * offscreen context as {@link measureAxisSize}. */
+function measureLabelWidth(text: string): number {
+  if (axisMeasureCtx == null) {
+    const c = document.createElement("canvas").getContext("2d");
+    if (!c) return text.length * 7;
+    axisMeasureCtx = c;
+  }
+  axisMeasureCtx.font = AXIS_FONT;
+  return axisMeasureCtx.measureText(text).width;
+}
 function fmtCount(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
@@ -456,6 +470,16 @@ import {
 } from "./signalSelection";
 import { SignalPatternEditor } from "./SignalPatternEditor";
 import { deriveAxesForArea, type YAxisMode } from "./plotAxisDerivation";
+import { useValueTables } from "./useValueTables";
+import { laneBands, laneTileBand, laneValueRange, normalizeIntoLane } from "./plotEnumLanes";
+import {
+  type AxisWeights,
+  applySplitterDelta,
+  axisWeightsFromRaw,
+  equalizePair,
+  pruneAxisWeights,
+  resolveAxisWeights,
+} from "./plotAreaLayout";
 import { useDecimatedRange } from "./useDecimatedRange";
 import { diagCount } from "./diag"; // DIAG
 
@@ -538,6 +562,12 @@ export function PlotPanel(props: IDockviewPanelProps) {
   /** Pixel width of every area's side panel — user-resizable via a
    * drag handle, persisted in panel config. */
   const [signalsWidth, setSignalsWidth] = useState(() => signalsWidthFromRaw(savedConfig?.signalsWidthPx));
+  /** Per-derived-axis vertical weights (flex-grow), keyed by axis id.
+   * Persisted in panel config; pruned to the live axis set below and
+   * resolved (defaults filled) at render (ADR 0026). */
+  const [axisWeights, setAxisWeights] = useState<AxisWeights>(() =>
+    axisWeightsFromRaw(savedConfig?.axisWeights),
+  );
   const [focusedAreaId, setFocusedAreaId] = useState<string>(() => areas[0]?.id ?? "");
   const [catalog, setCatalog] = useState<SignalDescriptorRecord[]>([]);
 
@@ -802,6 +832,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
       maxRateHz,
       signalsWidthPx: signalsWidth,
       showPoints,
+      axisWeights,
     };
     // Dual-write: onto the element (survives panel close + reopen and is
     // what `Save` serializes) and into the dockview `params` (the
@@ -826,6 +857,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     maxRateHz,
     signalsWidth,
     showPoints,
+    axisWeights,
   ]);
 
   const refreshCatalog = useCallback(() => {
@@ -1251,22 +1283,46 @@ export function PlotPanel(props: IDockviewPanelProps) {
     [areas, scopedCatalog, busNameLookup],
   );
 
+  /// Panel-level enum detection (ADR 0026). One `list_value_tables`
+  /// fetch over every signal in the panel (via the shared
+  /// `useValueTables` hook), reduced to the set of enum keys — signals
+  /// whose `VAL_` table has >= 2 members. `deriveAxesForArea` consults
+  /// this to collect a per-unit area's enums onto the shared
+  /// enum-lanes axis. The per-area side-panel readout keeps its own
+  /// `useValueTables` call inside `PlotArea`; folding the two fetches
+  /// into one downward-passed map is a follow-up.
+  const allPanelSignals = useMemo(
+    () => effectiveAreas.flatMap((a) => a.signals),
+    [effectiveAreas],
+  );
+  const panelValueTables = useValueTables(allPanelSignals);
+  const enumKeys = useMemo(() => {
+    const set = new Set<string>();
+    for (const [key, table] of panelValueTables) {
+      if (isEnumValueTable(table)) set.add(key);
+    }
+    return set;
+  }, [panelValueTables]);
+
   /// Expand each effective area into one or more derived axes, based on
   /// the area's `yAxisMode` (ADR 0026). Unified produces one entry per
-  /// area (identical to today); per-unit groups signals by unit; and
-  /// individual is one entry per signal. Each derived entry carries
-  /// the parent area so panel-level callbacks (add signal, set primary,
-  /// set mode, remove area) can route to the right place.
+  /// area (identical to today); per-unit groups signals by unit (with
+  /// all enums on one shared enum-lanes axis); and individual is one
+  /// entry per signal. Each derived entry carries the parent area so
+  /// panel-level callbacks (add signal, set primary, set mode, remove
+  /// area) can route to the right place.
   const derivedAreaConfigs = useMemo(() => {
     const out: Array<{
       area: PlotAreaConfig;
       parentArea: PlotAreaConfig;
       isFirstOfParent: boolean;
       subtitle: string | null;
+      enumLanes: boolean;
     }> = [];
+    const isEnum = (k: string) => enumKeys.has(k);
     for (const a of effectiveAreas) {
       const mode = a.yAxisMode ?? "unified";
-      const axes = deriveAxesForArea(a.id, a.signals, mode);
+      const axes = deriveAxesForArea(a.id, a.signals, mode, isEnum);
       axes.forEach((ax, i) => {
         // The derived `PlotAreaConfig` carries the axis's slice of
         // signals. `patterns` is preserved only on the first
@@ -1284,11 +1340,30 @@ export function PlotPanel(props: IDockviewPanelProps) {
           parentArea: a,
           isFirstOfParent: i === 0,
           subtitle: ax.subtitle,
+          enumLanes: ax.kind === "enum-lanes",
         });
       });
     }
     return out;
-  }, [effectiveAreas]);
+  }, [effectiveAreas, enumKeys]);
+
+  // Fit-to-panel weights (ADR 0026): resolve a flex-grow for every
+  // live derived axis (stored value or default 1), and prune stored
+  // entries whose axis no longer exists so the config doesn't
+  // accumulate stale ids. `pruneAxisWeights` returns the same
+  // reference when nothing is removed, so the setState is a no-op then
+  // and the effect can't loop.
+  const derivedAxisIds = useMemo(
+    () => derivedAreaConfigs.map((d) => d.area.id),
+    [derivedAreaConfigs],
+  );
+  const resolvedAxisWeights = useMemo(
+    () => resolveAxisWeights(derivedAxisIds, axisWeights),
+    [derivedAxisIds, axisWeights],
+  );
+  useEffect(() => {
+    setAxisWeights((prev) => pruneAxisWeights(prev, derivedAxisIds));
+  }, [derivedAxisIds]);
 
   /// Bus-rename invalidation (ADR 0020). Track the previous match
   /// count for each filter-mode area; when a buses-list change drops
@@ -1574,10 +1649,81 @@ export function PlotPanel(props: IDockviewPanelProps) {
           // own H1/H2). Look it up by the derived id.
           const yc = cursorYByArea[d.area.id];
           const parent = d.parentArea;
+          // A splitter sits before every axis but the first, trading
+          // vertical weight between it and the axis above (ADR 0026).
+          // It's a 0-height flex child (its hit area is an overlaid
+          // pseudo-element) so it doesn't perturb the fit-to-panel
+          // distribution. Measuring the neighbours' live pixel heights
+          // at drag start keeps the weight math independent of the
+          // panel's absolute size.
+          const above = idx > 0 ? derivedAreaConfigs[idx - 1] : null;
           return (
-            <PlotArea
-              key={d.area.id}
-              area={d.area}
+            <Fragment key={d.area.id}>
+              {above && (
+                <div
+                  className="plot-area-splitter"
+                  role="separator"
+                  aria-orientation="horizontal"
+                  title="drag to resize; double-click to equalize"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const sep = e.currentTarget;
+                    const aboveEl = sep.previousElementSibling as HTMLElement | null;
+                    const belowEl = sep.nextElementSibling as HTMLElement | null;
+                    if (!aboveEl || !belowEl) return;
+                    const idAbove = above.area.id;
+                    const idBelow = d.area.id;
+                    const abovePx0 = aboveEl.getBoundingClientRect().height;
+                    const belowPx0 = belowEl.getBoundingClientRect().height;
+                    const startY = e.clientY;
+                    // Seed the pair's resolved weights so the drag has
+                    // real numbers even for axes still at the default.
+                    const base: AxisWeights = {
+                      ...axisWeights,
+                      [idAbove]: resolvedAxisWeights[idAbove],
+                      [idBelow]: resolvedAxisWeights[idBelow],
+                    };
+                    const onMove = (ev: MouseEvent) => {
+                      setAxisWeights(
+                        applySplitterDelta(
+                          base,
+                          idAbove,
+                          idBelow,
+                          ev.clientY - startY,
+                          abovePx0,
+                          belowPx0,
+                        ),
+                      );
+                    };
+                    const onUp = () => {
+                      window.removeEventListener("mousemove", onMove);
+                      window.removeEventListener("mouseup", onUp);
+                    };
+                    window.addEventListener("mousemove", onMove);
+                    window.addEventListener("mouseup", onUp);
+                  }}
+                  onDoubleClick={() => {
+                    const idAbove = above.area.id;
+                    const idBelow = d.area.id;
+                    setAxisWeights((prev) =>
+                      equalizePair(
+                        {
+                          ...prev,
+                          [idAbove]: resolvedAxisWeights[idAbove],
+                          [idBelow]: resolvedAxisWeights[idBelow],
+                        },
+                        idAbove,
+                        idBelow,
+                      ),
+                    );
+                  }}
+                />
+              )}
+              <PlotArea
+                area={d.area}
+                flexGrow={resolvedAxisWeights[d.area.id]}
+                enumLanes={d.enumLanes}
               label={
                 d.subtitle == null
                   ? areaLabels.get(parent.id) ?? "Area"
@@ -1653,7 +1799,8 @@ export function PlotPanel(props: IDockviewPanelProps) {
               busColorLookup={busColorLookup}
               resolveColor={resolveColor}
               panelElementId={elementId}
-            />
+              />
+            </Fragment>
           );
         })}
       </div>
@@ -1803,6 +1950,15 @@ function MeasurementMenu({
 
 interface PlotAreaProps {
   area: PlotAreaConfig;
+  /** Vertical flex-grow weight for this axis (ADR 0026 fit-to-panel).
+   * Applied inline on the root; the browser distributes stack height
+   * proportionally. Undefined falls back to the CSS default (1). */
+  flexGrow?: number;
+  /** True when this axis is the shared per-unit enum-lanes axis (all of
+   * an area's enums stacked as logic-analyzer lanes, ADR 0026). The
+   * lane render lands in a later slice; today the axis draws as plain
+   * numeric lines. */
+  enumLanes?: boolean;
   label: string;
   isFirst: boolean;
   isLast: boolean;
@@ -1938,10 +2094,80 @@ interface PlotAreaProps {
   panelElementId: string;
 }
 
+/** Draw the logic-analyzer value tiles for one enum series into a
+ * pixel band (ADR 0026). Each constant-value segment of the (stepped)
+ * line gets an opaque-ish box carrying its label; a colormap targeting
+ * the signal (ADR 0029) tints the box by the held value. Shared by the
+ * single-enum axis (one full-height centered band) and each lane of
+ * the combined enum-lanes axis (one call per signal, its lane band).
+ * The stepped line still draws behind the ~0.65-alpha fill, so the
+ * waveform reads through. */
+function drawEnumTiles(
+  ctx: CanvasRenderingContext2D,
+  u: uPlot,
+  o: {
+    seriesIdx: number;
+    table: readonly ValueTableEntryRecord[];
+    target: ColorTarget | null;
+    resolveColor: ColorResolver;
+    /** Top / bottom of the tile band, in canvas pixels. */
+    bandTop: number;
+    bandBot: number;
+    /** Fallback border/label colour when no colormap tints the value. */
+    accent: string;
+    left: number;
+    width: number;
+    ratio: number;
+  },
+): void {
+  const seriesOpt = u.series[o.seriesIdx];
+  const ts = u.data[0] as number[] | undefined;
+  const vs = u.data[o.seriesIdx] as (number | null)[] | undefined;
+  if (!ts || !vs || seriesOpt?.show === false) return;
+  const labelFor = (raw: number): string => {
+    const found = o.table.find((r) => r.raw === Math.round(raw));
+    return found ? found.label : String(raw);
+  };
+  const bandH = o.bandBot - o.bandTop;
+  const padX = 4 * o.ratio;
+  for (const seg of enumSegments(ts, vs)) {
+    const x0 = u.valToPos(seg.t0, "x", true);
+    // `tEnd` is the next-sample timestamp (where the value changes),
+    // matching the stepped line's hold, so the box reaches the visual
+    // transition instead of cutting off at the last same-value sample.
+    const x1 = u.valToPos(seg.tEnd, "x", true);
+    // Clip-trim against the visible plot region; a segment past the
+    // canvas still labels its visible portion, centred on-screen.
+    const visStart = Math.max(x0, o.left);
+    const visEnd = Math.min(x1, o.left + o.width);
+    const segW = visEnd - visStart;
+    if (segW <= 0) continue;
+    const lbl = labelFor(seg.v);
+    const tw = ctx.measureText(lbl).width;
+    const labelFits = segW >= tw + padX * 2;
+    const mapColor = o.target ? o.resolveColor(o.target, seg.v) : null;
+    // ~65-85% fills keep the stepped line faintly visible underneath.
+    const fill = mapColor ? colorMapLaneFill(mapColor) : "rgba(10, 13, 15, 0.65)";
+    const accent = mapColor ?? o.accent;
+    ctx.fillStyle = fill;
+    ctx.fillRect(visStart, o.bandTop, segW, bandH);
+    ctx.strokeStyle = accent;
+    ctx.strokeRect(visStart + 0.5, o.bandTop + 0.5, segW - 1, bandH - 1);
+    if (labelFits) {
+      ctx.fillStyle = accent;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(lbl, visStart + segW / 2, (o.bandTop + o.bandBot) / 2);
+    }
+  }
+}
+
 function PlotArea(p: PlotAreaProps) {
   diagCount("render.PlotArea"); // DIAG
   const {
     area,
+    flexGrow,
+    enumLanes,
     label,
     isFirst,
     isLast,
@@ -2105,32 +2331,7 @@ function PlotArea(p: PlotAreaProps) {
   // labelled value reads as `<label> (<raw>)` on an exact raw match
   // for every signal regardless of axis mode — single-member tables
   // included.
-  const [valueTables, setValueTables] = useState<Map<string, ValueTableEntryRecord[]>>(new Map());
-  useEffect(() => {
-    let cancelled = false;
-    const accum = new Map<string, ValueTableEntryRecord[]>();
-    Promise.all(
-      signals.map(async (s) => {
-        try {
-          diagCount("invoke.list_value_tables"); // DIAG
-          const rows = await invoke<ValueTableEntryRecord[]>("list_value_tables", {
-            messageId: s.messageId,
-            extended: s.extended,
-            signalName: s.signalName,
-          });
-          if (rows.length > 0) accum.set(signalRefKey(s), rows);
-        } catch {
-          /* signal stays numeric */
-        }
-      }),
-    ).then(() => {
-      if (cancelled) return;
-      setValueTables(accum);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [signals]);
+  const valueTables = useValueTables(signals);
   // Axis-level enum mode is still gated on `signals.length === 1`
   // (the stepped path + symbolic y-axis ticks + label band only
   // make sense on a single-enum axis); derive that from the
@@ -2139,7 +2340,26 @@ function PlotArea(p: PlotAreaProps) {
     if (signals.length !== 1) return null;
     return valueTables.get(signalRefKey(signals[0])) ?? null;
   }, [signals, valueTables]);
-  const enumMode = isEnumValueTable(valueTable) && signals.length === 1;
+  // Combined enum-lanes axis (ADR 0026): the panel flags this axis (its
+  // derived `kind`) as holding all of an area's enums, drawn as stacked
+  // logic-analyzer lanes. This wins over single-enum mode — a lone enum
+  // on a per-unit area is a one-lane enum-lanes axis, not the old
+  // centered-ribbon render. The resample + draw hook read lane state
+  // through refs so a table-fetch tick doesn't recreate the
+  // (deps-stable) resample callback.
+  const laneMode = enumLanes === true && signals.length > 0;
+  const laneModeRef = useRef(laneMode);
+  laneModeRef.current = laneMode;
+  const valueTablesRef = useRef(valueTables);
+  valueTablesRef.current = valueTables;
+  // The lane draw hook reads tables live from `valueTablesRef`, so it
+  // needs no uPlot rebuild when they resolve — but a stopped trace
+  // won't redraw on its own. Nudge one so lane labels appear once the
+  // tables land. Cheap and a no-op on numeric axes.
+  useEffect(() => {
+    uplotRef.current?.redraw();
+  }, [valueTables]);
+  const enumMode = !laneMode && isEnumValueTable(valueTable) && signals.length === 1;
   // Ref mirrors so the resample callback (closure over the initial
   // signal set) sees the up-to-date enum-mode state without being
   // recreated on every value-table tick.
@@ -2263,7 +2483,10 @@ function PlotArea(p: PlotAreaProps) {
       // paused/zoomed (the visible slice is fit instead), or in enum mode
       // (no normalisation).
       const enumActivePre = enumModeRef.current && valueTableRef.current != null;
-      const wantHostExtent = lr.followLive && !manualFitYRef.current && !enumActivePre;
+      // Lane axes get their y from the value tables, not observed data
+      // (ADR 0026), so they need no host extent either.
+      const wantHostExtent =
+        lr.followLive && !manualFitYRef.current && !enumActivePre && !laneModeRef.current;
       const sigQuery = signals.map((s) => ({
         busId: s.busId,
         messageId: s.messageId,
@@ -2407,7 +2630,30 @@ function PlotArea(p: PlotAreaProps) {
       // symbolic.
       const enumActive = enumModeRef.current && valueTableRef.current != null;
       const effective = new Map<string, { lo: number; hi: number }>();
-      const displaySeries: Series[] = enumActive
+      // Lane axis: normalise each enum into its own lane band on the
+      // [0, 1] scale (ADR 0026). The lane's value range is a *table*
+      // fact (padded raw min/max), independent of observed data; a
+      // signal with no table draws flat at its lane midline.
+      const laneActive = laneModeRef.current;
+      const displaySeries: Series[] = laneActive
+        ? (() => {
+            const bands = laneBands(signals.length);
+            return seriesRel.map((s, i) => {
+              if (s.v.length === 0) return s;
+              const band = bands[i];
+              const table = valueTablesRef.current.get(signalRefKey(signals[i]));
+              const out = new Array<number>(s.v.length);
+              if (table && table.length > 0) {
+                const range = laneValueRange(table);
+                for (let j = 0; j < s.v.length; j++) out[j] = normalizeIntoLane(s.v[j], range, band);
+              } else {
+                const mid = (band.lo + band.hi) / 2;
+                for (let j = 0; j < s.v.length; j++) out[j] = mid;
+              }
+              return { t: s.t, v: out };
+            });
+          })()
+        : enumActive
         ? seriesRel
         : seriesRel.map((s, i) => {
             if (s.v.length === 0) return s;
@@ -2476,20 +2722,30 @@ function PlotArea(p: PlotAreaProps) {
       seriesRef.current = sm;
       presentRef.current = pv;
       effectiveRangesRef.current = effective;
-      // Refresh the primary signal's range/unit so the y-axis value
-      // formatter can convert normalised tick positions back to raw
-      // signal units on the next draw. Read through the ref — this
-      // callback's closure has a stale `primaryKey` once the user
-      // promotes a new signal.
+      // Refresh the range/unit the y-axis value formatter converts
+      // normalised tick positions back through. Prefer the parent
+      // area's primary signal, but only when it's actually on *this*
+      // derived axis — in per-unit mode each axis is a different unit
+      // group, so the primary lives on at most one of them. For every
+      // other axis (and when no primary is set) fall back to this
+      // axis's first ranged signal, so labels read real units (V, A, %)
+      // instead of the normalised [0, 1]. Read through the ref — the
+      // closure's `primaryKey` goes stale on promotion.
       const pk = primaryKeyRef.current;
-      if (pk) {
-        const r = effective.get(pk);
-        if (r) {
-          const sig = signals.find((s) => signalRefKey(s) === pk);
-          primaryAxisRef.current = { lo: r.lo, hi: r.hi, unit: sig?.unit ?? null };
-        } else {
-          primaryAxisRef.current = null;
+      let labelKey: string | null = pk && effective.has(pk) ? pk : null;
+      if (!labelKey) {
+        for (const s of signals) {
+          const k = signalRefKey(s);
+          if (effective.has(k)) {
+            labelKey = k;
+            break;
+          }
         }
+      }
+      if (labelKey) {
+        const r = effective.get(labelKey)!;
+        const sig = signals.find((s) => signalRefKey(s) === labelKey);
+        primaryAxisRef.current = { lo: r.lo, hi: r.hi, unit: sig?.unit ?? null };
       } else {
         primaryAxisRef.current = null;
       }
@@ -2548,6 +2804,21 @@ function PlotArea(p: PlotAreaProps) {
     // through the `signalSetKey` dep on this effect) installs the
     // enum-mode opts on the next uPlot instance.
     const enumActiveAtConstruct = enumMode && valueTable != null;
+    // Combined enum-lanes axis (ADR 0026): stepped paths for every
+    // series, a blank y gutter (tiles carry the labels, the side panel
+    // carries identity), and per-signal colour targets for the draw
+    // hook. The lane *tables* are read live from `valueTablesRef` in
+    // the draw hook (a redraw effect below shows labels once they
+    // resolve), so this instance need not rebuild when they land.
+    const laneModeAtConstruct = laneMode;
+    const laneTargetsAtConstruct: (ColorTarget | null)[] = laneModeAtConstruct
+      ? signals.map((s) => ({
+          messageId: s.messageId,
+          extended: s.extended,
+          signalName: s.signalName,
+          busId: s.busId ?? null,
+        }))
+      : [];
     // The enum-mode area holds exactly one signal; capture its identity
     // so the draw hook can resolve a colormap tint for the held value
     // (ADR 0029). Stable for this instance — the effect rebuilds when the
@@ -2566,7 +2837,19 @@ function PlotArea(p: PlotAreaProps) {
       const found = valueTable?.find((r) => r.raw === raw);
       return found ? found.label : String(raw);
     };
-    const yAxis: uPlot.Axis = enumActiveAtConstruct
+    const yAxis: uPlot.Axis = laneModeAtConstruct
+      ? {
+          // Blank gutter: no splits / values / grid. The lane tiles
+          // carry the value labels and the side panel carries identity,
+          // so a y scale would only waste horizontal space (ADR 0026).
+          ...axisCommon,
+          size: 14,
+          grid: { show: false },
+          ticks: { show: false },
+          splits: () => [],
+          values: () => [],
+        }
+      : enumActiveAtConstruct
       ? {
           ...axisCommon,
           size: 80,
@@ -2605,6 +2888,17 @@ function PlotArea(p: PlotAreaProps) {
           stroke: () => primaryColorRef.current ?? AXIS_STROKE,
           ticks: { stroke: () => primaryColorRef.current ?? AXIS_TICKS, width: 1 },
         };
+    // Elapsed-time labels widen as you zoom in (more fractional digits,
+    // ADR 0024), so a fixed tick spacing lets them collide. Space the
+    // ticks by the widest label the current span produces plus a gap, so
+    // they never overlap. Applied to *every* stacked area (not just the
+    // labelled bottom one) so all areas pick the same tick increment and
+    // their shared x-gridlines stay aligned.
+    const xTickSpace: uPlot.Axis["space"] = (_u, _axisIdx, min, max) => {
+      const d = fracDigitsForSpan((max ?? 0) - (min ?? 0));
+      const widest = measureLabelWidth(formatElapsed(max ?? 0, d));
+      return Math.max(50, Math.ceil(widest) + 22);
+    };
     // Only the bottom-most stacked area carries the "time (s)" label and
     // numeric ticks. Upper areas keep gridlines + tick marks (so the
     // shared x-grid still reads across the whole stack) but drop the
@@ -2616,6 +2910,7 @@ function PlotArea(p: PlotAreaProps) {
           label: "time (s)",
           labelSize: 16,
           size: 34,
+          space: xTickSpace,
           // Ticks share the trace's elapsed-time format (ADR 0024) so
           // the same timeline position reads identically in both views;
           // precision adapts to the visible span so zoomed-in ticks stay
@@ -2625,10 +2920,10 @@ function PlotArea(p: PlotAreaProps) {
             return splits.map((v) => formatElapsed(v, d));
           },
         }
-      : { ...axisCommon, size: 18, values: (_u, splits) => splits.map(() => "") };
+      : { ...axisCommon, size: 18, space: xTickSpace, values: (_u, splits) => splits.map(() => "") };
     const opts: uPlot.Options = {
       width: el.clientWidth || 600,
-      height: Math.max(60, el.clientHeight - 2),
+      height: Math.max(24, el.clientHeight - 2),
       // Both axes are `auto: false` — we own the range entirely, and
       // every code path that wants to move it does so via an explicit
       // `setScale`. Leaving `auto: true` (uPlot's default) means
@@ -2661,7 +2956,7 @@ function PlotArea(p: PlotAreaProps) {
           // marker per decimated sample. See `plotPoints.ts`.
           points: showPointsToUplot(showPoints),
           show: !s.hidden,
-          ...(enumActiveAtConstruct && uPlot.paths.stepped
+          ...((enumActiveAtConstruct || laneModeAtConstruct) && uPlot.paths.stepped
             ? { paths: uPlot.paths.stepped({ align: 1 }) }
             : {}),
         })),
@@ -2816,92 +3111,50 @@ function PlotArea(p: PlotAreaProps) {
             // instance when the value table resolves), so the cost
             // on numeric axes is zero.
             if (enumActiveAtConstruct && valueTableRef.current) {
-              const table = valueTableRef.current;
-              const labelFor = (raw: number): string => {
-                const found = table.find((r) => r.raw === Math.round(raw));
-                return found ? found.label : String(raw);
-              };
-              // Enum-mode areas hold exactly one signal, so its
-              // series sits at uPlot index 1. `u.data` is the
-              // AlignedData we just set — `setData(_, false)` keeps
-              // it stable.
-              const seriesIdx = 1;
-              const seriesOpt = u.series[seriesIdx];
-              const ts = u.data[0] as number[] | undefined;
-              const vs = u.data[seriesIdx] as (number | null)[] | undefined;
-              if (ts && vs && seriesOpt?.show !== false) {
-                const boxColor = primaryColorRef.current ?? AXIS_STROKE;
-                const segments = enumSegments(ts, vs);
-                const padX = 4 * ratio;
-                // All label boxes sit in one **centered horizontal
-                // band** down the middle of the plot, regardless of
-                // the held value. Tracking each value's y-position
-                // (the per-value lane scheme) collapsed under tall
-                // value tables — twelve enum values on a small canvas
-                // left each lane a few pixels tall. Decoupling label
-                // position from value gives the labels all the room
-                // they need; the stepped line still draws at the
-                // actual value, so the user reads "what" from the
-                // line height and "which value name" from the
-                // centered ribbon. (The line is visible above and
-                // below the ribbon and obscured under it — same
-                // logic-analyzer style.)
-                //
-                // Band sized at the larger of ~22 CSS px and 55% of
-                // the plot height, centered. The minimum keeps very
-                // small panels legible; the fraction lets a tall
-                // panel breathe.
-                const bandH = Math.max(22 * ratio, height * 0.55);
-                const bandTop = top + (height - bandH) / 2;
-                const bandBot = bandTop + bandH;
-                for (const seg of segments) {
-                  const x0 = u.valToPos(seg.t0, "x", true);
-                  // `tEnd` is the next-sample timestamp (where the
-                  // value changes), matching the stepped line's hold —
-                  // so the box reaches the visual transition instead
-                  // of cutting off at the last same-value sample.
-                  const x1 = u.valToPos(seg.tEnd, "x", true);
-                  // Clip-trim against the visible plot region first:
-                  // a segment extending past the canvas still labels
-                  // the visible portion, centred on what's on screen
-                  // rather than off-canvas.
-                  const visStart = Math.max(x0, left);
-                  const visEnd = Math.min(x1, left + width);
-                  const segW = visEnd - visStart;
-                  if (segW <= 0) continue;
-                  const lbl = labelFor(seg.v);
-                  const tw = ctx.measureText(lbl).width;
-                  // A thin segment still gets a coloured band so the
-                  // held interval is visible even if the label text
-                  // can't fit.
-                  const labelFits = segW >= tw + padX * 2;
-                  // A colormap (ADR 0029) targeting this signal tints the
-                  // box by the held value: an opaque-ish fill in the
-                  // value's colour with a contrasting label. Without a
-                  // map, fall back to the neutral dark ribbon + series-
-                  // coloured border/label. The ~65–85% fills keep the
-                  // stepped line faintly visible underneath either way.
-                  const mapColor = enumTarget
-                    ? colorResolverRef.current(enumTarget, seg.v)
-                    : null;
-                  // Same ribbon style as the un-mapped case — the line
-                  // shows through a 0.65-opacity dim fill — but the
-                  // border and label take the value's colour, and the
-                  // fill is a darkened shade of it.
-                  const fill = mapColor ? colorMapLaneFill(mapColor) : "rgba(10, 13, 15, 0.65)";
-                  const accent = mapColor ?? boxColor;
-                  ctx.fillStyle = fill;
-                  ctx.fillRect(visStart, bandTop, segW, bandH);
-                  ctx.strokeStyle = accent;
-                  ctx.strokeRect(visStart + 0.5, bandTop + 0.5, segW - 1, bandH - 1);
-                  if (labelFits) {
-                    ctx.fillStyle = accent;
-                    ctx.textAlign = "center";
-                    ctx.textBaseline = "middle";
-                    ctx.fillText(lbl, visStart + segW / 2, (bandTop + bandBot) / 2);
-                  }
-                }
-              }
+              // Single-enum axis: one signal (series index 1), tiles in
+              // a centered horizontal ribbon. Decoupling the ribbon from
+              // the held value (vs. a per-value lane) keeps labels legible
+              // even for a tall table on a short canvas; the stepped line
+              // still draws at the real value. Band = max(~22 CSS px, 55%
+              // of the plot height), centered.
+              const bandH = Math.max(22 * ratio, height * 0.55);
+              const bandTop = top + (height - bandH) / 2;
+              drawEnumTiles(ctx, u, {
+                seriesIdx: 1,
+                table: valueTableRef.current,
+                target: enumTarget,
+                resolveColor: colorResolverRef.current,
+                bandTop,
+                bandBot: bandTop + bandH,
+                accent: primaryColorRef.current ?? AXIS_STROKE,
+                left,
+                width,
+                ratio,
+              });
+            } else if (laneModeAtConstruct) {
+              // Combined enum-lanes axis: one tile row per signal, in its
+              // lane band (ADR 0026). Lane geometry is normalized [0, 1]
+              // (top-first); convert to canvas pixels via `valToPos`.
+              const bands = laneBands(signals.length);
+              signals.forEach((s, i) => {
+                if (s.hidden) return;
+                const laneNorm = bands[i];
+                const laneTopPx = u.valToPos(laneNorm.hi, "y", true);
+                const laneBotPx = u.valToPos(laneNorm.lo, "y", true);
+                const tileNorm = laneTileBand(laneNorm, laneBotPx - laneTopPx);
+                drawEnumTiles(ctx, u, {
+                  seriesIdx: i + 1,
+                  table: valueTablesRef.current.get(signalRefKey(s)) ?? [],
+                  target: laneTargetsAtConstruct[i],
+                  resolveColor: colorResolverRef.current,
+                  bandTop: u.valToPos(tileNorm.hi, "y", true),
+                  bandBot: u.valToPos(tileNorm.lo, "y", true),
+                  accent: s.color,
+                  left,
+                  width,
+                  ratio,
+                });
+              });
             }
             ctx.restore();
           },
@@ -3071,10 +3324,10 @@ function PlotArea(p: PlotAreaProps) {
     // of setting the canvas size can subtly shift its bbox by a
     // sub-pixel, which the user perceives as the plot area "wiggling".
     let lastW = el.clientWidth || 600;
-    let lastH = Math.max(60, el.clientHeight - 2);
+    let lastH = Math.max(24, el.clientHeight - 2);
     const ro = new ResizeObserver(() => {
       const w = el.clientWidth || 600;
-      const h = Math.max(60, el.clientHeight - 2);
+      const h = Math.max(24, el.clientHeight - 2);
       if (w === lastW && h === lastH) return;
       lastW = w;
       lastH = h;
@@ -3195,6 +3448,10 @@ function PlotArea(p: PlotAreaProps) {
    * Useful when the live capture has wide outliers but the user wants
    * the visible region's detail to fill the canvas. */
   const fitY = useCallback(() => {
+    // Lane axes take their y from the value tables, not observed data
+    // (ADR 0026) — Fit Y has nothing to snapshot and must not leave a
+    // stale manual latch that survives a mode switch.
+    if (laneModeRef.current) return;
     const sm = seriesRef.current;
     const next = new Map<string, { lo: number; hi: number }>();
     for (const [key, ser] of sm) {
@@ -3339,6 +3596,7 @@ function PlotArea(p: PlotAreaProps) {
   return (
     <div
       className={`plot-area${focused ? " focused" : ""}`}
+      style={flexGrow == null ? undefined : { flexGrow }}
       onMouseDown={onFocus}
       onDragOver={(e) => {
         if (e.dataTransfer.types.includes(SIGNAL_DND_MIME)) {

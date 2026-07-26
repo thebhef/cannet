@@ -95,7 +95,12 @@ wiring; each slice is independently landable:
    plain numeric lines until slice 7). Async table resolution shifts
    derived ids once per mount when enums are present — one extra
    uPlot rebuild, same class as today's valueTable-resolution
-   rebuild.
+   rebuild. **Clean up along the way** — this slice adds a fourth
+   `list_value_tables` fetch to PlotPanel, exactly the duplication
+   [Task 30 § #14](0030-code-quality-dedup.md) targets (`useValueTables`
+   hook across ColorMapPanel / PlotPanel / RbsPanel / TransmitPanel).
+   Build/consume that shared hook here instead of adding another copy,
+   and use it to serve the `enumKeys` set.
 6. **`plotEnumLanes.ts`** (new, + test): `laneBands` (top-first
    sub-intervals of [0, 1] with a small gap), `laneValueRange`,
    `normalizeIntoLane`, `laneTileBand` (centered, min-px, capped).
@@ -117,7 +122,34 @@ ADR 0026 and the `docs/CONTEXT.md` glossary ("Y-axis mode",
 "Logic-analyzer lane") are updated in the same commits as the
 behavior they describe. Follow-up for the backlog, not this task:
 the panel- and area-level value-table fetches coexist after slice 5
-— pass the panel's map down and delete the area copy.
+— pass the panel's map down and delete the area copy. This is the
+same seam as [Task 30 § #14](0030-code-quality-dedup.md); collapsing
+both PlotPanel fetches into the shared `useValueTables` hook resolves
+it.
+
+## Overlap with Task 30 (code-quality dedup)
+
+This task edits `PlotPanel.tsx` — the largest file called out in
+[Task 30's god-file split](0030-code-quality-dedup.md) — so several
+of its dedup items are in scope to knock out along the way rather than
+after:
+
+- **§ #14 value-table fetch (×4)** — see slice 5 and the follow-up
+  note above; land the `useValueTables` hook here.
+- **PlotPanel.tsx / `PlotArea` split** — slices 3 and 7 already carve
+  logic out into new tested modules (`plotAreaLayout.ts`,
+  `plotEnumLanes.ts`) and extract `drawEnumTiles` from the ~1,670-line
+  `PlotArea`. That is exactly the direction Task 30's decomposition
+  sketch wants; keep new surface in these modules rather than growing
+  `PlotArea`. While in the slice-3 drag/drop code, fold the duplicated
+  drop-target logic Task 30 flags (PlotPanel.tsx 3193–3215 vs
+  3398–3421 — re-confirm the lines, they drift) if it is a small
+  reach.
+
+Out of scope here (owned elsewhere): `decimatePoints` dead-code
+removal in `plotData.ts` (Task 30 § #21) is assigned to Task 25; the
+`plotSignalIdentity.ts` identity/palette extraction is a broader
+PlotPanel↔plotFilter refactor best left to Task 30 proper.
 
 ## Design questions
 
