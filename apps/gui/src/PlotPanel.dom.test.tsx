@@ -129,6 +129,7 @@ import * as uplotModule from "uplot";
 type FakeUPlotInst = {
   cursor: { left: number };
   root: HTMLElement;
+  over: HTMLElement;
   fire: (hook: string) => void;
 };
 const uplotInstances = (uplotModule as unknown as { __instances: FakeUPlotInst[] }).__instances;
@@ -138,6 +139,8 @@ import { PanelCommandsContext, createPanelCommandRegistry } from "./panelCommand
 import { TraceDataContext, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { ElementRegistryContext, type ElementRegistry } from "./projectElements";
+import { NotesContext, type NotesContextValue } from "./notesContext";
+import { wheelColor } from "./palette";
 import { freshTrace } from "./trace";
 
 class FakeResizeObserver {
@@ -235,19 +238,25 @@ const projectCtx: ProjectContextValue = {
   onSetSignalColor: () => {},
 };
 
-function renderPanel(opts?: { params?: Record<string, unknown>; registry?: ElementRegistry }) {
+function renderPanel(opts?: {
+  params?: Record<string, unknown>;
+  registry?: ElementRegistry;
+  notes?: NotesContextValue;
+}) {
   const api = { updateParameters: vi.fn() };
   const props = { params: opts?.params ?? {}, api } as unknown as Parameters<typeof PlotPanel>[0];
   const registry = opts?.registry ?? makeRegistry();
-  render(
+  let tree = (
     <TraceDataContext.Provider value={traceData}>
       <ProjectContext.Provider value={projectCtx}>
         <ElementRegistryContext.Provider value={registry}>
           <PlotPanel {...props} />
         </ElementRegistryContext.Provider>
       </ProjectContext.Provider>
-    </TraceDataContext.Provider>,
+    </TraceDataContext.Provider>
   );
+  if (opts?.notes) tree = <NotesContext.Provider value={opts.notes}>{tree}</NotesContext.Provider>;
+  render(tree);
   return { api, registry };
 }
 
@@ -618,23 +627,63 @@ describe("PlotPanel", () => {
     expect(lastCall.axisWeights).toEqual({ a1: 3 });
   });
 
-  it("shows the new-note colour swatch only in note mode and round-trips noteColor", () => {
-    // Not in note mode → no swatch.
-    renderPanel();
-    expect(screen.queryByLabelText("new note colour")).toBeNull();
-
-    const { api } = renderPanel({
-      params: { elementId: "el-note" },
-      registry: makeRegistry({
-        id: "el-note",
-        config: { areas: [{ id: "a1", signals: [] }], cursorMode: "note", noteColor: "#112233" },
-      }),
+  it("cycles the signal wheel for new notes; no fixed-colour picker", async () => {
+    // A note dropped in "+ note" mode takes the wheel colour at the
+    // index of the existing note count — like plot series seed by area
+    // signal count (ADR 0026) — rather than one colour picked from a
+    // toolbar swatch. Two pre-existing notes → the third gets
+    // wheelColor(2) (deliberately ≠ the old default EVENT_COLOR, which
+    // happens to equal wheelColor(1)).
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      queueMicrotask(() => cb(0));
+      return 1;
     });
-    const swatch = screen.getByLabelText("new note colour") as HTMLInputElement;
-    expect(swatch.value).toBe("#112233");
-    const calls = api.updateParameters.mock.calls;
-    const lastCall = calls[calls.length - 1]?.[0] ?? {};
-    expect(lastCall.noteColor).toBe("#112233");
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    const cw = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(600);
+    const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
+    try {
+      const addNote = vi.fn();
+      const notes: NotesContextValue = {
+        notes: [
+          { id: "n1", timestampNs: 0, label: "note 1" },
+          { id: "n2", timestampNs: 1, label: "note 2" },
+        ],
+        addNote,
+        renameNote: () => {},
+        recolorNote: () => {},
+        removeNote: () => {},
+      };
+      renderPanel({
+        params: { elementId: "el-note" },
+        registry: makeRegistry({
+          id: "el-note",
+          config: { areas: [{ id: "a1", signals: [] }], cursorMode: "note" },
+        }),
+        notes,
+      });
+      // The picker is gone: note mode shows no swatch.
+      expect(screen.queryByLabelText("new note colour")).toBeNull();
+      await pickCombobox(
+        screen.getByLabelText("add signal to focused plot area"),
+        "*|s:256:EngineSpeed",
+      );
+      await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
+      const inst = uplotInstances[uplotInstances.length - 1]!;
+      await act(async () => inst.fire("ready"));
+      // Plain left click on the plot (mousedown + mouseup, no move).
+      // Retried: the note drop is a silent no-op until the first sample
+      // decode anchors `baseSeconds`, which lands on its own microtask.
+      await waitFor(() => {
+        fireEvent.mouseDown(inst.over, { button: 0, clientX: 150, clientY: 100 });
+        fireEvent.mouseUp(window, { button: 0, clientX: 150, clientY: 100 });
+        expect(addNote).toHaveBeenCalled();
+      });
+      const lastCall = addNote.mock.calls[addNote.mock.calls.length - 1]!;
+      expect(lastCall[3]).toBe(wheelColor(2));
+    } finally {
+      cw.mockRestore();
+      ch.mockRestore();
+    }
   });
 
   it("collapses a fully-hidden axis and suppresses its splitter", () => {
