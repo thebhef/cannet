@@ -69,6 +69,7 @@ import { ElementRegistryContext, type ElementRegistry } from "./projectElements"
 import { freshTrace } from "./trace";
 import { SIGNAL_DND_MIME } from "./dragSignals";
 import { openCombobox } from "./comboboxTestKit";
+import { SignalCatalogProvider } from "./signalCatalogContext";
 
 class FakeResizeObserver {
   observe() {}
@@ -167,9 +168,11 @@ function renderPanel(opts?: { params?: Record<string, unknown> }) {
   render(
     <TraceDataContext.Provider value={traceData}>
       <ProjectContext.Provider value={projectCtx}>
-        <ElementRegistryContext.Provider value={registry}>
-          <SignalsPanel {...props} />
-        </ElementRegistryContext.Provider>
+        <SignalCatalogProvider>
+          <ElementRegistryContext.Provider value={registry}>
+            <SignalsPanel {...props} />
+          </ElementRegistryContext.Provider>
+        </SignalCatalogProvider>
       </ProjectContext.Provider>
     </TraceDataContext.Provider>,
   );
