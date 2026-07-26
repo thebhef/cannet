@@ -488,6 +488,47 @@ describe("payload sizing helpers", () => {
     });
   });
 
+  it("a numeric signal commits the typed physical value through encode_frame", async () => {
+    POOL = [frame("a")];
+    DESCRIBE = {
+      name: "Status",
+      expectedLen: 8,
+      isFd: false,
+      brs: false,
+      genMsgCycleTimeMs: 100,
+      genMsgSendType: null,
+      usesExtendedMux: false,
+      calcFields: {},
+      signals: [
+        {
+          name: "Speed",
+          unit: "kph",
+          factor: 1,
+          offset: 0,
+          min: 0,
+          max: 100,
+          size: 8,
+          signed: false,
+          mux: { kind: "plain" },
+          floatKind: "integer",
+          hasValueTable: false,
+          startValueRaw: null,
+        },
+      ],
+    };
+    renderPanel("el", ["a"]);
+    fireEvent.click(await screen.findByTitle("expand"));
+    const input = await screen.findByLabelText("Speed value");
+    fireEvent.change(input, { target: { value: "42" } });
+    fireEvent.blur(input);
+    await waitFor(() => {
+      const call = lastCall("encode_frame");
+      expect(call).toBeDefined();
+      const args = call?.args as { signals?: { name: string; physical: number }[] };
+      expect(args.signals).toEqual([{ name: "Speed", physical: 42 }]);
+    });
+  });
+
   it("maxDataBytesForKind: 8 classic, 64 FD, 0 remote/error", () => {
     expect(maxDataBytesForKind("classic")).toBe(8);
     expect(maxDataBytesForKind("fd")).toBe(64);
