@@ -20,11 +20,13 @@ the order below is the order of work, top first.
 1. [Task 29 — TX Timing Robustness](0029-tx-timing-robustness-counter.md)
    — fix periodic-TX drift and high-rate bunching from OS timer wake
    lateness, settle the missed-period policy, and record the
-   periodic-emission semantics in an ADR. The counter-per-wire-frame
-   half of this task has shipped (one increment per emitted frame,
-   staged-on-prepare / committed-on-emit; [ADR 0027](../../docs/adr/0027-calculated-fields-counter-crc.md));
-   what remains is the wake-lateness and missed-period work, blocked on
-   a jitter-target decision.
+   periodic-emission semantics in an ADR. The counter half resolved as
+   not-a-defect: the counter steps per prepared send by design (a
+   dropped frame is a real E2E gap;
+   [ADR 0027](../../docs/adr/0027-calculated-fields-counter-crc.md));
+   the briefly-shipped commit-on-emit staging was reverted. Remaining:
+   wake-lateness and missed-period work, blocked on a jitter-target /
+   rig-metric decision.
 2. [Task 31 — macOS Integration Issues](0031-macos-integration-issues.md)
    — crash on exit (wry/WebKit layer-tree teardown race) and missing
    Spotlight bundle metadata. Independently-shippable macOS fixes.

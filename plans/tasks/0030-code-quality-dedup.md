@@ -212,7 +212,7 @@ next to `DOCK_COMPONENTS` (App.tsx:174).
     DbcPanel id-label template duplicated in-file (897 vs 953);
     TransmitPanel:1322 re-rolls `formatId`'s width rule. `busLookup()`
     rebuilt inline in PlotPanel/ColorMapPanel (June item, still open).
-21. Smaller confirmed items: `buildSinkPredicate`/
+- **21. Smaller confirmed items: `buildSinkPredicate`/
     `resolveFilterPredicate` duplicate the sources→predicate
     composition; `recordRecentBlf`/`recordRecentCommand` are the same
     MRU-push twice; `decimatePoints` (plotData.ts:234–268) is a dead

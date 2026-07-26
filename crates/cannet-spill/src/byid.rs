@@ -66,10 +66,14 @@ struct IdPostings {
     /// in `O(log segs)`.
     cum_cap: Vec<usize>,
     len: usize,
-    /// Absolute index of the first segment that may hold un-flushed entries —
-    /// the tail at the previous flush. Appends only ever touch the tail, so a
-    /// flush re-syncs from here forward, never the sealed segments below it.
-    flushed_from: usize,
+    /// Absolute entry count already handed to writeback — `len` as of the
+    /// previous flush. Appends only ever extend past it, so a flush syncs
+    /// exactly the byte range `[flushed_len, len)` and an id with no new
+    /// postings costs nothing at all (no per-id syscall). That per-id
+    /// skip is what keeps the periodic flush off the append lock's
+    /// critical path: whole-map re-syncs across every id were the
+    /// dominant cost of the 2 s flush tick (measured 2026-07-25).
+    flushed_len: usize,
     /// Windowed-ring floor (ADR 0002 DS-8 / 6d): the lowest still-mapped slot,
     /// always a segment boundary. `0` until eviction drops leading segments.
     /// Reads stay within `[first_slot, len)`; a binary search lower-bounds
@@ -130,7 +134,8 @@ impl IdPostings {
         } else {
             self.cum_cap[self.seg_base - 1]
         };
-        self.flushed_from = self.flushed_from.max(self.seg_base);
+        // `flushed_len` needs no adjustment: it counts absolute entries,
+        // and the flush path clamps its start to the surviving floor.
         self.first_slot >= self.len
     }
 }
@@ -183,9 +188,9 @@ impl ByIdIndex {
             post.len = len;
             post.first_slot = first_slot;
             post.seg_base = seg_base;
-            // Reopened segments are durable; the next flush re-syncs only
-            // from the active tail.
-            post.flushed_from = seg_base + post.segs.len().saturating_sub(1);
+            // Reopened bytes are durable; the next flush syncs only what
+            // is appended after this point.
+            post.flushed_len = len;
             map.insert((id, extended), post);
         }
         Ok(Self { dir, map })
@@ -202,24 +207,48 @@ impl ByIdIndex {
             .collect()
     }
 
-    /// Flush the posting segments dirtied since the last flush so the
-    /// postings are durable before the manifest that references them is
-    /// written. Incremental: each posting only appends to its tail, so
-    /// sealed segments below `flushed_from` are already durable and are not
-    /// re-synced — keeping a flush `O(active segments)`, not `O(all by-id
-    /// segments)`, which at deep history is the bulk of the flush cost.
+    /// Flush the postings. Two flavors (ADR 0002 DS-2):
+    ///
+    /// - **async** (`sync == false`, the periodic tick): queue writeback
+    ///   of just the `[flushed_len, len)` entry range per id, skipping
+    ///   clean ids without a syscall — see
+    ///   [`Segment::queue_writeback`] for the platform split (a no-op on
+    ///   Windows, where the nearest API stalls ~0.3–0.5 ms per call and
+    ///   dozens of dirty ids per tick stalled the transmit scheduler —
+    ///   measured 2026-07-25).
+    /// - **sync** (the shutdown-hardening path): flush every live
+    ///   segment whole and wait for the device — deliberately ignoring
+    ///   the watermarks, so its guarantee never depends on what the
+    ///   async flavor did or didn't queue.
     pub(crate) fn flush(&mut self, sync: bool) -> std::io::Result<()> {
         for post in self.map.values_mut() {
-            // `flushed_from` is an absolute segment number; index the
-            // front-trimmed `Vec` relative to the dropped base (DS-8).
-            for seg in &post.segs[post.flushed_from - post.seg_base..] {
-                if sync {
+            if sync {
+                for seg in &post.segs {
                     seg.map.flush()?;
-                } else {
-                    seg.map.flush_async()?;
                 }
+                post.flushed_len = post.len;
+                continue;
             }
-            post.flushed_from = post.seg_base + post.segs.len().saturating_sub(1);
+            // Clamp to the windowed-ring floor: entries below it live in
+            // dropped segments (DS-8).
+            let start = post.flushed_len.max(post.first_slot);
+            if post.len <= start {
+                post.flushed_len = post.len.max(post.flushed_len);
+                continue;
+            }
+            let (first_seg, first_off) = post.locate(start);
+            let (last_seg, last_off) = post.locate(post.len - 1);
+            for seg_no in first_seg..=last_seg {
+                let seg = &post.segs[seg_no - post.seg_base];
+                let from = if seg_no == first_seg { first_off } else { 0 };
+                let to = if seg_no == last_seg {
+                    last_off + ENTRY_BYTES
+                } else {
+                    seg.map.len()
+                };
+                seg.queue_writeback(from, to - from)?;
+            }
+            post.flushed_len = post.len;
         }
         Ok(())
     }
@@ -406,6 +435,35 @@ mod tests {
         assert_eq!(got, (floor..1000).collect::<Vec<usize>>(), "contiguous above the floor");
         assert!(idx.range(7, false, 0, floor).is_empty(), "below the floor is gone");
         assert!(byid_file_count(dir.path()) < before, "leading segment files reclaimed");
+    }
+
+    #[test]
+    fn interleaved_flushes_keep_postings_intact_across_boundaries_and_eviction() {
+        // The incremental flush syncs only `[flushed_len, len)` per id and
+        // skips clean ids entirely. Interleave flushes with appends that
+        // cross geometric segment boundaries, evict, and flush again — the
+        // watermark bookkeeping must never corrupt reads or error.
+        let dir = TempDir::new().unwrap();
+        let mut idx = ByIdIndex::new(dir.path());
+        for i in 0u64..50 {
+            idx.push(7, false, i); // inside the first (64-entry) segment
+        }
+        idx.flush(false).unwrap();
+        idx.flush(false).unwrap(); // clean id: skip path, still Ok
+        for i in 50u64..500 {
+            idx.push(7, false, i); // crosses 64 and 192 boundaries
+        }
+        idx.flush(false).unwrap();
+        idx.evict_below(300); // drops leading segments below the mark
+        for i in 500u64..700 {
+            idx.push(7, false, i);
+        }
+        idx.flush(false).unwrap(); // watermark below the floor: clamped
+        idx.flush(true).unwrap(); // sync flavor over the same state
+        let got = idx.range(7, false, 0, 1000);
+        let floor = got[0];
+        assert!(floor <= 300);
+        assert_eq!(got, (floor..700).collect::<Vec<usize>>());
     }
 
     #[test]

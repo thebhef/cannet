@@ -205,11 +205,102 @@ def test_transmit_from_any_subscriber_reaches_the_shared_bus() -> None:
     reg.subscribe("fake:0", a)
     reg.subscribe("fake:0", b)
 
-    reg.transmit("fake:0", _frame(1))
-    reg.transmit("fake:0", _frame(2))
+    reg.transmit("fake:0", _frame(1), a)
+    reg.transmit("fake:0", _frame(2), b)
 
+    # Delivery is asynchronous (per-interface TX worker) but ordered.
+    _wait_for(lambda: len(driver.opened[0].sent) == 2)
     sent = driver.opened[0].sent
     assert [f.can_id for f in sent] == [0x101, 0x102]
+
+
+def test_transmit_does_not_block_on_a_slow_send() -> None:
+    """The whole point of the TX worker: ``transmit`` is an enqueue, so
+    a slow ``ch.send`` (device TX-buffer stall, ~ms-class python-can
+    overhead) never blocks the gRPC reader thread that also carries
+    every other interface's traffic."""
+    driver = _FakeDriver()
+    reg = srv._InterfaceRegistry(driver)
+    a: "queue.Queue" = queue.Queue()
+    reg.subscribe("fake:0", a)
+    ch = driver.opened[0]
+
+    release = threading.Event()
+    orig_send = ch.send
+
+    def slow_send(frame: drv.Frame) -> None:
+        release.wait(2.0)
+        orig_send(frame)
+
+    ch.send = slow_send  # type: ignore[method-assign]
+
+    t0 = time.monotonic()
+    for i in range(5):
+        reg.transmit("fake:0", _frame(i), a)
+    enqueue_s = time.monotonic() - t0
+    assert enqueue_s < 0.5, f"transmit blocked {enqueue_s:.2f}s on a slow send"
+    assert len(ch.sent) == 0, "nothing delivered while the send is stalled"
+
+    release.set()
+    _wait_for(lambda: len(ch.sent) == 5)
+    assert [f.can_id for f in ch.sent] == [0x100 + i for i in range(5)]
+
+
+def test_worker_tx_rejected_routes_to_the_submitting_outbox() -> None:
+    """A validation failure surfacing from ``ch.send`` still reaches
+    the session that transmitted — and only that session — even though
+    the send happens on the worker thread."""
+    driver = _FakeDriver()
+    reg = srv._InterfaceRegistry(driver)
+    a: "queue.Queue" = queue.Queue()
+    b: "queue.Queue" = queue.Queue()
+    reg.subscribe("fake:0", a)
+    reg.subscribe("fake:0", b)
+    ch = driver.opened[0]
+
+    def rejecting_send(frame: drv.Frame) -> None:
+        raise drv.TxRejected("dlc disagrees with len(data)")
+
+    ch.send = rejecting_send  # type: ignore[method-assign]
+    reg.transmit("fake:0", _frame(1), a)
+
+    def a_got_error() -> bool:
+        try:
+            env = a.get_nowait()
+        except queue.Empty:
+            return False
+        return (
+            env.WhichOneof("body") == "error"
+            and env.error.code == pb.Error.CODE_TX_REJECTED
+        )
+
+    _wait_for(a_got_error)
+    # The other session saw nothing (its queue holds only its
+    # subscribe-time InterfaceState snapshot).
+    leftovers = []
+    while True:
+        try:
+            leftovers.append(b.get_nowait())
+        except queue.Empty:
+            break
+    assert all(e.WhichOneof("body") != "error" for e in leftovers)
+
+
+def test_transmit_after_close_raises_at_enqueue() -> None:
+    driver = _FakeDriver()
+    reg = srv._InterfaceRegistry(driver)
+    a: "queue.Queue" = queue.Queue()
+    reg.subscribe("fake:0", a)
+    reg.unsubscribe("fake:0", a)
+    shared = srv._SharedInterface(
+        driver=driver, channel_id="fake:0", initial_config=drv.OpenConfig()
+    )
+    try:
+        shared.transmit(_frame(1), a)
+    except drv.TxRejected:
+        pass
+    else:
+        raise AssertionError("transmit on a closed interface must raise")
 
 
 # ---- ConfigureBus plumbing ------------------------------------------------

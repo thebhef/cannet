@@ -64,21 +64,32 @@ ring** holds the most recent frames that have not yet been flushed, so
 a read of the live tail is served from RAM until those bytes are
 durable.
 
-The periodic flush is **asynchronous** (`msync(MS_ASYNC)` /
-`FlushViewOfFile`): it only re-syncs the segments dirtied since the last
-flush (incremental — sealed segments are immutable and synced once) and
-it does **not** wait for the device, because waiting on a per-segment
-`fsync` would pin the append lock and stall ingest/transmit on a periodic
-sawtooth. The durability this store actually owes is **survive a process
+The periodic flush is **asynchronous**: it covers only the bytes
+appended since the last flush (incremental at byte granularity) and it
+does **not** wait for the device, because waiting on a per-segment
+`fsync` would pin the append lock and stall ingest/transmit on a
+periodic sawtooth. On Unix that is `msync(MS_ASYNC)` on the appended
+ranges — a genuine queue-and-return. On **Windows the periodic data
+flush is a no-op**: the nearest API, `FlushViewOfFile`, pushes dirty
+pages through the filesystem stack before returning (~0.3–0.5 ms per
+call — measured 2026-07-25, when dozens of per-id calls per tick
+stalled the transmit scheduler ~150 ms every 2 s at hardware rate),
+and the OS modified-page writer already writes dirty mapped pages on
+its own within seconds. The tick still rewrites the manifest and
+derived state; only the data-page msync is skipped. The durability this store actually owes is **survive a process
 restart** — `current/` is reloaded as a stopped trace at the next launch
 (DS-7) — and that is preserved unconditionally: an async msync leaves
 every write in the OS page cache, which backs the same file a reopen
 maps, so a reopen in the same OS session sees all of it. Only a
 **power loss or OS crash** in the window before physical writeback can
 lose the trailing frames since the last sync — an acceptable loss for an
-**ephemeral** scratch that is wiped on the next Start/Clear anyway. A
-single **synchronous** flush runs on clean shutdown to harden that
-trailing window against a power loss right after quit.
+**ephemeral** scratch that is wiped on the next Start/Clear anyway. (On
+Windows that window is bounded by the OS writer's cadence rather than
+the flush tick — a wider but still seconds-scale tail, inside the same
+acceptance.) A single **synchronous** flush runs on clean shutdown to
+harden that trailing window against a power loss right after quit; it
+flushes every live segment and waits for the device, deliberately
+independent of whatever the periodic path queued.
 
 #### What is on disk, and when
 

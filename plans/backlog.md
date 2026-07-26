@@ -716,3 +716,25 @@ next pass on this surface can address them as one piece.
   consumption); this remaining item is the memory spike. If it bites,
   stream-inflate the container body in bounded chunks rather than
   materialising the whole uncompressed payload.
+
+- `[cannet-gui]` **Project save absolutizes DBC paths.** Opening and
+  closing a project rewrites its `.cannet_prj` with each DBC's path
+  expanded to an absolute machine-specific one (`dbc/pack.dbc` →
+  `C:\Users\...\dbc/pack.dbc`), observed 2026-07-25 when a GUI session
+  against `examples/ev-zonal` dirtied the checked-in example and broke
+  `parses_the_checked_in_ev_zonal_example_project`. Paths that arrived
+  relative should persist relative (portability; examples are
+  checked in). Find the save path that resolves before serializing.
+
+- `[cannet-gui]` **Connect while already connected spins an error
+  loop.** Clicking Connect (or `--connect-on-start` racing the
+  project's auto-connect) with a live session to the same address
+  produces a ~1/s retry cycle - `already connected` ERROR status,
+  `session ended`, reconnect - and each attempt pushes a ConfigureBus
+  the sidecar fails to apply (`reconfigure ... failed: open pcan ...`,
+  channel held by the live session). Traffic survives on the original
+  session but the status UI churns red and each successful re-connect
+  wipes the capture scratch. Observed repeatedly 2026-07-25 (19:24,
+  19:40, 00:47 UTC). Connect-when-connected should be a no-op (or a
+  clean reconnect), and the ConfigureBus push should not fire on a
+  rejected duplicate session.

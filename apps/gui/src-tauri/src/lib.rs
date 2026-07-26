@@ -202,6 +202,29 @@ impl SessionTx {
             }
         }
     }
+
+    /// Send several frames to one interface. Remote sessions ride a
+    /// single `FrameBatch` envelope (per-envelope overhead paid once
+    /// per tick, not per frame); the in-process vbus has no envelope
+    /// concept, so it submits per frame.
+    fn transmit_batch(
+        &self,
+        channel: u8,
+        interface_id: &str,
+        frames: &[cannet_core::CanFrame],
+    ) -> Result<(), String> {
+        match self {
+            SessionTx::Remote(t) => t
+                .transmit_batch(interface_id, frames)
+                .map_err(|e| e.to_string()),
+            SessionTx::Vbus(_) => {
+                for frame in frames {
+                    self.transmit(channel, interface_id, frame)?;
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 /// How often the host pushes a `trace-grew` IPC event with the latest
@@ -778,6 +801,11 @@ fn spawn_trace_flusher(app: AppHandle) {
                     last_flushed_len = len;
                     let ms = started.elapsed().as_secs_f64() * 1000.0;
                     app.state::<diag::HostMetrics>().record_flush_ms(ms);
+                    // Dev-log twin of the gauge (ADR 0031): timestamp-
+                    // correlatable with the `tx-sched` lateness lines, so
+                    // a flush-vs-scheduler stall can be diagnosed from one
+                    // stderr capture without a perf run.
+                    tracing::info!(target: "tx-flush", "flush_ms={ms:.1}");
                 }
                 Err(e) => tracing::warn!(error = %e, "trace store flush failed"),
             }
@@ -3878,16 +3906,7 @@ fn transmit_frame_once(
         .expect("transmit_frames mutex poisoned")
         .send_request(&id)
         .ok_or_else(|| format!("no transmit frame with id {id}"))?;
-    let result = transmit_frame_inner(state.inner(), &request)?;
-    // The frame was emitted (a tx-confirm always lands, even offline) —
-    // commit the staged counter so the sequence advances once per wire
-    // frame (ADR 0027). An earlier error return leaves it uncommitted.
-    state
-        .transmit_frames
-        .lock()
-        .expect("transmit_frames mutex poisoned")
-        .commit_send(&id);
-    Ok(result)
+    transmit_frame_inner(state.inner(), &request)
 }
 
 /// Start a message's periodic schedule. Rejects non-periodic messages
@@ -4103,7 +4122,9 @@ fn run_transmit_scheduler(
 
         let state: State<'_, AppState> = app.state();
         let fire_start = std::time::Instant::now();
-        let mut fired = 0usize;
+        // Pass 1 — collect this tick's due requests (calculated fields
+        // freshly applied by `fire_info`) and reschedule each message.
+        let mut due: Vec<ipc::TransmitRequest> = Vec::new();
         for (id, fired_at) in schedule.take_due(now) {
             let Some((request, cycle_ms)) = state
                 .transmit_frames
@@ -4115,31 +4136,42 @@ fn run_transmit_scheduler(
                 schedule.unschedule(&id);
                 continue;
             };
-            fired += 1;
-            let connected = {
-                let sessions = state
-                    .remote_sessions
-                    .lock()
-                    .expect("remote_sessions mutex poisoned");
-                resolve_bus_route(&sessions, &request.bus_id).is_some()
-            };
-            if connected {
-                // A live route: the frame goes out (and a tx-confirm
-                // lands). Commit the staged counter so it advances once
-                // per wire frame. A tick with no route neither emits nor
-                // commits, so the counter stays in lock-step with the
-                // wire instead of running ahead (ADR 0027).
-                if transmit_frame_inner(state.inner(), &request).is_ok() {
-                    state
-                        .transmit_frames
-                        .lock()
-                        .expect("transmit_frames mutex poisoned")
-                        .commit_send(&id);
-                }
-            }
+            due.push(request);
             let period = Duration::from_millis(u64::from(cycle_ms));
             let next = next_tick_deadline(fired_at, std::time::Instant::now(), period);
             schedule.reschedule(&id, next);
+        }
+        let fired = due.len();
+        // Pass 2 — emit the tick's frames, one `FrameBatch` per
+        // `(session, channel, interface)` instead of one envelope per
+        // frame: per-envelope channel + proto overhead is paid once per
+        // tick per destination. A request whose bus route is down is
+        // skipped entirely — no emission and no tx-confirm — matching
+        // the single-frame path's connected gate. The tx-confirm rows
+        // still append per frame (the trace shows every transmit).
+        if !due.is_empty() {
+            let sessions = state
+                .remote_sessions
+                .lock()
+                .expect("remote_sessions mutex poisoned");
+            let mut routed: Vec<((String, u8, String), cannet_core::CanFrame)> = Vec::new();
+            for request in &due {
+                let Some(route) = resolve_bus_route(&sessions, &request.bus_id) else {
+                    continue;
+                };
+                // A malformed request (invalid id / frame) is dropped,
+                // as the single-frame path's discarded error did.
+                let Ok((frame, _)) = build_and_confirm(state.inner(), request, route.channel)
+                else {
+                    continue;
+                };
+                routed.push(((route.address, route.channel, route.interface_id), frame));
+            }
+            for ((address, channel, interface_id), frames) in group_wire_batches(routed) {
+                if let Some(session) = sessions.get(&address) {
+                    let _ = session.tx.transmit_batch(channel, &interface_id, &frames);
+                }
+            }
         }
         if fired > 0 {
             diag.record_fire(fire_start.elapsed(), fired);
@@ -4163,17 +4195,6 @@ fn transmit_frame_inner(
     state: &AppState,
     request: &ipc::TransmitRequest,
 ) -> Result<ipc::TransmitResult, String> {
-    let id = if request.extended {
-        CanId::extended(request.id).map_err(|e| format!("invalid extended id: {e}"))?
-    } else {
-        CanId::standard(request.id).map_err(|e| format!("invalid standard id: {e}"))?
-    };
-    // Best-effort monotonic timestamp tied to the host's clock — for a
-    // tx-confirm the analyzer's wall-time stamp is what we want.
-    let timestamp_ns = std::time::SystemTime::now()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
-
     // Resolve `bus_id` → `(session, channel, interface_id)`. With no
     // active session for the target bus, we still want a local Tx-
     // confirm to land (the user sees what they tried to send); use
@@ -4185,6 +4206,59 @@ fn transmit_frame_inner(
         .expect("remote_sessions mutex poisoned");
     let routing = resolve_bus_route(&sessions_guard, &request.bus_id);
     let wire_channel = routing.as_ref().map_or(0u8, |r| r.channel);
+
+    let (frame, tx_confirm_index) = build_and_confirm(state, request, wire_channel)?;
+
+    let wire_status = match routing {
+        None if sessions_guard.is_empty() => ipc::TransmitWireStatus::NotConnected,
+        None => ipc::TransmitWireStatus::Failed {
+            message: format!("bus {} is not bound on any active server", request.bus_id),
+        },
+        Some(BusRoute {
+            address,
+            channel,
+            interface_id,
+        }) => {
+            // Re-borrow the session for the actual transmit; `routing`
+            // dropped its borrow when it returned.
+            let session = sessions_guard
+                .get(&address)
+                .expect("session for resolved route disappeared mid-transmit");
+            match session.tx.transmit(channel, &interface_id, &frame) {
+                Ok(()) => ipc::TransmitWireStatus::Sent { interface_id },
+                Err(message) => ipc::TransmitWireStatus::Failed { message },
+            }
+        }
+    };
+    drop(sessions_guard);
+
+    Ok(ipc::TransmitResult {
+        tx_confirm_index,
+        wire_status,
+    })
+}
+
+/// Compose the wire [`cannet_core::CanFrame`] for `request` and append
+/// its `Tx`-direction tx-confirm row to the trace (stamped with the
+/// target `bus_id`, so the local trace shows it on the right bus even
+/// with no session carrying it). Shared by the single-frame path
+/// ([`transmit_frame_inner`]) and the scheduler's batched tick — one
+/// place owns frame composition and the confirm-append.
+fn build_and_confirm(
+    state: &AppState,
+    request: &ipc::TransmitRequest,
+    wire_channel: u8,
+) -> Result<(cannet_core::CanFrame, u64), String> {
+    let id = if request.extended {
+        CanId::extended(request.id).map_err(|e| format!("invalid extended id: {e}"))?
+    } else {
+        CanId::standard(request.id).map_err(|e| format!("invalid standard id: {e}"))?
+    };
+    // Best-effort monotonic timestamp tied to the host's clock — for a
+    // tx-confirm the analyzer's wall-time stamp is what we want.
+    let timestamp_ns = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
 
     let frame = match request.kind {
         ipc::TransmitKind::Classic => cannet_core::CanFrame::classic(
@@ -4219,40 +4293,26 @@ fn transmit_frame_inner(
         }
     };
 
-    // Append the tx-confirm — stamp it with the target `bus_id` so
-    // the local trace view shows it on the right bus, even when no
-    // remote session is actually carrying it.
     let mut raw = RawTraceFrame::from(frame.clone());
     raw.bus_id = Some(request.bus_id.clone());
     let tx_confirm_index = state.trace_store.append(raw).unwrap_or(u64::MAX);
+    Ok((frame, tx_confirm_index))
+}
 
-    let wire_status = match routing {
-        None if sessions_guard.is_empty() => ipc::TransmitWireStatus::NotConnected,
-        None => ipc::TransmitWireStatus::Failed {
-            message: format!("bus {} is not bound on any active server", request.bus_id),
-        },
-        Some(BusRoute {
-            address,
-            channel,
-            interface_id,
-        }) => {
-            // Re-borrow the session for the actual transmit; `routing`
-            // dropped its borrow when it returned.
-            let session = sessions_guard
-                .get(&address)
-                .expect("session for resolved route disappeared mid-transmit");
-            match session.tx.transmit(channel, &interface_id, &frame) {
-                Ok(()) => ipc::TransmitWireStatus::Sent { interface_id },
-                Err(message) => ipc::TransmitWireStatus::Failed { message },
-            }
+/// Group `(destination, frame)` pairs into per-destination batches,
+/// preserving first-seen destination order and per-destination frame
+/// order. The scheduler tick uses this to turn its due frames into one
+/// `FrameBatch` per `(session, channel, interface)`.
+fn group_wire_batches<K: PartialEq, F>(items: Vec<(K, F)>) -> Vec<(K, Vec<F>)> {
+    let mut grouped: Vec<(K, Vec<F>)> = Vec::new();
+    for (key, frame) in items {
+        if let Some((_, frames)) = grouped.iter_mut().find(|(k, _)| *k == key) {
+            frames.push(frame);
+        } else {
+            grouped.push((key, vec![frame]));
         }
-    };
-    drop(sessions_guard);
-
-    Ok(ipc::TransmitResult {
-        tx_confirm_index,
-        wire_status,
-    })
+    }
+    grouped
 }
 
 /// One resolved bus → wire route. Returned from
@@ -6102,6 +6162,29 @@ mod tests {
         assert!(transmit_frame_inner(&state, &req).is_err());
         // And the trace store was not appended to.
         assert_eq!(state.trace_store.len(), 0);
+    }
+
+    #[test]
+    fn group_wire_batches_preserves_first_seen_group_and_frame_order() {
+        // A tick's due frames for one (session, channel, interface)
+        // ride one FrameBatch; interleaved destinations must not
+        // reorder frames within a destination or shuffle destinations.
+        let items = vec![
+            (("a", 0u8, "if0"), 1u32),
+            (("b", 0u8, "if1"), 2),
+            (("a", 0u8, "if0"), 3),
+            (("a", 1u8, "if2"), 4),
+            (("b", 0u8, "if1"), 5),
+        ];
+        let grouped = group_wire_batches(items);
+        assert_eq!(
+            grouped,
+            vec![
+                (("a", 0u8, "if0"), vec![1, 3]),
+                (("b", 0u8, "if1"), vec![2, 5]),
+                (("a", 1u8, "if2"), vec![4]),
+            ],
+        );
     }
 
     #[test]
