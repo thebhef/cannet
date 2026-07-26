@@ -48,6 +48,30 @@ pub(crate) fn config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .map_err(|e| format!("no config dir: {e}"))
 }
 
+/// Parse `text` as JSON, accepting only a document whose
+/// `schema_version` equals `expected_version` (ADR 0011): any other
+/// value — or a missing one — is rejected with a user-facing message
+/// rather than migrated. `kind` labels the document in error text
+/// (e.g. `"project"`, `"RBS"`).
+pub(crate) fn parse_versioned<T: DeserializeOwned>(
+    text: &str,
+    kind: &str,
+    expected_version: u32,
+) -> Result<T, String> {
+    let raw: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("invalid {kind} JSON: {e}"))?;
+    let version = raw
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| "missing schema_version".to_string())?;
+    if version != u64::from(expected_version) {
+        return Err(format!(
+            "schema version {version}; this build expects {expected_version}"
+        ));
+    }
+    serde_json::from_value(raw).map_err(|e| format!("invalid {kind} JSON: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,5 +151,13 @@ mod tests {
     fn parse_or_default_tolerates_junk() {
         assert_eq!(parse_or_default::<Sample>("not json"), Sample::default());
         assert_eq!(parse_or_default::<Sample>("[1, 2, 3]"), Sample::default());
+    }
+
+    #[test]
+    fn parse_versioned_accepts_exact_version_and_rejects_others() {
+        assert!(parse_versioned::<Sample>(r#"{"schema_version":1}"#, "sample", 1).is_ok());
+        assert!(parse_versioned::<Sample>(r#"{"schema_version":2}"#, "sample", 1).is_err());
+        assert!(parse_versioned::<Sample>("{}", "sample", 1).is_err());
+        assert!(parse_versioned::<Sample>("not json", "sample", 1).is_err());
     }
 }
