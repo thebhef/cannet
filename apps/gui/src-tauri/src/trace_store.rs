@@ -42,11 +42,12 @@
 //! actually doing.
 //!
 //! Wall-clock is still kept alongside, but only for stall behavior:
-//! when no fresh frames arrive, [`RateEstimate::rate`] decays toward
-//! zero on wall-clock elapsed since the last observation, and
-//! [`Self::frames_per_second`]'s sample deque is pruned by wall time.
-//! Without this, a stalled stream would show its last rate forever
-//! (frame timestamps would have nothing to advance them).
+//! every sample deque (aggregate and per-id alike) is pruned by wall
+//! time, and a per-id estimate whose window has emptied falls back to
+//! its last inter-frame delta, decaying on wall-clock silence
+//! ([`RateEstimate::rate`]). Without this, a stalled stream would show
+//! its last rate forever (frame timestamps would have nothing to
+//! advance them).
 //!
 //! The store keeps a rolling window of
 //! `(Instant, last_frame_ts_ns, total_count)` samples, one taken at
@@ -174,10 +175,6 @@ const RATE_WINDOW: Duration = Duration::from_secs(1);
 /// the rate closely enough for a status line.
 const RATE_SAMPLE_INTERVAL: Duration = Duration::from_millis(20);
 
-/// Smoothing factor for the per-id message-rate estimate (an EMA of the
-/// inter-arrival time). Smaller = steadier, slower to react.
-const PER_ID_RATE_ALPHA: f64 = 0.6;
-
 /// How many frames [`TraceStore::latest_mux_in_window`]'s backward scan
 /// examines before giving up on a selector group (which then reads as
 /// blank). Generous enough to cover several seconds of a busy bus while
@@ -214,16 +211,31 @@ type MuxKey = (Option<String>, u32, bool, u64);
 /// enough for the append path).
 pub type MuxSelectorFn = dyn Fn(&RawTraceFrame) -> Option<u64> + Send + Sync;
 
-/// Per-id message-rate estimate. Tracks the EMA of the *frame-time*
-/// inter-arrival (the bus-side cadence) plus the wall-clock time of
-/// the last observation (so a stalled stream visibly decays to zero
-/// even though frame timestamps stop advancing).
-#[derive(Debug, Clone, Copy)]
+/// Per-id message-rate estimate: a windowed frame count — the same
+/// count-delta-over-frame-time-span read as the aggregate
+/// [`rate_from_samples`] — plus a last-inter-frame-delta fallback for
+/// ids slower than [`RATE_WINDOW`].
+///
+/// The windowed read is what keeps the displayed rate independent of
+/// *delivery* timing: rx frames land in sidecar batches, so any
+/// estimate that keys off wall time since the last append reads low
+/// whenever it's sampled inside a delivery gap (the by-id panel showed
+/// rx ids well under their wire rate while identically-paced tx
+/// confirms — appended smoothly in-process — read true). A count over
+/// the window doesn't care when inside the window the frames landed.
+#[derive(Debug, Clone)]
 struct RateEstimate {
     last_ts_ns: u64,
     last_wall: Instant,
-    ema_dt_secs: f64,
+    /// Frame-time delta between the two most recent frames, seconds.
+    /// The fallback cadence when the sample window holds fewer than two
+    /// samples (id slower than the window, or gone quiet).
+    last_dt_secs: f64,
     count: u64,
+    /// Rolling `(wall, ts_ns, count)` window, recorded at most every
+    /// [`RATE_SAMPLE_INTERVAL`] and pruned to [`RATE_WINDOW`] on
+    /// append — bounded per id like the aggregate deque.
+    samples: VecDeque<RateSample>,
 }
 
 impl RateEstimate {
@@ -231,8 +243,9 @@ impl RateEstimate {
         Self {
             last_ts_ns: ts_ns,
             last_wall: now,
-            ema_dt_secs: 0.0,
+            last_dt_secs: 0.0,
             count: 0,
+            samples: VecDeque::new(),
         }
     }
 
@@ -242,33 +255,52 @@ impl RateEstimate {
     fn observe(&mut self, ts_ns: u64, now: Instant) {
         self.count = self.count.saturating_add(1);
         let dt = ts_ns.saturating_sub(self.last_ts_ns) as f64 / 1e9;
-        if self.ema_dt_secs <= 0.0 {
-            if dt > 0.0 {
-                self.ema_dt_secs = dt;
-            }
-        } else if dt > 0.0 {
-            self.ema_dt_secs =
-                PER_ID_RATE_ALPHA * dt + (1.0 - PER_ID_RATE_ALPHA) * self.ema_dt_secs;
+        if dt > 0.0 {
+            self.last_dt_secs = dt;
         }
         self.last_ts_ns = ts_ns;
         self.last_wall = now;
+        let due = match self.samples.back() {
+            Some(last) => now.duration_since(last.wall) >= RATE_SAMPLE_INTERVAL,
+            None => true,
+        };
+        if due {
+            self.samples.push_back(RateSample {
+                wall: now,
+                ts_ns,
+                count: usize::try_from(self.count).unwrap_or(usize::MAX),
+            });
+            prune_rate_samples(&mut self.samples, now);
+        }
     }
 
-    /// Messages/second as of wall-time `now` — `0.0` until two frames
-    /// have been seen, and decaying toward `0` once frames stop
-    /// arriving (the effective interval grows with the wall-time since
-    /// the last one, so a stalled stream visibly drops).
+    /// Messages/second as of wall-time `now`: the count delta over the
+    /// frame-time span of the samples still inside [`RATE_WINDOW`]
+    /// (skipping stale ones without mutating — reads hold the map by
+    /// shared reference). With fewer than two in-window samples, falls
+    /// back to the last inter-frame delta, decaying on wall-clock
+    /// silence so a stalled id still visibly drops toward zero. `0.0`
+    /// until two frames have been seen.
+    #[allow(clippy::cast_precision_loss)] // counts and ns diffs fit in f64's mantissa.
     fn rate(&self, now: Instant) -> f64 {
-        if self.ema_dt_secs <= 0.0 {
-            return 0.0;
+        let first = self
+            .samples
+            .iter()
+            .find(|s| now.duration_since(s.wall) <= RATE_WINDOW);
+        if let (Some(first), Some(last)) = (first, self.samples.back()) {
+            let frames = last.count.saturating_sub(first.count);
+            let span = last.ts_ns.saturating_sub(first.ts_ns) as f64 / 1e9;
+            if frames > 0 && span > 0.0 {
+                return frames as f64 / span;
+            }
         }
-        let since = now.duration_since(self.last_wall).as_secs_f64();
-        let dt = since.max(self.ema_dt_secs);
-        if dt > 0.0 {
-            1.0 / dt
-        } else {
-            0.0
+        // A positive `last_dt_secs` implies two distinct timestamps have
+        // been seen — the "no estimate until two frames" gate.
+        if self.last_dt_secs > 0.0 {
+            let since = now.duration_since(self.last_wall).as_secs_f64();
+            return 1.0 / since.max(self.last_dt_secs);
         }
+        0.0
     }
 }
 
@@ -2040,6 +2072,48 @@ mod tests {
             (rate - 100.0).abs() < 10.0,
             "expected ~100/s from 10-ms frame-time gaps, got {rate}",
         );
+    }
+
+    #[test]
+    fn per_id_rate_is_steady_across_delivery_gaps() {
+        // Regression for the by-id msg/s rx bias: a 100 Hz message whose
+        // frames are *delivered* in bursts (sidecar batch flush + pump)
+        // has smooth 10-ms frame timestamps but wall-clock append gaps of
+        // ~100 ms. Sampled mid-gap — where the panel's refresh usually
+        // lands — the rate must read the wire cadence (~100/s), not decay
+        // toward 1/gap. The old EMA + wall-decay estimate read ~67 here
+        // while the tx side (appended smoothly in-process) read ~100,
+        // showing rx "way fewer" than tx for identical wire traffic.
+        let t0 = Instant::now();
+        let mut r = RateEstimate::first_seen(0, t0);
+        let mut ts = 0u64;
+        for burst in 0..12u64 {
+            let wall = t0 + Duration::from_millis(burst * 100);
+            for _ in 0..10 {
+                ts += 10_000_000;
+                r.observe(ts, wall);
+            }
+        }
+        // 15 ms after the last burst landed.
+        let rate = r.rate(t0 + Duration::from_millis(11 * 100 + 15));
+        assert!(
+            (rate - 100.0).abs() < 5.0,
+            "expected ~100/s across delivery gaps, got {rate}",
+        );
+    }
+
+    #[test]
+    fn per_id_rate_for_an_id_slower_than_the_window_reads_its_period() {
+        // A 0.2 Hz id (5 s period) can never have two frames inside the
+        // 1 s rate window; the estimate falls back to the last
+        // inter-frame delta, and decays only once the id goes silent
+        // longer than that period.
+        let t0 = Instant::now();
+        let mut r = RateEstimate::first_seen(0, t0);
+        r.observe(5_000_000_000, t0 + Duration::from_secs(5));
+        r.observe(10_000_000_000, t0 + Duration::from_secs(10));
+        assert!((r.rate(t0 + Duration::from_secs(12)) - 0.2).abs() < 0.01);
+        assert!((r.rate(t0 + Duration::from_secs(20)) - 0.1).abs() < 0.01);
     }
 
     #[test]

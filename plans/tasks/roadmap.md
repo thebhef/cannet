@@ -17,54 +17,44 @@ the order below is the order of work, top first.
 
 ## Implementation order
 
-1. [Task 29 — TX Timing Robustness](0029-tx-timing-robustness-counter.md)
-   — fix periodic-TX drift and high-rate bunching from OS timer wake
-   lateness, settle the missed-period policy, and record the
-   periodic-emission semantics in an ADR. The counter half resolved as
-   not-a-defect: the counter steps per prepared send by design (a
-   dropped frame is a real E2E gap;
-   [ADR 0027](../../docs/adr/0027-calculated-fields-counter-crc.md));
-   the briefly-shipped commit-on-emit staging was reverted. Remaining:
-   wake-lateness and missed-period work, blocked on a jitter-target /
-   rig-metric decision.
-2. [Task 31 — macOS Integration Issues](0031-macos-integration-issues.md)
+1. [Task 31 — macOS Integration Issues](0031-macos-integration-issues.md)
    — crash on exit (wry/WebKit layer-tree teardown race) and missing
    Spotlight bundle metadata. Independently-shippable macOS fixes.
-3. [Task 19 — Argument-Taking Palette Commands](0019-command-palette-goto.md)
+2. [Task 19 — Argument-Taking Palette Commands](0019-command-palette-goto.md)
    — the remaining argument-taking commands (go-to-row / -time,
    set-visible-range) and the shared input-prompt UI, on top of the
    command / palette framework. Save-with-picker (`capture.save`), the
    close commands, and a list-select go-to-event palette shipped with
    Task 37; what's left is the typed-argument prompt infrastructure.
-4. [Task 25 — CAN HW + Virtual-Bus Bug Fixes](0025-can-hw-vbus-bugfixes.md)
+3. [Task 25 — CAN HW + Virtual-Bus Bug Fixes](0025-can-hw-vbus-bugfixes.md)
    — the hardware/virtual-bus verify-and-fix pass (timestamp handling,
    post-clear negative timestamps) plus the plot-colour bug and the
    `decimatePoints` dead-code removal.
-5. [Task 22 — CANopen](0022-canopen.md)
+4. [Task 22 — CANopen](0022-canopen.md)
    — EDS ingestion and SDO / PDO decoding.
-6. [Task 23 — Plot Measurements and Triggers](0023-plot-measurements-and-triggers.md)
+5. [Task 23 — Plot Measurements and Triggers](0023-plot-measurements-and-triggers.md)
    — triggers, math channels, manual per-series y, export, drag a
    plot area.
-7. [Task 27 — Live Disk-Watch for Project & RBS Files](0027-project-rbs-disk-watch.md)
+6. [Task 27 — Live Disk-Watch for Project & RBS Files](0027-project-rbs-disk-watch.md)
    — generalize the DBC auto-reload watcher to project (`.cannet_prj`)
    and RBS (`.cannet_rbs`) files so external edits are picked up
    automatically.
-8. [Task 28 — RBS External Value-Source Binding](0028-rbs-external-value-source.md)
+7. [Task 28 — RBS External Value-Source Binding](0028-rbs-external-value-source.md)
    — cannet connects out to a value-source server that streams sparse
    `(signal, value)` updates by name; RBS applies them as overrides and
    keeps its own cadence/CRC/counters. Lets an external, out-of-repo sim
    (e.g. an EV drive cycle) drive the RBS.
-9. [Task 38 — MDF (MF4) Logger-File Import](0038-mdf-import.md)
+8. [Task 38 — MDF (MF4) Logger-File Import](0038-mdf-import.md)
    — import ASAM MDF 4.x bus-logging files (CANedge, Vector loggers)
    through the existing `CanFrameSource` seam; library
    evaluate-dependency pass is the blocking prerequisite. Signal-shape
    MF4 and MF4 export are explicitly later.
-10. [Task 39 — Automotive Ethernet Signals](0039-ethernet-signals.md)
+9. [Task 39 — Automotive Ethernet Signals](0039-ethernet-signals.md)
    — staged: pcapng import (CAN linktypes, no model change), step/hold
    plot semantics for on-change series, then the multi-protocol trace
    model and ARXML/FIBEX-described SOME/IP + signal-PDU decode.
    Research detail in [`0039-ethernet-signals/`](0039-ethernet-signals/).
-11. [Task 30 — Code-Quality Debt: Deduplication & God-File Split](0030-code-quality-dedup.md)
+10. [Task 30 — Code-Quality Debt: Deduplication & God-File Split](0030-code-quality-dedup.md)
    — pay down the copy-pasted hot-path implementations (CAN-ID
    extraction ×5, DBC bit-walkers ×3, decoder boilerplate) and the
    frontend fetch/format dups that also break the thin-view rule, plus
