@@ -39,7 +39,7 @@ the area is already test-covered; each region's tests move with it.
 | --- | --- | --- |
 | ~~5701~~ | ~~`apps/gui/src-tauri/src/lib.rs`~~ | **Done — see sketch below** |
 | ~~3857~~ | ~~`apps/gui/src/PlotPanel.tsx`~~ | **Done — see sketch below** |
-| 2650 | `crates/cannet-dbc/src/lib.rs` | parse / model / decode / encode / view-builders modules (tests are lines 1491–2650) |
+| ~~2650~~ | ~~`crates/cannet-dbc/src/lib.rs`~~ | **Done — see sketch below** |
 | 2441 | `apps/gui/src/App.tsx` | see sketch below |
 | 2158 | `apps/gui/src-tauri/src/trace_store.rs` | five separable concerns (impl 60–1302, tests 1304–2158): store facade, rate tracking, scratch breakdown, by-id, flush |
 | 2093 | `apps/gui/src-tauri/src/rbs.rs` | directory split along its own section banners (43/257/655/1132): file model / runtime reconciliation / view shaping / 15 commands. Pure relocation — `generate_handler` tolerates re-exported commands; helpers stay `pub(super)` |
@@ -157,6 +157,69 @@ before diverging). Landed as staged commits, each green
   refs, so a child component would carry a ~20-prop surface for no
   readability gain. The honest split is at the panel↔area seam, which is
   what landed.
+
+**`cannet-dbc/src/lib.rs` sketch** (reconciled against the current
+code): the sketch's `decode.rs` / `encode.rs` **already existed** as
+sibling files holding the *bit-level* primitives (`decode_signal_bits` /
+`sign_extend`, `encode_signal_bits`) — item #4's `bitwalk.rs` work lives
+alongside them — and `calc.rs` already held the calculated-field engine.
+So lib.rs (drifted to **2,860** lines, of which lines 1578–2860 were the
+test module) actually held: DBC parsing, the in-memory model types, the
+message-level decode/encode walks and their result types, the descriptor
+view-builders, and the calc *query* methods.
+
+**Done (task-0030/13-split-cannet-dbc).** Landed as staged commits, each
+green (`cargo test`/`clippy -p cannet-dbc` + the workspace pre-commit
+hook). Production `lib.rs` is now **31 lines** (module wiring + the
+public re-exports):
+
+- `model.rs` (179) — the indexed `Database`, the private
+  `MessageEntry`/`SignalEntry` (widened to `pub(crate)` so the now-sibling
+  modules keep field access), the `ValueTableEntry`/`DbcAttribute` value
+  types, `is_enum`, the trivial `message_count`/`has_multiplexor`
+  accessors, and the shared `message_id_parts`/`canid_to_message_id`
+  id-mapping helpers.
+- `parse.rs` (434) — `Database::parse`/`parse_warnings`, `DbcError`, and
+  every parse-only helper (long-symbol resolution, comment/attribute
+  bucketing, FD/BRS/cycle-time/send-type reads, start values,
+  `CannetCounter`/`CannetCrc` interpretation, `multiplexor_index`).
+- `view_builders.rs` (540) — `message_names`/`signal_names`/`signals`/
+  `value_table_for_signal`/`describe_message`/`dbc_content`, their
+  descriptor types (`SignalDescriptor`, `MessageDescriptor`,
+  `SignalDescriptorRich`, `DbcMessageContent`, `DbcSignalContent`,
+  `ByteOrder`, `SignalMux`, `FloatKind`), and `numeric_to_f64`. Per the
+  task's ground rule, `describe_message` and `dbc_content` were relocated
+  **as-is** — their documented non-superset relationship
+  (`SignalDescriptorRich.start_value_raw` vs. `DbcSignalContent`) is left
+  intact; that consolidation is item #12, not this split.
+- **decode / encode into the existing sibling files** rather than new
+  modules: the message-level decode walk + `DecodedMessage`/
+  `DecodedSignal` folded into `decode.rs` (158→323), the encode walk +
+  `EncodeReport`/`EncodedSignal`/`SkippedSignal`/`SkipReason` into
+  `encode.rs` (144→378) — each now next to the bit-level primitive it
+  already called.
+- **calc query methods into the existing `calc.rs`** (1250→1302):
+  `dbc_calculated_fields`, `calculated_field_messages`, and
+  `resolve_calculated_fields` became an `impl Database` block beside the
+  `resolve` free function the last one wraps; `calc.rs` now imports its
+  model types straight from `crate::model` (no crate-root re-export hop).
+- **Tests relocated wholesale** to a sibling `tests.rs` (1292) rather
+  than split per module — one shared sample DBC + helper set across the
+  now-many modules, resolved via `use super::*`, exactly as the gui
+  split (task 11) handled its own test module. Its dedicated `#[test]`s
+  in `decode.rs`/`encode.rs` (bit-level) stay put.
+
+**Caveats.** (1) `parse` and `model` split cleanly — DBC's
+grammar→struct mapping is not entangled; the only mechanical cost was
+widening the model structs/fields from crate-root-private to
+`pub(crate)`. (2) The split surfaced a **pre-existing misfiled rustdoc**:
+`encode_frame`'s whole prose block was physically attached to
+`calculated_field_messages` (which had only its four trailing lines of
+its own), and `encode_frame` had none. Since the two methods now live in
+different modules (encode.rs vs calc.rs), the block was split to its
+correct owners — no documentation text lost. A stray leftover doc line
+that briefly orphaned onto `decode_message` during the view-builders
+step was also dropped.
 
 **`App.tsx` sketch**: one 2,250-line component owning eight subsystems.
 Extract the `CommandsProvider` it was always supposed to delegate to
