@@ -1249,6 +1249,14 @@ function SignalDetails({ signal, indent }: SignalDetailsProps) {
   );
 }
 
+/// `0x<hex id>` with a trailing `x` for an extended id (`0x1FFFFFFFx`,
+/// `0x100`) — the tree row's id-label convention. Distinct from
+/// `format.ts`'s `formatId` (`x:`/`s:`-prefixed, zero-padded), which is
+/// the trace-view convention instead.
+function dbcIdLabel(m: { messageId: number; extended: boolean }): string {
+  return `0x${m.messageId.toString(16).toUpperCase()}${m.extended ? "x" : ""}`;
+}
+
 interface MessageDetailsProps {
   message: DbcMessageContentRecord;
   indent: string;
@@ -1256,9 +1264,7 @@ interface MessageDetailsProps {
 
 function MessageDetails({ message, indent }: MessageDetailsProps) {
   const decId = message.messageId.toString(10);
-  const hexId = `0x${message.messageId.toString(16).toUpperCase()}${
-    message.extended ? "x" : ""
-  }`;
+  const hexId = dbcIdLabel(message);
   return (
     <div className="dbc-row-details" style={{ paddingLeft: indent }}>
       <dl className="dbc-details-grid">
@@ -1315,9 +1321,7 @@ function DbcRowContent({ kind }: { kind: RenderRow["kind"] }) {
   }
   if (kind.tag === "message") {
     const m = kind.message;
-    const idLabel = `0x${m.messageId.toString(16).toUpperCase()}${
-      m.extended ? "x" : ""
-    }`;
+    const idLabel = dbcIdLabel(m);
     return (
       <>
         <span className="dbc-row-label">{m.name}</span>
