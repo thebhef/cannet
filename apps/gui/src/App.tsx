@@ -85,7 +85,6 @@ import {
 } from "./projectElements";
 import {
   type TraceState,
-  clearTraceStartOffset,
   clearedTrace,
   freshTrace,
   reanchorToSession,
@@ -721,30 +720,6 @@ export function App() {
       return changed ? next : prev;
     });
   }, [count]);
-
-  // Drop every trace view's per-view time-column offset when the
-  // session itself restarts (`sessionStartSeconds` changes). The
-  // offset is in session-relative seconds and stops meaning anything
-  // sensible the moment the session it referenced is gone — left
-  // alone, a stale value from the previous session shifts the next
-  // session's clock and shows negative deltas. The Connect / toolbar-
-  // Clear paths null `sessionStartSeconds` themselves; this effect
-  // also catches the host-initiated re-anchor in BLF replay (first
-  // frame becomes session start) and any other future trigger.
-  useEffect(() => {
-    setRegistry((prev) => {
-      let changed = false;
-      const next = prev.map((e) => {
-        const t = clearTraceStartOffset(e.trace);
-        if (t === e.trace) return e;
-        changed = true;
-        return { ...e, trace: t };
-      });
-      if (changed) diagCount("registry.clearOffset"); // DIAG
-      return changed ? next : prev;
-    });
-  }, [sessionStartSeconds]);
-
 
   // BLF import has a channel → bus mapping step. The
   // outer pending state holds the picked BLF path + its distinct
