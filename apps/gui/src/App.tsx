@@ -96,6 +96,7 @@ import {
   restoredTrace,
 } from "./trace";
 import { defaultBusColor } from "./busColor";
+import { useSessionReset } from "./useSessionReset";
 import { assignDefaultNames, defaultElementName, elementLabel } from "./elementLabel";
 import {
   BY_ID_PANEL_COMPONENT,
@@ -636,6 +637,16 @@ export function App() {
     setRegistry((prev) => prev.map((e) => ({ ...e, trace: freshTrace(0) })));
   }, []);
 
+  // The shared session (re)start step (clear the host store + reset the
+  // frontend's derived session state). Each call site below supplies its
+  // own clear-error policy — they differ on purpose.
+  const resetSession = useSessionReset({
+    invalidateCache,
+    setSessionStartSeconds,
+    setCount,
+    startAllElements,
+  });
+
   // Bootstrap + live-update the system-log mirror. The
   // snapshot is the source of truth on mount; thereafter the host's
   // `system-log-appended` event delivers each new entry. The merge
@@ -845,12 +856,19 @@ export function App() {
       persistBlfChannelMaps(
         recordBlfChannelMap(hostState().blf_channel_maps, projectId, blfPath, choices),
       );
+      // Abort the import if the host clear fails — and drop the recent
+      // entry, since the open won't happen.
+      if (
+        !(await resetSession({
+          onError: (err) => {
+            setState({ kind: "error", message: String(err) });
+            dropRecentBlf(blfPath);
+          },
+        }))
+      ) {
+        return;
+      }
       try {
-        await invoke("clear_trace_store");
-        invalidateCache();
-        setSessionStartSeconds(null);
-        setCount(0);
-        startAllElements();
         const channelBusMapping = channels.map((ch) => ({
           channel: ch,
           busId: choices[ch] ? choices[ch] : null,
@@ -869,7 +887,7 @@ export function App() {
         dropRecentBlf(blfPath);
       }
     },
-    [pendingBlf, projectId, invalidateCache, startAllElements, rememberRecentBlf, dropRecentBlf],
+    [pendingBlf, projectId, resetSession, rememberRecentBlf, dropRecentBlf],
   );
 
   // Add one or more DBCs to the loaded set (each goes through the host's
@@ -945,16 +963,13 @@ export function App() {
   );
 
   const handleClear = useCallback(async () => {
-    try {
-      await invoke("clear_trace_store");
-    } catch (err) {
-      setState({ kind: "error", message: String(err) });
-    }
-    invalidateCache();
-    setSessionStartSeconds(null);
-    setCount(0);
-    startAllElements();
-  }, [invalidateCache, startAllElements]);
+    // Clear continues past a host-clear failure: surface the error but
+    // reset the session anyway.
+    await resetSession({
+      onError: (err) => setState({ kind: "error", message: String(err) }),
+      resetOnClearError: true,
+    });
+  }, [resetSession]);
 
   // Connect to every server that has at least one binding in the
   // project. Each unique `server` in `interfaceBindings` becomes its
@@ -1066,14 +1081,13 @@ export function App() {
       setInterfaceBindings(effectiveBindings);
     }
 
-    try {
-      await invoke("clear_trace_store");
-      invalidateCache();
-      setSessionStartSeconds(null);
-      setCount(0);
-      startAllElements();
-    } catch (err) {
-      setState({ kind: "error", message: String(err) });
+    // Connect aborts on a host-clear failure: don't touch the session or
+    // open any server if the buffer couldn't be cleared.
+    if (
+      !(await resetSession({
+        onError: (err) => setState({ kind: "error", message: String(err) }),
+      }))
+    ) {
       return;
     }
 
@@ -1128,7 +1142,7 @@ export function App() {
         });
       }
     }
-  }, [buses, interfaceBindings, sidecarAddress, invalidateCache, startAllElements]);
+  }, [buses, interfaceBindings, sidecarAddress, resetSession]);
 
   // Tear down every active session. The host drains its session map.
   const handleDisconnect = useCallback(async () => {
@@ -1377,12 +1391,12 @@ export function App() {
     // Drop the host TX-message pool too, so a New
     // project starts with no transmit frames.
     void invoke("clear_transmit_frames").catch(() => {});
-    void invoke("clear_trace_store").catch(() => {});
-    invalidateCache();
-    setSessionStartSeconds(null);
-    setCount(0);
+    // Fire-and-forget the host clear + reset the session synchronously.
+    // `seedDefaultLayout` already reseeded the registry, so don't restart
+    // elements.
+    void resetSession({ fireAndForget: true, startElements: false });
     setDirty(false);
-  }, [seedDefaultLayout, rememberProject, loadDbcSet, invalidateCache]);
+  }, [seedDefaultLayout, rememberProject, loadDbcSet, resetSession]);
 
   const handleOpenProject = useCallback(async () => {
     const selected = await open({
