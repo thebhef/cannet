@@ -439,6 +439,7 @@ pub fn run() {
             let trace_store = open_trace_store(scratch);
             app.manage(AppState {
                 databases: Mutex::new(Vec::new()),
+                descriptor_snapshot: Mutex::new(None),
                 remote_sessions: Mutex::new(HashMap::new()),
                 trace_store,
                 signal_caches: SignalCacheStore::new(signal_dir),

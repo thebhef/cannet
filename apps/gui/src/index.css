@@ -2788,11 +2788,17 @@ button.trace-event-swatch {
   color: #64748b;
   text-align: center;
 }
+/* The fixed height is load-bearing: the panel virtualizes its row list
+   and positions the rendered slice against a spacer sized from
+   `ROW_HEIGHT` in `dbcPanelViewport.ts`. Changing it here means changing
+   it there. */
 .dbc-row {
   display: flex;
   align-items: center;
   gap: 0.4rem;
   padding: 0.1rem 0.5rem;
+  height: 20px;
+  box-sizing: border-box;
   white-space: nowrap;
   overflow: hidden;
   cursor: pointer;
@@ -2862,19 +2868,29 @@ button.trace-event-swatch {
   cursor: pointer;
   user-select: none;
 }
+/* Also load-bearing for the virtualizer: a detail block is exactly
+   `DETAIL_LINE_HEIGHT` per rendered `dt`/`dd` pair plus `DETAIL_CHROME`
+   (3 px padding + the 1 px rule) — see `dbcPanelViewport.ts`. The
+   zero row-gap, the fixed line-height, and `dd`'s `nowrap` are what
+   keep that arithmetic exact. */
 .dbc-row-details {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.72rem;
   color: #94a3b8;
   padding-right: 0.5rem;
-  padding-bottom: 0.25rem;
+  padding-bottom: 3px;
   border-bottom: 1px solid rgba(30, 41, 59, 0.5);
 }
 .dbc-details-grid {
   display: grid;
   grid-template-columns: max-content 1fr;
-  gap: 0.15rem 0.7rem;
+  gap: 0 0.7rem;
   margin: 0;
+}
+.dbc-details-grid dt,
+.dbc-details-grid dd {
+  height: 16px;
+  line-height: 16px;
 }
 .dbc-details-grid dt {
   color: #64748b;

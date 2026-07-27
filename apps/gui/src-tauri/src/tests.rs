@@ -302,6 +302,30 @@ fn fetch_all_signals(state: &AppState, end: u64) -> Vec<SignalSnapshotRecord> {
 }
 
 #[test]
+fn descriptor_snapshot_is_reused_across_calls_and_dropped_on_dbc_change() {
+    // Task 41: `fetch_signal_page` must not rebuild the descriptor
+    // universe per call — the DBC panel's value column and every signal
+    // view poll it a few times a second, and the rebuild is O(signals ×
+    // buses) with a sort on top.
+    let state = mux_snapshot_state();
+    let buses = ["powertrain".to_string()];
+    let first = state.scoped_descriptor_snapshot(&buses);
+    assert!(!first.is_empty());
+    // Same inputs → literally the same allocation, no rebuild.
+    assert!(Arc::ptr_eq(&first, &state.scoped_descriptor_snapshot(&buses)));
+    // A different project-bus list is a different universe.
+    let other = state.scoped_descriptor_snapshot(&["chassis".to_string()]);
+    assert!(!Arc::ptr_eq(&first, &other));
+    // A DBC-set change drops it, so a removed DBC's signals can't
+    // linger in the snapshot.
+    state.databases.lock().unwrap().clear();
+    invalidate_derived_caches(&state);
+    let after = state.scoped_descriptor_snapshot(&buses);
+    assert!(!Arc::ptr_eq(&first, &after));
+    assert!(after.is_empty());
+}
+
+#[test]
 fn fetch_signal_page_scopes_to_source_buses() {
     // A signal view is a sink with `sources` wiring: restricted to
     // specific buses, descriptors outside them (including the
@@ -475,6 +499,7 @@ pub(crate) fn test_state() -> AppState {
     let signals_dir = std::env::temp_dir().join(format!("cannet-test-signals-{n}"));
     AppState {
         databases: Mutex::new(Vec::new()),
+        descriptor_snapshot: Mutex::new(None),
         remote_sessions: Mutex::new(HashMap::new()),
         trace_store: Arc::new(TraceStore::new()),
         signal_caches: SignalCacheStore::new(signals_dir),

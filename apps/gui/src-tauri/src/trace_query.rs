@@ -389,19 +389,12 @@ pub(crate) fn fetch_signal_page_inner(
             .map(|d| (d.db.clone(), d.buses.clone()))
             .collect()
     };
-    let mut all = signal_snapshot::scoped_descriptors(
-        dbs.iter()
-            .map(|(db, buses)| (db.as_ref(), buses.as_slice())),
-        project_buses,
-    );
-    // The view's `sources` wiring bounds what exists for it: restricted
-    // to specific buses, other buses' descriptors (and the
-    // unassigned-bus degenerate) are out of scope — for the regex too,
-    // not just the rows. `None` = unwired / "*" = everything.
-    if let Some(scope) = source_buses {
-        all.retain(|(bus, _)| bus.as_ref().is_some_and(|b| scope.contains(b)));
-    }
-    let selected = signal_snapshot::select_descriptors(&all, selection, &names)?;
+    // Shared, cached universe — rebuilding and re-sorting one entry per
+    // signal per bus on every poll tick is what this cache exists to
+    // avoid. The view's `sources` wiring is applied inside the selection
+    // scan instead of by pruning `all`, so the snapshot stays shareable.
+    let all = state.scoped_descriptor_snapshot(project_buses);
+    let selected = signal_snapshot::select_descriptors(&all, selection, &names, source_buses)?;
     let mut rows = collect_signal_rows(state, &dbs, &all, &selected, start, end);
     signal_snapshot::sort_rows(&mut rows, sort_key, sort_dir, &names);
 
