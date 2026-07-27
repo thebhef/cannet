@@ -31,8 +31,8 @@
 //! [`ObjectHeaderV1`]: super::object::ObjectHeaderV1
 
 use super::object::{
-    object_type, ObjectHeaderBase, ObjectHeaderError, ObjectHeaderV1, OBJECT_FLAG_TIME_ONE_NANS,
-    OBJECT_HEADER_BASE_BYTES, OBJECT_HEADER_V1_BYTES,
+    decode_framed, object_type, ObjectHeaderBase, ObjectHeaderError, ObjectHeaderV1,
+    PreambleError, OBJECT_FLAG_TIME_ONE_NANS, OBJECT_HEADER_BASE_BYTES, OBJECT_HEADER_V1_BYTES,
 };
 
 /// Width of the per-event header that prefixes every CAN-class
@@ -126,6 +126,20 @@ impl std::error::Error for CanObjectError {
     }
 }
 
+impl From<PreambleError> for CanObjectError {
+    fn from(e: PreambleError) -> Self {
+        match e {
+            PreambleError::WrongObjectType(expected, got) => {
+                Self::WrongObjectType(expected, got)
+            }
+            PreambleError::BaseHeader(e) => Self::BaseHeader(e),
+            PreambleError::EventHeader(e) => Self::EventHeader(e),
+            PreambleError::TooSmall(got, required) => Self::TooSmall(got, required),
+            PreambleError::Truncated(got, required) => Self::Truncated(got, required),
+        }
+    }
+}
+
 /// Decoded `CAN_MESSAGE2`. Owns its data bytes (we don't borrow from
 /// the input slice; the decoded payload typically outlives the
 /// per-container scratch buffer).
@@ -172,30 +186,12 @@ impl CanMessage2 {
 // least `CAN_MESSAGE2_FIXED_BODY_BYTES` long.
 #[allow(clippy::missing_panics_doc)]
 pub fn decode_can_message2(object_bytes: &[u8]) -> Result<CanMessage2, CanObjectError> {
-    let base = ObjectHeaderBase::parse(object_bytes).map_err(CanObjectError::BaseHeader)?;
-    if base.object_type != object_type::CAN_MESSAGE2 {
-        return Err(CanObjectError::WrongObjectType(
-            object_type::CAN_MESSAGE2,
-            base.object_type,
-        ));
-    }
-    let required = CAN_EVENT_HEADER_BYTES + CAN_MESSAGE2_FIXED_BODY_BYTES;
-    if (base.object_size as usize) < required {
-        return Err(CanObjectError::TooSmall(base.object_size, required));
-    }
-    if object_bytes.len() < base.object_size as usize {
-        return Err(CanObjectError::Truncated(
-            object_bytes.len(),
-            base.object_size,
-        ));
-    }
-
-    let event = ObjectHeaderV1::parse(
-        &object_bytes[OBJECT_HEADER_BASE_BYTES..OBJECT_HEADER_BASE_BYTES + OBJECT_HEADER_V1_BYTES],
-    )
-    .map_err(CanObjectError::EventHeader)?;
-
-    let body = &object_bytes[CAN_EVENT_HEADER_BYTES..base.object_size as usize];
+    let framed = decode_framed(
+        object_bytes,
+        object_type::CAN_MESSAGE2,
+        CAN_MESSAGE2_FIXED_BODY_BYTES,
+    )?;
+    let (base, event, body) = (framed.base, framed.event, framed.body);
     let channel = u16::from_le_bytes(body[0..2].try_into().unwrap());
     let flags = body[2];
     let dlc = body[3];
@@ -350,28 +346,12 @@ impl CanMessage {
 // length-checked at the top.
 #[allow(clippy::missing_panics_doc)]
 pub fn decode_can_message(object_bytes: &[u8]) -> Result<CanMessage, CanObjectError> {
-    let base = ObjectHeaderBase::parse(object_bytes).map_err(CanObjectError::BaseHeader)?;
-    if base.object_type != object_type::CAN_MESSAGE {
-        return Err(CanObjectError::WrongObjectType(
-            object_type::CAN_MESSAGE,
-            base.object_type,
-        ));
-    }
-    let required = CAN_EVENT_HEADER_BYTES + CAN_MESSAGE_BODY_BYTES;
-    if (base.object_size as usize) < required {
-        return Err(CanObjectError::TooSmall(base.object_size, required));
-    }
-    if object_bytes.len() < base.object_size as usize {
-        return Err(CanObjectError::Truncated(
-            object_bytes.len(),
-            base.object_size,
-        ));
-    }
-    let event = ObjectHeaderV1::parse(
-        &object_bytes[OBJECT_HEADER_BASE_BYTES..OBJECT_HEADER_BASE_BYTES + OBJECT_HEADER_V1_BYTES],
-    )
-    .map_err(CanObjectError::EventHeader)?;
-    let body = &object_bytes[CAN_EVENT_HEADER_BYTES..CAN_EVENT_HEADER_BYTES + CAN_MESSAGE_BODY_BYTES];
+    let framed = decode_framed(
+        object_bytes,
+        object_type::CAN_MESSAGE,
+        CAN_MESSAGE_BODY_BYTES,
+    )?;
+    let (base, event, body) = (framed.base, framed.event, framed.body);
     Ok(CanMessage {
         base,
         event,
@@ -490,28 +470,12 @@ impl CanFdMessage {
 // length-checked at the top.
 #[allow(clippy::missing_panics_doc)]
 pub fn decode_can_fd_message(object_bytes: &[u8]) -> Result<CanFdMessage, CanObjectError> {
-    let base = ObjectHeaderBase::parse(object_bytes).map_err(CanObjectError::BaseHeader)?;
-    if base.object_type != object_type::CAN_FD_MESSAGE {
-        return Err(CanObjectError::WrongObjectType(
-            object_type::CAN_FD_MESSAGE,
-            base.object_type,
-        ));
-    }
-    let required = CAN_EVENT_HEADER_BYTES + CAN_FD_MESSAGE_MIN_BODY_BYTES;
-    if (base.object_size as usize) < required {
-        return Err(CanObjectError::TooSmall(base.object_size, required));
-    }
-    if object_bytes.len() < base.object_size as usize {
-        return Err(CanObjectError::Truncated(
-            object_bytes.len(),
-            base.object_size,
-        ));
-    }
-    let event = ObjectHeaderV1::parse(
-        &object_bytes[OBJECT_HEADER_BASE_BYTES..OBJECT_HEADER_BASE_BYTES + OBJECT_HEADER_V1_BYTES],
-    )
-    .map_err(CanObjectError::EventHeader)?;
-    let body = &object_bytes[CAN_EVENT_HEADER_BYTES..base.object_size as usize];
+    let framed = decode_framed(
+        object_bytes,
+        object_type::CAN_FD_MESSAGE,
+        CAN_FD_MESSAGE_MIN_BODY_BYTES,
+    )?;
+    let (base, event, body) = (framed.base, framed.event, framed.body);
     Ok(CanFdMessage {
         base,
         event,
@@ -666,29 +630,12 @@ impl CanFdMessage64 {
 pub fn decode_can_fd_message_64(
     object_bytes: &[u8],
 ) -> Result<CanFdMessage64, CanObjectError> {
-    let base = ObjectHeaderBase::parse(object_bytes).map_err(CanObjectError::BaseHeader)?;
-    if base.object_type != object_type::CAN_FD_MESSAGE_64 {
-        return Err(CanObjectError::WrongObjectType(
-            object_type::CAN_FD_MESSAGE_64,
-            base.object_type,
-        ));
-    }
-    let required = CAN_EVENT_HEADER_BYTES + CAN_FD_MESSAGE_64_FIXED_PREFIX_BYTES;
-    if (base.object_size as usize) < required {
-        return Err(CanObjectError::TooSmall(base.object_size, required));
-    }
-    if object_bytes.len() < base.object_size as usize {
-        return Err(CanObjectError::Truncated(
-            object_bytes.len(),
-            base.object_size,
-        ));
-    }
-    let event = ObjectHeaderV1::parse(
-        &object_bytes[OBJECT_HEADER_BASE_BYTES..OBJECT_HEADER_BASE_BYTES + OBJECT_HEADER_V1_BYTES],
-    )
-    .map_err(CanObjectError::EventHeader)?;
-
-    let body = &object_bytes[CAN_EVENT_HEADER_BYTES..base.object_size as usize];
+    let framed = decode_framed(
+        object_bytes,
+        object_type::CAN_FD_MESSAGE_64,
+        CAN_FD_MESSAGE_64_FIXED_PREFIX_BYTES,
+    )?;
+    let (base, event, body) = (framed.base, framed.event, framed.body);
     let valid_data_bytes = body[2];
     let data_end_in_body = CAN_FD_MESSAGE_64_FIXED_PREFIX_BYTES + usize::from(valid_data_bytes);
     if data_end_in_body > body.len() {
@@ -819,29 +766,12 @@ impl CanErrorExt {
 // length-checked at the top.
 #[allow(clippy::missing_panics_doc)]
 pub fn decode_can_error_ext(object_bytes: &[u8]) -> Result<CanErrorExt, CanObjectError> {
-    let base = ObjectHeaderBase::parse(object_bytes).map_err(CanObjectError::BaseHeader)?;
-    if base.object_type != object_type::CAN_ERROR_EXT {
-        return Err(CanObjectError::WrongObjectType(
-            object_type::CAN_ERROR_EXT,
-            base.object_type,
-        ));
-    }
-    let required = CAN_EVENT_HEADER_BYTES + CAN_ERROR_EXT_FIXED_PREFIX_BYTES;
-    if (base.object_size as usize) < required {
-        return Err(CanObjectError::TooSmall(base.object_size, required));
-    }
-    if object_bytes.len() < base.object_size as usize {
-        return Err(CanObjectError::Truncated(
-            object_bytes.len(),
-            base.object_size,
-        ));
-    }
-    let event = ObjectHeaderV1::parse(
-        &object_bytes[OBJECT_HEADER_BASE_BYTES..OBJECT_HEADER_BASE_BYTES + OBJECT_HEADER_V1_BYTES],
-    )
-    .map_err(CanObjectError::EventHeader)?;
-
-    let body = &object_bytes[CAN_EVENT_HEADER_BYTES..base.object_size as usize];
+    let framed = decode_framed(
+        object_bytes,
+        object_type::CAN_ERROR_EXT,
+        CAN_ERROR_EXT_FIXED_PREFIX_BYTES,
+    )?;
+    let (base, event, body) = (framed.base, framed.event, framed.body);
     let data = body[CAN_ERROR_EXT_FIXED_PREFIX_BYTES..].to_vec();
 
     Ok(CanErrorExt {

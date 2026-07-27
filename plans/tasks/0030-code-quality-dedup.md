@@ -135,12 +135,37 @@ next to `DOCK_COMPONENTS` (App.tsx:174).
    mask), plus `is_extended_id()`/`can_id()` duplicated on all five
    CAN structs. → one free fn / trait method; test that all callers
    agree.~~ **Done (task-0030/01-canid-dedup).**
-- **3. BLF object-decode preamble ~11×** across can.rs / text.rs /
+- ~~**3. BLF object-decode preamble ~11×** across can.rs / text.rs /
    diagnostics.rs / marker.rs: the same ~20-line
    parse-base→type-check→TooSmall/Truncated→parse-V1→body-slice
    skeleton, plus four near-identical error enums (MarkerError has one
    extra variant) and reader.rs's four wrapper variants + From impls.
-   → a `decode_framed<T>` helper + one shared error shape.
+   → a `decode_framed<T>` helper + one shared error shape.~~ **Done
+   (task-0030/04-blf-preamble).** Re-confirmed the "~11×" count exactly:
+   5 in can.rs (`CAN_MESSAGE`, `CAN_MESSAGE2`, `CAN_FD_MESSAGE`,
+   `CAN_FD_MESSAGE_64`, `CAN_ERROR_EXT`), 2 in text.rs
+   (`EVENT_COMMENT`, `APP_TEXT`), 3 in diagnostics.rs (`CAN_STATISTIC`,
+   `DATA_LOST_BEGIN`, `DATA_LOST_END`), 1 in marker.rs
+   (`GLOBAL_MARKER`). Extracted `format::object::decode_framed()` (a
+   plain fn, not generic over `T` — it returns a `FramedObject<'_>`
+   with the parsed headers + body slice, so each caller's own `?`
+   does the per-type conversion; genericising over the return type
+   would have added a type parameter for no behavioural gain) plus
+   `PreambleError` covering the five shared failure modes. All 11
+   call sites migrated. Per-type error enums (`CanObjectError`,
+   `TextError`, `DiagnosticError`, `MarkerError`) keep their existing
+   public shapes — each gets a `From<PreambleError>` impl instead of
+   being reshaped to match; `MarkerError::WrongObjectType`'s impl
+   drops `PreambleError`'s `expected` half since marker.rs's expected
+   type is always `GLOBAL_MARKER`, confirming the doc's note that it
+   doesn't uniformly mirror the other three. **Not consolidated:**
+   reader.rs's four `BlfReadError` wrapper variants (`CanObject`,
+   `Marker`, `Text`, `Diagnostic`) + their `From` impls — each maps a
+   real, distinct decode-failure domain into its own `Display`
+   message; collapsing them would either lose that distinction or
+   need a macro/`thiserror` dependency, which is a new-dependency
+   decision out of this item's scope. Left as the honest boilerplate
+   Rust error enums require.
 - ~~**4. DBC bit-walker decode/encode/calc** duplication
    (`cannet-dbc/src/{decode,encode,calc}.rs`) — from the June probe,
    *not re-verified by this audit*; re-confirm, then unify the walker
