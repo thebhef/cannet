@@ -19,6 +19,7 @@ import { buildSinkPredicate } from "./sinkPredicate";
 import { buildColorResolver } from "./colorMap";
 import { SourcesContextMenu } from "./SourcesPicker";
 import { useElementPanel, useElementSources } from "./useElementPanel";
+import { toggleInSet } from "./toggleSet";
 import {
   type ColumnKey,
   type ColumnState,
@@ -122,12 +123,7 @@ export function TracePanel(props: IDockviewPanelProps) {
   const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
   const onSortColumn = useCallback((key: ColumnKey) => setSort((s) => nextSort(s, key)), []);
   const onToggleExpand = useCallback((rowKey: string) => {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(rowKey)) next.delete(rowKey);
-      else next.add(rowKey);
-      return next;
-    });
+    setExpanded((prev) => toggleInSet(prev, rowKey));
   }, []);
 
   // The fetch predicate the host applies before returning rows. Built

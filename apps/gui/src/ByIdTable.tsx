@@ -1,17 +1,10 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 
-import type { SignalRecord, TraceFrameRecord } from "./types";
-import { formatSignalValueWithLabel } from "./format";
-import { type ColorResolver, colorMapTint } from "./colorMap";
-import { setSignalDragData } from "./dragSignals";
-import {
-  SIGNAL_LINE_HEIGHT,
-  buildPlacements,
-  maxAnchorRow,
-  rowFromScroll,
-  scaledHeight,
-  visibleRowCount,
-} from "./traceViewport";
+import type { TraceFrameRecord } from "./types";
+import { type ColorResolver } from "./colorMap";
+import { DecodedSignalCell } from "./DecodedSignalCell";
+import { buildPlacements, rowFromScroll } from "./traceViewport";
+import { useTraceViewport } from "./useTraceViewport";
 import {
   type BusLookup,
   type ColumnKey,
@@ -85,8 +78,6 @@ export function ByIdTable({
   onToggleExpand,
 }: ByIdTableProps) {
   diagCount("render.ByIdTable"); // DIAG
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [viewportHeight, setViewportHeight] = useState(600);
   // Absolute row at the top of the viewport — the single source of truth
   // for what's shown (the rows never depend on the live `scrollTop`).
   // Unlike the chronological view there is no live tail to pin to: by-id
@@ -96,23 +87,8 @@ export function ByIdTable({
   const visible = useMemo(() => visibleColumns(columns), [columns]);
   const gridTemplate = useMemo(() => gridTemplateColumns(columns), [columns]);
 
-  const rows = visibleRowCount(viewportHeight);
-  const spacerHeight = scaledHeight(count, viewportHeight);
-  const anchorMax = maxAnchorRow(count, viewportHeight);
-  const firstVisibleRow = Math.min(anchorMax, Math.max(0, anchoredRow));
-  const lastVisibleRow = Math.min(count, firstVisibleRow + rows);
-
-  // Observe viewport size so the visible-row count tracks resizes.
-  useEffect(() => {
-    if (!containerRef.current) return;
-    const update = () => {
-      if (containerRef.current) setViewportHeight(containerRef.current.clientHeight);
-    };
-    update();
-    const ro = new ResizeObserver(update);
-    ro.observe(containerRef.current);
-    return () => ro.disconnect();
-  }, []);
+  const { containerRef, viewportHeight, rows, spacerHeight, firstVisibleRow, lastVisibleRow } =
+    useTraceViewport(count, anchoredRow);
 
   // Prefetch the covering page for the visible rows.
   useEffect(() => {
@@ -259,59 +235,4 @@ const ByIdRow = memo(function ByIdRow({
   );
 });
 
-/// One decoded signal sub-row in an expanded by-id row, sized to
-/// `SIGNAL_LINE_HEIGHT` to match the placement arithmetic. Drag
-/// source identical to the chronological trace's version — same
-/// payload shape, same single-ref form, scoped to the frame's
-/// own `bus_id`. Shared component would force a cross-file import
-/// dance for a six-line render; the duplication is cheaper to
-/// maintain than the abstraction.
-function DecodedSignalCell({
-  frame,
-  messageName,
-  sig,
-  resolveColor,
-}: {
-  frame: TraceFrameRecord;
-  messageName: string;
-  sig: SignalRecord;
-  resolveColor: ColorResolver | null;
-}) {
-  const tint = resolveColor?.(
-    {
-      messageId: frame.id,
-      extended: frame.extended,
-      signalName: sig.name,
-      busId: frame.bus_id ?? null,
-    },
-    sig.value,
-  );
-  return (
-    <div
-      className="signal"
-      style={{ height: SIGNAL_LINE_HEIGHT }}
-      draggable
-      onDragStart={(e) => {
-        e.stopPropagation();
-        setSignalDragData(e, [
-          {
-            busId: frame.bus_id ?? null,
-            messageId: frame.id,
-            extended: frame.extended,
-            signalName: sig.name,
-            messageName,
-            unit: sig.unit,
-          },
-        ]);
-      }}
-    >
-      <span className="signal-name">{sig.name}</span>
-      <span
-        className="signal-value"
-        style={tint ? { background: colorMapTint(tint) } : undefined}
-      >
-        {formatSignalValueWithLabel(sig.value, sig.unit, sig.label)}
-      </span>
-    </div>
-  );
-}
+// `DecodedSignalCell` is shared with `TraceView` — see `DecodedSignalCell.tsx`.

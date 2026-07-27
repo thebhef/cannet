@@ -21,6 +21,7 @@ import {
   setSignalDragData,
   type DraggableSignalRef,
 } from "./dragSignals";
+import { toggleInSet } from "./toggleSet";
 
 /**
  * DBC discovery panel. Tree-with-fuzzy-search over every
@@ -843,12 +844,7 @@ export function DbcPanel(props: IDockviewPanelProps) {
   }, [showValues, renderedSignalKeys, buses]);
 
   const toggle = useCallback((id: string) => {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+    setExpanded((prev) => toggleInSet(prev, id));
   }, []);
 
   /// Keyboard cursor — the node id the arrow keys operate on. Kept
@@ -886,12 +882,7 @@ export function DbcPanel(props: IDockviewPanelProps) {
       if (modifiers.meta) {
         // Toggle this row's membership; update the anchor to the
         // toggled row so a follow-up shift-click extends from here.
-        setSelection((prev) => {
-          const next = new Set(prev);
-          if (next.has(id)) next.delete(id);
-          else next.add(id);
-          return next;
-        });
+        setSelection((prev) => toggleInSet(prev, id));
         selectionAnchorRef.current = id;
         return;
       }
@@ -1258,6 +1249,14 @@ function SignalDetails({ signal, indent }: SignalDetailsProps) {
   );
 }
 
+/// `0x<hex id>` with a trailing `x` for an extended id (`0x1FFFFFFFx`,
+/// `0x100`) — the tree row's id-label convention. Distinct from
+/// `format.ts`'s `formatId` (`x:`/`s:`-prefixed, zero-padded), which is
+/// the trace-view convention instead.
+function dbcIdLabel(m: { messageId: number; extended: boolean }): string {
+  return `0x${m.messageId.toString(16).toUpperCase()}${m.extended ? "x" : ""}`;
+}
+
 interface MessageDetailsProps {
   message: DbcMessageContentRecord;
   indent: string;
@@ -1265,9 +1264,7 @@ interface MessageDetailsProps {
 
 function MessageDetails({ message, indent }: MessageDetailsProps) {
   const decId = message.messageId.toString(10);
-  const hexId = `0x${message.messageId.toString(16).toUpperCase()}${
-    message.extended ? "x" : ""
-  }`;
+  const hexId = dbcIdLabel(message);
   return (
     <div className="dbc-row-details" style={{ paddingLeft: indent }}>
       <dl className="dbc-details-grid">
@@ -1324,9 +1321,7 @@ function DbcRowContent({ kind }: { kind: RenderRow["kind"] }) {
   }
   if (kind.tag === "message") {
     const m = kind.message;
-    const idLabel = `0x${m.messageId.toString(16).toUpperCase()}${
-      m.extended ? "x" : ""
-    }`;
+    const idLabel = dbcIdLabel(m);
     return (
       <>
         <span className="dbc-row-label">{m.name}</span>

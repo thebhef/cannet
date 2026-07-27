@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 
 import type { TraceFrameRecord } from "./types";
@@ -15,6 +15,7 @@ import {
   visibleColumns,
 } from "./traceColumns";
 import { formatData, formatId, formatKind, formatMsgRate, formatTimestamp } from "./format";
+import { useDismissableMenu } from "./useDismissableMenu";
 
 /// DnD payload type for dragging a column header to reorder it. Carries
 /// the dragged column's `ColumnKey` as plain text.
@@ -142,21 +143,7 @@ export function TraceHeader<K extends string = ColumnKey>({
 
   // The show/hide column context menu, at the cursor.
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
-  useEffect(() => {
-    if (!menu) return;
-    const close = () => setMenu(null);
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setMenu(null);
-    };
-    // A `mousedown` anywhere (the menu's own checkboxes use `click`)
-    // closes it; so does Escape.
-    document.addEventListener("mousedown", close);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", close);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [menu]);
+  const menuRef = useDismissableMenu<HTMLDivElement>(menu != null, () => setMenu(null));
 
   return (
     <div
@@ -237,10 +224,10 @@ export function TraceHeader<K extends string = ColumnKey>({
       })}
       {menu && (
         <div
+          ref={menuRef}
           className="column-context-menu"
           role="menu"
           style={{ left: menu.x, top: menu.y }}
-          onMouseDown={(e) => e.stopPropagation()}
         >
           {columns.map((c) => {
             const def = columnDefFor(defs, c.key);

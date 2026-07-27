@@ -1,6 +1,7 @@
-import { useEffect, useMemo } from "react";
+import { useMemo } from "react";
 
 import type { Bus } from "./types";
+import { useDismissableMenu } from "./useDismissableMenu";
 
 interface ChecklistProps {
   buses: readonly Bus[];
@@ -126,28 +127,11 @@ export function SourcesContextMenu(props: {
 }) {
   const { position, value, buses, filters, onChange, onClose, onInsertFilter } = props;
   const helpers = useSourcesHelpers(value, buses, filters, onChange);
-
-  // Close on Escape or outside-click. `mousedown` rather than
-  // `click` so a click on a `<label>` (which fires `click` after the
-  // wrapped input toggles) doesn't dismiss the menu prematurely.
-  useEffect(() => {
-    const onDown = (e: MouseEvent) => {
-      const t = e.target as Element | null;
-      if (!t?.closest(".sources-context-menu")) onClose();
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [onClose]);
+  const menuRef = useDismissableMenu<HTMLDivElement>(true, onClose);
 
   return (
     <div
+      ref={menuRef}
       className="sources-context-menu"
       style={{ left: position.x, top: position.y }}
       onContextMenu={(e) => e.preventDefault()}

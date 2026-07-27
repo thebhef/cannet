@@ -9,6 +9,7 @@ import { useSignalCatalog } from "./signalCatalogContext";
 import { rulesFromValueTable } from "./colorMap";
 import { isEnumValueTable, type ColorRule, type ProjectElement, type ValueTableEntryRecord } from "./types";
 import { useValueTables, type ValueTableSignal } from "./useValueTables";
+import { busLookup } from "./traceColumns";
 
 type ColorMapElement = Extract<ProjectElement, { kind: "colormap" }>;
 
@@ -57,11 +58,7 @@ export function ColorMapPanel(props: IDockviewPanelProps) {
   const entry = registry.get(elementId)?.element;
   const element = entry && entry.kind === "colormap" ? entry : null;
 
-  const busName = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const b of buses) m.set(b.id, b.name);
-    return m;
-  }, [buses]);
+  const busName = useMemo(() => busLookup(buses), [buses]);
 
   // The signal catalog (every signal the attached DBCs define, expanded
   // per bus). The host owns the DBC→signal mapping.

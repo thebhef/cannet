@@ -396,29 +396,87 @@ next to `DOCK_COMPONENTS` (App.tsx:174).
     priority, both persist shapes, currentSources kind-narrowing,
     availableFilters, handleSourcesChange) rather than duplicating it
     per panel.
-- **16. TraceView ↔ ByIdTable near-clones** — `DecodedSignalCell` is a
+- ~~**16. TraceView ↔ ByIdTable near-clones** — `DecodedSignalCell` is a
     48-line *verbatim* copy (TraceView.tsx:560–613 =
     ByIdTable.tsx:255–302, under a comment admitting it); the
     rows/spacer/anchor derivation and ResizeObserver effect are
     identical. → share the cell component and the viewport scaffolding;
     note the scroll handlers genuinely differ (TraceView embeds
-    auto-scroll suppression) — share the common core only.
-- **17. Host-mirror pattern** (snapshot fetch + change-event refetch +
+    auto-scroll suppression) — share the common core only.~~ **Done
+    (task-0030/10-ts-shared-batch).** Re-confirmed exactly: `DecodedSignalCell`
+    was a verbatim copy (ByIdTable's own comment admitted it); the
+    rows/spacer/anchor derivation and the resize effect were identical
+    modulo one diag-counter call TraceView made and ByIdTable didn't.
+    Extracted `DecodedSignalCell.tsx` (the shared cell) and
+    `useTraceViewport` (the shared scaffolding — takes an optional diag
+    key so TraceView keeps its counter and ByIdTable stays silent, exactly
+    matching prior behavior). Scroll handling (auto-scroll, wheel
+    stepping, re-pin) stayed panel-local as directed — TraceView's
+    auto-scroll suppression has no ByIdTable equivalent. TDD: both views
+    already had DOM coverage of the cell (TraceView.signals.dom.test.tsx,
+    ByIdTable.dom.test.tsx); added `useTraceViewport.dom.test.tsx` as
+    dedicated coverage for the extracted derivation itself.
+- ~~**17. Host-mirror pattern** (snapshot fetch + change-event refetch +
     500 ms poll-while-running) duplicated TransmitPanel:90–115 /
     RbsPanel:93–131 — and TransmitPanel is *missing* the
     post-listener refetch RbsPanel has (launch race; bug entry in
-    backlog). → `useHostMirror` hook fixes both at once.
-- **18. Dismiss-on-outside-click + Escape effect ×6** (traceTable,
+    backlog). → `useHostMirror` hook fixes both at once.~~ **Done
+    (task-0030/10-ts-shared-batch).** Confirmed the missing post-listener
+    refetch was real: added a regression test that reproduces the race
+    (a pool change landing in the async `listen()` attach gap is lost)
+    against the prior inline effect, confirmed it failed, then migrated
+    both panels onto `useHostMirror` (fetch/fallback/event/optional
+    payload `matches`/optional `pollWhile` predicate), which always does
+    the post-listener refetch. Backlog's `TransmitPanel.tsx` launch-race
+    entry removed (fixed, not just tracked). TDD: hook has its own
+    `useHostMirror.dom.test.tsx` (fetch, reject-fallback, post-listener
+    refetch, event-payload filtering, poll-while-true/stops-when-false,
+    unmount cleanup) plus the panel-level regression test.
+- ~~**18. Dismiss-on-outside-click + Escape effect ×6** (traceTable,
     SourcesPicker, PlotPanel ×2, ProjectGraphPanel, RbsPanel). → one
-    `useDismissableMenu` hook.
-- **19. Set-toggle helper ×6** (twice verbatim in RbsPanel alone). → one
-    util.
-- **20. Formatting around `format.ts` instead of in it** —
+    `useDismissableMenu` hook.~~ **Done (task-0030/10-ts-shared-batch).**
+    Re-confirmed ×6, but not identically shaped: 5 sites (traceTable,
+    SourcesPicker, PlotPanel's toolbar menu, PlotPanel's
+    `MeasurementMenu`, ProjectGraphPanel) already closed on outside
+    mousedown + Escape, via three different outside-detection tricks
+    (`closest()` selector, `stopPropagation()` on the menu root, or a
+    ref + `contains()`) that the shared hook's ref-based `contains()`
+    check replaces uniformly. RbsPanel's signal context menu didn't
+    match: it closed on *any* `window` "click" (inside or outside) with
+    no Escape handling at all — outside-dismiss still worked (its two
+    menu items already call the close setter themselves), but Escape was
+    a silent no-op. Migrating it onto the shared hook is a small
+    behavior gain, not pure dedup: Escape now closes it too, consistent
+    with the other 5. TDD: hook has `useDismissableMenu.dom.test.tsx`
+    (outside-mousedown closes, inside doesn't, Escape closes, closed
+    while `open=false` is inert, listeners drop on unmount); added two
+    RbsPanel tests (Escape closing the new-to-it path, and an
+    inside-menu mousedown not pre-empting its own click).
+- ~~**19. Set-toggle helper ×6** (twice verbatim in RbsPanel alone). → one
+    util.~~ **Done (task-0030/10-ts-shared-batch).** Re-confirmed exactly
+    ×6: TraceView/TracePanel row-expansion, DbcPanel's tree-expansion and
+    multi-select, and RbsPanel's `toggleSet`/`toggleSet2` — two
+    identically-bodied local helpers under different names. Added
+    `toggleInSet` (own unit test) and migrated all 6 call sites.
+- ~~**20. Formatting around `format.ts` instead of in it** —
     RbsPanel:567 is character-identical to `formatData`'s body (blocked
     only by its `TraceFrameRecord` parameter — add `formatBytes`);
     DbcPanel id-label template duplicated in-file (897 vs 953);
     TransmitPanel:1322 re-rolls `formatId`'s width rule. `busLookup()`
-    rebuilt inline in PlotPanel/ColorMapPanel (June item, still open).
+    rebuilt inline in PlotPanel/ColorMapPanel (June item, still open).~~
+    **Done (task-0030/10-ts-shared-batch).** All four re-confirmed: added
+    `formatBytes` (RbsPanel's message-payload hex, now sharing
+    `formatData`'s body) and `formatCanIdHex` (the id-hex-width rule
+    `formatId` wraps, now shared by TransmitPanel's editable `CanIdInput`,
+    which needs the bare hex text since its `s:`/`x:` prefix is its own
+    toggle button); factored DbcPanel's duplicated `0x<hex>[x]` id-label
+    template into a local `dbcIdLabel` helper (distinct from `formatId`'s
+    trace-view convention, so left local rather than moved into
+    `format.ts`); routed PlotPanel's and ColorMapPanel's inline
+    bus-id→name `Map` builds through `traceColumns.ts`'s existing
+    `busLookup()`, closing the June item. PlotPanel's separate
+    bus-id→*colour* map (`busColorLookup`) is a different lookup and
+    untouched.
 - **21. Smaller confirmed items: `buildSinkPredicate`/
     `resolveFilterPredicate` duplicate the sources→predicate
     composition; `recordRecentBlf`/`recordRecentCommand` are the same
