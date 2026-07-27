@@ -207,38 +207,19 @@ struct Placement {
 
 impl Placement {
     /// The payload byte indices this signal's bits touch, following
-    /// the same walk the decoder takes. Used for the range-overlap
-    /// check (the CRC range is byte-aligned, so byte granularity is
-    /// exact).
+    /// the same walk the decoder takes ([`crate::bitwalk::walk`]). Used
+    /// for the range-overlap check (the CRC range is byte-aligned, so
+    /// byte granularity is exact). `Placement` is always built from an
+    /// already-validated signal (`1..=64` bits), so the walk cannot
+    /// fail in practice; an empty result degrades to "no overlap",
+    /// which is safe since resolution already rejected the signal.
     fn occupied_bytes(self) -> Vec<usize> {
-        let mut bytes = Vec::new();
-        match self.byte_order {
-            ByteOrder::LittleEndian => {
-                for bit in self.start_bit..self.start_bit + self.size {
-                    let b = bit / 8;
-                    if bytes.last() != Some(&b) {
-                        bytes.push(b);
-                    }
-                }
-            }
-            ByteOrder::BigEndian => {
-                // Motorola walk: down within the byte, then to the MSB
-                // of the next byte (mirrors `encode_signal_bits`).
-                let mut bit = self.start_bit;
-                for _ in 0..self.size {
-                    let b = bit / 8;
-                    if bytes.last() != Some(&b) {
-                        bytes.push(b);
-                    }
-                    let bit_in_byte = bit % 8;
-                    if bit_in_byte == 0 {
-                        bit += 15;
-                    } else {
-                        bit -= 1;
-                    }
-                }
-            }
-        }
+        let Some(positions) = crate::bitwalk::walk(self.start_bit, self.size, self.byte_order)
+        else {
+            return Vec::new();
+        };
+        let mut bytes: Vec<usize> = positions.into_iter().map(|pos| pos.byte_idx).collect();
+        bytes.dedup();
         bytes
     }
 }

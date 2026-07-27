@@ -3,61 +3,25 @@
 
 use can_dbc::ByteOrder;
 
+use crate::bitwalk;
+
 /// Extract `size` bits from `data` starting at `start_bit`, interpreting
 /// the layout per `byte_order`. Returns `None` if any required bit lies
 /// past the end of `data`.
 ///
-/// The DBC bit numbering convention: within a byte, bit 0 is the LSB and
-/// bit 7 is the MSB; bytes go in increasing index. For little-endian
-/// signals the bits run upward starting at `start_bit`. For big-endian
-/// signals (Vector / Motorola convention), `start_bit` is the MSB of the
-/// signal: subsequent bits run downward within the same byte until the
-/// LSB, then jump to the MSB (bit 7) of the next byte.
+/// See [`bitwalk::walk`] for the DBC bit numbering convention.
 pub fn decode_signal_bits(
     data: &[u8],
     start_bit: usize,
     size: usize,
     byte_order: ByteOrder,
 ) -> Option<u64> {
-    if size == 0 || size > 64 {
-        return None;
-    }
-    match byte_order {
-        ByteOrder::LittleEndian => decode_little_endian(data, start_bit, size),
-        ByteOrder::BigEndian => decode_big_endian(data, start_bit, size),
-    }
-}
-
-fn decode_little_endian(data: &[u8], start_bit: usize, size: usize) -> Option<u64> {
+    let positions = bitwalk::walk(start_bit, size, byte_order)?;
     let mut value: u64 = 0;
-    for i in 0..size {
-        let bit_index = start_bit.checked_add(i)?;
-        let byte_idx = bit_index / 8;
-        let bit_in_byte = bit_index % 8;
-        let byte = *data.get(byte_idx)?;
-        let bit = u64::from((byte >> bit_in_byte) & 1);
-        value |= bit << i;
-    }
-    Some(value)
-}
-
-fn decode_big_endian(data: &[u8], start_bit: usize, size: usize) -> Option<u64> {
-    let mut value: u64 = 0;
-    let mut bit = start_bit;
-    for _ in 0..size {
-        let byte_idx = bit / 8;
-        let bit_in_byte = bit % 8;
-        let byte = *data.get(byte_idx)?;
-        let extracted = u64::from((byte >> bit_in_byte) & 1);
-        value = (value << 1) | extracted;
-        // Walk to the next bit in DBC big-endian (Motorola sequential)
-        // order: drop one bit within the byte, but on byte-boundary jump
-        // forward to the MSB (bit 7) of the next byte.
-        if bit_in_byte == 0 {
-            bit = bit.checked_add(15)?;
-        } else {
-            bit -= 1;
-        }
+    for pos in positions {
+        let byte = *data.get(pos.byte_idx)?;
+        let bit = u64::from((byte >> pos.bit_in_byte) & 1);
+        value |= bit << pos.value_bit;
     }
     Some(value)
 }

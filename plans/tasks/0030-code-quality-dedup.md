@@ -113,10 +113,16 @@ next to `DOCK_COMPONENTS` (App.tsx:174).
    skeleton, plus four near-identical error enums (MarkerError has one
    extra variant) and reader.rs's four wrapper variants + From impls.
    → a `decode_framed<T>` helper + one shared error shape.
-- **4. DBC bit-walker decode/encode/calc** duplication
+- ~~**4. DBC bit-walker decode/encode/calc** duplication
    (`cannet-dbc/src/{decode,encode,calc}.rs`) — from the June probe,
    *not re-verified by this audit*; re-confirm, then unify the walker
-   under round-trip coverage. Highest correctness risk if real.
+   under round-trip coverage. Highest correctness risk if real.~~
+   **Done (task-0030/02-bitwalker-dedup).** Re-confirmed 2026-07-26:
+   real duplication — the big-endian bit-stepping recurrence was
+   copy-pasted 4×, little-endian position math 2×. Unified into
+   `bitwalk::walk`, consumed by decode/encode/calc; existing
+   round-trip coverage (both byte orders, signed/float/offset/muxed)
+   served as the green baseline.
 - **5. Frame/wire conversions in the wrong layer** —
    `frame_to_object_bytes` (cannet-blf/src/lib.rs:505–675) hand-builds
    wire structs in the adapter crate root, duplicating header knowledge

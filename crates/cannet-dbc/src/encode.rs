@@ -4,17 +4,16 @@
 
 use can_dbc::ByteOrder;
 
+use crate::bitwalk;
+
 /// Write the low `size` bits of `value` into `data` starting at
 /// `start_bit`, in DBC `byte_order`. Bits outside the `[start_bit,
 /// start_bit + size)` window are preserved. Returns `None` (and does
 /// not mutate `data`) if any required bit lies past the end of `data`,
 /// or if `size` is `0` / `> 64`.
 ///
-/// The DBC bit numbering convention matches [`crate::decode_signal_bits`]:
-/// within a byte bit 0 is the LSB and bit 7 is the MSB; little-endian
-/// signals run bits upward starting at `start_bit`; big-endian (Motorola)
-/// signals start at the MSB of the signal and walk *down* in the byte,
-/// then jump to the MSB of the next byte at each byte boundary.
+/// See [`bitwalk::walk`] for the DBC bit numbering convention (shared
+/// with [`crate::decode_signal_bits`]).
 pub fn encode_signal_bits(
     data: &mut [u8],
     start_bit: usize,
@@ -22,68 +21,16 @@ pub fn encode_signal_bits(
     value: u64,
     byte_order: ByteOrder,
 ) -> Option<()> {
-    if size == 0 || size > 64 {
+    let positions = bitwalk::walk(start_bit, size, byte_order)?;
+    // Bounds-check every position up front so a partial write can't
+    // leave the buffer in a half-mutated state.
+    if positions.iter().any(|pos| pos.byte_idx >= data.len()) {
         return None;
     }
-    match byte_order {
-        ByteOrder::LittleEndian => encode_little_endian(data, start_bit, size, value),
-        ByteOrder::BigEndian => encode_big_endian(data, start_bit, size, value),
-    }
-}
-
-fn encode_little_endian(
-    data: &mut [u8],
-    start_bit: usize,
-    size: usize,
-    value: u64,
-) -> Option<()> {
-    // Bounds-check up front so a partial write can't leave the buffer
-    // in a half-mutated state.
-    let last_bit = start_bit.checked_add(size - 1)?;
-    if last_bit / 8 >= data.len() {
-        return None;
-    }
-    for i in 0..size {
-        let bit_index = start_bit + i;
-        let byte_idx = bit_index / 8;
-        let bit_in_byte = bit_index % 8;
-        let bit = u8::try_from((value >> i) & 1).ok()?;
-        let mask: u8 = 1u8 << bit_in_byte;
-        data[byte_idx] = (data[byte_idx] & !mask) | (bit << bit_in_byte);
-    }
-    Some(())
-}
-
-fn encode_big_endian(data: &mut [u8], start_bit: usize, size: usize, value: u64) -> Option<()> {
-    // Dry walk to confirm every byte position is in range — same
-    // motivation as in `encode_little_endian`: refuse atomically.
-    let mut bit = start_bit;
-    for _ in 0..size {
-        let byte_idx = bit / 8;
-        if byte_idx >= data.len() {
-            return None;
-        }
-        let bit_in_byte = bit % 8;
-        if bit_in_byte == 0 {
-            bit = bit.checked_add(15)?;
-        } else {
-            bit -= 1;
-        }
-    }
-    // Now write, walking the same path.
-    let mut bit = start_bit;
-    for i in 0..size {
-        let byte_idx = bit / 8;
-        let bit_in_byte = bit % 8;
-        let src_bit = u32::try_from(size - 1 - i).ok()?;
-        let bit_val = u8::try_from((value >> src_bit) & 1).ok()?;
-        let mask: u8 = 1u8 << bit_in_byte;
-        data[byte_idx] = (data[byte_idx] & !mask) | (bit_val << bit_in_byte);
-        if bit_in_byte == 0 {
-            bit += 15;
-        } else {
-            bit -= 1;
-        }
+    for pos in positions {
+        let bit = u8::try_from((value >> pos.value_bit) & 1).ok()?;
+        let mask: u8 = 1u8 << pos.bit_in_byte;
+        data[pos.byte_idx] = (data[pos.byte_idx] & !mask) | (bit << pos.bit_in_byte);
     }
     Some(())
 }

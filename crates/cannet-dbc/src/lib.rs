@@ -4,6 +4,7 @@
 //! This crate builds an indexed, decode-friendly view on top of that AST
 //! and runs the bit-extraction maths against `cannet_core::CanFrame` payloads.
 
+mod bitwalk;
 mod calc;
 mod crc_named;
 mod decode;
