@@ -43,7 +43,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::byid::{ByIdIndex, BYID_PREFIX};
 use crate::record::{rebuild_payload, split_payload, MetaRecord, BUS_NONE, RECORD_SIZE};
-use crate::seg::{create_segment, open_segment, remove_files_with_prefixes, Segment};
+use crate::seg::{open_segment, remove_files_with_prefixes, Segment};
+use crate::seg_chain::{evict_leading, grow_fixed};
 use crate::{RawStore, RawTraceFrame};
 
 /// File name of the reopen manifest (ADR 0002 DS-4/DS-7), written into the
@@ -105,6 +106,14 @@ impl Default for DiskConfig {
             ring_capacity: 4096,
         }
     }
+}
+
+fn meta_seg_path(dir: &Path, i: usize) -> PathBuf {
+    dir.join(format!("meta.{i:06}"))
+}
+
+fn payload_seg_path(dir: &Path, i: usize) -> PathBuf {
+    dir.join(format!("payload.{i:06}"))
 }
 
 /// Disk-backed [`RawStore`]. See the module docs.
@@ -263,7 +272,7 @@ impl DiskRawStore {
         // the count the watermark implies.
         let meta_segs_count = len.div_ceil(cfg.records_per_seg);
         for i in meta_seg_base..meta_segs_count {
-            let path = store.meta_seg_path(i);
+            let path = meta_seg_path(&store.dir, i);
             store.meta_segs.push(open_segment(&path)?);
         }
         // The lowest live payload byte is the first live row's payload
@@ -284,7 +293,7 @@ impl DiskRawStore {
                 + 1
         };
         for i in store.payload_seg_base..payload_segs_count {
-            let path = store.payload_seg_path(i);
+            let path = payload_seg_path(&store.dir, i);
             store.payload_segs.push(open_segment(&path)?);
         }
         // Refill the RAM ring from the durable tail so a follow-live read
@@ -323,13 +332,6 @@ impl DiskRawStore {
         std::fs::rename(&tmp, self.dir.join(MANIFEST_NAME))
     }
 
-    fn meta_seg_path(&self, i: usize) -> PathBuf {
-        self.dir.join(format!("meta.{i:06}"))
-    }
-
-    fn payload_seg_path(&self, i: usize) -> PathBuf {
-        self.dir.join(format!("payload.{i:06}"))
-    }
 
     /// Drop every mapping and delete the segment files from `dir`,
     /// including the reopen manifest so a wiped store never reloads a
@@ -431,22 +433,19 @@ impl DiskRawStore {
     // `seg` is an absolute segment number; the active tail lives at
     // `meta_seg_base + meta_segs.len() - 1`, so grow until it covers `seg`.
     fn ensure_meta_seg(&mut self, seg: usize) {
-        while self.meta_seg_base + self.meta_segs.len() <= seg {
-            let i = self.meta_seg_base + self.meta_segs.len();
-            let bytes = self.cfg.records_per_seg * RECORD_SIZE;
-            let s = create_segment(&self.meta_seg_path(i), bytes)
-                .expect("cannet-spill: metadata segment I/O failed");
-            self.meta_segs.push(s);
-        }
+        let bytes = self.cfg.records_per_seg * RECORD_SIZE;
+        let dir = &self.dir;
+        grow_fixed(&mut self.meta_segs, self.meta_seg_base, seg, |_| bytes, |i| {
+            meta_seg_path(dir, i)
+        });
     }
 
     fn ensure_payload_seg(&mut self, seg: usize) {
-        while self.payload_seg_base + self.payload_segs.len() <= seg {
-            let i = self.payload_seg_base + self.payload_segs.len();
-            let s = create_segment(&self.payload_seg_path(i), self.cfg.payload_seg_bytes)
-                .expect("cannet-spill: payload segment I/O failed");
-            self.payload_segs.push(s);
-        }
+        let bytes = self.cfg.payload_seg_bytes;
+        let dir = &self.dir;
+        grow_fixed(&mut self.payload_segs, self.payload_seg_base, seg, |_| bytes, |i| {
+            payload_seg_path(dir, i)
+        });
     }
 
     fn intern_bus(&mut self, name: &str) -> u16 {
@@ -593,11 +592,10 @@ impl DiskRawStore {
         let rps = self.cfg.records_per_seg;
         let tail_meta_seg = self.len.saturating_sub(1) / rps;
         let target_meta_base = (first_index / rps).min(tail_meta_seg);
-        while self.meta_seg_base < target_meta_base {
-            drop(self.meta_segs.remove(0)); // unmap before deleting (Windows)
-            let _ = std::fs::remove_file(self.meta_seg_path(self.meta_seg_base));
-            self.meta_seg_base += 1;
-        }
+        let dir = &self.dir;
+        evict_leading(&mut self.meta_segs, &mut self.meta_seg_base, target_meta_base, |i| {
+            meta_seg_path(dir, i)
+        });
         // The lowest live payload byte is the first live row's payload offset;
         // payload segments wholly below it are dead.
         if first_index < self.len {
@@ -606,11 +604,10 @@ impl DiskRawStore {
             let tail_payload_seg = self.payload_cursor.saturating_sub(1) / seg_bytes;
             let target_payload_base =
                 usize::try_from((min_off / seg_bytes).min(tail_payload_seg)).unwrap_or(0);
-            while self.payload_seg_base < target_payload_base {
-                drop(self.payload_segs.remove(0));
-                let _ = std::fs::remove_file(self.payload_seg_path(self.payload_seg_base));
-                self.payload_seg_base += 1;
-            }
+            let dir = &self.dir;
+            evict_leading(&mut self.payload_segs, &mut self.payload_seg_base, target_payload_base, |i| {
+                payload_seg_path(dir, i)
+            });
         }
         // The incremental-flush byte watermarks need no adjustment here:
         // they track the (still-monotonic) global write cursors, and the

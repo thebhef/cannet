@@ -45,7 +45,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use cannet_dbc::Database;
-use cannet_spill::SampleSeq;
+use cannet_spill::{lower_bound, SampleSeq};
 
 use crate::signal_sampler::{self, SamplePoint};
 use crate::trace_store::TraceStore;
@@ -281,17 +281,7 @@ impl SignalCache {
 /// at the level's low-water mark, so an evicted (front-trimmed) slot is
 /// never read.
 fn partition_by_t(level: &SampleSeq, target: f64) -> usize {
-    let mut lo = level.first_slot();
-    let mut hi = level.len();
-    while lo < hi {
-        let mid = lo + (hi - lo) / 2;
-        if level.get(mid).0 < target {
-            lo = mid + 1;
-        } else {
-            hi = mid;
-        }
-    }
-    lo
+    lower_bound(level.first_slot(), level.len(), target, |k| level.get(k).0)
 }
 
 /// Count of `level` points whose `t_seconds` lies in `[from, to)`.
