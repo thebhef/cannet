@@ -25,7 +25,6 @@ import type {
   TransmitMode,
   TransmitRequestRecord,
 } from "./types";
-import { useElementRegistry } from "./projectElements";
 import { CalcFieldEditor } from "./CalcFieldEditor";
 import { Combobox, type ComboboxOption } from "./Combobox";
 import { useProjectContext } from "./projectContext";
@@ -33,6 +32,7 @@ import { useSignalCatalog } from "./signalCatalogContext";
 import { effectiveBusColor } from "./busColor";
 import { SIGNAL_DND_MIME, parseSignalDragData } from "./dragSignals";
 import { useValueTables, type ValueTableSignal } from "./useValueTables";
+import { useElementPanel } from "./useElementPanel";
 
 /**
  * Transmit panel (thin view over the host model).
@@ -55,24 +55,15 @@ import { useValueTables, type ValueTableSignal } from "./useValueTables";
  * insert that frame before another (rewrites the element's `frameIds`).
  */
 export function TransmitPanel(props: IDockviewPanelProps) {
-  const { api } = props;
-  const params = props.params as { elementId?: unknown } | undefined;
-  const registry = useElementRegistry();
   const project = useProjectContext();
-  const [elementId] = useState(() =>
-    typeof params?.elementId === "string"
-      ? params.elementId
-      : crypto.randomUUID(),
-  );
-  useEffect(() => {
-    registry.ensure(elementId, "transmit");
-  }, [registry, elementId]);
+  const { elementId, registry, persist } = useElementPanel(props, "transmit");
 
   // Persist just the elementId in panel params — the frame model is
-  // host-owned now (no `frames` blob).
+  // host-owned now (no `frames` blob, so no `config` to write onto
+  // the element).
   useEffect(() => {
-    api.updateParameters({ elementId });
-  }, [api, elementId]);
+    persist();
+  }, [persist]);
 
   // This panel's group + display order: the transmit element's
   // `frameIds`. Mirrored into a ref so event-driven handlers read the

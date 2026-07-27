@@ -353,14 +353,49 @@ next to `DOCK_COMPONENTS` (App.tsx:174).
     before extracting, plus a hook-level test for the empty-signal-list
     gate the three panels now rely on. ColorMapPanel already had DOM
     coverage of the display effect (no new test needed).
-- **15. Element-panel lifecycle boilerplate ×4 panels** —
+- ~~**15. Element-panel lifecycle boilerplate ×4 panels** —
     `elementIdFromParams`, savedConfig hydration, dual-write persist,
     `currentSources` kind-narrowing, `availableFilters`, and the
     GOTO_EVENT subscribe-once listener are copy-pasted across
     TracePanel/PlotPanel and inlined in TransmitPanel/RbsPanel
     (TracePanel.tsx:41–197 vs PlotPanel.tsx:428–490, 767–790). → a
     `useElementPanel` hook (+ `useElementSources` for the picker
-    wiring).
+    wiring).~~ **Done (task-0030/09-element-panel-hook).** Re-confirmed
+    against current line numbers; the doc's shape mostly held, with two
+    wrinkles. First, `currentSources`/`availableFilters` never applied
+    to TransmitPanel/RbsPanel at all — their element kinds
+    (`transmit`: `sinks`/`frameIds`; `rbs`: `path`/`run`) carry no
+    `sources` field, so "inlined in TransmitPanel/RbsPanel" describes
+    only the id-resolution/ensure/persist slice, not a sources-picker
+    gap. `useElementSources` (currentSources kind-narrowing +
+    availableFilters + handleSourcesChange) is genuinely verbatim
+    between TracePanel and PlotPanel and is used only by those two.
+    Second, the GOTO_EVENT listener resists a shared implementation
+    despite the doc grouping it with the rest: TracePanel resolves the
+    payload timestamp to a display *row* (via `frame_indices_at_ns` /
+    `filtered_positions_at_ns` + the event merge) and scrolls to it;
+    PlotPanel resolves it to an x-axis *window centre*
+    (`gotoNote`/`baseSecondsRef`) and re-centres the plot. Different
+    targets, different host calls — left panel-local in both, per the
+    task's own escape hatch. `useElementPanel` covers id resolution +
+    registry `ensure` + `config` hydration + dual-write persist
+    (`persist(config?)`) for all 4 panels: TracePanel/PlotPanel pass a
+    config object (unifying their identical dual-write bodies, and
+    fixing nothing — behavior preserved bit-for-bit, including each
+    panel's own persist-effect dependency array, which `persist`'s
+    memoization keeps intact); TransmitPanel/RbsPanel call `persist()`
+    with no config (elementId-only into params, no registry write —
+    matching their pre-existing behavior, since neither element kind
+    has a `config` field to write). TDD: TracePanel and PlotPanel
+    already had DOM coverage of config hydration + dual-write persist
+    (`TracePanel.dom.test.tsx`, `PlotPanel.dom.test.tsx`); no panel had
+    coverage of the id-resolution fallback (fresh uuid when `params`
+    carries none) or of the elementId-only persist path — added
+    `useElementPanel.dom.test.tsx` as the canonical coverage for the
+    shared hooks themselves (id resolution, ensure, config hydration
+    priority, both persist shapes, currentSources kind-narrowing,
+    availableFilters, handleSourcesChange) rather than duplicating it
+    per panel.
 - **16. TraceView ↔ ByIdTable near-clones** — `DecodedSignalCell` is a
     48-line *verbatim* copy (TraceView.tsx:560–613 =
     ByIdTable.tsx:255–302, under a comment admitting it); the

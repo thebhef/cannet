@@ -14,12 +14,11 @@ import { timelineEvents } from "./notes";
 import { buildEventMerge } from "./eventMerge";
 import { useFilteredTrace } from "./useFilteredTrace";
 import { useByIdView } from "./useByIdView";
-import { useElementRegistry } from "./projectElements";
 import { useProjectContext } from "./projectContext";
 import { buildSinkPredicate } from "./sinkPredicate";
 import { buildColorResolver } from "./colorMap";
-import { elementLabel } from "./elementLabel";
 import { SourcesContextMenu } from "./SourcesPicker";
+import { useElementPanel, useElementSources } from "./useElementPanel";
 import {
   type ColumnKey,
   type ColumnState,
@@ -36,11 +35,14 @@ import { diagCount } from "./diag"; // DIAG
 
 type TraceMode = "chronological" | "by-id";
 
-/// The element id from a panel's params, or a fresh one if absent (a
-/// layout saved before elements existed, or a corrupt blob).
-function elementIdFromParams(params: unknown): string {
-  const p = params as { elementId?: unknown } | undefined;
-  return typeof p?.elementId === "string" ? p.elementId : crypto.randomUUID();
+/// This panel's persisted view config: the mode, auto-scroll,
+/// column layout, and events toggle — see {@link useElementPanel}.
+interface TraceConfig {
+  [key: string]: unknown;
+  mode?: unknown;
+  autoScroll?: unknown;
+  columns?: unknown;
+  showEvents?: unknown;
 }
 
 /**
@@ -58,12 +60,13 @@ function elementIdFromParams(params: unknown): string {
 export function TracePanel(props: IDockviewPanelProps) {
   diagCount("render.TracePanel"); // DIAG
   const data = useTraceData();
-  const registry = useElementRegistry();
-  const { ensure } = registry;
   const project = useProjectContext();
-  const { api } = props;
   const buses = project.buses;
   const lookup = useMemo(() => busLookup(buses), [buses]);
+  const { elementId, registry, element, savedConfig, persist } = useElementPanel<TraceConfig>(
+    props,
+    "trace",
+  );
   // Signal value→color maps (ADR 0029) are ambient: compile every
   // colormap element in the project into one resolver the decoded-signal
   // cells call to tint themselves. Rebuilt only when the element set
@@ -72,28 +75,6 @@ export function TracePanel(props: IDockviewPanelProps) {
     () => buildColorResolver(registry.entries.map((e) => e.element)),
     [registry.entries],
   );
-
-  const params = props.params as
-    | {
-        elementId?: unknown;
-        mode?: unknown;
-        autoScroll?: unknown;
-        columns?: unknown;
-        showEvents?: unknown;
-      }
-    | undefined;
-  const [elementId] = useState(() => elementIdFromParams(params));
-  useEffect(() => {
-    ensure(elementId, "trace");
-  }, [ensure, elementId]);
-  // Hydrate the state initializers below from the config persisted on
-  // the *element* (survives closing and reopening this panel within a
-  // session); fall back to the dockview `params` for older projects and
-  // the unsaved-workspace `localStorage` layout. Read once at mount.
-  const [savedConfig] = useState<typeof params>(() => {
-    const cfg = (registry.get(elementId)?.element as { config?: typeof params } | undefined)?.config;
-    return cfg ?? params;
-  });
 
   const [mode, setMode] = useState<TraceMode>(() =>
     savedConfig?.mode === "chronological" ? "chronological" : "by-id",
@@ -127,17 +108,12 @@ export function TracePanel(props: IDockviewPanelProps) {
     [],
   );
 
-  // Dual-write this panel's persistable state: onto the element (model
-  // state — survives closing and reopening the panel within a session,
-  // and is what `Save` serializes) and into the dockview `params` (the
-  // unsaved-workspace `localStorage` layout restores from `params` on
-  // app restart, and it doesn't persist the registry).
-  const { update } = registry;
+  // Dual-write this panel's persistable state (mode, auto-scroll,
+  // column layout, events toggle) onto the element and into the
+  // dockview params — see `useElementPanel`'s `persist`.
   useEffect(() => {
-    const config = { mode, autoScroll, columns, showEvents };
-    update(elementId, { config });
-    api.updateParameters({ elementId, ...config });
-  }, [api, update, elementId, mode, autoScroll, columns, showEvents]);
+    persist({ mode, autoScroll, columns, showEvents });
+  }, [persist, mode, autoScroll, columns, showEvents]);
 
   // By-id mode state. The snapshot itself is host-paged and host-sorted
   // (see `useByIdView` below); the panel owns only the view-local sort
@@ -157,35 +133,14 @@ export function TracePanel(props: IDockviewPanelProps) {
   // The fetch predicate the host applies before returning rows. Built
   // from the element's `sources` (and any upstream filter's predicate).
   // `null` means "no constraint" — the common case for `sources=["*"]`.
-  const element = registry.get(elementId)?.element;
   const fetchFilter = useMemo(() => {
     if (!element) return null;
     return buildSinkPredicate(element, (id) => registry.get(id)?.element);
   }, [element, registry]);
-  // Current sources for the picker. `["*"]` is the default when the
-  // element is still being healed or has a legacy shape lacking the
-  // field — be defensive so the picker never reads from `undefined`.
-  const currentSources =
-    element &&
-    element.kind !== "transmit" &&
-    element.kind !== "rbs" &&
-    element.kind !== "colormap"
-      ? element.sources ?? ["*"]
-      : ["*"];
-  // Filters available to wire upstream of this trace. Exclude
-  // ourselves (a trace can never be its own source) and any other
-  // non-filter elements; the cycle guard in `applyElementPatch`
-  // protects against pathological selections.
-  const availableFilters = useMemo(
-    () =>
-      registry.entries
-        .filter((e) => e.element.kind === "filter")
-        .map((e) => ({ id: e.element.id, label: elementLabel(e.element) })),
-    [registry.entries],
-  );
-  const handleSourcesChange = useCallback(
-    (next: string[]) => registry.update(elementId, { sources: next }),
-    [registry, elementId],
+  const { currentSources, availableFilters, handleSourcesChange } = useElementSources(
+    registry,
+    elementId,
+    element,
   );
   // Right-click anywhere in the trace panel opens the sources
   // context menu at the cursor. The menu owns its own outside-click

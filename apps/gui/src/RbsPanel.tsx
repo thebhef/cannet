@@ -39,12 +39,12 @@ import type {
   RbsSignalView,
   RbsView,
 } from "./types";
-import { useElementRegistry } from "./projectElements";
 import { useProjectContext } from "./projectContext";
 import { CalcFieldEditor } from "./CalcFieldEditor";
 import { Combobox } from "./Combobox";
 import { ValidatedInput, parsePositiveInt } from "./ValidatedInput";
 import { useValueTables, type ValueTableSignal } from "./useValueTables";
+import { useElementPanel } from "./useElementPanel";
 
 /// Address of one message row, as the `rbs_*` commands take it.
 interface Target {
@@ -71,21 +71,15 @@ interface MenuState {
 }
 
 export function RbsPanel(props: IDockviewPanelProps) {
-  const { api } = props;
-  const params = props.params as { elementId?: unknown } | undefined;
-  const registry = useElementRegistry();
   const project = useProjectContext();
-  const [elementId] = useState(() =>
-    typeof params?.elementId === "string" ? params.elementId : crypto.randomUUID(),
-  );
+  const { elementId, registry, element, persist } = useElementPanel(props, "rbs");
+  // Persist just the elementId in panel params — no view-local
+  // config: `path`/`run` live on the element itself, written directly
+  // through `registry.update` at their own call sites below.
   useEffect(() => {
-    registry.ensure(elementId, "rbs");
-  }, [registry, elementId]);
-  useEffect(() => {
-    api.updateParameters({ elementId });
-  }, [api, elementId]);
+    persist();
+  }, [persist]);
 
-  const element = registry.get(elementId)?.element;
   const path = element?.kind === "rbs" ? element.path : null;
   const run = element?.kind === "rbs" ? element.run : false;
 
