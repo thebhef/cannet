@@ -70,20 +70,15 @@ export interface ProjectContextValue {
   /// Bus list ops.
   onAddBus: (bus: Bus) => void;
   onRemoveBus: (id: string) => void;
-  onRenameBus: (id: string, name: string) => void;
-  /// Set a bus's graph colour (`#rrggbb`).
-  onSetBusColor: (id: string, color: string) => void;
-  /// Set a bus's nominal (arbitration) bitrate in bits/s. Pass `null`
-  /// to clear (reverts the host to the driver default on next connect).
-  onSetBusSpeed: (id: string, speed_bps: number | null) => void;
-  /// Toggle CAN-FD mode on a bus. When turned off, the data-phase
-  /// bitrate is left in place but ignored by the host until FD is
-  /// re-enabled.
-  onSetBusFd: (id: string, fd: boolean | null) => void;
-  /// Set a bus's FD data-phase bitrate in bits/s. Pass `null` to
-  /// clear (the host then falls back to the nominal rate for the data
-  /// phase).
-  onSetBusFdDataSpeed: (id: string, fd_data_speed_bps: number | null) => void;
+  /// Shallow-patch one bus's persisted fields (mirrors
+  /// {@link onUpdateVirtualBus}). Used for inline rename (`name`),
+  /// graph colour (`color`), and the hardware-config knobs: nominal
+  /// (arbitration) `speed_bps`, the CAN-FD toggle `fd`, and the FD
+  /// data-phase `fd_data_speed_bps` — each `null`able to clear (the
+  /// host falls back to the driver default / nominal rate on the next
+  /// connect). Pure project state; a hardware change applies on
+  /// reconnect.
+  onUpdateBus: (id: string, patch: Partial<Bus>) => void;
   /// Bus ids whose live hardware configuration no longer matches the
   /// edited project (the user changed speed / FD / data rate after
   /// connect). Reconnecting applies the change; the title-bar banner
