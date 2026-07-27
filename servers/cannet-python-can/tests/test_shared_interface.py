@@ -48,11 +48,9 @@ def _frame(i: int) -> drv.Frame:
         extended=False,
         is_rx=True,
         data=b"\x00",
-        fd=False,
+        kind=drv.FrameKind.CLASSIC,
         brs=False,
         esi=False,
-        is_remote=False,
-        is_error=False,
         dlc=1,
     )
 
@@ -408,3 +406,95 @@ def test_bus_off_state_maps_to_proto_bus_off() -> None:
     assert env.interface_state.state == pb.CONTROLLER_STATE_BUS_OFF
     assert env.interface_state.tec == 255
     assert env.interface_state.rec == 120
+
+
+# ---- error broadcast (item #23) -------------------------------------------
+
+
+class _ReopenFailsDriver:
+    """Opens the channel successfully once, then fails every reopen so
+    the ``reconfigure`` error-broadcast path can be exercised."""
+
+    def __init__(self, channel_id: str = "fake:0") -> None:
+        self._channel_id = channel_id
+        self.opens = 0
+        self.first: Optional[_FakeChannel] = None
+
+    def list_channels(self):
+        return [drv.Channel(id=self._channel_id, display_name="fake")]
+
+    def open(self, channel_id: str, config: drv.OpenConfig) -> _FakeChannel:
+        if channel_id != self._channel_id:
+            raise KeyError(channel_id)
+        self.opens += 1
+        if self.opens == 1:
+            self.first = _FakeChannel(channel_id=channel_id)
+            return self.first
+        raise OSError("reopen boom")
+
+
+def _new_shared() -> "srv._SharedInterface":
+    return srv._SharedInterface(
+        driver=_FakeDriver(), channel_id="fake:0", initial_config=drv.OpenConfig()
+    )
+
+
+def test_broadcast_error_fans_out_to_all_outboxes() -> None:
+    shared = _new_shared()
+    a: "queue.Queue" = queue.Queue()
+    b: "queue.Queue" = queue.Queue()
+    shared._outboxes = [a, b]
+
+    shared._broadcast_error(pb.LOG_LEVEL_ERROR, "boom")
+
+    for q in (a, b):
+        env = q.get(timeout=1.0)
+        assert env.WhichOneof("body") == "log"
+        assert env.log.level == pb.LOG_LEVEL_ERROR
+        assert env.log.message == "boom"
+
+
+def test_broadcast_error_under_held_lock_does_not_deadlock() -> None:
+    """Regression guard: the ``reconfigure`` call site fans out while
+    already holding the non-reentrant ``self._lock``. The helper must
+    read the outbox list without re-acquiring the lock — a reentrant
+    re-lock would deadlock here. Run on a worker thread with a join
+    timeout so a regression fails the test cleanly instead of hanging the
+    whole suite."""
+    shared = _new_shared()
+    a: "queue.Queue" = queue.Queue()
+    shared._outboxes = [a]
+
+    def _run() -> None:
+        with shared._lock:
+            shared._broadcast_error(pb.LOG_LEVEL_ERROR, "held", lock_held=True)
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout=2.0)
+    assert not t.is_alive(), "broadcast under the held lock deadlocked"
+    env = a.get(timeout=1.0)
+    assert env.log.message == "held"
+
+
+def test_reconfigure_failure_broadcasts_to_all_subscribers() -> None:
+    """End-to-end guard for the lock-held fan-out: a failed reopen keeps
+    the old channel and pushes a LOG_LEVEL_ERROR to every subscriber —
+    the one broadcast site that runs under ``self._lock``."""
+    driver = _ReopenFailsDriver()
+    reg = srv._InterfaceRegistry(driver)
+    a: "queue.Queue" = queue.Queue()
+    b: "queue.Queue" = queue.Queue()
+    reg.subscribe("fake:0", a)
+    reg.subscribe("fake:0", b)
+    _drain(a, kind="interface_state")
+    _drain(b, kind="interface_state")
+
+    reg.reconfigure("fake:0", drv.OpenConfig(bitrate_bps=250_000))
+
+    for q in (a, b):
+        [env] = _drain(q, kind="log")
+        assert env.log.level == pb.LOG_LEVEL_ERROR
+        assert "reconfigure" in env.log.message
+    # Old channel kept open on a failed reopen.
+    assert driver.first is not None and not driver.first.closed.is_set()

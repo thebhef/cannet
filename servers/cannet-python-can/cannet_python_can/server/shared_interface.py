@@ -1,163 +1,32 @@
-"""gRPC service implementation: hardware-server wire model (ADR 0022).
+"""The shared-interface layer: one open channel per physical interface,
+fanned out to every subscribed session, plus the rx / pack / state / tx
+pump threads that drive it (ADR 0022).
 
-The service implements the hardware-server wire contract:
-
-- Each physical interface is opened **once**, shared across every
-  session that subscribes to it; a reference count on subscriptions
-  drives start (first ``Subscribe``) and stop (last ``Unsubscribe``).
-- One rx pump per shared interface fans every received ``FrameBatch``
-  out to every subscribed session's outbox.
-- ``Body::ConfigureBus`` updates the interface's :class:`OpenConfig`;
-  if the interface is currently open the bus is closed and reopened
-  with the new config. Conflict semantics across concurrent clients
-  are deliberately left to whatever the underlying python-can backend
-  does.
-- ``Body::InterfaceState`` is pushed: a snapshot on each subscribe,
-  and a fresh push whenever the controller's fault-confinement state
-  or its TEC / REC counters change.
-- ``LogMessage`` envelopes are emitted for vendor-level info / warn /
-  error events tagged with ``sidecar:python-can``.
-
-The rx pump's batching policy (drain up to ``_BATCH_FLUSH_NS`` /
-``_BATCH_MAX_FRAMES``) is unchanged from the original per-session
-pump; it just runs once per interface instead of once per
-(session, interface) pair.
+:class:`_SharedInterface` owns the reference-counted channel lifecycle
+and the four pump threads; :class:`_InterfaceRegistry` is the
+process-wide map from interface id to its :class:`_SharedInterface`,
+holding early ``ConfigureBus`` state so a config that arrives before any
+subscribe is applied at the next open.
 """
 
 from __future__ import annotations
 
-import importlib
 import logging
-import os
 import queue
 import threading
 import time
-from typing import Iterator, Optional
+from typing import Optional
 
-import grpc
-
-from . import driver as drv
-from ._proto import cannet_pb2 as pb
-from ._proto import cannet_pb2_grpc as pb_grpc
+from .. import driver as drv
+from .._proto import cannet_pb2 as pb
+from .helpers import (
+    _error_envelope,
+    _frame_to_proto,
+    _log_envelope,
+    _state_name_to_proto,
+)
 
 _log = logging.getLogger(__name__)
-
-#: The sidecar wire log tag. The GUI host watches for this exact prefix
-#: when bridging incoming ``LogMessage`` envelopes into the System
-#: Messages panel.
-WIRE_SOURCE = "sidecar:python-can"
-
-#: Environment variable that lets the user pick an alternative driver
-#: module (must expose a top-level ``Driver()`` callable returning a
-#: :class:`cannet_python_can.driver.Driver`-shaped object).
-DRIVER_MODULE_ENV = "CANNET_DRIVER_MODULE"
-DEFAULT_DRIVER_MODULE = "cannet_python_can.driver_python_can"
-
-
-def load_driver() -> drv.Driver:
-    """Resolve the active driver module and instantiate it.
-
-    Falls back to the python-can-backed default. Looks for a top-level
-    callable named ``Driver`` (or its lower-case ``driver``); a module
-    that exposes the protocol directly works too.
-    """
-    name = os.environ.get(DRIVER_MODULE_ENV, DEFAULT_DRIVER_MODULE)
-    mod = importlib.import_module(name)
-    factory = (
-        getattr(mod, "Driver", None)
-        or getattr(mod, "PythonCanDriver", None)
-        or getattr(mod, "driver", None)
-    )
-    if factory is None:
-        raise RuntimeError(
-            f"driver module {name!r} exposes no Driver/PythonCanDriver/driver"
-        )
-    return factory()
-
-
-def _now_ns() -> int:
-    # Wall clock, not monotonic: self-stamped envelopes (TX-frame
-    # fallback, log messages) must share the Unix-epoch ns scale of
-    # hardware-stamped RX frames, or consumers that anchor on the
-    # first frame's timestamp see the streams ~3 orders of magnitude
-    # apart.
-    return time.time_ns()
-
-
-def _frame_to_proto(frame: drv.Frame) -> pb.Frame:
-    kind = pb.FRAME_KIND_CLASSIC
-    if frame.is_error:
-        kind = pb.FRAME_KIND_ERROR
-    elif frame.is_remote:
-        kind = pb.FRAME_KIND_REMOTE
-    elif frame.fd:
-        kind = pb.FRAME_KIND_FD
-    return pb.Frame(
-        timestamp_ns=frame.timestamp_ns,
-        can_id=frame.can_id,
-        extended=frame.extended,
-        direction=pb.DIRECTION_RX if frame.is_rx else pb.DIRECTION_TX,
-        kind=kind,
-        data=frame.data,
-        brs=frame.brs,
-        esi=frame.esi,
-        dlc=frame.dlc,
-    )
-
-
-def _proto_to_frame(p: pb.Frame) -> drv.Frame:
-    return drv.Frame(
-        timestamp_ns=p.timestamp_ns or _now_ns(),
-        can_id=p.can_id,
-        extended=p.extended,
-        is_rx=p.direction == pb.DIRECTION_RX,
-        data=bytes(p.data),
-        fd=p.kind == pb.FRAME_KIND_FD,
-        brs=p.brs,
-        esi=p.esi,
-        is_remote=p.kind == pb.FRAME_KIND_REMOTE,
-        is_error=p.kind == pb.FRAME_KIND_ERROR,
-        dlc=p.dlc,
-    )
-
-
-def _log_envelope(level: "pb.LogLevel.V", message: str) -> pb.Envelope:
-    return pb.Envelope(
-        log=pb.LogMessage(
-            timestamp_ns=_now_ns(),
-            level=level,
-            source=WIRE_SOURCE,
-            message=message,
-        )
-    )
-
-
-def _error_envelope(code: "pb.Error.Code.V", message: str) -> pb.Envelope:
-    return pb.Envelope(error=pb.Error(code=code, message=message))
-
-
-def _configure_to_open_config(cfg: pb.ConfigureBus) -> drv.OpenConfig:
-    """Translate a wire ``ConfigureBus`` into an :class:`OpenConfig`.
-
-    ``speed_bps`` / ``fd_data_speed_bps`` of 0 are taken as "unset";
-    the OpenConfig field becomes ``None`` so the driver picks its own
-    default.
-    """
-    return drv.OpenConfig(
-        bitrate_bps=int(cfg.speed_bps) if cfg.speed_bps else None,
-        data_bitrate_bps=(
-            int(cfg.fd_data_speed_bps) if cfg.fd_data_speed_bps else None
-        ),
-        fd=bool(cfg.fd_enabled),
-    )
-
-
-def _state_name_to_proto(name: str) -> "pb.ControllerState.V":
-    if name == drv.STATE_PASSIVE:
-        return pb.CONTROLLER_STATE_PASSIVE
-    if name == drv.STATE_BUS_OFF:
-        return pb.CONTROLLER_STATE_BUS_OFF
-    return pb.CONTROLLER_STATE_ACTIVE
 
 
 #: Pump drains for at most this many nanoseconds after the first
@@ -431,9 +300,7 @@ class _SharedInterface:
             except Exception as e:  # noqa: BLE001
                 msg = f"reconfigure {self._channel_id} failed: {e}"
                 _log.warning(msg)
-                outboxes = list(self._outboxes)
-                for ob in outboxes:
-                    ob.put(_log_envelope(pb.LOG_LEVEL_ERROR, msg))
+                self._broadcast_error(pb.LOG_LEVEL_ERROR, msg, lock_held=True)
                 return
             self._channel = new
             self._reset_state_baseline_locked()
@@ -510,6 +377,22 @@ class _SharedInterface:
         with self._lock:
             return list(self._outboxes)
 
+    def _broadcast_error(
+        self, level: "pb.LogLevel.V", message: str, *, lock_held: bool = False
+    ) -> None:
+        """Fan a ``LogMessage`` envelope out to every subscribed outbox.
+
+        Builds the envelope once and puts it on each subscriber's outbox.
+        Callers that already hold :attr:`_lock` (only :meth:`reconfigure`,
+        which fans out mid-reconfigure) must pass ``lock_held=True``: the
+        helper then reads :attr:`_outboxes` directly instead of taking the
+        non-reentrant lock a second time, which would deadlock.
+        """
+        env = _log_envelope(level, message)
+        outboxes = list(self._outboxes) if lock_held else self._outbox_snapshot()
+        for ob in outboxes:
+            ob.put(env)
+
     def _rx_pump(self) -> None:
         """Reader thread. Stays minimal so PCAN's recv queue drains as
         fast as physically possible: block on ``ch.recv``, push the raw
@@ -576,9 +459,7 @@ class _SharedInterface:
                     next_stats_ns = now_ns + _RX_STATS_INTERVAL_NS
         except Exception as e:  # noqa: BLE001
             _log.warning("rx pump for %s crashed: %s", cid, e)
-            err = _log_envelope(pb.LOG_LEVEL_ERROR, f"rx pump for {cid} crashed: {e}")
-            for ob in self._outbox_snapshot():
-                ob.put(err)
+            self._broadcast_error(pb.LOG_LEVEL_ERROR, f"rx pump for {cid} crashed: {e}")
 
     def _pack_pump(self) -> None:
         """Packager thread. Drains the rx handoff queue, batches frames
@@ -604,13 +485,11 @@ class _SharedInterface:
                 dropped += 1
                 if dropped == 1:
                     _log.warning("dropping unencodable frame on %s: %s", cid, e)
-                    err = _log_envelope(
+                    self._broadcast_error(
                         pb.LOG_LEVEL_ERROR,
                         f"dropping unencodable frame on {cid}: {e} "
                         f"(further drops suppressed)",
                     )
-                    for ob in self._outbox_snapshot():
-                        ob.put(err)
                 return None
 
         try:
@@ -642,9 +521,9 @@ class _SharedInterface:
                     ob.put(env)
         except Exception as e:  # noqa: BLE001
             _log.warning("pack pump for %s crashed: %s", cid, e)
-            err = _log_envelope(pb.LOG_LEVEL_ERROR, f"pack pump for {cid} crashed: {e}")
-            for ob in self._outbox_snapshot():
-                ob.put(err)
+            self._broadcast_error(
+                pb.LOG_LEVEL_ERROR, f"pack pump for {cid} crashed: {e}"
+            )
 
     def _state_pump(self) -> None:
         cid = self._channel_id
@@ -763,408 +642,3 @@ class _InterfaceRegistry:
         if shared is None:
             raise KeyError(channel_id)
         shared.transmit(frame, outbox)
-
-
-#: How often a parked ``WatchInterfaces`` stream wakes to re-check
-#: ``context.is_active()``. This is a liveness safety-net only — it does
-#: **not** drive enumeration. ADR 0016 leaves the re-enumeration cadence
-#: to the server "[depending on] how cheap enumeration is on this
-#: backend"; on PCAN the global ``GetValue(PCAN_ATTACHED_CHANNELS)`` call
-#: serialises against ``CAN_Write`` in the driver, so re-enumerating on a
-#: timer stalled active transmits (~150 ms hiccups every poll). The
-#: sidecar therefore enumerates only on subscribe (the seed) and on an
-#: explicit ``ListInterfaces`` pull (the GUI's "Discover" button), never
-#: on a timer while channels are open.
-_WATCH_LIVENESS_RECHECK_S = 5.0
-
-
-class CannetServerService(pb_grpc.CannetServerServicer):
-    """Service entry points called by the gRPC framework."""
-
-    def __init__(
-        self,
-        driver: drv.Driver,
-        *,
-        watch_recheck_interval_s: float = _WATCH_LIVENESS_RECHECK_S,
-    ) -> None:
-        self._driver = driver
-        self._registry = _InterfaceRegistry(driver)
-        # Shared snapshot cache + sequence counter, both guarded by
-        # `_watch_cond`. Watchers block on the condition until the
-        # sequence advances past their last-seen value. The cache is
-        # seeded once on first subscribe and re-published only by an
-        # explicit pull — nothing re-enumerates on a timer.
-        self._watch_cond = threading.Condition()
-        self._watch_snapshot: list[pb.Interface] = []
-        self._watch_seq: int = 0
-        self._watch_seeded = False
-        self._watch_lock = threading.Lock()
-        # How often a parked watcher wakes to re-check `is_active()` — a
-        # liveness safety-net, not an enumeration cadence. Tests override
-        # it to keep the suite quick.
-        self._watch_recheck_interval_s = watch_recheck_interval_s
-
-    # ----- ListInterfaces ---------------------------------------------------
-
-    def ListInterfaces(
-        self, request: pb.ListInterfacesRequest, context: grpc.ServicerContext
-    ) -> pb.InterfaceList:
-        ifaces = self._enumerate_interfaces()
-        _log.info("ListInterfaces -> %d channels", len(ifaces))
-        return pb.InterfaceList(interfaces=list(ifaces))
-
-    # ----- WatchInterfaces --------------------------------------------------
-
-    def WatchInterfaces(
-        self,
-        request: pb.WatchInterfacesRequest,
-        context: grpc.ServicerContext,
-    ) -> Iterator[pb.InterfaceList]:
-        """Long-lived subscription to the interface set. ADR 0016.
-
-        Yields the current snapshot immediately, then a fresh snapshot
-        whenever the shared cache's sequence advances. On the PCAN
-        backend the cache is *not* re-enumerated on a timer (that call
-        contends with active transmits — see
-        ``_WATCH_LIVENESS_RECHECK_S``), so in practice a parked stream
-        yields once and then waits; a hot-plug is picked up by the next
-        explicit ``ListInterfaces`` pull rather than pushed here.
-
-        The client ending the call wakes any waiter through the
-        ``add_callback`` hook below — without it the watcher could
-        block in ``cond.wait`` past the point the stream is gone.
-        """
-        self._ensure_watch_seeded()
-        # Wake-on-disconnect: gRPC calls this on client cancel /
-        # transport drop. Notifying all watchers lets each re-check
-        # `context.is_active()` and exit its loop cleanly.
-        context.add_callback(self._wake_watchers)
-
-        # Snapshot under the lock, then yield outside it so a slow
-        # client can't block the poll thread.
-        with self._watch_cond:
-            last_seq = self._watch_seq
-            current = list(self._watch_snapshot)
-        yield pb.InterfaceList(interfaces=current)
-
-        while context.is_active():
-            with self._watch_cond:
-                # `wait_for` rechecks the predicate on every wake-up,
-                # which folds the post-disconnect notify into the
-                # `is_active` check we run next.
-                self._watch_cond.wait_for(
-                    lambda: self._watch_seq != last_seq or not context.is_active(),
-                    timeout=self._watch_recheck_interval_s,
-                )
-                if not context.is_active():
-                    return
-                if self._watch_seq == last_seq:
-                    # Spurious wake-up or the timeout fired — loop
-                    # without yielding so we don't spam identical
-                    # snapshots.
-                    continue
-                last_seq = self._watch_seq
-                current = list(self._watch_snapshot)
-            yield pb.InterfaceList(interfaces=current)
-
-    def _enumerate_interfaces(self) -> list[pb.Interface]:
-        return [
-            pb.Interface(id=c.id, display_name=c.display_name, fd_capable=c.fd_capable)
-            for c in self._driver.list_channels()
-        ]
-
-    def _ensure_watch_seeded(self) -> None:
-        """Seed the shared interface cache once, on the first subscribe.
-        Idempotent; runs a single enumeration for the service's lifetime.
-
-        This is the only enumeration the watch path triggers: ADR 0016
-        leaves the re-enumeration cadence to the server, and on PCAN a
-        periodic re-enumeration contends with active transmits (see
-        ``_WATCH_LIVENESS_RECHECK_S``), so subsequent refreshes come from
-        an explicit ``ListInterfaces`` pull, not a timer."""
-        with self._watch_lock:
-            if self._watch_seeded:
-                return
-            self._watch_seeded = True
-            # Seed the cache so the first watcher's immediate yield
-            # matches what `ListInterfaces` would have returned.
-            initial = self._enumerate_interfaces()
-            with self._watch_cond:
-                self._watch_snapshot = initial
-                self._watch_seq = 1
-
-    def _wake_watchers(self) -> None:
-        with self._watch_cond:
-            self._watch_cond.notify_all()
-
-    # ----- Session ----------------------------------------------------------
-
-    def Session(
-        self,
-        request_iterator: Iterator[pb.Envelope],
-        context: grpc.ServicerContext,
-    ) -> Iterator[pb.Envelope]:
-        """Bidirectional stream. See `cannet.proto`'s `Session` rpc."""
-
-        outbox: "queue.Queue[Optional[pb.Envelope]]" = queue.Queue()
-        # Per-session set of subscribed interface ids — needed to
-        # 1) gate `FrameBatch` (CODE_NOT_SUBSCRIBED if absent) and
-        # 2) clean up on session end.
-        subscribed: set[str] = set()
-
-        def cleanup() -> None:
-            for cid in list(subscribed):
-                self._registry.unsubscribe(cid, outbox)
-            subscribed.clear()
-            outbox.put(None)
-
-        def request_pump() -> None:
-            try:
-                # Greeting log: lets the host show a "sidecar:python-can
-                # connected" message in System Messages without a side
-                # channel.
-                outbox.put(
-                    _log_envelope(
-                        pb.LOG_LEVEL_INFO, "session opened by cannet-python-can"
-                    )
-                )
-                for env in request_iterator:
-                    body = env.WhichOneof("body")
-                    if body == "subscribe":
-                        self._handle_subscribe(env.subscribe, subscribed, outbox)
-                    elif body == "unsubscribe":
-                        self._handle_unsubscribe(env.unsubscribe, subscribed, outbox)
-                    elif body == "frame_batch":
-                        self._handle_tx(env.frame_batch, subscribed, outbox)
-                    elif body == "configure_bus":
-                        self._handle_configure(env.configure_bus, outbox)
-                    elif body == "error":
-                        _log.info("client error envelope: %s", env.error.message)
-                    elif body == "log":
-                        _log.info("client log envelope: %s", env.log.message)
-            except grpc.RpcError as e:  # noqa: PERF203 - one-off
-                _log.info("session ended: %s", e)
-            except Exception as e:  # noqa: BLE001
-                _log.exception("session pump crashed")
-                outbox.put(
-                    _log_envelope(pb.LOG_LEVEL_ERROR, f"session pump crashed: {e}")
-                )
-            finally:
-                cleanup()
-
-        threading.Thread(target=request_pump, name="session-req", daemon=True).start()
-
-        while True:
-            env = outbox.get()
-            if env is None:
-                return
-            yield env
-
-    def _handle_subscribe(
-        self,
-        sub: pb.Subscribe,
-        subscribed: set[str],
-        outbox: "queue.Queue[Optional[pb.Envelope]]",
-    ) -> None:
-        cid = sub.interface_id
-        if cid in subscribed:
-            return  # idempotent within a session
-        try:
-            self._registry.subscribe(cid, outbox)
-        except KeyError:
-            outbox.put(
-                _error_envelope(
-                    pb.Error.CODE_UNKNOWN_INTERFACE, f"unknown interface {cid}"
-                )
-            )
-            return
-        except OSError as e:
-            outbox.put(_log_envelope(pb.LOG_LEVEL_ERROR, f"open {cid} failed: {e}"))
-            outbox.put(
-                _error_envelope(
-                    pb.Error.CODE_UNKNOWN_INTERFACE, f"open {cid} failed: {e}"
-                )
-            )
-            return
-        subscribed.add(cid)
-
-    def _handle_unsubscribe(
-        self,
-        unsub: pb.Unsubscribe,
-        subscribed: set[str],
-        outbox: "queue.Queue[Optional[pb.Envelope]]",
-    ) -> None:
-        cid = unsub.interface_id
-        if cid not in subscribed:
-            return
-        self._registry.unsubscribe(cid, outbox)
-        subscribed.discard(cid)
-
-    def _handle_tx(
-        self,
-        batch: pb.FrameBatch,
-        subscribed: set[str],
-        outbox: "queue.Queue[Optional[pb.Envelope]]",
-    ) -> None:
-        cid = batch.interface_id
-        if cid not in subscribed:
-            outbox.put(
-                _error_envelope(
-                    pb.Error.CODE_NOT_SUBSCRIBED,
-                    f"transmit on unsubscribed {cid}",
-                )
-            )
-            return
-        for proto_frame in batch.frames:
-            frame = _proto_to_frame(proto_frame)
-            try:
-                self._registry.transmit(cid, frame, outbox)
-            except drv.TxRejected as e:
-                outbox.put(_error_envelope(pb.Error.CODE_TX_REJECTED, str(e)))
-            except KeyError:
-                # Interface was closed between the subscribed-check
-                # and the transmit — race with another session's last
-                # unsubscribe. Surface as TX_REJECTED.
-                outbox.put(
-                    _error_envelope(
-                        pb.Error.CODE_TX_REJECTED,
-                        f"interface {cid} closed",
-                    )
-                )
-
-    def _handle_configure(
-        self,
-        cfg: pb.ConfigureBus,
-        outbox: "queue.Queue[Optional[pb.Envelope]]",
-    ) -> None:
-        """Apply a wire ``ConfigureBus``.
-
-        Multi-client conflict semantics are deliberately not enforced
-        here (ADR 0022 § Known unknowns); whatever the underlying
-        python-can backend does on reopen is what the user gets.
-        """
-        cid = cfg.interface_id
-        config = _configure_to_open_config(cfg)
-        try:
-            self._registry.reconfigure(cid, config)
-        except Exception as e:  # noqa: BLE001
-            outbox.put(
-                _log_envelope(
-                    pb.LOG_LEVEL_ERROR,
-                    f"configure {cid} failed: {e}",
-                )
-            )
-
-
-def serve(
-    address: str,
-    *,
-    driver: Optional[drv.Driver] = None,
-    fallback_attempts: int = 3,
-) -> tuple[grpc.Server, str]:
-    """Build and start a gRPC server bound near ``address``.
-
-    ``address`` is ``host:port``; ``port == 0`` asks the OS for any free
-    ephemeral port (the supported "random port" path — collisions are
-    impossible because the kernel only returns unused ports). A non-zero
-    port is honoured first; if its bind raises, the function logs a
-    warning and falls back to ``host:0`` for up to ``fallback_attempts``
-    tries before giving up.
-
-    Returns ``(server, bound_address)`` where ``bound_address`` is the
-    actually-bound ``host:port`` string. The host writes it onto the
-    sidecar's banner so the GUI host learns the port without a side
-    channel.
-    """
-    server = grpc.server(_thread_pool())
-    pb_grpc.add_CannetServerServicer_to_server(
-        CannetServerService(driver or load_driver()), server
-    )
-    bound = bind_with_retry(server, address, fallback_attempts=fallback_attempts)
-    server.start()
-    return server, bound
-
-
-def bind_with_retry(
-    server: grpc.Server, address: str, *, fallback_attempts: int = 3
-) -> str:
-    """Add an insecure port to ``server``, falling back to ``host:0``.
-
-    Returns the actually-bound ``host:port`` string. Raises
-    :class:`OSError` if every attempt fails (which only happens when the
-    OS is out of ephemeral ports — the ``:0`` fallback otherwise always
-    succeeds).
-    """
-    host, requested_port = _split_address(address)
-    if requested_port != 0:
-        try:
-            bound_port = server.add_insecure_port(f"{host}:{requested_port}")
-        except RuntimeError as e:
-            _log.warning(
-                "bind to requested port %d failed (%s); falling back to a random port",
-                requested_port,
-                e,
-            )
-        else:
-            if bound_port != 0:
-                return f"{host}:{bound_port}"
-    for attempt in range(1, fallback_attempts + 1):
-        try:
-            bound_port = server.add_insecure_port(f"{host}:0")
-        except RuntimeError as e:
-            _log.warning("random-port bind attempt %d failed: %s", attempt, e)
-            continue
-        if bound_port != 0:
-            return f"{host}:{bound_port}"
-    raise OSError(
-        f"failed to bind sidecar near {address!r} after "
-        f"{fallback_attempts} random-port fallback attempts"
-    )
-
-
-def _split_address(address: str) -> tuple[str, int]:
-    """Parse ``host:port`` into ``(host, port)``; ``port`` defaults to 0.
-
-    Liberal on input: ``"127.0.0.1"`` (no colon) is read as port 0, and
-    a non-numeric port string raises :class:`ValueError`. IPv6 literals
-    must be bracketed (``"[::1]:50061"``) per the standard.
-    """
-    if address.startswith("["):
-        end = address.rfind("]")
-        if end < 0:
-            raise ValueError(f"unterminated IPv6 literal: {address!r}")
-        host = address[: end + 1]
-        rest = address[end + 1 :]
-    else:
-        last = address.rfind(":")
-        if last < 0:
-            return address, 0
-        host = address[:last]
-        rest = address[last:]
-    if not rest:
-        return host, 0
-    if not rest.startswith(":"):
-        raise ValueError(f"malformed address: {address!r}")
-    port_str = rest[1:]
-    if not port_str:
-        return host, 0
-    return host, int(port_str)
-
-
-def _thread_pool():
-    # Late import: the sidecar must start even on a Python without
-    # `concurrent.futures` lazy-loading quirks.
-    from concurrent import futures
-
-    return futures.ThreadPoolExecutor(max_workers=16)
-
-
-__all__ = [
-    "CannetServerService",
-    "DEFAULT_DRIVER_MODULE",
-    "DRIVER_MODULE_ENV",
-    "WIRE_SOURCE",
-    "bind_with_retry",
-    "load_driver",
-    "serve",
-]

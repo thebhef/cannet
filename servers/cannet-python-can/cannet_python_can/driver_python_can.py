@@ -43,6 +43,7 @@ from .driver import (
     Channel,
     ControllerState,
     Frame,
+    FrameKind,
     OpenConfig,
     STATE_ACTIVE,
     STATE_BUS_OFF,
@@ -146,15 +147,15 @@ class PythonCanChannel:
         size")`` that's hard to interpret upstream. Reject here so the
         caller sees a precise ``TxRejected`` with the actual mismatch.
         """
-        if frame.is_error:
+        if frame.kind == FrameKind.ERROR:
             return
-        if frame.fd and not self._fd:
+        if frame.kind == FrameKind.FD and not self._fd:
             raise TxRejected(f"FD frame on classic-mode bus {self.channel_id}")
-        if frame.is_remote and self._fd:
+        if frame.kind == FrameKind.REMOTE and self._fd:
             raise TxRejected(
                 f"remote (RTR) frame not supported on FD-mode bus {self.channel_id}"
             )
-        if frame.is_remote:
+        if frame.kind == FrameKind.REMOTE:
             return
         max_bytes = 64 if self._fd else 8
         if len(frame.data) > max_bytes:
@@ -661,11 +662,13 @@ def _msg_to_frame(msg) -> Frame:
         extended=bool(getattr(msg, "is_extended_id", False)),
         is_rx=not bool(getattr(msg, "is_tx", False)),
         data=data,
-        fd=bool(getattr(msg, "is_fd", False)),
+        kind=FrameKind.from_flags(
+            is_error=bool(getattr(msg, "is_error_frame", False)),
+            is_remote=bool(getattr(msg, "is_remote_frame", False)),
+            is_fd=bool(getattr(msg, "is_fd", False)),
+        ),
         brs=bool(getattr(msg, "bitrate_switch", False)),
         esi=bool(getattr(msg, "error_state_indicator", False)),
-        is_remote=bool(getattr(msg, "is_remote_frame", False)),
-        is_error=bool(getattr(msg, "is_error_frame", False)),
         dlc=int(getattr(msg, "dlc", len(data))),
     )
 
@@ -676,11 +679,11 @@ def _frame_to_msg(frame: Frame):
     return can.Message(  # type: ignore[union-attr]
         arbitration_id=frame.can_id,
         is_extended_id=frame.extended,
-        is_fd=frame.fd,
+        is_fd=frame.kind == FrameKind.FD,
         bitrate_switch=frame.brs,
         error_state_indicator=frame.esi,
-        is_remote_frame=frame.is_remote,
-        is_error_frame=frame.is_error,
+        is_remote_frame=frame.kind == FrameKind.REMOTE,
+        is_error_frame=frame.kind == FrameKind.ERROR,
         data=frame.data,
         dlc=frame.dlc or len(frame.data),
     )

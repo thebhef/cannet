@@ -47,7 +47,31 @@ the area is already test-covered; each region's tests move with it.
 | ~~1603~~ | ~~`apps/gui/src/ProjectPanel.tsx`~~ | **Done — see sketch below** |
 
 The god-files table is now fully addressed — every row above is done.
-| 1045 | `servers/cannet-python-can/.../server.py` | four modules: gRPC service / shared-interface + pumps / enumeration-watch / helpers |
+| ~~1045~~ | ~~`servers/cannet-python-can/.../server.py`~~ | **Done — see below** |
+
+**`server.py` split done (task-0030/19-python-server-split).** The
+1,045-line `server.py` became a `server/` package (thin `__init__.py`
+facade re-exporting the public + test-driven surface, so
+`from cannet_python_can import server` is unchanged). Landed as staged
+commits after the three dedup items above, each green (ruff/mypy/pytest
+via the pre-commit hook): the package conversion (`7e2c97f`), then one
+commit per extracted module — `helpers.py` (`987b8e5`; conversions,
+envelope builders, driver resolution), `shared_interface.py` (`99de326`;
+`_SharedInterface` + `_InterfaceRegistry` + the rx/pack/state/tx pumps and
+their constants), `enumeration.py` (`92d0e85`; `enumerate_interfaces` +
+`watch_interfaces` + `_WATCH_LIVENESS_RECHECK_S`, which the servicer now
+delegates to), and `service.py` (`3a665c8`; `CannetServerService` + the
+`serve`/bind bootstrap). Pure relocation; behavior preserved. **Deviation
+from the doc's flat "four modules":** it's a package (`__init__` facade +
+four submodules), matching the Rust splits' `mod.rs`-plus-submodules
+precedent, because the public entry point is `from cannet_python_can
+import server` and the tests reach private names (`_SharedInterface`,
+`_proto_to_frame`, `_split_address`, …) through it — the facade re-exports
+those so no test moved. Enumeration-watch is a genuine seam but its two
+RPCs stay servicer methods (gRPC dispatches them); they delegate to the
+free functions in `enumeration.py`. Final: `__init__.py` (45) /
+`helpers.py` (152) / `enumeration.py` (76) / `service.py` (347) /
+`shared_interface.py` (644).
 
 **`lib.rs` sketch** (regions are self-contained, sharing only
 `AppState` + decode helpers — mechanical, but land as several staged
@@ -919,20 +943,62 @@ row is done.
 
 ### Python sidecar
 
-- **22. `WatchInterfaces` dead re-publish apparatus** — `_watch_seq` is
+- ~~**22. `WatchInterfaces` dead re-publish apparatus** — `_watch_seq` is
     written exactly once, so the condition/re-yield loop can never
     fire a second snapshot, and the comments claiming
     `ListInterfaces` re-publishes are false (server.py:666–769). →
     delete the apparatus or actually wire `ListInterfaces` to publish;
-    fix cannet.proto:17–21's drifted claim either way.
-- **23. Error-broadcast triplicated in `_SharedInterface`**
+    fix cannet.proto:17–21's drifted claim either way.~~ **Done
+    (task-0030/19-python-server-split, commit `d336933`).** Re-confirmed:
+    `_watch_seq` was written exactly twice — `0` in `__init__`, `1` in the
+    seed — and never advanced again, so the re-yield loop was dead, and
+    nothing touched `_watch_snapshot`/`_watch_seq` after seeding (the
+    "`ListInterfaces` re-publishes into a shared cache" claim was false).
+    **Deleted** the apparatus (prefer-deletion per CLAUDE.md simplicity;
+    no Rust consumer needs live push — the sidecar's tested behavior was
+    already "yield once, park", and the wire contract permits a server
+    that only emits the initial snapshot). `WatchInterfaces` now
+    enumerates once, yields, and parks on a `threading.Event` woken by
+    the disconnect callback. Each subscribe re-enumerates fresh instead of
+    returning a process-lifetime-stale seed (strictly fresher, still a
+    one-shot, no timer). Fixed cannet.proto's drifted discovery comment
+    (it described a nonexistent server-side polling cache/cadence) to
+    state that pushing past the initial snapshot is the server's choice
+    and clients must not assume every change is pushed.
+- ~~**23. Error-broadcast triplicated in `_SharedInterface`**
     (server.py:352, 485, 523). → one `_broadcast_error`; **careful**:
     the reconfigure site fans out while *holding* the non-reentrant
-    `self._lock` — the helper must not re-take it.
-- **24. Frame kind as three independent bools** (driver.py:104–114) with
+    `self._lock` — the helper must not re-take it.~~ **Done
+    (task-0030/19-python-server-split, commit `575c12f`).** The fan-out
+    was actually spelled **four** times (the doc named three): reconfigure's
+    failed-reopen branch (under `self._lock`), the rx-pump crash handler,
+    the pack-pump unencodable-frame drop, and the pack-pump crash handler.
+    Consolidated into `_SharedInterface._broadcast_error(level, message, *,
+    lock_held=False)`: the three pump sites call it lock-free (it snapshots
+    via `_outbox_snapshot`), and reconfigure passes `lock_held=True` so the
+    helper reads `self._outboxes` directly instead of re-taking the
+    non-reentrant lock (which would deadlock). TDD: added a
+    held-lock regression guard on a worker thread with a join timeout (a
+    reentrant-lock regression fails cleanly rather than hanging the suite),
+    a fan-out unit test, and an end-to-end reconfigure-failure test.
+- ~~**24. Frame kind as three independent bools** (driver.py:104–114) with
     the error>remote>fd priority ladder re-derived at each boundary —
     and `_proto_to_frame` silently maps UNSPECIFIED where the Rust
-    side (convert.rs) errors. → a `FrameKind` enum at the seam.
+    side (convert.rs) errors. → a `FrameKind` enum at the seam.~~ **Done
+    (task-0030/19-python-server-split, commit `bbb19cf`).** Added
+    `driver.FrameKind` (CLASSIC/FD/REMOTE/ERROR) with a single
+    `from_flags` classmethod owning the priority ladder; `Frame` now
+    carries one `kind` field (brs/esi/dlc stay). `_msg_to_frame` collapses
+    python-can's booleans via `from_flags` (the one ladder site);
+    `_frame_to_msg` / `_reject_if_incompatible` read `frame.kind`; the
+    server's `_frame_to_proto` / `_proto_to_frame` are straight lookups
+    through `_KIND_TO_PROTO` / `_PROTO_TO_KIND` (no ladder). **Real
+    fix:** `_proto_to_frame` now raises `ValueError` on
+    UNSPECIFIED/unrecognised kind (mirroring convert.rs's `UnknownKind`)
+    and `_handle_tx` turns it into `CODE_TX_REJECTED` — a malformed TX
+    frame is rejected, not silently sent as classic. TDD: wrote the
+    UNSPECIFIED/unknown-tag rejection tests first and confirmed they failed
+    against the silent-classic code before fixing.
 
 ### Architecture-level (deliberate follow-ups, not drive-by)
 
