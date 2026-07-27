@@ -24,7 +24,6 @@ import type {
   TransmitFrameRecord,
   TransmitMode,
   TransmitRequestRecord,
-  ValueTableEntryRecord,
 } from "./types";
 import { useElementRegistry } from "./projectElements";
 import { CalcFieldEditor } from "./CalcFieldEditor";
@@ -33,6 +32,7 @@ import { useProjectContext } from "./projectContext";
 import { useSignalCatalog } from "./signalCatalogContext";
 import { effectiveBusColor } from "./busColor";
 import { SIGNAL_DND_MIME, parseSignalDragData } from "./dragSignals";
+import { useValueTables, type ValueTableSignal } from "./useValueTables";
 
 /**
  * Transmit panel (thin view over the host model).
@@ -1009,7 +1009,7 @@ interface EnumValueCellProps {
 ///   3. neither → cancel the edit (keep the current value)
 ///
 /// The label table is loaded once per `(messageId, extended,
-/// signal_name)` and cached on the component.
+/// signal_name)` via the shared `useValueTables` hook (task 30 item 14).
 function EnumValueCell({
   messageId,
   extended,
@@ -1017,24 +1017,11 @@ function EnumValueCell({
   decoded,
   onCommit,
 }: EnumValueCellProps) {
-  const [rows, setRows] = useState<ValueTableEntryRecord[]>([]);
-  useEffect(() => {
-    let cancelled = false;
-    void invoke<ValueTableEntryRecord[]>("list_value_tables", {
-      messageId,
-      extended,
-      signalName: sig.name,
-    })
-      .then((r) => {
-        if (!cancelled) setRows(r);
-      })
-      .catch(() => {
-        if (!cancelled) setRows([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [messageId, extended, sig.name]);
+  const valueTableSignals = useMemo<ValueTableSignal[]>(
+    () => [{ busId: null, messageId, extended, signalName: sig.name }],
+    [messageId, extended, sig.name],
+  );
+  const [rows = []] = useValueTables(valueTableSignals).values();
 
   const [draft, setDraft] = useState<string | null>(null);
   // Display: if decoded carries a label use it; else show the raw

@@ -324,9 +324,35 @@ next to `DOCK_COMPONENTS` (App.tsx:174).
     per panel first as a green baseline before extracting, plus a
     dedicated `signalCatalogContext.dom.test.tsx` for the provider's
     fetch/refetch/failure semantics.
-- **14. Value-table fetch duplicated 4×** (`list_value_tables` in
+- ~~**14. Value-table fetch duplicated 4×** (`list_value_tables` in
     ColorMapPanel, PlotPanel, RbsPanel, TransmitPanel). → shared
-    `useValueTables` hook. *(thin-view)*
+    `useValueTables` hook. *(thin-view)*~~ **Done
+    (task-0030/08-value-tables-hook).** Re-confirmed, with a wrinkle
+    the doc predates: `useValueTables.ts` already existed, fetching by
+    `(busId, messageId, extended, signalName)` and keying its returned
+    `Map` by `signalKey` — it was added in PR #87 (2026-07-25, after
+    this audit's 2026-07-02 line numbers) to dedupe *two* call sites
+    inside PlotPanel itself, but never propagated to the other three
+    panels. So this item's actual remaining work was three migrations
+    onto the pre-existing hook, not building one from scratch: a
+    plain hook (not a context) is the right shape here, since each
+    caller wants a different single-signal (or zero-signal) subset,
+    unlike the catalog's one-shared-list-for-everyone case in #13.
+    ColorMapPanel, TransmitPanel (`EnumValueCell`), and RbsPanel
+    (`SignalRow`) each migrated their hand-rolled fetch+local-state
+    onto `useValueTables`, preserving their existing gates (RbsPanel's
+    `hasValueTable` skip; TransmitPanel's cell is only mounted for
+    `hasValueTable` signals already). **Not touched:** ColorMapPanel's
+    second `list_value_tables` call in `onPickSignal` — an imperative
+    one-shot fetch to seed color rules the instant a signal is picked,
+    not reactive display state, so it isn't the pattern this item
+    targets. TDD: TransmitPanel's `EnumValueCell` and RbsPanel's
+    `SignalRow` fetch had no DOM coverage that actually exercised the
+    fetched labels driving a commit (mocks existed but nothing typed a
+    fetched-only label) — added one green-baseline test per panel
+    before extracting, plus a hook-level test for the empty-signal-list
+    gate the three panels now rely on. ColorMapPanel already had DOM
+    coverage of the display effect (no new test needed).
 - **15. Element-panel lifecycle boilerplate ×4 panels** —
     `elementIdFromParams`, savedConfig hydration, dual-write persist,
     `currentSources` kind-narrowing, `availableFilters`, and the

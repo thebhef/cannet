@@ -8,6 +8,7 @@ import { useProjectContext } from "./projectContext";
 import { useSignalCatalog } from "./signalCatalogContext";
 import { rulesFromValueTable } from "./colorMap";
 import { isEnumValueTable, type ColorRule, type ProjectElement, type ValueTableEntryRecord } from "./types";
+import { useValueTables, type ValueTableSignal } from "./useValueTables";
 
 type ColorMapElement = Extract<ProjectElement, { kind: "colormap" }>;
 
@@ -67,30 +68,18 @@ export function ColorMapPanel(props: IDockviewPanelProps) {
   const { catalog } = useSignalCatalog();
 
   // The target signal's value table (enum names), re-fetched when the
-  // target changes. Not an enum (`isEnumValueTable`: fewer than two
-  // members, single-member SNA sentinels included) ⇒ a numeric signal
-  // (range editor).
+  // target changes (via the shared useValueTables hook, task 30 item
+  // 14). Not an enum (`isEnumValueTable`: fewer than two members,
+  // single-member SNA sentinels included) ⇒ a numeric signal (range
+  // editor).
   const signalName = element?.signalName ?? "";
   const messageId = element?.messageId ?? 0;
   const extended = element?.extended ?? false;
-  const [valueTable, setValueTable] = useState<ValueTableEntryRecord[]>([]);
-  useEffect(() => {
-    if (!signalName) {
-      setValueTable([]);
-      return;
-    }
-    let cancelled = false;
-    void invoke<ValueTableEntryRecord[]>("list_value_tables", { messageId, extended, signalName })
-      .then((rows) => {
-        if (!cancelled) setValueTable(rows);
-      })
-      .catch(() => {
-        if (!cancelled) setValueTable([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [signalName, messageId, extended]);
+  const targetSignals = useMemo<ValueTableSignal[]>(
+    () => (signalName ? [{ busId: element?.busId ?? null, messageId, extended, signalName }] : []),
+    [element?.busId, messageId, extended, signalName],
+  );
+  const [valueTable = []] = useValueTables(targetSignals).values();
 
   const setRules = useCallback(
     (rules: ColorRule[]) => update(elementId, { rules }),
