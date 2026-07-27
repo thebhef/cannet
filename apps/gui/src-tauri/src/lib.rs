@@ -1275,11 +1275,7 @@ fn raw_to_core_frame(
 ) -> Result<CoreCanFrame, String> {
     use cannet_core::CanFramePayload as P;
     let channel = channel_for_save(frame, buses);
-    let id = if frame.extended {
-        CanId::extended(frame.id).map_err(|e| e.to_string())?
-    } else {
-        CanId::standard(frame.id).map_err(|e| e.to_string())?
-    };
+    let id = CanId::new(frame.id, frame.extended).map_err(|e| e.to_string())?;
     match &frame.payload {
         P::Classic(data) => CoreCanFrame::classic(
             frame.timestamp_ns,
@@ -1587,11 +1583,7 @@ fn refresh_mux_extractor(state: &AppState) {
     state
         .trace_store
         .set_mux_extractor(Some(Arc::new(move |f: &RawTraceFrame| {
-            let id = if f.extended {
-                CanId::extended(f.id).ok()?
-            } else {
-                CanId::standard(f.id).ok()?
-            };
+            let id = CanId::new(f.id, f.extended).ok()?;
             snap.iter()
                 .filter(|(_, buses)| {
                     // Same per-bus scoping rule as `dbc_applies_to_frame`.
@@ -2212,11 +2204,7 @@ fn decode_snapshot_frame<'a>(
     dbs: &'a [(Arc<Database>, Vec<String>)],
     frame: &RawTraceFrame,
 ) -> Option<cannet_dbc::DecodedMessage<'a>> {
-    let id = if frame.extended {
-        CanId::extended(frame.id).ok()?
-    } else {
-        CanId::standard(frame.id).ok()?
-    };
+    let id = CanId::new(frame.id, frame.extended).ok()?;
     dbs.iter()
         .filter(|(_, buses)| {
             buses.is_empty()
@@ -3172,11 +3160,7 @@ async fn signal_min_max(app: AppHandle, signals: Vec<SignalQuery>) -> Vec<Option
 }
 
 fn decode_raw_frame(db: &Database, frame: &RawTraceFrame) -> Option<DecodedRecord> {
-    let id = if frame.extended {
-        CanId::extended(frame.id).ok()?
-    } else {
-        CanId::standard(frame.id).ok()?
-    };
+    let id = CanId::new(frame.id, frame.extended).ok()?;
     let data = frame.payload.data();
     db.decode_raw(id, data).map(|m| DecodedRecord {
         name: m.name.to_string(),
@@ -3689,12 +3673,7 @@ fn resolve_effective_calc(
     override_spec: Option<&ipc::CalcFieldsSpec>,
 ) -> Result<Option<cannet_dbc::ResolvedCalculatedFields>, String> {
     let no_override = override_spec.is_none_or(ipc::CalcFieldsSpec::is_empty);
-    let id = if request.extended {
-        CanId::extended(request.id)
-    } else {
-        CanId::standard(request.id)
-    };
-    let Ok(id) = id else {
+    let Ok(id) = CanId::new(request.id, request.extended) else {
         // An unencodable arbitration id can't carry calculated fields;
         // the transmit path itself will surface the id error.
         return Ok(None);
@@ -3778,12 +3757,7 @@ pub(crate) fn rebuild_verification(state: &AppState) {
                         let Ok((id, extended)) = rbs::parse_message_key(msg_key) else {
                             continue;
                         };
-                        let can_id = if extended {
-                            CanId::extended(id)
-                        } else {
-                            CanId::standard(id)
-                        };
-                        let Ok(can_id) = can_id else { continue };
+                        let Ok(can_id) = CanId::new(id, extended) else { continue };
                         let spec = ipc::CalcFieldsSpec {
                             counter: msg.counter.clone(),
                             crc: msg.crc.clone(),
@@ -4391,11 +4365,9 @@ fn build_and_confirm(
     request: &ipc::TransmitRequest,
     wire_channel: u8,
 ) -> Result<(cannet_core::CanFrame, u64), String> {
-    let id = if request.extended {
-        CanId::extended(request.id).map_err(|e| format!("invalid extended id: {e}"))?
-    } else {
-        CanId::standard(request.id).map_err(|e| format!("invalid standard id: {e}"))?
-    };
+    let mode = if request.extended { "extended" } else { "standard" };
+    let id = CanId::new(request.id, request.extended)
+        .map_err(|e| format!("invalid {mode} id: {e}"))?;
     // Best-effort monotonic timestamp tied to the host's clock — for a
     // tx-confirm the analyzer's wall-time stamp is what we want.
     let timestamp_ns = std::time::SystemTime::now()
@@ -4572,11 +4544,7 @@ fn describe_message_inner(
     message_id: u32,
     extended: bool,
 ) -> Option<ipc::MessageDescriptorRecord> {
-    let id = if extended {
-        cannet_core::CanId::extended(message_id).ok()?
-    } else {
-        cannet_core::CanId::standard(message_id).ok()?
-    };
+    let id = cannet_core::CanId::new(message_id, extended).ok()?;
     let dbs = state.databases.lock().expect("databases mutex poisoned");
     for loaded in dbs.iter() {
         if let Some(desc) = loaded.db.describe_message(id) {
@@ -4655,11 +4623,7 @@ fn decode_frame_inner(
     extended: bool,
     data: &[u8],
 ) -> Option<ipc::DecodedFrameRecord> {
-    let id = if extended {
-        cannet_core::CanId::extended(message_id).ok()?
-    } else {
-        cannet_core::CanId::standard(message_id).ok()?
-    };
+    let id = cannet_core::CanId::new(message_id, extended).ok()?;
     let dbs = state.databases.lock().expect("databases mutex poisoned");
     for loaded in dbs.iter() {
         if let Some(decoded) = loaded.db.decode_raw(id, data) {
@@ -4679,11 +4643,9 @@ fn encode_frame_inner(
     signals: &[ipc::EncodeFrameSignal],
     base: Vec<u8>,
 ) -> Result<ipc::EncodeFrameResponse, String> {
-    let id = if extended {
-        cannet_core::CanId::extended(message_id).map_err(|e| format!("invalid extended id: {e}"))?
-    } else {
-        cannet_core::CanId::standard(message_id).map_err(|e| format!("invalid standard id: {e}"))?
-    };
+    let mode = if extended { "extended" } else { "standard" };
+    let id = cannet_core::CanId::new(message_id, extended)
+        .map_err(|e| format!("invalid {mode} id: {e}"))?;
     let dbs = state.databases.lock().expect("databases mutex poisoned");
     let mut bytes = base;
     let signal_pairs: Vec<(&str, f64)> = signals
@@ -5751,6 +5713,51 @@ mod tests {
         assert_eq!(tail.last().map(|r| r.index), Some(9));
         // Entirely past the end -> empty.
         assert!(collect_trace_records(&state, 20, 30).is_empty());
+    }
+
+    #[test]
+    fn describe_message_inner_finds_standard_and_extended_ids() {
+        let state = test_state();
+        let standard_dbc = tiny_dbc(0x100, "Std", "Sig");
+        // DBC's on-disk BO_ id needs bit 31 set to mark it extended
+        // (`can-dbc`'s `MessageId::Extended`); `message_id_parts` masks
+        // it back off, so lookups use the plain 0x001A_BCDE id.
+        let extended_dbc = tiny_dbc(0x001A_BCDE | 0x8000_0000, "Ext", "Sig");
+        *state.databases.lock().unwrap() = vec![
+            loaded("std.dbc", &standard_dbc),
+            loaded("ext.dbc", &extended_dbc),
+        ];
+
+        let std_desc = describe_message_inner(&state, 0x100, false).unwrap();
+        assert_eq!(std_desc.name, "Std");
+
+        let ext_desc = describe_message_inner(&state, 0x001A_BCDE, true).unwrap();
+        assert_eq!(ext_desc.name, "Ext");
+
+        // The extended id's raw value doesn't collide with a standard
+        // lookup at the same message table.
+        assert!(describe_message_inner(&state, 0x001A_BCDE, false).is_none());
+    }
+
+    #[test]
+    fn decode_frame_inner_decodes_standard_and_extended_ids() {
+        let state = test_state();
+        let standard_dbc = tiny_dbc(0x100, "Std", "Sig");
+        // DBC's on-disk BO_ id needs bit 31 set to mark it extended
+        // (`can-dbc`'s `MessageId::Extended`); `message_id_parts` masks
+        // it back off, so lookups use the plain 0x001A_BCDE id.
+        let extended_dbc = tiny_dbc(0x001A_BCDE | 0x8000_0000, "Ext", "Sig");
+        *state.databases.lock().unwrap() = vec![
+            loaded("std.dbc", &standard_dbc),
+            loaded("ext.dbc", &extended_dbc),
+        ];
+        let data = vec![42u8, 0, 0, 0, 0, 0, 0, 0];
+
+        let std_decoded = decode_frame_inner(&state, 0x100, false, &data).unwrap();
+        assert_eq!(std_decoded.name, "Std");
+
+        let ext_decoded = decode_frame_inner(&state, 0x001A_BCDE, true, &data).unwrap();
+        assert_eq!(ext_decoded.name, "Ext");
     }
 
     #[test]

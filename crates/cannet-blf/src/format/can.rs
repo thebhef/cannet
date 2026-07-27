@@ -710,6 +710,61 @@ pub fn encode_can_fd_message_64(m: &CanFdMessage64) -> Vec<u8> {
     out
 }
 
+/// Convenience constructor: build a `CAN_FD_MESSAGE_64` from cannet's
+/// usual ingredients. Produces a struct ready for
+/// [`encode_can_fd_message_64`]; `trailing` is empty (only a
+/// decode→encode round-trip needs to preserve a captured trailer).
+// The `expect` is unreachable on every realistic input: a frame
+// with > 4 GiB of data isn't a CAN frame.
+#[allow(clippy::missing_panics_doc, clippy::too_many_arguments)]
+#[must_use]
+pub fn build_can_fd_message_64(
+    timestamp_ns: u64,
+    channel: u8,
+    dlc: u8,
+    valid_data_bytes: u8,
+    id_raw: u32,
+    flags: u32,
+    dir: u8,
+    data: Vec<u8>,
+) -> CanFdMessage64 {
+    let object_size = u32::try_from(
+        CAN_EVENT_HEADER_BYTES + CAN_FD_MESSAGE_64_FIXED_PREFIX_BYTES + data.len(),
+    )
+    .expect("CAN_FD_MESSAGE_64 size fits in u32");
+    CanFdMessage64 {
+        base: ObjectHeaderBase {
+            header_size: 32,
+            header_version: 1,
+            object_size,
+            object_type: object_type::CAN_FD_MESSAGE_64,
+        },
+        event: ObjectHeaderV1 {
+            object_flags: OBJECT_FLAG_TIME_ONE_NANS,
+            client_index: 0,
+            object_version: 0,
+            object_timestamp: timestamp_ns,
+        },
+        channel,
+        dlc,
+        valid_data_bytes,
+        tx_count: 0,
+        id_raw,
+        frame_length_ns: 0,
+        flags,
+        btr_cfg_arb: 0,
+        btr_cfg_data: 0,
+        time_offset_brs_ns: 0,
+        time_offset_crc_del_ns: 0,
+        bit_count: 0,
+        dir,
+        ext_data_offset: 0,
+        crc: 0,
+        data,
+        trailing: Vec::new(),
+    }
+}
+
 // =================================================================
 // CAN_ERROR_EXT (object type 73)
 // =================================================================
@@ -820,6 +875,43 @@ pub fn encode_can_error_ext(m: &CanErrorExt) -> Vec<u8> {
     out.extend_from_slice(&0u16.to_le_bytes()); // reserved2
     out.extend_from_slice(&m.data);
     out
+}
+
+/// Convenience constructor: build a `CAN_ERROR_EXT` from cannet's
+/// usual ingredients. cannet's own error-frame payload carries no
+/// corrupted-message data, so `data` is always empty — unlike
+/// [`build_can_message2`], this constructor doesn't take a `data`
+/// parameter. Produces a struct ready for [`encode_can_error_ext`].
+// The `expect` is unreachable on every realistic input.
+#[allow(clippy::missing_panics_doc)]
+#[must_use]
+pub fn build_can_error_ext(timestamp_ns: u64, channel: u16, id_raw: u32, flags_ext: u16) -> CanErrorExt {
+    let object_size = u32::try_from(CAN_EVENT_HEADER_BYTES + CAN_ERROR_EXT_FIXED_PREFIX_BYTES)
+        .expect("CAN_ERROR_EXT size fits in u32");
+    CanErrorExt {
+        base: ObjectHeaderBase {
+            header_size: 32,
+            header_version: 1,
+            object_size,
+            object_type: object_type::CAN_ERROR_EXT,
+        },
+        event: ObjectHeaderV1 {
+            object_flags: OBJECT_FLAG_TIME_ONE_NANS,
+            client_index: 0,
+            object_version: 0,
+            object_timestamp: timestamp_ns,
+        },
+        channel,
+        length: 0,
+        flags: 0,
+        ecc: 0,
+        position: 0,
+        dlc: 0,
+        frame_length_in_ns: 0,
+        id_raw,
+        flags_ext,
+        data: Vec::new(),
+    }
 }
 
 #[cfg(test)]
@@ -1369,6 +1461,40 @@ mod tests {
         assert_eq!(parsed.can_id(), 0x300);
         assert_eq!(parsed.data, vec![0xAA, 0xBB, 0xCC, 0xDD]);
         assert_eq!(parsed.event.timestamp_ns(), 123_000);
+    }
+
+    #[test]
+    fn build_can_fd_message_64_helper_produces_decodable_output() {
+        let data = vec![0xAAu8, 0xBB, 0xCC, 0xDD];
+        let m = build_can_fd_message_64(
+            456_000,
+            1,
+            4,
+            4,
+            0x300,
+            CAN_FD_64_FLAG_EDL | CAN_FD_64_FLAG_BRS,
+            1,
+            data.clone(),
+        );
+        let bytes = encode_can_fd_message_64(&m);
+        let parsed = decode_can_fd_message_64(&bytes).unwrap();
+        assert_eq!(parsed.can_id(), 0x300);
+        assert_eq!(parsed.data, data);
+        assert_eq!(parsed.event.timestamp_ns(), 456_000);
+        assert!(parsed.bitrate_switch());
+        assert_eq!(parsed.dir, 1);
+    }
+
+    #[test]
+    fn build_can_error_ext_helper_produces_decodable_output() {
+        let m = build_can_error_ext(789_000, 3, 0x01AB_CDEF | CAN_ID_EXTENDED_BIT, 0x0020);
+        let bytes = encode_can_error_ext(&m);
+        let parsed = decode_can_error_ext(&bytes).unwrap();
+        assert!(parsed.is_extended_id());
+        assert_eq!(parsed.can_id(), 0x01AB_CDEF);
+        assert_eq!(parsed.event.timestamp_ns(), 789_000);
+        assert_eq!(parsed.flags_ext, 0x0020);
+        assert!(parsed.data.is_empty());
     }
 
     // ----- Cross-struct id-extraction agreement ------------------
