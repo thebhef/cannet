@@ -43,7 +43,7 @@ the area is already test-covered; each region's tests move with it.
 | ~~2441~~ | ~~`apps/gui/src/App.tsx`~~ | **Done — see sketch below** |
 | ~~2158~~ | ~~`apps/gui/src-tauri/src/trace_store.rs`~~ | **Done — see sketch below** |
 | ~~2093~~ | ~~`apps/gui/src-tauri/src/rbs.rs`~~ | **Done — see sketch below** |
-| 1642 | `apps/gui/src/TransmitPanel.tsx` | 13 components in one file — extract the row/editor subcomponents |
+| ~~1642~~ | ~~`apps/gui/src/TransmitPanel.tsx`~~ | **Done — see sketch below** |
 | 1603 | `apps/gui/src/ProjectPanel.tsx` | connection-management UI (lines 556–1603, two thirds of the file) → its own file |
 | 1045 | `servers/cannet-python-can/.../server.py` | four modules: gRPC service / shared-interface + pumps / enumeration-watch / helpers |
 
@@ -363,6 +363,59 @@ tests** — `rbs_view` / `build_message_view` were never directly unit-
 tested (they are exercised only indirectly), so the view region carries
 no test module; not a regression, just a pre-existing coverage gap noted
 here.
+
+**`TransmitPanel.tsx` sketch**: 13 components in one file — extract the
+row/editor subcomponents. Re-verified 2026-07-26: the file had drifted
+to **1,589** lines (not the 2026-07-02 table's 1,642 — items #14/#15/#17
+in this same task had since migrated it onto `useValueTables` /
+`useElementPanel` / `useHostMirror` and extracted `formatCanIdHex`). The
+"13 components" count held exactly: 13 subcomponents (`TransmitFrameRow`,
+`CalcFieldsStrip`, `FrameShapeStrip`, `SignalsTable`, `SignalRow`,
+`NumericValueCell`, `EnumValueCell`, `CycleControls`, `PeriodInput`,
+`CanIdInput`, `BytesEditor`, `ByteCell`, `FrameDropZone`) plus the
+`TransmitPanel` shell.
+
+**Done (task-0030/17-split-transmitpanel).** TransmitPanel.tsx:
+**1,589 → 364 lines** (the panel shell: element wiring, the
+host-mirrored TX pool, the add/remove/reorder/drop handlers, and the
+frame-list composition). Landed as staged commits, each green
+(`pnpm test` + `build` via the pre-commit hook). The subcomponents split
+**cleanly** — every one was genuinely separable at a component seam; no
+prop-explosion forced a compromise, and all existing prop contracts were
+preserved verbatim (pure relocation). New files:
+
+- `transmitFrameConfig.ts` (160) — the panel's `TransmitFrameConfig`
+  working-shape type + its pure helpers: `configsEqual` /
+  `recordToConfig` / `configToFrame`, the `parseHexBytes` /
+  `bytesToHexString` codec, and `maxDataBytesForKind` / `zeroDataHex` /
+  `resizeDataHexPreserving`. The DOM test now imports the three exported
+  helpers from here (their honest home) instead of re-exported through
+  the panel.
+- `TransmitBytesEditor.tsx` (98) — `BytesEditor` + `ByteCell` (the
+  per-byte hex payload grid).
+- `TransmitSignalsTable.tsx` (373) — `SignalsTable`, `SignalRow`,
+  `NumericValueCell`, `EnumValueCell`, and the `formatPhysical` /
+  `formatRange` display helpers (the per-message signal-level
+  decode/encode editor).
+- `TransmitFrameControls.tsx` (347) — the row's inline controls:
+  `CalcFieldsStrip`, `FrameShapeStrip`, `CycleControls` (+ its internal
+  `PeriodInput`), and `CanIdInput`.
+- `TransmitFrameRow.tsx` (293) — `TransmitFrameRow` (the per-frame tile:
+  identity line, the descriptor fetch + DBC-derived kind/brs/length
+  effect, expand/remove, and the composition of the four editor
+  children), `FrameDropZone`, and the `tx-frame` reorder DnD helpers.
+
+**TDD.** Two editor paths that were being relocated had no prior DOM
+coverage — added one green-baseline regression test each *before*
+extracting: editing a payload byte cell writes the new payload through
+`set_transmit_frame` (byte editor), and a numeric signal commits the
+typed physical value through `encode_frame` (signals table; only the
+enum path was previously covered). Suite went 770 → 772, green before
+and after each extraction. **Coverage gap noted (not a regression):**
+the frame-reorder drag/drop path has no direct unit test — jsdom's
+`dataTransfer` doesn't carry data across synthetic drag events — so
+`reorderFrames` / the `tx-frame` DnD helpers stay exercised only
+indirectly, exactly as before this split.
 
 ## Duplicate implementations to consolidate
 

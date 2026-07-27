@@ -56,12 +56,12 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 import { listen } from "@tauri-apps/api/event";
 
+import { TransmitPanel } from "./TransmitPanel";
 import {
-  TransmitPanel,
   maxDataBytesForKind,
   zeroDataHex,
   resizeDataHexPreserving,
-} from "./TransmitPanel";
+} from "./transmitFrameConfig";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import {
   ElementRegistryContext,
@@ -369,6 +369,23 @@ describe("TransmitPanel (thin view over host registry)", () => {
     expect(await screen.findByText("stop")).toBeInTheDocument();
     expect(screen.queryByText("start")).toBeNull();
   });
+
+  it("editing a payload byte cell writes the new payload back to the host", async () => {
+    POOL = [frame("a")]; // classic, no DBC match — raw byte editing
+    renderPanel("el", ["a"]);
+    await screen.findByLabelText("frame description");
+    // Each byte cell is a hex `<input>` inside a `title="byte N"` label.
+    const input = screen.getByTitle("byte 0").querySelector("input")!;
+    fireEvent.change(input, { target: { value: "AB" } });
+    fireEvent.blur(input);
+    await waitFor(() => {
+      const c = lastCall("set_transmit_frame");
+      expect(c).toBeTruthy();
+      const data = (c!.args as { frame: { request: { data: number[] } } })
+        .frame.request.data;
+      expect(data[0]).toBe(0xab);
+    });
+  });
 });
 
 describe("payload sizing helpers", () => {
@@ -468,6 +485,47 @@ describe("payload sizing helpers", () => {
       expect(call).toBeDefined();
       const args = call?.args as { signals?: { name: string; physical: number }[] };
       expect(args.signals).toEqual([{ name: "Mode", physical: 1 }]);
+    });
+  });
+
+  it("a numeric signal commits the typed physical value through encode_frame", async () => {
+    POOL = [frame("a")];
+    DESCRIBE = {
+      name: "Status",
+      expectedLen: 8,
+      isFd: false,
+      brs: false,
+      genMsgCycleTimeMs: 100,
+      genMsgSendType: null,
+      usesExtendedMux: false,
+      calcFields: {},
+      signals: [
+        {
+          name: "Speed",
+          unit: "kph",
+          factor: 1,
+          offset: 0,
+          min: 0,
+          max: 100,
+          size: 8,
+          signed: false,
+          mux: { kind: "plain" },
+          floatKind: "integer",
+          hasValueTable: false,
+          startValueRaw: null,
+        },
+      ],
+    };
+    renderPanel("el", ["a"]);
+    fireEvent.click(await screen.findByTitle("expand"));
+    const input = await screen.findByLabelText("Speed value");
+    fireEvent.change(input, { target: { value: "42" } });
+    fireEvent.blur(input);
+    await waitFor(() => {
+      const call = lastCall("encode_frame");
+      expect(call).toBeDefined();
+      const args = call?.args as { signals?: { name: string; physical: number }[] };
+      expect(args.signals).toEqual([{ name: "Speed", physical: 42 }]);
     });
   });
 
