@@ -20,8 +20,7 @@
  * The derivation is a pure function so it can be unit-tested without
  * uPlot / React.
  */
-import type { SignalRef } from "./PlotPanel";
-import { signalKey } from "./plotData";
+import { signalRefKey, type SignalRef } from "./plotPanelConfig";
 
 export type YAxisMode = "unified" | "per-unit" | "individual";
 
@@ -50,14 +49,6 @@ export interface DerivedAxis {
   subtitle: string | null;
   /** The series this axis renders. */
   signals: SignalRef[];
-}
-
-/** Stable key for a signal — the canonical `signalKey` from
- * `plotData`, so keys here (axis ids, the `isEnum` lookup) match the
- * keys the panel uses everywhere else, including the `x:`/`s:`
- * extended-id discriminator. */
-function signalRefKey(s: SignalRef): string {
-  return signalKey(s.busId, s.messageId, s.extended, s.signalName);
 }
 
 /** Derive the axes that should be drawn for one plot area.
