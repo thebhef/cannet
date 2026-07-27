@@ -12,10 +12,9 @@
 //! A missing file or missing key resolves to the documented default, so a
 //! fresh install and a hand-deleted file behave identically.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use tauri::Manager;
 
 /// File name under `app_config_dir`.
 const SETTINGS_FILE: &str = "settings.json";
@@ -80,7 +79,7 @@ pub fn floored_scratch_cap(cap: Option<u64>) -> Option<u64> {
 /// file must never brick startup. Split from IO so it's testable without
 /// the filesystem.
 fn parse_settings(text: &str) -> Settings {
-    serde_json::from_str(text).unwrap_or_default()
+    crate::persisted_json::parse_or_default(text)
 }
 
 /// Read `dir/settings.json`. A missing or unreadable file, or junk
@@ -97,19 +96,7 @@ fn read_settings(dir: &Path) -> Settings {
 /// mid-write can't leave a half-written file.
 fn write_settings(dir: &Path, settings: &Settings) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
-    let text = serde_json::to_string_pretty(settings)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    let tmp = dir.join(format!("{SETTINGS_FILE}.tmp"));
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, dir.join(SETTINGS_FILE))
-}
-
-/// Resolve the per-OS config directory (`$XDG_CONFIG_HOME/<id>`,
-/// `%APPDATA%\<id>`, `~/Library/Application Support/<id>`).
-fn config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    app.path()
-        .app_config_dir()
-        .map_err(|e| format!("no config dir: {e}"))
+    crate::persisted_json::write_json_atomic(&dir.join(SETTINGS_FILE), settings)
 }
 
 /// Load the persisted settings. Returns defaults if the config dir can't
@@ -118,7 +105,7 @@ fn config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub fn get_settings(app: tauri::AppHandle) -> Settings {
-    config_dir(&app)
+    crate::persisted_json::config_dir(&app)
         .map(|dir| read_settings(&dir))
         .unwrap_or_default()
 }
@@ -129,7 +116,7 @@ pub fn get_settings(app: tauri::AppHandle) -> Settings {
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<(), String> {
-    let dir = config_dir(&app)?;
+    let dir = crate::persisted_json::config_dir(&app)?;
     write_settings(&dir, &settings).map_err(|e| {
         let msg = format!("failed to write settings: {e}");
         crate::sys_warn!(&app, "settings", "{msg}");

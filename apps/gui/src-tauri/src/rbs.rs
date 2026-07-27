@@ -100,19 +100,8 @@ impl RbsFile {
     /// Parse a `.cannet_rbs` document. Only the current
     /// `schema_version` is accepted (ADR 0011).
     pub fn parse(text: &str) -> Result<Self, String> {
-        let raw: serde_json::Value =
-            serde_json::from_str(text).map_err(|e| format!("invalid RBS JSON: {e}"))?;
-        let version = raw
-            .get("schema_version")
-            .and_then(serde_json::Value::as_u64)
-            .ok_or_else(|| "missing schema_version".to_string())?;
-        if version != u64::from(RBS_SCHEMA_VERSION) {
-            return Err(format!(
-                "schema version {version}; this build expects {RBS_SCHEMA_VERSION}"
-            ));
-        }
         let mut file: Self =
-            serde_json::from_value(raw).map_err(|e| format!("invalid RBS JSON: {e}"))?;
+            crate::persisted_json::parse_versioned(text, "RBS", RBS_SCHEMA_VERSION)?;
         if file.fill_bit > 1 {
             return Err(format!("fill_bit must be 0 or 1, got {}", file.fill_bit));
         }
@@ -1067,21 +1056,29 @@ pub async fn rbs_save_as(
     write_element(&app, state.inner(), &element_id, &path)
 }
 
+/// Serialize and write `file` to `path`, via a temp-file + rename
+/// (ADR 0011's persistence contract, shared with the project file): a
+/// failure partway through the write can't leave a truncated RBS file
+/// on disk in place of the last good save.
+fn write_rbs_file(path: &str, file: &RbsFile) -> std::io::Result<()> {
+    crate::persisted_json::write_json_atomic(std::path::Path::new(path), file)
+}
+
 fn write_element(
     app: &AppHandle,
     state: &AppState,
     element_id: &str,
     path: &str,
 ) -> Result<(), String> {
-    let text = {
+    let file = {
         let rbs = state.rbs.lock().expect("rbs mutex poisoned");
         let element = rbs
             .elements
             .get(element_id)
             .ok_or_else(|| format!("no RBS element {element_id}"))?;
-        serde_json::to_string_pretty(&element.file).map_err(|e| e.to_string())?
+        element.file.clone()
     };
-    std::fs::write(path, text).map_err(|e| {
+    write_rbs_file(path, &file).map_err(|e| {
         let msg = format!("failed to write RBS file to {path}: {e}");
         crate::sys_error!(app, "rbs", "{msg}");
         msg
@@ -1496,6 +1493,39 @@ pub fn rbs_crc_algorithms() -> Vec<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression test for the non-atomic RBS save (task 0030 item 7):
+    /// `write_element` used to `std::fs::write` straight to the target
+    /// path, so a write failure partway could leave a corrupted RBS
+    /// file in place of the last good save. Force the write to fail by
+    /// blocking the temp-file step (a directory sits where the `.tmp`
+    /// sibling needs to go) and confirm the original, valid file on
+    /// disk is left completely untouched.
+    #[test]
+    fn save_leaves_the_original_file_untouched_when_the_write_fails() {
+        let dir = std::env::temp_dir().join(format!("cannet-rbs-atomic-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("p.cannet_rbs");
+        let original = serde_json::to_string_pretty(&RbsFile::new()).unwrap();
+        std::fs::write(&path, &original).unwrap();
+
+        let mut tmp = path.clone().into_os_string();
+        tmp.push(".tmp");
+        std::fs::create_dir(&tmp).unwrap();
+
+        let result = write_rbs_file(path.to_str().unwrap(), &RbsFile::new());
+
+        assert!(
+            result.is_err(),
+            "the write must fail when the temp file can't be created"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            original,
+            "a failed save must not touch the previously-saved file"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     /// The checked-in ev-zonal example RBS must stay consistent with
     /// its DBCs: every entry's message key resolves, sits under the

@@ -219,13 +219,36 @@ next to `DOCK_COMPONENTS` (App.tsx:174).
    (id, bus, record) view both callers actually have. Fold
    `dbc_applies_to_frame` into filter.rs while there (June item,
    still open); diag.rs stats stay siloed — fine for now.
-- **7. Persistence written twice-plus** — settings.rs and state.rs are
+- ~~**7. Persistence written twice-plus** — settings.rs and state.rs are
    the same JSON-config module twice; the atomic-write-via-temp helper
    lives in trace_store while settings re-implements it and
    project/RBS saves are **non-atomic**; the ADR-0011 schema-version
    gate is encoded twice (project.rs:246–260 vs RBS). → one
    persisted-JSON helper (atomic write + version gate) used by all
-   four.
+   four.~~ **Done (task-0030/06-persistence-helper).** Re-confirmed:
+   settings.rs/state.rs each hand-rolled the identical temp-file-then-
+   rename write, JSON-or-default parse, and `app_config_dir`
+   resolution; `project.rs::save_project` and `rbs.rs::write_element`
+   both wrote straight to the target path with `std::fs::write` — a
+   real bug, not just duplication, since a write failure partway could
+   leave a truncated file in place of the last good save. Added
+   `persisted_json.rs` with `write_json_atomic` (the trace_store-proven
+   temp+rename pattern), `parse_or_default` (best-effort config files),
+   and `parse_versioned` (the ADR 0011 schema-version gate, previously
+   encoded separately in `project.rs` and `rbs.rs`); routed all four
+   call sites through it. TDD: added a regression test per fixed save
+   path (project, RBS) that blocks the temp-file step and asserts the
+   original on-disk file is untouched by a failed write; confirmed each
+   failed against the prior `std::fs::write`-direct implementation
+   before applying the fix. **Caveat:** settings.rs and state.rs stay
+   two separate modules rather than merging into one — `Settings` and
+   `UiState` are different documents by design (user-chosen
+   preferences vs. machine-recorded state, ADR 0034), so only the
+   shared plumbing (atomic write, default-on-corrupt parse, config
+   dir) moved to `persisted_json`; each module keeps its own thin
+   `parse_settings`/`parse_state` and `read_settings`/`read_state`
+   wrappers so their existing tests and doc comments (which explain
+   *why* the split from IO exists) stayed intact.
 - **8. Session-registration skeleton duplicated** between
    `connect_remote_server` (lib.rs:2717–2897) and
    `connect_local_vbus` (2911–3050), including a redundant re-lock to
