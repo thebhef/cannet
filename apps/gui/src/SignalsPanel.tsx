@@ -1,15 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 
-import type { SignalDescriptorRecord, SignalSelectionWire, SignalSnapshotRecord } from "./types";
+import type { SignalSelectionWire, SignalSnapshotRecord } from "./types";
 import { TraceControls } from "./TraceControls";
 import { TraceHeader } from "./traceTable";
 import { useTraceData } from "./traceData";
 import { useTrace } from "./trace";
 import { useElementRegistry } from "./projectElements";
 import { useProjectContext } from "./projectContext";
+import { useSignalCatalog } from "./signalCatalogContext";
 import { useSignalView } from "./useSignalView";
 import { busDisplayName, busLookup, nextSort, reorderColumn, resizeColumn, toggleColumn } from "./traceColumns";
 import {
@@ -191,21 +190,7 @@ export function SignalsPanel(props: IDockviewPanelProps) {
 
   // The catalog for the manual picker + pattern match counts, scoped
   // to the view's sources like the plot's.
-  const [catalog, setCatalog] = useState<SignalDescriptorRecord[]>([]);
-  const refreshCatalog = useCallback(() => {
-    void invoke<SignalDescriptorRecord[]>("list_signals", {
-      projectBuses: buses.map((b) => b.id),
-    }).then(setCatalog);
-  }, [buses]);
-  useEffect(() => {
-    refreshCatalog();
-  }, [refreshCatalog, project.dbcPaths]);
-  useEffect(() => {
-    const un = listen("dbc-changed", refreshCatalog);
-    return () => {
-      void un.then((fn) => fn());
-    };
-  }, [refreshCatalog]);
+  const { catalog } = useSignalCatalog();
   const scopedCatalog = useMemo(
     () => scopeCatalog(catalog, sourceBusSet),
     [catalog, sourceBusSet],

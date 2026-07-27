@@ -5,8 +5,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { Combobox } from "./Combobox";
 import { useElementRegistry } from "./projectElements";
 import { useProjectContext } from "./projectContext";
+import { useSignalCatalog } from "./signalCatalogContext";
 import { rulesFromValueTable } from "./colorMap";
-import { isEnumValueTable, type ColorRule, type ProjectElement, type SignalDescriptorRecord, type ValueTableEntryRecord } from "./types";
+import { isEnumValueTable, type ColorRule, type ProjectElement, type ValueTableEntryRecord } from "./types";
 
 type ColorMapElement = Extract<ProjectElement, { kind: "colormap" }>;
 
@@ -63,14 +64,7 @@ export function ColorMapPanel(props: IDockviewPanelProps) {
 
   // The signal catalog (every signal the attached DBCs define, expanded
   // per bus). The host owns the DBC→signal mapping.
-  const [catalog, setCatalog] = useState<SignalDescriptorRecord[]>([]);
-  useEffect(() => {
-    void invoke<SignalDescriptorRecord[]>("list_signals", {
-      projectBuses: buses.map((b) => b.id),
-    })
-      .then(setCatalog)
-      .catch(() => setCatalog([]));
-  }, [buses]);
+  const { catalog } = useSignalCatalog();
 
   // The target signal's value table (enum names), re-fetched when the
   // target changes. Not an enum (`isEnumValueTable`: fewer than two

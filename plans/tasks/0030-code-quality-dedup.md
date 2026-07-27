@@ -295,9 +295,35 @@ next to `DOCK_COMPONENTS` (App.tsx:174).
 
 ### TypeScript — several double as thin-view wins
 
-- **13. Signal catalog fetched independently in 3+ panels**
+- ~~**13. Signal catalog fetched independently in 3+ panels**
     (`list_signals` into local state in PlotPanel, TransmitPanel,
-    ColorMapPanel). → lift to a context/provider. *(thin-view)*
+    ColorMapPanel). → lift to a context/provider. *(thin-view)*~~ **Done
+    (task-0030/07-signal-catalog-context).** Re-confirmed the shape and
+    found a fourth site the doc didn't name: SignalsPanel also ran its
+    own `list_signals` fetch (its "add signal" picker). Added
+    `signalCatalogContext.tsx` — `SignalCatalogProvider` fetches once,
+    scoped to the project's bus ids, and `useSignalCatalog()` is the
+    single read path; wired into `App.tsx` inside `ProjectContext`
+    (which the provider reads `buses`/`dbcPaths` from) and around
+    `ElementRegistryContext`, so it's live for every dockview panel.
+    All four panels migrated to it in their own commits. The four
+    panels' refetch triggers had already drifted: PlotPanel and
+    SignalsPanel refetched on a `dbcPaths` change and listened for the
+    host's `dbc-changed` filesystem-watch event; ColorMapPanel and
+    TransmitPanel only refetched when the project's bus list itself
+    changed. The shared provider fetches on the *union* of every
+    trigger any panel relied on, so ColorMapPanel and TransmitPanel
+    gain the `dbcPaths`/`dbc-changed` refresh they were missing — a
+    latent staleness fix, not a behaviour regression. One divergence
+    survives: PlotPanel's toolbar has a manual "↻ reload signal list"
+    button no other panel has, so the context exposes a `refresh()`
+    escape hatch used only by that one caller. TDD: PlotPanel and
+    ColorMapPanel already had DOM coverage of their catalog-derived UI
+    (picker options); TransmitPanel and SignalsPanel didn't (both
+    tests hard-mocked `list_signals` to return `[]`) — added one test
+    per panel first as a green baseline before extracting, plus a
+    dedicated `signalCatalogContext.dom.test.tsx` for the provider's
+    fetch/refetch/failure semantics.
 - **14. Value-table fetch duplicated 4×** (`list_value_tables` in
     ColorMapPanel, PlotPanel, RbsPanel, TransmitPanel). → shared
     `useValueTables` hook. *(thin-view)*

@@ -49,6 +49,11 @@ vi.mock("@tauri-apps/api/core", () => ({
     return [];
   }),
 }));
+// The signal catalog provider listens for `dbc-changed`; give it a
+// resolved unsubscriber (this suite doesn't fire the event).
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async () => () => {}),
+}));
 
 import { ColorMapPanel } from "./ColorMapPanel";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
@@ -59,6 +64,7 @@ import {
 } from "./projectElements";
 import { freshTrace } from "./trace";
 import type { ProjectElement } from "./types";
+import { SignalCatalogProvider } from "./signalCatalogContext";
 
 const projectCtx = {
   buses: [{ id: "b1", name: "Chassis" }],
@@ -92,9 +98,11 @@ function renderPanel(over: Partial<Extract<ProjectElement, { kind: "colormap" }>
   const props = { params: { elementId: "cm1" } } as unknown as Parameters<typeof ColorMapPanel>[0];
   render(
     <ProjectContext.Provider value={projectCtx}>
-      <ElementRegistryContext.Provider value={registry}>
-        <ColorMapPanel {...props} />
-      </ElementRegistryContext.Provider>
+      <SignalCatalogProvider>
+        <ElementRegistryContext.Provider value={registry}>
+          <ColorMapPanel {...props} />
+        </ElementRegistryContext.Provider>
+      </SignalCatalogProvider>
     </ProjectContext.Provider>,
   );
   return { update };
