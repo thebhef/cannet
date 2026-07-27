@@ -55,11 +55,13 @@ the order below is the order of work, top first.
    model and ARXML/FIBEX-described SOME/IP + signal-PDU decode.
    Research detail in [`0039-ethernet-signals/`](0039-ethernet-signals/).
 10. [Task 30 — Code-Quality Debt: Deduplication & God-File Split](0030-code-quality-dedup.md)
-   — pay down the copy-pasted hot-path implementations (CAN-ID
-   extraction ×5, DBC bit-walkers ×3, decoder boilerplate) and the
-   frontend fetch/format dups that also break the thin-view rule, plus
-   split the two god-files (`lib.rs`, `PlotPanel.tsx`). Small reviewable
-   refactors under green tests; pick up opportunistically.
+   — the numbered duplication list (1–24) and all eight god-file splits
+   are **done**. What remains: item **#9** (bridge_client ↔ cannet-client),
+   deferred/gated on cannet-client growing a subscribe-timeout /
+   dynamic-allocation capability; and the **Architecture-level
+   follow-ups** (host-model crate extraction, IPC drift check, the
+   `6d`/`Step 3` comment sweep) — deliberate follow-ups, picked up
+   opportunistically.
 
 ## Notes
 

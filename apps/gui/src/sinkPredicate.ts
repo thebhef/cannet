@@ -59,23 +59,17 @@ export function buildSinkPredicate(
     // Wildcard means "every bus, including future ones"; it's the
     // unconstrained baseline. The only remaining constraints are the
     // upstream filter predicates.
-    if (filterPredicates.length === 0) return null;
-    if (filterPredicates.length === 1) return filterPredicates[0];
-    return { all: filterPredicates };
+    return andAll(filterPredicates);
   }
-  // Explicit-list path: at most one bus → drop the `any` wrapper.
-  const busPredicate: FilterPredicate | null =
-    buses.length === 0
-      ? null
-      : buses.length === 1
-        ? { bus: buses[0] }
-        : { any: buses.map((b) => ({ bus: b })) };
+  // Explicit-list path: the listed buses (as one `any`) AND-composed
+  // with the filter sources' predicates.
+  const busPred = busesToPredicate(buses);
   const all: FilterPredicate[] = [];
-  if (busPredicate) all.push(busPredicate);
+  if (busPred) all.push(busPred);
   all.push(...filterPredicates);
-  if (all.length === 0) return { any: [] }; // Should be unreachable: empty sources is handled above.
-  if (all.length === 1) return all[0];
-  return { all };
+  // Empty is unreachable here (empty sources is handled above); `{ any: [] }`
+  // keeps the "matches nothing" fallback explicit.
+  return andAll(all) ?? { any: [] };
 }
 
 /// Resolve a filter id to its effective predicate: the filter's own
@@ -115,11 +109,8 @@ function resolveFilterPredicate(
     }
   }
   if (!hasWildcard && el.sources.length > 0 && upstreamBuses.length > 0) {
-    upstream.push(
-      upstreamBuses.length === 1
-        ? { bus: upstreamBuses[0] }
-        : { any: upstreamBuses.map((b) => ({ bus: b })) },
-    );
+    const bp = busesToPredicate(upstreamBuses);
+    if (bp) upstream.push(bp);
   }
   // An empty `sources` on this filter means "matches nothing"; fold
   // that in.
@@ -130,7 +121,22 @@ function resolveFilterPredicate(
   const all: FilterPredicate[] = [];
   if (ownPredicate) all.push(ownPredicate);
   all.push(...upstream);
-  if (all.length === 0) return null;
-  if (all.length === 1) return all[0];
-  return { all };
+  return andAll(all);
+}
+
+/// Collapse a list of predicates into their AND: `[]` → `null` (no
+/// constraint), a single predicate unwrapped, otherwise `{ all }`.
+/// The shared composition step both the sink and filter walks end on.
+function andAll(predicates: FilterPredicate[]): FilterPredicate | null {
+  if (predicates.length === 0) return null;
+  if (predicates.length === 1) return predicates[0];
+  return { all: predicates };
+}
+
+/// The bus half of a sources list as a single predicate: `[]` → `null`,
+/// one bus unwrapped, otherwise `{ any: [Bus…] }`. Shared by both walks.
+function busesToPredicate(buses: string[]): FilterPredicate | null {
+  if (buses.length === 0) return null;
+  if (buses.length === 1) return { bus: buses[0] };
+  return { any: buses.map((b) => ({ bus: b })) };
 }

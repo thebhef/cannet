@@ -154,7 +154,7 @@ fn sample_signals_inner(
     // is `O(new matches)` rather than `O(matches in window)`, which is
     // the win at long captures + high rate: per-tick host work no
     // longer scales with capture length.
-    let dbs_guard = state.databases.lock().expect("databases mutex poisoned");
+    let dbs_guard = state.databases();
     let db_refs: Vec<&Database> = dbs_guard.iter().map(|l| l.db.as_ref()).collect();
     // The cache decimates internally now: it reads the coarsest pyramid
     // level above `max_points` (ADR 0002 DS-5), so a "fit data" over a
@@ -213,7 +213,7 @@ fn sample_signals_inner(
 #[allow(clippy::unused_async)]
 pub(crate) async fn signal_min_max(app: AppHandle, signals: Vec<SignalQuery>) -> Vec<Option<SignalExtent>> {
     let state: State<'_, AppState> = app.state();
-    let dbs_guard = state.databases.lock().expect("databases mutex poisoned");
+    let dbs_guard = state.databases();
     let db_refs: Vec<&Database> = dbs_guard.iter().map(|l| l.db.as_ref()).collect();
     let out = signals
         .iter()

@@ -34,6 +34,20 @@ pub use replay::{LoopingBlfReplay, ReplayError};
 pub use server::CannetServerImpl;
 pub use virtual_bus::{VirtualBusServerImpl, VIRTUAL_BUS_FACTORY_ID};
 
+use cannet_wire::proto::{envelope::Body, error::Code, Envelope, Error as ErrorMsg};
+
+/// Build an in-band `Error` envelope carrying the given wire [`Code`] and
+/// message. Shared by both server modes (BLF replay and the virtual bus):
+/// the peer sees it as an `Error` variant on the stream.
+pub(crate) fn error_envelope(code: Code, message: String) -> Envelope {
+    Envelope {
+        body: Some(Body::Error(ErrorMsg {
+            code: code.into(),
+            message,
+        })),
+    }
+}
+
 /// Bind a virtual-bus server to an ephemeral local port and serve it.
 ///
 /// Binds `127.0.0.1:0`, sends the resolved [`std::net::SocketAddr`] back

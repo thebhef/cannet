@@ -172,7 +172,7 @@ fn on_event(app: &AppHandle, event: &notify::Event) {
             // Surface a warning but don't drop the in-memory DB —
             // the user might restore the file or save-replace it.
             let state: State<'_, crate::app_state::AppState> = app.state();
-            let dbs = state.databases.lock().expect("databases mutex poisoned");
+            let dbs = state.databases();
             for d in dbs.iter() {
                 if event.paths.iter().any(|p| Path::new(&d.path) == p) {
                     sys_warn!(
@@ -193,7 +193,7 @@ fn on_event(app: &AppHandle, event: &notify::Event) {
 
     let matching: Vec<String> = {
         let state: State<'_, crate::app_state::AppState> = app.state();
-        let dbs = state.databases.lock().expect("databases mutex poisoned");
+        let dbs = state.databases();
         dbs.iter()
             .filter(|d| event.paths.iter().any(|p| Path::new(&d.path) == p))
             .map(|d| d.path.clone())
@@ -236,7 +236,7 @@ pub fn reload_one(app: &AppHandle, path: &str) {
     };
     {
         let state: State<'_, crate::app_state::AppState> = app.state();
-        let mut list = state.databases.lock().expect("databases mutex poisoned");
+        let mut list = state.databases();
         let Some(slot) = list.iter_mut().find(|d| d.path == path) else {
             // Unloaded between the FS event and now — nothing to
             // swap. The watcher will get unwatched on the next

@@ -16,7 +16,7 @@
 //! (chained together by `rbs::refresh_all_elements`).
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use tauri::{AppHandle, Manager, State};
 
@@ -35,7 +35,7 @@ use crate::{filter, ipc, local_buses, rbs, transmit_frames, transmit_scheduler, 
 // `transmit_commands` modules once those are split out; they resolve at
 // the crate root until then.
 use crate::trace_query::ActiveFilterIndex;
-use crate::transmit_commands::resolve_effective_calc;
+use crate::transmit_commands::{merge_calc_override, resolve_effective_calc};
 use crate::session::RemoteSession;
 
 /// A loaded DBC: its source path, the parsed database, and the set of
@@ -145,6 +145,61 @@ pub(crate) struct AppState {
     pub(crate) active_project_id: Mutex<Option<uuid::Uuid>>,
 }
 
+/// Guarded-field accessors. Each wraps the one lock its field needs with
+/// the canonical poison message, so call sites read
+/// `state.databases()` instead of re-spelling
+/// `state.databases.lock().expect("...")`. Poisoning is unrecoverable
+/// here (a panic under a held lock), so `expect` is the intended policy —
+/// the accessors centralise it. They take one lock each and never lock
+/// ordering internally, so the documented lock order (`rbs` before
+/// `databases` before `transmit_frames` before `remote_sessions`) is
+/// still enforced by call-site acquisition sequence.
+impl AppState {
+    pub(crate) fn databases(&self) -> MutexGuard<'_, Vec<LoadedDbc>> {
+        self.databases.lock().expect("databases mutex poisoned")
+    }
+
+    pub(crate) fn remote_sessions(&self) -> MutexGuard<'_, HashMap<String, RemoteSession>> {
+        self.remote_sessions
+            .lock()
+            .expect("remote_sessions mutex poisoned")
+    }
+
+    pub(crate) fn dbc_watcher(&self) -> MutexGuard<'_, Option<DbcWatcher>> {
+        self.dbc_watcher.lock().expect("dbc_watcher mutex poisoned")
+    }
+
+    pub(crate) fn transmit_frames(&self) -> MutexGuard<'_, transmit_frames::TransmitFrameRegistry> {
+        self.transmit_frames
+            .lock()
+            .expect("transmit_frames mutex poisoned")
+    }
+
+    pub(crate) fn rbs(&self) -> MutexGuard<'_, rbs::RbsRuntime> {
+        self.rbs.lock().expect("rbs mutex poisoned")
+    }
+
+    pub(crate) fn filter_index(&self) -> MutexGuard<'_, Option<ActiveFilterIndex>> {
+        self.filter_index.lock().expect("filter index mutex poisoned")
+    }
+
+    pub(crate) fn active_project_id(&self) -> MutexGuard<'_, Option<uuid::Uuid>> {
+        self.active_project_id
+            .lock()
+            .expect("active_project_id mutex poisoned")
+    }
+
+    /// First loaded DBC (in priority order) for which `f` yields a value —
+    /// the "first-loaded-DBC-wins" scan the unscoped decode/describe/encode
+    /// queries share. Bus-scoped resolution (`resolve_effective_calc`)
+    /// deliberately does *not* use this: it filters by bus first.
+    pub(crate) fn first_dbc<T>(&self, mut f: impl FnMut(&Database) -> Option<T>) -> Option<T> {
+        self.databases()
+            .iter()
+            .find_map(|loaded| f(loaded.db.as_ref()))
+    }
+}
+
 /// Drop the derived, lazily-built decode state after a DBC-set change:
 /// the per-signal decoded-sample caches (pyramids) and the active filter
 /// index. Both are functions of the current DBCs applied to the raw store,
@@ -161,9 +216,7 @@ pub(crate) struct AppState {
 pub(crate) fn invalidate_derived_caches(state: &AppState) {
     state.signal_caches.clear();
     *state
-        .filter_index
-        .lock()
-        .expect("filter index mutex poisoned") = None;
+        .filter_index() = None;
     refresh_mux_extractor(state);
 }
 
@@ -176,7 +229,7 @@ pub(crate) fn invalidate_derived_caches(state: &AppState) {
 /// DBC has a multiplexed message — the common case pays nothing.
 fn refresh_mux_extractor(state: &AppState) {
     let snap: Vec<(Arc<Database>, Vec<String>)> = {
-        let dbs = state.databases.lock().expect("databases mutex poisoned");
+        let dbs = state.databases();
         dbs.iter()
             .filter(|d| d.db.has_multiplexor())
             .map(|d| (d.db.clone(), d.buses.clone()))
@@ -202,8 +255,8 @@ fn refresh_mux_extractor(state: &AppState) {
 /// buses, or RBS configs change.
 pub(crate) fn rebuild_verification(state: &AppState) {
     let overrides: Vec<(String, u32, bool, cannet_dbc::CalculatedFieldsConfig)> = {
-        let rbs_guard = state.rbs.lock().expect("rbs mutex poisoned");
-        let dbs = state.databases.lock().expect("databases mutex poisoned");
+        let rbs_guard = state.rbs();
+        let dbs = state.databases();
         let mut out = Vec::new();
         for element in rbs_guard.elements.values() {
             for (bus_key, bus) in &element.file.buses {
@@ -238,10 +291,7 @@ pub(crate) fn rebuild_verification(state: &AppState) {
                             .find_map(|d| d.db.dbc_calculated_fields(can_id))
                             .cloned()
                             .unwrap_or_default();
-                        let merged = cannet_dbc::CalculatedFieldsConfig {
-                            counter: override_config.counter.or(dbc_default.counter),
-                            crc: override_config.crc.or(dbc_default.crc),
-                        };
+                        let merged = merge_calc_override(dbc_default, Some(override_config));
                         if !merged.is_empty() {
                             out.push((bus_id.clone(), id, extended, merged));
                         }
@@ -251,7 +301,7 @@ pub(crate) fn rebuild_verification(state: &AppState) {
         }
         out
     };
-    let dbs = state.databases.lock().expect("databases mutex poisoned");
+    let dbs = state.databases();
     state.verifier.rebuild_configs(&dbs, &overrides);
 }
 
@@ -263,11 +313,9 @@ pub(crate) fn rebuild_verification(state: &AppState) {
 /// the system log.
 pub(crate) fn refresh_calc_resolutions(app: &AppHandle) {
     let state: State<'_, AppState> = app.state();
-    let dbs = state.databases.lock().expect("databases mutex poisoned");
+    let dbs = state.databases();
     let mut registry = state
-        .transmit_frames
-        .lock()
-        .expect("transmit_frames mutex poisoned");
+        .transmit_frames();
     for (id, request, spec) in registry.resolution_inputs() {
         match resolve_effective_calc(&dbs, &request, spec.as_ref()) {
             Ok(resolved) => registry.set_resolved_calc(&id, resolved),

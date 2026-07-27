@@ -38,6 +38,24 @@ fn emit_transmit_frames_changed(app: &AppHandle) {
     let _ = app.emit("transmit-frames-changed", ());
 }
 
+/// Layer a per-message calc override over the DBC default, per field
+/// (ADR 0027): a present override field replaces the DBC default
+/// wholesale, an absent one keeps the default. `None` override yields
+/// the default unchanged. Shared by [`resolve_effective_calc`] and the
+/// verifier's per-bus override rebuild.
+pub(crate) fn merge_calc_override(
+    dbc_default: cannet_dbc::CalculatedFieldsConfig,
+    override_config: Option<cannet_dbc::CalculatedFieldsConfig>,
+) -> cannet_dbc::CalculatedFieldsConfig {
+    match override_config {
+        Some(o) => cannet_dbc::CalculatedFieldsConfig {
+            counter: o.counter.or(dbc_default.counter),
+            crc: o.crc.or(dbc_default.crc),
+        },
+        None => dbc_default,
+    }
+}
+
 /// Resolve the *effective* calculated-fields config for one TX
 /// message (ADR 0027): the DBC-declared defaults (`CannetCounter` /
 /// `CannetCrc` attributes) with the message's override spec layered
@@ -78,16 +96,7 @@ pub(crate) fn resolve_effective_calc(
     let override_config = override_spec
         .map(ipc::CalcFieldsSpec::to_config)
         .transpose()?;
-    let (mut counter, mut crc) = (dbc_default.counter, dbc_default.crc);
-    if let Some(o) = override_config {
-        if o.counter.is_some() {
-            counter = o.counter;
-        }
-        if o.crc.is_some() {
-            crc = o.crc;
-        }
-    }
-    let merged = cannet_dbc::CalculatedFieldsConfig { counter, crc };
+    let merged = merge_calc_override(dbc_default, override_config);
     if merged.is_empty() {
         return Ok(None);
     }
@@ -114,9 +123,7 @@ pub(crate) fn fetch_field_validity(state: State<'_, AppState>) -> Vec<verificati
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn list_transmit_frames(state: State<'_, AppState>) -> Vec<transmit_frames::TransmitFrameView> {
     state
-        .transmit_frames
-        .lock()
-        .expect("transmit_frames mutex poisoned")
+        .transmit_frames()
         .list()
 }
 
@@ -137,9 +144,7 @@ pub(crate) fn set_transmit_frame(
     id.clone_into(&mut frame.id);
     let parked = frame.mode != transmit_frames::TransmitMode::Periodic || frame.cycle_ms == 0;
     state
-        .transmit_frames
-        .lock()
-        .expect("transmit_frames mutex poisoned")
+        .transmit_frames()
         .set(frame);
     if parked {
         state.transmit_scheduler.stop(id);
@@ -155,9 +160,7 @@ pub(crate) fn set_transmit_frame(
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn remove_transmit_frame(app: AppHandle, state: State<'_, AppState>, id: String) {
     state
-        .transmit_frames
-        .lock()
-        .expect("transmit_frames mutex poisoned")
+        .transmit_frames()
         .remove(&id);
     state.transmit_scheduler.stop(id);
     emit_transmit_frames_changed(&app);
@@ -168,9 +171,7 @@ pub(crate) fn remove_transmit_frame(app: AppHandle, state: State<'_, AppState>, 
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn reorder_transmit_frames(app: AppHandle, state: State<'_, AppState>, ids: Vec<String>) {
     state
-        .transmit_frames
-        .lock()
-        .expect("transmit_frames mutex poisoned")
+        .transmit_frames()
         .reorder(&ids);
     emit_transmit_frames_changed(&app);
 }
@@ -180,9 +181,7 @@ pub(crate) fn reorder_transmit_frames(app: AppHandle, state: State<'_, AppState>
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn clear_transmit_frames(app: AppHandle, state: State<'_, AppState>) {
     state
-        .transmit_frames
-        .lock()
-        .expect("transmit_frames mutex poisoned")
+        .transmit_frames()
         .clear();
     emit_transmit_frames_changed(&app);
 }
@@ -197,9 +196,7 @@ pub(crate) fn transmit_frame_once(
     id: String,
 ) -> Result<ipc::TransmitResult, String> {
     let request = state
-        .transmit_frames
-        .lock()
-        .expect("transmit_frames mutex poisoned")
+        .transmit_frames()
         .send_request(&id)
         .ok_or_else(|| format!("no transmit frame with id {id}"))?;
     transmit_frame_inner(state.inner(), &request)
@@ -217,9 +214,7 @@ pub(crate) fn start_periodic_transmit(
 ) -> Result<(), String> {
     let started_cycle_ms = {
         let mut registry = state
-            .transmit_frames
-            .lock()
-            .expect("transmit_frames mutex poisoned");
+            .transmit_frames();
         if registry.begin_periodic(&id)? {
             // The owner is starting to transmit — the sequence counter
             // seeds at 0 (ADR 0027).
@@ -241,9 +236,7 @@ pub(crate) fn start_periodic_transmit(
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn stop_periodic_transmit(app: AppHandle, state: State<'_, AppState>, id: String) {
     state
-        .transmit_frames
-        .lock()
-        .expect("transmit_frames mutex poisoned")
+        .transmit_frames()
         .stop_periodic(&id);
     state.transmit_scheduler.stop(id);
     emit_transmit_frames_changed(&app);
@@ -465,9 +458,7 @@ pub(crate) fn run_transmit_scheduler(
                     continue;
                 }
                 let Some((request, cycle_ms)) = state
-                    .transmit_frames
-                    .lock()
-                    .expect("transmit_frames mutex poisoned")
+                    .transmit_frames()
                     .fire_info(&id)
                 else {
                     // Stopped, parked to Manual, or removed — drop it.
@@ -490,9 +481,7 @@ pub(crate) fn run_transmit_scheduler(
         // still append per frame (the trace shows every transmit).
         if !due.is_empty() {
             let sessions = state
-                .remote_sessions
-                .lock()
-                .expect("remote_sessions mutex poisoned");
+                .remote_sessions();
             let mut routed: Vec<((String, u8, String), cannet_core::CanFrame)> = Vec::new();
             for request in &due {
                 let Some(route) = resolve_bus_route(&sessions, &request.bus_id) else {
@@ -527,13 +516,9 @@ pub(crate) fn run_transmit_scheduler(
 fn routes_up(state: &AppState, due: &[(String, std::time::Instant)]) -> Vec<bool> {
     // Lock order: `transmit_frames` before `remote_sessions`.
     let registry = state
-        .transmit_frames
-        .lock()
-        .expect("transmit_frames mutex poisoned");
+        .transmit_frames();
     let sessions = state
-        .remote_sessions
-        .lock()
-        .expect("remote_sessions mutex poisoned");
+        .remote_sessions();
     due.iter()
         .map(|(id, _)| match registry.bus_id(id) {
             Some(bus) => resolve_bus_route(&sessions, &bus).is_some(),
@@ -553,13 +538,9 @@ fn resume_parked_routes(
     // Lock order: `transmit_frames` before `remote_sessions`.
     let resumable: Vec<(String, Option<u32>)> = {
         let registry = state
-            .transmit_frames
-            .lock()
-            .expect("transmit_frames mutex poisoned");
+            .transmit_frames();
         let sessions = state
-            .remote_sessions
-            .lock()
-            .expect("remote_sessions mutex poisoned");
+            .remote_sessions();
         schedule
             .parked_ids()
             .into_iter()
@@ -608,9 +589,7 @@ pub(crate) fn transmit_frame_inner(
     // wire channel 0 in that case — the trace view shows the *bus*
     // column, not the wire channel, so it stays unambiguous.
     let sessions_guard = state
-        .remote_sessions
-        .lock()
-        .expect("remote_sessions mutex poisoned");
+        .remote_sessions();
     let routing = resolve_bus_route(&sessions_guard, &request.bus_id);
     let wire_channel = routing.as_ref().map_or(0u8, |r| r.channel);
 

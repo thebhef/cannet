@@ -132,19 +132,15 @@ pub async fn rbs_view(
     state: State<'_, AppState>,
     element_id: String,
 ) -> Result<Option<RbsView>, String> {
-    let rbs = state.rbs.lock().expect("rbs mutex poisoned");
+    let rbs = state.rbs();
     let Some(element) = rbs.elements.get(&element_id) else {
         return Ok(None);
     };
-    let dbs = state.databases.lock().expect("databases mutex poisoned");
+    let dbs = state.databases();
     let registry = state
-        .transmit_frames
-        .lock()
-        .expect("transmit_frames mutex poisoned");
+        .transmit_frames();
     let sessions = state
-        .remote_sessions
-        .lock()
-        .expect("remote_sessions mutex poisoned");
+        .remote_sessions();
 
     let mut buses = Vec::new();
     for (bus_key, bus) in &element.file.buses {

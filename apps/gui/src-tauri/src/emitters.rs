@@ -177,9 +177,7 @@ pub(crate) fn spawn_trace_flusher(app: AppHandle) {
                     state.signal_caches.evict_below(ts);
                 }
                 if let Some(active) = state
-                    .filter_index
-                    .lock()
-                    .expect("filter index mutex poisoned")
+                    .filter_index()
                     .as_mut()
                 {
                     active.index.evict_below(mark);

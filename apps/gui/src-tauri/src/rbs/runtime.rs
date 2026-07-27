@@ -216,7 +216,7 @@ where
 /// mismatches, bad overrides).
 #[allow(clippy::too_many_lines)]
 fn rebuild_element_rows(state: &AppState, element_id: &str) -> Vec<String> {
-    let rbs = state.rbs.lock().expect("rbs mutex poisoned");
+    let rbs = state.rbs();
     let Some(element) = rbs.elements.get(element_id) else {
         return Vec::new();
     };
@@ -224,7 +224,7 @@ fn rebuild_element_rows(state: &AppState, element_id: &str) -> Vec<String> {
     let mut desired: Vec<TransmitFrame> = Vec::new();
     let no_overrides = RbsMessage::new();
 
-    let dbs = state.databases.lock().expect("databases mutex poisoned");
+    let dbs = state.databases();
     for bus_key in element.file.buses.keys() {
         let Some(bus_id) = rbs.resolve_bus(bus_key) else {
             // Unresolved logical bus: rows render inert in the panel,
@@ -308,9 +308,7 @@ fn rebuild_element_rows(state: &AppState, element_id: &str) -> Vec<String> {
     drop(rbs);
 
     let mut registry = state
-        .transmit_frames
-        .lock()
-        .expect("transmit_frames mutex poisoned");
+        .transmit_frames();
     let desired_ids: HashSet<&str> = desired.iter().map(|f| f.id.as_str()).collect();
     for stale in registry.rbs_row_ids(element_id) {
         if !desired_ids.contains(stale.as_str()) {
@@ -332,11 +330,9 @@ fn rebuild_element_rows(state: &AppState, element_id: &str) -> Vec<String> {
 /// row keys the registry's provenance carries — no DBC lock, so the
 /// hot enable / run / kill-switch paths stay light. Idempotent.
 pub(super) fn sync_schedules(state: &AppState) {
-    let rbs = state.rbs.lock().expect("rbs mutex poisoned");
+    let rbs = state.rbs();
     let mut registry = state
-        .transmit_frames
-        .lock()
-        .expect("transmit_frames mutex poisoned");
+        .transmit_frames();
     for row in registry.rbs_rows() {
         let want = !rbs.kill_switch
             && rbs.elements.get(&row.element).is_some_and(|element| {
@@ -392,7 +388,7 @@ pub(super) fn refresh_element(app: &AppHandle, element_id: &str) {
 pub(crate) fn refresh_all_elements(app: &AppHandle) {
     let state: State<'_, AppState> = app.state();
     let ids: Vec<String> = {
-        let rbs = state.rbs.lock().expect("rbs mutex poisoned");
+        let rbs = state.rbs();
         rbs.elements.keys().cloned().collect()
     };
     for id in ids {
