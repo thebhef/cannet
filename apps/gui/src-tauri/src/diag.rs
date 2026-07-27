@@ -489,7 +489,7 @@ pub struct FinishedCapture {
 pub fn diag_capture_start(
     state: State<'_, DiagState>,
     metrics: State<'_, HostMetrics>,
-    app_state: State<'_, crate::AppState>,
+    app_state: State<'_, crate::app_state::AppState>,
     label: String,
 ) {
     let mut cap = state.inner.lock().expect("diag mutex poisoned");
@@ -537,7 +537,7 @@ pub fn diag_push(
 #[allow(clippy::needless_pass_by_value)]
 pub fn diag_capture_finish(
     state: State<'_, DiagState>,
-    app_state: State<'_, crate::AppState>,
+    app_state: State<'_, crate::app_state::AppState>,
     path: Option<String>,
 ) -> Result<FinishedCapture, String> {
     let (label, samples, store_len_at_start) = {

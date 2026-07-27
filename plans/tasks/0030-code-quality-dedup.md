@@ -37,7 +37,7 @@ the area is already test-covered; each region's tests move with it.
 
 | LOC | File | Split into |
 | --- | --- | --- |
-| 5701 | `apps/gui/src-tauri/src/lib.rs` | see sketch below |
+| ~~5701~~ | ~~`apps/gui/src-tauri/src/lib.rs`~~ | **Done — see sketch below** |
 | 3577 | `apps/gui/src/PlotPanel.tsx` | see sketch below |
 | 2650 | `crates/cannet-dbc/src/lib.rs` | parse / model / decode / encode / view-builders modules (tests are lines 1491–2650) |
 | 2441 | `apps/gui/src/App.tsx` | see sketch below |
@@ -62,6 +62,32 @@ deliberate (`invalidate_derived_caches` drops signal pyramids + the
 on-disk filter index — reserved for rare DBC-set changes;
 `rbs::refresh_all_elements` already chains the other two). lib.rs ends
 at ~700 lines of wiring + `run()`.
+
+**Done (task-0030/11-split-lib-rs).** Landed as staged commits, one per
+region, each green (`cargo test`/`clippy -p cannet-gui` + the workspace
+pre-commit hook): `app_state.rs` (AppState + `LoadedDbc` + the three
+refreshers, kept distinct as directed), `capture.rs` (BLF open/save/scan
++ `raw_to_core_frame` + the scratch clear/restore/restamp lifecycle),
+`dbc_commands.rs` (DBC commands + the `decode_against`/`decode_raw_frame`/
+`signal_to_wire` decode helpers), `trace_query.rs` (paging, by-id sort,
+`ActiveFilterIndex` + candidate machinery), `session.rs` (remote/vbus
+connect + pump + `resolve_bus_route`, with dedup #8), `transmit_commands.rs`
+(TX commands + scheduler), `sampling.rs`, and `emitters.rs` (the
+`trace-grew`/flush timers + the System Messages surface, with
+`emit_system_log` re-exported at the crate root so the `sys_*` macros'
+`$crate::emit_system_log` is unchanged). Notes commands folded into
+`notes.rs`; the local-virtual-bus commands folded into `local_buses.rs`
+(sketch didn't place them — the registry they drive is the honest home).
+The upward-reach fix covered the four modules named plus `diag` and
+`verification`, which also reached into the crate root for `AppState` /
+`LoadedDbc`. **Deviation:** the ~1,900-line `#[cfg(test)] mod tests` was
+relocated wholesale to a sibling `tests.rs` rather than split per module —
+it shares helpers (`test_state`/`loaded`/`tiny_dbc`/…) across the now-many
+modules and holds string literals with braces (JSON in `calc_spec_serde`)
+that defeat mechanical brace-split, so keeping it one cohesive module
+(resolving via `use super::*`) was the safe move; per-module test
+co-location is a clean follow-up. Production `lib.rs` is now ~540 lines
+(module wiring + `run()`), so the ~700 target is met.
 
 **`PlotPanel.tsx` sketch**: `PlotArea` alone is ~1,670 lines mixing six
 concerns, and the panel↔area interface has exploded — 46 props, a
@@ -212,13 +238,22 @@ next to `DOCK_COMPONENTS` (App.tsx:174).
    an `rbs.rs` unit test helper (`ev_zonal_fixture_...`'s `resolve`
    closure) — out of this item's stated scope (gui lib.rs only) and
    left as-is per the "surgical changes" rule.
-- **6. `record_matches` fabricates a `RawTraceFrame`** (gui
+- ~~**6. `record_matches` fabricates a `RawTraceFrame`** (gui
    lib.rs:1556–1575: dummy timestamp/direction/payload, undocumented
    "predicate only touches id/bus/record" invariant) to reuse
    `FilterPredicate::matches`. → change the predicate input to the
    (id, bus, record) view both callers actually have. Fold
    `dbc_applies_to_frame` into filter.rs while there (June item,
-   still open); diag.rs stats stay siloed — fine for now.
+   still open); diag.rs stats stay siloed — fine for now.~~ **Done
+   (task-0030/11-split-lib-rs).** Added `FilterPredicate::matches_fields(id,
+   bus_id, decoded)` — the fields a predicate actually reads — and had the
+   `RawTraceFrame`-shaped `matches` delegate to it; `record_matches` now
+   evaluates the `TraceFrameRecord` it already holds directly, no dummy
+   frame. Folded `dbc_applies_to_frame` into `filter::dbc_applies(buses,
+   bus_id)` (expressed over the fields, not a `LoadedDbc`) and routed
+   `decode_against` + the mux extractor's inline scoping through it. Added
+   a `matches_fields`/`matches` parity test and a `dbc_applies` scoping
+   test. `diag.rs` stats left siloed as noted.
 - ~~**7. Persistence written twice-plus** — settings.rs and state.rs are
    the same JSON-config module twice; the atomic-write-via-temp helper
    lives in trace_store while settings re-implements it and
@@ -249,17 +284,28 @@ next to `DOCK_COMPONENTS` (App.tsx:174).
    `parse_settings`/`parse_state` and `read_settings`/`read_state`
    wrappers so their existing tests and doc comments (which explain
    *why* the split from IO exists) stayed intact.
-- **8. Session-registration skeleton duplicated** between
+- ~~**8. Session-registration skeleton duplicated** between
    `connect_remote_server` (lib.rs:2717–2897) and
    `connect_local_vbus` (2911–3050), including a redundant re-lock to
    re-read data just inserted. → shared registration fn; collapses
-   naturally into the `session.rs` split.
+   naturally into the `session.rs` split.~~
    **Partial (2026-07-25, task 29b):** the session-*map* mutation is
    now a choke point — `AppState::register_session` /
    `unregister_sessions` / `remove_vbus_session_if_dead`; no raw
    insert/remove at call sites (29b needed one place to emit the
    scheduler's route-up hint). Remaining: the wider skeleton (subscribe
    flow, pump spawn, status events) and the redundant re-lock.
+   **Done (task-0030/11-split-lib-rs).** The remaining skeleton now goes
+   through one `register_session_or_warn(app, state, address, session)`
+   seam in `session.rs` — the register + duplicate-address warn + return,
+   the only session-map insert either connect path does — shared by both
+   paths. The pump-spawn/status differences (one pump vs. one per
+   participant; different cleanup + status text) stay per-path: an honest
+   boundary rather than a forced merge. Dropped the redundant re-lock in
+   `connect_remote_server` that re-read the just-inserted `channel_to_bus`
+   under a second lock; the pump clones the value already in scope.
+   Covered by the existing `register_session_*` / `full_vbus_session_tx`
+   tests (the connect commands themselves need a live server/app).
 - **9. bridge_client.rs re-implements cannet-client's session
    machinery** — real duplication (subscribe envelope, allocated-id
    wait, pumps, twin error types), **but** the consolidation is gated:

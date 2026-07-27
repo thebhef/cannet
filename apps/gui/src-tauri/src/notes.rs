@@ -285,6 +285,74 @@ impl NotesStore {
     }
 }
 
+use tauri::{AppHandle, Emitter, Manager, State};
+
+use crate::app_state::AppState;
+
+/// Snapshot of the session-scoped notes, chronological.
+/// Plot panels call this on mount to seed their event list and
+/// reconcile against `notes-changed` events.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn fetch_notes(state: State<'_, AppState>) -> Vec<Note> {
+    state.notes.snapshot()
+}
+
+/// Add a note to the session buffer. Emits `notes-changed`
+/// with the new chronological snapshot on success. A duplicate `id`
+/// is a no-op (idempotent against an event arriving twice).
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn add_note(app: AppHandle, note: Note) {
+    let state: State<'_, AppState> = app.state();
+    if let Some(applied) = state.notes.add(note) {
+        let _ = app.emit("notes-changed", applied.notes);
+    }
+}
+
+/// Rename an existing note.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn rename_note(app: AppHandle, id: String, label: String) {
+    let state: State<'_, AppState> = app.state();
+    if let Some(applied) = state.notes.rename(&id, label) {
+        let _ = app.emit("notes-changed", applied.notes);
+    }
+}
+
+
+/// Recolour an existing note (ADR 0035): `Some("#RRGGBB")` to set, `null`
+/// to clear back to the view default.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn recolor_note(app: AppHandle, id: String, color: Option<String>) {
+    let state: State<'_, AppState> = app.state();
+    if let Some(applied) = state.notes.recolor(&id, color) {
+        let _ = app.emit("notes-changed", applied.notes);
+    }
+}
+
+/// Remove a note from the session buffer.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn remove_note(app: AppHandle, id: String) {
+    let state: State<'_, AppState> = app.state();
+    if let Some(applied) = state.notes.remove(&id) {
+        let _ = app.emit("notes-changed", applied.notes);
+    }
+}
+
+/// Drop every note from the session buffer. Called by the
+/// trace-store clear path so cleared captures lose their notes too.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn clear_notes(app: AppHandle) {
+    let state: State<'_, AppState> = app.state();
+    if let Some(applied) = state.notes.clear() {
+        let _ = app.emit("notes-changed", applied.notes);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
