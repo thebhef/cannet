@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 //
-// Unit tests for the shared signal-catalog provider (task 30 item
-// 13): fetches `list_signals` once, scoped to the project's bus list,
-// and refetches on the triggers the four panels it replaces relied on
-// independently — a bus-list change, the loaded DBC-path set
-// changing, and the host's `dbc-changed` filesystem-watch event.
+// Unit tests for the shared signal-catalog provider: fetches
+// `list_signals` once, scoped to the project's bus list, and refetches
+// on the triggers the four panels it replaces relied on independently
+// — a bus-list change, the loaded DBC-path set changing, and the
+// host's `dbc-changed` filesystem-watch event.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";

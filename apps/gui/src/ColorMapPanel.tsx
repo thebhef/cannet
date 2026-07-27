@@ -65,10 +65,9 @@ export function ColorMapPanel(props: IDockviewPanelProps) {
   const { catalog } = useSignalCatalog();
 
   // The target signal's value table (enum names), re-fetched when the
-  // target changes (via the shared useValueTables hook, task 30 item
-  // 14). Not an enum (`isEnumValueTable`: fewer than two members,
-  // single-member SNA sentinels included) ⇒ a numeric signal (range
-  // editor).
+  // target changes (via the shared useValueTables hook). Not an enum
+  // (`isEnumValueTable`: fewer than two members, single-member SNA
+  // sentinels included) ⇒ a numeric signal (range editor).
   const signalName = element?.signalName ?? "";
   const messageId = element?.messageId ?? 0;
   const extended = element?.extended ?? false;

@@ -54,14 +54,11 @@ the order below is the order of work, top first.
    plot semantics for on-change series, then the multi-protocol trace
    model and ARXML/FIBEX-described SOME/IP + signal-PDU decode.
    Research detail in [`0039-ethernet-signals/`](0039-ethernet-signals/).
-10. [Task 30 — Code-Quality Debt: Deduplication & God-File Split](0030-code-quality-dedup.md)
-   — the numbered duplication list (1–24) and all eight god-file splits
-   are **done**. What remains: item **#9** (bridge_client ↔ cannet-client),
-   deferred/gated on cannet-client growing a subscribe-timeout /
-   dynamic-allocation capability; and the **Architecture-level
-   follow-ups** (host-model crate extraction, IPC drift check, the
-   `6d`/`Step 3` comment sweep) — deliberate follow-ups, picked up
-   opportunistically.
+10. [Task 40 — bridge_client / cannet-client Session-Machinery
+    Consolidation](0040-bridge-client-consolidation.md) — gated on
+    cannet-client growing a subscribe-timeout / dynamic-allocation
+    capability; split out from task 30's item #9 once everything else
+    in that audit shipped.
 
 ## Notes
 

@@ -442,6 +442,24 @@ next pass on this surface can address them as one piece.
 
 ### Host crates, wire, and sidecar
 
+- `[cleanup]` **Extract a host-model crate out of `cannet-gui`.**
+  `trace_store` / `filter` / `signal_cache` / `signal_sampler` are
+  tauri-free and don't need to live in the app crate; `cannet-perf-measurement`
+  already depends on `cannet-gui` via documented `pub mod` escapes to
+  reach them (a deliberate tradeoff at the time). Now that the lib.rs
+  god-file split (task 30) has landed these into their own modules,
+  pulling them into a standalone crate is mechanical. Do it if/when
+  another consumer besides `cannet-perf-measurement` needs the same
+  escape, or the `pub mod` seam starts to hurt.
+- `[cleanup]` **Sweep task-step-number comments (`6d`, `Step 3`, …) out
+  of source.** ~20+ sites across `cannet-spill` and host files (filter,
+  signal_cache, emitters, trace_store's flush module among them) cite
+  plan-step numbers in comments, violating the no-plan-refs rule
+  (CLAUDE.md § Documentation: source cites ADRs, never `plans/`).
+  Surfaced by the 2026-07-02 quality audit (task 30) and reconfirmed
+  outstanding as of the task-30 close-out (2026-07-26) — replace each
+  with an ADR reference or plain inline rationale, in one commit so the
+  sweep doesn't drag.
 - `[idea]` `cannet-gui` disk-spill eviction (task 0018 Step 6): **pin
   note-bearing regions against eviction.** The windowed-ring cap drops the
   oldest frames purely by age; a section the user annotated with a note is

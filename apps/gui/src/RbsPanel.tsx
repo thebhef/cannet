@@ -660,7 +660,7 @@ interface SignalRowProps {
 function SignalRow({ elementId, target, message, signal: s, inert, onMenu }: SignalRowProps) {
   // Enum signals get a datalist of labels (committed as the label
   // string — the host resolves it through the VAL_ table), fetched via
-  // the shared useValueTables hook (task 30 item 14).
+  // the shared useValueTables hook.
   const valueTableSignals = useMemo<ValueTableSignal[]>(
     () =>
       s.hasValueTable
