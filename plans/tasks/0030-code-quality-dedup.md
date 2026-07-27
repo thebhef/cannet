@@ -44,7 +44,9 @@ the area is already test-covered; each region's tests move with it.
 | ~~2158~~ | ~~`apps/gui/src-tauri/src/trace_store.rs`~~ | **Done — see sketch below** |
 | ~~2093~~ | ~~`apps/gui/src-tauri/src/rbs.rs`~~ | **Done — see sketch below** |
 | ~~1642~~ | ~~`apps/gui/src/TransmitPanel.tsx`~~ | **Done — see sketch below** |
-| 1603 | `apps/gui/src/ProjectPanel.tsx` | connection-management UI (lines 556–1603, two thirds of the file) → its own file |
+| ~~1603~~ | ~~`apps/gui/src/ProjectPanel.tsx`~~ | **Done — see sketch below** |
+
+The god-files table is now fully addressed — every row above is done.
 | 1045 | `servers/cannet-python-can/.../server.py` | four modules: gRPC service / shared-interface + pumps / enumeration-watch / helpers |
 
 **`lib.rs` sketch** (regions are self-contained, sharing only
@@ -416,6 +418,41 @@ the frame-reorder drag/drop path has no direct unit test — jsdom's
 `dataTransfer` doesn't carry data across synthetic drag events — so
 `reorderFrames` / the `tx-frame` DnD helpers stay exercised only
 indirectly, exactly as before this split.
+
+**`ProjectPanel.tsx` sketch**: the 2026-07-02 table's "connection-management
+UI (lines 556–1603, two thirds of the file)" — re-verified 2026-07-26, the
+file had drifted to **1,572** lines and the region ran lines 525–1571
+(`uniqueRemoteServers` through `AddBridgeForm`), still ~two thirds. It is a
+run of self-contained discovery/connection subcomponents the panel composes,
+so it lifts out at a clean seam.
+
+**Done (task-0030/18-split-projectpanel).** ProjectPanel.tsx:
+**1,572 → 497 lines** (the panel shell: project New/Open/Save actions, the
+element inventory + `ElementRow`, the logical-bus / virtual-bus / Connection
+/ DBC section composition, and the id/basename helpers). The
+connection-management region split **cleanly** — pure relocation, every prop
+contract preserved verbatim, a one-directional shell→module dependency (the
+extracted code references nothing back in the shell). New file:
+
+- `ConnectionManagement.tsx` (1,093) — interface discovery
+  (`useInterfaceDiscovery` + `DiscoveryState`/`DiscoveryRegistry`), the
+  per-bus interface combo and hardware-config row (`BusInterfaceCombo` /
+  `BusHardwareConfig` + the option encode/decode/label helpers), the inline
+  "Add server…" form (`AddServerInline`), the Connection-section rows
+  (`LocalInterfacesRow` / `LocalInterfaceList` / `RemoteServerRow` /
+  `SelectedInterfaceList` + `labelForBinding`), the virtual-bus rows
+  (`VirtualBusRow` + `AddBridgeForm`), and the shared helpers
+  `uniqueRemoteServers` / `samePick` / `ComboPick`.
+
+**TDD.** The moved components already carried DOM coverage in
+`ProjectPanel.dom.test.tsx` (`BusInterfaceCombo`, `AddServerInline`,
+`LocalInterfaceList`, `uniqueRemoteServers`) — no gap to backfill, so no new
+tests were needed. That coverage was repointed at the new module;
+`ElementRow`'s cases stay on `ProjectPanel`. Suite held at 772, green before
+and after the extraction (`pnpm test` + `build` via the pre-commit hook).
+
+With this, the **God-files worth splitting** table is fully addressed — every
+row is done.
 
 ## Duplicate implementations to consolidate
 

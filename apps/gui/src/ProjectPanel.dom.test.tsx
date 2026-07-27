@@ -25,13 +25,13 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import type { IDockviewPanel } from "dockview";
 
+import { ElementRow } from "./ProjectPanel";
 import {
   AddServerInline,
   BusInterfaceCombo,
-  ElementRow,
   LocalInterfaceList,
   uniqueRemoteServers,
-} from "./ProjectPanel";
+} from "./ConnectionManagement";
 import { LOCAL_SERVER } from "./types";
 import type { Bus, InterfaceBinding, InterfaceRecord, ProjectElement } from "./types";
 
