@@ -5,8 +5,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { Combobox } from "./Combobox";
 import { useElementRegistry } from "./projectElements";
 import { useProjectContext } from "./projectContext";
+import { useSignalCatalog } from "./signalCatalogContext";
 import { rulesFromValueTable } from "./colorMap";
-import { isEnumValueTable, type ColorRule, type ProjectElement, type SignalDescriptorRecord, type ValueTableEntryRecord } from "./types";
+import { isEnumValueTable, type ColorRule, type ProjectElement, type ValueTableEntryRecord } from "./types";
+import { useValueTables, type ValueTableSignal } from "./useValueTables";
+import { busLookup } from "./traceColumns";
 
 type ColorMapElement = Extract<ProjectElement, { kind: "colormap" }>;
 
@@ -55,48 +58,24 @@ export function ColorMapPanel(props: IDockviewPanelProps) {
   const entry = registry.get(elementId)?.element;
   const element = entry && entry.kind === "colormap" ? entry : null;
 
-  const busName = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const b of buses) m.set(b.id, b.name);
-    return m;
-  }, [buses]);
+  const busName = useMemo(() => busLookup(buses), [buses]);
 
   // The signal catalog (every signal the attached DBCs define, expanded
   // per bus). The host owns the DBC→signal mapping.
-  const [catalog, setCatalog] = useState<SignalDescriptorRecord[]>([]);
-  useEffect(() => {
-    void invoke<SignalDescriptorRecord[]>("list_signals", {
-      projectBuses: buses.map((b) => b.id),
-    })
-      .then(setCatalog)
-      .catch(() => setCatalog([]));
-  }, [buses]);
+  const { catalog } = useSignalCatalog();
 
   // The target signal's value table (enum names), re-fetched when the
-  // target changes. Not an enum (`isEnumValueTable`: fewer than two
-  // members, single-member SNA sentinels included) ⇒ a numeric signal
-  // (range editor).
+  // target changes (via the shared useValueTables hook). Not an enum
+  // (`isEnumValueTable`: fewer than two members, single-member SNA
+  // sentinels included) ⇒ a numeric signal (range editor).
   const signalName = element?.signalName ?? "";
   const messageId = element?.messageId ?? 0;
   const extended = element?.extended ?? false;
-  const [valueTable, setValueTable] = useState<ValueTableEntryRecord[]>([]);
-  useEffect(() => {
-    if (!signalName) {
-      setValueTable([]);
-      return;
-    }
-    let cancelled = false;
-    void invoke<ValueTableEntryRecord[]>("list_value_tables", { messageId, extended, signalName })
-      .then((rows) => {
-        if (!cancelled) setValueTable(rows);
-      })
-      .catch(() => {
-        if (!cancelled) setValueTable([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [signalName, messageId, extended]);
+  const targetSignals = useMemo<ValueTableSignal[]>(
+    () => (signalName ? [{ busId: element?.busId ?? null, messageId, extended, signalName }] : []),
+    [element?.busId, messageId, extended, signalName],
+  );
+  const [valueTable = []] = useValueTables(targetSignals).values();
 
   const setRules = useCallback(
     (rules: ColorRule[]) => update(elementId, { rules }),

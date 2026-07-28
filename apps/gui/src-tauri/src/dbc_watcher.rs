@@ -45,7 +45,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::{sys_error, sys_info, sys_warn};
 
 /// Tracks a `notify` watcher plus the parent directories it currently
-/// owns watches on. Lives inside [`crate::AppState`] behind a mutex so
+/// owns watches on. Lives inside [`crate::app_state::AppState`] behind a mutex so
 /// `add_dbc` / `remove_dbc` / `clear_dbcs` can mutate the watch set.
 pub struct DbcWatcher {
     /// The underlying `notify` watcher. `None` only if construction
@@ -171,8 +171,8 @@ fn on_event(app: &AppHandle, event: &notify::Event) {
         EventKind::Remove(_) => {
             // Surface a warning but don't drop the in-memory DB —
             // the user might restore the file or save-replace it.
-            let state: State<'_, crate::AppState> = app.state();
-            let dbs = state.databases.lock().expect("databases mutex poisoned");
+            let state: State<'_, crate::app_state::AppState> = app.state();
+            let dbs = state.databases();
             for d in dbs.iter() {
                 if event.paths.iter().any(|p| Path::new(&d.path) == p) {
                     sys_warn!(
@@ -192,8 +192,8 @@ fn on_event(app: &AppHandle, event: &notify::Event) {
     }
 
     let matching: Vec<String> = {
-        let state: State<'_, crate::AppState> = app.state();
-        let dbs = state.databases.lock().expect("databases mutex poisoned");
+        let state: State<'_, crate::app_state::AppState> = app.state();
+        let dbs = state.databases();
         dbs.iter()
             .filter(|d| event.paths.iter().any(|p| Path::new(&d.path) == p))
             .map(|d| d.path.clone())
@@ -235,8 +235,8 @@ pub fn reload_one(app: &AppHandle, path: &str) {
         }
     };
     {
-        let state: State<'_, crate::AppState> = app.state();
-        let mut list = state.databases.lock().expect("databases mutex poisoned");
+        let state: State<'_, crate::app_state::AppState> = app.state();
+        let mut list = state.databases();
         let Some(slot) = list.iter_mut().find(|d| d.path == path) else {
             // Unloaded between the FS event and now — nothing to
             // swap. The watcher will get unwatched on the next
@@ -247,11 +247,11 @@ pub fn reload_one(app: &AppHandle, path: &str) {
     }
     sys_info!(app, "dbc-watch", "auto-reloaded DBC {path}");
     // Signal placements may have moved — drop the derived decode caches so
-    // the new parse takes effect (see `crate::invalidate_derived_caches`),
+    // the new parse takes effect (see `crate::app_state::invalidate_derived_caches`),
     // rebuild RBS rows, and re-resolve every TX entry's calculated fields.
     {
-        let state: State<'_, crate::AppState> = app.state();
-        crate::invalidate_derived_caches(&state);
+        let state: State<'_, crate::app_state::AppState> = app.state();
+        crate::app_state::invalidate_derived_caches(&state);
     }
     crate::rbs::refresh_all_elements(app);
     let _ = app.emit("dbc-changed", path);

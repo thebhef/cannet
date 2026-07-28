@@ -256,6 +256,86 @@ impl ObjectHeaderV1 {
     }
 }
 
+// ---- Shared object-decode preamble --------------------------------
+
+/// Width of the per-event header (base + v1) that prefixes every
+/// CAN-class / text-annotation / diagnostic / marker object: 32 bytes.
+/// All four families share this framing (see [`decode_framed`]).
+pub const EVENT_HEADER_BYTES: usize = OBJECT_HEADER_BASE_BYTES + OBJECT_HEADER_V1_BYTES;
+
+/// The parse-base -> type-check -> size-check -> parse-v1 result
+/// shared by every CAN-class / text-annotation / diagnostic / marker
+/// object decoder: the two parsed headers plus the body slice
+/// (everything from the end of the event header to `base.object_size`).
+/// Per-type fields still get parsed out of `body` by the caller.
+#[derive(Debug)]
+pub struct FramedObject<'a> {
+    pub base: ObjectHeaderBase,
+    pub event: ObjectHeaderV1,
+    pub body: &'a [u8],
+}
+
+/// Errors from the shared preamble in [`decode_framed`]. Every
+/// per-type decode error (`CanObjectError`, `TextError`,
+/// `DiagnosticError`, `MarkerError`) converts one of these into its
+/// own shape via `From` — they don't share a variant layout (e.g.
+/// `MarkerError::WrongObjectType` carries only the type it got, since
+/// the expected type is always `GLOBAL_MARKER`), only this decode
+/// logic.
+#[derive(Debug)]
+pub enum PreambleError {
+    /// The object's `ObjectHeaderBase.object_type` didn't match the
+    /// type the decoder was asked for. Carries `(expected, got)`.
+    WrongObjectType(u32, u32),
+    /// `ObjectHeaderBase` parse failed (signature / size validation).
+    BaseHeader(ObjectHeaderError),
+    /// `ObjectHeader` v1 parse failed (truncation).
+    EventHeader(ObjectHeaderError),
+    /// `object_size` was smaller than the fixed event header + the
+    /// per-type minimum body. Carries `(object_size, required)`.
+    TooSmall(u32, usize),
+    /// Buffer length was less than `object_size`.
+    Truncated(usize, u32),
+}
+
+/// Decode the shared preamble every CAN-class / text-annotation /
+/// diagnostic / marker object uses: parse `ObjectHeaderBase`, check
+/// `object_type` against `expected_type`, check `object_size` against
+/// `EVENT_HEADER_BYTES + min_body_bytes`, check the buffer actually
+/// holds `object_size` bytes, then parse the `ObjectHeader` v1
+/// extension. Returns the two headers plus the body slice (from the
+/// end of the event header to `base.object_size` — per-type fixed-size
+/// bodies simply don't read past their own width).
+pub fn decode_framed(
+    object_bytes: &[u8],
+    expected_type: u32,
+    min_body_bytes: usize,
+) -> Result<FramedObject<'_>, PreambleError> {
+    let base = ObjectHeaderBase::parse(object_bytes).map_err(PreambleError::BaseHeader)?;
+    if base.object_type != expected_type {
+        return Err(PreambleError::WrongObjectType(
+            expected_type,
+            base.object_type,
+        ));
+    }
+    let required = EVENT_HEADER_BYTES + min_body_bytes;
+    if (base.object_size as usize) < required {
+        return Err(PreambleError::TooSmall(base.object_size, required));
+    }
+    if object_bytes.len() < base.object_size as usize {
+        return Err(PreambleError::Truncated(
+            object_bytes.len(),
+            base.object_size,
+        ));
+    }
+    let event = ObjectHeaderV1::parse(
+        &object_bytes[OBJECT_HEADER_BASE_BYTES..EVENT_HEADER_BYTES],
+    )
+    .map_err(PreambleError::EventHeader)?;
+    let body = &object_bytes[EVENT_HEADER_BYTES..base.object_size as usize];
+    Ok(FramedObject { base, event, body })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,5 +456,57 @@ mod tests {
                 "object_size={size} expected advance {expected}",
             );
         }
+    }
+
+    // ---- decode_framed -------------------------------------------
+
+    /// Build a full 32-byte event header (base + v1) followed by
+    /// `body`, with `object_size` set to cover all of it.
+    fn synth_framed(object_type: u32, timestamp_ns: u64, body: &[u8]) -> Vec<u8> {
+        let object_size = u32::try_from(EVENT_HEADER_BYTES + body.len()).unwrap();
+        let mut bytes = synth_header(32, 1, object_size, object_type).to_vec();
+        bytes.extend_from_slice(&OBJECT_FLAG_TIME_ONE_NANS.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // client_index
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // object_version
+        bytes.extend_from_slice(&timestamp_ns.to_le_bytes());
+        bytes.extend_from_slice(body);
+        bytes
+    }
+
+    #[test]
+    fn decode_framed_parses_headers_and_slices_the_body() {
+        let bytes = synth_framed(object_type::CAN_MESSAGE2, 42, &[1, 2, 3, 4]);
+        let framed = decode_framed(&bytes, object_type::CAN_MESSAGE2, 4).unwrap();
+        assert_eq!(framed.base.object_type, object_type::CAN_MESSAGE2);
+        assert_eq!(framed.event.timestamp_ns(), 42);
+        assert_eq!(framed.body, &[1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn decode_framed_rejects_wrong_object_type() {
+        let bytes = synth_framed(object_type::CAN_MESSAGE2, 0, &[0u8; 4]);
+        let err = decode_framed(&bytes, object_type::GLOBAL_MARKER, 4).unwrap_err();
+        assert!(matches!(
+            err,
+            PreambleError::WrongObjectType(expected, got)
+                if expected == object_type::GLOBAL_MARKER && got == object_type::CAN_MESSAGE2,
+        ));
+    }
+
+    #[test]
+    fn decode_framed_rejects_object_size_below_min_body() {
+        let bytes = synth_framed(object_type::CAN_MESSAGE2, 0, &[0u8; 2]);
+        let err = decode_framed(&bytes, object_type::CAN_MESSAGE2, 4).unwrap_err();
+        assert!(matches!(err, PreambleError::TooSmall(got, required)
+            if got == u32::try_from(EVENT_HEADER_BYTES + 2).unwrap()
+                && required == EVENT_HEADER_BYTES + 4));
+    }
+
+    #[test]
+    fn decode_framed_rejects_truncated_buffer() {
+        let mut bytes = synth_framed(object_type::CAN_MESSAGE2, 0, &[0u8; 4]);
+        bytes.truncate(bytes.len() - 1);
+        let err = decode_framed(&bytes, object_type::CAN_MESSAGE2, 4).unwrap_err();
+        assert!(matches!(err, PreambleError::Truncated(_, _)));
     }
 }

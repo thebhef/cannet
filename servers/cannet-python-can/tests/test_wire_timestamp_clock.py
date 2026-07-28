@@ -34,7 +34,9 @@ from cannet_python_can._proto import cannet_pb2 as pb  # noqa: E402
 
 def test_proto_to_frame_timestamp_fallback_is_wall_clock() -> None:
     before = time.time_ns()
-    frame = srv._proto_to_frame(pb.Frame(timestamp_ns=0, can_id=0x100))
+    frame = srv._proto_to_frame(
+        pb.Frame(timestamp_ns=0, can_id=0x100, kind=pb.FRAME_KIND_CLASSIC)
+    )
     after = time.time_ns()
     assert before <= frame.timestamp_ns <= after, (
         f"TX-frame fallback timestamp {frame.timestamp_ns} is outside the "

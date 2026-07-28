@@ -146,6 +146,24 @@ trip over it.
 
 ### Plot panel
 
+- `[ui]` `cannet-gui` `PlotPanel.tsx`: **a hidden enum keeps its lane
+  band within a still-visible enum-lanes axis.** The fully-hidden-axis
+  case is done — a derived axis whose signals are *all* hidden now
+  collapses (`.plot-area.collapsed`: canvas dropped, excluded from the
+  fit-to-panel distribution, rows kept in the side panel), covering both
+  numeric and enum-lanes axes. Residual: when only *some* enums on a
+  lanes axis are hidden, the visible lanes don't reclaim the hidden
+  ones' bands. `visibleLaneBands`-style layout (bands over the visible
+  count) fixes the geometry, but the tile draw hook captures
+  construction-time `signals` and toggling `hidden` doesn't rebuild the
+  uPlot instance (`signalSetKey` excludes hidden), so a live per-lane
+  re-flow needs a `signalsRef` threaded into the draw hook. (Task 32 QA.)
+- `[bug]` `cannet-gui` `PlotPanel.tsx`: **cursor A/B marker chips and
+  the x-axis intermittently don't render.** Reachable state where the
+  cursor marker titles/text disappear, and possibly where the x-axis
+  itself stops drawing. Not yet reproduced deterministically; likely a
+  draw-hook / rebuild timing window (relates to the uPlot-staleness bug
+  below). Capture the repro before fixing. (Task 32 QA.)
 - `[bug]` `cannet-gui` plot panel: **uncaught uPlot TypeError after
   dev reload while streaming.** Seen during the rename-lockup
   investigation: `Uncaught TypeError: object null is not iterable` at
@@ -154,6 +172,24 @@ trip over it.
   Looks like a draw on a destroyed / rebuilt instance. Reproduce and
   guard (likely a `uplotRef.current` staleness window in
   `PlotPanel.tsx`'s create/destroy effect).
+  **2026-07-25 update:** the null is `axis._found` destructured in
+  `drawAxesGrid` — a shown axis drawn without axis-calc. Deterministic
+  trigger found and removed (StrictMode double boot-open storming
+  dbc-changed mid-stream; fixed by `bootOpenRanRef`), but the draw
+  itself is still unguarded — a dbc-refresh storm or reload mid-stream
+  can still reach it, and one throw in an effect unmounts the whole
+  React root (blank app). Guard the draw path when picked up.
+
+- `[bug]` `signalCatalogContext.tsx`: the `dbc-changed` listener has the
+  same attach-gap race `useHostMirror` was built to close (a change
+  landing between the snapshot fetch and the async `listen()` attach is
+  lost) — inherited from the pre-consolidation panel code. Migrate the
+  provider onto `useHostMirror`, or add the post-listener refetch.
+  (2026-07-26 task-30 closeout review.)
+- `[cleanup]` `PlotPanel.tsx:1077` contains two **raw NUL bytes**
+  (`a.path.join` on a literal 0x00 separator, not the escape), so
+  ripgrep classifies the file as binary and content search skips it.
+  Replace with `\u0000` escapes. Pre-existing, surfaced 2026-07-26.
 
 ### DBC view
 
@@ -175,15 +211,6 @@ trip over it.
   at ev-zonal scale so far.
 
 ### Transmit panel
-
-- `[bug]` `cannet-gui` `TransmitPanel.tsx`: **missing post-listener refetch
-  (launch race).** RbsPanel refreshes again once its change listener is
-  attached (RbsPanel.tsx:108–114, with a comment explaining the race);
-  TransmitPanel's otherwise-identical mount effect (90–115) skips that
-  step, so a registry change landing between the snapshot fetch and the
-  subscribe is silently missed. Closed for free by the shared
-  `useHostMirror` hook (task 30 item 17), or add the refetch directly.
-  (2026-07-02 audit.)
 
 - `[perf]` `cannet-gui` `run_transmit_scheduler`: per-bus
   `FrameBatch` batching. The scheduler currently fires each due
@@ -218,6 +245,17 @@ name/colour/remove on any editable event row. Remaining follow-ups:
   `PlotPanel`). The trace + events panel have it; the plot's note list still
   only renames/removes. Add a colour swatch there for parity (the host
   `recolor_note` command + `recolorNote` context dispatcher already exist).
+- `[bug]` **macOS: the event colour picker opens in the wrong location.**
+  The native colour picker for events appears in odd positions on macOS
+  (the plot series colour picker seems to open correctly, so compare the
+  two anchoring paths). Likely a popover/anchor-positioning difference in
+  the event colour control vs. the plot swatch. (Task 32 QA.)
+  **Candidate fix landed (unverified on macOS):** `.trace-event-swatch-input`
+  now fills the swatch's real footprint (`inset:0`, no `width/height:0`)
+  instead of collapsing to a zero-size point, so the native picker has a
+  concrete anchor rect at the swatch. If a Mac confirms this resolves the
+  mis-positioning, close the item; if not, revert the CSS and investigate
+  the virtualized-row scroll-offset anchor path instead.
 - `[feat]` **Interleave events into the *filtered* chronological trace.** The
   unfiltered view interleaves; a filtered view pages its own (filtered) index
   space, which the raw-frame anchors don't map to — events would need
@@ -415,6 +453,24 @@ next pass on this surface can address them as one piece.
 
 ### Host crates, wire, and sidecar
 
+- `[cleanup]` **Extract a host-model crate out of `cannet-gui`.**
+  `trace_store` / `filter` / `signal_cache` / `signal_sampler` are
+  tauri-free and don't need to live in the app crate; `cannet-perf-measurement`
+  already depends on `cannet-gui` via documented `pub mod` escapes to
+  reach them (a deliberate tradeoff at the time). Now that the lib.rs
+  god-file split (task 30) has landed these into their own modules,
+  pulling them into a standalone crate is mechanical. Do it if/when
+  another consumer besides `cannet-perf-measurement` needs the same
+  escape, or the `pub mod` seam starts to hurt.
+- `[cleanup]` **Sweep task-step-number comments (`6d`, `Step 3`, …) out
+  of source.** ~20+ sites across `cannet-spill` and host files (filter,
+  signal_cache, emitters, trace_store's flush module among them) cite
+  plan-step numbers in comments, violating the no-plan-refs rule
+  (CLAUDE.md § Documentation: source cites ADRs, never `plans/`).
+  Surfaced by the 2026-07-02 quality audit (task 30) and reconfirmed
+  outstanding as of the task-30 close-out (2026-07-26) — replace each
+  with an ADR reference or plain inline rationale, in one commit so the
+  sweep doesn't drag.
 - `[idea]` `cannet-gui` disk-spill eviction (task 0018 Step 6): **pin
   note-bearing regions against eviction.** The windowed-ring cap drops the
   oldest frames purely by age; a section the user annotated with a note is
@@ -483,6 +539,20 @@ next pass on this surface can address them as one piece.
   `millis_overflow`). With hardware attached, dump raw
   `millis`/`millis_overflow`/`micros` per frame, identify the
   mechanism, and file against python-can and/or mac-can PCBUSB.
+
+- `[cleanup]` `cannet-python-can` `_proto_to_frame`: direction
+  `UNSPECIFIED` is silently coerced to TX (`is_rx = direction ==
+  DIRECTION_RX`) where Rust's `convert.rs` rejects it — asymmetric with
+  the frame-*kind* seam, which now rejects `UNSPECIFIED` on both sides.
+  Unreachable from Rust peers (`frame_to_proto` always sets Rx/Tx);
+  align when next touching the seam. (2026-07-26 closeout review.)
+- `[perf]` **Re-capture the frontend perf tier on a release build.** The
+  2026-07-26 zonal baseline was a dev-build capture against a
+  release-build predecessor; the same-load movers — jsheap peak +30%
+  (188→245 MB), `tx_late_ms_mean` 4.5→14.2 — are plausibly dev-build
+  overhead but unconfirmed. Drift rates were flat (no leak signal). One
+  release-build run of the ADR-0031 flow on `examples/ev-zonal` settles
+  it; promote it as the baseline if numbers move.
 
 - `[ui]` `cannet-python-can` sidecar: **suppress the `xlReceive failed
   (XL_ERROR)` warning emitted on normal close.** Closing a Vector
@@ -583,14 +653,6 @@ next pass on this surface can address them as one piece.
     collapse to one timestamp).
   Fold into the CI server-conformance suite above, or run as a focused
   pass, once a rig is available.
-  - **Observed: periodic message-rate dips under PCAN loopback.**
-    With calculated-field periodics running, the plot view shows the
-    message rate sagging periodically. Suspected loopback / driver
-    queueing rather than the scheduler (the fixed-grid scheduler
-    absorbs work time and never bursts), but confirm against the
-    perf-harness profiling counters during the hardware pass and rule out
-    a fire-path stall (registry lock contention at high aggregate
-    rates).
   - **Task 14 RBS test matrix, live legs.** The RBS exit criteria's
     send matrix (Tx rows with fields filled in over `local-virtual-bus`,
     hardware (sidecar) interfaces, and FD frames) is covered at the
@@ -674,3 +736,50 @@ next pass on this surface can address them as one piece.
   `127.0.0.1:50051` is a fixed *default* (already overridable by flag);
   consider an ephemeral default so two standalone servers don't collide
   out of the box.
+
+- `[cannet-blf]` **A single-`LOG_CONTAINER` BLF inflates its whole
+  payload into memory at once.** Some writers emit the entire log as
+  one container (observed: a 465 MB file = 1 container of 465,623,864
+  bytes, vs. a normal file's ~1400 containers averaging ~24 KB). The
+  reader ([`crates/cannet-blf/src/format/reader.rs`](crates/cannet-blf/src/format/reader.rs)
+  `pull_one_container`) inflates a container fully into the `tail`
+  carry-over buffer before decoding objects, so such a file holds
+  hundreds of MB transiently. The per-object quadratic drain that made
+  these files effectively un-loadable is fixed (offset-based `tail`
+  consumption); this remaining item is the memory spike. If it bites,
+  stream-inflate the container body in bounded chunks rather than
+  materialising the whole uncompressed payload.
+
+- `[cannet-gui]` **Project save absolutizes DBC paths.** Opening and
+  closing a project rewrites its `.cannet_prj` with each DBC's path
+  expanded to an absolute machine-specific one (`dbc/pack.dbc` →
+  `C:\Users\...\dbc/pack.dbc`), observed 2026-07-25 when a GUI session
+  against `examples/ev-zonal` dirtied the checked-in example and broke
+  `parses_the_checked_in_ev_zonal_example_project`. Paths that arrived
+  relative should persist relative (portability; examples are
+  checked in). Find the save path that resolves before serializing.
+
+- `[cannet-gui]` **Connect while already connected spins an error
+  loop.** Clicking Connect (or `--connect-on-start` racing the
+  project's auto-connect) with a live session to the same address
+  produces a ~1/s retry cycle - `already connected` ERROR status,
+  `session ended`, reconnect - and each attempt pushes a ConfigureBus
+  the sidecar fails to apply (`reconfigure ... failed: open pcan ...`,
+  channel held by the live session). Traffic survives on the original
+  session but the status UI churns red and each successful re-connect
+  wipes the capture scratch. Observed repeatedly 2026-07-25 (19:24,
+  19:40, 00:47 UTC). Connect-when-connected should be a no-op (or a
+  clean reconnect), and the ConfigureBus push should not fire on a
+  rejected duplicate session.
+
+- `[cannet-gui]` **`list_dbc_content` ships the whole DBC tree over
+  IPC.** The command serialises every loaded DBC's full message/signal
+  tree (~5 MB on the reference 5-DBC project), and the DBC panel
+  re-pulls all of it on every `dbc-changed` event and every bus/scope
+  edit ([`apps/gui/src/DbcPanel.tsx`](apps/gui/src/DbcPanel.tsx)
+  `refreshContent`). Task 41 ruled this explicitly out of scope — the
+  layout cliff it was chasing was DOM-side and is fixed — but the
+  payload is still the largest single round-trip in the app and the
+  panel still holds the whole tree in frontend state. If it bites,
+  page `list_dbc_content` the way the trace and signal views are paged
+  (host-side flatten + row window) rather than shipping the tree.

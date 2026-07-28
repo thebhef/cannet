@@ -29,11 +29,13 @@ mod mem;
 mod record;
 mod sample_seq;
 mod seg;
+mod seg_chain;
 
-pub use disk::{DiskConfig, DiskRawStore};
+pub use disk::{is_raw_frame_segment, DiskConfig, DiskRawStore};
 pub use filter_index::FilterIndex;
 pub use mem::MemRawStore;
 pub use sample_seq::SampleSeq;
+pub use seg_chain::lower_bound;
 
 // `CandidateSource` is defined below alongside `RawStore`.
 

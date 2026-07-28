@@ -28,7 +28,6 @@ import {
 } from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { Fzf } from "fzf";
 
@@ -38,13 +37,17 @@ import type {
   RbsMessageView,
   RbsSignalView,
   RbsView,
-  ValueTableEntryRecord,
 } from "./types";
-import { useElementRegistry } from "./projectElements";
 import { useProjectContext } from "./projectContext";
 import { CalcFieldEditor } from "./CalcFieldEditor";
 import { Combobox } from "./Combobox";
 import { ValidatedInput, parsePositiveInt } from "./ValidatedInput";
+import { useValueTables, type ValueTableSignal } from "./useValueTables";
+import { useElementPanel } from "./useElementPanel";
+import { useHostMirror } from "./useHostMirror";
+import { useDismissableMenu } from "./useDismissableMenu";
+import { toggleInSet } from "./toggleSet";
+import { formatBytes } from "./format";
 
 /// Address of one message row, as the `rbs_*` commands take it.
 interface Target {
@@ -71,65 +74,36 @@ interface MenuState {
 }
 
 export function RbsPanel(props: IDockviewPanelProps) {
-  const { api } = props;
-  const params = props.params as { elementId?: unknown } | undefined;
-  const registry = useElementRegistry();
   const project = useProjectContext();
-  const [elementId] = useState(() =>
-    typeof params?.elementId === "string" ? params.elementId : crypto.randomUUID(),
-  );
+  const { elementId, registry, element, persist } = useElementPanel(props, "rbs");
+  // Persist just the elementId in panel params — no view-local
+  // config: `path`/`run` live on the element itself, written directly
+  // through `registry.update` at their own call sites below.
   useEffect(() => {
-    registry.ensure(elementId, "rbs");
-  }, [registry, elementId]);
-  useEffect(() => {
-    api.updateParameters({ elementId });
-  }, [api, elementId]);
+    persist();
+  }, [persist]);
 
-  const element = registry.get(elementId)?.element;
   const path = element?.kind === "rbs" ? element.path : null;
   const run = element?.kind === "rbs" ? element.run : false;
 
   // The assembled tree. `null` only until the host's `rbs_init` /
-  // `rbs_load` (driven by App's lifecycle effect) lands.
-  const [view, setView] = useState<RbsView | null>(null);
-  const refresh = useCallback(() => {
-    void invoke<RbsView | null>("rbs_view", { elementId })
-      .then(setView)
-      .catch(() => setView(null));
-  }, [elementId]);
-
-  useEffect(() => {
-    let active = true;
-    // Paint fast from whatever the host already has…
-    refresh();
-    const un = listen<string>("rbs-changed", (event) => {
-      if (event.payload === elementId || event.payload === "*") refresh();
-    });
-    // …and fetch again once the listener is attached: `listen` is
-    // async, and on app launch the host's `rbs_load` (driven by the
-    // project opening) can emit `rbs-changed` in the gap before
-    // registration — without this second fetch that emit is lost and
-    // the panel would sit empty until the next mutation.
-    void un.then(() => {
-      if (active) refresh();
-    });
-    return () => {
-      active = false;
-      void un.then((f) => f());
-    };
-  }, [refresh, elementId]);
-
-  // Live calculated fields: while the simulation runs, the fire path
-  // rewrites payload buffers (counter / CRC) without an `rbs-changed`
-  // per send. Poll at a display cadence so value cells track.
-  const anyRunning =
-    view?.run === true &&
-    view.buses.some((b) => b.ecus.some((e) => e.messages.some((m) => m.running)));
-  useEffect(() => {
-    if (!anyRunning) return;
-    const timer = window.setInterval(refresh, 500);
-    return () => window.clearInterval(timer);
-  }, [anyRunning, refresh]);
+  // `rbs_load` (driven by App's lifecycle effect) lands — re-fetched on
+  // `rbs-changed` (scoped to this element or a `"*"` broadcast) and,
+  // while the simulation runs, on a 500ms poll: the fire path rewrites
+  // payload buffers (counter / CRC) without an `rbs-changed` per send,
+  // so polling is what keeps value cells tracking.
+  const fetchView = useCallback(
+    () => invoke<RbsView | null>("rbs_view", { elementId }),
+    [elementId],
+  );
+  const { value: view } = useHostMirror<RbsView | null, string>({
+    fetch: fetchView,
+    fallback: null,
+    event: "rbs-changed",
+    matches: (payload) => payload === elementId || payload === "*",
+    pollWhile: (v) =>
+      v?.run === true && v.buses.some((b) => b.ecus.some((e) => e.messages.some((m) => m.running))),
+  });
 
   // ---- file picking ----
   const handleOpenFile = useCallback(async () => {
@@ -206,22 +180,11 @@ export function RbsPanel(props: IDockviewPanelProps) {
   const [expandedMessages, setExpandedMessages] = useState<Set<string>>(
     () => new Set(),
   );
-  const toggleSet = (set: Set<string>, key: string): Set<string> => {
-    const next = new Set(set);
-    if (next.has(key)) next.delete(key);
-    else next.add(key);
-    return next;
-  };
 
   // ---- modal / menu state ----
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [menu, setMenu] = useState<MenuState | null>(null);
-  useEffect(() => {
-    if (!menu) return;
-    const close = () => setMenu(null);
-    window.addEventListener("click", close);
-    return () => window.removeEventListener("click", close);
-  }, [menu]);
+  const menuRef = useDismissableMenu<HTMLDivElement>(menu != null, () => setMenu(null));
 
   const projectBusNames = project.buses.map((b) => b.name);
   const fileBusKeys = new Set(view?.buses.map((b) => b.key) ?? []);
@@ -299,7 +262,7 @@ export function RbsPanel(props: IDockviewPanelProps) {
             elementId={elementId}
             bus={bus}
             collapsed={collapsed.has(`b:${bus.key}`)}
-            onToggleCollapse={() => setCollapsed((s) => toggleSet(s, `b:${bus.key}`))}
+            onToggleCollapse={() => setCollapsed((s) => toggleInSet(s, `b:${bus.key}`))}
             collapsedSet={collapsed}
             setCollapsed={setCollapsed}
             expandedMessages={expandedMessages}
@@ -328,6 +291,7 @@ export function RbsPanel(props: IDockviewPanelProps) {
 
       {menu && (
         <div
+          ref={menuRef}
           className="rbs-context-menu"
           style={{ left: menu.x, top: menu.y }}
           role="menu"
@@ -490,7 +454,7 @@ function BusSection({
                 type="button"
                 className="rbs-caret"
           tabIndex={-1}
-                onClick={() => setCollapsed((s) => toggleSet2(s, `e:${bus.key}/${ecu.name}`))}
+                onClick={() => setCollapsed((s) => toggleInSet(s, `e:${bus.key}/${ecu.name}`))}
                 aria-label={`toggle ${ecu.name}`}
               >
                 {collapsedSet.has(`e:${bus.key}/${ecu.name}`) ? "▸" : "▾"}
@@ -514,7 +478,7 @@ function BusSection({
                   inert={inert}
                   expanded={expandedMessages.has(`${bus.key}/${m.key}`)}
                   onToggleExpand={() =>
-                    setExpandedMessages((s) => toggleSet2(s, `${bus.key}/${m.key}`))
+                    setExpandedMessages((s) => toggleInSet(s, `${bus.key}/${m.key}`))
                   }
                   onEnable={(enabled) => setEnabled(ecu.name, m.key, enabled)}
                   onConfigure={(preset) =>
@@ -527,13 +491,6 @@ function BusSection({
         ))}
     </section>
   );
-}
-
-function toggleSet2(set: Set<string>, key: string): Set<string> {
-  const next = new Set(set);
-  if (next.has(key)) next.delete(key);
-  else next.add(key);
-  return next;
 }
 
 interface MessageRowProps {
@@ -560,7 +517,7 @@ function MessageRow({
   onSignalMenu,
 }: MessageRowProps) {
   const unknown = m.name == null;
-  const dataHex = m.data.map((b) => b.toString(16).toUpperCase().padStart(2, "0")).join(" ");
+  const dataHex = formatBytes(m.data);
   const calcSummary = [
     m.counter ? `ctr:${m.counter.signal}` : null,
     m.crc ? `crc:${m.crc.signal}` : null,
@@ -702,24 +659,16 @@ interface SignalRowProps {
 
 function SignalRow({ elementId, target, message, signal: s, inert, onMenu }: SignalRowProps) {
   // Enum signals get a datalist of labels (committed as the label
-  // string — the host resolves it through the VAL_ table).
-  const [labels, setLabels] = useState<ValueTableEntryRecord[]>([]);
-  useEffect(() => {
-    if (!s.hasValueTable) return;
-    let cancelled = false;
-    void invoke<ValueTableEntryRecord[]>("list_value_tables", {
-      messageId: message.messageId,
-      extended: message.extended,
-      signalName: s.name,
-    })
-      .then((rows) => {
-        if (!cancelled) setLabels(rows);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [s.hasValueTable, s.name, message.messageId, message.extended]);
+  // string — the host resolves it through the VAL_ table), fetched via
+  // the shared useValueTables hook.
+  const valueTableSignals = useMemo<ValueTableSignal[]>(
+    () =>
+      s.hasValueTable
+        ? [{ busId: null, messageId: message.messageId, extended: message.extended, signalName: s.name }]
+        : [],
+    [s.hasValueTable, s.name, message.messageId, message.extended],
+  );
+  const [labels = []] = useValueTables(valueTableSignals).values();
 
   const display = s.label ?? (s.value != null ? formatValue(s.value) : "—");
   const datalistId = `rbs-enum-${message.key}-${s.name}`;

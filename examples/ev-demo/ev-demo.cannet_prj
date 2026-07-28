@@ -1398,13 +1398,13 @@
     {
       "kind": "remote",
       "server": "local",
-      "interface": "pcan:PCAN_USBBUS1(h:0x51, ch:0, uid:1)",
+      "interface": "pcan:PCAN_USBBUS1(h:0x51, ch:0, uid:0)",
       "bus_id": "pt"
     },
     {
       "kind": "remote",
       "server": "local",
-      "interface": "pcan:PCAN_USBBUS2(h:0x52, ch:0, uid:0)",
+      "interface": "pcan:PCAN_USBBUS2(h:0x52, ch:0, uid:1)",
       "bus_id": "batt"
     }
   ],

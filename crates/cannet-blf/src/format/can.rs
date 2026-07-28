@@ -31,8 +31,8 @@
 //! [`ObjectHeaderV1`]: super::object::ObjectHeaderV1
 
 use super::object::{
-    object_type, ObjectHeaderBase, ObjectHeaderError, ObjectHeaderV1, OBJECT_FLAG_TIME_ONE_NANS,
-    OBJECT_HEADER_BASE_BYTES, OBJECT_HEADER_V1_BYTES,
+    decode_framed, object_type, ObjectHeaderBase, ObjectHeaderError, ObjectHeaderV1,
+    PreambleError, OBJECT_FLAG_TIME_ONE_NANS, OBJECT_HEADER_BASE_BYTES, OBJECT_HEADER_V1_BYTES,
 };
 
 /// Width of the per-event header that prefixes every CAN-class
@@ -59,6 +59,25 @@ pub const CAN_ID_EXTENDED_BIT: u32 = 1 << 31;
 pub const CAN_ID_STANDARD_MASK: u32 = 0x0000_07FF;
 /// Mask for the extended-id portion of `id` (29 bits).
 pub const CAN_ID_EXTENDED_MASK: u32 = 0x1FFF_FFFF;
+
+/// True if a raw on-disk CAN `id` field marks a 29-bit extended id
+/// (bit 31 set). Shared by every CAN-class object's `is_extended_id()`.
+#[must_use]
+pub fn is_extended_can_id(id_raw: u32) -> bool {
+    (id_raw & CAN_ID_EXTENDED_BIT) != 0
+}
+
+/// Decode a raw on-disk CAN `id` field to its actual 11- or 29-bit
+/// value per [`is_extended_can_id`]. Shared by every CAN-class
+/// object's `can_id()`.
+#[must_use]
+pub fn decode_can_id(id_raw: u32) -> u32 {
+    if is_extended_can_id(id_raw) {
+        id_raw & CAN_ID_EXTENDED_MASK
+    } else {
+        id_raw & CAN_ID_STANDARD_MASK
+    }
+}
 
 /// Errors specific to decoding CAN-class objects.
 #[derive(Debug)]
@@ -107,6 +126,20 @@ impl std::error::Error for CanObjectError {
     }
 }
 
+impl From<PreambleError> for CanObjectError {
+    fn from(e: PreambleError) -> Self {
+        match e {
+            PreambleError::WrongObjectType(expected, got) => {
+                Self::WrongObjectType(expected, got)
+            }
+            PreambleError::BaseHeader(e) => Self::BaseHeader(e),
+            PreambleError::EventHeader(e) => Self::EventHeader(e),
+            PreambleError::TooSmall(got, required) => Self::TooSmall(got, required),
+            PreambleError::Truncated(got, required) => Self::Truncated(got, required),
+        }
+    }
+}
+
 /// Decoded `CAN_MESSAGE2`. Owns its data bytes (we don't borrow from
 /// the input slice; the decoded payload typically outlives the
 /// per-container scratch buffer).
@@ -128,15 +161,11 @@ pub struct CanMessage2 {
 impl CanMessage2 {
     /// True if the source frame used a 29-bit extended id.
     pub fn is_extended_id(&self) -> bool {
-        (self.id_raw & CAN_ID_EXTENDED_BIT) != 0
+        is_extended_can_id(self.id_raw)
     }
     /// Decoded CAN id (low 11 or 29 bits per [`Self::is_extended_id`]).
     pub fn can_id(&self) -> u32 {
-        if self.is_extended_id() {
-            self.id_raw & CAN_ID_EXTENDED_MASK
-        } else {
-            self.id_raw & CAN_ID_STANDARD_MASK
-        }
+        decode_can_id(self.id_raw)
     }
     /// True iff the TX bit (0) is set in `flags`.
     pub fn is_tx(&self) -> bool {
@@ -157,30 +186,12 @@ impl CanMessage2 {
 // least `CAN_MESSAGE2_FIXED_BODY_BYTES` long.
 #[allow(clippy::missing_panics_doc)]
 pub fn decode_can_message2(object_bytes: &[u8]) -> Result<CanMessage2, CanObjectError> {
-    let base = ObjectHeaderBase::parse(object_bytes).map_err(CanObjectError::BaseHeader)?;
-    if base.object_type != object_type::CAN_MESSAGE2 {
-        return Err(CanObjectError::WrongObjectType(
-            object_type::CAN_MESSAGE2,
-            base.object_type,
-        ));
-    }
-    let required = CAN_EVENT_HEADER_BYTES + CAN_MESSAGE2_FIXED_BODY_BYTES;
-    if (base.object_size as usize) < required {
-        return Err(CanObjectError::TooSmall(base.object_size, required));
-    }
-    if object_bytes.len() < base.object_size as usize {
-        return Err(CanObjectError::Truncated(
-            object_bytes.len(),
-            base.object_size,
-        ));
-    }
-
-    let event = ObjectHeaderV1::parse(
-        &object_bytes[OBJECT_HEADER_BASE_BYTES..OBJECT_HEADER_BASE_BYTES + OBJECT_HEADER_V1_BYTES],
-    )
-    .map_err(CanObjectError::EventHeader)?;
-
-    let body = &object_bytes[CAN_EVENT_HEADER_BYTES..base.object_size as usize];
+    let framed = decode_framed(
+        object_bytes,
+        object_type::CAN_MESSAGE2,
+        CAN_MESSAGE2_FIXED_BODY_BYTES,
+    )?;
+    let (base, event, body) = (framed.base, framed.event, framed.body);
     let channel = u16::from_le_bytes(body[0..2].try_into().unwrap());
     let flags = body[2];
     let dlc = body[3];
@@ -310,14 +321,10 @@ pub struct CanMessage {
 
 impl CanMessage {
     pub fn is_extended_id(&self) -> bool {
-        (self.id_raw & CAN_ID_EXTENDED_BIT) != 0
+        is_extended_can_id(self.id_raw)
     }
     pub fn can_id(&self) -> u32 {
-        if self.is_extended_id() {
-            self.id_raw & CAN_ID_EXTENDED_MASK
-        } else {
-            self.id_raw & CAN_ID_STANDARD_MASK
-        }
+        decode_can_id(self.id_raw)
     }
     pub fn is_tx(&self) -> bool {
         (self.flags & CAN_FLAG_TX) != 0
@@ -339,28 +346,12 @@ impl CanMessage {
 // length-checked at the top.
 #[allow(clippy::missing_panics_doc)]
 pub fn decode_can_message(object_bytes: &[u8]) -> Result<CanMessage, CanObjectError> {
-    let base = ObjectHeaderBase::parse(object_bytes).map_err(CanObjectError::BaseHeader)?;
-    if base.object_type != object_type::CAN_MESSAGE {
-        return Err(CanObjectError::WrongObjectType(
-            object_type::CAN_MESSAGE,
-            base.object_type,
-        ));
-    }
-    let required = CAN_EVENT_HEADER_BYTES + CAN_MESSAGE_BODY_BYTES;
-    if (base.object_size as usize) < required {
-        return Err(CanObjectError::TooSmall(base.object_size, required));
-    }
-    if object_bytes.len() < base.object_size as usize {
-        return Err(CanObjectError::Truncated(
-            object_bytes.len(),
-            base.object_size,
-        ));
-    }
-    let event = ObjectHeaderV1::parse(
-        &object_bytes[OBJECT_HEADER_BASE_BYTES..OBJECT_HEADER_BASE_BYTES + OBJECT_HEADER_V1_BYTES],
-    )
-    .map_err(CanObjectError::EventHeader)?;
-    let body = &object_bytes[CAN_EVENT_HEADER_BYTES..CAN_EVENT_HEADER_BYTES + CAN_MESSAGE_BODY_BYTES];
+    let framed = decode_framed(
+        object_bytes,
+        object_type::CAN_MESSAGE,
+        CAN_MESSAGE_BODY_BYTES,
+    )?;
+    let (base, event, body) = (framed.base, framed.event, framed.body);
     Ok(CanMessage {
         base,
         event,
@@ -450,14 +441,10 @@ pub struct CanFdMessage {
 
 impl CanFdMessage {
     pub fn is_extended_id(&self) -> bool {
-        (self.id_raw & CAN_ID_EXTENDED_BIT) != 0
+        is_extended_can_id(self.id_raw)
     }
     pub fn can_id(&self) -> u32 {
-        if self.is_extended_id() {
-            self.id_raw & CAN_ID_EXTENDED_MASK
-        } else {
-            self.id_raw & CAN_ID_STANDARD_MASK
-        }
+        decode_can_id(self.id_raw)
     }
     pub fn is_tx(&self) -> bool {
         (self.flags & CAN_FLAG_TX) != 0
@@ -483,28 +470,12 @@ impl CanFdMessage {
 // length-checked at the top.
 #[allow(clippy::missing_panics_doc)]
 pub fn decode_can_fd_message(object_bytes: &[u8]) -> Result<CanFdMessage, CanObjectError> {
-    let base = ObjectHeaderBase::parse(object_bytes).map_err(CanObjectError::BaseHeader)?;
-    if base.object_type != object_type::CAN_FD_MESSAGE {
-        return Err(CanObjectError::WrongObjectType(
-            object_type::CAN_FD_MESSAGE,
-            base.object_type,
-        ));
-    }
-    let required = CAN_EVENT_HEADER_BYTES + CAN_FD_MESSAGE_MIN_BODY_BYTES;
-    if (base.object_size as usize) < required {
-        return Err(CanObjectError::TooSmall(base.object_size, required));
-    }
-    if object_bytes.len() < base.object_size as usize {
-        return Err(CanObjectError::Truncated(
-            object_bytes.len(),
-            base.object_size,
-        ));
-    }
-    let event = ObjectHeaderV1::parse(
-        &object_bytes[OBJECT_HEADER_BASE_BYTES..OBJECT_HEADER_BASE_BYTES + OBJECT_HEADER_V1_BYTES],
-    )
-    .map_err(CanObjectError::EventHeader)?;
-    let body = &object_bytes[CAN_EVENT_HEADER_BYTES..base.object_size as usize];
+    let framed = decode_framed(
+        object_bytes,
+        object_type::CAN_FD_MESSAGE,
+        CAN_FD_MESSAGE_MIN_BODY_BYTES,
+    )?;
+    let (base, event, body) = (framed.base, framed.event, framed.body);
     Ok(CanFdMessage {
         base,
         event,
@@ -636,14 +607,10 @@ pub struct CanFdMessage64 {
 
 impl CanFdMessage64 {
     pub fn is_extended_id(&self) -> bool {
-        (self.id_raw & CAN_ID_EXTENDED_BIT) != 0
+        is_extended_can_id(self.id_raw)
     }
     pub fn can_id(&self) -> u32 {
-        if self.is_extended_id() {
-            self.id_raw & CAN_ID_EXTENDED_MASK
-        } else {
-            self.id_raw & CAN_ID_STANDARD_MASK
-        }
+        decode_can_id(self.id_raw)
     }
     pub fn bitrate_switch(&self) -> bool {
         (self.flags & CAN_FD_64_FLAG_BRS) != 0
@@ -663,29 +630,12 @@ impl CanFdMessage64 {
 pub fn decode_can_fd_message_64(
     object_bytes: &[u8],
 ) -> Result<CanFdMessage64, CanObjectError> {
-    let base = ObjectHeaderBase::parse(object_bytes).map_err(CanObjectError::BaseHeader)?;
-    if base.object_type != object_type::CAN_FD_MESSAGE_64 {
-        return Err(CanObjectError::WrongObjectType(
-            object_type::CAN_FD_MESSAGE_64,
-            base.object_type,
-        ));
-    }
-    let required = CAN_EVENT_HEADER_BYTES + CAN_FD_MESSAGE_64_FIXED_PREFIX_BYTES;
-    if (base.object_size as usize) < required {
-        return Err(CanObjectError::TooSmall(base.object_size, required));
-    }
-    if object_bytes.len() < base.object_size as usize {
-        return Err(CanObjectError::Truncated(
-            object_bytes.len(),
-            base.object_size,
-        ));
-    }
-    let event = ObjectHeaderV1::parse(
-        &object_bytes[OBJECT_HEADER_BASE_BYTES..OBJECT_HEADER_BASE_BYTES + OBJECT_HEADER_V1_BYTES],
-    )
-    .map_err(CanObjectError::EventHeader)?;
-
-    let body = &object_bytes[CAN_EVENT_HEADER_BYTES..base.object_size as usize];
+    let framed = decode_framed(
+        object_bytes,
+        object_type::CAN_FD_MESSAGE_64,
+        CAN_FD_MESSAGE_64_FIXED_PREFIX_BYTES,
+    )?;
+    let (base, event, body) = (framed.base, framed.event, framed.body);
     let valid_data_bytes = body[2];
     let data_end_in_body = CAN_FD_MESSAGE_64_FIXED_PREFIX_BYTES + usize::from(valid_data_bytes);
     if data_end_in_body > body.len() {
@@ -760,6 +710,61 @@ pub fn encode_can_fd_message_64(m: &CanFdMessage64) -> Vec<u8> {
     out
 }
 
+/// Convenience constructor: build a `CAN_FD_MESSAGE_64` from cannet's
+/// usual ingredients. Produces a struct ready for
+/// [`encode_can_fd_message_64`]; `trailing` is empty (only a
+/// decode→encode round-trip needs to preserve a captured trailer).
+// The `expect` is unreachable on every realistic input: a frame
+// with > 4 GiB of data isn't a CAN frame.
+#[allow(clippy::missing_panics_doc, clippy::too_many_arguments)]
+#[must_use]
+pub fn build_can_fd_message_64(
+    timestamp_ns: u64,
+    channel: u8,
+    dlc: u8,
+    valid_data_bytes: u8,
+    id_raw: u32,
+    flags: u32,
+    dir: u8,
+    data: Vec<u8>,
+) -> CanFdMessage64 {
+    let object_size = u32::try_from(
+        CAN_EVENT_HEADER_BYTES + CAN_FD_MESSAGE_64_FIXED_PREFIX_BYTES + data.len(),
+    )
+    .expect("CAN_FD_MESSAGE_64 size fits in u32");
+    CanFdMessage64 {
+        base: ObjectHeaderBase {
+            header_size: 32,
+            header_version: 1,
+            object_size,
+            object_type: object_type::CAN_FD_MESSAGE_64,
+        },
+        event: ObjectHeaderV1 {
+            object_flags: OBJECT_FLAG_TIME_ONE_NANS,
+            client_index: 0,
+            object_version: 0,
+            object_timestamp: timestamp_ns,
+        },
+        channel,
+        dlc,
+        valid_data_bytes,
+        tx_count: 0,
+        id_raw,
+        frame_length_ns: 0,
+        flags,
+        btr_cfg_arb: 0,
+        btr_cfg_data: 0,
+        time_offset_brs_ns: 0,
+        time_offset_crc_del_ns: 0,
+        bit_count: 0,
+        dir,
+        ext_data_offset: 0,
+        crc: 0,
+        data,
+        trailing: Vec::new(),
+    }
+}
+
 // =================================================================
 // CAN_ERROR_EXT (object type 73)
 // =================================================================
@@ -804,14 +809,10 @@ pub struct CanErrorExt {
 
 impl CanErrorExt {
     pub fn is_extended_id(&self) -> bool {
-        (self.id_raw & CAN_ID_EXTENDED_BIT) != 0
+        is_extended_can_id(self.id_raw)
     }
     pub fn can_id(&self) -> u32 {
-        if self.is_extended_id() {
-            self.id_raw & CAN_ID_EXTENDED_MASK
-        } else {
-            self.id_raw & CAN_ID_STANDARD_MASK
-        }
+        decode_can_id(self.id_raw)
     }
 }
 
@@ -820,29 +821,12 @@ impl CanErrorExt {
 // length-checked at the top.
 #[allow(clippy::missing_panics_doc)]
 pub fn decode_can_error_ext(object_bytes: &[u8]) -> Result<CanErrorExt, CanObjectError> {
-    let base = ObjectHeaderBase::parse(object_bytes).map_err(CanObjectError::BaseHeader)?;
-    if base.object_type != object_type::CAN_ERROR_EXT {
-        return Err(CanObjectError::WrongObjectType(
-            object_type::CAN_ERROR_EXT,
-            base.object_type,
-        ));
-    }
-    let required = CAN_EVENT_HEADER_BYTES + CAN_ERROR_EXT_FIXED_PREFIX_BYTES;
-    if (base.object_size as usize) < required {
-        return Err(CanObjectError::TooSmall(base.object_size, required));
-    }
-    if object_bytes.len() < base.object_size as usize {
-        return Err(CanObjectError::Truncated(
-            object_bytes.len(),
-            base.object_size,
-        ));
-    }
-    let event = ObjectHeaderV1::parse(
-        &object_bytes[OBJECT_HEADER_BASE_BYTES..OBJECT_HEADER_BASE_BYTES + OBJECT_HEADER_V1_BYTES],
-    )
-    .map_err(CanObjectError::EventHeader)?;
-
-    let body = &object_bytes[CAN_EVENT_HEADER_BYTES..base.object_size as usize];
+    let framed = decode_framed(
+        object_bytes,
+        object_type::CAN_ERROR_EXT,
+        CAN_ERROR_EXT_FIXED_PREFIX_BYTES,
+    )?;
+    let (base, event, body) = (framed.base, framed.event, framed.body);
     let data = body[CAN_ERROR_EXT_FIXED_PREFIX_BYTES..].to_vec();
 
     Ok(CanErrorExt {
@@ -891,6 +875,43 @@ pub fn encode_can_error_ext(m: &CanErrorExt) -> Vec<u8> {
     out.extend_from_slice(&0u16.to_le_bytes()); // reserved2
     out.extend_from_slice(&m.data);
     out
+}
+
+/// Convenience constructor: build a `CAN_ERROR_EXT` from cannet's
+/// usual ingredients. cannet's own error-frame payload carries no
+/// corrupted-message data, so `data` is always empty — unlike
+/// [`build_can_message2`], this constructor doesn't take a `data`
+/// parameter. Produces a struct ready for [`encode_can_error_ext`].
+// The `expect` is unreachable on every realistic input.
+#[allow(clippy::missing_panics_doc)]
+#[must_use]
+pub fn build_can_error_ext(timestamp_ns: u64, channel: u16, id_raw: u32, flags_ext: u16) -> CanErrorExt {
+    let object_size = u32::try_from(CAN_EVENT_HEADER_BYTES + CAN_ERROR_EXT_FIXED_PREFIX_BYTES)
+        .expect("CAN_ERROR_EXT size fits in u32");
+    CanErrorExt {
+        base: ObjectHeaderBase {
+            header_size: 32,
+            header_version: 1,
+            object_size,
+            object_type: object_type::CAN_ERROR_EXT,
+        },
+        event: ObjectHeaderV1 {
+            object_flags: OBJECT_FLAG_TIME_ONE_NANS,
+            client_index: 0,
+            object_version: 0,
+            object_timestamp: timestamp_ns,
+        },
+        channel,
+        length: 0,
+        flags: 0,
+        ecc: 0,
+        position: 0,
+        dlc: 0,
+        frame_length_in_ns: 0,
+        id_raw,
+        flags_ext,
+        data: Vec::new(),
+    }
 }
 
 #[cfg(test)]
@@ -1440,6 +1461,187 @@ mod tests {
         assert_eq!(parsed.can_id(), 0x300);
         assert_eq!(parsed.data, vec![0xAA, 0xBB, 0xCC, 0xDD]);
         assert_eq!(parsed.event.timestamp_ns(), 123_000);
+    }
+
+    #[test]
+    fn build_can_fd_message_64_helper_produces_decodable_output() {
+        let data = vec![0xAAu8, 0xBB, 0xCC, 0xDD];
+        let m = build_can_fd_message_64(
+            456_000,
+            1,
+            4,
+            4,
+            0x300,
+            CAN_FD_64_FLAG_EDL | CAN_FD_64_FLAG_BRS,
+            1,
+            data.clone(),
+        );
+        let bytes = encode_can_fd_message_64(&m);
+        let parsed = decode_can_fd_message_64(&bytes).unwrap();
+        assert_eq!(parsed.can_id(), 0x300);
+        assert_eq!(parsed.data, data);
+        assert_eq!(parsed.event.timestamp_ns(), 456_000);
+        assert!(parsed.bitrate_switch());
+        assert_eq!(parsed.dir, 1);
+    }
+
+    #[test]
+    fn build_can_error_ext_helper_produces_decodable_output() {
+        let m = build_can_error_ext(789_000, 3, 0x01AB_CDEF | CAN_ID_EXTENDED_BIT, 0x0020);
+        let bytes = encode_can_error_ext(&m);
+        let parsed = decode_can_error_ext(&bytes).unwrap();
+        assert!(parsed.is_extended_id());
+        assert_eq!(parsed.can_id(), 0x01AB_CDEF);
+        assert_eq!(parsed.event.timestamp_ns(), 789_000);
+        assert_eq!(parsed.flags_ext, 0x0020);
+        assert!(parsed.data.is_empty());
+    }
+
+    // ----- Cross-struct id-extraction agreement ------------------
+
+    /// A dummy `(base, event)` pair for tests that only care about
+    /// body fields — the header contents don't affect id extraction.
+    fn dummy_header() -> (ObjectHeaderBase, ObjectHeaderV1) {
+        (
+            ObjectHeaderBase {
+                header_size: 32,
+                header_version: 1,
+                object_size: 0,
+                object_type: 0,
+            },
+            ObjectHeaderV1 {
+                object_flags: OBJECT_FLAG_TIME_ONE_NANS,
+                client_index: 0,
+                object_version: 0,
+                object_timestamp: 0,
+            },
+        )
+    }
+
+    fn dummy_can_message(id_raw: u32) -> CanMessage {
+        let (base, event) = dummy_header();
+        CanMessage { base, event, channel: 0, flags: 0, dlc: 0, id_raw, data: [0; 8] }
+    }
+
+    fn dummy_can_message2(id_raw: u32) -> CanMessage2 {
+        let (base, event) = dummy_header();
+        CanMessage2 {
+            base,
+            event,
+            channel: 0,
+            flags: 0,
+            dlc: 0,
+            id_raw,
+            data: Vec::new(),
+            frame_length_ns: 0,
+            bit_count: 0,
+        }
+    }
+
+    fn dummy_can_fd_message(id_raw: u32) -> CanFdMessage {
+        let (base, event) = dummy_header();
+        CanFdMessage {
+            base,
+            event,
+            channel: 0,
+            flags: 0,
+            dlc: 0,
+            id_raw,
+            frame_length_ns: 0,
+            arb_bit_count: 0,
+            can_fd_flags: 0,
+            valid_data_bytes: 0,
+            data: [0; CAN_FD_MESSAGE_DATA_BYTES],
+        }
+    }
+
+    fn dummy_can_fd_message_64(id_raw: u32) -> CanFdMessage64 {
+        let (base, event) = dummy_header();
+        CanFdMessage64 {
+            base,
+            event,
+            channel: 0,
+            dlc: 0,
+            valid_data_bytes: 0,
+            tx_count: 0,
+            id_raw,
+            frame_length_ns: 0,
+            flags: 0,
+            btr_cfg_arb: 0,
+            btr_cfg_data: 0,
+            time_offset_brs_ns: 0,
+            time_offset_crc_del_ns: 0,
+            bit_count: 0,
+            dir: 0,
+            ext_data_offset: 0,
+            crc: 0,
+            data: Vec::new(),
+            trailing: Vec::new(),
+        }
+    }
+
+    fn dummy_can_error_ext(id_raw: u32) -> CanErrorExt {
+        let (base, event) = dummy_header();
+        CanErrorExt {
+            base,
+            event,
+            channel: 0,
+            length: 0,
+            flags: 0,
+            ecc: 0,
+            position: 0,
+            dlc: 0,
+            frame_length_in_ns: 0,
+            id_raw,
+            flags_ext: 0,
+            data: Vec::new(),
+        }
+    }
+
+    /// All five CAN-class structs decode the same raw `id` field the
+    /// same way (bit 31 = extended marker, low 11/29 bits = value).
+    /// Regression guard for the shared extraction logic: a callsite
+    /// that silently reverts to hand-rolled bit-fiddling would still
+    /// compile but could drift from the others without this test.
+    #[test]
+    fn all_can_structs_agree_on_id_extraction() {
+        let cases: &[u32] = &[
+            0x000,
+            0x123,
+            0x7FF,                              // max standard id
+            CAN_ID_EXTENDED_BIT,                 // extended, value 0
+            0x01AB_CDEF | CAN_ID_EXTENDED_BIT,
+            0x1FFF_FFFF | CAN_ID_EXTENDED_BIT,   // max extended id
+        ];
+
+        for &id_raw in cases {
+            let want_extended = (id_raw & CAN_ID_EXTENDED_BIT) != 0;
+            let want_id = if want_extended {
+                id_raw & CAN_ID_EXTENDED_MASK
+            } else {
+                id_raw & CAN_ID_STANDARD_MASK
+            };
+
+            let cm = dummy_can_message(id_raw);
+            assert_eq!(cm.is_extended_id(), want_extended, "CanMessage id_raw={id_raw:#x}");
+            assert_eq!(cm.can_id(), want_id, "CanMessage id_raw={id_raw:#x}");
+
+            let cm2 = dummy_can_message2(id_raw);
+            assert_eq!(cm2.is_extended_id(), want_extended, "CanMessage2 id_raw={id_raw:#x}");
+            assert_eq!(cm2.can_id(), want_id, "CanMessage2 id_raw={id_raw:#x}");
+
+            let fd = dummy_can_fd_message(id_raw);
+            assert_eq!(fd.is_extended_id(), want_extended, "CanFdMessage id_raw={id_raw:#x}");
+            assert_eq!(fd.can_id(), want_id, "CanFdMessage id_raw={id_raw:#x}");
+
+            let fd64 = dummy_can_fd_message_64(id_raw);
+            assert_eq!(fd64.is_extended_id(), want_extended, "CanFdMessage64 id_raw={id_raw:#x}");
+            assert_eq!(fd64.can_id(), want_id, "CanFdMessage64 id_raw={id_raw:#x}");
+
+            let err = dummy_can_error_ext(id_raw);
+            assert_eq!(err.is_extended_id(), want_extended, "CanErrorExt id_raw={id_raw:#x}");
+            assert_eq!(err.can_id(), want_id, "CanErrorExt id_raw={id_raw:#x}");
+        }
     }
 
     #[test]

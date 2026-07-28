@@ -10,10 +10,15 @@ test or a documented manual repro.
 
 ### 1. Broken timestamp handling
 
-- Regular CAN messages look OK at a 100 ms period and inconsistent at
-  10 ms. CAN-FD messages are inconsistent at 100 ms. The case is TX on
-  a real PEAK-FD interface and receiving on another PEAK-FD interface,
-  two logical buses.
+- ~~Regular CAN messages look OK at a 100 ms period and inconsistent
+  at 10 ms…~~ **Closed 2026-07-25** by the TX-timing arc: RBS cohort
+  bursts fixed by phase stagger
+  ([ADR 0039](../../docs/adr/0039-periodic-emission-timing.md)), the
+  by-id msg/s rx-vs-tx display bias fixed by the windowed per-id rate
+  estimator (`trace_store.rs::RateEstimate`), and on-wire rx cadence
+  is now machine-gated (`rx_gap_*` metrics in
+  `cannet-perf-measurement`). Verified on dual-PEAK hardware: per-id
+  p95/median gap ratio 1.14, rx counts = tx counts.
 - Negative timestamps still show up in historical trace views after a
   session clear. Details captured below — the pattern is not fully
   pinned down, but there's enough to point further investigation.
@@ -141,11 +146,13 @@ Cheap documented-contract work that lands with the fix:
 
 ### 2. Plot signal colours don't advance
 
-Signals added **one-by-one** from the DBC view to a plot panel all
-come up with the **first** colour in the palette (all green) instead
-of advancing through it (second orange, third blue, …). Adding several
-at once presumably cycles correctly, so the bug is in the
-add-one-at-a-time path not consulting / advancing the palette index.
+~~Signals added one-by-one all come up with the first palette
+colour…~~ **Fixed in code** (verified 2026-07-25): both add paths
+seed the colour-wheel index from the area's existing signal count per
+[ADR 0026](../../docs/adr/0026-plot-areas-compose-axes-configure.md)
+(`PlotPanel.tsx` `addSignalToFocused` and the drop path). Remaining:
+the regression test the exit criterion asks for — verify one-by-one
+adds advance the wheel.
 
 ### 3. Dead code: `decimatePoints`
 
@@ -158,9 +165,9 @@ stale comment.
 
 ## Exit criteria
 
-- The 10 ms / 100 ms / FD timestamp inconsistency on dual PEAK-FD is
-  reproduced, root-caused, and fixed, with a regression test or a
-  documented hardware repro in `SMOKE.md`.
+- ~~The 10 ms / 100 ms / FD timestamp inconsistency…~~ done (see
+  above; regression-guarded by the perf harness's `rx_gap_*` gates and
+  `per_id_rate_is_steady_across_delivery_gaps`).
 - The post-clear negative-timestamp bug is root-caused (per the
   experiment above) and fixed, with a regression test.
 - Adding plot signals one at a time advances the colour palette;

@@ -68,6 +68,13 @@ const BURST_EVERY = 5000;
 let totalSinceBurst = 0;
 let lastBurst = new Map<string, number>();
 
+/// Current absolute counter values. The 1 Hz reporter reads `counts`
+/// directly; this is the read side for anything outside this module —
+/// notably tests that assert a render/work count stays bounded.
+export function diagCounts(): ReadonlyMap<string, number> {
+  return counts;
+}
+
 export function diagCount(key: string, n = 1): void {
   counts.set(key, (counts.get(key) ?? 0) + n);
   totalSinceBurst += n;

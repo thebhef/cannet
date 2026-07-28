@@ -45,7 +45,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use cannet_dbc::Database;
-use cannet_spill::SampleSeq;
+use cannet_spill::{lower_bound, SampleSeq};
 
 use crate::signal_sampler::{self, SamplePoint};
 use crate::trace_store::TraceStore;
@@ -281,17 +281,7 @@ impl SignalCache {
 /// at the level's low-water mark, so an evicted (front-trimmed) slot is
 /// never read.
 fn partition_by_t(level: &SampleSeq, target: f64) -> usize {
-    let mut lo = level.first_slot();
-    let mut hi = level.len();
-    while lo < hi {
-        let mid = lo + (hi - lo) / 2;
-        if level.get(mid).0 < target {
-            lo = mid + 1;
-        } else {
-            hi = mid;
-        }
-    }
-    lo
+    lower_bound(level.first_slot(), level.len(), target, |k| level.get(k).0)
 }
 
 /// Count of `level` points whose `t_seconds` lies in `[from, to)`.
@@ -354,6 +344,54 @@ fn key_prefix(key: &SignalKey) -> String {
     mix(signal.as_bytes());
     let kind = if *extended { 'e' } else { 's' };
     format!("sig.{kind}{id:08x}.{h:016x}")
+}
+
+/// The scratch subdirectory the per-signal decimation pyramids spill into
+/// (ADR 0002 DS-5/DS-7). Named here because this module owns the pyramid
+/// files; the host roots the cache at `<scratch>/`[`PYRAMID_SUBDIR`] and the
+/// scratch-footprint diagnostic identifies the pyramid family by it.
+pub const PYRAMID_SUBDIR: &str = "signals";
+
+/// On-disk `(bytes, files, deepest-pyramid-level-count)` of the pyramid
+/// scratch under `dir` (the [`PYRAMID_SUBDIR`] tree). The depth is parsed
+/// from this module's own `….l{n}.{seg}` level-file naming, so the
+/// scratch-footprint diagnostic (ADR 0002 DS-8) doesn't reverse-engineer
+/// it. Best-effort: an unreadable entry counts zero.
+#[must_use]
+pub fn pyramid_scratch_usage(dir: &Path) -> (u64, u64, u64) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return (0, 0, 0);
+    };
+    let (mut bytes, mut files, mut depth) = (0, 0, 0);
+    for entry in entries.flatten() {
+        let Ok(m) = entry.metadata() else { continue };
+        if m.is_dir() {
+            let (b, f, d) = pyramid_scratch_usage(&entry.path());
+            bytes += b;
+            files += f;
+            depth = depth.max(d);
+        } else {
+            bytes += m.len();
+            files += 1;
+            if let Some(level) = pyramid_level(&entry.file_name().to_string_lossy()) {
+                depth = depth.max(level + 1);
+            }
+        }
+    }
+    (bytes, files, depth)
+}
+
+/// The level index `n` in a pyramid segment file name `….l{n}.{seg}`
+/// (`{base}.l0.0000`, `{base}.l2.0003`, …), or `None` if it doesn't match.
+/// The `.l{n}` suffix is appended by this module when it grows a pyramid
+/// level, so the parse lives beside the naming it inverts.
+fn pyramid_level(name: &str) -> Option<u64> {
+    let after = &name[name.rfind(".l")? + 2..];
+    let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    digits.parse().ok()
 }
 
 /// Remove every file directly under `dir` (the pyramid scratch). Called
@@ -505,6 +543,27 @@ mod tests {
     use crate::trace_store::RawTraceFrame;
     use cannet_core::{CanFramePayload, Direction};
     use tempfile::TempDir;
+
+    #[test]
+    fn pyramid_scratch_usage_sums_bytes_files_and_depth() {
+        // The scratch-footprint diagnostic (ADR 0002 DS-8) reads this
+        // module's own pyramid accounting: total bytes, file count, and the
+        // deepest level parsed from the `.l{n}` names it writes. Nested dirs
+        // recurse; a non-level file still counts toward bytes/files but not
+        // depth.
+        let dir = TempDir::new().unwrap();
+        let d = dir.path();
+        std::fs::write(d.join("sig.s00000100.dead.l0.0000"), vec![0u8; 300]).unwrap();
+        std::fs::write(d.join("sig.s00000100.dead.l1.0000"), vec![0u8; 150]).unwrap();
+        std::fs::write(d.join("sig.s00000100.dead.l2.0000"), vec![0u8; 70]).unwrap();
+        std::fs::write(d.join("not-a-level"), vec![0u8; 5]).unwrap();
+        let (bytes, files, depth) = pyramid_scratch_usage(d);
+        assert_eq!(bytes, 525); // 300 + 150 + 70 + 5
+        assert_eq!(files, 4);
+        assert_eq!(depth, 3); // levels l0, l1, l2 → depth 3
+        // A missing dir reads as empty, not a panic.
+        assert_eq!(pyramid_scratch_usage(&d.join("absent")), (0, 0, 0));
+    }
 
     fn dummy(ts_ns: u64, id: u32, payload: Vec<u8>) -> RawTraceFrame {
         RawTraceFrame {

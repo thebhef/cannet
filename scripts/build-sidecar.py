@@ -13,6 +13,12 @@ Usage (run from anywhere — all paths derive from this file's location)::
                                              # already be resolved by uv
     uv run scripts/build-sidecar.py --no-smoke   # build only
 
+`tauri build` also runs this script automatically via its
+``beforeBuildCommand`` hook, so a release bundle always freezes first.
+Rebuilds are incremental: PyInstaller reuses the analysis cached under
+``--workpath`` and replaces the onedir itself (``--noconfirm``), so an
+unchanged sidecar refreezes in seconds.
+
 The onedir lands at
 ``apps/gui/src-tauri/sidecar-dist/cannet-python-can/`` with the launcher
 ``cannet-python-can[.exe]`` beside its ``_internal/`` directory. By
@@ -26,7 +32,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import subprocess
 import sys
 import time
@@ -56,16 +61,13 @@ SMOKE_BANNER_PREFIX = "sidecar\tlistening\t"
 SMOKE_TIMEOUT_S = 30.0
 
 
-def _clean() -> None:
-    """Remove stale build output so a collection change can't leave cruft."""
-    for path in (ONEDIR, BUILD_DIR):
-        if path.exists():
-            shutil.rmtree(path)
-
-
 def build() -> None:
-    """Invoke PyInstaller in the sidecar's pinned uv environment."""
-    _clean()
+    """Invoke PyInstaller in the sidecar's pinned uv environment.
+
+    Freshness is PyInstaller's job: ``--noconfirm`` replaces the onedir
+    on collect, and the ``--workpath`` cache makes unchanged rebuilds
+    cheap — so nothing is deleted up front.
+    """
     DIST_DIR.mkdir(parents=True, exist_ok=True)
 
     pyinstaller_flags = [

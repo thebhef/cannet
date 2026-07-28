@@ -326,6 +326,29 @@ describe("RbsPanel (thin view over the host RBS model)", () => {
     expect(lastCall("rbs_set_signal")).toBeUndefined();
   });
 
+  it("resolves a typed label through the fetched VAL_ table", async () => {
+    VIEW = sampleView();
+    renderPanel("/tmp/sim.cannet_rbs");
+    fireEvent.click(await screen.findByLabelText("toggle 0x123"));
+    const input = await screen.findByLabelText("TargetMode value");
+    // Wait for the signal's VAL_ table (list_value_tables) to resolve
+    // into the datalist before typing a label it — not the currently
+    // committed one — defines.
+    await waitFor(() =>
+      expect(
+        document.querySelector('#rbs-enum-0x123-TargetMode option[value="Off"]'),
+      ).toBeTruthy(),
+    );
+    fireEvent.change(input, { target: { value: "Off" } });
+    fireEvent.blur(input);
+    await waitFor(() =>
+      expect(lastCall("rbs_set_signal")?.args).toMatchObject({
+        signal: "TargetMode",
+        value: "Off",
+      }),
+    );
+  });
+
   it("renders calculated-field destinations read-only", async () => {
     VIEW = sampleView();
     renderPanel("/tmp/sim.cannet_rbs");
@@ -353,5 +376,35 @@ describe("RbsPanel (thin view over the host RBS model)", () => {
       elementId: "el",
       target: { bus: "Powertrain", ecu: "BMS", message: "0x123" },
     });
+  });
+
+  // The signal right-click menu (configure as counter/CRC) shares the
+  // dismiss-on-outside-click + Escape hook with the other floating
+  // menus (task 0030 item #18) — previously this menu closed on *any*
+  // click (including Escape doing nothing at all).
+  it("opens the signal context menu on right-click and dismisses on Escape", async () => {
+    VIEW = sampleView();
+    renderPanel("/tmp/sim.cannet_rbs");
+    fireEvent.click(await screen.findByLabelText("toggle 0x123"));
+    fireEvent.contextMenu(await screen.findByText("AliveCtr"));
+    expect(await screen.findByText("Configure as sequence counter…")).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() =>
+      expect(screen.queryByText("Configure as sequence counter…")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("dismisses the signal context menu on an outside click, and an inside click doesn't leak through", async () => {
+    VIEW = sampleView();
+    renderPanel("/tmp/sim.cannet_rbs");
+    fireEvent.click(await screen.findByLabelText("toggle 0x123"));
+    fireEvent.contextMenu(await screen.findByText("AliveCtr"));
+    const item = await screen.findByText("Configure as sequence counter…");
+    // A mousedown on the menu's own item must not dismiss it before
+    // the click that actually activates it lands.
+    fireEvent.mouseDown(item);
+    expect(screen.getByText("Configure as sequence counter…")).toBeInTheDocument();
+    fireEvent.click(item);
+    await waitFor(() => expect(screen.getByText(/Calculated fields — Status/)).toBeInTheDocument());
   });
 });

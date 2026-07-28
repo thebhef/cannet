@@ -17,6 +17,8 @@
 //! versions are rejected with a user-facing message rather than
 //! migrated.
 
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -251,19 +253,7 @@ fn existing_project_id(path: &str) -> Option<Uuid> {
 /// from [`open_project`] so the parse is testable without touching the
 /// filesystem.
 fn parse_project(text: &str) -> Result<Project, String> {
-    let raw: serde_json::Value =
-        serde_json::from_str(text).map_err(|e| format!("invalid project JSON: {e}"))?;
-    let version = raw
-        .get("schema_version")
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| "missing schema_version".to_string())?;
-    if version == u64::from(PROJECT_SCHEMA_VERSION) {
-        serde_json::from_value(raw).map_err(|e| format!("invalid project JSON: {e}"))
-    } else {
-        Err(format!(
-            "schema version {version}; this build expects {PROJECT_SCHEMA_VERSION}",
-        ))
-    }
+    crate::persisted_json::parse_versioned(text, "project", PROJECT_SCHEMA_VERSION)
 }
 
 /// Read and parse a project file. Errors (with a user-facing message)
@@ -276,7 +266,7 @@ fn parse_project(text: &str) -> Result<Project, String> {
 #[allow(clippy::needless_pass_by_value)]
 pub fn open_project(
     app: tauri::AppHandle,
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, crate::app_state::AppState>,
     path: String,
 ) -> Result<Project, String> {
     let text = match std::fs::read_to_string(&path) {
@@ -295,22 +285,18 @@ pub fn open_project(
             // has applied the project and cleared the trace view — so the
             // restored history isn't clobbered by open-clears-the-trace.
             *state
-                .active_project_id
-                .lock()
-                .expect("active project mutex poisoned") = Some(p.project_id);
+                .active_project_id() = Some(p.project_id);
             // Load the host TX-message registry from
             // the project's pool. All periodics start stopped — reopen
             // never fires traffic onto a bus the user hasn't
             // intentionally reconnected.
             state
-                .transmit_frames
-                .lock()
-                .expect("transmit_frames mutex poisoned")
+                .transmit_frames()
                 .load(p.transmit_frames.clone());
             // Usually a no-op here (the frontend re-adds the project's
             // DBCs after open, each add re-resolving), but covers a
             // load into an already-populated DBC set.
-            crate::refresh_calc_resolutions(&app);
+            crate::app_state::refresh_calc_resolutions(&app);
             crate::sys_info!(&app, "project", "opened project {path}");
             Ok(p)
         }
@@ -333,7 +319,7 @@ pub fn open_project(
 #[allow(clippy::needless_pass_by_value)]
 pub fn save_project(
     app: tauri::AppHandle,
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, crate::app_state::AppState>,
     path: String,
     mut project: Project,
 ) -> Result<String, String> {
@@ -349,22 +335,17 @@ pub fn save_project(
     // project it submits. Snapshot the registry into the project before
     // writing so save captures the current pool + order.
     project.transmit_frames = state
-        .transmit_frames
-        .lock()
-        .expect("transmit_frames mutex poisoned")
+        .transmit_frames()
         .snapshot();
-    let text = match serde_json::to_string_pretty(&project) {
-        Ok(t) => t,
-        Err(e) => {
-            let msg = format!("failed to serialize project: {e}");
-            crate::sys_error!(&app, "project", "{msg}");
-            return Err(msg);
-        }
-    };
-    match std::fs::write(&path, text) {
+    match write_project_file(&path, &project) {
         Ok(()) => {
             crate::sys_info!(&app, "project", "saved project to {path}");
             Ok(project.project_id.to_string())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+            let msg = format!("failed to serialize project: {e}");
+            crate::sys_error!(&app, "project", "{msg}");
+            Err(msg)
         }
         Err(e) => {
             let msg = format!("failed to write project to {path}: {e}");
@@ -372,6 +353,16 @@ pub fn save_project(
             Err(msg)
         }
     }
+}
+
+/// Serialize and write `project` to `path`, via a temp-file + rename
+/// (ADR 0011's persistence contract, shared with the RBS file): a crash
+/// or failure partway through the write can't leave a truncated file
+/// on disk in place of the last good save. A serialize failure surfaces
+/// as [`std::io::ErrorKind::InvalidData`] so the caller can tell it
+/// apart from a write failure.
+fn write_project_file(path: &str, project: &Project) -> std::io::Result<()> {
+    crate::persisted_json::write_json_atomic(Path::new(path), project)
 }
 
 #[cfg(test)]
@@ -474,6 +465,39 @@ mod tests {
                 .project_id,
             id
         );
+    }
+
+    /// Regression test for the non-atomic project save:
+    /// `save_project` used to `std::fs::write` straight to the
+    /// target path, so a write failure partway could leave a corrupted
+    /// project file in place of the last good save. Force the write to
+    /// fail by blocking the temp-file step (a directory sits where the
+    /// `.tmp` sibling needs to go) and confirm the original, valid file
+    /// on disk is left completely untouched.
+    #[test]
+    fn save_leaves_the_original_file_untouched_when_the_write_fails() {
+        let dir = std::env::temp_dir().join(format!("cannet-save-atomic-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("p.cannet_prj");
+        let original = serde_json::to_string_pretty(&sample()).unwrap();
+        std::fs::write(&path, &original).unwrap();
+
+        let mut tmp = path.clone().into_os_string();
+        tmp.push(".tmp");
+        std::fs::create_dir(&tmp).unwrap();
+
+        let result = write_project_file(path.to_str().unwrap(), &sample());
+
+        assert!(
+            result.is_err(),
+            "the write must fail when the temp file can't be created"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            original,
+            "a failed save must not touch the previously-saved file"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

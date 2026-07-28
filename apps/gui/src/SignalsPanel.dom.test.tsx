@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
-import type { SignalSnapshotRecord } from "./types";
+import type { SignalDescriptorRecord, SignalSnapshotRecord } from "./types";
 
 const ROWS: SignalSnapshotRecord[] = [
   {
@@ -46,11 +46,14 @@ const ROWS: SignalSnapshotRecord[] = [
   },
 ];
 
+// The `list_signals` catalog. Empty by default; a test can set entries
+// to exercise the "add signal" picker.
+let SIGNALS: SignalDescriptorRecord[] = [];
 const invokeCalls: { cmd: string; args: Record<string, unknown> | undefined }[] = [];
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
     invokeCalls.push({ cmd, args });
-    if (cmd === "list_signals") return [];
+    if (cmd === "list_signals") return SIGNALS;
     if (cmd === "fetch_signal_page") return { count: ROWS.length, start: 0, rows: ROWS };
     return undefined;
   }),
@@ -65,6 +68,8 @@ import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { ElementRegistryContext, type ElementRegistry } from "./projectElements";
 import { freshTrace } from "./trace";
 import { SIGNAL_DND_MIME } from "./dragSignals";
+import { openCombobox } from "./comboboxTestKit";
+import { SignalCatalogProvider } from "./signalCatalogContext";
 
 class FakeResizeObserver {
   observe() {}
@@ -138,11 +143,7 @@ const projectCtx: ProjectContextValue = {
   onSetDbcBuses: () => {},
   onAddBus: () => {},
   onRemoveBus: () => {},
-  onRenameBus: () => {},
-  onSetBusColor: () => {},
-  onSetBusSpeed: () => {},
-  onSetBusFd: () => {},
-  onSetBusFdDataSpeed: () => {},
+  onUpdateBus: () => {},
   busesWithPendingHwConfig: [],
   onAddBinding: () => {},
   onRemoveBinding: () => {},
@@ -163,9 +164,11 @@ function renderPanel(opts?: { params?: Record<string, unknown> }) {
   render(
     <TraceDataContext.Provider value={traceData}>
       <ProjectContext.Provider value={projectCtx}>
-        <ElementRegistryContext.Provider value={registry}>
-          <SignalsPanel {...props} />
-        </ElementRegistryContext.Provider>
+        <SignalCatalogProvider>
+          <ElementRegistryContext.Provider value={registry}>
+            <SignalsPanel {...props} />
+          </ElementRegistryContext.Provider>
+        </SignalCatalogProvider>
       </ProjectContext.Provider>
     </TraceDataContext.Provider>,
   );
@@ -175,6 +178,7 @@ function renderPanel(opts?: { params?: Record<string, unknown> }) {
 beforeEach(() => {
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
   invokeCalls.length = 0;
+  SIGNALS = [];
 });
 afterEach(() => {
   cleanup();
@@ -182,6 +186,39 @@ afterEach(() => {
 });
 
 describe("SignalsPanel", () => {
+  it("lists the DBC signal catalog in the 'add signal' picker, grouped by ECU/message", async () => {
+    SIGNALS = [
+      {
+        bus_id: "p",
+        message_id: 256,
+        extended: false,
+        message_name: "EngineData",
+        transmitter: "EngineEcu",
+        signal_name: "EngineSpeed",
+        unit: "rpm",
+        is_enum: false,
+      },
+    ];
+    renderPanel();
+    openCombobox(screen.getByLabelText("add signal"));
+    const option = await waitFor(() => {
+      const el = document.querySelector('[role="option"]');
+      if (!el) throw new Error("option not yet rendered");
+      return el as HTMLElement;
+    });
+    expect(option.textContent).toBe("EngineSpeed [rpm]");
+    const headers = Array.from(document.querySelectorAll(".combobox-group")).map(
+      (h) => h.textContent,
+    );
+    expect(headers).toContain("EngineEcu");
+    expect(headers).toContain("EngineData");
+
+    fireEvent.click(option);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /selection \(1\)/ })).toBeInTheDocument();
+    });
+  });
+
   it("renders one row per snapshot record, blanks included", async () => {
     renderPanel();
     await waitFor(() => {

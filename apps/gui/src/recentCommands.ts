@@ -6,20 +6,15 @@
 // the list is capped. Persisted host-side across app restarts
 // (ADR 0032); these are the pure list helpers feeding `hostState`.
 
+import { pushRecent } from "./recentMru";
+
 /// Maximum number of recently-used commands to remember.
 export const RECENT_COMMANDS_LIMIT = 10;
 
-/// Pure helper: move `id` to the front of `current`, dedupe, cap at
-/// [`RECENT_COMMANDS_LIMIT`]. Empty ids are dropped.
+/// Move `id` to the front of the MRU, dedupe, cap at
+/// [`RECENT_COMMANDS_LIMIT`].
 export function recordRecentCommand(current: readonly string[], id: string): string[] {
-  if (!id) return [...current];
-  const out: string[] = [id];
-  for (const c of current) {
-    if (c === id) continue;
-    if (out.length >= RECENT_COMMANDS_LIMIT) break;
-    out.push(c);
-  }
-  return out;
+  return pushRecent(current, id, RECENT_COMMANDS_LIMIT);
 }
 
 /// Order `items` so the ones named in `recents` come first (in

@@ -37,7 +37,7 @@ use cannet_wire::{
         cannet_server_server::{CannetServer as CannetServerTrait, CannetServerServer},
         envelope::Body,
         error::Code,
-        AttachBridge, DetachBridge, Envelope, Error as ErrorMsg, FrameBatch,
+        AttachBridge, DetachBridge, Envelope, FrameBatch,
         Interface as ProtoInterface, InterfaceAllocated, InterfaceList, ListInterfacesRequest,
         Subscribe, Unsubscribe, WatchInterfacesRequest,
     },
@@ -48,6 +48,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::bridge_client::{BridgeRemote, BridgeShutdown};
+use crate::error_envelope;
 
 /// Factory interface id every virtual-bus server publishes.
 /// Subscribing to it allocates a fresh participant.
@@ -462,12 +463,10 @@ fn spawn_drain(
                             frames: vec![frame_to_proto(&frame)],
                         })),
                     },
-                    ParticipantEvent::NoAcknowledger(_) => Envelope {
-                        body: Some(Body::Error(ErrorMsg {
-                            code: Code::NoAcknowledger as i32,
-                            message: format!("no acknowledger on {allocated}"),
-                        })),
-                    },
+                    ParticipantEvent::NoAcknowledger(_) => error_envelope(
+                        Code::NoAcknowledger,
+                        format!("no acknowledger on {allocated}"),
+                    ),
                 };
                 if outgoing.blocking_send(Ok(envelope)).is_err() {
                     return;
@@ -477,11 +476,3 @@ fn spawn_drain(
         .expect("spawning vbus drain")
 }
 
-fn error_envelope(code: Code, message: String) -> Envelope {
-    Envelope {
-        body: Some(Body::Error(ErrorMsg {
-            code: code.into(),
-            message,
-        })),
-    }
-}

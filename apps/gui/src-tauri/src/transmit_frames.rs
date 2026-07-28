@@ -158,10 +158,12 @@ impl Entry {
 
     /// ADR 0027 fire path: step the counter and recompute the CRC
     /// *into the entry's payload buffer* (the buffer is the source of
-    /// truth — ADR 0017), then hand back the request to send.
-    /// Best-effort: a buffer too short for the resolved placements
-    /// (the user shrank the payload after registration) sends the
-    /// bytes unmodified rather than dropping the frame.
+    /// truth — ADR 0017), then hand back the request to send. The
+    /// counter steps once per prepared send regardless of emission
+    /// outcome — a prepared frame that dies is a real E2E gap
+    /// (ADR 0027). Best-effort: a buffer too short for the resolved
+    /// placements (the user shrank the payload after registration)
+    /// sends the bytes unmodified rather than dropping the frame.
     fn prepare_send(&mut self) -> TransmitRequest {
         if let Some(resolved) = &self.resolved_calc {
             let mut counter = self.counter;
@@ -346,6 +348,23 @@ impl TransmitFrameRegistry {
     #[must_use]
     pub fn is_running(&self, id: &str) -> bool {
         self.position(id).is_some_and(|i| self.entries[i].running)
+    }
+
+    /// The message's configured period, if it exists. Read alongside
+    /// `begin_periodic` (same lock hold) so the scheduler's `Start`
+    /// command can carry the period for phase placement (ADR 0039).
+    #[must_use]
+    pub fn cycle_ms(&self, id: &str) -> Option<u32> {
+        self.position(id).map(|i| self.entries[i].frame.cycle_ms)
+    }
+
+    /// The message's target bus, if it exists. Read *without* preparing
+    /// a send — the scheduler's route check must not step the sequence
+    /// counter (park keeps it frozen, ADR 0039).
+    #[must_use]
+    pub fn bus_id(&self, id: &str) -> Option<String> {
+        self.position(id)
+            .map(|i| self.entries[i].frame.request.bus_id.clone())
     }
 
     /// Insert a new message or update an existing one in place. If the

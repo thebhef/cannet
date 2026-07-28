@@ -10,6 +10,7 @@
 import type { SignalDescriptorRecord } from "./types";
 import { signalKey } from "./plotData";
 import { stableSignalColor } from "./palette";
+import type { SignalRef } from "./plotPanelConfig";
 
 /// The canonical signal path (ADR 0038). Segments are the DBC names
 /// verbatim; a missing bus or transmitter renders an empty segment so
@@ -67,31 +68,20 @@ export function resolvePatterns(
   });
 }
 
-/// Shape the plot panel renders. Same fields as `PlotPanel.tsx`'s local
-/// `SignalRef`. Kept here to avoid a circular import.
-export interface FilterSignalRef {
-  busId: string | null;
-  messageId: number;
-  extended: boolean;
-  signalName: string;
-  messageName: string;
-  unit: string;
-  color: string;
-  hidden?: boolean;
-}
-
 /// Shape `applyAreaSelections` accepts. Subset of `PlotPanel`'s
 /// `PlotAreaConfig` — anything the helpers need without bringing the
-/// renderer along.
+/// renderer along. The series shape is the shared `SignalRef`
+/// (`plotPanelConfig.ts`), imported directly now that it lives in a
+/// uPlot-free module.
 export interface SelectableArea {
   id: string;
-  signals: FilterSignalRef[];
+  signals: SignalRef[];
   patterns?: string[];
   // Other PlotAreaConfig fields pass through unchanged; the
   // function is generic over them.
 }
 
-const refKey = (s: FilterSignalRef) =>
+const refKey = (s: SignalRef) =>
   signalKey(s.busId, s.messageId, s.extended, s.signalName);
 
 /// Resolve `patterns` to coloured refs, deduped across patterns and
@@ -103,10 +93,10 @@ export function signalsFromPatterns(
   patterns: readonly string[],
   catalog: readonly SignalDescriptorRecord[],
   busNames: ReadonlyMap<string, string>,
-  exclude: readonly FilterSignalRef[] = [],
-): FilterSignalRef[] {
+  exclude: readonly SignalRef[] = [],
+): SignalRef[] {
   const seen = new Set(exclude.map(refKey));
-  const out: FilterSignalRef[] = [];
+  const out: SignalRef[] = [];
   for (const res of resolvePatterns(patterns, catalog, busNames)) {
     for (const s of res.matches) {
       const key = signalKey(s.bus_id, s.message_id, s.extended, s.signal_name);

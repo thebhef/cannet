@@ -10,7 +10,6 @@ name = "cannet-server"
 path = "src/main.rs"
 
 [dependencies]
-async-stream = "0.3"
 cannet-blf = { path = "../cannet-blf" }
 cannet-core = { path = "../cannet-core" }
 cannet-wire = { path = "../cannet-wire" }

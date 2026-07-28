@@ -34,7 +34,8 @@ struct Cli {
     example: Option<PathBuf>,
     /// Explicit baseline file. `baseline` defaults to writing a new
     /// dated file under docs/performance-measurements/; `check` defaults
-    /// to reading the newest file there.
+    /// to reading the promoted `baseline.json` there (copy a dated
+    /// snapshot over it to promote).
     #[arg(long, global = true)]
     baseline: Option<PathBuf>,
     /// Render report (`RenderReport` JSON) from a self-driving GUI run.

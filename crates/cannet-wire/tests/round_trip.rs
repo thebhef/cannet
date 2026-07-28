@@ -1,17 +1,13 @@
-//! End-to-end tests for the cannet-wire conversion + batching layers.
+//! End-to-end tests for the cannet-wire conversion layer.
 //!
 //! These tests stay in-process: they exercise the wire types and
-//! adapters without ever opening a TCP socket. Network transport is
+//! conversions without ever opening a TCP socket. Network transport is
 //! covered in the server / client crates.
-
-use std::time::Duration;
 
 use cannet_core::{CanFdFlags, CanFrame, CanId, Direction};
 use cannet_wire::{
-    batch_frames, batch_to_proto, frame_to_proto, proto, proto_to_batch, proto_to_frame,
-    unbatch_frames, BatchPolicy, ProtoConversionError,
+    batch_to_proto, frame_to_proto, proto, proto_to_batch, proto_to_frame, ProtoConversionError,
 };
-use futures::stream::StreamExt;
 
 const IFACE: &str = "blf:0";
 
@@ -165,136 +161,6 @@ fn batch_to_proto_tags_interface_id() {
 
     let decoded = proto_to_batch(&batch, 0).unwrap();
     assert_eq!(decoded, frames);
-}
-
-// ---------- batching ----------
-
-#[tokio::test(flavor = "current_thread", start_paused = true)]
-async fn batch_frames_flushes_when_count_cap_is_reached() {
-    let policy = BatchPolicy {
-        max_frames_per_batch: 4,
-        max_batch_latency: Duration::from_mins(1),
-    };
-    let frames: Vec<CanFrame> = (0u32..10)
-        .map(|i| classic(u64::from(i), 0, 0x100 + i, Direction::Rx, vec![i.try_into().unwrap()]))
-        .collect();
-    let stream = futures::stream::iter(frames.clone());
-
-    let batches: Vec<_> = batch_frames(IFACE.to_string(), stream, policy)
-        .collect()
-        .await;
-
-    assert_eq!(batches.len(), 3, "expected 4 + 4 + 2 frames in three batches");
-    assert_eq!(batches[0].frames.len(), 4);
-    assert_eq!(batches[1].frames.len(), 4);
-    assert_eq!(batches[2].frames.len(), 2);
-    for batch in &batches {
-        assert_eq!(batch.interface_id, IFACE);
-    }
-
-    let recovered: Vec<CanFrame> = batches
-        .iter()
-        .flat_map(|b| proto_to_batch(b, 0).unwrap())
-        .collect();
-    assert_eq!(recovered, frames);
-}
-
-#[tokio::test(flavor = "current_thread", start_paused = true)]
-async fn batch_frames_flushes_when_latency_cap_elapses() {
-    let policy = BatchPolicy {
-        max_frames_per_batch: 1024,
-        max_batch_latency: Duration::from_millis(10),
-    };
-    // Two frames, then a long pause, then one more frame. The first
-    // batch should flush after the 10 ms cap; the second after EOF.
-    let stream = async_stream::stream! {
-        yield classic(1, 0, 0x10, Direction::Rx, vec![1]);
-        yield classic(2, 0, 0x11, Direction::Rx, vec![2]);
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        yield classic(3, 0, 0x12, Direction::Rx, vec![3]);
-    };
-
-    let batches: Vec<_> = batch_frames(IFACE.to_string(), stream, policy)
-        .collect()
-        .await;
-
-    assert_eq!(batches.len(), 2, "expected one latency-flush + one EOF flush");
-    assert_eq!(batches[0].frames.len(), 2);
-    assert_eq!(batches[1].frames.len(), 1);
-}
-
-#[tokio::test(flavor = "current_thread", start_paused = true)]
-async fn batch_frames_flushes_remaining_at_end_of_input() {
-    let policy = BatchPolicy {
-        max_frames_per_batch: 100,
-        max_batch_latency: Duration::from_mins(1),
-    };
-    let frames: Vec<CanFrame> = (0u32..3)
-        .map(|i| classic(u64::from(i), 0, 0x10, Direction::Rx, vec![i.try_into().unwrap()]))
-        .collect();
-    let stream = futures::stream::iter(frames.clone());
-
-    let batches: Vec<_> = batch_frames(IFACE.to_string(), stream, policy)
-        .collect()
-        .await;
-
-    assert_eq!(batches.len(), 1);
-    assert_eq!(batches[0].frames.len(), 3);
-}
-
-#[tokio::test(flavor = "current_thread", start_paused = true)]
-async fn empty_input_produces_no_batches() {
-    let policy = BatchPolicy::default();
-    let stream = futures::stream::iter(Vec::<CanFrame>::new());
-    let batches: Vec<_> = batch_frames(IFACE.to_string(), stream, policy)
-        .collect()
-        .await;
-    assert!(batches.is_empty());
-}
-
-#[tokio::test(flavor = "current_thread", start_paused = true)]
-async fn unbatch_flattens_to_interface_tagged_frames() {
-    let frames_a = vec![classic(1, 0, 0x10, Direction::Rx, vec![1])];
-    let frames_b = vec![
-        classic(2, 0, 0x20, Direction::Rx, vec![2]),
-        classic(3, 0, 0x21, Direction::Rx, vec![3]),
-    ];
-    let batches = vec![
-        batch_to_proto("blf:0".into(), &frames_a),
-        batch_to_proto("blf:1".into(), &frames_b),
-    ];
-
-    let flattened: Vec<_> = unbatch_frames(futures::stream::iter(batches)).collect().await;
-
-    assert_eq!(flattened.len(), 3);
-    assert_eq!(flattened[0].0, "blf:0");
-    assert_eq!(flattened[1].0, "blf:1");
-    assert_eq!(flattened[2].0, "blf:1");
-    assert_eq!(flattened[0].1.can_id, 0x10);
-    assert_eq!(flattened[1].1.can_id, 0x20);
-    assert_eq!(flattened[2].1.can_id, 0x21);
-}
-
-#[tokio::test(flavor = "current_thread", start_paused = true)]
-async fn batch_then_unbatch_preserves_frames_in_order() {
-    let policy = BatchPolicy {
-        max_frames_per_batch: 3,
-        max_batch_latency: Duration::from_millis(10),
-    };
-    let originals: Vec<CanFrame> = (0u32..7)
-        .map(|i| classic(u64::from(i), 0, 0x100 + i, Direction::Rx, vec![i.try_into().unwrap()]))
-        .collect();
-    let stream = futures::stream::iter(originals.clone());
-
-    let batches: Vec<proto::FrameBatch> =
-        batch_frames(IFACE.to_string(), stream, policy).collect().await;
-
-    let recovered: Vec<CanFrame> = unbatch_frames(futures::stream::iter(batches))
-        .map(|(_, proto_frame)| proto_to_frame(&proto_frame, 0).unwrap())
-        .collect()
-        .await;
-
-    assert_eq!(recovered, originals);
 }
 
 // ---------- LogMessage envelope (ADR 0014) ----------

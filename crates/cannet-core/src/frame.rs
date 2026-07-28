@@ -24,6 +24,19 @@ pub struct CanId {
 }
 
 impl CanId {
+    /// Construct a `CanId`, selecting standard (11-bit) or extended
+    /// (29-bit) addressing via `extended` — the single constructor for
+    /// callers that carry the addressing mode as a runtime value
+    /// (e.g. a wire-format flag) rather than choosing [`Self::standard`]
+    /// or [`Self::extended`] directly at the call site.
+    pub fn new(raw: u32, extended: bool) -> Result<Self, IdError> {
+        if extended {
+            Self::extended(raw)
+        } else {
+            Self::standard(raw)
+        }
+    }
+
     pub fn standard(raw: u32) -> Result<Self, IdError> {
         if raw > STANDARD_ID_MAX {
             return Err(IdError::StandardOutOfRange(raw));
@@ -256,6 +269,28 @@ mod tests {
         let s = CanId::standard(0x123).unwrap();
         let x = CanId::extended(0x123).unwrap();
         assert_ne!(s, x);
+    }
+
+    #[test]
+    fn new_with_extended_false_matches_standard() {
+        assert_eq!(CanId::new(0x123, false), CanId::standard(0x123));
+    }
+
+    #[test]
+    fn new_with_extended_true_matches_extended() {
+        assert_eq!(CanId::new(0x123, true), CanId::extended(0x123));
+    }
+
+    #[test]
+    fn new_rejects_out_of_range_per_selected_mode() {
+        assert_eq!(
+            CanId::new(STANDARD_ID_MAX + 1, false).unwrap_err(),
+            IdError::StandardOutOfRange(STANDARD_ID_MAX + 1)
+        );
+        assert_eq!(
+            CanId::new(EXTENDED_ID_MAX + 1, true).unwrap_err(),
+            IdError::ExtendedOutOfRange(EXTENDED_ID_MAX + 1)
+        );
     }
 
     #[test]

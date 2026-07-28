@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 
 def _ensure_on_path() -> None:
@@ -23,7 +24,7 @@ _ensure_on_path()
 
 import pytest  # noqa: E402
 
-from cannet_python_can.driver import Frame, TxRejected  # noqa: E402
+from cannet_python_can.driver import Frame, FrameKind, TxRejected  # noqa: E402
 from cannet_python_can.driver_python_can import PythonCanChannel  # noqa: E402
 
 
@@ -35,18 +36,18 @@ class _RecordingBus:
         self.sent.append(msg)
 
 
-def _frame(*, data: bytes = b"", **overrides) -> Frame:
-    base = {
+def _frame(
+    *, data: bytes = b"", kind: FrameKind = FrameKind.CLASSIC, **overrides
+) -> Frame:
+    base: dict[str, Any] = {
         "timestamp_ns": 0,
         "can_id": 0x100,
         "extended": False,
         "is_rx": False,
         "data": data,
-        "fd": False,
+        "kind": kind,
         "brs": False,
         "esi": False,
-        "is_remote": False,
-        "is_error": False,
         "dlc": 0,
     }
     base.update(overrides)
@@ -65,7 +66,7 @@ def _channel(*, fd: bool, listen_only: bool = False) -> PythonCanChannel:
 def test_fd_frame_on_classic_bus_rejected() -> None:
     ch = _channel(fd=False)
     with pytest.raises(TxRejected, match="FD frame on classic-mode bus"):
-        ch.send(_frame(fd=True, data=bytes(12)))
+        ch.send(_frame(kind=FrameKind.FD, data=bytes(12)))
 
 
 def test_classic_oversize_payload_rejected() -> None:
@@ -77,7 +78,7 @@ def test_classic_oversize_payload_rejected() -> None:
 def test_fd_oversize_payload_rejected() -> None:
     ch = _channel(fd=True)
     with pytest.raises(TxRejected, match="exceeds 64-byte limit"):
-        ch.send(_frame(fd=True, data=bytes(65)))
+        ch.send(_frame(kind=FrameKind.FD, data=bytes(65)))
 
 
 def test_dlc_disagreeing_with_data_length_rejected() -> None:
@@ -89,29 +90,29 @@ def test_dlc_disagreeing_with_data_length_rejected() -> None:
 def test_rtr_on_fd_bus_rejected() -> None:
     ch = _channel(fd=True)
     with pytest.raises(TxRejected, match="remote .* not supported on FD-mode"):
-        ch.send(_frame(is_remote=True, dlc=4))
+        ch.send(_frame(kind=FrameKind.REMOTE, dlc=4))
 
 
 def test_classic_rtr_with_nonzero_dlc_passes_through() -> None:
     """python-can's classic-mode send skips the data copy for RTR
     frames, so the dlc/data-mismatch check must not fire on them."""
     ch = _channel(fd=False)
-    ch.send(_frame(is_remote=True, dlc=8))  # no exception
-    bus = ch._bus  # type: ignore[attr-defined]
+    ch.send(_frame(kind=FrameKind.REMOTE, dlc=8))  # no exception
+    bus = cast(_RecordingBus, ch._bus)  # type: ignore[attr-defined]
     assert len(bus.sent) == 1
 
 
 def test_classic_well_formed_frame_passes() -> None:
     ch = _channel(fd=False)
     ch.send(_frame(data=b"\x01\x02\x03"))
-    bus = ch._bus  # type: ignore[attr-defined]
+    bus = cast(_RecordingBus, ch._bus)  # type: ignore[attr-defined]
     assert len(bus.sent) == 1
 
 
 def test_fd_well_formed_frame_passes() -> None:
     ch = _channel(fd=True)
-    ch.send(_frame(fd=True, data=bytes(12)))
-    bus = ch._bus  # type: ignore[attr-defined]
+    ch.send(_frame(kind=FrameKind.FD, data=bytes(12)))
+    bus = cast(_RecordingBus, ch._bus)  # type: ignore[attr-defined]
     assert len(bus.sent) == 1
 
 

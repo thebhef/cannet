@@ -42,6 +42,15 @@ and the license / platform constraints we need to be aware of.
   virtualizer (`apps/gui/src/TraceView.tsx`) that caps the scroll
   container at 16M px and maps scrollTop fractionally to absolute
   row index. ~120 lines, no external dep.
+  **Re-confirmed `rejected` for the DBC panel** (Task 41): that panel's
+  row list is bounded by the DBC set (thousands of rows, not millions),
+  so it needs neither the scroll cap nor the fractional mapping — a
+  plain prefix-offset window over the flat row array covers it
+  (`apps/gui/src/dbcPanelViewport.ts`, ~110 lines with doc comments,
+  unit-tested without a DOM). Variable row heights (the "details"
+  toggle's per-row detail block) fall out of the prefix table, and the
+  same hand-rolled shape is already in use by `SystemMessagesPanel` —
+  not worth a dependency for one more call site.
 - **`tauri-plugin-window-state`** (v2, MIT / Apache-2.0) — `adopted`
   to persist the main window's size / position / maximized / fullscreen
   state across launches (machine-local app state, not project data, so
@@ -94,9 +103,11 @@ without reshaping callers.
 - Network transport: **tonic / gRPC over HTTP/2** + **prost** —
   `adopted` (Phase 2). Schema in `crates/cannet-wire`, `tonic-build`
   codegen on both ends. See [`../docs/adr/0004-grpc-wire-protocol.md`](../docs/adr/0004-grpc-wire-protocol.md).
-- **`async-stream`** crate (v0.3, MIT) — `adopted` in Phase 2.
-  Wire-crate implementation helper for stream adapters; see
-  ADR 0004 § Consequences.
+- **`async-stream`** crate (v0.3, MIT) — `adopted` in Phase 2 as a
+  wire-crate stream-adapter helper; **removed 2026-07-26**: its last
+  consumer (`cannet-wire`'s `batch.rs` stream adapters) was deleted as
+  dead code, and `cannet-server` streams via `tokio-stream`'s
+  `ReceiverStream` instead. See ADR 0004 § Consequences.
 - **`clap`** crate (v4, MIT/Apache) — `adopted` in Phase 2 for the
   `cannet-server` CLI (positional BLF path, `--bind` address). The
   Rust ecosystem standard for derive-macro CLI parsing; small

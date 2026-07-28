@@ -8,9 +8,9 @@
 // interaction between fzf's match set and the tree-render rules, so
 // faking the matcher would defeat the test.
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import type { DbcContentRecord, Bus, InterfaceBinding } from "./types";
 import { SIGNAL_DND_MIME, parseSignalDragData } from "./dragSignals";
@@ -111,6 +111,12 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 import { DbcPanel } from "./DbcPanel";
+import {
+  ASSUMED_VIEWPORT_HEIGHT,
+  OVERSCAN,
+  ROW_HEIGHT,
+} from "./dbcPanelViewport";
+import { diagCounts } from "./diag";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { ElementRegistryContext, type ElementRegistry } from "./projectElements";
 
@@ -139,11 +145,7 @@ const projectCtx: ProjectContextValue = {
   onSetDbcBuses: () => {},
   onAddBus: () => {},
   onRemoveBus: () => {},
-  onRenameBus: () => {},
-  onSetBusColor: () => {},
-  onSetBusSpeed: () => {},
-  onSetBusFd: () => {},
-  onSetBusFdDataSpeed: () => {},
+  onUpdateBus: () => {},
   busesWithPendingHwConfig: [],
   onAddBinding: () => {},
   onRemoveBinding: () => {},
@@ -157,8 +159,27 @@ const projectCtx: ProjectContextValue = {
   onSetSignalColor: () => {},
 };
 
+/// The slice of dockview's panel API the DBC panel touches:
+/// `updateParameters` for the persisted layout params, plus the
+/// visibility signal the live-value poll is gated on. `setVisible`
+/// drives the registered listener so a test can hide the panel.
+function fakePanelApi() {
+  const listeners = new Set<(e: { isVisible: boolean }) => void>();
+  return {
+    updateParameters: vi.fn(),
+    isVisible: true,
+    onDidVisibilityChange(fn: (e: { isVisible: boolean }) => void) {
+      listeners.add(fn);
+      return { dispose: () => listeners.delete(fn) };
+    },
+    setVisible(isVisible: boolean) {
+      for (const fn of listeners) fn({ isVisible });
+    },
+  };
+}
+
 function renderPanel() {
-  const api = { updateParameters: vi.fn() };
+  const api = fakePanelApi();
   const props = { params: {}, api } as unknown as Parameters<typeof DbcPanel>[0];
   render(
     <ProjectContext.Provider value={projectCtx}>
@@ -170,8 +191,22 @@ function renderPanel() {
   return api;
 }
 
+// The panel virtualizes its row list, so it observes its container.
+// jsdom reports a zero `clientHeight`, which the panel reads as
+// "not laid out yet" and falls back to `ASSUMED_VIEWPORT_HEIGHT`.
+class FakeResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+
+beforeEach(() => {
+  vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+});
+
 afterEach(async () => {
   cleanup();
+  vi.unstubAllGlobals();
   vi.clearAllMocks();
   // Restore the default content for tests that swapped in their own
   // fixture via `mockImplementation` (clearAllMocks clears call
@@ -292,13 +327,14 @@ describe("DbcPanel", () => {
     renderPanel();
     await screen.findByText("EngineData");
     const search = screen.getByLabelText("search DBC content");
-    // 0x100 = 256 = EngineData
+    // 0x100 = 256 = EngineData. The filter settles after a debounce, so
+    // wait on the *hiding* — the visible change this query makes.
     fireEvent.change(search, { target: { value: "0x100" } });
-    await waitFor(() =>
-      expect(screen.getByText("EngineData")).toBeInTheDocument(),
-    );
     // GearState (id 0x200) doesn't match — hidden.
-    expect(screen.queryByText("GearState")).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByText("GearState")).not.toBeInTheDocument(),
+    );
+    expect(screen.getByText("EngineData")).toBeInTheDocument();
   });
 
   it("matches on value-table labels", async () => {
@@ -461,7 +497,7 @@ describe("DbcPanel", () => {
       buses,
       dbcBuses: { "/tmp/powertrain.dbc": ["bus-a", "bus-b"] },
     };
-    const api = { updateParameters: vi.fn() };
+    const api = fakePanelApi();
     const props = { params: {}, api } as unknown as Parameters<typeof DbcPanel>[0];
     render(
       <ProjectContext.Provider value={scopedCtx}>
@@ -502,7 +538,7 @@ describe("DbcPanel", () => {
       // No scoping → unscoped DBC, appears under every bus group.
       dbcBuses: {},
     };
-    const api = { updateParameters: vi.fn() };
+    const api = fakePanelApi();
     const props = { params: {}, api } as unknown as Parameters<typeof DbcPanel>[0];
     render(
       <ProjectContext.Provider value={ctx}>
@@ -584,7 +620,7 @@ describe("DbcPanel", () => {
       // 'chassis' should NOT match it.
       dbcBuses: { "/tmp/powertrain.dbc": ["bus-a"] },
     };
-    const api = { updateParameters: vi.fn() };
+    const api = fakePanelApi();
     const props = { params: {}, api } as unknown as Parameters<typeof DbcPanel>[0];
     render(
       <ProjectContext.Provider value={ctx}>
@@ -619,7 +655,7 @@ describe("DbcPanel", () => {
       // BOTH bus groups, marked "applies to all buses".
       dbcBuses: {},
     };
-    const api = { updateParameters: vi.fn() };
+    const api = fakePanelApi();
     const props = { params: {}, api } as unknown as Parameters<typeof DbcPanel>[0];
     render(
       <ProjectContext.Provider value={ctx}>
@@ -722,12 +758,16 @@ describe("DbcPanel", () => {
     expect(screen.queryByText("EngineSpeed")).not.toBeInTheDocument();
   });
 
-  it("bounds the rendered rows at ev-zonal scale: collapsed by default, match-set-bounded when filtering", async () => {
-    // Synthetic content at the ev-zonal fixture's scale: 150
-    // messages across 5 ECUs, one message carrying 600 multiplexed
-    // signals. The responsiveness rule (task 33): the unfiltered
-    // tree renders no signal rows (messages stay collapsed); a
-    // narrow filter renders only the match and its ancestor path.
+  /// Rows the virtualizer can have in the DOM at once: the assumed
+  /// viewport's worth (jsdom measures zero height) plus the partial row
+  /// at the bottom edge plus the overscan margin on each side.
+  const WINDOW_BOUND =
+    Math.ceil(ASSUMED_VIEWPORT_HEIGHT / ROW_HEIGHT) + 1 + 2 * OVERSCAN;
+
+  /// A tree at the reference project's shape: `messages` messages
+  /// spread over 5 ECUs in one DBC, the first carrying 600 multiplexed
+  /// signals.
+  function bigTree(messageCount: number) {
     const bigSignals = Array.from({ length: 600 }, (_, i) => ({
       ...SIGNAL_DEFAULTS,
       name: `CellVoltage${String(i + 1).padStart(3, "0")}`,
@@ -737,7 +777,7 @@ describe("DbcPanel", () => {
       valueTable: [],
       mux: { kind: "multiplexed" as const, selector: i % 25 },
     }));
-    const messages = Array.from({ length: 150 }, (_, i) => ({
+    return Array.from({ length: messageCount }, (_, i) => ({
       ...MESSAGE_DEFAULTS,
       messageId: 0x100 + i,
       extended: false,
@@ -759,16 +799,27 @@ describe("DbcPanel", () => {
               },
             ],
     }));
+  }
+
+  /// Serve `messages` as the one loaded DBC's content.
+  async function mockContent(messages: unknown[]) {
     const core = await import("@tauri-apps/api/core");
     (core.invoke as ReturnType<typeof vi.fn>).mockImplementation(async (cmd: string) => {
       if (cmd === "list_dbc_content")
         return [{ dbcPath: "/tmp/pack.dbc", messages }];
       return undefined;
     });
+  }
+
+  it("bounds the rendered rows at ev-zonal scale: collapsed by default, match-set-bounded when filtering", async () => {
+    // Synthetic content at the ev-zonal fixture's scale: 150
+    // messages across 5 ECUs, one message carrying 600 multiplexed
+    // signals. The responsiveness rule (task 33): the unfiltered
+    // tree renders no signal rows (messages stay collapsed); a
+    // narrow filter renders only the match and its ancestor path.
+    await mockContent(bigTree(150));
     renderPanel();
     await screen.findByText("PackMessage001");
-    // Unfiltered: bus + dbc + 5 ECU rows + 150 messages, no signals.
-    expect(document.querySelectorAll(".dbc-row").length).toBe(157);
     expect(screen.queryByText("CellVoltage001")).not.toBeInTheDocument();
     // A narrow filter: one signal match -> exactly the path to it
     // (bus, dbc, ecu, message) + the signal row.
@@ -776,6 +827,95 @@ describe("DbcPanel", () => {
     fireEvent.change(search, { target: { value: "CellVoltage600" } });
     await screen.findByText("CellVoltage600");
     expect(document.querySelectorAll(".dbc-row").length).toBe(5);
+  });
+
+  it("renders only a viewport-bounded slice of the row list, however large the tree", async () => {
+    // Task 41's exit criterion: DOM row count tracks the viewport, not
+    // the DBC size. 2,000 messages (+ bus + dbc + 5 ECU rows) is a
+    // 2,007-row list; the DOM holds a screenful.
+    await mockContent(bigTree(2000));
+    renderPanel();
+    await screen.findByText("PackMessage001");
+    const rendered = document.querySelectorAll(".dbc-row").length;
+    expect(rendered).toBeGreaterThan(0);
+    expect(rendered).toBeLessThanOrEqual(WINDOW_BOUND);
+  });
+
+  it("re-renders only the rows whose props changed when the keyboard cursor moves", async () => {
+    // Task 41's memoisation criterion. Moving the cursor one row down
+    // changes the `active` prop of exactly two rows; without
+    // `memo` on `DbcRow` every row in the window re-executes.
+    await mockContent(bigTree(150));
+    renderPanel();
+    await screen.findByText("PackMessage001");
+    const tree = screen.getByRole("tree");
+    fireEvent.keyDown(tree, { key: "ArrowDown" }); // cursor onto row 0
+    const windowSize = document.querySelectorAll(".dbc-row").length;
+    expect(windowSize).toBeGreaterThan(10); // a full window is rendered
+    const before = diagCounts().get("dbcpanel.rowRender") ?? 0;
+    fireEvent.keyDown(tree, { key: "ArrowDown" }); // row 0 -> row 1
+    const rendered = (diagCounts().get("dbcpanel.rowRender") ?? 0) - before;
+    expect(rendered).toBeLessThan(windowSize);
+    expect(rendered).toBeLessThanOrEqual(4);
+  });
+
+  it("filters once the search input settles, not once per keystroke", async () => {
+    await mockContent(bigTree(150));
+    renderPanel();
+    await screen.findByText("PackMessage001");
+    const search = screen.getByLabelText("search DBC content");
+    const before = diagCounts().get("dbcpanel.rowRender") ?? 0;
+    // Type a query one character at a time. The tree is unchanged
+    // through the burst — only the input re-renders.
+    for (const q of ["P", "Pa", "Pac", "Pack", "PackM", "PackMe"]) {
+      fireEvent.change(search, { target: { value: q } });
+    }
+    expect(diagCounts().get("dbcpanel.rowRender") ?? 0).toBe(before);
+    // Once it settles the filter does apply.
+    await waitFor(() =>
+      expect(screen.getByText(/match/i)).toBeInTheDocument(),
+    );
+  });
+
+  it("builds the search index on the first query and reuses it after", async () => {
+    // Task 41: the haystack index (one string per message and signal,
+    // value tables inlined) and fzf's preprocessing of it are only worth
+    // paying for once the user searches — and only once.
+    await mockContent(bigTree(150));
+    const builds = () => diagCounts().get("dbcpanel.searchIndexBuild") ?? 0;
+    const before = builds();
+    renderPanel();
+    await screen.findByText("PackMessage001");
+    expect(builds()).toBe(before); // nothing typed yet — nothing built
+    const search = screen.getByLabelText("search DBC content");
+    fireEvent.change(search, { target: { value: "PackMessage007" } });
+    await screen.findByText(/match/i);
+    expect(builds()).toBe(before + 1);
+    // Refining the query reuses the same matcher.
+    fireEvent.change(search, { target: { value: "PackMessage042" } });
+    await waitFor(() =>
+      expect(screen.getByText("PackMessage042")).toBeInTheDocument(),
+    );
+    expect(builds()).toBe(before + 1);
+  });
+
+  it("scrolling the tree swaps in the rows at the new offset", async () => {
+    await mockContent(bigTree(150));
+    renderPanel();
+    await screen.findByText("PackMessage001");
+    // Rows: bus, dbc, then 5 ECU groups of 30 messages each. The last
+    // row is Ecu4's highest-numbered message.
+    expect(screen.queryByText("PackMessage150")).not.toBeInTheDocument();
+    const tree = screen.getByRole("tree");
+    // 157 rows tall, minus a viewport — scrolled to the bottom.
+    fireEvent.scroll(tree, {
+      target: { scrollTop: 157 * ROW_HEIGHT - ASSUMED_VIEWPORT_HEIGHT },
+    });
+    expect(await screen.findByText("PackMessage150")).toBeInTheDocument();
+    expect(screen.queryByText("PackMessage001")).not.toBeInTheDocument();
+    expect(document.querySelectorAll(".dbc-row").length).toBeLessThanOrEqual(
+      WINDOW_BOUND,
+    );
   });
 
   it("ECU-qualified queries match through the dotted ancestry (bus.ecu.message)", async () => {
@@ -788,9 +928,9 @@ describe("DbcPanel", () => {
     const search = screen.getByLabelText("search DBC content");
     fireEvent.change(search, { target: { value: "engineecu.engine" } });
     await waitFor(() =>
-      expect(screen.getByText("EngineData")).toBeInTheDocument(),
+      expect(screen.queryByText("GearState")).not.toBeInTheDocument(),
     );
-    expect(screen.queryByText("GearState")).not.toBeInTheDocument();
+    expect(screen.getByText("EngineData")).toBeInTheDocument();
   });
 
   it("prunes scattered low-quality fuzzy matches", async () => {
@@ -851,7 +991,7 @@ describe("DbcPanel", () => {
   });
 
   it("renders an empty-state message when no DBCs are loaded", async () => {
-    const api = { updateParameters: vi.fn() };
+    const api = fakePanelApi();
     const props = { params: {}, api } as unknown as Parameters<typeof DbcPanel>[0];
     const noDbcCtx: ProjectContextValue = { ...projectCtx, dbcPaths: [] };
     // Override the mock to return an empty list this time.
@@ -913,5 +1053,32 @@ describe("DbcPanel", () => {
     expect(calls.length).toBeGreaterThan(0);
     const sel = (calls[0][1] as { selection: { keys: { signalName: string }[] } }).selection;
     expect(sel.keys.map((k) => k.signalName).sort()).toEqual(["EngineSpeed", "EngineTemp"]);
+  });
+
+  it("stops polling for values while the panel is hidden", async () => {
+    const core = await import("@tauri-apps/api/core");
+    (core.invoke as ReturnType<typeof vi.fn>).mockImplementation(async (cmd: string) => {
+      if (cmd === "list_dbc_content") return DBC_CONTENT;
+      if (cmd === "fetch_signal_page") return { count: 0, start: 0, rows: [] };
+      return undefined;
+    });
+    const api = renderPanel();
+    const msg = await screen.findByText("EngineData");
+    fireEvent.click(msg.closest(".dbc-row")!.querySelector(".dbc-row-chevron")!);
+    await screen.findByText("EngineSpeed");
+    fireEvent.click(screen.getByLabelText(/values/i));
+    const pageCalls = () =>
+      (core.invoke as ReturnType<typeof vi.fn>).mock.calls.filter(
+        (c) => c[0] === "fetch_signal_page",
+      ).length;
+    await waitFor(() => expect(pageCalls()).toBeGreaterThan(0));
+    // Send the panel to a background tab: the standing poll must stop.
+    act(() => api.setVisible(false));
+    const whileHidden = pageCalls();
+    await new Promise((r) => setTimeout(r, 700)); // > one poll interval
+    expect(pageCalls()).toBe(whileHidden);
+    // Coming back into view resumes it.
+    act(() => api.setVisible(true));
+    await waitFor(() => expect(pageCalls()).toBeGreaterThan(whileHidden));
   });
 });

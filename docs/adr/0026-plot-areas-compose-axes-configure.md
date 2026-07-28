@@ -31,37 +31,60 @@ with a clean division of responsibility:
 | Mode | Axes produced | Scaling |
 | --- | --- | --- |
 | **unified** | one axis; all series overlaid | each *unit group* auto-scaled independently to fill the axis; same-unit series share one y scale |
-| **per-unit** | one axis per unit | each axis auto-scaled to its unit's data; each enum series gets its own axis |
+| **per-unit** | one axis per unit, plus one shared **enum-lanes** axis | each unit axis auto-scaled to its unit's data; all enum series collect onto a single stacked-lane axis |
 | **individual** | one axis per series | each axis auto-scaled to its one series |
 
-**The visible y-scale labels are always the primary signal's real
-engineering values — never a 0–1 ratio.** Each axis has a **primary
-signal** (the user picks it by clicking a series; defaults to the
-first). Its unit and value range drive the axis's tick labels. When
-several unit groups are overlaid on one axis (unified mode), only the
-primary's unit is labelled; the other groups are still drawn at their
-own auto scale and read via the cursor/legend. This is the rule that
-fixes the bug where the y axis sometimes showed `0.0–1.0` instead of
-the selected signal's units.
+**The visible y-scale labels are always a real signal's engineering
+values — never a 0–1 ratio.** Each axis labels its ticks through one
+signal's unit and value range: the parent area's **primary signal**
+(the user picks it by clicking a series) when that signal is on the
+axis, otherwise the axis's own first ranged signal. In per-unit mode
+each axis is a different unit group, so the primary is on at most one
+of them and every other axis labels through its own first signal — a
+volts / amps / percent stack reads V, A, % rather than all `0.0–1.0`.
+When several unit groups are overlaid on one axis (unified mode), only
+the chosen signal's unit is labelled; the other groups are still drawn
+at their own auto scale and read via the cursor/legend. This is the
+rule that fixes the bug where the y axis sometimes showed `0.0–1.0`
+instead of the selected signal's units. (The blank-gutter enum-lanes
+axis is exempt — its tiles carry the labels; see below.)
 
 **Y scales are always auto-derived from the data** (matching today's
 auto behaviour). There is no fixed user-set `{min,max}` range; the old
 `yMode` fixed half is removed.
 
-**Enum series render as a logic-analyzer lane when they have their own
-axis** (per-unit / individual): the enum is still plotted numerically
-— points honour the show-points control — with a high-opacity label
-box overlaid on each constant-value segment showing the enum label.
-The boxes sit in a **centered horizontal band** down the middle of
-the plot rather than tracking the held value's y position. A value
-table with many entries collapses per-value lanes to a few pixels;
-decoupling the label band from the value gives the labels all the
-room they need, while the stepped line still draws at the actual
-value so the user reads "what value" from line height and "which
-label" from the centered ribbon. Under unified mode an enum plots as
-a plain numeric line with no labels (a text box per overlaid enum
-would be noise). "Lane" is an axis *render style*, not a new
-structural level.
+**Enum series render as logic-analyzer lanes.** In **per-unit** mode
+every enum series of an area is pulled off its unit axis onto one
+shared **enum-lanes axis**: each enum is a horizontal lane (config
+order, top-first), its stepped waveform normalized into the lane's
+band with an opaque label tile drawn on each constant-value segment.
+A lane's y range is a **table fact** — the value table's raw min/max,
+padded — so it is independent of observed data, follow-live extents,
+and Fit Y (all designed out for lane axes). The axis has **no y
+gutter**: the tiles carry the value labels and the side panel carries
+identity. A colormap ([ADR 0029](0029-signal-value-color-maps.md)) tints each
+tile by its held value. A lone enum on a per-unit area is a one-lane
+instance of the same axis.
+
+The older **single-enum render** still serves a single enum in
+`individual` mode (or a manual area holding one enum): one centered
+horizontal label ribbon down the middle of the plot rather than a
+per-value lane — decoupling the ribbon from the held value keeps
+labels legible where a tall value table would otherwise collapse
+per-value lanes to a few pixels, while the stepped line still draws at
+the actual value. Under **unified** mode an enum plots as a plain
+numeric line with no labels (a text box per overlaid enum would be
+noise). "Lane" is an axis *render style*, not a new structural level.
+
+**Vertical space is fit-to-panel, with draggable splitters.** The
+derived axes of a panel always fit its height — no stack-scrolling
+once N axes exceed it. Each axis carries a **weight** (flex-grow,
+default 1, persisted per derived-axis id); a draggable separator
+between two adjacent axes trades weight between that pair (conserving
+their sum, clamped to a usable minimum), and double-clicking it
+equalizes them. A y-axis-mode change produces new axis ids and so
+resets an area's custom weights; the shared enum-lanes axis keeps a
+membership-stable id so lane churn doesn't reset its weight.
 
 **Each axis maps to one uPlot instance.** This keeps us consistent
 with [ADR 0007](0007-uplot-plot-renderer.md):
@@ -164,13 +187,28 @@ below:
   colour from the wheel index equal to the count of series already
   in the target area.
 - **X-axis cursor labels** render the cursor's letter + time on every
-  axis (used to only render on the bottom axis).
-- **Logic-analyzer lane overlays.** On an enum-only axis the stepped
-  line carries an opaque label box on each constant-value segment,
-  centred on the held value and tinted by the series colour. Pure
-  `enumSegments()` walks the (t, v) arrays; the draw hook then
-  reuses the cursor-label box style. Segments narrower than the
-  label width are skipped (the user can zoom in for those).
+  axis (used to only render on the bottom axis). Tick spacing is
+  label-width-aware so zoomed-in elapsed-time labels (more fractional
+  digits) don't overlap.
+- **Enum-lanes axis.** Per-unit mode collects an area's enums onto one
+  shared axis (`deriveAxesForArea` kind `enum-lanes`), fed by a
+  panel-level `list_value_tables` fetch (`useValueTables`) reduced to
+  the enum-key set. `PlotArea` normalizes each enum into its lane band
+  (`plotEnumLanes` helpers: `laneBands` / `laneValueRange` /
+  `normalizeIntoLane` / `laneTileBand`), draws a blank y gutter and
+  stepped series, and paints per-lane tiles via the shared
+  `drawEnumTiles(band)` helper. The single-enum axis reuses the same
+  helper with one full-height centered band. Pure `enumSegments()`
+  walks the (t, v) arrays; segments narrower than the label width draw
+  the coloured tile without text.
+- **Fit-to-panel vertical layout + splitters.** Derived axes always
+  fit the panel (`.plot-panel-areas` is `overflow: hidden`, not a
+  scroll list). Each axis's flex-grow is a persisted weight
+  (`axisWeights`, keyed by derived-axis id, pruned to the live set);
+  `plotAreaLayout` owns the weight maths (resolve, splitter-delta with
+  pair-sum conservation + min-px clamp, equalize) under unit tests. A
+  `role="separator"` handle between adjacent axes drags the pair's
+  weights and double-clicks to equalize.
 
 What's still rough:
 
@@ -182,17 +220,22 @@ What's still rough:
   signal — so in practice each axis labels itself sensibly, but the
   user can't pin a *different* explicit primary on two axes of the
   same area. Lift the key onto the derived axis if that ever bites.
-- **Per-unit grouping is unit-based only.** The `deriveAxesForArea`
-  helper has an `isEnum` predicate slot to break enum series out
-  onto their own axis in per-unit mode, but the panel doesn't
-  source it yet (each PlotArea queries `list_value_tables` for its
-  signal subset; the panel level doesn't roll up that information).
-  In practice today: an enum series in per-unit mode shares an axis
-  with anything else of the same unit, so the logic-analyzer lane
-  overlay only activates in `individual` mode (or in a manual area
-  that holds a single enum signal). The fix is panel-level
-  enum-awareness fed into `deriveAxesForArea`'s `isEnum` slot —
-  tracked in `plans/backlog.md`.
+- **A fully-hidden axis collapses; a partly-hidden lane axis doesn't
+  reclaim per-lane space yet.** When every signal on a derived axis is
+  hidden, the axis is excluded from the fit-to-panel height
+  distribution and its canvas is dropped (`.plot-area.collapsed`), while
+  its rows stay in the side panel so they remain un-hideable. This
+  covers a fully-hidden numeric axis and a fully-hidden enum-lanes axis
+  alike. Still open: within a *still-visible* enum-lanes axis, a hidden
+  enum keeps its lane band (the band isn't reclaimed by the visible
+  lanes) — the tile draw hook captures construction-time signals and the
+  hidden toggle doesn't rebuild the instance, so a live per-lane re-flow
+  needs a signals ref threaded into the draw hook. Tracked in
+  `plans/backlog.md`.
+- **Two value-table fetches coexist.** After the panel-level
+  `useValueTables` roll-up landed, `PlotArea` still keeps its own
+  `useValueTables` for the side-panel readout. Folding the two into
+  one downward-passed map is tracked in `plans/backlog.md`.
 
 ## Consequences
 

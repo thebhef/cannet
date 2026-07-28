@@ -1,0 +1,193 @@
+{
+  "mode": "frontend",
+  "label": "task-0030-closeout",
+  "duration_s": 58.9985,
+  "sample_count": 60,
+  "longtask_ms_per_s": {
+    "mean": 0.0,
+    "max": 0.0,
+    "p95": 0.0
+  },
+  "lag_ms": {
+    "mean": 0.013333332538604737,
+    "max": 5.5
+  },
+  "jank_seconds": 0,
+  "jank_fraction": 0.0,
+  "frames_late_per_s_mean": 0.0,
+  "rx_fps": {
+    "overall": 514.7549999999999,
+    "first_half": 514.8866666666667,
+    "second_half": 514.6233333333333,
+    "retention": 0.9994885605893854
+  },
+  "tx_fps": {
+    "overall": 515.3316666666665,
+    "first_half": 515.2433333333332,
+    "second_half": 515.4200000000001,
+    "retention": 1.000342880063142
+  },
+  "counters_per_s": {
+    "event.system-log-appended": {
+      "mean": 2.95,
+      "max": 5.0
+    },
+    "event.trace-grew": {
+      "mean": 10.0,
+      "max": 11.0
+    },
+    "invoke.fetch_by_id_page": {
+      "mean": 8.0,
+      "max": 8.0
+    },
+    "invoke.fetch_filtered_trace": {
+      "mean": 4.0,
+      "max": 4.0
+    },
+    "invoke.fetch_signal_page": {
+      "mean": 4.0,
+      "max": 4.0
+    },
+    "invoke.sample_signals": {
+      "mean": 125.1,
+      "max": 157.0
+    },
+    "memo.traceData": {
+      "mean": 20.0,
+      "max": 20.0
+    },
+    "plot.areaResampled": {
+      "mean": 125.11666666666666,
+      "max": 149.0
+    },
+    "plot.reportSeries": {
+      "mean": 125.1,
+      "max": 149.0
+    },
+    "plotarea.resample": {
+      "mean": 125.11666666666666,
+      "max": 157.0
+    },
+    "render.App": {
+      "mean": 43.2,
+      "max": 48.0
+    },
+    "render.ByIdTable": {
+      "mean": 55.8,
+      "max": 56.0
+    },
+    "render.PlotArea": {
+      "mean": 790.8333333333334,
+      "max": 990.0
+    },
+    "render.PlotPanel": {
+      "mean": 142.96666666666667,
+      "max": 178.0
+    },
+    "render.SignalsPanel": {
+      "mean": 27.533333333333335,
+      "max": 28.0
+    },
+    "render.TracePanel": {
+      "mean": 103.73333333333333,
+      "max": 104.0
+    },
+    "render.TraceView": {
+      "mean": 95.93333333333334,
+      "max": 96.0
+    }
+  },
+  "gauges": {
+    "count": {
+      "mean": 32954.666666666664,
+      "max": 63335.0,
+      "last": 63335.0,
+      "slope_per_min": 61790.596336933806
+    },
+    "drop.before_session": {
+      "mean": 0.0,
+      "max": 0.0,
+      "last": 0.0,
+      "slope_per_min": 0.0
+    },
+    "flush_ms": {
+      "mean": 3.6465716666666665,
+      "max": 8.5845,
+      "last": 7.2954,
+      "slope_per_min": 0.1335908839251058
+    },
+    "fps": {
+      "mean": 1035.4199999999996,
+      "max": 1067.2,
+      "last": 1028.8,
+      "slope_per_min": 7.857171818896435
+    },
+    "fps.batt": {
+      "mean": 518.595,
+      "max": 533.5,
+      "last": 529.5,
+      "slope_per_min": 9.415331689659169
+    },
+    "fps.pt": {
+      "mean": 515.5133333333335,
+      "max": 531.8,
+      "last": 515.4,
+      "slope_per_min": 5.318822285181695
+    },
+    "fps.rx": {
+      "mean": 514.7549999999999,
+      "max": 519.2,
+      "last": 514.9,
+      "slope_per_min": -0.9139981345641974
+    },
+    "fps.tx": {
+      "mean": 515.3316666666665,
+      "max": 518.8,
+      "last": 515.7,
+      "slope_per_min": 1.046131404341141
+    },
+    "jsheap_mb": {
+      "mean": 112.14,
+      "max": 209.9,
+      "last": 157.6,
+      "slope_per_min": 128.35756058759233
+    },
+    "mem.host_mb": {
+      "mean": 56.2642578125,
+      "max": 60.90234375,
+      "last": 60.90234375,
+      "slope_per_min": 7.259414915675031
+    },
+    "mem.tree_mb": {
+      "mean": 937.2852864583333,
+      "max": 1139.39453125,
+      "last": 1122.92578125,
+      "slope_per_min": 398.8191288047786
+    },
+    "mem.webview_mb": {
+      "mean": 775.3012369791667,
+      "max": 974.7890625,
+      "last": 956.375,
+      "slope_per_min": 391.70971718155664
+    },
+    "mem.webview_renderer_mb": {
+      "mean": 463.688671875,
+      "max": 651.94921875,
+      "last": 630.09765625,
+      "slope_per_min": 365.2297112166399
+    },
+    "tx_late_ms": {
+      "mean": 2.8027549999999994,
+      "max": 8.4688,
+      "last": 1.8999,
+      "slope_per_min": -0.35527815275204216
+    }
+  },
+  "rx_gap": {
+    "ids_measured": 11,
+    "worst_p95_ratio": 1.126013660433348,
+    "worst_p95_ratio_id": "batt/0x110",
+    "worst_short_frac": 0.004830917874396135,
+    "worst_short_frac_id": "batt/0x110"
+  }
+}

@@ -25,10 +25,9 @@
 //! [`crate::window_state`]).
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use tauri::Manager;
 
 /// File name under `app_config_dir`.
 const STATE_FILE: &str = "state.json";
@@ -87,7 +86,7 @@ pub struct ProjectBlfChannelMaps {
 /// never brick startup. Split from IO so it's testable without the
 /// filesystem.
 fn parse_state(text: &str) -> UiState {
-    serde_json::from_str(text).unwrap_or_default()
+    crate::persisted_json::parse_or_default(text)
 }
 
 /// Read `dir/state.json`. A missing or unreadable file, or junk contents,
@@ -104,19 +103,7 @@ fn read_state(dir: &Path) -> UiState {
 /// leave a half-written file.
 fn write_state(dir: &Path, state: &UiState) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
-    let text = serde_json::to_string_pretty(state)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    let tmp = dir.join(format!("{STATE_FILE}.tmp"));
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, dir.join(STATE_FILE))
-}
-
-/// Resolve the per-OS config directory (`$XDG_CONFIG_HOME/<id>`,
-/// `%APPDATA%\<id>`, `~/Library/Application Support/<id>`).
-fn config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    app.path()
-        .app_config_dir()
-        .map_err(|e| format!("no config dir: {e}"))
+    crate::persisted_json::write_json_atomic(&dir.join(STATE_FILE), state)
 }
 
 /// Load the persisted UI state. Returns defaults if the config dir can't
@@ -125,7 +112,7 @@ fn config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub fn get_state(app: tauri::AppHandle) -> UiState {
-    config_dir(&app)
+    crate::persisted_json::config_dir(&app)
         .map(|dir| read_state(&dir))
         .unwrap_or_default()
 }
@@ -136,7 +123,7 @@ pub fn get_state(app: tauri::AppHandle) -> UiState {
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub fn set_state(app: tauri::AppHandle, state: UiState) -> Result<(), String> {
-    let dir = config_dir(&app)?;
+    let dir = crate::persisted_json::config_dir(&app)?;
     write_state(&dir, &state).map_err(|e| {
         let msg = format!("failed to write state: {e}");
         crate::sys_warn!(&app, "state", "{msg}");
