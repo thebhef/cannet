@@ -56,7 +56,7 @@ jobs:
             args: ""
     runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Full history + tags so vergen's `git describe` resolves the
           # tag created below.
@@ -75,11 +75,11 @@ jobs:
         shell: bash
         run: git tag "${{ steps.ver.outputs.tag }}"
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 11.5.2
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           # Exact Node version pinned in .node-version (read by local
           # version managers too), so CI and local match.
@@ -105,17 +105,16 @@ jobs:
 
       - run: pnpm --dir apps/gui install --frozen-lockfile
 
-      # The bundle step freezes the python-can sidecar for THIS runner's
-      # OS/arch itself: `tauri build`'s beforeBuildCommand runs
-      # scripts/build-sidecar.py before picking up the onedir as a Tauri
-      # resource (ADR 0036). PyInstaller cannot cross-compile, so each
-      # native runner freezes its own; uv (installed here) provisions the
-      # pinned CPython and the locked deps — no separate setup-python.
-      # The build script smoke-runs the frozen launcher by default
-      # (asserts the `sidecar\tlistening` banner, and on macOS the exec
-      # bit + ad-hoc arm64 signature), so a collection or signing
-      # regression fails the release instead of shipping a dead sidecar.
-      - uses: astral-sh/setup-uv@v5
+      # Freeze the python-can sidecar for THIS runner's OS/arch before
+      # the bundle step picks it up as a Tauri resource (ADR 0036).
+      # PyInstaller cannot cross-compile, so each native runner freezes
+      # its own; uv provisions the pinned CPython and the locked deps —
+      # no separate setup-python. The build script smoke-runs the frozen
+      # launcher by default (asserts the `sidecar\tlistening` banner, and
+      # on macOS the exec bit + ad-hoc arm64 signature), so a collection
+      # or signing regression fails the release here instead of shipping
+      # a dead sidecar.
+      - uses: astral-sh/setup-uv@v8.3.2
         with:
           version: "0.9.21"
           enable-cache: true
