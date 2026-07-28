@@ -478,7 +478,6 @@ dependencies = [
 name = "cannet-server"
 version = "0.0.0"
 dependencies = [
- "async-stream",
  "blf_asc",
  "cannet-blf",
  "cannet-core",
@@ -510,7 +509,6 @@ dependencies = [
  "cannet-core",
  "prost",
  "protoc-bin-vendored",
- "tokio-stream",
  "tonic",
  "tonic-build",
 ]

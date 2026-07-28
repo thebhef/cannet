@@ -180,6 +180,17 @@ trip over it.
   can still reach it, and one throw in an effect unmounts the whole
   React root (blank app). Guard the draw path when picked up.
 
+- `[bug]` `signalCatalogContext.tsx`: the `dbc-changed` listener has the
+  same attach-gap race `useHostMirror` was built to close (a change
+  landing between the snapshot fetch and the async `listen()` attach is
+  lost) — inherited from the pre-consolidation panel code. Migrate the
+  provider onto `useHostMirror`, or add the post-listener refetch.
+  (2026-07-26 task-30 closeout review.)
+- `[cleanup]` `PlotPanel.tsx:1077` contains two **raw NUL bytes**
+  (`a.path.join` on a literal 0x00 separator, not the escape), so
+  ripgrep classifies the file as binary and content search skips it.
+  Replace with `\u0000` escapes. Pre-existing, surfaced 2026-07-26.
+
 ### DBC view
 
 - `[ui]` **DBC panel table-tree rework.** The current per-signal detail
@@ -528,6 +539,20 @@ next pass on this surface can address them as one piece.
   `millis_overflow`). With hardware attached, dump raw
   `millis`/`millis_overflow`/`micros` per frame, identify the
   mechanism, and file against python-can and/or mac-can PCBUSB.
+
+- `[cleanup]` `cannet-python-can` `_proto_to_frame`: direction
+  `UNSPECIFIED` is silently coerced to TX (`is_rx = direction ==
+  DIRECTION_RX`) where Rust's `convert.rs` rejects it — asymmetric with
+  the frame-*kind* seam, which now rejects `UNSPECIFIED` on both sides.
+  Unreachable from Rust peers (`frame_to_proto` always sets Rx/Tx);
+  align when next touching the seam. (2026-07-26 closeout review.)
+- `[perf]` **Re-capture the frontend perf tier on a release build.** The
+  2026-07-26 zonal baseline was a dev-build capture against a
+  release-build predecessor; the same-load movers — jsheap peak +30%
+  (188→245 MB), `tx_late_ms_mean` 4.5→14.2 — are plausibly dev-build
+  overhead but unconfirmed. Drift rates were flat (no leak signal). One
+  release-build run of the ADR-0031 flow on `examples/ev-zonal` settles
+  it; promote it as the baseline if numbers move.
 
 - `[ui]` `cannet-python-can` sidecar: **suppress the `xlReceive failed
   (XL_ERROR)` warning emitted on normal close.** Closing a Vector

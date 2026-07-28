@@ -480,7 +480,7 @@ pub async fn rbs_dirty(state: State<'_, AppState>) -> Result<Vec<RbsDirtyRecord>
 mod tests {
     use super::*;
 
-    /// Regression test for the non-atomic RBS save (task 0030 item 7):
+    /// Regression test for the non-atomic RBS save:
     /// `write_element` used to `std::fs::write` straight to the target
     /// path, so a write failure partway could leave a corrupted RBS
     /// file in place of the last good save. Force the write to fail by

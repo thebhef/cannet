@@ -94,9 +94,11 @@ without reshaping callers.
 - Network transport: **tonic / gRPC over HTTP/2** + **prost** —
   `adopted` (Phase 2). Schema in `crates/cannet-wire`, `tonic-build`
   codegen on both ends. See [`../docs/adr/0004-grpc-wire-protocol.md`](../docs/adr/0004-grpc-wire-protocol.md).
-- **`async-stream`** crate (v0.3, MIT) — `adopted` in Phase 2.
-  Wire-crate implementation helper for stream adapters; see
-  ADR 0004 § Consequences.
+- **`async-stream`** crate (v0.3, MIT) — `adopted` in Phase 2 as a
+  wire-crate stream-adapter helper; **removed 2026-07-26**: its last
+  consumer (`cannet-wire`'s `batch.rs` stream adapters) was deleted as
+  dead code, and `cannet-server` streams via `tokio-stream`'s
+  `ReceiverStream` instead. See ADR 0004 § Consequences.
 - **`clap`** crate (v4, MIT/Apache) — `adopted` in Phase 2 for the
   `cannet-server` CLI (positional BLF path, `--bind` address). The
   Rust ecosystem standard for derive-macro CLI parsing; small

@@ -10,9 +10,6 @@ cannet-core = { path = "../cannet-core" }
 prost = "0.13"
 tonic = "0.12"
 
-[dev-dependencies]
-tokio-stream = { version = "0.1", features = ["time"] }
-
 [build-dependencies]
 tonic-build = "0.12"
 protoc-bin-vendored = "3"

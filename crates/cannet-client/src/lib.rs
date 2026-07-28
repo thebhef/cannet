@@ -237,9 +237,11 @@ pub async fn watch_interfaces(
     })
 }
 
-/// Streaming response from [`watch_interfaces`]. Yields a fresh
-/// interface-list snapshot every time the server's view changes, plus
-/// one on initial subscribe.
+/// Streaming response from [`watch_interfaces`]. Always yields one
+/// snapshot on initial subscribe; whether further snapshots are pushed
+/// as the server's view changes is the server's choice — clients must
+/// not assume every change is pushed (re-subscribe or poll
+/// `list_interfaces` for a guaranteed-fresh view).
 pub struct InterfaceWatchStream {
     inner: tonic::Streaming<cannet_wire::proto::InterfaceList>,
 }
