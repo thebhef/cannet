@@ -6,11 +6,35 @@
 //! latest values, mux groups, statistics — lives in `fetch_signal_page`
 //! (lib.rs), next to its by-id sibling.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use cannet_dbc::{Database, SignalDescriptor};
 
 use crate::ipc::{SignalSelection, SignalSnapshotRecord};
+
+/// The bus-expanded descriptor universe: one entry per `(bus,
+/// descriptor)` pair, in descriptor-key order. What
+/// [`scoped_descriptors`] produces and [`select_descriptors`] indexes
+/// into.
+pub type ScopedDescriptors = Vec<(Option<String>, SignalDescriptor)>;
+
+/// A cached [`scoped_descriptors`] result, held by `AppState`.
+///
+/// The universe is a pure function of the loaded DBC set plus the
+/// project's bus list, and rebuilding it means cloning and sorting one
+/// descriptor per signal per bus — tens of thousands of entries on a
+/// large project, which is far too much to pay per `fetch_signal_page`
+/// call when the panels behind it poll at 2–4 Hz. So it is built once
+/// and shared by `Arc` until one of its two inputs changes: the bus
+/// list is compared here, and a DBC-set change drops the whole snapshot
+/// through `invalidate_derived_caches` (ADR 0033 — rebuild dependent
+/// state when its inputs change).
+pub struct DescriptorSnapshot {
+    /// The project-bus list `descriptors` was expanded against.
+    pub project_buses: Vec<String>,
+    pub descriptors: Arc<ScopedDescriptors>,
+}
 
 /// Expand every loaded DBC's signals across its bus scope: explicit
 /// `buses` scoping wins, an unscoped DBC applies to every project bus,
@@ -23,8 +47,8 @@ use crate::ipc::{SignalSelection, SignalSnapshotRecord};
 pub fn scoped_descriptors<'a>(
     dbs: impl IntoIterator<Item = (&'a Database, &'a [String])>,
     project_buses: &[String],
-) -> Vec<(Option<String>, SignalDescriptor)> {
-    let mut out: Vec<(Option<String>, SignalDescriptor)> = Vec::new();
+) -> ScopedDescriptors {
+    let mut out: ScopedDescriptors = Vec::new();
     for (db, buses) in dbs {
         let scope: Vec<Option<String>> = if !buses.is_empty() {
             buses.iter().map(|b| Some(b.clone())).collect()
@@ -81,37 +105,67 @@ pub fn signal_path(
 /// `all`'s order — the deterministic default row order). An invalid
 /// pattern is an `Err` with the compile error — surfaced as a panel
 /// error, never a crash.
+///
+/// `source_buses` is the caller view's bus wiring: `Some(scope)` bounds
+/// what exists *for that view* — descriptors on other buses (and the
+/// unassigned-bus degenerate) are out of scope for the regex too, not
+/// just for the rows. `None` is unwired / "*" — everything. This is a
+/// filter rather than a prune of `all` so that `all` can be the shared,
+/// cached universe ([`DescriptorSnapshot`]) rather than a per-call
+/// copy.
 pub fn select_descriptors(
     all: &[(Option<String>, SignalDescriptor)],
     selection: &SignalSelection,
     bus_names: &HashMap<String, String>,
+    source_buses: Option<&[String]>,
 ) -> Result<Vec<usize>, String> {
     let patterns: Vec<regex::Regex> = selection
         .patterns
         .iter()
         .map(|p| regex::Regex::new(p).map_err(|e| format!("invalid pattern /{p}/: {e}")))
         .collect::<Result<_, _>>()?;
+    // Manual keys are hashed on the descriptor identity so the scan
+    // below costs O(descriptors) rather than O(descriptors × keys). Both
+    // sides scale with the project: the DBC panel's value column selects
+    // one key per visible row while the universe runs to tens of
+    // thousands of descriptors, and the product is what made a poll tick
+    // cost hundreds of milliseconds.
+    let manual: HashSet<(Option<&str>, u32, bool, &str)> = selection
+        .keys
+        .iter()
+        .map(|k| {
+            (
+                k.bus_id.as_deref(),
+                k.message_id,
+                k.extended,
+                k.signal_name.as_str(),
+            )
+        })
+        .collect();
     let mut out = Vec::new();
     for (i, (bus, d)) in all.iter().enumerate() {
-        let manual = selection.keys.iter().any(|k| {
-            k.bus_id.as_deref() == bus.as_deref()
-                && k.message_id == d.message_id
-                && k.extended == d.extended
-                && k.signal_name == d.signal_name
-        });
-        let by_pattern = !patterns.is_empty() && {
-            let bus_name = bus
-                .as_deref()
-                .map(|id| bus_names.get(id).map_or(id, String::as_str));
-            let path = signal_path(
-                bus_name,
-                d.transmitter.as_deref(),
-                &d.message_name,
-                &d.signal_name,
-            );
-            patterns.iter().any(|re| re.is_match(&path))
-        };
-        if manual || by_pattern {
+        if let Some(scope) = source_buses {
+            if !bus.as_ref().is_some_and(|b| scope.contains(b)) {
+                continue;
+            }
+        }
+        if manual.contains(&descriptor_key(&all[i])) {
+            out.push(i);
+            continue;
+        }
+        if patterns.is_empty() {
+            continue;
+        }
+        let bus_name = bus
+            .as_deref()
+            .map(|id| bus_names.get(id).map_or(id, String::as_str));
+        let path = signal_path(
+            bus_name,
+            d.transmitter.as_deref(),
+            &d.message_name,
+            &d.signal_name,
+        );
+        if patterns.iter().any(|re| re.is_match(&path)) {
             out.push(i);
         }
     }
@@ -287,11 +341,49 @@ mod tests {
             keys: vec![key(Some("power"), 257, "TorqueReq")],
             patterns: vec!["^Powertrain/Bms/".to_string()],
         };
-        let hit = select_descriptors(&all, &sel, &names).unwrap();
+        let hit = select_descriptors(&all, &sel, &names, None).unwrap();
         let picked: Vec<&str> = hit.iter().map(|&i| all[i].1.signal_name.as_str()).collect();
         // Pattern catches both Bms-sent PackStatus signals; the manual
         // key adds TorqueReq. Deduped, in descriptor order.
         assert_eq!(picked, vec!["PackTemp", "PackVolts", "TorqueReq"]);
+    }
+
+    #[test]
+    fn selection_matches_manual_keys_independently_of_key_order_or_count() {
+        // Manual keys are looked up through a hash of the descriptor
+        // identity rather than scanned per descriptor. The observable
+        // contract that guards the rewrite: results are the descriptors'
+        // own order, whatever order (and however many) keys arrive in.
+        let all = all_on(&["power"]);
+        let mut keys = vec![
+            key(Some("power"), 257, "TorqueReq"),
+            key(Some("power"), 256, "PackVolts"),
+        ];
+        // Padding keys that match nothing must not change the outcome.
+        keys.extend((0..500).map(|i| key(Some("power"), 900 + i, "Absent")));
+        let sel = SignalSelection {
+            keys,
+            patterns: vec![],
+        };
+        let hit = select_descriptors(&all, &sel, &HashMap::new(), None).unwrap();
+        let picked: Vec<&str> = hit.iter().map(|&i| all[i].1.signal_name.as_str()).collect();
+        assert_eq!(picked, vec!["PackVolts", "TorqueReq"]);
+    }
+
+    #[test]
+    fn source_bus_scope_hides_descriptors_from_patterns_too() {
+        // A view wired to one bus can't reach another bus's descriptors
+        // even through a catch-all regex. Applied as a filter over the
+        // shared universe rather than by pruning it.
+        let all = all_on(&["chassis", "power"]);
+        let sel = SignalSelection {
+            keys: vec![key(Some("chassis"), 256, "PackVolts")],
+            patterns: vec![".".to_string()],
+        };
+        let hit =
+            select_descriptors(&all, &sel, &HashMap::new(), Some(&["power".to_string()])).unwrap();
+        assert!(!hit.is_empty());
+        assert!(hit.iter().all(|&i| all[i].0.as_deref() == Some("power")));
     }
 
     #[test]
@@ -301,7 +393,7 @@ mod tests {
             keys: vec![],
             patterns: vec!["([unclosed".to_string()],
         };
-        let err = select_descriptors(&all, &sel, &HashMap::new()).unwrap_err();
+        let err = select_descriptors(&all, &sel, &HashMap::new(), None).unwrap_err();
         assert!(err.contains("invalid pattern"), "got: {err}");
     }
 
@@ -312,7 +404,7 @@ mod tests {
             keys: vec![key(Some("power"), 256, "PackVolts")],
             patterns: vec![],
         };
-        let hit = select_descriptors(&all, &sel, &HashMap::new()).unwrap();
+        let hit = select_descriptors(&all, &sel, &HashMap::new(), None).unwrap();
         assert_eq!(hit.len(), 1);
         assert_eq!(all[hit[0]].0.as_deref(), Some("power"));
     }

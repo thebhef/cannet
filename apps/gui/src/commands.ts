@@ -10,23 +10,30 @@
 
 import { parseChord, type ParsedBinding } from "./keybindings";
 
-/// What kind of panel currently has dockview focus. Element-backed
-/// panels report their element kind; the singletons report their
-/// component name; `null` means no panel is focused.
-export type FocusedPanelKind =
-  | "trace"
-  | "plot"
-  | "signals"
-  | "transmit"
-  | "rbs"
-  | "project"
-  | "project-graph"
-  | "system-messages"
-  | "dbc"
-  | "settings"
-  | "about"
-  | "events"
-  | "shortcuts";
+/// Every kind of panel that can hold dockview focus — the single
+/// source of truth for both the [`FocusedPanelKind`] type and the
+/// context enumeration the conflict check ranges over (so the two can't
+/// drift). Element-backed panels report their element kind; the
+/// singletons report their component name.
+export const FOCUSED_PANEL_KINDS = [
+  "trace",
+  "plot",
+  "signals",
+  "transmit",
+  "rbs",
+  "project",
+  "project-graph",
+  "system-messages",
+  "dbc",
+  "settings",
+  "about",
+  "events",
+  "shortcuts",
+] as const;
+
+/// What kind of panel currently has dockview focus; `null` means no
+/// panel is focused.
+export type FocusedPanelKind = (typeof FOCUSED_PANEL_KINDS)[number];
 
 /// The small, fixed context object command predicates range over
 /// (ADR 0018) — deliberately not a general expression language.
@@ -236,27 +243,13 @@ export function commandsAvailableIn(
 
 /// Every value the context can take. The space is small and finite,
 /// so "do two predicates overlap?" is decided by enumeration rather
-/// than by restricting predicates to a declarative subset. This list
-/// must stay complete — every `FocusedPanelKind` and context dimension —
-/// or a genuinely-overlapping binding pair can look disjoint and slip
-/// past the conflict check (ADR 0037, invariant 3).
+/// than by restricting predicates to a declarative subset. The
+/// panel-kind dimension is derived from [`FOCUSED_PANEL_KINDS`] (plus
+/// `null` for "no panel focused"), so it can't drift from the type or a
+/// genuinely-overlapping binding pair could look disjoint and slip past
+/// the conflict check (ADR 0037, invariant 3).
 function enumerateContexts(): CommandContext[] {
-  const kinds: (FocusedPanelKind | null)[] = [
-    null,
-    "trace",
-    "plot",
-    "signals",
-    "transmit",
-    "rbs",
-    "project",
-    "project-graph",
-    "system-messages",
-    "dbc",
-    "settings",
-    "about",
-    "events",
-    "shortcuts",
-  ];
+  const kinds: (FocusedPanelKind | null)[] = [null, ...FOCUSED_PANEL_KINDS];
   const out: CommandContext[] = [];
   for (const focusedPanelKind of kinds) {
     for (const hasProjectOpen of [false, true]) {

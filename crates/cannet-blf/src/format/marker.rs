@@ -30,8 +30,8 @@
 //! `from_utf8_lossy` as it sees fit.
 
 use super::object::{
-    object_type, ObjectHeaderBase, ObjectHeaderError, ObjectHeaderV1, OBJECT_HEADER_BASE_BYTES,
-    OBJECT_HEADER_V1_BYTES,
+    decode_framed, object_type, ObjectHeaderBase, ObjectHeaderError, ObjectHeaderV1,
+    PreambleError, OBJECT_HEADER_BASE_BYTES, OBJECT_HEADER_V1_BYTES,
 };
 
 /// Width of the per-event header that prefixes a `GLOBAL_MARKER`:
@@ -119,31 +119,32 @@ impl std::error::Error for MarkerError {
     }
 }
 
+impl From<PreambleError> for MarkerError {
+    fn from(e: PreambleError) -> Self {
+        match e {
+            // The expected type is always GLOBAL_MARKER here, so
+            // MarkerError::WrongObjectType only carries what we got —
+            // it doesn't need PreambleError's `expected` half.
+            PreambleError::WrongObjectType(_expected, got) => Self::WrongObjectType(got),
+            PreambleError::BaseHeader(e) => Self::BaseHeader(e),
+            PreambleError::EventHeader(e) => Self::EventHeader(e),
+            PreambleError::TooSmall(got, required) => Self::TooSmall(got, required),
+            PreambleError::Truncated(got, required) => Self::Truncated(got, required),
+        }
+    }
+}
+
 /// Decode one `GLOBAL_MARKER`.
 // `try_into().unwrap()` calls are unreachable: every slice is
 // length-checked at the top.
 #[allow(clippy::missing_panics_doc)]
 pub fn decode(object_bytes: &[u8]) -> Result<GlobalMarker, MarkerError> {
-    let base = ObjectHeaderBase::parse(object_bytes).map_err(MarkerError::BaseHeader)?;
-    if base.object_type != object_type::GLOBAL_MARKER {
-        return Err(MarkerError::WrongObjectType(base.object_type));
-    }
-    let required = MARKER_EVENT_HEADER_BYTES + MARKER_FIXED_PREFIX_BYTES;
-    if (base.object_size as usize) < required {
-        return Err(MarkerError::TooSmall(base.object_size, required));
-    }
-    if object_bytes.len() < base.object_size as usize {
-        return Err(MarkerError::Truncated(
-            object_bytes.len(),
-            base.object_size,
-        ));
-    }
-    let event = ObjectHeaderV1::parse(
-        &object_bytes[OBJECT_HEADER_BASE_BYTES..OBJECT_HEADER_BASE_BYTES + OBJECT_HEADER_V1_BYTES],
-    )
-    .map_err(MarkerError::EventHeader)?;
-
-    let body = &object_bytes[MARKER_EVENT_HEADER_BYTES..base.object_size as usize];
+    let framed = decode_framed(
+        object_bytes,
+        object_type::GLOBAL_MARKER,
+        MARKER_FIXED_PREFIX_BYTES,
+    )?;
+    let (base, event, body) = (framed.base, framed.event, framed.body);
 
     let commented_event_type = u32::from_le_bytes(body[0..4].try_into().unwrap());
     let foreground_color = u32::from_le_bytes(body[4..8].try_into().unwrap());

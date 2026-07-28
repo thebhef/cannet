@@ -33,10 +33,12 @@
 //! live wire.
 //!
 //! [`proto::FrameBatch`] is the only frame-carrying envelope variant.
-//! Application code never deals with batches directly; the [`batch`]
-//! module provides adapters between a stream of [`cannet_core::CanFrame`]
-//! and a stream of [`proto::FrameBatch`] so server and client crates
-//! work in `cannet-core` types.
+//! Senders build one directly — the transmit scheduler coalesces a
+//! tick's frames into a single batch, the bridge and remote pumps send
+//! one frame per batch — and receivers iterate `batch.frames`. The
+//! [`convert`] module provides the per-frame and per-slice conversions
+//! between [`cannet_core::CanFrame`] and the proto types so server and
+//! client crates work in `cannet-core` types.
 //!
 //! ## Schema evolution
 //!
@@ -64,10 +66,8 @@ pub mod proto {
     tonic::include_proto!("cannet.v1");
 }
 
-pub mod batch;
 pub mod convert;
 
-pub use batch::{batch_frames, unbatch_frames, BatchPolicy};
 pub use convert::{
     batch_to_proto, frame_to_proto, proto_to_batch, proto_to_frame, ProtoConversionError,
 };

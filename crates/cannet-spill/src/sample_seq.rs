@@ -24,28 +24,11 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::seg::{create_segment, Segment};
+use crate::seg::Segment;
+use crate::seg_chain::{evict_leading, geometric_locate, geometric_push_grow};
 
-/// Entries in the first (smallest) segment.
-const BASE_ENTRIES: usize = 64;
-/// Cap on per-segment size; segments double up to here, then stay.
-const MAX_SEG_ENTRIES: usize = 65_536;
-/// `seg` index at which `BASE_ENTRIES << seg` first reaches the cap
-/// (`64 << 10 == 65_536`). Beyond it every segment is `MAX_SEG_ENTRIES`.
-const CAP_SEG: usize = 10;
 /// Bytes per entry: two `f64`s (`t_seconds`, `value`).
 const ENTRY_BYTES: usize = 16;
-
-/// Entry capacity of segment `seg`: [`BASE_ENTRIES`] doubled per step,
-/// capped at [`MAX_SEG_ENTRIES`]. Branching on [`CAP_SEG`] keeps the shift
-/// in range (matching [`crate::byid`]'s geometry).
-fn seg_capacity(seg: usize) -> usize {
-    if seg >= CAP_SEG {
-        MAX_SEG_ENTRIES
-    } else {
-        BASE_ENTRIES << seg
-    }
-}
 
 /// One append-only run of `(t_seconds, value)` pairs, backed by a geometric
 /// chain of mmap'd segment files named `{prefix}.NNNN` under `dir`.
@@ -122,22 +105,17 @@ impl SampleSeq {
     pub fn evict_below(&mut self, first_slot: usize) {
         self.first_slot = first_slot.clamp(self.first_slot, self.len);
         let target_base = self.cum_cap.partition_point(|&c| c <= self.first_slot);
-        while self.seg_base < target_base {
-            drop(self.segs.remove(0)); // unmap before deleting (Windows)
-            let _ = std::fs::remove_file(self.seg_path(self.seg_base));
-            self.seg_base += 1;
-        }
-    }
-
-    fn capacity(&self) -> usize {
-        self.cum_cap.last().copied().unwrap_or(0)
+        let dir = &self.dir;
+        let prefix = &self.prefix;
+        evict_leading(&mut self.segs, &mut self.seg_base, target_base, |i| {
+            seg_path(dir, prefix, i)
+        });
     }
 
     /// `(segment index, byte offset within it)` for entry slot `k`.
     fn locate(&self, k: usize) -> (usize, usize) {
-        let seg = self.cum_cap.partition_point(|&c| c <= k);
-        let base = if seg == 0 { 0 } else { self.cum_cap[seg - 1] };
-        (seg, (k - base) * ENTRY_BYTES)
+        let (seg, off) = geometric_locate(&self.cum_cap, k);
+        (seg, off * ENTRY_BYTES)
     }
 
     /// The `(t_seconds, value)` pair at the live slot `k`
@@ -164,15 +142,12 @@ impl SampleSeq {
     /// scratch volume is full or gone) — the same unrecoverable-I/O policy
     /// as the rest of the disk store.
     pub fn push(&mut self, t: f64, value: f64) {
-        if self.len == self.capacity() {
-            let i = self.cum_cap.len(); // absolute segment number (survives a trim)
-            let cap = seg_capacity(i);
-            let seg = create_segment(&self.seg_path(i), cap * ENTRY_BYTES)
-                .expect("cannet-spill: sample-seq segment I/O failed");
-            self.segs.push(seg);
-            let prev = self.cum_cap.last().copied().unwrap_or(0);
-            self.cum_cap.push(prev + cap);
-        }
+        let len = self.len;
+        let dir = &self.dir;
+        let prefix = &self.prefix;
+        geometric_push_grow(&mut self.segs, &mut self.cum_cap, len, ENTRY_BYTES, |i| {
+            seg_path(dir, prefix, i)
+        });
         let (seg, off) = self.locate(self.len);
         let map = &mut self.segs[seg - self.seg_base].map;
         map[off..off + 8].copy_from_slice(&t.to_le_bytes());
@@ -188,9 +163,10 @@ impl SampleSeq {
         Ok(())
     }
 
-    fn seg_path(&self, seg: usize) -> PathBuf {
-        self.dir.join(format!("{}.{seg:04}", self.prefix))
-    }
+}
+
+fn seg_path(dir: &Path, prefix: &str, seg: usize) -> PathBuf {
+    dir.join(format!("{prefix}.{seg:04}"))
 }
 
 #[cfg(test)]

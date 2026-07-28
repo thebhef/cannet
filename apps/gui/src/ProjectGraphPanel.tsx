@@ -34,6 +34,7 @@ import {
 import type { FilterPredicate } from "./types";
 import { effectiveBusColor } from "./busColor";
 import { assignLanePositions, reconcileGraphNodes } from "./graphNodeLayout";
+import { useDismissableMenu } from "./useDismissableMenu";
 
 /// Per-panel persisted state. Lives in the panel's dockview `params`
 /// so each project graph panel keeps its own viewport and layout
@@ -217,23 +218,9 @@ function ProjectGraphPanelInner(props: IDockviewPanelProps) {
       });
     }
   }, []);
-  useEffect(() => {
-    if (graphMenu == null) return;
-    const onDown = (e: MouseEvent) => {
-      if ((e.target as Element | null)?.closest(".graph-edge-menu") == null) {
-        setGraphMenu(null);
-      }
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setGraphMenu(null);
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [graphMenu]);
+  const graphMenuRef = useDismissableMenu<HTMLDivElement>(graphMenu != null, () =>
+    setGraphMenu(null),
+  );
 
   // Drag-to-connect: xyflow fires `onConnect` when the user drops a
   // drag from one handle onto another. Translate the connection into
@@ -300,6 +287,7 @@ function ProjectGraphPanelInner(props: IDockviewPanelProps) {
           // `position: fixed` menu off-screen).
           createPortal(
             <div
+              ref={graphMenuRef}
               className="graph-edge-menu"
               role="menu"
               style={{ left: graphMenu.x, top: graphMenu.y }}

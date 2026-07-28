@@ -45,6 +45,18 @@ struct RateFields {
     retention: f64,
 }
 
+/// The gating subset of the report's `rx_gap` block (on-wire receive
+/// cadence, ADR 0039): the worst per-id p95/median gap ratio and the
+/// worst short-gap (catch-up pair) fraction. Default-zero so a report
+/// from a sim-only run (no hardware rx, `rx_gap: null`) still parses.
+#[derive(Debug, Clone, Default, Deserialize)]
+struct RxGapFields {
+    #[serde(default)]
+    worst_p95_ratio: f64,
+    #[serde(default)]
+    worst_short_frac: f64,
+}
+
 /// The gating subset of a report's per-gauge `GaugeSpread`: the run peak
 /// and the linear drift. Used for the memory gauges (`jsheap_mb`,
 /// `mem.webview_renderer_mb`, `mem.host_mb`). Default-zero so a gauge — or
@@ -82,6 +94,10 @@ pub struct FrontendReport {
     /// out by key. Default-empty so a report without it still parses.
     #[serde(default)]
     gauges: BTreeMap<String, GaugeFields>,
+    /// On-wire receive cadence (worst per-id gap stats, ADR 0039).
+    /// `None`/absent on sim-only runs and reports predating the field.
+    #[serde(default)]
+    rx_gap: Option<RxGapFields>,
 }
 
 /// The render-tier metrics persisted in a baseline and compared by
@@ -157,6 +173,31 @@ pub struct FrontendMetrics {
     pub flush_ms_mean: f64,
     #[serde(default)]
     pub tx_late_ms_mean: f64,
+    /// The **run-worst** flush duration / wake lateness — the
+    /// spike-class signal the mean rows absorb. Measured 2026-07-25: a
+    /// ~150 ms flush stall every 2 s (clean seconds in between) sailed
+    /// under both mean ceilings while the transmit scheduler visibly
+    /// burst. Baseline-armed like the memory tier (zero baseline ⇒
+    /// inert), gated `baseline × FACTOR + STALL_MAX_FLOOR_MS` — the
+    /// generous floor keeps one-off OS writeback noise from flapping
+    /// what the mean rows were deliberately designed not to gate.
+    #[serde(default)]
+    pub flush_ms_max: f64,
+    #[serde(default)]
+    pub tx_late_ms_max: f64,
+    /// On-wire receive cadence (ADR 0039): worst per-id `p95 / median`
+    /// gap ratio and worst short-gap (<½ median — the catch-up pair)
+    /// fraction, from the receiving side's device-stamped timestamps.
+    /// The ground-truth bunching signal every other row is blind to:
+    /// throughput refills within the second and `tx_late_ms` is
+    /// cause-side only. Baseline-armed (zero baseline — e.g. a sim-only
+    /// rig with no hardware rx — ⇒ inert), gated
+    /// `baseline × FACTOR + floor`. Measured 2026-07-25: healthy rig
+    /// ~1.2 / ~2%; the pre-stagger cohort regression ~3.5 / ~28%.
+    #[serde(default)]
+    pub rx_gap_p95_ratio_worst: f64,
+    #[serde(default)]
+    pub rx_gap_short_frac_worst: f64,
 }
 
 impl From<&FrontendReport> for FrontendMetrics {
@@ -179,6 +220,16 @@ impl From<&FrontendReport> for FrontendMetrics {
             tree_mb_drift_per_min: r.gauge("mem.tree_mb").slope_per_min,
             flush_ms_mean: r.gauge("flush_ms").mean,
             tx_late_ms_mean: r.gauge("tx_late_ms").mean,
+            flush_ms_max: r.gauge("flush_ms").max,
+            tx_late_ms_max: r.gauge("tx_late_ms").max,
+            rx_gap_p95_ratio_worst: r
+                .rx_gap
+                .as_ref()
+                .map_or(0.0, |g| g.worst_p95_ratio),
+            rx_gap_short_frac_worst: r
+                .rx_gap
+                .as_ref()
+                .map_or(0.0, |g| g.worst_short_frac),
         }
     }
 }
@@ -243,6 +294,19 @@ mod ftol {
     /// Absolute ceiling (ms) on the **mean** transmit-scheduler wake
     /// lateness (regression mean ~27 ms; healthy ~9 ms).
     pub const TX_LATE_MS_CEILING: f64 = 18.0;
+    /// Floor (ms) for the run-worst flush / wake-lateness spike rows —
+    /// wide enough that a one-off OS writeback hiccup (10–20 ms class)
+    /// never flaps them, tight enough that the measured 2 s periodic
+    /// stall class (~150 ms at hardware rate, ~33 ms at sim rate over a
+    /// healthy ~5 ms baseline) fails.
+    pub const STALL_MAX_FLOOR_MS: f64 = 25.0;
+    /// Floor for the on-wire worst p95/median gap ratio (ADR 0039) —
+    /// a healthy ~1.2 baseline tolerates run-to-run tail wobble up to
+    /// ~2.9 before gating; the cohort regression measured ~3.5.
+    pub const RX_GAP_RATIO_FLOOR: f64 = 0.5;
+    /// Floor for the on-wire worst short-gap fraction — a ~2% baseline
+    /// gates at ~7%; the cohort regression measured ~28%.
+    pub const RX_GAP_SHORT_FRAC_FLOOR: f64 = 0.03;
 }
 
 /// Compare a fresh frontend report's metrics against the baseline's, and
@@ -389,6 +453,71 @@ pub fn check_frontend(
         });
     }
 
+    // Spike-class stall rows (run-worst flush / wake lateness): the mean
+    // rows above deliberately absorb one-off peaks, which also blinds
+    // them to a *periodic* sub-second stall with clean seconds between —
+    // the measured 2 s flush-lock signature. Baseline-relative with a
+    // generous floor, and inert until a baseline carries the fields
+    // (pre-existing baselines hold 0), like the memory tier.
+    for (metric, base, cur) in [
+        (
+            "flush_ms_max",
+            baseline.flush_ms_max,
+            current.flush_ms_max,
+        ),
+        (
+            "tx_late_ms_max",
+            baseline.tx_late_ms_max,
+            current.tx_late_ms_max,
+        ),
+    ] {
+        if base <= 0.0 {
+            continue; // inert until the baseline carries the spike tier
+        }
+        let limit = base * ftol::FACTOR + ftol::STALL_MAX_FLOOR_MS;
+        verdicts.push(Verdict {
+            mode: "frontend",
+            metric,
+            baseline: base,
+            current: cur,
+            limit,
+            pass: cur <= limit,
+        });
+    }
+
+    // On-wire receive cadence rows (ADR 0039): the ground-truth bunching
+    // signal from the receiving side's device-stamped timestamps —
+    // throughput refills within the second and `tx_late_ms` is cause-side
+    // only, so neither sees it. Baseline-armed like the spike tier (a
+    // sim-only baseline has no hardware rx and holds 0 ⇒ inert).
+    for (metric, base, cur, floor) in [
+        (
+            "rx_gap_p95_ratio_worst",
+            baseline.rx_gap_p95_ratio_worst,
+            current.rx_gap_p95_ratio_worst,
+            ftol::RX_GAP_RATIO_FLOOR,
+        ),
+        (
+            "rx_gap_short_frac_worst",
+            baseline.rx_gap_short_frac_worst,
+            current.rx_gap_short_frac_worst,
+            ftol::RX_GAP_SHORT_FRAC_FLOOR,
+        ),
+    ] {
+        if base <= 0.0 {
+            continue; // inert until the baseline carries the rx-gap tier
+        }
+        let limit = base * ftol::FACTOR + floor;
+        verdicts.push(Verdict {
+            mode: "frontend",
+            metric,
+            baseline: base,
+            current: cur,
+            limit,
+            pass: cur <= limit,
+        });
+    }
+
     // Higher-is-better retention floors (mirror the host `fps_retention`
     // gate): no worse than 0.90× baseline, and never below 0.80 absolute.
     for (metric, base, cur) in [
@@ -520,6 +649,14 @@ mod tests {
             // the contention-specific test drives these.
             flush_ms_mean: 0.0,
             tx_late_ms_mean: 0.0,
+            // Spike tier absent by default (base ≤ 0 ⇒ inert); the
+            // spike-specific test populates it.
+            flush_ms_max: 0.0,
+            tx_late_ms_max: 0.0,
+            // Rx-gap tier absent by default (base ≤ 0 ⇒ inert); the
+            // rx-gap-specific test populates it.
+            rx_gap_p95_ratio_worst: 0.0,
+            rx_gap_short_frac_worst: 0.0,
         }
     }
 
@@ -646,6 +783,104 @@ mod tests {
                 .filter(|v| v.metric == "flush_ms_mean" || v.metric == "tx_late_ms_mean")
                 .all(|v| v.pass),
             "a few-ms mean flush / lateness passes",
+        );
+    }
+
+    #[test]
+    fn rx_gap_gates_catch_on_wire_bunching() {
+        // The stagger measurement (ADR 0039): pre-fix cohorts drove the
+        // worst per-id p95/median gap ratio to ~3.5 and the short-gap
+        // (catch-up pair) fraction to ~28%; healthy rig ~1.2 / ~2%.
+        // Baseline-armed like the stall rows — inert until a baseline
+        // carries the fields.
+        let mut base = metrics(1.0, 12.0, 27.0, 0.03);
+        base.rx_gap_p95_ratio_worst = 1.25;
+        base.rx_gap_short_frac_worst = 0.02;
+        let mut cur = base.clone();
+        cur.rx_gap_p95_ratio_worst = 3.5; // > 1.25*2 + 0.5 = 3.0 ⇒ fails
+        cur.rx_gap_short_frac_worst = 0.28; // > 0.02*2 + 0.03 = 0.07 ⇒ fails
+        let verdicts = check_frontend(&base, &cur, Expected::default());
+        let ratio = verdicts
+            .iter()
+            .find(|v| v.metric == "rx_gap_p95_ratio_worst")
+            .unwrap();
+        let short = verdicts
+            .iter()
+            .find(|v| v.metric == "rx_gap_short_frac_worst")
+            .unwrap();
+        assert!(!ratio.pass, "cohort-regression ratio must fail");
+        assert!(!short.pass, "catch-up-pair fraction must fail");
+
+        // Ordinary run-to-run wobble stays green.
+        let mut wobble = base.clone();
+        wobble.rx_gap_p95_ratio_worst = 1.5;
+        wobble.rx_gap_short_frac_worst = 0.03;
+        let verdicts = check_frontend(&base, &wobble, Expected::default());
+        assert!(
+            verdicts
+                .iter()
+                .filter(|v| v.metric.starts_with("rx_gap_"))
+                .all(|v| v.pass),
+            "healthy wobble must not flap the rx-gap gates",
+        );
+
+        // Inert without a baseline (sim-only baseline: no hardware rx).
+        let verdicts = check_frontend(&metrics(1.0, 12.0, 27.0, 0.03), &cur, Expected::default());
+        assert!(
+            !verdicts.iter().any(|v| v.metric.starts_with("rx_gap_")),
+            "rx-gap gates must stay inert until the baseline carries them",
+        );
+    }
+
+    #[test]
+    fn stall_spike_gates_catch_what_the_mean_absorbs() {
+        // The 29b measurement: a ~150 ms flush stall every 2 s (half the
+        // seconds clean) keeps the *mean* under its ceiling while the
+        // scheduler visibly bursts. The max rows are the spike-class
+        // guard — baseline-armed, generous floor so one-off OS writeback
+        // noise doesn't flap them.
+        let mut base = metrics(1.0, 12.0, 27.0, 0.03);
+        base.flush_ms_max = 5.0; // healthy post-fix baseline
+        base.tx_late_ms_max = 4.0;
+        let mut cur = base.clone();
+        cur.flush_ms_max = 150.0; // > 5*2 + 25 = 35 ⇒ fails
+        cur.tx_late_ms_max = 140.0; // > 4*2 + 25 = 33 ⇒ fails
+        cur.flush_ms_mean = 20.0; // still under the 25 ms mean ceiling
+        cur.tx_late_ms_mean = 15.0; // still under the 18 ms mean ceiling
+        let verdicts = check_frontend(&base, &cur, Expected::default());
+        let fmax = verdicts.iter().find(|v| v.metric == "flush_ms_max").unwrap();
+        let lmax = verdicts.iter().find(|v| v.metric == "tx_late_ms_max").unwrap();
+        assert!(!fmax.pass, "150ms spike must fail (mean gate passed it)");
+        assert!(!lmax.pass, "140ms wake spike must fail");
+        assert!(
+            verdicts
+                .iter()
+                .filter(|v| v.metric == "flush_ms_mean" || v.metric == "tx_late_ms_mean")
+                .all(|v| v.pass),
+            "the mean gates are blind to this spike class — that's the point",
+        );
+
+        // Modest one-off writeback noise stays green (no flapping).
+        let mut noisy = base.clone();
+        noisy.flush_ms_max = 20.0; // < 35 limit
+        noisy.tx_late_ms_max = 18.0; // < 33 limit
+        let verdicts = check_frontend(&base, &noisy, Expected::default());
+        assert!(
+            verdicts
+                .iter()
+                .filter(|v| v.metric == "flush_ms_max" || v.metric == "tx_late_ms_max")
+                .all(|v| v.pass),
+            "one-off writeback noise must not flap the spike gates",
+        );
+
+        // Inert until a baseline carries the fields (pre-fix baselines
+        // hold 0), so the gate can land before the fix's baseline exists.
+        let verdicts = check_frontend(&metrics(1.0, 12.0, 27.0, 0.03), &cur, Expected::default());
+        assert!(
+            !verdicts
+                .iter()
+                .any(|v| v.metric == "flush_ms_max" || v.metric == "tx_late_ms_max"),
+            "zero-baseline runs must not emit spike verdicts",
         );
     }
 

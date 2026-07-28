@@ -13,11 +13,11 @@ import {
   scopeCatalog,
   signalPath,
   signalsFromPatterns,
-  type FilterSignalRef,
   type SelectableArea,
 } from "./signalSelection";
 import { signalKey } from "./plotData";
 import { stableSignalColor } from "./palette";
+import type { SignalRef } from "./plotPanelConfig";
 import type { SignalDescriptorRecord } from "./types";
 
 const CATALOG: SignalDescriptorRecord[] = [
@@ -112,7 +112,7 @@ describe("signalsFromPatterns", () => {
   });
 
   it("skips signals already picked manually (manual wins)", () => {
-    const manual: FilterSignalRef = {
+    const manual: SignalRef = {
       busId: "bus-a",
       messageId: 256,
       extended: false,
@@ -128,7 +128,7 @@ describe("signalsFromPatterns", () => {
   it("colours matches stable-by-identity, independent of match order", () => {
     const wide = signalsFromPatterns(["."], CATALOG, BUSES);
     const narrow = signalsFromPatterns(["EngineTemp"], CATALOG, BUSES);
-    const temp = (list: FilterSignalRef[]) => list.find((s) => s.signalName === "EngineTemp");
+    const temp = (list: SignalRef[]) => list.find((s) => s.signalName === "EngineTemp");
     expect(temp(wide)?.color).toBe(temp(narrow)?.color);
     expect(temp(wide)?.color).toBe(
       stableSignalColor(signalKey("bus-a", 256, false, "EngineTemp")),
@@ -169,7 +169,7 @@ describe("effectiveSourceBuses / scopeCatalog", () => {
 });
 
 describe("applyAreaSelections", () => {
-  const manual: FilterSignalRef = {
+  const manual: SignalRef = {
     busId: "bus-b",
     messageId: 512,
     extended: false,

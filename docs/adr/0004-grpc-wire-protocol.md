@@ -109,10 +109,9 @@ framing is sub-percent.
   to `.proto` files there propagate through `tonic-build` on every
   consumer. Field additions are non-breaking; removals require
   `reserved`.
-- **`async-stream`** (v0.3, MIT) is pulled in as a wire-crate
-  implementation helper so stream adapters (`unbatch_frames`, the
-  server's looping replay source) can be expressed as ordinary
-  async control flow rather than hand-rolled `Stream` impls with
+- **Server-side response streams are plain channels.** The server
+  pumps frames into a `tokio` mpsc channel and hands tonic a
+  `tokio-stream` `ReceiverStream` — no hand-rolled `Stream` impls or
   manual `Pin` plumbing.
 - **Cross-language clients land for free.** ADR 0008's
   `cannet-python-can` sidecar uses `grpcio` (Python, Apache-2.0)

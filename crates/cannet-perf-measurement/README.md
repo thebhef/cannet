@@ -104,12 +104,12 @@ cargo run -p cannet-perf-measurement -- check         # exit non-zero on regress
 
 # Include the render tier: a self-driving GUI run (ADR 0031) writes a
 # RenderReport, which `baseline` stores and `check` compares. The expected
-# rx/tx rates gate the live ev-demo sim's throughput as a two-sided band
+# rx/tx rates gate the live example sim's throughput as a two-sided band
 # (too few *or* too many frames fails); they apply to the frontend tier
 # only — host modes gate ingest relative to their own baseline.
 cargo run -p cannet-perf-measurement -- \
     --frontend-report <render-report.json> \
-    --expected-rx-fps 515 --expected-tx-fps 515 check
+    --expected-rx-fps 1608 --expected-tx-fps 1608 check
 ```
 
 ### Per-mode flags
@@ -206,6 +206,9 @@ rate gates below are what close that blind spot.
 | `jsheap_mb_drift_per_min` / `renderer_mb_drift_per_min` / `tree_mb_drift_per_min` | ≤ 2× baseline + 5 MB/min |
 | `flush_ms_mean` | ≤ 25 ms (absolute) |
 | `tx_late_ms_mean` | ≤ 18 ms (absolute) |
+| `flush_ms_max` / `tx_late_ms_max` | ≤ 2× baseline + 25 ms (inert until a baseline carries them) |
+| `rx_gap_p95_ratio_worst` | ≤ 2× baseline + 0.5 (inert until a baseline carries it) |
+| `rx_gap_short_frac_worst` | ≤ 2× baseline + 0.03 (inert until a baseline carries it) |
 
 The memory rows (ADR 0031) gate the renderer's growth — the JS heap
 (`jsheap_mb`, reported by the frontend) and the WebView renderer process RSS
@@ -235,8 +238,33 @@ peak gate would flap on one-off OS writeback noise. Gated against an
 **absolute** ceiling (a flush should average a few ms regardless of the
 machine), always active — an absent gauge reads 0, which passes.
 
+The `flush_ms_max` / `tx_late_ms_max` rows guard the class the mean rows
+deliberately absorb: a **periodic sub-second stall with clean seconds in
+between** (measured 2026-07-25 — a whole-map msync per flush tick stalled
+the transmit scheduler ~150 ms every 2 s at hardware rate while both mean
+rows and `tx_fps` retention stayed green). They gate the run-worst value,
+baseline-relative with a generous +25 ms floor so a one-off writeback
+hiccup still doesn't flap, and stay **inert until a baseline carries the
+fields** — regenerate the baseline (post-fix, on quiet hardware) to arm
+them.
+
+The `rx_gap_*` rows gate **on-wire receive cadence** (ADR 0039): the
+report's `rx_gap` block reduces the capture window's per-id receive
+gaps — from the receiving side's device-stamped timestamps, so it is
+ground truth for bunching — to the worst per-id `p95 / median` gap
+ratio (the lateness tail) and the worst fraction of gaps under half the
+median (the catch-up-pair signal). Every other row is blind to this
+class: a burst refills throughput within the second, and `tx_late_ms`
+measures the cause side only — the pre-stagger cohort regression sat at
+~3.5 / ~28% (healthy rig ~1.2 / ~2%) with all other rows green. Needs a
+two-node rig (real rx); a sim-only run reports no `rx_gap`, its
+baseline holds 0, and the rows stay **inert until a baseline carries
+them**.
+
 The expected-rate gate is a **two-sided band**: the sim emits a deterministic
-schedule (515 frames/s for ev-demo, echoed both directions), so a shortfall
+schedule — the project DBCs' cycle-time sum, ~1608 frames/s for ev-zonal
+(the current frontend-baseline project), 515 for ev-demo, echoed both
+directions — so a shortfall
 *and* an overshoot are failures. It's baseline-independent — a uniformly-slow
 run is caught even against a slow baseline — whereas retention catches
 decay-with-buffer-growth regardless of the absolute level.

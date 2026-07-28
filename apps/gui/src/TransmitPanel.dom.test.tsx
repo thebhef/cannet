@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
-import type { TransmitFrameRecord } from "./types";
+import type { SignalDescriptorRecord, TransmitFrameRecord } from "./types";
 
 // The host pool the mocked `list_transmit_frames` returns. Tests mutate
 // this before rendering; `set_transmit_frame` etc. just record calls.
@@ -21,6 +21,12 @@ let POOL: TransmitFrameRecord[] = [];
 // What `describe_message` returns — `null` by default (no DBC match);
 // a test can set a descriptor to exercise the DBC-derived kind/brs path.
 let DESCRIBE: unknown = null;
+// The `list_signals` catalog. Empty by default (no DBC-name resolution);
+// a test can set entries to exercise the collapsed row's DBC-name lookup.
+let SIGNALS: SignalDescriptorRecord[] = [];
+// The `list_value_tables` result, keyed by signal name — a test can
+// populate this to exercise an enum row's fetched datalist/commit path.
+const VALUE_TABLES: Record<string, { raw: number; label: string }[]> = {};
 const calls: Array<{ cmd: string; args: unknown }> = [];
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -30,11 +36,15 @@ vi.mock("@tauri-apps/api/core", () => ({
       case "list_transmit_frames":
         return POOL;
       case "list_signals":
-        return [];
+        return SIGNALS;
       case "describe_message":
         return DESCRIBE;
       case "decode_frame":
         return null;
+      case "list_value_tables":
+        return VALUE_TABLES[(args as { signalName?: string })?.signalName ?? ""] ?? [];
+      case "encode_frame":
+        return { bytes: [0] };
       default:
         return undefined;
     }
@@ -44,12 +54,14 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async () => () => {}),
 }));
 
+import { listen } from "@tauri-apps/api/event";
+
+import { TransmitPanel } from "./TransmitPanel";
 import {
-  TransmitPanel,
   maxDataBytesForKind,
   zeroDataHex,
   resizeDataHexPreserving,
-} from "./TransmitPanel";
+} from "./transmitFrameConfig";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import {
   ElementRegistryContext,
@@ -58,6 +70,7 @@ import {
 } from "./projectElements";
 import type { ProjectElement } from "./types";
 import type { TraceState } from "./trace";
+import { SignalCatalogProvider } from "./signalCatalogContext";
 
 function frame(
   id: string,
@@ -122,9 +135,11 @@ function renderPanel(elementId: string, frameIds: string[]) {
   >[0];
   render(
     <ProjectContext.Provider value={projectCtx}>
-      <ElementRegistryContext.Provider value={registry}>
-        <TransmitPanel {...props} />
-      </ElementRegistryContext.Provider>
+      <SignalCatalogProvider>
+        <ElementRegistryContext.Provider value={registry}>
+          <TransmitPanel {...props} />
+        </ElementRegistryContext.Provider>
+      </SignalCatalogProvider>
     </ProjectContext.Provider>,
   );
   return { updates };
@@ -137,17 +152,78 @@ function lastCall(cmd: string) {
 beforeEach(() => {
   POOL = [];
   DESCRIBE = null;
+  SIGNALS = [];
+  for (const k of Object.keys(VALUE_TABLES)) delete VALUE_TABLES[k];
   calls.length = 0;
 });
 afterEach(() => cleanup());
 
 describe("TransmitPanel (thin view over host registry)", () => {
+  it("resolves the collapsed row's DBC message name from the signal catalog", async () => {
+    // frame("a")'s request defaults to bus b1, id 0x100, classic,
+    // extended false — match it with one catalog entry on that
+    // (bus, message, extended) key.
+    POOL = [frame("a")];
+    SIGNALS = [
+      {
+        bus_id: "b1",
+        message_id: 0x100,
+        extended: false,
+        message_name: "EngineData",
+        transmitter: "EngineEcu",
+        signal_name: "EngineSpeed",
+        unit: "rpm",
+        is_enum: false,
+      },
+    ];
+    renderPanel("el", ["a"]);
+    await waitFor(() =>
+      expect(screen.getByTitle("DBC message name")).toHaveTextContent("EngineData"),
+    );
+  });
+
   it("renders only the messages in the element's frameIds group, in order", async () => {
     POOL = [frame("a"), frame("b"), frame("c")];
     renderPanel("el", ["c", "a"]); // group excludes "b", and reorders
     // Two rows (c, a); "b" is not in this panel's group.
     await waitFor(() =>
       expect(screen.getAllByLabelText("frame description")).toHaveLength(2),
+    );
+  });
+
+  it("re-fetches the pool once the change-event listener is attached (launch race)", async () => {
+    // `listen` is async; a host-side pool change (e.g. project load
+    // seeding TX frames) that lands in the gap between the initial
+    // snapshot fetch and the listener actually being registered would
+    // otherwise be silently missed until the next `transmit-frames-changed`
+    // event or the running-poll — neither of which fires here.
+    let releaseListen: (() => void) | undefined;
+    vi.mocked(listen).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releaseListen = () => resolve(() => Promise.resolve());
+        }),
+    );
+
+    POOL = [];
+    renderPanel("el", ["f1"]);
+
+    // Let the initial snapshot fetch land (pool still empty at this point).
+    await waitFor(() =>
+      expect(calls.filter((c) => c.cmd === "list_transmit_frames")).toHaveLength(1),
+    );
+    expect(screen.queryAllByLabelText("frame description")).toHaveLength(0);
+
+    // The host publishes a frame in the gap before the listener attaches.
+    POOL = [frame("f1", { description: "Gear box" })];
+
+    // Attach completes.
+    releaseListen?.();
+
+    // The post-listener refetch must pick up the frame that arrived
+    // during the attach gap.
+    await waitFor(() =>
+      expect(screen.getAllByLabelText("frame description")).toHaveLength(1),
     );
   });
 
@@ -293,6 +369,23 @@ describe("TransmitPanel (thin view over host registry)", () => {
     expect(await screen.findByText("stop")).toBeInTheDocument();
     expect(screen.queryByText("start")).toBeNull();
   });
+
+  it("editing a payload byte cell writes the new payload back to the host", async () => {
+    POOL = [frame("a")]; // classic, no DBC match — raw byte editing
+    renderPanel("el", ["a"]);
+    await screen.findByLabelText("frame description");
+    // Each byte cell is a hex `<input>` inside a `title="byte N"` label.
+    const input = screen.getByTitle("byte 0").querySelector("input")!;
+    fireEvent.change(input, { target: { value: "AB" } });
+    fireEvent.blur(input);
+    await waitFor(() => {
+      const c = lastCall("set_transmit_frame");
+      expect(c).toBeTruthy();
+      const data = (c!.args as { frame: { request: { data: number[] } } })
+        .frame.request.data;
+      expect(data[0]).toBe(0xab);
+    });
+  });
 });
 
 describe("payload sizing helpers", () => {
@@ -344,6 +437,95 @@ describe("payload sizing helpers", () => {
       expect(frameArg?.calc).toMatchObject({
         counter: { signal: "AliveCtr", increment: 1 },
       });
+    });
+  });
+
+  it("an enum signal fetches its VAL_ table and commits the matched raw on a typed label", async () => {
+    POOL = [frame("a")];
+    DESCRIBE = {
+      name: "Status",
+      expectedLen: 8,
+      isFd: false,
+      brs: false,
+      genMsgCycleTimeMs: 100,
+      genMsgSendType: null,
+      usesExtendedMux: false,
+      calcFields: {},
+      signals: [
+        {
+          name: "Mode",
+          unit: "",
+          factor: 1,
+          offset: 0,
+          min: 0,
+          max: 1,
+          size: 1,
+          signed: false,
+          mux: { kind: "plain" },
+          floatKind: "integer",
+          hasValueTable: true,
+          startValueRaw: null,
+        },
+      ],
+    };
+    VALUE_TABLES.Mode = [
+      { raw: 0, label: "Off" },
+      { raw: 1, label: "On" },
+    ];
+    renderPanel("el", ["a"]);
+    fireEvent.click(await screen.findByTitle("expand"));
+    const input = await screen.findByLabelText("Mode value (enum)");
+    // Typing a label the host's VAL_ table defines (not the currently
+    // decoded one — decode_frame returns null here) resolves through
+    // the fetched table to that label's raw value.
+    fireEvent.change(input, { target: { value: "On" } });
+    fireEvent.blur(input);
+    await waitFor(() => {
+      const call = lastCall("encode_frame");
+      expect(call).toBeDefined();
+      const args = call?.args as { signals?: { name: string; physical: number }[] };
+      expect(args.signals).toEqual([{ name: "Mode", physical: 1 }]);
+    });
+  });
+
+  it("a numeric signal commits the typed physical value through encode_frame", async () => {
+    POOL = [frame("a")];
+    DESCRIBE = {
+      name: "Status",
+      expectedLen: 8,
+      isFd: false,
+      brs: false,
+      genMsgCycleTimeMs: 100,
+      genMsgSendType: null,
+      usesExtendedMux: false,
+      calcFields: {},
+      signals: [
+        {
+          name: "Speed",
+          unit: "kph",
+          factor: 1,
+          offset: 0,
+          min: 0,
+          max: 100,
+          size: 8,
+          signed: false,
+          mux: { kind: "plain" },
+          floatKind: "integer",
+          hasValueTable: false,
+          startValueRaw: null,
+        },
+      ],
+    };
+    renderPanel("el", ["a"]);
+    fireEvent.click(await screen.findByTitle("expand"));
+    const input = await screen.findByLabelText("Speed value");
+    fireEvent.change(input, { target: { value: "42" } });
+    fireEvent.blur(input);
+    await waitFor(() => {
+      const call = lastCall("encode_frame");
+      expect(call).toBeDefined();
+      const args = call?.args as { signals?: { name: string; physical: number }[] };
+      expect(args.signals).toEqual([{ name: "Speed", physical: 42 }]);
     });
   });
 

@@ -283,6 +283,137 @@ impl CanFrameSink for SessionSink {
     }
 }
 
+use tauri::{AppHandle, State};
+
+use crate::app_state::AppState;
+use crate::project;
+use crate::{sys_info, sys_warn};
+
+// local-virtual-bus commands (ADR 0021)
+// ------------------------------------------------------------------
+//
+// Lifecycle: the GUI calls [`replay_local_virtual_buses`] on every
+// project open / new / close. Mid-session edits go through the
+// `create_local_virtual_bus` / `drop_local_virtual_bus` /
+// `attach_*` / `detach_*` commands for live updates.
+
+/// Rebuild every host-side virtual-bus instance from the project's
+/// definitions, and attach observers for each
+/// `local-virtual-bus` binding (ADR 0021). Existing instances are
+/// dropped first.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+// Returns `Result` for IPC-command uniformity even though replay only
+// logs per-bus errors and always succeeds overall.
+#[allow(clippy::unnecessary_wraps)]
+pub(crate) fn replay_local_virtual_buses(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    defs: Vec<project::LocalVirtualBusDef>,
+) -> Result<Vec<String>, String> {
+    let errors = replay(&state.local_buses, &defs);
+    for err in &errors {
+        sys_warn!(&app, "virtual-bus", "{err}");
+    }
+    let ids = state.local_buses.bus_ids();
+    sys_info!(
+        &app,
+        "virtual-bus",
+        "replayed {} local virtual bus(es)",
+        ids.len(),
+    );
+    Ok(ids)
+}
+
+/// Create a virtual bus. The GUI calls this from the project
+/// panel's *Add virtual bus* action. The vbus has no user-
+/// configurable bitrate (see `LocalVirtualBusDef`); the host applies
+/// a fixed default to `SharedBus` internally.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn create_local_virtual_bus(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    name: String,
+) -> Result<(), String> {
+    state
+        .local_buses
+        .create(&id, &name, default_vbus_config())?;
+    sys_info!(&app, "virtual-bus", "created virtual bus {id} ({name})");
+    Ok(())
+}
+
+/// Drop a virtual bus by id. Every observer and bridge attached to
+/// it tears down with it.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn drop_local_virtual_bus(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    if state.local_buses.drop_bus(&id) {
+        sys_info!(&app, "virtual-bus", "dropped virtual bus {id}");
+        Ok(())
+    } else {
+        Err(format!("no virtual bus {id:?}"))
+    }
+}
+
+/// Attach a bridge to a virtual bus. The bridge opens a
+/// `cannet-client` session against `spec.remote_address`. `allocates`
+/// signals that the bridged interface is a virtual-bus factory id
+/// (the client will wait for `InterfaceAllocated`).
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn attach_local_bus_bridge(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    virtual_bus_id: String,
+    spec: project::BridgeSpec,
+    allocates: Option<bool>,
+) -> Result<(), String> {
+    state
+        .local_buses
+        .attach_bridge(&virtual_bus_id, &spec, allocates.unwrap_or(false))?;
+    sys_info!(
+        &app,
+        "virtual-bus",
+        "attached bridge {} on vbus {virtual_bus_id}",
+        spec.name,
+    );
+    Ok(())
+}
+
+/// Detach a bridge from a virtual bus.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn detach_local_bus_bridge(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    virtual_bus_id: String,
+    name: String,
+) -> Result<bool, String> {
+    let removed = state.local_buses.detach_bridge(&virtual_bus_id, &name)?;
+    if removed {
+        sys_info!(
+            &app,
+            "virtual-bus",
+            "detached bridge {name} from vbus {virtual_bus_id}",
+        );
+    }
+    Ok(removed)
+}
+
+/// Snapshot of every virtual bus's installed bridge names — the
+/// GUI's project panel uses it as a readout.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn list_local_bus_bridges(state: State<'_, AppState>, virtual_bus_id: String) -> Vec<String> {
+    state.local_buses.bridge_names(&virtual_bus_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

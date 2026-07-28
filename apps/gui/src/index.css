@@ -1139,10 +1139,17 @@ button.trace-event-swatch {
   flex: 0 0 auto;
 }
 .trace-event-swatch-input {
+  /* Cover the swatch's real footprint (inset:0 stretches the absolutely
+   * positioned input to fill the relative wrap) rather than collapsing to
+   * a zero-size point. The native colour picker anchors to the input's
+   * rendered rect; giving it the swatch box keeps the popover on the
+   * swatch. On macOS a zero-size anchor inside a virtualized,
+   * absolutely-positioned event row lands in the wrong place — this is a
+   * candidate fix for that, pending verification on a Mac. `opacity:0` +
+   * `pointer-events:none` keep it invisible and let the button take the
+   * click (which forwards to `input.click()`). */
   position: absolute;
   inset: 0;
-  width: 0;
-  height: 0;
   opacity: 0;
   pointer-events: none;
   border: 0;
@@ -1370,23 +1377,54 @@ button.trace-event-swatch {
 .plot-panel-areas {
   flex: 1 1 0;
   min-height: 0;
-  overflow-y: auto;
+  /* Fit-to-panel (ADR 0026): derived axes always fit the stack — no
+     scroll list. Height is traded between areas via per-axis flex-grow
+     weights and the splitter drags. `hidden` (not `auto`) so a
+     pathologically short panel clips rather than growing a scrollbar. */
+  overflow: hidden;
   display: flex;
   flex-direction: column;
 }
 
 /* One plot area: a uPlot canvas on the left, a side signal panel on
-   the right. One area fills the stack; N areas split it evenly, each
-   clamped to a usable minimum. The canvas's ResizeObserver follows
+   the right. Areas split the stack by their flex-grow weight (set
+   inline, default 1). `min-height` is the pathological floor where
+   `overflow: hidden` clips; splitter drags clamp at the friendlier
+   AXIS_MIN_PX (ADR 0026). The canvas's ResizeObserver follows
    whatever height it gets. */
 .plot-area {
   display: flex;
   flex: 1 1 0;
-  min-height: 90px;
+  min-height: 24px;
   border-bottom: 1px solid #1f2630;
 }
 .plot-area:last-child {
   border-bottom: none;
+}
+
+/* Draggable separator between two stacked plot axes (ADR 0026). It's a
+   0-height flex child so it takes no room in the fit-to-panel
+   distribution; its grab target is an overlaid pseudo-element
+   straddling the shared border (row-resize cursor, hit-slop margins,
+   the same idiom as the side-panel resizer). */
+.plot-area-splitter {
+  flex: 0 0 0px;
+  position: relative;
+  height: 0;
+  z-index: 5;
+  cursor: row-resize;
+}
+.plot-area-splitter::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -4px;
+  height: 8px;
+}
+.plot-area-splitter:hover::before,
+.plot-area-splitter:active::before {
+  background: rgba(78, 203, 255, 0.25);
 }
 
 .plot-area-ycursors {
@@ -1407,6 +1445,26 @@ button.trace-event-swatch {
 
 .plot-area.focused {
   box-shadow: inset 2px 0 0 #4ecbff;
+}
+
+/* A fully-hidden axis (every signal hidden): drop the canvas so it
+   claims no plot height, and let the side-panel rows stay visible (and
+   un-hideable) as a compact strip. `flex: 0 0 auto` sizes the strip to
+   its rows; a max-height bounds a pathologically long hidden list to an
+   internal scroll rather than starving the visible axes. (ADR 0026
+   hidden-signal handling.) */
+.plot-area.collapsed {
+  flex: 0 0 auto;
+  min-height: 0;
+}
+.plot-area.collapsed .plot-area-canvas,
+.plot-area.collapsed .plot-area-resizer {
+  display: none;
+}
+.plot-area.collapsed .plot-area-signals {
+  flex: 1 1 auto;
+  border-left: none;
+  max-height: 8rem;
 }
 
 .plot-area-canvas {
@@ -2730,11 +2788,17 @@ button.trace-event-swatch {
   color: #64748b;
   text-align: center;
 }
+/* The fixed height is load-bearing: the panel virtualizes its row list
+   and positions the rendered slice against a spacer sized from
+   `ROW_HEIGHT` in `dbcPanelViewport.ts`. Changing it here means changing
+   it there. */
 .dbc-row {
   display: flex;
   align-items: center;
   gap: 0.4rem;
   padding: 0.1rem 0.5rem;
+  height: 20px;
+  box-sizing: border-box;
   white-space: nowrap;
   overflow: hidden;
   cursor: pointer;
@@ -2804,19 +2868,29 @@ button.trace-event-swatch {
   cursor: pointer;
   user-select: none;
 }
+/* Also load-bearing for the virtualizer: a detail block is exactly
+   `DETAIL_LINE_HEIGHT` per rendered `dt`/`dd` pair plus `DETAIL_CHROME`
+   (3 px padding + the 1 px rule) — see `dbcPanelViewport.ts`. The
+   zero row-gap, the fixed line-height, and `dd`'s `nowrap` are what
+   keep that arithmetic exact. */
 .dbc-row-details {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.72rem;
   color: #94a3b8;
   padding-right: 0.5rem;
-  padding-bottom: 0.25rem;
+  padding-bottom: 3px;
   border-bottom: 1px solid rgba(30, 41, 59, 0.5);
 }
 .dbc-details-grid {
   display: grid;
   grid-template-columns: max-content 1fr;
-  gap: 0.15rem 0.7rem;
+  gap: 0 0.7rem;
   margin: 0;
+}
+.dbc-details-grid dt,
+.dbc-details-grid dd {
+  height: 16px;
+  line-height: 16px;
 }
 .dbc-details-grid dt {
   color: #64748b;

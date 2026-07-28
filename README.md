@@ -204,7 +204,8 @@ All platforms need:
   `npm install -g pnpm`, or your OS package manager (`brew install pnpm`,
   `winget install pnpm`, etc.). Verify with `pnpm --version`.
 
-**Optional, for Phase 8 vendor drivers (Vector / Kvaser / PEAK):**
+**Required for `tauri build` (sidecar freeze) and Phase 8 vendor
+drivers (Vector / Kvaser / PEAK):**
 
 - [`uv`](https://docs.astral.sh/uv/) — manages the
   [`cannet-python-can`](servers/cannet-python-can/) sidecar's Python
@@ -272,6 +273,11 @@ pnpm --dir apps/gui tauri dev      # development build with hot reload
 pnpm --dir apps/gui tauri build    # release bundle
 ```
 
+`tauri build` first freezes the `cannet-python-can` sidecar
+([`scripts/build-sidecar.py`](scripts/build-sidecar.py), run by the
+`beforeBuildCommand` hook), so it needs `uv` on `PATH`. Rebuilds are
+incremental — an unchanged sidecar refreezes in seconds.
+
 `pnpm tauri dev` boots Vite, compiles the Rust host, and launches the
 cannet window. Use **Open BLF…** to pick a log; **Add DBC…** loads a
 database for live decoding — load more than one and frames decode
@@ -288,7 +294,7 @@ Pass the launch flags through to the binary (after a `--` separator under
 
 ```sh
 pnpm --dir apps/gui tauri dev -- -- \
-  --project examples/ev-demo/ev-demo.cannet_prj \
+  --project examples/ev-zonal/ev-zonal.cannet_prj \
   --connect-on-start \
   --perf-capture-secs 60 \
   --perf-out docs/performance-measurements/frontend/<date>-<hash>.json

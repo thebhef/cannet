@@ -399,7 +399,11 @@ def _install_fake_pcan(devices, detected=None):
             for h, dev in devices.items()
         ]
     original = can.detect_available_configs
-    can.detect_available_configs = lambda interfaces=None: list(detected)
+
+    def _fake_detect(interfaces: object = None) -> list[dict[str, object]]:
+        return list(detected)
+
+    can.detect_available_configs = _fake_detect
     return original
 
 
@@ -649,8 +653,8 @@ def test_open_pcan_disables_status_frames() -> None:
     fake_param = object()
     fake_off = object()
     mod_basic = sys.modules["can.interfaces.pcan.basic"]
-    mod_basic.PCAN_ALLOW_STATUS_FRAMES = fake_param
-    mod_basic.PCAN_PARAMETER_OFF = fake_off
+    setattr(mod_basic, "PCAN_ALLOW_STATUS_FRAMES", fake_param)
+    setattr(mod_basic, "PCAN_PARAMETER_OFF", fake_off)
 
     setvalue_calls: list[tuple[object, object, object]] = []
 

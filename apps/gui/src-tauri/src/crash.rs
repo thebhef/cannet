@@ -56,7 +56,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::sys_info;
 use crate::system_log::{LogLevel, SystemMessage};
-use crate::AppState;
+use crate::app_state::AppState;
 
 /// Rolling log file name under [`log_dir`].
 pub const LOG_FILE: &str = "cannet.log";

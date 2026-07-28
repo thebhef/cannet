@@ -26,31 +26,13 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::seg::{create_segment, open_segment, Segment};
+use crate::seg::{open_segment, Segment};
+use crate::seg_chain::{
+    evict_leading, geometric_locate, geometric_push_grow, geometric_seg_capacity, lower_bound,
+};
 
-/// Entries in the first (smallest) per-id segment.
-const BASE_ENTRIES: usize = 64;
-/// Cap on per-id segment size; segments double up to here, then stay.
-const MAX_SEG_ENTRIES: usize = 65_536;
-/// `seg` index at which `BASE_ENTRIES << seg` first reaches the cap
-/// (`64 << 10 == 65_536`). Beyond it every segment is `MAX_SEG_ENTRIES`.
-const CAP_SEG: usize = 10;
 /// Bytes per posting entry (a `u64` frame index).
 const ENTRY_BYTES: usize = 8;
-
-/// Entry capacity of posting segment `seg`: `BASE_ENTRIES` doubled per
-/// step, capped at `MAX_SEG_ENTRIES`. Branching on [`CAP_SEG`] (rather
-/// than `(BASE_ENTRIES << seg).min(MAX_SEG_ENTRIES)`) keeps the shift in
-/// range — a hot id needing 58+ segments would otherwise overflow the
-/// `<<`. The geometry is deterministic in `seg`, so the reopen path
-/// rebuilds an id's chain from its persisted length alone.
-fn seg_capacity(seg: usize) -> usize {
-    if seg >= CAP_SEG {
-        MAX_SEG_ENTRIES
-    } else {
-        BASE_ENTRIES << seg
-    }
-}
 
 /// File-name prefix for every by-id segment (used to wipe them on clear).
 pub(crate) const BYID_PREFIX: &str = "byid.";
@@ -66,10 +48,14 @@ struct IdPostings {
     /// in `O(log segs)`.
     cum_cap: Vec<usize>,
     len: usize,
-    /// Absolute index of the first segment that may hold un-flushed entries —
-    /// the tail at the previous flush. Appends only ever touch the tail, so a
-    /// flush re-syncs from here forward, never the sealed segments below it.
-    flushed_from: usize,
+    /// Absolute entry count already handed to writeback — `len` as of the
+    /// previous flush. Appends only ever extend past it, so a flush syncs
+    /// exactly the byte range `[flushed_len, len)` and an id with no new
+    /// postings costs nothing at all (no per-id syscall). That per-id
+    /// skip is what keeps the periodic flush off the append lock's
+    /// critical path: whole-map re-syncs across every id were the
+    /// dominant cost of the 2 s flush tick (measured 2026-07-25).
+    flushed_len: usize,
     /// Windowed-ring floor (ADR 0002 DS-8 / 6d): the lowest still-mapped slot,
     /// always a segment boundary. `0` until eviction drops leading segments.
     /// Reads stay within `[first_slot, len)`; a binary search lower-bounds
@@ -87,9 +73,8 @@ impl IdPostings {
 
     /// `(absolute segment index, byte offset within it)` for entry slot `k`.
     fn locate(&self, k: usize) -> (usize, usize) {
-        let seg = self.cum_cap.partition_point(|&c| c <= k);
-        let base = if seg == 0 { 0 } else { self.cum_cap[seg - 1] };
-        (seg, (k - base) * ENTRY_BYTES)
+        let (seg, off) = geometric_locate(&self.cum_cap, k);
+        (seg, off * ENTRY_BYTES)
     }
 
     /// The frame index stored at the live slot `k` (`first_slot <= k < len`).
@@ -120,17 +105,16 @@ impl IdPostings {
             // earlier ones (those whose cumulative capacity fits below it).
             self.cum_cap.partition_point(|&c| c <= floor_slot)
         };
-        while self.seg_base < target_base {
-            drop(self.segs.remove(0)); // unmap before deleting (Windows)
-            let _ = std::fs::remove_file(seg_path(dir, id, extended, self.seg_base));
-            self.seg_base += 1;
-        }
+        evict_leading(&mut self.segs, &mut self.seg_base, target_base, |i| {
+            seg_path(dir, id, extended, i)
+        });
         self.first_slot = if self.seg_base == 0 {
             0
         } else {
             self.cum_cap[self.seg_base - 1]
         };
-        self.flushed_from = self.flushed_from.max(self.seg_base);
+        // `flushed_len` needs no adjustment: it counts absolute entries,
+        // and the flush path clamps its start to the surviving floor.
         self.first_slot >= self.len
     }
 }
@@ -170,7 +154,7 @@ impl ByIdIndex {
             // deterministic in the absolute segment index).
             while post.capacity() < len {
                 let i = post.cum_cap.len();
-                let cap = seg_capacity(i);
+                let cap = geometric_seg_capacity(i);
                 let prev = post.cum_cap.last().copied().unwrap_or(0);
                 post.cum_cap.push(prev + cap);
             }
@@ -183,9 +167,9 @@ impl ByIdIndex {
             post.len = len;
             post.first_slot = first_slot;
             post.seg_base = seg_base;
-            // Reopened segments are durable; the next flush re-syncs only
-            // from the active tail.
-            post.flushed_from = seg_base + post.segs.len().saturating_sub(1);
+            // Reopened bytes are durable; the next flush syncs only what
+            // is appended after this point.
+            post.flushed_len = len;
             map.insert((id, extended), post);
         }
         Ok(Self { dir, map })
@@ -202,24 +186,48 @@ impl ByIdIndex {
             .collect()
     }
 
-    /// Flush the posting segments dirtied since the last flush so the
-    /// postings are durable before the manifest that references them is
-    /// written. Incremental: each posting only appends to its tail, so
-    /// sealed segments below `flushed_from` are already durable and are not
-    /// re-synced — keeping a flush `O(active segments)`, not `O(all by-id
-    /// segments)`, which at deep history is the bulk of the flush cost.
+    /// Flush the postings. Two flavors (ADR 0002 DS-2):
+    ///
+    /// - **async** (`sync == false`, the periodic tick): queue writeback
+    ///   of just the `[flushed_len, len)` entry range per id, skipping
+    ///   clean ids without a syscall — see
+    ///   [`Segment::queue_writeback`] for the platform split (a no-op on
+    ///   Windows, where the nearest API stalls ~0.3–0.5 ms per call and
+    ///   dozens of dirty ids per tick stalled the transmit scheduler —
+    ///   measured 2026-07-25).
+    /// - **sync** (the shutdown-hardening path): flush every live
+    ///   segment whole and wait for the device — deliberately ignoring
+    ///   the watermarks, so its guarantee never depends on what the
+    ///   async flavor did or didn't queue.
     pub(crate) fn flush(&mut self, sync: bool) -> std::io::Result<()> {
         for post in self.map.values_mut() {
-            // `flushed_from` is an absolute segment number; index the
-            // front-trimmed `Vec` relative to the dropped base (DS-8).
-            for seg in &post.segs[post.flushed_from - post.seg_base..] {
-                if sync {
+            if sync {
+                for seg in &post.segs {
                     seg.map.flush()?;
-                } else {
-                    seg.map.flush_async()?;
                 }
+                post.flushed_len = post.len;
+                continue;
             }
-            post.flushed_from = post.seg_base + post.segs.len().saturating_sub(1);
+            // Clamp to the windowed-ring floor: entries below it live in
+            // dropped segments (DS-8).
+            let start = post.flushed_len.max(post.first_slot);
+            if post.len <= start {
+                post.flushed_len = post.len.max(post.flushed_len);
+                continue;
+            }
+            let (first_seg, first_off) = post.locate(start);
+            let (last_seg, last_off) = post.locate(post.len - 1);
+            for seg_no in first_seg..=last_seg {
+                let seg = &post.segs[seg_no - post.seg_base];
+                let from = if seg_no == first_seg { first_off } else { 0 };
+                let to = if seg_no == last_seg {
+                    last_off + ENTRY_BYTES
+                } else {
+                    seg.map.len()
+                };
+                seg.queue_writeback(from, to - from)?;
+            }
+            post.flushed_len = post.len;
         }
         Ok(())
     }
@@ -243,15 +251,9 @@ impl ByIdIndex {
         // method on `self` would conflict with the `&mut` posting borrow).
         let dir = &self.dir;
         let post = self.map.entry((id, extended)).or_default();
-        if post.len == post.capacity() {
-            let i = post.cum_cap.len(); // absolute segment number (survives a trim)
-            let cap = seg_capacity(i);
-            let seg = create_segment(&seg_path(dir, id, extended, i), cap * ENTRY_BYTES)
-                .expect("cannet-spill: by-id segment I/O failed");
-            post.segs.push(seg);
-            let prev = post.cum_cap.last().copied().unwrap_or(0);
-            post.cum_cap.push(prev + cap);
-        }
+        geometric_push_grow(&mut post.segs, &mut post.cum_cap, post.len, ENTRY_BYTES, |i| {
+            seg_path(dir, id, extended, i)
+        });
         let (seg, off) = post.locate(post.len);
         post.segs[seg - post.seg_base].map[off..off + ENTRY_BYTES]
             .copy_from_slice(&frame_idx.to_le_bytes());
@@ -305,17 +307,7 @@ fn seg_path(dir: &Path, id: u32, extended: bool, seg: usize) -> PathBuf {
 /// `>= target` (the partition point of an ascending list). Lower-bounding at
 /// `first_slot` keeps the search out of any dropped leading segment (DS-8).
 fn partition_point(post: &IdPostings, target: u64) -> usize {
-    let mut lo = post.first_slot;
-    let mut hi = post.len;
-    while lo < hi {
-        let mid = lo + (hi - lo) / 2;
-        if post.entry(mid) < target {
-            lo = mid + 1;
-        } else {
-            hi = mid;
-        }
-    }
-    lo
+    lower_bound(post.first_slot, post.len, target, |k| post.entry(k))
 }
 
 #[cfg(test)]
@@ -409,6 +401,35 @@ mod tests {
     }
 
     #[test]
+    fn interleaved_flushes_keep_postings_intact_across_boundaries_and_eviction() {
+        // The incremental flush syncs only `[flushed_len, len)` per id and
+        // skips clean ids entirely. Interleave flushes with appends that
+        // cross geometric segment boundaries, evict, and flush again — the
+        // watermark bookkeeping must never corrupt reads or error.
+        let dir = TempDir::new().unwrap();
+        let mut idx = ByIdIndex::new(dir.path());
+        for i in 0u64..50 {
+            idx.push(7, false, i); // inside the first (64-entry) segment
+        }
+        idx.flush(false).unwrap();
+        idx.flush(false).unwrap(); // clean id: skip path, still Ok
+        for i in 50u64..500 {
+            idx.push(7, false, i); // crosses 64 and 192 boundaries
+        }
+        idx.flush(false).unwrap();
+        idx.evict_below(300); // drops leading segments below the mark
+        for i in 500u64..700 {
+            idx.push(7, false, i);
+        }
+        idx.flush(false).unwrap(); // watermark below the floor: clamped
+        idx.flush(true).unwrap(); // sync flavor over the same state
+        let got = idx.range(7, false, 0, 1000);
+        let floor = got[0];
+        assert!(floor <= 300);
+        assert_eq!(got, (floor..700).collect::<Vec<usize>>());
+    }
+
+    #[test]
     fn evict_below_removes_a_fully_dead_id() {
         // A rare id whose every sighting is below the mark drops out entirely
         // (all its segments are dead).
@@ -422,6 +443,39 @@ mod tests {
         idx.evict_below(50);
         assert!(idx.range(0x55, false, 0, 1000).is_empty(), "the rare id is gone");
         assert!(!idx.range(7, false, 0, 1000).is_empty(), "the live id stays");
+    }
+
+    #[cfg(unix)]
+    fn open_fd_count() -> usize {
+        // Every open descriptor shows up as an entry under /dev/fd (a
+        // /proc/self/fd symlink on Linux, a real dir on macOS).
+        std::fs::read_dir("/dev/fd").map_or(0, Iterator::count)
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn segments_do_not_retain_file_descriptors() {
+        // A mmap'd segment must not keep its file descriptor open for the
+        // mapping's lifetime: the by-id index holds one segment chain per
+        // distinct id, so retaining an fd per segment exhausts RLIMIT_NOFILE
+        // (EMFILE) mid-import on a capture with many ids. Push across 400
+        // ids, each past the first segment boundary (>64 entries → ≥2
+        // segments), and assert the open-fd count stays bounded — not O(ids).
+        let dir = TempDir::new().unwrap();
+        let mut idx = ByIdIndex::new(dir.path());
+        let before = open_fd_count();
+        for id in 0u32..400 {
+            for f in 0u64..100 {
+                idx.push(id, false, f);
+            }
+        }
+        let after = open_fd_count();
+        // 400 ids × ≥2 segments = ≥800 fds if each segment retains one; a
+        // margin of 64 absorbs incidental fds from parallel tests.
+        assert!(
+            after <= before + 64,
+            "open fds grew from {before} to {after}; segments retain file descriptors"
+        );
     }
 
     #[test]

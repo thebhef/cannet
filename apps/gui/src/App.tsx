@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { emit, listen } from "@tauri-apps/api/event";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { DockviewDefaultTab, DockviewReact, themeAbyss } from "dockview";
-import type { AddPanelOptions, DockviewApi, DockviewReadyEvent } from "dockview";
+import type { DockviewApi, DockviewReadyEvent } from "dockview";
 
 import type {
   Bus,
@@ -58,16 +58,12 @@ import { useTransientStatus } from "./useTransientStatus";
 import { NotesContext, type NotesContextValue } from "./notesContext";
 import type { Note } from "./notes";
 import { sortNotesChronologically } from "./notes";
-import { GOTO_EVENT, gotoEventItems } from "./gotoEvent";
-import { elementViewEntries } from "./gotoViews";
 import { ShortcutsPanel } from "./ShortcutsPanel";
-import { KeybindingsContext, type KeybindingsController } from "./keybindingsContext";
-import { loadSettings, saveSettings } from "./hostSettings";
+import { KeybindingsContext } from "./keybindingsContext";
 import { recordRecentBlf, forgetRecentBlf } from "./recentBlfs";
 import {
   hostState,
   setRecentBlfs as persistRecentBlfs,
-  setRecentCommands as persistRecentCommands,
   setLastProject as persistLastProject,
   setLayout as persistLayout,
   setBlfChannelMaps as persistBlfChannelMaps,
@@ -76,6 +72,7 @@ import { recordBlfChannelMap, savedBlfChannelMap } from "./blfChannelMap";
 import type { SystemMessage } from "./types";
 import { TraceDataContext, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
+import { SignalCatalogProvider } from "./signalCatalogContext";
 import { CloseConfirmModal, type CloseChoice } from "./CloseConfirmModal";
 import { BlfChannelMapModal } from "./BlfChannelMapModal";
 import {
@@ -88,79 +85,45 @@ import {
 } from "./projectElements";
 import {
   type TraceState,
-  clearTraceStartOffset,
   clearedTrace,
   freshTrace,
   reanchorToSession,
   restoredTrace,
 } from "./trace";
 import { defaultBusColor } from "./busColor";
+import { useSessionReset } from "./useSessionReset";
 import { assignDefaultNames, defaultElementName, elementLabel } from "./elementLabel";
 import {
   BY_ID_PANEL_COMPONENT,
   DBC_PANEL_COMPONENT,
-  DBC_PANEL_ID,
   PLOT_PANEL_COMPONENT,
   PROJECT_GRAPH_PANEL_COMPONENT,
-  PROJECT_GRAPH_PANEL_ID,
   PROJECT_PANEL_COMPONENT,
   PROJECT_PANEL_ID,
   COLORMAP_PANEL_COMPONENT,
   RBS_PANEL_COMPONENT,
   SETTINGS_PANEL_COMPONENT,
-  SETTINGS_PANEL_ID,
   ABOUT_PANEL_COMPONENT,
-  ABOUT_PANEL_ID,
   EVENTS_PANEL_COMPONENT,
-  EVENTS_PANEL_ID,
   SHORTCUTS_PANEL_COMPONENT,
-  SHORTCUTS_PANEL_ID,
   SIGNALS_PANEL_COMPONENT,
   SYSTEM_MESSAGES_PANEL_COMPONENT,
-  SYSTEM_MESSAGES_PANEL_ID,
   TRACE_PANEL_COMPONENT,
   TRANSMIT_PANEL_COMPONENT,
   elementPanelComponent,
-  isTabMiddlePress,
-  panelKindForFocus,
   stripMaximizedNode,
   validateLayout,
 } from "./dockLayout";
 import {
-  COMMANDS,
-  commandsAvailableIn,
-  parseBindings,
-  resolveBindings,
-  type BindingSpec,
-  type CommandContext,
-} from "./commands";
-import {
-  dispatchStroke,
-  formatChord,
-  isEditableTarget,
-  isMacPlatform,
-  type KeyStroke,
-} from "./keybindings";
-import {
   EMPTY_FOCUS_HISTORY,
   initLayoutHistory,
-  navigateFocus,
   recordFocus,
   recordLayout,
-  redoLayout,
-  undoLayout,
   type FocusHistory,
   type LayoutHistory,
 } from "./viewHistory";
-import { PaletteModal, type PaletteItem } from "./PaletteModal";
-import {
-  recordRecentCommand,
-  sortRecentFirst,
-} from "./recentCommands";
-import {
-  PanelCommandsContext,
-  createPanelCommandRegistry,
-} from "./panelCommands";
+import { PanelCommandsContext } from "./panelCommands";
+import { useCommands } from "./useCommands";
 import {
   beginDiagCapture,
   diagCount,
@@ -387,6 +350,22 @@ export function App() {
   // launch. The mirrored refs let that once-mounted effect read live
   // connect preconditions without re-subscribing on every change.
   const [automation, setAutomation] = useState<AutomationConfig | null>(null);
+  // Process-lifetime latch: the automation run is a one-shot. Without
+  // it, StrictMode's dev double-invoke of the onReady init calls
+  // `setAutomation` twice with distinct object identities, the
+  // `[automation]` effect fires twice, and two racing `handleConnect`s
+  // leave the loser's "already connected" error as the visible status
+  // (observed 2026-07-25: every self-driving run double-connected).
+  const automationRanRef = useRef(false);
+  // Same family: dockview re-initializes under StrictMode, so `onReady`
+  // fires twice and the boot project-open would run twice — the second
+  // `open_project` re-adds every DBC and the dbc-changed refresh storm
+  // lands mid-boot (observed 2026-07-25: every self-driving run opened
+  // the project twice, and the storm racing live streaming blanked the
+  // app). Refs persist across StrictMode effect replays, so this
+  // one-shots the boot open; `applyProject` reads `dockApiRef.current`,
+  // so the surviving dockview instance still gets the layout.
+  const bootOpenRanRef = useRef(false);
   const interfaceBindingsRef = useRef<InterfaceBinding[]>([]);
   const sidecarAddressRef = useRef<string | null>(null);
   const handleConnectRef = useRef<() => Promise<void>>(() => Promise.resolve());
@@ -561,37 +540,14 @@ export function App() {
 
   // --- command / hotkey framework (ADR 0018) ---
   // The active dockview panel, tracked via `onDidActivePanelChange`
-  // (subscribed in `handleDockReady`). Feeds the typed command
-  // context's `focusedPanelKind` and routes panel-local commands
-  // (the plot `f` / `l` hotkeys) to the focused panel's element.
+  // (subscribed in `handleDockReady`). The command subsystem
+  // (`useCommands`) reads it for the typed command context's
+  // `focusedPanelKind` and to route panel-local commands (the plot
+  // `f` / `l` hotkeys) to the focused panel's element.
   const [activePanel, setActivePanel] = useState<{
     id: string;
     elementId: string | null;
   } | null>(null);
-  const focusedPanelKind = useMemo(() => {
-    if (!activePanel) return null;
-    const elementKind = activePanel.elementId
-      ? registry.find((e) => e.element.id === activePanel.elementId)?.element.kind ?? null
-      : null;
-    return panelKindForFocus(activePanel.id, elementKind);
-  }, [activePanel, registry]);
-  // Which palette is open: the command palette (Mod+Shift+P),
-  // go-to-view (Mod+P), or go-to-event.
-  const [openPalette, setOpenPalette] = useState<"commands" | "goto" | "gotoEvent" | null>(
-    null,
-  );
-  // User keybinding customisation (ADR 0018): `null` = the built-in
-  // defaults are in effect. Loaded from `settings.json` on mount and
-  // persisted on each edit from the shortcuts panel. The effective,
-  // sanitised binding set the dispatcher runs is derived from it.
-  const [userBindings, setUserBindings] = useState<BindingSpec[] | null>(null);
-  // The last few commands run (MRU, capped — see recentCommands.ts);
-  // the command palette floats them to the top, VS Code-style.
-  const [recentCommands, setRecentCommands] = useState<string[]>(
-    () => hostState().recent_commands,
-  );
-  // Panel-local command implementations (plot fit / follow-live).
-  const [panelCommands] = useState(createPanelCommandRegistry);
 
   // Re-anchor every trace window: bump the epoch (each window folds it
   // into its descriptor and drops/re-fetches) and clear the live tail.
@@ -618,6 +574,16 @@ export function App() {
   const startAllElements = useCallback(() => {
     setRegistry((prev) => prev.map((e) => ({ ...e, trace: freshTrace(0) })));
   }, []);
+
+  // The shared session (re)start step (clear the host store + reset the
+  // frontend's derived session state). Each call site below supplies its
+  // own clear-error policy — they differ on purpose.
+  const resetSession = useSessionReset({
+    invalidateCache,
+    setSessionStartSeconds,
+    setCount,
+    startAllElements,
+  });
 
   // Bootstrap + live-update the system-log mirror. The
   // snapshot is the source of truth on mount; thereafter the host's
@@ -755,30 +721,6 @@ export function App() {
     });
   }, [count]);
 
-  // Drop every trace view's per-view time-column offset when the
-  // session itself restarts (`sessionStartSeconds` changes). The
-  // offset is in session-relative seconds and stops meaning anything
-  // sensible the moment the session it referenced is gone — left
-  // alone, a stale value from the previous session shifts the next
-  // session's clock and shows negative deltas. The Connect / toolbar-
-  // Clear paths null `sessionStartSeconds` themselves; this effect
-  // also catches the host-initiated re-anchor in BLF replay (first
-  // frame becomes session start) and any other future trigger.
-  useEffect(() => {
-    setRegistry((prev) => {
-      let changed = false;
-      const next = prev.map((e) => {
-        const t = clearTraceStartOffset(e.trace);
-        if (t === e.trace) return e;
-        changed = true;
-        return { ...e, trace: t };
-      });
-      if (changed) diagCount("registry.clearOffset"); // DIAG
-      return changed ? next : prev;
-    });
-  }, [sessionStartSeconds]);
-
-
   // BLF import has a channel → bus mapping step. The
   // outer pending state holds the picked BLF path + its distinct
   // channel list while the modal is open; clicking "Open" in the
@@ -828,12 +770,19 @@ export function App() {
       persistBlfChannelMaps(
         recordBlfChannelMap(hostState().blf_channel_maps, projectId, blfPath, choices),
       );
+      // Abort the import if the host clear fails — and drop the recent
+      // entry, since the open won't happen.
+      if (
+        !(await resetSession({
+          onError: (err) => {
+            setState({ kind: "error", message: String(err) });
+            dropRecentBlf(blfPath);
+          },
+        }))
+      ) {
+        return;
+      }
       try {
-        await invoke("clear_trace_store");
-        invalidateCache();
-        setSessionStartSeconds(null);
-        setCount(0);
-        startAllElements();
         const channelBusMapping = channels.map((ch) => ({
           channel: ch,
           busId: choices[ch] ? choices[ch] : null,
@@ -852,7 +801,7 @@ export function App() {
         dropRecentBlf(blfPath);
       }
     },
-    [pendingBlf, projectId, invalidateCache, startAllElements, rememberRecentBlf, dropRecentBlf],
+    [pendingBlf, projectId, resetSession, rememberRecentBlf, dropRecentBlf],
   );
 
   // Add one or more DBCs to the loaded set (each goes through the host's
@@ -928,16 +877,13 @@ export function App() {
   );
 
   const handleClear = useCallback(async () => {
-    try {
-      await invoke("clear_trace_store");
-    } catch (err) {
-      setState({ kind: "error", message: String(err) });
-    }
-    invalidateCache();
-    setSessionStartSeconds(null);
-    setCount(0);
-    startAllElements();
-  }, [invalidateCache, startAllElements]);
+    // Clear continues past a host-clear failure: surface the error but
+    // reset the session anyway.
+    await resetSession({
+      onError: (err) => setState({ kind: "error", message: String(err) }),
+      resetOnClearError: true,
+    });
+  }, [resetSession]);
 
   // Connect to every server that has at least one binding in the
   // project. Each unique `server` in `interfaceBindings` becomes its
@@ -1049,14 +995,13 @@ export function App() {
       setInterfaceBindings(effectiveBindings);
     }
 
-    try {
-      await invoke("clear_trace_store");
-      invalidateCache();
-      setSessionStartSeconds(null);
-      setCount(0);
-      startAllElements();
-    } catch (err) {
-      setState({ kind: "error", message: String(err) });
+    // Connect aborts on a host-clear failure: don't touch the session or
+    // open any server if the buffer couldn't be cleared.
+    if (
+      !(await resetSession({
+        onError: (err) => setState({ kind: "error", message: String(err) }),
+      }))
+    ) {
       return;
     }
 
@@ -1111,7 +1056,7 @@ export function App() {
         });
       }
     }
-  }, [buses, interfaceBindings, sidecarAddress, invalidateCache, startAllElements]);
+  }, [buses, interfaceBindings, sidecarAddress, resetSession]);
 
   // Tear down every active session. The host drains its session map.
   const handleDisconnect = useCallback(async () => {
@@ -1360,12 +1305,12 @@ export function App() {
     // Drop the host TX-message pool too, so a New
     // project starts with no transmit frames.
     void invoke("clear_transmit_frames").catch(() => {});
-    void invoke("clear_trace_store").catch(() => {});
-    invalidateCache();
-    setSessionStartSeconds(null);
-    setCount(0);
+    // Fire-and-forget the host clear + reset the session synchronously.
+    // `seedDefaultLayout` already reseeded the registry, so don't restart
+    // elements.
+    void resetSession({ fireAndForget: true, startElements: false });
     setDirty(false);
-  }, [seedDefaultLayout, rememberProject, loadDbcSet, invalidateCache]);
+  }, [seedDefaultLayout, rememberProject, loadDbcSet, resetSession]);
 
   const handleOpenProject = useCallback(async () => {
     const selected = await open({
@@ -1497,6 +1442,8 @@ export function App() {
   // persist: touch interfaces, and record.
   useEffect(() => {
     if (!automation) return;
+    if (automationRanRef.current) return; // one-shot (see the ref's docs)
+    automationRanRef.current = true;
     let cancelled = false;
     const sleep = (ms: number) =>
       new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -1642,33 +1589,15 @@ export function App() {
     setDirty(true);
     invalidateCache();
   }, [invalidateCache]);
-  const handleRenameBus = useCallback((id: string, name: string) => {
-    setBuses((prev) => prev.map((b) => (b.id === id ? { ...b, name } : b)));
+  // Shallow patch of one bus's persisted fields — inline rename, graph
+  // colour, and the hardware-config knobs (nominal speed / FD toggle /
+  // data-phase speed) all go through here (mirrors
+  // `handleUpdateVirtualBus`'s patch shape). Pure project state; the
+  // host applies any hardware change on the next Connect.
+  const handleUpdateBus = useCallback((id: string, patch: Partial<Bus>) => {
+    setBuses((prev) => prev.map((b) => (b.id === id ? { ...b, ...patch } : b)));
     setDirty(true);
   }, []);
-  const handleSetBusColor = useCallback((id: string, color: string) => {
-    setBuses((prev) => prev.map((b) => (b.id === id ? { ...b, color } : b)));
-    setDirty(true);
-  }, []);
-  const handleSetBusSpeed = useCallback((id: string, speed_bps: number | null) => {
-    setBuses((prev) =>
-      prev.map((b) => (b.id === id ? { ...b, speed_bps } : b)),
-    );
-    setDirty(true);
-  }, []);
-  const handleSetBusFd = useCallback((id: string, fd: boolean | null) => {
-    setBuses((prev) => prev.map((b) => (b.id === id ? { ...b, fd } : b)));
-    setDirty(true);
-  }, []);
-  const handleSetBusFdDataSpeed = useCallback(
-    (id: string, fd_data_speed_bps: number | null) => {
-      setBuses((prev) =>
-        prev.map((b) => (b.id === id ? { ...b, fd_data_speed_bps } : b)),
-      );
-      setDirty(true);
-    },
-    [],
-  );
   // Interface-binding mutations. Each project bus has at
   // most one binding (key is `bus_id`); multiple bindings may target
   // the same source — the sidecar and the
@@ -1738,88 +1667,33 @@ export function App() {
     setDirty(true);
   }, []);
 
-  // Tab titles come from the element's model-owned name (ADR 0019):
-  // the handler computes the same `${Kind} ${n}` default `create`
-  // assigns (against the registry the element is joining), and the
-  // title-sync effect below keeps the tab current thereafter.
-  const addTracePanel = useCallback(() => {
-    const api = dockApiRef.current;
-    if (!api) return;
-    const title = defaultElementName("trace", registryRef.current.map((e) => e.element));
-    const elementId = create("trace");
-    // A new trace starts in by-id mode (toggle it in the panel toolbar).
-    api.addPanel({
-      id: `trace-${elementId}`,
-      component: TRACE_PANEL_COMPONENT,
-      title,
-      params: { elementId, mode: "by-id" },
-    });
-  }, [create]);
-
-  const addPlotPanel = useCallback(() => {
-    const api = dockApiRef.current;
-    if (!api) return;
-    const title = defaultElementName("plot", registryRef.current.map((e) => e.element));
-    const elementId = create("plot");
-    api.addPanel({
-      id: `plot-${elementId}`,
-      component: PLOT_PANEL_COMPONENT,
-      title,
-      params: { elementId },
-    });
-  }, [create]);
-
-  const addSignalsPanel = useCallback(() => {
-    const api = dockApiRef.current;
-    if (!api) return;
-    const title = defaultElementName("signals", registryRef.current.map((e) => e.element));
-    const elementId = create("signals");
-    api.addPanel({
-      id: `signals-${elementId}`,
-      component: SIGNALS_PANEL_COMPONENT,
-      title,
-      params: { elementId },
-    });
-  }, [create]);
-
-  const addTransmitPanel = useCallback(() => {
-    const api = dockApiRef.current;
-    if (!api) return;
-    const title = defaultElementName("transmit", registryRef.current.map((e) => e.element));
-    const elementId = create("transmit");
-    api.addPanel({
-      id: `transmit-${elementId}`,
-      component: TRANSMIT_PANEL_COMPONENT,
-      title,
-      params: { elementId },
-    });
-  }, [create]);
-
-  const addRbsPanel = useCallback(() => {
-    const api = dockApiRef.current;
-    if (!api) return;
-    const title = defaultElementName("rbs", registryRef.current.map((e) => e.element));
-    const elementId = create("rbs");
-    api.addPanel({
-      id: `rbs-${elementId}`,
-      component: RBS_PANEL_COMPONENT,
-      title,
-      params: { elementId },
-    });
-  }, [create]);
-
-  const addColorMapPanel = useCallback(() => {
-    const api = dockApiRef.current;
-    if (!api) return;
-    const title = defaultElementName("colormap", registryRef.current.map((e) => e.element));
-    const elementId = create("colormap");
-    api.addPanel({
-      id: `colormap-${elementId}`,
-      component: COLORMAP_PANEL_COMPONENT,
-      title,
-      params: { elementId },
-    });
-  }, [create]);
+  // Add a fresh element of `kind` and open its dockview panel. The
+  // kind→component map is `elementPanelComponent` (dockLayout), and the
+  // panel id is `${component}-${elementId}` — the same scheme
+  // `openElementView` and the saved-layout restore use, so a panel
+  // added here reopens to the same id. A new trace opens in by-id mode
+  // (toggle it in the panel toolbar). Tab titles come from the
+  // element's model-owned name (ADR 0019): the same `${Kind} ${n}`
+  // default `create` assigns (against the registry the element is
+  // joining); the title-sync effect below keeps the tab current
+  // thereafter.
+  const addPanel = useCallback(
+    (kind: ProjectElementKind) => {
+      const api = dockApiRef.current;
+      if (!api) return;
+      const component = elementPanelComponent(kind);
+      if (!component) return; // panel-less kind (`filter`)
+      const title = defaultElementName(kind, registryRef.current.map((e) => e.element));
+      const elementId = create(kind);
+      api.addPanel({
+        id: `${component}-${elementId}`,
+        component,
+        title,
+        params: kind === "trace" ? { elementId, mode: "by-id" } : { elementId },
+      });
+    },
+    [create],
+  );
 
   // --- RBS host lifecycle (ADR 0028) ---
   // The host resolves `.cannet_rbs` bus-name keys against the
@@ -1929,102 +1803,6 @@ export function App() {
   }, [registry]);
 
 
-  // Show-or-focus a singleton panel keyed by its fixed id. Used by the
-  // toolbar buttons for Project, Graph, and System messages — clicking
-  // brings the panel forward if it's already open, otherwise adds it.
-  const showSingletonPanel = useCallback((options: AddPanelOptions) => {
-    const api = dockApiRef.current;
-    if (!api) return;
-    const existing = api.panels.find((p) => p.id === options.id);
-    if (existing) {
-      existing.api.setActive();
-      return;
-    }
-    api.addPanel(options);
-  }, []);
-
-  const showProjectGraphPanel = useCallback(
-    () =>
-      showSingletonPanel({
-        id: PROJECT_GRAPH_PANEL_ID,
-        component: PROJECT_GRAPH_PANEL_COMPONENT,
-        title: "Graph",
-      }),
-    [showSingletonPanel],
-  );
-
-  const showSystemMessagesPanel = useCallback(
-    () =>
-      showSingletonPanel({
-        id: SYSTEM_MESSAGES_PANEL_ID,
-        component: SYSTEM_MESSAGES_PANEL_COMPONENT,
-        title: "System messages",
-      }),
-    [showSingletonPanel],
-  );
-
-  // DBC discovery panel — singleton (same pattern as project /
-  // graph / system-messages). The host owns the loaded-DBC set; the
-  // panel is purely a viewer. Its search query + expand state survive
-  // a layout save through dockview panel params.
-  const showDbcPanel = useCallback(
-    () =>
-      showSingletonPanel({
-        id: DBC_PANEL_ID,
-        component: DBC_PANEL_COMPONENT,
-        title: "DBC",
-      }),
-    [showSingletonPanel],
-  );
-
-  // Settings editor — singleton, app-global (ADR 0034). Opened from the
-  // command palette; edits `settings.json` through the host.
-  const showSettingsPanel = useCallback(
-    () =>
-      showSingletonPanel({
-        id: SETTINGS_PANEL_ID,
-        component: SETTINGS_PANEL_COMPONENT,
-        title: "Settings",
-      }),
-    [showSingletonPanel],
-  );
-
-  // About view — singleton, app-global. Opened from the command palette;
-  // shows the build version and the bundled third-party license notices.
-  const showAboutPanel = useCallback(
-    () =>
-      showSingletonPanel({
-        id: ABOUT_PANEL_ID,
-        component: ABOUT_PANEL_COMPONENT,
-        title: "About",
-      }),
-    [showSingletonPanel],
-  );
-
-  // Keyboard-shortcuts editor — singleton, app-global (ADR 0018). Opened
-  // from the command palette; lists and rebinds every command.
-  const showShortcutsPanel = useCallback(
-    () =>
-      showSingletonPanel({
-        id: SHORTCUTS_PANEL_ID,
-        component: SHORTCUTS_PANEL_COMPONENT,
-        title: "Keyboard shortcuts",
-      }),
-    [showSingletonPanel],
-  );
-
-  // Timeline-events view — singleton, app-global (ADR 0035). Opened from
-  // the command palette; renders the host notes + derived markers.
-  const showEventsPanel = useCallback(
-    () =>
-      showSingletonPanel({
-        id: EVENTS_PANEL_ID,
-        component: EVENTS_PANEL_COMPONENT,
-        title: "Events",
-      }),
-    [showSingletonPanel],
-  );
-
   // System-log context: mirror + clear + markRead. `clear`
   // empties both the host's ring and the frontend's mirror; the host
   // does *not* reset its seq counter (callers rely on monotonicity),
@@ -2060,8 +1838,12 @@ export function App() {
   // optimistic local state, so a panel-A add shows up on panel B
   // through the same code path.
   const addNoteRemote = useCallback(
-    (id: string, timestampNs: number, label: string) => {
-      void invoke("add_note", { note: { id, timestampNs, label } }).catch(() => {
+    (id: string, timestampNs: number, label: string, color?: string) => {
+      // `color` rides the note payload directly — `Note.color` is
+      // `#[serde(default)]`, so omitting it yields `None` (the view
+      // default) with no host-side change.
+      const note = color ? { id, timestampNs, label, color } : { id, timestampNs, label };
+      void invoke("add_note", { note }).catch(() => {
         /* best effort — error surfaces in System Messages */
       });
     },
@@ -2087,84 +1869,14 @@ export function App() {
     [notes, addNoteRemote, renameNoteRemote, recolorNoteRemote, removeNoteRemote],
   );
 
-  const showProjectPanel = useCallback(
-    () =>
-      showSingletonPanel({
-        id: PROJECT_PANEL_ID,
-        component: PROJECT_PANEL_COMPONENT,
-        title: "Project",
-        position: { direction: "left" },
-      }),
-    [showSingletonPanel],
-  );
-
-  // --- command handlers + key dispatch (ADR 0018) ---
-  // Commands wrap the existing toolbar handlers — same behaviour,
-  // second access path. The map is rebuilt every render (cheap) and
-  // read through a ref so the once-registered keydown listener and
-  // the palette always see current closures.
-  const activePanelRef = useRef(activePanel);
-  activePanelRef.current = activePanel;
-  const runFocusedPanelCommand = useCallback(
-    (commandId: string) => {
-      const elementId = activePanelRef.current?.elementId;
-      if (elementId) panelCommands.invoke(elementId, commandId);
-    },
-    [panelCommands],
-  );
-  // View navigation: walk the focus history (skipping panels closed
-  // since), browser back/forward style. The `setActive` echo lands in
-  // `recordFocus` as a no-op, so the jump doesn't re-record itself.
-  const navigateViewHistory = useCallback((dir: -1 | 1) => {
-    const api = dockApiRef.current;
-    if (!api) return;
-    const r = navigateFocus(focusHistoryRef.current, dir, (id) => api.getPanel(id) != null);
-    if (!r) return;
-    focusHistoryRef.current = r.history;
-    api.getPanel(r.panelId)?.api.setActive();
-  }, []);
-  // Layout undo/redo: swap the whole serialized layout back in. The
-  // applying guard keeps the resulting layout-change echo from being
-  // recorded as a fresh step.
-  const applyLayoutHistory = useCallback((dir: "undo" | "redo") => {
-    const api = dockApiRef.current;
-    const history = layoutHistoryRef.current;
-    if (!api || !history) return;
-    const r = dir === "undo" ? undoLayout(history) : redoLayout(history);
-    if (!r) return;
-    const layout = validateLayout(JSON.parse(r.layout));
-    if (!layout) return;
-    applyingLayoutRef.current = true;
-    try {
-      api.fromJSON(layout);
-    } catch {
-      return; // snapshot won't load — leave the history untouched
-    } finally {
-      applyingLayoutRef.current = false;
-    }
-    layoutHistoryRef.current = r.history;
-  }, []);
-  const cycleTabInGroup = useCallback((dir: -1 | 1) => {
-    const group = dockApiRef.current?.activeGroup;
-    if (!group || group.panels.length < 2) return;
-    const active = group.activePanel;
-    const idx = active ? group.panels.indexOf(active) : -1;
-    const next = group.panels[(idx + dir + group.panels.length) % group.panels.length];
-    next.api.setActive();
-  }, []);
-  // Full-screen toggle over dockview's maximized-group. Runtime-only
-  // view state: the persisted layouts strip it (`stripMaximizedNode`).
-  const toggleFullscreenView = useCallback(() => {
-    const api = dockApiRef.current;
-    if (!api) return;
-    if (api.hasMaximizedGroup()) {
-      api.exitMaximizedGroup();
-    } else if (api.activePanel) {
-      api.maximizeGroup(api.activePanel);
-    }
-  }, []);
-  const commandHandlersRef = useRef<Record<string, () => void>>({});
-  commandHandlersRef.current = {
+  // The app-domain commands (ADR 0018): the toolbar/menu actions the
+  // command subsystem dispatches by id. Rebuilt every render (cheap);
+  // `useCommands` merges these with its own framework / view / palette /
+  // panel-show commands and reads the union through a ref, so the
+  // once-registered keydown listener and the palette see current
+  // closures. The panel-show / view-navigation / palette commands live
+  // in the hook — these are the ones backed by App-owned handlers.
+  const appCommands: Record<string, () => void> = {
     "project.open": () => void handleOpenProject(),
     "project.save": () => void handleSaveProject(),
     "project.saveAs": () => void handleSaveProjectAs(),
@@ -2177,270 +1889,35 @@ export function App() {
     "connection.disconnect": () => void handleDisconnect(),
     "capture.clear": () => void handleClear(),
     "capture.save": () => void handleSaveCapture(),
-    "panel.add.trace": addTracePanel,
-    "panel.add.plot": addPlotPanel,
-    "panel.add.signals": addSignalsPanel,
-    "panel.add.transmit": addTransmitPanel,
-    "panel.add.rbs": addRbsPanel,
-    "panel.add.colormap": addColorMapPanel,
+    "panel.add.trace": () => addPanel("trace"),
+    "panel.add.plot": () => addPanel("plot"),
+    "panel.add.signals": () => addPanel("signals"),
+    "panel.add.transmit": () => addPanel("transmit"),
+    "panel.add.rbs": () => addPanel("rbs"),
+    "panel.add.colormap": () => addPanel("colormap"),
     "project.saveAll": () => void handleSaveAllRef.current(),
     "rbs.killSwitch": toggleRbsKillSwitch,
-    "panel.show.project": showProjectPanel,
-    "panel.show.systemMessages": showSystemMessagesPanel,
-    "panel.show.projectGraph": showProjectGraphPanel,
-    "panel.show.dbc": showDbcPanel,
-    "panel.show.settings": showSettingsPanel,
-    "panel.show.about": showAboutPanel,
-    "panel.show.events": showEventsPanel,
-    "panel.show.shortcuts": showShortcutsPanel,
-    // Renaming happens in the project panel (the canonical edit
-    // surface — ADR 0019); the command surfaces it.
-    "panel.rename": showProjectPanel,
-    "palette.show": () => setOpenPalette("commands"),
-    "goto.view": () => setOpenPalette("goto"),
-    "goto.event": () => setOpenPalette("gotoEvent"),
     // Quit via the window's own close path: runs the unsaved-changes
     // prompt (`onCloseRequested`) and the clean-shutdown flush, exactly
     // like clicking the title-bar close button.
     "app.exit": () => void getCurrentWindow().close(),
-    "plot.fitXAxis": () => runFocusedPanelCommand("plot.fitXAxis"),
-    "plot.followLive.enable": () => runFocusedPanelCommand("plot.followLive.enable"),
-    "view.back": () => navigateViewHistory(-1),
-    "view.forward": () => navigateViewHistory(1),
-    // Close the focused panel only — the chord (`Mod+W`) must never
-    // fall through to the webview's close-the-window default; the
-    // dispatcher's preventDefault sees to that, and an accidental
-    // close is undoable (`view.undo`).
-    "view.close": () => dockApiRef.current?.activePanel?.api.close(),
-    "tab.next": () => cycleTabInGroup(1),
-    "tab.previous": () => cycleTabInGroup(-1),
-    "view.undo": () => applyLayoutHistory("undo"),
-    "view.redo": () => applyLayoutHistory("redo"),
-    "view.fullscreen": toggleFullscreenView,
-    "view.exitFullscreen": () => dockApiRef.current?.exitMaximizedGroup(),
   };
-  const runCommand = useCallback((id: string) => {
-    const handler = commandHandlersRef.current[id];
-    if (!handler) return;
-    // The palette-opening commands aren't worth resurfacing at the
-    // top of the palette they open; everything else is remembered.
-    if (id !== "palette.show" && id !== "goto.view") {
-      setRecentCommands((current) => {
-        const next = recordRecentCommand(current, id);
-        persistRecentCommands(next);
-        return next;
-      });
-    }
-    handler();
-  }, []);
-
-  const commandContext: CommandContext = useMemo(
-    () => ({ focusedPanelKind, hasProjectOpen: projectPath !== null, hasMaximizedView }),
-    [focusedPanelKind, projectPath, hasMaximizedView],
-  );
-  const commandContextRef = useRef(commandContext);
-  commandContextRef.current = commandContext;
-
-  // Effective bindings (ADR 0018): the user's customisation overlaid on the
-  // defaults, sanitised. The dispatcher and the palette hints read these,
-  // not a compile-time constant, so a shortcuts-panel edit takes effect
-  // immediately. Parsed once per change; read through a ref so the
-  // once-registered keydown listener always sees the latest.
-  const effectiveBindings = useMemo(() => resolveBindings(userBindings), [userBindings]);
-  const parsedBindings = useMemo(() => parseBindings(effectiveBindings), [effectiveBindings]);
-  const parsedBindingsRef = useRef(parsedBindings);
-  parsedBindingsRef.current = parsedBindings;
-
-  // Load the persisted keybindings once on mount. Absent / null = defaults.
-  useEffect(() => {
-    let live = true;
-    void loadSettings().then((s) => {
-      if (live) setUserBindings(s.keybindings);
-    });
-    return () => {
-      live = false;
-    };
-  }, []);
-
-  // Persist a keybinding change: load the current settings and write the
-  // whole struct back with the new `keybindings`, so a concurrent settings
-  // edit isn't clobbered. `null` resets to the built-in defaults. The host
-  // is authoritative; a failed write is logged host-side.
-  const persistUserBindings = useCallback((next: readonly BindingSpec[] | null) => {
-    const value = next == null ? null : [...next];
-    setUserBindings(value);
-    void loadSettings()
-      .then((s) => saveSettings({ ...s, keybindings: value }))
-      .catch(() => {
-        /* host logs the failure; the in-memory value still holds */
-      });
-  }, []);
-
-  const keybindingsController: KeybindingsController = useMemo(
-    () => ({ user: userBindings, effective: effectiveBindings, setUser: persistUserBindings }),
-    [userBindings, effectiveBindings, persistUserBindings],
-  );
-
-  // The global keydown dispatcher: resolve binding → check context →
-  // run, or silently no-op. Registered once, on the capture phase so
-  // a focused panel's own handlers can't shadow the global chords;
-  // plain-key bindings are suppressed while typing (see
-  // `dispatchStroke`). Sequence prefixes expire after a beat.
-  useEffect(() => {
-    const isMac = isMacPlatform();
-    let pending: KeyStroke[] = [];
-    let timer: number | undefined;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.defaultPrevented) return;
-      if (e.key === "Control" || e.key === "Meta" || e.key === "Shift" || e.key === "Alt") {
-        return;
-      }
-      const available = new Set(
-        commandsAvailableIn(COMMANDS, commandContextRef.current).map((c) => c.id),
-      );
-      const result = dispatchStroke(
-        pending,
-        { key: e.key, ctrl: e.ctrlKey, meta: e.metaKey, shift: e.shiftKey, alt: e.altKey },
-        parsedBindingsRef.current.filter((b) => available.has(b.commandId)),
-        { isMac, inEditable: isEditableTarget(e.target) },
-      );
-      pending = result.pending;
-      window.clearTimeout(timer);
-      if (result.pending.length > 0) {
-        timer = window.setTimeout(() => {
-          pending = [];
-        }, 1500);
-      }
-      if (result.handled) {
-        e.preventDefault();
-        e.stopPropagation();
-      }
-      if (result.commandId) runCommand(result.commandId);
-    };
-    document.addEventListener("keydown", onKeyDown, true);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown, true);
-      window.clearTimeout(timer);
-    };
-  }, [runCommand]);
-
-  // Middle-clicking a tab closes the view (dockview default-tab
-  // behaviour on pointer-up), but the browser's middle-button
-  // autoscroll is `mousedown`'s default action and engages first —
-  // cancel the default for tab presses only, on the capture phase.
-  // `preventDefault` doesn't touch dockview's own pointer handlers.
-  useEffect(() => {
-    const onMouseDown = (e: MouseEvent) => {
-      if (isTabMiddlePress(e.button, e.target)) e.preventDefault();
-    };
-    document.addEventListener("mousedown", onMouseDown, true);
-    return () => document.removeEventListener("mousedown", onMouseDown, true);
-  }, []);
-
-  // Palette items. Commands: everything available in the current
-  // context, hinted with the key binding (or category). Go-to-view:
-  // every view — open or not — by its model-owned display name
-  // (`gotoViews` below), so a closed element view is still reachable.
-  const commandPaletteItems: PaletteItem[] = useMemo(() => {
-    if (openPalette !== "commands") return [];
-    const isMac = isMacPlatform();
-    const items = commandsAvailableIn(COMMANDS, commandContext).map((c) => {
-      const binding = parsedBindings.find((b) => b.commandId === c.id);
-      return {
-        id: c.id,
-        label: c.label,
-        hint: binding ? formatChord(binding.chord, isMac) : c.category,
-      };
-    });
-    // Recently-used first (the fzf ranking takes over once the user
-    // types — this orders only the unfiltered list).
-    return sortRecentFirst(items, recentCommands);
-  }, [openPalette, commandContext, recentCommands, parsedBindings]);
-  // Open-or-focus the dockview panel for a project element — the reopen
-  // path go-to-view uses for a closed element view (mirrors ProjectPanel's
-  // open). A filter has no panel of its own, so surface the graph instead.
-  const openElementView = useCallback(
-    (element: ProjectElement) => {
-      const api = dockApiRef.current;
-      if (!api) return;
-      const component = elementPanelComponent(element.kind);
-      if (component === null) {
-        showProjectGraphPanel();
-        return;
-      }
-      const id = `${component}-${element.id}`;
-      const existing = api.getPanel(id);
-      if (existing) {
-        existing.api.setActive();
-        return;
-      }
-      api.addPanel({
-        id,
-        component,
-        title: elementLabel(element),
-        params:
-          element.kind === "trace"
-            ? { elementId: element.id, mode: "by-id" }
-            : { elementId: element.id },
-      });
-    },
-    [showProjectGraphPanel],
-  );
-  // Every reachable view for go-to-view (Ctrl+P): each project element that
-  // has a panel, plus every singleton. Open panels are focused, closed ones
-  // are opened on pick — the palette must reach a view you closed (e.g. a
-  // color map), not just the ones currently on screen. Labels are the
-  // model-owned element names (ADR 0019), same as the tabs.
-  const gotoViews = useMemo(() => {
-    const views: { id: string; label: string; open: () => void }[] = [];
-    for (const entry of registry) {
-      // Element views keyed exactly as `gotoViews`'s openers expect
-      // (`elementViewEntries` filters out panel-less kinds like `filter`).
-      const [view] = elementViewEntries([entry.element]);
-      if (view) views.push({ ...view, open: () => openElementView(entry.element) });
-    }
-    const singleton = (id: string, label: string, open: () => void) =>
-      views.push({ id, label, open });
-    singleton(PROJECT_PANEL_ID, "Project", showProjectPanel);
-    singleton(PROJECT_GRAPH_PANEL_ID, "Graph", showProjectGraphPanel);
-    singleton(DBC_PANEL_ID, "DBC", showDbcPanel);
-    singleton(SYSTEM_MESSAGES_PANEL_ID, "System messages", showSystemMessagesPanel);
-    singleton(SETTINGS_PANEL_ID, "Settings", showSettingsPanel);
-    singleton(ABOUT_PANEL_ID, "About", showAboutPanel);
-    singleton(EVENTS_PANEL_ID, "Events", showEventsPanel);
-    singleton(SHORTCUTS_PANEL_ID, "Keyboard shortcuts", showShortcutsPanel);
-    return views;
-  }, [
+  const commands = useCommands({
+    dockApiRef,
+    focusHistoryRef,
+    layoutHistoryRef,
+    applyingLayoutRef,
     registry,
-    openElementView,
-    showProjectPanel,
-    showProjectGraphPanel,
-    showDbcPanel,
-    showSystemMessagesPanel,
-    showSettingsPanel,
-    showAboutPanel,
-    showEventsPanel,
-    showShortcutsPanel,
-  ]);
-  const gotoPaletteItems: PaletteItem[] = useMemo(() => {
-    if (openPalette !== "goto") return [];
-    return gotoViews.map((v) => ({ id: v.id, label: v.label }));
-  }, [openPalette, gotoViews]);
-  // Go-to-event palette: every timeline event by label, hinted with its
-  // time relative to the session start. Selecting one broadcasts the same
-  // cross-panel jump the events view's per-row goto button emits (ADR 0035),
-  // so no events panel need be open.
-  const gotoEventPaletteItems: PaletteItem[] = useMemo(() => {
-    if (openPalette !== "gotoEvent") return [];
-    const truncationTsNs = firstIndex > 0 ? firstIndexTsNs : null;
-    return gotoEventItems(notes, truncationTsNs, sessionStartSeconds);
-  }, [openPalette, notes, firstIndex, firstIndexTsNs, sessionStartSeconds]);
-  const openViewById = useCallback(
-    (id: string) => {
-      gotoViews.find((v) => v.id === id)?.open();
-    },
-    [gotoViews],
-  );
+    activePanel,
+    projectPath,
+    hasMaximizedView,
+    notes,
+    firstIndex,
+    firstIndexTsNs,
+    sessionStartSeconds,
+    appCommands,
+  });
+  const runCommand = commands.runCommand;
 
   const handleDockReady = useCallback(
     (event: DockviewReadyEvent) => {
@@ -2514,6 +1991,10 @@ export function App() {
       // Perf self-driving flags (ADR 0031) override the last-opened
       // pointer: `--project` names the project deterministically. Fetch
       // the config first so the project it names is the one we open.
+      // One-shot (see `bootOpenRanRef`): the StrictMode re-init of
+      // dockview must not open the project a second time.
+      if (bootOpenRanRef.current) return;
+      bootOpenRanRef.current = true;
       void (async () => {
         let cfg: AutomationConfig | null = null;
         try {
@@ -2529,7 +2010,13 @@ export function App() {
         if (projectToOpen) {
           try {
             const p = await invoke<Project>("open_project", { path: projectToOpen });
-            void applyProject(p, projectToOpen);
+            // Awaited: the automation handoff below must not connect
+            // while the project is still applying — a capture started
+            // mid-apply flips views live and `applyProject`'s
+            // `setRegistry(clearedTrace)` then stomps them back to
+            // stopped (observed as every view born stopped in
+            // self-driving runs).
+            await applyProject(p, projectToOpen);
             rememberProject(projectToOpen);
             setDirty(false);
           } catch {
@@ -2697,11 +2184,7 @@ export function App() {
       onSetDbcBuses: handleSetDbcBuses,
       onAddBus: handleAddBus,
       onRemoveBus: handleRemoveBus,
-      onRenameBus: handleRenameBus,
-      onSetBusColor: handleSetBusColor,
-      onSetBusSpeed: handleSetBusSpeed,
-      onSetBusFd: handleSetBusFd,
-      onSetBusFdDataSpeed: handleSetBusFdDataSpeed,
+      onUpdateBus: handleUpdateBus,
       busesWithPendingHwConfig,
       onAddBinding: handleAddBinding,
       onRemoveBinding: handleRemoveBinding,
@@ -2735,11 +2218,7 @@ export function App() {
       handleSetDbcBuses,
       handleAddBus,
       handleRemoveBus,
-      handleRenameBus,
-      handleSetBusColor,
-      handleSetBusSpeed,
-      handleSetBusFd,
-      handleSetBusFdDataSpeed,
+      handleUpdateBus,
       busesWithPendingHwConfig,
       handleAddBinding,
       handleRemoveBinding,
@@ -2877,71 +2356,39 @@ export function App() {
         <div className="status">{status}</div>
       </header>
       <ProjectContext.Provider value={projectContextValue}>
-        <ElementRegistryContext.Provider value={elementRegistryValue}>
-          <SystemLogContext.Provider value={systemLogValue}>
-            <NotesContext.Provider value={notesValue}>
-              <TraceDataContext.Provider value={traceData}>
-                <KeybindingsContext.Provider value={keybindingsController}>
-                <PanelCommandsContext.Provider value={panelCommands}>
-                  {/* dockview drags tabs with the HTML5 drag-and-drop API, which
-                      Tauri's OS-level drag-drop handler breaks on WebView2 — hence
-                      `dragDropEnabled: false` in tauri.conf.json. The GUI takes
-                      files via the dialog plugin, not by drop, so nothing is lost. */}
-                  {/* `defaultTabComponent`: dockview-core's built-in tab
-                      closes only via its close button; the React default
-                      tab (same DOM, same class names) adds close on
-                      middle-click. The `mousedown` capture listener above
-                      keeps the browser's middle-button autoscroll from
-                      eating the press. */}
-                  <DockviewReact
-                    className="dock-area"
-                    theme={themeAbyss}
-                    components={DOCK_COMPONENTS}
-                    defaultTabComponent={DockviewDefaultTab}
-                    onReady={handleDockReady}
-                  />
-                </PanelCommandsContext.Provider>
-                </KeybindingsContext.Provider>
-              </TraceDataContext.Provider>
-            </NotesContext.Provider>
-          </SystemLogContext.Provider>
-        </ElementRegistryContext.Provider>
+        <SignalCatalogProvider>
+          <ElementRegistryContext.Provider value={elementRegistryValue}>
+            <SystemLogContext.Provider value={systemLogValue}>
+              <NotesContext.Provider value={notesValue}>
+                <TraceDataContext.Provider value={traceData}>
+                  <KeybindingsContext.Provider value={commands.keybindings}>
+                  <PanelCommandsContext.Provider value={commands.panelCommands}>
+                    {/* dockview drags tabs with the HTML5 drag-and-drop API, which
+                        Tauri's OS-level drag-drop handler breaks on WebView2 — hence
+                        `dragDropEnabled: false` in tauri.conf.json. The GUI takes
+                        files via the dialog plugin, not by drop, so nothing is lost. */}
+                    {/* `defaultTabComponent`: dockview-core's built-in tab
+                        closes only via its close button; the React default
+                        tab (same DOM, same class names) adds close on
+                        middle-click. The `mousedown` capture listener above
+                        keeps the browser's middle-button autoscroll from
+                        eating the press. */}
+                    <DockviewReact
+                      className="dock-area"
+                      theme={themeAbyss}
+                      components={DOCK_COMPONENTS}
+                      defaultTabComponent={DockviewDefaultTab}
+                      onReady={handleDockReady}
+                    />
+                  </PanelCommandsContext.Provider>
+                  </KeybindingsContext.Provider>
+                </TraceDataContext.Provider>
+              </NotesContext.Provider>
+            </SystemLogContext.Provider>
+          </ElementRegistryContext.Provider>
+        </SignalCatalogProvider>
       </ProjectContext.Provider>
-      {openPalette === "commands" && (
-        <PaletteModal
-          placeholder="Run a command…"
-          items={commandPaletteItems}
-          onPick={(item) => {
-            setOpenPalette(null);
-            runCommand(item.id);
-          }}
-          onClose={() => setOpenPalette(null)}
-        />
-      )}
-      {openPalette === "goto" && (
-        <PaletteModal
-          placeholder="Go to view…"
-          items={gotoPaletteItems}
-          onPick={(item) => {
-            setOpenPalette(null);
-            openViewById(item.id);
-          }}
-          onClose={() => setOpenPalette(null)}
-        />
-      )}
-      {openPalette === "gotoEvent" && (
-        <PaletteModal
-          placeholder="Go to event…"
-          items={gotoEventPaletteItems}
-          onPick={(item) => {
-            setOpenPalette(null);
-            // `item.id` is the event's absolute ns; broadcast the same
-            // cross-panel jump the events view's goto button emits (ADR 0035).
-            void emit(GOTO_EVENT, Number(item.id));
-          }}
-          onClose={() => setOpenPalette(null)}
-        />
-      )}
+      {commands.palettes}
       {pendingClose && <CloseConfirmModal onChoice={pendingClose.resolve} />}
       {pendingBlf && (
         <BlfChannelMapModal

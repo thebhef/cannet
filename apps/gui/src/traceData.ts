@@ -31,8 +31,7 @@ export interface TraceData {
   /// Unix-epoch seconds of the session's zero point. Set by the host's
   /// `start_session` (via the `trace-grew` event); `null` until the
   /// first session-grow tick after a Clear / Connect. Every trace view
-  /// renders relative to this, optionally shifted further by its own
-  /// per-view `traceStartOffsetSeconds` (panel Clear / Stop+Start).
+  /// renders relative to this single application-level zero (ADR 0024).
   sessionStartSeconds: number | null;
   /// Bumped whenever the model's identity changes out from under the
   /// windows — Clear, Connect, project load, a decode-settings/DBC
