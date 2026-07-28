@@ -771,3 +771,15 @@ next pass on this surface can address them as one piece.
   19:40, 00:47 UTC). Connect-when-connected should be a no-op (or a
   clean reconnect), and the ConfigureBus push should not fire on a
   rejected duplicate session.
+
+- `[cannet-gui]` **`list_dbc_content` ships the whole DBC tree over
+  IPC.** The command serialises every loaded DBC's full message/signal
+  tree (~5 MB on the reference 5-DBC project), and the DBC panel
+  re-pulls all of it on every `dbc-changed` event and every bus/scope
+  edit ([`apps/gui/src/DbcPanel.tsx`](apps/gui/src/DbcPanel.tsx)
+  `refreshContent`). Task 41 ruled this explicitly out of scope — the
+  layout cliff it was chasing was DOM-side and is fixed — but the
+  payload is still the largest single round-trip in the app and the
+  panel still holds the whole tree in frontend state. If it bites,
+  page `list_dbc_content` the way the trace and signal views are paged
+  (host-side flatten + row window) rather than shipping the tree.

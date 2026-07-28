@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -22,6 +22,14 @@ import {
   type DraggableSignalRef,
 } from "./dragSignals";
 import { toggleInSet } from "./toggleSet";
+import { diagCount } from "./diag";
+import {
+  ASSUMED_VIEWPORT_HEIGHT,
+  buildOffsets,
+  scrollToShow,
+  totalHeight,
+  visibleRange,
+} from "./dbcPanelViewport";
 
 /**
  * DBC discovery panel. Tree-with-fuzzy-search over every
@@ -43,6 +51,13 @@ import { toggleInSet } from "./toggleSet";
  * children of matches render — everything else is removed, so a
  * filtered render is bounded by the match set however large the
  * database is.
+ *
+ * The row list is **virtualized**: the tree flattens to a row array and
+ * only the viewport's slice plus an overscan margin becomes DOM (see
+ * `dbcPanelViewport.ts` for the geometry). Layout cost is bounded by
+ * the panel's height rather than the database's size — without this a
+ * large DBC set puts tens of thousands of boxes in the document and
+ * every keystroke pays a full synchronous relayout.
  *
  * Rows are drag sources for signals (see {@link setSignalDragData}),
  * support multi-select, and the whole tree is keyboard-navigable
@@ -539,28 +554,58 @@ export function buildSearchIndex(groups: readonly BusGroup[]): SearchEntry[] {
 /// the noise.
 const MIN_RELATIVE_SCORE = 0.7;
 
-/// Run `query` against `index` via fzf; return `(matched ids,
+/// How long the filter input settles before the tree re-filters. Short
+/// enough to feel immediate, long enough that a burst of keystrokes
+/// costs one match-and-rebuild instead of one per character.
+const FILTER_DEBOUNCE_MS = 150;
+
+/// A memoised fzf matcher over one bus-grouped tree, built on first
+/// use.
+///
+/// Neither half is cheap at scale and neither is needed until the user
+/// actually types: [`buildSearchIndex`] allocates one haystack string
+/// per message and per signal with attributes and value-table labels
+/// inlined (tens of thousands of strings on a large DBC set), and
+/// `Fzf`'s constructor preprocesses every one of them. Building it
+/// eagerly meant a project open paid for a search nobody had asked for;
+/// building it per keystroke meant paying again on every character.
+/// This does neither — one build on the first non-empty query, reused
+/// until the tree changes.
+type Matcher = () => Fzf<readonly SearchEntry[]>;
+
+function lazyMatcher(groups: readonly BusGroup[]): Matcher {
+  let fzf: Fzf<readonly SearchEntry[]> | null = null;
+  return () => {
+    if (fzf === null) {
+      diagCount("dbcpanel.searchIndexBuild"); // DIAG
+      // fzf's `Fzf` constructor expects to read the haystack off each
+      // item — passing the SearchEntry directly with a `selector` keeps
+      // the `id` available on the result rows.
+      fzf = new Fzf<readonly SearchEntry[]>(buildSearchIndex(groups), {
+        selector: (e) => e.haystack,
+        casing: "case-insensitive",
+      });
+    }
+    return fzf;
+  };
+}
+
+/// Run `query` through `matcher`; return `(matched ids,
 /// ancestors-of-matches ids)`. The render layer shows the matched
 /// set plus the paths to it and uses the ancestor set as "effectively
-/// expanded". An empty query short-circuits to empty sets — the
-/// caller's `filterActive` flag turns hiding off.
+/// expanded". An empty query short-circuits to empty sets — without
+/// ever forcing the matcher — and the caller's `filterActive` flag
+/// turns hiding off.
 function searchMatches(
-  index: readonly SearchEntry[],
+  matcher: Matcher,
   query: string,
 ): { matchSet: Set<string>; ancestorsOfMatches: Set<string> } {
   const matchSet = new Set<string>();
   const ancestorsOfMatches = new Set<string>();
-  if (query.trim() === "" || index.length === 0) {
+  if (query.trim() === "") {
     return { matchSet, ancestorsOfMatches };
   }
-  // fzf's `Fzf` constructor expects to read the haystack off each item
-  // — passing the SearchEntry directly with a `selector` keeps the
-  // `id` available on the result rows.
-  const fzf = new Fzf<readonly SearchEntry[]>(index, {
-    selector: (e) => e.haystack,
-    casing: "case-insensitive",
-  });
-  const results = fzf.find(query);
+  const results = matcher().find(query);
   const floor = (results[0]?.score ?? 0) * MIN_RELATIVE_SCORE;
   for (const res of results) {
     // Results arrive score-descending; everything past the floor is
@@ -681,6 +726,16 @@ export function DbcPanel(props: IDockviewPanelProps) {
     () => (params as { showValues?: unknown } | undefined)?.showValues === true,
   );
   const [content, setContent] = useState<DbcContentRecord[]>([]);
+  /// Whether the panel is on screen — false while it sits in a
+  /// background tab of its dockview group. The value poll below is a
+  /// standing host round-trip that decodes and joins one row per
+  /// visible signal; a hidden panel has no rows anyone can read, so it
+  /// stops polling entirely rather than paying that every 500 ms.
+  const [panelVisible, setPanelVisible] = useState<boolean>(api.isVisible);
+  useEffect(() => {
+    const d = api.onDidVisibilityChange((e) => setPanelVisible(e.isVisible));
+    return () => d.dispose();
+  }, [api]);
   /// Per-panel selection set (panel-local; not persisted in params —
   /// selection is transient discovery state, like a text-input
   /// selection, not a saved layout property).
@@ -748,12 +803,22 @@ export function DbcPanel(props: IDockviewPanelProps) {
     api.updateParameters({ filter, expanded: Array.from(expanded), showDetails, showValues });
   }, [api, filter, expanded, showDetails, showValues]);
 
-  const searchIndex = useMemo(() => buildSearchIndex(busGroups), [busGroups]);
+  // The query the tree is filtered by, trailing the input box by
+  // [`FILTER_DEBOUNCE_MS`]. Typing re-renders only the `<input>`; the
+  // matcher run and the whole-tree rebuild behind it happen once the
+  // user pauses, not once per keystroke.
+  const [query, setQuery] = useState(filter);
+  useEffect(() => {
+    const id = window.setTimeout(() => setQuery(filter), FILTER_DEBOUNCE_MS);
+    return () => window.clearTimeout(id);
+  }, [filter]);
+
+  const matcher = useMemo(() => lazyMatcher(busGroups), [busGroups]);
   const { matchSet, ancestorsOfMatches } = useMemo(
-    () => searchMatches(searchIndex, filter),
-    [searchIndex, filter],
+    () => searchMatches(matcher, query),
+    [matcher, query],
   );
-  const filterActive = filter.trim() !== "";
+  const filterActive = query.trim() !== "";
   const effectiveExpanded = useMemo(() => {
     if (!filterActive) return expanded;
     const merged = new Set(expanded);
@@ -774,18 +839,45 @@ export function DbcPanel(props: IDockviewPanelProps) {
     [busGroups, effectiveExpanded, matchSet, ancestorsOfMatches, filterActive, selection],
   );
 
+  // --- row-list virtualization ---
+  const treeRef = useRef<HTMLDivElement | null>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(0);
+  useEffect(() => {
+    const el = treeRef.current;
+    if (!el) return;
+    const measure = () => setViewportHeight(el.clientHeight);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  // A zero measurement means the container hasn't been laid out yet (or
+  // the panel is collapsed) — assume a screenful rather than rendering
+  // a single row into the first paint.
+  const windowHeight = viewportHeight > 0 ? viewportHeight : ASSUMED_VIEWPORT_HEIGHT;
+  const offsets = useMemo(
+    () => buildOffsets(rows.length, (i) => detailLinesFor(rows[i], showDetails)),
+    [rows, showDetails],
+  );
+  const { first, last } = visibleRange(offsets, scrollTop, windowHeight);
+  const visibleRows = useMemo(() => rows.slice(first, last), [rows, first, last]);
+  const onTreeScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    setScrollTop(e.currentTarget.scrollTop);
+  }, []);
+
   // --- live value column (Task 20) ---
   const registry = useElementRegistry();
   const resolveColor = useMemo(
     () => buildColorResolver(registry.entries.map((e) => e.element)),
     [registry.entries],
   );
-  /// The rendered signal rows' descriptor keys — exactly what the tree
-  /// shows (the panel's rows are structurally bounded), refreshed as
-  /// expansion / filtering changes.
-  const renderedSignalKeys = useMemo(() => {
+  /// The on-screen signal rows' descriptor keys — the windowed slice,
+  /// not the whole tree, so the host's per-call snapshot work is bounded
+  /// by the viewport like every other view over the model.
+  const visibleSignalKeys = useMemo(() => {
     if (!showValues) return [];
-    return rows
+    return visibleRows
       .filter((r) => r.kind.tag === "signal")
       .map((r) => {
         const k = r.kind as Extract<RenderRow["kind"], { tag: "signal" }>;
@@ -796,19 +888,27 @@ export function DbcPanel(props: IDockviewPanelProps) {
           signalName: k.signal.name,
         };
       });
-  }, [rows, showValues]);
+  }, [visibleRows, showValues]);
+  /// Latest keys for the poll below to read. Held in a ref so scrolling
+  /// (which changes the key set on every wheel notch) re-aims the next
+  /// tick instead of tearing down and restarting the interval — and
+  /// firing an IPC round-trip — per scroll event.
+  const visibleSignalKeysRef = useRef(visibleSignalKeys);
+  visibleSignalKeysRef.current = visibleSignalKeys;
   const [valuesByKey, setValuesByKey] = useState<ReadonlyMap<string, SignalSnapshotRecord>>(
     new Map(),
   );
   useEffect(() => {
-    if (!showValues || renderedSignalKeys.length === 0) {
+    if (!showValues || !panelVisible) {
       setValuesByKey(new Map());
       return;
     }
     let live = true;
     const fetchValues = () => {
+      const keys = visibleSignalKeysRef.current;
+      if (keys.length === 0) return;
       void invoke<{ rows: SignalSnapshotRecord[] }>("fetch_signal_page", {
-        selection: { keys: renderedSignalKeys, patterns: [] },
+        selection: { keys, patterns: [] },
         // Live-latest only: scan to the buffer tip (host clamps).
         scanStart: 0,
         scanEnd: Number.MAX_SAFE_INTEGER,
@@ -818,7 +918,7 @@ export function DbcPanel(props: IDockviewPanelProps) {
         projectBuses: buses.map((b) => b.id),
         sourceBuses: null,
         offset: 0,
-        limit: renderedSignalKeys.length,
+        limit: keys.length,
       })
         .then((page) => {
           if (!live) return;
@@ -841,7 +941,7 @@ export function DbcPanel(props: IDockviewPanelProps) {
       live = false;
       window.clearInterval(id);
     };
-  }, [showValues, renderedSignalKeys, buses]);
+  }, [showValues, panelVisible, buses]);
 
   const toggle = useCallback((id: string) => {
     setExpanded((prev) => toggleInSet(prev, id));
@@ -852,15 +952,25 @@ export function DbcPanel(props: IDockviewPanelProps) {
   /// it points at is filtered/collapsed away, the next arrow press
   /// restarts from the top. View-local, deliberately not persisted.
   const [activeId, setActiveId] = useState<string | null>(null);
-  const treeRef = useRef<HTMLDivElement | null>(null);
 
   // Keep the keyboard cursor visible while arrowing through a long
-  // tree.
+  // tree. The cursor's row may be outside the rendered window, so this
+  // scrolls by the row's computed offset rather than reaching for a DOM
+  // node that need not exist.
   useEffect(() => {
     if (activeId == null) return;
-    const el = treeRef.current?.querySelector('[data-active="true"]');
-    (el as HTMLElement | null)?.scrollIntoView?.({ block: "nearest" });
-  }, [activeId]);
+    const el = treeRef.current;
+    if (!el) return;
+    const idx = rows.findIndex((r) => r.id === activeId);
+    if (idx < 0) return;
+    // The element's own `scrollTop` is authoritative here — reading the
+    // state instead would make this effect re-run (and fight the user)
+    // on every scroll event.
+    const next = scrollToShow(offsets, idx, el.scrollTop, windowHeight);
+    if (next === el.scrollTop) return;
+    el.scrollTop = next;
+    setScrollTop(next);
+  }, [activeId, rows, offsets, windowHeight]);
 
   const onRowClick = useCallback(
     (id: string, modifiers: { shift: boolean; meta: boolean }) => {
@@ -1018,39 +1128,67 @@ export function DbcPanel(props: IDockviewPanelProps) {
         tabIndex={0}
         aria-activedescendant={activeId != null ? domRowId(activeId) : undefined}
         onKeyDown={onTreeKeyDown}
+        onScroll={onTreeScroll}
       >
         {content.length === 0 && (
           <div className="dbc-panel-empty">
             No DBC attached. Add one from the toolbar's <em>Add DBC…</em>.
           </div>
         )}
-        {rows.map((row) => (
-          <DbcRow
-            key={row.id}
-            row={row}
-            active={row.id === activeId}
-            showDetails={showDetails}
-            value={
-              showValues && row.kind.tag === "signal"
-                ? valuesByKey.get(
-                    signalKey(
-                      row.kind.busId,
-                      row.kind.messageId,
-                      row.kind.extended,
-                      row.kind.signal.name,
-                    ),
-                  ) ?? null
-                : undefined
-            }
-            resolveColor={resolveColor}
-            onToggle={toggleAndActivate}
-            onClick={onRowClick}
-            onDragStart={handleDragStart}
-          />
-        ))}
+        {/* Spacer at the full list height carries the scrollbar; the
+            inner element is translated so the rendered slice lands where
+            its rows belong. Both are presentational — the `tree` role's
+            children are the `treeitem` rows inside. */}
+        <div role="presentation" style={{ height: totalHeight(offsets) }}>
+          <div
+            role="presentation"
+            style={{ transform: `translateY(${offsets[first]}px)` }}
+          >
+            {visibleRows.map((row) => (
+              <DbcRow
+                key={row.id}
+                row={row}
+                active={row.id === activeId}
+                showDetails={showDetails}
+                value={
+                  showValues && row.kind.tag === "signal"
+                    ? valuesByKey.get(
+                        signalKey(
+                          row.kind.busId,
+                          row.kind.messageId,
+                          row.kind.extended,
+                          row.kind.signal.name,
+                        ),
+                      ) ?? null
+                    : undefined
+                }
+                resolveColor={resolveColor}
+                onToggle={toggleAndActivate}
+                onClick={onRowClick}
+                onDragStart={handleDragStart}
+              />
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   );
+}
+
+/// How many `dt`/`dd` lines the row's details block renders. The
+/// virtualizer needs a row's height before the row is in the DOM, and
+/// the details block is the only part of a row whose height varies.
+/// `0` means no details block at all: the panel-wide toggle is off, or
+/// the row is a bus / DBC / ECU container.
+///
+/// The per-kind counts live next to the components that render them
+/// ([`MessageDetails`] / [`SignalDetails`]) so a field added to one is
+/// added to the other.
+function detailLinesFor(row: RenderRow, showDetails: boolean): number {
+  if (!showDetails) return 0;
+  if (row.kind.tag === "message") return messageDetailLines(row.kind.message);
+  if (row.kind.tag === "signal") return signalDetailLines(row.kind.signal);
+  return 0;
 }
 
 /// DOM id for one tree row — what `aria-activedescendant` points at.
@@ -1074,7 +1212,25 @@ interface DbcRowProps {
   onDragStart: (e: React.DragEvent, row: RenderRow) => void;
 }
 
-function DbcRow({ row, active, showDetails, value, resolveColor, onToggle, onClick, onDragStart }: DbcRowProps) {
+/// One tree row. **Memoised**: most panel state changes (the keyboard
+/// cursor moving, a value tick, a scroll that shifts the window by a
+/// row) leave the great majority of the rendered rows' props identical,
+/// and re-executing them all is what turns a cheap interaction into a
+/// full-window relayout. The props are referentially stable by
+/// construction — `row` objects come from the memoised `rows` array and
+/// every callback is a `useCallback` — so the shallow comparison is
+/// meaningful.
+const DbcRow = memo(function DbcRow({
+  row,
+  active,
+  showDetails,
+  value,
+  resolveColor,
+  onToggle,
+  onClick,
+  onDragStart,
+}: DbcRowProps) {
+  diagCount("dbcpanel.rowRender"); // DIAG
   const indent = `${row.depth * 14}px`;
   // Bus / DBC / ECU rows: clicking anywhere toggles expand (they
   // aren't selectable). Message / signal rows: row body selects,
@@ -1155,7 +1311,7 @@ function DbcRow({ row, active, showDetails, value, resolveColor, onToggle, onCli
       )}
     </>
   );
-}
+});
 
 /// Compact human-readable summary of a signal's bit-layout. Mirrors
 /// what a DBC editor would show on the signal line: start bit + size,
@@ -1201,6 +1357,18 @@ function formatMux(mux: DbcSignalMux): string {
 interface SignalDetailsProps {
   signal: DbcSignalContentRecord;
   indent: string;
+}
+
+/// Lines [`SignalDetails`] renders, for [`detailLinesFor`]. Layout /
+/// scale / range are unconditional; mux, attributes, and the value
+/// table each add one when present.
+function signalDetailLines(s: DbcSignalContentRecord): number {
+  return (
+    3 +
+    (formatMux(s.mux) === "" ? 0 : 1) +
+    (s.attributes.length > 0 ? 1 : 0) +
+    (s.valueTable.length > 0 ? 1 : 0)
+  );
 }
 
 function SignalDetails({ signal, indent }: SignalDetailsProps) {
@@ -1260,6 +1428,13 @@ function dbcIdLabel(m: { messageId: number; extended: boolean }): string {
 interface MessageDetailsProps {
   message: DbcMessageContentRecord;
   indent: string;
+}
+
+/// Lines [`MessageDetails`] renders, for [`detailLinesFor`]. Id and
+/// length are unconditional; extended mux and attributes each add one
+/// when present.
+function messageDetailLines(m: DbcMessageContentRecord): number {
+  return 2 + (m.usesExtendedMux ? 1 : 0) + (m.attributes.length > 0 ? 1 : 0);
 }
 
 function MessageDetails({ message, indent }: MessageDetailsProps) {

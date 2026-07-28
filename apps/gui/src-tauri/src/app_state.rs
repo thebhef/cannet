@@ -29,7 +29,10 @@ use crate::signal_cache::SignalCacheStore;
 use crate::system_log::SystemLog;
 use crate::trace_store::{RawTraceFrame, TraceStore};
 use crate::sys_warn;
-use crate::{filter, ipc, local_buses, rbs, transmit_frames, transmit_scheduler, verification};
+use crate::{
+    filter, ipc, local_buses, rbs, signal_snapshot, transmit_frames, transmit_scheduler,
+    verification,
+};
 // `ActiveFilterIndex` / `RemoteSession` / `resolve_effective_calc` are
 // referenced from here but live in the `trace_query` / `session` /
 // `transmit_commands` modules once those are split out; they resolve at
@@ -60,6 +63,11 @@ pub(crate) struct AppState {
     /// by `add_dbc` / `remove_dbc` / `clear_dbcs`. (Only one interface
     /// exists for now, so every loaded DBC applies to it.)
     pub(crate) databases: Mutex<Vec<LoadedDbc>>,
+    /// Cached bus-expanded descriptor universe for the signal-snapshot
+    /// path — see [`signal_snapshot::DescriptorSnapshot`]. `None` until
+    /// the first `fetch_signal_page`; dropped by
+    /// [`invalidate_derived_caches`] on any DBC-set change.
+    pub(crate) descriptor_snapshot: Mutex<Option<signal_snapshot::DescriptorSnapshot>>,
     /// Active remote sessions, keyed by server address. Each value is
     /// the gRPC [`SessionHandle`] (drop to disconnect), a
     /// [`SessionTransmitter`] the transmit panel uses to push frames
@@ -189,6 +197,49 @@ impl AppState {
             .expect("active_project_id mutex poisoned")
     }
 
+    pub(crate) fn descriptor_snapshot(
+        &self,
+    ) -> MutexGuard<'_, Option<signal_snapshot::DescriptorSnapshot>> {
+        self.descriptor_snapshot
+            .lock()
+            .expect("descriptor_snapshot mutex poisoned")
+    }
+
+    /// The bus-expanded descriptor universe for `project_buses` — built
+    /// on first use and reused until the DBC set or the bus list
+    /// changes. See [`signal_snapshot::DescriptorSnapshot`] for why this
+    /// is cached at all.
+    ///
+    /// Deliberately holds only one lock at a time (check, release,
+    /// build, store), so it adds no edge to the documented lock order.
+    /// Two concurrent misses may each build a snapshot; that is a
+    /// wasted rebuild, not a correctness problem — they are equal by
+    /// construction.
+    pub(crate) fn scoped_descriptor_snapshot(
+        &self,
+        project_buses: &[String],
+    ) -> Arc<signal_snapshot::ScopedDescriptors> {
+        if let Some(hit) = self
+            .descriptor_snapshot()
+            .as_ref()
+            .filter(|s| s.project_buses == project_buses)
+            .map(|s| s.descriptors.clone())
+        {
+            return hit;
+        }
+        let built = Arc::new(signal_snapshot::scoped_descriptors(
+            self.databases()
+                .iter()
+                .map(|l| (l.db.as_ref(), l.buses.as_slice())),
+            project_buses,
+        ));
+        *self.descriptor_snapshot() = Some(signal_snapshot::DescriptorSnapshot {
+            project_buses: project_buses.to_vec(),
+            descriptors: built.clone(),
+        });
+        built
+    }
+
     /// First loaded DBC (in priority order) for which `f` yields a value —
     /// the "first-loaded-DBC-wins" scan the unscoped decode/describe/encode
     /// queries share. Bus-scoped resolution (`resolve_effective_calc`)
@@ -217,6 +268,11 @@ pub(crate) fn invalidate_derived_caches(state: &AppState) {
     state.signal_caches.clear();
     *state
         .filter_index() = None;
+    // The descriptor universe is derived from the DBC set the same way,
+    // and has the same staleness failure: a removed DBC's signals would
+    // keep appearing in the signal view and the DBC panel's value column
+    // until something else forced a rebuild.
+    *state.descriptor_snapshot() = None;
     refresh_mux_extractor(state);
 }
 
