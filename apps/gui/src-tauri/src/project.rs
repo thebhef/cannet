@@ -467,8 +467,8 @@ mod tests {
         );
     }
 
-    /// Regression test for the non-atomic project save (task 0030 item
-    /// 7): `save_project` used to `std::fs::write` straight to the
+    /// Regression test for the non-atomic project save:
+    /// `save_project` used to `std::fs::write` straight to the
     /// target path, so a write failure partway could leave a corrupted
     /// project file in place of the last good save. Force the write to
     /// fail by blocking the temp-file step (a directory sits where the

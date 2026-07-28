@@ -111,7 +111,7 @@ mod tests {
         );
     }
 
-    /// Regression test for the non-atomic-save bug (task 0030 item 7):
+    /// Regression test for the non-atomic-save bug:
     /// project.rs / RBS used to write straight to the target path, so a
     /// write failure partway could leave a corrupted file behind. The
     /// atomic helper writes to a temp sibling first — if *that* write
