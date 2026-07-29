@@ -60,9 +60,10 @@ order, top-first), its stepped waveform normalized into the lane's
 band with an opaque label tile drawn on each constant-value segment.
 A lane's y range is a **table fact** — the value table's raw min/max,
 padded — so it is independent of observed data, follow-live extents,
-and Fit Y (all designed out for lane axes). The axis has **no y
-gutter**: the tiles carry the value labels and the side panel carries
-identity. A colormap ([ADR 0029](0029-signal-value-color-maps.md)) tints each
+and Fit Y (all designed out for lane axes). The axis draws **nothing in
+its y gutter**: the tiles carry the value labels and the side panel
+carries identity. It still *reserves* the gutter — see "one gutter for
+the stack" below. A colormap ([ADR 0029](0029-signal-value-color-maps.md)) tints each
 tile by its held value. A lone enum on a per-unit area is a one-lane
 instance of the same axis.
 
@@ -195,7 +196,8 @@ below:
   panel-level `list_value_tables` fetch (`useValueTables`) reduced to
   the enum-key set. `PlotArea` normalizes each enum into its lane band
   (`plotEnumLanes` helpers: `laneBands` / `laneValueRange` /
-  `normalizeIntoLane` / `laneTileBand`), draws a blank y gutter and
+  `normalizeIntoLane` / `laneTileBand`), leaves its y gutter blank (but
+  still reserved — see "one y gutter for the whole stack"), draws
   stepped series, and paints per-lane tiles via the shared
   `drawEnumTiles(band)` helper. The single-enum axis reuses the same
   helper with one full-height centered band. Pure `enumSegments()`
@@ -214,6 +216,20 @@ below:
   scroll rate under follow-live; a tile spanning the viewport — the held
   value, and the case where a moving label reads worst — has no real
   edge in view and stays dead centre.
+- **One y gutter for the whole stack.** Every stacked axis draws the
+  same x window, so their plot boxes must begin at the same x —
+  otherwise the shared cursors, the x gridlines and the enum tiles all
+  sit at the right *time* but the wrong *pixel*, and nothing reads
+  across the stack. Each axis's left edge is its own y-gutter, and those
+  legitimately differ (a numeric axis measures its tick labels; the
+  enum-lanes axis needs almost none). So an axis's `axis.size` is a
+  *request*: `createGutterCoordinator` collects them panel-wide and
+  hands every axis the widest, latched through `axisGutterWidth` so the
+  edge doesn't twitch as an auto-fitted scale re-formats its ticks. The
+  narrow axes pay for it in blank gutter; a collinear cursor is worth
+  more than the pixels. A width change nudges the other axes to
+  re-lay-out, since a report reaches them from inside one axis's own
+  layout pass and a stopped trace may not redraw again on its own.
 - **Fit-to-panel vertical layout + splitters.** Derived axes always
   fit the panel (`.plot-panel-areas` is `overflow: hidden`, not a
   scroll list). Each axis's flex-grow is a persisted weight
