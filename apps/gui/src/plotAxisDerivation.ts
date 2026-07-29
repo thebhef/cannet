@@ -110,3 +110,30 @@ export function deriveAxesForArea(
     };
   });
 }
+
+/**
+ * Stabilise the y-axis gutter width against per-frame label churn.
+ *
+ * uPlot re-runs `axis.size` on every layout pass, and the numeric
+ * y-axis sizes itself from the *current* tick strings. Under follow-live
+ * the scale auto-fits, so those strings change width constantly
+ * (`1.2` → `12.5` → `125`) — the gutter grows and shrinks, the plot's
+ * left edge moves with it, and every fixed-time feature inside the box
+ * (gridlines, enum tiles, their labels) shifts left and right in
+ * lockstep. Sizing the gutter is a layout decision, not a per-frame
+ * readout, so it needs hysteresis.
+ *
+ * Grow immediately — labels must fit or they run off the canvas. Shrink
+ * only once `needed` is a comfortable `hysteresis` px below what's
+ * already reserved, so ordinary digit-width wobble stays inside the
+ * band and the layout holds still. `current` is `null` on the first
+ * pass, which takes `needed` as-is.
+ */
+export function axisGutterWidth(
+  needed: number,
+  current: number | null,
+  hysteresis: number,
+): number {
+  if (current == null || needed > current) return needed;
+  return needed < current - hysteresis ? needed : current;
+}

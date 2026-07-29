@@ -72,6 +72,43 @@ export function normalizeIntoLane(value: number, range: Band, band: Band): numbe
   return band.lo + frac * (band.hi - band.lo);
 }
 
+/** Where a value tile's label starts, in canvas pixels, given the
+ * tile's full horizontal extent `seg` and the visible plot region
+ * `vis` (both in canvas pixels). `null` when the visible part of the
+ * tile is too narrow to hold `textWidth` plus `padX` either side.
+ *
+ * The label centres on the midpoint of the tile's **visible** part,
+ * rounded to a whole pixel so glyphs aren't re-rasterised at a new
+ * subpixel phase every frame.
+ *
+ * Centring on the tile's *own* midpoint instead is tempting — it is
+ * rigid against the tile, so it can't drift while the plot scrolls —
+ * but a tile's off-screen edges aren't model facts. The host widens
+ * each fetched slice by two boundary points either side so a line
+ * renderer has a segment running off each edge, and those points are
+ * re-fetched every round trip: the tile's midpoint jumps with them,
+ * and zoomed in far enough they are whole screens away, which puts the
+ * label hard against an edge. Only the part you can see is trustworthy.
+ *
+ * That leaves one honest residual. Where a tile's *real* edge (a value
+ * transition) is on screen and the other side runs off, this midpoint
+ * sits between a moving edge and a fixed one, so under follow-live it
+ * tracks at half the scroll rate. A tile spanning the whole viewport —
+ * the common case for a held value, and the one where a moving label
+ * is most distracting — has no real edge in view, so its label sits
+ * dead centre and stays there. */
+export function tileLabelX(
+  seg: Band,
+  vis: Band,
+  textWidth: number,
+  padX: number,
+): number | null {
+  const visStart = Math.max(seg.lo, vis.lo);
+  const visEnd = Math.min(seg.hi, vis.hi);
+  if (visEnd - visStart < textWidth + padX * 2) return null;
+  return Math.round((visStart + visEnd - textWidth) / 2);
+}
+
 /** The centered vertical extent a value tile draws within its lane
  * `band`. The tile is `tileFraction` of the lane height, floored at
  * `minPx` (given the lane's on-screen pixel height `lanePx`) and capped

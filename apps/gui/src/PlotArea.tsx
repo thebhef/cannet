@@ -37,11 +37,12 @@ import { SIGNAL_DND_MIME, setSignalDragData } from "./dragSignals";
 import { type Series, valueAt } from "./plotCursors";
 import type { PatternResolution } from "./signalSelection";
 import { SignalPatternEditor } from "./SignalPatternEditor";
-import { type YAxisMode } from "./plotAxisDerivation";
+import { axisGutterWidth, type YAxisMode } from "./plotAxisDerivation";
+import { emptyJankMeter, jankPercent, observeScroll } from "./scrollJank";
 import { useValueTables } from "./useValueTables";
-import { laneBands, laneTileBand, laneValueRange, normalizeIntoLane } from "./plotEnumLanes";
+import { laneBands, laneTileBand, laneValueRange, normalizeIntoLane, tileLabelX } from "./plotEnumLanes";
 import { useDecimatedRange } from "./useDecimatedRange";
-import { diagCount } from "./diag"; // DIAG
+import { diagCount, diagGauge } from "./diag"; // DIAG
 
 const CURSOR_A_COLOR = "#ffd93d";
 const CURSOR_B_COLOR = "#ff5577";
@@ -81,6 +82,18 @@ let axisMeasureCtx: CanvasRenderingContext2D | null = null;
 /** Must match the axis `font` in `axisCommon` below — measurement is
  * meaningless if the font differs from what uPlot actually paints. */
 const AXIS_FONT = "10px ui-monospace, SFMono-Regular, Menlo, monospace";
+/** Slack (px) the y-gutter keeps before giving width back. Wide enough
+ * to swallow a digit's worth of tick-label churn, narrow enough that a
+ * genuinely shorter axis still reclaims the space. */
+const GUTTER_HYSTERESIS_PX = 12;
+/** Fraction of the visible span fetched beyond each edge of the plot's
+ * x-window, so the window can slide between fetches without reaching
+ * past the data it was given. */
+const FETCH_MARGIN_FRACTION = 0.2;
+/** EMA weight for the scroll-smoothness meter. Slow enough that the
+ * reading is steady to read off the status line, fast enough to respond
+ * within a second or so of changing something. */
+const JANK_ALPHA = 0.1;
 function measureAxisSize(values: string[] | null | undefined): number {
   if (!values || values.length === 0) return 52;
   if (axisMeasureCtx == null) {
@@ -269,7 +282,10 @@ interface PlotAreaProps {
   events: NoteEvent[];
   xSyncRef: MutableRefObject<XSync>;
   registerInstance: (id: string, u: uPlot | null) => void;
-  onUserXChange: (min: number, max: number, fromId: string) => void;
+  /** A user pan/zoom moved the shared x-window. `keepFollow` leaves
+   * follow-live on — a zoom whose intent is "change the scale", not
+   * "stop tracking the live edge". */
+  onUserXChange: (min: number, max: number, fromId: string, keepFollow?: boolean) => void;
   onAreaResampled: (areaId: string, firstT: number | null, lastT: number | null) => void;
   onPlaceCursorX: (which: "a" | "b", t: number) => void;
   onPlaceCursorY: (which: "h1" | "h2", v: number) => void;
@@ -347,7 +363,8 @@ interface PlotAreaProps {
 
 /** Draw the logic-analyzer value tiles for one enum series into a
  * pixel band (ADR 0026). Each constant-value segment of the (stepped)
- * line gets an opaque-ish box carrying its label; a colormap targeting
+ * line gets an opaque-ish box carrying its label, centred on the
+ * visible part of the box (`tileLabelX`); a colormap targeting
  * the signal (ADR 0029) tints the box by the held value. Shared by the
  * single-enum axis (one full-height centered band) and each lane of
  * the combined enum-lanes axis (one call per signal, its lane band).
@@ -387,15 +404,15 @@ function drawEnumTiles(
     // matching the stepped line's hold, so the box reaches the visual
     // transition instead of cutting off at the last same-value sample.
     const x1 = u.valToPos(seg.tEnd, "x", true);
-    // Clip-trim against the visible plot region; a segment past the
-    // canvas still labels its visible portion, centred on-screen.
+    // Clip-trim the box against the visible plot region; a segment past
+    // the canvas still labels its visible portion (`tileLabelX`).
     const visStart = Math.max(x0, o.left);
     const visEnd = Math.min(x1, o.left + o.width);
     const segW = visEnd - visStart;
     if (segW <= 0) continue;
     const lbl = labelFor(seg.v);
     const tw = ctx.measureText(lbl).width;
-    const labelFits = segW >= tw + padX * 2;
+    const labelX = tileLabelX({ lo: x0, hi: x1 }, { lo: o.left, hi: o.left + o.width }, tw, padX);
     const mapColor = o.target ? o.resolveColor(o.target, seg.v) : null;
     // ~65-85% fills keep the stepped line faintly visible underneath.
     const fill = mapColor ? colorMapLaneFill(mapColor) : "rgba(10, 13, 15, 0.65)";
@@ -404,11 +421,11 @@ function drawEnumTiles(
     ctx.fillRect(visStart, o.bandTop, segW, bandH);
     ctx.strokeStyle = accent;
     ctx.strokeRect(visStart + 0.5, o.bandTop + 0.5, segW - 1, bandH - 1);
-    if (labelFits) {
+    if (labelX != null) {
       ctx.fillStyle = accent;
-      ctx.textAlign = "center";
+      ctx.textAlign = "left";
       ctx.textBaseline = "middle";
-      ctx.fillText(lbl, visStart + segW / 2, (o.bandTop + o.bandBot) / 2);
+      ctx.fillText(lbl, labelX, Math.round((o.bandTop + o.bandBot) / 2));
     }
   }
 }
@@ -497,6 +514,11 @@ export function PlotArea(p: PlotAreaProps) {
    * normalisation in `resample` reads {@link manualRangesRef} instead of
    * the host extent. Cleared by Fit Data. */
   const manualFitYRef = useRef(false);
+  /** Currently reserved y-gutter width, latched across layout passes so
+   * the plot box doesn't twitch as tick labels re-format. */
+  const gutterWidthRef = useRef<number | null>(null);
+  /** Rolling scroll-smoothness meter, fed from the draw hook. */
+  const jankRef = useRef(emptyJankMeter());
   /** The y-range actually used to normalise each signal on the most
    * recent resample — the widen-only latch, the manual Fit Y pin, or
    * the !follow-live visible-fit, whichever was active. Surfaced in
@@ -705,7 +727,23 @@ export function PlotArea(p: PlotAreaProps) {
         return;
       }
 
-      const canvasW = canvasRef.current?.clientWidth || 600;
+      // Fetch past both edges of the visible window. The window slides
+      // continuously between fetches (ADR 0024: viewport position is a
+      // function of time), so a slice cut exactly to the window is
+      // already stale by the time it renders — the edge it has drifted
+      // toward has no data, and the next fetch snaps it back. That reads
+      // as contiguous points flickering in from either end. The margin
+      // covers the drift; `maxPoints` scales with it so resolution per
+      // visible pixel is unchanged.
+      const vis = xSyncRef.current;
+      let fetchMin = vis.xMin;
+      let fetchMax = vis.xMax;
+      if (fetchMin != null && fetchMax != null && fetchMax > fetchMin) {
+        const pad = (fetchMax - fetchMin) * FETCH_MARGIN_FRACTION;
+        fetchMin -= pad;
+        fetchMax += pad;
+      }
+      const canvasW = (canvasRef.current?.clientWidth || 600) * (1 + 2 * FETCH_MARGIN_FRACTION);
       // One `max_points` per canvas pixel: the host min/max-decimates to
       // at most `2 * max_points`, i.e. the min and max of each pixel
       // column — the full resolution a min/max envelope can show.
@@ -752,8 +790,8 @@ export function PlotArea(p: PlotAreaProps) {
           })),
           winStart: lr.winStart,
           winEnd: lr.winEnd,
-          xMin: xSyncRef.current.xMin,
-          xMax: xSyncRef.current.xMax,
+          xMin: fetchMin,
+          xMax: fetchMax,
           origin: lr.originSeconds,
           maxPoints: maxPts,
         },
@@ -1116,7 +1154,20 @@ export function PlotArea(p: PlotAreaProps) {
           // canvas edge. We measure the widest formatted label in the
           // current tick set with a canvas 2d context (cheap; reuses a
           // module-level scratch context).
-          size: (_u, values) => measureAxisSize(values),
+          // Latched through `axisGutterWidth`: the raw measurement moves
+          // with the auto-fitted scale's tick text, and uPlot re-runs
+          // this every layout pass, so feeding it straight through makes
+          // the gutter — and with it the plot box's left edge — twitch
+          // frame to frame.
+          size: (_u, values) => {
+            const w = axisGutterWidth(
+              measureAxisSize(values),
+              gutterWidthRef.current,
+              GUTTER_HYSTERESIS_PX,
+            );
+            gutterWidthRef.current = w;
+            return w;
+          },
           // Tint the y-axis to match the primary signal's trace so
           // it's obvious which series the labels correspond to. Falls
           // back to the neutral axis colour when there's no primary
@@ -1214,6 +1265,9 @@ export function PlotArea(p: PlotAreaProps) {
             if (xMin != null && xMax != null && Math.abs(min - xMin) < 1e-9 && Math.abs(max - xMax) < 1e-9) {
               return;
             }
+            diagCount("userx.setscale-hook"); // DIAG
+            diagGauge("userx.leak.min", min); // DIAG
+            diagGauge("userx.leak.max", max); // DIAG
             liveRef.current.onUserXChange(min, max, areaId);
           },
         ],
@@ -1231,12 +1285,89 @@ export function PlotArea(p: PlotAreaProps) {
             const ctx = u.ctx;
             const ratio = u.ctx.canvas.width / u.width || 1;
             const { left, top, width, height } = u.bbox;
+            // Scroll-smoothness sample, taken here because this is the
+            // one place that sees every repaint and the window position
+            // that was actually painted — not what we intended to paint.
+            {
+              const xs = u.scales.x;
+              if (xs.min != null) {
+                jankRef.current = observeScroll(jankRef.current, xs.min, performance.now(), JANK_ALPHA);
+                const pct = jankPercent(jankRef.current);
+                lr.reports.jank(areaId, pct);
+                // Also a diag gauge, so the ADR 0031 capture carries it
+                // into the RenderReport and scroll smoothness can be
+                // compared between runs instead of eyeballed. Distinct
+                // from the report's long-task `jank_fraction`: this is
+                // how evenly the window scrolls, not how busy the main
+                // thread was.
+                if (pct != null) diagGauge("scroll_jank_pct", pct);
+              }
+            }
             ctx.save();
             ctx.beginPath();
             ctx.rect(left, top, width, height);
             ctx.clip();
             ctx.font = `600 ${9.5 * ratio}px ui-monospace, monospace`;
             ctx.lineWidth = 1 * ratio;
+            // Logic-analyzer lane (ADR 0026): on an enum-only axis,
+            // overlay an opaque label box on each constant-value
+            // segment of the (stepped) line. The line + symbolic
+            // y-axis ticks are still there; the boxes sit *in front*
+            // of the line so a glance reads "Idle ── Running ──"
+            // rather than just a step pattern. Only runs on the
+            // enum-mode uPlot (the construction effect rebuilds the
+            // instance when the value table resolves), so the cost
+            // on numeric axes is zero.
+            //
+            // Drawn before the cursor / event overlays below: tiles are
+            // content, those are annotation, so the readouts you are
+            // actively pointing at have to stay legible over them.
+            if (enumActiveAtConstruct && valueTableRef.current) {
+              // Single-enum axis: one signal (series index 1), tiles in
+              // a centered horizontal ribbon. Decoupling the ribbon from
+              // the held value (vs. a per-value lane) keeps labels legible
+              // even for a tall table on a short canvas; the stepped line
+              // still draws at the real value. Band = max(~22 CSS px, 55%
+              // of the plot height), centered.
+              const bandH = Math.max(22 * ratio, height * 0.55);
+              const bandTop = top + (height - bandH) / 2;
+              drawEnumTiles(ctx, u, {
+                seriesIdx: 1,
+                table: valueTableRef.current,
+                target: enumTarget,
+                resolveColor: colorResolverRef.current,
+                bandTop,
+                bandBot: bandTop + bandH,
+                accent: primaryColorRef.current ?? AXIS_STROKE,
+                left,
+                width,
+                ratio,
+              });
+            } else if (laneModeAtConstruct) {
+              // Combined enum-lanes axis: one tile row per signal, in its
+              // lane band (ADR 0026). Lane geometry is normalized [0, 1]
+              // (top-first); convert to canvas pixels via `valToPos`.
+              const bands = laneBands(signals.length);
+              signals.forEach((s, i) => {
+                if (s.hidden) return;
+                const laneNorm = bands[i];
+                const laneTopPx = u.valToPos(laneNorm.hi, "y", true);
+                const laneBotPx = u.valToPos(laneNorm.lo, "y", true);
+                const tileNorm = laneTileBand(laneNorm, laneBotPx - laneTopPx);
+                drawEnumTiles(ctx, u, {
+                  seriesIdx: i + 1,
+                  table: valueTablesRef.current.get(signalRefKey(s)) ?? [],
+                  target: laneTargetsAtConstruct[i],
+                  resolveColor: colorResolverRef.current,
+                  bandTop: u.valToPos(tileNorm.hi, "y", true),
+                  bandBot: u.valToPos(tileNorm.lo, "y", true),
+                  accent: s.color,
+                  left,
+                  width,
+                  ratio,
+                });
+              });
+            }
             const vline = (xVal: number, color: string, dash: number[], lbl: string | null, atTop: boolean) => {
               const xp = u.valToPos(xVal, "x", true);
               if (xp < left - 4 || xp > left + width + 4) return;
@@ -1338,61 +1469,6 @@ export function PlotArea(p: PlotAreaProps) {
                 chip(left + 40 * ratio, yp, `ΔH ${fmtVal(Math.abs(lr.cursorYh2 - lr.cursorYh1))}`, "#cbd5e1");
               }
             }
-            // Logic-analyzer lane (ADR 0026): on an enum-only axis,
-            // overlay an opaque label box on each constant-value
-            // segment of the (stepped) line. The line + symbolic
-            // y-axis ticks are still there; the boxes sit *in front*
-            // of the line so a glance reads "Idle ── Running ──"
-            // rather than just a step pattern. Only runs on the
-            // enum-mode uPlot (the construction effect rebuilds the
-            // instance when the value table resolves), so the cost
-            // on numeric axes is zero.
-            if (enumActiveAtConstruct && valueTableRef.current) {
-              // Single-enum axis: one signal (series index 1), tiles in
-              // a centered horizontal ribbon. Decoupling the ribbon from
-              // the held value (vs. a per-value lane) keeps labels legible
-              // even for a tall table on a short canvas; the stepped line
-              // still draws at the real value. Band = max(~22 CSS px, 55%
-              // of the plot height), centered.
-              const bandH = Math.max(22 * ratio, height * 0.55);
-              const bandTop = top + (height - bandH) / 2;
-              drawEnumTiles(ctx, u, {
-                seriesIdx: 1,
-                table: valueTableRef.current,
-                target: enumTarget,
-                resolveColor: colorResolverRef.current,
-                bandTop,
-                bandBot: bandTop + bandH,
-                accent: primaryColorRef.current ?? AXIS_STROKE,
-                left,
-                width,
-                ratio,
-              });
-            } else if (laneModeAtConstruct) {
-              // Combined enum-lanes axis: one tile row per signal, in its
-              // lane band (ADR 0026). Lane geometry is normalized [0, 1]
-              // (top-first); convert to canvas pixels via `valToPos`.
-              const bands = laneBands(signals.length);
-              signals.forEach((s, i) => {
-                if (s.hidden) return;
-                const laneNorm = bands[i];
-                const laneTopPx = u.valToPos(laneNorm.hi, "y", true);
-                const laneBotPx = u.valToPos(laneNorm.lo, "y", true);
-                const tileNorm = laneTileBand(laneNorm, laneBotPx - laneTopPx);
-                drawEnumTiles(ctx, u, {
-                  seriesIdx: i + 1,
-                  table: valueTablesRef.current.get(signalRefKey(s)) ?? [],
-                  target: laneTargetsAtConstruct[i],
-                  resolveColor: colorResolverRef.current,
-                  bandTop: u.valToPos(tileNorm.hi, "y", true),
-                  bandBot: u.valToPos(tileNorm.lo, "y", true),
-                  accent: s.color,
-                  left,
-                  width,
-                  ratio,
-                });
-              });
-            }
             ctx.restore();
           },
         ],
@@ -1422,6 +1498,7 @@ export function PlotArea(p: PlotAreaProps) {
                   const min = xs.min + step;
                   const max = xs.max + step;
                   withSuppressed(() => u.setScale("x", { min, max }));
+                  diagCount("userx.wheel.hpan"); // DIAG
                   liveRef.current.onUserXChange(min, max, areaId);
                   return;
                 }
@@ -1445,14 +1522,26 @@ export function PlotArea(p: PlotAreaProps) {
                   const min = xs.min + step;
                   const max = xs.max + step;
                   withSuppressed(() => u.setScale("x", { min, max }));
+                  diagCount("userx.wheel.shiftpan"); // DIAG
                   liveRef.current.onUserXChange(min, max, areaId);
                 } else {
                   // plain wheel → zoom x around the cursor (synced).
-                  const xc = u.posToVal(e.clientX - rect.left, "x");
+                  const px = e.clientX - rect.left;
+                  const xc = u.posToVal(px, "x");
                   const min = xc - (xc - xs.min) * f;
                   const max = xc + (xs.max - xc) * f;
                   withSuppressed(() => u.setScale("x", { min, max }));
-                  liveRef.current.onUserXChange(min, max, areaId);
+                  // Only one gesture means "stop following": zooming
+                  // *out* over the leading half. That widens the window
+                  // around a point near the live edge, which is how you
+                  // pull older data into view — everything else (zooming
+                  // in anywhere, or any zoom over the t=0 half) is a
+                  // scale change, and `followXWindow` keeps the new
+                  // width while continuing to track.
+                  const zoomingOut = f > 1;
+                  const onLeadingHalf = px >= rect.width / 2;
+                  diagCount("userx.wheel.zoom"); // DIAG
+                  liveRef.current.onUserXChange(min, max, areaId, !(zoomingOut && onLeadingHalf));
                 }
               },
               { passive: false },
@@ -1478,6 +1567,7 @@ export function PlotArea(p: PlotAreaProps) {
                 const min = drag.minX - dxData;
                 const max = drag.maxX - dxData;
                 withSuppressed(() => u.setScale("x", { min, max }));
+                diagCount("userx.drag.pan"); // DIAG
                 liveRef.current.onUserXChange(min, max, areaId);
               } else {
                 // right-drag: draw the box-zoom selection.
@@ -1501,6 +1591,7 @@ export function PlotArea(p: PlotAreaProps) {
                 const b = u.posToVal(Math.max(d.sx, e.clientX) - r.left, "x");
                 if (b - a > 0) {
                   withSuppressed(() => u.setScale("x", { min: a, max: b }));
+                  diagCount("userx.boxzoom"); // DIAG
                   lr.onUserXChange(a, b, areaId);
                 }
                 return;
@@ -1535,7 +1626,20 @@ export function PlotArea(p: PlotAreaProps) {
     // empty column per series (the resample below fills them).
     const initialData = [[] as number[], ...signals.map(() => [] as number[])] as uPlot.AlignedData;
     diagCount("uplot.create"); // DIAG
-    const u = new uPlot(opts, initialData, el);
+    // Construct inside the suppress window, and seed the shared x-window
+    // before anything can observe the instance. uPlot sets its scales
+    // during construction, which fires our `setScale` hook; unsuppressed,
+    // a fresh instance's default range doesn't match the shared window,
+    // so the hook reads it as a user pan — `applyXAll` yanks every area
+    // to that default range and follow-live switches off. The rebuild is
+    // triggered by the signal set changing, which is exactly what
+    // connecting does once DBCs and value tables resolve.
+    let u!: uPlot;
+    withSuppressed(() => {
+      u = new uPlot(opts, initialData, el);
+      const { xMin, xMax } = xSyncRef.current;
+      if (xMin != null && xMax != null) u.setScale("x", { min: xMin, max: xMax });
+    });
     uplotRef.current = u;
     registerInstance(areaId, u);
     // The signal set changed (or this is the first mount): the old

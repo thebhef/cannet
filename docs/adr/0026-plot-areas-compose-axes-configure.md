@@ -200,7 +200,20 @@ below:
   `drawEnumTiles(band)` helper. The single-enum axis reuses the same
   helper with one full-height centered band. Pure `enumSegments()`
   walks the (t, v) arrays; segments narrower than the label width draw
-  the coloured tile without text.
+  the coloured tile without text. Tile labels centre on the midpoint of
+  the tile's **visible** part (`tileLabelX`), rounded to whole pixels so
+  glyphs aren't re-rasterised at a new subpixel phase each frame.
+  Centring on the tile's *own* midpoint is rigid against the tile and so
+  looks like the more stable choice, but a tile's off-screen edges are
+  not model facts: the fetched slice is widened by two boundary points
+  either side (`window_slice`), and those are re-fetched every round
+  trip, so the tile's midpoint jitters with them — and zoomed in far
+  enough they sit whole screens away, pinning the label to an edge. Only
+  the visible part is trustworthy. The residual is that a tile with a
+  real edge (a value transition) on screen tracks that edge at half the
+  scroll rate under follow-live; a tile spanning the viewport — the held
+  value, and the case where a moving label reads worst — has no real
+  edge in view and stays dead centre.
 - **Fit-to-panel vertical layout + splitters.** Derived axes always
   fit the panel (`.plot-panel-areas` is `overflow: hidden`, not a
   scroll list). Each axis's flex-grow is a persisted weight
