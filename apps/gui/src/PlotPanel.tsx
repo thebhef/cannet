@@ -39,7 +39,13 @@ import {
   type XCursors,
   type XSync,
 } from "./plotPanelConfig";
-import { followXWindow } from "./followWindow";
+import {
+  advanceLiveEdge,
+  followXWindow,
+  liveEdgeAt,
+  type LiveEdge,
+  type LiveEdgeTuning,
+} from "./followWindow";
 import { showPointsFromRaw, type ShowPointsMode } from "./plotPoints";
 import { Combobox, type ComboboxOption } from "./Combobox";
 import { formatElapsed, fracDigitsForSpan } from "./format";
@@ -158,6 +164,29 @@ const CURSOR_MODE_OPTIONS: ComboboxOption[] = [
  * slides; once the user picks a width, that width is what follow-live
  * keeps. */
 const DEFAULT_FOLLOW_WIDTH_SECONDS = 10;
+/** How far the follow-live clock may fall behind the data edge before it
+ * gives up nudging and resyncs hard (a stalled loop, a backgrounded
+ * tab). Generous, because the nudge below closes ordinary errors on its
+ * own — a hard resync is a visible jump, and at a 1.5 s zoom even a
+ * few hundred ms of it is a chunk of the plot. */
+const FOLLOW_MAX_LAG_SECONDS = 2;
+/** How far behind the newest frame the follow-live window tracks, as a
+ * multiple of the resample interval. The strip between the last fetch
+ * and now has no data yet, so an edge sitting on the newest sample
+ * leaves it blank and refills it each fetch — the leading edge drops
+ * out. Trading a little latency for a window that is always full is the
+ * right side of that deal for a scrolling view. */
+const FOLLOW_TARGET_LAG_TICKS = 3;
+/** Bounds on that lag: enough to cover a tick plus host latency even at
+ * 60 Hz, and never so much that the view feels detached from the bus. */
+const FOLLOW_TARGET_LAG_MIN_S = 0.3;
+const FOLLOW_TARGET_LAG_MAX_S = 0.9;
+/** Time constant for the follow-live clock's pull toward the data edge.
+ * Short enough that the window never strands itself ahead of the data,
+ * long enough to filter arrival jitter. Being a time constant rather
+ * than a per-update fraction keeps the behaviour identical across the
+ * 5–60 Hz resample rates, and idempotent across the per-area calls. */
+const FOLLOW_EDGE_TAU_SECONDS = 0.25;
 
 // Pattern-selection helpers live in `./signalSelection` so the
 // pure-logic tests can import them without dragging uplot into a jsdom run.
@@ -177,7 +206,7 @@ import {
   pruneAxisWeights,
   resolveAxisWeights,
 } from "./plotAreaLayout";
-import { diagCount } from "./diag"; // DIAG
+import { diagCount, diagGauge } from "./diag"; // DIAG
 import { PlotArea } from "./PlotArea";
 import { MeasurementMenu, PlotMeasurementStrip } from "./PlotMeasurements";
 
@@ -349,14 +378,18 @@ export function PlotPanel(props: IDockviewPanelProps) {
   // A user changed an area's x window (drag-select / ⌘+wheel / shift-pan):
   // record it as the shared window, propagate, drop out of follow-live.
   const onUserXChange = useCallback(
-    (min: number, max: number, fromId: string) => {
+    (min: number, max: number, fromId: string, keepFollow = false) => {
       // DIAG: fires only on a real user pan/zoom — if this spins
       // during the freeze, the setScale suppression window is being
       // missed and the x-sync ring (applyXAll → setScale hook →
       // onUserXChange) is the loop.
       diagCount("plot.userXChange"); // DIAG
       applyXAll(min, max, fromId);
-      setFollowLive(false);
+      // A zoom out over the old end of the window is a request to change
+      // scale, not to stop following: `followXWindow` keeps whatever
+      // width the user lands on and re-slides it to the live edge, so
+      // follow-live survives it intact.
+      if (!keepFollow) setFollowLive(false);
       bumpXEpoch();
     },
     [applyXAll, bumpXEpoch],
@@ -374,6 +407,28 @@ export function PlotPanel(props: IDockviewPanelProps) {
   useEffect(() => {
     runningRef.current = live;
   });
+  /** Follow-live's clock anchor, or `null` before the first slide / after
+   * a pause — the next slide re-anchors on the data edge. */
+  const liveEdgeRef = useRef<LiveEdge | null>(null);
+  /** Clock tuning, in a ref so the resample callback stays stable. The
+   * target lag follows the resample interval: a slower rate leaves a
+   * longer gap between fetches, so the window has to sit further back
+   * to stay full. */
+  const liveEdgeTuningRef = useRef<LiveEdgeTuning>({
+    maxLagSeconds: FOLLOW_MAX_LAG_SECONDS,
+    tauSeconds: FOLLOW_EDGE_TAU_SECONDS,
+    targetLagSeconds: FOLLOW_TARGET_LAG_MIN_S,
+  });
+  useEffect(() => {
+    liveEdgeTuningRef.current = {
+      maxLagSeconds: FOLLOW_MAX_LAG_SECONDS,
+      tauSeconds: FOLLOW_EDGE_TAU_SECONDS,
+      targetLagSeconds: Math.min(
+        FOLLOW_TARGET_LAG_MAX_S,
+        Math.max(FOLLOW_TARGET_LAG_MIN_S, (FOLLOW_TARGET_LAG_TICKS * resampleIntervalMs) / 1000),
+      ),
+    };
+  }, [resampleIntervalMs]);
   const onAreaResampled = useCallback(
     (areaId: string, firstT: number | null, lastT: number | null) => {
       diagCount("plot.areaResampled"); // DIAG
@@ -383,17 +438,42 @@ export function PlotPanel(props: IDockviewPanelProps) {
       else startByAreaRef.current.delete(areaId);
       const ext = sharedExtent();
       if (ext == null) return;
+      // Follow-live slides to a *clock*-derived edge, not to the data
+      // edge. Stepping straight to `ext` moves the window by however
+      // much data happened to arrive since the last tick — a quantity
+      // uncorrelated with when we repaint — so the whole plot juddered,
+      // and the jump scaled with pixels-per-second (worse zoomed in).
+      // Deriving the edge from elapsed real time makes position a
+      // function of time, so even an irregular tick lands the window
+      // where it belongs. See `advanceLiveEdge`.
+      let edgeT = ext;
+      if (followLiveRef.current && runningRef.current) {
+        const nowMs = performance.now();
+        const edge = advanceLiveEdge(liveEdgeRef.current, ext, nowMs, liveEdgeTuningRef.current);
+        liveEdgeRef.current = edge;
+        // Never track behind the window's own start: a fresh session has
+        // less capture than the display lag, and an edge before the
+        // start inverts the window (see `followXWindow`).
+        edgeT = Math.max(liveEdgeAt(edge, nowMs), sharedStart());
+      } else {
+        liveEdgeRef.current = null; // re-anchor on the next resume
+      }
       const sync = xSyncRef.current;
       const win = followXWindow(
         followLiveRef.current,
         runningRef.current,
         sync.xMin,
         sync.xMax,
-        ext,
+        edgeT,
         DEFAULT_FOLLOW_WIDTH_SECONDS,
         sharedStart(),
       );
-      if (win) applyXAll(win.min, win.max, null);
+      if (win) {
+        diagCount("followwin.slide"); // DIAG
+        diagGauge("winw", win.max - win.min); // DIAG
+        diagGauge("ext", ext); // DIAG
+        applyXAll(win.min, win.max, null);
+      }
     },
     [sharedExtent, sharedStart, applyXAll],
   );
@@ -841,6 +921,8 @@ export function PlotPanel(props: IDockviewPanelProps) {
   );
   const reportPerf = useCallback((_areaId: string, ms: number) => setPerfMs((p) => Math.max(p * 0.6, ms)), []);
   const reportHostMs = useCallback((_areaId: string, ms: number) => setHostMs((p) => Math.max(p * 0.6, ms)), []);
+  const [jankPct, setJankPct] = useState<number | null>(null);
+  const reportJank = useCallback((_areaId: string, pct: number | null) => setJankPct(pct), []);
   const reportRate = useCallback((_areaId: string, hz: number) => setRateHz((p) => Math.max(p * 0.7, hz)), []);
   const reportCache = useCallback((_areaId: string, n: number) => setCachePts(n), []);
   const reportBase = useCallback(
@@ -855,11 +937,12 @@ export function PlotPanel(props: IDockviewPanelProps) {
       series: reportSeries,
       perf: reportPerf,
       hostMs: reportHostMs,
+      jank: reportJank,
       rate: reportRate,
       cache: reportCache,
       base: reportBase,
     }),
-    [reportSeries, reportPerf, reportHostMs, reportRate, reportCache, reportBase],
+    [reportSeries, reportPerf, reportHostMs, reportJank, reportRate, reportCache, reportBase],
   );
   // Mirror the x-axis origin into a ref for the goto listener (above), which
   // subscribes once and so can't close over the live state value.
@@ -1243,7 +1326,8 @@ export function PlotPanel(props: IDockviewPanelProps) {
         >
           {live && rateHz > 0 ? `${Math.round(rateHz)} Hz` : "—"} ·{" "}
           {perfMs > 0 ? `${perfMs.toFixed(0)} ms` : "—"}
-          {hostMs > 0 ? ` (${hostMs.toFixed(0)} host)` : ""} · dpr {dpr.toFixed(2)} · win{" "}
+          {hostMs > 0 ? ` (${hostMs.toFixed(0)} host)` : ""}
+          {jankPct != null ? ` · jank ${jankPct.toFixed(1)}%` : ""} · dpr {dpr.toFixed(2)} · win{" "}
           {fmtCount(winFrames)} · cache {fmtCount(cachePts)}
         </span>
       </div>

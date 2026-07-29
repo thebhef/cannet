@@ -5,6 +5,7 @@ import {
   laneTileBand,
   laneValueRange,
   normalizeIntoLane,
+  tileLabelX,
 } from "./plotEnumLanes";
 
 const span = (b: Band) => b.hi - b.lo;
@@ -81,6 +82,85 @@ describe("normalizeIntoLane", () => {
 
   it("a zero-width range maps to the band midpoint", () => {
     expect(normalizeIntoLane(5, { lo: 5, hi: 5 }, band)).toBeCloseTo(0.3);
+  });
+});
+
+describe("tileLabelX", () => {
+  // A 400 px wide plot region starting at x = 100.
+  const vis: Band = { lo: 100, hi: 500 };
+  const TW = 40; // text width
+  const PAD = 4;
+
+  /** Midpoint of the drawn label, for readability of the expectations. */
+  const mid = (seg: Band) => tileLabelX(seg, vis, TW, PAD)! + TW / 2;
+
+  it("centres the label on a fully visible tile", () => {
+    expect(mid({ lo: 200, hi: 300 })).toBeCloseTo(250, 0);
+  });
+
+  it("centres in the part you can see, however far the tile runs off", () => {
+    // The host widens every fetched slice by two boundary points each
+    // side, so a tile is clipped by construction — and zoomed in far
+    // enough those points are whole screens away. Only the visible part
+    // is a trustworthy anchor.
+    expect(mid({ lo: -1100, hi: 400 })).toBeCloseTo(250, 0);
+    expect(mid({ lo: 200, hi: 9000 })).toBeCloseTo(350, 0);
+    expect(mid({ lo: -9e6, hi: 9e6 })).toBeCloseTo(300, 0);
+  });
+
+  it("ignores where the tile's off-screen edges land", () => {
+    // Those edges are boundary points re-fetched every round trip. If
+    // they moved the label, it would jitter once per fetch.
+    const a = tileLabelX({ lo: -900, hi: 4000 }, vis, TW, PAD);
+    const b = tileLabelX({ lo: -3000, hi: 90000 }, vis, TW, PAD);
+    expect(a).toBe(b);
+  });
+
+  it("returns null when the visible part cannot hold the text", () => {
+    // Visible width 40 < 40 + 2·4.
+    expect(tileLabelX({ lo: 200, hi: 240 }, vis, TW, PAD)).toBeNull();
+    // Entirely off-screen either side.
+    expect(tileLabelX({ lo: -500, hi: -100 }, vis, TW, PAD)).toBeNull();
+    expect(tileLabelX({ lo: 600, hi: 800 }, vis, TW, PAD)).toBeNull();
+  });
+
+  it("lands on whole pixels so glyphs are not re-rasterised each frame", () => {
+    const x = tileLabelX({ lo: 200.37, hi: 400 }, vis, TW, PAD);
+    expect(x).toBe(Math.round(x!));
+  });
+
+  it("holds a viewport-spanning tile's label dead still while it scrolls", () => {
+    // Follow-live, held value: the tile spans the whole viewport and
+    // scrolls under it. Neither edge is on screen, so the label is dead
+    // centre and completely still — the case where a moving label is
+    // most distracting. The off-screen edges are re-fetched boundary
+    // points, so they also jitter; that must not reach the label.
+    const xs = new Set<number>();
+    for (let k = 0; k < 40; k++) {
+      const jitter = (k % 3) * 37; // boundary points land differently each fetch
+      xs.add(tileLabelX({ lo: -800 - k * 7 - jitter, hi: 1400 - k * 7 + jitter }, vis, TW, PAD)!);
+    }
+    expect(xs.size).toBe(1);
+  });
+
+  it("tracks a real edge smoothly when one is on screen", () => {
+    // A transition inside the viewport is a real edge, so the label
+    // does follow it — at half the scroll rate, since the other side of
+    // the visible box is the fixed screen edge. Accepted residual: it
+    // glides, monotonically and never faster than half a scroll step,
+    // rather than jumping.
+    const STEP = 6;
+    const xs: number[] = [];
+    for (let k = 0; k < 30; k++) {
+      // Run ends at a transition scrolling left across the viewport;
+      // starts off-screen left.
+      xs.push(tileLabelX({ lo: -5000, hi: 480 - k * STEP }, vis, TW, PAD)!);
+    }
+    for (let i = 1; i < xs.length; i++) {
+      const d = xs[i] - xs[i - 1];
+      expect(d).toBeLessThanOrEqual(0); // no reversals
+      expect(Math.abs(d)).toBeLessThanOrEqual(Math.ceil(STEP / 2));
+    }
   });
 });
 

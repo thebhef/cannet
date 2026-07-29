@@ -118,6 +118,9 @@ export interface PlotAreaReports {
   hostMs: (areaId: string, ms: number) => void;
   /** Effective re-sample rate (Hz, smoothed); `0` when not running. */
   rate: (areaId: string, hz: number) => void;
+  /** Scroll unevenness (%) while following live; `null` when the window
+   * is stationary or the meter hasn't enough samples. */
+  jank: (areaId: string, pct: number | null) => void;
   /** Largest per-signal cache size (display + diagnostic). */
   cache: (areaId: string, points: number) => void;
   /** The area's cache base (x-axis origin, absolute seconds since the

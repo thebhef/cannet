@@ -1,5 +1,39 @@
 import { describe, expect, it } from "vitest";
-import { deriveAxesForArea } from "./plotAxisDerivation";
+import { axisGutterWidth, deriveAxesForArea } from "./plotAxisDerivation";
+
+describe("axisGutterWidth", () => {
+  const H = 12;
+
+  it("takes the measured width on the first pass", () => {
+    expect(axisGutterWidth(70, null, H)).toBe(70);
+  });
+
+  it("grows immediately so labels always fit", () => {
+    expect(axisGutterWidth(90, 70, H)).toBe(90);
+    expect(axisGutterWidth(71, 70, H)).toBe(71);
+  });
+
+  it("holds through ordinary label-width wobble", () => {
+    // The defect: under follow-live the auto-fitted y scale re-formats
+    // its ticks every frame, so the measured width jitters by a few px.
+    // The gutter must not chase it — the whole plot box moves if it
+    // does, shifting gridlines and enum tiles left and right.
+    let w = axisGutterWidth(80, null, H);
+    const widths = new Set<number>();
+    for (const measured of [78, 74, 80, 71, 76, 79, 72, 77, 80, 73]) {
+      w = axisGutterWidth(measured, w, H);
+      widths.add(w);
+    }
+    expect(widths).toEqual(new Set([80]));
+  });
+
+  it("shrinks once the requirement drops clear of the band", () => {
+    expect(axisGutterWidth(52, 80, H)).toBe(52);
+    // Exactly at the band edge still holds — only a clear drop moves it.
+    expect(axisGutterWidth(68, 80, H)).toBe(80);
+    expect(axisGutterWidth(67, 80, H)).toBe(67);
+  });
+});
 import type { SignalRef } from "./plotPanelConfig";
 import { isEnumValueTable } from "./types";
 

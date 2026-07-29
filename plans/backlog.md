@@ -783,3 +783,39 @@ next pass on this surface can address them as one piece.
   panel still holds the whole tree in frontend state. If it bites,
   page `list_dbc_content` the way the trace and signal views are paged
   (host-side flatten + row window) rather than shipping the tree.
+
+- `[cannet-gui]` **`scroll_jank_pct` reads 40–90 % on a healthy main
+  thread — meter or reality?** The follow-live scroll-smoothness gauge
+  ([`apps/gui/src/scrollJank.ts`](apps/gui/src/scrollJank.ts), reported
+  into the ADR-0031 `RenderReport` as a gauge) sat between 37 % and 87 %
+  through a 2026-07-28 connect run that was otherwise clean: ~1600 rx/tx
+  fps, `lag ≈ 0 ms`, `longtask = 0 ms`, window 1.3 s wide. Either the
+  window genuinely advances unevenly at that zoom, or the meter still
+  over-reads — two flaws in it were already found and fixed the same day
+  (a near-zero-rate divide, and sampling per repaint rather than per
+  window movement), so a third is plausible. Decide which before
+  promoting a baseline for it, or the gate locks in a wrong number.
+
+- `[cannet-gui]` **`PlotArea` renders ~8× per resample.** The same run
+  logged `render.PlotArea` at 300–400/s against ~50 `plotarea.resample`
+  and ~50 `plot.areaResampled`/s. The panel-level per-unit axis split
+  means several `PlotArea`s per panel, but that accounts for a factor of
+  ~4, not the render rate — something is re-rendering the component on
+  state that the imperative uPlot path already owns. Cheap to chase from
+  the existing `diagCount("render.PlotArea")` plus a `why-did-you-render`
+  pass; likely a prop identity that changes every tick.
+
+- `[cannet-gui]` **Min/max decimation buckets by slice index, not
+  time.** `decimate_min_max` splits the fetched slice into
+  `n.div_ceil(max_buckets)` index runs
+  ([`apps/gui/src-tauri/src/signal_sampler.rs`](apps/gui/src-tauri/src/signal_sampler.rs)),
+  so every fetch re-buckets: `n` changes and slice element 0 moves as the
+  window slides, shifting every bucket boundary at once and re-picking
+  each bucket's argmin/argmax. The rendered envelope therefore redraws
+  differently each fetch even where the underlying data is unchanged.
+  Investigated 2026-07-28 as a suspect for leading-edge flicker and
+  *ruled out* for that symptom (the flicker scaled with pixels-per-sample
+  and survived below the decimation threshold), but the re-bucketing is
+  real and would show as interior shimmer. Fix is time-anchored buckets:
+  bucket `k` = `[from + k·Δ, from + (k+1)·Δ)` with `from` quantised to a
+  multiple of `Δ`, so a sample always lands in the same bucket.

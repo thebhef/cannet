@@ -94,6 +94,24 @@ Frontend (`apps/gui/src`):
   appears, the guard let a stale frame through.
 - **A new session start re-zeroes every panel in the same render.**
   There is one number to change and no per-view state to reconcile.
+- **A scrolling view's viewport position is a function of _time_, not
+  of data arrival.** Following the live edge means the window's right
+  edge advances with elapsed real time (`advanceLiveEdge`), with the
+  data filling in behind it — not stepping to the newest frame's
+  timestamp on each refresh. Data arrival is uncorrelated with when a
+  view repaints, so stepping to it translates the whole view by a
+  random amount per frame: every fixed-time feature (gridlines, enum
+  tiles, their labels) judders in lockstep, and the jump scales with
+  pixels-per-second, so zooming in makes it worse. Prediction alone is
+  not enough, though: a clock corrected only once it has drifted _far_
+  from the data may sit anywhere inside that tolerance, so the trace's
+  leading edge wanders in the window — at a 1.5 s zoom a lead of even a
+  few hundred ms is a visibly empty plot. So each update also pulls the
+  edge a fraction of the way toward the data, which locks it to the
+  data's rate (the offset decays to zero on a live bus) while still
+  filtering arrival jitter. A hard resync is reserved for a capture
+  re-anchor and for falling far enough behind that nudging can't catch
+  up.
 
 ## Consequences
 
