@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { axisGutterWidth, deriveAxesForArea } from "./plotAxisDerivation";
+import { axisGutterWidth, createGutterCoordinator, deriveAxesForArea } from "./plotAxisDerivation";
 
 describe("axisGutterWidth", () => {
   const H = 12;
@@ -172,5 +172,76 @@ describe("deriveAxesForArea", () => {
     // Re-running gives the same ids.
     const again = deriveAxesForArea("area-7", sigs, "per-unit");
     expect(again[0].id).toBe(out[0].id);
+  });
+});
+
+describe("createGutterCoordinator", () => {
+  const H = 12;
+
+  it("widens every axis to the widest one's need", () => {
+    // The whole point: the stack draws one x window, so the plot boxes
+    // have to start at the same x or the shared cursor isn't collinear.
+    const c = createGutterCoordinator(H);
+    expect(c.report("numeric", 88)).toBe(88);
+    // The enum-lanes axis wants a bare gutter; it gets the panel's.
+    expect(c.report("lanes", 14)).toBe(88);
+    // ...and the wide one is unaffected by the narrow one.
+    expect(c.report("numeric", 88)).toBe(88);
+  });
+
+  it("takes the widest whichever order the axes report in", () => {
+    const c = createGutterCoordinator(H);
+    expect(c.report("lanes", 14)).toBe(14);
+    expect(c.report("numeric", 88)).toBe(88);
+    // The narrow axis picks the new width up on its next layout pass.
+    expect(c.report("lanes", 14)).toBe(88);
+  });
+
+  it("keeps the anti-twitch hysteresis, applied panel-wide", () => {
+    // Same reason as `axisGutterWidth`: an auto-fitted scale's tick
+    // strings change width constantly, and the left edge must not
+    // follow every wobble. Applied to the max, so all axes latch alike.
+    const c = createGutterCoordinator(H);
+    c.report("numeric", 88);
+    expect(c.report("numeric", 80)).toBe(88); // inside the band
+    expect(c.report("numeric", 70)).toBe(70); // past it
+    expect(c.report("numeric", 95)).toBe(95); // growth is immediate
+  });
+
+  it("gives back the width when the widest axis goes away", () => {
+    // Otherwise removing the only wide axis would strand every
+    // remaining one behind a gutter nothing needs.
+    const c = createGutterCoordinator(H);
+    c.report("numeric", 88);
+    c.report("lanes", 14);
+    c.forget("numeric");
+    expect(c.report("lanes", 14)).toBe(14);
+  });
+
+  it("holds its width when the last axis goes away", () => {
+    // Nothing left to size from — hold, rather than resetting and
+    // announcing a change nobody can act on (an empty stack has no axis
+    // to re-lay-out, and the next one to mount would flash a
+    // wrong-width gutter converging from scratch).
+    const seen: number[] = [];
+    const c = createGutterCoordinator(H, (w) => seen.push(w));
+    c.report("numeric", 88);
+    c.forget("numeric");
+    expect(seen).toEqual([88]);
+  });
+
+  it("announces a change once, to whoever has to re-lay-out", () => {
+    // A report arrives from inside one axis's layout pass; the others
+    // only see the new width on their next one, so the panel needs to
+    // know when to nudge them — and must not be nudged on every report.
+    const seen: number[] = [];
+    const c = createGutterCoordinator(H, (w) => seen.push(w));
+    c.report("numeric", 88);
+    c.report("lanes", 14);
+    c.report("numeric", 88);
+    c.report("lanes", 14);
+    expect(seen).toEqual([88]);
+    c.report("numeric", 40);
+    expect(seen).toEqual([88, 40]);
   });
 });

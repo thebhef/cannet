@@ -196,7 +196,13 @@ import {
   resolvePatterns,
   scopeCatalog,
 } from "./signalSelection";
-import { deriveAxesForArea, type YAxisMode } from "./plotAxisDerivation";
+import {
+  GUTTER_HYSTERESIS_PX,
+  createGutterCoordinator,
+  deriveAxesForArea,
+  type GutterCoordinator,
+  type YAxisMode,
+} from "./plotAxisDerivation";
 import { messageEcuLookup } from "./plotSignalLabel";
 import { useValueTables } from "./useValueTables";
 import {
@@ -323,6 +329,31 @@ export function PlotPanel(props: IDockviewPanelProps) {
   const extentByAreaRef = useRef<Map<string, number>>(new Map());
   const startByAreaRef = useRef<Map<string, number>>(new Map());
 
+  /// One y-gutter for the whole stack, so every axis's plot box starts
+  /// at the same x and the shared cursors / gridlines / enum tiles are
+  /// collinear down the panel (`plotAxisDerivation.ts`).
+  const gutterBroadcastRef = useRef(false);
+  const gutterRef = useRef<GutterCoordinator | null>(null);
+  if (gutterRef.current == null) {
+    gutterRef.current = createGutterCoordinator(GUTTER_HYSTERESIS_PX, () => {
+      // We're inside the reporting axis's own layout pass; the others
+      // pick the new width up on their next one, which for a stopped
+      // trace may never come. Nudge them — but after we're out of
+      // uPlot's layout, and only once per change. The nudged axes
+      // re-report the same needs, so this doesn't recur.
+      if (gutterBroadcastRef.current) return;
+      gutterBroadcastRef.current = true;
+      queueMicrotask(() => {
+        gutterBroadcastRef.current = false;
+        for (const u of instancesRef.current.values()) u.redraw(false, true);
+      });
+    });
+  }
+  const reportGutterNeed = useCallback(
+    (areaId: string, needed: number) => gutterRef.current!.report(areaId, needed),
+    [],
+  );
+
   const registerInstance = useCallback((id: string, u: uPlot | null) => {
     if (u) {
       instancesRef.current.set(id, u);
@@ -336,6 +367,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
       instancesRef.current.delete(id);
       extentByAreaRef.current.delete(id);
       startByAreaRef.current.delete(id);
+      // A destroyed axis stops reporting, so its need must not keep
+      // holding the panel's gutter wide.
+      gutterRef.current?.forget(id);
     }
   }, []);
 
@@ -1527,6 +1561,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
               xSyncRef={xSyncRef}
               registerInstance={registerInstance}
               plotSurface={plotSurface}
+              reportGutterNeed={reportGutterNeed}
               onUserXChange={onUserXChange}
               onAreaResampled={onAreaResampled}
               onPlaceCursorX={placeCursorX}

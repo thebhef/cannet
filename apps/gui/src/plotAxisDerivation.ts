@@ -137,3 +137,70 @@ export function axisGutterWidth(
   if (current == null || needed > current) return needed;
   return needed < current - hysteresis ? needed : current;
 }
+
+/** Slack (px) the y-gutter keeps before giving width back. Wide enough
+ * to swallow a digit's worth of tick-label churn, narrow enough that a
+ * genuinely shorter axis still reclaims the space. */
+export const GUTTER_HYSTERESIS_PX = 12;
+
+/** Panel-wide y-gutter agreement. See {@link createGutterCoordinator}. */
+export interface GutterCoordinator {
+  /** Record what `areaId`'s axis needs, and return the width it should
+   * actually reserve. Called from uPlot's `axis.size`, every layout
+   * pass, for every axis in the panel. */
+  report(areaId: string, needed: number): number;
+  /** Drop a destroyed axis so its width stops holding the panel wide. */
+  forget(areaId: string): void;
+}
+
+/**
+ * One y-gutter width for every stacked axis in a panel: the widest any
+ * one of them asks for.
+ *
+ * The stack draws a single shared x window, so the plot boxes have to
+ * begin at the same x — otherwise the shared cursors, the x gridlines
+ * and the enum tiles all sit at the right *time* but the wrong *pixel*,
+ * and nothing lines up down the stack. The left edge is set by each
+ * axis's own y-gutter, and those legitimately differ: a numeric axis
+ * sizes itself to its tick labels, the enum-lanes axis asks for a bare
+ * strip because its tiles carry the labels (ADR 0026). Taking the max
+ * costs the narrow axes some blank gutter, which is the price of a
+ * collinear cursor.
+ *
+ * Hysteresis (via {@link axisGutterWidth}) applies to the max, so every
+ * axis latches together rather than each drifting on its own.
+ *
+ * `onChange` fires when the agreed width moves. A report arrives from
+ * inside one axis's layout pass, so the *others* won't see the new
+ * width until their next one — the caller uses this to nudge them, and
+ * gets one call per actual change rather than one per report.
+ */
+export function createGutterCoordinator(
+  hysteresis: number,
+  onChange: (width: number) => void = () => {},
+): GutterCoordinator {
+  const needs = new Map<string, number>();
+  let width: number | null = null;
+  const settle = (): void => {
+    let max: number | null = null;
+    for (const v of needs.values()) max = max == null ? v : Math.max(max, v);
+    // No axis left to size from: hold the last agreed width rather than
+    // resetting, so the next axis to mount doesn't re-converge from
+    // scratch (and flash a wrong-width gutter doing it).
+    if (max == null) return;
+    const next = axisGutterWidth(max, width, hysteresis);
+    if (next === width) return;
+    width = next;
+    onChange(next);
+  };
+  return {
+    report(areaId, needed) {
+      needs.set(areaId, needed);
+      settle();
+      return width ?? needed;
+    },
+    forget(areaId) {
+      if (needs.delete(areaId)) settle();
+    },
+  };
+}

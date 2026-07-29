@@ -37,7 +37,7 @@ import { SIGNAL_DND_MIME, setSignalDragData } from "./dragSignals";
 import { type Series, valueAt } from "./plotCursors";
 import type { PatternResolution } from "./signalSelection";
 import { SignalPatternEditor } from "./SignalPatternEditor";
-import { axisGutterWidth, type YAxisMode } from "./plotAxisDerivation";
+import { type YAxisMode } from "./plotAxisDerivation";
 import { messageEcuKey, signalRowLabel } from "./plotSignalLabel";
 import { emptyJankMeter, jankPercent, observeScroll } from "./scrollJank";
 import { useValueTables } from "./useValueTables";
@@ -83,10 +83,6 @@ let axisMeasureCtx: CanvasRenderingContext2D | null = null;
 /** Must match the axis `font` in `axisCommon` below — measurement is
  * meaningless if the font differs from what uPlot actually paints. */
 const AXIS_FONT = "10px ui-monospace, SFMono-Regular, Menlo, monospace";
-/** Slack (px) the y-gutter keeps before giving width back. Wide enough
- * to swallow a digit's worth of tick-label churn, narrow enough that a
- * genuinely shorter axis still reclaims the space. */
-const GUTTER_HYSTERESIS_PX = 12;
 /** Fraction of the visible span fetched beyond each edge of the plot's
  * x-window, so the window can slide between fetches without reaching
  * past the data it was given. */
@@ -287,6 +283,10 @@ interface PlotAreaProps {
    * `collapsed` — it renders no canvas, so it has no uPlot and no
    * pointer surface of its own. See the placeholder effect. */
   plotSurface: () => HTMLElement | null;
+  /** Declare the y-gutter width this axis needs and get back the one
+   * the whole panel has agreed on (the widest anyone needs), so every
+   * plot box starts at the same x. Called from uPlot's `axis.size`. */
+  reportGutterNeed: (areaId: string, needed: number) => number;
   /** A user pan/zoom moved the shared x-window. `keepFollow` leaves
    * follow-live on — a zoom whose intent is "change the scale", not
    * "stop tracking the live edge". */
@@ -472,6 +472,7 @@ export function PlotArea(p: PlotAreaProps) {
     xSyncRef,
     registerInstance,
     plotSurface,
+    reportGutterNeed,
     onUserXChange,
     onAreaResampled,
     onPlaceCursorX,
@@ -527,9 +528,6 @@ export function PlotArea(p: PlotAreaProps) {
    * normalisation in `resample` reads {@link manualRangesRef} instead of
    * the host extent. Cleared by Fit Data. */
   const manualFitYRef = useRef(false);
-  /** Currently reserved y-gutter width, latched across layout passes so
-   * the plot box doesn't twitch as tick labels re-format. */
-  const gutterWidthRef = useRef<number | null>(null);
   /** Rolling scroll-smoothness meter, fed from the draw hook. */
   const jankRef = useRef(emptyJankMeter());
   /** The y-range actually used to normalise each signal on the most
@@ -1130,8 +1128,11 @@ export function PlotArea(p: PlotAreaProps) {
           // Blank gutter: no splits / values / grid. The lane tiles
           // carry the value labels and the side panel carries identity,
           // so a y scale would only waste horizontal space (ADR 0026).
+          // It still reserves whatever the panel agreed on — the boxes
+          // have to start at the same x for the shared cursor to be
+          // collinear — it just leaves it empty.
           ...axisCommon,
-          size: 14,
+          size: () => reportGutterNeed(areaId, 14),
           grid: { show: false },
           ticks: { show: false },
           splits: () => [],
@@ -1140,7 +1141,7 @@ export function PlotArea(p: PlotAreaProps) {
       : enumActiveAtConstruct
       ? {
           ...axisCommon,
-          size: 80,
+          size: () => reportGutterNeed(areaId, 80),
           splits: () => enumRaws,
           values: (_u, splits) =>
             splits.map((v) => `${v} "${enumLabelFor(Math.round(v))}"`),
@@ -1167,20 +1168,13 @@ export function PlotArea(p: PlotAreaProps) {
           // canvas edge. We measure the widest formatted label in the
           // current tick set with a canvas 2d context (cheap; reuses a
           // module-level scratch context).
-          // Latched through `axisGutterWidth`: the raw measurement moves
-          // with the auto-fitted scale's tick text, and uPlot re-runs
-          // this every layout pass, so feeding it straight through makes
-          // the gutter — and with it the plot box's left edge — twitch
-          // frame to frame.
-          size: (_u, values) => {
-            const w = axisGutterWidth(
-              measureAxisSize(values),
-              gutterWidthRef.current,
-              GUTTER_HYSTERESIS_PX,
-            );
-            gutterWidthRef.current = w;
-            return w;
-          },
+          // The measurement is a *request*: the panel hands back the
+          // width every axis in the stack reserves (the widest anyone
+          // needs), latched against tick-text churn. Both parts matter
+          // — a per-axis width leaves the plot boxes starting at
+          // different x, and an unlatched one makes the left edge
+          // twitch frame to frame under an auto-fitted scale.
+          size: (_u, values) => reportGutterNeed(areaId, measureAxisSize(values)),
           // Tint the y-axis to match the primary signal's trace so
           // it's obvious which series the labels correspond to. Falls
           // back to the neutral axis colour when there's no primary
