@@ -65,6 +65,23 @@ export function pruneAxisWeights(stored: AxisWeights, liveIds: Iterable<string>)
   return out;
 }
 
+/** Which axis the splitter above `idx` trades weight with: the nearest
+ * axis above it that isn't collapsed, or `null` when there is none.
+ *
+ * A collapsed axis (every signal hidden) is excluded from the
+ * fit-to-panel distribution, so it has no weight to trade and gets no
+ * splitter of its own. It must not *sever* the stack either — a
+ * splitter that only ever paired immediate DOM neighbours would vanish
+ * the moment a middle axis collapsed, leaving no way to resize the two
+ * axes it sits between. So the splitter reaches over it. */
+export function splitterPartnerAbove(collapsed: readonly boolean[], idx: number): number | null {
+  if (collapsed[idx]) return null;
+  for (let i = idx - 1; i >= 0; i--) {
+    if (!collapsed[i]) return i;
+  }
+  return null;
+}
+
 function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
 }

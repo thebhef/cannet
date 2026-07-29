@@ -38,6 +38,7 @@ import { type Series, valueAt } from "./plotCursors";
 import type { PatternResolution } from "./signalSelection";
 import { SignalPatternEditor } from "./SignalPatternEditor";
 import { axisGutterWidth, type YAxisMode } from "./plotAxisDerivation";
+import { messageEcuKey, signalRowLabel } from "./plotSignalLabel";
 import { emptyJankMeter, jankPercent, observeScroll } from "./scrollJank";
 import { useValueTables } from "./useValueTables";
 import { laneBands, laneTileBand, laneValueRange, normalizeIntoLane, tileLabelX } from "./plotEnumLanes";
@@ -282,6 +283,10 @@ interface PlotAreaProps {
   events: NoteEvent[];
   xSyncRef: MutableRefObject<XSync>;
   registerInstance: (id: string, u: uPlot | null) => void;
+  /** A live plot's interaction surface, borrowed while this axis is
+   * `collapsed` — it renders no canvas, so it has no uPlot and no
+   * pointer surface of its own. See the placeholder effect. */
+  plotSurface: () => HTMLElement | null;
   /** A user pan/zoom moved the shared x-window. `keepFollow` leaves
    * follow-live on — a zoom whose intent is "change the scale", not
    * "stop tracking the live edge". */
@@ -349,6 +354,10 @@ interface PlotAreaProps {
   /** Bus-id → render colour, for the swatch shown before the bus name
    * in each signal row (matches the bus's graph colour). */
   busColorLookup: ReadonlyMap<string, string>;
+  /** `messageEcuKey` → transmitting ECU, for the signal row's message
+   * line. The ECU isn't part of a plotted signal's identity, so the
+   * panel resolves it from the catalog once and shares it. */
+  ecuLookup: ReadonlyMap<string, string>;
   /** Signal value→colour resolver (ADR 0029): tints an enum lane box by
    * its held value. Read live in the draw hook via a ref. */
   resolveColor: ColorResolver;
@@ -462,6 +471,7 @@ export function PlotArea(p: PlotAreaProps) {
     events,
     xSyncRef,
     registerInstance,
+    plotSurface,
     onUserXChange,
     onAreaResampled,
     onPlaceCursorX,
@@ -487,11 +497,14 @@ export function PlotArea(p: PlotAreaProps) {
     catalog,
     busNameLookup,
     busColorLookup,
+    ecuLookup,
     resolveColor,
     panelElementId,
   } = p;
 
   const canvasRef = useRef<HTMLDivElement | null>(null);
+  /** The empty stand-in drawn in the canvas column while collapsed. */
+  const placeholderRef = useRef<HTMLDivElement | null>(null);
   const uplotRef = useRef<uPlot | null>(null);
   const seriesRef = useRef<Map<string, Series>>(new Map());
   const presentRef = useRef<Map<string, number | null>>(new Map());
@@ -1920,6 +1933,61 @@ export function PlotArea(p: PlotAreaProps) {
     }
     return fmtVal(v);
   };
+  // A collapsed axis renders no canvas, so uPlot never constructs here
+  // and this row is a hole in the panel's pointer surface: the wheel
+  // does nothing and the shared crosshair blanks out as the pointer
+  // crosses it. Replay the gesture on a live plot's own surface — every
+  // axis shares one x window and one canvas column, so the same
+  // `clientX` there is the gesture the user meant.
+  //
+  // Two things deliberately don't carry over, because the strip has no
+  // y scale to interpret them against: ⌘/ctrl + wheel (y zoom) lands on
+  // the borrowed axis, and in "y" cursor mode the press isn't forwarded
+  // at all rather than dropping H1/H2 at a meaningless value.
+  useEffect(() => {
+    const el = placeholderRef.current;
+    if (!el) return;
+    const replay = (e: Event) => {
+      const over = plotSurface();
+      if (!over) return;
+      const m = e as MouseEvent;
+      if (e.type !== "wheel" && e.type !== "mousemove" && liveRef.current.cursorMode === "y") return;
+      if (e.type === "wheel" || e.type === "contextmenu") e.preventDefault();
+      const r = over.getBoundingClientRect();
+      const init: MouseEventInit = {
+        bubbles: true,
+        cancelable: true,
+        clientX: m.clientX,
+        // Nothing here maps to a y value; aim at the borrowed plot's
+        // middle so the replayed press lands inside its box.
+        clientY: r.top + r.height / 2,
+        button: m.button,
+        buttons: m.buttons,
+        shiftKey: m.shiftKey,
+        ctrlKey: m.ctrlKey,
+        metaKey: m.metaKey,
+      };
+      over.dispatchEvent(
+        e.type === "wheel"
+          ? new WheelEvent("wheel", { ...init, deltaX: (e as WheelEvent).deltaX, deltaY: (e as WheelEvent).deltaY })
+          : new MouseEvent(e.type, init),
+      );
+    };
+    const types = ["wheel", "mousemove", "mouseleave", "mousedown", "contextmenu"];
+    for (const t of types) el.addEventListener(t, replay, { passive: false });
+    return () => {
+      for (const t of types) el.removeEventListener(t, replay);
+    };
+  }, [collapsed, plotSurface]);
+
+  /** The row's message line: the signal's DBC ancestry, `bus · ecu ·
+   * message` — the same hierarchy the picker groups by. */
+  const messageLabelFor = (s: SignalRef): string =>
+    signalRowLabel(
+      s.busId == null ? null : busNameLookup.get(s.busId) ?? s.busId,
+      ecuLookup.get(messageEcuKey(s.busId, s.messageId, s.extended)),
+      s.messageName,
+    );
   const valueTitle = cursorXa != null ? "value at cursor A" : hoverX != null ? "value at crosshair" : "latest value";
   // With both X cursors placed: Δ value (A − B), shown as a second line
   // under the per-signal value.
@@ -1937,12 +2005,14 @@ export function PlotArea(p: PlotAreaProps) {
   return (
     <div
       className={`plot-area${focused ? " focused" : ""}${collapsed ? " collapsed" : ""}`}
+      data-area-id={areaId}
       style={flexGrow == null ? undefined : { flexGrow }}
       onMouseDown={onFocus}
       onDragOver={(e) => signalDragOver(e, false)}
       onDrop={(e) => signalDrop(e, { beforeKey: null, stopEvent: false, panelElementId, onDropSignal })}
     >
       <div className="plot-area-canvas" ref={canvasRef} />
+      {collapsed && <div className="plot-area-placeholder" ref={placeholderRef} />}
       <div
         className="plot-area-resizer"
         role="separator"
@@ -2143,7 +2213,7 @@ export function PlotArea(p: PlotAreaProps) {
                   >
                     {s.signalName}
                   </span>
-                  <span className="plot-signal-message" title={s.messageName}>
+                  <span className="plot-signal-message" title={messageLabelFor(s)}>
                     {s.busId ? (
                       <>
                         <span
@@ -2151,10 +2221,10 @@ export function PlotArea(p: PlotAreaProps) {
                           style={{ background: busColorLookup.get(s.busId) ?? "#94a3b8" }}
                           aria-hidden="true"
                         />
-                        {`${busNameLookup.get(s.busId) ?? s.busId} · ${s.messageName}`}
+                        {messageLabelFor(s)}
                       </>
                     ) : (
-                      s.messageName
+                      messageLabelFor(s)
                     )}
                   </span>
                 </div>

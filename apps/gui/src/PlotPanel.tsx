@@ -197,6 +197,7 @@ import {
   scopeCatalog,
 } from "./signalSelection";
 import { deriveAxesForArea, type YAxisMode } from "./plotAxisDerivation";
+import { messageEcuLookup } from "./plotSignalLabel";
 import { useValueTables } from "./useValueTables";
 import {
   type AxisWeights,
@@ -205,6 +206,7 @@ import {
   equalizePair,
   pruneAxisWeights,
   resolveAxisWeights,
+  splitterPartnerAbove,
 } from "./plotAreaLayout";
 import { diagCount, diagGauge } from "./diag"; // DIAG
 import { PlotArea } from "./PlotArea";
@@ -335,6 +337,19 @@ export function PlotPanel(props: IDockviewPanelProps) {
       extentByAreaRef.current.delete(id);
       startByAreaRef.current.delete(id);
     }
+  }, []);
+
+  /// A live plot's own interaction surface, for an axis that has none.
+  /// A collapsed axis renders no canvas — so uPlot never constructs
+  /// there and its row is a hole in the panel's pointer surface: the
+  /// wheel does nothing and the shared crosshair blanks out as the
+  /// pointer crosses it. Every axis shares one x window and one canvas
+  /// column, so replaying the gesture here is the gesture the user
+  /// would have made a few pixels higher. `null` while no axis has a
+  /// uPlot yet.
+  const plotSurface = useCallback((): HTMLElement | null => {
+    for (const u of instancesRef.current.values()) return u.over;
+    return null;
   }, []);
 
   const sharedExtent = useCallback((): number | null => {
@@ -983,6 +998,11 @@ export function PlotPanel(props: IDockviewPanelProps) {
     return scopeCatalog(catalog, busSet);
   }, [catalog, currentSources, buses, registry.entries]);
 
+  /// `messageEcuKey` → transmitting ECU, built once for the whole
+  /// panel: every area's signal rows name their message by its DBC
+  /// ancestry, and the ECU only lives in the catalog.
+  const ecuLookup = useMemo(() => messageEcuLookup(scopedCatalog), [scopedCatalog]);
+
   /// Areas with their `patterns` resolved against the catalog
   /// (`signalSelection.ts`): the effective series list is the manual
   /// picks plus the pattern matches not already picked. Storage state
@@ -1163,6 +1183,13 @@ export function PlotPanel(props: IDockviewPanelProps) {
     });
   }, [scopedCatalog, busNameLookup]);
   const areaLabels = useMemo(() => new Map(areas.map((a, i) => [a.id, `Area ${i + 1}`])), [areas]);
+  /// Collapsed-ness of the axis stack, positionally — what
+  /// `splitterPartnerAbove` reads to pair splitters across collapsed
+  /// axes.
+  const collapsedFlags = useMemo(
+    () => derivedAreaConfigs.map((d) => d.collapsed),
+    [derivedAreaConfigs],
+  );
 
   // Iterate the *derived* axes, not the parent areas: `reportSeries`
   // stores each axis's sampled series under its derived id (which in
@@ -1375,11 +1402,15 @@ export function PlotPanel(props: IDockviewPanelProps) {
           // distribution. Measuring the neighbours' live pixel heights
           // at drag start keeps the weight math independent of the
           // panel's absolute size.
-          const above = idx > 0 ? derivedAreaConfigs[idx - 1] : null;
-          // A splitter trades vertical weight between two axes; it's
-          // meaningless next to a collapsed (fully-hidden) axis, which
-          // claims no height, so drop it when either neighbour collapses.
-          const showSplitter = above != null && !above.collapsed && !d.collapsed;
+          // A splitter trades vertical weight between two axes, and a
+          // collapsed (fully-hidden) axis has none to trade — so it
+          // gets no splitter, and the splitter reaches *over* it to
+          // pair the axes it sits between. Pairing DOM neighbours
+          // instead would make collapsing a middle axis silently
+          // remove the only handle for resizing either side of it.
+          const aboveIdx = splitterPartnerAbove(collapsedFlags, idx);
+          const above = aboveIdx == null ? null : derivedAreaConfigs[aboveIdx];
+          const showSplitter = above != null;
           return (
             <Fragment key={d.area.id}>
               {showSplitter && above && (
@@ -1392,11 +1423,17 @@ export function PlotPanel(props: IDockviewPanelProps) {
                     e.preventDefault();
                     e.stopPropagation();
                     const sep = e.currentTarget;
-                    const aboveEl = sep.previousElementSibling as HTMLElement | null;
-                    const belowEl = sep.nextElementSibling as HTMLElement | null;
-                    if (!aboveEl || !belowEl) return;
                     const idAbove = above.area.id;
                     const idBelow = d.area.id;
+                    // By id, not by DOM adjacency: a splitter can pair
+                    // two axes with collapsed strips between them.
+                    const byId = (id: string) =>
+                      Array.from(sep.parentElement?.children ?? []).find(
+                        (c) => (c as HTMLElement).dataset?.areaId === id,
+                      ) as HTMLElement | undefined ?? null;
+                    const aboveEl = byId(idAbove);
+                    const belowEl = byId(idBelow);
+                    if (!aboveEl || !belowEl) return;
                     const abovePx0 = aboveEl.getBoundingClientRect().height;
                     const belowPx0 = belowEl.getBoundingClientRect().height;
                     const startY = e.clientY;
@@ -1489,6 +1526,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
               events={events}
               xSyncRef={xSyncRef}
               registerInstance={registerInstance}
+              plotSurface={plotSurface}
               onUserXChange={onUserXChange}
               onAreaResampled={onAreaResampled}
               onPlaceCursorX={placeCursorX}
@@ -1516,6 +1554,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
               catalog={scopedCatalog}
               busNameLookup={busNameLookup}
               busColorLookup={busColorLookup}
+              ecuLookup={ecuLookup}
               resolveColor={resolveColor}
               panelElementId={elementId}
               />

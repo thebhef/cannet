@@ -237,7 +237,18 @@ What's still rough:
   reclaim per-lane space yet.** When every signal on a derived axis is
   hidden, the axis is excluded from the fit-to-panel height
   distribution and its canvas is dropped (`.plot-area.collapsed`), while
-  its rows stay in the side panel so they remain un-hideable. This
+  its rows stay in the side panel so they remain un-hideable — in the
+  side panel's own column, at its own width, since un-hiding means
+  clicking a swatch in those rows and a strip that reflowed across the
+  empty row would have to be chased. The rows themselves render compact
+  (message name folded up beside the signal name) so a collapsed axis
+  costs a line or two of panel height. A collapsed axis must not become
+  a dead zone in the panel either: it is skipped when pairing splitters
+  (`splitterPartnerAbove` — the splitter reaches over it to the axes on
+  either side, which is where the weight can actually go), and its
+  empty canvas column is a placeholder that replays wheel and pointer
+  gestures on a live axis's surface, since it has no uPlot of its own
+  to receive them. This
   covers a fully-hidden numeric axis and a fully-hidden enum-lanes axis
   alike. Still open: within a *still-visible* enum-lanes axis, a hidden
   enum keeps its lane band (the band isn't reclaimed by the visible
