@@ -1457,14 +1457,55 @@ button.trace-event-swatch {
   flex: 0 0 auto;
   min-height: 0;
 }
-.plot-area.collapsed .plot-area-canvas,
-.plot-area.collapsed .plot-area-resizer {
+.plot-area.collapsed .plot-area-canvas {
   display: none;
 }
-.plot-area.collapsed .plot-area-signals {
+/* The canvas column becomes an empty stand-in, so the strip stays in
+   the side panel's own column instead of flowing across the row.
+   Collapsing is how you hide an axis, and un-hiding means clicking a
+   swatch in these very rows — if they slid to the far side of the
+   panel you'd have to go find them. The stand-in also carries the
+   pointer surface the missing canvas would have (`PlotArea`'s
+   placeholder effect). */
+.plot-area-placeholder {
   flex: 1 1 auto;
-  border-left: none;
+  min-width: 0;
+}
+.plot-area.collapsed .plot-area-signals {
   max-height: 8rem;
+}
+/* Nothing on this axis is drawn, so its rows only have to stay
+   identifiable and clickable. Fold the message line up beside the
+   signal name and tighten the padding, so a fully-hidden axis costs a
+   line or two of panel height instead of a full row per signal. */
+.plot-area.collapsed .plot-area-signals-head {
+  padding: 0.1rem 0.4rem;
+}
+.plot-area.collapsed .plot-signal-row {
+  align-items: center;
+  padding: 0.05rem 0.4rem;
+  row-gap: 0;
+}
+.plot-area.collapsed .plot-signal-text {
+  flex-direction: row;
+  align-items: baseline;
+  column-gap: 0.35rem;
+}
+/* Ellipsis inside a flex row needs an explicit `min-width` floor — the
+   default `auto` sizes each child to its content and neither shrinks. */
+.plot-area.collapsed .plot-signal-name {
+  font-size: 0.82rem;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.plot-area.collapsed .plot-signal-message {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.plot-area.collapsed .plot-signal-swatch {
+  width: 0.8rem;
+  height: 0.8rem;
+  margin-top: 0;
 }
 
 .plot-area-canvas {

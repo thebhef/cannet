@@ -7,7 +7,40 @@ import {
   equalizePair,
   pruneAxisWeights,
   resolveAxisWeights,
+  splitterPartnerAbove,
 } from "./plotAreaLayout";
+
+describe("splitterPartnerAbove", () => {
+  it("pairs an axis with the one directly above it", () => {
+    expect(splitterPartnerAbove([false, false, false], 1)).toBe(0);
+    expect(splitterPartnerAbove([false, false, false], 2)).toBe(1);
+  });
+
+  it("has no partner for the topmost axis", () => {
+    expect(splitterPartnerAbove([false, false], 0)).toBeNull();
+  });
+
+  it("reaches over a collapsed axis instead of being severed by it", () => {
+    // A collapsed axis claims no height, so it can't trade weight —
+    // but it must not cut the two axes it sits between off from each
+    // other either. Otherwise hiding every signal on a middle axis
+    // silently removes the only way to resize its neighbours.
+    expect(splitterPartnerAbove([false, true, false], 2)).toBe(0);
+    expect(splitterPartnerAbove([false, true, true, false], 3)).toBe(0);
+  });
+
+  it("has no partner when everything above is collapsed", () => {
+    expect(splitterPartnerAbove([true, false], 1)).toBeNull();
+    expect(splitterPartnerAbove([true, true, false], 2)).toBeNull();
+  });
+
+  it("gives a collapsed axis no splitter of its own", () => {
+    // The splitter is drawn above the axis it belongs to; a collapsed
+    // axis has no weight to trade, so it gets none and its neighbours
+    // pair up across it.
+    expect(splitterPartnerAbove([false, true], 1)).toBeNull();
+  });
+});
 
 describe("axisWeightsFromRaw", () => {
   it("non-object input → empty record", () => {

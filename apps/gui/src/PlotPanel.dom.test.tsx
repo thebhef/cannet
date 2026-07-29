@@ -307,6 +307,20 @@ describe("PlotPanel", () => {
     });
   });
 
+  it("names a signal row's message by its DBC ancestry, ECU included", async () => {
+    // The row's second line is the same bus · ecu · message the picker
+    // groups by and the DBC tree shows. The ECU isn't part of a plotted
+    // signal's identity, so it's resolved from the catalog.
+    renderPanel();
+    await pickCombobox(
+      screen.getByLabelText("add signal to focused plot area"),
+      "*|s:256:EngineSpeed",
+    );
+    await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
+    // No project buses in this harness, so the bus segment drops out.
+    expect(screen.getByText("EngineEcu · EngineData")).toBeInTheDocument();
+  });
+
   it("picks a signal into the focused area; a repeat pick is a no-op", async () => {
     renderPanel();
     const picker = screen.getByLabelText("add signal to focused plot area");
@@ -711,9 +725,97 @@ describe("PlotPanel", () => {
     const collapsed = areas.filter((a) => a.classList.contains("collapsed"));
     expect(collapsed.length).toBe(1);
     expect(collapsed[0].style.flexGrow).toBe("0");
-    // Two axes normally get one splitter between them; the collapsed
-    // neighbour suppresses it.
+    // The collapsed axis is the top one and has no weight to trade, so
+    // the visible axis below it has nothing to pair with.
     expect(document.querySelectorAll(".plot-area-splitter").length).toBe(0);
+  });
+
+  it("a splitter reaches over a collapsed axis to pair the axes either side of it", () => {
+    // Hiding every signal on a middle axis must not take away the only
+    // handle for resizing its neighbours: the splitter skips the
+    // collapsed strip and trades weight between the two live axes.
+    const registry = makeRegistry({
+      id: "el-mid-hidden",
+      config: {
+        areas: [
+          {
+            id: "a1",
+            yAxisMode: "individual",
+            signals: [
+              { busId: null, messageId: 256, extended: false, signalName: "Top", messageName: "EngineData", unit: "rpm", color: "#abc" },
+              { busId: null, messageId: 256, extended: false, signalName: "Middle", messageName: "EngineData", unit: "V", color: "#def", hidden: true },
+              { busId: null, messageId: 256, extended: false, signalName: "Bottom", messageName: "EngineData", unit: "degC", color: "#fed" },
+            ],
+          },
+        ],
+      },
+    });
+    renderPanel({ params: { elementId: "el-mid-hidden" }, registry });
+    const areas = Array.from(document.querySelectorAll(".plot-area")) as HTMLElement[];
+    expect(areas.length).toBe(3);
+    expect(areas[1].classList.contains("collapsed")).toBe(true);
+    const splitters = Array.from(document.querySelectorAll(".plot-area-splitter"));
+    expect(splitters.length).toBe(1);
+
+    // Drag it: the weight has to move between the *live* axes, not the
+    // collapsed one. jsdom reports zero-height boxes, so give the drag
+    // real pixel heights to divide by.
+    const rect = vi
+      .spyOn(Element.prototype, "getBoundingClientRect")
+      .mockReturnValue({ height: 200, width: 600, top: 0, left: 0, bottom: 200, right: 600, x: 0, y: 0, toJSON: () => ({}) });
+    try {
+      fireEvent.mouseDown(splitters[0], { clientY: 100 });
+      fireEvent.mouseMove(window, { clientY: 150 });
+      fireEvent.mouseUp(window, { clientY: 150 });
+    } finally {
+      rect.mockRestore();
+    }
+    // Pair sum conserved (2), top grown, bottom shrunk, middle still 0.
+    const after = Array.from(document.querySelectorAll(".plot-area")) as HTMLElement[];
+    expect(Number(after[0].style.flexGrow)).toBeCloseTo(1.25);
+    expect(after[1].style.flexGrow).toBe("0");
+    expect(Number(after[2].style.flexGrow)).toBeCloseTo(0.75);
+  });
+
+  it("a collapsed axis's placeholder forwards the wheel to a live plot", () => {
+    // A collapsed axis has no canvas, so no uPlot and no pointer
+    // surface — its row would be a dead strip for zoom and crosshair.
+    // The placeholder replays the gesture on a live plot instead.
+    const cw = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(600);
+    const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
+    try {
+      const registry = makeRegistry({
+        id: "el-fwd",
+        config: {
+          areas: [
+            {
+              id: "a1",
+              yAxisMode: "individual",
+              signals: [
+                { busId: null, messageId: 256, extended: false, signalName: "Shown", messageName: "EngineData", unit: "rpm", color: "#abc" },
+                { busId: null, messageId: 256, extended: false, signalName: "Gone", messageName: "EngineData", unit: "V", color: "#def", hidden: true },
+              ],
+            },
+          ],
+        },
+      });
+      renderPanel({ params: { elementId: "el-fwd" }, registry });
+      const placeholder = document.querySelector(".plot-area-placeholder") as HTMLElement;
+      expect(placeholder).not.toBeNull();
+      const seen: WheelEvent[] = [];
+      for (const inst of uplotInstances) {
+        inst.over.addEventListener("wheel", (e) => seen.push(e as WheelEvent));
+      }
+      expect(uplotInstances.length).toBeGreaterThan(0);
+      fireEvent.wheel(placeholder, { deltaY: -120, clientX: 137 });
+      expect(seen.length).toBe(1);
+      expect(seen[0].deltaY).toBe(-120);
+      // Same x, so the zoom anchors where the pointer actually was.
+      expect(seen[0].clientX).toBe(137);
+    } finally {
+      cw.mockRestore();
+      ch.mockRestore();
+    }
   });
 
   it("per-unit mode collects an area's enums onto one shared enum-lanes axis", async () => {
