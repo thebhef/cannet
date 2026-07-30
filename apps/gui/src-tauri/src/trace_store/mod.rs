@@ -75,6 +75,19 @@ mod scratch;
 
 use rate::{RateEstimate, RateTrack};
 
+/// One coherent read of a trace window's x-axis anchors. See
+/// [`TraceStore::window_anchors`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowAnchors {
+    /// Timestamp of the frame the window starts at — the x-axis origin
+    /// floor (ADR 0024). `None` when the window starts past the end.
+    pub first_ns: Option<u64>,
+    /// The capture's newest timestamp. `None` when the store is empty.
+    pub live_edge_ns: Option<u64>,
+    /// Store length at the same instant as the two above.
+    pub len: usize,
+}
+
 pub use byid::LatestById;
 pub use cannet_spill::RawTraceFrame;
 pub use scratch::ScratchBreakdown;
@@ -406,6 +419,32 @@ impl TraceStore {
         self.lock_inner().raw.frame_timestamps(start, end)
     }
 
+    /// A window's x-axis anchors, read under **one** lock: the timestamp
+    /// of the frame at `start`, the capture's live edge, and the store
+    /// length that both describe.
+    ///
+    /// One acquisition because `sample_signals` needs all three to
+    /// describe the same store, and taking them separately lets frames
+    /// land in between — the window's floor, its right edge, and the
+    /// bound the per-signal caches catch up to would then each be from a
+    /// different instant.
+    ///
+    /// The right edge is [`cannet_spill::RawStore::max_ts`], the running
+    /// max, **not** the last row in `[start, end)`. Frames are appended in
+    /// arrival order and a multi-bus capture interleaves deliveries, so
+    /// the last row's timestamp routinely dips below the true edge and
+    /// recovers; anything scrolling to follow it (ADR 0024) reads that
+    /// as the capture jumping backwards.
+    #[must_use]
+    pub fn window_anchors(&self, start: usize) -> WindowAnchors {
+        let inner = self.lock_inner();
+        WindowAnchors {
+            first_ns: inner.raw.frame_timestamps(start, start + 1).0,
+            live_edge_ns: inner.raw.max_ts(),
+            len: inner.raw.len(),
+        }
+    }
+
     /// The absolute index of the first *retained* frame whose timestamp is
     /// `>= ts` (a lower bound), or `len()` if every retained frame is older.
     /// This is the anchor where a timeline event at `ts` sorts into the
@@ -656,6 +695,29 @@ mod tests {
         assert_eq!(store.len(), 0);
         store.append(dummy(2_000, 2));
         assert_eq!(store.len(), 1);
+    }
+
+    #[test]
+    fn live_edge_is_the_newest_frame_not_the_last_appended_one() {
+        // The store is fed in *arrival* order and a multi-bus capture
+        // interleaves deliveries, so the newest row is routinely not the
+        // newest frame. Everything that scrolls to follow the capture
+        // (ADR 0024) reads a dip here as the capture jumping backwards:
+        // a 23-hour two-bus PCAN capture dipped ~1.1 s, several times a
+        // minute, and threw the plot's window back by that much.
+        let store = TraceStore::new();
+        store.append(dummy(5_000_000_000, 1));
+        store.append(dummy(9_000_000_000, 2));
+        store.append(dummy(7_000_000_000, 3)); // the other bus, behind
+        let a = store.window_anchors(0);
+        assert_eq!(a.live_edge_ns, Some(9_000_000_000));
+        assert_eq!(a.first_ns, Some(5_000_000_000));
+        assert_eq!(a.len, 3);
+        // The buffered span is a difference of two endpoints, so it can
+        // only be monotonic if the newest one is.
+        assert!((store.buffer_seconds() - 4.0).abs() < 1e-9);
+        store.append(dummy(8_000_000_000, 4));
+        assert!((store.buffer_seconds() - 4.0).abs() < 1e-9);
     }
 
     #[test]

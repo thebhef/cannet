@@ -819,3 +819,29 @@ next pass on this surface can address them as one piece.
   real and would show as interior shimmer. Fix is time-anchored buckets:
   bucket `k` = `[from + k·Δ, from + (k+1)·Δ)` with `from` quantised to a
   multiple of `Δ`, so a sample always lands in the same bucket.
+
+- `[cannet-gui / cannet-spill]` **Frames may be stored out of timestamp
+  order, and `frame_index_at_ns` assumes they aren't.** Established
+  2026-07-30 from a 23-hour two-bus PCAN capture: the health log's
+  `buffer_s` deltas over 39 samples were `+1.1 x21`, `-1.1 x9`,
+  `+3.3 x5`, `+3.4 x2`, `+3.2 x2` — a +-1.1 s wobble (occasionally
+  2.2 s) on a quantity that can only be monotonic if its endpoints are.
+  The buses' deliveries interleave, so the last-appended frame is
+  routinely not the newest.
+
+  The *reporting* half is fixed: the store keeps a running max
+  (`RawStore::max_ts`), `first_last_ts` and `sample_signals` use it, so
+  `buffer_seconds`, the status line and the plot's follow-live edge are
+  monotonic again.
+
+  What is left is whether the underlying frame order is really
+  interleaved or the dip was only an artefact of reading index
+  `len - 1`. It matters because `frame_index_at_ns` binary-searches
+  `[first_index, len)` assuming ascending timestamps (ADR 0024's
+  time-index mapping): if frames genuinely are out of order, goto-time
+  and the truncation marker are subtly wrong too, and so is the
+  per-signal cache's `t_seconds` binary search on the legacy
+  `bus_id: None` "any bus" path (the bus-scoped path is safe, since one
+  bus's frames arrive in order). Settle it by instrumenting the pump for
+  a non-monotonic append; if real, the fix is ordering the multi-bus
+  merge, not patching the searches.

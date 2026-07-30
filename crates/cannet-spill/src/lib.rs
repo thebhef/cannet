@@ -119,8 +119,23 @@ pub trait RawStore: Send {
     fn frame_timestamps(&self, start: usize, end: usize) -> (Option<u64>, Option<u64>);
 
     /// Timestamps of the oldest and newest stored frame (the whole-buffer
-    /// span), without cloning frames.
+    /// span), without cloning frames. The newest is [`Self::max_ts`], not
+    /// the last-appended frame's — see there for why those differ.
     fn first_last_ts(&self) -> (Option<u64>, Option<u64>);
+
+    /// The newest timestamp in the store — the capture's live edge.
+    ///
+    /// **Not** `frame_timestamps(.., len).1`. Frames are appended in
+    /// *arrival* order, and a capture with several buses interleaves
+    /// their deliveries, so the last-appended frame is routinely not the
+    /// newest one: a 23-hour two-bus PCAN capture showed the last-appended
+    /// timestamp dipping ~1.1 s (occasionally 2.2 s) below the true edge
+    /// and recovering, several times a minute.
+    ///
+    /// Maintained as a running max on append, so it is monotonic by
+    /// construction — which is what every consumer already assumed
+    /// index-order gave them. `None` when the store is empty.
+    fn max_ts(&self) -> Option<u64>;
 
     /// For one `(id, extended)` arbitration key: the matching frames in
     /// `[start, end)` paired with their store index, via the `by-id`

@@ -5,7 +5,11 @@ import { advanceLiveEdge, liveEdgeAt, type LiveEdge, followXWindow } from "./fol
 const DEFAULT = 10;
 
 describe("advanceLiveEdge", () => {
-  const TUNING = { maxLagSeconds: 2, tauSeconds: 0.25, targetLagSeconds: 0 };
+  const TUNING = {
+    maxLagSeconds: 2,
+    tauSeconds: 0.25,
+    targetLagSeconds: 0,
+  };
   const adv = (e: LiveEdge | null, ext: number, nowMs: number, t = TUNING) =>
     advanceLiveEdge(e, ext, nowMs, t);
   const spread = (xs: number[]) => {
@@ -54,6 +58,38 @@ describe("advanceLiveEdge", () => {
     let many = base;
     for (let i = 0; i < 6; i++) many = adv(many, 100.5, 1066);
     expect(liveEdgeAt(many, 1066)).toBeCloseTo(liveEdgeAt(base, 1066), 9);
+  });
+
+  it("keeps real time when several areas report the same tick a few ms apart", () => {
+    // The panel calls this once per plot area, milliseconds apart, and
+    // only whichever call raises the shared max carries new data. The
+    // others must be true no-ops. Re-anchoring the clock on them throws
+    // away the elapsed time since the previous call — which *rewinds*
+    // the displayed edge by that much — so on a panel with N axes the
+    // edge loses (N-1)/N of every tick and creeps instead of tracking.
+    const AREAS = 4;
+    const TICK = 66;
+    const TICKS = 60;
+    let edge: LiveEdge | null = null;
+    let ext = 100;
+    let nowMs = 1000;
+    let firstAt = 0;
+    let firstMs = 0;
+    for (let k = 0; k < TICKS; k++) {
+      nowMs = 1000 + k * TICK;
+      ext += TICK / 1000; // real-time rate
+      edge = adv(edge, ext, nowMs); // the area whose fetch raised the max
+      for (let a = 1; a < AREAS; a++) {
+        nowMs = 1000 + k * TICK + a * 4;
+        edge = adv(edge, ext, nowMs); // ...and the rest, same max
+      }
+      if (k === 0) {
+        firstAt = liveEdgeAt(edge, nowMs);
+        firstMs = nowMs;
+      }
+    }
+    // Real time elapsed must equal edge travelled: it's a clock.
+    expect(liveEdgeAt(edge!, nowMs) - firstAt).toBeCloseTo((nowMs - firstMs) / 1000, 1);
   });
 
   it("smooths jittery data arrival into far steadier motion", () => {
@@ -121,20 +157,28 @@ describe("advanceLiveEdge", () => {
     }
   });
 
-  it("stops dead when the data edge stops", () => {
+  it("stops dead once the data edge has stopped", () => {
     // Disconnect with the trace still running: the observed symptom was
     // a slow "filtered residual" slide — the clock advancing by elapsed
     // time while the pull only clawed back a fraction, creeping to
-    // equilibrium. With no new data the window must not move at all.
+    // equilibrium without ever stopping. It may coast, bounded, and
+    // must then hold *exactly*. Bounded rather than instant because
+    // "no new data" also describes an extra plot area reporting the
+    // same tick, and a data edge that dipped below its high-water mark
+    // — neither of which means the bus went quiet.
     let edge = adv(null, 10, 1000);
     const first = liveEdgeAt(edge, 1000);
     for (let k = 1; k < 200; k++) edge = adv(edge, 10, 1000 + k * 66);
-    expect(liveEdgeAt(edge, 1000 + 199 * 66)).toBeCloseTo(first, 9);
+    const held = liveEdgeAt(edge, 1000 + 199 * 66);
+    expect(held - first).toBeLessThanOrEqual(TUNING.maxLagSeconds);
+    // ...and it stays there, however long the dead stream is polled.
+    for (let k = 200; k < 400; k++) edge = adv(edge, 10, 1000 + k * 66);
+    expect(liveEdgeAt(edge, 1000 + 399 * 66)).toBeCloseTo(held, 9);
   });
 
   it("still advances smoothly once data resumes", () => {
-    // The cap must not wedge the window: after a stall, new data has to
-    // pull it forward again.
+    // The ceiling must not wedge the window: after a quiet spell, new
+    // data has to pull it forward and re-lock onto the live edge.
     let edge = adv(null, 10, 1000);
     for (let k = 1; k < 20; k++) edge = adv(edge, 10, 1000 + k * 66);
     const stalled = liveEdgeAt(edge, 1000 + 19 * 66);
@@ -143,7 +187,10 @@ describe("advanceLiveEdge", () => {
       ext += 0.066;
       edge = adv(edge, ext, 1000 + k * 66);
     }
-    expect(liveEdgeAt(edge, 1000 + 59 * 66)).toBeGreaterThan(stalled + 1.5);
+    const endMs = 1000 + 59 * 66;
+    expect(liveEdgeAt(edge, endMs)).toBeGreaterThan(stalled);
+    // Re-locked onto the data — not left trailing, not stuck at the cap.
+    expect(liveEdgeAt(edge, endMs)).toBeCloseTo(ext, 1);
   });
 
   it("catches up when the clock has fallen behind the data", () => {
