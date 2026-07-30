@@ -141,6 +141,8 @@ pub struct DiskRawStore {
     /// the evicted result (`None`) rather than indexing a dropped segment;
     /// the live range is `[first_index, len)`.
     first_index: usize,
+    /// Running max of every appended timestamp — see `RawStore::max_ts`.
+    max_ts: Option<u64>,
     /// Global next-write byte offset into the logical payload blob.
     payload_cursor: u64,
     meta_segs: Vec<Segment>,
@@ -193,6 +195,7 @@ impl DiskRawStore {
             cfg,
             len: 0,
             first_index: 0,
+            max_ts: None,
             payload_cursor: 0,
             meta_segs: Vec::new(),
             payload_segs: Vec::new(),
@@ -224,6 +227,7 @@ impl DiskRawStore {
             cfg: DiskConfig::default(),
             len: 0,
             first_index: 0,
+            max_ts: None,
             payload_cursor: 0,
             meta_segs: Vec::new(),
             payload_segs: Vec::new(),
@@ -271,6 +275,7 @@ impl DiskRawStore {
             cfg,
             len,
             first_index,
+            max_ts: None,
             payload_cursor: manifest.payload_cursor,
             meta_segs: Vec::new(),
             payload_segs: Vec::new(),
@@ -318,6 +323,12 @@ impl DiskRawStore {
         // half-filled ring.
         let ring_from = len.saturating_sub(cfg.ring_capacity);
         let tail: Vec<RawTraceFrame> = (ring_from..len).filter_map(|i| store.read_frame(i)).collect();
+        // Seed the running max from that same tail. It isn't persisted in
+        // the manifest, and the newest timestamp is not necessarily the
+        // last row (see `RawStore::max_ts`) — but the ring is orders of
+        // magnitude deeper than any arrival skew, so the tail's max is the
+        // store's max, and any append after this only raises it.
+        store.max_ts = tail.iter().map(|f| f.timestamp_ns).max();
         store.ring.extend(tail);
         // Reopened bytes are already durable on disk, so the first flush
         // need only sync what is appended after this point.
@@ -660,6 +671,7 @@ impl RawStore for DiskRawStore {
         self.write_meta(idx, &rec.encode());
         self.by_id
             .push(frame.id, frame.extended, idx as u64);
+        self.max_ts = Some(self.max_ts.map_or(frame.timestamp_ns, |m| m.max(frame.timestamp_ns)));
         self.ring.push_back(frame);
         if self.ring.len() > self.cfg.ring_capacity {
             self.ring.pop_front();
@@ -678,6 +690,7 @@ impl RawStore for DiskRawStore {
 
     fn clear(&mut self) {
         self.len = 0;
+        self.max_ts = None;
         self.payload_cursor = 0;
         self.ring = VecDeque::new();
         self.bus_intern = Vec::new();
@@ -713,7 +726,11 @@ impl RawStore for DiskRawStore {
         if self.first_index >= self.len {
             return (None, None);
         }
-        (self.read_ts(self.first_index), self.read_ts(self.len - 1))
+        (self.read_ts(self.first_index), self.max_ts)
+    }
+
+    fn max_ts(&self) -> Option<u64> {
+        self.max_ts
     }
 
     fn matching_frames_indexed(
@@ -843,6 +860,47 @@ mod tests {
             payload_seg_bytes: 64,
             ring_capacity: 3,
         }
+    }
+
+    #[test]
+    fn max_ts_is_the_newest_timestamp_not_the_last_appended_one() {
+        // Frames land in *arrival* order and a multi-bus capture
+        // interleaves deliveries, so the last row is routinely not the
+        // newest. Every consumer of "the live edge" assumed otherwise;
+        // this is the running max that makes it true.
+        let dir = TempDir::new().unwrap();
+        let mut s = DiskRawStore::new(dir.path()).unwrap();
+        assert_eq!(s.max_ts(), None);
+        s.append(frame(5_000, 1));
+        s.append(frame(9_000, 2));
+        s.append(frame(7_000, 3)); // the other bus, running behind
+        assert_eq!(s.max_ts(), Some(9_000));
+        // ...and it never goes backwards, which is the property the
+        // follow-live clock reads it for.
+        assert_eq!(s.first_last_ts().1, Some(9_000));
+        // The index-based range read still reports the last *row*; that
+        // is what it is for, and why it can't answer "the live edge".
+        assert_eq!(s.frame_timestamps(0, 3).1, Some(7_000));
+    }
+
+    #[test]
+    fn max_ts_resets_on_clear_and_survives_reopen() {
+        let dir = TempDir::new().unwrap();
+        let mut s = DiskRawStore::with_config(dir.path(), tiny()).unwrap();
+        s.append(frame(5_000, 1));
+        s.append(frame(9_000, 2));
+        s.append(frame(7_000, 3));
+        s.flush().unwrap();
+        drop(s);
+        let reopened = DiskRawStore::reopen(dir.path()).unwrap().unwrap();
+        // Seeded from the durable tail, which is far deeper than any
+        // arrival skew.
+        assert_eq!(reopened.max_ts(), Some(9_000));
+        let mut s = reopened;
+        s.clear();
+        assert_eq!(s.max_ts(), None);
+        s.append(frame(1_000, 1));
+        assert_eq!(s.max_ts(), Some(1_000));
     }
 
     #[test]

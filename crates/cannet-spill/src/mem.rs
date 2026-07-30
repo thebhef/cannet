@@ -18,6 +18,8 @@ type IdKey = (u32, bool);
 pub struct MemRawStore {
     frames: Vec<RawTraceFrame>,
     by_id: HashMap<IdKey, Vec<usize>>,
+    /// Running max of every appended timestamp — see `RawStore::max_ts`.
+    max_ts: Option<u64>,
 }
 
 impl MemRawStore {
@@ -34,6 +36,7 @@ impl RawStore for MemRawStore {
             .entry((frame.id, frame.extended))
             .or_default()
             .push(idx);
+        self.max_ts = Some(self.max_ts.map_or(frame.timestamp_ns, |m| m.max(frame.timestamp_ns)));
         self.frames.push(frame);
         idx
     }
@@ -47,6 +50,7 @@ impl RawStore for MemRawStore {
         // large one returns the backing memory to the allocator.
         self.frames = Vec::new();
         self.by_id = HashMap::new();
+        self.max_ts = None;
     }
 
     fn slice(&self, start: usize, end: usize) -> Vec<RawTraceFrame> {
@@ -72,10 +76,11 @@ impl RawStore for MemRawStore {
     }
 
     fn first_last_ts(&self) -> (Option<u64>, Option<u64>) {
-        (
-            self.frames.first().map(|f| f.timestamp_ns),
-            self.frames.last().map(|f| f.timestamp_ns),
-        )
+        (self.frames.first().map(|f| f.timestamp_ns), self.max_ts)
+    }
+
+    fn max_ts(&self) -> Option<u64> {
+        self.max_ts
     }
 
     fn matching_frames_indexed(

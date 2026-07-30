@@ -112,6 +112,28 @@ Frontend (`apps/gui/src`):
   filtering arrival jitter. A hard resync is reserved for a capture
   re-anchor and for falling far enough behind that nudging can't catch
   up.
+- **The live edge is a model fact, not an index lookup.** A scrolling
+  view needs "the newest data that exists", which is _not_ the same as
+  "the timestamp of the last row". Frames are stored in arrival order
+  and a multi-bus capture interleaves deliveries, so the last row is
+  routinely not the newest frame — a 23-hour two-bus capture dipped
+  ~1.1 s and recovered, several times a minute. The store therefore
+  maintains a running max (`RawStore::max_ts`), monotonic by
+  construction, and the window's floor, that edge, and the store length
+  are read together under one lock so the three describe the same
+  instant. Defending in the view instead was considered and rejected: a
+  view can only refuse to move backwards, it cannot recover the true
+  edge, and every other consumer of the same number (the buffered-span
+  readout, the time↔index search) would still be wrong.
+- **The clock may predict past the data, but only by the resync
+  tolerance.** That ceiling is what stops the window sliding on into
+  empty space when a stream goes quiet, without needing a "has it
+  stopped?" timer tuned between the longest gap between frames and the
+  user's patience. It also means "no new data this tick" needs no
+  special case: the common cause is a second plot area reporting the
+  same tick milliseconds later, and treating that as a stall would
+  discard the elapsed time between the two calls and rewind the edge
+  once per extra axis.
 
 ## Consequences
 

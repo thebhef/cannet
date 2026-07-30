@@ -127,9 +127,23 @@ fn sample_signals_inner(
     let ns_to_seconds = |ns: u64| (ns as f64) / 1e9;
 
     let t_slice = std::time::Instant::now();
-    let (from_ts, last_ts) = state
-        .trace_store
-        .frame_timestamps(from_index as usize, window_end as usize);
+    // One coherent read: the window's floor, the capture's live edge, and
+    // the store length they describe. `window_end` bounds the window but
+    // does *not* pick the edge — the edge is a store-level fact
+    // (`max_ts`), because the last row in a range is not the newest frame
+    // in it once several buses interleave their arrivals.
+    let anchors = state.trace_store.window_anchors(from_index as usize);
+    let from_ts = anchors.first_ns;
+    let last_ts = if (window_end as usize) >= anchors.len {
+        anchors.live_edge_ns
+    } else {
+        // A window deliberately short of the tip keeps its own right
+        // edge; the live edge would be outside it.
+        state
+            .trace_store
+            .frame_timestamps(from_index as usize, window_end as usize)
+            .1
+    };
     // Time bounds for the per-signal slice. When the caller didn't
     // supply them (first fetch on a fresh panel — it doesn't have a
     // base / fps yet), fall back to the window's actual timestamps so

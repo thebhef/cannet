@@ -6,15 +6,19 @@ export interface LiveEdge {
   sessionT: number;
   /// `performance.now()` milliseconds at the anchor.
   wallMs: number;
-  /// Newest data edge seen, to tell a capture re-anchor (it moves
+  /// Newest data edge seen. The host reports this from a running max
+  /// (`RawStore::max_ts`), so it only ever falls when the capture
+  /// itself re-anchors — which is what tells a buffer clear (it moves
   /// backwards) from a merely quiet bus (it stops moving).
   lastExt: number;
 }
 
 /// Tuning for the follow-live clock. See [`advanceLiveEdge`].
 export interface LiveEdgeTuning {
-  /// How far the clock may fall behind before it gives up nudging and
-  /// resyncs hard — a stalled loop or a backgrounded tab.
+  /// How far the clock may drift from the data in either direction
+  /// before it stops nudging: behind by this much and it resyncs hard
+  /// (a stalled loop, a backgrounded tab); ahead by this much and it
+  /// stops predicting (a stream that has gone quiet).
   maxLagSeconds: number;
   /// Time constant of the pull toward the data edge.
   tauSeconds: number;
@@ -73,28 +77,48 @@ export function advanceLiveEdge(
   nowMs: number,
   tuning: LiveEdgeTuning,
 ): LiveEdge {
-  // Track a point *behind* the newest frame, so the trace always runs
-  // past the right edge instead of up to it.
+  // Anchor the clock on a data edge, tracking a point *behind* the
+  // newest frame so the trace always runs past the window's right edge
+  // instead of up to it.
+  const anchor = (at: number): LiveEdge => ({
+    sessionT: at - tuning.targetLagSeconds,
+    wallMs: nowMs,
+    lastExt: at,
+  });
+  if (!edge) return anchor(ext);
+  // The capture moved back — a buffer clear. Nothing to nudge toward.
+  if (ext < edge.lastExt) return anchor(ext);
   const target = ext - tuning.targetLagSeconds;
-  if (!edge) return { sessionT: target, wallMs: nowMs, lastExt: ext };
-  if (ext < edge.lastExt) return { sessionT: target, wallMs: nowMs, lastExt: ext };
   const predicted = liveEdgeAt(edge, nowMs);
-  if (target > predicted + tuning.maxLagSeconds) {
-    return { sessionT: target, wallMs: nowMs, lastExt: ext };
+  // The clock fell far behind the data — a stalled loop or a
+  // backgrounded tab. No amount of nudging catches up.
+  if (target > predicted + tuning.maxLagSeconds) return anchor(ext);
+  // The clock may never predict more than `maxLagSeconds` *past* the
+  // data. On a live bus that is slack it never uses. On a stream that
+  // has gone quiet it is what stops the window sliding on into empty
+  // space — and it needs no "has it stopped?" timer, which would have
+  // to be longer than the deepest arrival dip and shorter than anyone's
+  // patience.
+  const ceiling = target + tuning.maxLagSeconds;
+  if (ext === edge.lastExt) {
+    // No new data: another plot area reporting the same tick
+    // milliseconds later, or a stopped stream. Keep predicting and let
+    // the ceiling decide —
+    // an *exact* no-op, because re-anchoring `wallMs` here discards the
+    // elapsed time since the last call, which rewinds the displayed
+    // edge by that much, once per extra axis, every tick.
+    if (predicted <= ceiling) return edge;
+    return { ...edge, sessionT: ceiling, wallMs: nowMs };
   }
-  // No new data since the last update: the stream has stalled, or this
-  // is a second plot area reporting the same tick. Hold the edge and
-  // re-anchor the clock. Advancing here is what made a disconnected
-  // trace keep sliding — the clock gained elapsed time each update while
-  // the pull only clawed back a fraction, so the window crept to
-  // equilibrium instead of stopping. Smoothing the gaps *between* data
-  // updates is the job; extrapolating past a dead stream is not.
-  if (ext === edge.lastExt) return { ...edge, wallMs: nowMs };
   const dt = Math.max(0, (nowMs - edge.wallMs) / 1000);
   const corrected = predicted + (target - predicted) * (1 - Math.exp(-dt / tuning.tauSeconds));
   // Re-anchoring every update keeps `sessionT` the currently displayed
-  // edge, so this is simply "never go backwards".
-  return { sessionT: Math.max(edge.sessionT, corrected), wallMs: nowMs, lastExt: ext };
+  // edge, so the `max` is simply "never go backwards".
+  return {
+    sessionT: Math.min(ceiling, Math.max(edge.sessionT, corrected)),
+    wallMs: nowMs,
+    lastExt: ext,
+  };
 }
 
 /// Where the shared plot x-window should sit after an area finishes a
