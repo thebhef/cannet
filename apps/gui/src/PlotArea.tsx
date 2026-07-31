@@ -395,14 +395,19 @@ function drawEnumTiles(
     left: number;
     width: number;
     ratio: number;
+    /** The signal's raw sample values (enum codes), index-aligned with
+     * `u.data`. The lanes axis passes these because it plots normalized
+     * lane positions, which can't be matched against a value table; the
+     * single-enum axis plots raw codes already and omits it. */
+    rawValues?: (number | null)[];
   },
 ): void {
   const seriesOpt = u.series[o.seriesIdx];
   const ts = u.data[0] as number[] | undefined;
-  const vs = u.data[o.seriesIdx] as (number | null)[] | undefined;
+  const vs = o.rawValues ?? (u.data[o.seriesIdx] as (number | null)[] | undefined);
   if (!ts || !vs || seriesOpt?.show === false) return;
   const labelFor = (raw: number): string => {
-    const found = o.table.find((r) => r.raw === Math.round(raw));
+    const found = o.table.find((r) => r.raw === raw);
     return found ? found.label : String(raw);
   };
   const bandH = o.bandBot - o.bandTop;
@@ -419,10 +424,12 @@ function drawEnumTiles(
     const visEnd = Math.min(x1, o.left + o.width);
     const segW = visEnd - visStart;
     if (segW <= 0) continue;
-    const lbl = labelFor(seg.v);
+    // Enum codes are integers, but arrive as f64 from the host.
+    const raw = Math.round(seg.v);
+    const lbl = labelFor(raw);
     const tw = ctx.measureText(lbl).width;
     const labelX = tileLabelX({ lo: x0, hi: x1 }, { lo: o.left, hi: o.left + o.width }, tw, padX);
-    const mapColor = o.target ? o.resolveColor(o.target, seg.v) : null;
+    const mapColor = o.target ? o.resolveColor(o.target, raw) : null;
     // ~65-85% fills keep the stepped line faintly visible underneath.
     const fill = mapColor ? colorMapLaneFill(mapColor) : "rgba(10, 13, 15, 0.65)";
     const accent = mapColor ?? o.accent;
@@ -632,6 +639,11 @@ export function PlotArea(p: PlotAreaProps) {
   laneModeRef.current = laneMode;
   const valueTablesRef = useRef(valueTables);
   valueTablesRef.current = valueTables;
+  // Merged raw sample rows (enum codes), one per signal, index-aligned
+  // with the y columns of `u.data`. The lanes axis plots normalized
+  // lane positions, so the draw hook reads its values from here to
+  // match them against a value table. Null off the lanes axis.
+  const laneRawRef = useRef<(number | null)[][] | null>(null);
   // The lane draw hook reads tables live from `valueTablesRef`, so it
   // needs no uPlot rebuild when they resolve — but a stopped trace
   // won't redraw on its own. Nudge one so lane labels appear once the
@@ -921,47 +933,57 @@ export function PlotArea(p: PlotAreaProps) {
       // fact (padded raw min/max), independent of observed data; a
       // signal with no table draws flat at its lane midline.
       const laneActive = laneModeRef.current;
-      const displaySeries: Series[] = laneActive
+      // Merge onto the shared time axis *first*, then normalise the
+      // merged rows. The lane draw hook has to match plotted samples
+      // against a value table, which only works on the model values
+      // (raw enum codes) — so it needs a raw array index-aligned with
+      // `u.data`. Merging first makes that alignment structural: both
+      // arrays are the same rows, one derived from the other.
+      //
+      // Equivalent to normalising first, because `mergeSeries` derives
+      // its x column from timestamps alone and sample-and-holds values
+      // without interpolating: holding a normalised value is the same
+      // as normalising a held one. The `null` before a series' first
+      // sample must be carried through untouched.
+      const mergedRaw = mergeSeries(seriesRel);
+      const xs = mergedRaw[0] as number[];
+      const rawRows = mergedRaw.slice(1);
+      const displayRows: (number | null)[][] = laneActive
         ? (() => {
             const bands = laneBands(signals.length);
-            return seriesRel.map((s, i) => {
-              if (s.v.length === 0) return s;
+            return rawRows.map((row, i) => {
+              if (seriesRel[i].v.length === 0) return row; // all null anyway
               const band = bands[i];
               const table = valueTablesRef.current.get(signalRefKey(signals[i]));
-              const out = new Array<number>(s.v.length);
               if (table && table.length > 0) {
                 const range = laneValueRange(table);
-                for (let j = 0; j < s.v.length; j++) out[j] = normalizeIntoLane(s.v[j], range, band);
-              } else {
-                const mid = (band.lo + band.hi) / 2;
-                for (let j = 0; j < s.v.length; j++) out[j] = mid;
+                return row.map((v) => (v == null ? null : normalizeIntoLane(v, range, band)));
               }
-              return { t: s.t, v: out };
+              const mid = (band.lo + band.hi) / 2;
+              return row.map((v) => (v == null ? null : mid));
             });
           })()
         : enumActive
-        ? seriesRel
-        : seriesRel.map((s, i) => {
-            if (s.v.length === 0) return s;
+        ? rawRows
+        : rawRows.map((row, i) => {
+            if (seriesRel[i].v.length === 0) return row; // all null anyway
             const key = signalRefKey(signals[i]);
             const r = scaleRanges.get(key);
-            const out = new Array<number>(s.v.length);
             if (r && r.hi > r.lo) {
               effective.set(key, r);
               const span = r.hi - r.lo;
-              for (let j = 0; j < s.v.length; j++) out[j] = (s.v[j] - r.lo) / span;
-            } else {
-              // No range available yet (signal hasn't decoded, or all
-              // observed values are equal so far). Render at the canvas
-              // midline so the line is *visible* — without this fallback
-              // the raw values get drawn against the y = [0, 1] pin and
-              // clipped to nothing.
-              for (let j = 0; j < s.v.length; j++) out[j] = 0.5;
+              return row.map((v) => (v == null ? null : (v - r.lo) / span));
             }
-            return { t: s.t, v: out };
+            // No range available yet (signal hasn't decoded, or all
+            // observed values are equal so far). Render at the canvas
+            // midline so the line is *visible* — without this fallback
+            // the raw values get drawn against the y = [0, 1] pin and
+            // clipped to nothing.
+            return row.map((v) => (v == null ? null : 0.5));
           });
-      const merged = mergeSeries(displaySeries) as uPlot.AlignedData;
-      const xs = merged[0] as number[];
+      const merged = [xs, ...displayRows] as uPlot.AlignedData;
+      // Raw codes for the lane draw hook, same row order as `u.data`.
+      laneRawRef.current = laneActive ? rawRows : null;
       // Live edge for follow-live / Fit Data: the trace window's true
       // last-frame time (`snapshot.lastT`, from the host's
       // `last_seconds`). The `xs` fallback covers the very first fetch,
@@ -1361,9 +1383,10 @@ export function PlotArea(p: PlotAreaProps) {
                 const laneTopPx = u.valToPos(laneNorm.hi, "y", true);
                 const laneBotPx = u.valToPos(laneNorm.lo, "y", true);
                 const tileNorm = laneTileBand(laneNorm, laneBotPx - laneTopPx);
+                const table = valueTablesRef.current.get(signalRefKey(s)) ?? [];
                 drawEnumTiles(ctx, u, {
                   seriesIdx: i + 1,
-                  table: valueTablesRef.current.get(signalRefKey(s)) ?? [],
+                  table,
                   target: laneTargetsAtConstruct[i],
                   resolveColor: colorResolverRef.current,
                   bandTop: u.valToPos(tileNorm.hi, "y", true),
@@ -1372,6 +1395,11 @@ export function PlotArea(p: PlotAreaProps) {
                   left,
                   width,
                   ratio,
+                  // Raw codes: the plotted series holds lane positions.
+                  // Without a table the lookup is meaningless either
+                  // way, so keep the plotted values there — that's what
+                  // draws today (one flat tile at the lane midline).
+                  rawValues: table.length > 0 ? (laneRawRef.current?.[i] ?? undefined) : undefined,
                 });
               });
             }
@@ -1915,8 +1943,9 @@ export function PlotArea(p: PlotAreaProps) {
   /** Format a current value for the side panel. If the signal has a
    * value table, render as `<label> (<raw>)` for enum-style readout;
    * otherwise fall through to numeric. The raw is shown rounded —
-   * enum codes are integers, and `Math.round` matches the lane's
-   * `labelFor` lookup. */
+   * enum codes are integers. `v` comes from `seriesRef`, which holds
+   * the un-normalised series, so this matches the code the lane tile
+   * labels (the tile inverts its lane normalisation to get there). */
   const formatValueFor = (key: string, v: number | null): string => {
     if (v == null || !Number.isFinite(v)) return "—";
     const table = valueTables.get(key);

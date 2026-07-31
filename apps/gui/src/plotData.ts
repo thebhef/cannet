@@ -110,6 +110,11 @@ export function mergeSeries(series: RawSeries[]): (number | null)[][] {
   const xs = [...xsSet].sort((a, b) => a - b);
   const out: (number | null)[][] = [xs];
   for (const s of series) {
+    // The fill looks redundant — every index is assigned below — but it
+    // is what keeps `ys` a *packed* array. `new Array(n)` alone is
+    // holey, and holey arrays stay on a slower element kind even once
+    // every hole is written. The `null` before a series' first sample
+    // comes from `last`, not from this fill.
     const ys: (number | null)[] = new Array(xs.length).fill(null);
     let j = 0;
     let last: number | null = null;
