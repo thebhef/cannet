@@ -103,11 +103,24 @@ function encodeSample(series: { t: number[]; v: number[] }[]): ArrayBuffer {
 // empty by default so signals read as numeric. Prefixed `mock` so the
 // hoisted `vi.mock` factory may reference it lazily.
 const mockValueTables: Record<string, { raw: number; label: string }[]> = {};
+// Per-signal sampled series (keyed by signal name) for tests that need
+// specific values — enum codes, or differing timestamps to exercise
+// `mergeSeries`'s sample-and-hold. Unset signals fall back to the
+// default numeric fixture. Prefixed `mock` for the hoisted factory.
+const mockSampleSeries: Record<string, { t: number[]; v: number[] }> = {};
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: { signals?: unknown[]; signalName?: string }) => {
     if (cmd === "list_signals") return SIGNALS;
     if (cmd === "sample_signals")
-      return encodeSample((args?.signals ?? []).map(() => ({ t: [0, 1, 2], v: [10, 20, 15] })));
+      return encodeSample(
+        (args?.signals ?? []).map(
+          (s) =>
+            mockSampleSeries[(s as { signalName?: string }).signalName ?? ""] ?? {
+              t: [0, 1, 2],
+              v: [10, 20, 15],
+            },
+        ),
+      );
     if (cmd === "signal_min_max")
       // Host-owned all-time per-signal extent (ADR 0025) — matches the
       // sampled values' min/max so follow-live auto-norm has a range.
@@ -268,6 +281,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.clearAllMocks();
   for (const k of Object.keys(mockValueTables)) delete mockValueTables[k];
+  for (const k of Object.keys(mockSampleSeries)) delete mockSampleSeries[k];
 });
 
 describe("PlotPanel", () => {
@@ -1060,5 +1074,198 @@ describe("PlotPanel command registration (f / l hotkeys)", () => {
       commands.invoke("el-test", "plot.followLive.enable");
     });
     expect(checkbox).toBeChecked();
+  });
+});
+
+
+// Characterisation of the y-normalisation pipeline: the exact array
+// `PlotArea` hands uPlot via `setData` in each axis mode.
+//
+// The plot's core data path — per-signal normalise, then `mergeSeries`
+// onto a shared time axis — had no assertions on its *output*, so a
+// refactor there was flying blind. These pin current behaviour with
+// literal expected values (not recomputed from the lane helpers), so a
+// change in which transform lands on which series is caught.
+//
+// uPlot needs aligned data: one x column and parallel y columns. Each
+// signal arrives with its own timestamps (its own message, its own
+// cycle rate), so `mergeSeries` unions the timestamps and sample-and-
+// holds each signal forward, leaving `null` before its first sample.
+describe("PlotArea y-normalisation", () => {
+  const ENUM3 = [
+    { raw: 0, label: "Idle" },
+    { raw: 1, label: "Run" },
+    { raw: 2, label: "Fault" },
+  ];
+
+  /** uPlot only constructs against a real-sized canvas. */
+  function stubSize() {
+    const cw = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(600);
+    const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
+    return () => {
+      cw.mockRestore();
+      ch.mockRestore();
+    };
+  }
+
+  /** The data most recently handed to the newest uPlot instance. */
+  function lastData(): (number | null)[][] {
+    const inst = uplotInstances[uplotInstances.length - 1] as unknown as {
+      data: (number | null)[][];
+    };
+    return inst.data;
+  }
+
+  /** Wait for the newest instance's data to satisfy `check`.
+   *
+   * Value tables resolve asynchronously, after the area has rendered at
+   * least once, and their resolution re-runs the resample — so the
+   * first `setData` an area receives can predate them. */
+  async function waitForData(check: (d: (number | null)[][]) => void) {
+    await waitFor(() => {
+      expect(uplotInstances.length).toBeGreaterThan(0);
+      const d = lastData();
+      expect(d[0]?.length ?? 0).toBeGreaterThan(0);
+      check(d);
+    });
+  }
+
+  /** Add `names` to the focused area, then switch the area to `mode`. */
+  async function addSignals(names: string[], mode?: string) {
+    const picker = screen.getByLabelText("add signal to focused plot area");
+    for (const n of names) {
+      await pickCombobox(picker, `*|s:256:${n}`);
+      await waitFor(() => expect(screen.getByText(n)).toBeInTheDocument());
+    }
+    if (mode) await pickCombobox(screen.getByLabelText("y-axis mode"), mode);
+  }
+
+  it("enum lanes: each signal is normalised into its own lane band", async () => {
+    // Two 3-code enums on one per-unit area → a two-lane axis. Lane 0
+    // (top) spans [0.5375, 0.9625], lane 1 spans [0.0375, 0.4625]; each
+    // code maps to its fraction of the table's padded range [-0.5, 2.5],
+    // i.e. 1/6, 1/2, 5/6 of the band.
+    mockValueTables.EngineSpeed = ENUM3;
+    mockValueTables.EngineTemp = ENUM3;
+    mockSampleSeries.EngineSpeed = { t: [0, 1, 2], v: [0, 1, 2] };
+    mockSampleSeries.EngineTemp = { t: [0, 1, 2], v: [0, 1, 2] };
+    const restore = stubSize();
+    try {
+      renderPanel();
+      await addSignals(["EngineSpeed", "EngineTemp"], "per-unit");
+      await waitFor(() => expect(document.querySelectorAll(".plot-area").length).toBe(1));
+      await waitForData((data) => {
+        expect(data[0]).toEqual([0, 1, 2]);
+        expect(data[1]?.[0]).toBeCloseTo(0.6083333, 6);
+        expect(data[1]?.[1]).toBeCloseTo(0.75, 6);
+        expect(data[1]?.[2]).toBeCloseTo(0.8916667, 6);
+        // Same codes, lane 1 — a whole band lower.
+        expect(data[2]?.[0]).toBeCloseTo(0.1083333, 6);
+        expect(data[2]?.[1]).toBeCloseTo(0.25, 6);
+        expect(data[2]?.[2]).toBeCloseTo(0.3916667, 6);
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it("enum lanes: a late value-table resolution re-normalises the data", async () => {
+    // Regression: tables are fetched after the area first renders, and
+    // the lane normalisation runs *through* them, so a resolution has
+    // to re-run the resample. A redraw cannot fix it — the no-table
+    // midline fallback (lane 0 → 0.75, lane 1 → 0.25) is baked into the
+    // data, not the drawing. A live trace papers over it on the next
+    // tick; a stopped trace would sit on flat lanes forever.
+    mockValueTables.EngineSpeed = ENUM3;
+    mockValueTables.EngineTemp = ENUM3;
+    mockSampleSeries.EngineSpeed = { t: [0, 1, 2], v: [0, 1, 2] };
+    mockSampleSeries.EngineTemp = { t: [0, 1, 2], v: [0, 1, 2] };
+    const restore = stubSize();
+    try {
+      renderPanel();
+      await addSignals(["EngineSpeed", "EngineTemp"], "per-unit");
+      await waitFor(() => expect(document.querySelectorAll(".plot-area").length).toBe(1));
+      // No manual resample: the lanes must leave the midline on their own.
+      await waitForData((data) => {
+        expect(data[1]).not.toEqual([0.75, 0.75, 0.75]);
+        expect(data[2]).not.toEqual([0.25, 0.25, 0.25]);
+        expect(data[1]?.[2]).toBeCloseTo(0.8916667, 6);
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it("enum lanes: sample-and-hold and the pre-first-sample null survive", async () => {
+    // The signals have *different* timestamps, so the merge has real
+    // work to do: union to [0, 1, 2], hold each value forward, and leave
+    // `null` before a signal's first sample. A null must stay null —
+    // normalising one would silently plot a bogus lane position.
+    mockValueTables.EngineSpeed = ENUM3;
+    mockValueTables.EngineTemp = ENUM3;
+    mockSampleSeries.EngineSpeed = { t: [0, 2], v: [0, 2] };
+    mockSampleSeries.EngineTemp = { t: [1], v: [1] };
+    const restore = stubSize();
+    try {
+      renderPanel();
+      await addSignals(["EngineSpeed", "EngineTemp"], "per-unit");
+      await waitFor(() => expect(document.querySelectorAll(".plot-area").length).toBe(1));
+      await waitForData((data) => {
+        expect(data[0]).toEqual([0, 1, 2]);
+        // Code 0 held across x=1, then code 2.
+        expect(data[1]?.[0]).toBeCloseTo(0.6083333, 6);
+        expect(data[1]?.[1]).toBeCloseTo(0.6083333, 6);
+        expect(data[1]?.[2]).toBeCloseTo(0.8916667, 6);
+        // No sample until x=1 → null first, then code 1 held forward.
+        expect(data[2]?.[0]).toBeNull();
+        expect(data[2]?.[1]).toBeCloseTo(0.25, 6);
+        expect(data[2]?.[2]).toBeCloseTo(0.25, 6);
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it("numeric: each unit group is normalised to [0, 1] by its own range", async () => {
+    // No value tables → both signals numeric. Values 10/20/15 against
+    // the host extent 10..20 → 0, 1, 0.5. rpm and degC are separate
+    // unit groups but share an extent here, so both rows match.
+    mockSampleSeries.EngineSpeed = { t: [0, 1, 2], v: [10, 20, 15] };
+    mockSampleSeries.EngineTemp = { t: [0, 1, 2], v: [10, 20, 15] };
+    const restore = stubSize();
+    try {
+      renderPanel();
+      await addSignals(["EngineSpeed", "EngineTemp"]);
+      await waitForData((data) => {
+        expect(data[0]).toEqual([0, 1, 2]);
+        expect(data[1]?.[0]).toBeCloseTo(0, 6);
+        expect(data[1]?.[1]).toBeCloseTo(1, 6);
+        expect(data[1]?.[2]).toBeCloseTo(0.5, 6);
+        expect(data[2]?.[0]).toBeCloseTo(0, 6);
+        expect(data[2]?.[1]).toBeCloseTo(1, 6);
+        expect(data[2]?.[2]).toBeCloseTo(0.5, 6);
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it("single-enum axis: raw codes pass through un-normalised", async () => {
+    // One enum on its own axis keeps the codes as-is — the y scale is
+    // pinned to the table's raw range instead. This is the axis mode
+    // that already agreed with the signal panel.
+    mockValueTables.EngineSpeed = ENUM3;
+    mockSampleSeries.EngineSpeed = { t: [0, 1, 2], v: [0, 1, 2] };
+    const restore = stubSize();
+    try {
+      renderPanel();
+      await addSignals(["EngineSpeed"], "individual");
+      await waitForData((data) => {
+        expect(data[0]).toEqual([0, 1, 2]);
+        expect(data[1]).toEqual([0, 1, 2]);
+      });
+    } finally {
+      restore();
+    }
   });
 });
