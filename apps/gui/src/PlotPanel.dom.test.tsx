@@ -147,6 +147,8 @@ type FakeUPlotInst = {
 };
 const uplotInstances = (uplotModule as unknown as { __instances: FakeUPlotInst[] }).__instances;
 
+import { invoke } from "@tauri-apps/api/core";
+
 import { PlotPanel } from "./PlotPanel";
 import { PanelCommandsContext, createPanelCommandRegistry } from "./panelCommands";
 import { TraceDataContext, type TraceData } from "./traceData";
@@ -170,13 +172,19 @@ class FakeResizeObserver {
 // config (the close-and-reopen path).
 type TS = ReturnType<typeof freshTrace>;
 type Entry = { element: { kind: "plot"; id: string; config?: Record<string, unknown> }; trace: TS };
-function makeRegistry(seed?: { id: string; config?: Record<string, unknown> }): ElementRegistry {
+function makeRegistry(seed?: {
+  id: string;
+  config?: Record<string, unknown>;
+  /// Window state for the seeded element — defaults to a fresh running
+  /// trace; a seeded `end` makes the panel read as stopped.
+  trace?: TS;
+}): ElementRegistry {
   const map = new Map<string, Entry>();
-  const entry = (id: string, config?: Record<string, unknown>): Entry => ({
+  const entry = (id: string, config?: Record<string, unknown>, trace?: TS): Entry => ({
     element: { kind: "plot", id, config },
-    trace: freshTrace(0),
+    trace: trace ?? freshTrace(0),
   });
-  if (seed) map.set(seed.id, entry(seed.id, seed.config));
+  if (seed) map.set(seed.id, entry(seed.id, seed.config, seed.trace));
   return {
     get entries() {
       return [...map.values()];
@@ -256,20 +264,49 @@ function renderPanel(opts?: {
   const api = { updateParameters: vi.fn() };
   const props = { params: opts?.params ?? {}, api } as unknown as Parameters<typeof PlotPanel>[0];
   const registry = opts?.registry ?? makeRegistry();
-  let tree = (
-    <TraceDataContext.Provider value={traceData}>
-      <ProjectContext.Provider value={projectCtx}>
-        <SignalCatalogProvider>
-          <ElementRegistryContext.Provider value={registry}>
-            <PlotPanel {...props} />
-          </ElementRegistryContext.Provider>
-        </SignalCatalogProvider>
-      </ProjectContext.Provider>
-    </TraceDataContext.Provider>
-  );
-  if (opts?.notes) tree = <NotesContext.Provider value={opts.notes}>{tree}</NotesContext.Provider>;
-  render(tree);
-  return { api, registry };
+  const build = (data: TraceData) => {
+    let tree = (
+      <TraceDataContext.Provider value={data}>
+        <ProjectContext.Provider value={projectCtx}>
+          <SignalCatalogProvider>
+            <ElementRegistryContext.Provider value={registry}>
+              <PlotPanel {...props} />
+            </ElementRegistryContext.Provider>
+          </SignalCatalogProvider>
+        </ProjectContext.Provider>
+      </TraceDataContext.Provider>
+    );
+    if (opts?.notes) tree = <NotesContext.Provider value={opts.notes}>{tree}</NotesContext.Provider>;
+    return tree;
+  };
+  const { rerender } = render(build(traceData));
+  return {
+    api,
+    registry,
+    /// Push a new session-buffer frame count through the trace context —
+    /// what a `trace-grew` event does, and what moves the plot's `winEnd`.
+    growTrace: (count: number) => rerender(build({ ...traceData, count })),
+  };
+}
+
+/// How many `sample_signals` round-trips the panel has made so far —
+/// the plot's fetch cadence, counted straight off the mocked bridge.
+const sampleCalls = () =>
+  vi.mocked(invoke).mock.calls.filter((c) => c[0] === "sample_signals").length;
+
+/// Run `body` with non-zero element dimensions. The uPlot construction
+/// effect refuses a 0x0 canvas (jsdom's default), and with no instance
+/// `resample` returns before it fetches — so any test that counts
+/// fetches needs a sized canvas.
+async function withSizedCanvas(body: () => Promise<void>): Promise<void> {
+  const cw = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(600);
+  const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
+  try {
+    await body();
+  } finally {
+    cw.mockRestore();
+    ch.mockRestore();
+  }
 }
 
 beforeEach(() => {
@@ -342,6 +379,65 @@ describe("PlotPanel", () => {
     await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
     await pickCombobox(picker, "*|s:256:EngineSpeed");
     expect(screen.getAllByText("EngineSpeed").length).toBe(1);
+  });
+
+  it("a growing trace window alone does not re-sample a running plot", async () => {
+    // `trace-grew` moves `winEnd` ~10x/s. A *running* plot re-samples on
+    // its own self-paced loop; a second trigger keyed on `winEnd` put an
+    // undeduped 10 Hz floor under that cadence (its comment claimed a
+    // `renderedThrough` skip that has never existed in the tree).
+    await withSizedCanvas(async () => {
+      const { growTrace } = renderPanel();
+      await pickCombobox(
+        screen.getByLabelText("add signal to focused plot area"),
+        "*|s:256:EngineSpeed",
+      );
+      await waitFor(() => expect(sampleCalls()).toBeGreaterThan(0));
+
+      const before = sampleCalls();
+      // Freeze the clock for the measurement so the resample loop cannot
+      // confound it: the tick already pending on the real clock may fire,
+      // but its re-arm lands on the fake timer we never advance. The
+      // remaining slack is fixed one-off work (measured identical at 6
+      // and at 18 growths), not per-growth cost.
+      vi.useFakeTimers();
+      try {
+        for (let n = 1; n <= 12; n++) {
+          await act(async () => {
+            growTrace(100 + n * 10);
+          });
+        }
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(sampleCalls() - before).toBeLessThanOrEqual(2);
+    });
+  });
+
+  it("a stopped plot still re-samples when its window changes under it", async () => {
+    // The half of the `winEnd` trigger that must survive: a stopped panel
+    // has no resample loop, so a window change is the only thing that can
+    // pull fresh data. Here the session buffer shrinks under a frozen
+    // window (what a Clear does to a stopped panel), moving `winEnd`
+    // alone — `winStart`'s own trigger cannot cover it.
+    await withSizedCanvas(async () => {
+      const registry = makeRegistry({
+        id: "el-stopped",
+        trace: { start: 0, end: 60, isPaused: false },
+      });
+      const { growTrace } = renderPanel({ params: { elementId: "el-stopped" }, registry });
+      await pickCombobox(
+        screen.getByLabelText("add signal to focused plot area"),
+        "*|s:256:EngineSpeed",
+      );
+      await waitFor(() => expect(sampleCalls()).toBeGreaterThan(0));
+
+      const before = sampleCalls();
+      await act(async () => {
+        growTrace(30);
+      });
+      expect(sampleCalls()).toBeGreaterThan(before);
+    });
   });
 
   it("dragging an internal signal-row between areas moves it (sourcePanelId matches)", async () => {
