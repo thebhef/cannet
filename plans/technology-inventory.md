@@ -103,6 +103,24 @@ without reshaping callers.
 - Network transport: **tonic / gRPC over HTTP/2** + **prost** —
   `adopted` (Phase 2). Schema in `crates/cannet-wire`, `tonic-build`
   codegen on both ends. See [`../docs/adr/0004-grpc-wire-protocol.md`](../docs/adr/0004-grpc-wire-protocol.md).
+- **tonic `tls` feature (rustls)** — `proposed` (Task 42). Transport
+  security for the production cannet server's public endpoint per
+  [ADR 0041](../docs/adr/0041-remote-connection-security.md);
+  rustls is already the tonic-blessed TLS stack, no new top-level
+  crate. Loopback links stay plaintext; the wire crate does not
+  hard-require it.
+- **`rcgen`** (Rust, MIT / Apache-2.0) — `proposed` (Task 42).
+  Generates the server's self-signed keypair/certificate on first
+  run (ADR 0041). The de-facto Rust cert-generation crate (used by
+  rustls' own test infra); alternative is shelling out to `openssl`,
+  which reintroduces a runtime binary dependency.
+- **mDNS/DNS-SD crate** — `proposed` (Task 43); candidates
+  `mdns-sd`, `libmdns`. Server-side advertisement of `_cannet._tcp`
+  and GUI-side browse per
+  [ADR 0040](../docs/adr/0040-production-cannet-server.md).
+  Evaluate-dependency pass is the Task 43 blocking prerequisite —
+  must cover register + browse (or one crate per side); hand-rolled
+  UDP beacon rejected in ADR 0040.
 - **`async-stream`** crate (v0.3, MIT) — `adopted` in Phase 2 as a
   wire-crate stream-adapter helper; **removed 2026-07-26**: its last
   consumer (`cannet-wire`'s `batch.rs` stream adapters) was deleted as

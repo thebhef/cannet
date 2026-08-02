@@ -30,6 +30,24 @@ node occupies a hardware port.
 _Avoid_: "channel" for an interface (CAN-FD channel numbering is a
 separate, BLF-internal thing).
 
+### Servers
+
+**Cannet server**:
+The production server — a headless process an operator launches on a
+**server host** to make that host's CAN hardware reachable over the
+network. It supervises vendor **sidecars** and exposes their
+interfaces, unchanged, at a single endpoint the GUI connects to.
+_Avoid_: "rig" / "rig mode" — the machine is a server host, the
+process is the cannet server.
+
+**Sidecar**:
+A vendor-hardware driver process, reachable only from the machine it
+runs on, supervised by whoever needs it — the GUI for local hardware,
+a cannet server for remote hardware. Never addressed by the user
+directly.
+_Avoid_: "sidecar file" — that unrelated term names the forbidden
+companion-file pattern (ADR 0010).
+
 ### Data and model
 
 **Capture**:
