@@ -396,9 +396,10 @@ scrolling, filtering, and plotting. Each frame is written straight
 through to memory-mapped segment files under an OS cache directory
 (`$XDG_CACHE_HOME/dev.cannet.app/current/` on Linux, the platform
 equivalent elsewhere); the kernel page cache keeps the hot part resident and pages
-cold history out under pressure, so host RAM stays roughly flat while
-the on-disk cache grows (the status line shows both — `… host` and
-`… disk`). Decoded-signal plot data and the search indexes are built on
+cold history out under pressure, so RAM stays roughly flat while
+the on-disk cache grows (the status line shows both — `… RAM`, the
+whole application's resident memory, and `… cache`, the scratch
+footprint on disk). Decoded-signal plot data and the search indexes are built on
 demand and memory-mapped the same way. See
 [`docs/adr/0001-indefinite-length-capture.md`](docs/adr/0001-indefinite-length-capture.md)
 and [`docs/adr/0002-disk-spill-store.md`](docs/adr/0002-disk-spill-store.md).
@@ -523,12 +524,11 @@ the re-sampling), Clear re-anchors what's plotted to "now".
   window, not the whole capture), and the result is min/max-decimated
   host-side to ≈the plot's pixel width before it reaches uPlot (spikes
   survive the decimation), and the live plot re-samples **incrementally**
-  on a self-paced loop at a configurable rate (default 15 Hz; pick it in the
-  plot toolbar) — each tick only the frames appended since
-  the previous one are decoded and appended to a bounded per-signal
+  on a self-paced loop at ≈15 Hz — each tick only the frames appended
+  since the previous one are decoded and appended to a bounded per-signal
   cache, so a long capture isn't re-decoded every tick. Pause stops the
-  loop. The toolbar shows the update rate, the worst recent re-sample
-  time, and the device-pixel ratio.
+  loop. The toolbar shows the realised update rate, the worst recent
+  re-sample time, and the device-pixel ratio.
 
 Multiple plot panels can be open, each independent; the areas, signal
 assignments, y-ranges, follow-live, cursor mode, and measurement
@@ -922,9 +922,13 @@ Phase 7 adds a structured log bus and a panel that surfaces it.
 
 **Host-side log bus**. The Tauri host owns a bounded in-process ring
 of `{ ts, source, level, message }` entries (`apps/gui/src-tauri/src/
-system_log.rs`). `sys_info!` / `sys_warn!` / `sys_error!` macros fan
-each event into both the ring and `tracing-subscriber`'s `fmt` layer
-so dev stderr keeps working. A per-`(source, template)` rate
+system_log.rs`). `sys_debug!` / `sys_info!` / `sys_warn!` /
+`sys_error!` macros fan each event into both the ring and
+`tracing-subscriber`'s `fmt` layer so dev stderr keeps working.
+`info` is reserved for what the user's own actions produced — an app
+nobody is touching emits none; the app's own chatter (health
+samples, lifecycle breadcrumbs, sidecar status) is `debug`. A
+per-`(source, template)` rate
 limiter caps any one emitter at five entries per second; the first
 drop in a window records a single suppression note so the panel
 doesn't go silent under a flood. Sources currently in use:
@@ -933,8 +937,10 @@ use `sidecar:<vendor>` in Phase 8).
 
 **System Messages panel**. Add it from the toolbar's *System
 messages* button. The panel renders a virtualised list filterable by
-source and by minimum level (default `warn` — informational entries
-are visible only if you opt in). Copy-all and double-click-to-copy
+source and by minimum level (default `info` — a session's worth of
+what you did; drop it to `debug` for the app's internal breadcrumbs,
+which reach the rolling log file either way). Copy-all and
+double-click-to-copy
 put entries on the clipboard; Clear empties the ring. Per-panel
 filter state lives in dockview `params`; the bus itself is
 session-scoped (it isn't written into the project file).

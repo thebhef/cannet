@@ -95,7 +95,6 @@ export interface PlotPanelParams {
   cursorYByArea?: unknown;
   // `notes` retired from panel params — see the session-scoped notes
   // store. A tolerant parser ignores the extra field on older blobs.
-  maxRateHz?: unknown;
   signalsWidthPx?: unknown;
   showPoints?: unknown;
   /** Per-derived-axis vertical weight (flex-grow), keyed by axis id.
@@ -144,12 +143,11 @@ export const SIGNALS_WIDTH_DEFAULT = 220;
 export const SIGNALS_WIDTH_MIN = 120;
 export const SIGNALS_WIDTH_MAX = 600;
 
-/** Plot update-rate options (Hz) offered in the toolbar, and the
- * default. Lower = less CPU under a fast capture; the re-sample loop is
- * self-paced (next tick scheduled after the previous finishes), so a
- * slow tick just lowers the realised rate further. */
-export const RATE_OPTIONS = [5, 10, 15, 30, 60] as const;
-export const DEFAULT_MAX_RATE_HZ = 15;
+/** Minimum spacing between live plot re-samples (ms, ≈15 Hz). The
+ * re-sample loop is self-paced (the next tick is scheduled after the
+ * previous one finishes), so a slow tick just lowers the realised rate
+ * further. */
+export const RESAMPLE_INTERVAL_MS = 67;
 
 export function signalRefKey(s: SignalRef): string {
   return signalKey(s.busId, s.messageId, s.extended, s.signalName);
@@ -256,11 +254,6 @@ export function measKeysFromRaw(raw: unknown): MeasurementKey[] {
 export function signalsWidthFromRaw(v: unknown): number {
   if (typeof v !== "number" || !Number.isFinite(v)) return SIGNALS_WIDTH_DEFAULT;
   return Math.max(SIGNALS_WIDTH_MIN, Math.min(SIGNALS_WIDTH_MAX, Math.round(v)));
-}
-
-/** A persisted max-rate value, clamped to one of {@link RATE_OPTIONS}. */
-export function maxRateFromRaw(v: unknown): number {
-  return typeof v === "number" && (RATE_OPTIONS as readonly number[]).includes(v) ? v : DEFAULT_MAX_RATE_HZ;
 }
 
 export function fmtFreq(hz: number | null | undefined): string {

@@ -5,8 +5,8 @@
 //! Kvaser, and PEAK hardware). The sidecar speaks the same `.proto`
 //! as `cannet-server`; this module is the host-side process manager
 //! and the bridge that turns the sidecar's stdout / stderr / exit
-//! status into [`sys_info!`] / [`sys_warn!`] / [`sys_error!`] System
-//! Messages tagged with [`SOURCE`].
+//! status into [`sys_debug!`] / [`sys_info!`] / [`sys_warn!`] /
+//! [`sys_error!`] System Messages tagged with [`SOURCE`].
 //!
 //! ## Stdout banner format
 //!
@@ -95,7 +95,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::system_log::LogLevel;
-use crate::{emit_system_log, sys_error, sys_info, sys_warn};
+use crate::{emit_system_log, sys_debug, sys_error, sys_info, sys_warn};
 
 /// The System Messages source tag every sidecar event is published
 /// under. Must match `cannet_python_can.server.WIRE_SOURCE` in the
@@ -476,7 +476,7 @@ fn resolve_command(app: &AppHandle) -> Option<(Command, String)> {
     let source = launcher.zip(resolve_sidecar_dir());
     match plan_launch(cfg!(dev), frozen, source) {
         Some(LaunchPlan::Frozen(path)) => {
-            sys_info!(app, SOURCE, "starting sidecar via frozen binary");
+            sys_debug!(app, SOURCE, "starting sidecar via frozen binary");
             Some((
                 build_frozen_command(&path),
                 "source: frozen self-contained binary".to_string(),
@@ -484,15 +484,15 @@ fn resolve_command(app: &AppHandle) -> Option<(Command, String)> {
         }
         Some(LaunchPlan::Source(launcher, sidecar_dir)) => {
             match launcher {
-                LaunchPath::BundledUv => sys_info!(app, SOURCE, "starting sidecar via local uv"),
-                LaunchPath::PathUv => sys_info!(app, SOURCE, "starting sidecar via PATH uv"),
+                LaunchPath::BundledUv => sys_debug!(app, SOURCE, "starting sidecar via local uv"),
+                LaunchPath::PathUv => sys_debug!(app, SOURCE, "starting sidecar via PATH uv"),
                 LaunchPath::SystemPython => sys_warn!(
                     app,
                     SOURCE,
                     "uv not found; falling back to python3 -m cannet_python_can. Install uv for the supported flow."
                 ),
             }
-            sys_info!(app, SOURCE, "sidecar dir: {}", sidecar_dir.display());
+            sys_debug!(app, SOURCE, "sidecar dir: {}", sidecar_dir.display());
             Some((
                 build_command(launcher, &sidecar_dir),
                 format!("sidecar dir: {}", sidecar_dir.display()),
@@ -557,8 +557,8 @@ fn spawn_blocking_inner(app: &AppHandle) {
         "exec: {program} {}\ncwd:  {cwd}\n{source_summary}",
         args.join(" ")
     );
-    sys_info!(app, SOURCE, "exec: {program} {}", args.join(" "));
-    sys_info!(app, SOURCE, "cwd:  {cwd}");
+    sys_debug!(app, SOURCE, "exec: {program} {}", args.join(" "));
+    sys_debug!(app, SOURCE, "cwd:  {cwd}");
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
@@ -631,9 +631,9 @@ fn spawn_blocking_inner(app: &AppHandle) {
         }
         Ok(status) => {
             // Bundle the invocation context into the error message
-            // itself so it's visible at the panel's default `warn`
-            // filter level — info-level breadcrumbs above don't help
-            // a user who hasn't widened the filter.
+            // itself so it's visible at the panel's default filter
+            // level — the debug-level breadcrumbs above don't help a
+            // user who hasn't widened the filter.
             sys_error!(
                 app,
                 SOURCE,
@@ -796,9 +796,10 @@ pub fn classify_stderr_line(line: &str) -> (LogLevel, String) {
     };
     let level = match level_token {
         // Python: DEBUG / INFO / WARNING / ERROR / CRITICAL — plus the
-        // `WARN` alias some loggers emit. We collapse DEBUG to Info
-        // (the panel has no debug level) and CRITICAL to Error.
-        "DEBUG" | "INFO" => LogLevel::Info,
+        // `WARN` alias some loggers emit. The sidecar's own INFO is our
+        // Debug (it is reporting on itself; nobody asked for it), and
+        // CRITICAL collapses to Error.
+        "DEBUG" | "INFO" => LogLevel::Debug,
         "WARNING" | "WARN" => LogLevel::Warn,
         "ERROR" | "CRITICAL" => LogLevel::Error,
         // Token doesn't look like a Python level — bail out so a
@@ -816,20 +817,23 @@ pub fn classify_stderr_line(line: &str) -> (LogLevel, String) {
 pub fn classify_stdout_line(line: &str) -> (LogLevel, String) {
     let parts: Vec<&str> = line.split('\t').collect();
     match parts.as_slice() {
-        ["sidecar", "version", v] => (LogLevel::Info, format!("sidecar version {v}")),
-        ["sidecar", "interfaces", n] => (LogLevel::Info, format!("discovered {n} interface(s)")),
+        ["sidecar", "version", v] => (LogLevel::Debug, format!("sidecar version {v}")),
+        ["sidecar", "interfaces", n] => (LogLevel::Debug, format!("discovered {n} interface(s)")),
+        // Coming up and going down is the pair a user reads to see whether
+        // local capture is available; the rest of the banner is the
+        // sidecar reporting on itself.
         ["sidecar", "listening", addr] => (LogLevel::Info, format!("listening on {addr}")),
         ["sidecar", "shutdown", reason] => (LogLevel::Info, format!("shutting down ({reason})")),
-        ["sidecar", "exit", code] => (LogLevel::Info, format!("exit code {code}")),
+        ["sidecar", "exit", code] => (LogLevel::Debug, format!("exit code {code}")),
         // Top-level Python failure surfaced by `__main__.py`'s
         // last-chance handler. The matching multi-line traceback
         // follows on stderr (one `LogLevel::Warn` line per frame).
         ["sidecar", "error", msg] => (LogLevel::Error, format!("sidecar fatal: {msg}")),
         ["interface", id, display, kind] => (
-            LogLevel::Info,
+            LogLevel::Debug,
             format!("interface {id} ({display}) [{kind}]"),
         ),
-        _ => (LogLevel::Info, line.to_string()),
+        _ => (LogLevel::Debug, line.to_string()),
     }
 }
 
@@ -882,7 +886,7 @@ pub fn restart_sidecar(app: AppHandle, state: State<'_, SidecarState>) {
             (pid, guard.kill())
         };
         match kill_outcome {
-            (pid, Ok(())) => sys_info!(&app, SOURCE, "killed previous sidecar (pid {pid})"),
+            (pid, Ok(())) => sys_debug!(&app, SOURCE, "killed previous sidecar (pid {pid})"),
             // `InvalidInput` from `kill()` on Unix means the child has
             // already exited — that's fine, the wait thread will see
             // it next poll and clean up.
@@ -903,8 +907,14 @@ mod tests {
 
     #[test]
     fn classify_stdout_recognises_banner_lines() {
+        // The sidecar's own status is Debug; only "listening" / "shutdown"
+        // — is local capture available or not — rate as Info.
         assert!(matches!(
             classify_stdout_line("sidecar\tversion\t0.1.0"),
+            (LogLevel::Debug, _)
+        ));
+        assert!(matches!(
+            classify_stdout_line("sidecar\tlistening\t127.0.0.1:50061"),
             (LogLevel::Info, _)
         ));
         let (_lvl, msg) = classify_stdout_line("sidecar\tinterfaces\t0");
@@ -921,7 +931,7 @@ mod tests {
     #[test]
     fn classify_stdout_passes_through_unknown_lines() {
         let (lvl, msg) = classify_stdout_line("a stray print from the sidecar");
-        assert!(matches!(lvl, LogLevel::Info));
+        assert!(matches!(lvl, LogLevel::Debug));
         assert_eq!(msg, "a stray print from the sidecar");
     }
 
@@ -932,7 +942,10 @@ mod tests {
         let (lvl, msg) = classify_stderr_line(
             "2026-05-25 16:05:43,487 INFO cannet_python_can.server ListInterfaces -> 2 channels",
         );
-        assert!(matches!(lvl, LogLevel::Info), "INFO should not be warned");
+        assert!(
+            matches!(lvl, LogLevel::Debug),
+            "the sidecar's INFO is our Debug, and must not be warned"
+        );
         assert_eq!(
             msg, "cannet_python_can.server ListInterfaces -> 2 channels",
             "timestamp should be stripped; name + message retained"
@@ -954,7 +967,7 @@ mod tests {
 
         let (lvl, _) =
             classify_stderr_line("2026-05-25 16:05:43,487 DEBUG cannet_python_can chatty");
-        assert!(matches!(lvl, LogLevel::Info));
+        assert!(matches!(lvl, LogLevel::Debug));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 // The header status line: a pure split of app state into a *resting*
 // readout (the disk-spill residency line — frames · fps · elapsed ·
-// host · disk, ADR 0002 DS-8) and an optional *transient* notice
+// RAM · cache, ADR 0002 DS-8) and an optional *transient* notice
 // (errors, completions, remote connect/error summaries). The view
 // shows the transient for a few seconds, mirrors it to the system log,
 // then reverts to the resting line — so a notice is never lost but the
@@ -70,15 +70,18 @@ export function splitStatus(inp: StatusInputs): StatusSplit {
         : `${dbcPaths.length} DBCs`;
   const fps = inp.framesPerSecond > 0 ? ` · ${formatRate(inp.framesPerSecond)}` : "";
   const buf = inp.bufferSeconds > 0 ? ` · ${formatDuration(inp.bufferSeconds)} elapsed` : "";
-  // Disk-spill residency split (ADR 0002 DS-8): whole-host RSS vs on-disk
-  // cache. `host` is the whole process's resident memory (not a
-  // store-only figure — mmap'd cache pages page in and out under the
+  // Disk-spill residency split (ADR 0002 DS-8): resident memory vs the
+  // on-disk cache. `RAM` is the whole application's resident memory — the
+  // Rust host plus its WebView children, the figure a task manager shows —
+  // and not a store-only number: mmap'd cache pages come and go under the
   // kernel, so store residency is bounded by design and not separately
-  // metered); `disk` is the `current/` scratch footprint. Each shows
-  // only when present.
-  const mem = inp.memBytes != null && inp.memBytes > 0 ? ` · ${formatBytes(inp.memBytes)} host` : "";
+  // metered. `cache` is the `current/` scratch footprint on disk. Each
+  // shows only when present.
+  const mem = inp.memBytes != null && inp.memBytes > 0 ? ` · ${formatBytes(inp.memBytes)} RAM` : "";
   const cache =
-    inp.scratchBytes != null && inp.scratchBytes > 0 ? ` · ${formatBytes(inp.scratchBytes)} disk` : "";
+    inp.scratchBytes != null && inp.scratchBytes > 0
+      ? ` · ${formatBytes(inp.scratchBytes)} cache`
+      : "";
   const residency = `${frames}${fps}${buf}${mem}${cache}`;
   const idlePrompt = `Open a BLF log or connect to a server to begin. ${dbc}.`;
 

@@ -201,7 +201,8 @@ export function App() {
   // On-disk scratch footprint from the latest `trace-grew`; `null` when the
   // store is in-RAM, which hides the cache-size readout.
   const [scratchBytes, setScratchBytes] = useState<number | null>(null);
-  // Host-process resident memory from the latest `trace-grew` (~1 Hz); the
+  // Whole-app resident memory from the latest `trace-grew` (re-sampled on
+  // the host's slow health cadence, so it lags a sudden allocation); the
   // in-memory counterpart to the on-disk cache size.
   const [memBytes, setMemBytes] = useState<number | null>(null);
   // Live sidecar status — needed to resolve the `"local"` sentinel on
@@ -2353,7 +2354,12 @@ export function App() {
     <main className="app">
       <header>
         <div className="toolbar">{toolbarItems.map(renderToolbarItem)}</div>
-        <div className="status">{status}</div>
+        <div
+          className="status"
+          title="buffered frames · frame rate · elapsed capture · resident memory (app + WebView) · disk-spill cache on disk"
+        >
+          {status}
+        </div>
       </header>
       <ProjectContext.Provider value={projectContextValue}>
         <SignalCatalogProvider>

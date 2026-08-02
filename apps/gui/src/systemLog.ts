@@ -9,9 +9,10 @@ import type { SystemMessage, SystemLogLevel } from "./types";
 /// Severity ordering for the panel's minimum-level filter. Must agree
 /// with `system_log::LogLevel::rank` on the Rust side.
 export const SYSTEM_LOG_LEVEL_RANK: Record<SystemLogLevel, number> = {
-  info: 0,
-  warn: 1,
-  error: 2,
+  debug: 0,
+  info: 1,
+  warn: 2,
+  error: 3,
 };
 
 /// Filter parameters held in a panel's dockview `params`. `"" |
@@ -22,14 +23,14 @@ export interface SystemMessagesPanelParams {
   minLevel?: SystemLogLevel;
 }
 
-/// The default minimum level. Panel defaults to `warn` so an
-/// informational stream doesn't bury a real error; drop the filter
-/// to `info` in the panel toolbar when debugging — the breadcrumb
-/// context (sidecar `exec:` / `cwd:` lines, etc.) is emitted at
-/// `info` and becomes visible the moment the filter is loosened.
-/// Error-level messages still bundle their key context inline so
-/// they remain actionable at the default filter.
-export const DEFAULT_MIN_LEVEL: SystemLogLevel = "warn";
+/// The default minimum level. `info` is now what the user's own
+/// actions produced — a handful of entries per session, not a stream —
+/// so it reads as a history of what was done rather than burying the
+/// errors. Drop the filter to `debug` for the app's internal
+/// breadcrumbs (health samples, sidecar `exec:` / `cwd:` lines,
+/// connection plumbing). Everything at every level is already in the
+/// rolling log file regardless of this filter.
+export const DEFAULT_MIN_LEVEL: SystemLogLevel = "info";
 
 /// Apply the per-panel filter to a chronological message list. Pure
 /// function — kept here so it can be unit-tested without rendering.

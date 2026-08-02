@@ -19,14 +19,13 @@ import { GOTO_EVENT, type GotoPayload } from "./gotoEvent";
 import { mergeSeries, signalKey } from "./plotData";
 import { stableSignalColor, wheelColor } from "./palette";
 import {
-  RATE_OPTIONS,
+  RESAMPLE_INTERVAL_MS,
   SIGNALS_WIDTH_MAX,
   SIGNALS_WIDTH_MIN,
   TRACE_COLORS,
   areasFromParams,
   cursorModeFromRaw,
   fmtCount,
-  maxRateFromRaw,
   measKeysFromRaw,
   signalRefKey,
   signalsWidthFromRaw,
@@ -144,10 +143,6 @@ const EMPTY_KEY_SET: ReadonlySet<string> = new Set();
 /// The derived truncation marker's cursor colour (ADR 0035) — a muted
 /// amber, distinct from the note-event blue. Matches the trace floor row.
 const TRUNCATION_COLOR = "#e0a030";
-const RATE_COMBO_OPTIONS: ComboboxOption[] = RATE_OPTIONS.map((hz) => ({
-  value: String(hz),
-  label: `${hz} Hz`,
-}));
 const SHOW_POINTS_OPTIONS: ComboboxOption[] = [
   { value: "auto", label: "auto" },
   { value: "off", label: "off" },
@@ -177,15 +172,15 @@ const FOLLOW_MAX_LAG_SECONDS = 2;
  * out. Trading a little latency for a window that is always full is the
  * right side of that deal for a scrolling view. */
 const FOLLOW_TARGET_LAG_TICKS = 3;
-/** Bounds on that lag: enough to cover a tick plus host latency even at
- * 60 Hz, and never so much that the view feels detached from the bus. */
+/** Bounds on that lag: enough to cover a tick plus host latency, and
+ * never so much that the view feels detached from the bus. */
 const FOLLOW_TARGET_LAG_MIN_S = 0.3;
 const FOLLOW_TARGET_LAG_MAX_S = 0.9;
 /** Time constant for the follow-live clock's pull toward the data edge.
  * Short enough that the window never strands itself ahead of the data,
  * long enough to filter arrival jitter. Being a time constant rather
- * than a per-update fraction keeps the behaviour identical across the
- * 5–60 Hz resample rates, and idempotent across the per-area calls. */
+ * than a per-update fraction keeps the behaviour idempotent across the
+ * per-area calls. */
 const FOLLOW_EDGE_TAU_SECONDS = 0.25;
 
 // Pattern-selection helpers live in `./signalSelection` so the
@@ -253,8 +248,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
   const [showDiag, setShowDiag] = useState(() =>
     typeof savedConfig?.showDiag === "boolean" ? savedConfig.showDiag : false,
   );
-  const [maxRateHz, setMaxRateHz] = useState(() => maxRateFromRaw(savedConfig?.maxRateHz));
-  const resampleIntervalMs = Math.max(1, Math.round(1000 / maxRateHz));
   const [showPoints, setShowPoints] = useState<ShowPointsMode>(() => showPointsFromRaw(savedConfig?.showPoints));
   /** Pixel width of every area's side panel — user-resizable via a
    * drag handle, persisted in panel config. */
@@ -460,24 +453,16 @@ export function PlotPanel(props: IDockviewPanelProps) {
    * a pause — the next slide re-anchors on the data edge. */
   const liveEdgeRef = useRef<LiveEdge | null>(null);
   /** Clock tuning, in a ref so the resample callback stays stable. The
-   * target lag follows the resample interval: a slower rate leaves a
-   * longer gap between fetches, so the window has to sit further back
-   * to stay full. */
+   * target lag follows the resample interval: a longer gap between
+   * fetches means the window has to sit further back to stay full. */
   const liveEdgeTuningRef = useRef<LiveEdgeTuning>({
     maxLagSeconds: FOLLOW_MAX_LAG_SECONDS,
     tauSeconds: FOLLOW_EDGE_TAU_SECONDS,
-    targetLagSeconds: FOLLOW_TARGET_LAG_MIN_S,
+    targetLagSeconds: Math.min(
+      FOLLOW_TARGET_LAG_MAX_S,
+      Math.max(FOLLOW_TARGET_LAG_MIN_S, (FOLLOW_TARGET_LAG_TICKS * RESAMPLE_INTERVAL_MS) / 1000),
+    ),
   });
-  useEffect(() => {
-    liveEdgeTuningRef.current = {
-      maxLagSeconds: FOLLOW_MAX_LAG_SECONDS,
-      tauSeconds: FOLLOW_EDGE_TAU_SECONDS,
-      targetLagSeconds: Math.min(
-        FOLLOW_TARGET_LAG_MAX_S,
-        Math.max(FOLLOW_TARGET_LAG_MIN_S, (FOLLOW_TARGET_LAG_TICKS * resampleIntervalMs) / 1000),
-      ),
-    };
-  }, [resampleIntervalMs]);
   const onAreaResampled = useCallback(
     (areaId: string, firstT: number | null, lastT: number | null) => {
       diagCount("plot.areaResampled"); // DIAG
@@ -617,7 +602,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
       showDiag,
       cursorX,
       cursorYByArea,
-      maxRateHz,
       signalsWidthPx: signalsWidth,
       showPoints,
       axisWeights,
@@ -632,7 +616,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
     showDiag,
     cursorX,
     cursorYByArea,
-    maxRateHz,
     signalsWidth,
     showPoints,
     axisWeights,
@@ -1373,14 +1356,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
         </label>
         {measEnabled && <MeasurementMenu measKeys={measKeys} onChange={setMeasKeys} />}
         <span className="plot-toolbar-sep" />
-        <label className="plot-cursor-ctl" title="cap how often the plot re-samples — lower it under a fast capture">
-          max
-          <Combobox
-            options={RATE_COMBO_OPTIONS}
-            value={String(maxRateHz)}
-            onChange={(v) => setMaxRateHz(Number(v))}
-          />
-        </label>
         <span
           className="plot-perf"
           title="update rate · worst recent resample (host slice + decode in parens) · device pixel ratio · frames in trace window · cached plot points (biggest area)"
@@ -1545,7 +1520,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
               live={live}
               followLive={followLive}
               showPoints={showPoints}
-              resampleIntervalMs={resampleIntervalMs}
               signalsWidth={signalsWidth}
               onResizeSignalsWidth={(w) =>
                 setSignalsWidth(Math.max(SIGNALS_WIDTH_MIN, Math.min(SIGNALS_WIDTH_MAX, w)))

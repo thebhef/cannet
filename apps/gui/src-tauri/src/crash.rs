@@ -22,7 +22,7 @@
 //! - [`install_panic_hook`] appends the panic message, location,
 //!   thread, and backtrace to the same log (the catchable-death path),
 //!   then chains the previous hook so stderr/`tracing` still fire.
-//! - [`spawn_health_recorder`] emits a once-a-second System Message with
+//! - [`spawn_health_recorder`] emits a periodic System Message with
 //!   `{trace_len, buffer_seconds, fps, rss_mb, tree_mb, webview_mb (split
 //!   browser/renderer/gpu/other), jsheap_mb, sys_avail_mb, sys_total_mb}`
 //!   — so it rides the normal logging pipe and lands in the same rolling
@@ -54,7 +54,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use tauri::{AppHandle, Manager};
 
-use crate::sys_info;
+use crate::sys_debug;
 use crate::system_log::{LogLevel, SystemMessage};
 use crate::app_state::AppState;
 
@@ -66,8 +66,12 @@ pub const LOG_FILE: &str = "cannet.log";
 /// disk use is bounded to ~2× this.
 const LOG_CAP_BYTES: u64 = 5 * 1024 * 1024;
 
-/// How often [`spawn_health_recorder`] emits a resource sample.
-const HEALTH_INTERVAL: Duration = Duration::from_secs(1);
+/// How often [`spawn_health_recorder`] emits a resource sample. Each
+/// sample walks the whole system process table (see [`read_memory`]),
+/// which is far too expensive to repeat every second for a trail whose
+/// job is spotting slow trends — a leak or an approaching OOM shows up
+/// just as clearly at this cadence, for a twentieth of the cost.
+const HEALTH_INTERVAL: Duration = Duration::from_secs(20);
 
 /// Serializes writes from the many threads that log concurrently (pump,
 /// recorder, command handlers) so their lines don't interleave.
@@ -87,15 +91,19 @@ pub fn record_js_heap(bytes: u64) {
     LAST_JS_HEAP.store(bytes, Ordering::Relaxed);
 }
 
-/// Latest host-process RSS (bytes), published by [`spawn_health_recorder`]
-/// each tick so the ~10 Hz status emitter can show the in-memory figure
-/// without its own (expensive) sysinfo process scan. `0` = not yet sampled.
-static LAST_HOST_RSS: AtomicU64 = AtomicU64::new(0);
+/// Latest whole-application RSS (bytes) — the Rust host plus every
+/// descendant, so the `WebView` processes are counted too — published by
+/// [`spawn_health_recorder`] each tick so the ~10 Hz status emitter can show
+/// the in-memory figure without its own (expensive) sysinfo process scan.
+/// `0` = not yet sampled.
+static LAST_APP_RSS: AtomicU64 = AtomicU64::new(0);
 
-/// The last host-process RSS reading (bytes), or `None` if the health
-/// recorder hasn't sampled one yet.
-pub fn last_host_rss() -> Option<u64> {
-    match LAST_HOST_RSS.load(Ordering::Relaxed) {
+/// The last whole-application RSS reading (bytes), or `None` if the health
+/// recorder hasn't sampled one yet. This is what the status line labels
+/// "RAM" — the figure a user comparing against Task Manager expects, not
+/// the host process in isolation.
+pub fn last_app_rss() -> Option<u64> {
+    match LAST_APP_RSS.load(Ordering::Relaxed) {
         0 => None,
         v => Some(v),
     }
@@ -181,11 +189,12 @@ pub fn install_panic_hook() {
     }));
 }
 
-/// Spawn the 1 Hz health recorder on a named OS thread. It reads only
+/// Spawn the health recorder on a named OS thread (cadence:
+/// [`HEALTH_INTERVAL`]). It reads only
 /// the cheap O(1) trace metrics plus process RSS and emits them as a
 /// System Message, so the sample lands in the ring, the panel, and the
-/// rolling log through the normal pipe. Info level keeps it below the
-/// panel's default `warn` filter while still being on disk. Logs the
+/// rolling log through the normal pipe. Debug level keeps it below the
+/// panel's default filter while still being on disk. Logs the
 /// log-file path once on start so the user knows where to look.
 pub fn spawn_health_recorder(app: AppHandle) {
     // Switch off the temp fallback onto the idiomatic per-OS log dir now
@@ -194,7 +203,7 @@ pub fn spawn_health_recorder(app: AppHandle) {
     if let Ok(dir) = app.path().app_log_dir() {
         set_log_dir(dir);
     }
-    sys_info!(
+    sys_debug!(
         &app,
         "crash",
         "rolling log + crash records → {}",
@@ -213,13 +222,15 @@ pub fn spawn_health_recorder(app: AppHandle) {
             let buffer_seconds = state.trace_store.buffer_seconds();
             let fps = state.trace_store.frames_per_second();
             let mem = read_memory(&mut sys, own_pid);
-            // Publish the host RSS so the ~10 Hz status emitter can show the
-            // in-memory figure without its own sysinfo scan.
-            if let Some(rss) = mem.host {
-                LAST_HOST_RSS.store(rss, Ordering::Relaxed);
+            // Publish the whole-application RSS so the ~10 Hz status emitter
+            // can show the in-memory figure without its own sysinfo scan.
+            // `tree` folds in the `WebView` children; fall back to the host
+            // alone if the tree walk found nothing.
+            if let Some(rss) = mem.tree.or(mem.host) {
+                LAST_APP_RSS.store(rss, Ordering::Relaxed);
             }
             let breakdown = state.trace_store.scratch_breakdown();
-            sys_info!(
+            sys_debug!(
                 &app,
                 "health",
                 "{}",
@@ -505,6 +516,7 @@ fn iso8601_from_ms(ts_ms: u64) -> String {
 
 fn level_tag(level: LogLevel) -> &'static str {
     match level {
+        LogLevel::Debug => "DEBUG",
         LogLevel::Info => "INFO",
         LogLevel::Warn => "WARN",
         LogLevel::Error => "ERROR",

@@ -2,8 +2,8 @@
 //!
 //! A single in-process [`SystemLog`] holds a bounded ring of
 //! [`SystemMessage`]s — `{ ts_ms, source, level, message }` — that the
-//! System Messages panel renders. Call sites push through the [`info!`],
-//! [`warn!`], and [`error!`] macros in this module, which:
+//! System Messages panel renders. Call sites push through the [`debug!`],
+//! [`info!`], [`warn!`], and [`error!`] macros in this module, which:
 //!
 //! 1. emit a `tracing::event!` so the normal `tracing-subscriber` `fmt`
 //!    layer (initialised via [`init_tracing_subscriber`]) still writes
@@ -15,7 +15,15 @@
 //! Sources are short stable strings (`"project"`, `"dbc"`,
 //! `"connection"`, `"blf-import"`, `"plot"`; vendor sidecars will use
 //! `"sidecar:<vendor>"`). Levels are
-//! [`LogLevel::Info`] / `Warn` / `Error`.
+//! [`LogLevel::Debug`] / `Info` / `Warn` / `Error`.
+//!
+//! The split between the bottom two is by *cause*, not by importance:
+//! `Info` is for what the user asked for (a file opened or saved, a
+//! connection made or dropped, a view created), so an untouched app
+//! produces none. Everything the app does on its own — health samples,
+//! internal lifecycle breadcrumbs, sidecar chatter — is `Debug`. Debug
+//! entries still reach the rolling log file and the panel (which filters
+//! them out by default), so a diagnosis never needs a rebuild.
 //!
 //! The ring is bounded — the oldest message is dropped when capacity is
 //! reached — so a long-running session can't grow the buffer unboundedly.
@@ -43,11 +51,17 @@ const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(1);
 const RATE_LIMIT_BURST: usize = 5;
 
 /// Severity of a system message. Maps onto the panel's level-filter
-/// dropdown — the panel defaults to `Warn` so an informational source
-/// doesn't bury a real error.
+/// dropdown, which defaults to `Info` — a session's worth of user
+/// actions, without the app's own chatter underneath it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LogLevel {
+    /// The app talking to itself: health samples, lifecycle
+    /// breadcrumbs, sidecar chatter. Reaches the rolling log file and
+    /// the ring, below the panel's default filter.
+    Debug,
+    /// The consequence of something the user did. Nothing here should
+    /// appear in an app nobody is touching.
     Info,
     Warn,
     Error,
@@ -61,9 +75,10 @@ impl LogLevel {
     #[cfg(test)]
     pub fn rank(self) -> u8 {
         match self {
-            Self::Info => 0,
-            Self::Warn => 1,
-            Self::Error => 2,
+            Self::Debug => 0,
+            Self::Info => 1,
+            Self::Warn => 2,
+            Self::Error => 3,
         }
     }
 }
@@ -295,6 +310,18 @@ pub fn init_tracing_subscriber() {
         .try_init();
 }
 
+/// Emit at debug level — the app's own chatter, not something the user
+/// asked for. Same plumbing as [`sys_info!`]; the panel filters it out
+/// by default, but it still lands in the rolling log file.
+#[macro_export]
+macro_rules! sys_debug {
+    ($app:expr, $source:expr, $($arg:tt)*) => {{
+        let __msg = format!($($arg)*);
+        ::tracing::debug!(target: "cannet", source = $source, "{}", __msg);
+        $crate::emit_system_log($app, $source, $crate::system_log::LogLevel::Debug, __msg);
+    }};
+}
+
 /// Emit at info level. Fans the formatted message into the host's
 /// `SystemLog` ring (via the `AppHandle`'s `SystemLog` state) and the
 /// `tracing` subscriber, then broadcasts a `system-log-appended`
@@ -410,9 +437,24 @@ mod tests {
     }
 
     #[test]
-    fn level_rank_orders_info_warn_error() {
+    fn level_rank_orders_debug_info_warn_error() {
+        assert!(LogLevel::Debug.rank() < LogLevel::Info.rank());
         assert!(LogLevel::Info.rank() < LogLevel::Warn.rank());
         assert!(LogLevel::Warn.rank() < LogLevel::Error.rank());
+    }
+
+    #[test]
+    fn debug_serialises_as_its_lowercase_wire_name() {
+        // The frontend's `SystemLogLevel` union matches on these strings.
+        let msg = SystemMessage {
+            seq: 0,
+            ts_ms: 0,
+            source: "health".into(),
+            level: LogLevel::Debug,
+            message: "sample".into(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains(r#""level":"debug""#), "{json}");
     }
 
     #[test]

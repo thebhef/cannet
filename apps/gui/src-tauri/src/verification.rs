@@ -26,7 +26,7 @@ use tauri::AppHandle;
 
 use crate::trace_store::RawTraceFrame;
 use crate::app_state::LoadedDbc;
-use crate::sys_info;
+use crate::sys_debug;
 
 /// Minimum spacing of valid→invalid Info messages per `(bus, id)`.
 const TRANSITION_LOG_INTERVAL: Duration = Duration::from_secs(1);
@@ -169,7 +169,7 @@ impl VerificationState {
     pub fn observe(&self, app: &AppHandle, frame: &RawTraceFrame, index: u64) {
         if let Some(kind) = self.observe_inner(frame, index) {
             let bus = frame.bus_id.as_deref().unwrap_or("(unassigned)");
-            sys_info!(
+            sys_debug!(
                 app,
                 "verify",
                 "{bus} 0x{:X}: calculated-field check failed ({kind}) at frame {index}",

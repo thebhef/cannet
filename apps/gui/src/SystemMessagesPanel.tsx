@@ -15,6 +15,7 @@ import { useSystemLog } from "./systemLogContext";
 
 const ROW_HEIGHT = 22;
 const MIN_LEVEL_OPTIONS = [
+  { value: "debug", label: "debug" },
   { value: "info", label: "info" },
   { value: "warn", label: "warn" },
   { value: "error", label: "error" },
@@ -31,8 +32,9 @@ interface PanelParams {
 /**
  * System Messages panel. Renders the host's structured log
  * bus as a virtualised list with timestamp, source, level, and message
- * columns. Filterable by source and by minimum level (default `warn`;
- * drop to `info` in the toolbar to see breadcrumb context).
+ * columns. Filterable by source and by minimum level (default `info`
+ * — what the user's actions produced; drop to `debug` for the app's
+ * internal breadcrumbs).
  * Per-panel filter state lives in dockview `params`; the bus itself
  * lives in the host (`src-tauri/src/system_log.rs`) and is delivered
  * to the frontend by `fetch_system_log` plus incremental

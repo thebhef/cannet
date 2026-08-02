@@ -60,8 +60,8 @@ export function liveEdgeAt(edge: LiveEdge, nowMs: number): number {
 ///
 /// The pull is a first-order filter with time constant `tauSeconds`,
 /// applied against *elapsed time* rather than per call. That matters for
-/// two reasons: the correction is then independent of the resample rate
-/// (`RATE_OPTIONS` spans 5–60 Hz), and calling this several times for the
+/// two reasons: the correction is then independent of the resample rate,
+/// and calling this several times for the
 /// same instant — once per plot area, which is what the panel does —
 /// converges to the same answer instead of over-correcting once per area.
 ///

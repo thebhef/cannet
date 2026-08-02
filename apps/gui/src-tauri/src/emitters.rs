@@ -36,14 +36,38 @@ const TRACE_FLUSH_TICK: Duration = Duration::from_secs(2);
 /// (≈256 rows is ~5600 px of trace area), so the whole auto-scroll
 /// window is covered even on a big display.
 pub(crate) const TRACE_GREW_TAIL: u64 = 256;
+
+/// Fraction of the gap to the raw rate that [`smooth_fps`] closes per
+/// tick. At [`TRACE_GREW_TICK`] (10 Hz) that is a ~300 ms time constant:
+/// enough to take the burst out of a batched arrival without making the
+/// readout feel detached from the bus.
+const FPS_SMOOTHING: f64 = 0.3;
+
+/// One step of the emitted rate's filter — an exponential moving average
+/// over [`TraceStore::frames_per_second`]. The raw estimate is a count over
+/// the *frame-time* span of a one-second sample window, so frames arriving
+/// in driver batches make it jump around; the status line wants the trend,
+/// not the jitter.
+///
+/// A raw `0.0` snaps straight to zero rather than decaying asymptotically:
+/// an idle session has to reach *exactly* zero for
+/// [`should_emit_trace_grew`] to stop waking the `WebView` 10×/second.
+pub(crate) fn smooth_fps(last: Option<f64>, raw: f64) -> f64 {
+    match last {
+        Some(prev) if raw > 0.0 => prev + (raw - prev) * FPS_SMOOTHING,
+        _ => raw,
+    }
+}
+
 /// Whether a `trace-grew` tick should emit, given the `(count, fps)` it
 /// last emitted and the values this tick. Skips only when both are
 /// byte-identical. An idle session settles there: the count is frozen
 /// and [`TraceStore::frames_per_second`] returns exactly `0.0` once a
-/// full second has elapsed since the last append, so after the rate has
-/// finished decaying the tuple stops changing and the emitter goes quiet.
-/// During that one-second decay each read differs, so
-/// the status line still slides to zero before the stream falls silent.
+/// full second has elapsed since the last append — which [`smooth_fps`]
+/// passes through unfiltered — so after the rate has finished decaying the
+/// tuple stops changing and the emitter goes quiet. During that one-second
+/// decay each read differs, so the status line still slides to zero before
+/// the stream falls silent.
 pub(crate) fn should_emit_trace_grew(last: Option<(u64, f64)>, current: (u64, f64)) -> bool {
     match last {
         Some((count, fps)) => count != current.0 || fps.to_bits() != current.1.to_bits(),
@@ -74,7 +98,14 @@ pub(crate) fn spawn_trace_grew_emitter(app: AppHandle) {
             let (count_usize, first_index_usize, oldest_ts_ns) =
                 state.trace_store.len_and_low_water();
             let count = u64::try_from(count_usize).unwrap_or(u64::MAX);
-            let frames_per_second = state.trace_store.frames_per_second();
+            // Filter the aggregate before it leaves the host: the status
+            // line reads the trend, not the per-batch arrival jitter. The
+            // filter state is the last *emitted* value — a skipped tick is
+            // by definition one where nothing moved.
+            let frames_per_second = smooth_fps(
+                last_emitted.map(|(_, fps, _)| fps),
+                state.trace_store.frames_per_second(),
+            );
             let session_start_ns = state.trace_store.session_start_ns();
             if !should_emit_trace_grew(
                 last_emitted.map(|(c, fps, _)| (c, fps)),
@@ -101,7 +132,7 @@ pub(crate) fn spawn_trace_grew_emitter(app: AppHandle) {
             let frames_dropped_before_session = state.trace_store.frames_dropped_before_session();
             let scratch_bytes = state.trace_store.scratch_footprint_bytes();
             let first_index = first_index_usize as u64;
-            let mem_bytes = crash::last_host_rss();
+            let mem_bytes = crash::last_app_rss();
             let (frames_per_second_rx, frames_per_second_tx) =
                 state.trace_store.frames_per_second_by_direction();
             let _ = app.emit(
@@ -209,7 +240,8 @@ pub(crate) fn clear_system_log(state: State<'_, AppState>) {
 }
 
 /// Push a System Messages entry from the frontend. Same plumbing as
-/// the host-side `sys_info!` / `sys_warn!` / `sys_error!` macros: the
+/// the host-side `sys_debug!` / `sys_info!` / `sys_warn!` / `sys_error!`
+/// macros: the
 /// host's log bus assigns the `seq`, emits a `system-log-appended`
 /// event, and the frontend mirror picks it up via its existing
 /// listener — no separate channel for GUI-emitted entries.
@@ -227,6 +259,7 @@ pub(crate) fn gui_emit_system_log(
     message: String,
 ) -> Result<(), String> {
     let lvl = match level.as_str() {
+        "debug" => system_log::LogLevel::Debug,
         "info" => system_log::LogLevel::Info,
         "warn" => system_log::LogLevel::Warn,
         "error" => system_log::LogLevel::Error,
