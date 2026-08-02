@@ -38,10 +38,11 @@ export interface DecimatedSignal {
   signalName: string;
 }
 
-/// Everything that determines a fetch. An unchanged request (same
-/// window, slice, pixel budget, and signal set) means no round-trip; a
-/// changed `descriptor`, `winStart`, or a `winEnd` that shrank below the
-/// last seen one re-anchors the window.
+/// Everything that determines a fetch. A request that cannot return
+/// different bytes than the last one means no round-trip — which
+/// includes a growing `winEnd` under a visible slice that ends behind
+/// the last frame already seen. A changed `descriptor`, `winStart`, or a
+/// `winEnd` that shrank below the last seen one re-anchors the window.
 export interface DecimatedRequest {
   /// Memo key for the signal set — changing it re-anchors the window.
   descriptor: string;
@@ -125,8 +126,11 @@ interface Cache {
   firstT: number | null;
   lastT: number | null;
   byKey: Map<string, Series>;
-  /// `${winStart}:${winEnd}:${fromSeconds}:${toSeconds}:${maxPoints}` —
-  /// skip the fetch when it matches the last successful one.
+  /// `${winStart}:${windowKey}:${fromSeconds}:${toSeconds}:${maxPoints}` —
+  /// skip the fetch when it matches the last successful one. `windowKey`
+  /// is `winEnd`, or the constant `"parked"` when the requested slice
+  /// ends behind the last frame already seen and a longer window
+  /// therefore cannot change the answer.
   fetchKey: string;
   /// Latest `winEnd` seen, to detect a buffer clear shrinking the window.
   lastWinEnd: number;
@@ -184,7 +188,18 @@ export function useDecimatedRange(): DecimatedRange {
         fromSeconds = req.xMin + cache.base;
         toSeconds = req.xMax + cache.base;
       }
-      const fetchKey = `${req.winStart}:${req.winEnd}:${fromSeconds}:${toSeconds}:${req.maxPoints}`;
+      // The key answers "could this request return different bytes?", not
+      // "did any input change". `winEnd` only affects the answer when the
+      // requested slice can reach the frames a longer window adds: a slice
+      // that ends before the last frame we have already seen cannot gain
+      // samples from one, so a zoomed-into-history view keys on the slice
+      // alone and stops refetching pixel-identical output as the capture
+      // grows. (Its live-edge readout — `lastT` — then freezes with it;
+      // that is what "parked" means here.)
+      const sliceEndsBehindTheLiveEdge =
+        toSeconds != null && cache.base != null && cache.lastT != null && toSeconds < cache.base + cache.lastT;
+      const windowKey = sliceEndsBehindTheLiveEdge ? "parked" : String(req.winEnd);
+      const fetchKey = `${req.winStart}:${windowKey}:${fromSeconds}:${toSeconds}:${req.maxPoints}`;
 
       if (cache.fetchKey === fetchKey && cache.byKey.size > 0) {
         return { kind: "unchanged", firstT: cache.firstT, lastT: cache.lastT };
