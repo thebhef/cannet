@@ -671,6 +671,13 @@ fn dbc_set_change_invalidates_stale_derived_caches() {
         predicate: serde_json::from_str(r#"{"bus": "p"}"#).unwrap(),
         session_start_ns: 0,
         index: cannet_spill::FilterIndex::new(&fi_dir).unwrap(),
+        candidates: filter::CandidateSet {
+            keys: Vec::new(),
+            membership: false,
+        },
+        decode_ids: HashSet::new(),
+        resolved_key_generation: None,
+        resolve_count: 0,
     });
 
     invalidate_derived_caches(&state);
@@ -895,6 +902,36 @@ fn trace_grew_skips_only_when_count_and_rate_are_unchanged() {
     assert!(should_emit_trace_grew(Some((10, 5.0)), (10, 4.5)));
     // Capture cleared (count dropped) — emit.
     assert!(should_emit_trace_grew(Some((10, 5.0)), (0, 0.0)));
+}
+
+#[test]
+fn filter_candidate_resolution_is_memoised_until_a_new_id_is_seen() {
+    // `ensure_active_filter_index` runs on every filtered page fetch — 4 Hz
+    // per open filtered view — and re-resolved the predicate's candidate
+    // set and decode-id set each time, walking every loaded DBC's message
+    // and signal names. All of it is a pure function of (predicate, DBCs,
+    // ids seen), and the first two can't move without the index being
+    // dropped, so the only live input is the store's key generation.
+    let mut state = test_state();
+    state.filter_index_dir =
+        std::env::temp_dir().join(format!("cannet-test-fi-memo-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&state.filter_index_dir).unwrap();
+    let filter: FilterPredicate = serde_json::from_str(r#"{"id_list": [256]}"#).unwrap();
+
+    state.trace_store.append(dummy_frame(1_000, 256));
+    drop(crate::trace_query::ensure_active_filter_index(&state, &filter).unwrap());
+    assert_eq!(state.filter_index().as_ref().unwrap().resolve_count, 1);
+
+    // More frames of an id already seen: nothing about the resolution can
+    // have changed.
+    state.trace_store.append(dummy_frame(2_000, 256));
+    drop(crate::trace_query::ensure_active_filter_index(&state, &filter).unwrap());
+    assert_eq!(state.filter_index().as_ref().unwrap().resolve_count, 1);
+
+    // A previously unseen id can change which candidates exist — resolve.
+    state.trace_store.append(dummy_frame(3_000, 512));
+    drop(crate::trace_query::ensure_active_filter_index(&state, &filter).unwrap());
+    assert_eq!(state.filter_index().as_ref().unwrap().resolve_count, 2);
 }
 
 #[test]

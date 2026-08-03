@@ -473,6 +473,41 @@ fn extract_snapshot_cells(
     }
 }
 
+/// One windowed by-key snapshot serving every plain (non-mux) signal of
+/// the requested streams: the per-channel `FrameKey`s merged down to
+/// `(bus, id, extended)`, keeping the newest occurrence (a same-bus
+/// multi-channel id is a degenerate config — the newest channel's frame
+/// and statistics represent it).
+///
+/// Restricted to the streams actually asked for. The unrestricted
+/// snapshot clones a key and a frame payload per distinct id *in the
+/// capture*, under the append lock, and the callers here want a page's
+/// worth — the signals view's ~30 rows, the DBC panel's visible signals.
+fn plain_latest_for<'a>(
+    state: &AppState,
+    streams: impl Iterator<Item = &'a StreamKey>,
+    start: usize,
+    end: usize,
+) -> HashMap<StreamKey, trace_store::LatestById> {
+    let wanted: HashSet<StreamKey> = streams.cloned().collect();
+    let mut out: HashMap<StreamKey, trace_store::LatestById> = HashMap::new();
+    let rows = state
+        .trace_store
+        .latest_in_window_where(start, end, |(bus, _ch, id, ext)| {
+            wanted.contains(&(bus.clone(), *id, *ext))
+        });
+    for row in rows {
+        let key = (row.frame.bus_id.clone(), row.frame.id, row.frame.extended);
+        match out.get(&key) {
+            Some(have) if have.index >= row.index => {}
+            _ => {
+                out.insert(key, row);
+            }
+        }
+    }
+    out
+}
+
 fn collect_signal_rows(
     state: &AppState,
     dbs: &[(Arc<Database>, Vec<String>)],
@@ -493,20 +528,7 @@ fn collect_signal_rows(
         }
     }
 
-    // One windowed by-key snapshot serves every plain signal; merge the
-    // per-channel FrameKeys down to (bus, id, extended), keeping the
-    // newest occurrence (same-bus multi-channel ids are a degenerate
-    // config — the newest channel's frame and statistics represent it).
-    let mut plain_latest: HashMap<StreamKey, trace_store::LatestById> = HashMap::new();
-    for row in state.trace_store.latest_in_window(start, end) {
-        let key = (row.frame.bus_id.clone(), row.frame.id, row.frame.extended);
-        match plain_latest.get(&key) {
-            Some(have) if have.index >= row.index => {}
-            _ => {
-                plain_latest.insert(key, row);
-            }
-        }
-    }
+    let plain_latest = plain_latest_for(state, streams.keys(), start, end);
 
     // Per descriptor index: the decoded value + statistics, or absent
     // (blank row). Decodes happen per (stream, group): a 500-signal mux
@@ -623,6 +645,20 @@ pub(crate) struct ActiveFilterIndex {
     /// rebuild.
     pub(crate) session_start_ns: u64,
     pub(crate) index: cannet_spill::FilterIndex,
+    /// The predicate's by-id candidate set and the ids whose frames have
+    /// to be decoded to test it. Both are a pure function of (predicate,
+    /// loaded DBCs, ids seen so far) — resolving them walks every loaded
+    /// DBC's message and signal names, and it ran on *every* page fetch.
+    /// The predicate and the DBC set can't move without this whole index
+    /// being dropped (`invalidate_derived_caches` nulls it on any DBC
+    /// change; a predicate change rebuilds it above), so the only input
+    /// left to watch is the store's key generation.
+    pub(crate) candidates: filter::CandidateSet,
+    pub(crate) decode_ids: HashSet<u32>,
+    pub(crate) resolved_key_generation: Option<u64>,
+    /// How many times the resolution above was actually computed. Carried
+    /// only so the memo is testable — nothing reads it in production.
+    pub(crate) resolve_count: u64,
 }
 
 /// Map a filtered view window onto a single index page. `p_start` / `p_end`
@@ -693,7 +729,7 @@ fn materialize_filtered_rows(state: &AppState, page_idxs: &[usize]) -> Vec<Trace
 /// lock is held only for the synchronous build; the index's own chunked
 /// extend releases the trace-store append lock between chunks, so ingest is
 /// not starved.
-fn ensure_active_filter_index<'a>(
+pub(crate) fn ensure_active_filter_index<'a>(
     state: &'a AppState,
     filter: &FilterPredicate,
 ) -> Option<std::sync::MutexGuard<'a, Option<ActiveFilterIndex>>> {
@@ -716,14 +752,31 @@ fn ensure_active_filter_index<'a>(
             predicate: filter.clone(),
             session_start_ns: session,
             index,
+            candidates: filter::CandidateSet {
+                keys: Vec::new(),
+                membership: false,
+            },
+            decode_ids: HashSet::new(),
+            resolved_key_generation: None,
+            resolve_count: 0,
         });
     }
     {
         let active = guard.as_mut().expect("active filter index just set");
         let dbs = state.databases();
-        let candidates = resolve_candidates_for(filter, &state.trace_store, &dbs)
-            .unwrap_or_else(|| all_ids_tested(&state.trace_store));
-        let decode_ids = decode_candidate_ids(&dbs, filter);
+        // Re-resolve only when a new id has been seen. Walking every
+        // loaded DBC's message and signal names on each page fetch was
+        // pure repetition — nothing else that feeds it can change without
+        // dropping or rebuilding the index.
+        let generation = state.trace_store.key_generation();
+        if active.resolved_key_generation != Some(generation) {
+            active.candidates = resolve_candidates_for(filter, &state.trace_store, &dbs)
+                .unwrap_or_else(|| all_ids_tested(&state.trace_store));
+            active.decode_ids = decode_candidate_ids(&dbs, filter);
+            active.resolved_key_generation = Some(generation);
+            active.resolve_count = active.resolve_count.wrapping_add(1);
+        }
+        let decode_ids = &active.decode_ids;
         let keep = |f: &RawTraceFrame| {
             let decoded = if decode_ids.contains(&f.id) {
                 decode_against(&dbs, f)
@@ -732,6 +785,7 @@ fn ensure_active_filter_index<'a>(
             };
             filter.matches(f, decoded.as_ref())
         };
+        let candidates = active.candidates.clone();
         state
             .trace_store
             .refresh_filter_index(&mut active.index, &candidates, &keep);
