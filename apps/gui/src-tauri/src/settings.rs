@@ -93,6 +93,7 @@ pub(crate) const SCOPES: ScopeTable = &[
     ("trace_show_events", Scope::UserOverridable),
     ("plot_y_axis_mode", Scope::UserOverridable),
     ("dbc_auto_reload", Scope::UserOverridable),
+    ("can_id_format", Scope::UserOverridable),
 ];
 
 /// The persisted user settings. `#[serde(default)]` fills any absent field
@@ -299,6 +300,19 @@ pub struct Settings {
     /// way — the opt-out is about not replacing the database under an
     /// analysis in progress, not about going quiet.
     pub dbc_auto_reload: bool,
+    /// How a trace-style table's `id` column renders an arbitration
+    /// id — one of [`CAN_ID_FORMATS`], default `hex`, which is what the
+    /// column has always shown.
+    ///
+    /// App-wide policy rather than a per-view default: there is no
+    /// per-panel id format, and two panels disagreeing about how to
+    /// spell the same id would be worse than either choice. It governs
+    /// the *display* columns only — the transmit and filter editors
+    /// keep typing ids in hex, which is their own input contract.
+    ///
+    /// The `s:` / `x:` prefix is not part of the choice and survives
+    /// both: 11-bit and 29-bit ids overlap numerically.
+    pub can_id_format: String,
 }
 
 /// The smallest legal value of any millisecond-interval setting.
@@ -358,6 +372,11 @@ pub const TRACE_MODES: &[&str] = &["chronological", "by-id"];
 /// verbatim and is narrowed by `yAxisModeFromRaw` on arrival.
 pub const Y_AXIS_MODES: &[&str] = &["unified", "per-unit", "individual"];
 
+/// The renderings [`Settings::can_id_format`] accepts for a trace-style
+/// table's `id` column. The names are the frontend's `CanIdFormat`
+/// spellings, since the value crosses the IPC verbatim.
+pub const CAN_ID_FORMATS: &[&str] = &["hex", "decimal"];
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -389,6 +408,7 @@ impl Default for Settings {
             trace_show_events: true,
             plot_y_axis_mode: "unified".to_string(),
             dbc_auto_reload: true,
+            can_id_format: "hex".to_string(),
         }
     }
 }
@@ -530,6 +550,12 @@ fn refuse_unknown_options(settings: &mut Settings, complaints: &mut Vec<String>)
             &mut settings.plot_y_axis_mode,
             Y_AXIS_MODES,
             d.plot_y_axis_mode.clone(),
+        ),
+        (
+            "can_id_format",
+            &mut settings.can_id_format,
+            CAN_ID_FORMATS,
+            d.can_id_format.clone(),
         ),
     ] {
         refuse_unknown(complaints, key, value, allowed, default);
@@ -809,6 +835,7 @@ mod tests {
             trace_show_events: false,
             plot_y_axis_mode: "individual".to_string(),
             dbc_auto_reload: false,
+            can_id_format: "decimal".to_string(),
         }
     }
 

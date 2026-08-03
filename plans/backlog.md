@@ -122,6 +122,28 @@ trip over it.
 
 ### Trace view
 
+- `[feat]` **Timestamp display mode (absolute / delta), and the ADR
+  amendment it needs.** Task 45 Stage 5 listed "CAN-ID and timestamp
+  formatting" as a default with no way to change it. The CAN-ID half
+  shipped (`can_id_format`); the timestamp half is a feature, not a
+  promotion, and was deliberately left. Both alternatives comparable
+  tools offer cost real machinery:
+  - **Absolute (wall clock).**
+    [ADR 0024](../docs/adr/0024-trace-like-view-timing.md) decision 2 says
+    every renderer displays `frame.timestamp − session_start` and calls a
+    disagreement between two panels a bug. A knob that changed only the
+    row tables would create exactly that. Doing it right means *every*
+    renderer follows, including the plot's x-axis ticks and cursor
+    readouts — whose gutter/split geometry is tuned to elapsed-format
+    label widths — plus an amendment to the ADR saying the origin stays
+    single while its *rendering* becomes a global choice.
+  - **Delta (since the previous row).** A per-row difference is a model
+    fact over an adjacent row the paged, event-merged view may not have
+    loaded, so it belongs host-side next to the other derived columns
+    (CLAUDE.md § thin views), not in the renderer.
+
+  Either is a task, not a settings row. Pick up with the plot's own
+  formatting work if that ever lands.
 - `[ui]` `cannet-gui`: **bitfield message visualizer**. Render a CAN
   message as its raw bits laid out as a grid (8×N cells, one per bit),
   coloured / lit by current value, with DBC-derived signal overlays

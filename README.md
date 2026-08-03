@@ -511,6 +511,12 @@ writes, so the panel teaches the file.
   controls win from then on: changing one of these never reaches back
   into a panel you already have open, and a panel restored from a
   project keeps what you set in it.
+- **CAN-ID format.** The trace and by-ID tables spell an arbitration id
+  in zero-padded hex by default; **`can_id_format`** switches them to
+  decimal. The `s:` / `x:` prefix stays either way — 11-bit and 29-bit
+  ids overlap as numbers, so it is the only thing saying which frame a
+  row is. Display columns only: the transmit and filter editors still
+  take hex.
 - **`developer` settings.** Machine-load and internal-cadence knobs —
   the plot's fetch interval, the view refresh interval, the live-update
   rate, the reconnect backoff, the health-sample cadence, the status

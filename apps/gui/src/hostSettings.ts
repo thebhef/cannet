@@ -120,6 +120,10 @@ export interface Settings {
   /// Host-consumed (`dbc_watcher`); listed here because the mirror
   /// carries every field of `settings.json`.
   dbc_auto_reload: boolean;
+  /// How a trace-style table's `id` column spells an arbitration id —
+  /// the frontend's `CanIdFormat`. App-wide: the trace and by-ID tables
+  /// read it and pass it to their rows.
+  can_id_format: string;
 }
 
 export function defaultSettings(): Settings {
@@ -152,6 +156,7 @@ export function defaultSettings(): Settings {
     trace_show_events: true,
     plot_y_axis_mode: "unified",
     dbc_auto_reload: true,
+    can_id_format: "hex",
   };
 }
 

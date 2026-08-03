@@ -10,6 +10,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, render } from "@testing-library/react";
 
+/// The `id` column's format is the `can_id_format` setting.
+let storedSettings: Record<string, unknown> = {};
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(async (cmd: string) => (cmd === "get_settings" ? { ...storedSettings } : null)),
+}));
+
+import { hydrateSettings } from "./hostSettings";
 import { ByIdTable } from "./ByIdTable";
 import { byIdRowKey } from "./ByIdTable";
 import { defaultColumns } from "./traceColumns";
@@ -59,12 +66,25 @@ function renderTable(resolveColor: ColorResolver | null) {
   );
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+  storedSettings = {};
+  await hydrateSettings();
 });
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+});
+
+describe("ByIdTable id column", () => {
+  it("spells the arbitration id the way can_id_format says", async () => {
+    // The by-id table shares `cellContent` with the chronological
+    // trace but reads the setting itself, so it needs its own guard.
+    storedSettings = { can_id_format: "decimal" };
+    await hydrateSettings();
+    const { container } = renderTable(null);
+    expect(container.querySelector(".trace-row .col-id")?.textContent).toBe("s:256");
+  });
 });
 
 describe("ByIdTable color-map tint", () => {

@@ -27,8 +27,8 @@ use serde::Serialize;
 
 use crate::persisted_json::{scope_of, Scope};
 use crate::settings::{
-    Settings, MIN_INTERVAL_MS, MIN_LOG_ROTATION_BYTES, MIN_SCRATCH_CAP_BYTES, MIN_SYSTEM_LOG_RING,
-    SCOPES, SIDECAR_LOG_LEVELS, SYSTEM_LOG_LEVELS, TRACE_MODES, Y_AXIS_MODES,
+    Settings, CAN_ID_FORMATS, MIN_INTERVAL_MS, MIN_LOG_ROTATION_BYTES, MIN_SCRATCH_CAP_BYTES,
+    MIN_SYSTEM_LOG_RING, SCOPES, SIDECAR_LOG_LEVELS, SYSTEM_LOG_LEVELS, TRACE_MODES, Y_AXIS_MODES,
 };
 
 /// A whole-millisecond interval control: the shape every cadence
@@ -413,6 +413,17 @@ const DESCRIPTORS: &[Spec] = &[
         kind: Kind::Default,
         control: Control::Enum {
             options: Y_AXIS_MODES,
+        },
+    },
+    Spec {
+        key: "can_id_format",
+        backing: Backing::Field,
+        label: "CAN-ID format",
+        help: "How the trace and by-ID tables spell an arbitration id:                zero-padded hex, or plain decimal. The s: / x: prefix stays                either way — 11-bit and 29-bit ids overlap as numbers. Only the                display columns follow this; the transmit and filter editors                still take hex.",
+        surfaces: &[Surface::Trace, Surface::ById],
+        kind: Kind::Behaviour,
+        control: Control::Enum {
+            options: CAN_ID_FORMATS,
         },
     },
     Spec {

@@ -767,6 +767,69 @@ alone* (red when the parsed branch drops `o.yAxisMode`), *does not
 retro-fit an area saved before the field existed* (red when
 `yAxisModeFromRaw`'s fallback reads the setting).
 
+**CAN-ID formatting.** *(done)* — **timestamp formatting is not, and
+that is a finding, not an omission.** See below the table.
+
+| Field | Default | Tags | Scope | Read at |
+| --- | --- | --- | --- | --- |
+| `can_id_format` | `hex` | trace + by-id / behaviour | user-overridable | `TraceView` / `ByIdTable` |
+
+Notes:
+
+- **`Behaviour`, not `Default`**, for the same reason as
+  `dbc_auto_reload`: there is no per-panel id format, and two panels
+  spelling the same id differently would be worse than either choice.
+- **The `s:` / `x:` prefix is not part of the choice.** 11-bit and
+  29-bit ids overlap numerically, so the prefix is the only thing
+  saying which frame a row is; `formatId` keeps it in both formats.
+- **`formatId` takes the format as a required argument.** A defaulted
+  parameter would let a new call site silently re-create the hex-only
+  behaviour this item exists to remove.
+- **The two table renderers read the setting, not `cellContent`.** The
+  rows are memoised, so the value has to arrive as a *changed prop* —
+  reading it inside the cell renderer leaves the visible window
+  painting the old format until something unrelated moves. `useSetting`
+  rather than `hostSettings()` for the same reason.
+- **Editors keep hex.** The transmit id box and the filter predicate
+  editor have their own input contract (and their own prefix control);
+  the setting governs display columns.
+
+Behaviour tests (each mutation-checked — by pinning `idFormat` to a
+literal, and by swapping `useSetting` for a non-reactive
+`hostSettings()` read, which reddens only the repaint guard):
+`format.test.ts` → *renders the id in base ten when asked, unpadded*,
+*keeps the s: / x: discriminator in both formats*;
+`TraceView.signals.dom.test.tsx` → *spells the arbitration id the way
+can_id_format says*, *repaints already-rendered rows when the format
+changes*; `ByIdTable.dom.test.tsx` → *spells the arbitration id the way
+can_id_format says* (its own guard, because it reads the setting
+itself).
+
+**Timestamp formatting is a feature wearing a settings costume, and is
+deferred.** The stage lists it alongside the CAN-ID format as a
+standard toggle, and it is — in tools whose time model is not
+[ADR 0024](../../docs/adr/0024-trace-like-view-timing.md)'s. Here:
+
+- **Absolute (wall-clock) display** contradicts ADR 0024 decision 2 —
+  "every renderer displays elapsed time since that origin, this is the
+  only formula" — unless *every* renderer follows. Applying it to the
+  row tables alone produces precisely the failure the ADR exists to
+  prevent: a trace row and a plot marker labelling the same frame
+  differently. Applying it everywhere means the plot's x-axis ticks and
+  cursor readouts too, whose gutter-width and split geometry are tuned
+  to elapsed-format label widths, plus an amendment to the ADR
+  separating "one origin" (which would still hold) from "one
+  rendering" (which would not).
+- **Delta (since the previous row)** is a difference against an
+  adjacent row that the paged, event-merged view may not have loaded.
+  Deriving it in the renderer is the model computation CLAUDE.md's
+  thin-views rule forbids; done properly it is a host-side derived
+  column beside the existing ones.
+
+Neither is a promotion of an existing default, so neither was smuggled
+in here. The item is written up in `plans/backlog.md` under *Trace
+view* as a candidate task, with both options and their costs.
+
 **DBC auto-reload opt-out.** *(done)*
 
 | Field | Default | Tags | Scope | Reader |

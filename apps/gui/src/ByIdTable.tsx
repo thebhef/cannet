@@ -5,6 +5,8 @@ import { type ColorResolver } from "./colorMap";
 import { DecodedSignalCell } from "./DecodedSignalCell";
 import { buildPlacements, rowFromScroll } from "./traceViewport";
 import { useTraceViewport } from "./useTraceViewport";
+import { useSetting } from "./hostSettings";
+import type { CanIdFormat } from "./format";
 import {
   type BusLookup,
   type ColumnKey,
@@ -83,6 +85,10 @@ export function ByIdTable({
   // Unlike the chronological view there is no live tail to pin to: by-id
   // is a sorted snapshot, so the anchor only moves when the user scrolls.
   const [anchoredRow, setAnchoredRow] = useState(0);
+  // The `id` column's format (`can_id_format`), read here rather than
+  // in `cellContent` so it reaches the memoised rows as a prop and a
+  // change repaints them. Same as `TraceView`.
+  const idFormat = useSetting("can_id_format") as CanIdFormat;
 
   const visible = useMemo(() => visibleColumns(columns), [columns]);
   const gridTemplate = useMemo(() => gridTemplateColumns(columns), [columns]);
@@ -165,6 +171,7 @@ export function ByIdTable({
                   columns={visible}
                   gridTemplate={gridTemplate}
                   baseTimestamp={baseTimestamp}
+                  idFormat={idFormat}
                   busLookup={busLookup}
                   resolveColor={resolveColor}
                   onToggle={onToggleExpand}
@@ -188,6 +195,7 @@ interface ByIdRowProps {
   columns: readonly ColumnState[];
   gridTemplate: string;
   baseTimestamp: number | null;
+  idFormat: CanIdFormat;
   busLookup: BusLookup;
   resolveColor: ColorResolver | null;
   onToggle: (rowKey: string) => void;
@@ -201,6 +209,7 @@ const ByIdRow = memo(function ByIdRow({
   columns,
   gridTemplate,
   baseTimestamp,
+  idFormat,
   busLookup,
   resolveColor,
   onToggle,
@@ -215,7 +224,7 @@ const ByIdRow = memo(function ByIdRow({
     >
       {columns.map((c) => (
         <span key={c.key} className={columnDef(c.key).className}>
-          {cellContent(c.key, frame, frame?.index ?? 0, baseTimestamp, isExpanded, busLookup, row?.rate, row?.count)}
+          {cellContent(c.key, frame, frame?.index ?? 0, baseTimestamp, idFormat, isExpanded, busLookup, row?.rate, row?.count)}
         </span>
       ))}
       {isExpanded && frame?.decoded && (
