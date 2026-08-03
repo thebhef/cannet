@@ -299,6 +299,7 @@ pub fn open_project(
                 .cache_root()
                 .to_path_buf();
             let dir = crate::project_dir::resolve(Some(Path::new(&path)), &cache_root);
+            crate::remember_project_dir(&app, &dir, Some(Path::new(&path)));
             crate::reroot_session(&app, &dir, crate::trace_store::Carry::Nothing);
             // Record the open project's identity (ADR 0002 DS-7). A prior
             // capture belonging to this project is reloaded *separately* by
@@ -414,6 +415,11 @@ pub fn save_project_as(
         crate::project_dir::carry_workspace_scope(&active.get(), &dest);
         dest
     };
+    // The directory this project is leaving stays in the registry: Save As
+    // carries the capture but deliberately leaves the derived caches
+    // behind (they may still be mapped, and they rebuild), and the cache
+    // list is how those bytes are reclaimed.
+    crate::remember_project_dir(&app, &dest, Some(Path::new(&path)));
     crate::reroot_session(&app, &dest, crate::trace_store::Carry::Contents);
     Ok(id)
 }

@@ -532,6 +532,47 @@ the running record of what is done and what moved.
   single-scratch behaviour rather than a regression, so it went to the
   backlog rather than expanding this branch.
 
+**Branch 3 — the registry and its cache UI (`task-47-registry`).**
+
+- **Done: the registry.**
+  [`project_registry.rs`](../../apps/gui/src-tauri/src/project_registry.rs)
+  records every project directory the session takes up — at startup, on
+  `open_project`, and on `save_project_as` — with its cache directory, the
+  project file it holds, whether it is auto-located, and when it was last
+  used. The project directory's path is the identity, so reopening a
+  project refreshes one entry rather than adding a second.
+- **It is user scope, and its own file** (`projects.json` in
+  `app_config_dir`), not a `state.json` key. `state.json` is the
+  frontend's mirror — `set_state` writes the whole struct back from the
+  renderer — so a host-owned key there would be erased by the next layout
+  change. A registry that cannot be written is logged and dropped: it
+  costs the user a row in the cache list, never an operation.
+- **Done: the cache directory the registry records is recorded, not
+  recomputed.** The cache is keyed by a hash of the project directory's
+  path (decision 12), which is exactly why the registry has to exist —
+  the key is not readable back off a path — and re-deriving it in the
+  reclaim path would be a second copy of that rule.
+- **Done: sizes reuse the one walk.** `trace_store::dir_footprint` — what
+  `scratch_footprint_bytes` already measures the active project's cache
+  with — widened from `pub(super)` to `pub(crate)`. The list measures **on
+  demand only**, when it opens or after an action; the walk is too
+  expensive for a timer (Task 44 Tier 1 #4).
+- **Done: Clear and Delete mean what ADR 0042 §5's table says**, proven
+  by tests against the table: after Clear the cache directory and the
+  registry entry both survive; after Delete both are gone; after either,
+  **the project directory itself is untouched** — including an
+  auto-located one in cannet's own cache space. The table's last column
+  says "untouched" without qualification, so Delete leaves an
+  auto-located directory's `.cannet/` behind (a few hundred bytes, and
+  reopening the project re-registers it) rather than reading the rule as
+  applying only to directories the user made.
+- **Clearing the active project is the live-store clear.** Its scratch is
+  mapped, so `clear_project_cache` routes it to `clear_trace_store` — the
+  existing Clear path, which means "discard this session" — instead of
+  unlinking files underneath a mapping. Delete is refused for it for the
+  same reason, and `clear_all_project_caches` sweeps the directories of
+  every *other* project and clears the active one through the live store.
+
 **Deferred out of branch 1, and why:**
 
 - **Re-rooting mid-session.** The project directory was resolved **once,
