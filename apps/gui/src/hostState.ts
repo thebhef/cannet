@@ -2,8 +2,11 @@
 //
 // These values (last-opened project, no-project layout snapshot, recent
 // BLFs, recent commands) used to live in `localStorage`; they now
-// round-trip through the host's `get_state` / `set_state` commands and
-// land in `state.json` in the OS config dir. The host is authoritative.
+// round-trip through the host's `get_state` / `set_state` commands. The
+// host is authoritative — and it also decides *where* each value lands:
+// `state.json` in the OS config dir for what follows the person, the
+// project's own `.cannet/state.json` for what belongs to the project
+// (ADR 0042). This side just reads and writes the resolved struct.
 // This is *state* the app records as the user works — not user *settings*
 // (those live in `settings.json`, see `hostSettings`); ADR 0034 splits the
 // two and renamed this file from `preferences.json`.
@@ -17,7 +20,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
-import type { BlfChannelMaps } from "./blfChannelMap";
+import { emptyBlfChannelMaps, type BlfChannelMaps } from "./blfChannelMap";
 
 /// Mirror of the host `UiState` struct (snake_case to match serde).
 export interface UiState {
@@ -34,7 +37,7 @@ function emptyState(): UiState {
     layout: null,
     recent_blfs: [],
     recent_commands: [],
-    blf_channel_maps: {},
+    blf_channel_maps: emptyBlfChannelMaps(),
   };
 }
 

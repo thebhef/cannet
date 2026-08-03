@@ -265,11 +265,6 @@ export function App() {
   >(() => new Map());
   // Path of the open project file, or null for an unsaved workspace.
   const [projectPath, setProjectPath] = useState<string | null>(null);
-  // Stable id of the open project (host-managed, carried on what
-  // `open_project` / `save_project` return). Keys the per-project
-  // remembered BLF channel↔bus mappings; null (unsaved, never-saved
-  // workspace) means those mappings have nothing durable to bind to.
-  const [projectId, setProjectId] = useState<string | null>(null);
   // True when the workspace has changed since it was last saved/opened.
   const [dirty, setDirty] = useState(false);
   // Set while the "unsaved changes — Save / Discard / Cancel?" modal is
@@ -767,7 +762,7 @@ export function App() {
       // fallback) so the next open of this BLF — or a same-shaped one —
       // pre-fills the dialog with it.
       persistBlfChannelMaps(
-        recordBlfChannelMap(hostState().blf_channel_maps, projectId, blfPath, choices),
+        recordBlfChannelMap(hostState().blf_channel_maps, blfPath, choices),
       );
       // Abort the import if the host clear fails — and drop the recent
       // entry, since the open won't happen.
@@ -800,7 +795,7 @@ export function App() {
         dropRecentBlf(blfPath);
       }
     },
-    [pendingBlf, projectId, resetSession, rememberRecentBlf, dropRecentBlf],
+    [pendingBlf, resetSession, rememberRecentBlf, dropRecentBlf],
   );
 
   // Add one or more DBCs to the loaded set (each goes through the host's
@@ -1154,7 +1149,6 @@ export function App() {
   // into the fields; hit Connect to switch.
   const applyProject = useCallback(
     async (project: Project, projectFilePath: string) => {
-      setProjectId(project.project_id ?? null);
       // DBC and `.cannet_rbs` references in the project may be relative
       // to the project file's own directory (ADR 0030); resolve them to
       // absolute before they reach the host commands, which read from
@@ -1286,7 +1280,6 @@ export function App() {
     }
     seedDefaultLayout();
     rememberProject(null);
-    setProjectId(null);
     void loadDbcSet([], {});
     setDbcBuses({});
     setBuses([]);
@@ -1334,8 +1327,7 @@ export function App() {
   const saveProjectTo = useCallback(
     async (path: string): Promise<boolean> => {
       try {
-        const id = await invoke<string>("save_project", { path, project: gatherProject() });
-        setProjectId(id);
+        await invoke<string>("save_project", { path, project: gatherProject() });
         rememberProject(path);
         setDirty(false);
         return true;
@@ -2391,7 +2383,6 @@ export function App() {
           buses={buses}
           initial={savedBlfChannelMap(
             hostState().blf_channel_maps,
-            projectId,
             pendingBlf.blfPath,
             pendingBlf.channels.length,
             new Set(buses.map((b) => b.id)),

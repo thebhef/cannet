@@ -455,6 +455,15 @@ the running record of what is done and what moved.
   already holds the key*: with no UI for picking a scope, "leave the
   value where it is" is the only rule that neither promotes an override
   nor silently demotes one.
+- **Done: `blf_channel_maps` lost its `project_id` key.** The mappings
+  live in the project's own `.cannet/state.json`, so the directory is the
+  scoping and a second project simply has none of the first's. That
+  removed the frontend's `projectId` state entirely — the mappings were
+  the only thing reading it — and with it the "no project, so nothing
+  durable to bind this to" case: an unsaved project remembers its
+  mappings like any other, because it has a project directory too. The
+  host still keeps `Project::project_id` for the scratch-reload gate
+  (ADR 0002 DS-7); that is a different question.
 - **Reads are deliberately unchanged.** Precedence stays uniform — a
   workspace value wins for any key — so a `state.json` whose
   project-scoped half has not been hand-migrated yet still resolves from

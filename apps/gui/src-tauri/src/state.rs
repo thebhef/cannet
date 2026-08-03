@@ -88,11 +88,13 @@ pub struct UiState {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub recent_commands: Vec<String>,
     /// Last-accepted BLF channel→bus mappings, so reopening a BLF
-    /// pre-fills the channel↔bus dialog. Keyed by `project_id` (bus ids
-    /// are project-scoped). Unlike the spill caches this is user-authored
-    /// and not recomputable, so it must not be evicted.
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub blf_channel_maps: BTreeMap<String, ProjectBlfChannelMaps>,
+    /// pre-fills the channel↔bus dialog. Project-scoped: it lives in the
+    /// project's own `.cannet/state.json`, so the directory is the
+    /// scoping and no `project_id` key is needed (ADR 0042). Unlike the
+    /// spill caches this is user-authored and not recomputable, so it
+    /// must not be evicted.
+    #[serde(skip_serializing_if = "BlfChannelMaps::is_empty")]
+    pub blf_channel_maps: BlfChannelMaps,
 }
 
 /// One project's remembered BLF channel→bus mappings. Both maps go
@@ -100,7 +102,7 @@ pub struct UiState {
 /// strings); `""` records a deliberately skipped channel.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct ProjectBlfChannelMaps {
+pub struct BlfChannelMaps {
     /// Exact match: absolute BLF path → mapping. Pre-fill for reopening
     /// the very same file.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -111,6 +113,14 @@ pub struct ProjectBlfChannelMaps {
     /// starting point.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub by_channel_count: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+impl BlfChannelMaps {
+    /// Whether this project has remembered no mapping at all — the
+    /// condition that keeps the key out of a fresh `state.json`.
+    fn is_empty(&self) -> bool {
+        self.by_path.is_empty() && self.by_channel_count.is_empty()
+    }
 }
 
 /// Parse state JSON, tolerating junk. A malformed or partial file yields
@@ -198,25 +208,22 @@ mod tests {
             layout: Some(serde_json::json!({ "grid": {}, "panels": {} })),
             recent_blfs: vec!["/a.blf".into(), "/b.blf".into()],
             recent_commands: vec!["open-project".into()],
-            blf_channel_maps: BTreeMap::from([(
-                "5f2d7c1e-9a41-4a5e-8b1c-2e6f0d3a9b70".to_string(),
-                ProjectBlfChannelMaps {
-                    by_path: BTreeMap::from([(
-                        "/captures/drive.blf".to_string(),
-                        BTreeMap::from([
-                            ("0".to_string(), "bus-pt".to_string()),
-                            ("1".to_string(), String::new()),
-                        ]),
-                    )]),
-                    by_channel_count: BTreeMap::from([(
-                        "2".to_string(),
-                        BTreeMap::from([
-                            ("0".to_string(), "bus-pt".to_string()),
-                            ("1".to_string(), String::new()),
-                        ]),
-                    )]),
-                },
-            )]),
+            blf_channel_maps: BlfChannelMaps {
+                by_path: BTreeMap::from([(
+                    "/captures/drive.blf".to_string(),
+                    BTreeMap::from([
+                        ("0".to_string(), "bus-pt".to_string()),
+                        ("1".to_string(), String::new()),
+                    ]),
+                )]),
+                by_channel_count: BTreeMap::from([(
+                    "2".to_string(),
+                    BTreeMap::from([
+                        ("0".to_string(), "bus-pt".to_string()),
+                        ("1".to_string(), String::new()),
+                    ]),
+                )]),
+            },
         }
     }
 
@@ -377,16 +384,43 @@ mod tests {
 
     #[test]
     fn blf_channel_maps_parse_from_nested_json() {
+        // No `project_id` key: the project directory the file sits in is
+        // the scoping (ADR 0042).
         let s = parse_state(
-            r#"{"blf_channel_maps": {"pid": {
+            r#"{"blf_channel_maps": {
                 "by_path": {"/a.blf": {"0": "bus-a", "2": ""}},
                 "by_channel_count": {"3": {"0": "bus-a"}}
-            }}}"#,
+            }}"#,
         );
-        let p = &s.blf_channel_maps["pid"];
+        let p = &s.blf_channel_maps;
         assert_eq!(p.by_path["/a.blf"]["0"], "bus-a");
         assert_eq!(p.by_path["/a.blf"]["2"], "");
         assert_eq!(p.by_channel_count["3"]["0"], "bus-a");
+    }
+
+    #[test]
+    fn a_second_project_cannot_see_the_first_projects_blf_mappings() {
+        // The exit criterion for the `project_id` key's removal: the
+        // mappings live in the project's own `.cannet/`, so a different
+        // project directory simply has none.
+        let tmp = tempfile::tempdir().unwrap();
+        let user = tmp.path().join("config");
+        let a = tmp.path().join("a").join(".cannet");
+        let b = tmp.path().join("b").join(".cannet");
+        for d in [&user, &a, &b] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        write_state(&user, &a, &sample()).unwrap();
+
+        assert_eq!(
+            read_state_scoped(&user, &a).blf_channel_maps,
+            sample().blf_channel_maps
+        );
+        assert_eq!(
+            read_state_scoped(&user, &b).blf_channel_maps,
+            BlfChannelMaps::default(),
+            "project B must not see project A's mappings"
+        );
     }
 
     #[test]
