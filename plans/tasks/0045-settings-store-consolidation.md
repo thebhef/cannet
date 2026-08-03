@@ -677,7 +677,7 @@ other is the app / connection / appearance knobs.
 | Slice | Items | State |
 | --- | --- | --- |
 | **Data views** | Default column sets, widths, and hidden columns (trace + signal); CAN-ID and timestamp formatting; default y-axis mode; default auto-scroll / trace mode / events overlay; DBC auto-reload opt-out. | **complete** — eight fields, plus one deferred item (timestamp formatting) with its reasoning below |
-| **App, connection, appearance** | Startup behaviour; default server address; default nominal bitrate; seed layout; palettes; theme and density; confirmation-prompt suppression. | **complete** — four fields, plus four deferred items (seed layout, palettes, light mode, density) with their reasoning below |
+| **App, connection, appearance** | Startup behaviour; default server address; default nominal bitrate; seed layout; palettes; theme and density; confirmation-prompt suppression. | **complete** — three fields (a fourth, confirmation-prompt suppression, shipped and was then removed at the user's direction), plus four deferred items (seed layout, palettes, light mode, density) with their reasoning below |
 
 Minimum system-log level is not in either: it landed in Stage 2 #2.
 
@@ -929,7 +929,11 @@ Four of the seven items are promotions; four are deferrals — theme
 splits into light mode and density, which fail for different reasons
 and are triaged separately. The deferrals are written up below and in
 `plans/backlog.md` with their options costed, in the shape Stage 5's
-data-view half used for timestamp formatting.
+data-view half used for timestamp formatting. One of the four
+promotions — confirmation-prompt suppression — has since been
+**removed at the user's direction**; its entry below records that
+rather than disappearing, so the reasoning that produced it stays
+traceable.
 
 **Startup behaviour.** *(done)*
 
@@ -973,40 +977,31 @@ reopened by default*, *reopen off starts without a project*;
 *opens nothing when `reopen_last_project` is off*, *keeps the
 last-project pointer when it is not resuming it*.
 
-**Confirmation-prompt suppression.** *(done)*
+**Confirmation-prompt suppression.** *(shipped, then **removed at the
+user's direction**)*
 
-| Field | Default | Tags | Scope | Read at |
-| --- | --- | --- | --- | --- |
-| `confirm_unsaved_on_exit` | `true` | general / behaviour | user | `App`'s `onCloseRequested` |
+It shipped as `confirm_unsaved_on_exit` — `true` by default, general /
+behaviour, `Scope::User`, read in `App`'s `onCloseRequested`. The
+reasoning was that the unsaved-changes prompt on window close (which
+ADR 0028 already widened to cover dirty `.cannet_rbs` files) is the
+app's *only* yes/no modal, so one field was the whole item, and that
+how much hand-holding you want is about the person at the keyboard
+rather than about the project.
 
-Notes:
+**It is gone.** Reviewing the shipped panel, the user's call was that
+it "can just get removed": a knob whose only effect is to make the app
+lose your work more quietly is not a preference worth carrying. The
+field, its descriptor, its scope entry, its TS mirror and the read site
+are all removed — no dead key in `settings.json`, and no other route to
+suppressing the prompt. The prompt is unconditional again, which is
+what it was before this item.
 
-- **The app has exactly one confirmation prompt**, so this one field is
-  the whole item. The unsaved-changes prompt on window close (which
-  ADR 0028 already widened to cover dirty `.cannet_rbs` files) is the
-  only modal that asks a yes/no question; the rest are editors and
-  pickers. A second prompt, if one ever appears, gets its own field —
-  "ask me about anything" is not a preference anyone holds, and a
-  blanket switch would silently take in prompts written after it.
-- **Off means the close goes through and the work is lost**, and the
-  help text says exactly that. The prompt's other two answers are Save
-  and Cancel, so suppressing it cannot mean anything else; dressing it
-  up as "save automatically instead" would be a different feature.
-- **`Scope::User`.** How much hand-holding you want is about the person
-  at the keyboard, which is the standing test for the user-scope
-  exceptions. (`clear_scratch_on_exit` is overridable despite also
-  being a destructive on-exit behaviour, because what it governs is a
-  per-project resource. A prompt is not.)
-- **Read at the moment of the close.** The handler is installed once
-  with no dependencies, so a captured value would have made turning the
-  prompt off a relaunch — the one thing this setting cannot ask for.
-
-Behaviour tests (each mutation-checked — by dropping the guard, which
-reddens the opt-out, and by capturing the value at mount, which reddens
-only the read-at-close guard): `App.closeConfirm.dom.test.tsx` →
-*prompts by default when there is unsaved work*, *lets the close through
-when `confirm_unsaved_on_exit` is off*, *reads the setting at the moment
-of the close, not at mount*.
+The regression guard is that removed means removed:
+`App.closeConfirm.dom.test.tsx` → *prompts when there is unsaved work*,
+*prompts even when the file still carries the removed opt-out* (a
+`settings.json` left by the build that had it is an unknown field, not
+a way back). Mutation-checked by restoring the guard, which reddens the
+second.
 
 **Default server address and default nominal bitrate.** *(done)*
 
@@ -1125,7 +1120,8 @@ hidden the second behind the first.
 the committed baseline carries against the host modes (tracebuffer,
 grpc, hardware-peak); the frontend tier is skipped, as in Stages 3, 4
 and 5a, because Task 44 Tier 0 still owes a self-driving capture. Four
-new fields take `settings.json` to thirty-five, and close Stage 5.
+new fields took `settings.json` to thirty-five and closed Stage 5;
+`confirm_unsaved_on_exit`'s later removal leaves it at thirty-four.
 
 ## Interlock with Tasks 46 and 47
 
@@ -1308,7 +1304,7 @@ properly view-local, and the window-state plugin is properly separate.
   a `ConfigureBus` where the host sends none today — a configuration
   action against real hardware. The general guard is
   `a_file_written_before_a_field_existed_resolves_to_that_field_s_default`,
-  which covers all thirty-five keys.*
+  which covers every key.*
 - Every promoted field lands with its Task 46 tags already attached —
   no retrofit pass. *(met — and mechanically, not by convention:
   `every_setting_has_at_least_one_surface_tag` polices the surface axis
@@ -1316,7 +1312,7 @@ properly view-local, and the window-state plugin is properly separate.
   was tagged after the fact.)*
 - `settings.json` on a fresh install lists every knob the app has, at
   its default — the ADR 0034 promise, still true at the new count.
-  *(met at thirty-five, and it is a test rather than a promise:
+  *(met at thirty-four, and it is a test rather than a promise:
   `default_settings_serialize_with_every_key_present`,
   `every_settings_key_declares_a_scope`, and
   `descriptors_and_settings_name_the_same_keys` fail the build in both

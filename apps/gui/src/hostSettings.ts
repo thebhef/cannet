@@ -58,11 +58,6 @@ export interface Settings {
   /// auto-located project directory the host resolved. Read once, on the
   /// boot open.
   reopen_last_project: boolean;
-  /// Whether closing the window with unsaved project or `.cannet_rbs`
-  /// changes prompts first. Off, the close is let through and those
-  /// changes go with it. Read at the moment of the close, so a change
-  /// takes effect without a relaunch.
-  confirm_unsaved_on_exit: boolean;
   /// How long a transient status notice dwells in the header before the
   /// bar reverts to its resting line.
   notice_dwell_ms: number;
@@ -169,7 +164,6 @@ export function defaultSettings(): Settings {
     show_developer_settings: false,
     system_log_min_level: "info",
     reopen_last_project: true,
-    confirm_unsaved_on_exit: true,
     notice_dwell_ms: 3000,
     plot_fetch_interval_ms: 67,
     view_refresh_interval_ms: 250,
