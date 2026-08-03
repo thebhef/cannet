@@ -39,12 +39,17 @@ const SETTINGS_FILE: &str = "settings.json";
 /// The scope of every key [`Settings`] persists (ADR 0042 §3) — what
 /// routes a write to the user file or to the project's `.cannet/`.
 ///
-/// Every setting is **overridable**: a settings value is a preference
-/// that follows the person, and the workspace copy of the file exists to
-/// hold this project's exceptions to it. Which of them are better modelled
-/// as project-scoped outright — `scratch_cap_bytes` and
-/// `clear_scratch_on_exit` both govern a per-project resource — is settled
-/// with the rest of the settings promotion work, not here.
+/// Settings that govern the app's behaviour are **overridable**: the
+/// value is a preference that follows the person, and the workspace copy
+/// of the file exists to hold this project's exceptions to it. Which of
+/// them are better modelled as project-scoped outright —
+/// `scratch_cap_bytes` and `clear_scratch_on_exit` both govern a
+/// per-project resource — is settled with the rest of the settings
+/// promotion work, not here.
+///
+/// `show_developer_settings` is the exception: it governs what *you* see
+/// in the settings view, which is not a project's business, so it stays
+/// at user scope.
 ///
 /// The names are the serialized ones. `every_settings_key_declares_a_scope`
 /// is what keeps this table from drifting away from the struct.
@@ -52,6 +57,7 @@ pub(crate) const SCOPES: ScopeTable = &[
     ("scratch_cap_bytes", Scope::UserOverridable),
     ("clear_scratch_on_exit", Scope::UserOverridable),
     ("keybindings", Scope::UserOverridable),
+    ("show_developer_settings", Scope::User),
 ];
 
 /// The persisted user settings. `#[serde(default)]` fills any absent field
@@ -59,6 +65,10 @@ pub(crate) const SCOPES: ScopeTable = &[
 /// unknown field a newer build wrote is ignored. Unlike [`crate::state`],
 /// the fields are *not* skipped on serialize — the file is meant to be
 /// read and hand-edited, so it always lists every setting.
+// `show_developer_settings` trips `struct_field_names` by ending in the
+// struct's own name. The field name *is* the `settings.json` key a user
+// reads and hand-edits, so it is named for the file, not for Rust.
+#[allow(clippy::struct_field_names)]
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -76,6 +86,12 @@ pub struct Settings {
     /// stores and round-trips this — the frontend reads it, merges it over
     /// the defaults, and applies the result; the host never dispatches keys.
     pub keybindings: Option<Vec<Binding>>,
+    /// Whether the settings view reveals the `developer`-tagged knobs
+    /// ([`crate::settings_descriptor::Kind::Developer`]). Default
+    /// `false`. It is an ordinary setting rather than panel chrome so
+    /// that the view grows no controls of its own — and so that the
+    /// toggle is itself findable by searching for it.
+    pub show_developer_settings: bool,
 }
 
 /// One persisted keybinding — the on-disk mirror of the frontend's
@@ -100,8 +116,9 @@ pub struct Binding {
 /// whole meta segment at a time and the cap cannot be honored at all. It is
 /// therefore *validation metadata on the field*: stated once, here, enforced
 /// where a value enters the app ([`validate`]), and surfaced to the frontend
-/// through [`get_settings_bounds`] rather than re-declared there. `None`
-/// (unbounded) is always legal.
+/// through [`get_settings_bounds`] and as the `min` of the field's
+/// descriptor ([`crate::settings_descriptor`]) rather than re-declared
+/// there. `None` (unbounded) is always legal.
 pub const MIN_SCRATCH_CAP_BYTES: u64 = 100 * 1024 * 1024;
 
 /// The bounds the frontend needs to render the settings controls — the same
@@ -165,16 +182,6 @@ fn warn_refused(app: &tauri::AppHandle, complaints: &[String]) {
     }
 }
 
-/// The validation bounds for the settings fields (ADR 0002 DS-8). The
-/// frontend reads these instead of re-declaring the limits it renders.
-#[tauri::command]
-#[must_use]
-pub fn get_settings_bounds() -> SettingsBounds {
-    SettingsBounds {
-        min_scratch_cap_bytes: MIN_SCRATCH_CAP_BYTES,
-    }
-}
-
 /// Load the effective settings: the user scope, overridden per key by
 /// the open project's workspace scope (ADR 0042 §3). Returns defaults if
 /// the config dir can't be resolved or the files are missing / corrupt —
@@ -190,6 +197,28 @@ pub fn get_settings(app: tauri::AppHandle) -> Settings {
     let (settings, complaints) = validate(raw);
     warn_refused(&app, &complaints);
     settings
+}
+
+/// The validation bounds for the settings fields (ADR 0002 DS-8). The
+/// frontend reads these instead of re-declaring the limits it renders.
+#[tauri::command]
+#[must_use]
+pub fn get_settings_bounds() -> SettingsBounds {
+    SettingsBounds {
+        min_scratch_cap_bytes: MIN_SCRATCH_CAP_BYTES,
+    }
+}
+
+/// The settings keys the open project's `.cannet/settings.json`
+/// declares — the ones whose effective value came from the project
+/// rather than from the user's own file (ADR 0042 §3). The settings view
+/// marks them, so a value a project overrides is visible as such instead
+/// of looking like a personal preference.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+#[must_use]
+pub fn get_settings_overrides(app: tauri::AppHandle) -> Vec<String> {
+    crate::persisted_json::declared_keys(&crate::workspace_dir(&app).join(SETTINGS_FILE))
 }
 
 /// Persist the whole settings struct — each key at the scope [`SCOPES`]
@@ -258,6 +287,7 @@ mod tests {
                     skip_editable: Some(true),
                 },
             ]),
+            show_developer_settings: true,
         }
     }
 
@@ -284,6 +314,7 @@ mod tests {
         assert_eq!(d.scratch_cap_bytes, None);
         assert!(!d.clear_scratch_on_exit);
         assert_eq!(d.keybindings, None);
+        assert!(!d.show_developer_settings);
     }
 
     #[test]
@@ -379,7 +410,7 @@ mod tests {
             let (accepted, complaints) = validate(Settings {
                 scratch_cap_bytes: cap,
                 clear_scratch_on_exit: true,
-                keybindings: None,
+                ..Settings::default()
             });
             assert_eq!(accepted.scratch_cap_bytes, None, "cap {cap:?}");
             assert_eq!(complaints.len(), 1, "cap {cap:?}: {complaints:?}");
@@ -400,6 +431,7 @@ mod tests {
         assert!(text.contains("scratch_cap_bytes"), "{text}");
         assert!(text.contains("clear_scratch_on_exit"), "{text}");
         assert!(text.contains("keybindings"), "{text}");
+        assert!(text.contains("show_developer_settings"), "{text}");
     }
 
     #[test]
@@ -415,8 +447,7 @@ mod tests {
             &user,
             &Settings {
                 scratch_cap_bytes: Some(4 * 1024 * 1024 * 1024),
-                clear_scratch_on_exit: false,
-                keybindings: None,
+                ..Settings::default()
             },
         );
         std::fs::write(
