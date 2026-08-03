@@ -204,6 +204,13 @@ fn to_object<T: Serialize>(
     }
 }
 
+/// Whether the JSON document at `path` declares nothing at all — absent,
+/// empty, junk, or `{}`. What a scope file cannet just created holds, and
+/// therefore the test for "there is nothing here to preserve".
+pub(crate) fn declares_nothing(path: &Path) -> bool {
+    read_object(path).is_empty()
+}
+
 /// The top-level keys of the JSON document at `path` — empty when it is
 /// missing, unreadable, or not an object, the same resolution
 /// [`read_scoped`] gives those cases.

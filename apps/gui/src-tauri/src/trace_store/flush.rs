@@ -15,13 +15,13 @@ use std::path::Path;
 use std::time::Instant;
 
 use cannet_core::{CanFdFlags, CanFramePayload, Direction};
-use cannet_spill::DiskRawStore;
+use cannet_spill::{DiskRawStore, MemRawStore, RawStore};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::rate::{RateEstimate, RateTrack};
 use super::scratch::dir_footprint;
-use super::{FrameKey, PerKey, RawTraceFrame, TraceStore};
+use super::{FrameKey, Inner, PerKey, RawTraceFrame, TraceStore};
 
 /// File in the scratch dir recording which project the on-disk session
 /// belongs to (ADR 0002 DS-7). Written when a capture starts; read by
@@ -133,21 +133,9 @@ impl TraceStore {
     /// in its own [`RawStore::clear`](cannet_spill::RawStore::clear).)
     pub fn start_session(&self, session_start_ns: u64) {
         let mut inner = self.lock_inner();
-        inner.session_start_ns = session_start_ns;
         inner.raw.clear();
-        inner.agg_rate = RateTrack::default();
-        inner.per_key = HashMap::new();
-        inner.key_generation = inner.key_generation.wrapping_add(1);
-        // The mux index empties with the buffer; the extractor itself
-        // survives (the DBC set didn't change) and covers the fresh
-        // buffer from index 0.
-        inner.latest_mux = HashMap::new();
-        inner.mux_rates = HashMap::new();
-        inner.mux_index_from = 0;
-        inner.per_bus = HashMap::new();
-        inner.rx_rate = RateTrack::default();
-        inner.tx_rate = RateTrack::default();
-        inner.dropped_before_session = 0;
+        inner.reset_derived();
+        inner.session_start_ns = session_start_ns;
         // Wiping the buffer wipes the scratch (ADR 0002 DS-7): the raw
         // store's `clear` already dropped its segments and manifest; drop
         // the facade's derived + identity files too so a stale prior
@@ -182,6 +170,74 @@ impl TraceStore {
     /// window relaxes — acceptable for the ephemeral scratch.
     pub fn flush_async(&self) -> std::io::Result<()> {
         self.flush_with(false)
+    }
+
+    /// Move this store onto `dir` — the cache directory of a project
+    /// directory the session has switched to (ADR 0042 §1).
+    ///
+    /// The whole swap happens under one hold of the store lock, which is
+    /// what makes it safe against a running flusher and live ingest: both
+    /// take the same lock, so they observe the store either wholly before
+    /// or wholly after the move, never mid-way. A flush whose directory
+    /// walk straddled the swap is detected and dropped
+    /// ([`Self::commit_flush`]).
+    ///
+    /// [`Carry::Contents`] is the Save As path (ADR 0042 §6): the capture
+    /// is flushed, unmapped, moved, and remapped at its new home, and the
+    /// facade's derived state is kept because it describes the same frames.
+    /// [`Carry::Nothing`] is the open-a-different-project path: the old
+    /// directory keeps its capture untouched, and this store comes up empty
+    /// on the new one — `try_reload` is what brings that project's own
+    /// capture back, gated on its identity as always.
+    ///
+    /// A no-op if `dir` is already this store's directory. Errors only if
+    /// the new directory can't be created or opened; a file that refuses to
+    /// move is logged and left behind.
+    pub fn reroot(&self, dir: &Path, carry: Carry) -> std::io::Result<()> {
+        let mut inner = self.lock_inner();
+        let from = inner.scratch_dir.clone();
+        if from.as_deref() == Some(dir) {
+            return Ok(());
+        }
+        std::fs::create_dir_all(dir)?;
+        if carry == Carry::Contents {
+            // Nothing may stay in the RAM ring: the files are about to
+            // become the only copy.
+            inner.raw.flush()?;
+        }
+        // Dropping the disk store is what unmaps its segments — required
+        // before they can be renamed (Windows refuses to move a mapped
+        // file) and before another store opens the same directory. The
+        // in-RAM double stands in for the moment in between; the lock is
+        // held throughout, so nothing ever observes it.
+        drop(std::mem::replace(
+            &mut inner.raw,
+            Box::new(MemRawStore::new()) as Box<dyn RawStore>,
+        ));
+        let carried = match (carry, from.as_deref()) {
+            (Carry::Contents, Some(from)) => {
+                move_scratch_files(from, dir);
+                DiskRawStore::reopen(dir).ok().flatten()
+            }
+            _ => None,
+        };
+        // A store that came across keeps the derived state describing it;
+        // one that did not is a different capture entirely.
+        if let Some(store) = carried {
+            inner.raw = Box::new(store);
+        } else {
+            inner.raw = Box::new(DiskRawStore::open_empty(dir)?);
+            inner.reset_derived();
+        }
+        inner.scratch_dir = Some(dir.to_path_buf());
+        inner.footprint_bytes = 0;
+        Ok(())
+    }
+
+    /// The directory this store's scratch lives in, or `None` for the
+    /// in-RAM double.
+    pub fn scratch_dir(&self) -> Option<std::path::PathBuf> {
+        self.lock_inner().scratch_dir.clone()
     }
 
     fn flush_with(&self, sync: bool) -> std::io::Result<()> {
@@ -234,38 +290,8 @@ impl TraceStore {
             _ => None,
         };
 
-        {
-            let mut inner = self.lock_inner();
-            if let Some(bytes) = evict_bytes {
-                inner.raw.evict_oldest_bytes(bytes);
-            }
-            if sync {
-                inner.raw.flush()?;
-            } else {
-                inner.raw.flush_async()?;
-            }
-            if let Some(dir) = dir.as_deref() {
-                let entries = inner
-                    .per_key
-                    .iter()
-                    .map(|(key, e)| DerivedEntry {
-                        bus_id: key.0.clone(),
-                        channel: key.1,
-                        id: key.2,
-                        extended: key.3,
-                        last_index: e.last_index as u64,
-                        count: e.rate.count,
-                        timestamp_ns: e.last_frame.timestamp_ns,
-                        tx: matches!(e.last_frame.direction, Direction::Tx),
-                        payload: PersistedPayload::from(&e.last_frame.payload),
-                    })
-                    .collect();
-                let derived = DerivedState {
-                    session_start_ns: inner.session_start_ns,
-                    entries,
-                };
-                write_json(&dir.join(DERIVED_FILE), &derived)?;
-            }
+        if !self.commit_flush(sync, dir.as_deref(), evict_bytes)? {
+            return Ok(());
         }
 
         // Cache the total footprint after all of this flush's writes, so the
@@ -275,9 +301,67 @@ impl TraceStore {
         // anything, and the cap decision needs a pre-write reading anyway.
         if let Some(dir) = dir.as_deref() {
             let footprint = dir_footprint(dir);
-            self.lock_inner().footprint_bytes = footprint;
+            let mut inner = self.lock_inner();
+            if inner.scratch_dir.as_deref() == Some(dir) {
+                inner.footprint_bytes = footprint;
+            }
         }
         Ok(())
+    }
+
+    /// The half of a flush that runs under the lock: the windowed-ring
+    /// eviction, the raw flush, and the derived snapshot. `dir` is the
+    /// scratch directory the caller measured its eviction budget against.
+    ///
+    /// Returns `false` — having written nothing — when the store has been
+    /// re-rooted since then. [`Self::reroot`] takes this same lock, so the
+    /// swap can only have happened while the lock was released for the
+    /// directory walk; what the caller measured describes a store this no
+    /// longer is, and `dir` names a directory it no longer owns. Dropping
+    /// the tick is right rather than merely safe: the next one measures the
+    /// new root, and the alternative is writing one store's derived
+    /// snapshot into another store's directory.
+    fn commit_flush(
+        &self,
+        sync: bool,
+        dir: Option<&Path>,
+        evict_bytes: Option<u64>,
+    ) -> std::io::Result<bool> {
+        let mut inner = self.lock_inner();
+        if inner.scratch_dir.as_deref() != dir {
+            return Ok(false);
+        }
+        if let Some(bytes) = evict_bytes {
+            inner.raw.evict_oldest_bytes(bytes);
+        }
+        if sync {
+            inner.raw.flush()?;
+        } else {
+            inner.raw.flush_async()?;
+        }
+        if let Some(dir) = dir {
+            let entries = inner
+                .per_key
+                .iter()
+                .map(|(key, e)| DerivedEntry {
+                    bus_id: key.0.clone(),
+                    channel: key.1,
+                    id: key.2,
+                    extended: key.3,
+                    last_index: e.last_index as u64,
+                    count: e.rate.count,
+                    timestamp_ns: e.last_frame.timestamp_ns,
+                    tx: matches!(e.last_frame.direction, Direction::Tx),
+                    payload: PersistedPayload::from(&e.last_frame.payload),
+                })
+                .collect();
+            let derived = DerivedState {
+                session_start_ns: inner.session_start_ns,
+                entries,
+            };
+            write_json(&dir.join(DERIVED_FILE), &derived)?;
+        }
+        Ok(true)
     }
 
     /// Record which project the current scratch belongs to (ADR 0002
@@ -359,6 +443,81 @@ impl TraceStore {
             }
         }
         true
+    }
+}
+
+impl Inner {
+    /// Drop every RAM-side derivation of the frame buffer, leaving the
+    /// buffer itself and the injected mux extractor alone. Shared by the
+    /// two places that make the buffer no longer describe what the
+    /// derivations say: starting a session (the frames go) and re-rooting
+    /// without carrying the capture (the frames are somewhere else now).
+    ///
+    /// Fresh `HashMap` allocations rather than `clear()`: those only reset
+    /// length, leaving the — possibly enormous after a long replay —
+    /// backing buffers resident, so a small session after a large one would
+    /// carry the previous footprint. The raw store does the same in its own
+    /// [`RawStore::clear`](cannet_spill::RawStore::clear).
+    fn reset_derived(&mut self) {
+        self.session_start_ns = 0;
+        self.agg_rate = RateTrack::default();
+        self.per_key = HashMap::new();
+        self.key_generation = self.key_generation.wrapping_add(1);
+        // The mux index empties with the buffer; the extractor itself
+        // survives (the DBC set didn't change) and covers the fresh buffer
+        // from index 0.
+        self.latest_mux = HashMap::new();
+        self.mux_rates = HashMap::new();
+        self.mux_index_from = 0;
+        self.per_bus = HashMap::new();
+        self.rx_rate = RateTrack::default();
+        self.tx_rate = RateTrack::default();
+        self.dropped_before_session = 0;
+    }
+}
+
+/// Whether a re-root brings the current capture with it (ADR 0042 §6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Carry {
+    /// Save As: the user asked cannet to put the project somewhere, so its
+    /// data goes too — arriving without it would be a surprise.
+    Contents,
+    /// Opening a different project: this session's capture stays in the
+    /// directory it belongs to, and the destination's own capture is what
+    /// belongs there.
+    Nothing,
+}
+
+/// Move the scratch's own files from `from` into `to`, leaving the
+/// derived subdirectories behind.
+///
+/// The raw store keeps everything it owns — segments, by-id index,
+/// manifest — as *files* at the top level of the cache directory, beside
+/// this module's `identity.json` / `derived.json` and the notes copy. The
+/// derived caches (the filter index, the signal pyramids) are
+/// subdirectories, and they are deliberately not moved: they are rebuilt
+/// on demand, and they are mapped by subsystems this lock does not hold,
+/// which is the one part of the move that cannot be made safe. What they
+/// leave behind is bytes in a cache directory the user can reclaim.
+///
+/// Best-effort per file: one that refuses to move is logged and left
+/// where it is rather than failing the re-root.
+fn move_scratch_files(from: &Path, to: &Path) {
+    let Ok(entries) = std::fs::read_dir(from) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if !entry.file_type().is_ok_and(|t| t.is_file()) {
+            continue;
+        }
+        if let Err(e) = std::fs::rename(entry.path(), to.join(entry.file_name())) {
+            tracing::warn!(
+                file = %entry.path().display(),
+                error = %e,
+                "could not move a scratch file to the new project directory; \
+                 it stays where it is"
+            );
+        }
     }
 }
 
@@ -628,6 +787,188 @@ mod tests {
             len - mark,
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Two cache directories, as a Save As or a project switch would have.
+    struct Roots {
+        _tmp: tempfile::TempDir,
+        a: std::path::PathBuf,
+        b: std::path::PathBuf,
+    }
+
+    impl Roots {
+        fn new() -> Self {
+            let tmp = tempfile::tempdir().unwrap();
+            let a = tmp.path().join("a");
+            let b = tmp.path().join("b");
+            std::fs::create_dir_all(&a).unwrap();
+            std::fs::create_dir_all(&b).unwrap();
+            Self { _tmp: tmp, a, b }
+        }
+    }
+
+    #[test]
+    fn rerooting_with_carry_moves_the_capture_and_keeps_it_readable() {
+        // ADR 0042 §6: Save As carries the contents across, so the trace
+        // the user is looking at survives the move — same frames, same
+        // derived state, new home.
+        let roots = Roots::new();
+        let store = TraceStore::new_disk(&roots.a).unwrap();
+        store.start_session(1_000);
+        for i in 0u32..5 {
+            store.append(dummy(1_000 + u64::from(i) * 1_000, 0x100 + i));
+        }
+        store.flush().unwrap();
+
+        store.reroot(&roots.b, Carry::Contents).unwrap();
+
+        assert_eq!(store.scratch_dir().as_deref(), Some(roots.b.as_path()));
+        assert_eq!(store.len(), 5, "the frames came with it");
+        assert_eq!(store.session_start_ns(), 1_000, "and so did the anchor");
+        assert_eq!(
+            store.latest_since(0).len(),
+            5,
+            "the by-id derived state describes the same frames"
+        );
+        // The files really moved: the new directory reopens with the
+        // capture, and the old one is left with no manifest to reopen.
+        drop(store);
+        assert_eq!(
+            cannet_spill::DiskRawStore::reopen(&roots.b)
+                .unwrap()
+                .expect("the manifest moved too")
+                .len(),
+            5
+        );
+        assert!(cannet_spill::DiskRawStore::reopen(&roots.a)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn rerooting_without_carry_leaves_the_old_capture_exactly_where_it_was() {
+        // Opening a different project: A's capture must still be there when
+        // the user comes back to it, and this session starts empty on B —
+        // `try_reload` is what brings B's own capture back, not this.
+        let roots = Roots::new();
+        let store = TraceStore::new_disk(&roots.a).unwrap();
+        store.start_session(1_000);
+        for i in 0u32..5 {
+            store.append(dummy(1_000 + u64::from(i) * 1_000, 0x100 + i));
+        }
+        store.flush().unwrap();
+
+        store.reroot(&roots.b, Carry::Nothing).unwrap();
+
+        assert_eq!(store.scratch_dir().as_deref(), Some(roots.b.as_path()));
+        assert_eq!(store.len(), 0, "a different project's store starts empty");
+        assert!(
+            store.latest_since(0).is_empty(),
+            "and so does its by-id view"
+        );
+        assert_eq!(
+            cannet_spill::DiskRawStore::reopen(&roots.a)
+                .unwrap()
+                .expect("A's capture is untouched")
+                .len(),
+            5
+        );
+    }
+
+    #[test]
+    fn rerooting_to_the_directory_already_open_changes_nothing() {
+        let roots = Roots::new();
+        let store = TraceStore::new_disk(&roots.a).unwrap();
+        store.append(dummy(1_000, 0x100));
+        store.reroot(&roots.a, Carry::Nothing).unwrap();
+        assert_eq!(store.len(), 1);
+    }
+
+    #[test]
+    fn a_flush_whose_walk_straddles_a_reroot_writes_nothing() {
+        // `flush_with` measures the scratch off the lock (the walk is too
+        // slow to hold it) and commits under it. A re-root in between means
+        // those measurements describe a store this no longer is — and the
+        // directory it named belongs to another project now. The commit
+        // must recognise that and drop the tick rather than write one
+        // store's derived snapshot into another's directory.
+        let roots = Roots::new();
+        let store = TraceStore::new_disk(&roots.a).unwrap();
+        store.append(dummy(1_000, 0x100));
+        store.reroot(&roots.b, Carry::Nothing).unwrap();
+        let before: Vec<_> = std::fs::read_dir(&roots.a)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+
+        // Exactly what an in-flight flush would carry: the directory it
+        // measured, which is no longer the store's.
+        let committed = store.commit_flush(true, Some(&roots.a), None).unwrap();
+
+        assert!(!committed, "the tick must be dropped, not committed");
+        let after: Vec<_> = std::fs::read_dir(&roots.a)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(before, after, "nothing was written into the old directory");
+        // And the store itself still flushes normally on its own root.
+        assert!(store.commit_flush(true, Some(&roots.b), None).unwrap());
+    }
+
+    #[test]
+    fn rerooting_is_safe_against_a_running_flusher() {
+        // The flusher thread runs on a cadence against live ingest, and a
+        // re-root swaps the raw store out from under both. They serialise on
+        // the store lock, so the invariant to prove is that no interleaving
+        // leaves torn state: after the last swap the store holds exactly
+        // what was appended to it since, and every earlier directory keeps a
+        // consistent, reopenable capture.
+        let roots = Roots::new();
+        let store = std::sync::Arc::new(TraceStore::new_disk(&roots.a).unwrap());
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flusher = {
+            let store = store.clone();
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    store.flush_async().ok();
+                }
+            })
+        };
+        let appender = {
+            let store = store.clone();
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                let mut ts = 1_000u64;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    ts += 1_000;
+                    store.append(dummy(ts, 0x200));
+                }
+            })
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        for i in 0..20 {
+            let dir = tmp.path().join(format!("root-{i}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            store.reroot(&dir, Carry::Nothing).unwrap();
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        appender.join().unwrap();
+        flusher.join().unwrap();
+
+        // The final root is the one in force, and the capture reopens to
+        // exactly the length the store reports — a torn swap would leave a
+        // manifest describing frames the store no longer has, or vice versa.
+        let final_dir = tmp.path().join("root-19");
+        assert_eq!(store.scratch_dir().as_deref(), Some(final_dir.as_path()));
+        let len = store.len();
+        store.flush().unwrap();
+        drop(store);
+        let reopened = cannet_spill::DiskRawStore::reopen(&final_dir).unwrap();
+        assert_eq!(reopened.map_or(0, |s| s.len()), len);
     }
 
     #[test]

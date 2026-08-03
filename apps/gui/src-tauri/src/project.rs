@@ -1,5 +1,11 @@
 //! Project files: the saved workspace, as a JSON document, read and
-//! written by the [`open_project`] / [`save_project`] commands.
+//! written by the [`open_project`] / [`save_project`] /
+//! [`save_project_as`] commands.
+//!
+//! Opening a project moves the session into that project's own directory
+//! (ADR 0042 §1), and [`save_project_as`] *creates* one at the
+//! destination the user picked and moves the session there with its data.
+//! Plain [`save_project`] writes the file and touches no directory.
 //!
 //! The host owns the project model. The two fields it *doesn't*
 //! interpret are `layout` (`dockview`'s serialized layout blob) and
@@ -20,6 +26,7 @@
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use tauri::Manager;
 use uuid::Uuid;
 
 /// Current project-file schema version. A file is accepted only if its
@@ -279,6 +286,20 @@ pub fn open_project(
     };
     match parse_project(&text) {
         Ok(p) => {
+            // The session moves to this project's own directory
+            // (ADR 0042 §1): its `.cannet/` is where the workspace scope
+            // resolves from, and its cache is where this project's capture
+            // lives. Nothing is carried across — the project that was open
+            // keeps its capture where it belongs, and
+            // `restore_scratch_capture` (which the frontend calls next)
+            // reloads *this* project's from the directory we just moved
+            // into, gated on the identity recorded below as always.
+            let cache_root = app
+                .state::<crate::project_dir::ActiveProjectDir>()
+                .cache_root()
+                .to_path_buf();
+            let dir = crate::project_dir::resolve(Some(Path::new(&path)), &cache_root);
+            crate::reroot_session(&app, &dir, crate::trace_store::Carry::Nothing);
             // Record the open project's identity (ADR 0002 DS-7). A prior
             // capture belonging to this project is reloaded *separately* by
             // `restore_scratch_capture`, which the frontend calls after it
@@ -348,6 +369,53 @@ pub fn save_project(
             Err(msg)
         }
     }
+}
+
+/// Save the project to `path` **and make the directory it lands in a
+/// project directory** (ADR 0042 §6, decision 9).
+///
+/// This is Save As, and it is one of only two places cannet writes a
+/// `.cannet/` into storage the user chose — legitimate because they named
+/// the destination in a save dialog, an explicit act rather than a
+/// consequence of opening something. The destination comes up complete:
+/// `.cannet/` with its scope files, the cache link, the `.gitignore`, and
+/// the `.cannet_prj` beside it.
+///
+/// It also **carries the project's contents across**, because the user
+/// asked cannet to put the project somewhere and arriving without its data
+/// would be a surprise: the workspace-scoped files are copied (into
+/// whatever the destination has nothing to say about) and the session
+/// re-roots onto the new directory with its capture. Plain Save
+/// ([`save_project`]) does none of this — it writes the file and leaves
+/// every directory alone.
+///
+/// Returns the saved file's `project_id`, as [`save_project`] does.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn save_project_as(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::app_state::AppState>,
+    path: String,
+    project: Project,
+) -> Result<String, String> {
+    let id = save_project(app.clone(), state, path.clone(), project)?;
+    // A project file with no parent directory is not a path anything can
+    // be rooted in; the file is saved, which is the part the user asked
+    // for.
+    let Some(root) = Path::new(&path)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+    else {
+        return Ok(id);
+    };
+    let dest = {
+        let active = app.state::<crate::project_dir::ActiveProjectDir>();
+        let dest = crate::project_dir::create_at(root, active.cache_root());
+        crate::project_dir::carry_workspace_scope(&active.get(), &dest);
+        dest
+    };
+    crate::reroot_session(&app, &dest, crate::trace_store::Carry::Contents);
+    Ok(id)
 }
 
 /// Serialize and write `project` to `path`, via a temp-file + rename

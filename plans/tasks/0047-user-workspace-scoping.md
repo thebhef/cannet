@@ -475,27 +475,78 @@ the running record of what is done and what moved.
   absolute, which is always correct. ADR 0030 restated accordingly, and
   the `relativize-project-paths` pre-commit hook — which existed because
   the GUI wrote absolute — becomes a backstop with nothing to do.
+- **Done: the session re-roots mid-flight.** `ProjectDir` is no longer
+  resolved once at startup: `ActiveProjectDir` holds it behind a lock,
+  and `reroot_session` moves everything rooted in a project directory's
+  cache onto a new one — the trace store's raw store, the signal-cache
+  pyramids, the filter-index directory, and the notes. `open_project`
+  re-roots (carrying nothing: the project that was open keeps its
+  capture, and `restore_scratch_capture` then reloads *this* project's
+  from the directory just moved into).
+  - **The mmap dictates the order.** The derived caches hold mapped
+    files under the *old* cache directory, and a mapped file cannot be
+    moved — Windows will not even rename one. They are dropped first,
+    and lose nothing by it: both rebuild from the raw frames on demand.
+    The trace store then swaps its own files under its own lock, which
+    is what makes the swap safe against live ingest and the flusher.
+  - **The flusher is quiesced by that lock**, with one hole closed:
+    `flush_with` measures the scratch off the lock (the directory walk
+    is far too slow to hold it) and commits under it, so a re-root can
+    land in between. `commit_flush` now compares the directory it was
+    handed against the store's own and drops the tick if they differ,
+    rather than writing one store's derived snapshot into another's
+    directory.
+  - **What Save As carries** is every *file* at the top of the cache
+    directory — the raw segments, the by-id index, the manifest,
+    `identity.json`, `derived.json`, `notes.json`. The derived
+    subdirectories stay behind deliberately; they are the ones other
+    subsystems may still have mapped, and they rebuild. What they leave
+    is bytes in a cache directory the registry will let the user
+    reclaim.
+- **Done: Save As produces a complete project directory** (ADR 0042 §6,
+  decision 9). `save_project_as` is its own command — plain Save must
+  not create a `.cannet/`, since cannet only writes one where the user
+  pointed it — and it writes the project file, calls
+  `project_dir::create_at` on the destination (the second and last place
+  a `.cannet/` is created), carries the workspace-scope files across,
+  and re-roots with `Carry::Contents`. **A destination file that already
+  says something is not overwritten**: decision 10's "a hand-created
+  `.cannet/` starts clean" and §6's "Save As carries the contents
+  across" collide only there, and both are about respecting a directory
+  the user made, so what the user wrote wins. ADR 0042 §6 now records
+  that.
 - **Reads are deliberately unchanged.** Precedence stays uniform — a
   workspace value wins for any key — so a `state.json` whose
   project-scoped half has not been hand-migrated yet still resolves from
   the user file, and the first write moves it across. Gating reads by
   scope as well would have made the pending hand-migration a hard cutover
   for no gain.
+- **Found while implementing: `NotesStore::reroot` destroyed the notes it
+  was about to load.** Pointing the store at the new directory and *then*
+  emptying it persisted that empty list through the new pointer, wiping
+  the arriving project's `notes.json`. The test written first caught it;
+  it now reads the new directory's file before it touches the store.
+- **Not done: New Project does not re-root** — it has no host command to
+  hang it off, and the frontend's clear-everything path leaves the
+  session in the previous project's directory. Pre-existing
+  single-scratch behaviour rather than a regression, so it went to the
+  backlog rather than expanding this branch.
 
 **Deferred out of branch 1, and why:**
 
-- **Re-rooting mid-session.** The project directory is resolved **once,
+- **Re-rooting mid-session.** The project directory was resolved **once,
   at startup**, from the user-scope `last_project`. Opening a *different*
-  project without relaunching leaves the store rooted where it was, so
-  that project's capture lands in the previous project's cache — the
-  same outcome as today's single machine-wide scratch, so no regression,
-  but not yet the full decision-6 behaviour. Re-rooting means swapping
+  project without relaunching left the store rooted where it was, so
+  that project's capture landed in the previous project's cache — the
+  same outcome as the single machine-wide scratch, so no regression,
+  but not the full decision-6 behaviour. Re-rooting means swapping
   the live `TraceStore`'s raw store plus `SignalCacheStore`,
   `filter_index_dir`, and `NotesStore`, against a running flusher
-  thread; that is a branch of its own. **Branch 2.**
+  thread; that was a branch of its own. **Done in branch 2.**
 - Registry, cache-management UI, `Save as…`, `blf_channel_maps` move,
   `UiState` scope split, project-relative writes, terminology sweep —
-  all as originally planned for branches 2 and 3.
+  all as originally planned for branches 2 and 3. (Everything but the
+  registry, its UI, and the terminology sweep landed in branch 2.)
 
 **Docs updated with branch 1:** ADR 0002 (DS-7's location and the
 per-project split, plus its "per-session subdirectory" rejected

@@ -32,6 +32,7 @@
 //! because a project file was opened there.
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use uuid::Uuid;
 
@@ -164,15 +165,37 @@ pub fn resolve(project_file: Option<&Path>, cache_root: &Path) -> ProjectDir {
         .and_then(Path::parent)
         .filter(|dir| is_project_directory(dir))
         .map(Path::to_path_buf);
-    let (root, auto_located) = match named {
-        Some(dir) => (dir, false),
-        None => (
+    match named {
+        Some(dir) => prepare(dir, cache_root, false),
+        None => prepare(
             cache_root
                 .join(AUTO_PROJECTS_SUBDIR)
                 .join(auto_location_key(project_file)),
+            cache_root,
             true,
         ),
-    };
+    }
+}
+
+/// Make `root` a project directory — creating its `.cannet/` — and return
+/// it ready to use.
+///
+/// This is the **Save As** path, and one of only two places cannet writes
+/// a `.cannet/` into storage the user chose (ADR 0042 §2). It is
+/// legitimate here precisely because the user named the destination in a
+/// save dialog: an explicit act, not a consequence of opening something.
+/// Everywhere else, [`resolve`] auto-locates rather than creating one.
+pub fn create_at(root: &Path, cache_root: &Path) -> ProjectDir {
+    prepare(root.to_path_buf(), cache_root, false)
+}
+
+/// Assemble the [`ProjectDir`] for `root` and create whatever is missing.
+///
+/// The cache directory is always `<cache_root>/cache/<hash of the project
+/// directory's path>` (ADR 0042 §4, decision 12): the cache belongs to the
+/// directory, not to the document inside it. Creation failure is logged
+/// rather than propagated — see [`resolve`].
+fn prepare(root: PathBuf, cache_root: &Path, auto_located: bool) -> ProjectDir {
     let cache = cache_root.join(LOCAL_CACHES_SUBDIR).join(path_key(&root));
     let dir = ProjectDir {
         root,
@@ -188,6 +211,86 @@ pub fn resolve(project_file: Option<&Path>, cache_root: &Path) -> ProjectDir {
         );
     }
     dir
+}
+
+/// The workspace-scoped documents a project directory carries — what
+/// [`carry_workspace_scope`] brings across on Save As.
+const WORKSPACE_SCOPE_FILES: [&str; 2] = ["settings.json", "state.json"];
+
+/// Copy `from`'s workspace-scoped files into `to` — the Save As half of
+/// ADR 0042 §6.
+///
+/// Save As is cannet's managed workflow, so the project's data goes where
+/// the user asked cannet to put the project; arriving without it would be
+/// a surprise. (The capture travels separately — it is the trace store
+/// that owns those files, and it moves them under its own lock.)
+///
+/// A destination file that already says something is **not** overwritten.
+/// That is the same directory ADR 0042 §6 says starts clean when the user
+/// made it by hand: what they wrote there is their declaration for this
+/// project, and a Save As into it does not get to overrule it.
+pub fn carry_workspace_scope(from: &ProjectDir, to: &ProjectDir) {
+    let (from, to) = (from.workspace_dir(), to.workspace_dir());
+    if from == to {
+        return;
+    }
+    for file in WORKSPACE_SCOPE_FILES {
+        let dest = to.join(file);
+        if !crate::persisted_json::declares_nothing(&dest) {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(from.join(file)) else {
+            continue;
+        };
+        if let Err(e) = std::fs::write(&dest, text) {
+            tracing::warn!(
+                file = %dest.display(),
+                error = %e,
+                "could not carry a workspace file to the new project directory"
+            );
+        }
+    }
+}
+
+/// The project directory this session is rooted in — managed state, held
+/// behind a lock because the session can move to a different one without
+/// relaunching (ADR 0042 §1: opening another project, or Save As).
+///
+/// It carries the cache space it resolves against, so a re-root does not
+/// need the `App` the original resolution had.
+pub struct ActiveProjectDir {
+    cache_root: PathBuf,
+    current: Mutex<ProjectDir>,
+}
+
+impl ActiveProjectDir {
+    /// Start out rooted in `current`, resolved against `cache_root`.
+    pub fn new(cache_root: PathBuf, current: ProjectDir) -> Self {
+        Self {
+            cache_root,
+            current: Mutex::new(current),
+        }
+    }
+
+    /// The project directory in force right now.
+    pub fn get(&self) -> ProjectDir {
+        self.current
+            .lock()
+            .expect("project dir mutex poisoned")
+            .clone()
+    }
+
+    /// cannet's own cache space — where auto-located project directories
+    /// and every project's cache live.
+    pub fn cache_root(&self) -> &Path {
+        &self.cache_root
+    }
+
+    /// Root the session in `dir` from now on. Only the host's re-root path
+    /// calls this: swapping the stores over is the rest of the job.
+    pub fn set(&self, dir: ProjectDir) {
+        *self.current.lock().expect("project dir mutex poisoned") = dir;
+    }
 }
 
 /// The auto-located directory's name under `<cache_root>/projects/`.
@@ -583,6 +686,115 @@ mod tests {
             .join(CACHE_LINK)
             .join("probe")
             .is_file());
+    }
+
+    #[test]
+    fn save_as_makes_a_chosen_directory_a_complete_project_directory() {
+        // The Save As exit criterion (ADR 0042 §6, decision 9): the
+        // destination comes up immediately usable — `.cannet/` with its
+        // scope files, the cache link, and the `.gitignore` — with no
+        // `.cannet/` needed there beforehand. `create_at`, unlike
+        // `resolve`, does *not* auto-locate: naming a destination in a
+        // save dialog is the explicit act that earns a directory here.
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_root = tmp.path().join("cache-root");
+        let chosen = tmp.path().join("somewhere").join("the user picked");
+        std::fs::create_dir_all(&chosen).unwrap();
+
+        let pd = create_at(&chosen, &cache_root);
+
+        assert_eq!(pd.root(), chosen);
+        assert!(!pd.is_auto_located());
+        let ws = chosen.join(WORKSPACE_DIR);
+        assert!(ws.join("settings.json").is_file());
+        assert!(ws.join("state.json").is_file());
+        assert!(ws.join(".gitignore").is_file());
+        assert!(pd.cache_dir().is_dir());
+        assert!(pd.cache_dir().starts_with(&cache_root), "cache stays local");
+        std::fs::write(ws.join(CACHE_LINK).join("probe"), b"ok").unwrap();
+        assert_eq!(std::fs::read(pd.cache_dir().join("probe")).unwrap(), b"ok");
+        // And the pair now identifies it, once the project file lands.
+        std::fs::write(chosen.join("p.cannet_prj"), "{}").unwrap();
+        assert!(is_project_directory(&chosen));
+    }
+
+    #[test]
+    fn save_as_carries_the_workspace_scope_across() {
+        // ADR 0042 §6: the user asked cannet to put the project
+        // somewhere, so its data goes too.
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_root = tmp.path().join("cache-root");
+        let from = resolve(None, &cache_root);
+        std::fs::write(
+            from.workspace_dir().join("state.json"),
+            r#"{"recent_blfs": ["/a.blf"]}"#,
+        )
+        .unwrap();
+        let to = create_at(&tmp.path().join("chosen"), &cache_root);
+
+        carry_workspace_scope(&from, &to);
+
+        assert_eq!(
+            std::fs::read_to_string(to.workspace_dir().join("state.json")).unwrap(),
+            r#"{"recent_blfs": ["/a.blf"]}"#
+        );
+    }
+
+    #[test]
+    fn save_as_does_not_overwrite_what_a_hand_made_workspace_dir_already_says() {
+        // ADR 0042 §6's other half: a `.cannet/` the user wrote is their
+        // declaration for that project, and a Save As into it does not get
+        // to overrule it. Only the files cannet created empty are filled.
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_root = tmp.path().join("cache-root");
+        let from = resolve(None, &cache_root);
+        std::fs::write(
+            from.workspace_dir().join("state.json"),
+            r#"{"recent_blfs": ["/a.blf"]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            from.workspace_dir().join("settings.json"),
+            r#"{"clear_scratch_on_exit": true}"#,
+        )
+        .unwrap();
+        let chosen = tmp.path().join("chosen");
+        std::fs::create_dir_all(chosen.join(WORKSPACE_DIR)).unwrap();
+        std::fs::write(
+            chosen.join(WORKSPACE_DIR).join("settings.json"),
+            r#"{"clear_scratch_on_exit": false}"#,
+        )
+        .unwrap();
+        let to = create_at(&chosen, &cache_root);
+
+        carry_workspace_scope(&from, &to);
+
+        assert_eq!(
+            std::fs::read_to_string(to.workspace_dir().join("settings.json")).unwrap(),
+            r#"{"clear_scratch_on_exit": false}"#,
+            "what the user wrote stands"
+        );
+        assert_eq!(
+            std::fs::read_to_string(to.workspace_dir().join("state.json")).unwrap(),
+            r#"{"recent_blfs": ["/a.blf"]}"#,
+            "the file cannet created empty is filled"
+        );
+    }
+
+    #[test]
+    fn the_active_project_directory_can_be_swapped_mid_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_root = tmp.path().join("cache-root");
+        let first = resolve(None, &cache_root);
+        let active = ActiveProjectDir::new(cache_root.clone(), first.clone());
+        assert_eq!(active.get(), first);
+        assert_eq!(active.cache_root(), cache_root);
+
+        let second = create_at(&tmp.path().join("chosen"), &cache_root);
+        active.set(second.clone());
+
+        assert_eq!(active.get(), second);
+        assert_ne!(active.get().cache_dir(), first.cache_dir());
     }
 
     #[test]

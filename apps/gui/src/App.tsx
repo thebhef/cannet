@@ -70,6 +70,7 @@ import { KeybindingsContext } from "./keybindingsContext";
 import { recordRecentBlf, forgetRecentBlf } from "./recentBlfs";
 import {
   hostState,
+  hydrateState,
   setRecentBlfs as persistRecentBlfs,
   setLastProject as persistLastProject,
   setLayout as persistLayout,
@@ -1342,6 +1343,12 @@ export function App() {
     if (typeof selected !== "string") return;
     try {
       const project = await invoke<Project>("open_project", { path: selected });
+      // Opening a project re-roots the host onto that project's own
+      // directory (ADR 0042 §1), so the project-scoped half of the host
+      // state — the layout, its recent BLFs, its channel maps — is a
+      // different file's now. Re-read before anything writes the previous
+      // project's values into it.
+      await hydrateState();
       void applyProject(project, selected);
       rememberProject(selected);
       setDirty(false);
@@ -1352,13 +1359,23 @@ export function App() {
 
   // Returns true if the project was written, false if it wasn't (e.g.
   // the user cancelled the file picker, or the write failed).
+  //
+  // `promote` picks the command: `save_project_as` also makes the
+  // destination a project directory and moves the session into it,
+  // carrying the project's data along (ADR 0042 §6). Plain Save writes
+  // the file and touches no directory — cannet never creates a
+  // `.cannet/` as a side effect, only where the user pointed it.
   const saveProjectTo = useCallback(
-    async (path: string): Promise<boolean> => {
+    async (path: string, promote = false): Promise<boolean> => {
       try {
-        await invoke<string>("save_project", {
+        await invoke<string>(promote ? "save_project_as" : "save_project", {
           path,
           project: withStoredPaths(gatherProject(), path),
         });
+        // The project directory may have moved, so the project-scoped
+        // half of the host state now resolves somewhere else; re-read it
+        // before anything writes the stale copy back.
+        if (promote) await hydrateState();
         rememberProject(path);
         setDirty(false);
         return true;
@@ -1376,7 +1393,7 @@ export function App() {
       defaultPath: projectPath ?? "cannet-project.cannet_prj",
     });
     if (!path) return false;
-    return saveProjectTo(path);
+    return saveProjectTo(path, true);
   }, [projectPath, saveProjectTo]);
 
   const handleSaveProject = useCallback(

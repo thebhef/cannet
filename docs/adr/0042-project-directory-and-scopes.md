@@ -132,6 +132,12 @@ and arriving without its data would be a surprise. **A hand-created
 and moves on. That is a declaration of intent going forward, not a
 request to relocate anything.
 
+Where the two meet — a Save As into a directory whose `.cannet/` the
+user wrote themselves — **what the user wrote wins**. Save As fills only
+what has nothing to say; it does not overrule a workspace file someone
+authored. Both rules are about respecting a directory the user made, so
+neither gets to override the other.
+
 ### 7. Terminology: "project", not "workspace"
 
 The thing a user works on is a **project**. What the code called "an
