@@ -29,6 +29,7 @@ const schema = {
       help: "Reveal machine-load and internal-cadence knobs in this view.",
       surfaces: ["general"],
       kind: "behaviour",
+      backing: "field",
       control: { type: "bool" },
       scope: "user",
       default: false,
@@ -39,6 +40,7 @@ const schema = {
       help: "Your keybinding customisation.",
       surfaces: ["general"],
       kind: "behaviour",
+      backing: "field",
       control: { type: "custom", renderer: "keybindings" },
       scope: "user-overridable",
       default: null,
@@ -49,6 +51,7 @@ const schema = {
       help: "Drop the oldest history once the on-disk cache exceeds this.",
       surfaces: ["storage"],
       kind: "behaviour",
+      backing: "field",
       control: { type: "int", unit: "MB", scale: 1048576, min: minCap, unset: "unbounded" },
       scope: "user-overridable",
       default: null,
@@ -59,9 +62,24 @@ const schema = {
       help: "How often an open plot asks the host for a resampled window.",
       surfaces: ["plot"],
       kind: "developer",
+      backing: "field",
       control: { type: "int", unit: "Hz", scale: 1, min: null, unset: null },
       scope: "user-overridable",
       default: 15,
+    },
+    // A row that is not a `settings.json` field at all — a surface the
+    // panel hosts (ADR 0034's descriptor consequences). Synthetic, like
+    // the rest: the panel renders whatever the host serves.
+    {
+      key: "a_view_row",
+      label: "A hosted surface",
+      help: "Not a stored value; a management surface the panel hosts.",
+      surfaces: ["storage"],
+      kind: "behaviour",
+      backing: "view",
+      control: { type: "custom", renderer: "test-view" },
+      scope: null,
+      default: null,
     },
   ],
 };
@@ -92,9 +110,11 @@ vi.mock("@tauri-apps/api/core", () => ({
 import type { IDockviewPanelProps } from "dockview";
 
 import { hydrateSettings } from "./hostSettings";
+import { CUSTOM_SETTING_RENDERERS } from "./settingControls";
 import { SettingsPanel } from "./SettingsPanel";
 
 beforeEach(async () => {
+  CUSTOM_SETTING_RENDERERS["test-view"] = () => <p>the hosted surface</p>;
   stored = {
     scratch_cap_bytes: null,
     clear_scratch_on_exit: false,
@@ -108,7 +128,10 @@ beforeEach(async () => {
   // before first render.
   await hydrateSettings();
 });
-afterEach(cleanup);
+afterEach(() => {
+  delete CUSTOM_SETTING_RENDERERS["test-view"];
+  cleanup();
+});
 
 /// Render the panel and wait for its asynchronous mount work (the
 /// descriptor fetch, the re-hydrate) to land.
@@ -131,6 +154,20 @@ describe("SettingsPanel", () => {
     ).toBeInTheDocument();
     // Grouped by surface tag, with the surface labels the host served.
     expect(screen.getByRole("treeitem", { name: /Storage/ })).toBeInTheDocument();
+  });
+
+  // A row that is not a `settings.json` field shows no key: the panel
+  // teaches the file, and pointing at a key nothing stores would teach
+  // the wrong thing (ADR 0034).
+  it("shows no settings key for a row that is a hosted surface", async () => {
+    await renderLoaded();
+    expect(screen.getByText("A hosted surface")).toBeInTheDocument();
+    expect(screen.getByText("the hosted surface")).toBeInTheDocument();
+    expect(screen.queryByText("a_view_row")).not.toBeInTheDocument();
+    // And it is still searchable and still offers nothing to reset.
+    expect(
+      screen.queryByRole("button", { name: "Reset to default" }),
+    ).not.toBeInTheDocument();
   });
 
   it("takes the cap minimum from the descriptor rather than restating it", async () => {
@@ -219,7 +256,7 @@ describe("developer settings", () => {
     // No developer group, and the footer counts only what is visible —
     // a denominator that included the hidden row would advertise it.
     expect(screen.queryByRole("treeitem", { name: /Developer/ })).toBeNull();
-    expect(screen.getByText("3 of 3 settings")).toBeInTheDocument();
+    expect(screen.getByText("4 of 4 settings")).toBeInTheDocument();
   });
 
   it("stay hidden from a search that would otherwise match them", async () => {
