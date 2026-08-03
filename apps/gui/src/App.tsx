@@ -73,7 +73,7 @@ import {
 } from "./hostState";
 import { recordBlfChannelMap, savedBlfChannelMap } from "./blfChannelMap";
 import type { SystemMessage } from "./types";
-import { TraceDataContext, type TraceData } from "./traceData";
+import { TraceDataProvider, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { SignalCatalogProvider } from "./signalCatalogContext";
 import { CloseConfirmModal, type CloseChoice } from "./CloseConfirmModal";
@@ -2354,7 +2354,7 @@ export function App() {
           <ElementRegistryContext.Provider value={elementRegistryValue}>
             <SystemLogContext.Provider value={systemLogValue}>
               <NotesContext.Provider value={notesValue}>
-                <TraceDataContext.Provider value={traceData}>
+                <TraceDataProvider value={traceData}>
                   <KeybindingsContext.Provider value={commands.keybindings}>
                   <PanelCommandsContext.Provider value={commands.panelCommands}>
                     {/* dockview drags tabs with the HTML5 drag-and-drop API, which
@@ -2376,7 +2376,7 @@ export function App() {
                     />
                   </PanelCommandsContext.Provider>
                   </KeybindingsContext.Provider>
-                </TraceDataContext.Provider>
+                </TraceDataProvider>
               </NotesContext.Provider>
             </SystemLogContext.Provider>
           </ElementRegistryContext.Provider>

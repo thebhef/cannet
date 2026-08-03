@@ -12,7 +12,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 import { ElementRegistryContext, type ElementRegistry } from "./projectElements";
-import type { TraceData } from "./traceData";
+import { TraceDataProvider, type TraceData } from "./traceData";
 import type { TraceFrameRecord } from "./types";
 import { freshTrace, useTrace } from "./trace";
 
@@ -33,9 +33,11 @@ function harness(rows: boolean) {
     updateTrace: () => {},
   } as unknown as ElementRegistry;
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <ElementRegistryContext.Provider value={registry}>{children}</ElementRegistryContext.Provider>
+    <ElementRegistryContext.Provider value={registry}>
+      <TraceDataProvider value={data}>{children}</TraceDataProvider>
+    </ElementRegistryContext.Provider>
   );
-  const hook = renderHook(() => useTrace(data, "el", rows), { wrapper });
+  const hook = renderHook(() => useTrace("el", rows), { wrapper });
   return { hook, fetchRange };
 }
 

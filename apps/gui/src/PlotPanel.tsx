@@ -6,7 +6,7 @@ import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 
 import { isEnumValueTable, type Bus, type SignalDescriptorRecord } from "./types";
-import { useTraceData } from "./traceData";
+import { useTraceLive, useTraceModel } from "./traceData";
 import { useProjectContext } from "./projectContext";
 import { useSignalCatalog } from "./signalCatalogContext";
 import { defaultBusColor } from "./busColor";
@@ -225,7 +225,8 @@ import { MeasurementMenu, PlotMeasurementStrip } from "./PlotMeasurements";
 
 export function PlotPanel(props: IDockviewPanelProps) {
   diagCount("render.PlotPanel"); // DIAG
-  const data = useTraceData();
+  const model = useTraceModel();
+  const capture = useTraceLive();
   const { buses } = useProjectContext();
   const { elementId, registry, element, savedConfig, persist } = useElementPanel<PlotPanelParams>(
     props,
@@ -238,7 +239,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
   );
   // `false`: the plot reads the window bounds and run state, never a
   // frame row — so it does not page one (ADR 0025).
-  const trace = useTrace(data, elementId, false);
+  const trace = useTrace(elementId, false);
   const live = trace.status === "running";
   const winStart = trace.offset;
   const winEnd = trace.offset + trace.frameCount;
@@ -622,14 +623,14 @@ export function PlotPanel(props: IDockviewPanelProps) {
   // session-scoped (the host clears them in `clear_trace_store`
   // and emits `notes-changed`), so nothing for this panel to
   // wipe locally.
-  const prevCountRef = useRef(data.count);
+  const prevCountRef = useRef(capture.count);
   useEffect(() => {
-    if (prevCountRef.current > 0 && data.count === 0) {
+    if (prevCountRef.current > 0 && capture.count === 0) {
       setCursorX({ a: null, b: null });
       setCursorYByArea({});
     }
-    prevCountRef.current = data.count;
-  }, [data.count]);
+    prevCountRef.current = capture.count;
+  }, [capture.count]);
 
   useEffect(() => {
     if (!areas.some((a) => a.id === focusedAreaId)) setFocusedAreaId(areas[0]?.id ?? "");
@@ -1345,14 +1346,14 @@ export function PlotPanel(props: IDockviewPanelProps) {
   // The derived truncation marker (ADR 0035) as a plot cursor, when the
   // disk-spill store has truncated the oldest history (`firstIndex > 0`).
   const truncation = useMemo<NoteEvent | null>(() => {
-    if (baseSeconds == null || data.truncationTsNs == null) return null;
+    if (baseSeconds == null || model.truncationTsNs == null) return null;
     return {
       id: TRUNCATION_EVENT_ID,
-      t: data.truncationTsNs / 1e9 - baseSeconds,
+      t: model.truncationTsNs / 1e9 - baseSeconds,
       label: "history truncated here",
       color: TRUNCATION_COLOR,
     };
-  }, [data.truncationTsNs, baseSeconds]);
+  }, [model.truncationTsNs, baseSeconds]);
   const events = useMemo<NoteEvent[]>(
     () => [
       { id: "__t0", t: 0, label: "T0" },
@@ -1619,7 +1620,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
               isParentHead={d.isFirstOfParent}
               winStart={winStart}
               winEnd={winEnd}
-              originSeconds={data.sessionStartSeconds}
+              originSeconds={model.sessionStartSeconds}
               live={live}
               followLive={followLive}
               showPoints={showPoints}

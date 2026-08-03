@@ -4,11 +4,12 @@ import { emit } from "@tauri-apps/api/event";
 
 import { TraceView, type EventActions } from "./TraceView";
 import { GOTO_EVENT } from "./gotoEvent";
-import { useTraceData } from "./traceData";
+import { useTraceModel } from "./traceData";
 import { useNotes } from "./notesContext";
 import { timelineEvents } from "./notes";
 import type { TraceRow } from "./trace";
 import { busLookup, columnsFromParams } from "./traceColumns";
+import { diagCount } from "./diag"; // DIAG
 
 /// The singleton timeline-events view (ADR 0035): one panel, opened from the
 /// command palette like Project / System Messages, that *is* the trace view
@@ -17,11 +18,12 @@ import { busLookup, columnsFromParams } from "./traceColumns";
 /// type, `TraceRow`), with the frame header hidden. Each editable row carries
 /// inline rename / recolour / remove controls (derived events aren't editable).
 export function EventsPanel(_props: IDockviewPanelProps) {
-  const data = useTraceData();
+  diagCount("render.EventsPanel"); // DIAG
+  const model = useTraceModel();
   const { notes, renameNote, recolorNote, removeNote } = useNotes();
   const events = useMemo(
-    () => timelineEvents(notes, data.truncationTsNs),
-    [notes, data.truncationTsNs],
+    () => timelineEvents(notes, model.truncationTsNs),
+    [notes, model.truncationTsNs],
   );
 
   const getRow = useCallback(
@@ -55,7 +57,7 @@ export function EventsPanel(_props: IDockviewPanelProps) {
         count={events.length}
         version={events.length}
         autoScroll={false}
-        baseTimestampSeconds={data.sessionStartSeconds}
+        baseTimestampSeconds={model.sessionStartSeconds}
         columns={columns}
         onColumnResize={noop}
         onColumnToggle={noop}

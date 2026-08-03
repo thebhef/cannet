@@ -168,7 +168,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 import { PlotPanel } from "./PlotPanel";
 import { PanelCommandsContext, createPanelCommandRegistry } from "./panelCommands";
-import { TraceDataContext, type TraceData } from "./traceData";
+import { TraceDataProvider, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { ElementRegistryContext, type ElementRegistry } from "./projectElements";
 import { NotesContext, type NotesContextValue } from "./notesContext";
@@ -304,7 +304,7 @@ function renderPanel(opts?: {
   const registry = opts?.registry ?? makeRegistry();
   const build = (data: TraceData) => {
     let tree = (
-      <TraceDataContext.Provider value={data}>
+      <TraceDataProvider value={data}>
         <ProjectContext.Provider value={projectCtx}>
           <SignalCatalogProvider>
             <ElementRegistryContext.Provider value={registry}>
@@ -312,7 +312,7 @@ function renderPanel(opts?: {
             </ElementRegistryContext.Provider>
           </SignalCatalogProvider>
         </ProjectContext.Provider>
-      </TraceDataContext.Provider>
+      </TraceDataProvider>
     );
     if (opts?.notes) tree = <NotesContext.Provider value={opts.notes}>{tree}</NotesContext.Provider>;
     return tree;
@@ -1218,7 +1218,7 @@ describe("PlotPanel command registration (f / l hotkeys)", () => {
       api,
     } as unknown as Parameters<typeof PlotPanel>[0];
     render(
-      <TraceDataContext.Provider value={traceData}>
+      <TraceDataProvider value={traceData}>
         <ProjectContext.Provider value={projectCtx}>
           <SignalCatalogProvider>
             <ElementRegistryContext.Provider value={makeRegistry()}>
@@ -1228,7 +1228,7 @@ describe("PlotPanel command registration (f / l hotkeys)", () => {
             </ElementRegistryContext.Provider>
           </SignalCatalogProvider>
         </ProjectContext.Provider>
-      </TraceDataContext.Provider>,
+      </TraceDataProvider>,
     );
     return commands;
   }

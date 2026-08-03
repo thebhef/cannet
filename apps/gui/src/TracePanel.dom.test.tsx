@@ -28,7 +28,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 import { TracePanel } from "./TracePanel";
-import { TraceDataContext, type TraceData } from "./traceData";
+import { TraceDataProvider, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import {
   ElementRegistryContext,
@@ -112,13 +112,13 @@ function renderPanel(elements: ProjectElement[], count = 100, mode = "chronologi
   // its window) survive a simulated window growth.
   const registry = makeRegistry(elements);
   const tree = (c: number) => (
-    <TraceDataContext.Provider value={{ ...traceData, count: c }}>
+    <TraceDataProvider value={{ ...traceData, count: c }}>
       <ProjectContext.Provider value={projectCtx}>
         <ElementRegistryContext.Provider value={registry}>
           <TracePanel {...props} />
         </ElementRegistryContext.Provider>
       </ProjectContext.Provider>
-    </TraceDataContext.Provider>
+    </TraceDataProvider>
   );
   const { rerender, container } = render(tree(count));
   return { grow: (c: number) => rerender(tree(c)), container, api, registry };

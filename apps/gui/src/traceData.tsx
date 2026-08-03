@@ -1,0 +1,109 @@
+import { createContext, useContext, useMemo, type ReactNode } from "react";
+
+import type { TraceFrameRecord } from "./types";
+
+/**
+ * Capture-level state shared by every trace panel.
+ *
+ * The capture itself lives host-side (`TraceStore`); this carries the
+ * shared *model facts* a trace view needs — how many frames exist, the
+ * session's zero point — plus the two thin accessors a per-view window
+ * is built on (ADR 0025): a raw paged read of the unfiltered
+ * chronological rows, and the live-edge tail. Each panel owns its own
+ * window over these (`useTrace` → `useWindowedQuery`); the model itself
+ * is never held whole frontend-side.
+ *
+ * It is published as **two** contexts, because the fields move at very
+ * different rates. {@link TraceLive} changes on every `trace-grew` —
+ * ~10 Hz while a capture runs — and {@link TraceModel} only when the
+ * model's *identity* does. A consumer that reads no live field (the
+ * events view) subscribes to the model alone and stops re-rendering with
+ * the capture. Use the narrowest hook a view actually needs.
+ *
+ * Trace panels keep their *own* scroll position, auto-scroll toggle,
+ * and expanded-row set — those are per-panel and never live here.
+ */
+export interface TraceModel {
+  /// Absolute ns of the oldest retained frame, or `null` when nothing has
+  /// been truncated (`firstIndex === 0`) or the buffer is empty. This is
+  /// where the derived truncation marker (ADR 0035) sits — the timeline-
+  /// event views read it to synthesise that marker.
+  truncationTsNs: number | null;
+  /// Unix-epoch seconds of the session's zero point. Set by the host's
+  /// `start_session` (via the `trace-grew` event); `null` until the
+  /// first session-grow tick after a Clear / Connect. Every trace view
+  /// renders relative to this single application-level zero (ADR 0024).
+  sessionStartSeconds: number | null;
+  /// Bumped whenever the model's identity changes out from under the
+  /// windows — Clear, Connect, project load, a decode-settings/DBC
+  /// change, or a buffer shrink. A per-view window folds this into its
+  /// descriptor so it drops and re-anchors (ADR 0025).
+  epoch: number;
+  /// Fetch raw (unfiltered) chronological rows for the absolute index
+  /// range `[start, end)` — the unfiltered `RowPage` read. A per-view
+  /// window translates its local offset into this absolute range.
+  fetchRange: (start: number, end: number) => Promise<TraceFrameRecord[]>;
+}
+
+/// The half that moves with the capture — every `trace-grew` replaces it.
+export interface TraceLive {
+  count: number;
+  /// Windowed-ring low-water mark (ADR 0002 DS-8): the lowest still-live row
+  /// index in the session buffer. `0` until the disk-spill cap truncates the
+  /// oldest history. A chronological window clamps its start up to this so
+  /// evicted rows below the floor aren't rendered as blank placeholders.
+  firstIndex: number;
+  /// The newest frames as carried by the most recent `trace-grew`: a
+  /// contiguous run ending at the live tip, `start` being the absolute
+  /// index of `rows[0]`. A window overlays this so following live never
+  /// shows a placeholder at the live edge between fetches.
+  liveTail: { start: number; rows: TraceFrameRecord[] };
+}
+
+export type TraceData = TraceModel & TraceLive;
+
+export const TraceModelContext = createContext<TraceModel | null>(null);
+export const TraceLiveContext = createContext<TraceLive | null>(null);
+
+/// Publish both halves from one `TraceData`. The halves are memoised on
+/// their own fields, so a `count` tick leaves the model context's
+/// identity — and therefore every model-only consumer — untouched.
+export function TraceDataProvider({
+  value,
+  children,
+}: {
+  value: TraceData;
+  children: ReactNode;
+}) {
+  const { truncationTsNs, sessionStartSeconds, epoch, fetchRange, count, firstIndex, liveTail } =
+    value;
+  const model = useMemo<TraceModel>(
+    () => ({ truncationTsNs, sessionStartSeconds, epoch, fetchRange }),
+    [truncationTsNs, sessionStartSeconds, epoch, fetchRange],
+  );
+  const live = useMemo<TraceLive>(
+    () => ({ count, firstIndex, liveTail }),
+    [count, firstIndex, liveTail],
+  );
+  return (
+    <TraceModelContext.Provider value={model}>
+      <TraceLiveContext.Provider value={live}>{children}</TraceLiveContext.Provider>
+    </TraceModelContext.Provider>
+  );
+}
+
+export function useTraceModel(): TraceModel {
+  const ctx = useContext(TraceModelContext);
+  if (!ctx) {
+    throw new Error("useTraceModel must be used inside a TraceDataProvider");
+  }
+  return ctx;
+}
+
+export function useTraceLive(): TraceLive {
+  const ctx = useContext(TraceLiveContext);
+  if (!ctx) {
+    throw new Error("useTraceLive must be used inside a TraceDataProvider");
+  }
+  return ctx;
+}

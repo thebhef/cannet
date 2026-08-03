@@ -4,7 +4,6 @@ import type { IDockviewPanelProps } from "dockview";
 import type { SignalSelectionWire, SignalSnapshotRecord } from "./types";
 import { TraceControls } from "./TraceControls";
 import { TraceHeader } from "./traceTable";
-import { useTraceData } from "./traceData";
 import { useTrace } from "./trace";
 import { useElementRegistry } from "./projectElements";
 import { useProjectContext } from "./projectContext";
@@ -90,7 +89,6 @@ const keyOf = (k: { busId: string | null; messageId: number; extended: boolean; 
  */
 export function SignalsPanel(props: IDockviewPanelProps) {
   diagCount("render.SignalsPanel"); // DIAG
-  const data = useTraceData();
   const registry = useElementRegistry();
   const { ensure, update } = registry;
   const project = useProjectContext();
@@ -116,7 +114,7 @@ export function SignalsPanel(props: IDockviewPanelProps) {
 
   // `false`: the signals view reads the window bounds and run state,
   // never a frame row — so it does not page one (ADR 0025).
-  const trace = useTrace(data, elementId, false);
+  const trace = useTrace(elementId, false);
 
   // The selection (manual keys + patterns) is this view's model input;
   // persisted with the element like other panel config.

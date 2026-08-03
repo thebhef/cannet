@@ -19,7 +19,8 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 import { EventsPanel } from "./EventsPanel";
 import { GOTO_EVENT } from "./gotoEvent";
-import { TraceDataContext, type TraceData } from "./traceData";
+import { TraceDataProvider, type TraceData } from "./traceData";
+import { diagCounts } from "./diag";
 import { NotesContext, type NotesContextValue } from "./notesContext";
 import type { Note } from "./notes";
 
@@ -47,15 +48,22 @@ const notesCtx = (notes: Note[]): NotesContextValue => ({
   removeNote: vi.fn(),
 });
 
-function renderPanel(notes: Note[]) {
+function renderPanel(notes: Note[], data: TraceData = traceData) {
   const props = {} as Parameters<typeof EventsPanel>[0];
-  return render(
-    <TraceDataContext.Provider value={traceData}>
-      <NotesContext.Provider value={notesCtx(notes)}>
-        <EventsPanel {...props} />
-      </NotesContext.Provider>
-    </TraceDataContext.Provider>,
+  // One element object, reused across re-renders. That is how dockview
+  // mounts a panel — the element is built when the panel is created and
+  // held in the layout's state — so React's same-element bail-out
+  // insulates a panel from its host re-rendering, and a context change is
+  // the only thing that reaches it. Rebuilding the element here instead
+  // would re-render the panel unconditionally and prove nothing.
+  const child = (
+    <NotesContext.Provider value={notesCtx(notes)}>
+      <EventsPanel {...props} />
+    </NotesContext.Provider>
   );
+  const tree = (d: TraceData) => <TraceDataProvider value={d}>{child}</TraceDataProvider>;
+  const { rerender } = render(tree(data));
+  return { rerender: (d: TraceData) => rerender(tree(d)) };
 }
 
 beforeEach(() => {
@@ -65,6 +73,24 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   vi.clearAllMocks();
+});
+
+describe("EventsPanel", () => {
+  it("does not re-render when only the live half of the capture moves", () => {
+    // A `trace-grew` tick moved `count` / `firstIndex` / `liveTail` ~10x a
+    // second and re-rendered every consumer of the trace context — this
+    // view among them, though it reads none of those fields. Splitting the
+    // context puts the events view on the half that only changes when the
+    // model's identity does.
+    const { rerender } = renderPanel([
+      { id: "n1", timestampNs: 5_000_000_000, label: "boom", kind: "note" },
+    ]);
+    const before = diagCounts().get("render.EventsPanel") ?? 0;
+    for (let n = 1; n <= 5; n++) {
+      rerender({ ...traceData, count: n * 10, firstIndex: n, liveTail: { start: n, rows: [] } });
+    }
+    expect((diagCounts().get("render.EventsPanel") ?? 0) - before).toBe(0);
+  });
 });
 
 describe("EventsPanel goto", () => {
