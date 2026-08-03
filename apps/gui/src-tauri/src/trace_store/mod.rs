@@ -94,6 +94,38 @@ pub use scratch::ScratchBreakdown;
 
 pub(crate) use flush::{read_json, write_json};
 
+/// The store-side half of the periodic status readout, read in a single
+/// lock acquisition by [`TraceStore::status_snapshot`]. Every field is
+/// the value the correspondingly-named accessor would return, so the
+/// whole readout describes one instant rather than nine.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StatusSnapshot {
+    /// Frames stored, as [`TraceStore::len`].
+    pub len: usize,
+    /// Windowed-ring low-water mark (ADR 0002 DS-8). Guaranteed
+    /// `<= len` because both come from the same critical section.
+    pub first_index: usize,
+    /// Timestamp (ns) of the oldest retained frame — where the frontend
+    /// places the truncation marker (ADR 0035) when `first_index > 0`.
+    pub first_index_ts_ns: Option<u64>,
+    /// As [`TraceStore::session_start_ns`].
+    pub session_start_ns: u64,
+    /// As [`TraceStore::buffer_seconds`].
+    pub buffer_seconds: f64,
+    /// As [`TraceStore::frames_dropped_before_session`].
+    pub frames_dropped_before_session: u64,
+    /// As [`TraceStore::scratch_footprint_bytes`].
+    pub scratch_bytes: Option<u64>,
+    /// As [`TraceStore::frames_per_second`].
+    pub frames_per_second: f64,
+    /// As [`TraceStore::frames_per_second_by_direction`].
+    pub frames_per_second_rx: f64,
+    /// As [`TraceStore::frames_per_second_by_direction`].
+    pub frames_per_second_tx: f64,
+    /// As [`TraceStore::frames_per_second_by_bus`].
+    pub frames_per_second_by_bus: Vec<(Option<String>, f64)>,
+}
+
 /// Identifies a "kind of frame" for the latest-by-id view: the
 /// logical bus (`None` = unassigned, a distinct bucket from any named
 /// bus), the wire channel, the arbitration id, and whether it's an
@@ -321,6 +353,49 @@ impl TraceStore {
             inner.raw.first_index(),
             inner.raw.first_last_ts().0,
         )
+    }
+
+    /// Everything the periodic status tick reads off the store, taken in
+    /// **one** lock acquisition.
+    ///
+    /// The tick used to call nine separate accessors — three before its
+    /// "did anything move?" skip test and six more when it emitted — so a
+    /// 10 Hz status readout took the append lock nine times a second per
+    /// tick while ingest contended for it. Beyond the acquisitions, the
+    /// values were mutually inconsistent by construction: a frame could
+    /// land between the length read and the rate read, so the emitted
+    /// event described no single instant. [`Self::len_and_low_water`]
+    /// already made that argument for the length/low-water pair; this
+    /// extends it to the whole readout.
+    ///
+    /// Cheap enough to take unconditionally: every field is either a
+    /// stored scalar or a read of a rate deque bounded by
+    /// `RATE_WINDOW / RATE_SAMPLE_INTERVAL`, and the per-bus vector is
+    /// bus-space bounded. Nothing here walks the buffer or decodes.
+    #[must_use]
+    pub fn status_snapshot(&self) -> StatusSnapshot {
+        let now = Instant::now();
+        let mut inner = self.lock_inner();
+        let (first_ts, last_ts) = inner.raw.first_last_ts();
+        #[allow(clippy::cast_precision_loss)]
+        let buffer_seconds = match (first_ts, last_ts) {
+            (Some(first), Some(last)) => last.saturating_sub(first) as f64 / 1_000_000_000.0,
+            _ => 0.0,
+        };
+        let (frames_per_second_rx, frames_per_second_tx) = rate::by_direction_fps(&mut inner, now);
+        StatusSnapshot {
+            len: inner.raw.len(),
+            first_index: inner.raw.first_index(),
+            first_index_ts_ns: first_ts,
+            session_start_ns: inner.session_start_ns,
+            buffer_seconds,
+            frames_dropped_before_session: inner.dropped_before_session,
+            scratch_bytes: inner.scratch_dir.is_some().then_some(inner.footprint_bytes),
+            frames_per_second: rate::agg_fps(&mut inner, now),
+            frames_per_second_rx,
+            frames_per_second_tx,
+            frames_per_second_by_bus: rate::by_bus_fps(&mut inner, now),
+        }
     }
 
     /// Append a frame to the tail of the trace. Updates the
@@ -684,6 +759,61 @@ mod tests {
         let slice = store.slice(2, 5);
         let ids: Vec<u32> = slice.iter().map(|f| f.id).collect();
         assert_eq!(ids, vec![2, 3, 4]);
+    }
+
+    /// `status_snapshot` is the nine status accessors read under one
+    /// lock: every field must carry what its own accessor returns.
+    /// Guards the shape the collapse could silently break — a field
+    /// wired to the wrong source (rx/tx swapped, `first_index` reading
+    /// `len`) still type-checks and still emits a plausible number.
+    #[test]
+    #[allow(clippy::float_cmp)] // same inputs, same arithmetic, same instant
+    fn status_snapshot_matches_the_individual_accessors() {
+        use test_support::{dummy_on_bus, dummy_tx};
+        let store = TraceStore::new();
+        store.start_session(1_000);
+        // Dropped by the session-start guard, so that counter is non-zero.
+        store.append(dummy(500, 1));
+        // Two rounds separated by a wall gap longer than
+        // RATE_SAMPLE_INTERVAL, so each bucket records a second sample and
+        // reports a rate. The per-direction frame-time steps differ, so rx,
+        // tx and the aggregate are three distinct numbers.
+        store.append(dummy_on_bus(1_000, 1, "pt"));
+        store.append(dummy_on_bus(1_000, 2, "body"));
+        store.append(dummy(1_000, 3)); // unassigned bus bucket
+        store.append(dummy_tx(1_000, 4));
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        store.append(dummy_on_bus(101_000_000, 1, "pt"));
+        store.append(dummy_on_bus(201_000_000, 2, "body"));
+        store.append(dummy(101_000_000, 3));
+        store.append(dummy_tx(51_000_000, 4));
+
+        let snap = store.status_snapshot();
+        let (len, first_index, first_ts) = store.len_and_low_water();
+        assert_eq!(snap.len, len);
+        assert_eq!(snap.first_index, first_index);
+        assert_eq!(snap.first_index_ts_ns, first_ts);
+        assert_eq!(snap.session_start_ns, store.session_start_ns());
+        assert_eq!(snap.buffer_seconds, store.buffer_seconds());
+        assert_eq!(
+            snap.frames_dropped_before_session,
+            store.frames_dropped_before_session()
+        );
+        assert_eq!(snap.scratch_bytes, store.scratch_footprint_bytes());
+        assert_eq!(snap.frames_per_second, store.frames_per_second());
+        let (rx, tx) = store.frames_per_second_by_direction();
+        assert_eq!(snap.frames_per_second_rx, rx);
+        assert_eq!(snap.frames_per_second_tx, tx);
+        assert_eq!(snap.frames_per_second_by_bus, store.frames_per_second_by_bus());
+
+        // The fixture has to be able to tell the fields apart, or the
+        // equalities above are satisfiable by any wiring.
+        assert_eq!(snap.frames_dropped_before_session, 1);
+        assert!(snap.buffer_seconds > 0.0);
+        assert_eq!(snap.frames_per_second_by_bus.len(), 3); // None, "body", "pt"
+        assert!(snap.frames_per_second_rx > 0.0);
+        assert_ne!(snap.frames_per_second_rx, snap.frames_per_second_tx);
+        assert_ne!(snap.frames_per_second, snap.frames_per_second_rx);
     }
 
     #[test]

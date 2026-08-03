@@ -10,7 +10,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use super::TraceStore;
+use super::{Inner, TraceStore};
 
 /// How far back the rate estimator looks. One second is short enough
 /// that a stalled stream registers immediately and long enough that
@@ -191,14 +191,43 @@ fn rate_from_samples(samples: &VecDeque<RateSample>) -> f64 {
     delta / dt
 }
 
+// The rate readouts are split into an inner-taking helper plus a
+// locking wrapper so [`TraceStore::status_snapshot`] can take all of
+// them in a single lock acquisition.
+
+pub(super) fn agg_fps(inner: &mut Inner, now: Instant) -> f64 {
+    prune_rate_samples(&mut inner.agg_rate.samples, now);
+    rate_from_samples(&inner.agg_rate.samples)
+}
+
+pub(super) fn by_bus_fps(inner: &mut Inner, now: Instant) -> Vec<(Option<String>, f64)> {
+    let mut out: Vec<(Option<String>, f64)> = inner
+        .per_bus
+        .iter_mut()
+        .map(|(bus, br)| {
+            prune_rate_samples(&mut br.samples, now);
+            (bus.clone(), rate_from_samples(&br.samples))
+        })
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+pub(super) fn by_direction_fps(inner: &mut Inner, now: Instant) -> (f64, f64) {
+    prune_rate_samples(&mut inner.rx_rate.samples, now);
+    prune_rate_samples(&mut inner.tx_rate.samples, now);
+    let rx = rate_from_samples(&inner.rx_rate.samples);
+    let tx = rate_from_samples(&inner.tx_rate.samples);
+    (rx, tx)
+}
+
 impl TraceStore {
     /// Estimated current append rate in frames per second.
     #[must_use]
     pub fn frames_per_second(&self) -> f64 {
         let now = Instant::now();
         let mut inner = self.lock_inner();
-        prune_rate_samples(&mut inner.agg_rate.samples, now);
-        rate_from_samples(&inner.agg_rate.samples)
+        agg_fps(&mut inner, now)
     }
 
     /// Estimated current append rate per logical bus, in frames per
@@ -210,16 +239,7 @@ impl TraceStore {
     pub fn frames_per_second_by_bus(&self) -> Vec<(Option<String>, f64)> {
         let now = Instant::now();
         let mut inner = self.lock_inner();
-        let mut out: Vec<(Option<String>, f64)> = inner
-            .per_bus
-            .iter_mut()
-            .map(|(bus, br)| {
-                prune_rate_samples(&mut br.samples, now);
-                (bus.clone(), rate_from_samples(&br.samples))
-            })
-            .collect();
-        out.sort_by(|a, b| a.0.cmp(&b.0));
-        out
+        by_bus_fps(&mut inner, now)
     }
 
     /// Estimated current append rate split by [`cannet_core::Direction`],
@@ -232,11 +252,7 @@ impl TraceStore {
     pub fn frames_per_second_by_direction(&self) -> (f64, f64) {
         let now = Instant::now();
         let mut inner = self.lock_inner();
-        prune_rate_samples(&mut inner.rx_rate.samples, now);
-        prune_rate_samples(&mut inner.tx_rate.samples, now);
-        let rx = rate_from_samples(&inner.rx_rate.samples);
-        let tx = rate_from_samples(&inner.tx_rate.samples);
-        (rx, tx)
+        by_direction_fps(&mut inner, now)
     }
 }
 
