@@ -271,6 +271,12 @@ fn link_cache_dir(link: &Path, target: &Path) {
 /// it has to be run through `cmd /C`; the alternative is the
 /// `FSCTL_SET_REPARSE_POINT` ioctl, which this crate cannot reach
 /// (`unsafe_code = "forbid"`).
+///
+/// The command line is built with `raw_arg` and both paths explicitly
+/// quoted. `Command::arg` quotes only what *MSVC* parsing needs, which
+/// leaves `cmd`'s own metacharacters — `&`, `^`, `|` — live in a
+/// directory name a user is perfectly entitled to use. A Windows path
+/// can never contain `"`, so quoting is sound here.
 #[cfg(windows)]
 fn create_dir_link(link: &Path, target: &Path) -> std::io::Result<()> {
     use std::os::windows::process::CommandExt;
@@ -279,10 +285,11 @@ fn create_dir_link(link: &Path, target: &Path) -> std::io::Result<()> {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let out = std::process::Command::new("cmd")
         .arg("/C")
-        .arg("mklink")
-        .arg("/J")
-        .arg(link)
-        .arg(target)
+        .raw_arg(format!(
+            "mklink /J \"{}\" \"{}\"",
+            link.display(),
+            target.display()
+        ))
         .creation_flags(CREATE_NO_WINDOW)
         .output()?;
     if out.status.success() {
@@ -540,6 +547,26 @@ mod tests {
             b"through the link",
             "the link must reach the cannet-managed cache directory"
         );
+    }
+
+    #[test]
+    fn the_cache_link_survives_shell_metacharacters_in_the_path() {
+        // The Windows link goes through `cmd /C`, so a directory named
+        // with `&` — which a user is perfectly entitled to do — must not
+        // break the command line.
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_root = tmp.path().join("cache&root");
+        let root = tmp.path().join("a&b");
+        user_made_project_dir(&root);
+
+        let pd = resolve(Some(&root.join("p.cannet_prj")), &cache_root);
+
+        std::fs::write(
+            pd.root().join(WORKSPACE_DIR).join(CACHE_LINK).join("probe"),
+            b"ok",
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(pd.cache_dir().join("probe")).unwrap(), b"ok");
     }
 
     #[test]

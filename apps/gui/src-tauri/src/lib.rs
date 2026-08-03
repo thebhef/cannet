@@ -455,10 +455,11 @@ pub fn run() {
             let filter_dir = filter_index_dir(&scratch);
             let signal_dir = signal_cache_dir(&scratch);
             let trace_store = open_trace_store(&scratch);
-            // Managed on its own rather than as an `AppState` field: the
-            // scoped reads (`workspace_dir`) run from commands that don't
-            // otherwise touch the trace model, and settings are read
-            // during `setup` before `AppState` is in place.
+            // Managed on its own rather than as an `AppState` field: it
+            // is the session's identity, not part of the trace model, and
+            // the scoped settings / state reads that need it
+            // (`workspace_dir`) run from commands that hold nothing but an
+            // `AppHandle`.
             app.manage(project_dir);
             app.manage(AppState {
                 databases: Mutex::new(Vec::new()),

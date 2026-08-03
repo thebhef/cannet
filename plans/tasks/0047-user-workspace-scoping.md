@@ -365,6 +365,11 @@ the running record of what is done and what moved.
   link exists for — would otherwise lose its cache entirely. The link
   stays as the browsable view, and failing to create it is a logged
   warning rather than a failure.
+- **Done: the key is deterministic across builds.** `path_key` is a v5
+  (name-based) UUID over the path text, via a feature flag on the `uuid`
+  crate already in use. `DefaultHasher` was the obvious reach and is
+  wrong here: its output is explicitly not stable across releases, and
+  this key names a directory that has to be found again next launch.
 - **Done: `.cannet/.gitignore`** ignoring `cache/`, written at creation
   (decision 4), plus empty `settings.json` / `state.json`. They are
   written **empty** on purpose: a workspace value overrides the user
@@ -405,6 +410,13 @@ the running record of what is done and what moved.
   `UiState` scope split, project-relative writes, terminology sweep —
   all as originally planned for branches 2 and 3.
 
+**Docs updated with branch 1:** ADR 0002 (DS-7's location and the
+per-project split, plus its "per-session subdirectory" rejected
+alternative), ADR 0034 (two files × two scopes, its settings-vs-state
+distinction untouched), README (the project directory, and that a
+capture belongs to its project), and the module rustdoc on
+`project_dir`, `persisted_json`, `settings`, and `state`.
+
 **Corrections to this document found while implementing:**
 
 - The documentation deliverable claims ADR 0002 **DS-6** says "rooted at
@@ -412,6 +424,17 @@ the running record of what is done and what moved.
   only production path". The phrase lives in *code comments* citing
   DS-6. DS-7 is where the location was recorded, and DS-7 is what
   changed.
+- **`open_trace_store`'s RAM fallback was unreachable, not just
+  untested.** The disk store maps segments lazily, so handed an
+  unusable directory it opened happily and panicked on the first flush;
+  the only thing that ever reached the fallback was the old
+  scratch-*resolution* error, which no longer exists. It now creates the
+  directory before opening, which is what turns an unusable path back
+  into the documented RAM degradation.
+- **Decision 12's "hash of the path" needs a *stable* hash.**
+  `DefaultHasher` does not promise stability across releases, so a key
+  built from it would silently orphan every project's cache on some
+  future toolchain bump. See the `path_key` note above.
 
 ## Sequencing
 
