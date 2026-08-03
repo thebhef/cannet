@@ -97,9 +97,31 @@ this, or did the app observe it?"*
    longer write through on every keystroke — "500" would be refused at
    "5" and the box reset before the last digit arrived. It now commits
    on blur / Enter, with the typed text held as local draft state.
-4. **No host-side validation of `keybindings`.** The host round-trips
-   any `{chord, commandId}`; a typo'd hand-edit silently disables a
-   command with nothing on the system log. Validate and warn.
+4. **A refused `keybindings` entry said nothing.** *(done — the
+   original claim was half wrong)* The claim was "no validation of
+   `keybindings`: the host round-trips any `{chord, commandId}`". The
+   *validation* was already there — `resolveBindings` →
+   `sanitizeBindings` has always dropped unknown command ids,
+   unparseable chords, and colliding bindings on load. What was missing
+   is the **reporting**: a typo'd hand-edit lost its shortcut with
+   nothing anywhere saying why.
+
+   It is also not host-side work, and shouldn't become host-side work.
+   The chord grammar (`keybindings.ts`) and the command registry
+   (`commands.ts`) are both declared in the frontend, so the host cannot
+   judge a binding without a second copy of both — exactly the
+   duplication item 3 just removed for the cap bound. Validation belongs
+   where the rule is stated; that is the frontend. The *report* goes
+   host-side, on the system log, via `gui_emit_system_log` (the
+   sanctioned frontend→syslog path, whose rustdoc already anticipates
+   this use).
+
+   `sanitizeBindings` is now a thin wrapper over `reviewBindings`, which
+   returns the accepted list *and* the refusals with reasons;
+   `useCommands`' load effect warns one line per refusal. Tests:
+   `commands.test.ts` → `reviewBindings` (reason names the offending
+   command id / chord / the binding it lost to, and the accepted half
+   still matches `sanitizeBindings` exactly).
 5. **No boot hydrate, no change notification.** Two independent
    consumers read settings lazily. A hand-edit while the app runs needs
    a restart *and* gets clobbered by the next panel edit. This

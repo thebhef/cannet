@@ -8,6 +8,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import type { AddPanelOptions, DockviewApi } from "dockview";
 
@@ -47,6 +48,7 @@ import {
   commandsAvailableIn,
   parseBindings,
   resolveBindings,
+  reviewBindings,
   type BindingSpec,
   type CommandContext,
 } from "./commands";
@@ -392,10 +394,24 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
   parsedBindingsRef.current = parsedBindings;
 
   // Load the persisted keybindings once on mount. Absent / null = defaults.
+  // Anything the sanitiser refuses is reported on the system log: a
+  // hand-edited `settings.json` naming a command that doesn't exist used to
+  // just lose that shortcut, with nothing anywhere saying why.
   useEffect(() => {
     let live = true;
     void loadSettings().then((s) => {
-      if (live) setUserBindings(s.keybindings);
+      if (!live) return;
+      setUserBindings(s.keybindings);
+      if (s.keybindings == null) return;
+      for (const { binding, reason } of reviewBindings(s.keybindings, COMMANDS).rejected) {
+        void invoke("gui_emit_system_log", {
+          level: "warn",
+          source: "keybindings",
+          message: `ignoring keybinding "${binding.chord}" → ${binding.commandId}: ${reason}`,
+        }).catch(() => {
+          /* best effort - the binding is dropped either way */
+        });
+      }
     });
     return () => {
       live = false;
