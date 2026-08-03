@@ -442,8 +442,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     [applyXAll, bumpXEpoch],
   );
 
-  // An area finished a re-sample: update the panel's data extent and
-  // reposition the shared x-window per `followXWindow` — slide to the live
+  // Where the shared x-window goes per `followXWindow` — slide to the live
   // edge only while *running*; a restored stopped trace fits its full span
   // once instead of a trailing default-width slice.
   const followLiveRef = useRef(followLive);
@@ -468,13 +467,13 @@ export function PlotPanel(props: IDockviewPanelProps) {
       Math.max(FOLLOW_TARGET_LAG_MIN_S, (FOLLOW_TARGET_LAG_TICKS * RESAMPLE_INTERVAL_MS) / 1000),
     ),
   });
-  const onAreaResampled = useCallback(
-    (areaId: string, firstT: number | null, lastT: number | null) => {
-      diagCount("plot.areaResampled"); // DIAG
-      if (lastT != null) extentByAreaRef.current.set(areaId, lastT);
-      else extentByAreaRef.current.delete(areaId);
-      if (firstT != null) startByAreaRef.current.set(areaId, firstT);
-      else startByAreaRef.current.delete(areaId);
+  /** Pending coalesced slide, or `0` when none is scheduled (ADR 0024 —
+   * "one slide per frame"). */
+  const slideRafRef = useRef(0);
+  /** Recompute the shared x-window from the panel's current extent and
+   * push it to every area. One clock read, one fan-out — see
+   * {@link onAreaResampled}. */
+  const slideXWindow = useCallback(() => {
       const ext = sharedExtent();
       if (ext == null) return;
       // Follow-live slides to a *clock*-derived edge, not to the data
@@ -513,8 +512,38 @@ export function PlotPanel(props: IDockviewPanelProps) {
         diagGauge("ext", ext); // DIAG
         applyXAll(win.min, win.max, null);
       }
+  }, [sharedExtent, sharedStart, applyXAll]);
+
+  // An area finished a re-sample. Record its contribution to the panel's
+  // data extent / window floor *now* — Fit Data reads those synchronously
+  // — but defer the follow-live slide to the next frame, coalescing every
+  // area's report into one (ADR 0024). Sliding per report made the fan-out
+  // O(areas²): each of N areas pushed its own clock-derived window into all
+  // N uPlots per resample interval, and `applyXAll`'s equality skip could
+  // never fire because no two areas read `performance.now()` at the same
+  // instant. Fetch cadence (the per-area resample loop) and redraw cadence
+  // (this frame) are now independent.
+  const onAreaResampled = useCallback(
+    (areaId: string, firstT: number | null, lastT: number | null) => {
+      diagCount("plot.areaResampled"); // DIAG
+      if (lastT != null) extentByAreaRef.current.set(areaId, lastT);
+      else extentByAreaRef.current.delete(areaId);
+      if (firstT != null) startByAreaRef.current.set(areaId, firstT);
+      else startByAreaRef.current.delete(areaId);
+      if (slideRafRef.current) return;
+      slideRafRef.current = requestAnimationFrame(() => {
+        slideRafRef.current = 0;
+        slideXWindow();
+      });
     },
-    [sharedExtent, sharedStart, applyXAll],
+    [slideXWindow],
+  );
+  useEffect(
+    () => () => {
+      if (slideRafRef.current) cancelAnimationFrame(slideRafRef.current);
+      slideRafRef.current = 0;
+    },
+    [],
   );
 
   /** Bumped to ask every PlotArea to invalidate its per-trace

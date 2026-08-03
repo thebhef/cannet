@@ -311,6 +311,33 @@ function renderPanel(opts?: {
 const sampleCalls = () =>
   vi.mocked(invoke).mock.calls.filter((c) => c[0] === "sample_signals").length;
 
+/// The newest uPlot instance rendered inside the named area. Areas
+/// rebuild their instance on a signal-set change, so the last one wins.
+function liveInstanceIn(areaLabel: string): FakeUPlotInst {
+  const areaEl = screen.getByText(areaLabel).closest(".plot-area")!;
+  for (let i = uplotInstances.length - 1; i >= 0; i--) {
+    if (areaEl.contains(uplotInstances[i].root)) return uplotInstances[i];
+  }
+  throw new Error(`no uPlot instance for ${areaLabel}`);
+}
+
+/// Drop a signal onto an area, the way the DBC panel / another area
+/// does — the only way to give a *non-focused* area a signal.
+function dropSignal(areaLabel: string, signalName: string, unit: string) {
+  const MIME = "application/x-cannet-plot-signal";
+  const payload = JSON.stringify({
+    messageId: 256,
+    extended: false,
+    signalName,
+    messageName: "EngineData",
+    unit,
+  });
+  const dt = { types: [MIME], getData: (t: string) => (t === MIME ? payload : ""), dropEffect: "" };
+  const area = screen.getByText(areaLabel).closest(".plot-area")!;
+  fireEvent.dragOver(area, { dataTransfer: dt });
+  fireEvent.drop(area, { dataTransfer: dt });
+}
+
 /// Run `body` with non-zero element dimensions. The uPlot construction
 /// effect refuses a 0x0 canvas (jsdom's default), and with no instance
 /// `resample` returns before it fetches — so any test that counts
@@ -1408,33 +1435,6 @@ describe("PlotPanel Fit Data over a parked window", () => {
     mockSampleBounds.last = PARKED_EDGE;
   });
 
-  /// The newest uPlot instance rendered inside the named area. Areas
-  /// rebuild their instance on a signal-set change, so the last one wins.
-  function liveInstanceIn(areaLabel: string): FakeUPlotInst {
-    const areaEl = screen.getByText(areaLabel).closest(".plot-area")!;
-    for (let i = uplotInstances.length - 1; i >= 0; i--) {
-      if (areaEl.contains(uplotInstances[i].root)) return uplotInstances[i];
-    }
-    throw new Error(`no uPlot instance for ${areaLabel}`);
-  }
-
-  /// Drop a signal onto an area, the way the DBC panel / another area
-  /// does — the only way to give a *non-focused* area a signal.
-  function dropSignal(areaLabel: string, signalName: string, unit: string) {
-    const MIME = "application/x-cannet-plot-signal";
-    const payload = JSON.stringify({
-      messageId: 256,
-      extended: false,
-      signalName,
-      messageName: "EngineData",
-      unit,
-    });
-    const dt = { types: [MIME], getData: (t: string) => (t === MIME ? payload : ""), dropEffect: "" };
-    const area = screen.getByText(areaLabel).closest(".plot-area")!;
-    fireEvent.dragOver(area, { dataTransfer: dt });
-    fireEvent.drop(area, { dataTransfer: dt });
-  }
-
   /// Replay a user zoom the way uPlot does — it moves its own x scale and
   /// then fires `setScale`, which the panel reads as a user pan/zoom
   /// (shared window updated, follow-live dropped).
@@ -1566,6 +1566,85 @@ describe("PlotPanel Fit Data over a parked window", () => {
         expect(fitted.max).toBe(GROWN_EDGE);
       } finally {
         vi.useRealTimers();
+      }
+    });
+  });
+});
+
+describe("PlotPanel follow-live slide cadence", () => {
+  /// `performance.now()` that steps forward a fixed amount per read. Real
+  /// areas resample milliseconds apart, so each one evaluates the
+  /// follow-live clock at a *different* instant and derives a slightly
+  /// different x window; a frozen clock would hide that behind
+  /// `applyXAll`'s equality skip and make the assertion vacuous.
+  function steppingClock(stepMs: number) {
+    let t = 100_000;
+    return vi.spyOn(performance, "now").mockImplementation(() => (t += stepMs));
+  }
+
+  /// rAF under test control: the panel coalesces its follow-live slide
+  /// into one frame, so "how many frames ran" has to be an input, not a
+  /// race against jsdom's real clock.
+  function captureFrames() {
+    const queued: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => queued.push(cb));
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    return async () => {
+      const due = queued.splice(0);
+      await act(async () => {
+        for (const cb of due) cb(0);
+      });
+    };
+  }
+
+  it("slides the shared x window once per frame, not once per area", async () => {
+    // `applyXAll` fans a new window out to *every* uPlot in the panel, and
+    // it ran once per area resample — so N areas cost N² canvas redraws
+    // per resample interval. The equality skip can't save it: each area
+    // reads its own `performance.now()`, so the windows differ.
+    await withSizedCanvas(async () => {
+      const runFrames = captureFrames();
+      renderPanel();
+      await pickCombobox(
+        screen.getByLabelText("add signal to focused plot area"),
+        "*|s:256:EngineSpeed",
+      );
+      fireEvent.click(screen.getByRole("button", { name: "add plot area" }));
+      fireEvent.click(screen.getByRole("button", { name: "add plot area" }));
+      // A cross-area drop is an *add*, so the same signal can sit in all
+      // three areas — enough to give each one a live uPlot.
+      await act(async () => dropSignal("Area 2", "EngineSpeed", "rpm"));
+      await act(async () => dropSignal("Area 3", "EngineSpeed", "rpm"));
+      await runFrames();
+      await act(async () => {});
+      await runFrames();
+      const areas = ["Area 1", "Area 2", "Area 3"].map(liveInstanceIn);
+
+      const clock = steppingClock(5);
+      try {
+        // One resample in every area: toggling follow-live forces one
+        // (the panel has to snap on/off the live edge immediately).
+        const follow = screen.getByRole("checkbox", { name: /follow live/i });
+        await act(async () => fireEvent.click(follow)); // off
+        await runFrames();
+        for (const a of areas) a.xCalls.length = 0;
+
+        await act(async () => fireEvent.click(follow)); // on
+        await act(async () => {});
+        await runFrames();
+
+        for (const a of areas) {
+          // At most the area's own re-pin of the shared window inside
+          // `resample`, plus the one coalesced panel-wide slide.
+          expect(a.xCalls.length).toBeLessThanOrEqual(2);
+        }
+        // …and it is the *same* window everywhere (one clock read, one
+        // fan-out), which is what makes the equality skip able to fire.
+        const last = areas.map((a) => a.xCalls[a.xCalls.length - 1]);
+        expect(last[1]).toEqual(last[0]);
+        expect(last[2]).toEqual(last[0]);
+      } finally {
+        clock.mockRestore();
       }
     });
   });
