@@ -117,11 +117,15 @@ dispatch table, and `settingControls.dom.test.tsx` exercises both halves
   scope, so leave the value where it already is"). It belongs with the
   work that gives projects settings worth moving — Task 45's promotions
   — not with the framework. Logged in the backlog.
-- **Not built: the `project-caches` renderer.** It needs Task 47 branch
-  3's project registry, which lands after this task; it will be the
-  dispatch table's first real entry. Building it here would mean
-  building it twice. The table's production entry today is
-  `keybindings`.
+- **Deferred at the time: the `project-caches` renderer.** It needed
+  [Task 47](0047-user-workspace-scoping.md) branch 3's project registry,
+  which landed after this task; building it here would have meant
+  building it twice. **It has since landed**, as the dispatch table's
+  first entry that is a real editor rather than a pointer. It also
+  extended the descriptor: the cache list is not a `settings.json` field,
+  so a descriptor now declares whether it backs a field or is a view the
+  panel hosts, and the key-set test holds over the field-backed rows
+  exactly as it did (ADR 0034's consequences record it).
 
 **Documentation landed:** ADR 0034 (decision 2 amended, decision 4
 added, with the @rjsf rejection restated rather than reversed),

@@ -54,14 +54,23 @@ export type SettingControl =
   | { type: "text"; placeholder: string | null }
   | { type: "custom"; renderer: string };
 
+/// What a row is *about*: a field of `settings.json`, or a management
+/// surface the settings view hosts (the project cache list, ADR 0042 §5).
+/// A `view` row has no stored value, so it shows no key, no scope, no
+/// default, and nothing to reset.
+export type SettingBacking = "field" | "view";
+
 export interface SettingDescriptor {
-  /// The `settings.json` field name. Shown, so the panel teaches the file.
+  /// The `settings.json` field name. Shown, so the panel teaches the
+  /// file. For a `view` row it is an id for search and dispatch, not a
+  /// field, and is not shown.
   key: string;
   label: string;
   help: string;
   surfaces: SurfaceId[];
   kind: SettingKind;
   control: SettingControl;
+  backing: SettingBacking;
   scope: SettingScope | null;
   /// The value `Settings::default()` gives this key — what "differs from
   /// its default" is measured against.

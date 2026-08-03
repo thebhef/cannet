@@ -188,6 +188,11 @@ pub struct ProjectCacheRow {
     /// demand**, never on a timer: the walk is not cheap (ADR 0002 DS-8).
     bytes: u64,
     state: CacheRowState,
+    /// Whether cannet chose this directory's location. Separate from
+    /// `state`, which is the one badge a row wears: the *open* project may
+    /// also be auto-located, and it is exactly that row the `Save as…`
+    /// offer belongs on (ADR 0042 §5).
+    auto_located: bool,
     last_used_seconds: u64,
 }
 
@@ -205,6 +210,7 @@ fn rows(registry: &ProjectRegistry, active_root: &Path) -> Vec<ProjectCacheRow> 
         .map(|e| ProjectCacheRow {
             bytes: crate::trace_store::dir_footprint(&e.cache_path()),
             state: row_state(e, active_root),
+            auto_located: e.auto_located,
             root: e.root.clone(),
             cache: e.cache.clone(),
             project_file: e.project_file.clone(),
@@ -668,6 +674,22 @@ mod tests {
         assert_eq!(state_of(theirs.root()), CacheRowState::Known);
         assert_eq!(state_of(auto.root()), CacheRowState::AutoLocated);
         assert_eq!(state_of(gone.root()), CacheRowState::Missing);
+    }
+
+    #[test]
+    fn an_open_auto_located_project_wears_the_active_badge_and_still_says_it_is_auto_located() {
+        // The `Save as…` offer belongs on the open auto-located project —
+        // the one place a user sees their project is living in cache
+        // space — so the badge (active) must not hide the fact.
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config");
+        let auto = crate::project_dir::resolve(None, &tmp.path().join("cache-root"));
+        record(&config, &auto, None, 1_700);
+
+        let listed = rows(&read(&config), auto.root());
+
+        assert_eq!(listed[0].state, CacheRowState::Active);
+        assert!(listed[0].auto_located);
     }
 
     #[test]

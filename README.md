@@ -495,6 +495,22 @@ writes, so the panel teaches the file.
   **Developer** group rather than mixed into the others. Nothing is
   hidden from the file: they are all in `settings.json` whether the
   panel shows them or not.
+- **Reclaiming disk — Storage › Project caches.** Every project keeps
+  its own capture, so the panel lists every project directory cannet
+  holds cached data for and what each one is currently using (measured
+  when you look, not on a timer — the walk is not cheap). Two actions,
+  and they differ: **Clear data cache** empties one project's cached
+  data and keeps both the cache directory and the entry; **Delete**
+  removes the cache directory and forgets the project. **Neither
+  touches your project directory** — if the app won't create a
+  `.cannet/` unasked, it won't remove one either. **Clear all data
+  caches** empties every one and removes nothing. Clearing the open
+  project discards the session in progress, and deleting it is
+  unavailable while its cache is mapped. A project directory you
+  deleted outside the app is listed as *project gone* until you delete
+  its row, so Clear means the same thing everywhere. And if the open
+  project is living in cannet's cache space, its row offers **Save
+  as…** — this list is the one place you see that it is.
 
 **Add plot panel** opens a signal plot (Phase 4): a uPlot-based
 oscilloscope-style view, docked like any other panel. It's backed by a

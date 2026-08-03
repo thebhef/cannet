@@ -572,6 +572,40 @@ the running record of what is done and what moved.
   unlinking files underneath a mapping. Delete is refused for it for the
   same reason, and `clear_all_project_caches` sweeps the directories of
   every *other* project and clears the active one through the live store.
+- **Done: the list, as Task 46's first real custom renderer.**
+  `project-caches` is registered in `CUSTOM_SETTING_RENDERERS`, and
+  [`ProjectCachesList.tsx`](../../apps/gui/src/ProjectCachesList.tsx)
+  renders the **Storage → Project caches** group from the prototype:
+  badge, path, size, `Save as…` on the auto-located rows, Clear, Delete,
+  and a header clear-all. Sizes are asked for when the panel opens, when
+  the open project changes, and after an action — never on a timer.
+- **The descriptor table gained `Backing`, rather than a test getting
+  weaker.** Task 46's key-set test requires every descriptor to name a
+  `settings.json` field, and the cache list is not one: it is a
+  management surface, and ADR 0034 would have been violated by inventing
+  a settings key for something the app records rather than the user sets.
+  So a descriptor now declares `Backing::Field` or `Backing::View`, the
+  key-set test holds over every field-backed row exactly as before, and
+  **two new tests** carry the rest: a view row must be a `Control::Custom`
+  (the escape hatch cannot smuggle a generated control over a key nothing
+  stores) and must not shadow a real settings key (which would leave that
+  setting with no editor while still passing the key-set test). A view row
+  shows no key, no scope, no default, and no reset — the panel teaches the
+  file, and pointing at a key nothing stores would teach the wrong thing.
+- **`Save as…` is offered on every auto-located row but enabled only on
+  the active one.** Save As moves the *session's* project, so it can only
+  be taken on the project that is open; a non-active auto-located row
+  carries the offer disabled, with a title saying to open that project
+  first. Rendering nothing there would have hidden the fact that those
+  rows are the movable ones, which is the discoverability the offer exists
+  for. `state` is the one badge a row wears (active outranks auto-located),
+  so the row also carries `auto_located` separately — the open project may
+  be auto-located too, and that is exactly the row the offer belongs on.
+- **The list re-reads when the open project changes**, which is also what
+  a `Save as…` taken from a row produces. That is why it needs no return
+  value from the project context's `onSaveProjectAs` and no polling.
+- **`formatBytes` is shared with the status line** rather than copied —
+  the two report the same kind of figure.
 
 **Deferred out of branch 1, and why:**
 

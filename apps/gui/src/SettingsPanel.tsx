@@ -237,13 +237,17 @@ function SettingRow({
 }) {
   const isDefault = isDefaultValue(descriptor, value);
   const custom = descriptor.control.type === "custom";
+  // A view row is not a field of `settings.json`, so it shows no key —
+  // the panel teaches the file, and pointing at a key nothing stores
+  // would teach the wrong thing.
+  const field = descriptor.backing !== "view";
   return (
     <div
       className={`setting${overridden ? " overridden" : isDefault ? "" : " modified"}`}
     >
       <div className="setting-top">
         <span className="setting-label">{descriptor.label}</span>
-        <code className="setting-key">{descriptor.key}</code>
+        {field && <code className="setting-key">{descriptor.key}</code>}
         <span className="setting-chips">
           {descriptor.kind === "developer" ? (
             <>

@@ -3461,6 +3461,95 @@ button.trace-event-swatch {
   color: #a5b4fc;
 }
 
+/* Storage › Project caches — the settings view's one management
+   surface (ADR 0042 §5). */
+.project-caches {
+  border: 1px solid #1f2630;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.project-caches-head,
+.project-cache-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.5rem;
+}
+.project-caches-head {
+  background: #121821;
+  border-bottom: 1px solid #1f2630;
+  font-size: 0.72rem;
+  color: #94a3b8;
+}
+.project-caches-summary {
+  flex: 1 1 auto;
+}
+.project-caches-hint {
+  color: #64748b;
+}
+.project-caches-error {
+  margin: 0;
+  padding: 0.3rem 0.5rem;
+  color: #d98a8a;
+}
+.project-caches-empty {
+  margin: 0;
+  padding: 0.5rem;
+  color: #64748b;
+}
+.project-cache-row + .project-cache-row {
+  border-top: 1px solid #161d27;
+}
+.project-cache-path {
+  flex: 1 1 auto;
+  font-family: ui-monospace, monospace;
+  font-size: 0.72rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-cache-row.gone .project-cache-path {
+  color: #64748b;
+  text-decoration: line-through;
+}
+.project-cache-size {
+  font-variant-numeric: tabular-nums;
+  color: #94a3b8;
+  width: 4.5rem;
+  text-align: right;
+}
+.project-cache-badge {
+  font-size: 0.65rem;
+  padding: 0 0.3rem;
+  border-radius: 0.5rem;
+  border: 1px solid #2c3444;
+  color: #64748b;
+  white-space: nowrap;
+}
+.project-cache-badge.active {
+  border-color: #21463d;
+  color: #58b09c;
+  background: #0d1a17;
+}
+.project-cache-badge.auto-located {
+  border-color: #33405c;
+  color: #93a7cc;
+  background: #131a26;
+}
+.project-cache-badge.missing {
+  border-color: #4d2c2c;
+  color: #d98a8a;
+  background: #1d1010;
+}
+.project-caches button {
+  font-size: 0.72rem;
+  padding: 0.05rem 0.4rem;
+}
+.project-caches button.danger:not(:disabled) {
+  border-color: #4d2c2c;
+  color: #d98a8a;
+}
+
 /* The older shared panel shell — the About and Shortcuts panels. */
 .settings-panel {
   height: 100%;
