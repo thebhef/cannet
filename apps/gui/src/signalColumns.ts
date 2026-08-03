@@ -5,12 +5,14 @@
 /// identical to the by-id view — only the counted population differs
 /// (per-signal mux-matched updates; see `fetch_signal_page`).
 
+import { hostSettings } from "./hostSettings";
 import {
   type ColumnDef,
   type ColumnState,
   type SortState,
   columnDefFor,
   columnsFromParamsFor,
+  configuredColumnsFor,
   defaultColumnsFor,
   gridTemplateColumnsFor,
 } from "./traceColumns";
@@ -49,12 +51,19 @@ export type SignalSortState = SortState<SignalColumnKey>;
 /// stable order.
 export const DEFAULT_SIGNAL_SORT: SignalSortState = null;
 
+/// The app's built-in signal-table layout.
 export function defaultSignalColumns(): SignalColumnState[] {
   return defaultColumnsFor(SIGNAL_COLUMN_DEFS);
 }
 
+/// The layout a fresh signal table opens with — `signal_columns` when
+/// the user has set one, else the built-in.
+export function configuredSignalColumns(): SignalColumnState[] {
+  return configuredColumnsFor(SIGNAL_COLUMN_DEFS, hostSettings().signal_columns);
+}
+
 export function signalColumnsFromParams(value: unknown): SignalColumnState[] {
-  return columnsFromParamsFor(SIGNAL_COLUMN_DEFS, value);
+  return columnsFromParamsFor(SIGNAL_COLUMN_DEFS, value, {}, configuredSignalColumns());
 }
 
 export function signalColumnDef(key: SignalColumnKey): ColumnDef<SignalColumnKey> {

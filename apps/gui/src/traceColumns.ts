@@ -12,6 +12,7 @@
 /// model with its own keys (`signalColumns.ts`), while the trace-bound
 /// wrappers here keep the original API for the trace views.
 
+import { hostSettings } from "./hostSettings";
 import type { Bus } from "./types";
 
 /// A trace column's stable identity.
@@ -80,9 +81,11 @@ export interface ColumnState<K extends string = ColumnKey> {
   visible: boolean;
 }
 
-/// The default per-panel column state for a defs set: each column at
-/// its default width, in canonical order, visible unless flagged
-/// `defaultHidden`.
+/// The **built-in** per-panel column state for a defs set: each column
+/// at its default width, in canonical order, visible unless flagged
+/// `defaultHidden`. This is the app's own answer, not the user's — see
+/// [`configuredColumnsFor`] for the one a fresh panel actually opens
+/// with.
 export function defaultColumnsFor<K extends string>(
   defs: readonly ColumnDef<K>[],
 ): ColumnState<K>[] {
@@ -94,37 +97,69 @@ export function defaultColumns(): ColumnState[] {
   return defaultColumnsFor(COLUMN_DEFS);
 }
 
+/// The layout a **fresh** panel opens with: the user's configured
+/// default (`trace_columns` / `signal_columns`) when they have one, and
+/// the built-in layout otherwise.
+///
+/// The configured value goes through the same parser a saved panel
+/// layout does, so a hand-edit naming an unknown column — or a layout
+/// left behind by a build with different columns — falls back to the
+/// built-in rather than producing a broken table. That parse is the
+/// only validation the value gets: the column key set is declared here,
+/// in the frontend, so the host stores it without interpreting it
+/// (same contract as `keybindings`).
+export function configuredColumnsFor<K extends string>(
+  defs: readonly ColumnDef<K>[],
+  configured: unknown,
+  legacy: Record<string, K> = {},
+): ColumnState<K>[] {
+  if (configured == null) return defaultColumnsFor(defs);
+  return columnsFromParamsFor(defs, configured, legacy);
+}
+
+/// Trace-bound [`configuredColumnsFor`].
+export function configuredColumns(): ColumnState[] {
+  return configuredColumnsFor(COLUMN_DEFS, hostSettings().trace_columns, { ch: "bus" });
+}
+
 /// Validate a value persisted in a dockview panel's params (or a
 /// project file) as column state for a defs set: known keys only, each
 /// at most once, in **any order** (columns are user-reorderable, so a
 /// saved permutation is honoured verbatim), each with sane width /
 /// visible fields. Keys the saved layout doesn't mention — a column
 /// added to the model after the layout was saved — are filled in at
-/// their canonical slot with defaults, so old layouts keep the user's
+/// their canonical slot from `fallback`, so old layouts keep the user's
 /// widths/order and still gain new columns. Anything malformed (a
 /// duplicate / unknown key, a corrupt blob, more entries than columns
-/// exist) falls back to the defaults. `legacy` maps renamed keys
+/// exist) falls back wholesale. `legacy` maps renamed keys
 /// (old name → current), carrying width / visibility / position over.
+///
+/// `fallback` defaults to the app's built-in layout. A panel passes the
+/// user's configured default instead ([`configuredColumnsFor`]), so a
+/// brand-new panel — and a column too new for a saved layout to name —
+/// arrives at what the user asked for rather than at the built-in.
 export function columnsFromParamsFor<K extends string>(
   defs: readonly ColumnDef<K>[],
   value: unknown,
   legacy: Record<string, K> = {},
+  fallback: readonly ColumnState<K>[] = defaultColumnsFor(defs),
 ): ColumnState<K>[] {
+  const fallbackOf = (key: K) => fallback.find((c) => c.key === key);
   if (!Array.isArray(value) || value.length > defs.length) {
-    return defaultColumnsFor(defs);
+    return fallback.map((c) => ({ ...c }));
   }
   const canonical = new Set<string>(defs.map((d) => d.key));
   const seen = new Set<string>();
   const out: ColumnState<K>[] = [];
   for (const c of value) {
-    if (c == null || typeof c !== "object") return defaultColumnsFor(defs);
+    if (c == null || typeof c !== "object") return fallback.map((f) => ({ ...f }));
     const o = c as { key?: unknown; width?: unknown; visible?: unknown };
     if (typeof o.width !== "number" || typeof o.visible !== "boolean") {
-      return defaultColumnsFor(defs);
+      return fallback.map((f) => ({ ...f }));
     }
     const key = typeof o.key === "string" && o.key in legacy ? legacy[o.key] : o.key;
     if (typeof key !== "string" || !canonical.has(key) || seen.has(key)) {
-      return defaultColumnsFor(defs);
+      return fallback.map((f) => ({ ...f }));
     }
     seen.add(key);
     out.push({ key: key as K, width: o.width, visible: o.visible });
@@ -142,17 +177,24 @@ export function columnsFromParamsFor<K extends string>(
         break;
       }
     }
-    out.splice(insertAt, 0, { key: def.key, width: def.defaultWidth, visible: !def.defaultHidden });
+    const seed = fallbackOf(def.key);
+    out.splice(insertAt, 0, {
+      key: def.key,
+      width: seed?.width ?? def.defaultWidth,
+      visible: seed?.visible ?? !def.defaultHidden,
+    });
     seen.add(def.key);
   });
   return out;
 }
 
-/// Trace-bound [`columnsFromParamsFor`]. The legacy `"ch"` key is
-/// treated as `"bus"` (the column was renamed when wire-level channel
-/// display was replaced with the project's bus name).
+/// Trace-bound [`columnsFromParamsFor`], with the user's configured
+/// default as the fallback — so a panel with no saved layout opens at
+/// `trace_columns` rather than at the built-in one. The legacy `"ch"`
+/// key is treated as `"bus"` (the column was renamed when wire-level
+/// channel display was replaced with the project's bus name).
 export function columnsFromParams(value: unknown): ColumnState[] {
-  return columnsFromParamsFor(COLUMN_DEFS, value, { ch: "bus" });
+  return columnsFromParamsFor(COLUMN_DEFS, value, { ch: "bus" }, configuredColumns());
 }
 
 /// The definition for `key` in a defs set (label, css class, flex flag).

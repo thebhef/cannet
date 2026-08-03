@@ -767,6 +767,61 @@ alone* (red when the parsed branch drops `o.yAxisMode`), *does not
 retro-fit an area saved before the field existed* (red when
 `yAxisModeFromRaw`'s fallback reads the setting).
 
+**Default column sets, widths, and hidden columns.** *(done)*
+
+| Field | Default | Tags | Scope | Read at |
+| --- | --- | --- | --- | --- |
+| `trace_columns` | `null` (built-in) | trace + by-id / default | user-overridable | `columnsFromParams`, at panel creation |
+| `signal_columns` | `null` (built-in) | signals / default | user-overridable | `signalColumnsFromParams`, at panel creation |
+
+Notes:
+
+- **`null` is the default, and it means the built-in layout.** Writing
+  the built-in layout out as the default would have frozen it: a column
+  added later would not appear in a file that predates it. `null` keeps
+  `COLUMN_DEFS` / `SIGNAL_COLUMN_DEFS` the single source of the
+  built-in answer, and an untouched install opens exactly the table it
+  always did.
+- **Two fields, not one.** The two tables have different column sets,
+  so one shared layout could not name both. (Unlike Stage 3's recents
+  pair, this is forced rather than a judgement.)
+- **Stored and round-tripped, not validated host-side** — the same
+  contract as `keybindings`, for Stage 1 item 4's reason: the column key
+  set is declared in the frontend, so a host-side check would need a
+  second copy of it. The frontend's existing parser is the validation,
+  and a configured layout naming a column that does not exist falls back
+  to the built-in rather than producing a broken table.
+- **The configured default enters through `columnsFromParamsFor`'s new
+  `fallback`**, so it is used in exactly the places the built-in used to
+  be: a panel with no saved layout, a malformed one, and the fill-in
+  slot for a column too new for a saved layout to name. A panel that
+  *has* a layout is untouched.
+- **The settings row is a real editor, and it is the one custom
+  renderer that edits.** `keybindings` points at the shortcuts panel
+  because that panel is the editor; there is no equivalent for a
+  *default* — a table header adjusts the panel in front of you, not the
+  one you will open next. `CustomRendererProps` therefore gains
+  `onCommit`, which the generated controls already had. The editor owns
+  no arithmetic: every move goes through the same
+  `toggleColumn` / `resizeColumn` / `reorderColumn` the header uses, so
+  a default and a live layout cannot disagree about what a move means.
+  ADR 0034 needs no amendment — its "one table is the entire extension
+  surface, and there is no third case" still holds; nothing in it said
+  a named renderer may not write.
+
+Behaviour tests (each mutation-checked — by making `configuredColumnsFor`
+ignore its configured value, by making `columnsFromParams` ignore the
+saved one, and by pinning the editor to the trace column set):
+`traceColumns.test.ts` → *is what a panel with no saved layout opens
+at*, *loses to a layout the panel already saved*, *falls back to the
+built-in when it names a column that does not exist*;
+`signalColumns.test.ts` → *seeds a fresh signal table, and has its own
+setting*; `settingControls.dom.test.tsx` → *edits a column default
+through the same moves the table header makes* (toggle, width on blur
+rather than per keystroke, reorder), *commits null to go back to the
+built-in layout*, *edits the signal table's own column set for its own
+key*.
+
 **CAN-ID formatting.** *(done)* — **timestamp formatting is not, and
 that is a finding, not an omission.** See below the table.
 

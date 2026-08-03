@@ -12,12 +12,17 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 
+import { ColumnDefaultsEditor } from "./ColumnDefaultsEditor";
 import { ProjectCachesList } from "./ProjectCachesList";
 import type { SettingDescriptor } from "./settingDescriptors";
 
 export interface CustomRendererProps {
   descriptor: SettingDescriptor;
   value: unknown;
+  /// Persist a new value, in the same *stored* representation the
+  /// generated controls commit. A renderer that only points at another
+  /// editor (or at a management surface) ignores it.
+  onCommit: (value: unknown) => void;
 }
 
 /// Every custom renderer, keyed by the descriptor's `renderer` name.
@@ -31,11 +36,19 @@ export interface CustomRendererProps {
 /// `project-caches` is the other kind: a management surface with no
 /// other home, whose descriptor is a `view` row rather than a field
 /// (ADR 0042 §5).
+///
+/// `column-defaults` is the third: a real editor, because a table
+/// header adjusts the panel in front of you and there is nowhere else
+/// to say what the *next* one should open as. Two settings share it —
+/// the trace/by-ID column set and the signal one.
 export const CUSTOM_SETTING_RENDERERS: Record<
   string,
   (props: CustomRendererProps) => ReactNode
 > = {
   "project-caches": () => <ProjectCachesList />,
+  "column-defaults": ({ descriptor, value, onCommit }) => (
+    <ColumnDefaultsEditor descriptor={descriptor} value={value} onCommit={onCommit} />
+  ),
   keybindings: ({ value }) => {
     const count = Array.isArray(value) ? value.length : 0;
     return (
@@ -73,7 +86,7 @@ export function SettingControl({ descriptor, value, onCommit }: SettingControlPr
           </p>
         );
       }
-      return <>{render({ descriptor, value })}</>;
+      return <>{render({ descriptor, value, onCommit })}</>;
     }
     case "bool":
       return (

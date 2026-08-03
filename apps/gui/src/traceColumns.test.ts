@@ -1,6 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+/// A fresh panel's layout is the `trace_columns` setting, so these
+/// tests need a host to hydrate it from.
+let storedSettings: Record<string, unknown> = {};
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(async (cmd: string) => (cmd === "get_settings" ? { ...storedSettings } : null)),
+}));
 
 import type { Bus } from "./types";
+import { hydrateSettings } from "./hostSettings";
 import {
   COLUMN_DEFS,
   DEFAULT_SORT,
@@ -18,6 +26,57 @@ import {
 } from "./traceColumns";
 
 const minmaxCount = (t: string) => (t.match(/minmax\(/g) ?? []).length;
+
+beforeEach(async () => {
+  storedSettings = {};
+  await hydrateSettings();
+});
+
+describe("the configured default layout", () => {
+  const dataColumn = (cols: ReturnType<typeof defaultColumns>) =>
+    cols.find((c) => c.key === "data");
+
+  it("is what a panel with no saved layout opens at", async () => {
+    // `data` is visible at 360 in the built-in layout, so a hidden 400
+    // proves the panel read `trace_columns`.
+    storedSettings = { trace_columns: [{ key: "data", width: 400, visible: false }] };
+    await hydrateSettings();
+    expect(dataColumn(columnsFromParams(undefined))).toEqual({
+      key: "data",
+      width: 400,
+      visible: false,
+    });
+    // Columns the configured layout is silent about keep the built-in
+    // answer, at their canonical slot.
+    expect(columnsFromParams(undefined).map((c) => c.key)).toEqual(
+      COLUMN_DEFS.map((d) => d.key),
+    );
+  });
+
+  it("loses to a layout the panel already saved", async () => {
+    // A `default` seeds a new view; it must never override one that
+    // already carries a layout.
+    storedSettings = { trace_columns: [{ key: "data", width: 400, visible: false }] };
+    await hydrateSettings();
+    const saved = defaultColumns().map((c) =>
+      c.key === "data" ? { ...c, width: 111, visible: true } : c,
+    );
+    expect(dataColumn(columnsFromParams(saved))).toEqual({
+      key: "data",
+      width: 111,
+      visible: true,
+    });
+  });
+
+  it("falls back to the built-in when it names a column that does not exist", async () => {
+    // The host stores this field without interpreting it (the column
+    // key set lives here), so a hand-edit naming a stale column has to
+    // be caught on this side rather than producing a broken table.
+    storedSettings = { trace_columns: [{ key: "no-such-column", width: 40, visible: true }] };
+    await hydrateSettings();
+    expect(columnsFromParams(undefined)).toEqual(defaultColumns());
+  });
+});
 
 describe("defaultColumns", () => {
   it("is every column, in canonical order at its default width", () => {

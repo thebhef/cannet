@@ -124,6 +124,22 @@ export interface Settings {
   /// the frontend's `CanIdFormat`. App-wide: the trace and by-ID tables
   /// read it and pass it to their rows.
   can_id_format: string;
+  /// The column layout a *newly created* trace or by-ID table opens
+  /// with; `null` = the app's built-in layout. Round-tripped by the
+  /// host without interpretation — the column key set is declared here
+  /// (`traceColumns.ts`), so this side validates it.
+  trace_columns: ColumnLayout[] | null;
+  /// The same for the signal table's own column set
+  /// (`signalColumns.ts`).
+  signal_columns: ColumnLayout[] | null;
+}
+
+/// One column of a stored default table layout — the wire mirror of
+/// `ColumnState` in `traceColumns.ts`.
+export interface ColumnLayout {
+  key: string;
+  width: number;
+  visible: boolean;
 }
 
 export function defaultSettings(): Settings {
@@ -157,6 +173,8 @@ export function defaultSettings(): Settings {
     plot_y_axis_mode: "unified",
     dbc_auto_reload: true,
     can_id_format: "hex",
+    trace_columns: null,
+    signal_columns: null,
   };
 }
 

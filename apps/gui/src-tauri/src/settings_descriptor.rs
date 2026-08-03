@@ -416,6 +416,28 @@ const DESCRIPTORS: &[Spec] = &[
         },
     },
     Spec {
+        key: "trace_columns",
+        backing: Backing::Field,
+        label: "Default trace columns",
+        help: "Which columns a new trace or by-ID table shows, in what order,                and how wide. Only the starting point — drag a header to                reorder, drag its right edge to resize, right-click it to show                or hide, and a panel you already have keeps what you set there.",
+        surfaces: &[Surface::Trace, Surface::ById],
+        kind: Kind::Default,
+        control: Control::Custom {
+            renderer: "column-defaults",
+        },
+    },
+    Spec {
+        key: "signal_columns",
+        backing: Backing::Field,
+        label: "Default signal columns",
+        help: "The same, for the signal table, which has its own columns.                Count, rate and bus start hidden by default because a signal                list is usually read for values.",
+        surfaces: &[Surface::Signals],
+        kind: Kind::Default,
+        control: Control::Custom {
+            renderer: "column-defaults",
+        },
+    },
+    Spec {
         key: "can_id_format",
         backing: Backing::Field,
         label: "CAN-ID format",

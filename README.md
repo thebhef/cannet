@@ -505,12 +505,17 @@ writes, so the panel teaches the file.
   without relaunching cannet.
 - **Defaults you can still change per view.** Some settings only decide
   what a *new* view starts as — the trace panel's **Default trace
-  view**, **Default auto-scroll**, and **Default events overlay**, and
-  the plot's **Default y-axis layout**.
+  view**, **Default auto-scroll**, and **Default events overlay**, the
+  plot's **Default y-axis layout**, and **Default trace columns** /
+  **Default signal columns** (which columns a new table shows, in what
+  order, how wide).
   They are read once, when the view is created, and the view's own
   controls win from then on: changing one of these never reaches back
   into a panel you already have open, and a panel restored from a
-  project keeps what you set in it.
+  project keeps what you set in it. The column rows are the one setting
+  with a purpose-built editor rather than a plain control — a table
+  header adjusts the panel in front of you, so the default needs a home
+  of its own; **Use the built-in layout** puts it back.
 - **CAN-ID format.** The trace and by-ID tables spell an arbitration id
   in zero-padded hex by default; **`can_id_format`** switches them to
   decimal. The `s:` / `x:` prefix stays either way — 11-bit and 29-bit

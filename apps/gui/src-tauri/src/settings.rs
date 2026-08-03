@@ -94,6 +94,8 @@ pub(crate) const SCOPES: ScopeTable = &[
     ("plot_y_axis_mode", Scope::UserOverridable),
     ("dbc_auto_reload", Scope::UserOverridable),
     ("can_id_format", Scope::UserOverridable),
+    ("trace_columns", Scope::UserOverridable),
+    ("signal_columns", Scope::UserOverridable),
 ];
 
 /// The persisted user settings. `#[serde(default)]` fills any absent field
@@ -313,6 +315,40 @@ pub struct Settings {
     /// The `s:` / `x:` prefix is not part of the choice and survives
     /// both: 11-bit and 29-bit ids overlap numerically.
     pub can_id_format: String,
+    /// The column layout a **newly created** trace or by-ID table opens
+    /// with — order, width, and which columns start hidden. `None` (the
+    /// default) means the built-in layout, so a file that predates this
+    /// field opens exactly the table the app always opened.
+    ///
+    /// Read once, when the panel seeds its state. The header's own
+    /// drag-to-resize, drag-to-reorder, and right-click show/hide still
+    /// win for a panel that exists, and a panel restored from a project
+    /// keeps the layout saved on its element.
+    ///
+    /// **Stored and round-tripped, not validated**, exactly like
+    /// [`Settings::keybindings`]: the column key set is declared in the
+    /// frontend (`traceColumns.ts`), so a host-side check would need a
+    /// second copy of it. The frontend's own parser accepts a known key
+    /// at most once and falls back to the built-in layout otherwise.
+    pub trace_columns: Option<Vec<ColumnLayout>>,
+    /// The column layout a **newly created** signal table opens with —
+    /// [`Settings::trace_columns`] for the signal view's own column set
+    /// (`signalColumns.ts`), with the same contract.
+    ///
+    /// Two fields rather than one: the two tables have different
+    /// columns, so one shared layout could not name them both.
+    pub signal_columns: Option<Vec<ColumnLayout>>,
+}
+
+/// One column of a table's default layout — the on-disk mirror of the
+/// frontend's `ColumnState`. Its `key` names a column of whichever
+/// table the setting belongs to; the host does not interpret it (see
+/// [`Settings::trace_columns`]).
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ColumnLayout {
+    pub key: String,
+    pub width: u64,
+    pub visible: bool,
 }
 
 /// The smallest legal value of any millisecond-interval setting.
@@ -409,6 +445,8 @@ impl Default for Settings {
             plot_y_axis_mode: "unified".to_string(),
             dbc_auto_reload: true,
             can_id_format: "hex".to_string(),
+            trace_columns: None,
+            signal_columns: None,
         }
     }
 }
@@ -836,6 +874,12 @@ mod tests {
             plot_y_axis_mode: "individual".to_string(),
             dbc_auto_reload: false,
             can_id_format: "decimal".to_string(),
+            trace_columns: Some(vec![ColumnLayout {
+                key: "data".to_string(),
+                width: 400,
+                visible: false,
+            }]),
+            signal_columns: None,
         }
     }
 
