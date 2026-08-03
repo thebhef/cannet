@@ -464,6 +464,17 @@ the running record of what is done and what moved.
   mappings like any other, because it has a project directory too. The
   host still keeps `Project::project_id` for the scratch-reload gate
   (ADR 0002 DS-7); that is a different question.
+- **Done: files inside the project directory are written relative.**
+  `projectPaths.ts` gained `relativizeProjectPath`, the exact inverse of
+  the `resolveProjectPath` that was already there, and the save path
+  applies it to the DBC refs and the RBS elements' paths. Containment is
+  a prefix test on the text, not a filesystem question — the renderer
+  has no filesystem — and it deliberately never climbs out with `../`: a
+  reference that escaped the directory would break on the move the
+  relative form exists to survive. A path it is unsure about stays
+  absolute, which is always correct. ADR 0030 restated accordingly, and
+  the `relativize-project-paths` pre-commit hook — which existed because
+  the GUI wrote absolute — becomes a backstop with nothing to do.
 - **Reads are deliberately unchanged.** Precedence stays uniform — a
   workspace value wins for any key — so a `state.json` whose
   project-scoped half has not been hand-migrated yet still resolves from

@@ -32,7 +32,11 @@ import {
 } from "./types";
 import { resolveBindingInterface } from "./bindingResolution";
 import { useSidecarStatus } from "./sidecarStatus";
-import { projectDir, resolveProjectPath } from "./projectPaths";
+import {
+  projectDir,
+  relativizeProjectPath,
+  resolveProjectPath,
+} from "./projectPaths";
 import { windowTitle } from "./windowTitle";
 import { TracePanel } from "./TracePanel";
 import { ProjectPanel } from "./ProjectPanel";
@@ -187,6 +191,30 @@ const DOCK_COMPONENTS = {
   [EVENTS_PANEL_COMPONENT]: EventsPanel,
   [SHORTCUTS_PANEL_COMPONENT]: ShortcutsPanel,
 };
+
+/// Rewrite a project's file references into the form it should be
+/// *stored* in (ADR 0030): a DBC or `.cannet_rbs` inside the project
+/// directory is recorded relative to the project file, so the directory
+/// can be copied to another path or another machine and still resolve
+/// its own files. Anything outside it stays absolute.
+///
+/// The exact inverse of what `applyProject` resolves on open, and applied
+/// at the same layer — the host commands keep taking ready-to-open paths.
+function withStoredPaths(project: Project, projectFilePath: string): Project {
+  const dir = projectDir(projectFilePath);
+  return {
+    ...project,
+    dbcs: project.dbcs.map((d) => ({
+      ...d,
+      path: relativizeProjectPath(dir, d.path),
+    })),
+    elements: project.elements.map((el) =>
+      isProjectElement(el) && el.kind === "rbs" && el.path
+        ? { ...el, path: relativizeProjectPath(dir, el.path) }
+        : el,
+    ),
+  };
+}
 
 export function App() {
   diagCount("render.App"); // DIAG
@@ -1327,7 +1355,10 @@ export function App() {
   const saveProjectTo = useCallback(
     async (path: string): Promise<boolean> => {
       try {
-        await invoke<string>("save_project", { path, project: gatherProject() });
+        await invoke<string>("save_project", {
+          path,
+          project: withStoredPaths(gatherProject(), path),
+        });
         rememberProject(path);
         setDirty(false);
         return true;
