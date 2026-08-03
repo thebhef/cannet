@@ -393,9 +393,11 @@ The session buffer is not held in RAM — it is a **memory-mapped store**
 on disk, so a capture can run indefinitely (hours to days, well past
 physical memory) with every historical frame still addressable for
 scrolling, filtering, and plotting. Each frame is written straight
-through to memory-mapped segment files under an OS cache directory
-(`$XDG_CACHE_HOME/dev.cannet.app/current/` on Linux, the platform
-equivalent elsewhere); the kernel page cache keeps the hot part resident and pages
+through to memory-mapped segment files in the open project's own cache
+(`.cannet/cache/` inside the project directory, which links to
+cannet-managed local storage under an OS cache directory —
+`$XDG_CACHE_HOME/dev.cannet.app` on Linux, the platform equivalent
+elsewhere); the kernel page cache keeps the hot part resident and pages
 cold history out under pressure, so RAM stays roughly flat while
 the on-disk cache grows (the status line shows both — `… RAM`, the
 whole application's resident memory, and `… cache`, the scratch
@@ -403,6 +405,12 @@ footprint on disk). Decoded-signal plot data and the search indexes are built on
 demand and memory-mapped the same way. See
 [`docs/adr/0001-indefinite-length-capture.md`](docs/adr/0001-indefinite-length-capture.md)
 and [`docs/adr/0002-disk-spill-store.md`](docs/adr/0002-disk-spill-store.md).
+
+**The capture belongs to the project.** Each project gets its own
+cache, so opening a second project doesn't destroy the first one's
+capture — come back and it's still there. If you haven't given a
+project a directory of its own (below), cannet keeps one for it in its
+own cache space; nothing about that is a different mode.
 
 Because it lives outside the process, the capture **survives a quit or
 crash**: on the next launch the prior session reloads as a *stopped*
@@ -436,6 +444,22 @@ the project panel, and closing the window with unsaved changes prompts
 you (Save & close / Discard & close / Cancel). Not carried in the project: a trace's window
 position (it re-anchors to the session buffer on each launch anyway),
 and the BLF replay path.
+
+**The project directory.** To keep a project's data with the project
+rather than in cannet's cache, make a `.cannet/` folder next to the
+`.cannet_prj` file. That pair — a project file *beside* a `.cannet/` —
+is what makes a folder a project directory, and it is the only way one
+comes into being: cannet never creates a `.cannet/` in your folders
+because you opened a file there. Inside it, cannet keeps that project's
+settings overrides, its view state, and `cache/` — a link to the
+machine-local storage the capture actually lands in, kept out of the
+project directory itself so a memory-mapped multi-gigabyte scratch
+never ends up on a network share. A `.gitignore` covering `cache/` is
+written with it, since a project directory is plausibly a repository.
+Settings resolve user-first, project-second: a value in
+`.cannet/settings.json` overrides your own for that project, and every
+other setting stays as you set it. See
+[`docs/adr/0042-project-directory-and-scopes.md`](docs/adr/0042-project-directory-and-scopes.md).
 
 **Add plot panel** opens a signal plot (Phase 4): a uPlot-based
 oscilloscope-style view, docked like any other panel. It's backed by a

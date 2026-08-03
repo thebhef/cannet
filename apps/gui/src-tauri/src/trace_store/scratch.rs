@@ -1,7 +1,7 @@
 //! Scratch-directory footprint accounting for the cache diagnostic
 //! (ADR 0002 DS-8).
 //!
-//! The windowed-ring cap bounds the whole `current/` scratch dir; the
+//! The windowed-ring cap bounds the whole `cache/` scratch dir; the
 //! status readout wants that total plus a per-family breakdown (raw
 //! frames vs. signal pyramids vs. everything else). Both are measured by
 //! walking the dir off the store lock (the dir path is cloned under the
@@ -12,7 +12,7 @@ use std::path::Path;
 use super::TraceStore;
 
 impl TraceStore {
-    /// The total `current/` scratch footprint in bytes as of the last flush,
+    /// The total `cache/` scratch footprint in bytes as of the last flush,
     /// or `None` for the in-RAM double (which has no scratch dir). Drives the
     /// status readout (ADR 0002 DS-8).
     pub fn scratch_footprint_bytes(&self) -> Option<u64> {
@@ -33,7 +33,7 @@ impl TraceStore {
     }
 
     /// Set the windowed-ring cap (ADR 0002 DS-8) — the maximum total
-    /// `current/` footprint before a flush sheds the oldest raw history.
+    /// `cache/` footprint before a flush sheds the oldest raw history.
     /// `None` is unbounded. A no-op in effect for the in-RAM double (it has
     /// no scratch dir, so flush never measures or evicts).
     pub fn set_scratch_cap(&self, cap: Option<u64>) {
@@ -42,7 +42,7 @@ impl TraceStore {
     }
 }
 
-/// Total bytes of every file under `dir` (recursively) — the `current/`
+/// Total bytes of every file under `dir` (recursively) — the `cache/`
 /// scratch footprint the windowed-ring cap measures (ADR 0002 DS-8): raw
 /// segments, by-id and filter indexes, signal pyramids, and the small JSON
 /// sidecars. Best-effort: an unreadable entry counts zero, so a transient
@@ -62,7 +62,7 @@ pub(super) fn dir_footprint(dir: &Path) -> u64 {
     total
 }
 
-/// A per-family breakdown of the `current/` scratch footprint for the
+/// A per-family breakdown of the `cache/` scratch footprint for the
 /// periodic cache diagnostic (ADR 0002 DS-8). Byte counts are on-disk
 /// segment-file sizes; `*_files` are file counts (segments, i.e. "pages").
 #[derive(Debug, Default, Clone, Copy)]
@@ -83,7 +83,7 @@ pub struct ScratchBreakdown {
     pub total_bytes: u64,
 }
 
-/// Bucket the `current/` scratch by family for the cache diagnostic. One
+/// Bucket the `cache/` scratch by family for the cache diagnostic. One
 /// walk that delegates each family's naming to the module that owns it,
 /// rather than re-deriving foreign file names here: the raw-frame family is
 /// identified by [`cannet_spill::is_raw_frame_segment`], and the pyramid
@@ -186,7 +186,7 @@ mod tests {
     #[test]
     fn scratch_footprint_bytes_is_none_for_ram_and_tracks_disk() {
         // The status readout source (ADR 0002 DS-8): None for the in-RAM
-        // double, the measured `current/` footprint for a disk store, cached
+        // double, the measured `cache/` footprint for a disk store, cached
         // on the flush cadence.
         let ram = TraceStore::new();
         assert_eq!(ram.scratch_footprint_bytes(), None);

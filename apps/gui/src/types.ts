@@ -82,7 +82,7 @@ export interface TraceGrew {
   /// frames are buffered.
   buffer_seconds: number;
   /// Total on-disk scratch footprint in bytes as of the last flush (the
-  /// disk-spill `current/` dir). Shown in the status line as the cache
+  /// disk-spill `cache/` dir). Shown in the status line as the cache
   /// size; `null` when the store is in-RAM (no disk scratch).
   scratch_bytes: number | null;
   /// Whole-application resident memory in bytes (~1 Hz sample) — the Rust

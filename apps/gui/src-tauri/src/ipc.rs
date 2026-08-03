@@ -205,7 +205,7 @@ pub struct TraceGrew {
     pub buffer_seconds: f64,
     /// Total on-disk scratch footprint in bytes as of the last flush
     /// (ADR 0002 DS-8) — the raw segments, indexes, and pyramids under
-    /// `current/`. Shown in the status line as the cache size. `None` when
+    /// `cache/`. Shown in the status line as the cache size. `None` when
     /// the store is in-RAM (no disk scratch), so the view can hide it.
     pub scratch_bytes: Option<u64>,
     /// Whole-application resident memory in bytes — the Rust host plus its
