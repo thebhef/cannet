@@ -535,6 +535,11 @@ Notes:
   once, for both the frozen and the dev launcher flavours, which differ
   in how they *find* the sidecar, not in how it is configured.
   `--bind` is still not passed, for the reason its own test states.
+- **All three sidecar-facing settings take effect on Restart sidecar**,
+  not just on relaunch, because `resolve_command` reads them on every
+  spawn. That falls out of the design rather than being built, but it
+  is what makes "try a patched driver" a loop rather than a ceremony,
+  so the README says it.
 - **The env-var branch is now unit-testable**, which it was not: the
   workspace forbids `unsafe`, so no test can call `set_var`, and the
   old code read the environment inside the resolver. The read is now
