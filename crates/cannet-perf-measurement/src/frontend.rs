@@ -312,9 +312,10 @@ mod ftol {
 /// - **Higher-is-better, baseline-relative** — rx / tx throughput
 ///   *retention* (the buffer-growth-degradation signal). Floored the same
 ///   way the host harness floors `fps_retention`.
-/// - **Higher-is-better, absolute** — rx / tx throughput vs the expected
+/// - **Two-sided absolute band** — rx / tx throughput against the expected
 ///   sim rate, when handed in. Baseline-independent, so a uniformly-slow
-///   run is caught even against a slow baseline.
+///   run is caught even against a slow baseline, and a deterministic
+///   schedule makes an overshoot as wrong as a shortfall.
 #[must_use]
 #[allow(clippy::too_many_lines)] // a flat list of independent gate blocks
 pub fn check_frontend(

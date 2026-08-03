@@ -43,14 +43,16 @@ struct Cli {
     /// against them. Omit to leave the frontend tier out of the run.
     #[arg(long, global = true)]
     frontend_report: Option<PathBuf>,
-    /// Expected receive rate (frames/s) for the live ev-demo sim, gated by
-    /// `check` on the frontend tier as an absolute floor (measured ≥ 0.85×
-    /// expected) independent of the baseline. Host modes gate ingest
+    /// Expected receive rate (frames/s) for the live sim, gated by `check`
+    /// on the frontend tier as a two-sided ±15 % band around this value,
+    /// independent of the baseline — the sim's schedule is deterministic,
+    /// so too many frames is as wrong as too few. Host modes gate ingest
     /// against their own configured offered rate instead.
     #[arg(long, global = true)]
     expected_rx_fps: Option<f64>,
-    /// Expected transmit rate (frames/s) for the live ev-demo sim, gated on
-    /// the frontend tier (the only tier that measures tx separately).
+    /// Expected transmit rate (frames/s) for the live sim, gated on the
+    /// frontend tier (the only tier that measures tx separately) as the
+    /// same two-sided band.
     #[arg(long, global = true)]
     expected_tx_fps: Option<f64>,
     #[command(subcommand)]
