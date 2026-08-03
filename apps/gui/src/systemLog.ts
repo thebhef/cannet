@@ -18,19 +18,14 @@ export const SYSTEM_LOG_LEVEL_RANK: Record<SystemLogLevel, number> = {
 /// Filter parameters held in a panel's dockview `params`. `"" |
 /// undefined` for `source` is "all sources". Per-panel state, not
 /// persisted in the project file.
+///
+/// The *minimum level* is deliberately not here: "how verbose do I want
+/// my log view" is a preference that outlives a panel, so it lives in
+/// `settings.json` as `system_log_min_level` (ADR 0034). The source
+/// filter is genuinely view-local and stays.
 export interface SystemMessagesPanelParams {
   filterSource?: string;
-  minLevel?: SystemLogLevel;
 }
-
-/// The default minimum level. `info` is now what the user's own
-/// actions produced — a handful of entries per session, not a stream —
-/// so it reads as a history of what was done rather than burying the
-/// errors. Drop the filter to `debug` for the app's internal
-/// breadcrumbs (health samples, sidecar `exec:` / `cwd:` lines,
-/// connection plumbing). Everything at every level is already in the
-/// rolling log file regardless of this filter.
-export const DEFAULT_MIN_LEVEL: SystemLogLevel = "info";
 
 /// Apply the per-panel filter to a chronological message list. Pure
 /// function — kept here so it can be unit-tested without rendering.

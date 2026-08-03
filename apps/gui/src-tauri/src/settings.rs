@@ -58,6 +58,7 @@ pub(crate) const SCOPES: ScopeTable = &[
     ("clear_scratch_on_exit", Scope::UserOverridable),
     ("keybindings", Scope::UserOverridable),
     ("show_developer_settings", Scope::User),
+    ("system_log_min_level", Scope::User),
 ];
 
 /// The persisted user settings. `#[serde(default)]` fills any absent field
@@ -69,7 +70,7 @@ pub(crate) const SCOPES: ScopeTable = &[
 // struct's own name. The field name *is* the `settings.json` key a user
 // reads and hand-edits, so it is named for the file, not for Rust.
 #[allow(clippy::struct_field_names)]
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     /// Maximum bytes the disk-spill scratch may grow to before the oldest
@@ -92,6 +93,33 @@ pub struct Settings {
     /// that the view grows no controls of its own — and so that the
     /// toggle is itself findable by searching for it.
     pub show_developer_settings: bool,
+    /// Lowest severity the System Messages panel shows — one of
+    /// [`SYSTEM_LOG_LEVELS`], default `info`. It is a preference ("how
+    /// verbose do I want my log view") rather than panel state, so it
+    /// survives closing and reopening the panel; the panel's *source*
+    /// filter is view-local and stays in its dockview params.
+    pub system_log_min_level: String,
+}
+
+/// The severity names [`Settings::system_log_min_level`] accepts, least
+/// to most severe — the same ladder the frontend's
+/// `SYSTEM_LOG_LEVEL_RANK` and [`crate::system_log::LogLevel`] order by.
+///
+/// Stated once: [`validate`] refuses anything outside it, and it is what
+/// the field's descriptor publishes as its `enum` options rather than
+/// re-listing them ([`crate::settings_descriptor`]).
+pub const SYSTEM_LOG_LEVELS: &[&str] = &["debug", "info", "warn", "error"];
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            scratch_cap_bytes: None,
+            clear_scratch_on_exit: false,
+            keybindings: None,
+            show_developer_settings: false,
+            system_log_min_level: "info".to_string(),
+        }
+    }
 }
 
 /// One persisted keybinding — the on-disk mirror of the frontend's
@@ -140,6 +168,15 @@ fn validate(settings: Settings) -> (Settings, Vec<String>) {
             ));
             settings.scratch_cap_bytes = None;
         }
+    }
+    if !SYSTEM_LOG_LEVELS.contains(&settings.system_log_min_level.as_str()) {
+        let bad = &settings.system_log_min_level;
+        let known = SYSTEM_LOG_LEVELS.join(", ");
+        complaints.push(format!(
+            "system_log_min_level \"{bad}\" is not one of {known}; ignoring it — the \
+             System Messages panel filters at its default"
+        ));
+        settings.system_log_min_level = Settings::default().system_log_min_level;
     }
     (settings, complaints)
 }
@@ -268,6 +305,7 @@ mod tests {
                 },
             ]),
             show_developer_settings: true,
+            system_log_min_level: "warn".to_string(),
         }
     }
 
@@ -295,6 +333,37 @@ mod tests {
         assert!(!d.clear_scratch_on_exit);
         assert_eq!(d.keybindings, None);
         assert!(!d.show_developer_settings);
+        assert_eq!(d.system_log_min_level, "info");
+    }
+
+    #[test]
+    fn an_unknown_system_log_level_is_refused_and_reported() {
+        // Same contract as the cap (ADR 0034 / Stage 1 item 3): a value
+        // the app can't honor is refused and reported, and resolves to
+        // the default — never silently repaired to something else.
+        let (accepted, complaints) = validate(Settings {
+            system_log_min_level: "verbose".to_string(),
+            ..Settings::default()
+        });
+        assert_eq!(accepted.system_log_min_level, "info");
+        assert_eq!(complaints.len(), 1, "{complaints:?}");
+        assert!(
+            complaints[0].contains("system_log_min_level"),
+            "{complaints:?}"
+        );
+        assert!(complaints[0].contains("verbose"), "{complaints:?}");
+    }
+
+    #[test]
+    fn every_declared_system_log_level_is_accepted() {
+        for level in SYSTEM_LOG_LEVELS {
+            let (accepted, complaints) = validate(Settings {
+                system_log_min_level: (*level).to_string(),
+                ..Settings::default()
+            });
+            assert_eq!(&accepted.system_log_min_level, level);
+            assert!(complaints.is_empty(), "{level}: {complaints:?}");
+        }
     }
 
     #[test]
@@ -387,12 +456,20 @@ mod tests {
     #[test]
     fn default_settings_serialize_with_every_key_present() {
         // Unlike state.json, settings.json lists every knob even at its
-        // default so the file is discoverable when hand-edited.
-        let text = serde_json::to_string(&Settings::default()).unwrap();
-        assert!(text.contains("scratch_cap_bytes"), "{text}");
-        assert!(text.contains("clear_scratch_on_exit"), "{text}");
-        assert!(text.contains("keybindings"), "{text}");
-        assert!(text.contains("show_developer_settings"), "{text}");
+        // default so the file is discoverable when hand-edited. Checked
+        // against `SCOPES` rather than a hand-written key list, which
+        // `every_settings_key_declares_a_scope` already pins to the
+        // struct in both directions.
+        let serde_json::Value::Object(keys) = serde_json::to_value(Settings::default()).unwrap()
+        else {
+            panic!("settings must serialize to a JSON object");
+        };
+        for (name, _) in SCOPES {
+            assert!(
+                keys.contains_key(*name),
+                "`{name}` is not in the written file"
+            );
+        }
     }
 
     #[test]

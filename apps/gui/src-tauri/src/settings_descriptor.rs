@@ -26,7 +26,7 @@
 use serde::Serialize;
 
 use crate::persisted_json::{scope_of, Scope};
-use crate::settings::{Settings, MIN_SCRATCH_CAP_BYTES, SCOPES};
+use crate::settings::{Settings, MIN_SCRATCH_CAP_BYTES, SCOPES, SYSTEM_LOG_LEVELS};
 
 /// Which part of the app a setting governs — the tag axis the settings
 /// tree groups by. A setting may govern more than one surface.
@@ -206,6 +206,18 @@ const DESCRIPTORS: &[Spec] = &[
         kind: Kind::Behaviour,
         control: Control::Bool,
     },
+    Spec {
+        key: "system_log_min_level",
+        label: "System log minimum level",
+        help: "The lowest severity the System Messages panel lists. `info` is what \
+               your own actions produced; drop to `debug` for the app's internal \
+               breadcrumbs. The rolling log file keeps every level regardless.",
+        surfaces: &[Surface::Logging],
+        kind: Kind::Behaviour,
+        control: Control::Enum {
+            options: SYSTEM_LOG_LEVELS,
+        },
+    },
 ];
 
 /// One surface, as served: the tag value and the label the tree shows.
@@ -371,6 +383,20 @@ mod tests {
             panic!("the cap is a whole-number control");
         };
         assert_eq!(min, Some(crate::settings::MIN_SCRATCH_CAP_BYTES));
+    }
+
+    #[test]
+    fn the_published_log_levels_are_the_ones_validate_accepts() {
+        // Same anti-drift rule as the cap minimum: the view offers what
+        // the host accepts, from the host's own list, not a second copy.
+        let level = DESCRIPTORS
+            .iter()
+            .find(|s| s.key == "system_log_min_level")
+            .expect("the level has a descriptor");
+        let Control::Enum { options } = level.control else {
+            panic!("the level is a fixed-option control");
+        };
+        assert_eq!(options, SYSTEM_LOG_LEVELS);
     }
 
     #[test]

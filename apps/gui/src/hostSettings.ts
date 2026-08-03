@@ -30,6 +30,7 @@
 import { invoke } from "@tauri-apps/api/core";
 
 import type { BindingSpec } from "./commands";
+import type { SystemLogLevel } from "./types";
 
 /// Mirror of the host `Settings` struct (snake_case to match serde).
 export interface Settings {
@@ -47,6 +48,10 @@ export interface Settings {
   /// An ordinary setting rather than panel chrome, so the panel grows no
   /// controls of its own.
   show_developer_settings: boolean;
+  /// Lowest severity the System Messages panel lists. A preference
+  /// rather than panel state, so it survives closing the panel; the
+  /// panel's source filter stays view-local.
+  system_log_min_level: SystemLogLevel;
 }
 
 export function defaultSettings(): Settings {
@@ -55,6 +60,7 @@ export function defaultSettings(): Settings {
     clear_scratch_on_exit: false,
     keybindings: null,
     show_developer_settings: false,
+    system_log_min_level: "info",
   };
 }
 

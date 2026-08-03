@@ -156,9 +156,18 @@ the fix is not host-side).
    only by the settings panel", false since `useCommands` reads them at
    boot — and doubly false now that the module hydrates.
 
-### Stage 2 — move what is misfiled
+### Stage 2 — move what is misfiled — **complete**
 
-1. **`blf_channel_maps` stays in `state.json` — no move.** A read of
+All three items are settled. Item 1 needed no work here (Task 47 did
+it); items 2 and 3 landed together.
+
+1. **`blf_channel_maps` stays in `state.json` — no move.** *(done by
+   [Task 47](0047-user-workspace-scoping.md), not here.)* It is now
+   `Scope::Workspace` in `state.rs`'s scope table, so it lives in the
+   project's `.cannet/state.json` — the workspace-scoped state this
+   item said it belonged in. Nothing was left for this stage. The
+   reasoning is kept because it is the worked example ADR 0034's
+   sharpened deciding question needs. A read of
    its rustdoc (*"unlike the spill caches this is user-authored and not
    recomputable, so it must not be evicted"*) suggested it fails
    ADR 0034's placement test, since the ADR asserts nothing in
@@ -174,22 +183,44 @@ the fix is not host-side).
 
    Where it *does* belong is **workspace-scoped state** — per-project,
    beside the other things scoped to that working context. That is
-   [Task 47](0047-user-workspace-scoping.md), which is scheduled ahead
-   of this task's Stage 2, so the move happens there rather than here.
-   Until then it stays where it is; it is not misfiled badly enough to
-   justify moving it twice.
+   where Task 47 put it.
 
    ADR 0034 therefore needs no amendment on this point. Sharpening its
    deciding question would still help — "did the user *choose* this, or
    did the app *observe* it?" reads ambiguously for a value the user
    typed into a dialog once.
 2. **System-log minimum level is an app preference stuck in panel
-   state.** "How verbose do I want my log view" survives a panel close
-   in nobody's mental model; today it lives in an untyped dockview
-   `params` blob and resets with every new panel. `filterSource`
-   alongside it is correctly view-local — only the level moves.
+   state.** *(done)* "How verbose do I want my log view" survives a
+   panel close in nobody's mental model; it lived in an untyped
+   dockview `params` blob and reset with every new panel. It is now the
+   `system_log_min_level` setting (`Scope::User` — what *you* see in a
+   log view is not a project's business), and the panel's "Min level"
+   combobox is that setting's editor: it reads through `hostSettings`,
+   subscribes so a change made in the settings view or by a hand-edit
+   follows, and writes through `updateSettings`. `filterSource` stays
+   in `params`, and the panel's rustdoc now says why the two filters
+   sit in different places.
+
+   The value is a `String` validated against
+   [`SYSTEM_LOG_LEVELS`](../../apps/gui/src-tauri/src/settings.rs)
+   rather than a serde enum: a serde enum would fail the *whole*
+   document on one typo'd level, whereas the string goes through
+   `validate` and gets Stage 1 item 3's treatment — refused, reported
+   on the system log, resolved to the default, user's text left alone.
+   The same list is what the descriptor publishes as the control's
+   options, so the view offers exactly what the host accepts
+   (`the_published_log_levels_are_the_ones_validate_accepts`).
+
+   Tests: `SystemMessagesPanel.dom.test.tsx` (level comes from
+   settings not params; a pick persists and never lands in
+   `updateParameters`; it survives close/reopen; the source filter
+   still goes to `params` and writes no setting) and `settings.rs`
+   (unknown level refused and reported; every declared level accepted).
 3. **`showValues` is written to `params` but absent from that panel's
-   params interface.** Right location, broken contract. Type it.
+   params interface.** *(done)* Right location, broken contract.
+   `DbcPanel`'s `PanelParams` now declares it, and the inline
+   `params as { showValues?: unknown }` cast at the `useState` seed is
+   gone.
 
 ### Stage 3 — promote constants that are really policy
 

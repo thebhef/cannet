@@ -76,6 +76,10 @@ interface PanelParams {
   /// showing bit layout, scale, range, mux, attributes, value table,
   /// etc. — every DBC field we have a frontend representation for.
   showDetails?: unknown;
+  /// Panel-wide "live values" toggle: whether each signal row carries a
+  /// live-latest decoded value column. Persisted like the other
+  /// toggles, so reopening from a saved layout restores it.
+  showValues?: unknown;
 }
 
 function filterFromParams(raw: unknown): string {
@@ -723,7 +727,7 @@ export function DbcPanel(props: IDockviewPanelProps) {
   /// panel is a singleton navigator with no trace-window state
   /// (pausing belongs to signal-view elements).
   const [showValues, setShowValues] = useState<boolean>(
-    () => (params as { showValues?: unknown } | undefined)?.showValues === true,
+    () => params?.showValues === true,
   );
   const [content, setContent] = useState<DbcContentRecord[]>([]);
   /// Whether the panel is on screen — false while it sits in a
