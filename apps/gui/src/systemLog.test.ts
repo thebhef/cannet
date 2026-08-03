@@ -2,9 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import type { SystemMessage } from "./types";
 import {
+  EMPTY_SYSTEM_LOG_MIRROR,
+  SYSTEM_LOG_MIRROR_CAPACITY,
+  type SystemLogMirror,
   applySystemLogFilter,
+  clearSystemLogMirror,
   distinctSources,
   formatLogLine,
+  markSystemLogRead,
   mergeSystemMessage,
   reconcileSnapshot,
   unreadWarnOrError,
@@ -72,42 +77,98 @@ describe("distinctSources", () => {
   });
 });
 
+/// A mirror holding `msgs`, nothing read yet.
+const mirrorOf = (...msgs: SystemMessage[]): SystemLogMirror =>
+  msgs.reduce(mergeSystemMessage, EMPTY_SYSTEM_LOG_MIRROR);
+
 describe("mergeSystemMessage", () => {
   it("appends a new message", () => {
-    const list = [msg(0, "dbc", "info")];
-    const merged = mergeSystemMessage(list, msg(1, "dbc", "warn"));
-    expect(merged.map((m) => m.seq)).toEqual([0, 1]);
+    const merged = mergeSystemMessage(mirrorOf(msg(0, "dbc", "info")), msg(1, "dbc", "warn"));
+    expect(merged.messages.map((m) => m.seq)).toEqual([0, 1]);
   });
 
   it("is a no-op when seq is already present (event/snapshot race)", () => {
-    const list = [msg(0, "dbc", "info"), msg(1, "dbc", "warn")];
-    const merged = mergeSystemMessage(list, msg(1, "dbc", "warn"));
-    expect(merged.map((m) => m.seq)).toEqual([0, 1]);
+    // The host emits `seq` monotonically, so the check is against the
+    // tail alone — no scan of the mirror per appended message.
+    const mirror = mirrorOf(msg(0, "dbc", "info"), msg(1, "dbc", "warn"));
+    const merged = mergeSystemMessage(mirror, msg(1, "dbc", "warn"));
+    expect(merged).toBe(mirror);
+  });
+
+  it("caps the mirror, dropping the oldest entries", () => {
+    // The frontend mirror must not grow with session time (CLAUDE.md's
+    // paging rule); the host ring it mirrors is bounded the same way.
+    let mirror = EMPTY_SYSTEM_LOG_MIRROR;
+    for (let seq = 0; seq < SYSTEM_LOG_MIRROR_CAPACITY + 50; seq++) {
+      mirror = mergeSystemMessage(mirror, msg(seq, "dbc", "info"));
+    }
+    expect(mirror.messages.length).toBe(SYSTEM_LOG_MIRROR_CAPACITY);
+    expect(mirror.messages[0].seq).toBe(50);
+    expect(mirror.messages[mirror.messages.length - 1].seq).toBe(
+      SYSTEM_LOG_MIRROR_CAPACITY + 49,
+    );
+  });
+
+  it("tracks the unread warn/error tally as it appends", () => {
+    let mirror = mergeSystemMessage(EMPTY_SYSTEM_LOG_MIRROR, msg(0, "dbc", "info"));
+    expect(mirror.unread).toBe(0);
+    mirror = mergeSystemMessage(mirror, msg(1, "dbc", "warn"));
+    mirror = mergeSystemMessage(mirror, msg(2, "connection", "error"));
+    mirror = mergeSystemMessage(mirror, msg(3, "dbc", "debug"));
+    expect(mirror.unread).toBe(2);
+  });
+});
+
+describe("markSystemLogRead / clearSystemLogMirror", () => {
+  it("clears the badge until a *new* warn or error arrives", () => {
+    const mirror = markSystemLogRead(
+      mirrorOf(msg(0, "dbc", "warn"), msg(1, "connection", "error")),
+    );
+    expect(mirror.unread).toBe(0);
+    expect(mergeSystemMessage(mirror, msg(2, "dbc", "info")).unread).toBe(0);
+    expect(mergeSystemMessage(mirror, msg(2, "dbc", "error")).unread).toBe(1);
+  });
+
+  it("empties the mirror without un-reading what was already read", () => {
+    // The host keeps counting `seq` across a clear, so the read mark has
+    // to survive it — otherwise the next info message re-arms the badge.
+    const cleared = clearSystemLogMirror(
+      markSystemLogRead(mirrorOf(msg(0, "dbc", "warn"))),
+    );
+    expect(cleared.messages).toEqual([]);
+    expect(cleared.unread).toBe(0);
+    expect(mergeSystemMessage(cleared, msg(1, "dbc", "info")).unread).toBe(0);
   });
 });
 
 describe("reconcileSnapshot", () => {
   it("replaces the list with the snapshot when nothing is more recent", () => {
-    const current = [msg(0, "dbc", "info")];
+    const current = mirrorOf(msg(0, "dbc", "info"));
     const snapshot = [msg(0, "dbc", "info"), msg(1, "dbc", "warn")];
-    expect(reconcileSnapshot(current, snapshot).map((m) => m.seq)).toEqual([0, 1]);
+    expect(reconcileSnapshot(current, snapshot).messages.map((m) => m.seq)).toEqual([0, 1]);
   });
 
   it("preserves any tail entries whose seq is past the snapshot's last", () => {
     // A `system-log-appended` event arrived (seq 2) between the panel
     // requesting the snapshot and the snapshot being delivered.
-    const current = [msg(2, "connection", "error")];
+    const current = mirrorOf(msg(2, "connection", "error"));
     const snapshot = [msg(0, "dbc", "info"), msg(1, "dbc", "warn")];
-    expect(reconcileSnapshot(current, snapshot).map((m) => m.seq)).toEqual([
+    expect(reconcileSnapshot(current, snapshot).messages.map((m) => m.seq)).toEqual([
       0, 1, 2,
     ]);
   });
 
-  it("returns a copy of `current` when the snapshot is empty", () => {
-    const current = [msg(0, "dbc", "info")];
-    const result = reconcileSnapshot(current, []);
-    expect(result).not.toBe(current);
-    expect(result).toEqual(current);
+  it("keeps `current` when the snapshot is empty", () => {
+    const current = mirrorOf(msg(0, "dbc", "info"));
+    expect(reconcileSnapshot(current, []).messages).toEqual(current.messages);
+  });
+
+  it("recounts unread against the read mark", () => {
+    // The bulk recount lives here — once, on the boot snapshot — so the
+    // append path never has to rescan.
+    const read = markSystemLogRead(mirrorOf(msg(0, "dbc", "warn")));
+    const snapshot = [msg(0, "dbc", "warn"), msg(1, "dbc", "error"), msg(2, "dbc", "info")];
+    expect(reconcileSnapshot(read, snapshot).unread).toBe(1); // seq 1 only
   });
 });
 
