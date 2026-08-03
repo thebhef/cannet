@@ -37,6 +37,7 @@ import {
 } from "./projectElements";
 import { freshTrace } from "./trace";
 import { LIVE_TAIL_ROWS, resetLiveTailDemand } from "./liveTailDemand";
+import { PAGE_ROWS } from "./useWindowedQuery";
 import type { ProjectElement } from "./types";
 
 class FakeResizeObserver {
@@ -201,7 +202,7 @@ describe("TracePanel chronological filtering", () => {
         scanStart: 0,
         scanEnd: 100,
         offset: 0,
-        limit: 512,
+        limit: PAGE_ROWS,
         fromEnd: true,
         // The follow-live tail resumes from the incremental checkpoint; on
         // the first fetch under a descriptor it's the freshly-reset empty

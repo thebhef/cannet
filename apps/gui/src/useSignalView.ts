@@ -6,11 +6,6 @@ import type { SignalSortState } from "./signalColumns";
 import { useWindowedQuery, type WindowPage } from "./useWindowedQuery";
 import { diagCount } from "./diag"; // DIAG
 
-/// Rows fetched per page. The row set is bounded by the selection (one
-/// row per selected descriptor), so a single page usually covers it —
-/// same reasoning as the by-id view.
-const PAGE = 1024;
-
 /// Spacing between live refreshes — latest values / statistics lag the
 /// tail by at most this while running. Matches the by-id cadence.
 const REFRESH_MS = 250;
@@ -93,7 +88,6 @@ export function useSignalView(
     fetchPage,
     followLive: running,
     extentSignal: winEnd + (running ? 0 : 1),
-    pageSize: PAGE,
     refreshMs: REFRESH_MS,
   });
 

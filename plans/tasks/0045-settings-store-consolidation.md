@@ -256,7 +256,11 @@ so they go in:
 
 Independent of the settings question: the DBC panel's live-value poll
 is a bare `500` literal where every sibling cadence has a named
-constant. Name it while in here.
+constant. Name it while in here. *(done — `VALUE_POLL_MS` in
+`DbcPanel.tsx`, with the prose copy of the number in the
+`panelVisible` comment replaced by the name. It stays a constant: it is
+not one of the promoted knobs, and the row above about the host-mirror
+poll is about `useHostMirror`, not this one.)*
 
 **Explicitly staying constants** — recorded so this is not re-audited
 every six months: page sizes, `MAX_SCROLL_HEIGHT_PX` (a browser
@@ -268,7 +272,16 @@ not persistent intent.
 
 Separately, page sizes are 512 / 1000 / 1024 for the same job across
 four call sites. Not a settings question; just unexplained drift worth
-normalising while in here.
+normalising while in here. *(done — one exported `PAGE_ROWS = 1024` in
+`useWindowedQuery.ts`; the four call sites no longer pass `pageSize` at
+all, so the hook's default* is *the page size and there is nothing left
+to drift. 1024 was already the value at two of the four, is a power of
+two, and is within 2.4 % of the chronological view's 1000; the filtered
+view's 512 was the outlier and nothing in git history ties any of the
+three to a measurement. The same number also sets the scroll-back
+prefetch margin (`pageSize / 4`), which the drift had moving between
+128, 250 and 256 rows. Guarded by* `pages at PAGE_ROWS when the caller
+names no page size` *in `useWindowedQuery.test.ts`.)*
 
 ### Stage 4 — env-only configuration that needs a settings equivalent
 

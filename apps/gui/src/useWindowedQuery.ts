@@ -102,7 +102,18 @@ function emptyWindow<T>(): WindowState<T> {
   return { start: 0, rows: [], fetchedTotal: 0, version: 0 };
 }
 
-const DEFAULT_PAGE = 512;
+/// Rows fetched per page, for every paged view.
+///
+/// One number, stated once. The four views that page through this hook
+/// (chronological trace, filtered trace, by-id, signals) do the same
+/// job — big enough that ordinary scrolling stays inside the loaded
+/// page, small enough that one page is a cheap IPC payload to
+/// deserialize on the UI thread — and used to carry 1000, 512 and 1024
+/// for it, none of them tied to a measurement or a host-side
+/// constraint. It also sets the scroll-back prefetch margin
+/// (`pageSize / 4` in `ensureVisible`), so the drift moved that too.
+export const PAGE_ROWS = 1024;
+
 const DEFAULT_REFRESH_MS = 250;
 
 export function useWindowedQuery<T>(
@@ -116,7 +127,7 @@ export function useWindowedQuery<T>(
     extentSignal,
     extent,
     liveTail,
-    pageSize = DEFAULT_PAGE,
+    pageSize = PAGE_ROWS,
     refreshMs = DEFAULT_REFRESH_MS,
   } = opts;
 

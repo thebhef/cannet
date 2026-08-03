@@ -5,11 +5,6 @@ import type { FilterPredicate, TraceFrameRecord } from "./types";
 import { useWindowedQuery, type WindowPage } from "./useWindowedQuery";
 import { diagCount } from "./diag"; // DIAG
 
-/// Rows fetched per filtered page. Big enough that ordinary scrolling
-/// stays inside the loaded page; small enough that one page is a cheap
-/// IPC payload to deserialize on the UI thread.
-const PAGE = 512;
-
 /// Minimum spacing between the live "keep up with the trace"
 /// refreshes. The filtered view lags the tail by at most this; the
 /// throttle bounds both the UI-thread parse cost and the host-side
@@ -120,8 +115,7 @@ export function useFilteredTrace(
       // `winEnd` advances every grow tick; `running` flips on Start/Stop.
       // Either marks the view stale so the throttled tick refreshes.
       extentSignal: winEnd + (running ? 0 : 1),
-      pageSize: PAGE,
-      refreshMs: REFRESH_MS,
+        refreshMs: REFRESH_MS,
     });
 
   return { count, version, getFrame: getRow, ensureVisible };

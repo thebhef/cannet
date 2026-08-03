@@ -169,6 +169,12 @@ const ALL_BUSES_BUS_ID = ":::all";
 const NO_TRANSMITTER_ECU_KEY = ":::none";
 const NO_TRANSMITTER_LABEL = "(no transmitter)";
 
+/// Spacing between live-value refreshes while the value column is on
+/// and the panel is on screen. Dirty-gated on `trace-grew`, so a quiet
+/// capture costs nothing; this only bounds how often a *growing* one
+/// pays the decode-and-join round-trip.
+const VALUE_POLL_MS = 500;
+
 /// One per-transmitter group of a DBC's messages — the ECU tree
 /// level. `key` feeds the node id (stable across renames of the
 /// display label); `transmitter` is `null` for the no-sender group.
@@ -734,7 +740,8 @@ export function DbcPanel(props: IDockviewPanelProps) {
   /// background tab of its dockview group. The value poll below is a
   /// standing host round-trip that decodes and joins one row per
   /// visible signal; a hidden panel has no rows anyone can read, so it
-  /// stops polling entirely rather than paying that every 500 ms.
+  /// stops polling entirely rather than paying that every
+  /// `VALUE_POLL_MS`.
   const [panelVisible, setPanelVisible] = useState<boolean>(api.isVisible);
   useEffect(() => {
     const d = api.onDidVisibilityChange((e) => setPanelVisible(e.isVisible));
@@ -961,7 +968,7 @@ export function DbcPanel(props: IDockviewPanelProps) {
     // at once rather than after a tick.
     valuesDirtyRef.current = true;
     tick();
-    const id = window.setInterval(tick, 500);
+    const id = window.setInterval(tick, VALUE_POLL_MS);
     return () => {
       live = false;
       window.clearInterval(id);

@@ -9,7 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 
-import { useWindowedQuery, type WindowPage } from "./useWindowedQuery";
+import { PAGE_ROWS, useWindowedQuery, type WindowPage } from "./useWindowedQuery";
 
 /// A fake host page source over a contiguous integer "model" of
 /// `total` rows: row at index `i` is the string `r{i}`. Counts calls so
@@ -280,5 +280,24 @@ describe("useWindowedQuery", () => {
     // Past the loaded page, the overlay answers so the live edge never
     // shows a placeholder between throttled re-pages.
     expect(result.current.getRow(1001)).toBe("t1001");
+  });
+
+  it("pages at PAGE_ROWS when the caller names no page size", async () => {
+    // Every paged view now omits `pageSize`, so this default *is* the
+    // one page size — the four views used to carry 1000 / 512 / 1024
+    // for the same job.
+    const { fetchPage } = fakeSource(100_000);
+    renderHook(() =>
+      useWindowedQuery({
+        ...base,
+        pageSize: undefined,
+        descriptor: "cap1",
+        extent: 100_000,
+        fetchPage,
+      }),
+    );
+    await flush();
+
+    expect(fetchPage).toHaveBeenCalledWith(0, PAGE_ROWS, false);
   });
 });

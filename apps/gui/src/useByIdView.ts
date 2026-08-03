@@ -6,13 +6,6 @@ import type { SortState } from "./traceColumns";
 import { useWindowedQuery, type WindowPage } from "./useWindowedQuery";
 import { diagCount } from "./diag"; // DIAG
 
-/// Rows fetched per by-id page. The by-id set is bounded by id-space (one
-/// row per arbitration id), so in practice a single page covers it; the
-/// virtualizer fetches more only for a capture with an unusually large id
-/// space. Big enough that ordinary scrolling stays inside the loaded
-/// page; small enough to stay a cheap IPC payload.
-const PAGE = 1024;
-
 /// Spacing between the live "keep up with the trace" refreshes — the
 /// by-id values (latest frame, rate, new ids) lag the tail by at most
 /// this while running.
@@ -112,8 +105,7 @@ export function useByIdView(
       refresh: "window",
       // `winEnd` advances every grow tick; `running` flips on Start/Stop.
       extentSignal: winEnd + (running ? 0 : 1),
-      pageSize: PAGE,
-      refreshMs: REFRESH_MS,
+        refreshMs: REFRESH_MS,
     });
 
   return { count, version, getRow, ensureVisible };
