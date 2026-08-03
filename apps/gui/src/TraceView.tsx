@@ -29,7 +29,7 @@ import { diagCount } from "./diag"; // DIAG
 
 interface TraceViewProps {
   count: number;
-  /// Bumped by the parent when chunk-cache contents change; its only
+  /// Bumped by the parent when the loaded page's contents change; its only
   /// job is to re-render this component so `getRow` is re-consulted
   /// (e.g. a placeholder row's data just landed). Not read directly.
   version: number;
@@ -116,13 +116,20 @@ export function TraceView({
   // truth for what's shown: `firstVisibleRow` and the scrollbar
   // position both derive from it, so the rendered rows never depend on
   // the live `scrollTop` and can't jitter when `count` grows
-  // underneath the user. While `autoScroll` is on a layout effect
-  // keeps it pinned to the live tail (`maxAnchorRow`); a user scroll
-  // re-points it at whatever row the scrollbar now sits on; the re-pin
-  // effect drags `scrollTop` to match as the trace lengthens (which
-  // shifts the row↔scroll mapping past ~730k rows, where it's
-  // compressed).
-  const [anchoredRow, setAnchoredRow] = useState(0);
+  // underneath the user. A user scroll points it at whatever row the
+  // scrollbar now sits on; the re-pin effect drags `scrollTop` to match
+  // as the trace lengthens (which shifts the row↔scroll mapping past
+  // ~730k rows, where it's compressed).
+  //
+  // `null` means "pinned to the live tail", where the anchor is
+  // *derived* from `anchorMax` rather than stored. Storing it there
+  // needed a post-render write on every `count` growth, so each live
+  // tick rendered twice: once against the stale anchor, discarded, then
+  // again against the new one.
+  const [anchoredRow, setAnchoredRow] = useState<number | null>(autoScroll ? null : 0);
+  // Auto-scroll always means pinned, whatever the stored anchor says —
+  // so nothing has to race the toggle to keep the two consistent.
+  const anchor = autoScroll ? null : anchoredRow;
 
   // Set true when *we* move scrollTop (the re-pin effect) so the
   // resulting scroll event isn't taken for a user scroll — which would
@@ -130,30 +137,37 @@ export function TraceView({
   const programmaticScrollRef = useRef(false);
 
   const { containerRef, viewportHeight, rows, spacerHeight, anchorMax, firstVisibleRow, lastVisibleRow } =
-    useTraceViewport(count, anchoredRow, "traceview.resizeObserver");
+    useTraceViewport(count, anchor, "traceview.resizeObserver");
   // `scrollForRow(anchorMax)` is exactly the bottom (`maxScrollTop`),
   // so this is "the bottom" while auto-scrolling and the anchored
   // row's scrollTop otherwise.
   const targetScrollTop = scrollForRow(firstVisibleRow, count, viewportHeight);
 
-  // Tell the parent which absolute rows are visible so it can prefetch
-  // the covering chunks — but skip this while auto-scrolling: the
-  // `trace-grew` overlay already carries enough trailing frames to
-  // cover every visible row, so prefetching there would just churn the
-  // shared chunk cache (at a high frame rate the live edge moves many
-  // chunks per tick, evicting other panels' rows from the LRU).
+  // Tell the parent which absolute rows are visible so it can page them
+  // in — but skip this while auto-scrolling: the `trace-grew` live-tail
+  // overlay already carries enough trailing frames to cover every
+  // visible row, so asking here would re-page the window every tick and
+  // pull it off whatever the other consumers of the same query need.
   useEffect(() => {
     if (count === 0 || autoScroll) return;
     ensureVisible(firstVisibleRow, lastVisibleRow);
   }, [autoScroll, firstVisibleRow, lastVisibleRow, count, ensureVisible]);
 
-  // While auto-scrolling, keep the anchor glued to the live tail. This
-  // is also what makes turning auto-scroll off (toolbar checkbox) a
-  // no-op visually: the anchor is already the tail row, so nothing
-  // jumps.
+  // Turning auto-scroll off from the toolbar is the one path that stops
+  // following the tail without naming a row (every other one — a scroll,
+  // a wheel step, a goto — sets the anchor itself), so fill in the row
+  // the view is already showing. Keyed on the `autoScroll` edge, so it
+  // costs one render per toggle and none per tick; `?? ` leaves an
+  // anchor a handler set while disabling alone.
+  const anchorMaxRef = useRef(anchorMax);
+  anchorMaxRef.current = anchorMax;
+  const wasAutoScroll = useRef(autoScroll);
   useLayoutEffect(() => {
-    if (autoScroll && anchoredRow !== anchorMax) setAnchoredRow(anchorMax);
-  }, [autoScroll, anchorMax, anchoredRow]);
+    const was = wasAutoScroll.current;
+    wasAutoScroll.current = autoScroll;
+    if (autoScroll && !was) setAnchoredRow(null);
+    else if (!autoScroll && was) setAnchoredRow((r) => r ?? anchorMaxRef.current);
+  }, [autoScroll]);
 
   // Keep the actual scroll position in sync with where the view wants
   // to be. Fires only when the *target* moves — i.e. on auto-scroll
@@ -196,7 +210,7 @@ export function TraceView({
         onAutoScrollDisabled(); // wheel-up: release the pin to look back
       }
       setAnchoredRow((r) => {
-        const base = autoScroll ? anchorMax : Math.min(anchorMax, Math.max(0, r));
+        const base = autoScroll || r == null ? anchorMax : Math.min(anchorMax, Math.max(0, r));
         return Math.min(anchorMax, Math.max(0, base + step));
       });
     };
@@ -208,9 +222,9 @@ export function TraceView({
   useEffect(() => {
     if (count === 0) {
       setExpanded(new Set());
-      setAnchoredRow(0);
+      setAnchoredRow(autoScroll ? null : 0);
     }
-  }, [count]);
+  }, [count, autoScroll]);
 
   // A cross-panel "goto" (ADR 0035): drop out of auto-scroll and anchor the
   // requested display row near the top (a couple of rows of lead-in for
@@ -287,7 +301,7 @@ export function TraceView({
             {placements.map(({ posKey, absIdx, top, isExpanded, height }) => {
               // Resolve the base-typed row once and hand the frame / event to
               // the single Row renderer as separate props — the inner objects
-              // are ref-stable (chunk cache / events array), so `Row`'s memo
+              // are ref-stable (the loaded page / the events array), so `Row`'s memo
               // still skips unchanged rows where wrapping in a fresh
               // `{ row, … }` object each render would not (ADR 0035).
               const r = getRow(absIdx);

@@ -1,7 +1,8 @@
 /// Shared virtualization scaffolding for `TraceView` and `ByIdTable`:
 /// tracks the container's pixel height via `ResizeObserver` and derives
 /// the rows-to-render / scaled spacer height / anchor bounds / visible
-/// row window from it, `count`, and the caller's `anchoredRow` — the
+/// row window from it, `count`, and the caller's `anchoredRow` (`null`
+/// = pinned to the tail, so the anchor is derived rather than held) — the
 /// rows/spacer/anchor arithmetic and the resize effect were identical
 /// between the two views. Everything past that (scroll handling,
 /// auto-scroll, wheel stepping) stays in each view: `TraceView`'s
@@ -26,7 +27,11 @@ export interface TraceViewportScaffold {
 
 export function useTraceViewport(
   count: number,
-  anchoredRow: number,
+  /// The absolute row to put at the top of the viewport, or `null` for
+  /// "pin to the tail" — the anchor is then *derived* from `anchorMax`,
+  /// so a caller following the live edge holds no state that has to be
+  /// rewritten after every render as the row count grows.
+  anchoredRow: number | null,
   /// Diag counter key bumped on every resize-observed update, or
   /// omitted to stay silent (`ByIdTable` has never carried one;
   /// `TraceView` passes `"traceview.resizeObserver"`).
@@ -51,7 +56,8 @@ export function useTraceViewport(
   const rows = visibleRowCount(viewportHeight);
   const spacerHeight = scaledHeight(count, viewportHeight);
   const anchorMax = maxAnchorRow(count, viewportHeight);
-  const firstVisibleRow = Math.min(anchorMax, Math.max(0, anchoredRow));
+  const firstVisibleRow =
+    anchoredRow == null ? anchorMax : Math.min(anchorMax, Math.max(0, anchoredRow));
   const lastVisibleRow = Math.min(count, firstVisibleRow + rows);
 
   return { containerRef, viewportHeight, rows, spacerHeight, anchorMax, firstVisibleRow, lastVisibleRow };
