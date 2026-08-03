@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 
 import { invoke } from "@tauri-apps/api/core";
-import { useDecimatedRange, type DecimatedRequest } from "./useDecimatedRange";
+import { fetchWindowExtent, useDecimatedRange, type DecimatedRequest } from "./useDecimatedRange";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 const mockInvoke = vi.mocked(invoke);
@@ -285,5 +285,34 @@ describe("useDecimatedRange", () => {
     const out2 = await run(() => result.current, req(), sidecar);
     expect(out2.kind).toBe("unchanged");
     expect(sidecar).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("fetchWindowExtent", () => {
+  it("asks for the window's anchors alone — no signals, no slice bounds", async () => {
+    // `last_seconds` is a fact about the window (the host reads it off
+    // the store's anchors), not about the queried signals, so the
+    // extent-only form of the query carries an empty signal list and
+    // costs the host no per-signal slicing.
+    mockInvoke.mockResolvedValue(encode(100, 150, []));
+
+    expect(await fetchWindowExtent(0, 5000)).toBe(150);
+
+    const args = mockInvoke.mock.calls[0][1] as Record<string, unknown>;
+    expect(args.fromIndex).toBe(0);
+    expect(args.windowEnd).toBe(5000);
+    expect(args.signals).toEqual([]);
+    expect(args.fromSeconds).toBeNull();
+    expect(args.toSeconds).toBeNull();
+  });
+
+  it("is null for a collapsed window, without a round-trip", async () => {
+    expect(await fetchWindowExtent(7, 7)).toBeNull();
+    expect(mockInvoke).not.toHaveBeenCalled();
+  });
+
+  it("is null while the window holds no frames yet", async () => {
+    mockInvoke.mockResolvedValue(encode(null, null, []));
+    expect(await fetchWindowExtent(0, 10)).toBeNull();
   });
 });

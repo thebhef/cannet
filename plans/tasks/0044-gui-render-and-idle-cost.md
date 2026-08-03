@@ -278,10 +278,11 @@ numbers, and until it lands none of the six can be called *measured*.
 2. **Parked views refetch identical data** — confirmed. A slice ending
    behind the last frame already seen now keys without `winEnd`, so a
    zoomed-into-history panel makes no round-trip while the capture
-   grows. **Caveat for Tier 2:** its live-edge readout (`lastT`) freezes
-   with it, so *Fit Data* on such a panel fits to the extent as of the
-   moment it parked. The finding assumed the output was pixel-identical;
-   the plot data is, the live edge is not.
+   grows. The finding assumed the output was pixel-identical; the plot
+   data is, the live edge is not — `lastT` freezes with the fetch, and
+   it is what feeds the panel's data extent. That shipped as a *Fit
+   Data* regression and was fixed on top; see "Fit Data over a parked
+   window" below.
 3. **Trace views render twice per tick** — confirmed; measured 2 renders
    per `count` change before, 1 after. The anchor is now derived while
    pinned. The doc deliverable landed with it: CLAUDE.md's paging rule
@@ -317,3 +318,51 @@ numbers, and until it lands none of the six can be called *measured*.
    through `useFilteredTrace`). Three of the four call sites now opt
    out, so a Clear / Connect / DBC reload / Start / Stop no longer
    fetches 1000 decoded frames per open plot, signals or by-id panel.
+
+### Fit Data over a parked window
+
+Tier 1 item 2 shipped a regression: with the panel's live-edge readout
+frozen, *Fit Data* fitted to the extent as of the moment the window
+parked, so the plot ended early — as though the capture had stopped
+when the user panned away. Nothing looked broken; it just showed less
+than everything.
+
+Characterised first, three questions, three tests
+(`PlotPanel.dom.test.tsx` → "Fit Data over a parked window"):
+
+- **Does it reproduce?** Yes. Parked at a 2 s live edge, capture grown
+  to 9 s, Fit Data fits to 2.
+- **Does it self-heal?** **Yes — on the second press**, contradicting
+  the expectation that it would stay wrong for the session. Fitting to
+  the stale edge lands the right edge *on* it, and the ±20 % fetch
+  margin then puts the requested slice back past the last frame seen —
+  which un-parks the window, so the re-sample Fit Data forces refreshes
+  the extent and the next press is right. The bug was "one press
+  stale", not "stuck until follow-live".
+- **Does a live area rescue it?** **No, and it cannot.** `sharedExtent()`
+  maxes across areas, but the x window is *panel*-wide (`xSyncRef`), so
+  every area requests the same slice and parks as one. The premise of a
+  panel with one parked and one live area is unreachable. (An area whose
+  windowed source re-anchors — a signal added or removed — does refetch
+  and would refresh the extent, but that is a signal-set change, not a
+  live area.)
+
+**The fix.** `fitData` asks the host where the window ends *now*
+instead of trusting the extent the areas last drew. `last_seconds` is a
+fact about the window — the host reads it off the store's anchors, not
+off the queried signals — so an empty `signals` list is the same query
+with the per-signal slicing left out: `fetchWindowExtent` in
+`useDecimatedRange.ts`. One round-trip per press, none per tick.
+Rejected alternatives: a per-tick extent query (puts the skipped
+round-trip straight back); deriving the edge from `winEnd` (a frame
+*index* — index→time mapping is host-side); reading `data.liveTail`'s
+last row (couples to a payload Tier 2 item 4 plans to gate off, and
+says nothing about a window short of the tip).
+
+**No exit criterion is now unmet.** "A parked / zoomed plot panel
+issues no host round-trips while the capture grows" still holds — the
+new round-trip is on a user gesture, and the two-area test asserts the
+zero-round-trip claim directly while the capture grows. Still no
+ADR-0031 capture, so the cost of that one press is un-measured; it is
+a `window_anchors` binary search with no decode, so it should not be
+visible.

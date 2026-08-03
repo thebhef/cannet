@@ -17,6 +17,7 @@ import { useNotes } from "./notesContext";
 import { TRUNCATION_EVENT_ID } from "./notes";
 import { GOTO_EVENT, type GotoPayload } from "./gotoEvent";
 import { mergeSeries, signalKey } from "./plotData";
+import { fetchWindowExtent } from "./useDecimatedRange";
 import { stableSignalColor, wheelColor } from "./palette";
 import {
   RESAMPLE_INTERVAL_MS,
@@ -110,7 +111,9 @@ import {
  * Interaction: drag-select or **wheel** zooms x on every area (and
  * leaves "follow live"); `shift`+wheel pans x; `⌘/ctrl`+wheel zooms y
  * on the hovered area (buried — y is usually set with the per-area
- * range control); "fit data" refits x to the full signal extent;
+ * range control); "fit data" refits x to the capture's full extent,
+ * asked of the host on the press (a window zoomed into history stops
+ * re-sampling, so the extent it carries is the one it last drew);
  * **follow live** slides a fixed-width window so the right edge tracks
  * the live edge — the width is whatever you last zoomed/panned to (a
  * default until the capture is that long, then it slides).
@@ -524,15 +527,31 @@ export function PlotPanel(props: IDockviewPanelProps) {
   const [fitYEpoch, setFitYEpoch] = useState(0);
   const fitYAll = useCallback(() => setFitYEpoch((n) => n + 1), []);
 
-  const fitData = useCallback(() => {
-    const ext = sharedExtent();
+  const fitData = useCallback(async () => {
+    // `sharedExtent()` is only as fresh as the last area re-sample, and a
+    // window zoomed into history stops re-sampling while the capture
+    // grows (its request can't return different bytes). Fitting to it
+    // would end the plot where the capture stood when the user panned
+    // away — so ask the host where the window ends *now*. One round-trip
+    // per press; none per tick, which is what the parked view saves.
+    const base = baseSecondsRef.current;
+    let ext: number | null = null;
+    if (base != null && Number.isFinite(base)) {
+      try {
+        const last = await fetchWindowExtent(winStart, winEnd);
+        if (last != null) ext = last - base;
+      } catch {
+        /* host unreachable — fall back to the rendered extent below */
+      }
+    }
+    ext ??= sharedExtent();
     // Fit the full span from the window's session-relative start (ADR
     // 0024 — a Clear re-anchors but doesn't re-zero), not a literal 0.
     const start = sharedStart();
     applyXAll(start, ext != null && ext > start ? ext : start + 1, null);
     setResetYEpoch((n) => n + 1);
     bumpXEpoch();
-  }, [sharedExtent, sharedStart, applyXAll, bumpXEpoch]);
+  }, [sharedExtent, sharedStart, applyXAll, bumpXEpoch, winStart, winEnd]);
 
   // Hotkey / palette implementations for this panel instance
   // (ADR 0018): with the panel focused, `f` re-runs fit-data and `l`

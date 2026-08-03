@@ -40,6 +40,14 @@ use crate::signal_sampler;
 /// small, and the caller re-decimates its own accumulated series).
 /// Min/max decimation preserves per-bucket extrema, so spikes survive.
 ///
+/// The returned `from_seconds` / `last_seconds` are facts about the
+/// *window*, read off the store's anchors — they do not depend on which
+/// signals were asked for. **An empty `signals` list is therefore the
+/// extent-only form of this query**: the window's bounds with no
+/// per-signal slicing or decode at all. A view that must know where the
+/// capture currently ends, without pulling a slice it is not going to
+/// draw, calls it that way.
+///
 /// `async` for the same reason as `fetch_trace_range`: the slice +
 /// decode can briefly contend with a fast pump thread, so it runs off
 /// the UI thread. The trace-store slice is taken before the DBC lock to

@@ -1404,6 +1404,10 @@ describe("PlotPanel Fit Data over a parked window", () => {
   /// still short of `PARKED_EDGE`, which is what makes it parked.
   const HISTORY = { min: 0.4, max: 1.0 };
 
+  beforeEach(() => {
+    mockSampleBounds.last = PARKED_EDGE;
+  });
+
   /// The newest uPlot instance rendered inside the named area. Areas
   /// rebuild their instance on a signal-set change, so the last one wins.
   function liveInstanceIn(areaLabel: string): FakeUPlotInst {
@@ -1466,7 +1470,7 @@ describe("PlotPanel Fit Data over a parked window", () => {
     }
   }
 
-  it.fails("Fit Data on a parked panel fits to the capture's true live edge", async () => {
+  it("Fit Data on a parked panel fits to the capture's true live edge", async () => {
     // THE REGRESSION. The panel parked at a live edge of 2 s, the capture
     // ran on to 9 s, and Fit Data — whose whole job is "show me
     // everything" — fits to 2. Nothing looks broken; the plot just ends
@@ -1495,13 +1499,13 @@ describe("PlotPanel Fit Data over a parked window", () => {
     });
   });
 
-  it("a second Fit Data press recovers the true live edge", async () => {
-    // How bad the regression is turns on this. The first press fits to
-    // the stale edge — but landing the right edge *on* that edge is
-    // exactly what un-parks the window (the padded slice now reaches
-    // past the last frame seen), so the re-sample it forces refreshes the
-    // extent and a second press is right. The panel is one press stale,
-    // not stuck for the session.
+  it("repeated Fit Data presses agree on the live edge", async () => {
+    // This started as the severity question: before the fix the first
+    // press fit to the stale edge, and landing the right edge *on* that
+    // edge un-parked the window, so the re-sample it forced refreshed the
+    // extent and the second press was right — one press stale, not stuck
+    // for the session. Now both presses are right, and this guards the
+    // second one against re-acquiring a stale edge from the first.
     await withSizedCanvas(async () => {
       const { growTrace } = renderPanel();
       await pickCombobox(
@@ -1527,10 +1531,11 @@ describe("PlotPanel Fit Data over a parked window", () => {
 
   it("every area of a panel parks together — a second area is no rescue", async () => {
     // `sharedExtent()` maxes over the areas, so one area still reaching
-    // the live edge would keep the panel fresh. It can't happen: the x
-    // window is panel-wide, so all areas request the same slice and park
-    // as one. Both go quiet while the capture grows (the Tier 1 win) and
-    // both get the same fitted window (the Tier 1 cost).
+    // the live edge would keep the panel's cached extent fresh. It can't
+    // happen: the x window is panel-wide, so all areas request the same
+    // slice and park as one — which is why Fit Data can't lean on the
+    // cached extent and asks the host instead. Both areas stay quiet
+    // while the capture grows, and both land on the same fitted window.
     await withSizedCanvas(async () => {
       const { growTrace } = renderPanel();
       await pickCombobox(
@@ -1555,10 +1560,10 @@ describe("PlotPanel Fit Data over a parked window", () => {
 
         a2.xCalls.length = 0;
         const fitted = await pressFitData(a1);
-        // Both areas were moved to the same window, and it is the one
-        // derived from the extent as of parking.
+        // Both areas were moved to the same window, and it spans the
+        // whole capture — not the part of it they had seen.
         expect(a2.xCalls[a2.xCalls.length - 1]).toEqual(fitted);
-        expect(fitted.max).toBe(PARKED_EDGE);
+        expect(fitted.max).toBe(GROWN_EDGE);
       } finally {
         vi.useRealTimers();
       }
