@@ -159,6 +159,25 @@ describe("useDecimatedRange", () => {
     expect(mockInvoke).toHaveBeenCalledTimes(2);
   });
 
+  it("reports a frozen live edge while parked — nothing here can see the capture grow", async () => {
+    // The mechanism behind the panel-level staleness this fast path
+    // causes: `unchanged` hands back the cached `lastT`, which is the
+    // live edge as of the last *real* fetch. There is no round-trip to
+    // refresh it, so anything that needs the window's current extent
+    // (rather than the rendered one) has to ask for it separately.
+    mockInvoke.mockResolvedValue(encode(100, 110, [{ t: [101, 104], v: [1, 2] }]));
+    const { result } = renderHook(() => useDecimatedRange());
+    await run(() => result.current, req({ winEnd: 1000 })); // base = 100, live edge = 110
+    await run(() => result.current, req({ winEnd: 1000, xMin: 1, xMax: 4 })); // park on 101..104
+
+    // The capture ran on — the host's live edge is now 150 s.
+    mockInvoke.mockResolvedValue(encode(100, 150, [{ t: [101, 104], v: [1, 2] }]));
+    const out = await run(() => result.current, req({ winEnd: 5000, xMin: 1, xMax: 4 }));
+
+    expect(out.kind).toBe("unchanged");
+    expect(out.lastT).toBe(10); // 110 − base, not the true 50
+  });
+
   it("still refetches when the visible slice reaches the live edge", async () => {
     // The other side of the same rule: a slice whose right edge is at or
     // past the last frame seen *can* gain samples from a longer window,
