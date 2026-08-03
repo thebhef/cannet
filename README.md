@@ -289,16 +289,32 @@ the one interface for now).
 The shipping GUI can drive itself for a render-tier performance
 measurement, no operator and no external automation client — it covers
 every platform the app ships on (incl. macOS, which has no WebDriver).
-Pass the launch flags through to the binary (after a `--` separator under
-`tauri dev`):
+
+**Build a release binary to measure.** `tauri dev` runs a debug Rust
+host behind React's development build; the numbers it produces are its
+own, not the app's, and are not comparable with a release capture. Build
+the app, then run the binary directly:
 
 ```sh
-pnpm --dir apps/gui tauri dev -- -- \
-  --project examples/ev-zonal/ev-zonal.cannet_prj \
+pnpm --dir apps/gui tauri build --no-bundle       # release host + production bundle
+./target/release/cannet-gui \
+  --project /abs/path/to/examples/ev-zonal/ev-zonal.cannet_prj \
   --connect-on-start \
   --perf-capture-secs 60 \
-  --perf-out docs/performance-measurements/frontend/<date>-<hash>.json
+  --perf-interact scrub \
+  --perf-out /abs/path/to/docs/performance-measurements/frontend/<date>-<hash>.json
 ```
+
+`cargo build --release -p cannet-gui` on its own is **not** a substitute:
+without the `custom-protocol` feature the tauri CLI passes, the binary
+still points at the Vite dev server, so it comes up with no frontend at
+all (and the run captures nothing).
+
+Use **absolute** paths for `--project` and `--perf-out`. They are
+resolved against the process's working directory, which is the launch
+directory here but is `apps/gui/src-tauri` under `tauri dev` — a
+repo-relative `--project` there fails to open, the app boots idle, and no
+report is written.
 
 - `--project <path>` opens a project deterministically (ahead of the
   last-opened pointer). Usable on its own to just open a project.
@@ -308,6 +324,13 @@ pnpm --dir apps/gui tauri dev -- -- \
   seconds after the session settles, then writes the report and exits.
 - `--perf-out <path>` is where the `RenderReport` JSON lands;
   `--perf-label <text>` names the scenario in it.
+- `--perf-interact <script>` drives synthetic gestures at the heavy
+  views for the length of the run, so the capture measures interaction
+  cost and not only resting cost. `scrub` zooms the plot to a working
+  window and then cycles trace scrolls, plot pans and zooms; `follow`
+  does the zoom and then leaves the view alone, which is the scenario
+  the scroll-smoothness gauges are meaningful in (a pan moves the window
+  further in one step than a stall would). Omit it for a resting run.
 
 Everything else the run needs is already in the saved project: the panel
 layout (the views under test), the bus bindings (the frame source), and

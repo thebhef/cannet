@@ -28,7 +28,17 @@ Two halves make this work:
   - `--connect-on-start` — fire the same connect action a user clicks;
   - `--perf-capture-secs <n>` / `--perf-out <path>` — after connect
     settles, auto-capture for `n` seconds and write the `RenderReport`,
-    then exit (`--perf-label <text>` names the scenario in the report).
+    then exit (`--perf-label <text>` names the scenario in the report);
+  - `--perf-interact <script>` — drive synthetic gestures at the heavy
+    views for the length of the run. The saved project supplies the
+    *views*, but not what a user does to them, and most of the render
+    tier's cost is paid on interaction (the virtualiser re-windowing as
+    the table scrolls, the plot re-fetching and re-decimating as its
+    x-window moves). Without this a capture measures the resting cost
+    and a regression in the interactive path passes it. The gestures are
+    real DOM events dispatched at the real elements, so they reach the
+    app through the listeners a mouse would — the same "the app is its
+    own driver" argument as the rest of this decision.
 
   Everything else the measurement needs is already persisted project
   state: opening the project restores the panel layout (so the views
@@ -75,6 +85,12 @@ the decision to touch interfaces, and the decision to record.
   its RBS run flag drives the load. For a hardware-free render run the
   project should bind to a virtual bus rather than physical adapters —
   that is a property of the saved project, not of the flags.
+- **A capture is only comparable to another capture of the same build
+  kind.** A development build runs a debug host behind React's
+  development bundle; measured against an otherwise identical release
+  run it inflates the JS heap several-fold and roughly triples the
+  transmit scheduler's wake lateness. Baselines are release captures,
+  and a dated report records which it was in its label.
 - The `RenderReport` carries a `frontend` mode tag so it slots beside
   the model-tier modes in a measurement file. Because the app produces
   the report — a regression checker cannot re-run a GUI session the way
