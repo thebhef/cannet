@@ -123,6 +123,12 @@ dispatch table, and `settingControls.dom.test.tsx` exercises both halves
   building it twice. The table's production entry today is
   `keybindings`.
 
+**Documentation landed:** ADR 0034 (decision 2 amended, decision 4
+added, with the @rjsf rejection restated rather than reversed),
+`technology-inventory.md` (@rjsf revisited and still rejected), and the
+README's settings section — how to find a setting, what `developer`
+means, and that the file stays hand-editable.
+
 ## Sequencing
 
 **The tag taxonomy must be settled before Task 45 Stage 3 bulk-promotes
@@ -325,9 +331,10 @@ overridden); this task carries the *metadata* and renders it.
 ## Documentation deliverables
 
 - **ADR 0034 amendment** recording the descriptor + tagged-view
-  decision and why it is not the framework the ADR rejected. This is
-  the same amendment Task 45 needs for its `blf_channel_maps`
-  resolution — one amendment, both changes.
+  decision and why it is not the framework the ADR rejected. (The
+  `blf_channel_maps` resolution this once expected to ride along landed
+  with Task 47 branch 2 instead, where the mappings moved into the
+  project directory.)
 - README settings section: how to find a setting, what `developer`
   means, and that the file remains editable directly.
 

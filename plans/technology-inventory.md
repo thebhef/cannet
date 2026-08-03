@@ -89,9 +89,13 @@ and the license / platform constraints we need to be aware of.
   deliberately lean (no component/form library) and the initial settings
   count is two, so a schema-driven framework is an abstraction for
   single-use code with generic styling that fights the app's bespoke
-  panels. A flat in-repo panel is used instead. Revisit only if settings
-  proliferate — the `settings.json` storage contract is independent of the
-  panel. See [`../docs/adr/0034-settings-vs-state-and-custom-settings-panel.md`](../docs/adr/0034-settings-vs-state-and-custom-settings-panel.md).
+  panels. A flat in-repo panel is used instead. **Revisited when settings
+  did proliferate, and still `rejected`:** the answer was an in-repo
+  per-setting descriptor served by the host, with the panel generated
+  from it, reusing `fzf` for search — no dependency, a schema that lives
+  beside the struct it describes, and the app's own styling. See
+  [`../docs/adr/0034-settings-vs-state-and-custom-settings-panel.md`](../docs/adr/0034-settings-vs-state-and-custom-settings-panel.md)
+  decision 4.
 
 ### CAN / CANFD Abstraction
 
