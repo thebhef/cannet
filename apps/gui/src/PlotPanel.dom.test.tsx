@@ -1763,7 +1763,13 @@ describe("PlotPanel diagnostic readouts", () => {
     // `PlotArea` could not benefit from `React.memo` while the panel
     // handed it a fresh inline arrow for every callback on every render.
     await withSizedCanvas(async () => {
-      renderPanel();
+      // A *stopped* panel, so no self-paced resample can land between the
+      // baseline read and the click and be mistaken for a fan-out.
+      const registry = makeRegistry({
+        id: "el-memo",
+        trace: { start: 0, end: 60, isPaused: false },
+      });
+      renderPanel({ params: { elementId: "el-memo" }, registry });
       await pickCombobox(
         screen.getByLabelText("add signal to focused plot area"),
         "*|s:256:EngineSpeed",

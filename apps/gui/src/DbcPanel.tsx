@@ -898,6 +898,16 @@ export function DbcPanel(props: IDockviewPanelProps) {
   const [valuesByKey, setValuesByKey] = useState<ReadonlyMap<string, SignalSnapshotRecord>>(
     new Map(),
   );
+  /// Dirty gate under the poll below. Only two things can change a
+  /// rendered value: a frame arriving (`trace-grew`, which stops firing
+  /// when the capture does) and the viewport moving over rows whose
+  /// value hasn't been fetched yet. Without it the panel re-snapshotted
+  /// the whole id space twice a second forever — with no capture running
+  /// at all.
+  const valuesDirtyRef = useRef(true);
+  useEffect(() => {
+    valuesDirtyRef.current = true;
+  }, [visibleSignalKeys]);
   useEffect(() => {
     if (!showValues || !panelVisible) {
       setValuesByKey(new Map());
@@ -935,12 +945,27 @@ export function DbcPanel(props: IDockviewPanelProps) {
           /* best effort — the tree renders without values */
         });
     };
-    fetchValues();
-    const id = window.setInterval(fetchValues, 500);
+    const unlisten = listen("trace-grew", () => {
+      valuesDirtyRef.current = true;
+    });
+    const tick = () => {
+      if (!valuesDirtyRef.current) return;
+      valuesDirtyRef.current = false;
+      fetchValues();
+    };
+    // Turning the column on (or coming back into view) shows something
+    // at once rather than after a tick.
+    valuesDirtyRef.current = true;
+    tick();
+    const id = window.setInterval(tick, 500);
     return () => {
       live = false;
       window.clearInterval(id);
+      void unlisten.then((fn) => fn());
     };
+    // Deliberately not keyed on `visibleSignalKeys`: scrolling re-aims the
+    // next tick through the ref above, rather than tearing the interval
+    // (and the listener) down and firing a round-trip per wheel notch.
   }, [showValues, panelVisible, buses]);
 
   const toggle = useCallback((id: string) => {
