@@ -227,7 +227,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
     elementId,
     element,
   );
-  const trace = useTrace(data, elementId);
+  // `false`: the plot reads the window bounds and run state, never a
+  // frame row — so it does not page one (ADR 0025).
+  const trace = useTrace(data, elementId, false);
   const live = trace.status === "running";
   const winStart = trace.offset;
   const winEnd = trace.offset + trace.frameCount;
