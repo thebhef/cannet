@@ -159,10 +159,14 @@ fn record_matches(predicate: &FilterPredicate, record: &TraceFrameRecord) -> boo
 /// unassigned frame so it sorts after any real bus name ascending.
 /// Mirrors the former client-side `sortValue` "bus" case, moved host-side
 /// with the rest of the by-id sort.
-fn bus_sort_key(bus_id: Option<&str>, names: &HashMap<String, String>) -> String {
+///
+/// Borrows rather than allocating, like [`ecu_sort_key`] and
+/// [`kind_sort_key`] — it is called twice per comparison of an
+/// `O(n log n)` sort.
+fn bus_sort_key<'a>(bus_id: Option<&'a str>, names: &'a HashMap<String, String>) -> &'a str {
     match bus_id {
-        None => "~".to_string(),
-        Some(id) => names.get(id).cloned().unwrap_or_else(|| id.to_string()),
+        None => "~",
+        Some(id) => names.get(id).map_or(id, String::as_str),
     }
 }
 
@@ -202,7 +206,7 @@ fn by_id_cmp(
         "idx" => fa.index.cmp(&fb.index),
         "time" => fa.timestamp_seconds.total_cmp(&fb.timestamp_seconds),
         "bus" => bus_sort_key(fa.bus_id.as_deref(), names)
-            .cmp(&bus_sort_key(fb.bus_id.as_deref(), names)),
+            .cmp(bus_sort_key(fb.bus_id.as_deref(), names)),
         "dir" => fa.direction.cmp(fb.direction),
         "id" => fa.id.cmp(&fb.id),
         "kind" => kind_sort_key(&fa.kind).cmp(kind_sort_key(&fb.kind)),
