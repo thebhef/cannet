@@ -196,6 +196,38 @@ where they are today.
     this manually when the task lands — find the existing project
     directories on disk and move them into the new layout.*
 
+    **What is actually on the one install** (surveyed 2026-08-02, after
+    branch 1). The old disk-spill scratch
+    (`%LOCALAPPDATA%\dev.cannet.app\current`, 1.2 GB) is pure
+    recomputable cache and can just be deleted — nothing user-authored
+    was in it, no `notes.json`. `settings.json` is three user-scope
+    fields and stays put; `.window-state.json` belongs to the plugin
+    and stays put. The one file that splits is `state.json`:
+
+    | Field | Bytes | Goes to |
+    | --- | --- | --- |
+    | `layout` | 7948 | workspace |
+    | `blf_channel_maps` | 591 | workspace (its `project_id` key drops) |
+    | `recent_blfs` | 253 | workspace |
+    | `recent_commands` | 206 | user — stays |
+    | `last_project` | 66 | user — stays |
+
+    **Do not move the workspace half until branch 2 routes the
+    writes.** `state.json` already *reads* through `resolve_scoped`, so
+    a workspace copy would take effect immediately — but every write
+    still goes to the user file. The workspace copy would then never
+    update while permanently winning the merge, so `layout` (the
+    highest-churn field there) would revert to a frozen snapshot on
+    every restart. Migrate after the write path is scope-aware, not
+    before.
+
+    Settle the destination first, too: the install's `last_project` is
+    `examples/ev-zonal/ev-zonal.cannet_prj`, which has no `.cannet/`
+    beside it and therefore auto-locates. Anything migrated into that
+    auto-located directory is stranded if the project is later promoted
+    by hand, because decision 10 says a hand-created `.cannet/` starts
+    clean.
+
 12. **The local cache directory is keyed by a hash of the project
     directory's path.** Reclaiming is a user action, not a garbage
     collector: the settings view lists cache directories and lets the
@@ -208,7 +240,6 @@ where they are today.
     those usages. "Workspace" is reserved for the scoped data —
     `.cannet/` is the workspace directory, and workspace scope is the
     per-project half of the scope matrix.
-
 
 ## Scope-review every `UiState` field
 
@@ -359,12 +390,15 @@ the running record of what is done and what moved.
   rules out the `FSCTL_SET_REPARSE_POINT` ioctl and a new crate was out
   of scope) and a symlink elsewhere. It points at
   `<app_cache_dir>/cache/<hash of the project directory's path>`.
-  **Deviation from decision 2 worth knowing:** the store opens the link
-  *target*, not `.cannet/cache/`. A project directory on a filesystem
-  that cannot hold a reparse point — an SMB share, the exact case the
-  link exists for — would otherwise lose its cache entirely. The link
-  stays as the browsable view, and failing to create it is a logged
-  warning rather than a failure.
+  **The store opens the link *target*, not `.cannet/cache/`.** A
+  project directory on a filesystem that cannot hold a reparse point —
+  an SMB share, the exact case the link exists for — would otherwise
+  lose its cache entirely. The link stays as the browsable view, and
+  failing to create it is a logged warning rather than a failure. This
+  began as a deviation from decision 2, whose wording said cannet
+  "still just opens `.cannet/cache/`"; ADR 0042 §4 has since been
+  corrected to record the target-opening rule and why following the
+  layout literally would defeat it.
 - **Done: the key is deterministic across builds.** `path_key` is a v5
   (name-based) UUID over the path text, via a feature flag on the `uuid`
   crate already in use. `DefaultHasher` was the obvious reach and is
