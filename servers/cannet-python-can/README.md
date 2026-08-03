@@ -105,6 +105,9 @@ in `driver_python_can.py` wraps `python-can`. To use something else:
 2. Write a new module exposing a top-level callable named `Driver`
    that returns a struct shaped like `driver.Driver`.
 3. Point `CANNET_DRIVER_MODULE` at it before launching the sidecar.
+   Launched from the GUI, the **Driver module** setting is the same
+   thing: the host forwards it as this variable, and a variable already
+   in the environment wins for that run.
 
 The wire-level code (`server.py`) does not change. See
 [`LICENSING.md`](LICENSING.md) for the LGPL analysis that motivates

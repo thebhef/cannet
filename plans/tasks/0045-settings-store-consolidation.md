@@ -469,6 +469,85 @@ Task 44 Tier 0 still owes a self-driving capture.
 
 #### Stage 4 as built
 
+**The precedence rule, decided once for the whole stage: the
+environment wins, and the shadowed setting is reported.**
+
+Every env var in this stage predates its setting and exists as an
+*escape hatch* — for tests, CI, packaging experiments, and deployment
+shapes nobody foresaw. An escape hatch a persisted file can override is
+not an escape hatch, and harnesses already drive cannet by setting
+these, so a settings file must not quietly change what such a run does.
+The setting is therefore the **persistent default the environment
+overrides for one run**, which also keeps the untouched-install
+promise in its strongest form: an existing env-var user's behaviour is
+unchanged whatever ends up in their settings file.
+
+The cost is that `settings.json` can show a value the app is not using
+— which the exit criteria do not let pass silently. So when the
+environment shadows a *non-blank* setting, the host says so on the
+system log at warn level, naming the variable, the key, and both
+values: the same refuse-and-report shape a rejected value already got.
+A blank setting is shadowed by nothing, so an untouched install is
+silent. One pure function, `sidecar::env_over_setting`, is the whole
+rule; blank means "nothing here" on both sides, so an empty
+`CANNET_SIDECAR_DIR` falls through to the setting instead of resolving
+to an empty path.
+
+**`RUST_LOG` is the exception, and stays env-only.** It is not a
+settings equivalent that is missing — it governs the dev-stderr
+`tracing` layer, which does not exist in a release build (no console
+under `windows_subsystem = "windows"`), and it is set per debugging
+session, not persisted as intent. That is the same argument that keeps
+the ADR-0031 automation flags as CLI. What the stage actually owed was
+verbosity control over the artifact a field engineer *ships* —
+`cannet.log` — and that is `log_file_min_level` below. Re-reading a
+filter into an already-installed `EnvFilter` would also need a reload
+layer, for a stream nobody in the field can see.
+
+**Items 1 and 2 — `sidecar_dir` and `driver_module`.** *(done)*
+
+| Field | Default | Tags | Scope | Reader |
+| --- | --- | --- | --- | --- |
+| `sidecar_dir` | `""` | connection / behaviour | user-overridable | `sidecar::resolve_sidecar_dir` |
+| `driver_module` | `""` | connection / behaviour | user-overridable | forwarded to the child as `CANNET_DRIVER_MODULE` |
+
+Notes:
+
+- **Blank is the default, and blank means the built-in behaviour** —
+  the bundled sidecar found by the existing probe, and the sidecar's
+  own `cannet_python_can.driver_python_can`. So a file that predates
+  the fields resolves to exactly what the app did before
+  (`a_file_written_before_a_field_existed_resolves_to_that_field_s_default`).
+- **Neither is validated, deliberately.** Only the sidecar can say
+  whether a directory holds a sidecar or a module implements the driver
+  protocol, and it already reports both — a spawn failure and a startup
+  fatal, each on the system log. A host-side existence check would be a
+  second, weaker opinion that goes stale between the check and the
+  launch.
+- **Both are `Behaviour`, not `Developer`.** They are not machine-load
+  or cadence knobs, and hiding them by default would hide the LGPL §4
+  replace path (`servers/cannet-python-can/LICENSING.md`) that is the
+  main reason they exist.
+- **`driver_module` needed the host to forward it at all.** The
+  variable is read by the *sidecar*; the host never set it, so
+  selecting a driver meant launching the GUI from a shell that already
+  had it. `apply_sidecar_settings` now configures the built command —
+  once, for both the frozen and the dev launcher flavours, which differ
+  in how they *find* the sidecar, not in how it is configured.
+  `--bind` is still not passed, for the reason its own test states.
+- **The env-var branch is now unit-testable**, which it was not: the
+  workspace forbids `unsafe`, so no test can call `set_var`, and the
+  old code read the environment inside the resolver. The read is now
+  one line at the edge and the decision is pure, so `sidecar.rs`'s
+  standing "eyeball-verify it there" note is gone.
+
+Tests (each mutation-checked): `sidecar.rs` → *the environment wins
+over the setting and says so*, *the setting applies when the
+environment is silent*, *the environment alone is not a shadowing*, *a
+blank value on either side means unset*, *an override is used verbatim
+as the sidecar dir*, *the driver module is forwarded to the sidecar
+process*, *no driver module leaves the child environment alone*.
+
 **Item 4 — a malformed value costs its field, not the file.**
 *(done)* `Settings` is `#[serde(default)]` at the *container*, which
 fills an **absent** field but does not rescue one whose value is the

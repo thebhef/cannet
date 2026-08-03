@@ -474,6 +474,34 @@ const DESCRIPTORS: &[Spec] = &[
         },
     },
     Spec {
+        key: "sidecar_dir",
+        backing: Backing::Field,
+        label: "Sidecar directory",
+        help: "Run the python-can sidecar from this directory instead of the one \
+               shipped with the app — a patched or replaced build, without \
+               repackaging. Blank uses the bundled sidecar. A directory with no \
+               sidecar in it shows up as a spawn failure in this log.",
+        surfaces: &[Surface::Connection],
+        kind: Kind::Behaviour,
+        control: Control::Text {
+            placeholder: Some("bundled sidecar"),
+        },
+    },
+    Spec {
+        key: "driver_module",
+        backing: Backing::Field,
+        label: "Driver module",
+        help: "Python module the sidecar loads its hardware driver from. Blank \
+               uses the bundled python-can driver. Set it to run your own driver \
+               implementation; the sidecar reports on startup if the module is \
+               missing or does not implement the driver protocol.",
+        surfaces: &[Surface::Connection],
+        kind: Kind::Behaviour,
+        control: Control::Text {
+            placeholder: Some("cannet_python_can.driver_python_can"),
+        },
+    },
+    Spec {
         key: "reconnect_backoff_ms",
         backing: Backing::Field,
         label: "Reconnect backoff",

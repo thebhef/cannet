@@ -87,6 +87,14 @@ export interface Settings {
   sidecar_restart_budget: number;
   /// Wait before reconnecting to a `cannet-server` after a drop.
   reconnect_backoff_ms: number;
+  /// Directory to launch the python-can sidecar from; `""` = the one
+  /// the app ships with. Host-consumed; `CANNET_SIDECAR_DIR` in the
+  /// environment overrides it for one run.
+  sidecar_dir: string;
+  /// Python module the sidecar loads its driver from; `""` = the
+  /// bundled python-can driver. Host-consumed; `CANNET_DRIVER_MODULE`
+  /// in the environment overrides it for one run.
+  driver_module: string;
 }
 
 export function defaultSettings(): Settings {
@@ -110,6 +118,8 @@ export function defaultSettings(): Settings {
     health_sample_interval_ms: 20_000,
     sidecar_restart_budget: 3,
     reconnect_backoff_ms: 2000,
+    sidecar_dir: "",
+    driver_module: "",
   };
 }
 

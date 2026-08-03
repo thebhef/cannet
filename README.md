@@ -1135,8 +1135,15 @@ defines a small adapter protocol (`list_channels`, `open`, `recv`,
    and re-run `uv sync`).
 2. Write a module exposing a top-level `Driver` callable returning a
    matching object.
-3. Set `CANNET_DRIVER_MODULE=<your_module>` in the environment the
-   GUI launches with.
+3. Name it in **Settings → Connection → Driver module**, which the host
+   forwards to the sidecar. `CANNET_DRIVER_MODULE=<your_module>` in the
+   environment the GUI launches with still works and takes precedence
+   for that run (the override is reported in System Messages).
+
+A patched or replaced sidecar *build* is reachable the same way:
+**Settings → Connection → Sidecar directory** points cannet at a
+`cannet-python-can` package directory of your own, and
+`CANNET_SIDECAR_DIR` overrides it for one run.
 
 The wire-level code does not change. See
 [`servers/cannet-python-can/LICENSING.md`](servers/cannet-python-can/LICENSING.md)

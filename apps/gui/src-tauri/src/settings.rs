@@ -84,6 +84,8 @@ pub(crate) const SCOPES: ScopeTable = &[
     ("health_sample_interval_ms", Scope::UserOverridable),
     ("sidecar_restart_budget", Scope::UserOverridable),
     ("reconnect_backoff_ms", Scope::UserOverridable),
+    ("sidecar_dir", Scope::UserOverridable),
+    ("driver_module", Scope::UserOverridable),
 ];
 
 /// The persisted user settings. `#[serde(default)]` fills any absent field
@@ -194,6 +196,36 @@ pub struct Settings {
     /// Default 2000 ms: fine on a LAN, short for a flaky VPN to a
     /// remote server.
     pub reconnect_backoff_ms: u64,
+    /// Directory holding the `cannet-python-can` package to launch,
+    /// instead of the one the host finds for itself. Empty (the
+    /// default) means the built-in resolution: the frozen bundled
+    /// sidecar, or the source tree found by walking up from the GUI
+    /// binary. A field engineer with a patched or replaced sidecar
+    /// build points cannet at it here instead of repackaging the app.
+    ///
+    /// Free text: a directory that holds no sidecar surfaces as the
+    /// resulting spawn failure on the system log, which is the only
+    /// place the answer is actually known.
+    ///
+    /// `CANNET_SIDECAR_DIR` in the environment overrides this for one
+    /// run and says so on the system log — see
+    /// [`crate::sidecar`]'s `env_over_setting`.
+    pub sidecar_dir: String,
+    /// Python module the sidecar loads its hardware driver from. Empty
+    /// (the default) means the sidecar's own
+    /// `cannet_python_can.driver_python_can`. The host forwards a
+    /// non-empty value to the sidecar process as
+    /// `CANNET_DRIVER_MODULE`; before this setting the host never set
+    /// that variable at all, so choosing a driver meant launching the
+    /// GUI from a shell that already had it.
+    ///
+    /// Free text, for the same reason as `sidecar_dir`: only the
+    /// sidecar can say whether a module exists and implements the
+    /// driver protocol, and it reports that on startup.
+    ///
+    /// `CANNET_DRIVER_MODULE` in the host's own environment overrides
+    /// this for one run and says so on the system log.
+    pub driver_module: String,
 }
 
 /// The smallest legal value of any millisecond-interval setting.
@@ -250,6 +282,8 @@ impl Default for Settings {
             health_sample_interval_ms: 20_000,
             sidecar_restart_budget: 3,
             reconnect_backoff_ms: 2_000,
+            sidecar_dir: String::new(),
+            driver_module: String::new(),
         }
     }
 }
@@ -441,6 +475,7 @@ fn refuse_below(complaints: &mut Vec<String>, key: &str, value: &mut u64, min: u
 /// `<user_dir>/settings.json` overridden per key by
 /// `<workspace_dir>/settings.json`. A missing or unreadable file, or
 /// junk contents, contributes nothing at that scope.
+///
 /// Returns the settings plus one complaint per key whose value the
 /// struct refused — a hand-edit that typed a string where a number
 /// belongs. [`get_settings`] reports those alongside [`validate`]'s, so
@@ -595,6 +630,8 @@ mod tests {
             health_sample_interval_ms: 0,
             sidecar_restart_budget: 1,
             reconnect_backoff_ms: 10_000,
+            sidecar_dir: "sidecar-source-tree".to_string(),
+            driver_module: "my_team.driver".to_string(),
         }
     }
 
