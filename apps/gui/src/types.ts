@@ -326,8 +326,9 @@ export interface ByIdSnapshotRecord {
 /// columns, a plot's areas / cursors. That's model state, so it survives
 /// closing and reopening the panel within a session, not only a project
 /// save/restore. The panel also mirrors the same blob into its dockview
-/// `params` so the unsaved-project `localStorage` layout — which does
-/// not persist the registry — can restore it across an app restart. A
+/// `params` so the project directory's own layout snapshot (ADR 0042
+/// §3) — which does not persist the registry — can restore it across an
+/// app restart. A
 /// transmit's frame list and an rbs's `.cannet_rbs` path live in their
 /// own host-side stores, not in `config`.
 ///

@@ -20,15 +20,14 @@ export interface ElementPanelState<TConfig> {
   element: ProjectElement | undefined;
   /// The panel's persisted view config, read once at mount: the
   /// element's `config` if present, else the dockview `params` — for
-  /// an older project, or the unsaved-project `localStorage` layout
-  /// that still carries it there.
+  /// an older project, or the project directory's layout snapshot,
+  /// which still carries it there.
   savedConfig: TConfig | undefined;
   /// Dual-write this panel's persistable state: onto the element
   /// (model state — survives closing and reopening the panel within a
   /// session, and is what `Save` serializes) and into the dockview
-  /// `params` (the unsaved-project `localStorage` layout restores
-  /// from `params` on app restart, and it doesn't persist the
-  /// registry). The element's patch is a deep no-op check, so a mount
+  /// `params` (the project directory's layout snapshot restores from
+  /// `params` on app restart, and it doesn't persist the registry). The element's patch is a deep no-op check, so a mount
   /// whose state already equals the stored config doesn't churn the
   /// registry or mark the project dirty.
   ///
