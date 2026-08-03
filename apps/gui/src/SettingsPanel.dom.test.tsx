@@ -35,17 +35,6 @@ const schema = {
       default: false,
     },
     {
-      key: "keybindings",
-      label: "Keyboard shortcuts",
-      help: "Your keybinding customisation.",
-      surfaces: ["general"],
-      kind: "behaviour",
-      backing: "field",
-      control: { type: "custom", renderer: "keybindings" },
-      scope: "user-overridable",
-      default: null,
-    },
-    {
       key: "scratch_cap_bytes",
       label: "Cache size cap",
       help: "Drop the oldest history once the on-disk cache exceeds this.",
@@ -73,7 +62,7 @@ const schema = {
     {
       key: "a_view_row",
       label: "A hosted surface",
-      help: "Not a stored value; a management surface the panel hosts.",
+      help: "",
       surfaces: ["storage"],
       kind: "behaviour",
       backing: "view",
@@ -225,7 +214,7 @@ describe("SettingsPanel", () => {
     await renderLoaded();
     await search("storage");
     await waitFor(() =>
-      expect(screen.queryByText("Keyboard shortcuts")).not.toBeInTheDocument(),
+      expect(screen.queryByText("Show developer settings")).not.toBeInTheDocument(),
     );
     expect(screen.getByText("Cache size cap")).toBeInTheDocument();
   });
@@ -256,7 +245,7 @@ describe("developer settings", () => {
     // No developer group, and the footer counts only what is visible —
     // a denominator that included the hidden row would advertise it.
     expect(screen.queryByRole("treeitem", { name: /Developer/ })).toBeNull();
-    expect(screen.getByText("4 of 4 settings")).toBeInTheDocument();
+    expect(screen.getByText("3 of 3 settings")).toBeInTheDocument();
   });
 
   it("stay hidden from a search that would otherwise match them", async () => {
@@ -267,19 +256,63 @@ describe("developer settings", () => {
 
   // Flipping the toggle must add one group, not grow the surface groups:
   // a user who reveals them to find one knob must not discover that Plot
-  // has silently gained a fetch-cadence row.
+  // has silently gained a fetch-cadence row. Plot holds nothing else in
+  // this schema, so it is absent from the tree either way — revealing a
+  // developer setting must not conjure its surface back into the tree.
   it("collect into their own group when revealed, not into their surface", async () => {
     await renderLoaded();
+    expect(screen.queryByRole("treeitem", { name: /Plot/ })).toBeNull();
 
     fireEvent.click(screen.getByRole("checkbox", { name: "Show developer settings" }));
 
     const group = await screen.findByRole("treeitem", { name: /Developer/ });
-    fireEvent.click(screen.getByRole("treeitem", { name: /Plot/ }));
-    expect(screen.queryByText("Plot fetch cadence")).not.toBeInTheDocument();
+    expect(screen.queryByRole("treeitem", { name: /Plot/ })).toBeNull();
 
     fireEvent.click(group);
     expect(screen.getByText("Plot fetch cadence")).toBeInTheDocument();
     // The row says which surface it would otherwise have been filed under.
     expect(screen.getByText("developer")).toBeInTheDocument();
+  });
+
+  // A self-describing setting carries no help text. The paragraph must
+  // not render at all — an empty one still takes its margin, which
+  // reads as a missing description rather than a label that says
+  // everything.
+  it("render no description paragraph for a setting that needs none", async () => {
+    await renderLoaded();
+    const row = screen.getByText("A hosted surface").closest(".setting");
+    expect(row).not.toBeNull();
+    expect(row?.querySelector(".setting-desc")).toBeNull();
+    // The row that does have help still shows it.
+    const capped = screen.getByText("Cache size cap").closest(".setting");
+    expect(capped?.querySelector(".setting-desc")).not.toBeNull();
+  });
+
+  // An empty group is noise, and worse than noise when it implies the
+  // user has missed something.
+  it("hide a surface group that has no settings to show", async () => {
+    await renderLoaded();
+    expect(screen.getByRole("treeitem", { name: /Storage/ })).toBeInTheDocument();
+    expect(screen.queryByRole("treeitem", { name: /Plot/ })).toBeNull();
+  });
+
+  // Filtering a search within a group hides matches outside it, and the
+  // panel then looks like it found nothing when it found plenty.
+  it("clear the group selection when a search starts", async () => {
+    await renderLoaded();
+
+    fireEvent.click(screen.getByRole("treeitem", { name: /Storage/ }));
+    expect(screen.getByRole("treeitem", { name: /Storage/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+
+    await search("developer");
+
+    expect(screen.getByRole("treeitem", { name: /All settings/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByText("Show developer settings")).toBeInTheDocument();
   });
 });

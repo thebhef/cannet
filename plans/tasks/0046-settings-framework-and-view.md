@@ -73,15 +73,24 @@ the shipped taxonomy is the prototype's: general, plot, trace, signals,
 by-ID, DBC, transmit, connection, logging, storage. §2 is corrected
 above.
 
-**`keybindings` gets a descriptor, and therefore a renderer.** §1 says
-keyboard shortcuts are not the worked example for `type: "custom"`,
-because reproducing the shortcuts editor here would be a second home for
-one fact. That stands — but `keybindings` *is* a field of
-`settings.json`, so the key-set test requires it to have a descriptor,
-and a descriptor has to declare a control. It declares
-`custom`/`keybindings`, and that renderer is a **pointer, not an
-editor**: it says where the bindings are edited and how many are
-customised. §1 is corrected to say so.
+**`keybindings` has no row at all — a third answer, not a renderer.**
+It first shipped with a `custom` renderer that was a *pointer*: the
+key-set test requires every `settings.json` field to have a descriptor,
+and a descriptor has to declare a control, so a pointer row looked like
+the only way to satisfy both. On review the user rejected it — a row
+that only says "shortcuts exist, edited elsewhere" is exactly the second
+home for one fact §1 rules out, and it earns its space by satisfying a
+test rather than by telling anyone anything.
+
+The fix is `EDITED_ELSEWHERE` in
+[`settings_descriptor.rs`](../../apps/gui/src-tauri/src/settings_descriptor.rs):
+a field may be accounted for by a panel row **or** by a declaration
+naming the editor it lives in, and nothing else. ADR 0034's "the file
+lists every knob" promise stays mechanically checked — adding a field
+still forces a deliberate choice, now between two answers rather than
+one — and three tests bound the second: an entry must name a real
+settings key, must not also have a row, and must say where the knob *is*
+edited.
 
 **The view is generated end to end.**
 [`SettingsPanel.tsx`](../../apps/gui/src/SettingsPanel.tsx) names no
@@ -219,8 +228,8 @@ renderer is a *pointer* to the shortcuts panel, never an editor.
 Two independent axes; a setting carries tags from both.
 
 **Surface** — which part of the app the setting governs. Drives the
-default tree grouping: general, plot, trace, signals, by-ID, DBC,
-transmit, connection, logging, storage. There is no `project` surface:
+default tree grouping: general, plot, trace, signals, DBC,
+connection, logging, storage. There is no `project` surface:
 belonging to a project is a *scope* ([ADR 0042](../../docs/adr/0042-project-directory-and-scopes.md)
 §3), orthogonal to which part of the app a setting governs.
 
@@ -321,6 +330,33 @@ the descriptor — it ships with it, alongside tags:
 
 Task 47's design question 3 settles the *rule* (which keys may be
 overridden); this task carries the *metadata* and renders it.
+
+### 6. Corrections from the first review
+
+The user reviewed the shipped panel. Four changes, all in the view:
+
+- **An empty surface group is not rendered.** `transmit` had no
+  settings and drew a group anyway; a group with nothing in it is noise,
+  and worse than noise when it implies something has been missed. The
+  test counts *rendered rows*, so it holds for any surface that empties
+  — including one emptied only because its developer rows are hidden,
+  which must look identical to one that was always empty or the tree
+  would announce what it is hiding.
+- **The unfiltered list lists each setting once.** It rendered a section
+  per group and put a descriptor in *every* section whose surface it
+  carried, so a two-surface setting appeared twice. Section assignment
+  is now the **primary** surface — matching the chip the row already
+  shows — while the sidebar filter still matches **any** surface, so
+  `sidecar_log_level` is still found under both Logging and Connection.
+- **Searching clears the group selection.** A query was filtered within
+  the selected group, so a match outside it was invisible and the panel
+  looked like it had found nothing when it had found plenty. The tree
+  returns to "All settings" so the state is visible rather than merely
+  ignored.
+- **A setting with no help text renders no paragraph.** See Task 45's
+  post-review pass for the copy rules; the view change is that an empty
+  `help` produces no element, since an empty paragraph still takes its
+  margin and reads as a missing description.
 
 ## Non-goals
 

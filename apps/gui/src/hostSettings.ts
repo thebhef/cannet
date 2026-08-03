@@ -100,7 +100,6 @@ export interface Settings {
   /// second; `null` adds it with no bitrate, leaving the adapter's own
   /// default in charge. Read once, when the bus is created — the bus
   /// row's bitrate box wins afterwards.
-  default_bus_bitrate_bps: number | null;
   /// Directory to launch the python-can sidecar from; `""` = the one
   /// the app ships with. Host-consumed; `CANNET_SIDECAR_DIR` in the
   /// environment overrides it for one run.
@@ -179,7 +178,6 @@ export function defaultSettings(): Settings {
     sidecar_restart_budget: 3,
     reconnect_backoff_ms: 2000,
     default_server_address: "127.0.0.1:50051",
-    default_bus_bitrate_bps: null,
     sidecar_dir: "",
     driver_module: "",
     log_file_min_level: "debug",

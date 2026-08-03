@@ -198,19 +198,11 @@ describe("the custom-renderer dispatch table", () => {
     expect(screen.queryByLabelText("show data")).not.toBeInTheDocument();
   });
 
-  // The shortcuts panel is the one editor for bindings (ADR 0018); this
-  // row points at it and must never grow into a second one.
-  it("renders keybindings as a pointer to the shortcuts panel, not an editor", () => {
-    render(
-      <SettingControl
-        descriptor={descriptor({ type: "custom", renderer: "keybindings" }, "keybindings")}
-        value={[{ chord: "Mod+k", commandId: "palette.show" }]}
-        onCommit={vi.fn()}
-      />,
-    );
-    expect(screen.getByText(/1 binding customised/)).toBeInTheDocument();
-    expect(screen.getByText(/Keyboard Shortcuts panel/)).toBeInTheDocument();
-    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  // The shortcuts panel is the one editor for bindings (ADR 0018), so
+  // `keybindings` has no row here at all — not even a pointer, which
+  // would be a second home for one fact. The host declares it in
+  // `EDITED_ELSEWHERE`; this is the frontend half of that rule.
+  it("registers no renderer for a setting whose editor lives elsewhere", () => {
+    expect(CUSTOM_SETTING_RENDERERS).not.toHaveProperty("keybindings");
   });
 });

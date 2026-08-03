@@ -1005,3 +1005,9 @@ next pass on this surface can address them as one piece.
   "untouched" column means *a directory the user owns* — cannet created
   that one in its own cache space unasked, and decision 2's symmetry
   would let it remove one there too.
+
+- **`PlotPanel.dom.test.tsx` "slides the shared x window once per
+  frame, not once per area" is flaky.** Failed once and passed on an
+  unchanged re-run during the settings review pass (2026-08-03). It
+  is timing-sensitive around rAF coalescing; nobody has established
+  whether the test or the coalescing is at fault.

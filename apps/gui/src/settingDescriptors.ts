@@ -127,6 +127,19 @@ export function groupIdsOf(descriptor: SettingDescriptor): SurfaceId[] {
   return descriptor.kind === "developer" ? [DEVELOPER_GROUP] : descriptor.surfaces;
 }
 
+/// The one group a setting is *listed under*, as opposed to the groups
+/// it can be *found* through.
+///
+/// A setting may carry several surfaces — `sidecar_log_level` is both
+/// logging and connection — and selecting either finds it, which is
+/// what `groupIdsOf` is for. But the unfiltered list is one list, so it
+/// must list each setting once; without this it renders under every
+/// surface it carries. The first surface wins, matching the surface
+/// chip the row already shows.
+export function primaryGroupIdOf(descriptor: SettingDescriptor): SurfaceId | undefined {
+  return descriptor.kind === "developer" ? DEVELOPER_GROUP : descriptor.surfaces[0];
+}
+
 /// The tree's groups, in order: every surface, plus the developer group
 /// when the user has opted into seeing it.
 export function settingGroups(

@@ -7,7 +7,7 @@ import {
   EMPTY_SCHEMA,
   countsByGroup,
   formatSettingValue,
-  groupIdsOf,
+  primaryGroupIdOf,
   isDefaultValue,
   loadSettingDescriptors,
   loadSettingsOverrides,
@@ -89,6 +89,16 @@ export function SettingsPanel(_props: IDockviewPanelProps) {
     return () => clearTimeout(timer);
   }, [typed]);
 
+  // Searching drops any group selection, so a query searches everything.
+  // Filtering a search *within* a group hides matches outside it, and
+  // the panel then looks like it found nothing when it found plenty.
+  // The tree returns to "All settings" so the state is visible rather
+  // than merely ignored, and clearing the query does not restore the
+  // old group — search took over, and this is where it left you.
+  useEffect(() => {
+    if (typed.trim() !== "") setGroup(null);
+  }, [typed]);
+
   const match = useMemo(() => settingsMatcher(schema), [schema]);
   const showDeveloper = settings.show_developer_settings;
   const groups = useMemo(
@@ -163,7 +173,12 @@ export function SettingsPanel(_props: IDockviewPanelProps) {
           </button>
           {groups.map((g) => {
             const count = counts.get(g.id) ?? 0;
-            if (query !== "" && count === 0) return null;
+            // A group with nothing in it is noise, and worse than noise
+            // when it implies the user has missed something. This also
+            // covers a group emptied only because its developer rows are
+            // hidden — which must look identical to one that has no
+            // settings at all, or the tree would announce what is hidden.
+            if (count === 0) return null;
             return (
               <button
                 type="button"
@@ -191,7 +206,7 @@ export function SettingsPanel(_props: IDockviewPanelProps) {
               ranking; an unfiltered list is grouped. */}
           {query === ""
             ? groups.map((g) => {
-                const inGroup = shown.filter((d) => groupIdsOf(d).includes(g.id));
+                const inGroup = shown.filter((d) => primaryGroupIdOf(d) === g.id);
                 if (inGroup.length === 0) return null;
                 return (
                   <section key={g.id}>
@@ -262,7 +277,11 @@ function SettingRow({
           )}
         </span>
       </div>
-      <p className="setting-desc">{descriptor.help}</p>
+      {/* A self-describing setting carries no help text, and then the
+          paragraph is not rendered at all — an empty one still takes its
+          margin, which reads as a missing description rather than a
+          setting whose label says everything. */}
+      {descriptor.help !== "" && <p className="setting-desc">{descriptor.help}</p>}
       <div className="setting-ctl">
         <SettingControl descriptor={descriptor} value={value} onCommit={onCommit} />
       </div>

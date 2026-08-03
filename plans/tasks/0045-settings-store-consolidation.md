@@ -797,10 +797,10 @@ Notes:
   slot for a column too new for a saved layout to name. A panel that
   *has* a layout is untouched.
 - **The settings row is a real editor, and it is the one custom
-  renderer that edits.** `keybindings` points at the shortcuts panel
-  because that panel is the editor; there is no equivalent for a
-  *default* — a table header adjusts the panel in front of you, not the
-  one you will open next. `CustomRendererProps` therefore gains
+  renderer that edits.** There is no equivalent for a *default* — a
+  table header adjusts the panel in front of you, not the one you will
+  open next, so unlike `keybindings` (which has no row at all, being
+  edited in the shortcuts panel) there is nowhere else to point. `CustomRendererProps` therefore gains
   `onCommit`, which the generated controls already had. The editor owns
   no arithmetic: every move goes through the same
   `toggleColumn` / `resizeColumn` / `reorderColumn` the header uses, so
@@ -1123,6 +1123,47 @@ and 5a, because Task 44 Tier 0 still owes a self-driving capture. Four
 new fields took `settings.json` to thirty-five and closed Stage 5;
 `confirm_unsaved_on_exit`'s later removal leaves it at thirty-four.
 
+## Post-review pass
+
+The user reviewed the shipped panel once every stage had landed. The
+corrections below are theirs, and they are recorded here rather than
+edited into each stage's record so that the reasoning that produced the
+original classification stays readable.
+
+**Ten settings became `developer`.** `follow_window_ms`,
+`dbc_auto_reload`, `trace_columns`, `signal_columns`,
+`trace_flush_interval_ms`, `log_rotation_bytes`,
+`system_log_ring_capacity`, `system_log_rate_limit`, `sidecar_dir`,
+`driver_module`. Stage 5a had reasoned about `Default` vs `Behaviour`,
+which is a different axis: `developer` is a *visibility* call, and
+several knobs that are honestly one or the other are still not worth a
+non-expert's attention. The three level knobs stay visible — the split
+the user drew was "the log items other than level".
+
+Two of these were pointed: setting a column's **pixel width** through a
+settings dialog is a strange thing to offer, and `dbc_auto_reload` has
+"no reason to be exposed at all" — hidden is the compromise.
+
+**`default_bus_bitrate_bps` was removed**, field and all. It shipped
+blank-by-default to keep a new bus byte-identical, and a knob that is
+inert on a fresh install and unwanted when set is not worth its row.
+
+**Help text was cut hard.** Three rules came out of it, and they apply
+to any setting added later:
+
+1. **Never assert what has not been established.** `follow_window_ms`
+   claimed its default "suits a fast powertrain bus; a slow body bus
+   wants more" — invented, and a user would have acted on it.
+2. **Delete "only a default" prose.** The kind tag already says it, and
+   restating it on every row is noise.
+3. **Empty help is the right answer for a self-describing setting.**
+   "Reopen the last project on launch" needs no sentence under it.
+   Eight descriptors now carry `""`, and the panel renders no paragraph
+   at all rather than an empty one taking its margin.
+
+Keep help only for a unit subtlety, a non-obvious consequence, a real
+interaction with another setting, or what `0` / blank means.
+
 ## Interlock with Tasks 46 and 47
 
 This task grows the settings count past twenty-five, which is more than
@@ -1298,12 +1339,12 @@ properly view-local, and the window-state plugin is properly separate.
   sidecar's — and the environment keeps winning, so an existing
   env-var user is unaffected whatever their file says.)*
 
-  *Met for Stage 5 too, and one item is worth naming because it nearly
-  wasn't: `default_bus_bitrate_bps` defaults to **blank**, not to
-  500 000. Seeding a rate into every new bus would have started sending
-  a `ConfigureBus` where the host sends none today — a configuration
-  action against real hardware. The general guard is
-  `a_file_written_before_a_field_existed_resolves_to_that_field_s_default`,
+  *Met for Stage 5 too. `default_bus_bitrate_bps` shipped defaulting to
+  blank rather than 500 000 — seeding a rate into every new bus would
+  have started sending a `ConfigureBus` where the host sends none today
+  — and was then **removed entirely at the user's direction**, as a knob
+  nobody wanted; a new bus again carries no bitrate. The general guard
+  is `a_file_written_before_a_field_existed_resolves_to_that_field_s_default`,
   which covers every key.*
 - Every promoted field lands with its Task 46 tags already attached —
   no retrofit pass. *(met — and mechanically, not by convention:

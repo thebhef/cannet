@@ -5,9 +5,7 @@ import {
   NOMINAL_BITRATE_PRESETS_BPS,
   formatBitrate,
   parseBitrateInput,
-  withDefaultBitrate,
 } from "./busHardwareConfig";
-import type { Bus } from "./types";
 
 describe("formatBitrate", () => {
   it("renders megabit-aligned values with the M suffix", () => {
@@ -58,30 +56,5 @@ describe("parseBitrateInput", () => {
     ]) {
       expect(parseBitrateInput(formatBitrate(bps))).toBe(bps);
     }
-  });
-});
-
-describe("withDefaultBitrate", () => {
-  const BUS: Bus = { id: "b1", name: "Bus 1" };
-
-  it("leaves a new bus unset when no default is configured", () => {
-    // What Add bus produced before the setting existed: no bitrate key
-    // at all, so the wire's `0 = unset` stands and the adapter's own
-    // default applies. `null` is the field's default, so an untouched
-    // install adds exactly the bus it always did.
-    expect(withDefaultBitrate(BUS, null)).toEqual(BUS);
-    expect("speed_bps" in withDefaultBitrate(BUS, null)).toBe(false);
-  });
-
-  it("seeds a new bus with the configured default", () => {
-    expect(withDefaultBitrate(BUS, 250_000).speed_bps).toBe(250_000);
-  });
-
-  it("never overrides a bitrate the bus already names", () => {
-    // The setting seeds a *new* bus. A bus that arrives with a rate —
-    // from a project, or a caller that worked one out — keeps it, which
-    // is the same rule every other `default`-tagged setting follows.
-    const configured: Bus = { ...BUS, speed_bps: 125_000 };
-    expect(withDefaultBitrate(configured, 250_000).speed_bps).toBe(125_000);
   });
 });
