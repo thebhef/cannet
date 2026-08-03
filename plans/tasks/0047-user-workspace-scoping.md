@@ -295,9 +295,14 @@ correct — not because it is settings work.
 
 Deliberately excluded, so this stays the directory concept:
 
-- **Per-setting scope metadata** — which keys may be overridden at
-  workspace scope. That is a field on
-  [Task 46](0046-settings-framework-and-view.md)'s descriptor.
+- **Rendering** per-setting scope metadata — the tag beside a setting
+  saying which scope it lives at, and any control for choosing one.
+  That is [Task 46](0046-settings-framework-and-view.md)'s descriptor
+  and view. The *declaration* is not deferrable, though: this task's
+  exit criteria require every persisted key to declare its scope,
+  because that declaration is what routes a write. It lands here (see
+  "Implementation status", branch 2) in a form Task 46's descriptor can
+  read rather than restate.
 - **Promoting constants into settings** — all of
   [Task 45](0045-settings-store-consolidation.md) Stage 3, including
   whether `scratch_cap_bytes` and `clear_scratch_on_exit` become
@@ -428,6 +433,34 @@ the running record of what is done and what moved.
   never writes it, so an override only exists by hand-edit), but the
   per-setting scope metadata has to route the write, not just gate the
   read.
+
+**Branch 2 — the two scopes, end to end (`task-47-scoped-writes`).**
+
+- **Done: every persisted key declares its scope, and the declaration
+  routes the write.** `persisted_json::Scope` is the metadata —
+  `User` (follows the person), `Workspace` (belongs to one project), or
+  `UserOverridable` (a user value a project may override) — and
+  `write_scoped` is `read_scoped`'s counterpart: it routes each key to
+  the file its scope names, leaves the other scope's file alone, and
+  rewrites neither unless that file's content actually changed. A key
+  with no declared scope trips a `debug_assert` (so a test catches it)
+  and falls back to user scope in release rather than being dropped.
+  Each document declares its own table (`settings::SCOPES`,
+  `state::SCOPES`) beside the struct, and `scope_of` is what Task 46's
+  descriptor reads instead of keeping a second copy.
+- **Done: the known gap is closed.** An override echoed back through
+  `set_settings` is now written back to `.cannet/settings.json`, not
+  promoted into the user file, and the user's own value for that key
+  survives untouched. `UserOverridable` routes to *whichever scope
+  already holds the key*: with no UI for picking a scope, "leave the
+  value where it is" is the only rule that neither promotes an override
+  nor silently demotes one.
+- **Reads are deliberately unchanged.** Precedence stays uniform — a
+  workspace value wins for any key — so a `state.json` whose
+  project-scoped half has not been hand-migrated yet still resolves from
+  the user file, and the first write moves it across. Gating reads by
+  scope as well would have made the pending hand-migration a hard cutover
+  for no gain.
 
 **Deferred out of branch 1, and why:**
 
