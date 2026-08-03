@@ -366,3 +366,140 @@ zero-round-trip claim directly while the capture grows. Still no
 ADR-0031 capture, so the cost of that one press is un-measured; it is
 a `window_anchors` binary search with no decode, so it should not be
 visible.
+
+## Tier 2 results
+
+Landed 2026-08-02, one commit per item. **No ADR-0031 capture was
+taken** (the machine was in use), so these are code- and test-level
+observations, not measured deltas — the same caveat as Tier 1. Where a
+number appears below it came from a diag counter inside a jsdom run,
+not from the app.
+
+1. **`applyXAll` is O(areas²)** — confirmed, including the reason the
+   dedup could not fire. Each area's resample called `applyXAll`, which
+   pushed a window into *every* uPlot in the panel, and no two areas
+   agreed on the window because each derived it from its own
+   `performance.now()`. The slide is now coalesced into one rAF per
+   panel: one clock read, one fan-out, at most one window change per
+   frame. Fetch cadence (the per-area resample loop) and redraw cadence
+   are independent, which is what Tier 4 needs. Measured in the test
+   harness with a stepping clock and three areas: each uPlot received 5
+   x-scale pushes per round of resamples before, ≤2 after (its own
+   re-pin plus the coalesced slide), and all three now land on the
+   *same* window. The extent and window-floor refs are still updated
+   synchronously — the Tier 1 lesson about freezing a value something
+   else reads: *Fit Data* reads them on the press.
+
+   **The previous tier's finding still holds after the change**:
+   `xSyncRef` is one panel-level ref, so every area requests the same
+   slice and they cannot diverge. It is now load-bearing for the
+   coalesced slide (there is one window to compute), so it is written
+   down as an ADR-0024 invariant alongside the cadence rule.
+
+2. **Per-tick diagnostic `setState`s** — confirmed, and it *is* what the
+   backlog's "`PlotArea` renders ~8× per resample" was. Measured over
+   one second of a two-area running panel (jsdom, growing capture):
+   **30 resamples → 59 panel renders and 60 area renders** before;
+   after, ≤6 and ≤34. Five setters became a ref accumulator flushed on
+   a lazily-armed ~2 Hz timer (`usePlotBadge`) — armed by a report,
+   disarmed when it fires, so a panel with nothing sampling does no
+   work. `reportBase` was *not* one of them (notes, the truncation
+   marker and Fit Data project through it); it keeps its state and
+   commits only on a real change.
+
+   Memoising `PlotArea` needed three more things, two of which were the
+   real blockers: the per-axis callbacks had to stop being a dozen fresh
+   inline arrows per render (now one `AxisHandlers` bundle rebuilt when
+   the axis set changes), an empty pattern-resolution list had to stop
+   being a fresh `[]`, and — the one that would have silently defeated
+   everything else — `useElementSources` returned a fresh `["*"]` for an
+   unwired element on every render, which invalidated the plot's
+   scoped-catalog memo and through it every derived axis.
+
+3. **Split the trace context** — done, and **narrower in effect than the
+   finding implies.** The split is real: `TraceModel` (`epoch`,
+   `sessionStartSeconds`, `truncationTsNs`, `fetchRange`) and
+   `TraceLive` (`count`, `firstIndex`, `liveTail`), each memoised on its
+   own fields. But of the four consumers only the *events* view reads
+   the model alone; the plot, trace and signals panels all page through
+   `useTrace`, whose window arithmetic is a function of `count`, so they
+   still re-render per `trace-grew` and cannot stop. The finding's
+   "including panels whose inputs provably did not change" is true of
+   one panel, not four.
+
+   Writing the test turned up something worth recording: **a dockview
+   panel is insulated from its host re-rendering.** The panel's React
+   element is built when the panel is created and held in the layout's
+   state, so React's same-element bail-out applies and a context change
+   is the only thing that reaches it. Without that, splitting the
+   context would achieve nothing — App re-renders on every `trace-grew`
+   regardless. The test models it by reusing one element object across
+   re-renders; rebuilding it makes the assertion vacuous.
+
+4. **Gate the live tail on demand** — confirmed and implemented. The
+   frontend declares what it wants (`set_live_tail_rows`, aggregated
+   across views in `liveTailDemand.ts`); the host ships nothing and
+   skips the collect + decode while the aggregate is zero, which is also
+   its startup state. Only the unfiltered chronological table
+   auto-scrolling a running capture asks. The declared size is clamped
+   host-side to the old constant, so the payload stays bounded whatever
+   is asked for.
+
+5. **By-ID live refresh** — one of the three parts was real, one was
+   already fixed, and the headline number is wrong.
+   - *Live refresh re-pages page 0* — real. `useWindowedQuery` now names
+     the two live-refresh behaviours apart (`refresh: "tail" | "window"`)
+     and by-id takes the second, so a refresh re-fetches the page the
+     view has. ADR 0025 carries the rule.
+   - *Paused-snapshot tighten* (former Task 24) — **already done.**
+     `latest_in_window` scans `[start, end)` for a bounded window and
+     never reads past the window end, and
+     `latest_in_window_bounds_to_the_window_end` already pinned it. The
+     frontend passes `scanEnd = winEnd` when stopped/paused, so a paused
+     snapshot already reflects the window it shows. No change.
+   - *"re-pages 1024 decoded rows"* — **inaccurate.** The host returns
+     `min(limit, id-count)` rows and the by-id set is id-space bounded,
+     so a typical capture refreshes tens of rows, not 1024. The real
+     per-tick cost was host-side and is item 7's: building the snapshot
+     over the whole id space. Paging the by-id set below the id space
+     would trade a live-refresh saving for scroll fetches, and there is
+     no measurement yet saying which way that goes — left alone.
+
+6. **`DbcPanel`'s 500 ms poll** — confirmed. It was already gated on the
+   value column being on *and* the panel being visible, but not on
+   anything having changed, so an idle panel with the column on
+   re-snapshotted the id space twice a second forever. Now gated on
+   `trace-grew` (which goes quiet when the capture does) and on the
+   viewport moving over rows with no value yet. The listener is
+   deliberately not in the effect's dependency list — keying it on the
+   visible key set would tear the interval down and fire a round-trip
+   per wheel notch, which the existing ref indirection was there to
+   prevent.
+
+7. **Host-side per-tick scans** — both confirmed.
+   `latest_in_window` gained a `_where` form that filters at the source,
+   so the signals page and the DBC panel's value column stop cloning a
+   key and a frame payload for every id in the capture under the append
+   lock. `ensure_active_filter_index` now memoises the candidate set and
+   the decode-id set on a new `TraceStore::key_generation` (bumped only
+   when the key set changes); the predicate and the DBC set cannot move
+   without the index being rebuilt or dropped, so that is the only live
+   input. Neither is measured — both are "obviously less work per call",
+   and the ADR-0031 capture is what would price them.
+
+### What is still unmeasured
+
+Every number above is a diag counter in jsdom. Tier 0 still owes the
+release-build capture, and until it lands none of these seven can be
+called measured. Two exit criteria are the ones that need it:
+`render.PlotArea` tracking `plotarea.resample` (item 2 moved it from
+~2x to ~1x per resample in the harness, on two areas), and "idle cost is
+measurably ~0".
+
+### Noticed in passing
+
+Turning auto-scroll off spins `TracePanel` and `TraceView` in a render
+loop in the jsdom harness — reproduced against the pre-Tier-2 tree, so
+it is not from this work. Recorded in `plans/backlog.md`; it is why
+item 4's withdrawal test goes through the by-id mode switch rather than
+the toggle.
