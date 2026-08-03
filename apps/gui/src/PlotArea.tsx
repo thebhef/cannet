@@ -12,7 +12,7 @@
  * construction-time locals (enum/lane targets, the value-table ref),
  * so it does not cleanly separate into its own module.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type MutableRefObject } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type MutableRefObject } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import uPlot from "uplot";
 
@@ -445,7 +445,13 @@ function drawEnumTiles(
   }
 }
 
-export function PlotArea(p: PlotAreaProps) {
+/** Memoised: a plot panel re-renders for its own reasons (toolbar
+ * menus, the ~2 Hz perf badge, cursor placement) far more often than
+ * any area's inputs change, and an area render walks its whole signal
+ * list. The panel holds up its end by handing every callback down as a
+ * stable identity — the per-axis bundle in `AxisHandlers` and the
+ * grouped `PlotAreaReports` — so this memo can actually hit. */
+export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   diagCount("render.PlotArea"); // DIAG
   const {
     area,
@@ -2321,6 +2327,4 @@ export function PlotArea(p: PlotAreaProps) {
       </div>
     </div>
   );
-}
-
-
+});

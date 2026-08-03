@@ -175,6 +175,7 @@ import { NotesContext, type NotesContextValue } from "./notesContext";
 import { SignalCatalogProvider } from "./signalCatalogContext";
 import { wheelColor } from "./palette";
 import { freshTrace } from "./trace";
+import { diagCounts } from "./diag";
 
 class FakeResizeObserver {
   observe() {}
@@ -202,29 +203,49 @@ function makeRegistry(seed?: {
     trace: trace ?? freshTrace(0),
   });
   if (seed) map.set(seed.id, entry(seed.id, seed.config, seed.trace));
+  // The real registry keeps `entries` as state and only replaces the array
+  // when something actually changed. Mirror that: a getter that rebuilt the
+  // array on every read would re-run every memo hanging off it and make
+  // render-count assertions meaningless.
+  let snapshot: Entry[] | null = null;
+  const touched = () => {
+    snapshot = null;
+  };
   return {
     get entries() {
-      return [...map.values()];
+      if (snapshot == null) snapshot = [...map.values()];
+      return snapshot;
     },
     get: (id: string) => map.get(id),
     create: () => {
       const id = Math.random().toString(36).slice(2);
       map.set(id, entry(id));
+      touched();
       return id;
     },
     ensure: (id: string) => {
-      if (!map.has(id)) map.set(id, entry(id));
+      if (!map.has(id)) {
+        map.set(id, entry(id));
+        touched();
+      }
     },
     update: (id: string, patch: { config?: Record<string, unknown> }) => {
       const e = map.get(id);
-      if (e) map.set(id, { ...e, element: { ...e.element, ...patch } });
+      if (e) {
+        map.set(id, { ...e, element: { ...e.element, ...patch } });
+        touched();
+      }
     },
     updateTrace: (id: string, updater: (s: TS) => TS) => {
       const e = map.get(id);
-      if (e) map.set(id, { ...e, trace: updater(e.trace) });
+      if (e) {
+        map.set(id, { ...e, trace: updater(e.trace) });
+        touched();
+      }
     },
     remove: (id: string) => {
       map.delete(id);
+      touched();
     },
   } as unknown as ElementRegistry;
 }
@@ -336,6 +357,21 @@ function dropSignal(areaLabel: string, signalName: string, unit: string) {
   const area = screen.getByText(areaLabel).closest(".plot-area")!;
   fireEvent.dragOver(area, { dataTransfer: dt });
   fireEvent.drop(area, { dataTransfer: dt });
+}
+
+/// Let React render the way it does in the app — batched per update,
+/// not collected into an `act` scope. Render *cadence* is only
+/// measurable outside `act`, which flushes everything queued in its
+/// scope as one commit.
+async function outsideAct(body: () => Promise<void>): Promise<void> {
+  const g = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean };
+  const prev = g.IS_REACT_ACT_ENVIRONMENT;
+  g.IS_REACT_ACT_ENVIRONMENT = false;
+  try {
+    await body();
+  } finally {
+    g.IS_REACT_ACT_ENVIRONMENT = prev;
+  }
 }
 
 /// Run `body` with non-zero element dimensions. The uPlot construction
@@ -1646,6 +1682,106 @@ describe("PlotPanel follow-live slide cadence", () => {
       } finally {
         clock.mockRestore();
       }
+    });
+  });
+});
+
+describe("PlotPanel diagnostic readouts", () => {
+  const counter = (k: string) => diagCounts().get(k) ?? 0;
+
+  /// `performance.now()` stepping by an uneven amount per read. The
+  /// readouts this describe is about are *timings*, so a frozen (or
+  /// evenly-stepping) clock makes every tick report the identical number
+  /// and React's bail-on-same-value hides the per-tick `setState`s the
+  /// test is trying to catch.
+  function jitteryClock() {
+    const real = performance.now.bind(performance);
+    let i = 0;
+    return vi.spyOn(performance, "now").mockImplementation(() => {
+      i = (i + 1) % 7;
+      return real() + i * 0.37;
+    });
+  }
+
+  it("does not re-render the panel or its areas once per resample", async () => {
+    // The toolbar's perf badge was fed by five panel-level `setState`s
+    // per area resample. Every one of those re-rendered the panel, and
+    // through it every `PlotArea` — so N areas cost N² React renders per
+    // resample interval for a read-out nobody can follow above ~2 Hz.
+    await withSizedCanvas(async () => {
+      renderPanel();
+      await pickCombobox(
+        screen.getByLabelText("add signal to focused plot area"),
+        "*|s:256:EngineSpeed",
+      );
+      fireEvent.click(screen.getByRole("button", { name: "add plot area" }));
+      await act(async () => dropSignal("Area 2", "EngineSpeed", "rpm"));
+      // Past the 250 ms post-mount uPlot rebuild, so its renders aren't
+      // counted as steady-state cost.
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 400));
+      });
+
+      // A capture that actually grows. Without it the follow-live clock
+      // coasts to its ceiling, the x window stops moving, and every tick
+      // takes the windowed source's "unchanged" fast path — which reports
+      // two of the five readouts instead of all five, and would make the
+      // assertions below vacuous.
+      const growing = setInterval(() => {
+        mockSampleBounds.last += 0.05;
+      }, 20);
+      const clock = jitteryClock();
+      try {
+        const before = {
+          panel: counter("render.PlotPanel"),
+          area: counter("render.PlotArea"),
+          resample: counter("plotarea.resample"),
+        };
+        // Let the self-paced resample loops run — the steady state of a
+        // running plot, with no user interaction at all. Deliberately
+        // *not* inside `act`: `act` collects every update in its scope
+        // and flushes them together, which would collapse a second's
+        // worth of per-tick renders into one and make the count
+        // meaningless.
+        await outsideAct(() => new Promise((r) => setTimeout(r, 1000)));
+        const resamples = counter("plotarea.resample") - before.resample;
+        expect(resamples).toBeGreaterThanOrEqual(10);
+        // The badge flushes on its own ~2 Hz timer, so the panel renders a
+        // handful of times over this second however many samples land.
+        expect(counter("render.PlotPanel") - before.panel).toBeLessThanOrEqual(6);
+        // An area re-renders for its own side-panel values, and for
+        // nothing else — no cross-area fan-out.
+        expect(counter("render.PlotArea") - before.area).toBeLessThanOrEqual(resamples + 4);
+      } finally {
+        clock.mockRestore();
+        clearInterval(growing);
+      }
+    });
+  });
+
+  it("re-renders no plot area when only panel-local state changes", async () => {
+    // `PlotArea` could not benefit from `React.memo` while the panel
+    // handed it a fresh inline arrow for every callback on every render.
+    await withSizedCanvas(async () => {
+      renderPanel();
+      await pickCombobox(
+        screen.getByLabelText("add signal to focused plot area"),
+        "*|s:256:EngineSpeed",
+      );
+      fireEvent.click(screen.getByRole("button", { name: "add plot area" }));
+      await act(async () => dropSignal("Area 2", "EngineSpeed", "rpm"));
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 400));
+      });
+
+      const before = counter("render.PlotArea");
+      // Purely panel-local: the toolbar context menu. No `PlotArea` prop
+      // depends on it.
+      await act(async () => {
+        fireEvent.contextMenu(document.querySelector(".plot-panel-toolbar")!);
+      });
+      expect(screen.getByRole("menu")).toBeInTheDocument();
+      expect(counter("render.PlotArea") - before).toBe(0);
     });
   });
 });

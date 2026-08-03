@@ -30,6 +30,7 @@ import {
   measKeysFromRaw,
   signalRefKey,
   signalsWidthFromRaw,
+  type AxisHandlers,
   type CursorMode,
   type NoteEvent,
   type PlotAreaConfig,
@@ -143,6 +144,9 @@ import {
 
 /** Stable empty set for areas with no manual picks yet. */
 const EMPTY_KEY_SET: ReadonlySet<string> = new Set();
+/** Stable empty list for areas with no patterns — a fresh `[]` per render
+ * would defeat `PlotArea`'s memo. */
+const EMPTY_RESOLUTIONS: readonly PatternResolution[] = [];
 /// The derived truncation marker's cursor colour (ADR 0035) — a muted
 /// amber, distinct from the note-event blue. Matches the trace floor row.
 const TRUNCATION_COLOR = "#e0a030";
@@ -193,6 +197,7 @@ import {
   effectiveSourceBuses,
   resolvePatterns,
   scopeCatalog,
+  type PatternResolution,
 } from "./signalSelection";
 import {
   GUTTER_HYSTERESIS_PX,
@@ -213,6 +218,7 @@ import {
   splitterPartnerAbove,
 } from "./plotAreaLayout";
 import { diagCount, diagGauge } from "./diag"; // DIAG
+import { usePlotBadge } from "./usePlotBadge";
 import { PlotArea } from "./PlotArea";
 import { MeasurementMenu, PlotMeasurementStrip } from "./PlotMeasurements";
 
@@ -301,22 +307,12 @@ export function PlotPanel(props: IDockviewPanelProps) {
   // is on — it's the only consumer; the side-panel values come from the
   // area's own ref) and a perf read-out.
   const [seriesByArea, setSeriesByArea] = useState<Map<string, Map<string, Series>>>(new Map());
-  const [perfMs, setPerfMs] = useState(0);
-  /** Server-side wall-clock of the worst recent `sample_signals` call
-   * — `slice_matching_many` (lock-held clone) + decode + decimate.
-   * Compare with `perfMs` to see how much of the total resample cost
-   * is host work vs JS / IPC. */
-  const [hostMs, setHostMs] = useState(0);
-  const [rateHz, setRateHz] = useState(0);
   /** Per-area count of frames in the trace's current window, max
    * across areas — a quick read of "is the trace actually windowing
    * frames?" (`0` ⇒ stopped / zero-width). */
   const winFrames = winEnd - winStart;
-  /** Per-area total of cached signal points (max across areas / signals),
-   * fed by `reportCache`. `0` after a fresh signal-set / re-anchor;
-   * grows as the resample fills the cache. */
-  const [cachePts, setCachePts] = useState(0);
   const dpr = typeof devicePixelRatio === "number" ? devicePixelRatio : 1;
+  const badge = usePlotBadge();
 
   // Shared x-window + the per-area uPlot registry + the per-area data
   // extent (longest plotted signal across the panel) and window-start
@@ -1001,16 +997,28 @@ export function PlotPanel(props: IDockviewPanelProps) {
     },
     [measEnabled],
   );
-  const reportPerf = useCallback((_areaId: string, ms: number) => setPerfMs((p) => Math.max(p * 0.6, ms)), []);
-  const reportHostMs = useCallback((_areaId: string, ms: number) => setHostMs((p) => Math.max(p * 0.6, ms)), []);
-  const [jankPct, setJankPct] = useState<number | null>(null);
-  const reportJank = useCallback((_areaId: string, pct: number | null) => setJankPct(pct), []);
-  const reportRate = useCallback((_areaId: string, hz: number) => setRateHz((p) => Math.max(p * 0.7, hz)), []);
-  const reportCache = useCallback((_areaId: string, n: number) => setCachePts(n), []);
-  const reportBase = useCallback(
-    (_areaId: string, secs: number | null) => setBaseSeconds(secs),
-    [],
+  // The four timing / size read-outs and the smoothness meter go through
+  // the badge accumulator: they feed only the toolbar strip, so they are
+  // batched to its flush rate instead of costing a render per report.
+  const { report: badgeSink } = badge;
+  const reportPerf = useCallback((_areaId: string, ms: number) => badgeSink.perf(ms), [badgeSink]);
+  const reportHostMs = useCallback((_areaId: string, ms: number) => badgeSink.hostMs(ms), [badgeSink]);
+  const reportJank = useCallback(
+    (_areaId: string, pct: number | null) => badgeSink.jank(pct),
+    [badgeSink],
   );
+  const reportRate = useCallback((_areaId: string, hz: number) => badgeSink.rate(hz), [badgeSink]);
+  const reportCache = useCallback((_areaId: string, n: number) => badgeSink.cache(n), [badgeSink]);
+  // Not a diagnostic: the x-axis origin projects notes, the truncation
+  // marker and Fit Data onto this panel's timeline. Every area reports the
+  // same value every tick, so gate the commit on a real change rather than
+  // leaning on React's bail-out.
+  const lastBaseRef = useRef<number | null>(null);
+  const reportBase = useCallback((_areaId: string, secs: number | null) => {
+    if (lastBaseRef.current === secs) return;
+    lastBaseRef.current = secs;
+    setBaseSeconds(secs);
+  }, []);
   // Group the area→panel readouts into one stable object so each
   // PlotArea gets a single `reports` prop / liveRef entry rather than
   // six parallel callbacks (`PlotAreaReports`).
@@ -1250,6 +1258,50 @@ export function PlotPanel(props: IDockviewPanelProps) {
     });
   }, [scopedCatalog, busNameLookup]);
   const areaLabels = useMemo(() => new Map(areas.map((a, i) => [a.id, `Area ${i + 1}`])), [areas]);
+
+  /// Per-derived-axis callback bundle, rebuilt only when the axis set
+  /// itself changes. Building these inline in the render loop handed
+  /// every `PlotArea` a dozen fresh function identities per panel
+  /// render, which defeated memoising the component: the whole stack
+  /// re-rendered whenever any panel state moved, however unrelated.
+  const areaHandlers = useMemo(() => {
+    const m = new Map<string, AxisHandlers>();
+    for (const d of derivedAreaConfigs) {
+      const axisId = d.area.id;
+      const parent = d.parentArea;
+      m.set(axisId, {
+        onPlaceCursorY: (which, v) => placeCursorY(axisId, which, v),
+        onSetPrimarySignal: (k) => setAreaPrimarySignal(parent.id, k),
+        onSetYAxisMode: (mode) => setAreaYAxisMode(parent.id, mode),
+        onFocus: () => setFocusedAreaId(parent.id),
+        onRemoveArea: () => removeArea(parent.id),
+        onRemoveSignal: (key) => removeSignal(parent.id, key),
+        onDropSignal: (ref, beforeKey, isInternalMove) =>
+          placeSignal(ref, parent.id, beforeKey, isInternalMove),
+        onToggleHidden: (ref) => toggleSignalHidden(parent.id, ref),
+        onSetSignalColor: (ref, color) => setSignalColor(parent.id, ref, color),
+        onSetPatterns: (ps) => setAreaPatterns(parent.id, ps),
+        onMaterializePatterns: () => materializePatterns(parent.id, parent.signals),
+      });
+    }
+    return m;
+  }, [
+    derivedAreaConfigs,
+    placeCursorY,
+    setAreaPrimarySignal,
+    setAreaYAxisMode,
+    removeArea,
+    removeSignal,
+    placeSignal,
+    toggleSignalHidden,
+    setSignalColor,
+    setAreaPatterns,
+    materializePatterns,
+  ]);
+  const resizeSignalsWidth = useCallback(
+    (w: number) => setSignalsWidth(Math.max(SIGNALS_WIDTH_MIN, Math.min(SIGNALS_WIDTH_MAX, w))),
+    [],
+  );
   /// Collapsed-ness of the axis stack, positionally — what
   /// `splitterPartnerAbove` reads to pair splitters across collapsed
   /// axes.
@@ -1410,11 +1462,11 @@ export function PlotPanel(props: IDockviewPanelProps) {
           className="plot-perf"
           title="update rate · worst recent resample (host slice + decode in parens) · device pixel ratio · frames in trace window · cached plot points (biggest area)"
         >
-          {live && rateHz > 0 ? `${Math.round(rateHz)} Hz` : "—"} ·{" "}
-          {perfMs > 0 ? `${perfMs.toFixed(0)} ms` : "—"}
-          {hostMs > 0 ? ` (${hostMs.toFixed(0)} host)` : ""}
-          {jankPct != null ? ` · jank ${jankPct.toFixed(1)}%` : ""} · dpr {dpr.toFixed(2)} · win{" "}
-          {fmtCount(winFrames)} · cache {fmtCount(cachePts)}
+          {live && badge.value.rateHz > 0 ? `${Math.round(badge.value.rateHz)} Hz` : "—"} ·{" "}
+          {badge.value.perfMs > 0 ? `${badge.value.perfMs.toFixed(0)} ms` : "—"}
+          {badge.value.hostMs > 0 ? ` (${badge.value.hostMs.toFixed(0)} host)` : ""}
+          {badge.value.jankPct != null ? ` · jank ${badge.value.jankPct.toFixed(1)}%` : ""} · dpr{" "}
+          {dpr.toFixed(2)} · win {fmtCount(winFrames)} · cache {fmtCount(badge.value.cachePts)}
         </span>
       </div>
       {toolbarMenuAt && (
@@ -1467,6 +1519,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
           // pair the axes it sits between. Pairing DOM neighbours
           // instead would make collapsing a middle axis silently
           // remove the only handle for resizing either side of it.
+          const handlers = areaHandlers.get(d.area.id)!;
           const aboveIdx = splitterPartnerAbove(collapsedFlags, idx);
           const above = aboveIdx == null ? null : derivedAreaConfigs[aboveIdx];
           const showSplitter = above != null;
@@ -1571,9 +1624,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
               followLive={followLive}
               showPoints={showPoints}
               signalsWidth={signalsWidth}
-              onResizeSignalsWidth={(w) =>
-                setSignalsWidth(Math.max(SIGNALS_WIDTH_MIN, Math.min(SIGNALS_WIDTH_MAX, w)))
-              }
+              onResizeSignalsWidth={resizeSignalsWidth}
               cursorMode={cursorMode}
               cursorXa={cursorX.a}
               cursorXb={cursorX.b}
@@ -1589,27 +1640,15 @@ export function PlotPanel(props: IDockviewPanelProps) {
               onUserXChange={onUserXChange}
               onAreaResampled={onAreaResampled}
               onPlaceCursorX={placeCursorX}
-              onPlaceCursorY={(which, v) => placeCursorY(d.area.id, which, v)}
               onAddNote={addNote}
               reports={reports}
               resetYEpoch={resetYEpoch}
               xEpoch={xEpoch}
               fitYEpoch={fitYEpoch}
               showDiag={showDiag}
-              onSetPrimarySignal={(k) => setAreaPrimarySignal(parent.id, k)}
-              onSetYAxisMode={(m) => setAreaYAxisMode(parent.id, m)}
-              onFocus={() => setFocusedAreaId(parent.id)}
-              onRemoveArea={() => removeArea(parent.id)}
-              onRemoveSignal={(key) => removeSignal(parent.id, key)}
-              onDropSignal={(ref, beforeKey, isInternalMove) =>
-                placeSignal(ref, parent.id, beforeKey, isInternalMove)
-              }
-              onToggleHidden={(ref) => toggleSignalHidden(parent.id, ref)}
-              onSetSignalColor={(ref, color) => setSignalColor(parent.id, ref, color)}
-              onSetPatterns={(ps) => setAreaPatterns(parent.id, ps)}
-              onMaterializePatterns={() => materializePatterns(parent.id, parent.signals)}
+              {...handlers}
               manualKeys={manualKeysByArea.get(parent.id) ?? EMPTY_KEY_SET}
-              patternResolutions={patternResolutionsByArea.get(parent.id) ?? []}
+              patternResolutions={patternResolutionsByArea.get(parent.id) ?? EMPTY_RESOLUTIONS}
               catalog={scopedCatalog}
               busNameLookup={busNameLookup}
               busColorLookup={busColorLookup}
