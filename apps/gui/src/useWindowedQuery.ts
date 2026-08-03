@@ -59,9 +59,18 @@ export interface WindowedQueryOptions<T> {
     limit: number,
     fromEnd: boolean,
   ) => Promise<WindowPage<T>>;
-  /// True → stale refreshes re-page the tail; false → parked, so a
-  /// stale tick re-counts only (and not even that when `extent` is set).
+  /// True → stale refreshes re-fetch rows (see `refresh` for which);
+  /// false → parked, so a stale tick re-counts only (and not even that
+  /// when `extent` is set).
   followLive: boolean;
+  /// What a live refresh re-fetches. `"tail"` (the default) asks for the
+  /// last page — an auto-scrolling chronological view, whose interest is
+  /// always the newest rows. `"window"` re-fetches the page the view
+  /// already has, for a source whose *contents* go stale in place rather
+  /// than growing at one end: the by-id snapshot's latest values, rates
+  /// and newly-seen ids. Re-paging from 0 there yanks a scrolled view
+  /// back to the top on every refresh tick.
+  refresh?: "tail" | "window";
   /// Bump to mark the window stale (the trace grew, run-state changed).
   extentSignal: number;
   /// The authoritative row total when the caller already knows it
@@ -103,6 +112,7 @@ export function useWindowedQuery<T>(
     descriptor,
     fetchPage,
     followLive,
+    refresh = "tail",
     extentSignal,
     extent,
     liveTail,
@@ -119,7 +129,12 @@ export function useWindowedQuery<T>(
     descriptor: "",
     fetchPage,
     followLive,
+    refresh,
     pageSize,
+    /// First index of the page currently loaded — what `refresh:
+    /// "window"` re-fetches. Mirrors `win.start`, kept here because
+    /// `load` is stable and cannot close over render state.
+    loadedStart: 0,
     fetching: false,
     pending: null as
       | { wantStart: number; fromEnd: boolean; countOnly: boolean }
@@ -128,6 +143,7 @@ export function useWindowedQuery<T>(
   });
   ctl.current.fetchPage = fetchPage;
   ctl.current.followLive = followLive;
+  ctl.current.refresh = refresh;
   ctl.current.pageSize = pageSize;
 
   const load = useCallback(
@@ -146,6 +162,7 @@ export function useWindowedQuery<T>(
         .fetchPage(Math.max(0, wantStart), limit, fromEnd)
         .then((res) => {
           if (ctl.current.descriptor !== descriptor) return; // changed under us
+          if (!countOnly) ctl.current.loadedStart = res.start;
           setWin((p) =>
             countOnly
               ? { ...p, fetchedTotal: res.total, version: p.version + 1 }
@@ -177,6 +194,7 @@ export function useWindowedQuery<T>(
   // (immediate; not throttled).
   useEffect(() => {
     ctl.current.descriptor = descriptor;
+    ctl.current.loadedStart = 0;
     setWin((p) => ({ ...emptyWindow<T>(), version: p.version + 1 }));
     if (descriptor === "") return;
     load(0, ctl.current.followLive, false);
@@ -199,8 +217,10 @@ export function useWindowedQuery<T>(
       const c = ctl.current;
       if (!c.dirty || c.descriptor === "") return;
       c.dirty = false;
-      if (c.followLive) load(0, true, false);
-      else if (!extentKnown) load(0, false, true);
+      if (c.followLive) {
+        if (c.refresh === "window") load(c.loadedStart, false, false);
+        else load(0, true, false);
+      } else if (!extentKnown) load(0, false, true);
     }, refreshMs);
     return () => window.clearInterval(id);
   }, [descriptor, extentKnown, refreshMs, load]);

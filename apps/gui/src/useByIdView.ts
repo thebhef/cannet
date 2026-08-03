@@ -50,10 +50,13 @@ export interface ByIdView {
 /// sort the "bus" column by the project name the user sees.
 ///
 /// While `running`, the throttled refresh re-pages so latest values,
-/// rates and newly-seen ids stay live (the by-id set is bounded, so
-/// re-paging page 0 covers the common single-page case); stopped/paused,
-/// the snapshot is static. Bounding the host scan to `winEnd` (not the
-/// live tip) is what makes a paused snapshot reflect the window it shows.
+/// rates and newly-seen ids stay live; stopped/paused, the snapshot is
+/// static. The refresh re-fetches the page the view *has*
+/// (`refresh: "window"`), not page 0 — this source goes stale in place
+/// rather than growing at one end, and re-paging from 0 yanked a view
+/// scrolled into a large id space back to the top four times a second.
+/// Bounding the host scan to `winEnd` (not the live tip) is what makes a
+/// paused snapshot reflect the window it shows.
 export function useByIdView(
   active: boolean,
   winStart: number,
@@ -103,8 +106,10 @@ export function useByIdView(
     useWindowedQuery<ByIdSnapshotRecord>({
       descriptor,
       fetchPage,
-      // While running, re-page so live values / rates / new ids refresh.
+      // While running, re-page so live values / rates / new ids refresh —
+      // in place, where the view is looking.
       followLive: running,
+      refresh: "window",
       // `winEnd` advances every grow tick; `running` flips on Start/Stop.
       extentSignal: winEnd + (running ? 0 : 1),
       pageSize: PAGE,

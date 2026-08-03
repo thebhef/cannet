@@ -211,6 +211,45 @@ describe("useWindowedQuery", () => {
     expect(result.current.getRow(0)).toBe("r0");
   });
 
+  it("refresh 'window': a live refresh re-pages where the view is, not page 0", async () => {
+    // The by-id view refreshes to keep latest values / rates / new ids
+    // live, but it is not a tail: re-paging from 0 every tick yanks a
+    // scrolled view back to the top four times a second.
+    const { fetchPage } = fakeSource(1000);
+    const { result, rerender } = renderHook(
+      (p: { extentSignal: number }) =>
+        useWindowedQuery({
+          ...base,
+          descriptor: "byid",
+          extent: 1000,
+          followLive: true,
+          refresh: "window",
+          fetchPage,
+          extentSignal: p.extentSignal,
+        }),
+      { initialProps: { extentSignal: 0 } },
+    );
+    await flush();
+
+    // Scroll into a later page.
+    act(() => result.current.ensureVisible(500, 530));
+    await flush();
+    expect(result.current.getRow(500)).toBe("r500");
+    const loadedStart = fetchPage.mock.calls[fetchPage.mock.calls.length - 1][0];
+
+    // The model grew — a live refresh is due.
+    rerender({ extentSignal: 1 });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(base.refreshMs * 2);
+    });
+
+    const refresh = fetchPage.mock.calls[fetchPage.mock.calls.length - 1];
+    expect(refresh[0]).toBe(loadedStart);
+    expect(refresh[2]).toBe(false); // not a from-the-end tail page
+    // …and the view still shows what it was showing.
+    expect(result.current.getRow(500)).toBe("r500");
+  });
+
   it("is inactive for an empty descriptor: no fetch, no rows", async () => {
     const { fetchPage } = fakeSource(1000);
     const { result } = renderHook(() =>
