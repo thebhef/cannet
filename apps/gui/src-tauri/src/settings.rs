@@ -59,11 +59,13 @@ const SETTINGS_FILE: &str = "settings.json";
 /// rather than about the work: what the settings view reveals
 /// (`show_developer_settings`), how verbose their log view is
 /// (`system_log_min_level`), how long a status notice dwells before it
-/// clears (`notice_dwell_ms`, a reading-speed accommodation), and
+/// clears (`notice_dwell_ms`, a reading-speed accommodation),
 /// whether launching resumes the last project (`reopen_last_project`,
 /// which is read before any project — and therefore any workspace file
-/// — has been resolved at all). None of those are a project's business,
-/// so they stay at user scope.
+/// — has been resolved at all), and whether closing with unsaved work
+/// asks first (`confirm_unsaved_on_exit`, which is about how much
+/// hand-holding the person wants). None of those are a project's
+/// business, so they stay at user scope.
 ///
 /// The names are the serialized ones. `every_settings_key_declares_a_scope`
 /// is what keeps this table from drifting away from the struct.
@@ -75,6 +77,7 @@ pub(crate) const SCOPES: ScopeTable = &[
     ("system_log_min_level", Scope::User),
     ("notice_dwell_ms", Scope::User),
     ("reopen_last_project", Scope::User),
+    ("confirm_unsaved_on_exit", Scope::User),
     ("plot_fetch_interval_ms", Scope::UserOverridable),
     ("view_refresh_interval_ms", Scope::UserOverridable),
     ("follow_window_ms", Scope::UserOverridable),
@@ -160,6 +163,21 @@ pub struct Settings {
     /// it cannot take part in deciding it. That it is not a project's
     /// business either is what makes the restriction cost nothing.
     pub reopen_last_project: bool,
+    /// Whether closing the window with unsaved project or `.cannet_rbs`
+    /// changes asks first (ADR 0028 puts both through the one prompt).
+    /// Default `true`, which is what closing has always done.
+    ///
+    /// Off, the close is let through and the unsaved work goes with it —
+    /// the prompt's *only* other outcomes are Save and Cancel, so
+    /// suppressing it can mean nothing else. It is the app's one
+    /// confirmation dialog, so this is the whole of "confirmation-prompt
+    /// suppression"; a second one would get its own field rather than
+    /// widening this one, since "ask me about anything" is not a
+    /// preference anybody holds.
+    ///
+    /// Read at the moment of the close, not when the handler is
+    /// installed, so turning it off takes effect without a relaunch.
+    pub confirm_unsaved_on_exit: bool,
     /// How long a transient status notice stays frozen in the header
     /// before the bar reverts to the resting residency line. Default
     /// 3000 ms. Nothing is lost by shortening or lengthening it —
@@ -440,6 +458,7 @@ impl Default for Settings {
             show_developer_settings: false,
             system_log_min_level: "info".to_string(),
             reopen_last_project: true,
+            confirm_unsaved_on_exit: true,
             notice_dwell_ms: 3_000,
             plot_fetch_interval_ms: 67,
             view_refresh_interval_ms: 250,
@@ -908,6 +927,7 @@ mod tests {
             show_developer_settings: true,
             system_log_min_level: "warn".to_string(),
             reopen_last_project: false,
+            confirm_unsaved_on_exit: false,
             notice_dwell_ms: 1_500,
             plot_fetch_interval_ms: 33,
             view_refresh_interval_ms: 500,
@@ -1133,6 +1153,7 @@ mod tests {
                 Some(std::path::PathBuf::from("/jobs/friday.cannet_prj")),
                 &Settings {
                     reopen_last_project: false,
+                    confirm_unsaved_on_exit: false,
                     ..Settings::default()
                 },
             ),

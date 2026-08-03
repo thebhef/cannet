@@ -973,6 +973,41 @@ reopened by default*, *reopen off starts without a project*;
 *opens nothing when `reopen_last_project` is off*, *keeps the
 last-project pointer when it is not resuming it*.
 
+**Confirmation-prompt suppression.** *(done)*
+
+| Field | Default | Tags | Scope | Read at |
+| --- | --- | --- | --- | --- |
+| `confirm_unsaved_on_exit` | `true` | general / behaviour | user | `App`'s `onCloseRequested` |
+
+Notes:
+
+- **The app has exactly one confirmation prompt**, so this one field is
+  the whole item. The unsaved-changes prompt on window close (which
+  ADR 0028 already widened to cover dirty `.cannet_rbs` files) is the
+  only modal that asks a yes/no question; the rest are editors and
+  pickers. A second prompt, if one ever appears, gets its own field —
+  "ask me about anything" is not a preference anyone holds, and a
+  blanket switch would silently take in prompts written after it.
+- **Off means the close goes through and the work is lost**, and the
+  help text says exactly that. The prompt's other two answers are Save
+  and Cancel, so suppressing it cannot mean anything else; dressing it
+  up as "save automatically instead" would be a different feature.
+- **`Scope::User`.** How much hand-holding you want is about the person
+  at the keyboard, which is the standing test for the user-scope
+  exceptions. (`clear_scratch_on_exit` is overridable despite also
+  being a destructive on-exit behaviour, because what it governs is a
+  per-project resource. A prompt is not.)
+- **Read at the moment of the close.** The handler is installed once
+  with no dependencies, so a captured value would have made turning the
+  prompt off a relaunch — the one thing this setting cannot ask for.
+
+Behaviour tests (each mutation-checked — by dropping the guard, which
+reddens the opt-out, and by capturing the value at mount, which reddens
+only the read-at-close guard): `App.closeConfirm.dom.test.tsx` →
+*prompts by default when there is unsaved work*, *lets the close through
+when `confirm_unsaved_on_exit` is off*, *reads the setting at the moment
+of the close, not at mount*.
+
 ## Interlock with Tasks 46 and 47
 
 This task grows the settings count past twenty-five, which is more than

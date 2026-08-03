@@ -344,6 +344,18 @@ const DESCRIPTORS: &[Spec] = &[
         control: Control::Bool,
     },
     Spec {
+        key: "confirm_unsaved_on_exit",
+        backing: Backing::Field,
+        label: "Ask before closing with unsaved changes",
+        help: "Prompt to save when you close the window with an unsaved project \
+               or an edited .cannet_rbs. Turned off, the window closes and those \
+               changes are gone — the prompt's only other answers are Save and \
+               Cancel, so there is nothing else for it to mean.",
+        surfaces: &[Surface::General],
+        kind: Kind::Behaviour,
+        control: Control::Bool,
+    },
+    Spec {
         key: "recent_blfs_limit",
         backing: Backing::Field,
         label: "Recent BLFs remembered",

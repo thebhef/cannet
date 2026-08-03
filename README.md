@@ -449,7 +449,9 @@ project is kept so turning it back on resumes there. With no project,
 the layout is restored from that directory's own view state. Unsaved
 changes show a `●` in
 the project panel, and closing the window with unsaved changes prompts
-you (Save & close / Discard & close / Cancel). Not carried in the project: a trace's window
+you (Save & close / Discard & close / Cancel) — turn
+**`confirm_unsaved_on_exit`** off and the window just closes, taking
+the unsaved changes with it. Not carried in the project: a trace's window
 position (it re-anchors to the session buffer on each launch anyway),
 and the BLF replay path.
 

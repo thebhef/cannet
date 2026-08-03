@@ -1559,6 +1559,13 @@ export function App() {
           /* host gone — nothing to save */
         }
         if (!dirtyRef.current && !rbsDirty) return; // nothing unsaved — let it close
+        // The opt-out: with the prompt suppressed the close goes
+        // through and the unsaved work goes with it — Save and Cancel
+        // are the prompt's only other answers, so there is nothing else
+        // suppressing it could mean. Read here rather than captured
+        // when this handler was installed (it has no deps), so turning
+        // it off doesn't need a relaunch.
+        if (!hostSettings().confirm_unsaved_on_exit) return;
         event.preventDefault();
         const choice = await new Promise<CloseChoice>((resolve) =>
           setPendingClose({ resolve }),
