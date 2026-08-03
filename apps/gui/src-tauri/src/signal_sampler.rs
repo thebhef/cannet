@@ -54,22 +54,54 @@ pub fn sample_signal(
     };
     let mut out = Vec::new();
     for frame in frames {
-        if frame.id != message_id || frame.extended != extended {
-            continue;
+        if let Some(point) = sample_frame(frame, db, id, message_id, extended, signal_name) {
+            out.push(point);
         }
-        let Some(decoded) = db.decode_raw(id, frame.payload.data()) else {
-            continue;
-        };
-        let Some(sig) = decoded.signals.iter().find(|s| s.name == signal_name) else {
-            continue;
-        };
-        #[allow(clippy::cast_precision_loss)]
-        out.push(SamplePoint {
-            t_seconds: (frame.timestamp_ns as f64) / 1e9,
-            value: sig.value,
-        });
     }
     out
+}
+
+/// Single-frame form of [`sample_signal`]: `Some(point)` exactly when
+/// that function would have emitted a point for this frame, `None`
+/// otherwise. Same filtering and decode rules, no `Vec`.
+///
+/// Exists for the decoded-signal cache's catch-up loop, which decodes
+/// one frame at a time against each candidate database and takes the
+/// first that yields a point — calling [`sample_signal`] there heap-
+/// allocated a `Vec` per frame per database to hold at most one value.
+#[must_use]
+pub fn sample_one(
+    frame: &RawTraceFrame,
+    db: &Database,
+    message_id: u32,
+    extended: bool,
+    signal_name: &str,
+) -> Option<SamplePoint> {
+    let id = make_id(message_id, extended)?;
+    sample_frame(frame, db, id, message_id, extended, signal_name)
+}
+
+/// The shared per-frame body: id filter, decode, signal lookup. Takes
+/// the already-validated [`CanId`] so a multi-frame caller resolves it
+/// once.
+fn sample_frame(
+    frame: &RawTraceFrame,
+    db: &Database,
+    id: CanId,
+    message_id: u32,
+    extended: bool,
+    signal_name: &str,
+) -> Option<SamplePoint> {
+    if frame.id != message_id || frame.extended != extended {
+        return None;
+    }
+    let decoded = db.decode_raw(id, frame.payload.data())?;
+    let sig = decoded.signals.iter().find(|s| s.name == signal_name)?;
+    #[allow(clippy::cast_precision_loss)]
+    Some(SamplePoint {
+        t_seconds: (frame.timestamp_ns as f64) / 1e9,
+        value: sig.value,
+    })
 }
 
 fn make_id(raw: u32, extended: bool) -> Option<CanId> {
@@ -234,6 +266,47 @@ BO_ 256 EngineData: 2 ECU
                 t_seconds: 1.0,
                 value: 2.0
             }]
+        );
+    }
+
+    /// [`sample_one`] decodes the one frame it is given, and rejects
+    /// every case [`sample_signal`] skips: wrong id, wrong extended
+    /// flag, payload too short, unknown signal, malformed message id.
+    #[test]
+    fn sample_one_decodes_a_frame_and_rejects_the_skip_cases() {
+        let db = Database::parse(DBC).unwrap();
+        let good = frame(1_000_000_000, 256, vec![0x04, 0x00]);
+        assert_eq!(
+            sample_one(&good, &db, 256, false, "EngineSpeed"),
+            Some(SamplePoint {
+                t_seconds: 1.0,
+                value: 1.0
+            }),
+        );
+        // Wrong id / wrong extended flag — the frame filter. The
+        // extended case is checked in the direction the decoder can't
+        // catch on its own: an *extended* frame carrying the same raw
+        // id decodes fine against the standard message, so only the
+        // frame filter keeps it out of a standard query's series.
+        assert_eq!(sample_one(&good, &db, 257, false, "EngineSpeed"), None);
+        assert_eq!(sample_one(&good, &db, 256, true, "EngineSpeed"), None);
+        let ext = RawTraceFrame {
+            extended: true,
+            ..good.clone()
+        };
+        assert_eq!(sample_one(&ext, &db, 256, false, "EngineSpeed"), None);
+        // A frame *of* another id, asked for under its own id, but the
+        // DBC doesn't define it.
+        let other = frame(1_000_000_000, 257, vec![0xFF, 0xFF]);
+        assert_eq!(sample_one(&other, &db, 257, false, "EngineSpeed"), None);
+        // Payload too short for the signal.
+        let short = frame(2_000_000_000, 256, vec![0x04]);
+        assert_eq!(sample_one(&short, &db, 256, false, "EngineSpeed"), None);
+        // Unknown signal name, and a malformed standard id.
+        assert_eq!(sample_one(&good, &db, 256, false, "Nope"), None);
+        assert_eq!(
+            sample_one(&good, &db, 0xFFFF_FFFF, false, "EngineSpeed"),
+            None
         );
     }
 
