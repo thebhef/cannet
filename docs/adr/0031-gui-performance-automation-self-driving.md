@@ -87,10 +87,12 @@ the decision to touch interfaces, and the decision to record.
   that is a property of the saved project, not of the flags.
 - **A capture is only comparable to another capture of the same build
   kind.** A development build runs a debug host behind React's
-  development bundle; measured against an otherwise identical release
-  run it inflates the JS heap several-fold and roughly triples the
-  transmit scheduler's wake lateness. Baselines are release captures,
-  and a dated report records which it was in its label.
+  development bundle. Measured against an otherwise identical release
+  run of the same commit, it reads ~1.5× the JS heap peak, ~1.9× the
+  mean flush duration, ~2.4× the mean transmit-scheduler wake lateness,
+  and — because React double-invokes renders under StrictMode in
+  development — ~2× every render counter. Baselines are release
+  captures, and a report's label records which kind it was.
 - The `RenderReport` carries a `frontend` mode tag so it slots beside
   the model-tier modes in a measurement file. Because the app produces
   the report — a regression checker cannot re-run a GUI session the way

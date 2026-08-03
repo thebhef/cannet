@@ -17,7 +17,7 @@ dedup**. Those findings are recorded in "Findings" below.
 
 | Tier | State |
 | --- | --- |
-| 0 — measurement | **outstanding, and it is the only thing left** |
+| 0 — measurement | done, measured (see "Tier 0 results") |
 | 1 — pure waste | done (see "Tier 1 results") |
 | 2 — structural | done (see "Tier 2 results") |
 | 3 — hot-path allocation | done, measured (see "Tier 3 results") |
@@ -28,27 +28,11 @@ early. Landing it with Stage 3 means it arrives with its `developer`
 tag and its scope already attached instead of needing a retrofit — and
 it becomes the first real exercise of Task 46's descriptor.
 
-**What Tier 0 still owes, and why it matters.** The host half is
-measured: `cannet-perf-measurement`'s `tracebuffer`, `grpc` and
-`hardware-peak` modes need no GUI, and Tier 3 was priced with them
-(+9.8 % ingest, `append_ms_max` −49 %). Tier 2's filter-candidate memo
-shows up there too — `hardware-peak scan_ms_max` 0.886 → 0.045.
-
-The **frontend** half is not measured at all:
-
-1. **No frontend capture has been run.** `check` skips that tier unless
-   given `--frontend-report` from a self-driving GUI run, so every
-   frontend number this task claims is a diag counter in jsdom, not a
-   measurement.
-2. **The interaction-driven capture step (item 2 below) was never
-   added**, so the capture still cannot see the interaction cost this
-   task targets — a fresh baseline would not fix that on its own.
-3. **`scroll_jank_pct` (item 3) is still unsettled.**
-
-Consequence: three exit criteria remain unprovable — idle cost
-measurably ~0, `render.PlotArea` tracking `plotarea.resample`, and
-per-tier before/after for the frontend. The work is done; the evidence
-for the frontend half is not.
+Both halves are now measured. The host half was priced with
+`cannet-perf-measurement`'s `tracebuffer`, `grpc` and `hardware-peak`
+modes, which need no GUI (Tier 3: +9.8 % ingest, `append_ms_max` −49 %;
+Tier 2's filter-candidate memo as `hardware-peak scan_ms_max`
+0.886 → 0.045, now 0.032). The frontend half is in "Tier 0 results".
 
 Separately, a **pre-existing** render loop was found while writing the
 Tier 2 tests (auto-scroll toggle spins `TracePanel` ⟷ `TraceView`). It
@@ -321,24 +305,227 @@ aggregation all round-trip, per the CLAUDE.md architecture rule.
 
 ## Exit criteria
 
-- A release-build ADR-0031 baseline exists, with an interaction-driven
-  capture step, and `scroll_jank_pct` is either trusted or excluded
-  from the gate with a reason.
-- Idle cost is measurably ~0: with no capture running and no
+Walked 2026-08-03 against the Tier 0 captures.
+
+- **Met.** A release-build ADR-0031 baseline exists, with an
+  interaction-driven capture step, and `scroll_jank_pct` is either
+  trusted or excluded from the gate with a reason. → the promoted
+  `baseline.json` is a release capture taken with `--perf-interact
+  scrub` running; `scroll_jank_pct` is **excluded**, reason in "Tier 0
+  results" § 3.
+- **Met.** Idle cost is measurably ~0: with no capture running and no
   interaction in flight, no view re-renders and no timer does work.
   This closes the backlog's "idle render churn — ~120 FPS on macOS with
-  nothing changing" item.
-- `render.PlotArea` tracks `plotarea.resample` within the factor the
-  axis split accounts for — closing the "renders ~8× per resample"
-  item.
-- A parked / zoomed plot panel issues no host round-trips while the
-  capture grows.
-- Frontend state holds nothing that grows with session time or capture
-  length.
-- The ingest pump is not blocked by the flusher's directory walks.
-- Each tier's before/after numbers are recorded here, including the
-  ones that turned out not to matter — a finding that measured flat is
-  as useful to future readers as one that paid off.
+  nothing changing" item. → `release-idle`, 60 s with the project open
+  (200 738 frames restored) and never connected: the only counters that
+  fire at all are `render.App` and `event.system-log-appended`, each
+  **0.05/s** — three events in the minute. No `render.PlotArea`, no
+  `plotarea.resample`, no `invoke.*`, no `render.TraceView`, no
+  `followwin.slide`, no `memo.traceData`. `longtask` 0.0 ms/s, worst
+  lag 1.0 ms, `flush_ms` 0.00, `tx_late_ms` 0.03, and the JS heap
+  *falls* (−9.7 MB/min). Measured on Windows; the backlog item was
+  raised on macOS, and no macOS rig was available here.
+- **Met.** `render.PlotArea` tracks `plotarea.resample` within the
+  factor the axis split accounts for — closing the "renders ~8× per
+  resample" item. → **2.06×** on the release capture (106.3 vs 51.7/s)
+  against a two-area panel. The 2026-07-26 capture read 6.51×, and that
+  was a dev build, so ~3.25× at face value.
+- **Met** (test-level; unchanged by Tier 0). A parked / zoomed plot
+  panel issues no host round-trips while the capture grows — asserted
+  directly by the two-area test in `PlotPanel.dom.test.tsx`.
+- **Met** (test-level; unchanged by Tier 0). Frontend state holds
+  nothing that grows with session time or capture length. The captures
+  corroborate rather than prove it: JS-heap drift falls from 154.5 to
+  10.3 MB/min across the tiers, and the idle run's is negative.
+- **Met.** The ingest pump is not blocked by the flusher's directory
+  walks. → Tier 3's `append_ms_max` −49 %, and now `flush_ms` mean 4.10
+  / max 10.9 ms on the release capture against a 25 ms absolute ceiling.
+- **Partly met.** Each tier's before/after numbers are recorded here,
+  including the ones that turned out not to matter. The host tiers are
+  per-tier (Tier 3). The **frontend delta is aggregate across
+  Tiers 1–3**, not decomposed: the two dev captures bracket the whole
+  run of them (`render.PlotArea` 447.5 → 193.2/s, `render.PlotPanel`
+  121.9 → 40.0, `render.TraceView` 60.0 → 20.0, `invoke.sample_signals`
+  68.0 → 36.9, jsheap peak 245.1 → 113.4 MB). Decomposing needs a
+  release build and a 60 s connected run per tier commit, which was not
+  done — each tier had already landed with code- and test-level
+  evidence, and splitting a delta after the fact buys less than it
+  costs. Recorded as not done rather than glossed.
+
+## Tier 0 results
+
+Landed 2026-08-03. Five ADR-0031 captures on `examples/ev-zonal`, 60 s
+each, same rig, all committed under
+[`docs/performance-measurements/frontend/`](../../docs/performance-measurements/frontend).
+Every number below is from one of them; nothing here is inferred from
+reading.
+
+### How a release capture is taken
+
+`pnpm --dir apps/gui tauri dev` is a **debug host behind React's
+development bundle**, which is what contaminated the 2026-07-26
+baseline. `cargo build --release -p cannet-gui` is not the fix: without
+the `custom-protocol` feature the tauri CLI passes, the binary still
+points at the Vite dev server and comes up with **no frontend at all** —
+observed, and the tell is a run that logs no `opened project` line, no
+`jsheap_mb`, and `trace_len=0` on every health tick. `pnpm --dir apps/gui
+tauri build --no-bundle`, then running `target/release/cannet-gui`
+directly with the flags, is the path; the README now says so.
+
+### 1. Release baseline — and what the dev build was worth
+
+The 2026-07-26 baseline differs from a release capture of today's tree
+in **two** ways at once (build kind, and Tiers 1–3), so a two-way
+comparison cannot attribute anything. A third capture — the same code
+under `tauri dev` — separates them:
+
+| | 07-26 dev, pre-tier | 08-03 dev, post-tier | 08-03 release |
+| --- | --- | --- | --- |
+| `jsheap_mb` peak | 245.1 | 113.4 | **75.9** |
+| `jsheap_mb` drift /min | 154.5 | 11.1 | 10.3 |
+| `renderer_mb` peak | 655.7 | 354.0 | 364.8 |
+| `tree_mb` peak | 1139.6 | 850.0 | 780.2 |
+| `flush_ms` mean | 7.04 | 7.90 | **4.10** |
+| `tx_late_ms` mean | 14.16 | 13.83 | **5.67** |
+| `render.PlotArea` /s | 447.5 | 193.2 | 106.3 |
+| rx / tx fps | 1608 / 1608 | 1606 / 1607 | 1606 / 1608 |
+
+The two unexplained movers are now explained, and they have **different
+causes**:
+
+- **`tx_late_ms_mean` 4.5 → 14.2 was the dev build.** Same code, dev
+  13.83 vs release 5.67; the tier work moved it not at all
+  (14.16 → 13.83). Tier 3 item 3 predicted its lock-count reduction
+  would show here; it does not, and the release capture says the metric
+  was measuring the debug host.
+- **The jsheap peak was mostly the code, not the build.** 245.1 → 113.4
+  is the tiers; 113.4 → 75.9 is the build. The 2026-07-26 predecessor it
+  regressed against read 188 MB, and today's release run is 75.9 — the
+  "+30 % unexplained" is gone in both directions at once, and the drift
+  (154.5 → 10.3 MB/min) with it.
+
+Throughput is identical across all three, which is the control: the
+workload did not change, only what it cost.
+
+The render counters halve between the dev and release columns of the
+*same code* because React's development build double-invokes renders
+under StrictMode — so a render count from a dev capture is worth half
+its face value, and the 2026-07-26 numbers should be read that way.
+
+**Promoted**: the interaction capture is the new
+`docs/performance-measurements/baseline.json` frontend block, taken in
+the same pass as a fresh host-mode capture (host modes flat or better —
+`hardware-peak scan_ms_max` 0.886 → 0.032). An independent scrub run
+checks green on all 33 gated metrics.
+
+### 2. The interaction step
+
+`--perf-interact <script>` (ADR 0031) drives real DOM events at the real
+elements — no WebDriver, the app is its own driver. `scrub` zooms the
+plot to a working window and then cycles trace scrolls, plot pans and
+zooms with idle slots between them; `follow` does the zoom and then
+leaves the view alone.
+
+The warm-up zoom is not cosmetic. **The capture had been measuring a
+static plot**: a follow-live window wider than the capture is pinned to
+the session start and never advances, and the example's saved window is
+tens to hundreds of seconds against a 60 s run (`winw` 170.4 with
+`followwin.slide` at 0/s on one run).
+
+What interaction costs, against the resting run (both release):
+
+| | resting | scrub |
+| --- | --- | --- |
+| `longtask_ms_per_s` mean / max | 0.0 / 0.0 | 1.3 / 78.0 |
+| `lag_ms` max | 4.6 | 27.1 |
+| `jank_fraction` | 0.000 | 0.017 |
+| `flush_ms` max | 10.9 | 15.2 |
+| `tx_late_ms` max | 21.2 | 75.9 |
+| `plotarea.resample` /s | 51.7 | 61.0 |
+| `render.PlotArea` /s | 106.3 | 108.3 |
+
+So the gate can now see something it was structurally blind to: every
+UX-health metric it exists to protect reads exactly zero on a resting
+capture, and non-zero under interaction. Throughput and retention are
+unmoved (1606/1608, retention 0.999), which is the point — interaction
+costs render-tier time, not frames.
+
+Worth recording as a property of the gate: a capture that fails to
+connect (seen once — the app opened the project but never reached the
+connect, no error logged, not reproducible on re-run) writes a report
+with rx/tx fps 0 and `rx_gap: null`, and `check` **fails it loudly** on
+four rows rather than passing a run that measured nothing.
+
+### 3. `scroll_jank_pct` — excluded from the gate, with the reason
+
+**The meter is not lying and the app is not obviously janking; the
+number was uninterpretable because two things it depends on were never
+recorded.** Two experiments.
+
+**Experiment A (`scrollJank.test.ts`, deterministic).** Feed the meter a
+scroll whose misplacement is *known in pixels*. One pixel of alternating
+wobble reads **~16 %** when the window advances every 16 ms and **~4 %**
+at 66 ms; and **10×** as much at a 1.3 s window as at a 13 s one. The
+pixels on screen are identical within each pair. The reading is a *rate*
+deviation — a positional error divided by an interval and by a span — so
+it moves when the zoom or the advance cadence moves with nothing about
+the render path having changed. A gate on it would fire on an edit to
+`plot_fetch_interval_ms`.
+
+**Experiment B (two real captures).** `jankPixels` divides both out
+(pixels of misplacement per window movement) and `scrollStepMs` reports
+the cadence:
+
+| capture | `winw` | `scroll_step_ms` | `scroll_jank_pct` mean/max | `scroll_jank_px` mean/max |
+| --- | --- | --- | --- | --- |
+| release resting | 24.2 s | 28.1 | 6.5 / 12.9 | 0.12 / 0.30 |
+| release follow | 0.7 s | 49.1 | 6.9 / 23.9 | 6.97 / 30.3 |
+| release scrub | 0.8 s | 69.3 | 121 / 1087 | 74 / 244 |
+
+This **falsified the expectation Experiment A set up**. The prediction
+was that the percentage would balloon at the tighter zoom while the
+pixels held; instead the *percentage* is near-constant (6.5 → 6.9) and
+the *pixels* move 56×. So the app's real error is fixed in **time**, not
+in pixels: ~1.8 ms of misplacement per step at the wide window, ~3.4 ms
+at the tight one. Which of the two readings looks alarming is purely a
+function of how far the view is zoomed in.
+
+Consequences, in order:
+
+1. **Neither number is gateable, because the capture does not control
+   the scenario they depend on.** `winw` was 170.4 s, 24.2 s and 0.7 s
+   across runs of the same project — the saved plot window is whatever
+   the panel was last left at. A gate would be comparing two different
+   experiments.
+2. **The scrub row is nonsense on purpose**: a pan moves the window a
+   tenth of its width in one step, and a meter for how evenly the window
+   advances cannot tell that from a stall. This is why `follow` exists.
+3. So: **`scroll_jank_pct` is excluded from the gate**, and stays as a
+   reported diagnostic alongside `scroll_jank_px` and `scroll_step_ms`.
+   It keeps one honest use — comparing two runs at *identical* zoom and
+   cadence, which is what a before/after on one machine is. Its doc
+   comment no longer claims to be comparable across either. A wrong gate
+   is worse than no gate, and there is not yet a scenario definition
+   that would make either number a fair test.
+
+The ~2–3 ms per-step timing error is a real finding and is **not**
+diagnosed here — measurement was the job. Recorded in
+[`backlog.md`](../backlog.md) with the numbers.
+
+### What this says about Tier 4's rAF decision
+
+Tier 4 named the evidence that would reopen pinning redraw to rAF: *a
+frontend capture showing draw cost dominating fetch cost*. It does not
+show that.
+
+On the resting release capture the UI thread is not loaded at all —
+`longtask` 0.0 ms/s mean, 0.0 p95, `jank_fraction` 0.000, worst
+event-loop lateness 4.6 ms — while the model ingests 1606 frames/s. And
+the redraw is not running at display rate to begin with: `followwin.slide`
+fires 34×/s, because the coalesced slide is armed by a resample, not by
+a frame. There is no draw cost to control, so a second cadence field
+would govern something that measures zero. **The decision stands, and it
+is now measured rather than argued.**
 
 ## Tier 1 results
 
