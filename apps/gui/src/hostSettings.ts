@@ -7,10 +7,20 @@
 // `settings.json` in the OS config dir; the host is authoritative and the
 // settings panel is sugar over the file.
 //
-// Settings are read only by the settings panel (the host reads the cap
-// from `settings.json` directly when it enforces it), so — unlike
-// `hostState` — there's no boot-time hydrate or synchronous cache: the
-// panel loads on mount and writes the whole struct back on each edit.
+// Several independent consumers read settings (the settings panel, the
+// keybinding layer, and the host itself, which reads `settings.json`
+// directly when it enforces the scratch cap), so — as with `hostState` —
+// the frontend hydrates an in-memory cache once before first render
+// (`hydrateSettings`, called from `main.tsx`) and reads it synchronously
+// thereafter.
+//
+// The cache is a *read* convenience and never the base of a write:
+// `updateSettings` merges its patch over a fresh read of the file, because
+// the file is hand-editable and another consumer may have written since the
+// last hydrate. It then caches what the host says it stored (the host
+// refuses out-of-range values) and notifies subscribers, so one consumer's
+// edit — or a re-hydrate after a hand-edit — reaches all of them without a
+// restart.
 
 import { invoke } from "@tauri-apps/api/core";
 
@@ -74,4 +84,45 @@ export async function loadSettings(): Promise<Settings> {
 export async function saveSettings(settings: Settings): Promise<Settings> {
   const accepted = await invoke<Partial<Settings> | null>("set_settings", { settings });
   return accepted == null ? settings : { ...defaultSettings(), ...accepted };
+}
+
+let cache: Settings = defaultSettings();
+const listeners = new Set<(settings: Settings) => void>();
+
+function publish(next: Settings): void {
+  cache = next;
+  for (const fn of [...listeners]) fn(cache);
+}
+
+/// Load the persisted settings into the in-memory cache and notify
+/// subscribers. Called once before rendering; calling it again re-reads the
+/// file, which is how a hand-edit made while the app runs reaches the app
+/// without a restart.
+export async function hydrateSettings(): Promise<void> {
+  publish(await loadSettings());
+}
+
+/// The current cached settings. Synchronous; reflects writes made this
+/// session even before they've flushed to disk.
+export function hostSettings(): Settings {
+  return cache;
+}
+
+/// Subscribe to settings changes. Returns the unsubscribe function.
+export function subscribeSettings(fn: (settings: Settings) => void): () => void {
+  listeners.add(fn);
+  return () => {
+    listeners.delete(fn);
+  };
+}
+
+/// Apply a settings patch: merge it over a *fresh read* of the file — not
+/// over the cache — so a concurrent write or a hand-edit isn't clobbered,
+/// persist the whole struct, then cache and publish what the host actually
+/// accepted. Rejects if the write failed (the host logs it).
+export async function updateSettings(patch: Partial<Settings>): Promise<Settings> {
+  const current = await loadSettings();
+  const accepted = await saveSettings({ ...current, ...patch });
+  publish(accepted);
+  return accepted;
 }

@@ -2,10 +2,11 @@ import { useEffect, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 
 import {
-  defaultSettings,
-  loadSettings,
+  hostSettings,
+  hydrateSettings,
   loadSettingsBounds,
-  saveSettings,
+  subscribeSettings,
+  updateSettings,
   type Settings,
   type SettingsBounds,
 } from "./hostSettings";
@@ -16,18 +17,18 @@ const BYTES_PER_MB = 1024 * 1024;
  * Settings panel — a flat, hand-rolled editor over the host's
  * `settings.json` (ADR 0034). User intent only (the disk-spill scratch
  * cap and clear-on-exit), distinct from the machine state in `hostState`.
- * The file is the durable contract; this panel loads it on mount and, on
- * each edit, re-reads it and writes the whole struct back with the edit
- * merged over the current contents. Field limits come from the host
- * (`loadSettingsBounds`) rather than being restated here, and the host is
- * the one that enforces them — this panel displays whatever the host says
- * it stored. A singleton panel (one instance, fixed dockview id), opened
- * from the command palette.
+ * The file is the durable contract; this panel is a view over the shared
+ * `hostSettings` cache — it re-hydrates on mount (picking up a hand-edit
+ * made since boot), follows changes any other consumer makes, and writes
+ * through `updateSettings`, which merges each edit over a fresh read.
+ * Field limits come from the host (`loadSettingsBounds`) rather than being
+ * restated here, and the host is the one that enforces them — this panel
+ * displays whatever the host says it stored. A singleton panel (one
+ * instance, fixed dockview id), opened from the command palette.
  */
 export function SettingsPanel(_props: IDockviewPanelProps) {
-  const [settings, setSettings] = useState<Settings>(defaultSettings);
+  const [settings, setSettings] = useState<Settings>(hostSettings);
   const [bounds, setBounds] = useState<SettingsBounds | null>(null);
-  const [loaded, setLoaded] = useState(false);
   // In-progress text for the cap box. `null` = show the stored value. The
   // box can't be written through on every keystroke: the host refuses a
   // below-minimum cap, so "500" typed one digit at a time would be refused
@@ -35,13 +36,11 @@ export function SettingsPanel(_props: IDockviewPanelProps) {
   const [capDraft, setCapDraft] = useState<string | null>(null);
 
   useEffect(() => {
+    const unsubscribe = subscribeSettings(setSettings);
+    // The file may have been hand-edited since boot; a panel opening is
+    // exactly when to find out.
+    void hydrateSettings();
     let live = true;
-    void loadSettings().then((s) => {
-      if (live) {
-        setSettings(s);
-        setLoaded(true);
-      }
-    });
     void loadSettingsBounds()
       .then((b) => {
         if (live) setBounds(b);
@@ -51,23 +50,20 @@ export function SettingsPanel(_props: IDockviewPanelProps) {
       });
     return () => {
       live = false;
+      unsubscribe();
     };
   }, []);
 
-  // Persist an edit: show it immediately, then re-read the file and write
-  // the whole struct back with the patch merged over *that* — not over this
-  // panel's mount-time snapshot — so a concurrent write (the shortcuts
-  // panel persisting a keybinding) isn't clobbered. Same shape as
-  // `useCommands`' `persistUserBindings`. The host is authoritative and
-  // answers with what it stored, which is what ends up displayed.
+  // Persist an edit: show it immediately, then write through the shared
+  // cache, which merges the patch over a fresh read of the file — not over
+  // this panel's snapshot — so a concurrent write (the shortcuts panel
+  // persisting a keybinding) isn't clobbered. The host is authoritative and
+  // answers with what it stored, which is what every consumer then sees.
   const update = (patch: Partial<Settings>) => {
     setSettings((prev) => ({ ...prev, ...patch }));
-    void loadSettings()
-      .then((current) => saveSettings({ ...current, ...patch }))
-      .then((accepted) => setSettings(accepted))
-      .catch(() => {
-        /* host logs the failure; the in-memory value still holds */
-      });
+    void updateSettings(patch).catch(() => {
+      /* host logs the failure; the in-memory value still holds */
+    });
   };
 
   const minCapMb = bounds == null ? undefined : Math.ceil(bounds.minScratchCapBytes / BYTES_PER_MB);
@@ -94,7 +90,7 @@ export function SettingsPanel(_props: IDockviewPanelProps) {
 
   return (
     <div className="settings-panel">
-      <fieldset className="settings-group" disabled={!loaded}>
+      <fieldset className="settings-group">
         <legend>Disk-spill Cache</legend>
         <label className="settings-field">
           <span className="settings-label">Cache size cap (MB)</span>

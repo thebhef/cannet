@@ -38,19 +38,23 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import type { IDockviewPanelProps } from "dockview";
 
+import { hydrateSettings } from "./hostSettings";
 import { SettingsPanel } from "./SettingsPanel";
 
-beforeEach(() => {
+beforeEach(async () => {
   stored = { scratch_cap_bytes: null, clear_scratch_on_exit: false, keybindings: null };
   writes = [];
+  // The panel is a view over the shared cache, which the app hydrates
+  // before first render.
+  await hydrateSettings();
 });
 afterEach(cleanup);
 
-/// Render the panel and wait for it to finish loading (the fieldset is
-/// disabled until then, so nothing is clickable before).
+/// Render the panel and wait for its asynchronous mount work (the bounds
+/// fetch, the re-hydrate) to land.
 async function renderLoaded() {
   render(<SettingsPanel {...({} as IDockviewPanelProps)} />);
-  await waitFor(() => expect(screen.getByRole("checkbox")).toBeEnabled());
+  await screen.findByText(/Minimum 64 MB/);
   return screen.getByRole("spinbutton");
 }
 

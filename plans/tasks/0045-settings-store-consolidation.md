@@ -122,13 +122,32 @@ this, or did the app observe it?"*
    `commands.test.ts` → `reviewBindings` (reason names the offending
    command id / chord / the binding it lost to, and the accepted half
    still matches `sanitizeBindings` exactly).
-5. **No boot hydrate, no change notification.** Two independent
-   consumers read settings lazily. A hand-edit while the app runs needs
-   a restart *and* gets clobbered by the next panel edit. This
-   asymmetry with `hostState` (which does hydrate) is what enables
-   defect 1.
-6. Stale doc comment: `hostSettings.ts` claims "settings are read only
-   by the settings panel", false since `useCommands` reads them at boot.
+5. **No boot hydrate, no change notification.** *(done)* Two
+   independent consumers read settings lazily; a hand-edit while the app
+   ran needed a restart, and the asymmetry with `hostState` (which does
+   hydrate) is what enabled defect 1. `hostSettings` now mirrors
+   `hostState`: `hydrateSettings()` from `main.tsx` before first render,
+   `hostSettings()` for synchronous reads, `subscribeSettings()` for
+   change notification.
+
+   The one place it deliberately does *not* mirror `hostState`: **the
+   cache is never the base of a write.** `updateSettings(patch)` merges
+   over a fresh read of the file, then caches and publishes what the
+   host says it accepted. A cache-based write would have re-introduced
+   defect 1 in a worse form — `hostState` can write from its cache
+   because nothing else edits `state.json`, but `settings.json` is
+   hand-editable by contract, so its cache can always be stale.
+   Re-opening the settings panel re-hydrates, which is how a hand-edit
+   made mid-session reaches the app.
+
+   Tests: `hostSettings.test.ts` — synchronous read after hydrate,
+   defaults for a partial host answer, patch merged over a fresh read
+   (not the cache), subscribers notified with the *accepted* settings
+   rather than what was sent, and a re-hydrate notifying subscribers.
+6. **Stale doc comment** *(done, in the same change as item 5, which
+   rewrote the paragraph)*: `hostSettings.ts` claimed "settings are read
+   only by the settings panel", false since `useCommands` reads them at
+   boot — and doubly false now that the module hydrates.
 
 ### Stage 2 — move what is misfiled
 
