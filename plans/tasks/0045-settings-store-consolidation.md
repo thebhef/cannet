@@ -33,7 +33,14 @@ this, or did the app observe it?"*
 
 ## Scope
 
-### Stage 1 — fix the store that exists
+### Stage 1 — fix the store that exists — **complete**
+
+All six items below are done. Stage 1 ran ahead of Task 47 (see
+"Interlock"). Two of the six claims turned out to be inaccurate as
+written and are corrected in place: item 3 (the cap floor is not a
+clamping-strategy choice — it is validation metadata) and item 4 (the
+`keybindings` validation already existed; the *reporting* did not, and
+the fix is not host-side).
 
 1. **The lost-update race.** *(done)*
    [`SettingsPanel.tsx`](../../apps/gui/src/SettingsPanel.tsx) loaded
@@ -288,8 +295,9 @@ Three hard dependencies run between them:
   defensible.** Those knobs were borderline precisely because exposing
   them risked clutter and incoherent tuning; hidden-by-default answers
   both, so they are promoted rather than argued one at a time.
-- **Stage 1 runs before either.** The lost-update race is a live bug
-  and nothing else should be built on a racy store.
+- **Stage 1 runs before either.** *(done — it ran ahead of Task 47, and
+  the roadmap now says so.)* The lost-update race was a live bug and
+  nothing else should be built on a racy store.
 
 The storage contract does not depend on the view — ADR 0034 says so
 explicitly — so Task 46 gates the panel, never the file. Task 47 *does*
@@ -337,16 +345,32 @@ properly view-local, and the window-state plugin is properly separate.
   specific files/sessions?*, with `blf_channel_maps` as the worked
   example. Task 46 amends the same ADR for the descriptor/tagged-view
   decision — fold both into one amendment.
-- **Open question: are we using the right base directories?** Both
-  `settings.json` and `state.json` live in Tauri's `app_config_dir`,
-  while the scratch lives in `app_cache_dir`. On XDG those are three
-  distinct roots (`XDG_CONFIG_HOME`, `XDG_STATE_HOME`,
-  `XDG_CACHE_HOME`), and `state.json` is by its own module doc *state*,
-  sitting in the *config* dir. Worth checking what Tauri 2 actually
-  exposes before deciding whether this is worth correcting — a base-dir
-  move is a migration, and ADR 0011 says we drop rather than migrate.
-  Low priority; record the answer either way so it stops being a
-  recurring question.
+- **Base directories: answered — no change, and it should stop being
+  raised.** The question was whether `state.json` is misfiled by living
+  in `app_config_dir` next to `settings.json`, given that XDG separates
+  `XDG_CONFIG_HOME` / `XDG_STATE_HOME` / `XDG_CACHE_HOME`.
+
+  Checked against tauri 2.11.1's `PathResolver`
+  (`tauri/src/path/desktop.rs`) and its `BaseDirectory` enum. It exposes
+  `config`, `data`, `local_data`, `cache`, `runtime`, `home`, `temp`,
+  `resource`, the `app_*` variants of those, and `app_log` — and **no
+  state dir**. There is no `state_dir()` and no `BaseDirectory::State`.
+  The underlying `dirs` 6.0 crate *does* have `state_dir()`, but it
+  returns `Some` only on Linux (`$XDG_STATE_HOME`, else
+  `~/.local/state`) and `None` on both macOS and Windows.
+
+  So honouring `XDG_STATE_HOME` would mean bypassing Tauri's resolver,
+  taking `dirs` as a direct dependency (a technology-inventory
+  decision), and hand-rolling the macOS/Windows fallback that Tauri
+  currently supplies — to move a best-effort, regenerable file. Against
+  that: ADR 0011 says we drop rather than migrate, so the move would
+  discard everyone's recents and last-project pointer. The cost is real
+  and the benefit is XDG tidiness on one of three platforms.
+
+  **Verdict: keep `state.json` in `app_config_dir`.** The scratch is
+  correctly in `app_cache_dir` (it is genuinely disposable), and no
+  Tauri-supported "state" root exists to move to. Revisit only if Tauri
+  adds one.
 - **Stale `localStorage` comments** at five sites (`hostState.ts` ×2,
   `types.ts`, `useElementPanel.ts` ×2) still describe an
   "unsaved-workspace `localStorage` layout" that no longer exists.
@@ -363,10 +387,17 @@ properly view-local, and the window-state plugin is properly separate.
 
 ## Exit criteria
 
-- Editing a keybinding and a setting in the same session cannot lose
-  either, with a regression test proving it.
+- ~~Editing a keybinding and a setting in the same session cannot lose
+  either, with a regression test proving it.~~ *(met — Stage 1 items 1
+  and 5.)*
 - Every value in `settings.json` means what the file says: no knob
-  enforced at a value the file does not show.
+  enforced at a value the file does not show. *(met for
+  `scratch_cap_bytes` — Stage 1 item 3. Note the shape this took: a
+  value the app cannot honor is **refused and reported**, not enforced
+  at some other number. The file may still contain the refused text —
+  it is the user's document — but nothing anywhere is running at a
+  value the file doesn't show, and the system log says which value was
+  refused and why. New knobs must follow the same rule.)*
 - One source of truth for each item in the duplicates list, or an
   explicit note saying why a copy stays.
 - No user-facing knob promoted in Stage 3 changes behaviour for a user
