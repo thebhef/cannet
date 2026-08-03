@@ -677,7 +677,7 @@ other is the app / connection / appearance knobs.
 | Slice | Items | State |
 | --- | --- | --- |
 | **Data views** | Default column sets, widths, and hidden columns (trace + signal); CAN-ID and timestamp formatting; default y-axis mode; default auto-scroll / trace mode / events overlay; DBC auto-reload opt-out. | **complete** — eight fields, plus one deferred item (timestamp formatting) with its reasoning below |
-| **App, connection, appearance** | Startup behaviour; default server address; default nominal bitrate; seed layout; palettes; theme and density; confirmation-prompt suppression. | outstanding |
+| **App, connection, appearance** | Startup behaviour; default server address; default nominal bitrate; seed layout; palettes; theme and density; confirmation-prompt suppression. | **complete** — four fields, plus four deferred items (seed layout, palettes, light mode, density) with their reasoning below |
 
 Minimum system-log level is not in either: it landed in Stage 2 #2.
 
@@ -922,6 +922,56 @@ metrics (tracebuffer, grpc, hardware-peak) against the promoted
 baseline after the change; the frontend tier is skipped, as in Stages 3
 and 4, because Task 44 Tier 0 still owes a self-driving capture. Eight
 new fields take `settings.json` to thirty-one.
+
+#### Stage 5 (app, connection, appearance) as built
+
+Four of the seven items are promotions; four are deferrals — theme
+splits into light mode and density, which fail for different reasons
+and are triaged separately. The deferrals are written up below and in
+`plans/backlog.md` with their options costed, in the shape Stage 5's
+data-view half used for timestamp formatting.
+
+**Startup behaviour.** *(done)*
+
+| Field | Default | Tags | Scope | Read at |
+| --- | --- | --- | --- | --- |
+| `reopen_last_project` | `true` | general / behaviour | user | `resolve_project_dir` (host) and the boot open (frontend) |
+
+Notes:
+
+- **`Behaviour`, not `Default`.** There is no per-window version of
+  "resume where I left off"; it is one app-wide policy, decided once
+  per launch.
+- **`Scope::User`, and forced to be.** ADR 0042 §1 resolves the project
+  directory *from* the value, and the workspace scope lives inside the
+  directory being resolved — so a workspace override could not be read
+  in time to matter. It is a user-scope value on the merits anyway
+  (which project to resume is about the person), which is what makes
+  the restriction cost nothing. `settings::user_scope` is the
+  single-scope read that serves it, and it exists for exactly the
+  reason `state::user_scope_last_project` does; its rustdoc says so.
+- **Two halves, one decision.** The host picks the project *directory*
+  before the WebView exists; the frontend decides whether to
+  `open_project`. Both read the same field, so a launch with it off is
+  rooted in the auto-located directory (ADR 0042 §1 — there is still a
+  project directory, because there is no no-project branch) *and* opens
+  nothing. Gating only the frontend would have left the session rooted
+  in the last project's workspace with none of it loaded.
+- **The pointer is not cleared.** `last_project` is state the app
+  records, not a consequence of this preference; leaving it alone is
+  what makes turning the setting back on resume where it says.
+- **Automation is not gated.** ADR 0031's `--project` names its project
+  outright, and a self-driving run must not depend on a persisted
+  preference, so the setting only decides whether the *pointer* is
+  consulted.
+
+Behaviour tests (each mutation-checked — by making `project_to_reopen`
+ignore the setting, which reddens both the host guard and, through the
+frontend read, the boot one): `settings.rs` → *the last project is
+reopened by default*, *reopen off starts without a project*;
+`App.bootReopen.dom.test.tsx` → *resumes the last project by default*,
+*opens nothing when `reopen_last_project` is off*, *keeps the
+last-project pointer when it is not resuming it*.
 
 ## Interlock with Tasks 46 and 47
 

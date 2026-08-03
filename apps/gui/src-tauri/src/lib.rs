@@ -213,9 +213,12 @@ fn report_js_heap(bytes: u64) {
 /// `cache/` is the disk-spill scratch (ADR 0002 DS-6/DS-7).
 ///
 /// The project to resolve for is the one the frontend is about to
-/// reopen — the user-scope `last_project`. A project file the user put
-/// a `.cannet/` beside resolves to its own directory; anything else
-/// (a loose project file, or none at all) gets an auto-located directory
+/// reopen — the user-scope `last_project`, unless the user-scope
+/// `reopen_last_project` says to launch with nothing open, in which case
+/// this session resolves as if there were no last project. A project
+/// file the user put a `.cannet/` beside resolves to its own directory;
+/// anything else (a loose project file, a pointer this launch is not
+/// resuming, or none at all) gets an auto-located directory
 /// under Tauri's `app_cache_dir()` — `$XDG_CACHE_HOME/dev.cannet.app` on
 /// Linux and the per-OS equivalents, the same identifier namespace as
 /// the config (`app_config_dir`) and log (`app_log_dir`) roots. Either
@@ -229,7 +232,10 @@ fn resolve_project_dir(app: &tauri::App) -> project_dir::ActiveProjectDir {
         .path()
         .app_cache_dir()
         .unwrap_or_else(|_| std::env::temp_dir().join("cannet"));
-    let last_project = state::user_scope_last_project(app.handle());
+    let last_project = settings::project_to_reopen(
+        state::user_scope_last_project(app.handle()),
+        &settings::user_scope(app.handle()),
+    );
     let dir = project_dir::resolve(last_project.as_deref(), &cache_root);
     log_project_dir(&dir, "project directory resolved");
     remember_project_dir(app.handle(), &dir, last_project.as_deref());

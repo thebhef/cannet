@@ -332,6 +332,18 @@ const DESCRIPTORS: &[Spec] = &[
         },
     },
     Spec {
+        key: "reopen_last_project",
+        backing: Backing::Field,
+        label: "Reopen the last project on launch",
+        help: "Start cannet where you left off. Turn it off to launch with \
+               nothing open — the pointer to your last project is kept either \
+               way, so turning this back on resumes it. Its capture is kept \
+               too: every project keeps its own.",
+        surfaces: &[Surface::General],
+        kind: Kind::Behaviour,
+        control: Control::Bool,
+    },
+    Spec {
         key: "recent_blfs_limit",
         backing: Backing::Field,
         label: "Recent BLFs remembered",

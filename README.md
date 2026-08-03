@@ -442,8 +442,12 @@ restores the bus / binding configuration — hit **Connect** to switch),
 buffer cleared). The panel also lists the configured server(s) with
 **Connect all** / **Disconnect all** and the loaded DBCs with **Add…**
 / **Remove** / **Reload all from disk**. The
-last opened/saved project is reopened on launch (with no project, the
-layout is restored from local storage). Unsaved changes show a `●` in
+last opened/saved project is reopened on launch, unless you turn
+**`reopen_last_project`** off — then a launch starts with nothing open,
+in the auto-located project directory, and the pointer to your last
+project is kept so turning it back on resumes there. With no project,
+the layout is restored from that directory's own view state. Unsaved
+changes show a `●` in
 the project panel, and closing the window with unsaved changes prompts
 you (Save & close / Discard & close / Cancel). Not carried in the project: a trace's window
 position (it re-anchors to the session buffer on each launch anyway),

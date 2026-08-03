@@ -58,9 +58,12 @@ const SETTINGS_FILE: &str = "settings.json";
 /// The exceptions are the settings about *the person at the keyboard*
 /// rather than about the work: what the settings view reveals
 /// (`show_developer_settings`), how verbose their log view is
-/// (`system_log_min_level`), and how long a status notice dwells before
-/// it clears (`notice_dwell_ms`, a reading-speed accommodation). None of
-/// those are a project's business, so they stay at user scope.
+/// (`system_log_min_level`), how long a status notice dwells before it
+/// clears (`notice_dwell_ms`, a reading-speed accommodation), and
+/// whether launching resumes the last project (`reopen_last_project`,
+/// which is read before any project — and therefore any workspace file
+/// — has been resolved at all). None of those are a project's business,
+/// so they stay at user scope.
 ///
 /// The names are the serialized ones. `every_settings_key_declares_a_scope`
 /// is what keeps this table from drifting away from the struct.
@@ -71,6 +74,7 @@ pub(crate) const SCOPES: ScopeTable = &[
     ("show_developer_settings", Scope::User),
     ("system_log_min_level", Scope::User),
     ("notice_dwell_ms", Scope::User),
+    ("reopen_last_project", Scope::User),
     ("plot_fetch_interval_ms", Scope::UserOverridable),
     ("view_refresh_interval_ms", Scope::UserOverridable),
     ("follow_window_ms", Scope::UserOverridable),
@@ -142,6 +146,20 @@ pub struct Settings {
     /// survives closing and reopening the panel; the panel's *source*
     /// filter is view-local and stays in its dockview params.
     pub system_log_min_level: String,
+    /// Whether launching cannet resumes the project it was last working
+    /// in. Default `true`, which is what launching has always done.
+    ///
+    /// Off, a launch starts in the auto-located project directory
+    /// (ADR 0042 §1) with nothing open — there is still a project
+    /// directory, because there is no no-project code path. The
+    /// `last_project` pointer is left as it is, so turning this back on
+    /// resumes where the pointer still says.
+    ///
+    /// Read at startup from the **user scope only** ([`user_scope`]):
+    /// the workspace scope lives inside the directory this decides, so
+    /// it cannot take part in deciding it. That it is not a project's
+    /// business either is what makes the restriction cost nothing.
+    pub reopen_last_project: bool,
     /// How long a transient status notice stays frozen in the header
     /// before the bar reverts to the resting residency line. Default
     /// 3000 ms. Nothing is lost by shortening or lengthening it —
@@ -421,6 +439,7 @@ impl Default for Settings {
             keybindings: None,
             show_developer_settings: false,
             system_log_min_level: "info".to_string(),
+            reopen_last_project: true,
             notice_dwell_ms: 3_000,
             plot_fetch_interval_ms: 67,
             view_refresh_interval_ms: 250,
@@ -760,6 +779,44 @@ pub fn get_settings(app: tauri::AppHandle) -> Settings {
     settings
 }
 
+/// The settings as the **user scope alone** resolves them — no workspace
+/// overrides, no validation reporting.
+///
+/// One caller, and it is the reason the function exists: the project
+/// directory is resolved at startup (ADR 0042 §1) from settings that
+/// cannot go through the scoped read path, because the workspace scope
+/// lives *inside* the directory being resolved. `state`'s
+/// `user_scope_last_project` is the same restriction on the same
+/// decision. Every field read this way is `Scope::User`, so nothing is
+/// being quietly denied its override.
+pub(crate) fn user_scope(app: &tauri::AppHandle) -> Settings {
+    let Ok(dir) = crate::persisted_json::config_dir(app) else {
+        return Settings::default();
+    };
+    // A workspace path that cannot exist: this read is deliberately
+    // single-scope, and `read_settings` treats a missing file as
+    // contributing nothing.
+    validate(read_settings(&dir, Path::new("")).0).0
+}
+
+/// The project file a launch resumes into: the one the app was last
+/// working in, unless [`Settings::reopen_last_project`] says to start
+/// without one.
+///
+/// Pure so the decision is testable — the environment it actually runs
+/// in (a `tauri::App` mid-`setup`, before the `WebView` exists) is not one
+/// a test can build.
+pub(crate) fn project_to_reopen(
+    last: Option<std::path::PathBuf>,
+    settings: &Settings,
+) -> Option<std::path::PathBuf> {
+    if settings.reopen_last_project {
+        last
+    } else {
+        None
+    }
+}
+
 /// The settings keys the open project's `.cannet/settings.json`
 /// declares — the ones whose effective value came from the project
 /// rather than from the user's own file (ADR 0042 §3). The settings view
@@ -850,6 +907,7 @@ mod tests {
             ]),
             show_developer_settings: true,
             system_log_min_level: "warn".to_string(),
+            reopen_last_project: false,
             notice_dwell_ms: 1_500,
             plot_fetch_interval_ms: 33,
             view_refresh_interval_ms: 500,
@@ -1048,6 +1106,37 @@ mod tests {
         assert!(
             complaints[0].contains("plot_fetch_interval_ms"),
             "{complaints:?}"
+        );
+    }
+
+    #[test]
+    fn the_last_project_is_reopened_by_default() {
+        // The behaviour the app has always had, now as the field's
+        // default: an install nobody has touched resumes where it left
+        // off.
+        let last = Some(std::path::PathBuf::from("/jobs/friday.cannet_prj"));
+        assert_eq!(
+            project_to_reopen(last.clone(), &Settings::default()),
+            last,
+            "the default must resume the last project"
+        );
+    }
+
+    #[test]
+    fn reopen_off_starts_without_a_project() {
+        // The knob the item exists for: start empty. The pointer is
+        // still on file — turning the setting back on resumes — but
+        // this session resolves as if there were no last project, which
+        // is the auto-located project directory (ADR 0042 §1).
+        assert_eq!(
+            project_to_reopen(
+                Some(std::path::PathBuf::from("/jobs/friday.cannet_prj")),
+                &Settings {
+                    reopen_last_project: false,
+                    ..Settings::default()
+                },
+            ),
+            None
         );
     }
 

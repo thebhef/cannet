@@ -53,6 +53,11 @@ export interface Settings {
   /// rather than panel state, so it survives closing the panel; the
   /// panel's source filter stays view-local.
   system_log_min_level: SystemLogLevel;
+  /// Whether launching resumes the project cannet was last working in.
+  /// Off, the boot path opens nothing and the session stays in the
+  /// auto-located project directory the host resolved. Read once, on the
+  /// boot open.
+  reopen_last_project: boolean;
   /// How long a transient status notice dwells in the header before the
   /// bar reverts to its resting line.
   notice_dwell_ms: number;
@@ -149,6 +154,7 @@ export function defaultSettings(): Settings {
     keybindings: null,
     show_developer_settings: false,
     system_log_min_level: "info",
+    reopen_last_project: true,
     notice_dwell_ms: 3000,
     plot_fetch_interval_ms: 67,
     view_refresh_interval_ms: 250,

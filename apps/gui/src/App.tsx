@@ -62,7 +62,7 @@ import {
 } from "./systemLog";
 import { splitStatus, type LogState, type RemoteStatus, type TransientStatus } from "./statusLine";
 import { useTransientStatus } from "./useTransientStatus";
-import { useSetting } from "./hostSettings";
+import { hostSettings, useSetting } from "./hostSettings";
 import { NotesContext, type NotesContextValue } from "./notesContext";
 import type { Note } from "./notes";
 import { sortNotesChronologically } from "./notes";
@@ -2030,7 +2030,16 @@ export function App() {
         // it replaces the layout restored above (and re-applies the
         // bus/DBC config). A stale pointer (file moved/deleted) is
         // cleared so it stops failing.
-        const projectToOpen = cfg?.project ?? hostState().last_project;
+        //
+        // `reopen_last_project` gates only the pointer: automation names
+        // its project outright, and a run driven by `--project` must not
+        // depend on a persisted preference. The host makes the same
+        // decision for the project *directory* before the WebView
+        // exists, so with the setting off this session is already rooted
+        // in the auto-located directory and there is nothing to open.
+        const projectToOpen =
+          cfg?.project ??
+          (hostSettings().reopen_last_project ? hostState().last_project : null);
         if (projectToOpen) {
           try {
             const p = await invoke<Project>("open_project", { path: projectToOpen });
