@@ -48,7 +48,9 @@ const SOURCE: &str = "interfaces";
 /// connect + subscribe path. Short enough that a sidecar restart
 /// reconnects "instantly" from the user's perspective; long enough
 /// that a permanently-down remote server doesn't hammer.
-const RECONNECT_BACKOFF: Duration = Duration::from_secs(2);
+fn reconnect_backoff() -> Duration {
+    Duration::from_millis(crate::settings::effective().reconnect_backoff_ms)
+}
 
 /// Wire shape of [`INTERFACES_CHANGED_EVENT`]. `address` is the same
 /// `host:port` the cache is keyed by; `interfaces` is the new full
@@ -214,7 +216,7 @@ async fn run_watch(app: AppHandle, address: String) {
                 );
             }
         }
-        tokio::time::sleep(RECONNECT_BACKOFF).await;
+        tokio::time::sleep(reconnect_backoff()).await;
     }
 }
 

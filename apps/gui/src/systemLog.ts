@@ -4,6 +4,7 @@
 // over it. This module is the pure logic — sorting / filtering —
 // that the panel and unit tests share.
 
+import { hostSettings } from "./hostSettings";
 import type { SystemMessage, SystemLogLevel } from "./types";
 
 /// Severity ordering for the panel's minimum-level filter. Must agree
@@ -51,12 +52,18 @@ export function distinctSources(messages: readonly SystemMessage[]): string[] {
   return Array.from(seen).sort();
 }
 
-/// Entries the frontend mirror holds. Matches the host ring's
-/// `RING_CAPACITY` (`src-tauri/src/system_log.rs`), which is the most a
-/// snapshot can ever deliver — mirroring more would hold entries the
-/// panel can never be shown again, and would grow the mirror with
-/// session time, which the paging rule in CLAUDE.md forbids outright.
-export const SYSTEM_LOG_MIRROR_CAPACITY = 4096;
+/// Entries the frontend mirror holds: the `system_log_ring_capacity`
+/// setting, which is also what bounds the host ring
+/// (`src-tauri/src/system_log.rs`) — one number, read from
+/// `settings.json` on both sides rather than mirrored by hand.
+///
+/// It is the most a snapshot can ever deliver: mirroring more would
+/// hold entries the panel can never be shown again, and would grow the
+/// mirror with session time, which the paging rule in CLAUDE.md forbids
+/// outright.
+function mirrorCapacity(): number {
+  return Math.max(1, hostSettings().system_log_ring_capacity);
+}
 
 /// The frontend's bounded mirror of the host ring, plus the badge
 /// bookkeeping. One value rather than three pieces of state so the tally
@@ -65,7 +72,7 @@ export const SYSTEM_LOG_MIRROR_CAPACITY = 4096;
 /// re-scanning the whole mirror whenever a message arrives.
 export interface SystemLogMirror {
   /// Chronological view of the buffer, newest last, at most
-  /// [`SYSTEM_LOG_MIRROR_CAPACITY`] entries.
+  /// [`mirrorCapacity`] entries.
   messages: SystemMessage[];
   /// Highest `seq` the user has seen. `-1` = nothing read yet. Survives
   /// a clear: the host keeps counting `seq` across one.
@@ -82,9 +89,8 @@ export const EMPTY_SYSTEM_LOG_MIRROR: SystemLogMirror = {
 
 /// Drop the oldest entries so `messages` fits the cap.
 function capped(messages: SystemMessage[]): SystemMessage[] {
-  return messages.length > SYSTEM_LOG_MIRROR_CAPACITY
-    ? messages.slice(messages.length - SYSTEM_LOG_MIRROR_CAPACITY)
-    : messages;
+  const cap = mirrorCapacity();
+  return messages.length > cap ? messages.slice(messages.length - cap) : messages;
 }
 
 function isWarnOrError(m: SystemMessage): boolean {

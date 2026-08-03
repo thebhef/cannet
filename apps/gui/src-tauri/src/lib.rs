@@ -553,6 +553,11 @@ pub fn run() {
             if let Some(main) = app.get_webview_window("main") {
                 window_state::ensure_on_screen(&main);
             }
+            // Fill the host-side settings cache before anything that
+            // reads it starts: the loops below, the rolling-log writer,
+            // and the system-log ring all take their cadences and
+            // depths from it (ADR 0034).
+            settings::hydrate(app.handle());
             crash::spawn_health_recorder(app.handle().clone());
             spawn_trace_grew_emitter(app.handle().clone());
             spawn_trace_flusher(app.handle().clone());

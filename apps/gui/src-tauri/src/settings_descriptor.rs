@@ -27,7 +27,8 @@ use serde::Serialize;
 
 use crate::persisted_json::{scope_of, Scope};
 use crate::settings::{
-    Settings, MIN_INTERVAL_MS, MIN_SCRATCH_CAP_BYTES, SCOPES, SYSTEM_LOG_LEVELS,
+    Settings, MIN_INTERVAL_MS, MIN_LOG_ROTATION_BYTES, MIN_SCRATCH_CAP_BYTES, MIN_SYSTEM_LOG_RING,
+    SCOPES, SYSTEM_LOG_LEVELS,
 };
 
 /// A whole-millisecond interval control: the shape every cadence
@@ -38,6 +39,18 @@ const fn interval_ms() -> Control {
         unit: Some("ms"),
         scale: 1,
         min: Some(MIN_INTERVAL_MS),
+        unset: None,
+    }
+}
+
+/// An interval whose `0` means "off" rather than "as fast as
+/// possible" — so it carries no floor, and the help text says what zero
+/// does.
+const fn interval_ms_or_off() -> Control {
+    Control::Int {
+        unit: Some("ms"),
+        scale: 1,
+        min: None,
         unset: None,
     }
 }
@@ -306,6 +319,108 @@ const DESCRIPTORS: &[Spec] = &[
                cost on the UI thread and the host-side window scans under a \
                high-rate stream.",
         surfaces: &[Surface::General],
+        kind: Kind::Developer,
+        control: interval_ms(),
+    },
+    Spec {
+        key: "live_update_interval_ms",
+        label: "Live update rate",
+        help: "How often the host tells the views a running capture has grown. \
+               Covers the whole live-update loop — the rate readout's smoothing \
+               and the live-tail size are tuned against this one number.",
+        surfaces: &[Surface::Trace],
+        kind: Kind::Developer,
+        control: interval_ms(),
+    },
+    Spec {
+        key: "trace_flush_interval_ms",
+        label: "Capture flush interval",
+        help: "How often the capture is flushed to disk. A crash loses at most \
+               this much trailing capture; each flush costs an fsync and a \
+               manifest rewrite, so lengthening it trades durability for I/O.",
+        surfaces: &[Surface::Storage],
+        kind: Kind::Behaviour,
+        control: interval_ms(),
+    },
+    Spec {
+        key: "log_rotation_bytes",
+        label: "Log file rotation size",
+        help: "Size at which cannet.log rotates. One previous generation is kept, \
+               so the pair uses about twice this. The rolling log is what you send \
+               with a bug report — a long soak at a small size loses its \
+               beginning.",
+        surfaces: &[Surface::Logging],
+        kind: Kind::Behaviour,
+        control: Control::Int {
+            unit: Some("MiB"),
+            scale: 1024 * 1024,
+            min: Some(MIN_LOG_ROTATION_BYTES),
+            unset: None,
+        },
+    },
+    Spec {
+        key: "system_log_ring_capacity",
+        label: "System log depth",
+        help: "How many system messages are kept before the oldest is dropped. The \
+               System Messages panel can show no more than this, so raising it \
+               makes more of a long session reachable.",
+        surfaces: &[Surface::Logging],
+        kind: Kind::Behaviour,
+        control: Control::Int {
+            unit: Some("entries"),
+            scale: 1,
+            min: Some(MIN_SYSTEM_LOG_RING),
+            unset: None,
+        },
+    },
+    Spec {
+        key: "system_log_rate_limit",
+        label: "System log rate limit",
+        help: "How many identical messages one source may log per second before \
+               the rest are suppressed. Set it to 0 to turn the limiter off — \
+               diagnosing a message flood is exactly when you want all of it.",
+        surfaces: &[Surface::Logging],
+        kind: Kind::Behaviour,
+        control: Control::Int {
+            unit: Some("per second"),
+            scale: 1,
+            min: None,
+            unset: None,
+        },
+    },
+    Spec {
+        key: "health_sample_interval_ms",
+        label: "Health sample interval",
+        help: "How often memory and capture metrics are sampled into the system \
+               log at debug level. Each sample walks the whole system process \
+               table, so it is not free; set it to 0 to turn sampling off.",
+        surfaces: &[Surface::Logging],
+        kind: Kind::Developer,
+        control: interval_ms_or_off(),
+    },
+    Spec {
+        key: "sidecar_restart_budget",
+        label: "Sidecar restart budget",
+        help: "How many times a crashed python-can sidecar is restarted \
+               automatically before the app gives up for the session. Raise it for \
+               a flaky adapter; lower it so a CI soak fails loudly. Restart \
+               sidecar resets the count.",
+        surfaces: &[Surface::Connection],
+        kind: Kind::Behaviour,
+        control: Control::Int {
+            unit: Some("attempts"),
+            scale: 1,
+            min: None,
+            unset: None,
+        },
+    },
+    Spec {
+        key: "reconnect_backoff_ms",
+        label: "Reconnect backoff",
+        help: "How long to wait before reconnecting to a cannet-server after the \
+               connection drops. Fine at the default on a LAN; a flaky link to a \
+               remote server wants longer so a down server is not hammered.",
+        surfaces: &[Surface::Connection],
         kind: Kind::Developer,
         control: interval_ms(),
     },

@@ -70,6 +70,23 @@ export interface Settings {
   recent_blfs_limit: number;
   /// How many recently-run commands the palette floats to the top.
   recent_commands_limit: number;
+  /// How often the host tells the views a running capture has grown.
+  live_update_interval_ms: number;
+  /// How often the capture is flushed to disk (ADR 0002 DS-2/DS-7).
+  trace_flush_interval_ms: number;
+  /// Size at which `cannet.log` rotates to `cannet.log.1`.
+  log_rotation_bytes: number;
+  /// Entries the system-log ring holds, host-side and in the frontend
+  /// mirror, before the oldest is dropped.
+  system_log_ring_capacity: number;
+  /// Identical messages one source may log per second; `0` = no limit.
+  system_log_rate_limit: number;
+  /// Health-sample cadence; `0` = sampling off.
+  health_sample_interval_ms: number;
+  /// Auto-restarts allowed per session for a crashed sidecar.
+  sidecar_restart_budget: number;
+  /// Wait before reconnecting to a `cannet-server` after a drop.
+  reconnect_backoff_ms: number;
 }
 
 export function defaultSettings(): Settings {
@@ -85,6 +102,14 @@ export function defaultSettings(): Settings {
     follow_window_ms: 10_000,
     recent_blfs_limit: 8,
     recent_commands_limit: 10,
+    live_update_interval_ms: 100,
+    trace_flush_interval_ms: 2000,
+    log_rotation_bytes: 5 * 1024 * 1024,
+    system_log_ring_capacity: 4096,
+    system_log_rate_limit: 5,
+    health_sample_interval_ms: 20_000,
+    sidecar_restart_budget: 3,
+    reconnect_backoff_ms: 2000,
   };
 }
 

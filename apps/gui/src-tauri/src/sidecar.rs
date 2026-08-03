@@ -69,7 +69,7 @@
 //! ## Retry budget
 //!
 //! A sidecar that crashes (non-zero exit) gets at most
-//! [`MAX_RESTARTS_PER_SESSION`] auto-restarts before the host stops
+//! a budget of auto-restarts before the host stops
 //! trying; an error-level message tells the user to click "Restart
 //! sidecar" by hand (the Tauri command exposed below). The budget
 //! resets when the user runs the manual restart command.
@@ -105,9 +105,12 @@ use crate::{emit_system_log, sys_debug, sys_error, sys_info, sys_warn};
 pub const SOURCE: &str = "sidecar:python-can";
 
 /// How many times the host auto-restarts a crashing sidecar before
-/// giving up for the rest of the session. Resets when the user
-/// triggers a manual restart through [`restart_sidecar`].
-pub const MAX_RESTARTS_PER_SESSION: u32 = 3;
+/// giving up for the rest of the session, from `settings.json`
+/// (`sidecar_restart_budget`). Resets when the user triggers a manual
+/// restart through [`restart_sidecar`].
+fn restart_budget() -> u64 {
+    crate::settings::effective().sidecar_restart_budget
+}
 
 /// Tauri event name fired on every transition between [`SidecarPhase`]
 /// states (including bound-address changes). Frontend subscribers
@@ -451,7 +454,7 @@ fn which_binary(name: &str) -> Option<PathBuf> {
 /// every lifecycle event is published as a System Message tagged
 /// [`SOURCE`].
 ///
-/// Auto-restart on crash, capped by [`MAX_RESTARTS_PER_SESSION`].
+/// Auto-restart on crash, capped by [`restart_budget`].
 pub fn spawn_sidecar(app: &AppHandle) {
     let app_clone = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -851,7 +854,8 @@ fn maybe_restart(app: &AppHandle) {
         inner.crash_count += 1;
         inner.crash_count
     };
-    if attempt > MAX_RESTARTS_PER_SESSION {
+    let budget = restart_budget();
+    if u64::from(attempt) > budget {
         sys_error!(
             app,
             SOURCE,
@@ -859,11 +863,7 @@ fn maybe_restart(app: &AppHandle) {
         );
         return;
     }
-    sys_warn!(
-        app,
-        SOURCE,
-        "auto-restarting sidecar ({attempt}/{MAX_RESTARTS_PER_SESSION})"
-    );
+    sys_warn!(app, SOURCE, "auto-restarting sidecar ({attempt}/{budget})");
     spawn_sidecar(app);
 }
 

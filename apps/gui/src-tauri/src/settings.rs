@@ -28,6 +28,7 @@
 //! fresh install and a hand-deleted file behave identically.
 
 use std::path::Path;
+use std::sync::{Arc, OnceLock, PoisonError, RwLock};
 
 use serde::{Deserialize, Serialize};
 
@@ -68,6 +69,14 @@ pub(crate) const SCOPES: ScopeTable = &[
     ("follow_window_ms", Scope::UserOverridable),
     ("recent_blfs_limit", Scope::UserOverridable),
     ("recent_commands_limit", Scope::UserOverridable),
+    ("live_update_interval_ms", Scope::UserOverridable),
+    ("trace_flush_interval_ms", Scope::UserOverridable),
+    ("log_rotation_bytes", Scope::UserOverridable),
+    ("system_log_ring_capacity", Scope::UserOverridable),
+    ("system_log_rate_limit", Scope::UserOverridable),
+    ("health_sample_interval_ms", Scope::UserOverridable),
+    ("sidecar_restart_budget", Scope::UserOverridable),
+    ("reconnect_backoff_ms", Scope::UserOverridable),
 ];
 
 /// The persisted user settings. `#[serde(default)]` fills any absent field
@@ -136,6 +145,48 @@ pub struct Settings {
     /// How many recently-run commands the palette floats to the top.
     /// Default 10. `0` remembers none.
     pub recent_commands_limit: u64,
+    /// How often the host pushes a `trace-grew` event with the latest
+    /// count, rate, and live tail. Default 100 ms. It is *one* setting
+    /// covering the whole live-update loop: the smoothing constant and
+    /// the tail ceiling are tuned against this cadence, and exposing
+    /// one of the three would invite a combination none of them was
+    /// designed for.
+    pub live_update_interval_ms: u64,
+    /// How often the host flushes the trace store to disk (ADR 0002
+    /// DS-2/DS-7). Default 2000 ms — a crash loses at most this much
+    /// trailing capture, at the cost of an fsync and a manifest
+    /// rewrite each time. The same durability-versus-I/O decision
+    /// `scratch_cap_bytes` already exposes.
+    pub trace_flush_interval_ms: u64,
+    /// Size at which `cannet.log` rotates to `cannet.log.1`. Default
+    /// 5 MiB; one generation is kept, so disk use is bounded to about
+    /// twice this. The rolling log is the artifact a field engineer
+    /// ships back, and a long soak at the default silently loses its
+    /// head.
+    pub log_rotation_bytes: u64,
+    /// Entries the host's in-process system-log ring holds before the
+    /// oldest is evicted. Default 4096. The frontend mirror follows it,
+    /// so raising it makes more history reachable in the panel as well.
+    pub system_log_ring_capacity: u64,
+    /// How many messages one `(source, template)` pair may contribute
+    /// per second before the rest are suppressed. Default 5. **`0`
+    /// turns the limiter off** — debugging a message flood is exactly
+    /// when you want to see all of it.
+    pub system_log_rate_limit: u64,
+    /// How often the health recorder samples memory and store metrics.
+    /// Default 20 000 ms. Each sample walks the whole system process
+    /// table, so it is genuinely expensive. **`0` turns sampling off.**
+    pub health_sample_interval_ms: u64,
+    /// How many times the host auto-restarts a crashed sidecar before
+    /// giving up for the session. Default 3 — too few for a flaky
+    /// dongle, too many for a CI soak. `0` never auto-restarts. A
+    /// manual "Restart sidecar" resets the counter either way.
+    pub sidecar_restart_budget: u64,
+    /// How long the interface watcher waits before reconnecting to a
+    /// `cannet-server` after the stream ends or a connect fails.
+    /// Default 2000 ms: fine on a LAN, short for a flaky VPN to a
+    /// remote server.
+    pub reconnect_backoff_ms: u64,
 }
 
 /// The smallest legal value of any millisecond-interval setting.
@@ -147,6 +198,19 @@ pub struct Settings {
 /// descriptor rather than restated there
 /// (`every_published_minimum_is_the_one_validate_enforces`).
 pub const MIN_INTERVAL_MS: u64 = 1;
+
+/// The smallest legal [`Settings::system_log_ring_capacity`]. A ring
+/// that holds nothing cannot hold the message being pushed into it, so
+/// one entry is the floor the data structure itself imposes.
+pub const MIN_SYSTEM_LOG_RING: u64 = 1;
+
+/// The smallest legal [`Settings::log_rotation_bytes`], and the unit the
+/// settings view edits it in. A rotation cap is stored in bytes but
+/// typed in MiB — the control's `scale` — so one mebibyte is the
+/// smallest value that control can express, and a cap below one block
+/// write would rotate the log away faster than anything could be read
+/// out of it.
+pub const MIN_LOG_ROTATION_BYTES: u64 = 1024 * 1024;
 
 /// The severity names [`Settings::system_log_min_level`] accepts, least
 /// to most severe — the same ladder the frontend's
@@ -171,8 +235,60 @@ impl Default for Settings {
             follow_window_ms: 10_000,
             recent_blfs_limit: 8,
             recent_commands_limit: 10,
+            live_update_interval_ms: 100,
+            trace_flush_interval_ms: 2_000,
+            log_rotation_bytes: 5 * 1024 * 1024,
+            system_log_ring_capacity: 4_096,
+            system_log_rate_limit: 5,
+            health_sample_interval_ms: 20_000,
+            sidecar_restart_budget: 3,
+            reconnect_backoff_ms: 2_000,
         }
     }
+}
+
+/// The effective settings, cached for host code that needs a value
+/// somewhere re-reading the file is not an option — a per-message log
+/// write, a timer loop, the system-log ring. Refreshed by every
+/// [`get_settings`] / [`set_settings`], and hydrated once at startup, so
+/// it is never staler than the last read.
+///
+/// It is deliberately **not** the base of a write. Stage 1's rule
+/// stands: `set_settings` merges over a fresh read of the file, because
+/// the file is hand-editable and a cache can always be stale. This is a
+/// read cache and nothing else.
+static EFFECTIVE: OnceLock<RwLock<Arc<Settings>>> = OnceLock::new();
+
+fn effective_cell() -> &'static RwLock<Arc<Settings>> {
+    EFFECTIVE.get_or_init(|| RwLock::new(Arc::new(Settings::default())))
+}
+
+/// The current effective settings — one `Arc` clone, no filesystem, no
+/// lock held past the read. Safe from any thread, including from inside
+/// the system-log path, which is why it must never touch the disk.
+///
+/// Before the first [`hydrate`] it answers [`Settings::default`], which
+/// is the same answer a missing file gives.
+#[must_use]
+pub fn effective() -> Arc<Settings> {
+    let guard = effective_cell()
+        .read()
+        .unwrap_or_else(PoisonError::into_inner);
+    Arc::clone(&guard)
+}
+
+fn cache(settings: &Settings) {
+    let mut guard = effective_cell()
+        .write()
+        .unwrap_or_else(PoisonError::into_inner);
+    *guard = Arc::new(settings.clone());
+}
+
+/// Fill the [`effective`] cache from disk. Called once during setup, so
+/// the loops and log writers that read it start on the user's values
+/// rather than on the defaults.
+pub fn hydrate(app: &tauri::AppHandle) {
+    let _ = get_settings(app.clone());
 }
 
 /// One persisted keybinding — the on-disk mirror of the frontend's
@@ -263,6 +379,36 @@ pub(crate) fn validate(settings: Settings) -> (Settings, Vec<String>) {
             MIN_INTERVAL_MS,
             d.follow_window_ms,
         ),
+        (
+            "live_update_interval_ms",
+            &mut settings.live_update_interval_ms,
+            MIN_INTERVAL_MS,
+            d.live_update_interval_ms,
+        ),
+        (
+            "trace_flush_interval_ms",
+            &mut settings.trace_flush_interval_ms,
+            MIN_INTERVAL_MS,
+            d.trace_flush_interval_ms,
+        ),
+        (
+            "reconnect_backoff_ms",
+            &mut settings.reconnect_backoff_ms,
+            MIN_INTERVAL_MS,
+            d.reconnect_backoff_ms,
+        ),
+        (
+            "system_log_ring_capacity",
+            &mut settings.system_log_ring_capacity,
+            MIN_SYSTEM_LOG_RING,
+            d.system_log_ring_capacity,
+        ),
+        (
+            "log_rotation_bytes",
+            &mut settings.log_rotation_bytes,
+            MIN_LOG_ROTATION_BYTES,
+            d.log_rotation_bytes,
+        ),
     ] {
         refuse_below(&mut complaints, key, value, min, default);
     }
@@ -325,6 +471,7 @@ pub fn get_settings(app: tauri::AppHandle) -> Settings {
         .map(|user_dir| read_settings(&user_dir, &crate::workspace_dir(&app)))
         .unwrap_or_default();
     let (settings, complaints) = validate(raw);
+    cache(&settings);
     warn_refused(&app, &complaints);
     settings
 }
@@ -352,6 +499,7 @@ pub fn get_settings_overrides(app: tauri::AppHandle) -> Vec<String> {
 pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<Settings, String> {
     let dir = crate::persisted_json::config_dir(&app)?;
     let (settings, complaints) = validate(settings);
+    cache(&settings);
     warn_refused(&app, &complaints);
     write_settings(&dir, &crate::workspace_dir(&app), &settings).map_err(|e| {
         let msg = format!("failed to write settings: {e}");
@@ -415,6 +563,14 @@ mod tests {
             follow_window_ms: 30_000,
             recent_blfs_limit: 20,
             recent_commands_limit: 3,
+            live_update_interval_ms: 250,
+            trace_flush_interval_ms: 5_000,
+            log_rotation_bytes: 32 * 1024 * 1024,
+            system_log_ring_capacity: 512,
+            system_log_rate_limit: 0,
+            health_sample_interval_ms: 0,
+            sidecar_restart_budget: 1,
+            reconnect_backoff_ms: 10_000,
         }
     }
 
@@ -526,6 +682,38 @@ mod tests {
         assert_eq!(parse_settings(legacy), Settings::default());
         // Same for the empty document and the missing one.
         assert_eq!(parse_settings("{}"), Settings::default());
+    }
+
+    #[test]
+    fn the_effective_cache_answers_defaults_until_something_publishes() {
+        // Host code on paths that cannot read the file — the log
+        // writer, the timer loops, the system-log ring — reads this
+        // cache, so before the boot hydrate it must answer exactly what
+        // a missing file answers.
+        //
+        // Deliberately exercised through `notice_dwell_ms` alone: the
+        // cache is process-wide, and every other field is read by some
+        // other module whose tests run concurrently with this one.
+        // Nothing host-side reads the dwell, so publishing it here
+        // cannot perturb them.
+        let before = effective();
+        assert_eq!(
+            before.notice_dwell_ms,
+            Settings::default().notice_dwell_ms,
+            "un-hydrated cache must read as the defaults"
+        );
+
+        cache(&Settings {
+            notice_dwell_ms: 12_345,
+            ..(*before).clone()
+        });
+        assert_eq!(effective().notice_dwell_ms, 12_345);
+
+        cache(&before);
+        assert_eq!(
+            effective().notice_dwell_ms,
+            Settings::default().notice_dwell_ms
+        );
     }
 
     #[test]

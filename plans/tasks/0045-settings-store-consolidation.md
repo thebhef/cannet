@@ -361,6 +361,91 @@ the existing default-cadence test); `recentBlfs.test.ts` /
 `recentCommands.test.ts` → *caps at the configured depth, not a
 hard-coded one*.
 
+**Host-consumed fields, and the cache they read.**
+
+The host half needed one thing the frontend half did not: a way to read
+a setting on a path where re-reading `settings.json` is out of the
+question — a per-message rolling-log write, a `tokio` timer loop, the
+system-log ring itself. `settings::effective()` is that: an
+`Arc<Settings>` behind an `RwLock`, refreshed by every `get_settings` /
+`set_settings` and hydrated once in `setup` before any of its readers
+start. One `Arc` clone per read, no filesystem, safe to call from
+inside the system-log path — which is the constraint that ruled out
+"just read the file".
+
+It is a **read** cache and never the base of a write. Stage 1 item 5's
+rule is untouched: `set_settings` still merges over a fresh read,
+because the file is hand-editable and a cache can always be stale.
+Before the boot hydrate it answers `Settings::default()`, which is the
+same answer a missing file gives, so the pre-hydrate window behaves
+identically to a fresh install rather than specially.
+
+| Field | Default | Tags | Reader |
+| --- | --- | --- | --- |
+| `live_update_interval_ms` | 100 | trace / developer | `emitters::spawn_trace_grew_emitter` |
+| `trace_flush_interval_ms` | 2 000 | storage / behaviour | `emitters::spawn_trace_flusher` |
+| `log_rotation_bytes` | 5 MiB | logging / behaviour | `crash::persist_block`, the panic hook |
+| `system_log_ring_capacity` | 4 096 | logging / behaviour | `system_log::push_ring` **and the frontend mirror** |
+| `system_log_rate_limit` | 5 | logging / behaviour | `system_log::burst_budget` |
+| `health_sample_interval_ms` | 20 000 | logging / developer | `crash::spawn_health_recorder` |
+| `sidecar_restart_budget` | 3 | connection / behaviour | `sidecar::maybe_restart` |
+| `reconnect_backoff_ms` | 2 000 | connection / developer | `interfaces::run_watch` |
+
+Notes:
+
+- **The two `tokio` loops re-arm.** Both read the cadence at the top of
+  each tick and rebuild their `Interval` when it moved (`retune`), so a
+  changed cadence takes effect on the next tick rather than at
+  relaunch. Same for the health recorder, which additionally parks on a
+  short poll while sampling is switched off so switching it back on
+  does not need a restart either.
+- **Live update rate is one setting, per its row.** `FPS_SMOOTHING` and
+  `TRACE_GREW_TAIL` stay constants and their rustdoc now says they are
+  tuned *against* this cadence, which is the reason the row gives for
+  not surfacing all three.
+- **Three fields treat `0` as "off", not as a floor**, so they carry no
+  published minimum and their help text says what zero does:
+  `system_log_rate_limit` (the row's own argument — "debugging a
+  message flood is exactly when you want the limiter off"),
+  `health_sample_interval_ms` ("a user on a loaded machine may want it
+  off"), and `sidecar_restart_budget` (never auto-restart). The
+  zero-is-off mapping is split into a pure `budget_from` /
+  `health_interval_from` so it is testable without touching the
+  process-wide cache.
+- **`RING_CAPACITY` crossed a language boundary by hand and no longer
+  does.** The frontend's `SYSTEM_LOG_MIRROR_CAPACITY` was a
+  hand-maintained copy of the host constant with a comment asking for
+  it to be kept in sync. Both sides now read
+  `system_log_ring_capacity`, so raising the depth actually makes more
+  history reachable in the panel instead of only in the host.
+- **`push_ring` takes its capacity as a parameter and evicts in a
+  loop.** Lowering the depth mid-session leaves an over-long ring; the
+  old single `==` check would have left it stuck at its old size.
+- **`log_rotation_bytes` has a floor of 1 MiB, and that floor is
+  mechanical rather than taste.** The control edits in MiB via its
+  `scale`, so one mebibyte is the smallest value the control can
+  express at all. Generation count stays structural (one `.1`) — making
+  it a knob means rewriting `rotate_if_needed` into a shift loop, which
+  is not what the row asks for.
+- **`RATE_LIMIT_WINDOW` stays a constant.** The row promotes the ring
+  depth and the burst budget; the budget is the number a user reasons
+  about ("identical messages per second"), and making the window
+  adjustable too would express one rate two ways.
+
+Behaviour tests (each mutation-checked): `settings.rs` → *the effective
+cache answers defaults until something publishes* (deliberately driven
+through `notice_dwell_ms`, the one field no host module reads, because
+the cache is process-wide and the other fields' readers have concurrent
+tests); `system_log.rs` → *a rate limit of zero means no limit*, *the
+ring shrinks to a lowered capacity*; `crash.rs` → *a health interval of
+zero turns sampling off*; `systemLog.test.ts` → *caps at the configured
+ring depth, not a hard-coded one*.
+
+**Measured:** `cannet-perf-measurement check` passes all 12 gated
+metrics (tracebuffer, grpc, hardware-peak) against the promoted
+baseline after the change; the frontend tier is skipped as ever, since
+Task 44 Tier 0 still owes a self-driving capture.
+
 ### Stage 4 — env-only configuration that needs a settings equivalent
 
 1. **`CANNET_SIDECAR_DIR`** — the only way to point the app at a
@@ -427,7 +512,10 @@ change the file layout, which is why it precedes Stage 2.
 
 ## Duplicate sources of truth to collapse
 
-1. View refresh cadence — 250 ms in four files.
+1. ~~View refresh cadence — 250 ms in four files.~~ *Collapsed
+   (Stage 3): one `view_refresh_interval_ms` setting, defaulted in
+   `useWindowedQuery` and inherited by every paged view and by
+   `useHostMirror`, which gives up its own 500 ms as well.*
 2. ~~Scratch cap floor — Rust ↔ TS, "keep in sync by convention".~~
    *Collapsed (Stage 1 item 3): stated once host-side as validation
    metadata, published to the frontend, no TS copy.*
