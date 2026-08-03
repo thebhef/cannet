@@ -348,7 +348,6 @@ impl TraceStore {
             frame.id,
             frame.extended,
         );
-        let bus_for_rate = key.0.clone();
         let direction = frame.direction;
         let mut inner = self.lock_inner();
         if ts_ns < inner.session_start_ns {
@@ -378,8 +377,12 @@ impl TraceStore {
         } else {
             let mut rate = RateEstimate::first_seen(ts_ns, now);
             rate.observe(ts_ns, now);
+            // The key is cloned only here, on a key's *first* sighting —
+            // it is still needed below for the per-bus bucket, and the
+            // key set is id-space bounded, so this costs nothing per
+            // frame in steady state.
             inner.per_key.insert(
-                key,
+                key.clone(),
                 PerKey {
                     last_index: idx,
                     last_frame: frame,
@@ -391,9 +394,12 @@ impl TraceStore {
         // The aggregate, per-bus, and per-direction throughput trackers all
         // fold in this frame the same way (bump the count, sample on the
         // shared cadence gate) — the aggregate is a `RateTrack` like the
-        // others rather than a bypassing bare deque.
+        // others rather than a bypassing bare deque. The per-bus bucket
+        // takes the key's own bus id, so `entry` gets an owned value with
+        // no second clone per frame (it drops it when the bucket exists,
+        // which is every frame after the first on that bus).
         inner.agg_rate.observe(ts_ns, now);
-        inner.per_bus.entry(bus_for_rate).or_default().observe(ts_ns, now);
+        inner.per_bus.entry(key.0).or_default().observe(ts_ns, now);
         match direction {
             Direction::Rx => &mut inner.rx_rate,
             Direction::Tx => &mut inner.tx_rate,
