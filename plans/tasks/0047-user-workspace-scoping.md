@@ -373,6 +373,22 @@ the running record of what is done and what moved.
 - **Done: the scratch root is the project's cache** (decision 6). The
   disk-spill store, filter index, signal pyramids, and notes all root in
   `ProjectDir::cache_dir()`.
+- **Done: the two-scope read path** (decision 3).
+  `persisted_json::resolve_scoped` is the one precedence rule — a
+  workspace value overrides the user value for the same key — and
+  `read_scoped` applies it to a filename in two directories. Both
+  `settings.json` and `state.json` read through it. The merge is by
+  **top-level key, not deep**: overriding `keybindings` replaces the
+  list rather than splicing it, so an override is always a value some
+  scope actually wrote.
+- **Known gap, for whoever adds workspace writes:** reads merge, writes
+  go to the user scope. If a workspace override exists and the frontend
+  echoes the merged value back through `set_settings`, that value is
+  written into the *user* file — the override is silently promoted.
+  Unreachable today (cannet creates `.cannet/settings.json` empty and
+  never writes it, so an override only exists by hand-edit), but the
+  per-setting scope metadata has to route the write, not just gate the
+  read.
 
 **Deferred out of branch 1, and why:**
 

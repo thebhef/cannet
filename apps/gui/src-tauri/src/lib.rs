@@ -238,6 +238,18 @@ fn resolve_project_dir(app: &tauri::App) -> project_dir::ProjectDir {
     dir
 }
 
+/// The open project's workspace-scoped data directory — `.cannet/`
+/// inside the session's project directory (ADR 0042 §3). This is the
+/// override half of every two-scope read; the user half is
+/// `app_config_dir`.
+///
+/// The project directory is managed as Tauri state at the top of
+/// `setup`, before any command can run, so this is always answerable —
+/// there is no session without a project directory (ADR 0042 §1).
+pub(crate) fn workspace_dir(app: &AppHandle) -> std::path::PathBuf {
+    app.state::<project_dir::ProjectDir>().workspace_dir()
+}
+
 /// Open the production trace store on the disk-spill backend rooted at
 /// `scratch` — the project directory's cache (ADR 0002 DS-6: the disk
 /// store is the only production path). Falls back to the in-RAM store —
@@ -439,11 +451,15 @@ pub fn run() {
             // `setup` returns, so it is in place for every consumer
             // (including `apply_scratch_cap` and the DBC watcher below).
             let project_dir = resolve_project_dir(app);
-            let scratch = project_dir.cache_dir();
-            let filter_dir = filter_index_dir(scratch);
-            let signal_dir = signal_cache_dir(scratch);
-            let notes_dir = scratch.to_path_buf();
-            let trace_store = open_trace_store(scratch);
+            let scratch = project_dir.cache_dir().to_path_buf();
+            let filter_dir = filter_index_dir(&scratch);
+            let signal_dir = signal_cache_dir(&scratch);
+            let trace_store = open_trace_store(&scratch);
+            // Managed on its own rather than as an `AppState` field: the
+            // scoped reads (`workspace_dir`) run from commands that don't
+            // otherwise touch the trace model, and settings are read
+            // during `setup` before `AppState` is in place.
+            app.manage(project_dir);
             app.manage(AppState {
                 databases: Mutex::new(Vec::new()),
                 descriptor_snapshot: Mutex::new(None),
@@ -455,7 +471,7 @@ pub fn run() {
                 // store's identity/derived files (ADR 0002 DS-7); they
                 // persist on every edit, so a marker added to a stopped
                 // trace survives reopen.
-                notes: NotesStore::with_scratch(notes_dir),
+                notes: NotesStore::with_scratch(scratch),
                 dbc_watcher: Mutex::new(None),
                 local_buses: local_buses::LocalBusRegistry::default(),
                 transmit_frames: Mutex::new(transmit_frames::TransmitFrameRegistry::default()),

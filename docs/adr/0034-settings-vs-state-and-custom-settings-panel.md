@@ -65,6 +65,17 @@ both a place to persist them and a way to edit them.
 
 ## Consequences
 
+- **Extended by [ADR 0042](0042-project-directory-and-scopes.md): two
+  files × two scopes.** The pair above is the *user* scope, and each
+  project directory carries the same pair at *workspace* scope in its
+  `.cannet/`. A workspace value overrides the user value for the same
+  key; the path carries the scope, not the filename, so
+  `.cannet/settings.json` is the workspace file and a name like `user.*`
+  never appears inside a project directory. The settings-vs-state
+  distinction this ADR draws is unchanged and still correct — it is the
+  question of *what a field is*, orthogonal to *whose it is*. Both
+  questions have to be answered for every field: settings or state, and
+  user or workspace.
 - **Refines [ADR 0032](0032-machine-local-ui-state-host-side.md).** Its
   single `preferences.json` becomes `state.json` (same contents, new
   name); a sibling `settings.json` joins it. The "host-side, not

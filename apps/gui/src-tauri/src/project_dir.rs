@@ -76,6 +76,12 @@ impl ProjectDir {
         &self.root
     }
 
+    /// The workspace-scoped data directory, `<root>/.cannet` — the
+    /// project's half of the two-scope split (ADR 0042 §3).
+    pub fn workspace_dir(&self) -> PathBuf {
+        self.root.join(WORKSPACE_DIR)
+    }
+
     /// The directory the disk-spill scratch, signal pyramids, filter
     /// index, and notes root in (ADR 0002 DS-6/DS-7, ADR 0042 §4).
     ///

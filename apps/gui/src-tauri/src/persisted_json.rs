@@ -12,6 +12,12 @@
 //! instead gate on an explicit schema version (ADR 0011); that shared
 //! gate is [`parse_versioned`], added alongside their migration onto
 //! this module.
+//!
+//! **Two scopes.** Settings and UI state exist once per user and once
+//! per project directory (ADR 0042). [`resolve_scoped`] is the single
+//! precedence rule both go through — a workspace value overrides the
+//! user value for the same key — and [`read_scoped`] is that rule
+//! applied to a filename in two directories.
 
 use std::path::{Path, PathBuf};
 
@@ -38,6 +44,50 @@ pub(crate) fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> std::io
 /// file must never brick startup.
 pub(crate) fn parse_or_default<T: DeserializeOwned + Default>(text: &str) -> T {
     serde_json::from_str(text).unwrap_or_default()
+}
+
+/// Resolve one document across the two scopes (ADR 0042 §3): **a
+/// workspace value overrides the user value for the same key**, and a
+/// key the workspace does not mention keeps whatever the user scope
+/// says.
+///
+/// The merge is by top-level key, not deep. A setting's value is one
+/// thing the user chose — a keybinding list, a colour map — and merging
+/// *into* it would produce a value neither scope ever wrote. Overriding
+/// `keybindings` means replacing the list, not splicing it.
+///
+/// Which keys may legitimately be overridden is per-setting metadata,
+/// not a property of this mechanism; this is only the precedence.
+///
+/// Junk at either scope contributes nothing rather than poisoning the
+/// result, and a document that isn't a JSON object (an array, a bare
+/// number) is treated the same way — a corrupt file at one scope must
+/// not lose the other scope's values.
+pub(crate) fn resolve_scoped<T: DeserializeOwned + Default>(user: &str, workspace: &str) -> T {
+    let mut merged = top_level_keys(user);
+    merged.extend(top_level_keys(workspace));
+    serde_json::from_value(serde_json::Value::Object(merged)).unwrap_or_default()
+}
+
+/// The top-level keys of `text`, or an empty map if it isn't a JSON
+/// object (missing, junk, or the wrong shape).
+fn top_level_keys(text: &str) -> serde_json::Map<String, serde_json::Value> {
+    match serde_json::from_str(text) {
+        Ok(serde_json::Value::Object(map)) => map,
+        _ => serde_json::Map::new(),
+    }
+}
+
+/// Read `<user_dir>/<file>` and `<workspace_dir>/<file>` and resolve
+/// them through [`resolve_scoped`]. An unreadable file at either scope
+/// reads as an empty document — the same resolution an absent one gets.
+pub(crate) fn read_scoped<T: DeserializeOwned + Default>(
+    user_dir: &Path,
+    workspace_dir: &Path,
+    file: &str,
+) -> T {
+    let read = |dir: &Path| std::fs::read_to_string(dir.join(file)).unwrap_or_default();
+    resolve_scoped(&read(user_dir), &read(workspace_dir))
 }
 
 /// Resolve the per-OS config directory (`$XDG_CONFIG_HOME/<id>`,
@@ -150,6 +200,89 @@ mod tests {
     fn parse_or_default_tolerates_junk() {
         assert_eq!(parse_or_default::<Sample>("not json"), Sample::default());
         assert_eq!(parse_or_default::<Sample>("[1, 2, 3]"), Sample::default());
+    }
+
+    #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+    #[serde(default)]
+    struct Scoped {
+        alpha: Option<u32>,
+        beta: Option<u32>,
+        list: Vec<u32>,
+    }
+
+    #[test]
+    fn a_workspace_value_overrides_the_user_value_for_the_same_key() {
+        // ADR 0042 §3, the whole point of two scopes.
+        let s: Scoped = resolve_scoped(r#"{"alpha": 1}"#, r#"{"alpha": 2}"#);
+        assert_eq!(s.alpha, Some(2));
+    }
+
+    #[test]
+    fn a_key_the_workspace_does_not_mention_keeps_the_user_value() {
+        let s: Scoped = resolve_scoped(r#"{"alpha": 1, "beta": 7}"#, r#"{"alpha": 2}"#);
+        assert_eq!(s.alpha, Some(2));
+        assert_eq!(s.beta, Some(7), "beta is untouched by the override");
+    }
+
+    #[test]
+    fn an_empty_workspace_document_changes_nothing() {
+        // What a freshly created project directory looks like: `{}` must
+        // resolve to exactly the user's settings, not to the defaults.
+        let user = r#"{"alpha": 1, "beta": 7, "list": [3, 4]}"#;
+        assert_eq!(
+            resolve_scoped::<Scoped>(user, "{}"),
+            resolve_scoped::<Scoped>(user, "")
+        );
+        let s: Scoped = resolve_scoped(user, "{}");
+        assert_eq!(s.alpha, Some(1));
+        assert_eq!(s.beta, Some(7));
+        assert_eq!(s.list, vec![3, 4]);
+    }
+
+    #[test]
+    fn a_workspace_only_key_applies_over_the_default() {
+        let s: Scoped = resolve_scoped("{}", r#"{"beta": 9}"#);
+        assert_eq!(s.beta, Some(9));
+    }
+
+    #[test]
+    fn an_overridden_list_is_replaced_not_spliced() {
+        // Top-level merge, not deep: an override replaces the value the
+        // user chose rather than producing one neither scope wrote.
+        let s: Scoped = resolve_scoped(r#"{"list": [1, 2, 3]}"#, r#"{"list": [9]}"#);
+        assert_eq!(s.list, vec![9]);
+    }
+
+    #[test]
+    fn junk_at_one_scope_does_not_cost_the_other_scopes_values() {
+        let from_user: Scoped = resolve_scoped(r#"{"alpha": 1}"#, "not json");
+        assert_eq!(from_user.alpha, Some(1));
+        let from_workspace: Scoped = resolve_scoped("[1, 2, 3]", r#"{"alpha": 5}"#);
+        assert_eq!(from_workspace.alpha, Some(5));
+    }
+
+    #[test]
+    fn read_scoped_resolves_two_directories_and_tolerates_missing_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let user = tmp.path().join("user");
+        let ws = tmp.path().join("ws");
+        std::fs::create_dir_all(&user).unwrap();
+        std::fs::create_dir_all(&ws).unwrap();
+
+        // Neither file present: defaults.
+        assert_eq!(
+            read_scoped::<Scoped>(&user, &ws, "x.json"),
+            Scoped::default()
+        );
+
+        std::fs::write(user.join("x.json"), r#"{"alpha": 1, "beta": 7}"#).unwrap();
+        // Workspace file still absent — the user scope stands alone.
+        let s: Scoped = read_scoped(&user, &ws, "x.json");
+        assert_eq!((s.alpha, s.beta), (Some(1), Some(7)));
+
+        std::fs::write(ws.join("x.json"), r#"{"alpha": 2}"#).unwrap();
+        let s: Scoped = read_scoped(&user, &ws, "x.json");
+        assert_eq!((s.alpha, s.beta), (Some(2), Some(7)));
     }
 
     #[test]
