@@ -103,12 +103,24 @@ mappings — no migration guarantees, consistent with
 
 But the capture now lives in the project's workspace directory, so
 returning to a project finds its capture still there rather than
-destroyed by whatever was opened in between. `clear_scratch_on_exit`
-clears the **active** project only; wiping other projects' caches is a
-deliberate action taken from the settings view, which lists cache
-directories and can remove them — including ones whose project
-directory no longer exists. Nothing deletes a cache behind the user's
-back.
+destroyed by whatever was opened in between.
+
+`clear_scratch_on_exit` clears the **active** project only. Reclaiming
+any other project's disk is a deliberate action from the settings view,
+which lists every project directory cannet holds cached data for — with
+two distinct actions:
+
+| Action | Cached data | Cache directory | Registry entry | Project directory |
+| --- | --- | --- | --- | --- |
+| Clear | emptied | kept | kept | untouched |
+| Delete | gone | removed | forgotten | untouched |
+
+Clear means "free the disk, keep working here"; Delete means "stop
+tracking this project". **Neither can touch a directory the user owns.**
+That is decision 2 applied to the reclaim path: if the app may not
+create a `.cannet/` unasked, it certainly may not remove one. Nothing
+deletes a cache behind the user's back, and no automatic policy
+reclaims one.
 
 ### 6. Save As migrates; a hand-created `.cannet/` does not
 
@@ -188,7 +200,9 @@ operation.
   bleeding into the next.
 - Disk use multiplies by the number of projects with captures. The
   settings view's cache list is the relief valve, and it is required,
-  not optional.
+  not optional — a per-project Clear, a Delete that also forgets the
+  project, and a clear-all that empties every cache without removing
+  anything.
 - Re-opening a project directory that is already open is **undefined
   behaviour** for now. Detect-and-focus is the behaviour worth having,
   but it needs single-instance / inter-window messaging the app does
