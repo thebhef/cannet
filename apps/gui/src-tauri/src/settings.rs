@@ -47,9 +47,12 @@ const SETTINGS_FILE: &str = "settings.json";
 /// per-project resource — is settled with the rest of the settings
 /// promotion work, not here.
 ///
-/// `show_developer_settings` is the exception: it governs what *you* see
-/// in the settings view, which is not a project's business, so it stays
-/// at user scope.
+/// The exceptions are the settings about *the person at the keyboard*
+/// rather than about the work: what the settings view reveals
+/// (`show_developer_settings`), how verbose their log view is
+/// (`system_log_min_level`), and how long a status notice dwells before
+/// it clears (`notice_dwell_ms`, a reading-speed accommodation). None of
+/// those are a project's business, so they stay at user scope.
 ///
 /// The names are the serialized ones. `every_settings_key_declares_a_scope`
 /// is what keeps this table from drifting away from the struct.
@@ -59,6 +62,12 @@ pub(crate) const SCOPES: ScopeTable = &[
     ("keybindings", Scope::UserOverridable),
     ("show_developer_settings", Scope::User),
     ("system_log_min_level", Scope::User),
+    ("notice_dwell_ms", Scope::User),
+    ("plot_fetch_interval_ms", Scope::UserOverridable),
+    ("view_refresh_interval_ms", Scope::UserOverridable),
+    ("follow_window_ms", Scope::UserOverridable),
+    ("recent_blfs_limit", Scope::UserOverridable),
+    ("recent_commands_limit", Scope::UserOverridable),
 ];
 
 /// The persisted user settings. `#[serde(default)]` fills any absent field
@@ -99,7 +108,45 @@ pub struct Settings {
     /// survives closing and reopening the panel; the panel's *source*
     /// filter is view-local and stays in its dockview params.
     pub system_log_min_level: String,
+    /// How long a transient status notice stays frozen in the header
+    /// before the bar reverts to the resting residency line. Default
+    /// 3000 ms. Nothing is lost by shortening or lengthening it —
+    /// notices are mirrored to the system log — so it is purely a
+    /// reading-speed accommodation.
+    pub notice_dwell_ms: u64,
+    /// How often an open plot asks the host for a resampled window
+    /// while a capture runs. Default 67 ms (~15 Hz). Redraw stays
+    /// pinned to rAF; this governs only the fetch, which is where the
+    /// host-side cost is (ADR 0025).
+    pub plot_fetch_interval_ms: u64,
+    /// How often a paged view re-reads the tail while a capture runs —
+    /// the chronological and filtered traces, by-id, signals, and the
+    /// transmit/RBS host mirrors. Default 250 ms. It bounds both the
+    /// UI-thread parse cost and the host-side window scans under a
+    /// high-rate stream.
+    pub view_refresh_interval_ms: u64,
+    /// Width of a plot's follow-live x-window before the user has set
+    /// one by zooming or panning, in milliseconds (the settings view
+    /// edits it in seconds). Default 10 000 ms. Site-specific: 10 s is
+    /// wrong for a slow body bus.
+    pub follow_window_ms: u64,
+    /// How many recently-opened BLFs the File menu remembers. Default
+    /// 8. `0` remembers none.
+    pub recent_blfs_limit: u64,
+    /// How many recently-run commands the palette floats to the top.
+    /// Default 10. `0` remembers none.
+    pub recent_commands_limit: u64,
 }
+
+/// The smallest legal value of any millisecond-interval setting.
+///
+/// A hard implementation limit rather than a taste: an interval of zero
+/// is a busy loop, and below one millisecond is not representable in the
+/// timer APIs on either side of the IPC. Stated once, enforced in
+/// [`validate`], and published as the `min` of every interval field's
+/// descriptor rather than restated there
+/// (`every_published_minimum_is_the_one_validate_enforces`).
+pub const MIN_INTERVAL_MS: u64 = 1;
 
 /// The severity names [`Settings::system_log_min_level`] accepts, least
 /// to most severe — the same ladder the frontend's
@@ -118,6 +165,12 @@ impl Default for Settings {
             keybindings: None,
             show_developer_settings: false,
             system_log_min_level: "info".to_string(),
+            notice_dwell_ms: 3_000,
+            plot_fetch_interval_ms: 67,
+            view_refresh_interval_ms: 250,
+            follow_window_ms: 10_000,
+            recent_blfs_limit: 8,
+            recent_commands_limit: 10,
         }
     }
 }
@@ -157,7 +210,13 @@ pub const MIN_SCRATCH_CAP_BYTES: u64 = 100 * 1024 * 1024;
 /// file is a user-authored document (ADR 0034): we report what we refuse and
 /// leave their text alone, exactly as a hand-edited keybinding that names an
 /// unknown command is dropped and reported rather than rewritten.
-fn validate(settings: Settings) -> (Settings, Vec<String>) {
+///
+/// Crate-visible only so the descriptor table can be tested against it —
+/// `every_published_minimum_is_the_one_validate_enforces` proves the
+/// bound a control publishes is the bound this function applies. The
+/// ingress calls are [`get_settings`] and [`set_settings`]; there is no
+/// other caller.
+pub(crate) fn validate(settings: Settings) -> (Settings, Vec<String>) {
     let mut complaints = Vec::new();
     let mut settings = settings;
     if let Some(cap) = settings.scratch_cap_bytes {
@@ -178,7 +237,51 @@ fn validate(settings: Settings) -> (Settings, Vec<String>) {
         ));
         settings.system_log_min_level = Settings::default().system_log_min_level;
     }
+    let d = Settings::default();
+    for (key, value, min, default) in [
+        (
+            "notice_dwell_ms",
+            &mut settings.notice_dwell_ms,
+            MIN_INTERVAL_MS,
+            d.notice_dwell_ms,
+        ),
+        (
+            "plot_fetch_interval_ms",
+            &mut settings.plot_fetch_interval_ms,
+            MIN_INTERVAL_MS,
+            d.plot_fetch_interval_ms,
+        ),
+        (
+            "view_refresh_interval_ms",
+            &mut settings.view_refresh_interval_ms,
+            MIN_INTERVAL_MS,
+            d.view_refresh_interval_ms,
+        ),
+        (
+            "follow_window_ms",
+            &mut settings.follow_window_ms,
+            MIN_INTERVAL_MS,
+            d.follow_window_ms,
+        ),
+    ] {
+        refuse_below(&mut complaints, key, value, min, default);
+    }
     (settings, complaints)
+}
+
+/// Refuse `value` if it is below `min`, reporting the field by name and
+/// resolving it to `default` — the shared shape of every numeric bound
+/// in [`validate`], so a new bounded field is one table row rather than
+/// another hand-written `if`.
+fn refuse_below(complaints: &mut Vec<String>, key: &str, value: &mut u64, min: u64, default: u64) {
+    if *value >= min {
+        return;
+    }
+    complaints.push(format!(
+        "{key} {value} is below the minimum of {min}; ignoring it — using the \
+         default ({default})"
+    ));
+    *value = default;
 }
 
 /// Read the effective settings across both scopes (ADR 0042 §3):
@@ -306,6 +409,12 @@ mod tests {
             ]),
             show_developer_settings: true,
             system_log_min_level: "warn".to_string(),
+            notice_dwell_ms: 1_500,
+            plot_fetch_interval_ms: 33,
+            view_refresh_interval_ms: 500,
+            follow_window_ms: 30_000,
+            recent_blfs_limit: 20,
+            recent_commands_limit: 3,
         }
     }
 
@@ -400,6 +509,23 @@ mod tests {
         let s = parse_settings(r#"{"clear_scratch_on_exit": true}"#);
         assert!(s.clear_scratch_on_exit);
         assert_eq!(s.scratch_cap_bytes, None);
+    }
+
+    #[test]
+    fn a_file_written_before_a_field_existed_resolves_to_that_field_s_default() {
+        // The promotion promise, in its strongest form: a settings
+        // document carrying only the keys the store had before Stage 3
+        // must produce exactly the defaults — so an install nobody has
+        // touched behaves as it did before the fields existed.
+        let legacy = r#"{
+            "scratch_cap_bytes": null,
+            "clear_scratch_on_exit": false,
+            "keybindings": null,
+            "show_developer_settings": false
+        }"#;
+        assert_eq!(parse_settings(legacy), Settings::default());
+        // Same for the empty document and the missing one.
+        assert_eq!(parse_settings("{}"), Settings::default());
     }
 
     #[test]

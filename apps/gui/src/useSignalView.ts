@@ -6,10 +6,6 @@ import type { SignalSortState } from "./signalColumns";
 import { useWindowedQuery, type WindowPage } from "./useWindowedQuery";
 import { diagCount } from "./diag"; // DIAG
 
-/// Spacing between live refreshes — latest values / statistics lag the
-/// tail by at most this while running. Matches the by-id cadence.
-const REFRESH_MS = 250;
-
 /// Host `fetch_signal_page` reply (see `ipc.rs::RowPage`).
 interface SignalPage {
   count: number;
@@ -88,7 +84,6 @@ export function useSignalView(
     fetchPage,
     followLive: running,
     extentSignal: winEnd + (running ? 0 : 1),
-    refreshMs: REFRESH_MS,
   });
 
   return { count, version, getRow, ensureVisible, error };

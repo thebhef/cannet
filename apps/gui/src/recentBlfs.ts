@@ -5,15 +5,14 @@
 // across app restarts (ADR 0032); these are the pure list helpers that
 // shape the MRU before it's handed to `hostState`.
 
+import { hostSettings } from "./hostSettings";
 import { pushRecent } from "./recentMru";
 
-/// Maximum number of recents to remember. Eight is roughly "every
-/// BLF you opened this week"; anything older is in the file picker.
-export const RECENT_BLFS_LIMIT = 8;
-
-/// Prepend `path` to the MRU, dedupe, cap at [`RECENT_BLFS_LIMIT`].
+/// Prepend `path` to the MRU, dedupe, cap at the configured depth
+/// (`recent_blfs_limit`; the default is roughly "every BLF you opened
+/// this week", and anything older is in the file picker).
 export function recordRecentBlf(current: readonly string[], path: string): string[] {
-  return pushRecent(current, path, RECENT_BLFS_LIMIT);
+  return pushRecent(current, path, hostSettings().recent_blfs_limit);
 }
 
 /// Pure helper: remove `path` from the list. Used when the host

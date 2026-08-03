@@ -226,7 +226,8 @@ it); items 2 and 3 landed together.
 
 Ranked by how likely a real user is to want the knob. Each becomes a
 `settings.json` field with the current value as its default, so an
-untouched install behaves identically.
+untouched install behaves identically. **What landed, and what
+deviated, is recorded under "Stage 3 as built" below the tables.**
 
 | Knob | Today | Why a user cares |
 | --- | --- | --- |
@@ -282,6 +283,83 @@ three to a measurement. The same number also sets the scroll-back
 prefetch margin (`pageSize / 4`), which the drift had moving between
 128, 250 and 256 rows. Guarded by* `pages at PAGE_ROWS when the caller
 names no page size` *in `useWindowedQuery.test.ts`.)*
+
+#### Stage 3 as built
+
+Every field below lands with its scope and both tag axes attached — no
+retrofit — and with the current value as its default, so a file that
+predates it resolves to exactly what the app did before
+(`a_file_written_before_a_field_existed_resolves_to_that_field_s_default`).
+
+**Shared machinery, added once.**
+
+- **`MIN_INTERVAL_MS`.** Every promoted cadence is a millisecond count
+  and zero is a busy loop, so one host-side constant states the floor,
+  `validate` enforces it through a shared `refuse_below` helper, and
+  each interval control publishes it as its `min` rather than restating
+  it. `every_published_minimum_is_the_one_validate_enforces` is the
+  general form of Stage 1's cap-minimum test: for *every* descriptor
+  with an `Int` floor, the host must accept that value, refuse the one
+  under it, name the field in the complaint, and resolve it to its
+  default. A future field that published a bound nobody enforced fails
+  that test.
+- **`useSetting(key)`** in `hostSettings.ts` — `useSyncExternalStore`
+  over the existing cache, for a component that must *react* to a
+  change (an interval whose effect has to be rebuilt). Code that only
+  needs the value at the moment it acts reads `hostSettings()`
+  directly and skips the render; both kinds are in use.
+
+**Frontend-consumed fields.**
+
+| Field | Default | Tags | Scope |
+| --- | --- | --- | --- |
+| `plot_fetch_interval_ms` | 67 | plot / developer | user-overridable |
+| `view_refresh_interval_ms` | 250 | general / developer | user-overridable |
+| `follow_window_ms` | 10 000 | plot / default | user-overridable |
+| `recent_blfs_limit` | 8 | general / behaviour | user-overridable |
+| `recent_commands_limit` | 10 | general / behaviour | user-overridable |
+| `notice_dwell_ms` | 3 000 | general / developer | user |
+
+Notes on the ones that deviated from the table above:
+
+- **The view refresh cadence took the host-mirror poll with it, and
+  that is a real behaviour change.** The four 250 ms copies collapsed
+  into `useWindowedQuery`'s one default, which every view now inherits
+  by not passing `refreshMs` at all. `useHostMirror`'s separate 500 ms
+  default is gone too — its row says it "rides with the view-refresh
+  cadence rather than standing alone", and a host mirror going stale in
+  place is the same "keep up with the host" job — so the transmit and
+  RBS panels now poll at 250 ms while a message is running instead of
+  500 ms. **This is the one place Stage 3 changes what an untouched
+  install does**, and it is a consequence of the collapse, not of the
+  promotion: the alternative was to keep two numbers for one concept,
+  which is the drift the stage exists to remove. The poll is
+  `pollWhile`-gated, so it only applies while something is actually
+  running.
+- **Recents retention is two fields, not one.** The table lists it as
+  one row ("8 BLFs / 10 commands") but they are two independent lists
+  with different natural depths, and — unlike the live-update-rate
+  row — nothing interlocks them, so one shared number would have had to
+  change one of the two defaults. There is no incoherent-tuning risk in
+  two separate caps.
+- **`follow_window_ms`, not `follow_window_seconds`.** Stored in
+  milliseconds like every other duration in the file, and edited in
+  seconds through the control's `scale` — the same mechanism that lets
+  the cache cap be stored in bytes and typed in MB. It keeps `Settings`
+  free of a float, and `PlotPanel`'s follow-live target lag (which is a
+  multiple of the fetch interval) now derives from
+  `plot_fetch_interval_ms` instead of the deleted module constant.
+- **`notice_dwell_ms` is `Scope::User`.** The argument for the knob is
+  reading speed, which follows the person, not the project — the same
+  reasoning as `show_developer_settings` and `system_log_min_level`.
+
+Behaviour tests (each mutation-checked): `useWindowedQuery.test.ts`
+→ *throttles live refreshes at the configured view refresh interval*
+and *pages at PAGE_ROWS…*; `PlotPanel.dom.test.tsx` → *paces the fetch
+loop from the plot fetch interval setting* (a real-time counterpart to
+the existing default-cadence test); `recentBlfs.test.ts` /
+`recentCommands.test.ts` → *caps at the configured depth, not a
+hard-coded one*.
 
 ### Stage 4 — env-only configuration that needs a settings equivalent
 

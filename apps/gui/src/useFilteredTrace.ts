@@ -5,12 +5,6 @@ import type { FilterPredicate, TraceFrameRecord } from "./types";
 import { useWindowedQuery, type WindowPage } from "./useWindowedQuery";
 import { diagCount } from "./diag"; // DIAG
 
-/// Minimum spacing between the live "keep up with the trace"
-/// refreshes. The filtered view lags the tail by at most this; the
-/// throttle bounds both the UI-thread parse cost and the host-side
-/// window scans under a high-rate stream.
-const REFRESH_MS = 250;
-
 /// Host `fetch_filtered_trace` reply (see `ipc.rs::RowPage`).
 interface FilteredTracePage {
   count: number;
@@ -115,7 +109,6 @@ export function useFilteredTrace(
       // `winEnd` advances every grow tick; `running` flips on Start/Stop.
       // Either marks the view stale so the throttled tick refreshes.
       extentSignal: winEnd + (running ? 0 : 1),
-        refreshMs: REFRESH_MS,
     });
 
   return { count, version, getFrame: getRow, ensureVisible };

@@ -26,7 +26,32 @@
 use serde::Serialize;
 
 use crate::persisted_json::{scope_of, Scope};
-use crate::settings::{Settings, MIN_SCRATCH_CAP_BYTES, SCOPES, SYSTEM_LOG_LEVELS};
+use crate::settings::{
+    Settings, MIN_INTERVAL_MS, MIN_SCRATCH_CAP_BYTES, SCOPES, SYSTEM_LOG_LEVELS,
+};
+
+/// A whole-millisecond interval control: the shape every cadence
+/// setting's row takes, with the one enforced floor
+/// ([`MIN_INTERVAL_MS`]) rather than a per-row copy of it.
+const fn interval_ms() -> Control {
+    Control::Int {
+        unit: Some("ms"),
+        scale: 1,
+        min: Some(MIN_INTERVAL_MS),
+        unset: None,
+    }
+}
+
+/// A plain count with no floor — a limit of zero is a legitimate
+/// "remember nothing".
+const fn count() -> Control {
+    Control::Int {
+        unit: None,
+        scale: 1,
+        min: None,
+        unset: None,
+    }
+}
 
 /// Which part of the app a setting governs — the tag axis the settings
 /// tree groups by. A setting may govern more than one surface.
@@ -218,6 +243,72 @@ const DESCRIPTORS: &[Spec] = &[
             options: SYSTEM_LOG_LEVELS,
         },
     },
+    Spec {
+        key: "recent_blfs_limit",
+        label: "Recent BLFs remembered",
+        help: "How many recently-opened BLFs the File menu lists. Roughly \"every \
+               BLF you opened this week\" at the default. Zero remembers none.",
+        surfaces: &[Surface::General],
+        kind: Kind::Behaviour,
+        control: count(),
+    },
+    Spec {
+        key: "recent_commands_limit",
+        label: "Recent commands remembered",
+        help: "How many recently-run commands the command palette floats to the \
+               top of its list. Zero remembers none.",
+        surfaces: &[Surface::General],
+        kind: Kind::Behaviour,
+        control: count(),
+    },
+    Spec {
+        key: "follow_window_ms",
+        label: "Default follow-live window",
+        help: "How much time a plot's follow-live window shows before you have set \
+               a width by zooming or panning. The default suits a fast powertrain \
+               bus; a slow body bus wants more.",
+        surfaces: &[Surface::Plot],
+        kind: Kind::Default,
+        control: Control::Int {
+            unit: Some("s"),
+            scale: 1000,
+            min: Some(MIN_INTERVAL_MS),
+            unset: None,
+        },
+    },
+    Spec {
+        key: "notice_dwell_ms",
+        label: "Status notice dwell",
+        help: "How long a transient notice stays in the status bar before it \
+               reverts to the resting line. Lengthen it if notices clear before \
+               you have read them; nothing is lost either way, since every notice \
+               is also in the system log.",
+        surfaces: &[Surface::General],
+        kind: Kind::Developer,
+        control: interval_ms(),
+    },
+    Spec {
+        key: "plot_fetch_interval_ms",
+        label: "Plot fetch interval",
+        help: "How often an open plot asks the host for a resampled window while a \
+               capture runs. Raising it cuts host load on a busy machine at the \
+               cost of a choppier live plot; drawing stays at display rate either \
+               way.",
+        surfaces: &[Surface::Plot],
+        kind: Kind::Developer,
+        control: interval_ms(),
+    },
+    Spec {
+        key: "view_refresh_interval_ms",
+        label: "View refresh interval",
+        help: "How often a paged view re-reads the tail while a capture runs — the \
+               trace, by-id, signal and transmit views. It bounds both the parse \
+               cost on the UI thread and the host-side window scans under a \
+               high-rate stream.",
+        surfaces: &[Surface::General],
+        kind: Kind::Developer,
+        control: interval_ms(),
+    },
 ];
 
 /// One surface, as served: the tag value and the label the tree shows.
@@ -366,6 +457,57 @@ mod tests {
                 defaults.get(d.key),
                 "descriptor for `{}` carries a stale default",
                 d.key
+            );
+        }
+    }
+
+    /// `Settings::default()` with one key overwritten, by its
+    /// *serialized* name — the only handle a table-driven test has on a
+    /// field it does not name in Rust.
+    fn settings_with(key: &str, value: u64) -> Settings {
+        let mut doc = serde_json::to_value(Settings::default()).unwrap();
+        doc[key] = serde_json::json!(value);
+        serde_json::from_value(doc).expect("a numeric key takes a number")
+    }
+
+    fn value_of(settings: &Settings, key: &str) -> serde_json::Value {
+        serde_json::to_value(settings).unwrap()[key].clone()
+    }
+
+    #[test]
+    fn every_published_minimum_is_the_one_validate_enforces() {
+        // The general form of the cap-minimum rule below: whatever a
+        // control publishes as its floor, the host must accept that
+        // value and refuse the one under it — reporting the field by
+        // name and resolving it to its default. A descriptor that
+        // published a bound nobody enforced would let the view accept a
+        // value the store then silently ignored.
+        let defaults = Settings::default();
+        for spec in DESCRIPTORS {
+            let Control::Int { min: Some(min), .. } = spec.control else {
+                continue;
+            };
+            assert!(min > 0, "`{}` publishes a floor of zero", spec.key);
+
+            let (_, complaints) = crate::settings::validate(settings_with(spec.key, min));
+            assert!(
+                !complaints.iter().any(|c| c.contains(spec.key)),
+                "`{}` refuses its own published minimum: {complaints:?}",
+                spec.key
+            );
+
+            let (accepted, complaints) =
+                crate::settings::validate(settings_with(spec.key, min - 1));
+            assert!(
+                complaints.iter().any(|c| c.contains(spec.key)),
+                "`{}` accepts a value below its published minimum",
+                spec.key
+            );
+            assert_eq!(
+                value_of(&accepted, spec.key),
+                value_of(&defaults, spec.key),
+                "a refused `{}` must resolve to its default",
+                spec.key
             );
         }
     }

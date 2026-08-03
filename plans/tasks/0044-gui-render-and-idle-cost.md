@@ -21,7 +21,7 @@ dedup**. Those findings are recorded in "Findings" below.
 | 1 — pure waste | done (see "Tier 1 results") |
 | 2 — structural | done (see "Tier 2 results") |
 | 3 — hot-path allocation | done, measured (see "Tier 3 results") |
-| 4 — the cadence knob | **deferred** into [Task 45](0045-settings-store-consolidation.md) Stage 3 |
+| 4 — the cadence knob | done, in [Task 45](0045-settings-store-consolidation.md) Stage 3 (see "Tier 4 results") |
 
 Tier 4 moved because it is one settings field and nothing forces it
 early. Landing it with Stage 3 means it arrives with its `developer`
@@ -248,6 +248,43 @@ sweep of app-level settings that bypass the store is
 Decide at that point whether redraw cadence needs its own field or
 should stay pinned to rAF. Default stays the current effective value so
 an untouched install behaves identically.
+
+#### Tier 4 results
+
+Landed in Task 45 Stage 3 as **`plot_fetch_interval_ms`**, default 67
+(the value `RESAMPLE_INTERVAL_MS` carried), tagged `plot` /
+`developer`, scope user-overridable. It is a `settings.json` field
+surfaced in the settings panel — not a per-panel control — because the
+combobox this replaces was per-panel and per-panel is the wrong scope
+for a machine-load trade-off. `PlotArea`'s self-paced resample loop
+reads it through `useSetting`, so a change takes effect without a
+relaunch, and `PlotPanel`'s follow-live target lag (a multiple of the
+fetch interval) derives from it rather than from the deleted constant.
+Guarded by *paces the fetch loop from the plot fetch interval setting*
+in `PlotPanel.dom.test.tsx`, a real-time counterpart to the existing
+default-cadence test.
+
+**Redraw cadence gets no field; it stays pinned to rAF.** Three
+reasons, in order of weight:
+
+1. **The cost the knob exists to control is not the redraw.** Tier 2 #1
+   separated fetch from redraw precisely so the expensive half — the
+   host round-trip, the deserialize, and the merge — could be paced
+   independently. That half is now the setting. What is left is one
+   canvas draw per panel per frame, which is the cheap half and is
+   already coalesced.
+2. **A second field admits incoherent pairs.** Set redraw slower than
+   fetch and the app pays for data it never shows; set it faster and it
+   redraws identical pixels. That is exactly the argument that made
+   Task 45's live-update-rate row *one* setting instead of three, and
+   it applies here with a two-field pair just as well as a three.
+3. **Display rate is the right ceiling for a canvas and there is
+   nothing under it worth having.** Below one rAF per frame the plot
+   judders for a saving that item 1 says is not there.
+
+If evidence ever contradicts item 1 — a frontend capture showing draw
+cost dominating fetch cost — this is the decision to revisit, and the
+measurement Tier 0 still owes is what would show it.
 
 ## Findings
 

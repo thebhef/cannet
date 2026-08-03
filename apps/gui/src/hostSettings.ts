@@ -27,6 +27,7 @@
 // edit — or a re-hydrate after a hand-edit — reaches all of them without a
 // restart.
 
+import { useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import type { BindingSpec } from "./commands";
@@ -52,6 +53,23 @@ export interface Settings {
   /// rather than panel state, so it survives closing the panel; the
   /// panel's source filter stays view-local.
   system_log_min_level: SystemLogLevel;
+  /// How long a transient status notice dwells in the header before the
+  /// bar reverts to its resting line.
+  notice_dwell_ms: number;
+  /// How often an open plot asks the host for a resampled window while
+  /// a capture runs. Redraw stays pinned to rAF; this is the fetch.
+  plot_fetch_interval_ms: number;
+  /// How often a paged view re-reads the tail while a capture runs —
+  /// the trace, by-id, signal and transmit/RBS views.
+  view_refresh_interval_ms: number;
+  /// Width of a plot's follow-live x-window before the user has set one
+  /// by zooming or panning. Milliseconds on the wire, seconds in the
+  /// settings view.
+  follow_window_ms: number;
+  /// How many recently-opened BLFs the File menu lists.
+  recent_blfs_limit: number;
+  /// How many recently-run commands the palette floats to the top.
+  recent_commands_limit: number;
 }
 
 export function defaultSettings(): Settings {
@@ -61,6 +79,12 @@ export function defaultSettings(): Settings {
     keybindings: null,
     show_developer_settings: false,
     system_log_min_level: "info",
+    notice_dwell_ms: 3000,
+    plot_fetch_interval_ms: 67,
+    view_refresh_interval_ms: 250,
+    follow_window_ms: 10_000,
+    recent_blfs_limit: 8,
+    recent_commands_limit: 10,
   };
 }
 
@@ -105,6 +129,15 @@ export async function hydrateSettings(): Promise<void> {
 /// session even before they've flushed to disk.
 export function hostSettings(): Settings {
   return cache;
+}
+
+/// One setting's current value, re-rendering the caller when it
+/// changes. For a value a component *reacts* to — a poll interval whose
+/// effect must be rebuilt, a width the next render uses. Code that only
+/// needs the value at the moment it acts (a callback, an event handler)
+/// should read `hostSettings()` directly instead and skip the render.
+export function useSetting<K extends keyof Settings>(key: K): Settings[K] {
+  return useSyncExternalStore(subscribeSettings, () => hostSettings()[key]);
 }
 
 /// Subscribe to settings changes. Returns the unsubscribe function.

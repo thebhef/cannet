@@ -1,10 +1,21 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-  RECENT_COMMANDS_LIMIT,
-  recordRecentCommand,
-  sortRecentFirst,
-} from "./recentCommands";
+// The cap is the `recent_commands_limit` setting, so these tests need a
+// host to hydrate it from.
+let stored: Record<string, unknown> = {};
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(async (cmd: string) => (cmd === "get_settings" ? { ...stored } : null)),
+}));
+
+const { recordRecentCommand, sortRecentFirst } = await import("./recentCommands");
+const { defaultSettings, hydrateSettings } = await import("./hostSettings");
+
+const RECENT_COMMANDS_LIMIT = defaultSettings().recent_commands_limit;
+
+beforeEach(async () => {
+  stored = {};
+  await hydrateSettings();
+});
 
 describe("recordRecentCommand", () => {
   it("prepends the newest command", () => {
@@ -24,6 +35,14 @@ describe("recordRecentCommand", () => {
     expect(list).toHaveLength(RECENT_COMMANDS_LIMIT);
     expect(list[0]).toBe(`cmd-${RECENT_COMMANDS_LIMIT + 2}`);
     expect(list).not.toContain("cmd-0");
+  });
+
+  it("caps at the configured depth, not a hard-coded one", async () => {
+    stored = { recent_commands_limit: 3 };
+    await hydrateSettings();
+    let list: string[] = [];
+    for (let i = 0; i < 6; i++) list = recordRecentCommand(list, `cmd-${i}`);
+    expect(list).toEqual(["cmd-5", "cmd-4", "cmd-3"]);
   });
 
   it("ignores an empty id", () => {
