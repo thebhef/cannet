@@ -364,7 +364,11 @@ the transmit panel to create a new TX frame for that message;
 multi-select (click / Shift-click / Cmd-Ctrl-click) drags the whole
 selection at once. The host watches every loaded DBC file and
 auto-reloads the in-memory copy when the file changes on disk — no
-need to click Reload after editing a DBC in another tool. Singleton
+need to click Reload after editing a DBC in another tool. Turn
+**`dbc_auto_reload`** off if you would rather choose the moment the
+decoding changes while you are editing a DBC mid-analysis; a file that
+disappears is still reported either way, and Reload DBC still works.
+Singleton
 like the project panel, and read-only (DBCs are added / removed from
 the project panel, not from here). New panels arrive as a tab
 in the active group — drag a

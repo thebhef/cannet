@@ -767,6 +767,38 @@ alone* (red when the parsed branch drops `o.yAxisMode`), *does not
 retro-fit an area saved before the field existed* (red when
 `yAxisModeFromRaw`'s fallback reads the setting).
 
+**DBC auto-reload opt-out.** *(done)*
+
+| Field | Default | Tags | Scope | Reader |
+| --- | --- | --- | --- | --- |
+| `dbc_auto_reload` | `true` | dbc / behaviour | user-overridable | `dbc_watcher::on_event` |
+
+Notes:
+
+- **`Behaviour`, not `Default`** — the only item in this half that is.
+  There is no per-panel version of "reload when the file changes"; it
+  is one app-wide policy, so the `default` tag's contract (seeds a view,
+  never overrides it) does not apply.
+- **Read per event, not at startup**, matching Stage 3's re-arming
+  loops: switching it off stops the *next* swap rather than the next
+  launch.
+- **A removal is still reported when it is off.** The opt-out is "do not
+  replace the database under an analysis in progress", not "go quiet" —
+  a DBC vanishing from disk is news either way, and the warning does not
+  touch in-memory state.
+- **The event-kind filter became a pure function** (`reaction_to` →
+  `Reload` / `NoteRemoval` / `Ignore`) so both it and the gate are unit
+  tested. This module's own note explains why its end-to-end path is
+  left to manual verification (FS watchers are timing-dependent enough
+  to be flaky in CI); the decision no longer has to be.
+
+Behaviour tests (mutation-checked by dropping the `auto_reload` guard,
+and by moving the removal branch under it): `dbc_watcher.rs` → *a save
+reloads while auto-reload is on* (over all five event kinds an editor's
+save produces), *auto-reload off leaves the in-memory copy alone*, *a
+removal is reported whichever way the setting is set*, *an event that
+touches no content is ignored either way*.
+
 ## Interlock with Tasks 46 and 47
 
 This task grows the settings count past twenty-five, which is more than

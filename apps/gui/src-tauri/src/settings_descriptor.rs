@@ -416,6 +416,15 @@ const DESCRIPTORS: &[Spec] = &[
         },
     },
     Spec {
+        key: "dbc_auto_reload",
+        backing: Backing::Field,
+        label: "Reload a DBC when it changes on disk",
+        help: "Re-read a loaded DBC as soon as the file is saved by another                tool, instead of waiting for Reload DBC. Turn it off when you                are editing a DBC while analysing a capture and would rather                choose the moment the decoding changes. A DBC that disappears                is reported either way.",
+        surfaces: &[Surface::Dbc],
+        kind: Kind::Behaviour,
+        control: Control::Bool,
+    },
+    Spec {
         key: "notice_dwell_ms",
         backing: Backing::Field,
         label: "Status notice dwell",

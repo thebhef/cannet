@@ -116,6 +116,10 @@ export interface Settings {
   /// (ADR 0026). Read once, when the area is created; an area that
   /// already exists keeps the layout it was drawn with.
   plot_y_axis_mode: string;
+  /// Whether a loaded DBC is re-read when the file changes on disk.
+  /// Host-consumed (`dbc_watcher`); listed here because the mirror
+  /// carries every field of `settings.json`.
+  dbc_auto_reload: boolean;
 }
 
 export function defaultSettings(): Settings {
@@ -147,6 +151,7 @@ export function defaultSettings(): Settings {
     trace_auto_scroll: true,
     trace_show_events: true,
     plot_y_axis_mode: "unified",
+    dbc_auto_reload: true,
   };
 }
 

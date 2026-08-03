@@ -92,6 +92,7 @@ pub(crate) const SCOPES: ScopeTable = &[
     ("trace_auto_scroll", Scope::UserOverridable),
     ("trace_show_events", Scope::UserOverridable),
     ("plot_y_axis_mode", Scope::UserOverridable),
+    ("dbc_auto_reload", Scope::UserOverridable),
 ];
 
 /// The persisted user settings. `#[serde(default)]` fills any absent field
@@ -287,6 +288,17 @@ pub struct Settings {
     /// wins afterwards, and an area saved before this field existed
     /// keeps reading as `unified` rather than being re-laid-out.
     pub plot_y_axis_mode: String,
+    /// Whether a loaded DBC is re-read and swapped in when the file
+    /// changes on disk (ADR-free; see [`crate::dbc_watcher`]). Default
+    /// `true`, which is what the app has always done.
+    ///
+    /// App-wide policy rather than a per-view default: there is no
+    /// "this panel only" version of it. Read on every filesystem
+    /// event, so switching it off stops the next swap rather than the
+    /// next launch, and a file *disappearing* is still reported either
+    /// way — the opt-out is about not replacing the database under an
+    /// analysis in progress, not about going quiet.
+    pub dbc_auto_reload: bool,
 }
 
 /// The smallest legal value of any millisecond-interval setting.
@@ -376,6 +388,7 @@ impl Default for Settings {
             trace_auto_scroll: true,
             trace_show_events: true,
             plot_y_axis_mode: "unified".to_string(),
+            dbc_auto_reload: true,
         }
     }
 }
@@ -795,6 +808,7 @@ mod tests {
             trace_auto_scroll: false,
             trace_show_events: false,
             plot_y_axis_mode: "individual".to_string(),
+            dbc_auto_reload: false,
         }
     }
 
