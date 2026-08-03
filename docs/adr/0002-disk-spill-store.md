@@ -321,11 +321,15 @@ the oldest sealed segments but cannot drop the tail, so the footprint
 floors above the cap while the retained frame window thrashes a whole
 meta segment at a time. The segment geometry is tuned for the 10⁸-frame,
 multi-day target (large segments → fewer files), which makes that floor
-coarse. Rather than make eviction chase an infeasible cap, a **minimum
-effective cap** is enforced where the setting meets the store
-(`settings::MIN_SCRATCH_CAP_BYTES`): a smaller user value is raised to
-the floor, and the settings UI mirrors it. `None` (unbounded) is
-unaffected.
+coarse. Rather than make eviction chase an infeasible cap, the floor is
+a **minimum legal cap** (`settings::MIN_SCRATCH_CAP_BYTES`) — validation
+metadata on the `scratch_cap_bytes` setting, not a setting of its own.
+It is stated once, host-side; enforced where a value enters the app (a
+below-minimum cap, from the panel or a hand-edited `settings.json`, is
+**refused and reported on the system log** rather than silently repaired
+to the floor, and the field resolves to its default); and published to
+the frontend so the UI renders the limit instead of restating it.
+`None` (unbounded) is always legal and unaffected.
 
 **One mark, every store; absolute numbering preserved.** The mark is a
 single logical floor applied across all three append-only segment

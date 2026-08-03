@@ -4,19 +4,13 @@ import type { IDockviewPanelProps } from "dockview";
 import {
   defaultSettings,
   loadSettings,
+  loadSettingsBounds,
   saveSettings,
   type Settings,
+  type SettingsBounds,
 } from "./hostSettings";
 
 const BYTES_PER_MB = 1024 * 1024;
-
-/// Minimum effective scratch cap in MB (ADR 0002 DS-8). A smaller cap can't
-/// be honored — the pre-allocated segment families (one payload + one filter
-/// segment alone are ~12 MiB) dominate the budget and the retained window
-/// thrashes a segment at a time. The host clamps authoritatively; the UI
-/// mirrors the floor so the displayed value matches what's enforced. Keep in
-/// sync with `settings::MIN_SCRATCH_CAP_BYTES`.
-const MIN_CAP_MB = 100;
 
 /**
  * Settings panel — a flat, hand-rolled editor over the host's
@@ -24,12 +18,21 @@ const MIN_CAP_MB = 100;
  * cap and clear-on-exit), distinct from the machine state in `hostState`.
  * The file is the durable contract; this panel loads it on mount and, on
  * each edit, re-reads it and writes the whole struct back with the edit
- * merged over the current contents. A singleton panel (one instance,
- * fixed dockview id), opened from the command palette.
+ * merged over the current contents. Field limits come from the host
+ * (`loadSettingsBounds`) rather than being restated here, and the host is
+ * the one that enforces them — this panel displays whatever the host says
+ * it stored. A singleton panel (one instance, fixed dockview id), opened
+ * from the command palette.
  */
 export function SettingsPanel(_props: IDockviewPanelProps) {
   const [settings, setSettings] = useState<Settings>(defaultSettings);
+  const [bounds, setBounds] = useState<SettingsBounds | null>(null);
   const [loaded, setLoaded] = useState(false);
+  // In-progress text for the cap box. `null` = show the stored value. The
+  // box can't be written through on every keystroke: the host refuses a
+  // below-minimum cap, so "500" typed one digit at a time would be refused
+  // (and the box reset) before the last digit arrived.
+  const [capDraft, setCapDraft] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -39,6 +42,13 @@ export function SettingsPanel(_props: IDockviewPanelProps) {
         setLoaded(true);
       }
     });
+    void loadSettingsBounds()
+      .then((b) => {
+        if (live) setBounds(b);
+      })
+      .catch(() => {
+        /* no host: render without the limit rather than inventing one */
+      });
     return () => {
       live = false;
     };
@@ -48,34 +58,38 @@ export function SettingsPanel(_props: IDockviewPanelProps) {
   // the whole struct back with the patch merged over *that* — not over this
   // panel's mount-time snapshot — so a concurrent write (the shortcuts
   // panel persisting a keybinding) isn't clobbered. Same shape as
-  // `useCommands`' `persistUserBindings`. The host is authoritative.
+  // `useCommands`' `persistUserBindings`. The host is authoritative and
+  // answers with what it stored, which is what ends up displayed.
   const update = (patch: Partial<Settings>) => {
     setSettings((prev) => ({ ...prev, ...patch }));
     void loadSettings()
       .then((current) => saveSettings({ ...current, ...patch }))
+      .then((accepted) => setSettings(accepted))
       .catch(() => {
         /* host logs the failure; the in-memory value still holds */
       });
   };
 
-  const capMb =
+  const minCapMb = bounds == null ? undefined : Math.ceil(bounds.minScratchCapBytes / BYTES_PER_MB);
+  const storedCapMb =
     settings.scratch_cap_bytes == null
       ? ""
-      : // Mirror the host's floor: a stored sub-floor value (e.g. a
-        // hand-edited settings.json) is enforced at the floor, so show it.
-        String(Math.max(MIN_CAP_MB, Math.round(settings.scratch_cap_bytes / BYTES_PER_MB)));
+      : String(Math.round(settings.scratch_cap_bytes / BYTES_PER_MB));
 
-  const onCapChange = (raw: string) => {
-    const trimmed = raw.trim();
+  // Commit the typed cap on blur / Enter. Blank = unbounded; anything
+  // unparseable reverts to the stored value. A too-small number is *sent* —
+  // the host is the one that judges it, and reports the refusal.
+  const commitCap = () => {
+    if (capDraft == null) return;
+    const trimmed = capDraft.trim();
+    setCapDraft(null);
     if (trimmed === "") {
       update({ scratch_cap_bytes: null });
       return;
     }
     const mb = Number(trimmed);
-    if (!Number.isFinite(mb) || mb < 0) return; // ignore non-numeric / negative
-    // Mirror the host's cap floor (ADR 0002 DS-8) so the box never shows a
-    // value smaller than what's actually enforced.
-    update({ scratch_cap_bytes: Math.round(Math.max(mb, MIN_CAP_MB) * BYTES_PER_MB) });
+    if (!Number.isFinite(mb) || mb < 0) return;
+    update({ scratch_cap_bytes: Math.round(mb * BYTES_PER_MB) });
   };
 
   return (
@@ -86,16 +100,24 @@ export function SettingsPanel(_props: IDockviewPanelProps) {
           <span className="settings-label">Cache size cap (MB)</span>
           <input
             type="number"
-            min={MIN_CAP_MB}
+            min={minCapMb}
             step={64}
             placeholder="unbounded"
-            value={capMb}
-            onChange={(e) => onCapChange(e.target.value)}
+            value={capDraft ?? storedCapMb}
+            onChange={(e) => setCapDraft(e.target.value)}
+            onBlur={commitCap}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") commitCap();
+            }}
           />
           <span className="settings-desc">
             Drop the oldest history once the on-disk cache exceeds this.
-            Minimum {MIN_CAP_MB} MB — below that, pre-allocated segments
-            dominate and the cap can't be honored. Blank = unbounded.
+            {minCapMb != null && (
+              <> Minimum {minCapMb} MB — below that, pre-allocated segments
+              dominate and the cap can't be honored, so a smaller value is
+              refused.</>
+            )}{" "}
+            Blank = unbounded.
           </span>
         </label>
         <label className="settings-field settings-field-checkbox">

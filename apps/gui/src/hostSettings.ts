@@ -34,6 +34,27 @@ export function defaultSettings(): Settings {
   return { scratch_cap_bytes: null, clear_scratch_on_exit: false, keybindings: null };
 }
 
+/// Mirror of the host `SettingsBounds` struct: the validation limits the
+/// host enforces on ingress. Deliberately *not* re-declared as constants
+/// here — the host is the single source of truth for a limit derived from
+/// the store's segment geometry (ADR 0002 DS-8), and the UI reads it so the
+/// two cannot drift.
+export interface SettingsBounds {
+  /// Smallest legal `scratch_cap_bytes`; a smaller value is refused.
+  minScratchCapBytes: number;
+}
+
+/// Load the settings validation bounds. Rejects (rather than inventing a
+/// fallback) when there is no host or the answer is unusable, so a caller
+/// renders the bound only once it actually knows it.
+export async function loadSettingsBounds(): Promise<SettingsBounds> {
+  const bounds = await invoke<Partial<SettingsBounds> | null>("get_settings_bounds");
+  if (typeof bounds?.minScratchCapBytes !== "number") {
+    throw new Error("settings bounds unavailable");
+  }
+  return { minScratchCapBytes: bounds.minScratchCapBytes };
+}
+
 /// Load the persisted settings. Tolerant of a host that returns `null` /
 /// partial data (and of no host at all, e.g. in unit tests) — anything
 /// missing falls back to the documented default.
@@ -46,8 +67,11 @@ export async function loadSettings(): Promise<Settings> {
   }
 }
 
-/// Persist the whole settings struct. Best-effort: a failed write is
-/// logged host-side and surfaced to the caller as a rejected promise.
-export async function saveSettings(settings: Settings): Promise<void> {
-  await invoke("set_settings", { settings });
+/// Persist the whole settings struct, resolving to what the host actually
+/// stored — it refuses out-of-range values (reporting them on the system
+/// log), so the accepted settings can differ from what was sent. A failed
+/// write is logged host-side and surfaced as a rejected promise.
+export async function saveSettings(settings: Settings): Promise<Settings> {
+  const accepted = await invoke<Partial<Settings> | null>("set_settings", { settings });
+  return accepted == null ? settings : { ...defaultSettings(), ...accepted };
 }

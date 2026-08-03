@@ -49,16 +49,54 @@ this, or did the app observe it?"*
    Regression test: `SettingsPanel.dom.test.tsx` → "keeps a keybinding
    written by another panel while it was open" (mutates the mock store
    between mount and click; fails on the pre-fix code).
-2. **The cap floor is duplicated by admission.** `MIN_SCRATCH_CAP_BYTES`
-   (Rust) and `MIN_CAP_MB` (TS) carry a "keep in sync" comment. One
-   source of truth.
-3. **Flooring on read, not on write.** `floored_scratch_cap` runs where
-   settings meet the store, so a hand-edited 15 MB cap stays 15 MB in
-   the file, is enforced at 100 MB in the store, and is *displayed* as
-   100 MB. Three answers to one question. For a file whose entire
-   selling point is hand-editability, the file lying about the
-   effective value is the wrong failure mode — normalise on write, or
-   surface the correction.
+2. **The cap floor is duplicated by admission.** *(done — folded into
+   item 3)* `MIN_SCRATCH_CAP_BYTES` (Rust) and `MIN_CAP_MB` (TS)
+   carried a "keep in sync" comment. The duplication is gone because
+   the bound is no longer mirrored: `MIN_CAP_MB` is deleted and the
+   panel reads the limit from the host through `get_settings_bounds`.
+   Anti-drift test: `settings.rs` →
+   `the_published_bound_is_the_one_validate_enforces` (the published
+   bound must be the number `validate` enforces) plus
+   `SettingsPanel.dom.test.tsx` → "takes the cap minimum from the host
+   rather than restating it", whose fake host publishes a *different*
+   minimum (64 MB) so a panel that hard-codes 100 fails.
+3. **The floor is validation metadata, not settings data.** *(done)*
+   This is not a choice between clamping strategies, and it should not
+   be re-litigated as one. `MIN_SCRATCH_CAP_BYTES` is a **hard
+   implementation limit** (ADR 0002 DS-8): below it the pre-allocated
+   segment families dominate the budget, so a smaller cap cannot be
+   honored at all. That makes it a *constraint on the
+   `scratch_cap_bytes` field* — a `min` — not a value to flow through
+   settings logic and clamp at a read boundary. So:
+
+   - the bound is **stated once**, host-side, next to the field it
+     bounds;
+   - it is **enforced at ingress** — `get_settings` (a hand-edited
+     file) and `set_settings` (a panel write) both run `validate`,
+     which **refuses** an out-of-range value, resolves the field to its
+     default, and **reports it on the system log**. Same contract as
+     item 4's treatment of a typo'd keybinding: one rule for
+     hand-editing the file, not two;
+   - `floored_scratch_cap`'s read-time clamp is **gone**. The store
+     does not silently repair a value that should never have been
+     accepted;
+   - the bound is **published** to the frontend
+     (`get_settings_bounds`) rather than re-declared there.
+
+   Deliberately *not* done: normalising the user's file on our own
+   initiative (rewriting a refused 15 MB to 100 MB). The file is a
+   user-authored document; we report what we refuse and leave their
+   text alone, which is also what a dropped keybinding does. And
+   deliberately not built: the per-setting descriptor. When it lands
+   (Task 46), `MIN_SCRATCH_CAP_BYTES` *becomes* that descriptor's `min`
+   with no behavioural change — one host-side source of truth, enforced
+   on write, surfaced to the frontend.
+
+   One consequence worth recording: because the host now refuses a
+   below-minimum cap instead of clamping it, the cap box could no
+   longer write through on every keystroke — "500" would be refused at
+   "5" and the box reset before the last digit arrived. It now commits
+   on blur / Enter, with the typed text held as local draft state.
 4. **No host-side validation of `keybindings`.** The host round-trips
    any `{chord, commandId}`; a typo'd hand-edit silently disables a
    command with nothing on the system log. Validate and warn.
@@ -219,7 +257,9 @@ change the file layout, which is why it precedes Stage 2.
 ## Duplicate sources of truth to collapse
 
 1. View refresh cadence — 250 ms in four files.
-2. Scratch cap floor — Rust ↔ TS, "keep in sync by convention".
+2. ~~Scratch cap floor — Rust ↔ TS, "keep in sync by convention".~~
+   *Collapsed (Stage 1 item 3): stated once host-side as validation
+   metadata, published to the frontend, no TS copy.*
 3. Default nominal bitrate 500 kbps — TS ↔ Python ↔ Rust, "kept in
    sync by convention". Crosses three languages; the most likely of
    these to drift unnoticed.

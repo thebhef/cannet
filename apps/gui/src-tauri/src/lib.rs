@@ -249,9 +249,9 @@ fn open_trace_store(scratch: std::io::Result<std::path::PathBuf>) -> Arc<TraceSt
 /// the live trace store. Called at launch and after every settings change
 /// so the cap takes effect without a restart.
 pub(crate) fn apply_scratch_cap(app: &AppHandle) {
-    // Raise a below-floor cap to the minimum (ADR 0002 DS-8): a smaller cap
-    // can't be honored once the pre-allocated segment families are counted.
-    let cap = settings::floored_scratch_cap(settings::get_settings(app.clone()).scratch_cap_bytes);
+    // `get_settings` has already refused any below-minimum cap (ADR 0002
+    // DS-8) and reported it, so whatever arrives here is honorable as-is.
+    let cap = settings::get_settings(app.clone()).scratch_cap_bytes;
     app.state::<AppState>().trace_store.set_scratch_cap(cap);
 }
 
@@ -350,6 +350,7 @@ pub fn run() {
             state::set_state,
             settings::get_settings,
             settings::set_settings,
+            settings::get_settings_bounds,
             list_signals,
             list_dbc_content,
             sample_signals,
