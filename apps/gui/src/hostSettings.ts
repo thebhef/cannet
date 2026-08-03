@@ -95,6 +95,13 @@ export interface Settings {
   /// bundled python-can driver. Host-consumed; `CANNET_DRIVER_MODULE`
   /// in the environment overrides it for one run.
   driver_module: string;
+  /// Lowest severity written to the rolling `cannet.log`. A separate
+  /// filter over a separate sink from `system_log_min_level`, which
+  /// narrows only the System Messages view.
+  log_file_min_level: SystemLogLevel;
+  /// Log level the python-can sidecar runs at — Python's ladder, whose
+  /// third rung is `warning`, not `warn`.
+  sidecar_log_level: string;
 }
 
 export function defaultSettings(): Settings {
@@ -120,6 +127,8 @@ export function defaultSettings(): Settings {
     reconnect_backoff_ms: 2000,
     sidecar_dir: "",
     driver_module: "",
+    log_file_min_level: "debug",
+    sidecar_log_level: "info",
   };
 }
 

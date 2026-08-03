@@ -333,6 +333,14 @@ pub fn build_frozen_command(launcher: &std::path::Path) -> Command {
 /// it is configured, so this is stated once here rather than in each
 /// `build_*_command`.
 ///
+/// `log_level` is the sidecar's own `--log-level`, one of
+/// [`crate::settings::SIDECAR_LOG_LEVELS`]. It governs how much the
+/// sidecar writes to stderr, which is what
+/// [`classify_stderr_line`] turns into System Messages — so it is the
+/// verbosity of everything the sidecar contributes to a log a user
+/// ships back. It was unreachable only because the host passed the
+/// child no arguments at all.
+///
 /// `driver_module` is forwarded as [`DRIVER_MODULE_ENV`], which the
 /// sidecar reads to pick its driver implementation; `None` leaves the
 /// child environment alone so the sidecar uses its own default. The host
@@ -340,7 +348,8 @@ pub fn build_frozen_command(launcher: &std::path::Path) -> Command {
 /// unreachable from the GUI.
 ///
 /// `--bind` is still deliberately not passed — see [`build_command`].
-fn apply_sidecar_settings(cmd: &mut Command, driver_module: Option<&OsStr>) {
+fn apply_sidecar_settings(cmd: &mut Command, log_level: &str, driver_module: Option<&OsStr>) {
+    cmd.arg("--log-level").arg(log_level);
     if let Some(module) = driver_module {
         cmd.env(DRIVER_MODULE_ENV, module);
     }
@@ -589,8 +598,9 @@ fn resolve_command(app: &AppHandle) -> Option<(Command, String)> {
     {
         sys_warn!(app, SOURCE, "{note}");
     }
+    let log_level = crate::settings::effective().sidecar_log_level.clone();
     let configure = |mut cmd: Command| {
-        apply_sidecar_settings(&mut cmd, driver_module.value.as_deref());
+        apply_sidecar_settings(&mut cmd, &log_level, driver_module.value.as_deref());
         cmd
     };
     // Resolve the sidecar source directory to an absolute path
@@ -1375,13 +1385,35 @@ mod tests {
     }
 
     #[test]
+    fn the_sidecar_log_level_reaches_the_child_and_bind_still_does_not() {
+        // The sidecar's `--log-level` was unreachable because the host
+        // passed no arguments at all. `--bind` stays unpassed for the
+        // reason `build_command_does_not_pin_a_bind_address` gives —
+        // adding one argument must not smuggle in the other.
+        for mut cmd in [
+            build_command(LaunchPath::PathUv, &sample_sidecar_dir()),
+            build_command(LaunchPath::SystemPython, &sample_sidecar_dir()),
+            build_frozen_command(&std::env::temp_dir().join(frozen_launcher_name())),
+        ] {
+            apply_sidecar_settings(&mut cmd, "warning", None);
+            let args: Vec<OsString> = cmd.get_args().map(OsStr::to_os_string).collect();
+            let at = args
+                .iter()
+                .position(|a| a == "--log-level")
+                .unwrap_or_else(|| panic!("no --log-level in {args:?}"));
+            assert_eq!(args[at + 1], OsStr::new("warning"));
+            assert!(!args.iter().any(|a| a == "--bind"), "{args:?}");
+        }
+    }
+
+    #[test]
     fn the_driver_module_is_forwarded_to_the_sidecar_process() {
         // `CANNET_DRIVER_MODULE` is read by the *sidecar*, and the host
         // never set it — so the only way to select a driver was to
         // launch the GUI from a shell that already had it. The setting
         // is the host-side half of that contract.
         let mut cmd = build_command(LaunchPath::PathUv, &sample_sidecar_dir());
-        apply_sidecar_settings(&mut cmd, Some(OsStr::new("my_team.driver")));
+        apply_sidecar_settings(&mut cmd, "info", Some(OsStr::new("my_team.driver")));
         let value = cmd
             .get_envs()
             .find_map(|(k, v)| (k == DRIVER_MODULE_ENV).then_some(v))
@@ -1395,7 +1427,7 @@ mod tests {
         // The untouched install must launch exactly as it did before
         // the setting existed: the sidecar picks its own default.
         let mut cmd = build_frozen_command(&std::env::temp_dir().join(frozen_launcher_name()));
-        apply_sidecar_settings(&mut cmd, None);
+        apply_sidecar_settings(&mut cmd, "info", None);
         assert!(
             !cmd.get_envs().any(|(k, _)| k == DRIVER_MODULE_ENV),
             "nothing should be set when neither the env nor the setting names one"

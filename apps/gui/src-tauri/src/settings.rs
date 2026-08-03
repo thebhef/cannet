@@ -86,6 +86,8 @@ pub(crate) const SCOPES: ScopeTable = &[
     ("reconnect_backoff_ms", Scope::UserOverridable),
     ("sidecar_dir", Scope::UserOverridable),
     ("driver_module", Scope::UserOverridable),
+    ("log_file_min_level", Scope::UserOverridable),
+    ("sidecar_log_level", Scope::UserOverridable),
 ];
 
 /// The persisted user settings. `#[serde(default)]` fills any absent field
@@ -226,6 +228,25 @@ pub struct Settings {
     /// `CANNET_DRIVER_MODULE` in the host's own environment overrides
     /// this for one run and says so on the system log.
     pub driver_module: String,
+    /// Lowest severity written to the rolling `cannet.log` — one of
+    /// [`SYSTEM_LOG_LEVELS`], default `debug`, which is everything and
+    /// therefore exactly what the file held before it was adjustable.
+    ///
+    /// A **separate filter over a separate sink** from
+    /// [`Settings::system_log_min_level`]: that one narrows the System
+    /// Messages *view*, this one narrows the artifact a bug report
+    /// carries, and quieting one must not quieten the other. A panic
+    /// record ignores both ([`crate::crash`]).
+    pub log_file_min_level: String,
+    /// Log level the python-can sidecar runs at — one of
+    /// [`SIDECAR_LOG_LEVELS`], default `info`, which is the sidecar's
+    /// own default, so an untouched install is unchanged.
+    ///
+    /// It governs the sidecar's stderr, which the host classifies into
+    /// System Messages, so it is the verbosity of everything a vendor
+    /// driver contributes to a log a user ships back — `debug` for a
+    /// hardware fault nobody can reproduce.
+    pub sidecar_log_level: String,
 }
 
 /// The smallest legal value of any millisecond-interval setting.
@@ -260,6 +281,18 @@ pub const MIN_LOG_ROTATION_BYTES: u64 = 1024 * 1024;
 /// re-listing them ([`crate::settings_descriptor`]).
 pub const SYSTEM_LOG_LEVELS: &[&str] = &["debug", "info", "warn", "error"];
 
+/// The level names [`Settings::sidecar_log_level`] accepts, least to
+/// most severe.
+///
+/// These are the sidecar's own `--log-level` choices — Python's ladder,
+/// where the third rung is `warning` rather than `warn` — not
+/// [`SYSTEM_LOG_LEVELS`]. The host passes the value through verbatim,
+/// so translating between the two spellings here would only create a
+/// mapping to get wrong; the list is what the sidecar's argument parser
+/// accepts, and a value outside it would make the sidecar exit at
+/// startup.
+pub const SIDECAR_LOG_LEVELS: &[&str] = &["debug", "info", "warning", "error"];
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -284,6 +317,8 @@ impl Default for Settings {
             reconnect_backoff_ms: 2_000,
             sidecar_dir: String::new(),
             driver_module: String::new(),
+            log_file_min_level: "debug".to_string(),
+            sidecar_log_level: "info".to_string(),
         }
     }
 }
@@ -385,16 +420,29 @@ pub(crate) fn validate(settings: Settings) -> (Settings, Vec<String>) {
             settings.scratch_cap_bytes = None;
         }
     }
-    if !SYSTEM_LOG_LEVELS.contains(&settings.system_log_min_level.as_str()) {
-        let bad = &settings.system_log_min_level;
-        let known = SYSTEM_LOG_LEVELS.join(", ");
-        complaints.push(format!(
-            "system_log_min_level \"{bad}\" is not one of {known}; ignoring it — the \
-             System Messages panel filters at its default"
-        ));
-        settings.system_log_min_level = Settings::default().system_log_min_level;
-    }
     let d = Settings::default();
+    for (key, value, allowed, default) in [
+        (
+            "system_log_min_level",
+            &mut settings.system_log_min_level,
+            SYSTEM_LOG_LEVELS,
+            d.system_log_min_level.clone(),
+        ),
+        (
+            "log_file_min_level",
+            &mut settings.log_file_min_level,
+            SYSTEM_LOG_LEVELS,
+            d.log_file_min_level.clone(),
+        ),
+        (
+            "sidecar_log_level",
+            &mut settings.sidecar_log_level,
+            SIDECAR_LOG_LEVELS,
+            d.sidecar_log_level.clone(),
+        ),
+    ] {
+        refuse_unknown(&mut complaints, key, value, allowed, default);
+    }
     for (key, value, min, default) in [
         (
             "notice_dwell_ms",
@@ -460,6 +508,32 @@ pub(crate) fn validate(settings: Settings) -> (Settings, Vec<String>) {
 /// resolving it to `default` — the shared shape of every numeric bound
 /// in [`validate`], so a new bounded field is one table row rather than
 /// another hand-written `if`.
+/// Refuse `value` if it is not one of `allowed`, reporting the field by
+/// name and resolving it to `default` — the string counterpart of
+/// [`refuse_below`], so a new fixed-option field is one table row
+/// rather than another hand-written `if`.
+///
+/// A serde enum would refuse the value too, but by failing the *whole*
+/// document on one typo'd level; a plain `String` checked here gets the
+/// refuse-report-default treatment the rest of the store uses.
+fn refuse_unknown(
+    complaints: &mut Vec<String>,
+    key: &str,
+    value: &mut String,
+    allowed: &[&str],
+    default: String,
+) {
+    if allowed.contains(&value.as_str()) {
+        return;
+    }
+    let known = allowed.join(", ");
+    complaints.push(format!(
+        "{key} \"{value}\" is not one of {known}; ignoring it — using the \
+         default ({default})"
+    ));
+    *value = default;
+}
+
 fn refuse_below(complaints: &mut Vec<String>, key: &str, value: &mut u64, min: u64, default: u64) {
     if *value >= min {
         return;
@@ -632,6 +706,8 @@ mod tests {
             reconnect_backoff_ms: 10_000,
             sidecar_dir: "sidecar-source-tree".to_string(),
             driver_module: "my_team.driver".to_string(),
+            log_file_min_level: "info".to_string(),
+            sidecar_log_level: "debug".to_string(),
         }
     }
 

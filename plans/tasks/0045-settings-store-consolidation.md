@@ -448,7 +448,7 @@ metrics (tracebuffer, grpc, hardware-peak) against the promoted
 baseline after the change; the frontend tier is skipped as ever, since
 Task 44 Tier 0 still owes a self-driving capture.
 
-### Stage 4 — env-only configuration that needs a settings equivalent
+### Stage 4 — env-only configuration that needs a settings equivalent — **complete**
 
 1. **`CANNET_SIDECAR_DIR`** — the only way to point the app at a
    non-default sidecar. A field engineer with a patched driver build
@@ -547,6 +547,62 @@ environment is silent*, *the environment alone is not a shadowing*, *a
 blank value on either side means unset*, *an override is used verbatim
 as the sidecar dir*, *the driver module is forwarded to the sidecar
 process*, *no driver module leaves the child environment alone*.
+
+**Item 3 — log verbosity, both halves.** *(done)*
+
+| Field | Default | Tags | Scope | Reader |
+| --- | --- | --- | --- | --- |
+| `log_file_min_level` | `debug` | logging / behaviour | user-overridable | `crash::persist_message` |
+| `sidecar_log_level` | `info` | logging + connection / behaviour | user-overridable | passed to the child as `--log-level` |
+
+Notes:
+
+- **The two defaults are the two current behaviours.** `debug` is the
+  lowest rung, so the rolling log keeps exactly what it kept when it
+  had no filter at all; `info` is the sidecar's own argparse default.
+  Neither changes an untouched install.
+- **The log file's minimum is a second filter over a second sink, not
+  a rename of `system_log_min_level`.** That one narrows the System
+  Messages *view*; this one narrows the artifact a bug report carries,
+  and quieting one must not quieten the other — a user who sets the
+  panel to `warn` to stop the noise would otherwise silently ship a
+  useless log. `system_log_min_level`'s help text used to end "the
+  rolling log file keeps every level regardless", which this makes
+  false, so it is rewritten in the same change.
+- **A panic record ignores both.** It is written through
+  `append_block` directly, on the terminal path that deliberately
+  bypasses even the write lock.
+- **`SIDECAR_LOG_LEVELS` is Python's ladder, not ours** — its third
+  rung is `warning`, not `warn`. The host passes the value through
+  verbatim, so publishing our spelling would offer the view a value
+  that makes the sidecar exit at startup. Translating between the two
+  would be a mapping to get wrong; the list is what the sidecar's
+  argument parser accepts, and
+  `the_sidecar_log_levels_are_pythons_ladder_not_ours` pins that.
+- **`--bind` is still not passed.** The stage's own wording pairs the
+  two ("the host passes neither it nor `--bind`"), but the reason
+  `--bind` is absent is not oversight: `build_command_does_not_pin_a_bind_address`
+  records that pinning a port re-creates the stale-instance wedge the
+  ephemeral-port default was added to fix. The new test asserts the
+  log level arrived *and* that `--bind` still did not, so adding one
+  argument cannot smuggle in the other.
+- **Two shared pieces, matching Stage 3's shape.** `refuse_unknown` is
+  `refuse_below`'s string counterpart, so a fixed-option field is one
+  table row rather than another hand-written `if`; and
+  `LogLevel::from_name` / `rank` (the latter was test-only) turn a
+  settings level name into a comparable rung.
+  `every_published_option_set_is_the_one_validate_accepts` is the
+  `Control::Enum` counterpart of Stage 3's published-minimum test: for
+  *every* enum descriptor, the host must accept each published option
+  and refuse one it does not publish.
+
+Behaviour tests (each mutation-checked): `crash.rs` → *the rolling log
+admits exactly what its minimum level allows* (the whole 4×4 ladder,
+plus the default admitting everything and an unknown name not silencing
+the log); `sidecar.rs` → *the sidecar log level reaches the child and
+bind still does not*, over all three launcher flavours; `system_log.rs`
+→ *every declared level name maps to a level in ladder order*;
+`settings_descriptor.rs` → the two tests above.
 
 **Item 4 — a malformed value costs its field, not the file.**
 *(done)* `Settings` is `#[serde(default)]` at the *container*, which

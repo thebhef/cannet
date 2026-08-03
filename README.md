@@ -485,7 +485,17 @@ writes, so the panel teaches the file.
   doesn't show. A few fields treat `0` as "off" rather than as a
   minimum (`system_log_rate_limit`, `health_sample_interval_ms`,
   `sidecar_restart_budget`, the two recents depths); their help text
-  says so.
+  says so. A value of the wrong *shape* — text where a number belongs —
+  is refused the same way, and costs **that field only**: the rest of
+  your file is untouched.
+- **Environment variables win, and say so.** `CANNET_SIDECAR_DIR` and
+  `CANNET_DRIVER_MODULE` have settings equivalents (**Sidecar
+  directory**, **Driver module**), but the variable takes precedence
+  for the run it is set in — it is the escape hatch, and a file
+  shouldn't be able to disarm it. When one shadows a setting you have
+  filled in, the **System Messages** panel says which variable
+  overrode which key, with both values, so the file never quietly shows
+  something the app isn't using.
 - **`developer` settings.** Machine-load and internal-cadence knobs —
   the plot's fetch interval, the view refresh interval, the live-update
   rate, the reconnect backoff, the health-sample cadence, the status
