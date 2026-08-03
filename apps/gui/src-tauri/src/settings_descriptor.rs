@@ -28,7 +28,7 @@ use serde::Serialize;
 use crate::persisted_json::{scope_of, Scope};
 use crate::settings::{
     Settings, MIN_INTERVAL_MS, MIN_LOG_ROTATION_BYTES, MIN_SCRATCH_CAP_BYTES, MIN_SYSTEM_LOG_RING,
-    SCOPES, SIDECAR_LOG_LEVELS, SYSTEM_LOG_LEVELS,
+    SCOPES, SIDECAR_LOG_LEVELS, SYSTEM_LOG_LEVELS, TRACE_MODES,
 };
 
 /// A whole-millisecond interval control: the shape every cadence
@@ -366,6 +366,43 @@ const DESCRIPTORS: &[Spec] = &[
             min: Some(MIN_INTERVAL_MS),
             unset: None,
         },
+    },
+    Spec {
+        key: "trace_mode",
+        backing: Backing::Field,
+        label: "Default trace view",
+        help: "Which view a new trace panel opens in: by-ID, one row per \
+               arbitration id, or the chronological row-per-frame trace. Only \
+               the starting point — the panel's own buttons still switch it, \
+               and a panel that is already open keeps what you set there.",
+        surfaces: &[Surface::Trace],
+        kind: Kind::Default,
+        control: Control::Enum {
+            options: TRACE_MODES,
+        },
+    },
+    Spec {
+        key: "trace_auto_scroll",
+        backing: Backing::Field,
+        label: "Default auto-scroll",
+        help: "Whether a new chronological trace starts pinned to the live \
+               edge. Turn it off to open looking at the beginning of a \
+               capture. The panel's auto-scroll box — and scrolling away from \
+               the tail — still wins once it is open.",
+        surfaces: &[Surface::Trace],
+        kind: Kind::Default,
+        control: Control::Bool,
+    },
+    Spec {
+        key: "trace_show_events",
+        backing: Backing::Field,
+        label: "Default events overlay",
+        help: "Whether a new chronological trace interleaves timeline events — \
+               your notes and the capture-truncation marker — among the frame \
+               rows. The panel's events box still wins once it is open.",
+        surfaces: &[Surface::Trace],
+        kind: Kind::Default,
+        control: Control::Bool,
     },
     Spec {
         key: "notice_dwell_ms",

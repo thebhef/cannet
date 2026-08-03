@@ -102,6 +102,16 @@ export interface Settings {
   /// Log level the python-can sidecar runs at — Python's ladder, whose
   /// third rung is `warning`, not `warn`.
   sidecar_log_level: string;
+  /// Which view a *freshly created* trace panel opens in. Read once,
+  /// when the panel seeds its state; the panel's own buttons still win
+  /// afterwards, and changing this never rewrites an open panel.
+  trace_mode: string;
+  /// Whether a *freshly created* chronological trace starts pinned to
+  /// the live tail. Read once at panel creation.
+  trace_auto_scroll: boolean;
+  /// Whether a *freshly created* chronological trace interleaves
+  /// timeline events among its rows. Read once at panel creation.
+  trace_show_events: boolean;
 }
 
 export function defaultSettings(): Settings {
@@ -129,6 +139,9 @@ export function defaultSettings(): Settings {
     driver_module: "",
     log_file_min_level: "debug",
     sidecar_log_level: "info",
+    trace_mode: "by-id",
+    trace_auto_scroll: true,
+    trace_show_events: true,
   };
 }
 

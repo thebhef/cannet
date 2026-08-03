@@ -20,6 +20,7 @@ import { buildSinkPredicate } from "./sinkPredicate";
 import { buildColorResolver } from "./colorMap";
 import { SourcesContextMenu } from "./SourcesPicker";
 import { useElementPanel, useElementSources } from "./useElementPanel";
+import { hostSettings } from "./hostSettings";
 import { toggleInSet } from "./toggleSet";
 import {
   type ColumnKey,
@@ -36,6 +37,14 @@ import {
 import { diagCount } from "./diag"; // DIAG
 
 type TraceMode = "chronological" | "by-id";
+
+/// Narrow a persisted / configured mode name to a `TraceMode`. The host
+/// already refuses an unknown `trace_mode`, but a panel's own saved
+/// config is an old project file and gets the same tolerant treatment
+/// the rest of the parse does: anything unrecognised reads as by-ID.
+function traceMode(value: unknown): TraceMode {
+  return value === "chronological" ? "chronological" : "by-id";
+}
 
 /// This panel's persisted view config: the mode, auto-scroll,
 /// column layout, and events toggle — see {@link useElementPanel}.
@@ -54,10 +63,12 @@ interface TraceConfig {
  * its latest frame; click a column to sort). Both modes share the
  * column layout (resize a divider; right-click a header to show / hide
  * columns) and the trace controls; the element lives in the registry,
- * so closing the panel doesn't destroy it. The mode (default by ID),
- * auto-scroll (chronological), and the column layout are this view's
- * config, persisted on the element (so they survive closing and
- * reopening the panel) and mirrored into the dockview `params`.
+ * so closing the panel doesn't destroy it. The mode, auto-scroll
+ * (chronological), the events overlay, and the column layout are this
+ * view's config, persisted on the element (so they survive closing and
+ * reopening the panel) and mirrored into the dockview `params`. A panel
+ * with none of them yet — a brand-new one — seeds them from the
+ * `trace_mode` / `trace_auto_scroll` / `trace_show_events` settings.
  */
 export function TracePanel(props: IDockviewPanelProps) {
   diagCount("render.TracePanel"); // DIAG
@@ -78,20 +89,28 @@ export function TracePanel(props: IDockviewPanelProps) {
     [registry.entries],
   );
 
+  // The three view defaults (`trace_mode`, `trace_auto_scroll`,
+  // `trace_show_events`) are read *here* and nowhere else — once, as
+  // this panel seeds its state. A panel that already carries the value
+  // keeps it, and a later change to a default leaves open panels alone.
   const [mode, setMode] = useState<TraceMode>(() =>
-    savedConfig?.mode === "chronological" ? "chronological" : "by-id",
+    traceMode(savedConfig?.mode ?? hostSettings().trace_mode),
   );
   const switchMode = useCallback((m: TraceMode) => setMode(m), []);
 
   // Per-panel: auto-scroll (chronological) and the column layout.
   const [autoScroll, setAutoScroll] = useState(() =>
-    typeof savedConfig?.autoScroll === "boolean" ? savedConfig.autoScroll : true,
+    typeof savedConfig?.autoScroll === "boolean"
+      ? savedConfig.autoScroll
+      : hostSettings().trace_auto_scroll,
   );
   const handleAutoScrollDisabled = useCallback(() => setAutoScroll(false), []);
   // View-local: whether timeline events (ADR 0035) interleave into this
-  // chronological trace. Default on; persisted with the rest of the config.
+  // chronological trace. Persisted with the rest of the config.
   const [showEvents, setShowEvents] = useState(() =>
-    typeof savedConfig?.showEvents === "boolean" ? savedConfig.showEvents : true,
+    typeof savedConfig?.showEvents === "boolean"
+      ? savedConfig.showEvents
+      : hostSettings().trace_show_events,
   );
   const [columns, setColumns] = useState<ColumnState[]>(() => columnsFromParams(savedConfig?.columns));
   const handleColumnResize = useCallback(

@@ -88,6 +88,9 @@ pub(crate) const SCOPES: ScopeTable = &[
     ("driver_module", Scope::UserOverridable),
     ("log_file_min_level", Scope::UserOverridable),
     ("sidecar_log_level", Scope::UserOverridable),
+    ("trace_mode", Scope::UserOverridable),
+    ("trace_auto_scroll", Scope::UserOverridable),
+    ("trace_show_events", Scope::UserOverridable),
 ];
 
 /// The persisted user settings. `#[serde(default)]` fills any absent field
@@ -98,7 +101,13 @@ pub(crate) const SCOPES: ScopeTable = &[
 // `show_developer_settings` trips `struct_field_names` by ending in the
 // struct's own name. The field name *is* the `settings.json` key a user
 // reads and hand-edits, so it is named for the file, not for Rust.
-#[allow(clippy::struct_field_names)]
+//
+// `struct_excessive_bools` fires for the same reason and gets the same
+// answer: this is not a state machine whose flags interact, it is the
+// serde mirror of a hand-editable JSON document (ADR 0034) in which each
+// on/off knob is independent. Folding pairs into two-variant enums would
+// change what the file looks like without making any of them clearer.
+#[allow(clippy::struct_field_names, clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -247,6 +256,28 @@ pub struct Settings {
     /// driver contributes to a log a user ships back — `debug` for a
     /// hardware fault nobody can reproduce.
     pub sidecar_log_level: String,
+    /// Which view a **freshly created** trace panel opens in — one of
+    /// [`TRACE_MODES`], default `by-id`, which is what a new panel has
+    /// always opened in.
+    ///
+    /// A *default*, not a policy: the panel's mode buttons still switch
+    /// it, and the choice is persisted on the element, so changing this
+    /// never rewrites a panel that already exists. Read once, when the
+    /// panel seeds its state.
+    pub trace_mode: String,
+    /// Whether a **freshly created** chronological trace pins to the
+    /// live tail. Default `true`.
+    ///
+    /// Read once at panel creation, like [`Settings::trace_mode`]; the
+    /// panel's auto-scroll checkbox (and scrolling away from the tail)
+    /// still wins for a panel that exists.
+    pub trace_auto_scroll: bool,
+    /// Whether a **freshly created** chronological trace interleaves
+    /// timeline events (ADR 0035) among its frame rows. Default `true`.
+    ///
+    /// Read once at panel creation, like [`Settings::trace_mode`]; the
+    /// panel's events checkbox still wins for a panel that exists.
+    pub trace_show_events: bool,
 }
 
 /// The smallest legal value of any millisecond-interval setting.
@@ -293,6 +324,14 @@ pub const SYSTEM_LOG_LEVELS: &[&str] = &["debug", "info", "warn", "error"];
 /// startup.
 pub const SIDECAR_LOG_LEVELS: &[&str] = &["debug", "info", "warning", "error"];
 
+/// The view names [`Settings::trace_mode`] accepts — the two modes a
+/// trace panel switches between, spelled as the panel's own `TraceMode`
+/// spells them, since the value crosses the IPC verbatim.
+///
+/// Stated once: [`validate`] refuses anything outside it, and it is what
+/// the field's descriptor publishes as its `enum` options.
+pub const TRACE_MODES: &[&str] = &["chronological", "by-id"];
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -319,6 +358,9 @@ impl Default for Settings {
             driver_module: String::new(),
             log_file_min_level: "debug".to_string(),
             sidecar_log_level: "info".to_string(),
+            trace_mode: "by-id".to_string(),
+            trace_auto_scroll: true,
+            trace_show_events: true,
         }
     }
 }
@@ -439,6 +481,12 @@ pub(crate) fn validate(settings: Settings) -> (Settings, Vec<String>) {
             &mut settings.sidecar_log_level,
             SIDECAR_LOG_LEVELS,
             d.sidecar_log_level.clone(),
+        ),
+        (
+            "trace_mode",
+            &mut settings.trace_mode,
+            TRACE_MODES,
+            d.trace_mode.clone(),
         ),
     ] {
         refuse_unknown(&mut complaints, key, value, allowed, default);
@@ -708,6 +756,9 @@ mod tests {
             driver_module: "my_team.driver".to_string(),
             log_file_min_level: "info".to_string(),
             sidecar_log_level: "debug".to_string(),
+            trace_mode: "chronological".to_string(),
+            trace_auto_scroll: false,
+            trace_show_events: false,
         }
     }
 

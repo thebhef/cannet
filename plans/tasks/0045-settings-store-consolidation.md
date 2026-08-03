@@ -669,6 +669,72 @@ suppression.
 This stage is large and mostly independent per item. It should be
 sliced by surface, not landed as one change.
 
+#### How Stage 5 is sliced
+
+Two slices, split by surface. **This half is the data views**; the
+other is the app / connection / appearance knobs.
+
+| Slice | Items |
+| --- | --- |
+| **Data views** (this half) | Default column sets, widths, and hidden columns (trace + signal); CAN-ID and timestamp formatting; default y-axis mode; default auto-scroll / trace mode / events overlay; DBC auto-reload opt-out. |
+| **App, connection, appearance** (second half) | Startup behaviour; default server address; default nominal bitrate; seed layout; palettes; theme and density; confirmation-prompt suppression. |
+
+Minimum system-log level is not in either: it landed in Stage 2 #2.
+
+Every field below lands with the current value as its default, so an
+untouched install behaves identically
+(`a_file_written_before_a_field_existed_resolves_to_that_field_s_default`
+covers the new keys as it covered Stage 3's and Stage 4's), and with
+its scope and both tag axes attached.
+
+**Most of this half is `Kind::Default`, and that tag has a rule.** A
+default seeds a view *at creation* and never afterwards. It must not
+remove the per-view control, must not override a value the view already
+carries, and must not reach back into a view that already exists — so
+it is read in the state seed, not on render, and a settings change is
+not a broadcast. Where a knob has no per-view equivalent it is
+`Kind::Behaviour` instead, and the item's note says so.
+
+#### Stage 5 (data views) as built
+
+**Trace view defaults.** *(done)*
+
+| Field | Default | Tags | Scope | Read at |
+| --- | --- | --- | --- | --- |
+| `trace_mode` | `by-id` | trace / default | user-overridable | `TracePanel`'s state seed |
+| `trace_auto_scroll` | `true` | trace / default | user-overridable | `TracePanel`'s state seed |
+| `trace_show_events` | `true` | trace / default | user-overridable | `TracePanel`'s state seed |
+
+Notes:
+
+- **`trace_mode` is a `String` against
+  [`TRACE_MODES`](../../apps/gui/src-tauri/src/settings.rs), not a
+  serde enum** — Stage 2 item 2's reasoning, unchanged: a serde enum fails
+  the *whole* document on one typo'd mode, whereas the string is
+  refused, reported, and resolved to its own default by `validate`'s
+  `refuse_unknown` table. The published option set is the one
+  `validate` accepts, so Stage 4's
+  `every_published_option_set_is_the_one_validate_accepts` covers it
+  with no new anti-drift test.
+- **The panel already had the fallbacks; they just pointed at
+  literals.** `savedConfig?.mode === "chronological" ? … : "by-id"` and
+  two `: true`s became `?? hostSettings().trace_*`. The saved value
+  still wins, which is what keeps a restored project — and a reopened
+  panel — exactly as the user left it.
+- **`struct_excessive_bools` now fires on `Settings`** and is allowed,
+  with the same reasoning as the existing `struct_field_names` allow:
+  this is the serde mirror of a hand-editable document, not a state
+  machine, and folding independent on/off keys into two-variant enums
+  would change what the file looks like without clarifying anything.
+
+Behaviour tests (each mutation-checked by seeding the panel from the
+setting *unconditionally*, which reddens the two guards below plus the
+pre-existing `restores config from the element over bare reopen
+params`): `TracePanel.dom.test.tsx` → *opens a fresh panel in the
+configured default mode*, *takes auto-scroll and the events overlay
+from the settings*, *lets a panel's own saved config win over the
+default*, *does not retro-fit an open panel when the default changes*.
+
 ## Interlock with Tasks 46 and 47
 
 This task grows the settings count past twenty-five, which is more than

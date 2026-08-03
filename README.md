@@ -499,6 +499,13 @@ writes, so the panel teaches the file.
   launched with — its directory, its driver module, its log level —
   are re-read on every spawn, so **Restart sidecar** applies a change
   without relaunching cannet.
+- **Defaults you can still change per view.** Some settings only decide
+  what a *new* view starts as — the trace panel's **Default trace
+  view**, **Default auto-scroll**, and **Default events overlay**.
+  They are read once, when the panel is created, and the panel's own
+  controls win from then on: changing one of these never reaches back
+  into a panel you already have open, and a panel restored from a
+  project keeps what you set in it.
 - **`developer` settings.** Machine-load and internal-cadence knobs —
   the plot's fetch interval, the view refresh interval, the live-update
   rate, the reconnect backoff, the health-sample cadence, the status

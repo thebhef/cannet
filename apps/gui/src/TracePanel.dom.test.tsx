@@ -13,11 +13,18 @@ import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react
 
 import { invoke } from "@tauri-apps/api/core";
 
+/// What the fake host's `settings.json` holds. The view defaults
+/// (`trace_mode`, `trace_auto_scroll`, `trace_show_events`) are read
+/// from it when a panel seeds its state, so the defaults tests write
+/// here and re-hydrate.
+let storedSettings: Record<string, unknown> = {};
+
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string) => {
     if (cmd === "fetch_filtered_trace" || cmd === "fetch_by_id_page") {
       return { count: 0, start: 0, rows: [] };
     }
+    if (cmd === "get_settings") return { ...storedSettings };
     return [];
   }),
 }));
@@ -38,6 +45,7 @@ import {
 import { freshTrace } from "./trace";
 import { LIVE_TAIL_ROWS, resetLiveTailDemand } from "./liveTailDemand";
 import { PAGE_ROWS } from "./useWindowedQuery";
+import { hydrateSettings } from "./hostSettings";
 import type { ProjectElement } from "./types";
 
 class FakeResizeObserver {
@@ -104,10 +112,16 @@ function makeRegistry(elements: ProjectElement[]): ElementRegistry {
   } as unknown as ElementRegistry;
 }
 
-function renderPanel(elements: ProjectElement[], count = 100, mode = "chronological") {
+/// `mode === null` omits the key entirely — a panel with no saved view
+/// config, which is what makes the configured default observable.
+function renderPanel(
+  elements: ProjectElement[],
+  count = 100,
+  mode: string | null = "chronological",
+) {
   const api = { updateParameters: vi.fn() };
   const props = {
-    params: { elementId: "t1", mode },
+    params: mode === null ? { elementId: "t1" } : { elementId: "t1", mode },
     api,
   } as unknown as Parameters<typeof TracePanel>[0];
   // One registry instance across re-renders so the trace element (and
@@ -126,9 +140,11 @@ function renderPanel(elements: ProjectElement[], count = 100, mode = "chronologi
   return { grow: (c: number) => rerender(tree(c)), container, api, registry };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
   resetLiveTailDemand();
+  storedSettings = {};
+  await hydrateSettings();
 });
 afterEach(() => {
   cleanup();
@@ -253,6 +269,78 @@ describe("TracePanel chronological filtering", () => {
         expect.objectContaining({ scanEnd: 150, fromEnd: true }),
       ),
     );
+  });
+});
+
+describe("TracePanel view defaults", () => {
+  const oneTrace: ProjectElement[] = [
+    { kind: "trace", id: "t1", sources: ["*"] } as ProjectElement,
+  ];
+  /// Which mode button the panel is showing as selected.
+  const activeMode = (container: HTMLElement) =>
+    [...container.querySelectorAll(".mode-toggle button.active")]
+      .map((b) => b.textContent?.replace(/\s+/g, " ").trim())
+      .join();
+  /// A toolbar checkbox by its label text ("auto-scroll", "events").
+  const toolbarBox = (container: HTMLElement, label: string) =>
+    [...container.querySelectorAll<HTMLLabelElement>(".trace-panel-toolbar label.checkbox")]
+      .find((l) => l.textContent?.trim() === label)
+      ?.querySelector("input") ?? null;
+
+  it("opens a fresh panel in the configured default mode", async () => {
+    // `by-id` is the default, so asking for `chronological` proves the
+    // mode came from the setting rather than from the hard-coded one.
+    storedSettings = { trace_mode: "chronological" };
+    await hydrateSettings();
+    const { container } = renderPanel(oneTrace, 100, null);
+    expect(activeMode(container)).toBe("trace");
+  });
+
+  it("takes auto-scroll and the events overlay from the settings", async () => {
+    // Both default to on, so both off proves the panel read them.
+    storedSettings = {
+      trace_mode: "chronological",
+      trace_auto_scroll: false,
+      trace_show_events: false,
+    };
+    await hydrateSettings();
+    const { container } = renderPanel(oneTrace, 100, null);
+    expect(toolbarBox(container, "auto-scroll")?.checked).toBe(false);
+    expect(toolbarBox(container, "events")?.checked).toBe(false);
+  });
+
+  it("lets a panel's own saved config win over the default", async () => {
+    // A `default` setting seeds a *new* view; it must never override
+    // what a panel already carries.
+    storedSettings = {
+      trace_mode: "by-id",
+      trace_auto_scroll: false,
+      trace_show_events: false,
+    };
+    await hydrateSettings();
+    const el = {
+      kind: "trace",
+      id: "t1",
+      sources: ["*"],
+      config: { mode: "chronological", autoScroll: true, showEvents: true },
+    } as unknown as ProjectElement;
+    const { container } = renderPanel([el], 100, null);
+    expect(activeMode(container)).toBe("trace");
+    expect(toolbarBox(container, "auto-scroll")?.checked).toBe(true);
+    expect(toolbarBox(container, "events")?.checked).toBe(true);
+  });
+
+  it("does not retro-fit an open panel when the default changes", async () => {
+    // Changing a default is not a broadcast: the panel read it once, at
+    // creation, and keeps what it has.
+    const { container, grow } = renderPanel(oneTrace, 100, null);
+    expect(activeMode(container)).toBe("by ID");
+    storedSettings = { trace_mode: "chronological" };
+    await act(async () => {
+      await hydrateSettings();
+    });
+    grow(150);
+    expect(activeMode(container)).toBe("by ID");
   });
 });
 
