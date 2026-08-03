@@ -3229,7 +3229,239 @@ button.trace-event-swatch {
 }
 .tx-calc-summary em { color: #eab308; font-style: normal; }
 
-/* Settings panel (ADR 0034) — flat, hand-rolled editor over settings.json. */
+/* Settings view (ADR 0034) — the descriptor-driven editor over
+   settings.json: search, a tag-grouped tree, and rows whose controls are
+   generated from each setting's descriptor. `.settings-panel` below is
+   the older shared shell that the About and Shortcuts panels still use. */
+.settings-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-size: 0.85rem;
+}
+.settings-header {
+  flex: 0 0 auto;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid #1f2630;
+}
+.settings-search {
+  width: 100%;
+  background: #1c2230;
+  border: 1px solid #2c3444;
+  border-radius: 4px;
+  color: #e2e8f0;
+  font: inherit;
+  padding: 0.25rem 0.5rem;
+}
+.settings-search:focus {
+  outline: none;
+  border-color: #2d5aa8;
+}
+.settings-body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.settings-tree {
+  flex: 0 0 12rem;
+  overflow-y: auto;
+  padding: 0.5rem 0;
+  border-right: 1px solid #1f2630;
+}
+.settings-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  background: none;
+  border: 0;
+  color: #94a3b8;
+  font: inherit;
+  text-align: left;
+  padding: 0.15rem 0.5rem 0.15rem 0.75rem;
+  cursor: pointer;
+}
+.settings-tree-row:hover {
+  background: #1f2a3d;
+}
+.settings-tree-row.selected {
+  background: #1b2740;
+  color: #e2e8f0;
+}
+.settings-tree-row.developer {
+  color: #e0a458;
+  margin-top: 0.4rem;
+  border-top: 1px solid #1f2630;
+  padding-top: 0.4rem;
+}
+.settings-tree-label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-tree-count {
+  color: #64748b;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+.settings-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 0 0 2rem;
+}
+.settings-group-head {
+  margin: 0.9rem 0 0.2rem;
+  padding: 0 0.9rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+.settings-empty {
+  padding: 2rem 0.9rem;
+  color: #64748b;
+  text-align: center;
+}
+.setting {
+  padding: 0.5rem 0.9rem 0.6rem;
+  border-left: 2px solid transparent;
+}
+.setting:hover {
+  background: #121821;
+}
+.setting.modified {
+  border-left-color: #4f8ef7;
+}
+.setting.overridden {
+  border-left-color: #58b09c;
+}
+.setting-top {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+.setting-label {
+  font-weight: 600;
+  color: #e6ecf5;
+}
+.setting-key {
+  font-family: ui-monospace, monospace;
+  font-size: 0.72rem;
+  color: #64748b;
+}
+.setting-chips {
+  margin-left: auto;
+  display: flex;
+  gap: 0.25rem;
+}
+.setting-chip {
+  font-size: 0.65rem;
+  padding: 0 0.3rem;
+  border-radius: 0.5rem;
+  border: 1px solid #2c3444;
+  color: #64748b;
+  white-space: nowrap;
+}
+.setting-chip.developer {
+  border-color: #4d3f1c;
+  color: #e0a458;
+  background: #1c1708;
+}
+.setting-chip.scope {
+  border-color: #21463d;
+  color: #58b09c;
+  background: #0d1a17;
+}
+.setting-desc {
+  color: #94a3b8;
+  margin: 0.2rem 0 0.4rem;
+  max-width: 68ch;
+  line-height: 1.45;
+}
+.setting-ctl {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+.setting-ctl input[type="text"],
+.setting-ctl input[type="number"],
+.setting-ctl select {
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 3px;
+  color: #e2e8f0;
+  font: inherit;
+  padding: 0.1rem 0.3rem;
+  min-width: 6rem;
+}
+.setting-ctl input[type="text"] {
+  min-width: 16rem;
+}
+.setting-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+}
+.setting-unit {
+  color: #64748b;
+  font-size: 0.72rem;
+}
+.setting-custom {
+  margin: 0;
+  color: #94a3b8;
+}
+.setting-missing-renderer {
+  color: #d98a8a;
+}
+.setting-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.3rem;
+  font-size: 0.72rem;
+  min-height: 1rem;
+}
+.setting-from {
+  color: #64748b;
+}
+.setting-reset {
+  background: none;
+  border: 0;
+  color: #4f8ef7;
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+  padding: 0;
+}
+.setting-reset:hover {
+  text-decoration: underline;
+}
+.settings-footer {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 0.9rem;
+  align-items: center;
+  border-top: 1px solid #1f2630;
+  padding: 0.3rem 0.75rem;
+  color: #64748b;
+  font-size: 0.72rem;
+}
+.settings-footer-hint {
+  margin-left: auto;
+}
+.settings-footer-hint code {
+  font-family: ui-monospace, monospace;
+  color: #a5b4fc;
+}
+
+/* The older shared panel shell — the About and Shortcuts panels. */
 .settings-panel {
   height: 100%;
   overflow: auto;

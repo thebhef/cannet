@@ -12,8 +12,6 @@ vi.mock("@tauri-apps/api/core", () => ({
     switch (cmd) {
       case "get_settings":
         return { ...stored };
-      case "get_settings_bounds":
-        return { minScratchCapBytes: minCap };
       case "set_settings": {
         const next = { ...(args?.settings as Record<string, unknown>) };
         writes.push({ ...next });

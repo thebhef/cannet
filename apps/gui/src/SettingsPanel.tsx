@@ -1,39 +1,69 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 
+import { SettingControl } from "./settingControls";
+import {
+  DEVELOPER_GROUP,
+  EMPTY_SCHEMA,
+  countsByGroup,
+  formatSettingValue,
+  groupIdsOf,
+  isDefaultValue,
+  loadSettingDescriptors,
+  loadSettingsOverrides,
+  settingGroups,
+  settingsMatcher,
+  visibleSettings,
+  type SettingDescriptor,
+  type SettingsSchema,
+  type SurfaceId,
+} from "./settingDescriptors";
 import {
   hostSettings,
   hydrateSettings,
-  loadSettingsBounds,
   subscribeSettings,
   updateSettings,
   type Settings,
-  type SettingsBounds,
 } from "./hostSettings";
 
-const BYTES_PER_MB = 1024 * 1024;
+/// How long the search box settles before the list re-filters — the same
+/// rule and the same number the DBC panel's tree filter uses, so a burst
+/// of keystrokes costs one match instead of one per character.
+const FILTER_DEBOUNCE_MS = 150;
 
 /**
- * Settings panel — a flat, hand-rolled editor over the host's
- * `settings.json` (ADR 0034). User intent only (the disk-spill scratch
- * cap and clear-on-exit), distinct from the machine state in `hostState`.
- * The file is the durable contract; this panel is a view over the shared
- * `hostSettings` cache — it re-hydrates on mount (picking up a hand-edit
- * made since boot), follows changes any other consumer makes, and writes
- * through `updateSettings`, which merges each edit over a fresh read.
- * Field limits come from the host (`loadSettingsBounds`) rather than being
- * restated here, and the host is the one that enforces them — this panel
- * displays whatever the host says it stored. A singleton panel (one
+ * Settings panel — a descriptor-driven editor over the host's
+ * `settings.json` (ADR 0034).
+ *
+ * The panel is **generated**, not hand-written: the host serves a
+ * descriptor per setting (`get_setting_descriptors`) carrying its label,
+ * help text, control shape, tags, scope, and default, and every row here
+ * is rendered from that. Adding a setting is a host-side table entry;
+ * nothing in this file names one.
+ *
+ * Search is `fzf` over label, key, help text, and tags. The tree groups
+ * by the descriptor's surface tag, except that `developer`-tagged
+ * settings collect into their own group — and are hidden entirely until
+ * `show_developer_settings` is on. **Nothing announces what is hidden**:
+ * no banner, no count, no "some results are hidden". The toggle that
+ * reveals them is an ordinary setting, one search away.
+ *
+ * Values come from the shared `hostSettings` cache — the panel
+ * re-hydrates on mount (picking up a hand-edit made since boot), follows
+ * changes any other consumer makes, and writes through `updateSettings`,
+ * which merges each edit over a fresh read. A singleton panel (one
  * instance, fixed dockview id), opened from the command palette.
  */
 export function SettingsPanel(_props: IDockviewPanelProps) {
   const [settings, setSettings] = useState<Settings>(hostSettings);
-  const [bounds, setBounds] = useState<SettingsBounds | null>(null);
-  // In-progress text for the cap box. `null` = show the stored value. The
-  // box can't be written through on every keystroke: the host refuses a
-  // below-minimum cap, so "500" typed one digit at a time would be refused
-  // (and the box reset) before the last digit arrived.
-  const [capDraft, setCapDraft] = useState<string | null>(null);
+  const [schema, setSchema] = useState<SettingsSchema>(EMPTY_SCHEMA);
+  /// Keys the open project's `.cannet/settings.json` declares, so an
+  /// overridden value is visible as one instead of looking like a
+  /// personal preference (ADR 0042 §3).
+  const [overrides, setOverrides] = useState<readonly string[]>([]);
+  const [typed, setTyped] = useState("");
+  const [query, setQuery] = useState("");
+  const [group, setGroup] = useState<SurfaceId | null>(null);
 
   useEffect(() => {
     const unsubscribe = subscribeSettings(setSettings);
@@ -41,94 +71,219 @@ export function SettingsPanel(_props: IDockviewPanelProps) {
     // exactly when to find out.
     void hydrateSettings();
     let live = true;
-    void loadSettingsBounds()
-      .then((b) => {
-        if (live) setBounds(b);
-      })
-      .catch(() => {
-        /* no host: render without the limit rather than inventing one */
-      });
+    void loadSettingDescriptors().then((s) => {
+      if (live) setSchema(s);
+    });
+    void loadSettingsOverrides().then((o) => {
+      if (live) setOverrides(o);
+    });
     return () => {
       live = false;
       unsubscribe();
     };
   }, []);
 
-  // Persist an edit: show it immediately, then write through the shared
-  // cache, which merges the patch over a fresh read of the file — not over
-  // this panel's snapshot — so a concurrent write (the shortcuts panel
-  // persisting a keybinding) isn't clobbered. The host is authoritative and
-  // answers with what it stored, which is what every consumer then sees.
-  const update = (patch: Partial<Settings>) => {
-    setSettings((prev) => ({ ...prev, ...patch }));
-    void updateSettings(patch).catch(() => {
+  // Debounced, so typing re-renders the input and nothing else.
+  useEffect(() => {
+    const timer = setTimeout(() => setQuery(typed.trim()), FILTER_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [typed]);
+
+  const match = useMemo(() => settingsMatcher(schema), [schema]);
+  const showDeveloper = settings.show_developer_settings;
+  const groups = useMemo(
+    () => settingGroups(schema, showDeveloper),
+    [schema, showDeveloper],
+  );
+  // A selection that no longer exists — Developer, after the toggle went
+  // off — falls back to "All settings" rather than showing nothing.
+  const selected = groups.some((g) => g.id === group) ? group : null;
+
+  const matched = useMemo(() => match(query), [match, query]);
+  const inScope = useMemo(
+    () => visibleSettings(matched, showDeveloper, null),
+    [matched, showDeveloper],
+  );
+  const shown = useMemo(
+    () => visibleSettings(inScope, showDeveloper, selected),
+    [inScope, showDeveloper, selected],
+  );
+  const counts = useMemo(() => countsByGroup(inScope), [inScope]);
+  // The denominator counts only what the user can see, so the footer
+  // never hints at a hidden setting.
+  const total = useMemo(
+    () => visibleSettings(schema.settings, showDeveloper, null).length,
+    [schema, showDeveloper],
+  );
+
+  const values = settings as unknown as Record<string, unknown>;
+  const commit = (key: string, value: unknown) => {
+    setSettings((prev) => ({ ...prev, [key]: value }));
+    void updateSettings({ [key]: value } as Partial<Settings>).catch(() => {
       /* host logs the failure; the in-memory value still holds */
     });
   };
 
-  const minCapMb = bounds == null ? undefined : Math.ceil(bounds.minScratchCapBytes / BYTES_PER_MB);
-  const storedCapMb =
-    settings.scratch_cap_bytes == null
-      ? ""
-      : String(Math.round(settings.scratch_cap_bytes / BYTES_PER_MB));
-
-  // Commit the typed cap on blur / Enter. Blank = unbounded; anything
-  // unparseable reverts to the stored value. A too-small number is *sent* —
-  // the host is the one that judges it, and reports the refusal.
-  const commitCap = () => {
-    if (capDraft == null) return;
-    const trimmed = capDraft.trim();
-    setCapDraft(null);
-    if (trimmed === "") {
-      update({ scratch_cap_bytes: null });
-      return;
-    }
-    const mb = Number(trimmed);
-    if (!Number.isFinite(mb) || mb < 0) return;
-    update({ scratch_cap_bytes: Math.round(mb * BYTES_PER_MB) });
-  };
+  const rows = (list: readonly SettingDescriptor[]) =>
+    list.map((descriptor) => (
+      <SettingRow
+        key={descriptor.key}
+        descriptor={descriptor}
+        surfaceLabel={surfaceLabelOf(schema, descriptor)}
+        value={values[descriptor.key]}
+        overridden={overrides.includes(descriptor.key)}
+        onCommit={(value) => commit(descriptor.key, value)}
+      />
+    ));
 
   return (
-    <div className="settings-panel">
-      <fieldset className="settings-group">
-        <legend>Disk-spill Cache</legend>
-        <label className="settings-field">
-          <span className="settings-label">Cache size cap (MB)</span>
-          <input
-            type="number"
-            min={minCapMb}
-            step={64}
-            placeholder="unbounded"
-            value={capDraft ?? storedCapMb}
-            onChange={(e) => setCapDraft(e.target.value)}
-            onBlur={commitCap}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") commitCap();
-            }}
-          />
-          <span className="settings-desc">
-            Drop the oldest history once the on-disk cache exceeds this.
-            {minCapMb != null && (
-              <> Minimum {minCapMb} MB — below that, pre-allocated segments
-              dominate and the cap can't be honored, so a smaller value is
-              refused.</>
-            )}{" "}
-            Blank = unbounded.
+    <div className="settings-view">
+      <div className="settings-header">
+        <input
+          type="search"
+          className="settings-search"
+          placeholder="Search settings"
+          aria-label="Search settings"
+          autoComplete="off"
+          value={typed}
+          onChange={(e) => setTyped(e.target.value)}
+        />
+      </div>
+      <div className="settings-body">
+        <div className="settings-tree" role="tree" aria-label="Setting groups">
+          <button
+            type="button"
+            role="treeitem"
+            aria-selected={selected === null}
+            className={`settings-tree-row${selected === null ? " selected" : ""}`}
+            onClick={() => setGroup(null)}
+          >
+            <span className="settings-tree-label">All settings</span>
+            <span className="settings-tree-count">{inScope.length}</span>
+          </button>
+          {groups.map((g) => {
+            const count = counts.get(g.id) ?? 0;
+            if (query !== "" && count === 0) return null;
+            return (
+              <button
+                type="button"
+                key={g.id}
+                role="treeitem"
+                aria-selected={selected === g.id}
+                className={`settings-tree-row${selected === g.id ? " selected" : ""}${
+                  g.id === DEVELOPER_GROUP ? " developer" : ""
+                }`}
+                onClick={() => setGroup(g.id)}
+              >
+                <span className="settings-tree-label">{g.label}</span>
+                <span className="settings-tree-count">{count}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="settings-list">
+          {shown.length === 0 && (
+            <p className="settings-empty">
+              {query === "" ? "No settings." : `No settings match “${query}”.`}
+            </p>
+          )}
+          {/* A query ranks globally, so grouping it would fight the
+              ranking; an unfiltered list is grouped. */}
+          {query === ""
+            ? groups.map((g) => {
+                const inGroup = shown.filter((d) => groupIdsOf(d).includes(g.id));
+                if (inGroup.length === 0) return null;
+                return (
+                  <section key={g.id}>
+                    <h3 className="settings-group-head">{g.label}</h3>
+                    {rows(inGroup)}
+                  </section>
+                );
+              })
+            : rows(shown)}
+        </div>
+      </div>
+      <div className="settings-footer">
+        <span>
+          {shown.length} of {total} settings
+        </span>
+        <span className="settings-footer-hint">
+          Backed by <code>settings.json</code> — hand-editable
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/// The label of a setting's first surface, for the chip a developer row
+/// shows in place of the group it is no longer filed under.
+function surfaceLabelOf(schema: SettingsSchema, descriptor: SettingDescriptor): string {
+  const id = descriptor.surfaces[0];
+  return schema.surfaces.find((s) => s.id === id)?.label ?? (id ?? "");
+}
+
+function SettingRow({
+  descriptor,
+  surfaceLabel,
+  value,
+  overridden,
+  onCommit,
+}: {
+  descriptor: SettingDescriptor;
+  surfaceLabel: string;
+  value: unknown;
+  overridden: boolean;
+  onCommit: (value: unknown) => void;
+}) {
+  const isDefault = isDefaultValue(descriptor, value);
+  const custom = descriptor.control.type === "custom";
+  return (
+    <div
+      className={`setting${overridden ? " overridden" : isDefault ? "" : " modified"}`}
+    >
+      <div className="setting-top">
+        <span className="setting-label">{descriptor.label}</span>
+        <code className="setting-key">{descriptor.key}</code>
+        <span className="setting-chips">
+          {descriptor.kind === "developer" ? (
+            <>
+              <span className="setting-chip">{surfaceLabel}</span>
+              <span className="setting-chip developer">developer</span>
+            </>
+          ) : (
+            <span className="setting-chip">{descriptor.kind}</span>
+          )}
+          {descriptor.scope === "user-overridable" && (
+            <span className="setting-chip scope">project-overridable</span>
+          )}
+        </span>
+      </div>
+      <p className="setting-desc">{descriptor.help}</p>
+      <div className="setting-ctl">
+        <SettingControl descriptor={descriptor} value={value} onCommit={onCommit} />
+      </div>
+      <div className="setting-meta">
+        {overridden && (
+          <span className="setting-from">
+            Set by this project — the value lives in its{" "}
+            <code>.cannet/settings.json</code>
           </span>
-        </label>
-        <label className="settings-field settings-field-checkbox">
-          <input
-            type="checkbox"
-            checked={settings.clear_scratch_on_exit}
-            onChange={(e) => update({ clear_scratch_on_exit: e.target.checked })}
-          />
-          <span className="settings-label">Clear cache on exit</span>
-          <span className="settings-desc">
-            Wipe the disk-spill cache when the app closes cleanly, instead of
-            reloading the prior session on the next launch.
+        )}
+        {!overridden && !isDefault && !custom && (
+          <span className="setting-from">
+            Modified — the default is {formatSettingValue(descriptor, descriptor.default)}
           </span>
-        </label>
-      </fieldset>
+        )}
+        {!isDefault && !custom && (
+          <button
+            type="button"
+            className="setting-reset"
+            onClick={() => onCommit(descriptor.default)}
+          >
+            Reset to default
+          </button>
+        )}
+      </div>
     </div>
   );
 }

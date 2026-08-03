@@ -83,6 +83,46 @@ and a descriptor has to declare a control. It declares
 editor**: it says where the bindings are edited and how many are
 customised. §1 is corrected to say so.
 
+**The view is generated end to end.**
+[`SettingsPanel.tsx`](../../apps/gui/src/SettingsPanel.tsx) names no
+setting: it renders rows from the served descriptors, and
+[`settingControls.tsx`](../../apps/gui/src/settingControls.tsx) picks the
+widget from `control.type`. `CUSTOM_SETTING_RENDERERS` is the one
+dispatch table, and `settingControls.dom.test.tsx` exercises both halves
+— every generated type, and dispatch through the table.
+
+- **No new matcher, no new tree.** Search is `fzf` with the same
+  relative score floor the DBC panel uses, for the same reason (fzf
+  accepts any subsequence, so over help text a query "matches" prose
+  that merely contains the letters in order). The floor is relative to
+  the best score *for that query*, so a setting found only through its
+  help text still survives. The tree is the prototype's one-level group
+  selector rather than a nested tree, so there is no tree to implement.
+- **`get_settings_bounds` is gone.** Its one consumer was the old
+  panel's hard-coded cap row; the same `MIN_SCRATCH_CAP_BYTES` is now
+  the descriptor's `min`, so the command was a second channel for one
+  constant. Its test moved to the descriptor.
+- **Deviation from the prototype: the footer counts only what is
+  visible.** The prototype's footer reads `N of <all settings>`, which
+  advertises the hidden ones by arithmetic. The denominator here is the
+  visible universe.
+- **Deferred: choosing a scope.** The prototype's User / Workspace tabs
+  and its "Set for this project…" action are not built. The view shows
+  *provenance* — a value the open project overrides is marked as the
+  project's, from `get_settings_overrides` — which is what §4 and §5
+  actually require ("the scope of every value must be unmistakable at a
+  glance"). Moving a value between scopes is a different thing: it needs
+  per-scope read and write commands, and it changes the premise
+  `Scope::UserOverridable` was built on ("there is no UI for choosing a
+  scope, so leave the value where it already is"). It belongs with the
+  work that gives projects settings worth moving — Task 45's promotions
+  — not with the framework. Logged in the backlog.
+- **Not built: the `project-caches` renderer.** It needs Task 47 branch
+  3's project registry, which lands after this task; it will be the
+  dispatch table's first real entry. Building it here would mean
+  building it twice. The table's production entry today is
+  `keybindings`.
+
 ## Sequencing
 
 **The tag taxonomy must be settled before Task 45 Stage 3 bulk-promotes

@@ -99,7 +99,7 @@ pub(crate) enum Kind {
 /// renderer. There is no third case.
 ///
 /// Like [`Kind`], this is a vocabulary rather than a set of call sites:
-/// the view renders every variant (`settingControls.test.tsx` covers
+/// the view renders every variant (`settingControls.dom.test.tsx` covers
 /// them), and a variant no setting uses yet is what makes adding that
 /// setting a one-line change rather than a framework change. Rust cannot
 /// see a use that lives on the other side of a serialized contract,

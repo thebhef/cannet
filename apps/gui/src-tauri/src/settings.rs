@@ -116,20 +116,10 @@ pub struct Binding {
 /// whole meta segment at a time and the cap cannot be honored at all. It is
 /// therefore *validation metadata on the field*: stated once, here, enforced
 /// where a value enters the app ([`validate`]), and surfaced to the frontend
-/// through [`get_settings_bounds`] and as the `min` of the field's
-/// descriptor ([`crate::settings_descriptor`]) rather than re-declared
-/// there. `None` (unbounded) is always legal.
+/// as the `min` of the field's descriptor
+/// ([`crate::settings_descriptor`]) rather than re-declared there. `None`
+/// (unbounded) is always legal.
 pub const MIN_SCRATCH_CAP_BYTES: u64 = 100 * 1024 * 1024;
-
-/// The bounds the frontend needs to render the settings controls — the same
-/// limits [`validate`] enforces, so the UI cannot offer a value the host
-/// will refuse. Returned by [`get_settings_bounds`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SettingsBounds {
-    /// Smallest legal `scratch_cap_bytes`; see [`MIN_SCRATCH_CAP_BYTES`].
-    pub min_scratch_cap_bytes: u64,
-}
 
 /// Check every settings value against its documented bounds, returning the
 /// accepted settings plus one human-readable complaint per refused field.
@@ -197,16 +187,6 @@ pub fn get_settings(app: tauri::AppHandle) -> Settings {
     let (settings, complaints) = validate(raw);
     warn_refused(&app, &complaints);
     settings
-}
-
-/// The validation bounds for the settings fields (ADR 0002 DS-8). The
-/// frontend reads these instead of re-declaring the limits it renders.
-#[tauri::command]
-#[must_use]
-pub fn get_settings_bounds() -> SettingsBounds {
-    SettingsBounds {
-        min_scratch_cap_bytes: MIN_SCRATCH_CAP_BYTES,
-    }
 }
 
 /// The settings keys the open project's `.cannet/settings.json`
@@ -357,25 +337,6 @@ mod tests {
     fn unknown_fields_are_ignored() {
         let s = parse_settings(r#"{"scratch_cap_bytes": 1024, "future_key": 42}"#);
         assert_eq!(s.scratch_cap_bytes, Some(1024));
-    }
-
-    #[test]
-    fn the_published_bound_is_the_one_validate_enforces() {
-        // The frontend renders `get_settings_bounds` rather than its own
-        // copy of the limit, so the published bound and the enforced one
-        // must be the same number — this is what keeps them from drifting.
-        let min = get_settings_bounds().min_scratch_cap_bytes;
-        let at_bound = validate(Settings {
-            scratch_cap_bytes: Some(min),
-            ..Settings::default()
-        });
-        assert!(at_bound.1.is_empty(), "{:?}", at_bound.1);
-        assert_eq!(at_bound.0.scratch_cap_bytes, Some(min));
-        let below = validate(Settings {
-            scratch_cap_bytes: Some(min - 1),
-            ..Settings::default()
-        });
-        assert_eq!(below.1.len(), 1, "{:?}", below.1);
     }
 
     #[test]

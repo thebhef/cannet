@@ -429,7 +429,6 @@ pub fn run() {
             state::set_state,
             settings::get_settings,
             settings::set_settings,
-            settings::get_settings_bounds,
             settings::get_settings_overrides,
             settings_descriptor::get_setting_descriptors,
             list_signals,

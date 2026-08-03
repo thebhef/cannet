@@ -1,11 +1,16 @@
 // User settings, persisted host-side (ADR 0034).
 //
 // Unlike `hostState` (machine state the app records as you work), these
-// are choices the user deliberately sets — a disk-spill scratch-size cap
-// and a clear-on-exit toggle. They round-trip through the host's
-// `get_settings` / `set_settings` commands and land in a hand-editable
-// `settings.json` in the OS config dir; the host is authoritative and the
-// settings panel is sugar over the file.
+// are choices the user deliberately sets. They round-trip through the
+// host's `get_settings` / `set_settings` commands and land in a
+// hand-editable `settings.json` in the OS config dir; the host is
+// authoritative and the settings panel is sugar over the file.
+//
+// This module is the *values*. Everything a view needs to render them —
+// label, help text, control shape, tags, scope, default — comes from the
+// host's descriptor table via `settingDescriptors.ts`, so a new setting
+// is a host-side change and this interface is the only thing that grows
+// here.
 //
 // Several independent consumers read settings (the settings panel, the
 // keybinding layer, and the host itself, which reads `settings.json`
@@ -38,31 +43,19 @@ export interface Settings {
   /// replaces the defaults. Resolve to the effective bindings with
   /// `resolveBindings` from `commands.ts`.
   keybindings: BindingSpec[] | null;
+  /// Whether the settings panel reveals the `developer`-tagged knobs.
+  /// An ordinary setting rather than panel chrome, so the panel grows no
+  /// controls of its own.
+  show_developer_settings: boolean;
 }
 
 export function defaultSettings(): Settings {
-  return { scratch_cap_bytes: null, clear_scratch_on_exit: false, keybindings: null };
-}
-
-/// Mirror of the host `SettingsBounds` struct: the validation limits the
-/// host enforces on ingress. Deliberately *not* re-declared as constants
-/// here — the host is the single source of truth for a limit derived from
-/// the store's segment geometry (ADR 0002 DS-8), and the UI reads it so the
-/// two cannot drift.
-export interface SettingsBounds {
-  /// Smallest legal `scratch_cap_bytes`; a smaller value is refused.
-  minScratchCapBytes: number;
-}
-
-/// Load the settings validation bounds. Rejects (rather than inventing a
-/// fallback) when there is no host or the answer is unusable, so a caller
-/// renders the bound only once it actually knows it.
-export async function loadSettingsBounds(): Promise<SettingsBounds> {
-  const bounds = await invoke<Partial<SettingsBounds> | null>("get_settings_bounds");
-  if (typeof bounds?.minScratchCapBytes !== "number") {
-    throw new Error("settings bounds unavailable");
-  }
-  return { minScratchCapBytes: bounds.minScratchCapBytes };
+  return {
+    scratch_cap_bytes: null,
+    clear_scratch_on_exit: false,
+    keybindings: null,
+    show_developer_settings: false,
+  };
 }
 
 /// Load the persisted settings. Tolerant of a host that returns `null` /
