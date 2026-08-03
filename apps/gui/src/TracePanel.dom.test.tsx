@@ -9,7 +9,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 
 import { invoke } from "@tauri-apps/api/core";
 
@@ -36,6 +36,7 @@ import {
   type RegistryEntry,
 } from "./projectElements";
 import { freshTrace } from "./trace";
+import { LIVE_TAIL_ROWS, resetLiveTailDemand } from "./liveTailDemand";
 import type { ProjectElement } from "./types";
 
 class FakeResizeObserver {
@@ -126,6 +127,7 @@ function renderPanel(elements: ProjectElement[], count = 100, mode = "chronologi
 
 beforeEach(() => {
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+  resetLiveTailDemand();
 });
 afterEach(() => {
   cleanup();
@@ -142,6 +144,51 @@ const traceAndFilter: ProjectElement[] = [
     predicate: { id_list: [256] },
   } as ProjectElement,
 ];
+
+describe("TracePanel live-tail demand", () => {
+  /// What the panel last told the host it wants shipped per `trace-grew`.
+  const declaredRows = () => {
+    const calls = vi.mocked(invoke).mock.calls.filter((c) => c[0] === "set_live_tail_rows");
+    return calls.length === 0 ? null : (calls[calls.length - 1][1] as { rows: number }).rows;
+  };
+
+  it("asks for a tail only while an unfiltered chronological view follows live", async () => {
+    // The host collected and decoded 256 trailing frames on every
+    // `trace-grew` regardless of whether anything read them; only this
+    // view does.
+    renderPanel([{ kind: "trace", id: "t1", sources: ["*"] } as ProjectElement]);
+    await waitFor(() => expect(declaredRows()).toBe(LIVE_TAIL_ROWS));
+  });
+
+  it("withdraws the demand when the view switches to by-id", async () => {
+    const { container } = renderPanel([
+      { kind: "trace", id: "t1", sources: ["*"] } as ProjectElement,
+    ]);
+    await waitFor(() => expect(declaredRows()).toBe(LIVE_TAIL_ROWS));
+    const byId = [...container.querySelectorAll("button")].find(
+      (b) => b.textContent?.replace(/\s+/g, " ").trim() === "by ID",
+    )!;
+    await act(async () => {
+      fireEvent.click(byId);
+    });
+    expect(declaredRows()).toBe(0);
+  });
+
+  it("asks for no tail in by-id mode", async () => {
+    renderPanel([{ kind: "trace", id: "t1", sources: ["*"] } as ProjectElement], 100, "by-id");
+    // Give the mount effects a chance to declare something.
+    await waitFor(() => expect(invoke).toHaveBeenCalled());
+    expect(declaredRows() ?? 0).toBe(0);
+  });
+
+  it("asks for no tail when the trace is filtered", async () => {
+    // A filtered chronological view pages through `useFilteredTrace`, which
+    // has no live-tail overlay — the raw tail would be the wrong rows.
+    renderPanel(traceAndFilter);
+    await waitFor(() => expect(invoke).toHaveBeenCalled());
+    expect(declaredRows() ?? 0).toBe(0);
+  });
+});
 
 describe("TracePanel chronological filtering", () => {
   it("pages the window through fetch_filtered_trace with the resolved predicate", async () => {
@@ -170,7 +217,7 @@ describe("TracePanel chronological filtering", () => {
     // `sources=["*"]` → no predicate → the cheap shared chunk cache is
     // used; the panel itself issues no `fetch_filtered_trace`.
     renderPanel([{ kind: "trace", id: "t1", sources: ["*"] } as ProjectElement]);
-    expect(invoke).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalledWith("fetch_filtered_trace", expect.anything());
   });
 
   it("right-clicking a column header opens the column menu, not the sources picker", () => {

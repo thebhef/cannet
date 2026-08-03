@@ -30,12 +30,41 @@ const TRACE_GREW_TICK: Duration = Duration::from_millis(100);
 const TRACE_FLUSH_TICK: Duration = Duration::from_secs(2);
 
 
-/// How many trailing frames to ship with each `trace-grew` event so the
-/// auto-scrolling trace view can paint its live tail without a fetch
+/// Ceiling on the trailing frames shipped with a `trace-grew` event so
+/// the auto-scrolling trace view can paint its live tail without a fetch
 /// round-trip. Comfortably larger than any plausible visible-row count
 /// (≈256 rows is ~5600 px of trace area), so the whole auto-scroll
 /// window is covered even on a big display.
+///
+/// It is a *ceiling*, not the amount shipped: only an auto-scrolling
+/// chronological view reads the tail, so the frontend declares what it
+/// wants (`set_live_tail_rows`) and the host ships nothing until
+/// something does.
 pub(crate) const TRACE_GREW_TAIL: u64 = 256;
+
+/// The absolute frame range to ship as the live tail, or `None` when
+/// there is nothing to ship — no demand declared, or an empty capture.
+/// The declared size is clamped to [`TRACE_GREW_TAIL`] so the per-tick
+/// payload stays bounded whatever the frontend asks for.
+pub(crate) fn live_tail_range(count: u64, requested: u64) -> Option<(u64, u64)> {
+    let want = requested.min(TRACE_GREW_TAIL);
+    if want == 0 || count == 0 {
+        return None;
+    }
+    Some((count.saturating_sub(want), count))
+}
+
+/// Declare how many trailing frames the frontend wants on each
+/// `trace-grew`. `0` (the startup default) means none: the host skips the
+/// collect + decode entirely. Called by the views that overlay the live
+/// edge as they mount, unmount, or stop auto-scrolling.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn set_live_tail_rows(state: State<'_, AppState>, rows: u64) {
+    state
+        .live_tail_rows
+        .store(rows.min(TRACE_GREW_TAIL), std::sync::atomic::Ordering::Relaxed);
+}
 
 /// Fraction of the gap to the raw rate that [`smooth_fps`] closes per
 /// tick. At [`TRACE_GREW_TICK`] (10 Hz) that is a ~300 ms time constant:
@@ -115,8 +144,15 @@ pub(crate) fn spawn_trace_grew_emitter(app: AppHandle) {
                 continue;
             }
             last_emitted = Some((count, frames_per_second, session_start_ns));
-            let tail =
-                collect_trace_records(state.inner(), count.saturating_sub(TRACE_GREW_TAIL), count);
+            // Only an auto-scrolling chronological view reads the tail, so
+            // the decode runs only when one has said it wants it.
+            let tail = match live_tail_range(
+                count,
+                state.live_tail_rows.load(std::sync::atomic::Ordering::Relaxed),
+            ) {
+                Some((from, to)) => collect_trace_records(state.inner(), from, to),
+                None => Vec::new(),
+            };
             #[allow(clippy::cast_precision_loss)]
             let session_start_seconds = session_start_ns as f64 / 1_000_000_000.0;
             let buffer_seconds = state.trace_store.buffer_seconds();

@@ -516,6 +516,7 @@ pub(crate) fn test_state() -> AppState {
         verifier: verification::VerificationState::default(),
         filter_index_dir: std::env::temp_dir().join("cannet-test-filter"),
         filter_index: Mutex::new(None),
+        live_tail_rows: std::sync::atomic::AtomicU64::new(0),
         active_project_id: Mutex::new(None),
     }
 }
@@ -894,6 +895,27 @@ fn trace_grew_skips_only_when_count_and_rate_are_unchanged() {
     assert!(should_emit_trace_grew(Some((10, 5.0)), (10, 4.5)));
     // Capture cleared (count dropped) — emit.
     assert!(should_emit_trace_grew(Some((10, 5.0)), (0, 0.0)));
+}
+
+#[test]
+fn live_tail_range_is_none_until_something_asks_for_one() {
+    // The tail exists for the auto-scrolling chronological view. With no
+    // such view open — no trace panel, or all of them by-id / filtered /
+    // parked — collecting and decoding 256 frames ten times a second is
+    // work for nobody, so the demand starts at zero and stays there.
+    assert_eq!(live_tail_range(1_000, 0), None);
+    // An empty capture has no tail whatever anyone asked for.
+    assert_eq!(live_tail_range(0, 256), None);
+    // A declared demand takes the newest `n` frames.
+    assert_eq!(live_tail_range(1_000, 64), Some((936, 1_000)));
+    // Shorter capture than the demand: everything there is.
+    assert_eq!(live_tail_range(10, 64), Some((0, 10)));
+    // The declared size is capped, so a frontend cannot ask the host for
+    // an unbounded payload per tick.
+    assert_eq!(
+        live_tail_range(10_000, u64::MAX),
+        Some((10_000 - TRACE_GREW_TAIL, 10_000)),
+    );
 }
 
 #[test]

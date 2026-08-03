@@ -8,6 +8,7 @@ import { GOTO_EVENT, type GotoPayload } from "./gotoEvent";
 import { ByIdTable } from "./ByIdTable";
 import { TraceControls } from "./TraceControls";
 import { useTraceModel } from "./traceData";
+import { LIVE_TAIL_ROWS, useLiveTailDemand } from "./liveTailDemand";
 import { useTrace, type TraceRow } from "./trace";
 import { useNotes } from "./notesContext";
 import { timelineEvents } from "./notes";
@@ -186,6 +187,18 @@ export function TracePanel(props: IDockviewPanelProps) {
     fetchFilter,
     autoScroll && trace.status === "running",
     trace.status === "running",
+  );
+
+  // The live tail exists for exactly this case: an unfiltered
+  // chronological table auto-scrolling a running capture overlays it so
+  // the live edge never shows a placeholder between re-pages. Declare the
+  // demand so the host does the collect + decode only while someone reads
+  // it — every other mode, and a parked or stopped one, wants none.
+  useLiveTailDemand(
+    elementId,
+    mode === "chronological" && !chronoFiltered && autoScroll && trace.status === "running"
+      ? LIVE_TAIL_ROWS
+      : 0,
   );
 
   // Timeline events (ADR 0035): host notes + the derived truncation marker,

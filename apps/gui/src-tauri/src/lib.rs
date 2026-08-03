@@ -21,10 +21,11 @@
 //! The trace UI is a *view* over [`TraceStore`]: it asks for slices via
 //! `fetch_trace_range` and renders virtualized rows around the current
 //! viewport. A `trace-grew` IPC event ticks at ~10 Hz with the latest
-//! `count`, frame rate, and a short decoded *tail* of the newest frames
-//! — the count/rate keep the status line and scrollbar current, and the
+//! `count`, frame rate, and — when a view has asked for one
+//! (`set_live_tail_rows`) — a short decoded *tail* of the newest frames.
+//! The count/rate keep the status line and scrollbar current, and the
 //! tail lets the auto-scrolling view paint the live edge without a
-//! fetch round-trip — so the host never has to push every frame.
+//! fetch round-trip, so the host never has to push every frame.
 //!
 //! The loaded DBCs live in shared backend state (`AppState::databases`)
 //! so that the per-fetch decoder always uses the current set — frames
@@ -127,7 +128,7 @@ use cannet_core::CanFrameSource;
 #[cfg(test)]
 use cannet_dbc::Database;
 #[cfg(test)]
-use emitters::{should_emit_trace_grew, smooth_fps, TRACE_GREW_TAIL};
+use emitters::{live_tail_range, should_emit_trace_grew, smooth_fps, TRACE_GREW_TAIL};
 #[cfg(test)]
 use app_state::{invalidate_derived_caches, LoadedDbc};
 #[cfg(test)]
@@ -157,7 +158,8 @@ use dbc_commands::{
 use dbc_commands::{decode_frame_inner, describe_message_inner, encode_frame_inner};
 pub(crate) use emitters::emit_system_log;
 use emitters::{
-    clear_system_log, fetch_system_log, gui_emit_system_log, spawn_trace_flusher,
+    clear_system_log, fetch_system_log, gui_emit_system_log, set_live_tail_rows,
+    spawn_trace_flusher,
     spawn_trace_grew_emitter,
 };
 use sampling::{sample_signals, signal_min_max};
@@ -373,6 +375,7 @@ pub fn run() {
             fetch_system_log,
             clear_system_log,
             gui_emit_system_log,
+            set_live_tail_rows,
             fetch_notes,
             add_note,
             rename_note,
@@ -460,6 +463,7 @@ pub fn run() {
                 verifier: verification::VerificationState::default(),
                 filter_index_dir: filter_dir,
                 filter_index: Mutex::new(None),
+                live_tail_rows: std::sync::atomic::AtomicU64::new(0),
                 active_project_id: Mutex::new(None),
             });
             // Make sure the main window has the id our capabilities expect.

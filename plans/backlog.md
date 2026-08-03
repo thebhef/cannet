@@ -802,3 +802,18 @@ next pass on this surface can address them as one piece.
   bus's frames arrive in order). Settle it by instrumenting the pump for
   a non-monotonic append; if real, the fix is ordering the multi-bus
   merge, not patching the searches.
+
+- `[cannet-gui]` **Turning auto-scroll off spins TracePanel and TraceView
+  in a render loop.** Observed 2026-08-02 while adding the live-tail
+  demand test (Task 44 Tier 2 #4): in `TracePanel.dom.test.tsx`, clicking
+  the auto-scroll checkbox on an unfiltered chronological panel over a
+  100-frame window makes `render.TracePanel` and `render.TraceView` climb
+  in lockstep at roughly 2500 each per burst until the vitest worker is
+  killed. **Predates the change** — reproduced against `HEAD` with the
+  demand hook removed, so it is not the hook. Whether it reproduces in a
+  real browser is untested: the harness's `ResizeObserver` never fires,
+  so `TraceView` measures a zero-height viewport, and the loop may be
+  that measurement disagreeing with the virtualiser's `ensureVisible`.
+  Either way a toggle should settle. The live-tail withdrawal is
+  therefore covered through the mode switch rather than this toggle;
+  restore the tighter test once the loop is fixed.

@@ -146,6 +146,11 @@ pub(crate) struct AppState {
     /// rebuilt on a predicate or capture-session change, extended
     /// incrementally otherwise. `fetch_filtered_trace` serves pages from it.
     pub(crate) filter_index: Mutex<Option<ActiveFilterIndex>>,
+    /// How many trailing frames the frontend wants on each `trace-grew`
+    /// (`set_live_tail_rows`). `0` — the startup default — means the
+    /// emitter skips the tail collect + decode entirely; only an
+    /// auto-scrolling chronological view ever reads it.
+    pub(crate) live_tail_rows: std::sync::atomic::AtomicU64,
     /// Identity of the currently open project (ADR 0002 DS-7), set by
     /// `open_project`. Stamped into the scratch when a capture starts so a
     /// later launch reloads that scratch only against the same project;
