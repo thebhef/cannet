@@ -33,8 +33,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Stable per-project identity (`Project::project_id`) that gates disk-spill
 # scratch reload across rename/move (ADR 0002 DS-7). v4 random, serde for
-# the project-file round-trip.
-uuid = { version = "1", features = ["v4", "serde"] }
+# the project-file round-trip. v5 (name-based, deterministic) keys each
+# project directory's cache directory by a hash of its path (ADR 0042 §4)
+# — a directory name has to survive across builds, which `DefaultHasher`
+# explicitly does not promise.
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
 # Filter-predicate `name_regex` evaluation; small surface, transitively
 # present already via several Phase 1-5 crates.
 regex = "1"

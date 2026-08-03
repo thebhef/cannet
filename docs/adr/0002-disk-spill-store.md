@@ -77,7 +77,7 @@ stalled the transmit scheduler ~150 ms every 2 s at hardware rate),
 and the OS modified-page writer already writes dirty mapped pages on
 its own within seconds. The tick still rewrites the manifest and
 derived state; only the data-page msync is skipped. The durability this store actually owes is **survive a process
-restart** — `current/` is reloaded as a stopped trace at the next launch
+restart** — `cache/` is reloaded as a stopped trace at the next launch
 (DS-7) — and that is preserved unconditionally: an async msync leaves
 every write in the OS page cache, which backs the same file a reopen
 maps, so a reopen in the same OS session sees all of it. Only a
@@ -199,16 +199,32 @@ not two production paths to keep in sync.
 
 ### DS-7 — Scratch lifecycle: cache directory, reset-on-new-trace
 
-The scratch files live in a single directory under the OS cache
-directory, resolved through Tauri's `PathResolver::app_cache_dir()`:
-`$XDG_CACHE_HOME/dev.cannet.app/current/` on Linux and the OS
-equivalents on macOS and Windows. Rooting under the app-identifier
-namespace keeps the cache next to the config (`app_config_dir`) and
-log (`app_log_dir`) roots. There is at most one trace in scope at a
-time, so one directory — not a per-session subdirectory — is the
-honest data model.
+The scratch files live in the **project directory's own cache**,
+`<project dir>/.cannet/cache/`
+([ADR 0042](0042-project-directory-and-scopes.md)) — written `cache/`
+throughout the rest of this ADR. There is at most one trace in scope
+per project, so one directory per project — not a per-session
+subdirectory — is the honest data model.
 
-`current/` is the home for **all session-scoped data the GUI is
+`.cannet/cache/` is a link to a directory cannet keeps in machine-local
+storage under Tauri's `PathResolver::app_cache_dir()`
+(`$XDG_CACHE_HOME/dev.cannet.app` on Linux and the OS equivalents),
+keyed by a hash of the project directory's path. Rooting the real bytes
+under the app-identifier namespace keeps the cache next to the config
+(`app_config_dir`) and log (`app_log_dir`) roots, and — the reason the
+link exists at all — keeps a memory-mapped, multi-gigabyte,
+continuously-appended store off a project directory that might live on
+a network share. A session the user has not given a project directory
+gets an auto-located one inside that same cache space, so there is
+always exactly one answer to "where does the scratch go".
+
+**One cache per project.** Opening a second project does not reach the
+first project's scratch: they are different directories. Returning to a
+project finds its capture where it left it, and reclaiming the disk a
+finished project is using is a per-project action rather than an
+all-or-nothing wipe.
+
+`cache/` is the home for **all session-scoped data the GUI is
 mutating**, not only the raw frame store. That includes the raw
 metadata and payload (DS-1), the `by-id` and filter indexes (DS-3),
 the per-signal decimated pyramids (DS-5), and **session-authored
@@ -217,22 +233,22 @@ authored during a live capture before any `.blf` Save, and
 markers/events accumulated against an already-open BLF before its
 next Save back out. On Save Capture, markers and events fold into
 the output `.blf` per [ADR 0010](0010-no-sidecar-files.md); until
-then `current/` is where they live. (Exact on-disk form for
+then `cache/` is where they live. (Exact on-disk form for
 markers/events is left to the implementer — appendable BLF-record
 files are the natural fit since Save already writes that format.)
 
-**Lifecycle: reset on new trace, never on exit.** `current/` is
+**Lifecycle: reset on new trace, never on exit.** `cache/` is
 wiped exactly when the *session buffer* is wiped:
 
-- **Clear** (user-initiated) — wipes `current/` and starts fresh.
-- **Start a new capture from a stopped state** — wipes `current/`
+- **Clear** (user-initiated) — wipes `cache/` and starts fresh.
+- **Start a new capture from a stopped state** — wipes `cache/`
   and starts fresh. Starting a fresh capture *is* discarding the
   previous trace; the disk scratch and the session buffer go
   together.
-- **Exit / panic / crash** — `current/` is left alone.
+- **Exit / panic / crash** — `cache/` is left alone.
 
 Together these mean: whenever a project is opened (auto-reopen at
-launch, or manual Open Project), if `current/` exists *and its
+launch, or manual Open Project), if `cache/` exists *and its
 recorded project identity matches the project being opened*, it is
 loaded as a **stopped, historical trace** — the prior session the
 user did not explicitly discard. From there the user can Save
@@ -243,11 +259,11 @@ at any time.
 (For context: today the frontend auto-reopens the last project at
 launch by reading a host-persisted last-project pointer (ADR 0032) and
 calling `open_project`. DS-7's gate runs as part of that `open_project`
-call. The host carries no project-reload memory of its own — `current/`
+call. The host carries no project-reload memory of its own — `cache/`
 is *not* a launch trigger, only a match against whatever project the
 frontend opens.)
 
-**Project identity gate.** `current/` records the identity of the
+**Project identity gate.** `cache/` records the identity of the
 project it belongs to, plus the project's path at the time the
 scratch was created. The identity is what gates loading; the path is
 a host-side diagnostic / robustness record (so the host has its own
@@ -256,8 +272,9 @@ last-project pointer). On `open_project`, the scratch
 loads only when its recorded identity matches the project's
 identity; otherwise it stays on disk, invisible to the active
 project. Opening a *different* project is not a wipe trigger; only
-Clear and Start wipe. (So opening project B hides project A's
-scratch but doesn't destroy it; reopening project A brings it back.)
+Clear and Start wipe. (So opening project B leaves project A's scratch
+alone — it is in A's own cache directory, which B never touches —
+and reopening project A brings it back.)
 
 Identity must be **stable across rename and move** — a project's
 file path is the user's to change at any time, and the last-project
@@ -273,7 +290,7 @@ generated one when it is read; because the field is host-managed (the
 frontend's save payload omits it, like `transmit_frames`), `save_project`
 anchors it to the target file — preserving the id already on disk and
 writing a new one only for a brand-new file — so it stays stable across
-saves. The path recorded alongside the identity in `current/` is
+saves. The path recorded alongside the identity in `cache/` is
 best-effort diagnostic data, not the basis for the match.
 
 This is deliberate. The on-disk formats are reload-compatible by
@@ -297,7 +314,7 @@ finite volume needs an opt-out: a user-set **maximum scratch size**
 the cap is unset, everything above holds unconditionally — DS-8 adds
 no behavior. When it is set, the store becomes a **windowed ring**.
 
-**The cap bounds the total `current/` footprint**, not the raw store
+**The cap bounds the total `cache/` footprint**, not the raw store
 alone — the raw metadata and payload (DS-1), the `by-id` and filter
 indexes (DS-3), and the per-signal pyramids (DS-5). Bounding only the
 raw store would not hold disk: a pyramid grows `O(matches over the
@@ -365,7 +382,7 @@ than silent.
 **Reopen.** The low-water mark (and any retention state the eviction
 keeps, such as the newest-per-id values needed to keep a rare id
 visible in the `by-id` grid after its only frame is evicted) is part of
-the persisted reopen state under `current/`, so reopening across an
+the persisted reopen state under `cache/`, so reopening across an
 eviction restores the same floor and the same live window — DS-7's
 "reload as a stopped trace" extends unchanged to a capped, truncated
 scratch.
@@ -423,10 +440,12 @@ scratch.
   opt-in clear-on-exit is a future settings-panel item, not an
   always-on behavior.
 - **Per-session subdirectory under the cache root.** Rejected (DS-7).
-  Only one trace is ever in scope, so a single `current/` directory
-  is the honest data model — per-session subdirs would either always
-  hold exactly one occupant (waste) or imply a multi-session history
-  the product does not have.
+  Only one trace is ever in scope *per project*, so one `cache/`
+  directory per project is the honest data model — per-session subdirs
+  would either always hold exactly one occupant (waste) or imply a
+  multi-session history the product does not have. The per-project
+  split is not that: a project is a working context the user names and
+  returns to, not a session.
 - **Raw `libc` / `windows-sys` FFI for the `mmap` syscalls.**
   Rejected. `memmap2` already wraps POSIX `mmap` and Windows
   `CreateFileMapping` / `MapViewOfFile` behind one Rust API.

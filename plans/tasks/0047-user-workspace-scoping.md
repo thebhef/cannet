@@ -338,6 +338,65 @@ group in [Task 46](0046-settings-framework-and-view.md)'s prototype
 where it is the worked example of a setting that declares a custom
 renderer instead of a generated control. Keep the two in step.
 
+## Implementation status
+
+The implementation is being landed in three branches. This section is
+the running record of what is done and what moved.
+
+**Branch 1 — the foundation (`task-47-project-dir`).**
+
+- **Done: project-directory resolution.**
+  [`project_dir.rs`](../../apps/gui/src-tauri/src/project_dir.rs) —
+  `resolve(project_file, cache_root)` returns a `ProjectDir`
+  unconditionally. A project file with a `.cannet/` beside it resolves
+  to its own directory; a loose one, an orphaned `.cannet/`, or no
+  project file at all gets an auto-located directory under
+  `<app_cache_dir>/projects/<key>`. Resolution is **infallible** — the
+  paths are well-defined even when the filesystem refuses, so no caller
+  carries a "no project directory" branch.
+- **Done: the cache link.** `.cannet/cache/` is a directory junction on
+  Windows (`mklink /J` through `cmd`, since `unsafe_code = "forbid"`
+  rules out the `FSCTL_SET_REPARSE_POINT` ioctl and a new crate was out
+  of scope) and a symlink elsewhere. It points at
+  `<app_cache_dir>/cache/<hash of the project directory's path>`.
+  **Deviation from decision 2 worth knowing:** the store opens the link
+  *target*, not `.cannet/cache/`. A project directory on a filesystem
+  that cannot hold a reparse point — an SMB share, the exact case the
+  link exists for — would otherwise lose its cache entirely. The link
+  stays as the browsable view, and failing to create it is a logged
+  warning rather than a failure.
+- **Done: `.cannet/.gitignore`** ignoring `cache/`, written at creation
+  (decision 4), plus empty `settings.json` / `state.json`. They are
+  written **empty** on purpose: a workspace value overrides the user
+  value (decision 3), so seeding them with defaults would shadow the
+  user's own settings the moment a directory was created.
+- **Done: the scratch root is the project's cache** (decision 6). The
+  disk-spill store, filter index, signal pyramids, and notes all root in
+  `ProjectDir::cache_dir()`.
+
+**Deferred out of branch 1, and why:**
+
+- **Re-rooting mid-session.** The project directory is resolved **once,
+  at startup**, from the user-scope `last_project`. Opening a *different*
+  project without relaunching leaves the store rooted where it was, so
+  that project's capture lands in the previous project's cache — the
+  same outcome as today's single machine-wide scratch, so no regression,
+  but not yet the full decision-6 behaviour. Re-rooting means swapping
+  the live `TraceStore`'s raw store plus `SignalCacheStore`,
+  `filter_index_dir`, and `NotesStore`, against a running flusher
+  thread; that is a branch of its own. **Branch 2.**
+- Registry, cache-management UI, `Save as…`, `blf_channel_maps` move,
+  `UiState` scope split, project-relative writes, terminology sweep —
+  all as originally planned for branches 2 and 3.
+
+**Corrections to this document found while implementing:**
+
+- The documentation deliverable claims ADR 0002 **DS-6** says "rooted at
+  the scratch dir". It does not — DS-6 is only "the disk store is the
+  only production path". The phrase lives in *code comments* citing
+  DS-6. DS-7 is where the location was recorded, and DS-7 is what
+  changed.
+
 ## Sequencing
 
 1. Task 45 **Stage 1** — the lost-update race. Independent of scoping;

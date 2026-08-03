@@ -117,6 +117,19 @@ pub fn get_state(app: tauri::AppHandle) -> UiState {
         .unwrap_or_default()
 }
 
+/// The path of the last project opened or saved-as, read from the
+/// **user scope only**.
+///
+/// This is what the project directory is resolved from at startup
+/// (ADR 0042 §1), which is why it can't go through the scoped read path:
+/// the workspace scope lives *inside* the directory being resolved.
+/// `last_project` is a user-scope value anyway — which project to reopen
+/// is about the person, not about any one project.
+pub(crate) fn user_scope_last_project(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    let dir = crate::persisted_json::config_dir(app).ok()?;
+    read_state(&dir).last_project.map(std::path::PathBuf::from)
+}
+
 /// Persist the whole UI-state struct, replacing the file. Errors (with a
 /// user-facing message) only if the config dir can't be resolved or the
 /// write fails; on failure it also lands on the system log.
