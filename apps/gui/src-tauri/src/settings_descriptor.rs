@@ -27,8 +27,9 @@ use serde::Serialize;
 
 use crate::persisted_json::{scope_of, Scope};
 use crate::settings::{
-    Settings, CAN_ID_FORMATS, MIN_INTERVAL_MS, MIN_LOG_ROTATION_BYTES, MIN_SCRATCH_CAP_BYTES,
-    MIN_SYSTEM_LOG_RING, SCOPES, SIDECAR_LOG_LEVELS, SYSTEM_LOG_LEVELS, TRACE_MODES, Y_AXIS_MODES,
+    Settings, CAN_ID_FORMATS, MIN_BUS_BITRATE_BPS, MIN_INTERVAL_MS, MIN_LOG_ROTATION_BYTES,
+    MIN_SCRATCH_CAP_BYTES, MIN_SYSTEM_LOG_RING, SCOPES, SIDECAR_LOG_LEVELS, SYSTEM_LOG_LEVELS,
+    TRACE_MODES, Y_AXIS_MODES,
 };
 
 /// A whole-millisecond interval control: the shape every cadence
@@ -614,6 +615,38 @@ const DESCRIPTORS: &[Spec] = &[
             scale: 1,
             min: None,
             unset: None,
+        },
+    },
+    Spec {
+        key: "default_server_address",
+        backing: Backing::Field,
+        label: "Default server address",
+        help: "The address the Add server form opens filled with, for a bus \
+               binding or a bridge. Only the starting point — type over it as \
+               usual. Point it at the cannet-server you use most so adding one \
+               is a click rather than a retype.",
+        surfaces: &[Surface::Connection],
+        kind: Kind::Default,
+        control: Control::Text {
+            placeholder: Some("host:port"),
+        },
+    },
+    Spec {
+        key: "default_bus_bitrate_bps",
+        backing: Backing::Field,
+        label: "Default bus bitrate",
+        help: "The nominal bitrate a bus you add starts at. Blank adds it with \
+               no bitrate, which leaves the adapter's own default in charge — \
+               what Add bus has always done. Fill it in when every bus you \
+               configure runs at the same rate. Each bus's own bitrate box \
+               still wins, and a bus you already have is left alone.",
+        surfaces: &[Surface::Connection],
+        kind: Kind::Default,
+        control: Control::Int {
+            unit: Some("bit/s"),
+            scale: 1,
+            min: Some(MIN_BUS_BITRATE_BPS),
+            unset: Some("the adapter's default"),
         },
     },
     Spec {

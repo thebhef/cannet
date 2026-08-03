@@ -91,6 +91,8 @@ pub(crate) const SCOPES: ScopeTable = &[
     ("health_sample_interval_ms", Scope::UserOverridable),
     ("sidecar_restart_budget", Scope::UserOverridable),
     ("reconnect_backoff_ms", Scope::UserOverridable),
+    ("default_server_address", Scope::UserOverridable),
+    ("default_bus_bitrate_bps", Scope::UserOverridable),
     ("sidecar_dir", Scope::UserOverridable),
     ("driver_module", Scope::UserOverridable),
     ("log_file_min_level", Scope::UserOverridable),
@@ -248,6 +250,30 @@ pub struct Settings {
     /// Default 2000 ms: fine on a LAN, short for a flaky VPN to a
     /// remote server.
     pub reconnect_backoff_ms: u64,
+    /// The address a **new** server form opens filled with — the
+    /// "Add server…" form under a bus, and the bridge form. Default
+    /// `127.0.0.1:50051`, the literal both boxes used to hard-code.
+    ///
+    /// A *default*, not a policy: it seeds the box and the user types
+    /// over it. Nothing validates it, for the same reason nothing
+    /// validates [`Settings::sidecar_dir`] — only a connection attempt
+    /// can say whether an address answers, and it reports that already.
+    pub default_server_address: String,
+    /// Nominal (arbitration-phase) bitrate a **newly added** logical bus
+    /// starts with, in bits per second. `None` (the default) adds a bus
+    /// with no bitrate at all, which is what "Add bus" has always done:
+    /// the wire encodes an unset rate as `0` and the sidecar resolves
+    /// its own default from that.
+    ///
+    /// A *default*, not a policy: the bus row's own bitrate box still
+    /// wins, a bus that arrives with a rate keeps it, and changing this
+    /// never touches a bus that already exists. Set it when every bus
+    /// you configure runs at the same rate.
+    ///
+    /// Zero is refused rather than stored ([`MIN_BUS_BITRATE_BPS`]):
+    /// the wire already spells "unset" as zero, so a stored zero would
+    /// be indistinguishable from blank while looking like a choice.
+    pub default_bus_bitrate_bps: Option<u64>,
     /// Directory holding the `cannet-python-can` package to launch,
     /// instead of the one the host finds for itself. Empty (the
     /// default) means the built-in resolution: the frozen bundled
@@ -410,6 +436,17 @@ pub const MIN_SYSTEM_LOG_RING: u64 = 1;
 /// out of it.
 pub const MIN_LOG_ROTATION_BYTES: u64 = 1024 * 1024;
 
+/// The smallest legal [`Settings::default_bus_bitrate_bps`].
+///
+/// A hard limit rather than a taste, and it is the wire's, not ours:
+/// `ConfigureBus` encodes an unset nominal rate as `0`, so a stored zero
+/// would be indistinguishable from "no default" while looking in the
+/// file like a deliberate choice. Blank is how the field says unset;
+/// zero is refused. Nothing above one is asserted — only the adapter
+/// knows what rates it can be opened at, and it reports a refusal on
+/// connect.
+pub const MIN_BUS_BITRATE_BPS: u64 = 1;
+
 /// The severity names [`Settings::system_log_min_level`] accepts, least
 /// to most severe — the same ladder the frontend's
 /// `SYSTEM_LOG_LEVEL_RANK` and [`crate::system_log::LogLevel`] order by.
@@ -473,6 +510,8 @@ impl Default for Settings {
             health_sample_interval_ms: 20_000,
             sidecar_restart_budget: 3,
             reconnect_backoff_ms: 2_000,
+            default_server_address: "127.0.0.1:50051".to_string(),
+            default_bus_bitrate_bps: None,
             sidecar_dir: String::new(),
             driver_module: String::new(),
             log_file_min_level: "debug".to_string(),
@@ -584,6 +623,16 @@ pub(crate) fn validate(settings: Settings) -> (Settings, Vec<String>) {
                  (a smaller cap can't be honored); ignoring it — the cache is unbounded"
             ));
             settings.scratch_cap_bytes = None;
+        }
+    }
+    if let Some(bps) = settings.default_bus_bitrate_bps {
+        if bps < MIN_BUS_BITRATE_BPS {
+            complaints.push(format!(
+                "default_bus_bitrate_bps {bps} is below the minimum of \
+                 {MIN_BUS_BITRATE_BPS} (the wire already spells an unset rate as \
+                 zero); ignoring it — a new bus takes no bitrate"
+            ));
+            settings.default_bus_bitrate_bps = None;
         }
     }
     refuse_unknown_options(&mut settings, &mut complaints);
@@ -942,6 +991,8 @@ mod tests {
             health_sample_interval_ms: 0,
             sidecar_restart_budget: 1,
             reconnect_backoff_ms: 10_000,
+            default_server_address: "10.0.0.5:50051".to_string(),
+            default_bus_bitrate_bps: Some(250_000),
             sidecar_dir: "sidecar-source-tree".to_string(),
             driver_module: "my_team.driver".to_string(),
             log_file_min_level: "info".to_string(),

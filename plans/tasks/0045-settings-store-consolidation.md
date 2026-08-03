@@ -1008,6 +1008,66 @@ only the read-at-close guard): `App.closeConfirm.dom.test.tsx` →
 when `confirm_unsaved_on_exit` is off*, *reads the setting at the moment
 of the close, not at mount*.
 
+**Default server address and default nominal bitrate.** *(done)*
+
+| Field | Default | Tags | Scope | Read at |
+| --- | --- | --- | --- | --- |
+| `default_server_address` | `127.0.0.1:50051` | connection / default | user-overridable | `AddServerInline` and `AddBridgeForm`'s state seeds |
+| `default_bus_bitrate_bps` | `null` (unset) | connection / default | user-overridable | `handleAddBus` |
+
+Notes:
+
+- **The address was the same literal in two forms.** `AddServerInline`
+  named it `DEFAULT_NEW_SERVER`; the bridge form inlined it. Both now
+  seed from the setting, so the promotion collapses that pair as well.
+  Nothing validates it, for `sidecar_dir`'s reason: only a connection
+  attempt can say whether an address answers, and it reports that
+  already.
+- **The bitrate default is blank, and blank is the current
+  behaviour.** This is the item that could most easily have changed an
+  untouched install. "Add bus" has always produced a bus with *no*
+  bitrate; the wire encodes an unset nominal rate as `0` and the
+  sidecar resolves 500 kbps from that. Defaulting the setting to
+  500 000 and seeding every new bus would have made the host start
+  sending a `ConfigureBus` where it previously sent none
+  (`session.rs` skips the envelope entirely when neither `speed_bps`
+  nor `fd` is set) — a configuration action against real hardware that
+  does not happen today. `None` keeps `Add bus` producing exactly the
+  bus it always did, key-for-key, and the knob is there for a shop
+  whose buses all run at one rate.
+- **Zero is refused rather than stored** (`MIN_BUS_BITRATE_BPS`, and
+  the hard limit is the wire's, not a taste): `0` already spells
+  "unset" on the wire, so a stored zero would be indistinguishable
+  from blank while looking in the file like a choice. Nothing above one
+  is asserted — only the adapter knows what rates it opens at, and it
+  reports a refusal on connect. Stage 3's
+  `every_published_minimum_is_the_one_validate_enforces` covers the
+  bound with no new anti-drift test.
+- **`DEFAULT_NOMINAL_BITRATE_BPS` stays a constant**, and duplicates
+  item 3 is closed as *a copy that stays, with the reason recorded*.
+  It is not a value cannet chooses: it is a **preview of the sidecar's
+  fallback**, rendered as the bitrate box's placeholder so the user can
+  see what an unset field will actually resolve to. Only the sidecar
+  knows that number, nothing on the wire asks it, and moving the
+  resolution host-side would mean sending a `ConfigureBus` for every
+  bus — the behaviour change the paragraph above rejects. Its rustdoc
+  now says this, so the next reader does not mistake it for the
+  setting's default. The remaining Rust "copies" are a different fact
+  in each case (`cannet-server`'s `--speed` CLI default, `SharedBus`'s
+  virtual-bus timing), not a third mirror of this one.
+- **`withDefaultBitrate` returns the bus untouched when the setting is
+  blank** — no `speed_bps` key at all, rather than an explicit `null`
+  — so a project file written by a `Add bus` is byte-identical to one
+  written before the field existed.
+
+Behaviour tests (each mutation-checked — by pinning the form's seed to
+the literal, and by dropping `withDefaultBitrate`'s already-set guard):
+`busHardwareConfig.test.ts` → *leaves a new bus unset when no default is
+configured*, *seeds a new bus with the configured default*, *never
+overrides a bitrate the bus already names*;
+`ProjectPanel.dom.test.tsx` → *starts at the configured default server
+address*.
+
 ## Interlock with Tasks 46 and 47
 
 This task grows the settings count past twenty-five, which is more than
@@ -1048,9 +1108,21 @@ change the file layout, which is why it precedes Stage 2.
 2. ~~Scratch cap floor — Rust ↔ TS, "keep in sync by convention".~~
    *Collapsed (Stage 1 item 3): stated once host-side as validation
    metadata, published to the frontend, no TS copy.*
-3. Default nominal bitrate 500 kbps — TS ↔ Python ↔ Rust, "kept in
-   sync by convention". Crosses three languages; the most likely of
-   these to drift unnoticed.
+3. ~~Default nominal bitrate 500 kbps — TS ↔ Python ↔ Rust, "kept in
+   sync by convention".~~ *Settled (Stage 5, app half): **the TS copy
+   stays**, and it is not a mirror of a shared decision. The Python
+   constant is the sidecar's own fallback for the wire's `0 = unset`;
+   the TS constant renders that fallback as the bitrate box's
+   placeholder, so the user can see what an unset field resolves to.
+   Nothing on the wire asks the sidecar what it would use, and moving
+   the resolution host-side would mean pushing a `ConfigureBus` for
+   every bus — a configuration action against hardware that does not
+   happen today. `DEFAULT_NOMINAL_BITRATE_BPS`'s rustdoc now says it is
+   a preview rather than a choice, so it is not mistaken for the new
+   `default_bus_bitrate_bps` setting. The "Rust" side was never a third
+   copy of this number: `cannet-server`'s `--speed` CLI default and
+   `SharedBus`'s virtual-bus timing are separate facts that happen to
+   share a value.*
 4. Panel view config — written to both element `config` and dockview
    `params`, both landing in the project file. Deliberate and
    documented, but two writers for one fact.

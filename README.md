@@ -512,9 +512,12 @@ writes, so the panel teaches the file.
 - **Defaults you can still change per view.** Some settings only decide
   what a *new* view starts as — the trace panel's **Default trace
   view**, **Default auto-scroll**, and **Default events overlay**, the
-  plot's **Default y-axis layout**, and **Default trace columns** /
+  plot's **Default y-axis layout**, **Default trace columns** /
   **Default signal columns** (which columns a new table shows, in what
-  order, how wide).
+  order, how wide), the **Default server address** an Add server form
+  opens filled with, and the **Default bus bitrate** a bus you add
+  starts at (blank — what ships — adds it with no bitrate at all, so
+  the adapter's own applies, exactly as **Add bus** has always done).
   They are read once, when the view is created, and the view's own
   controls win from then on: changing one of these never reaches back
   into a panel you already have open, and a panel restored from a

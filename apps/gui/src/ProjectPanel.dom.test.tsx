@@ -32,6 +32,7 @@ import {
   LocalInterfaceList,
   uniqueRemoteServers,
 } from "./ConnectionManagement";
+import { hydrateSettings } from "./hostSettings";
 import { LOCAL_SERVER } from "./types";
 import type { Bus, InterfaceBinding, InterfaceRecord, ProjectElement } from "./types";
 
@@ -41,11 +42,21 @@ const BUS1: Bus = { id: "b1", name: "Bus 1" };
 // they survive a port re-roll.
 const LIVE_LOCAL = "127.0.0.1:43891";
 
-afterEach(() => {
+afterEach(async () => {
   cleanup();
   invokeMock.mockReset();
   invokeMock.mockResolvedValue([]);
+  // The settings cache is module-global, so a test that seeds one must
+  // not leave it seeded for the next.
+  await hydrateSettings();
 });
+
+/// Put one setting in the frontend's settings cache, the way the app
+/// fills it: through a `get_settings` answer.
+async function withSetting(patch: Record<string, unknown>): Promise<void> {
+  invokeMock.mockImplementationOnce((async () => patch) as never);
+  await hydrateSettings();
+}
 
 describe("uniqueRemoteServers", () => {
   it("returns first-seen distinct server addresses", () => {
@@ -355,6 +366,14 @@ describe("AddServerInline", () => {
     await pickCombobox(ifaceSelect, "vcan0");
     fireEvent.click(screen.getByRole("button", { name: "Bind to Bus 1" }));
     expect(onPick).toHaveBeenCalledWith({ server: "127.0.0.1:50051", iface: "vcan0" });
+  });
+
+  it("starts at the configured default server address", async () => {
+    // The address the form opens filled with is a *default*: it seeds
+    // the box and the user still types over it.
+    await withSetting({ default_server_address: "10.9.9.9:60000" });
+    render(<AddServerInline busLabel="Bus 1" onCancel={() => {}} onPick={() => {}} />);
+    expect(screen.getByLabelText("server address")).toHaveValue("10.9.9.9:60000");
   });
 
   it("surfaces the error and stays open when Discover throws", async () => {
