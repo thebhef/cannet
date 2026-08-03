@@ -22,9 +22,10 @@ const MIN_CAP_MB = 100;
  * Settings panel — a flat, hand-rolled editor over the host's
  * `settings.json` (ADR 0034). User intent only (the disk-spill scratch
  * cap and clear-on-exit), distinct from the machine state in `hostState`.
- * The file is the durable contract; this panel loads it on mount and
- * writes the whole struct back on each edit. A singleton panel (one
- * instance, fixed dockview id), opened from the command palette.
+ * The file is the durable contract; this panel loads it on mount and, on
+ * each edit, re-reads it and writes the whole struct back with the edit
+ * merged over the current contents. A singleton panel (one instance,
+ * fixed dockview id), opened from the command palette.
  */
 export function SettingsPanel(_props: IDockviewPanelProps) {
   const [settings, setSettings] = useState<Settings>(defaultSettings);
@@ -43,15 +44,18 @@ export function SettingsPanel(_props: IDockviewPanelProps) {
     };
   }, []);
 
-  // Persist the whole struct on each edit; the host is authoritative.
+  // Persist an edit: show it immediately, then re-read the file and write
+  // the whole struct back with the patch merged over *that* — not over this
+  // panel's mount-time snapshot — so a concurrent write (the shortcuts
+  // panel persisting a keybinding) isn't clobbered. Same shape as
+  // `useCommands`' `persistUserBindings`. The host is authoritative.
   const update = (patch: Partial<Settings>) => {
-    setSettings((prev) => {
-      const next = { ...prev, ...patch };
-      void saveSettings(next).catch(() => {
+    setSettings((prev) => ({ ...prev, ...patch }));
+    void loadSettings()
+      .then((current) => saveSettings({ ...current, ...patch }))
+      .catch(() => {
         /* host logs the failure; the in-memory value still holds */
       });
-      return next;
-    });
   };
 
   const capMb =

@@ -35,17 +35,20 @@ this, or did the app observe it?"*
 
 ### Stage 1 — fix the store that exists
 
-1. **The lost-update race.** *(verified)*
-   [`SettingsPanel.tsx`](../../apps/gui/src/SettingsPanel.tsx) loads
-   settings once on mount and then writes the *whole* struct from that
+1. **The lost-update race.** *(done)*
+   [`SettingsPanel.tsx`](../../apps/gui/src/SettingsPanel.tsx) loaded
+   settings once on mount and then wrote the *whole* struct from that
    mount-time snapshot on every edit (`{...prev, ...patch}`).
    `useCommands`' `persistUserBindings` does it correctly — re-read,
    merge, write — and its comment even says it does so "so a concurrent
    settings edit isn't clobbered". The panels are singletons and both
    can be open at once, so: rebind a key, then tick a Settings
-   checkbox, and **the rebind is silently reverted**. Make the panel
-   re-read before merge, as `useCommands` already does. This is a
-   user-visible bug, not just untidiness — it wants a regression test.
+   checkbox, and **the rebind was silently reverted**. The panel now
+   re-reads before merging, as `useCommands` already did; the edit still
+   shows immediately in local state, only the *write* base changed.
+   Regression test: `SettingsPanel.dom.test.tsx` → "keeps a keybinding
+   written by another panel while it was open" (mutates the mock store
+   between mount and click; fails on the pre-fix code).
 2. **The cap floor is duplicated by admission.** `MIN_SCRATCH_CAP_BYTES`
    (Rust) and `MIN_CAP_MB` (TS) carry a "keep in sync" comment. One
    source of truth.
