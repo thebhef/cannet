@@ -17,6 +17,7 @@
 //! point forward — no retroactive re-verification.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -39,6 +40,16 @@ type Key = (Option<String>, u32, bool);
 /// Shared verification state. One instance on `AppState`.
 #[derive(Default)]
 pub struct VerificationState {
+    /// Whether `inner.configs` currently holds anything — the lock-free
+    /// gate [`Self::wants`] consults before reaching for the mutex.
+    ///
+    /// Written only by [`Self::rebuild_configs`], under the mutex.
+    /// `Relaxed` is sufficient: a read that catches a rebuild in flight
+    /// makes a config apply one frame later or a removal take effect one
+    /// frame later, which is exactly the module's stated "config changes
+    /// apply from that point forward" semantics. The authoritative check
+    /// is still the hash probe under the lock.
+    configured: AtomicBool,
     inner: Mutex<Inner>,
 }
 
@@ -142,6 +153,7 @@ impl VerificationState {
         inner
             .validity
             .retain(|(_, id, ext), _| live_ids.contains(&(*id, *ext)));
+        self.configured.store(!configs.is_empty(), Ordering::Relaxed);
         inner.configs = configs;
     }
 
@@ -149,18 +161,26 @@ impl VerificationState {
     /// — the per-frame fast-path probe the pump uses to decide if the
     /// frame is worth cloning for [`Self::observe`]. Tx frames never
     /// want verification.
+    ///
+    /// Runs on the ingest path, once per frame, so it does no work
+    /// before it has to: with no calculated-field config loaded at all
+    /// — the state of every project that declares none, and of every
+    /// project before its DBCs load — it takes **no lock**, on the
+    /// `configured` flag alone. The bus-scoped key allocates, so the
+    /// allocation-free any-bus wildcard is probed first (the answer is
+    /// the same either way — this is an `or`).
     #[must_use]
     pub fn wants(&self, frame: &RawTraceFrame) -> bool {
-        if frame.direction == Direction::Tx {
+        if frame.direction == Direction::Tx || !self.configured.load(Ordering::Relaxed) {
             return false;
         }
         let inner = self.inner.lock().expect("verification mutex poisoned");
-        if inner.configs.is_empty() {
-            return false;
+        let wildcard: Key = (None, frame.id, frame.extended);
+        if inner.configs.contains_key(&wildcard) {
+            return true;
         }
         let scoped: Key = (frame.bus_id.clone(), frame.id, frame.extended);
-        let wildcard: Key = (None, frame.id, frame.extended);
-        inner.configs.contains_key(&scoped) || inner.configs.contains_key(&wildcard)
+        inner.configs.contains_key(&scoped)
     }
 
     /// Verify one just-ingested frame. Cheap for unconfigured ids —
@@ -424,6 +444,64 @@ mod tests {
         other.id = 0x700;
         observe_quiet(&state, &other, 1);
         assert!(state.violations_in(0, 10).is_empty());
+    }
+
+    /// `wants` runs on every ingested frame. With nothing configured it
+    /// must not so much as touch the mutex, or a project that declares
+    /// no calculated fields still pays a lock acquisition per frame —
+    /// contending with whatever else holds it.
+    ///
+    /// Proved by holding the mutex and asking from another thread: an
+    /// answer that arrives while the lock is held is an answer that
+    /// didn't need it. Once a config is installed, `wants` does need the
+    /// lock, and the same probe blocks — which is what makes the first
+    /// half of the assertion mean something.
+    #[test]
+    fn wants_answers_without_the_lock_until_something_is_configured() {
+        use std::sync::mpsc;
+        use std::sync::Arc;
+
+        // Asymmetric waits, so neither assertion can fail spuriously: a
+        // slow machine only delays an answer that is coming (hence the
+        // generous wait where one is expected), and a wait that expects a
+        // timeout can only be *shortened* into a false pass, never a
+        // false failure.
+        fn ask(state: &Arc<VerificationState>, wait: Duration) -> Result<bool, ()> {
+            let (tx, rx) = mpsc::channel();
+            let s = Arc::clone(state);
+            std::thread::spawn(move || {
+                let _ = tx.send(s.wants(&rx_frame(Some("p"), vec![0u8; 8])));
+            });
+            rx.recv_timeout(wait).map_err(|_| ())
+        }
+        let answered = Duration::from_secs(5);
+        let blocked = Duration::from_millis(200);
+
+        let state = Arc::new(VerificationState::default());
+        let held = state.inner.lock().expect("verification mutex poisoned");
+        assert_eq!(
+            ask(&state, answered),
+            Ok(false),
+            "unconfigured: answered lock-free"
+        );
+        drop(held);
+
+        // Same probe, now with a config loaded: the answer needs the map,
+        // so holding the lock withholds it.
+        let loaded = crate::tests::loaded("v.dbc", VERIFY_DBC);
+        state.rebuild_configs(&[loaded], &[]);
+        assert_eq!(
+            ask(&state, answered),
+            Ok(true),
+            "configured id wants verification"
+        );
+        let held = state.inner.lock().expect("verification mutex poisoned");
+        assert_eq!(
+            ask(&state, blocked),
+            Err(()),
+            "configured: the answer comes from behind the lock",
+        );
+        drop(held);
     }
 
     #[test]
