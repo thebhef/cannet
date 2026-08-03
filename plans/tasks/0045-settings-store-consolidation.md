@@ -462,6 +462,49 @@ Task 44 Tier 0 still owes a self-driving capture.
    artifact that actually matters in the field — has no verbosity
    control at all. The sidecar's `--log-level` is likewise unreachable
    because the host passes neither it nor `--bind`.
+4. **Folded in: one malformed value resolved the whole document to
+   defaults.** Not an env-var item — it is settings-store robustness,
+   noticed while Stage 3 landed and taken here because it is the same
+   code and it gets worse with every field added.
+
+#### Stage 4 as built
+
+**Item 4 — a malformed value costs its field, not the file.**
+*(done)* `Settings` is `#[serde(default)]` at the *container*, which
+fills an **absent** field but does not rescue one whose value is the
+wrong type: `"plot_fetch_interval_ms": "fast"` failed the whole
+deserialize, so every other setting silently reverted too. Survivable
+at four fields; at nineteen it discards a user's whole file over one
+typo, which directly undercuts ADR 0034's hand-editable contract.
+
+The fix is in the shared merge rather than in `Settings`:
+`persisted_json::resolve_scoped_reporting` parses the merged document
+as a whole (the common case, and free), and **only on failure** walks
+the keys, admitting each one that the type accepts and dropping —
+with a complaint — each one it does not. So a refused value gets
+exactly Stage 1 item 3's treatment: reported on the system log,
+resolved to *that field's* default, the user's text left alone.
+`get_settings` concatenates these complaints with `validate`'s, so the
+two ways a value can be wrong (malformed, out of range) are reported
+through one path.
+
+Two notes:
+
+- **It lands in `persisted_json`, so `state.json` gets it too.** That
+  is the same primitive, not scope creep — the merge is where "one
+  key's value" is already the unit of work, and a bad `recent_blfs`
+  entry no longer costs the last-project pointer either. `state.rs`
+  has nowhere to report, so it uses the discarding wrapper.
+- **The complaint text is authored in `persisted_json`**, in the shape
+  `validate`'s range complaints already use, so the reporting caller
+  prints it verbatim rather than re-deriving prose from an error type.
+
+Tests (mutation-checked by reverting the per-key walk to
+`T::default()`): `persisted_json.rs` → *a value the document rejects
+costs only its own key* and *a document with nothing wrong reports
+nothing*; `settings.rs` → *one malformed value costs that field and
+not the document* (a good neighbour before it, two after it, and the
+bad one at its own default).
 
 ### Stage 5 — defaults with no way to change them
 

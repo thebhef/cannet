@@ -63,10 +63,60 @@ pub(crate) fn parse_or_default<T: DeserializeOwned + Default>(text: &str) -> T {
 /// result, and a document that isn't a JSON object (an array, a bare
 /// number) is treated the same way — a corrupt file at one scope must
 /// not lose the other scope's values.
-pub(crate) fn resolve_scoped<T: DeserializeOwned + Default>(user: &str, workspace: &str) -> T {
+///
+/// **A malformed value costs that key, not the document**, and is
+/// reported: the returned complaints carry one line per key whose value
+/// the document type rejected. A container
+/// `#[serde(default)]` fills an *absent* field but does not rescue one
+/// whose value is the wrong type, so a single typo used to fail the
+/// whole deserialize and silently revert every other key to its default
+/// — which a hand-editable file (ADR 0034) cannot afford. Each key is
+/// therefore admitted on its own, and one that the type refuses is
+/// dropped and reported, resolving to its default exactly as an absent
+/// key does.
+///
+/// The complaints are formatted here, in the same shape the settings
+/// store's range checks use, so a caller with somewhere to report them
+/// (`settings::get_settings` puts them on the system log) prints them
+/// verbatim and one with nowhere drops them.
+pub(crate) fn resolve_scoped<T: DeserializeOwned + Default>(
+    user: &str,
+    workspace: &str,
+) -> (T, Vec<String>) {
     let mut merged = top_level_keys(user);
     merged.extend(top_level_keys(workspace));
-    serde_json::from_value(serde_json::Value::Object(merged)).unwrap_or_default()
+    // The whole document parses in the overwhelmingly common case; the
+    // per-key walk below is the fallback for a document with something
+    // wrong in it, so its cost is paid only when something is.
+    match serde_json::from_value(serde_json::Value::Object(merged.clone())) {
+        Ok(value) => (value, Vec::new()),
+        Err(_) => admit_per_key(merged),
+    }
+}
+
+/// Build a `T` from the keys it accepts, one at a time, complaining
+/// about each one it does not. Keys are admitted in document order and
+/// kept only if the accumulated document still parses, so a key is
+/// judged by the same deserializer that judges the whole file.
+fn admit_per_key<T: DeserializeOwned + Default>(
+    merged: serde_json::Map<String, serde_json::Value>,
+) -> (T, Vec<String>) {
+    let mut accepted = serde_json::Map::new();
+    let mut complaints = Vec::new();
+    for (key, value) in merged {
+        let mut candidate = accepted.clone();
+        candidate.insert(key.clone(), value.clone());
+        if serde_json::from_value::<T>(serde_json::Value::Object(candidate.clone())).is_ok() {
+            accepted = candidate;
+        } else {
+            complaints.push(format!(
+                "{key} {value} is not a value this field can take; ignoring it \
+                 — using the default"
+            ));
+        }
+    }
+    let value = serde_json::from_value(serde_json::Value::Object(accepted)).unwrap_or_default();
+    (value, complaints)
 }
 
 /// The top-level keys of `text`, or an empty map if it isn't a JSON
@@ -85,7 +135,7 @@ pub(crate) fn read_scoped<T: DeserializeOwned + Default>(
     user_dir: &Path,
     workspace_dir: &Path,
     file: &str,
-) -> T {
+) -> (T, Vec<String>) {
     let read = |dir: &Path| std::fs::read_to_string(dir.join(file)).unwrap_or_default();
     resolve_scoped(&read(user_dir), &read(workspace_dir))
 }
@@ -369,16 +419,23 @@ mod tests {
         list: Vec<u32>,
     }
 
+    /// The resolved document alone. Most tests here are about the
+    /// precedence rule rather than the per-key complaints, which
+    /// `a_value_the_document_rejects_costs_only_its_own_key` covers.
+    fn resolved<T: DeserializeOwned + Default>(user: &str, workspace: &str) -> T {
+        resolve_scoped(user, workspace).0
+    }
+
     #[test]
     fn a_workspace_value_overrides_the_user_value_for_the_same_key() {
         // ADR 0042 §3, the whole point of two scopes.
-        let s: Scoped = resolve_scoped(r#"{"alpha": 1}"#, r#"{"alpha": 2}"#);
+        let s: Scoped = resolved(r#"{"alpha": 1}"#, r#"{"alpha": 2}"#);
         assert_eq!(s.alpha, Some(2));
     }
 
     #[test]
     fn a_key_the_workspace_does_not_mention_keeps_the_user_value() {
-        let s: Scoped = resolve_scoped(r#"{"alpha": 1, "beta": 7}"#, r#"{"alpha": 2}"#);
+        let s: Scoped = resolved(r#"{"alpha": 1, "beta": 7}"#, r#"{"alpha": 2}"#);
         assert_eq!(s.alpha, Some(2));
         assert_eq!(s.beta, Some(7), "beta is untouched by the override");
     }
@@ -388,11 +445,8 @@ mod tests {
         // What a freshly created project directory looks like: `{}` must
         // resolve to exactly the user's settings, not to the defaults.
         let user = r#"{"alpha": 1, "beta": 7, "list": [3, 4]}"#;
-        assert_eq!(
-            resolve_scoped::<Scoped>(user, "{}"),
-            resolve_scoped::<Scoped>(user, "")
-        );
-        let s: Scoped = resolve_scoped(user, "{}");
+        assert_eq!(resolved::<Scoped>(user, "{}"), resolved::<Scoped>(user, ""));
+        let s: Scoped = resolved(user, "{}");
         assert_eq!(s.alpha, Some(1));
         assert_eq!(s.beta, Some(7));
         assert_eq!(s.list, vec![3, 4]);
@@ -400,7 +454,7 @@ mod tests {
 
     #[test]
     fn a_workspace_only_key_applies_over_the_default() {
-        let s: Scoped = resolve_scoped("{}", r#"{"beta": 9}"#);
+        let s: Scoped = resolved("{}", r#"{"beta": 9}"#);
         assert_eq!(s.beta, Some(9));
     }
 
@@ -408,15 +462,37 @@ mod tests {
     fn an_overridden_list_is_replaced_not_spliced() {
         // Top-level merge, not deep: an override replaces the value the
         // user chose rather than producing one neither scope wrote.
-        let s: Scoped = resolve_scoped(r#"{"list": [1, 2, 3]}"#, r#"{"list": [9]}"#);
+        let s: Scoped = resolved(r#"{"list": [1, 2, 3]}"#, r#"{"list": [9]}"#);
         assert_eq!(s.list, vec![9]);
     }
 
     #[test]
+    fn a_value_the_document_rejects_costs_only_its_own_key() {
+        // The other half of "junk at one scope doesn't cost the other":
+        // junk in one *value* must not cost the other keys. A container
+        // `#[serde(default)]` fills an absent field but does not rescue
+        // one whose value is the wrong type, so a whole-document parse
+        // would have thrown away `alpha` too.
+        let (s, complaints): (Scoped, _) =
+            resolve_scoped(r#"{"alpha": 1, "beta": "not a number"}"#, "");
+        assert_eq!(s.alpha, Some(1), "a good value survives a bad neighbour");
+        assert_eq!(s.beta, None, "the bad value resolves to its default");
+        assert_eq!(complaints.len(), 1, "{complaints:?}");
+        assert!(complaints[0].contains("beta"), "{complaints:?}");
+    }
+
+    #[test]
+    fn a_document_with_nothing_wrong_reports_nothing() {
+        let (s, complaints): (Scoped, _) = resolve_scoped(r#"{"alpha": 1}"#, r#"{"beta": 2}"#);
+        assert_eq!((s.alpha, s.beta), (Some(1), Some(2)));
+        assert!(complaints.is_empty(), "{complaints:?}");
+    }
+
+    #[test]
     fn junk_at_one_scope_does_not_cost_the_other_scopes_values() {
-        let from_user: Scoped = resolve_scoped(r#"{"alpha": 1}"#, "not json");
+        let from_user: Scoped = resolved(r#"{"alpha": 1}"#, "not json");
         assert_eq!(from_user.alpha, Some(1));
-        let from_workspace: Scoped = resolve_scoped("[1, 2, 3]", r#"{"alpha": 5}"#);
+        let from_workspace: Scoped = resolved("[1, 2, 3]", r#"{"alpha": 5}"#);
         assert_eq!(from_workspace.alpha, Some(5));
     }
 
@@ -430,17 +506,17 @@ mod tests {
 
         // Neither file present: defaults.
         assert_eq!(
-            read_scoped::<Scoped>(&user, &ws, "x.json"),
+            read_scoped::<Scoped>(&user, &ws, "x.json").0,
             Scoped::default()
         );
 
         std::fs::write(user.join("x.json"), r#"{"alpha": 1, "beta": 7}"#).unwrap();
         // Workspace file still absent — the user scope stands alone.
-        let s: Scoped = read_scoped(&user, &ws, "x.json");
+        let (s, _): (Scoped, _) = read_scoped(&user, &ws, "x.json");
         assert_eq!((s.alpha, s.beta), (Some(1), Some(7)));
 
         std::fs::write(ws.join("x.json"), r#"{"alpha": 2}"#).unwrap();
-        let s: Scoped = read_scoped(&user, &ws, "x.json");
+        let (s, _): (Scoped, _) = read_scoped(&user, &ws, "x.json");
         assert_eq!((s.alpha, s.beta), (Some(2), Some(7)));
     }
 
@@ -521,7 +597,7 @@ mod tests {
         std::fs::write(s.user.join("x.json"), r#"{"beta": 1}"#).unwrap();
         std::fs::write(s.workspace.join("x.json"), r#"{"beta": 2}"#).unwrap();
 
-        let effective: Scoped = read_scoped(&s.user, &s.workspace, "x.json");
+        let (effective, _): (Scoped, _) = read_scoped(&s.user, &s.workspace, "x.json");
         assert_eq!(effective.beta, Some(2), "the override is what was read");
         s.write(&effective);
 

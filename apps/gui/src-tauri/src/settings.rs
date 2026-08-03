@@ -26,6 +26,13 @@
 //!
 //! A missing file or missing key resolves to the documented default, so a
 //! fresh install and a hand-deleted file behave identically.
+//!
+//! **One bad value costs one field.** A key whose value the struct
+//! refuses — a string where a number belongs — is dropped and reported
+//! at the read boundary and resolves to its own default; the rest of the
+//! user's file survives. A hand-editable contract cannot afford a typo
+//! that silently reverts everything
+//! ([`crate::persisted_json::resolve_scoped`]).
 
 use std::path::Path;
 use std::sync::{Arc, OnceLock, PoisonError, RwLock};
@@ -434,7 +441,12 @@ fn refuse_below(complaints: &mut Vec<String>, key: &str, value: &mut u64, min: u
 /// `<user_dir>/settings.json` overridden per key by
 /// `<workspace_dir>/settings.json`. A missing or unreadable file, or
 /// junk contents, contributes nothing at that scope.
-fn read_settings(user_dir: &Path, workspace_dir: &Path) -> Settings {
+/// Returns the settings plus one complaint per key whose value the
+/// struct refused — a hand-edit that typed a string where a number
+/// belongs. [`get_settings`] reports those alongside [`validate`]'s, so
+/// the two ways a value can be wrong (malformed, out of range) get the
+/// same refuse-report-default treatment.
+fn read_settings(user_dir: &Path, workspace_dir: &Path) -> (Settings, Vec<String>) {
     crate::persisted_json::read_scoped(user_dir, workspace_dir, SETTINGS_FILE)
 }
 
@@ -461,16 +473,19 @@ fn warn_refused(app: &tauri::AppHandle, complaints: &[String]) {
 /// Load the effective settings: the user scope, overridden per key by
 /// the open project's workspace scope (ADR 0042 §3). Returns defaults if
 /// the config dir can't be resolved or the files are missing / corrupt —
-/// reading settings never fails for the caller. Out-of-range values in a
-/// hand-edited file are refused here, at the read boundary, and reported
-/// on the system log; the caller only ever sees values the app can honor.
+/// reading settings never fails for the caller. Malformed and
+/// out-of-range values in a hand-edited file are refused here, at the
+/// read boundary, and reported on the system log — one refused field
+/// each, never the whole document; the caller only ever sees values the
+/// app can honor.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub fn get_settings(app: tauri::AppHandle) -> Settings {
-    let raw = crate::persisted_json::config_dir(&app)
+    let (raw, mut complaints) = crate::persisted_json::config_dir(&app)
         .map(|user_dir| read_settings(&user_dir, &crate::workspace_dir(&app)))
         .unwrap_or_default();
-    let (settings, complaints) = validate(raw);
+    let (settings, refused) = validate(raw);
+    complaints.extend(refused);
     cache(&settings);
     warn_refused(&app, &complaints);
     settings
@@ -536,7 +551,16 @@ mod tests {
     /// partial documents must survive it: a corrupt settings file can
     /// never brick startup.
     fn parse_settings(text: &str) -> Settings {
-        crate::persisted_json::resolve_scoped(text, "")
+        crate::persisted_json::resolve_scoped(text, "").0
+    }
+
+    /// The effective settings alone. Most tests here are about what the
+    /// two scopes resolve to rather than about the read boundary's
+    /// complaints, which
+    /// `one_malformed_value_costs_that_field_and_not_the_document`
+    /// covers.
+    fn resolved(user_dir: &Path, workspace_dir: &Path) -> Settings {
+        read_settings(user_dir, workspace_dir).0
     }
 
     fn sample() -> Settings {
@@ -579,16 +603,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let s = sample();
         write_user_settings(dir.path(), &s);
-        assert_eq!(read_settings(dir.path(), &no_workspace()), s);
+        assert_eq!(resolved(dir.path(), &no_workspace()), s);
     }
 
     #[test]
     fn missing_file_reads_as_default() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(
-            read_settings(dir.path(), &no_workspace()),
-            Settings::default()
-        );
+        assert_eq!(resolved(dir.path(), &no_workspace()), Settings::default());
     }
 
     #[test]
@@ -635,7 +656,7 @@ mod tests {
     fn keybindings_round_trip_with_camelcase_and_optional_skip_editable() {
         let dir = tempfile::tempdir().unwrap();
         write_user_settings(dir.path(), &sample());
-        assert_eq!(read_settings(dir.path(), &no_workspace()), sample());
+        assert_eq!(resolved(dir.path(), &no_workspace()), sample());
         // The on-disk shape matches the frontend `BindingSpec`: camelCase
         // `commandId`, and `skipEditable` present only when set.
         let text = serde_json::to_string(&sample()).unwrap();
@@ -713,6 +734,35 @@ mod tests {
         assert_eq!(
             effective().notice_dwell_ms,
             Settings::default().notice_dwell_ms
+        );
+    }
+
+    #[test]
+    fn one_malformed_value_costs_that_field_and_not_the_document() {
+        // The file is a hand-editable contract (ADR 0034), so a typo in
+        // one value must not silently discard everything else the user
+        // set. Same treatment as an out-of-range value: refused,
+        // reported, resolved to *that field's* default.
+        let doc = r#"{
+            "clear_scratch_on_exit": true,
+            "plot_fetch_interval_ms": "fast",
+            "recent_blfs_limit": 20,
+            "system_log_min_level": "warn"
+        }"#;
+        let (settings, complaints): (Settings, _) = crate::persisted_json::resolve_scoped(doc, "");
+
+        assert!(settings.clear_scratch_on_exit, "a good neighbour survives");
+        assert_eq!(settings.recent_blfs_limit, 20);
+        assert_eq!(settings.system_log_min_level, "warn");
+        assert_eq!(
+            settings.plot_fetch_interval_ms,
+            Settings::default().plot_fetch_interval_ms,
+            "the malformed field resolves to its own default"
+        );
+        assert_eq!(complaints.len(), 1, "{complaints:?}");
+        assert!(
+            complaints[0].contains("plot_fetch_interval_ms"),
+            "{complaints:?}"
         );
     }
 
@@ -808,7 +858,7 @@ mod tests {
         )
         .unwrap();
 
-        let effective = read_settings(&user, &workspace);
+        let effective = resolved(&user, &workspace);
 
         assert!(
             effective.clear_scratch_on_exit,
@@ -833,7 +883,7 @@ mod tests {
         write_user_settings(&user, &sample());
         std::fs::write(workspace.join(SETTINGS_FILE), "{}\n").unwrap();
 
-        assert_eq!(read_settings(&user, &workspace), sample());
+        assert_eq!(resolved(&user, &workspace), sample());
     }
 
     #[test]
@@ -884,15 +934,15 @@ mod tests {
         )
         .unwrap();
 
-        let resolved = read_settings(&user, &workspace);
-        assert!(resolved.clear_scratch_on_exit);
-        write_settings(&user, &workspace, &resolved).unwrap();
+        let effective = resolved(&user, &workspace);
+        assert!(effective.clear_scratch_on_exit);
+        write_settings(&user, &workspace, &effective).unwrap();
 
         assert!(
-            !read_settings(&user, &no_workspace()).clear_scratch_on_exit,
+            !resolved(&user, &no_workspace()).clear_scratch_on_exit,
             "the user's own value must not be overwritten by the project's"
         );
-        assert!(read_settings(&user, &workspace).clear_scratch_on_exit);
+        assert!(resolved(&user, &workspace).clear_scratch_on_exit);
     }
 
     #[test]
@@ -913,7 +963,7 @@ mod tests {
             std::fs::read_to_string(workspace.join(SETTINGS_FILE)).unwrap(),
             "{}\n"
         );
-        assert_eq!(read_settings(&user, &workspace), sample());
+        assert_eq!(resolved(&user, &workspace), sample());
     }
 
     #[test]
@@ -921,9 +971,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_user_settings(dir.path(), &sample());
         write_user_settings(dir.path(), &Settings::default());
-        assert_eq!(
-            read_settings(dir.path(), &no_workspace()),
-            Settings::default()
-        );
+        assert_eq!(resolved(dir.path(), &no_workspace()), Settings::default());
     }
 }
