@@ -185,10 +185,12 @@ it); items 2 and 3 landed together.
    beside the other things scoped to that working context. That is
    where Task 47 put it.
 
-   ADR 0034 therefore needs no amendment on this point. Sharpening its
-   deciding question would still help — "did the user *choose* this, or
-   did the app *observe* it?" reads ambiguously for a value the user
-   typed into a dialog once.
+   ADR 0034 therefore needs no amendment on this point. Its deciding
+   question *is* now sharpened — "did the user choose this, or did the
+   app observe it?" read ambiguously for a value the user typed into a
+   dialog once, and decision 1 now asks *is this a behavioural
+   preference, or a memo about specific files and sessions?*, with
+   `blf_channel_maps` written up as the worked example.
 2. **System-log minimum level is an app preference stuck in panel
    state.** *(done)* "How verbose do I want my log view" survives a
    panel close in nobody's mental model; it lived in an untyped
@@ -222,7 +224,7 @@ it); items 2 and 3 landed together.
    `params as { showValues?: unknown }` cast at the `useState` seed is
    gone.
 
-### Stage 3 — promote constants that are really policy
+### Stage 3 — promote constants that are really policy — **complete**
 
 Ranked by how likely a real user is to want the knob. Each becomes a
 `settings.json` field with the current value as its default, so an
@@ -547,14 +549,14 @@ properly view-local, and the window-state plugin is properly separate.
 
 ## Documentation deliverables
 
-- **ADR 0034 clarification.** Not the amendment first thought
-  necessary — its `state.json` claim holds. What it needs is a sharper
-  deciding question: "did the user choose this, or did the app observe
-  it?" is ambiguous for a value a user typed into a dialog once. State
-  the test as *is this a behavioural preference, or a memo about
-  specific files/sessions?*, with `blf_channel_maps` as the worked
-  example. Task 46 amends the same ADR for the descriptor/tagged-view
-  decision — fold both into one amendment.
+- **ADR 0034 clarification.** *(done — Stage 3.)* Not the amendment
+  first thought necessary; its `state.json` claim holds. What it needed
+  was a sharper deciding question, and decision 1 now asks *is this a
+  behavioural preference, or a memo about specific files and
+  sessions?*, with `blf_channel_maps` as the worked example and a note
+  that user-authored is not the same as a user preference. Task 46's
+  descriptor/tagged-view amendment to the same ADR landed separately
+  rather than folded in, because it shipped first.
 - **Base directories: answered — no change, and it should stop being
   raised.** The question was whether `state.json` is misfiled by living
   in `app_config_dir` next to `settings.json`, given that XDG separates
