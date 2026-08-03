@@ -641,6 +641,11 @@ nothing*; `settings.rs` → *one malformed value costs that field and
 not the document* (a good neighbour before it, two after it, and the
 bad one at its own default).
 
+**Measured:** `cannet-perf-measurement check` passes all 12 gated
+metrics (tracebuffer, grpc, hardware-peak) against the promoted
+baseline after the change; the frontend tier is skipped, as in Stage 3,
+because Task 44 Tier 0 still owes a self-driving capture.
+
 ### Stage 5 — defaults with no way to change them
 
 Ranked; each is "set once and keep" territory. Minimum system-log
@@ -788,10 +793,23 @@ properly view-local, and the window-state plugin is properly separate.
   it is the user's document — but nothing anywhere is running at a
   value the file doesn't show, and the system log says which value was
   refused and why. New knobs must follow the same rule.)*
+
+  *Stage 4 extends this twice. A value of the wrong **shape** is now
+  refused the same way and costs only its own field, instead of failing
+  the whole document (item 4). And an **environment variable** that
+  shadows a setting is the one case where the app genuinely runs at a
+  value the file does not show — the escape hatch has to win, or it is
+  not one — so it is reported on the system log naming the variable, the
+  key, and both values. The criterion holds in its real form: nothing
+  runs at a value nobody was told about.*
 - One source of truth for each item in the duplicates list, or an
   explicit note saying why a copy stays.
 - No user-facing knob promoted in Stage 3 changes behaviour for a user
-  who never opens the settings file.
+  who never opens the settings file. *(Also met for Stage 4: each of
+  its four fields defaults to the value the app already ran at — blank
+  for the two paths, `debug` for the log file's minimum, `info` for the
+  sidecar's — and the environment keeps winning, so an existing
+  env-var user is unaffected whatever their file says.)*
 - Every promoted field lands with its Task 46 tags already attached —
   no retrofit pass.
 - `settings.json` on a fresh install lists every knob the app has, at
