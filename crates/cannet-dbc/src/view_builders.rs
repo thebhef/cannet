@@ -128,7 +128,10 @@ impl Database {
             cannet_core::CanId::standard(message_id).ok()?
         })?;
         let entry = self.messages.get(&key)?;
-        let sig = entry.signals.iter().find(|s| s.signal.name == signal_name)?;
+        let sig = entry
+            .signals
+            .iter()
+            .find(|s| s.signal.name == signal_name)?;
         if sig.value_table.is_empty() {
             None
         } else {

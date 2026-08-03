@@ -180,7 +180,11 @@ pub fn check_mode(mode: &'static str, baseline: &Metrics, current: &HarnessRepor
 
     // Lower-is-better, relative-to-baseline ceilings.
     for (metric, base, cur) in [
-        ("append_ms_max", baseline.append_ms_max, current.append_ms_max),
+        (
+            "append_ms_max",
+            baseline.append_ms_max,
+            current.append_ms_max,
+        ),
         ("scan_ms_max", baseline.scan_ms_max, current.scan_ms_max),
     ] {
         let limit = base * tol::LATENCY_MAX_FACTOR + tol::LATENCY_FLOOR_MS;

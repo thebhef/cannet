@@ -179,8 +179,11 @@ fn dbc_scoped_to(d: &crate::app_state::LoadedDbc, bus_id: &str) -> bool {
 /// the resolved transmitter (ECU) name. The row rebuild and the panel
 /// view share this so they can never disagree about which messages a
 /// bus carries.
-pub(super) fn for_each_scoped_message<F>(dbs: &[crate::app_state::LoadedDbc], bus_id: &str, mut visit: F)
-where
+pub(super) fn for_each_scoped_message<F>(
+    dbs: &[crate::app_state::LoadedDbc],
+    bus_id: &str,
+    mut visit: F,
+) where
     F: FnMut(&cannet_dbc::Database, &str, cannet_core::CanId, &cannet_dbc::MessageDescriptor, &str),
 {
     let mut seen: HashSet<String> = HashSet::new();
@@ -307,8 +310,7 @@ fn rebuild_element_rows(state: &AppState, element_id: &str) -> Vec<String> {
     drop(dbs);
     drop(rbs);
 
-    let mut registry = state
-        .transmit_frames();
+    let mut registry = state.transmit_frames();
     let desired_ids: HashSet<&str> = desired.iter().map(|f| f.id.as_str()).collect();
     for stale in registry.rbs_row_ids(element_id) {
         if !desired_ids.contains(stale.as_str()) {
@@ -331,8 +333,7 @@ fn rebuild_element_rows(state: &AppState, element_id: &str) -> Vec<String> {
 /// hot enable / run / kill-switch paths stay light. Idempotent.
 pub(super) fn sync_schedules(state: &AppState) {
     let rbs = state.rbs();
-    let mut registry = state
-        .transmit_frames();
+    let mut registry = state.transmit_frames();
     for row in registry.rbs_rows() {
         let want = !rbs.kill_switch
             && rbs.elements.get(&row.element).is_some_and(|element| {

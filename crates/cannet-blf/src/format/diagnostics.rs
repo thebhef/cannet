@@ -15,8 +15,8 @@
 //! (32-byte base + `ObjectHeader` v1) with a fixed-size body.
 
 use super::object::{
-    decode_framed, object_type, ObjectHeaderBase, ObjectHeaderError, ObjectHeaderV1,
-    PreambleError, OBJECT_FLAG_TIME_ONE_NANS, OBJECT_HEADER_BASE_BYTES, OBJECT_HEADER_V1_BYTES,
+    decode_framed, object_type, ObjectHeaderBase, ObjectHeaderError, ObjectHeaderV1, PreambleError,
+    OBJECT_FLAG_TIME_ONE_NANS, OBJECT_HEADER_BASE_BYTES, OBJECT_HEADER_V1_BYTES,
 };
 
 /// Width of the per-event header (base + v1) that prefixes the
@@ -91,9 +91,7 @@ impl std::error::Error for DiagnosticError {
 impl From<PreambleError> for DiagnosticError {
     fn from(e: PreambleError) -> Self {
         match e {
-            PreambleError::WrongObjectType(expected, got) => {
-                Self::WrongObjectType(expected, got)
-            }
+            PreambleError::WrongObjectType(expected, got) => Self::WrongObjectType(expected, got),
             PreambleError::BaseHeader(e) => Self::BaseHeader(e),
             PreambleError::EventHeader(e) => Self::EventHeader(e),
             PreambleError::TooSmall(got, required) => Self::TooSmall(got, required),
@@ -359,7 +357,9 @@ mod tests {
 
     #[test]
     fn can_statistic_round_trips() {
-        let mut s = build_can_statistic(/*ts*/ 12_345_678, /*channel*/ 1, /*busload*/ 1_234);
+        let mut s = build_can_statistic(
+            /*ts*/ 12_345_678, /*channel*/ 1, /*busload*/ 1_234,
+        );
         s.standard_data_frames = 100;
         s.extended_data_frames = 25;
         s.standard_remote_frames = 3;
@@ -399,9 +399,7 @@ mod tests {
     #[test]
     fn data_lost_end_round_trips() {
         let e = build_data_lost_end(
-            2_000_000,
-            QUEUE_RT,
-            1_500_000, // first lost at +1.5 ms
+            2_000_000, QUEUE_RT, 1_500_000, // first lost at +1.5 ms
             42,
         );
         let bytes = encode_data_lost_end(&e);

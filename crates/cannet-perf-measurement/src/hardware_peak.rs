@@ -15,7 +15,9 @@ use std::sync::Arc;
 use cannet_client::{connect_and_subscribe, list_interfaces, PreSubscribeConfig, Subscription};
 use cannet_gui_lib::trace_store::TraceStore;
 
-use crate::runner::{build_report, current_rss_mb, parse_predicate, scan_loop, HarnessReport, RunParams};
+use crate::runner::{
+    build_report, current_rss_mb, parse_predicate, scan_loop, HarnessReport, RunParams,
+};
 use crate::sidecar::SidecarProcess;
 use crate::LoadedExample;
 

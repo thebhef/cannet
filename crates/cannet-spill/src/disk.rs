@@ -322,7 +322,9 @@ impl DiskRawStore {
         // read would move `ring_start` down and make later reads hit the
         // half-filled ring.
         let ring_from = len.saturating_sub(cfg.ring_capacity);
-        let tail: Vec<RawTraceFrame> = (ring_from..len).filter_map(|i| store.read_frame(i)).collect();
+        let tail: Vec<RawTraceFrame> = (ring_from..len)
+            .filter_map(|i| store.read_frame(i))
+            .collect();
         // Seed the running max from that same tail. It isn't persisted in
         // the manifest, and the newest timestamp is not necessarily the
         // last row (see `RawStore::max_ts`) — but the ring is orders of
@@ -356,7 +358,6 @@ impl DiskRawStore {
         std::fs::write(&tmp, &bytes)?;
         std::fs::rename(&tmp, self.dir.join(MANIFEST_NAME))
     }
-
 
     /// Drop every mapping and delete the segment files from `dir`,
     /// including the reopen manifest so a wiped store never reloads a
@@ -436,8 +437,8 @@ impl DiskRawStore {
             let seg = &segs[seg_no - seg_base];
             let seg_start = seg_no as u64 * seg_bytes;
             let lo = usize::try_from(from.max(seg_start) - seg_start).unwrap_or(0);
-            let hi = usize::try_from(to.min(seg_start + seg_bytes) - seg_start)
-                .unwrap_or(seg.map.len());
+            let hi =
+                usize::try_from(to.min(seg_start + seg_bytes) - seg_start).unwrap_or(seg.map.len());
             seg.queue_writeback(lo, hi - lo)?;
         }
         Ok(())
@@ -463,17 +464,25 @@ impl DiskRawStore {
     fn ensure_meta_seg(&mut self, seg: usize) {
         let bytes = self.cfg.records_per_seg * RECORD_SIZE;
         let dir = &self.dir;
-        grow_fixed(&mut self.meta_segs, self.meta_seg_base, seg, |_| bytes, |i| {
-            meta_seg_path(dir, i)
-        });
+        grow_fixed(
+            &mut self.meta_segs,
+            self.meta_seg_base,
+            seg,
+            |_| bytes,
+            |i| meta_seg_path(dir, i),
+        );
     }
 
     fn ensure_payload_seg(&mut self, seg: usize) {
         let bytes = self.cfg.payload_seg_bytes;
         let dir = &self.dir;
-        grow_fixed(&mut self.payload_segs, self.payload_seg_base, seg, |_| bytes, |i| {
-            payload_seg_path(dir, i)
-        });
+        grow_fixed(
+            &mut self.payload_segs,
+            self.payload_seg_base,
+            seg,
+            |_| bytes,
+            |i| payload_seg_path(dir, i),
+        );
     }
 
     fn intern_bus(&mut self, name: &str) -> u16 {
@@ -621,9 +630,12 @@ impl DiskRawStore {
         let tail_meta_seg = self.len.saturating_sub(1) / rps;
         let target_meta_base = (first_index / rps).min(tail_meta_seg);
         let dir = &self.dir;
-        evict_leading(&mut self.meta_segs, &mut self.meta_seg_base, target_meta_base, |i| {
-            meta_seg_path(dir, i)
-        });
+        evict_leading(
+            &mut self.meta_segs,
+            &mut self.meta_seg_base,
+            target_meta_base,
+            |i| meta_seg_path(dir, i),
+        );
         // The lowest live payload byte is the first live row's payload offset;
         // payload segments wholly below it are dead.
         if first_index < self.len {
@@ -633,9 +645,12 @@ impl DiskRawStore {
             let target_payload_base =
                 usize::try_from((min_off / seg_bytes).min(tail_payload_seg)).unwrap_or(0);
             let dir = &self.dir;
-            evict_leading(&mut self.payload_segs, &mut self.payload_seg_base, target_payload_base, |i| {
-                payload_seg_path(dir, i)
-            });
+            evict_leading(
+                &mut self.payload_segs,
+                &mut self.payload_seg_base,
+                target_payload_base,
+                |i| payload_seg_path(dir, i),
+            );
         }
         // The incremental-flush byte watermarks need no adjustment here:
         // they track the (still-monotonic) global write cursors, and the
@@ -669,9 +684,11 @@ impl RawStore for DiskRawStore {
             kind,
         };
         self.write_meta(idx, &rec.encode());
-        self.by_id
-            .push(frame.id, frame.extended, idx as u64);
-        self.max_ts = Some(self.max_ts.map_or(frame.timestamp_ns, |m| m.max(frame.timestamp_ns)));
+        self.by_id.push(frame.id, frame.extended, idx as u64);
+        self.max_ts = Some(
+            self.max_ts
+                .map_or(frame.timestamp_ns, |m| m.max(frame.timestamp_ns)),
+        );
         self.ring.push_back(frame);
         if self.ring.len() > self.cfg.ring_capacity {
             self.ring.pop_front();
@@ -762,10 +779,7 @@ impl RawStore for DiskRawStore {
         }
         let end = end.min(self.len);
         (start..end)
-            .filter_map(|i| {
-                self.read_frame(i)
-                    .and_then(|f| keep(&f).then_some(i))
-            })
+            .filter_map(|i| self.read_frame(i).and_then(|f| keep(&f).then_some(i)))
             .collect()
     }
 
@@ -953,7 +967,10 @@ mod tests {
         }
         s.first_index = 8; // simulate the oldest 8 rows evicted
         for i in 0..8 {
-            assert!(s.read_frame(i).is_none(), "row {i} below mark must be evicted");
+            assert!(
+                s.read_frame(i).is_none(),
+                "row {i} below mark must be evicted"
+            );
             assert!(s.read_ts(i).is_none(), "ts {i} below mark must be evicted");
         }
         for i in 8..20 {
@@ -989,14 +1006,22 @@ mod tests {
         // segment 2 holds the first live row (8) and is kept.
         assert_eq!(s.meta_seg_base, 2);
         assert_eq!(s.meta_segs.len(), 3);
-        assert!(!dir.path().join("meta.000000").exists(), "seg 0 file deleted");
-        assert!(!dir.path().join("meta.000001").exists(), "seg 1 file deleted");
+        assert!(
+            !dir.path().join("meta.000000").exists(),
+            "seg 0 file deleted"
+        );
+        assert!(
+            !dir.path().join("meta.000001").exists(),
+            "seg 1 file deleted"
+        );
         assert!(dir.path().join("meta.000002").exists(), "seg 2 file kept");
         for i in 0..8 {
             assert!(s.read_frame(i).is_none(), "row {i} evicted");
         }
         for i in 8..20 {
-            let f = s.read_frame(i).expect("live row reads across the base shift");
+            let f = s
+                .read_frame(i)
+                .expect("live row reads across the base shift");
             assert_eq!(f.id, i as u32);
             assert_eq!(f.timestamp_ns, i as u64 * 10);
         }
@@ -1024,7 +1049,10 @@ mod tests {
                 .count()
         };
         let before = payload_files(dir.path());
-        assert!(before >= 5, "20-byte payloads span several payload segments");
+        assert!(
+            before >= 5,
+            "20-byte payloads span several payload segments"
+        );
         s.evict_below(12);
         assert!(
             payload_files(dir.path()) < before,
@@ -1050,11 +1078,16 @@ mod tests {
             s.evict_below(8);
             s.flush().unwrap();
         }
-        let s = DiskRawStore::reopen(dir.path()).unwrap().expect("manifest present");
+        let s = DiskRawStore::reopen(dir.path())
+            .unwrap()
+            .expect("manifest present");
         assert_eq!(s.len(), 20);
         assert_eq!(s.first_index, 8, "the floor reloads from the manifest");
         for i in 0..8 {
-            assert!(s.read_frame(i).is_none(), "row {i} stays evicted after reopen");
+            assert!(
+                s.read_frame(i).is_none(),
+                "row {i} stays evicted after reopen"
+            );
         }
         for i in 8..20 {
             let f = s.read_frame(i).expect("live row after reopen");
@@ -1079,9 +1112,19 @@ mod tests {
         let full = s.raw_disk_bytes();
         let target = full / 2;
         let freed = s.evict_oldest_bytes(target);
-        assert!(freed >= target, "frees at least the requested {target} bytes (got {freed})");
-        assert_eq!(s.raw_disk_bytes(), full - freed, "footprint drops by exactly what was freed");
-        assert!(s.first_index > 0 && s.first_index < 40, "the floor moved into the window");
+        assert!(
+            freed >= target,
+            "frees at least the requested {target} bytes (got {freed})"
+        );
+        assert_eq!(
+            s.raw_disk_bytes(),
+            full - freed,
+            "footprint drops by exactly what was freed"
+        );
+        assert!(
+            s.first_index > 0 && s.first_index < 40,
+            "the floor moved into the window"
+        );
         for i in 0..s.first_index {
             assert!(s.read_frame(i).is_none(), "row {i} evicted");
         }
@@ -1094,7 +1137,10 @@ mod tests {
         }
         // The tail is never dropped, even asking for more than the whole store.
         let freed_all = s.evict_oldest_bytes(u64::MAX);
-        assert!(s.read_frame(39).is_some(), "live tail survives an over-large request");
+        assert!(
+            s.read_frame(39).is_some(),
+            "live tail survives an over-large request"
+        );
         let _ = freed_all;
     }
 
@@ -1112,7 +1158,9 @@ mod tests {
             s.evict_below(100);
             s.flush().unwrap();
         }
-        let s = DiskRawStore::reopen(dir.path()).unwrap().expect("manifest present");
+        let s = DiskRawStore::reopen(dir.path())
+            .unwrap()
+            .expect("manifest present");
         assert_eq!(s.first_index, 100);
         // by-id reads above the mark survive the reopen.
         let hits: Vec<usize> = s
@@ -1164,7 +1212,10 @@ mod tests {
         s.append(b);
         assert_eq!(s.slice(0, 1)[0].payload.data(), vec![0xaa; 50].as_slice());
         assert_eq!(s.slice(1, 2)[0].payload.data(), vec![0xbb; 50].as_slice());
-        assert!(s.payload_segs.len() >= 2, "second payload padded to next seg");
+        assert!(
+            s.payload_segs.len() >= 2,
+            "second payload padded to next seg"
+        );
     }
 
     #[test]
@@ -1335,7 +1386,9 @@ mod tests {
             s.flush().unwrap();
         } // store dropped — mappings released, only the files remain
 
-        let s = DiskRawStore::reopen(dir.path()).unwrap().expect("manifest present");
+        let s = DiskRawStore::reopen(dir.path())
+            .unwrap()
+            .expect("manifest present");
         assert_eq!(s.len(), 15);
         assert_eq!(s.read_frame(0), Some(fd));
         assert_eq!(s.read_frame(1), Some(rem));
@@ -1370,11 +1423,17 @@ mod tests {
             }
             s.flush().unwrap();
         } // dropped — only the files (and what the flushes made durable) remain
-        let s = DiskRawStore::reopen(dir.path()).unwrap().expect("manifest present");
+        let s = DiskRawStore::reopen(dir.path())
+            .unwrap()
+            .expect("manifest present");
         assert_eq!(s.len(), 200);
         for i in 0u32..200 {
             let f = &s.slice(i as usize, i as usize + 1)[0];
-            assert_eq!(f.timestamp_ns, u64::from(i), "frame {i} lost after incremental flush");
+            assert_eq!(
+                f.timestamp_ns,
+                u64::from(i),
+                "frame {i} lost after incremental flush"
+            );
         }
         // The by-id chain — also incrementally flushed — reopened intact.
         assert_eq!(s.matching_frames_indexed(7, false, 0, 200).len(), 200);
@@ -1393,7 +1452,9 @@ mod tests {
             }
             s.flush().unwrap();
         }
-        let s = DiskRawStore::reopen(dir.path()).unwrap().expect("manifest present");
+        let s = DiskRawStore::reopen(dir.path())
+            .unwrap()
+            .expect("manifest present");
         assert_eq!(s.len(), 300);
         // id 7 is every index not divisible by 3.
         let want: Vec<usize> = (0..300).filter(|i| i % 3 != 0).collect();

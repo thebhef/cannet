@@ -284,15 +284,12 @@ pub fn open_project(
             // `restore_scratch_capture`, which the frontend calls after it
             // has applied the project and cleared the trace view — so the
             // restored history isn't clobbered by open-clears-the-trace.
-            *state
-                .active_project_id() = Some(p.project_id);
+            *state.active_project_id() = Some(p.project_id);
             // Load the host TX-message registry from
             // the project's pool. All periodics start stopped — reopen
             // never fires traffic onto a bus the user hasn't
             // intentionally reconnected.
-            state
-                .transmit_frames()
-                .load(p.transmit_frames.clone());
+            state.transmit_frames().load(p.transmit_frames.clone());
             // Usually a no-op here (the frontend re-adds the project's
             // DBCs after open, each add re-resolving), but covers a
             // load into an already-populated DBC set.
@@ -334,9 +331,7 @@ pub fn save_project(
     // messages — the thin-view frontend doesn't carry them in the
     // project it submits. Snapshot the registry into the project before
     // writing so save captures the current pool + order.
-    project.transmit_frames = state
-        .transmit_frames()
-        .snapshot();
+    project.transmit_frames = state.transmit_frames().snapshot();
     match write_project_file(&path, &project) {
         Ok(()) => {
             crate::sys_info!(&app, "project", "saved project to {path}");

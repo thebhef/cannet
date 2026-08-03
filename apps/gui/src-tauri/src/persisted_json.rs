@@ -93,8 +93,7 @@ mod tests {
             name: "x".into(),
         };
         write_json_atomic(&path, &value).unwrap();
-        let read: Sample =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let read: Sample = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(read, value);
     }
 

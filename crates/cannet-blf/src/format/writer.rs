@@ -61,8 +61,7 @@ impl BlfFileWriter {
         // Placeholder FileStatistics: signature and statistics_size
         // are correct; everything else is zero until finish.
         let placeholder = FileStatistics {
-            statistics_size: u32::try_from(FILE_STATISTICS_MIN_BYTES)
-                .expect("144 fits in u32"),
+            statistics_size: u32::try_from(FILE_STATISTICS_MIN_BYTES).expect("144 fits in u32"),
             api_number: 0,
             application_id: 0,
             compression_level: 0,
@@ -139,9 +138,8 @@ impl BlfFileWriter {
         if self.buffer.is_empty() {
             return Ok(());
         }
-        let bytes = log_container::encode(&self.buffer, COMPRESSION_ZLIB).map_err(|e| {
-            io::Error::other(format!("LOG_CONTAINER encode: {e}"))
-        })?;
+        let bytes = log_container::encode(&self.buffer, COMPRESSION_ZLIB)
+            .map_err(|e| io::Error::other(format!("LOG_CONTAINER encode: {e}")))?;
         self.file.write_all(&bytes)?;
         self.buffer.clear();
         Ok(())
@@ -155,8 +153,7 @@ impl BlfFileWriter {
         self.flush_container()?;
         let file_size = self.file.seek(SeekFrom::End(0))?;
         let stats = FileStatistics {
-            statistics_size: u32::try_from(FILE_STATISTICS_MIN_BYTES)
-                .expect("144 fits in u32"),
+            statistics_size: u32::try_from(FILE_STATISTICS_MIN_BYTES).expect("144 fits in u32"),
             // application_id 5 matches what blf_asc has historically
             // stamped; keeps third-party readers consuming our files
             // with no surprises.
@@ -169,9 +166,7 @@ impl BlfFileWriter {
             uncompressed_file_size: self.uncompressed_size,
             object_count: self.object_count,
             application_build: 0,
-            measurement_start_time: SystemTime::from_unix_nanos(
-                self.start_unix_nanos.unwrap_or(0),
-            ),
+            measurement_start_time: SystemTime::from_unix_nanos(self.start_unix_nanos.unwrap_or(0)),
             last_object_time: SystemTime::from_unix_nanos(self.last_unix_nanos.unwrap_or(0)),
             restore_points_offset: 0,
         };

@@ -134,10 +134,7 @@ async fn subscribe_one_interface_yields_frames_with_chosen_channel() {
     let address = addr.to_string();
 
     let mut source = tokio::task::spawn_blocking(move || {
-        connect_and_subscribe(
-            &address,
-            vec![Subscription::new("blf:0", 7)],
-        )
+        connect_and_subscribe(&address, vec![Subscription::new("blf:0", 7)])
     })
     .await
     .unwrap()
@@ -164,10 +161,7 @@ async fn subscribing_to_unknown_interface_surfaces_server_error() {
     let address = addr.to_string();
 
     let mut source = tokio::task::spawn_blocking(move || {
-        connect_and_subscribe(
-            &address,
-            vec![Subscription::new("blf:99", 0)],
-        )
+        connect_and_subscribe(&address, vec![Subscription::new("blf:99", 0)])
     })
     .await
     .unwrap()
@@ -194,11 +188,8 @@ async fn into_parts_lets_handle_and_receiver_live_in_different_threads() {
     // dropped; the receiver then observes end-of-stream.
     let (handle, mut receiver, _transmitter): (SessionHandle, FrameReceiver, _) =
         tokio::task::spawn_blocking(move || {
-            let source = connect_and_subscribe(
-                &address,
-                vec![Subscription::new("blf:0", 0)],
-            )
-            .unwrap();
+            let source =
+                connect_and_subscribe(&address, vec![Subscription::new("blf:0", 0)]).unwrap();
             source.into_parts()
         })
         .await
@@ -207,7 +198,10 @@ async fn into_parts_lets_handle_and_receiver_live_in_different_threads() {
     // Drain a frame to confirm the split session is live.
     let receiver = tokio::task::spawn_blocking(move || {
         use cannet_core::CanFrameSource;
-        receiver.next_frame().unwrap().expect("expected at least one frame");
+        receiver
+            .next_frame()
+            .unwrap()
+            .expect("expected at least one frame");
         receiver
     })
     .await
@@ -230,7 +224,10 @@ async fn into_parts_lets_handle_and_receiver_live_in_different_threads() {
             }
         }
     });
-    let result = timeout(Duration::from_secs(5), saw_end).await.unwrap().unwrap();
+    let result = timeout(Duration::from_secs(5), saw_end)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         result,
         "FrameReceiver did not observe end-of-stream after SessionHandle drop",
@@ -241,8 +238,7 @@ async fn into_parts_lets_handle_and_receiver_live_in_different_threads() {
 
 /// Spin up a virtual-bus server (ADR 0021) — the wire-level transmit
 /// round-trip target now that loopback is retired.
-async fn spawn_virtual_bus_server(
-) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+async fn spawn_virtual_bus_server() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     use cannet_core::BusConfig;
     use cannet_server::VirtualBusServerImpl;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -359,11 +355,7 @@ async fn dropping_source_disconnects_cleanly() {
     // beyond "the test doesn't hang" — the worker thread should exit
     // when the runtime drops, releasing the gRPC stream.
     tokio::task::spawn_blocking(move || {
-        let source = connect_and_subscribe(
-            &address,
-            vec![Subscription::new("blf:0", 0)],
-        )
-        .unwrap();
+        let source = connect_and_subscribe(&address, vec![Subscription::new("blf:0", 0)]).unwrap();
         drop(source);
     })
     .await
@@ -382,10 +374,7 @@ async fn dropping_source_disconnects_cleanly() {
     for _ in 0..40 {
         let address = address.clone();
         match tokio::task::spawn_blocking(move || {
-            connect_and_subscribe(
-                &address,
-                vec![Subscription::new("blf:0", 0)],
-            )
+            connect_and_subscribe(&address, vec![Subscription::new("blf:0", 0)])
         })
         .await
         .unwrap()

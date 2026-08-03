@@ -18,15 +18,11 @@ use super::can::{
     decode_can_message2, CanErrorExt, CanFdMessage, CanFdMessage64, CanMessage, CanMessage2,
     CanObjectError,
 };
-use super::diagnostics::{
-    self, CanStatistic, DataLostBegin, DataLostEnd, DiagnosticError,
-};
+use super::diagnostics::{self, CanStatistic, DataLostBegin, DataLostEnd, DiagnosticError};
 use super::header::{FileStatistics, HeaderError, FILE_STATISTICS_MIN_BYTES};
 use super::log_container::{self, LogContainerError};
 use super::marker::{self, GlobalMarker, MarkerError};
-use super::object::{
-    object_type, ObjectHeaderBase, ObjectHeaderError, OBJECT_HEADER_BASE_BYTES,
-};
+use super::object::{object_type, ObjectHeaderBase, ObjectHeaderError, OBJECT_HEADER_BASE_BYTES};
 use super::text::{self, AppText, EventComment, TextError};
 
 /// One on-disk object, decoded into a typed variant when we
@@ -261,7 +257,9 @@ impl BlfReader {
             }
             let object_bytes = &self.tail[self.tail_pos..self.tail_pos + object_size];
             let decoded = match base.object_type {
-                object_type::CAN_MESSAGE => BlfObject::CanMessage(decode_can_message(object_bytes)?),
+                object_type::CAN_MESSAGE => {
+                    BlfObject::CanMessage(decode_can_message(object_bytes)?)
+                }
                 object_type::CAN_MESSAGE2 => {
                     BlfObject::CanMessage2(decode_can_message2(object_bytes)?)
                 }
@@ -280,9 +278,7 @@ impl BlfReader {
                 object_type::EVENT_COMMENT => {
                     BlfObject::EventComment(text::decode_event_comment(object_bytes)?)
                 }
-                object_type::APP_TEXT => {
-                    BlfObject::AppText(text::decode_app_text(object_bytes)?)
-                }
+                object_type::APP_TEXT => BlfObject::AppText(text::decode_app_text(object_bytes)?),
                 object_type::CAN_STATISTIC => {
                     BlfObject::CanStatistic(diagnostics::decode_can_statistic(object_bytes)?)
                 }

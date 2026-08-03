@@ -79,7 +79,11 @@ fn list_objects(harness: &Path, blf: &Path) -> Vec<ObjectListing> {
                 .expect("missing timestamp")
                 .parse()
                 .expect("timestamp not numeric");
-            ObjectListing { type_id, type_name, timestamp_ns }
+            ObjectListing {
+                type_id,
+                type_name,
+                timestamp_ns,
+            }
         })
         .collect()
 }
@@ -210,10 +214,14 @@ fn oracle_lists_text_annotations_written_by_our_writer() {
     w.finish().unwrap();
 
     let listing = list_objects(&harness, &path);
-    let comment_rows: Vec<&ObjectListing> =
-        listing.iter().filter(|o| o.type_name == "EVENT_COMMENT").collect();
-    let app_rows: Vec<&ObjectListing> =
-        listing.iter().filter(|o| o.type_name == "APP_TEXT").collect();
+    let comment_rows: Vec<&ObjectListing> = listing
+        .iter()
+        .filter(|o| o.type_name == "EVENT_COMMENT")
+        .collect();
+    let app_rows: Vec<&ObjectListing> = listing
+        .iter()
+        .filter(|o| o.type_name == "APP_TEXT")
+        .collect();
     assert_eq!(
         comment_rows.len(),
         1,
@@ -248,10 +256,7 @@ fn oracle_lists_diagnostics_written_by_our_writer() {
         .unwrap();
 
     let begin_ns = base_abs + 10_000_000;
-    let begin = diagnostics::build_data_lost_begin(
-        begin_ns - start,
-        diagnostics::QUEUE_RT,
-    );
+    let begin = diagnostics::build_data_lost_begin(begin_ns - start, diagnostics::QUEUE_RT);
     w.append_object(&diagnostics::encode_data_lost_begin(&begin), begin_ns)
         .unwrap();
 

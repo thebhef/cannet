@@ -35,9 +35,7 @@ pub async fn rbs_load(
     // file).
     let fallback = |msg: String| {
         crate::sys_error!(&app, "rbs", "{msg}");
-        let seeded = state
-            .rbs()
-            .ensure_seeded(&element_id);
+        let seeded = state.rbs().ensure_seeded(&element_id);
         if seeded {
             refresh_element(&app, &element_id);
         }
@@ -81,9 +79,7 @@ pub async fn rbs_init(
     state: State<'_, AppState>,
     element_id: String,
 ) -> Result<(), String> {
-    let seeded = state
-        .rbs()
-        .ensure_seeded(&element_id);
+    let seeded = state.rbs().ensure_seeded(&element_id);
     if seeded {
         refresh_element(&app, &element_id);
     }
@@ -102,8 +98,7 @@ pub async fn rbs_unload(
         let mut rbs = state.rbs();
         rbs.elements.remove(&element_id);
     }
-    let mut registry = state
-        .transmit_frames();
+    let mut registry = state.transmit_frames();
     for id in registry.rbs_row_ids(&element_id) {
         registry.remove(&id);
         state.transmit_scheduler.stop(id);
@@ -152,8 +147,7 @@ pub async fn rbs_set_run(
         started
     };
     if started {
-        let mut registry = state
-            .transmit_frames();
+        let mut registry = state.transmit_frames();
         for id in registry.rbs_row_ids(&element_id) {
             registry.reset_counter(&id);
         }

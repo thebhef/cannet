@@ -96,10 +96,7 @@ pub(crate) fn add_dbc(
         sys_info!(&app, "dbc", "loaded DBC {path}");
         // Start watching this file's parent dir for FS
         // events (only on first-load — a reload is already watched).
-        if let Some(w) = state
-            .dbc_watcher()
-            .as_mut()
-        {
+        if let Some(w) = state.dbc_watcher().as_mut() {
             w.watch_dbc(std::path::Path::new(&path));
         }
     }
@@ -145,10 +142,7 @@ pub(crate) fn remove_dbc(app: AppHandle, state: State<'_, AppState>, path: Strin
     };
     if removed {
         sys_info!(&app, "dbc", "removed DBC {path}");
-        if let Some(w) = state
-            .dbc_watcher()
-            .as_mut()
-        {
+        if let Some(w) = state.dbc_watcher().as_mut() {
             w.unwatch_dbc(std::path::Path::new(&path));
         }
         invalidate_derived_caches(state.inner());
@@ -173,10 +167,7 @@ pub(crate) fn clear_dbcs(app: AppHandle, state: State<'_, AppState>) {
         invalidate_derived_caches(state.inner());
         rbs::refresh_all_elements(&app);
     }
-    if let Some(w) = state
-        .dbc_watcher()
-        .as_mut()
-    {
+    if let Some(w) = state.dbc_watcher().as_mut() {
         w.unwatch_all();
     }
 }
@@ -486,10 +477,11 @@ pub(crate) fn decode_frame_inner(
 ) -> Option<ipc::DecodedFrameRecord> {
     let id = cannet_core::CanId::new(message_id, extended).ok()?;
     state.first_dbc(|db| {
-        db.decode_raw(id, data).map(|decoded| ipc::DecodedFrameRecord {
-            name: decoded.name.to_string(),
-            signals: decoded.signals.iter().map(signal_to_wire).collect(),
-        })
+        db.decode_raw(id, data)
+            .map(|decoded| ipc::DecodedFrameRecord {
+                name: decoded.name.to_string(),
+                signals: decoded.signals.iter().map(signal_to_wire).collect(),
+            })
     })
 }
 
@@ -511,20 +503,21 @@ pub(crate) fn encode_frame_inner(
     // `first_dbc` writes the encoded payload into `bytes` in place and
     // yields the skipped-signal list; `bytes` is consumed after the scan.
     let skipped = state.first_dbc(|db| {
-        db.encode_frame(id, &signal_pairs, &mut bytes).map(|report| {
-            report
-                .skipped
-                .into_iter()
-                .map(|s| ipc::EncodeFrameSkipped {
-                    name: s.name,
-                    reason: match s.reason {
-                        cannet_dbc::SkipReason::SignalNotFound => "signal_not_found",
-                        cannet_dbc::SkipReason::BaseTooShort => "base_too_short",
-                        cannet_dbc::SkipReason::SizeOutOfRange => "size_out_of_range",
-                    },
-                })
-                .collect()
-        })
+        db.encode_frame(id, &signal_pairs, &mut bytes)
+            .map(|report| {
+                report
+                    .skipped
+                    .into_iter()
+                    .map(|s| ipc::EncodeFrameSkipped {
+                        name: s.name,
+                        reason: match s.reason {
+                            cannet_dbc::SkipReason::SignalNotFound => "signal_not_found",
+                            cannet_dbc::SkipReason::BaseTooShort => "base_too_short",
+                            cannet_dbc::SkipReason::SizeOutOfRange => "size_out_of_range",
+                        },
+                    })
+                    .collect()
+            })
     });
     match skipped {
         Some(skipped) => Ok(ipc::EncodeFrameResponse { bytes, skipped }),

@@ -84,8 +84,8 @@ fn sidecar_dir() -> Result<PathBuf, String> {
     if let Some(dir) = std::env::var_os("CANNET_SIDECAR_DIR") {
         return Ok(PathBuf::from(dir));
     }
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../servers/cannet-python-can");
+    let dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../servers/cannet-python-can");
     if dir.join("pyproject.toml").is_file() {
         Ok(dir)
     } else {

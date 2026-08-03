@@ -13,10 +13,10 @@ use cannet_perf_measurement::check::{
     self, Baseline, Expected, Metrics, ModeBaseline, BASELINE_VERSION,
 };
 use cannet_perf_measurement::filter_bench::{self, FilterBenchConfig};
-use cannet_perf_measurement::signal_bench::{self, SignalBenchConfig};
 use cannet_perf_measurement::frontend::{self, FrontendBaseline, FrontendMetrics};
 use cannet_perf_measurement::grpc::{self, GrpcConfig};
 use cannet_perf_measurement::hardware_peak::{self, HardwarePeakConfig};
+use cannet_perf_measurement::signal_bench::{self, SignalBenchConfig};
 use cannet_perf_measurement::tracebuffer::{self, StoreKind, TracebufferConfig};
 use cannet_perf_measurement::{
     default_baseline_path, default_example_dir, default_measurements_dir, load_example,

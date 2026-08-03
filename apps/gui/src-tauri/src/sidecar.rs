@@ -332,7 +332,10 @@ pub fn build_frozen_command(launcher: &std::path::Path) -> Command {
 /// all; stdin/stdout/stderr are piped regardless (see `spawn_blocking_inner`),
 /// so the tab-separated banner protocol is unaffected. No-op off Windows,
 /// where a console app never spawns a stray window.
-#[cfg_attr(not(windows), allow(unused_variables, clippy::needless_pass_by_ref_mut))]
+#[cfg_attr(
+    not(windows),
+    allow(unused_variables, clippy::needless_pass_by_ref_mut)
+)]
 fn suppress_console_window(cmd: &mut Command) {
     #[cfg(windows)]
     {

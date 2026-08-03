@@ -40,10 +40,7 @@ fn main() -> anyhow::Result<()> {
                     .join(" ");
                 #[allow(clippy::cast_precision_loss)]
                 let t_seconds = frame.timestamp_ns as f64 / 1e9;
-                entry.push(format!(
-                    "t={t_seconds:.3}s {}: {signals}",
-                    decoded.name
-                ));
+                entry.push(format!("t={t_seconds:.3}s {}: {signals}", decoded.name));
             }
         }
     }

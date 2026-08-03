@@ -112,19 +112,20 @@ pub(crate) fn resolve_effective_calc(
 /// has produced its first violation; absent ids have never failed.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub(crate) fn fetch_field_validity(state: State<'_, AppState>) -> Vec<verification::ValidityRecord> {
+pub(crate) fn fetch_field_validity(
+    state: State<'_, AppState>,
+) -> Vec<verification::ValidityRecord> {
     state.verifier.validity_snapshot()
 }
-
 
 /// Snapshot the TX-message pool (each message + its `running` flag), in
 /// pool order.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub(crate) fn list_transmit_frames(state: State<'_, AppState>) -> Vec<transmit_frames::TransmitFrameView> {
-    state
-        .transmit_frames()
-        .list()
+pub(crate) fn list_transmit_frames(
+    state: State<'_, AppState>,
+) -> Vec<transmit_frames::TransmitFrameView> {
+    state.transmit_frames().list()
 }
 
 /// Insert a new TX message or update an existing one in place. The
@@ -143,9 +144,7 @@ pub(crate) fn set_transmit_frame(
 ) {
     id.clone_into(&mut frame.id);
     let parked = frame.mode != transmit_frames::TransmitMode::Periodic || frame.cycle_ms == 0;
-    state
-        .transmit_frames()
-        .set(frame);
+    state.transmit_frames().set(frame);
     if parked {
         state.transmit_scheduler.stop(id);
     }
@@ -159,9 +158,7 @@ pub(crate) fn set_transmit_frame(
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn remove_transmit_frame(app: AppHandle, state: State<'_, AppState>, id: String) {
-    state
-        .transmit_frames()
-        .remove(&id);
+    state.transmit_frames().remove(&id);
     state.transmit_scheduler.stop(id);
     emit_transmit_frames_changed(&app);
 }
@@ -169,10 +166,12 @@ pub(crate) fn remove_transmit_frame(app: AppHandle, state: State<'_, AppState>, 
 /// Rewrite the pool order to match `ids`.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub(crate) fn reorder_transmit_frames(app: AppHandle, state: State<'_, AppState>, ids: Vec<String>) {
-    state
-        .transmit_frames()
-        .reorder(&ids);
+pub(crate) fn reorder_transmit_frames(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    ids: Vec<String>,
+) {
+    state.transmit_frames().reorder(&ids);
     emit_transmit_frames_changed(&app);
 }
 
@@ -180,9 +179,7 @@ pub(crate) fn reorder_transmit_frames(app: AppHandle, state: State<'_, AppState>
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn clear_transmit_frames(app: AppHandle, state: State<'_, AppState>) {
-    state
-        .transmit_frames()
-        .clear();
+    state.transmit_frames().clear();
     emit_transmit_frames_changed(&app);
 }
 
@@ -213,8 +210,7 @@ pub(crate) fn start_periodic_transmit(
     id: String,
 ) -> Result<(), String> {
     let started_cycle_ms = {
-        let mut registry = state
-            .transmit_frames();
+        let mut registry = state.transmit_frames();
         if registry.begin_periodic(&id)? {
             // The owner is starting to transmit — the sequence counter
             // seeds at 0 (ADR 0027).
@@ -235,9 +231,7 @@ pub(crate) fn start_periodic_transmit(
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn stop_periodic_transmit(app: AppHandle, state: State<'_, AppState>, id: String) {
-    state
-        .transmit_frames()
-        .stop_periodic(&id);
+    state.transmit_frames().stop_periodic(&id);
     state.transmit_scheduler.stop(id);
     emit_transmit_frames_changed(&app);
 }
@@ -457,10 +451,7 @@ pub(crate) fn run_transmit_scheduler(
                     schedule.park(&id);
                     continue;
                 }
-                let Some((request, cycle_ms)) = state
-                    .transmit_frames()
-                    .fire_info(&id)
-                else {
+                let Some((request, cycle_ms)) = state.transmit_frames().fire_info(&id) else {
                     // Stopped, parked to Manual, or removed — drop it.
                     schedule.unschedule(&id);
                     continue;
@@ -480,8 +471,7 @@ pub(crate) fn run_transmit_scheduler(
         // the single-frame path's connected gate. The tx-confirm rows
         // still append per frame (the trace shows every transmit).
         if !due.is_empty() {
-            let sessions = state
-                .remote_sessions();
+            let sessions = state.remote_sessions();
             let mut routed: Vec<((String, u8, String), cannet_core::CanFrame)> = Vec::new();
             for request in &due {
                 let Some(route) = resolve_bus_route(&sessions, &request.bus_id) else {
@@ -515,10 +505,8 @@ pub(crate) fn run_transmit_scheduler(
 /// None, which drops it from the schedule.
 fn routes_up(state: &AppState, due: &[(String, std::time::Instant)]) -> Vec<bool> {
     // Lock order: `transmit_frames` before `remote_sessions`.
-    let registry = state
-        .transmit_frames();
-    let sessions = state
-        .remote_sessions();
+    let registry = state.transmit_frames();
+    let sessions = state.remote_sessions();
     due.iter()
         .map(|(id, _)| match registry.bus_id(id) {
             Some(bus) => resolve_bus_route(&sessions, &bus).is_some(),
@@ -531,16 +519,11 @@ fn routes_up(state: &AppState, due: &[(String, std::time::Instant)]) -> Vec<bool
 /// id re-anchors at now + its stagger offset; an id whose registry row
 /// is gone (removed while the route was down) is dropped for good; the
 /// rest stay parked until the next hint or probe.
-fn resume_parked_routes(
-    state: &AppState,
-    schedule: &mut transmit_scheduler::PeriodicSchedule,
-) {
+fn resume_parked_routes(state: &AppState, schedule: &mut transmit_scheduler::PeriodicSchedule) {
     // Lock order: `transmit_frames` before `remote_sessions`.
     let resumable: Vec<(String, Option<u32>)> = {
-        let registry = state
-            .transmit_frames();
-        let sessions = state
-            .remote_sessions();
+        let registry = state.transmit_frames();
+        let sessions = state.remote_sessions();
         schedule
             .parked_ids()
             .into_iter()
@@ -588,8 +571,7 @@ pub(crate) fn transmit_frame_inner(
     // confirm to land (the user sees what they tried to send); use
     // wire channel 0 in that case — the trace view shows the *bus*
     // column, not the wire channel, so it stays unambiguous.
-    let sessions_guard = state
-        .remote_sessions();
+    let sessions_guard = state.remote_sessions();
     let routing = resolve_bus_route(&sessions_guard, &request.bus_id);
     let wire_channel = routing.as_ref().map_or(0u8, |r| r.channel);
 
@@ -635,9 +617,13 @@ fn build_and_confirm(
     request: &ipc::TransmitRequest,
     wire_channel: u8,
 ) -> Result<(cannet_core::CanFrame, u64), String> {
-    let mode = if request.extended { "extended" } else { "standard" };
-    let id = CanId::new(request.id, request.extended)
-        .map_err(|e| format!("invalid {mode} id: {e}"))?;
+    let mode = if request.extended {
+        "extended"
+    } else {
+        "standard"
+    };
+    let id =
+        CanId::new(request.id, request.extended).map_err(|e| format!("invalid {mode} id: {e}"))?;
     // Best-effort monotonic timestamp tied to the host's clock — for a
     // tx-confirm the analyzer's wall-time stamp is what we want.
     let timestamp_ns = std::time::SystemTime::now()

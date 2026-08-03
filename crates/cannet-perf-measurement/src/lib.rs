@@ -29,12 +29,12 @@ use cannet_gui_lib::{parse_message_key, Project, RbsFile, PROJECT_SCHEMA_VERSION
 pub mod check;
 pub mod filter_bench;
 pub mod frontend;
-pub mod signal_bench;
-pub mod runner;
-pub mod sidecar;
-pub mod tracebuffer;
 pub mod grpc;
 pub mod hardware_peak;
+pub mod runner;
+pub mod sidecar;
+pub mod signal_bench;
+pub mod tracebuffer;
 pub mod workload;
 
 /// A DBC loaded from the example, with its resolved on-disk path.

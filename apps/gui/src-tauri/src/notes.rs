@@ -320,7 +320,6 @@ pub(crate) fn rename_note(app: AppHandle, id: String, label: String) {
     }
 }
 
-
 /// Recolour an existing note (ADR 0035): `Some("#RRGGBB")` to set, `null`
 /// to clear back to the view default.
 #[tauri::command]

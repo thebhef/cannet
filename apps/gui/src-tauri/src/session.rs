@@ -132,10 +132,13 @@ impl AppState {
     /// down) if `address` already has one. On success, hints the
     /// transmit scheduler that a route may have come up so parked
     /// periodics resume promptly.
-    pub(crate) fn register_session(&self, address: String, session: RemoteSession) -> Result<(), String> {
+    pub(crate) fn register_session(
+        &self,
+        address: String,
+        session: RemoteSession,
+    ) -> Result<(), String> {
         {
-            let mut guard = self
-                .remote_sessions();
+            let mut guard = self.remote_sessions();
             if guard.contains_key(&address) {
                 return Err(format!("already connected to {address}"));
             }
@@ -148,9 +151,11 @@ impl AppState {
     /// Remove one session (`Some(addr)`) or all of them (`None`),
     /// returning what was removed so the caller can run teardown
     /// (stop flags, handle drops) outside the lock.
-    pub(crate) fn unregister_sessions(&self, address: Option<&str>) -> Vec<(String, RemoteSession)> {
-        let mut guard = self
-            .remote_sessions();
+    pub(crate) fn unregister_sessions(
+        &self,
+        address: Option<&str>,
+    ) -> Vec<(String, RemoteSession)> {
+        let mut guard = self.remote_sessions();
         match address {
             Some(addr) => guard
                 .remove(addr)
@@ -166,8 +171,7 @@ impl AppState {
     /// Returns whether the session is dead — pumps exit out of order and
     /// the first one out must not tear the whole session down.
     pub(crate) fn remove_vbus_session_if_dead(&self, address: &str) -> bool {
-        let mut guard = self
-            .remote_sessions();
+        let mut guard = self.remote_sessions();
         let session_dead = guard.get(address).is_none_or(|s| match &s.tx {
             SessionTx::Vbus(sinks) => sinks.is_empty(),
             SessionTx::Remote(_) => false,
@@ -587,7 +591,11 @@ impl cannet_core::CanFrameSource for LocalSourceFrameSource {
 /// disconnects only that one.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub(crate) fn disconnect_remote_server(app: AppHandle, state: State<'_, AppState>, address: Option<String>) {
+pub(crate) fn disconnect_remote_server(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    address: Option<String>,
+) {
     let sessions = state.unregister_sessions(address.as_deref());
     for (addr, session) in sessions {
         session.stop.store(true, Ordering::Relaxed);
@@ -606,7 +614,10 @@ pub(crate) fn disconnect_remote_server(app: AppHandle, state: State<'_, AppState
 ///
 /// Pure helper so the pump's routing decision is unit-testable without
 /// spinning up a Tauri runtime.
-pub(crate) fn route_channel(channel: u8, mapping: &[(u8, Option<String>)]) -> Result<Option<String>, ()> {
+pub(crate) fn route_channel(
+    channel: u8,
+    mapping: &[(u8, Option<String>)],
+) -> Result<Option<String>, ()> {
     match mapping.iter().find(|(ch, _)| *ch == channel) {
         Some((_, Some(bid))) => Ok(Some(bid.clone())),
         Some((_, None)) => Err(()),

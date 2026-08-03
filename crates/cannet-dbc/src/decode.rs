@@ -87,7 +87,12 @@ fn decode_message<'a>(entry: &'a MessageEntry, data: &[u8]) -> DecodedMessage<'a
     let multiplexor_value = entry
         .signals
         .iter()
-        .find(|s| matches!(s.signal.multiplexer_indicator, MultiplexIndicator::Multiplexor))
+        .find(|s| {
+            matches!(
+                s.signal.multiplexer_indicator,
+                MultiplexIndicator::Multiplexor
+            )
+        })
         .and_then(|s| decode_signal(s, data).map(|d| d.raw_unsigned));
 
     let mut signals = Vec::with_capacity(entry.signals.len());

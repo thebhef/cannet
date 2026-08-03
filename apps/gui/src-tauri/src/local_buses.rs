@@ -410,7 +410,10 @@ pub(crate) fn detach_local_bus_bridge(
 /// GUI's project panel uses it as a readout.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub(crate) fn list_local_bus_bridges(state: State<'_, AppState>, virtual_bus_id: String) -> Vec<String> {
+pub(crate) fn list_local_bus_bridges(
+    state: State<'_, AppState>,
+    virtual_bus_id: String,
+) -> Vec<String> {
     state.local_buses.bridge_names(&virtual_bus_id)
 }
 

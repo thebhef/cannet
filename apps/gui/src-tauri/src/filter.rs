@@ -326,10 +326,19 @@ pub(crate) fn dbc_applies(buses: &[String], bus_id: Option<&str>) -> bool {
 }
 
 impl TaggedPredicate {
-    fn matches_fields(&self, id: u32, bus_id: Option<&str>, decoded: Option<&DecodedRecord>) -> bool {
+    fn matches_fields(
+        &self,
+        id: u32,
+        bus_id: Option<&str>,
+        decoded: Option<&DecodedRecord>,
+    ) -> bool {
         match self {
-            Self::All(children) => children.iter().all(|c| c.matches_fields(id, bus_id, decoded)),
-            Self::Any(children) => children.iter().any(|c| c.matches_fields(id, bus_id, decoded)),
+            Self::All(children) => children
+                .iter()
+                .all(|c| c.matches_fields(id, bus_id, decoded)),
+            Self::Any(children) => children
+                .iter()
+                .any(|c| c.matches_fields(id, bus_id, decoded)),
             Self::Bus(b) => bus_id == Some(b.as_str()),
             Self::IdRange([lo, hi]) => id >= *lo && id <= *hi,
             Self::IdList(ids) => ids.contains(&id),

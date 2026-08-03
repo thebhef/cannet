@@ -30,9 +30,7 @@ use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
 
-use super::object::{
-    object_type, ObjectHeaderBase, ObjectHeaderError, OBJECT_HEADER_BASE_BYTES,
-};
+use super::object::{object_type, ObjectHeaderBase, ObjectHeaderError, OBJECT_HEADER_BASE_BYTES};
 
 /// Width of the `LOG_CONTAINER`-specific extension body that sits
 /// between the 16-byte [`ObjectHeaderBase`] and the compressed
@@ -226,8 +224,8 @@ pub fn encode(inner_bytes: &[u8], compression_method: u16) -> Result<Vec<u8>, Lo
     out.extend_from_slice(&compression_method.to_le_bytes());
     out.extend_from_slice(&0u16.to_le_bytes()); // reserved1
     out.extend_from_slice(&0u32.to_le_bytes()); // reserved2
-    let uncompressed_file_size = u32::try_from(inner_bytes.len())
-        .expect("inner_bytes length fits in u32");
+    let uncompressed_file_size =
+        u32::try_from(inner_bytes.len()).expect("inner_bytes length fits in u32");
     out.extend_from_slice(&uncompressed_file_size.to_le_bytes());
     out.extend_from_slice(&0u32.to_le_bytes()); // reserved3
 
@@ -307,13 +305,13 @@ mod tests {
         let object_size = u32::try_from(LOG_CONTAINER_HEADER_BYTES + payload.len()).unwrap();
         bytes.extend_from_slice(&object_size.to_le_bytes()); // object_size
         bytes.extend_from_slice(&object_type::LOG_CONTAINER.to_le_bytes()); // object_type
-        // extension header
+                                                                            // extension header
         bytes.extend_from_slice(&compression_method.to_le_bytes());
         bytes.extend_from_slice(&0u16.to_le_bytes()); // reserved1
         bytes.extend_from_slice(&0u32.to_le_bytes()); // reserved2
         bytes.extend_from_slice(&uncompressed_size.to_le_bytes());
         bytes.extend_from_slice(&0u32.to_le_bytes()); // reserved3
-        // payload
+                                                      // payload
         bytes.extend_from_slice(payload);
         bytes
     }
@@ -359,14 +357,19 @@ mod tests {
         let mut bytes = synth_container(COMPRESSION_NONE, inner, 1);
         bytes[12..16].copy_from_slice(&object_type::CAN_MESSAGE2.to_le_bytes());
         let err = decode(&bytes).unwrap_err();
-        assert!(matches!(err, LogContainerError::WrongObjectType(t) if t == object_type::CAN_MESSAGE2));
+        assert!(
+            matches!(err, LogContainerError::WrongObjectType(t) if t == object_type::CAN_MESSAGE2)
+        );
     }
 
     #[test]
     fn rejects_unknown_compression_method() {
         let bytes = synth_container(7, b"abc", 3);
         let err = decode(&bytes).unwrap_err();
-        assert!(matches!(err, LogContainerError::UnknownCompressionMethod(7)));
+        assert!(matches!(
+            err,
+            LogContainerError::UnknownCompressionMethod(7)
+        ));
     }
 
     #[test]
@@ -408,8 +411,8 @@ mod tests {
             assert_eq!(decoded.uncompressed_payload, inner);
             // Padding is applied correctly: total bytes is object_size
             // plus `object_size % 4`.
-            let expected_total = decoded.base.object_size as usize
-                + (decoded.base.object_size as usize % 4);
+            let expected_total =
+                decoded.base.object_size as usize + (decoded.base.object_size as usize % 4);
             assert_eq!(bytes.len(), expected_total);
         }
     }
@@ -417,7 +420,10 @@ mod tests {
     #[test]
     fn encode_rejects_unknown_compression_method() {
         let err = encode(b"abc", 7).unwrap_err();
-        assert!(matches!(err, LogContainerError::UnknownCompressionMethod(7)));
+        assert!(matches!(
+            err,
+            LogContainerError::UnknownCompressionMethod(7)
+        ));
     }
 
     /// Round-trip: pull the (single, well-formed) `LOG_CONTAINER`
@@ -460,8 +466,8 @@ mod tests {
             "first object after FileStatistics should be LOG_CONTAINER",
         );
 
-        let container = decode(&after_stats[..base.object_size as usize])
-            .expect("real LOG_CONTAINER decodes");
+        let container =
+            decode(&after_stats[..base.object_size as usize]).expect("real LOG_CONTAINER decodes");
         // The inflated payload starts with another ObjectHeaderBase
         // (the first inner CAN_MESSAGE2 / CAN_MESSAGE).
         let inner = ObjectHeaderBase::parse(&container.uncompressed_payload)

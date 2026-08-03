@@ -137,10 +137,8 @@ pub async fn rbs_view(
         return Ok(None);
     };
     let dbs = state.databases();
-    let registry = state
-        .transmit_frames();
-    let sessions = state
-        .remote_sessions();
+    let registry = state.transmit_frames();
+    let sessions = state.remote_sessions();
 
     let mut buses = Vec::new();
     for (bus_key, bus) in &element.file.buses {

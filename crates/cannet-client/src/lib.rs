@@ -50,10 +50,8 @@ use std::thread;
 
 use cannet_core::{CanFrame, CanFrameSource};
 use cannet_wire::proto::{
-    cannet_server_client::CannetServerClient,
-    envelope::Body,
-    ConfigureBus, Envelope, FrameBatch, ListInterfacesRequest, Subscribe,
-    WatchInterfacesRequest,
+    cannet_server_client::CannetServerClient, envelope::Body, ConfigureBus, Envelope, FrameBatch,
+    ListInterfacesRequest, Subscribe, WatchInterfacesRequest,
 };
 use cannet_wire::{frame_to_proto, proto_to_frame, ProtoConversionError};
 use tokio::sync::mpsc as tokio_mpsc;
@@ -221,9 +219,7 @@ pub async fn list_interfaces(address: &str) -> Result<Vec<Interface>, Connection
 /// dropping the stream ends the subscription. Reconnect-on-disconnect
 /// is the caller's job — for the GUI host that's the subscription
 /// manager in `sidecar.rs` (and the analogous remote manager).
-pub async fn watch_interfaces(
-    address: &str,
-) -> Result<InterfaceWatchStream, ConnectionError> {
+pub async fn watch_interfaces(address: &str) -> Result<InterfaceWatchStream, ConnectionError> {
     let endpoint = format!("http://{address}");
     let mut client = CannetServerClient::connect(endpoint)
         .await
@@ -278,8 +274,7 @@ pub fn connect_and_subscribe(
 ) -> Result<RemoteCanFrameSource, ConnectionError> {
     let address = address.to_string();
     let (frame_tx, frame_rx) = mpsc::channel::<Result<CanFrame, ConnectionError>>();
-    let (ready_tx, ready_rx) =
-        mpsc::sync_channel::<Result<SessionReady, ConnectionError>>(1);
+    let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<SessionReady, ConnectionError>>(1);
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
     let thread = thread::Builder::new()

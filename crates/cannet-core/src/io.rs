@@ -72,7 +72,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frame::{CanId, Direction, CanFrame};
+    use crate::frame::{CanFrame, CanId, Direction};
 
     fn make_frame(ts: u64) -> CanFrame {
         let id = CanId::standard(0x100).unwrap();
@@ -119,7 +119,9 @@ mod tests {
 
     #[test]
     fn pump_returns_ok_on_empty_source() {
-        let mut source = VecSource { frames: Vec::new().into_iter() };
+        let mut source = VecSource {
+            frames: Vec::new().into_iter(),
+        };
         let mut sink = VecSink::default();
         pump(&mut source, &mut sink).unwrap();
         assert!(sink.captured.is_empty());
@@ -167,7 +169,9 @@ mod tests {
 
     #[test]
     fn pump_surfaces_sink_errors() {
-        let mut source = VecSource { frames: vec![make_frame(0)].into_iter() };
+        let mut source = VecSource {
+            frames: vec![make_frame(0)].into_iter(),
+        };
         let mut sink = FailingSink;
         let err = pump(&mut source, &mut sink).unwrap_err();
         assert!(matches!(err, PumpError::Sink(SinkErr)));

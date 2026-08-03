@@ -60,9 +60,7 @@ pub fn frame_to_proto(frame: &CanFrame) -> proto::Frame {
         Direction::Tx => proto::Direction::Tx,
     };
     let (kind, data, brs, esi, dlc) = match &frame.payload {
-        CanFramePayload::Classic(d) => {
-            (proto::FrameKind::Classic, d.clone(), false, false, 0)
-        }
+        CanFramePayload::Classic(d) => (proto::FrameKind::Classic, d.clone(), false, false, 0),
         CanFramePayload::Fd { data, flags } => (
             proto::FrameKind::Fd,
             data.clone(),
@@ -110,7 +108,9 @@ pub fn proto_to_frame(
         Ok(proto::Direction::Rx) => Direction::Rx,
         Ok(proto::Direction::Tx) => Direction::Tx,
         Ok(proto::Direction::Unspecified) | Err(_) => {
-            return Err(ProtoConversionError::UnknownDirection(proto_frame.direction));
+            return Err(ProtoConversionError::UnknownDirection(
+                proto_frame.direction,
+            ));
         }
     };
     let kind = proto::FrameKind::try_from(proto_frame.kind)
@@ -170,5 +170,9 @@ pub fn proto_to_batch(
     batch: &proto::FrameBatch,
     channel: u8,
 ) -> Result<Vec<CanFrame>, ProtoConversionError> {
-    batch.frames.iter().map(|f| proto_to_frame(f, channel)).collect()
+    batch
+        .frames
+        .iter()
+        .map(|f| proto_to_frame(f, channel))
+        .collect()
 }

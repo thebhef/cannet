@@ -9,8 +9,8 @@
 
 use super::*;
 use crate::model::message_id_parts;
-use cannet_core::{CanId, Direction, CanFrame};
 use can_dbc::SignalExtendedValueType;
+use cannet_core::{CanFrame, CanId, Direction};
 use std::collections::HashMap;
 
 const SAMPLE_DBC: &str = r#"VERSION ""
@@ -59,12 +59,15 @@ fn make_frame(raw_id: u32, extended: bool, data: Vec<u8>) -> CanFrame {
 }
 
 fn signal_by_name<'a>(msg: &'a DecodedMessage<'_>, name: &str) -> &'a DecodedSignal<'a> {
-    msg.signals.iter().find(|s| s.name == name).unwrap_or_else(|| {
-        panic!(
-            "signal {name} not found, got: {:?}",
-            msg.signals.iter().map(|s| s.name).collect::<Vec<_>>()
-        )
-    })
+    msg.signals
+        .iter()
+        .find(|s| s.name == name)
+        .unwrap_or_else(|| {
+            panic!(
+                "signal {name} not found, got: {:?}",
+                msg.signals.iter().map(|s| s.name).collect::<Vec<_>>()
+            )
+        })
 }
 
 #[test]
@@ -252,7 +255,11 @@ fn decodes_ieee_float_signal_via_sig_valtype() {
     let decoded = db.decode(&frame).unwrap();
 
     let lat_sig = signal_by_name(&decoded, "Lat");
-    assert!((lat_sig.value - f64::from(lat)).abs() < 1e-5, "got {}", lat_sig.value);
+    assert!(
+        (lat_sig.value - f64::from(lat)).abs() < 1e-5,
+        "got {}",
+        lat_sig.value
+    );
     assert_eq!(lat_sig.unit, "deg");
 
     let alt_sig = signal_by_name(&decoded, "Alt");
@@ -284,7 +291,10 @@ BA_ "SystemSignalLongSymbol" SG_ 256 ShortSig "AVeryLongSignalNameThatExceedsThi
 fn resolves_long_symbol_message_and_signal_names() {
     let db = Database::parse(LONG_SYMBOL_DBC).unwrap();
     let decoded = db.decode(&make_frame(256, false, vec![7u8; 8])).unwrap();
-    assert_eq!(decoded.name, "AVeryLongMessageNameThatExceedsThirtyTwoChars");
+    assert_eq!(
+        decoded.name,
+        "AVeryLongMessageNameThatExceedsThirtyTwoChars"
+    );
     assert_eq!(
         decoded.signals.iter().map(|s| s.name).collect::<Vec<_>>(),
         vec!["AVeryLongSignalNameThatExceedsThirtyTwoChars"],
@@ -380,7 +390,10 @@ fn single_member_value_table_label_only_on_exact_match() {
     let frame = make_frame(256, false, vec![0, 0, 0, 0, 5, 0, 0, 0]);
     let decoded = db.decode(&frame).unwrap();
     let counter = signal_by_name(&decoded, "Counter");
-    assert_eq!(counter.label, None, "ordinary value must not get the SNA label");
+    assert_eq!(
+        counter.label, None,
+        "ordinary value must not get the SNA label"
+    );
     assert!((counter.value - 5.0).abs() < 1e-12);
     assert_eq!(counter.unit, "count");
 }
@@ -396,7 +409,10 @@ fn value_table_for_signal_returns_sorted_rows() {
     assert_eq!(rows[3].label, "Drive");
     // Signed table: rows sorted ascending, including the negative one.
     let signed = db.value_table_for_signal(256, false, "Direction").unwrap();
-    assert_eq!(signed.iter().map(|e| e.raw).collect::<Vec<_>>(), vec![-1, 0, 1]);
+    assert_eq!(
+        signed.iter().map(|e| e.raw).collect::<Vec<_>>(),
+        vec![-1, 0, 1]
+    );
     // Single-member table: still returned — the label stays
     // available even though the signal is not an enum.
     let single = db.value_table_for_signal(256, false, "Counter").unwrap();
@@ -439,7 +455,9 @@ fn physical_of(msg: &DecodedMessage<'_>, name: &str) -> f64 {
 fn encode_returns_none_for_unknown_id() {
     let db = Database::parse(SAMPLE_DBC).unwrap();
     let mut base = vec![0u8; 8];
-    assert!(db.encode_frame(std_id(0x600), &[("Whatever", 0.0)], &mut base).is_none());
+    assert!(db
+        .encode_frame(std_id(0x600), &[("Whatever", 0.0)], &mut base)
+        .is_none());
 }
 
 #[test]
@@ -706,11 +724,15 @@ BA_ "GenMsgCycleTime" BO_ 256 100;
 "#;
     let db = Database::parse(dbc).unwrap();
     assert_eq!(
-        db.describe_message(std_id(256)).unwrap().gen_msg_cycle_time_ms,
+        db.describe_message(std_id(256))
+            .unwrap()
+            .gen_msg_cycle_time_ms,
         Some(100),
     );
     assert_eq!(
-        db.describe_message(std_id(257)).unwrap().gen_msg_cycle_time_ms,
+        db.describe_message(std_id(257))
+            .unwrap()
+            .gen_msg_cycle_time_ms,
         None,
     );
 }
@@ -825,17 +847,10 @@ fn encode_round_trips_every_signal_in_demo_fixture() {
             // arm; in that case there's nothing to compare against
             // and we move on. The non-muxed and switch signals are
             // always present.
-            if let Some(s) = decoded
-                .signals
-                .iter()
-                .find(|s| s.name == sig.signal.name)
-            {
+            if let Some(s) = decoded.signals.iter().find(|s| s.name == sig.signal.name) {
                 // f32 IEEE signals lose precision in the bottom
                 // few bits; everything else is exact.
-                let tol = if matches!(
-                    sig.extended_type,
-                    SignalExtendedValueType::IEEEfloat32Bit
-                ) {
+                let tol = if matches!(sig.extended_type, SignalExtendedValueType::IEEEfloat32Bit) {
                     1e-5
                 } else {
                     1e-9
@@ -996,7 +1011,11 @@ fn dbc_content_carries_signal_bit_layout() {
     let db = Database::parse(SAMPLE_DBC).unwrap();
     let content = db.dbc_content();
     let engine = content.iter().find(|m| m.name == "EngineData").unwrap();
-    let speed = engine.signals.iter().find(|s| s.name == "EngineSpeed").unwrap();
+    let speed = engine
+        .signals
+        .iter()
+        .find(|s| s.name == "EngineSpeed")
+        .unwrap();
     assert_eq!(speed.start_bit, 0);
     assert_eq!(speed.length, 16);
     assert_eq!(speed.byte_order, ByteOrder::Little);
@@ -1018,12 +1037,20 @@ fn dbc_content_carries_signal_factor_offset_and_range() {
     let db = Database::parse(SAMPLE_DBC).unwrap();
     let content = db.dbc_content();
     let engine = content.iter().find(|m| m.name == "EngineData").unwrap();
-    let speed = engine.signals.iter().find(|s| s.name == "EngineSpeed").unwrap();
+    let speed = engine
+        .signals
+        .iter()
+        .find(|s| s.name == "EngineSpeed")
+        .unwrap();
     assert!((speed.factor - 0.25).abs() < 1e-9);
     assert!((speed.offset - 0.0).abs() < 1e-9);
     assert!((speed.min - 0.0).abs() < 1e-9);
     assert!((speed.max - 16383.75).abs() < 1e-9);
-    let temp = engine.signals.iter().find(|s| s.name == "EngineTemp").unwrap();
+    let temp = engine
+        .signals
+        .iter()
+        .find(|s| s.name == "EngineTemp")
+        .unwrap();
     assert!((temp.offset - -40.0).abs() < 1e-9);
     assert!((temp.min - -40.0).abs() < 1e-9);
     assert!((temp.max - 215.0).abs() < 1e-9);
@@ -1036,7 +1063,11 @@ fn dbc_content_carries_mux_indicator() {
     let muxed = content.iter().find(|m| m.name == "MuxedMsg").unwrap();
     let switch = muxed.signals.iter().find(|s| s.name == "Mux").unwrap();
     assert_eq!(switch.mux, SignalMux::Multiplexor);
-    let mode0 = muxed.signals.iter().find(|s| s.name == "Mode0Field").unwrap();
+    let mode0 = muxed
+        .signals
+        .iter()
+        .find(|s| s.name == "Mode0Field")
+        .unwrap();
     assert_eq!(mode0.mux, SignalMux::Multiplexed { selector: 0 });
     let always = muxed.signals.iter().find(|s| s.name == "Always").unwrap();
     assert_eq!(always.mux, SignalMux::Plain);
@@ -1117,7 +1148,12 @@ fn signals_carry_the_transmitter() {
 fn signals_carry_the_mux_selector() {
     let db = Database::parse(SAMPLE_DBC).unwrap();
     let sigs = db.signals();
-    let sel = |name: &str| sigs.iter().find(|s| s.signal_name == name).unwrap().mux_selector;
+    let sel = |name: &str| {
+        sigs.iter()
+            .find(|s| s.signal_name == name)
+            .unwrap()
+            .mux_selector
+    };
     // Multiplexed signals carry their selector group; the
     // multiplexor itself and plain signals carry none.
     assert_eq!(sel("Mode0Field"), Some(0));
@@ -1133,8 +1169,14 @@ fn decode_mux_selector_reads_only_the_multiplexor() {
     assert!(db.has_multiplexor());
     assert!(!Database::parse(TRANSMITTER_DBC).unwrap().has_multiplexor());
     let id = cannet_core::CanId::standard(512).unwrap();
-    assert_eq!(db.decode_mux_selector(id, &[0, 0xAA, 0xBB, 0, 0, 0, 0, 0]), Some(0));
-    assert_eq!(db.decode_mux_selector(id, &[1, 0x12, 0x34, 0, 0, 0, 0, 0]), Some(1));
+    assert_eq!(
+        db.decode_mux_selector(id, &[0, 0xAA, 0xBB, 0, 0, 0, 0, 0]),
+        Some(0)
+    );
+    assert_eq!(
+        db.decode_mux_selector(id, &[1, 0x12, 0x34, 0, 0, 0, 0, 0]),
+        Some(1)
+    );
     // A message without a multiplexor has no selector.
     let plain = cannet_core::CanId::standard(256).unwrap();
     assert_eq!(db.decode_mux_selector(plain, &[0; 8]), None);
@@ -1228,7 +1270,10 @@ fn gen_sig_start_value_and_send_type_have_typed_accessors() {
     let desc = db.describe_message(CanId::standard(291).unwrap()).unwrap();
     // ENUM-typed GenMsgSendType value 0 resolves to its label.
     assert_eq!(desc.gen_msg_send_type.as_deref(), Some("Cyclic"));
-    assert_eq!(desc.calc_fields.counter.as_ref().unwrap().signal, "AliveCtr");
+    assert_eq!(
+        desc.calc_fields.counter.as_ref().unwrap().signal,
+        "AliveCtr"
+    );
     let start = |name: &str| {
         desc.signals
             .iter()
@@ -1287,6 +1332,10 @@ fn demo_dbc_calculated_field_examples_resolve() {
     assert_eq!(desc.gen_msg_send_type.as_deref(), Some("Cyclic"));
     assert_eq!(desc.gen_msg_cycle_time_ms, Some(100));
     assert_eq!(desc.transmitter.as_deref(), Some("ECU2"));
-    let contactor = desc.signals.iter().find(|s| s.name == "ContactorReq").unwrap();
+    let contactor = desc
+        .signals
+        .iter()
+        .find(|s| s.name == "ContactorReq")
+        .unwrap();
     assert_eq!(contactor.start_value_raw, Some(2.0));
 }

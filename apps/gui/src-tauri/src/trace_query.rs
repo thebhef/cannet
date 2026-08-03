@@ -26,13 +26,16 @@ use crate::ipc::{
 use crate::signal_snapshot;
 use crate::trace_store::{self, RawTraceFrame, TraceStore};
 
-
 /// Pull a `[start, end)` slice out of the trace store and decode each
 /// frame against the loaded DBCs (first that matches wins). Shared by
 /// the `fetch_trace_range` command (trace-view scrolling) and the
 /// `trace-grew` tail (auto-scroll live tail). Out-of-range or
 /// oversized ranges clamp to what's stored, matching [`TraceStore::slice`].
-pub(crate) fn collect_trace_records(state: &AppState, start: u64, end: u64) -> Vec<TraceFrameRecord> {
+pub(crate) fn collect_trace_records(
+    state: &AppState,
+    start: u64,
+    end: u64,
+) -> Vec<TraceFrameRecord> {
     let start_us = usize::try_from(start).unwrap_or(usize::MAX);
     let end_us = usize::try_from(end).unwrap_or(usize::MAX);
     let raw = state.trace_store.slice(start_us, end_us);
@@ -54,7 +57,6 @@ pub(crate) fn collect_trace_records(state: &AppState, start: u64, end: u64) -> V
         })
         .collect()
 }
-
 
 /// Resolve `filter`'s decode-dependent leaves against the loaded DBCs
 /// into the set of arbitration ids whose decode could change the
@@ -205,8 +207,9 @@ fn by_id_cmp(
         "rate" => a.rate.total_cmp(&b.rate),
         "idx" => fa.index.cmp(&fb.index),
         "time" => fa.timestamp_seconds.total_cmp(&fb.timestamp_seconds),
-        "bus" => bus_sort_key(fa.bus_id.as_deref(), names)
-            .cmp(bus_sort_key(fb.bus_id.as_deref(), names)),
+        "bus" => {
+            bus_sort_key(fa.bus_id.as_deref(), names).cmp(bus_sort_key(fb.bus_id.as_deref(), names))
+        }
         "dir" => fa.direction.cmp(fb.direction),
         "id" => fa.id.cmp(&fb.id),
         "kind" => kind_sort_key(&fa.kind).cmp(kind_sort_key(&fb.kind)),
@@ -737,8 +740,7 @@ pub(crate) fn ensure_active_filter_index<'a>(
     state: &'a AppState,
     filter: &FilterPredicate,
 ) -> Option<std::sync::MutexGuard<'a, Option<ActiveFilterIndex>>> {
-    let mut guard = state
-        .filter_index();
+    let mut guard = state.filter_index();
     let session = state.trace_store.session_start_ns();
     let needs_rebuild = match guard.as_ref() {
         Some(a) => a.predicate != *filter || a.session_start_ns != session,

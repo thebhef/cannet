@@ -224,8 +224,14 @@ const RX_GAP_PERIODIC_BAND_NS: std::ops::RangeInclusive<u64> = 1_000_000..=2_000
 /// `None` when nothing qualifies (no hardware rx in the capture). Pure —
 /// the capture-finish command feeds it the capture window's frames.
 #[must_use]
-#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-pub fn rx_gap_stats(series: &std::collections::HashMap<(String, u32), Vec<u64>>) -> Option<RxGapReport> {
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+pub fn rx_gap_stats(
+    series: &std::collections::HashMap<(String, u32), Vec<u64>>,
+) -> Option<RxGapReport> {
     let mut report: Option<RxGapReport> = None;
     for ((bus, id), ts) in series {
         if ts.len() < RX_GAP_MIN_GAPS + 1 {
@@ -554,7 +560,10 @@ pub fn diag_capture_finish(
         return Err("no diagnostic samples were captured".into());
     }
     let mut report = summarize(&label, &samples);
-    report.rx_gap = rx_gap_stats(&capture_rx_series(&app_state.trace_store, store_len_at_start));
+    report.rx_gap = rx_gap_stats(&capture_rx_series(
+        &app_state.trace_store,
+        store_len_at_start,
+    ));
     let written = match path {
         Some(p) => {
             let json = serde_json::to_string_pretty(&report)

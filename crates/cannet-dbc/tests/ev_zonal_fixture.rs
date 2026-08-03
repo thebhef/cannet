@@ -12,8 +12,8 @@ fn load(name: &str) -> Database {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../examples/ev-zonal/dbc")
         .join(name);
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let text =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let db = Database::parse(&text).expect("fixture must parse");
     assert!(
         db.parse_warnings().is_empty(),

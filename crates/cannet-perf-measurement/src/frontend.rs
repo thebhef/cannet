@@ -222,14 +222,8 @@ impl From<&FrontendReport> for FrontendMetrics {
             tx_late_ms_mean: r.gauge("tx_late_ms").mean,
             flush_ms_max: r.gauge("flush_ms").max,
             tx_late_ms_max: r.gauge("tx_late_ms").max,
-            rx_gap_p95_ratio_worst: r
-                .rx_gap
-                .as_ref()
-                .map_or(0.0, |g| g.worst_p95_ratio),
-            rx_gap_short_frac_worst: r
-                .rx_gap
-                .as_ref()
-                .map_or(0.0, |g| g.worst_short_frac),
+            rx_gap_p95_ratio_worst: r.rx_gap.as_ref().map_or(0.0, |g| g.worst_p95_ratio),
+            rx_gap_short_frac_worst: r.rx_gap.as_ref().map_or(0.0, |g| g.worst_short_frac),
         }
     }
 }
@@ -440,8 +434,16 @@ pub fn check_frontend(
     // one-off OS writeback noise). Always active (an absent gauge reads 0,
     // which passes).
     for (metric, cur, ceiling) in [
-        ("flush_ms_mean", current.flush_ms_mean, ftol::FLUSH_MS_CEILING),
-        ("tx_late_ms_mean", current.tx_late_ms_mean, ftol::TX_LATE_MS_CEILING),
+        (
+            "flush_ms_mean",
+            current.flush_ms_mean,
+            ftol::FLUSH_MS_CEILING,
+        ),
+        (
+            "tx_late_ms_mean",
+            current.tx_late_ms_mean,
+            ftol::TX_LATE_MS_CEILING,
+        ),
     ] {
         verdicts.push(Verdict {
             mode: "frontend",
@@ -460,11 +462,7 @@ pub fn check_frontend(
     // generous floor, and inert until a baseline carries the fields
     // (pre-existing baselines hold 0), like the memory tier.
     for (metric, base, cur) in [
-        (
-            "flush_ms_max",
-            baseline.flush_ms_max,
-            current.flush_ms_max,
-        ),
+        ("flush_ms_max", baseline.flush_ms_max, current.flush_ms_max),
         (
             "tx_late_ms_max",
             baseline.tx_late_ms_max,
@@ -678,10 +676,16 @@ mod tests {
         // jank blows past 0.03 * 2 + 0.05 = 0.11; the others stay in band.
         let cur = metrics(1.5, 13.0, 30.0, 0.5);
         let verdicts = check_frontend(&base, &cur, Expected::default());
-        let jank = verdicts.iter().find(|v| v.metric == "jank_fraction").unwrap();
+        let jank = verdicts
+            .iter()
+            .find(|v| v.metric == "jank_fraction")
+            .unwrap();
         assert!(!jank.pass, "jank regressed");
         assert!(
-            verdicts.iter().filter(|v| v.metric != "jank_fraction").all(|v| v.pass),
+            verdicts
+                .iter()
+                .filter(|v| v.metric != "jank_fraction")
+                .all(|v| v.pass),
             "only jank should fail"
         );
     }
@@ -695,10 +699,16 @@ mod tests {
         let mut cur = metrics(1.0, 12.0, 27.0, 0.03);
         cur.rx_fps_retention = 0.5; // halved as the buffer grew
         let verdicts = check_frontend(&base, &cur, Expected::default());
-        let rx = verdicts.iter().find(|v| v.metric == "rx_fps_retention").unwrap();
+        let rx = verdicts
+            .iter()
+            .find(|v| v.metric == "rx_fps_retention")
+            .unwrap();
         assert!(!rx.pass, "rx retention 0.5 < 0.80 floor must fail");
         assert!(
-            verdicts.iter().filter(|v| v.metric != "rx_fps_retention").all(|v| v.pass),
+            verdicts
+                .iter()
+                .filter(|v| v.metric != "rx_fps_retention")
+                .all(|v| v.pass),
             "only rx retention should fail"
         );
     }
@@ -743,7 +753,10 @@ mod tests {
         assert!(!drift.pass, "runaway renderer drift must fail");
         // All seven memory verdicts are present (baseline armed) and only
         // the renderer drift one failed.
-        assert_eq!(verdicts.iter().filter(|v| v.metric.contains("_mb")).count(), 7);
+        assert_eq!(
+            verdicts.iter().filter(|v| v.metric.contains("_mb")).count(),
+            7
+        );
         assert!(
             verdicts
                 .iter()
@@ -765,14 +778,23 @@ mod tests {
         cur.flush_ms_mean = 38.0; // > 25 ms ceiling (systematic stall)
         cur.tx_late_ms_mean = 27.0; // > 18 ms ceiling
         let verdicts = check_frontend(&base, &cur, Expected::default());
-        let flush = verdicts.iter().find(|v| v.metric == "flush_ms_mean").unwrap();
-        let txl = verdicts.iter().find(|v| v.metric == "tx_late_ms_mean").unwrap();
+        let flush = verdicts
+            .iter()
+            .find(|v| v.metric == "flush_ms_mean")
+            .unwrap();
+        let txl = verdicts
+            .iter()
+            .find(|v| v.metric == "tx_late_ms_mean")
+            .unwrap();
         assert!(!flush.pass, "38ms mean flush must fail the 25ms ceiling");
         assert!(!txl.pass, "27ms mean lateness must fail the 18ms ceiling");
         // The retention gates stayed green — proving the ceilings catch
         // what the averages cannot.
         assert!(
-            verdicts.iter().filter(|v| v.metric.ends_with("_retention")).all(|v| v.pass),
+            verdicts
+                .iter()
+                .filter(|v| v.metric.ends_with("_retention"))
+                .all(|v| v.pass),
             "throughput retention is blind to the sub-second stall",
         );
         // And a healthy run passes both ceilings.
@@ -848,8 +870,14 @@ mod tests {
         cur.flush_ms_mean = 20.0; // still under the 25 ms mean ceiling
         cur.tx_late_ms_mean = 15.0; // still under the 18 ms mean ceiling
         let verdicts = check_frontend(&base, &cur, Expected::default());
-        let fmax = verdicts.iter().find(|v| v.metric == "flush_ms_max").unwrap();
-        let lmax = verdicts.iter().find(|v| v.metric == "tx_late_ms_max").unwrap();
+        let fmax = verdicts
+            .iter()
+            .find(|v| v.metric == "flush_ms_max")
+            .unwrap();
+        let lmax = verdicts
+            .iter()
+            .find(|v| v.metric == "tx_late_ms_max")
+            .unwrap();
         assert!(!fmax.pass, "150ms spike must fail (mean gate passed it)");
         assert!(!lmax.pass, "140ms wake spike must fail");
         assert!(
@@ -923,8 +951,14 @@ mod tests {
             tx_fps: Some(500.0),
         };
         let verdicts = check_frontend(&base, &cur, expected);
-        let rx = verdicts.iter().find(|v| v.metric == "rx_fps_expected").unwrap();
-        let tx = verdicts.iter().find(|v| v.metric == "tx_fps_expected").unwrap();
+        let rx = verdicts
+            .iter()
+            .find(|v| v.metric == "rx_fps_expected")
+            .unwrap();
+        let tx = verdicts
+            .iter()
+            .find(|v| v.metric == "tx_fps_expected")
+            .unwrap();
         assert!(!rx.pass, "700 below the 850 band floor must fail");
         assert!(!tx.pass, "650 above the 575 band ceiling must fail");
 

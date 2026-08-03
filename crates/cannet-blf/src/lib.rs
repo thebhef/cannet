@@ -213,7 +213,13 @@ fn can_message_to_frame(m: &CanMessage, start_ns: u64) -> Result<CanFrame, BlfSo
     let id = classify_id(m.can_id(), m.is_extended_id())?;
     let direction = classify_direction(m.flags);
     if (m.flags & CAN_FLAG_RTR) != 0 {
-        return Ok(CanFrame::remote(timestamp_ns, channel, id, direction, m.dlc));
+        return Ok(CanFrame::remote(
+            timestamp_ns,
+            channel,
+            id,
+            direction,
+            m.dlc,
+        ));
     }
     Ok(CanFrame::classic(
         timestamp_ns,
@@ -230,7 +236,13 @@ fn can_message2_to_frame(m: &CanMessage2, start_ns: u64) -> Result<CanFrame, Blf
     let id = classify_id(m.can_id(), m.is_extended_id())?;
     let direction = classify_direction(m.flags);
     if m.is_remote() {
-        return Ok(CanFrame::remote(timestamp_ns, channel, id, direction, m.dlc));
+        return Ok(CanFrame::remote(
+            timestamp_ns,
+            channel,
+            id,
+            direction,
+            m.dlc,
+        ));
     }
     Ok(CanFrame::classic(
         timestamp_ns,
@@ -259,15 +271,28 @@ fn can_fd_message_to_frame(m: &CanFdMessage, start_ns: u64) -> Result<CanFrame, 
     )?)
 }
 
-fn can_fd_message_64_to_frame(m: &CanFdMessage64, start_ns: u64) -> Result<CanFrame, BlfSourceError> {
+fn can_fd_message_64_to_frame(
+    m: &CanFdMessage64,
+    start_ns: u64,
+) -> Result<CanFrame, BlfSourceError> {
     let timestamp_ns = absolute_ts(m.event.timestamp_ns(), start_ns);
     let channel = adjust_channel_to_zero_based(u16::from(m.channel))?;
     let id = classify_id(m.can_id(), m.is_extended_id())?;
     // Direction in CAN_FD_MESSAGE_64 is encoded in `dir`, not in `flags`.
     // 0 = Rx, 1 = Tx (mirrors Vector's convention).
-    let direction = if m.dir == 0 { Direction::Rx } else { Direction::Tx };
+    let direction = if m.dir == 0 {
+        Direction::Rx
+    } else {
+        Direction::Tx
+    };
     if m.is_remote() {
-        return Ok(CanFrame::remote(timestamp_ns, channel, id, direction, m.dlc));
+        return Ok(CanFrame::remote(
+            timestamp_ns,
+            channel,
+            id,
+            direction,
+            m.dlc,
+        ));
     }
     Ok(CanFrame::fd(
         timestamp_ns,
@@ -460,10 +485,9 @@ impl BlfCaptureWriter {
     /// destination. Returns the byte size and frame count for the
     /// host's system-message integration.
     pub fn finish(mut self) -> Result<FinishedCapture, BlfWriteError> {
-        let inner = self
-            .inner
-            .take()
-            .ok_or_else(|| BlfWriteError::Io(io::Error::other("writer has already been finished")))?;
+        let inner = self.inner.take().ok_or_else(|| {
+            BlfWriteError::Io(io::Error::other("writer has already been finished"))
+        })?;
         let byte_size = inner.finish()?;
         fs::rename(&self.temp, &self.dest)?;
         Ok(FinishedCapture {
@@ -546,10 +570,20 @@ fn frame_to_object_bytes(frame: &CanFrame, start_ns: Option<u64>) -> Vec<u8> {
         CanFramePayload::Remote { dlc } => {
             // Remote frames carry no data; emit a CAN_MESSAGE2 with
             // RTR bit set and an empty data slot.
-            let m = build_can_message2(rel_ns, channel, flags | CAN_FLAG_RTR, *dlc, id_raw, Vec::new());
+            let m = build_can_message2(
+                rel_ns,
+                channel,
+                flags | CAN_FLAG_RTR,
+                *dlc,
+                id_raw,
+                Vec::new(),
+            );
             encode_can_message2(&m)
         }
-        CanFramePayload::Fd { data, flags: fd_flags } => {
+        CanFramePayload::Fd {
+            data,
+            flags: fd_flags,
+        } => {
             let dlc = u8::try_from(data.len()).unwrap_or(u8::MAX);
             let mut flags_32: u32 = CAN_FD_64_FLAG_EDL;
             if fd_flags.bitrate_switch {
@@ -834,8 +868,13 @@ mod tests {
         .unwrap();
         let mut w = BlfCaptureWriter::create(&dest).unwrap();
         w.append(&frame).unwrap();
-        w.append_marker(TS_BASE_NS + 1_000_000, "stuck bit", "note-uuid-1", 0x00FF_8800)
-            .unwrap();
+        w.append_marker(
+            TS_BASE_NS + 1_000_000,
+            "stuck bit",
+            "note-uuid-1",
+            0x00FF_8800,
+        )
+        .unwrap();
         let outcome = w.finish().unwrap();
         assert_eq!(outcome.frame_count, 1);
         assert_eq!(outcome.marker_count, 1);
@@ -927,7 +966,10 @@ mod tests {
             PathBuf::from("/tmp/x.blf.part"),
         );
         // Bare filename (no directory part) still works.
-        assert_eq!(temp_path_for(Path::new("x.blf")), PathBuf::from("x.blf.part"));
+        assert_eq!(
+            temp_path_for(Path::new("x.blf")),
+            PathBuf::from("x.blf.part")
+        );
     }
 
     /// The native writer is ns-exact — drift on a high-precision

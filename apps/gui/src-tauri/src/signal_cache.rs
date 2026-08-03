@@ -556,7 +556,7 @@ mod tests {
         assert_eq!(bytes, 525); // 300 + 150 + 70 + 5
         assert_eq!(files, 4);
         assert_eq!(depth, 3); // levels l0, l1, l2 → depth 3
-        // A missing dir reads as empty, not a panic.
+                              // A missing dir reads as empty, not a panic.
         assert_eq!(pyramid_scratch_usage(&d.join("absent")), (0, 0, 0));
     }
 

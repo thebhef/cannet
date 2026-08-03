@@ -233,7 +233,10 @@ fn sample_signals_inner(
 /// per-signal caches up to the store tip, so cost is `O(new matches)`.
 #[tauri::command]
 #[allow(clippy::unused_async)]
-pub(crate) async fn signal_min_max(app: AppHandle, signals: Vec<SignalQuery>) -> Vec<Option<SignalExtent>> {
+pub(crate) async fn signal_min_max(
+    app: AppHandle,
+    signals: Vec<SignalQuery>,
+) -> Vec<Option<SignalExtent>> {
     let state: State<'_, AppState> = app.state();
     let dbs_guard = state.databases();
     let db_refs: Vec<&Database> = dbs_guard.iter().map(|l| l.db.as_ref()).collect();

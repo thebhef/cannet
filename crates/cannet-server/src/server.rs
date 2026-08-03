@@ -40,17 +40,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
+use crate::error_envelope;
 use cannet_wire::{
     frame_to_proto,
     proto::{
         cannet_server_server::{CannetServer as CannetServerTrait, CannetServerServer},
         envelope::Body,
         error::Code,
-        Envelope, FrameBatch, Interface as ProtoInterface, InterfaceList,
-        ListInterfacesRequest, Subscribe, Unsubscribe, WatchInterfacesRequest,
+        Envelope, FrameBatch, Interface as ProtoInterface, InterfaceList, ListInterfacesRequest,
+        Subscribe, Unsubscribe, WatchInterfacesRequest,
     },
 };
-use crate::error_envelope;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
@@ -369,4 +369,3 @@ fn scale_ns(rel_ns: u64, rate: f64) -> u64 {
         0
     }
 }
-

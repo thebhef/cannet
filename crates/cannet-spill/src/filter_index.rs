@@ -132,9 +132,13 @@ impl FilterIndex {
         let seg = self.len / self.seg_entries; // absolute segment number
         let seg_entries = self.seg_entries;
         let dir = &self.dir;
-        grow_fixed(&mut self.segs, self.seg_base, seg, |_| seg_entries * ENTRY_BYTES, |i| {
-            Self::seg_path(dir, i)
-        });
+        grow_fixed(
+            &mut self.segs,
+            self.seg_base,
+            seg,
+            |_| seg_entries * ENTRY_BYTES,
+            |i| Self::seg_path(dir, i),
+        );
         let off = (self.len % self.seg_entries) * ENTRY_BYTES;
         self.segs[seg - self.seg_base].map[off..off + ENTRY_BYTES]
             .copy_from_slice(&(frame_idx as u64).to_le_bytes());
@@ -156,7 +160,12 @@ impl FilterIndex {
     /// predicate: every candidate-id frame matches, so candidate indices
     /// are recorded directly with no frame read. `ids` is the candidate id
     /// set. Idempotent past `built_through`.
-    pub fn extend_membership(&mut self, store: &dyn CandidateSource, ids: &[(u32, bool)], to: usize) {
+    pub fn extend_membership(
+        &mut self,
+        store: &dyn CandidateSource,
+        ids: &[(u32, bool)],
+        to: usize,
+    ) {
         let to = to.min(store.frame_count());
         let mut pos = self.built_through;
         while pos < to {
@@ -247,7 +256,9 @@ impl FilterIndex {
         self.first_pos = floor.clamp(self.first_pos, self.len);
         let target_base = self.first_pos / self.seg_entries;
         let dir = &self.dir;
-        evict_leading(&mut self.segs, &mut self.seg_base, target_base, |i| Self::seg_path(dir, i));
+        evict_leading(&mut self.segs, &mut self.seg_base, target_base, |i| {
+            Self::seg_path(dir, i)
+        });
     }
 
     /// Drop the index: unmap and delete its segment files, reset to empty.
@@ -320,7 +331,12 @@ mod tests {
         // bus "a": candidate ids 0x100 & 0x200 are on bus a, but keep must
         // still confirm bus_id (an id could appear on another bus).
         let ids = [(0x100, false), (0x200, false)];
-        idx.extend(&store, &ids, &|f| f.bus_id.as_deref() == Some("a"), store.len());
+        idx.extend(
+            &store,
+            &ids,
+            &|f| f.bus_id.as_deref() == Some("a"),
+            store.len(),
+        );
         assert_eq!(idx.len(), 20);
         let page = idx.page(0, idx.len());
         assert!(page.iter().all(|&i| i % 3 != 2));
@@ -459,7 +475,7 @@ mod tests {
         // …and a page straddling the mark drops the evicted prefix.
         let page = idx.page(0, idx.len());
         assert_eq!(page, vec![12, 15, 18, 21, 24, 27]); // positions 4..10
-        // A page entirely below the mark comes back empty (no panic).
+                                                        // A page entirely below the mark comes back empty (no panic).
         assert!(idx.page(0, 4).is_empty());
     }
 
@@ -484,7 +500,10 @@ mod tests {
                 .count()
         };
         let before = seg_files();
-        assert!(before >= 3, "10 matches over 4-posting segments span ≥3 files");
+        assert!(
+            before >= 3,
+            "10 matches over 4-posting segments span ≥3 files"
+        );
 
         // Evict every frame below index 13: matches 0,3,6,9,12 go (positions
         // 0..5), so the first live position is 5 (frame 15).
@@ -496,7 +515,11 @@ mod tests {
         assert!(seg_files() < before, "dead leading segment file reclaimed");
         // Surviving matches still page by absolute position across the shift.
         assert_eq!(idx.page(5, 100), vec![15, 18, 21, 24, 27]);
-        assert_eq!(idx.position_of(0), 5, "lower bound never descends below the mark");
+        assert_eq!(
+            idx.position_of(0),
+            5,
+            "lower bound never descends below the mark"
+        );
         // A page wholly below the mark is empty (no panic / unmapped read).
         assert!(idx.page(0, 5).is_empty());
 

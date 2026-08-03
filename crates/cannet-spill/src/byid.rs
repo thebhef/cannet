@@ -162,7 +162,8 @@ impl ByIdIndex {
             // dropped on eviction (DS-8), so map only those at/above it.
             let seg_base = post.cum_cap.partition_point(|&c| c <= first_slot);
             for i in seg_base..post.cum_cap.len() {
-                post.segs.push(open_segment(&seg_path(&dir, id, extended, i))?);
+                post.segs
+                    .push(open_segment(&seg_path(&dir, id, extended, i))?);
             }
             post.len = len;
             post.first_slot = first_slot;
@@ -251,9 +252,13 @@ impl ByIdIndex {
         // method on `self` would conflict with the `&mut` posting borrow).
         let dir = &self.dir;
         let post = self.map.entry((id, extended)).or_default();
-        geometric_push_grow(&mut post.segs, &mut post.cum_cap, post.len, ENTRY_BYTES, |i| {
-            seg_path(dir, id, extended, i)
-        });
+        geometric_push_grow(
+            &mut post.segs,
+            &mut post.cum_cap,
+            post.len,
+            ENTRY_BYTES,
+            |i| seg_path(dir, id, extended, i),
+        );
         let (seg, off) = post.locate(post.len);
         post.segs[seg - post.seg_base].map[off..off + ENTRY_BYTES]
             .copy_from_slice(&frame_idx.to_le_bytes());
@@ -394,10 +399,23 @@ mod tests {
         let got = idx.range(7, false, 0, 1000);
         assert!(!got.is_empty());
         let floor = got[0];
-        assert!(floor > 0 && floor <= 300, "floor {floor} is a dropped-segment boundary ≤ mark");
-        assert_eq!(got, (floor..1000).collect::<Vec<usize>>(), "contiguous above the floor");
-        assert!(idx.range(7, false, 0, floor).is_empty(), "below the floor is gone");
-        assert!(byid_file_count(dir.path()) < before, "leading segment files reclaimed");
+        assert!(
+            floor > 0 && floor <= 300,
+            "floor {floor} is a dropped-segment boundary ≤ mark"
+        );
+        assert_eq!(
+            got,
+            (floor..1000).collect::<Vec<usize>>(),
+            "contiguous above the floor"
+        );
+        assert!(
+            idx.range(7, false, 0, floor).is_empty(),
+            "below the floor is gone"
+        );
+        assert!(
+            byid_file_count(dir.path()) < before,
+            "leading segment files reclaimed"
+        );
     }
 
     #[test]
@@ -441,8 +459,14 @@ mod tests {
             idx.push(7, false, i); // keep some other id live above the mark
         }
         idx.evict_below(50);
-        assert!(idx.range(0x55, false, 0, 1000).is_empty(), "the rare id is gone");
-        assert!(!idx.range(7, false, 0, 1000).is_empty(), "the live id stays");
+        assert!(
+            idx.range(0x55, false, 0, 1000).is_empty(),
+            "the rare id is gone"
+        );
+        assert!(
+            !idx.range(7, false, 0, 1000).is_empty(),
+            "the live id stays"
+        );
     }
 
     #[cfg(unix)]

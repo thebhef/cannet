@@ -407,7 +407,10 @@ impl ResolvedCalculatedFields {
                 _ => violations.push(FieldViolation::Truncated),
             }
         }
-        VerifyOutcome { violations, counter }
+        VerifyOutcome {
+            violations,
+            counter,
+        }
     }
 }
 
@@ -490,8 +493,7 @@ pub fn parse_crc_attribute(signal: &str, text: &str) -> Result<CrcConfig, String
         (Some(name), false) => CrcAlgorithm::Named(name),
         (None, _) => {
             let width = width.ok_or("raw CRC parameters require width")?;
-            let width =
-                u8::try_from(width).map_err(|_| format!("width {width} out of range"))?;
+            let width = u8::try_from(width).map_err(|_| format!("width {width} out of range"))?;
             let poly = poly.ok_or("raw CRC parameters require poly")?;
             CrcAlgorithm::Raw(RawCrcParams {
                 width,
@@ -584,8 +586,7 @@ fn parse_hex_bytes(text: &str) -> Result<Vec<u8>, String> {
 /// memory growth is bounded by the number of distinct raw CRCs ever
 /// configured in the session — a handful in practice.
 fn raw_algorithm(params: RawCrcParams) -> &'static Algorithm<u64> {
-    static CACHE: OnceLock<Mutex<HashMap<RawCrcParams, &'static Algorithm<u64>>>> =
-        OnceLock::new();
+    static CACHE: OnceLock<Mutex<HashMap<RawCrcParams, &'static Algorithm<u64>>>> = OnceLock::new();
     let mut cache = CACHE
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
@@ -726,8 +727,9 @@ fn resolve_counter(
 fn resolve_crc(entry: &MessageEntry, c: &CrcConfig) -> Result<ResolvedCrc, CalcFieldError> {
     let placement = placement_of(entry, &c.signal)?;
     let algorithm: &'static Algorithm<u64> = match &c.algorithm {
-        CrcAlgorithm::Named(name) => crc_named::lookup(name)
-            .ok_or_else(|| CalcFieldError::UnknownAlgorithm(name.clone()))?,
+        CrcAlgorithm::Named(name) => {
+            crc_named::lookup(name).ok_or_else(|| CalcFieldError::UnknownAlgorithm(name.clone()))?
+        }
         CrcAlgorithm::Raw(params) => {
             if !(1..=64).contains(&params.width) {
                 return Err(CalcFieldError::UnusableAlgorithmWidth(params.width));
@@ -757,7 +759,10 @@ fn resolve_crc(entry: &MessageEntry, c: &CrcConfig) -> Result<ResolvedCrc, CalcF
             payload_bits,
         })?;
     if end_bit > payload_bits {
-        return Err(CalcFieldError::RangeOutOfBounds { end_bit, payload_bits });
+        return Err(CalcFieldError::RangeOutOfBounds {
+            end_bit,
+            payload_bits,
+        });
     }
     let range_bytes = (start / 8) as usize..(end_bit / 8) as usize;
     if placement
@@ -861,7 +866,10 @@ BO_ 293 Wide: 8 ECU1
                 }),
             },
         );
-        assert_eq!(err.unwrap_err(), CalcFieldError::UnknownAlgorithm("CRC-99/NOPE".into()));
+        assert_eq!(
+            err.unwrap_err(),
+            CalcFieldError::UnknownAlgorithm("CRC-99/NOPE".into())
+        );
     }
 
     /// The E2E-profile shape: Data ID prefix + payload range. Expected
@@ -902,12 +910,15 @@ BO_ 293 Wide: 8 ECU1
             }),
         };
         assert_eq!(
-            db().resolve_calculated_fields(id(293), &config((0, 56))).map(|_| ()),
+            db().resolve_calculated_fields(id(293), &config((0, 56)))
+                .map(|_| ()),
             Err(CalcFieldError::RangeOverlapsDestination),
             "a 0:56 range covers byte 6, which the 16-bit signal occupies"
         );
 
-        let resolved = db().resolve_calculated_fields(id(293), &config((0, 48))).unwrap();
+        let resolved = db()
+            .resolve_calculated_fields(id(293), &config((0, 48)))
+            .unwrap();
         let mut payload = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x00, 0x00];
         let mut counter = 0;
         resolved.apply(&mut counter, &mut payload).unwrap();
@@ -918,7 +929,11 @@ BO_ 293 Wide: 8 ECU1
             for b in [0x11u8, 0x22, 0x33, 0x44, 0x55, 0x66] {
                 crc ^= u16::from(b) << 8;
                 for _ in 0..8 {
-                    crc = if crc & 0x8000 != 0 { (crc << 1) ^ 0x1021 } else { crc << 1 };
+                    crc = if crc & 0x8000 != 0 {
+                        (crc << 1) ^ 0x1021
+                    } else {
+                        crc << 1
+                    };
                 }
             }
             crc
@@ -1027,7 +1042,9 @@ BO_ 293 Wide: 8 ECU1
             }),
         };
         let database = db();
-        let resolved = database.resolve_calculated_fields(id(291), &config).unwrap();
+        let resolved = database
+            .resolve_calculated_fields(id(291), &config)
+            .unwrap();
         let mut payload = [0x42, 0, 0, 0, 0, 0, 0, 0];
         let mut counter = 0u64;
 
@@ -1038,7 +1055,11 @@ BO_ 293 Wide: 8 ECU1
 
         // The decoded view shows the live values — no special-casing.
         let decoded = database.decode_raw(id(291), &second).unwrap();
-        let alive = decoded.signals.iter().find(|s| s.name == "AliveCtr").unwrap();
+        let alive = decoded
+            .signals
+            .iter()
+            .find(|s| s.name == "AliveCtr")
+            .unwrap();
         assert_eq!(alive.raw_unsigned, 2);
 
         // Verification: first sighting seeds, the consecutive frame
@@ -1064,7 +1085,10 @@ BO_ 293 Wide: 8 ECU1
         let outcome = resolved.verify(&second, Some(2));
         assert_eq!(
             outcome.violations,
-            vec![FieldViolation::CounterSkip { expected: 3, found: 2 }]
+            vec![FieldViolation::CounterSkip {
+                expected: 3,
+                found: 2
+            }]
         );
         assert_eq!(outcome.counter, Some(2));
     }
@@ -1093,21 +1117,33 @@ BO_ 293 Wide: 8 ECU1
         // Non-byte-aligned range.
         assert_eq!(
             resolve(&crc8_j1850_config((4, 8), vec![])).unwrap_err(),
-            CalcFieldError::RangeNotByteAligned { start: 4, length: 8 }
+            CalcFieldError::RangeNotByteAligned {
+                start: 4,
+                length: 8
+            }
         );
         assert_eq!(
             resolve(&crc8_j1850_config((0, 12), vec![])).unwrap_err(),
-            CalcFieldError::RangeNotByteAligned { start: 0, length: 12 }
+            CalcFieldError::RangeNotByteAligned {
+                start: 0,
+                length: 12
+            }
         );
         // Zero-length range.
         assert_eq!(
             resolve(&crc8_j1850_config((0, 0), vec![])).unwrap_err(),
-            CalcFieldError::RangeNotByteAligned { start: 0, length: 0 }
+            CalcFieldError::RangeNotByteAligned {
+                start: 0,
+                length: 0
+            }
         );
         // Range past the declared payload.
         assert_eq!(
             resolve(&crc8_j1850_config((0, 72), vec![])).unwrap_err(),
-            CalcFieldError::RangeOutOfBounds { end_bit: 72, payload_bits: 64 }
+            CalcFieldError::RangeOutOfBounds {
+                end_bit: 72,
+                payload_bits: 64
+            }
         );
         // Range covering the CRC's own byte.
         assert_eq!(
@@ -1146,7 +1182,10 @@ BO_ 293 Wide: 8 ECU1
                 crc: None,
             })
             .unwrap_err(),
-            CalcFieldError::RolloverTooLarge { rollover: 16, max: 15 }
+            CalcFieldError::RolloverTooLarge {
+                rollover: 16,
+                max: 15
+            }
         );
         // Algorithm wider than the destination.
         assert_eq!(
@@ -1160,7 +1199,10 @@ BO_ 293 Wide: 8 ECU1
                 }),
             })
             .unwrap_err(),
-            CalcFieldError::AlgorithmWiderThanSignal { width: 16, signal_bits: 8 }
+            CalcFieldError::AlgorithmWiderThanSignal {
+                width: 16,
+                signal_bits: 8
+            }
         );
         // Unknown message id.
         assert_eq!(
@@ -1192,7 +1234,10 @@ BO_ 293 Wide: 8 ECU1
                 rollover: Some(7),
             })
         );
-        assert_eq!(parse_counter_attribute("A", ""), Ok(CounterConfig::new("A")));
+        assert_eq!(
+            parse_counter_attribute("A", ""),
+            Ok(CounterConfig::new("A"))
+        );
         assert!(parse_counter_attribute("A", "increment=1;increment=2").is_err());
         assert!(parse_counter_attribute("A", "rolover=15").is_err());
         assert!(parse_counter_attribute("A", "increment=banana").is_err());
@@ -1282,10 +1327,13 @@ BO_ 293 Wide: 8 ECU1
             }),
         };
         assert_eq!(
-            db().resolve_calculated_fields(id(292), &config((0, 8))).map(|_| ()),
+            db().resolve_calculated_fields(id(292), &config((0, 8)))
+                .map(|_| ()),
             Err(CalcFieldError::RangeOverlapsDestination)
         );
-        let resolved = db().resolve_calculated_fields(id(292), &config((8, 56))).unwrap();
+        let resolved = db()
+            .resolve_calculated_fields(id(292), &config((8, 56)))
+            .unwrap();
         let mut payload = [0u8; 8];
         payload[1..8].copy_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77]);
         let mut counter = 0;
