@@ -674,10 +674,10 @@ sliced by surface, not landed as one change.
 Two slices, split by surface. **This half is the data views**; the
 other is the app / connection / appearance knobs.
 
-| Slice | Items |
-| --- | --- |
-| **Data views** (this half) | Default column sets, widths, and hidden columns (trace + signal); CAN-ID and timestamp formatting; default y-axis mode; default auto-scroll / trace mode / events overlay; DBC auto-reload opt-out. |
-| **App, connection, appearance** (second half) | Startup behaviour; default server address; default nominal bitrate; seed layout; palettes; theme and density; confirmation-prompt suppression. |
+| Slice | Items | State |
+| --- | --- | --- |
+| **Data views** | Default column sets, widths, and hidden columns (trace + signal); CAN-ID and timestamp formatting; default y-axis mode; default auto-scroll / trace mode / events overlay; DBC auto-reload opt-out. | **complete** — eight fields, plus one deferred item (timestamp formatting) with its reasoning below |
+| **App, connection, appearance** | Startup behaviour; default server address; default nominal bitrate; seed layout; palettes; theme and density; confirmation-prompt suppression. | outstanding |
 
 Minimum system-log level is not in either: it landed in Stage 2 #2.
 
@@ -916,6 +916,12 @@ reloads while auto-reload is on* (over all five event kinds an editor's
 save produces), *auto-reload off leaves the in-memory copy alone*, *a
 removal is reported whichever way the setting is set*, *an event that
 touches no content is ignored either way*.
+
+**Measured:** `cannet-perf-measurement check` passes all 12 gated
+metrics (tracebuffer, grpc, hardware-peak) against the promoted
+baseline after the change; the frontend tier is skipped, as in Stages 3
+and 4, because Task 44 Tier 0 still owes a self-driving capture. Eight
+new fields take `settings.json` to thirty-one.
 
 ## Interlock with Tasks 46 and 47
 
