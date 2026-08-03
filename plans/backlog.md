@@ -47,6 +47,16 @@ refinements), and **Task 16** (hotkey framework).
 
 ### CI / checks
 
+- `[cleanup]` **`apps/gui/src-tauri/Cargo.toml` has no `custom-protocol`
+  feature**, so `cargo build --release -p cannet-gui` produces a binary
+  that still points at the Vite dev server and comes up with no frontend
+  — silently, since the window opens and the host runs. The Tauri
+  template carries `custom-protocol = ["tauri/custom-protocol"]` for
+  exactly this. `pnpm --dir apps/gui tauri build` is unaffected (the CLI
+  passes the feature), and the README now says to use it, but the
+  failure mode costs whoever hits it a debugging session. (Found taking
+  the Task 44 release capture.)
+
 Static and automated checks we'd like running on the repo to catch a
 class of bug before it ships, rather than relying on the next user to
 trip over it.
