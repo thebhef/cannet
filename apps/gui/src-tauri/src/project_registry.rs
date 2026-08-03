@@ -156,9 +156,9 @@ impl ProjectEntry {
 }
 
 /// What one row of the project cache list is, as the settings view shows
-/// it. Exactly one state per row, in the order the badges are ranked:
-/// the open project first, then a project directory that is no longer
-/// there, then one cannet chose the location of.
+/// it. Exactly one state per row, ranked in the order below: what is
+/// true of the open project outranks what is true of a directory that is
+/// no longer there, which outranks where the directory came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CacheRowState {
@@ -173,6 +173,12 @@ pub enum CacheRowState {
     /// cannet chose the location, because the user named none. These are
     /// the rows that offer `Save as…` (ADR 0042 §5).
     AutoLocated,
+    /// The directory is still there, but is no longer a project
+    /// directory: its `.cannet_prj` moved away and left the `.cannet/`
+    /// un-paired (ADR 0042 §2). Surfacing it is the point — an orphaned
+    /// workspace directory is exactly the cache a user has no other way
+    /// to find.
+    Orphaned,
     /// A project directory the user made, not the open one.
     Known,
 }
@@ -222,6 +228,11 @@ fn rows(registry: &ProjectRegistry, active_root: &Path) -> Vec<ProjectCacheRow> 
 /// Which badge `entry` wears. Active wins over everything (the open
 /// project's directory exists by construction), and a directory that is
 /// no longer there is the next thing worth saying about it.
+///
+/// Auto-located is checked before orphaned because an auto-located
+/// directory holds no `.cannet_prj` in the usual case — its project file
+/// lives in the user's own folder, or nowhere at all — so it would read
+/// as orphaned when it is nothing of the kind.
 fn row_state(entry: &ProjectEntry, active_root: &Path) -> CacheRowState {
     if entry.root_path() == active_root {
         CacheRowState::Active
@@ -229,6 +240,8 @@ fn row_state(entry: &ProjectEntry, active_root: &Path) -> CacheRowState {
         CacheRowState::Missing
     } else if entry.auto_located {
         CacheRowState::AutoLocated
+    } else if !crate::project_dir::is_project_directory(&entry.root_path()) {
+        CacheRowState::Orphaned
     } else {
         CacheRowState::Known
     }
@@ -674,6 +687,44 @@ mod tests {
         assert_eq!(state_of(theirs.root()), CacheRowState::Known);
         assert_eq!(state_of(auto.root()), CacheRowState::AutoLocated);
         assert_eq!(state_of(gone.root()), CacheRowState::Missing);
+    }
+
+    #[test]
+    fn a_directory_whose_project_file_moved_away_is_listed_as_orphaned() {
+        // ADR 0042 §2: moving the `.cannet_prj` out un-pairs it, and the
+        // orphaned `.cannet/` is what the registry surfaces so its cache
+        // can be reclaimed. Without the badge it would read as a live
+        // project the user still has.
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config");
+        let dir = project_dir(tmp.path(), "work");
+        record(&config, &dir, None, 1_700);
+        assert_eq!(
+            rows(&read(&config), Path::new("elsewhere"))[0].state,
+            CacheRowState::Known
+        );
+
+        std::fs::remove_file(dir.root().join("p.cannet_prj")).unwrap();
+
+        let listed = rows(&read(&config), Path::new("elsewhere"));
+        assert_eq!(listed[0].state, CacheRowState::Orphaned);
+        assert!(dir.workspace_dir().is_dir(), "the .cannet/ is still there");
+    }
+
+    #[test]
+    fn an_auto_located_directory_is_not_mistaken_for_an_orphan() {
+        // It holds no `.cannet_prj` — its project file lives in the
+        // user's own folder, or nowhere at all — so the auto-located
+        // badge has to be decided first.
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config");
+        let auto = crate::project_dir::resolve(None, &tmp.path().join("cache-root"));
+        record(&config, &auto, None, 1_700);
+
+        assert_eq!(
+            rows(&read(&config), Path::new("elsewhere"))[0].state,
+            CacheRowState::AutoLocated
+        );
     }
 
     #[test]

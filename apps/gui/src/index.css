@@ -3536,7 +3536,8 @@ button.trace-event-swatch {
   color: #93a7cc;
   background: #131a26;
 }
-.project-cache-badge.missing {
+.project-cache-badge.missing,
+.project-cache-badge.orphaned {
   border-color: #4d2c2c;
   color: #d98a8a;
   background: #1d1010;

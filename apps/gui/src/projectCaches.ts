@@ -19,9 +19,15 @@ import { invoke } from "@tauri-apps/api/core";
 import { formatBytes } from "./statusLine";
 
 /// The one badge a row wears. `active` outranks the rest — the open
-/// project's directory exists by construction — and `missing` is a
-/// project directory deleted outside the app.
-export type ProjectCacheState = "active" | "missing" | "auto-located" | "known";
+/// project's directory exists by construction — `missing` is a project
+/// directory deleted outside the app, and `orphaned` one whose project
+/// file moved away and left the `.cannet/` un-paired.
+export type ProjectCacheState =
+  | "active"
+  | "missing"
+  | "auto-located"
+  | "orphaned"
+  | "known";
 
 /// One project directory's row, as the host serves it.
 export interface ProjectCacheRow {
@@ -80,6 +86,8 @@ export function badgeLabel(state: ProjectCacheState): string {
       return "project gone";
     case "auto-located":
       return "auto-located";
+    case "orphaned":
+      return "no project file";
     case "known":
       return "known";
   }

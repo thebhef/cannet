@@ -508,7 +508,10 @@ writes, so the panel teaches the file.
   project discards the session in progress, and deleting it is
   unavailable while its cache is mapped. A project directory you
   deleted outside the app is listed as *project gone* until you delete
-  its row, so Clear means the same thing everywhere. And if the open
+  its row, so Clear means the same thing everywhere; one whose
+  `.cannet_prj` you moved away — leaving the `.cannet/` un-paired — says
+  *no project file*, which is otherwise a cache with nothing pointing at
+  it. And if the open
   project is living in cannet's cache space, its row offers **Save
   as…** — this list is the one place you see that it is.
 

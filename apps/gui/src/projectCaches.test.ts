@@ -32,6 +32,7 @@ describe("project cache rows", () => {
     expect(badgeLabel("active")).toBe("active");
     expect(badgeLabel("missing")).toBe("project gone");
     expect(badgeLabel("auto-located")).toBe("auto-located");
+    expect(badgeLabel("orphaned")).toBe("no project file");
     expect(badgeLabel("known")).toBe("known");
   });
 

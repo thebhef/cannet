@@ -152,6 +152,15 @@ describe("the project cache list", () => {
     expect(screen.getByRole("button", { name: "Delete" })).toBeEnabled();
   });
 
+  // ADR 0042 §2: moving a `.cannet_prj` away from its `.cannet/`
+  // un-pairs it, and the orphaned directory is what the registry
+  // surfaces so its cache can be reclaimed.
+  it("says when a listed directory no longer holds a project file", async () => {
+    rows = [row({ root: "/work/unpaired", state: "orphaned" })];
+    await renderList();
+    expect(screen.getByText("no project file")).toBeInTheDocument();
+  });
+
   it("reports a failed action without losing the list", async () => {
     rows = [row({ root: "/work/locked" })];
     await renderList();

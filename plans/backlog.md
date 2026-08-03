@@ -874,3 +874,18 @@ next pass on this surface can address them as one piece.
   where it already is"). Worth doing once projects have settings worth
   moving — i.e. alongside Task 45's promotions — rather than now, when
   three keys are overridable and none is by default.
+
+- `[cannet-gui]` **Deleting an auto-located project's cache leaves its
+  project directory behind, unlisted.** ADR 0042 §5's table says Delete
+  leaves the project directory untouched, without qualification, and
+  Task 47 branch 3 implemented it literally — so deleting an
+  auto-located row forgets the entry but leaves
+  `<app_cache_dir>/projects/<key>/` (a `.cannet/` holding two empty JSON
+  files, a `.gitignore`, and a dangling cache link) with nothing pointing
+  at it. A few hundred bytes, and reopening that project re-registers
+  it, so it is a tidiness question rather than a leak that matters. If it
+  is ever worth fixing, the honest form is an amendment to the ADR saying
+  the
+  "untouched" column means *a directory the user owns* — cannet created
+  that one in its own cache space unasked, and decision 2's symmetry
+  would let it remove one there too.

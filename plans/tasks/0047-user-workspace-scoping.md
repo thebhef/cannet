@@ -601,6 +601,14 @@ the running record of what is done and what moved.
   for. `state` is the one badge a row wears (active outranks auto-located),
   so the row also carries `auto_located` separately — the open project may
   be auto-located too, and that is exactly the row the offer belongs on.
+- **Done: the orphaned row.** The exit criteria name three row states —
+  active, auto-located, orphaned — and the first cut had four that did
+  not include the third: a directory whose `.cannet_prj` moved away read
+  as an ordinary known project. It now reads **no project file**, which
+  is decision 5's "the orphaned `.cannet/` is what the registry surfaces
+  so its cache can be reclaimed" actually surfacing. Auto-located is
+  decided first, since such a directory usually holds no project file
+  and would otherwise read as an orphan.
 - **The list re-reads when the open project changes**, which is also what
   a `Save as…` taken from a row produces. That is why it needs no return
   value from the project context's `onSaveProjectAs` and no polling.
@@ -676,66 +684,104 @@ capture belongs to its project), and the module rustdoc on
 
 ## Documentation deliverables
 
-- **[ADR 0042](../../docs/adr/0042-project-directory-and-scopes.md) —
+- [x] **[ADR 0042](../../docs/adr/0042-project-directory-and-scopes.md) —
   written.** Records every item under "Decisions": always-a-project-
   directory, the `.cannet/` layout, the scope matrix and precedence
   rule, cache locality and keying, Save-As-migrates, the expendability
   of workspace data, and the terminology resolution. The task file
   carries the implementation detail; the ADR carries the decision.
-- **ADR 0034 amendment** — its `settings.json` / `state.json` split
-  becomes two files × two scopes. The settings-vs-state distinction it
-  draws is unchanged and still correct.
-- **ADR 0002** — DS-6's "rooted at the scratch dir" changes when the
-  root becomes `.cannet/cache/`, and DS-7's reload story becomes
-  per-project rather than per-app (decision 6).
-- **ADR 0030** — it documents relative *reading* with absolute
-  *writing* as the GUI's behaviour. Once files inside the project
-  directory are written relative, that decision needs restating, and
-  `projectPaths.ts`'s module doc with it.
-- **Terminology sweep.** "Workspace" currently means the in-memory
-  element/panel set — "an unsaved workspace" is the no-project state,
-  `seedDefaultLayout` builds "the seed workspace". With a project
-  directory always present, that sense needs retiring or renaming;
-  do not leave the word doing two jobs.
+  §4 was corrected in branch 1 (the store opens the link's *target*) and
+  §6 in branch 2 (a hand-written workspace file wins over Save As).
+- [x] **ADR 0034 amendment** — its `settings.json` / `state.json` split
+  becomes two files × two scopes (branch 1). The settings-vs-state
+  distinction it draws is unchanged and still correct. Branch 3 added
+  one more consequence: a descriptor may be a *view* rather than a
+  field, which is what lets the cache list live in the settings panel
+  without inventing a settings key for it.
+- [x] **ADR 0002** — DS-7's reload story is per-project rather than
+  per-app (branch 1). Note the deliverable named DS-6; the phrase it
+  quoted lives in code comments, and DS-7 is what actually changed (see
+  "Corrections", below).
+- [x] **ADR 0030** — restated in branch 2: files inside the project
+  directory are written relative, and `projectPaths.ts`'s module doc
+  says so.
+- [x] **Terminology sweep** — done in branch 3. The in-memory
+  element/panel sense of "workspace" is retired; the word is left doing
+  one job (the scoped data), plus Rust tooling's own unrelated sense of
+  a multi-crate root.
 
 ## Exit criteria
 
-- Every session has a project directory; there is no no-project code
-  path left.
-- cannet never creates a `.cannet/` as a side effect. The only ones it
+Status as of branch 3, which closes the task.
+
+- [x] Every session has a project directory; there is no no-project code
+  path left. *(Branch 1: `resolve` is infallible and total. The
+  frontend's `projectPath: null` is a missing project **file**, not a
+  missing directory.)*
+- [x] cannet never creates a `.cannet/` as a side effect. The only ones it
   writes are auto-located directories in its own cache space and the
   destination the user picked through Save As; any other `.cannet/`
-  beside a project file got there because the user made it.
-- Save As into a chosen directory produces a complete, immediately
+  beside a project file got there because the user made it. *(Branch 1,
+  with a test that the user's folder gains nothing.)*
+- [x] Save As into a chosen directory produces a complete, immediately
   usable project directory — `.cannet/`, its files, the cache link, the
-  `.gitignore`, and the `.cannet_prj` beside it.
-- Two projects each keep their own capture: opening B and returning to
-  A finds A's capture intact.
-- Opening a project directory that is already open is left **undefined**
+  `.gitignore`, and the `.cannet_prj` beside it. *(Branch 2.)*
+- [x] Two projects each keep their own capture: opening B and returning to
+  A finds A's capture intact. *(Branch 1 for the directories, branch 2
+  for the mid-session re-root that makes it true without a relaunch.)*
+- [x] Opening a project directory that is already open is left **undefined**
   (decision 8) — no detection, no guard, no second-view handling. This
   criterion exists to record that the absence is deliberate, not an
-  oversight.
-- A value set at user scope and overridden at workspace scope resolves
+  oversight. *(Nothing was written. The backlog carries the
+  single-instance dependency decision.)*
+- [x] A value set at user scope and overridden at workspace scope resolves
   to the workspace value, proven by tests at the resolution layer.
-- Every persisted key declares its valid scope; a key with no scope
-  fails a test rather than defaulting silently.
-- `blf_channel_maps` lives in `.cannet/` and a second project cannot see
-  the first's mappings.
-- A user who never names a project directory sees no change: the
+  *(Branch 1.)*
+- [x] Every persisted key declares its valid scope; a key with no scope
+  fails a test rather than defaulting silently. *(Branch 2, for both
+  `settings.json` and `state.json`.)*
+- [x] `blf_channel_maps` lives in `.cannet/` and a second project cannot see
+  the first's mappings. *(Branch 2.)*
+- [x] A user who never names a project directory sees no change: the
   auto-created one lives where today's scratch does, with identical
-  defaults.
-- The disk-spill store never lands on the project directory's own
+  defaults. **Corrected wording:** it lives in the same cache *space*,
+  not at the same path — `<app_cache_dir>/projects/<key>` with its cache
+  at `<app_cache_dir>/cache/<hash>`, rather than the single
+  `<app_cache_dir>/current`. Behaviour and defaults are identical; the
+  old `current/` scratch is abandoned, which decision 11 covers (it is
+  pure recomputable cache, and the survey found nothing user-authored in
+  it).
+- [x] The disk-spill store never lands on the project directory's own
   storage: `.cannet/cache/` resolves to cannet-managed local storage,
-  and `cache/` never appears in version control by default.
-- A project directory can be copied to another machine (or another
+  and `cache/` never appears in version control by default. *(Branch 1,
+  both under test.)*
+- [x] A project directory can be copied to another machine (or another
   path) and its DBC / RBS references still resolve — proving paths
-  inside the directory are written relative, not absolute.
-- A DBC that a generator rewrites in the project directory still
-  auto-reloads.
-- The project-directory list shows accurate cache sizes and each row's
+  inside the directory are written relative, not absolute. *(Branch 2.)*
+- [x] A DBC that a generator rewrites in the project directory still
+  auto-reloads. *(Unchanged by this task and still true: the watcher
+  watches each loaded DBC's **parent directory**, and a DBC in the
+  project directory is no different from one anywhere else. Nothing
+  here made a project-directory DBC a special case — which was the
+  point of not symlinking content files. No new test: there is no new
+  behaviour to pin, and the existing watcher tests cover the mechanism.)*
+- [x] The project-directory list shows accurate cache sizes and each row's
   state — active, auto-located, or orphaned. Clear empties a cache,
   Delete removes the cache directory and forgets the project, clear-all
   empties every cache, and no action removes a project directory the
-  user owns.
-- An auto-located row offers `Save as…`, and taking it produces a
-  complete project directory at the chosen destination.
+  user owns. *(Branch 3. The row states are five, not three: `active`,
+  `missing` (the directory was deleted outside the app), `auto-located`,
+  `orphaned` (its project file moved away), and `known`.)*
+- [x] An auto-located row offers `Save as…`, and taking it produces a
+  complete project directory at the chosen destination. *(Branch 3 for
+  the offer, branch 2 for what taking it does. The offer is enabled only
+  on the **open** project's row — see branch 3's note.)*
+
+**Not code, and still outstanding: decision 11's hand-migration.** The
+one install with pre-existing state has to be migrated by hand — the
+project half of the user `state.json` moved into the right project's
+`.cannet/`, and the old `<app_cache_dir>/current` scratch deleted.
+Branch 2 landed the scope-aware write path this was waiting on, so it is
+now safe to do; the destination question decision 11 raises
+(`examples/ev-zonal` has no `.cannet/`, so it auto-locates) still has to
+be answered by whoever does it.
