@@ -28,7 +28,7 @@ use serde::Serialize;
 use crate::persisted_json::{scope_of, Scope};
 use crate::settings::{
     Settings, MIN_INTERVAL_MS, MIN_LOG_ROTATION_BYTES, MIN_SCRATCH_CAP_BYTES, MIN_SYSTEM_LOG_RING,
-    SCOPES, SIDECAR_LOG_LEVELS, SYSTEM_LOG_LEVELS, TRACE_MODES,
+    SCOPES, SIDECAR_LOG_LEVELS, SYSTEM_LOG_LEVELS, TRACE_MODES, Y_AXIS_MODES,
 };
 
 /// A whole-millisecond interval control: the shape every cadence
@@ -403,6 +403,17 @@ const DESCRIPTORS: &[Spec] = &[
         surfaces: &[Surface::Trace],
         kind: Kind::Default,
         control: Control::Bool,
+    },
+    Spec {
+        key: "plot_y_axis_mode",
+        backing: Backing::Field,
+        label: "Default y-axis layout",
+        help: "How a new plot area spreads its signals over y-axes: all                overlaid on one, one axis per unit, or one axis per signal.                Only the starting point — each area's own picker still wins,                and a plot you already have is left as it is drawn.",
+        surfaces: &[Surface::Plot],
+        kind: Kind::Default,
+        control: Control::Enum {
+            options: Y_AXIS_MODES,
+        },
     },
     Spec {
         key: "notice_dwell_ms",

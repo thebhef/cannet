@@ -735,6 +735,38 @@ configured default mode*, *takes auto-scroll and the events overlay
 from the settings*, *lets a panel's own saved config win over the
 default*, *does not retro-fit an open panel when the default changes*.
 
+**Plot default y-axis mode.** *(done)*
+
+| Field | Default | Tags | Scope | Read at |
+| --- | --- | --- | --- | --- |
+| `plot_y_axis_mode` | `unified` | plot / default | user-overridable | `newPlotArea` |
+
+Notes:
+
+- **The setting is read in exactly one place, and it is not
+  `yAxisModeFromRaw`.** That parser's `unified` fallback answers "what
+  was this area drawn as before the field existed" — an area saved
+  without a `yAxisMode` must keep reading as unified, or changing the
+  *creation* default silently re-lays-out plots the user already has.
+  The two creation sites (a panel with no saved layout, and "add plot
+  area") now share one `newPlotArea()`, which is where the setting is
+  read.
+- **`plotPanelConfig.ts` takes its first runtime import**, so its
+  "no React / uPlot imports live here" note is now "no uPlot and no
+  components; the one runtime dependency is `hostSettings`". The
+  module stays testable without a DOM.
+- **`validate` outgrew `too_many_lines`** with the two new fixed-option
+  fields and is split into `refuse_unknown_options` /
+  `refuse_below_minimums` — the two tables it already had, each in its
+  own function. No behaviour change; the anti-drift tests are unmoved.
+
+Behaviour tests (each mutation-checked): `plotPanelConfig.test.ts` →
+*seeds a new area from the setting, not from a literal* (red when
+creation hard-codes `unified`), *leaves an area that already has a mode
+alone* (red when the parsed branch drops `o.yAxisMode`), *does not
+retro-fit an area saved before the field existed* (red when
+`yAxisModeFromRaw`'s fallback reads the setting).
+
 ## Interlock with Tasks 46 and 47
 
 This task grows the settings count past twenty-five, which is more than

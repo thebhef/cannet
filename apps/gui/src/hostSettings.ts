@@ -112,6 +112,10 @@ export interface Settings {
   /// Whether a *freshly created* chronological trace interleaves
   /// timeline events among its rows. Read once at panel creation.
   trace_show_events: boolean;
+  /// How a *newly created* plot area spreads its series over y-axes
+  /// (ADR 0026). Read once, when the area is created; an area that
+  /// already exists keeps the layout it was drawn with.
+  plot_y_axis_mode: string;
 }
 
 export function defaultSettings(): Settings {
@@ -142,6 +146,7 @@ export function defaultSettings(): Settings {
     trace_mode: "by-id",
     trace_auto_scroll: true,
     trace_show_events: true,
+    plot_y_axis_mode: "unified",
   };
 }
 

@@ -91,6 +91,7 @@ pub(crate) const SCOPES: ScopeTable = &[
     ("trace_mode", Scope::UserOverridable),
     ("trace_auto_scroll", Scope::UserOverridable),
     ("trace_show_events", Scope::UserOverridable),
+    ("plot_y_axis_mode", Scope::UserOverridable),
 ];
 
 /// The persisted user settings. `#[serde(default)]` fills any absent field
@@ -278,6 +279,14 @@ pub struct Settings {
     /// Read once at panel creation, like [`Settings::trace_mode`]; the
     /// panel's events checkbox still wins for a panel that exists.
     pub trace_show_events: bool,
+    /// How a **newly created** plot area lays its series out across
+    /// y-axes (ADR 0026) — one of [`Y_AXIS_MODES`], default `unified`.
+    ///
+    /// Read once, when an area is created: the panel's first area, or
+    /// one added with "add plot area". The per-area mode picker still
+    /// wins afterwards, and an area saved before this field existed
+    /// keeps reading as `unified` rather than being re-laid-out.
+    pub plot_y_axis_mode: String,
 }
 
 /// The smallest legal value of any millisecond-interval setting.
@@ -332,6 +341,11 @@ pub const SIDECAR_LOG_LEVELS: &[&str] = &["debug", "info", "warning", "error"];
 /// the field's descriptor publishes as its `enum` options.
 pub const TRACE_MODES: &[&str] = &["chronological", "by-id"];
 
+/// The layout names [`Settings::plot_y_axis_mode`] accepts — the plot's
+/// own `YAxisMode` spellings (ADR 0026), since the value crosses the IPC
+/// verbatim and is narrowed by `yAxisModeFromRaw` on arrival.
+pub const Y_AXIS_MODES: &[&str] = &["unified", "per-unit", "individual"];
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -361,6 +375,7 @@ impl Default for Settings {
             trace_mode: "by-id".to_string(),
             trace_auto_scroll: true,
             trace_show_events: true,
+            plot_y_axis_mode: "unified".to_string(),
         }
     }
 }
@@ -462,6 +477,15 @@ pub(crate) fn validate(settings: Settings) -> (Settings, Vec<String>) {
             settings.scratch_cap_bytes = None;
         }
     }
+    refuse_unknown_options(&mut settings, &mut complaints);
+    refuse_below_minimums(&mut settings, &mut complaints);
+    (settings, complaints)
+}
+
+/// The fixed-option half of [`validate`]: one table row per field whose
+/// value must be one of a published list. Split out of `validate` only
+/// because the two tables together outgrew one function.
+fn refuse_unknown_options(settings: &mut Settings, complaints: &mut Vec<String>) {
     let d = Settings::default();
     for (key, value, allowed, default) in [
         (
@@ -488,9 +512,21 @@ pub(crate) fn validate(settings: Settings) -> (Settings, Vec<String>) {
             TRACE_MODES,
             d.trace_mode.clone(),
         ),
+        (
+            "plot_y_axis_mode",
+            &mut settings.plot_y_axis_mode,
+            Y_AXIS_MODES,
+            d.plot_y_axis_mode.clone(),
+        ),
     ] {
-        refuse_unknown(&mut complaints, key, value, allowed, default);
+        refuse_unknown(complaints, key, value, allowed, default);
     }
+}
+
+/// The numeric-floor half of [`validate`]: one table row per field with
+/// a published minimum. Its counterpart is [`refuse_unknown_options`].
+fn refuse_below_minimums(settings: &mut Settings, complaints: &mut Vec<String>) {
+    let d = Settings::default();
     for (key, value, min, default) in [
         (
             "notice_dwell_ms",
@@ -547,9 +583,8 @@ pub(crate) fn validate(settings: Settings) -> (Settings, Vec<String>) {
             d.log_rotation_bytes,
         ),
     ] {
-        refuse_below(&mut complaints, key, value, min, default);
+        refuse_below(complaints, key, value, min, default);
     }
-    (settings, complaints)
 }
 
 /// Refuse `value` if it is below `min`, reporting the field by name and
@@ -759,6 +794,7 @@ mod tests {
             trace_mode: "chronological".to_string(),
             trace_auto_scroll: false,
             trace_show_events: false,
+            plot_y_axis_mode: "individual".to_string(),
         }
     }
 

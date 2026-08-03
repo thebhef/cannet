@@ -501,8 +501,9 @@ writes, so the panel teaches the file.
   without relaunching cannet.
 - **Defaults you can still change per view.** Some settings only decide
   what a *new* view starts as — the trace panel's **Default trace
-  view**, **Default auto-scroll**, and **Default events overlay**.
-  They are read once, when the panel is created, and the panel's own
+  view**, **Default auto-scroll**, and **Default events overlay**, and
+  the plot's **Default y-axis layout**.
+  They are read once, when the view is created, and the view's own
   controls win from then on: changing one of these never reaches back
   into a panel you already have open, and a panel restored from a
   project keeps what you set in it.
