@@ -52,7 +52,7 @@ export const SHORTCUTS_PANEL_COMPONENT = "shortcuts";
 /// show-or-focus a single instance.
 export const DBC_PANEL_ID = "dbc";
 
-/// The project graph is a singleton panel — one per workspace — so it
+/// The project graph is a singleton panel — one per project — so it
 /// gets a fixed id rather than one keyed on an element.
 export const PROJECT_GRAPH_PANEL_ID = "project-graph";
 
@@ -160,7 +160,7 @@ export function isTabMiddlePress(button: number, target: EventTarget | null): bo
 /**
  * Drop the maximized-view marker from a serialized layout. Dockview's
  * `toJSON` records a maximized group as `grid.maximizedNode` (untyped
- * in `SerializedDockview`), which would make the workspace state, a
+ * in `SerializedDockview`), which would make the persisted layout, a
  * saved project, or an undo snapshot reopen full-screen. Full-screen
  * is a transient view mode, so every persistence path strips it.
  */

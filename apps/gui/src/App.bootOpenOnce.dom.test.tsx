@@ -189,7 +189,7 @@ describe("boot project open", () => {
       await new Promise((r) => setTimeout(r, 100));
     });
     expect(openProjectCalls).toEqual(["C:/fake/auto.cannet_prj"]);
-    // The workspace still mounts (the latched open applied the project).
+    // The layout still mounts (the latched open applied the project).
     await waitFor(() => {
       if (!document.querySelector(".dv-tab")) throw new Error("no dockview tabs yet");
     });

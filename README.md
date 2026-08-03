@@ -434,7 +434,7 @@ of which names its own server address). The **project panel** (or the
 toolbar's **Open project…** / **Save project**) drives it: **Save** /
 **Save As…** write one, **Open…** restores it (re-loads the DBCs and
 restores the bus / binding configuration — hit **Connect** to switch),
-**New** starts a fresh workspace (default layout, no DBCs, disconnected,
+**New** starts a fresh unsaved project (default layout, no DBCs, disconnected,
 buffer cleared). The panel also lists the configured server(s) with
 **Connect all** / **Disconnect all** and the loaded DBCs with **Add…**
 / **Remove** / **Reload all from disk**. The

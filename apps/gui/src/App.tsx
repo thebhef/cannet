@@ -288,9 +288,9 @@ export function App() {
   const [busConfigInFlight, setBusConfigInFlight] = useState<
     Map<string, { speed_bps: number | null; fd: boolean | null; fd_data_speed_bps: number | null }>
   >(() => new Map());
-  // Path of the open project file, or null for an unsaved workspace.
+  // Path of the open project file, or null for an unsaved project.
   const [projectPath, setProjectPath] = useState<string | null>(null);
-  // True when the workspace has changed since it was last saved/opened.
+  // True when the project has changed since it was last saved/opened.
   const [dirty, setDirty] = useState(false);
   // Set while the "unsaved changes — Save / Discard / Cancel?" modal is
   // up (the window-close handler awaits the choice via `resolve`).
@@ -1090,7 +1090,7 @@ export function App() {
     setBusConfigInFlight(new Map());
   }, []);
 
-  // Reset to the seed workspace: one trace element + its panel, plus
+  // Reset to the seed project: one trace element + its panel, plus
   // the project panel. Shared by first launch (no saved layout) and
   // "New project". Reads `dockApiRef.current`, so call it after
   // `onReady` has populated it.
@@ -1099,7 +1099,7 @@ export function App() {
     if (!api) return;
     setRegistry([]);
     const elementId = create("trace");
-    // A seeded workspace is a fresh starting point, not a step in the
+    // A seeded project is a fresh starting point, not a step in the
     // old one — build it under the applying guard and restart both
     // view histories from it.
     applyingLayoutRef.current = true;
@@ -1128,7 +1128,7 @@ export function App() {
       : EMPTY_FOCUS_HISTORY;
   }, [create]);
 
-  /// Snapshot the current workspace into a `Project` (the elements, not
+  /// Snapshot the open project into a `Project` (the elements, not
   /// their runtime state — that re-anchors on reload). Emits
   /// `buses`, `interface_bindings`, and `dbcs` (per-DBC bus scoping).
   const gatherProject = useCallback(
@@ -1161,7 +1161,7 @@ export function App() {
 
   // Record which project is "open" — both the React state and the
   // host-side pointer (ADR 0032) that reopens it on the next launch.
-  // `null` means an unsaved workspace.
+  // `null` means an unsaved project.
   const rememberProject = useCallback((path: string | null) => {
     setProjectPath(path);
     persistLastProject(path);
@@ -1240,7 +1240,7 @@ export function App() {
       const api = dockApiRef.current;
       const layout = validateLayout(project.layout);
       if (api && layout) {
-        // An opened project replaces the workspace wholesale; its
+        // An opened project replaces what was open wholesale; its
         // layout is a fresh baseline, not an undoable step from the
         // previous one — apply under the guard and restart both view
         // histories (same as `seedDefaultLayout`).
@@ -1295,7 +1295,7 @@ export function App() {
   );
 
   const handleNewProject = useCallback(() => {
-    // Fresh workspace: seed layout, no open project, no DBCs, no
+    // A fresh unsaved project: seed layout, no project file, no DBCs, no
     // session — disconnect and clear the buffer too. RBS elements
     // unload first (stopping their schedules).
     for (const e of registryRef.current) {
@@ -1522,7 +1522,7 @@ export function App() {
       } finally {
         // A capture run is unattended — exit so the launching CLI
         // returns. `destroy` skips the dirty-close prompt (applying the
-        // project dirties the workspace). A connect-only / project-only
+        // project marks it dirty). A connect-only / project-only
         // run leaves the app open for interactive use.
         if (!cancelled && automation.captureSecs != null) {
           getCurrentWindow().destroy();
@@ -1550,7 +1550,7 @@ export function App() {
     let unlisten: (() => void) | undefined;
     void win
       .onCloseRequested(async (event) => {
-        // Unsaved state = a dirty project workspace OR any dirty
+        // Unsaved state = a dirty project OR any dirty
         // `.cannet_rbs` (the exit prompt covers both — ADR 0028).
         let rbsDirty = false;
         try {
@@ -1904,7 +1904,7 @@ export function App() {
     "project.open": () => void handleOpenProject(),
     "project.save": () => void handleSaveProject(),
     "project.saveAs": () => void handleSaveProjectAs(),
-    // Close project = return to a fresh no-project workspace (same reset
+    // Close project = return to a fresh unsaved project (same reset
     // the New-project action performs).
     "project.close": handleNewProject,
     "blf.open": () => void handleOpenLog(),
@@ -1984,7 +1984,7 @@ export function App() {
       // empty or half-built layout. Best-effort (ADR 0032). This is the
       // "no project open" layout — a reopened named project (below)
       // overwrites it. Any layout change (panels added / dragged /
-      // closed, columns resized) also marks the workspace dirty.
+      // closed, columns resized) also marks the project dirty.
       // Full-screen state for the command context (gates Escape).
       api.onDidMaximizedGroupChange(() => {
         setHasMaximizedView(api.hasMaximizedGroup());
@@ -1993,7 +1993,7 @@ export function App() {
       api.onDidLayoutChange(() => {
         diagCount("dockview.layoutChange"); // DIAG
         // Strip the transient full-screen marker so neither the
-        // workspace state nor the undo history reopens maximized.
+        // persisted layout nor the undo history reopens maximized.
         const json = stripMaximizedNode(api.toJSON());
         persistLayout(json);
         setDirty(true);

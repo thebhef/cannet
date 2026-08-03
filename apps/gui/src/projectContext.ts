@@ -18,9 +18,9 @@ import type { Bus, InterfaceBinding, LocalVirtualBusDef } from "./types";
  */
 export interface ProjectContextValue {
   /// Path of the open project file, or `null` if none has been saved /
-  /// opened yet (an "unsaved" workspace).
+  /// opened yet (an unsaved project).
   projectPath: string | null;
-  /// True when the workspace has changed since it was last saved /
+  /// True when the project has changed since it was last saved /
   /// opened (an unsaved-changes indicator; also drives the
   /// save-before-quit prompt).
   dirty: boolean;

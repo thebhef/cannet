@@ -1,4 +1,4 @@
-//! Project files: the saved workspace, as a JSON document, read and
+//! Project files: the saved project, as a JSON document, read and
 //! written by the [`open_project`] / [`save_project`] /
 //! [`save_project_as`] commands.
 //!
@@ -166,7 +166,7 @@ pub struct DbcRef {
     pub buses: Vec<String>,
 }
 
-/// A saved workspace.
+/// A saved project.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Project {
     /// Schema version — see [`PROJECT_SCHEMA_VERSION`].

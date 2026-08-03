@@ -334,7 +334,7 @@ directories that pile up.
   idea that would half-work: the file loads, and only the reload
   quietly doesn't.
 
-## Workspace registry and cache management
+## Project registry and cache management
 
 A user-scope registry of known project directories, and a settings
 surface over it. This is the user-facing half.
@@ -606,6 +606,20 @@ the running record of what is done and what moved.
   value from the project context's `onSaveProjectAs` and no polling.
 - **`formatBytes` is shared with the status line** rather than copied —
   the two report the same kind of figure.
+- **Done: the terminology sweep** (decision 13, ADR 0042 §7). The
+  retired sense — "workspace" for the in-memory element/panel set — is
+  gone: "an unsaved workspace" is an unsaved project, "the seed
+  workspace" a seed project, "the saved workspace" a saved project, and
+  the layout-persistence comments say *layout* where they meant the
+  serialized dockview blob. It landed entirely in comments, rustdoc, and
+  prose: no identifier carried the retired sense, so nothing was
+  renamed. This document's own "Workspace registry" heading was one of
+  them and is now "Project registry". `SettingScope`, `workspace_dir`,
+  and the rest are the *reserved* sense and are untouched.
+  - **The Cargo sense stays.** "The workspace forbids `unsafe`", "the
+    workspace `target/`" — that is Rust tooling's own term for the
+    multi-crate root, not something cannet gets to rename, and no reader
+    of those comments is at risk of confusing it with `.cannet/`.
 
 **Deferred out of branch 1, and why:**
 
