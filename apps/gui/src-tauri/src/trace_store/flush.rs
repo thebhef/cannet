@@ -184,7 +184,28 @@ impl TraceStore {
     }
 
     fn flush_with(&self, sync: bool) -> std::io::Result<()> {
-        let mut inner = self.lock_inner();
+        // Both directory walks below run **off** the store lock, following
+        // the same clone-the-dir-then-release shape as
+        // [`TraceStore::scratch_breakdown`]. Each is one `metadata()` syscall
+        // per file — thousands on a long capture — and the flusher runs on a
+        // cadence against a live ingest pump, so walking under the lock stalls
+        // every append for the duration of the walk.
+        //
+        // The eviction, the raw flush and the derived write stay inside one
+        // lock hold: `start_session` deletes [`DERIVED_FILE`] and empties
+        // `per_key`, so a flush that wrote its snapshot outside the lock could
+        // recreate that file describing the session that just ended. The
+        // write is small by construction (id-space-bounded, see
+        // [`DerivedState`]); the walks are not, which is why they are the part
+        // that moves out.
+        let (dir, cap, raw_bytes) = {
+            let inner = self.lock_inner();
+            (
+                inner.scratch_dir.clone(),
+                inner.scratch_cap_bytes,
+                inner.raw.raw_disk_bytes(),
+            )
+        };
         // Windowed-ring cap (ADR 0002 DS-8): shed the oldest raw segments
         // *before* the raw flush, so the manifest that flush writes reflects
         // the post-eviction floor and segment set. A manifest written before
@@ -199,47 +220,62 @@ impl TraceStore {
         // families' bytes too, collapsing the retained window to the tail.
         // The cascade then shrinks the derived families to match, so raw + the
         // cascade converge on the cap together across a tick or two.
-        if let (Some(dir), Some(cap)) = (inner.scratch_dir.clone(), inner.scratch_cap_bytes) {
-            let footprint = dir_footprint(&dir);
-            if footprint > cap {
-                let raw = inner.raw.raw_disk_bytes();
-                let raw_excess = u64::try_from(
-                    u128::from(footprint - cap) * u128::from(raw) / u128::from(footprint),
-                )
-                .unwrap_or(footprint - cap);
-                inner.raw.evict_oldest_bytes(raw_excess);
+        let evict_bytes = match (dir.as_deref(), cap) {
+            (Some(dir), Some(cap)) => {
+                let footprint = dir_footprint(dir);
+                (footprint > cap).then(|| {
+                    u64::try_from(
+                        u128::from(footprint - cap) * u128::from(raw_bytes)
+                            / u128::from(footprint),
+                    )
+                    .unwrap_or(footprint - cap)
+                })
+            }
+            _ => None,
+        };
+
+        {
+            let mut inner = self.lock_inner();
+            if let Some(bytes) = evict_bytes {
+                inner.raw.evict_oldest_bytes(bytes);
+            }
+            if sync {
+                inner.raw.flush()?;
+            } else {
+                inner.raw.flush_async()?;
+            }
+            if let Some(dir) = dir.as_deref() {
+                let entries = inner
+                    .per_key
+                    .iter()
+                    .map(|(key, e)| DerivedEntry {
+                        bus_id: key.0.clone(),
+                        channel: key.1,
+                        id: key.2,
+                        extended: key.3,
+                        last_index: e.last_index as u64,
+                        count: e.rate.count,
+                        timestamp_ns: e.last_frame.timestamp_ns,
+                        tx: matches!(e.last_frame.direction, Direction::Tx),
+                        payload: PersistedPayload::from(&e.last_frame.payload),
+                    })
+                    .collect();
+                let derived = DerivedState {
+                    session_start_ns: inner.session_start_ns,
+                    entries,
+                };
+                write_json(&dir.join(DERIVED_FILE), &derived)?;
             }
         }
-        if sync {
-            inner.raw.flush()?;
-        } else {
-            inner.raw.flush_async()?;
-        }
-        if let Some(dir) = inner.scratch_dir.clone() {
-            let entries = inner
-                .per_key
-                .iter()
-                .map(|(key, e)| DerivedEntry {
-                    bus_id: key.0.clone(),
-                    channel: key.1,
-                    id: key.2,
-                    extended: key.3,
-                    last_index: e.last_index as u64,
-                    count: e.rate.count,
-                    timestamp_ns: e.last_frame.timestamp_ns,
-                    tx: matches!(e.last_frame.direction, Direction::Tx),
-                    payload: PersistedPayload::from(&e.last_frame.payload),
-                })
-                .collect();
-            let derived = DerivedState {
-                session_start_ns: inner.session_start_ns,
-                entries,
-            };
-            write_json(&dir.join(DERIVED_FILE), &derived)?;
-            // Cache the total footprint after all of this flush's writes, so
-            // the status readout (ADR 0002 DS-8) reflects the on-disk truth
-            // including the manifest and derived files just written.
-            inner.footprint_bytes = dir_footprint(&dir);
+
+        // Cache the total footprint after all of this flush's writes, so the
+        // status readout (ADR 0002 DS-8) reflects the on-disk truth including
+        // the manifest and derived files just written. A second walk, not the
+        // first one reused: the first is measured before this flush wrote
+        // anything, and the cap decision needs a pre-write reading anyway.
+        if let Some(dir) = dir.as_deref() {
+            let footprint = dir_footprint(dir);
+            self.lock_inner().footprint_bytes = footprint;
         }
         Ok(())
     }
