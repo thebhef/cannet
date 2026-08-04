@@ -7,7 +7,8 @@ import { TraceView, type EventActions } from "./TraceView";
 import { GOTO_EVENT, type GotoPayload } from "./gotoEvent";
 import { ByIdTable } from "./ByIdTable";
 import { TraceControls } from "./TraceControls";
-import { useTraceData } from "./traceData";
+import { useTraceModel } from "./traceData";
+import { LIVE_TAIL_ROWS, useLiveTailDemand } from "./liveTailDemand";
 import { useTrace, type TraceRow } from "./trace";
 import { useNotes } from "./notesContext";
 import { timelineEvents } from "./notes";
@@ -60,7 +61,7 @@ interface TraceConfig {
  */
 export function TracePanel(props: IDockviewPanelProps) {
   diagCount("render.TracePanel"); // DIAG
-  const data = useTraceData();
+  const model = useTraceModel();
   const project = useProjectContext();
   const buses = project.buses;
   const lookup = useMemo(() => busLookup(buses), [buses]);
@@ -142,7 +143,7 @@ export function TracePanel(props: IDockviewPanelProps) {
   // reads `trace.getFrame`. Everywhere else the window's bounds and run
   // state are all this panel wants, so it doesn't page rows (ADR 0025).
   const chronoFiltered = mode === "chronological" && fetchFilter != null;
-  const trace = useTrace(data, elementId, mode === "chronological" && !chronoFiltered);
+  const trace = useTrace(elementId, mode === "chronological" && !chronoFiltered);
   // Right-click anywhere in the trace panel opens the sources
   // context menu at the cursor. The menu owns its own outside-click
   // / Escape dismissal.
@@ -188,13 +189,25 @@ export function TracePanel(props: IDockviewPanelProps) {
     trace.status === "running",
   );
 
+  // The live tail exists for exactly this case: an unfiltered
+  // chronological table auto-scrolling a running capture overlays it so
+  // the live edge never shows a placeholder between re-pages. Declare the
+  // demand so the host does the collect + decode only while someone reads
+  // it — every other mode, and a parked or stopped one, wants none.
+  useLiveTailDemand(
+    elementId,
+    mode === "chronological" && !chronoFiltered && autoScroll && trace.status === "running"
+      ? LIVE_TAIL_ROWS
+      : 0,
+  );
+
   // Timeline events (ADR 0035): host notes + the derived truncation marker,
   // the whole (sparse) set. They render in the chronological trace, spliced
   // among the frame rows by timestamp.
   const { notes, renameNote, recolorNote, removeNote } = useNotes();
   const events = useMemo(
-    () => timelineEvents(notes, data.truncationTsNs),
-    [notes, data.truncationTsNs],
+    () => timelineEvents(notes, model.truncationTsNs),
+    [notes, model.truncationTsNs],
   );
 
   // Interleave events into the chronological view when the view-local toggle
@@ -240,7 +253,7 @@ export function TracePanel(props: IDockviewPanelProps) {
     return () => {
       live = false;
     };
-  }, [interleave, chronoFiltered, fetchFilter, events, trace.offset, data.epoch]);
+  }, [interleave, chronoFiltered, fetchFilter, events, trace.offset, model.epoch]);
 
   // The merge places each event at `anchor - offset`. Unfiltered anchors are
   // absolute frame indices, so the offset is the window start; filtered

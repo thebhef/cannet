@@ -98,6 +98,12 @@ export interface ElementSources {
 /// element not wired through the graph). `["*"]` (every bus) is the
 /// defensive default for a still-healing or legacy-shaped element, so
 /// the picker never reads from `undefined`.
+/// The unwired default ("every bus"), as one shared array. A fresh
+/// `["*"]` per render invalidates every memo keyed on `currentSources`
+/// — for the plot that is the scoped catalog, and through it the
+/// derived axes and each area's props.
+const ALL_BUSES: string[] = ["*"];
+
 export function useElementSources(
   registry: ElementRegistry,
   elementId: string,
@@ -105,8 +111,8 @@ export function useElementSources(
 ): ElementSources {
   const currentSources =
     element && element.kind !== "transmit" && element.kind !== "rbs" && element.kind !== "colormap"
-      ? element.sources ?? ["*"]
-      : ["*"];
+      ? element.sources ?? ALL_BUSES
+      : ALL_BUSES;
   // Filters available to wire upstream of this element. Exclude any
   // non-filter elements; the cycle guard in `applyElementPatch`
   // protects against pathological selections (including this element

@@ -215,12 +215,17 @@ pub struct TraceGrew {
     /// together they show the disk-spill residency split (RAM stays bounded
     /// while the on-disk cache grows). `None` until the first health sample.
     pub mem_bytes: Option<u64>,
-    /// The last frames in the store (up to a fixed cap), already decoded
-    /// against the currently-attached DBC. The auto-scrolling trace view
-    /// paints its live tail straight from this instead of round-tripping
-    /// to `fetch_trace_range` for rows the chunk cache hasn't caught up
+    /// The last frames in the store, already decoded against the
+    /// currently-attached DBC. The auto-scrolling trace view paints its
+    /// live tail straight from this instead of round-tripping to
+    /// `fetch_trace_range` for rows its loaded page hasn't caught up
     /// with — without it, every tick repainted the visible window as a
     /// band of placeholders until the follow-up fetch landed.
+    ///
+    /// **Empty unless a view has asked for one** (`set_live_tail_rows`,
+    /// clamped to `TRACE_GREW_TAIL`): nothing else reads it, and
+    /// collecting and decoding a couple of hundred frames ten times a
+    /// second for nobody was pure ingest-path cost.
     pub tail: Vec<TraceFrameRecord>,
 }
 

@@ -103,12 +103,22 @@ vi.mock("@tauri-apps/api/core", () => ({
     return undefined;
   }),
 }));
-// `listen` is what the panel hooks up to receive `dbc-changed`
-// events from the host's filesystem watcher. The mock returns a
-// resolved no-op unsubscriber so the cleanup path runs cleanly.
+// `listen` is what the panel hooks up for `dbc-changed` (the host's
+// filesystem watcher) and `trace-grew` (the dirty gate under the live
+// value poll). The mock keeps the handlers so a test can fire either.
+const mockListeners = new Map<string, Set<(e: { payload: unknown }) => void>>();
 vi.mock("@tauri-apps/api/event", () => ({
-  listen: vi.fn(async () => () => {}),
+  listen: vi.fn(async (event: string, handler: (e: { payload: unknown }) => void) => {
+    const set = mockListeners.get(event) ?? new Set();
+    set.add(handler);
+    mockListeners.set(event, set);
+    return () => set.delete(handler);
+  }),
 }));
+/// Deliver a host event to whatever the panel subscribed.
+function emitHostEvent(event: string, payload: unknown = null) {
+  for (const h of mockListeners.get(event) ?? []) h({ payload });
+}
 
 import { DbcPanel } from "./DbcPanel";
 import {
@@ -202,6 +212,7 @@ class FakeResizeObserver {
 
 beforeEach(() => {
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+  mockListeners.clear();
 });
 
 afterEach(async () => {
@@ -1053,6 +1064,43 @@ describe("DbcPanel", () => {
     expect(calls.length).toBeGreaterThan(0);
     const sel = (calls[0][1] as { selection: { keys: { signalName: string }[] } }).selection;
     expect(sel.keys.map((k) => k.signalName).sort()).toEqual(["EngineSpeed", "EngineTemp"]);
+  });
+
+  it("polls for values only when the capture has grown", async () => {
+    // The poll had no dirty gate: it re-fetched every 500 ms whether or
+    // not a frame had arrived — with no capture running at all, forever,
+    // and each tick a whole-id-space snapshot host-side. `trace-grew`
+    // already goes quiet when the capture does, so gate on it.
+    const core = await import("@tauri-apps/api/core");
+    (core.invoke as ReturnType<typeof vi.fn>).mockImplementation(async (cmd: string) => {
+      if (cmd === "list_dbc_content") return DBC_CONTENT;
+      if (cmd === "fetch_signal_page") return { count: 0, start: 0, rows: [] };
+      return undefined;
+    });
+    renderPanel();
+    const msg = await screen.findByText("EngineData");
+    fireEvent.click(msg.closest(".dbc-row")!.querySelector(".dbc-row-chevron")!);
+    await screen.findByText("EngineSpeed");
+    fireEvent.click(screen.getByLabelText(/values/i));
+    const pageCalls = () =>
+      (core.invoke as ReturnType<typeof vi.fn>).mock.calls.filter(
+        (c) => c[0] === "fetch_signal_page",
+      ).length;
+    await waitFor(() => expect(pageCalls()).toBeGreaterThan(0));
+
+    // Nothing is capturing: several poll intervals must cost nothing.
+    const settled = pageCalls();
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 1200));
+    });
+    expect(pageCalls()).toBe(settled);
+
+    // A `trace-grew` means a value may have moved — exactly one refetch.
+    await act(async () => {
+      emitHostEvent("trace-grew");
+      await new Promise((r) => setTimeout(r, 1200));
+    });
+    expect(pageCalls()).toBe(settled + 1);
   });
 
   it("stops polling for values while the panel is hidden", async () => {

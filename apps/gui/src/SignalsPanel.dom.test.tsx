@@ -63,7 +63,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 import { SignalsPanel } from "./SignalsPanel";
-import { TraceDataContext, type TraceData } from "./traceData";
+import { TraceDataProvider, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { ElementRegistryContext, type ElementRegistry } from "./projectElements";
 import { freshTrace } from "./trace";
@@ -162,7 +162,7 @@ function renderPanel(opts?: { params?: Record<string, unknown> }) {
   const props = { params: opts?.params ?? {}, api } as unknown as Parameters<typeof SignalsPanel>[0];
   const registry = makeRegistry();
   render(
-    <TraceDataContext.Provider value={traceData}>
+    <TraceDataProvider value={traceData}>
       <ProjectContext.Provider value={projectCtx}>
         <SignalCatalogProvider>
           <ElementRegistryContext.Provider value={registry}>
@@ -170,7 +170,7 @@ function renderPanel(opts?: { params?: Record<string, unknown> }) {
           </ElementRegistryContext.Provider>
         </SignalCatalogProvider>
       </ProjectContext.Provider>
-    </TraceDataContext.Provider>,
+    </TraceDataProvider>,
   );
   return { api, registry };
 }

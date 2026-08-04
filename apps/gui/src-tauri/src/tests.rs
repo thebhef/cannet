@@ -516,6 +516,7 @@ pub(crate) fn test_state() -> AppState {
         verifier: verification::VerificationState::default(),
         filter_index_dir: std::env::temp_dir().join("cannet-test-filter"),
         filter_index: Mutex::new(None),
+        live_tail_rows: std::sync::atomic::AtomicU64::new(0),
         active_project_id: Mutex::new(None),
     }
 }
@@ -670,6 +671,13 @@ fn dbc_set_change_invalidates_stale_derived_caches() {
         predicate: serde_json::from_str(r#"{"bus": "p"}"#).unwrap(),
         session_start_ns: 0,
         index: cannet_spill::FilterIndex::new(&fi_dir).unwrap(),
+        candidates: filter::CandidateSet {
+            keys: Vec::new(),
+            membership: false,
+        },
+        decode_ids: HashSet::new(),
+        resolved_key_generation: None,
+        resolve_count: 0,
     });
 
     invalidate_derived_caches(&state);
@@ -894,6 +902,57 @@ fn trace_grew_skips_only_when_count_and_rate_are_unchanged() {
     assert!(should_emit_trace_grew(Some((10, 5.0)), (10, 4.5)));
     // Capture cleared (count dropped) — emit.
     assert!(should_emit_trace_grew(Some((10, 5.0)), (0, 0.0)));
+}
+
+#[test]
+fn filter_candidate_resolution_is_memoised_until_a_new_id_is_seen() {
+    // `ensure_active_filter_index` runs on every filtered page fetch — 4 Hz
+    // per open filtered view — and re-resolved the predicate's candidate
+    // set and decode-id set each time, walking every loaded DBC's message
+    // and signal names. All of it is a pure function of (predicate, DBCs,
+    // ids seen), and the first two can't move without the index being
+    // dropped, so the only live input is the store's key generation.
+    let mut state = test_state();
+    state.filter_index_dir =
+        std::env::temp_dir().join(format!("cannet-test-fi-memo-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&state.filter_index_dir).unwrap();
+    let filter: FilterPredicate = serde_json::from_str(r#"{"id_list": [256]}"#).unwrap();
+
+    state.trace_store.append(dummy_frame(1_000, 256));
+    drop(crate::trace_query::ensure_active_filter_index(&state, &filter).unwrap());
+    assert_eq!(state.filter_index().as_ref().unwrap().resolve_count, 1);
+
+    // More frames of an id already seen: nothing about the resolution can
+    // have changed.
+    state.trace_store.append(dummy_frame(2_000, 256));
+    drop(crate::trace_query::ensure_active_filter_index(&state, &filter).unwrap());
+    assert_eq!(state.filter_index().as_ref().unwrap().resolve_count, 1);
+
+    // A previously unseen id can change which candidates exist — resolve.
+    state.trace_store.append(dummy_frame(3_000, 512));
+    drop(crate::trace_query::ensure_active_filter_index(&state, &filter).unwrap());
+    assert_eq!(state.filter_index().as_ref().unwrap().resolve_count, 2);
+}
+
+#[test]
+fn live_tail_range_is_none_until_something_asks_for_one() {
+    // The tail exists for the auto-scrolling chronological view. With no
+    // such view open — no trace panel, or all of them by-id / filtered /
+    // parked — collecting and decoding 256 frames ten times a second is
+    // work for nobody, so the demand starts at zero and stays there.
+    assert_eq!(live_tail_range(1_000, 0), None);
+    // An empty capture has no tail whatever anyone asked for.
+    assert_eq!(live_tail_range(0, 256), None);
+    // A declared demand takes the newest `n` frames.
+    assert_eq!(live_tail_range(1_000, 64), Some((936, 1_000)));
+    // Shorter capture than the demand: everything there is.
+    assert_eq!(live_tail_range(10, 64), Some((0, 10)));
+    // The declared size is capped, so a frontend cannot ask the host for
+    // an unbounded payload per tick.
+    assert_eq!(
+        live_tail_range(10_000, u64::MAX),
+        Some((10_000 - TRACE_GREW_TAIL, 10_000)),
+    );
 }
 
 #[test]

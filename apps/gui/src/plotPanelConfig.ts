@@ -127,6 +127,25 @@ export interface PlotAreaReports {
   base: (areaId: string, baseSeconds: number | null) => void;
 }
 
+/** The panel→area callbacks that are bound to *which* axis is calling —
+ * routing an edit to the right derived axis or its parent area. Grouped
+ * (and built once per axis-set change rather than per render) so a
+ * memoised `PlotArea` isn't handed a dozen fresh function identities
+ * every time unrelated panel state moves. */
+export interface AxisHandlers {
+  onPlaceCursorY: (which: "h1" | "h2", v: number) => void;
+  onSetPrimarySignal: (key: string | null) => void;
+  onSetYAxisMode: (mode: YAxisMode) => void;
+  onFocus: () => void;
+  onRemoveArea: () => void;
+  onRemoveSignal: (key: string) => void;
+  onDropSignal: (ref: SignalRef, beforeKey: string | null, isInternalMove: boolean) => void;
+  onToggleHidden: (ref: SignalRef) => void;
+  onSetSignalColor: (ref: SignalRef, color: string) => void;
+  onSetPatterns: (patterns: string[] | undefined) => void;
+  onMaterializePatterns: () => void;
+}
+
 /** The shared current x-window + a suppress flag so a programmatic
  * scale change doesn't bounce back through an area's `setScale` hook
  * as "the user zoomed". `xMin`/`xMax` are `null` until the first data

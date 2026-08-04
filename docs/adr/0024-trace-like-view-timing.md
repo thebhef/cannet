@@ -125,6 +125,29 @@ Frontend (`apps/gui/src`):
   view can only refuse to move backwards, it cannot recover the true
   edge, and every other consumer of the same number (the buffered-span
   readout, the time↔index search) would still be wrong.
+- **Fetch cadence and redraw cadence are separate, and the window
+  moves at most once per frame.** A view's data fetches run on their
+  own loop (the plot's per-area resample); the *window* those fetches
+  feed is one panel-level quantity, recomputed from one clock read and
+  fanned out to every renderer in the panel at most once per animation
+  frame. Sliding once per fetch instead is what makes the cost
+  quadratic in renderers: with N stacked plot areas each reporting its
+  own resample, every report pushed a new x window into all N canvases,
+  N times per resample interval. The dedup that ought to have absorbed
+  it cannot, because two areas reporting the "same" tick read
+  `performance.now()` milliseconds apart and so derive two different
+  windows — the redraw is real work for a difference nobody can see.
+  Coalescing also removes the last coupling that stopped fetch rate
+  from being tunable: with the slide on its own frame budget, fetching
+  less often costs resolution, not smoothness.
+- **A panel's x window is panel-wide.** Every renderer stacked in one
+  panel requests the same visible slice and moves as one — there is no
+  such thing as one area following the live edge while another sits
+  parked in history. Panel-level state (the plot's `xSyncRef`) is what
+  makes that true, and several behaviours depend on it: the coalesced
+  slide above has one window to compute, and *Fit Data* cannot lean on
+  a sibling area to keep the data extent fresh (see the plot's
+  `fetchWindowExtent`).
 - **The clock may predict past the data, but only by the resync
   tolerance.** That ceiling is what stops the window sliding on into
   empty space when a stream goes quiet, without needing a "has it

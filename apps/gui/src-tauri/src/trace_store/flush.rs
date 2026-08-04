@@ -137,6 +137,7 @@ impl TraceStore {
         inner.raw.clear();
         inner.agg_rate = RateTrack::default();
         inner.per_key = HashMap::new();
+        inner.key_generation = inner.key_generation.wrapping_add(1);
         // The mux index empties with the buffer; the extractor itself
         // survives (the DBC set didn't change) and covers the fresh
         // buffer from index 0.
@@ -330,6 +331,7 @@ impl TraceStore {
         // stopped, so every rate reads zero); the newest-index and frame are
         // recovered from the overlay.
         inner.per_key = HashMap::new();
+        inner.key_generation = inner.key_generation.wrapping_add(1);
         inner.session_start_ns = 0;
         if let Some(derived) = read_json::<DerivedState>(&dir.join(DERIVED_FILE)) {
             inner.session_start_ns = derived.session_start_ns;

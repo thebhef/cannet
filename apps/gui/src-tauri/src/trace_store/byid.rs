@@ -67,6 +67,33 @@ impl TraceStore {
     /// pass — paid on a status change, not on the live refresh tick.
     #[must_use]
     pub fn latest_in_window(&self, start: usize, end: usize) -> Vec<LatestById> {
+        self.latest_in_window_where(start, end, |_| true)
+    }
+
+    /// The current key-set generation — bumped whenever a new
+    /// [`FrameKey`] is first seen, or the map is rebuilt (session start,
+    /// scratch reopen). Callers that derive something from "which ids
+    /// exist" memoise on it instead of recomputing per request.
+    #[must_use]
+    pub fn key_generation(&self) -> u64 {
+        self.lock_inner().key_generation
+    }
+
+    /// [`Self::latest_in_window`] restricted to the keys `keep` accepts.
+    ///
+    /// The unrestricted form materialises one `FrameKey` clone and one
+    /// frame-payload clone per distinct id in the capture, under the
+    /// append lock. Callers that want a handful of streams — the signal
+    /// view's page, the DBC panel's value column — pay the whole id space
+    /// for a viewport, on every refresh tick. Filtering at the source
+    /// keeps that proportional to what was asked for.
+    #[must_use]
+    pub fn latest_in_window_where(
+        &self,
+        start: usize,
+        end: usize,
+        keep: impl Fn(&FrameKey) -> bool,
+    ) -> Vec<LatestById> {
         let now = Instant::now();
         let inner = self.lock_inner();
         let len = inner.raw.len();
@@ -86,16 +113,17 @@ impl TraceStore {
             inner
                 .per_key
                 .iter()
-                .filter(|(_, e)| e.last_index >= start)
+                .filter(|(key, e)| e.last_index >= start && keep(key))
                 .map(|(key, e)| (key.clone(), e.last_index, e.last_frame.clone()))
                 .collect()
         } else {
             let mut last: HashMap<FrameKey, usize> = HashMap::new();
             for (offset, f) in inner.raw.slice(start, end).iter().enumerate() {
-                last.insert(
-                    (f.bus_id.clone(), f.channel, f.id, f.extended),
-                    start + offset,
-                );
+                let key: FrameKey = (f.bus_id.clone(), f.channel, f.id, f.extended);
+                if !keep(&key) {
+                    continue;
+                }
+                last.insert(key, start + offset);
             }
             let mut keyed: Vec<(FrameKey, usize)> = last.into_iter().collect();
             keyed.sort_unstable();
@@ -344,6 +372,66 @@ mod tests {
         );
         store.start_session(0);
         assert!(store.latest_since(0).is_empty());
+    }
+
+    #[test]
+    fn latest_in_window_where_serves_only_the_keys_asked_for() {
+        // The unrestricted snapshot clones a key and a frame payload per
+        // distinct id in the capture — the whole id space — for a caller
+        // that wants a page's worth of streams. Both paths through the
+        // function have to honour the restriction: the tip fast path over
+        // the maintained key map, and the bounded-window scan.
+        let store = TraceStore::new();
+        for id in [1u32, 2, 3, 2, 1] {
+            store.append(dummy(0, id));
+        }
+        let only_two = |k: &FrameKey| k.2 == 2;
+        // Tip fast path (`end == len`).
+        assert_eq!(
+            store
+                .latest_in_window_where(0, store.len(), only_two)
+                .iter()
+                .map(|l| (l.index, l.frame.id))
+                .collect::<Vec<_>>(),
+            vec![(3, 2)],
+        );
+        // Bounded window (paused / scrolled into history).
+        assert_eq!(
+            store
+                .latest_in_window_where(0, 3, only_two)
+                .iter()
+                .map(|l| (l.index, l.frame.id))
+                .collect::<Vec<_>>(),
+            vec![(1, 2)],
+        );
+        // …and it is the same answer the unrestricted form gives, filtered.
+        assert_eq!(
+            store
+                .latest_in_window_where(0, store.len(), |_| true)
+                .iter()
+                .filter(|l| l.frame.id == 2)
+                .map(|l| (l.index, l.frame.id))
+                .collect::<Vec<_>>(),
+            vec![(3, 2)],
+        );
+    }
+
+    #[test]
+    fn key_generation_moves_only_when_the_key_set_does() {
+        // The invalidation signal for anything derived from "which ids
+        // exist" — the filtered trace's candidate resolution memoises on
+        // it, so a repeat of a known id must not disturb it and a new id
+        // must.
+        let store = TraceStore::new();
+        store.append(dummy(0, 1));
+        let after_first = store.key_generation();
+        store.append(dummy(1, 1)); // same key again
+        assert_eq!(store.key_generation(), after_first);
+        store.append(dummy(2, 2)); // new id
+        assert_ne!(store.key_generation(), after_first);
+        let after_two = store.key_generation();
+        store.start_session(0); // the map is rebuilt empty
+        assert_ne!(store.key_generation(), after_two);
     }
 
     #[test]

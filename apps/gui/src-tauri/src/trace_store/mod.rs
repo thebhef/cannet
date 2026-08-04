@@ -172,6 +172,12 @@ struct Inner {
     /// length. See [`PerKey`]; the by-id view reads it instead of walking the
     /// whole buffer.
     per_key: HashMap<FrameKey, PerKey>,
+    /// Bumped whenever the *set of keys* in `per_key` changes — a new id
+    /// seen, or the map rebuilt by a session start / scratch reopen. It is
+    /// the invalidation signal for anything derived from "which ids exist"
+    /// (the filtered trace's candidate resolution), which would otherwise
+    /// be recomputed on every page fetch.
+    key_generation: u64,
     /// The host-injected multiplexor-selector extractor, or `None`
     /// while no loaded DBC declares a multiplexor. Swapped whenever the
     /// DBC set changes ([`TraceStore::set_mux_extractor`]).
@@ -271,6 +277,7 @@ impl TraceStore {
                 raw,
                 agg_rate: RateTrack::default(),
                 per_key: HashMap::new(),
+                key_generation: 0,
                 mux_selector_of: None,
                 latest_mux: HashMap::new(),
                 mux_rates: HashMap::new(),
@@ -379,6 +386,7 @@ impl TraceStore {
                     rate,
                 },
             );
+            inner.key_generation = inner.key_generation.wrapping_add(1);
         }
         // The aggregate, per-bus, and per-direction throughput trackers all
         // fold in this frame the same way (bump the count, sample on the

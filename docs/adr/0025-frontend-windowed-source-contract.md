@@ -103,6 +103,15 @@ Two rules keep the lifecycle correct under high ingest:
   for a fixed descriptor the row-addressed views are append-only, so new
   frames land only at the tail. This bounds re-fetch cost to actual
   viewport change, not to ingest rate.
+- **A live refresh re-fetches what the view is looking at, not page 0.**
+  Append-only sources (the chronological tables) grow at one end, so
+  "keep up" means re-paging the tail. The by-ID snapshot does not: its
+  rows go stale *in place* — latest value, rate, newly-seen ids — with
+  no meaningful tail. Refreshing it from offset 0 both re-fetched rows
+  the viewport isn't showing and yanked a scrolled view back to the top
+  on every tick. The windowed primitive therefore names the two
+  behaviours separately (`refresh: "tail" | "window"`), and a source
+  picks the one that matches its shape.
 - **The filter predicate is part of the descriptor, not a property of
   the capture.** The filtered trace is every frame since the trace's
   start matching the *current* predicate; editing the predicate is a

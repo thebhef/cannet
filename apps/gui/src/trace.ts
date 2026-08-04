@@ -11,7 +11,7 @@
 
 import { useCallback } from "react";
 
-import type { TraceData } from "./traceData";
+import { useTraceLive, useTraceModel } from "./traceData";
 import type { TraceFrameRecord } from "./types";
 import type { TimelineEvent } from "./notes";
 import { useElementRegistry } from "./projectElements";
@@ -173,7 +173,7 @@ export interface TraceHandle {
 }
 
 /// Bind a panel to the trace `elementId`: a window over the shared
-/// capture (`data`, from `useTraceData()`), with start / stop / pause /
+/// capture (the trace contexts), with start / stop / pause /
 /// resume / clear. The window state lives in the element registry — the
 /// panel must have ensured the entry exists (`reg.ensureTrace`); until
 /// then this falls back to a fresh window.
@@ -185,18 +185,22 @@ export interface TraceHandle {
 /// frames, fetched and dropped) on every Clear / Connect / DBC reload /
 /// Start / Stop, once per open panel. `getFrame` then always returns
 /// `null`; every other field is unaffected.
-export function useTrace(data: TraceData, elementId: string, rows: boolean): TraceHandle {
+export function useTrace(elementId: string, rows: boolean): TraceHandle {
   const reg = useElementRegistry();
-  const sessionCount = data.count;
+  // Both halves: the window arithmetic is a function of the live capture,
+  // and the paging descriptor of the model's identity.
+  const model = useTraceModel();
+  const live = useTraceLive();
+  const sessionCount = live.count;
   const state = reg.get(elementId)?.trace ?? clearedTrace(0);
 
   // Clamp the window start up to the windowed-ring low-water mark (ADR 0002
   // DS-8) so truncated rows below the floor aren't rendered as placeholders.
-  const { offset, frameCount } = traceWindow(state, sessionCount, data.firstIndex);
+  const { offset, frameCount } = traceWindow(state, sessionCount, live.firstIndex);
 
   // Every renderer shows elapsed time since the one application-level trace
   // start (ADR 0024): the session-buffer start.
-  const baseTimestampSeconds = data.sessionStartSeconds;
+  const baseTimestampSeconds = model.sessionStartSeconds;
 
   // This panel's window over the unfiltered chronological rows
   // `[offset, offset + frameCount)`, indexed locally `[0, frameCount)`.
@@ -216,21 +220,21 @@ export function useTrace(data: TraceData, elementId: string, rows: boolean): Tra
         ? Math.max(offset, winEnd - limit)
         : offset + localOffset;
       const absEnd = Math.min(winEnd, absStart + limit);
-      const rows = absEnd > absStart ? await data.fetchRange(absStart, absEnd) : [];
+      const rows = absEnd > absStart ? await model.fetchRange(absStart, absEnd) : [];
       return { total: frameCount, start: absStart - offset, rows };
     },
-    [data, offset, frameCount],
+    [model, offset, frameCount],
   );
 
   const win = useWindowedQuery<TraceFrameRecord>({
     // An empty descriptor is the primitive's "inactive" state (ADR
     // 0025): no fetch, no refresh tick, `getRow` always `null`.
-    descriptor: rows ? `${data.epoch}:${offset}` : "",
+    descriptor: rows ? `${model.epoch}:${offset}` : "",
     fetchPage,
     followLive: false,
-    extentSignal: data.count,
+    extentSignal: live.count,
     extent: frameCount,
-    liveTail: rows ? { start: data.liveTail.start - offset, rows: data.liveTail.rows } : null,
+    liveTail: rows ? { start: live.liveTail.start - offset, rows: live.liveTail.rows } : null,
     pageSize: CHRONO_PAGE,
   });
   const getFrame = win.getRow;
@@ -238,21 +242,21 @@ export function useTrace(data: TraceData, elementId: string, rows: boolean): Tra
 
   const { updateTrace } = reg;
   const start = useCallback(
-    () => updateTrace(elementId, () => freshTrace(data.count)),
-    [updateTrace, elementId, data],
+    () => updateTrace(elementId, () => freshTrace(live.count)),
+    [updateTrace, elementId, live],
   );
   const stop = useCallback(
-    () => updateTrace(elementId, (s) => stopTrace(s, data.count)),
-    [updateTrace, elementId, data],
+    () => updateTrace(elementId, (s) => stopTrace(s, live.count)),
+    [updateTrace, elementId, live],
   );
   const pause = useCallback(
-    () => updateTrace(elementId, (s) => pauseTrace(s, data.count)),
-    [updateTrace, elementId, data],
+    () => updateTrace(elementId, (s) => pauseTrace(s, live.count)),
+    [updateTrace, elementId, live],
   );
   const resume = useCallback(() => updateTrace(elementId, resumeTrace), [updateTrace, elementId]);
   const clear = useCallback(
-    () => updateTrace(elementId, (s) => clearKeepingState(s, data.count)),
-    [updateTrace, elementId, data],
+    () => updateTrace(elementId, (s) => clearKeepingState(s, live.count)),
+    [updateTrace, elementId, live],
   );
 
   return {
