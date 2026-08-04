@@ -291,11 +291,37 @@ Guarded by the `laneBandsForVisible` cases in `plotEnumLanes.test.ts`
 hiding a lane hands its vertical space to the rest" in
 `PlotPanel.dom.test.tsx`.
 
-## 11. Filters cannot be edited once added
+## 11. Filters cannot be edited once added — **done**
 
-A filter added to the plot view cannot be edited afterwards — only
-removed and re-added. Possibly true of the signal panel's filters too;
-check both before deciding the fix's shape.
+Surveyed every surface that adds a filter first:
+
+- **Defective, both of them:** the plot area's `patterns…` popover and
+  the signal view's `selection` editor. They render the *same*
+  component (`SignalPatternEditor`, ADR 0020/0038), whose rows were a
+  read-only `/pattern/` plus a × — so the only way to change a pattern
+  was to remove it and retype it. One fix serves both.
+- **Not defective:** a graph filter element's predicate
+  (`FilterPredicateEditor`) already edits in place on its node, and
+  the sources checklist (`SourcesPicker`) is a set of checkboxes. The
+  trace views' filtering is a graph filter element, so it inherits the
+  graph editor. The DBC/RBS "filter" boxes are search inputs.
+
+A pattern row is now a `ValidatedInput` (ADR 0027): draft while
+typing, apply on blur or Enter, abandon on Escape — the convention the
+transmit and RBS cells already use, and the one the settings panel
+follows. Per-keystroke commit was rejected: each keystroke re-resolves
+the area's series (and, on the signal view, re-queries
+`fetch_signal_page`) against a half-typed regex that matches a wildly
+different signal set. A blank or duplicate edit reverts; an invalid
+regex commits, because the row's own "bad regex" readout is the
+feedback the user is writing against. Evaluation stays where it was —
+host-side for the signal view, catalog-resolution for the plot's
+series list.
+
+Guarded by "edits an existing pattern in place and re-queries the host
+with it" / "abandons a pattern edit on Escape"
+(`SignalsPanel.dom.test.tsx`) and "edits an area's pattern in place and
+re-resolves its series" (`PlotPanel.dom.test.tsx`).
 
 ## 12. Adding many signals to a plot hangs the frontend
 

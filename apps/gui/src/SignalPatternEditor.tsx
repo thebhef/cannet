@@ -1,15 +1,23 @@
 /// Shared regex-pattern list editor (ADR 0038): edits the `patterns`
-/// half of a signal selection (`signalSelection.ts`). Each row shows
-/// the pattern, its live match count against the catalog (or "bad
-/// regex"), and a remove button; the input row appends. The plot
+/// half of a signal selection (`signalSelection.ts`). Each row is an
+/// editable pattern with its live match count against the catalog (or
+/// "bad regex") and a remove button; the input row appends. The plot
 /// panel's per-area filter popover and the signal view's selection
 /// editor both render this, so pattern behaviour can't drift between
 /// surfaces.
+///
+/// An existing pattern edits in place through `ValidatedInput`
+/// (ADR 0027): draft while typing, apply on blur or Enter, abandon on
+/// Escape. Applying per keystroke would re-resolve the selection — and
+/// on the signal view re-query the host — for every half-typed regex,
+/// which matches a wildly different signal set on the way to the one
+/// the user means.
 
 import { useState } from "react";
 
 import type { SignalDescriptorRecord } from "./types";
 import { resolvePatterns } from "./signalSelection";
+import { ValidatedInput } from "./ValidatedInput";
 
 interface SignalPatternEditorProps {
   patterns: readonly string[];
@@ -45,8 +53,27 @@ export function SignalPatternEditor({
     <div className="pattern-editor">
       {resolutions.map((res, i) => (
         <div className="pattern-editor-row" key={`${res.pattern}-${i}`}>
-          <span className="pattern-editor-regex" title={res.pattern}>
-            /{res.pattern}/
+          <span className="pattern-editor-slash" aria-hidden="true">
+            /
+          </span>
+          <ValidatedInput
+            className="pattern-editor-regex"
+            value={res.pattern}
+            ariaLabel={`pattern ${i + 1}`}
+            title="edit this pattern — Enter or clicking away applies it, Escape abandons the edit"
+            // Reject blank (the × removes a pattern) and a duplicate of
+            // another row; a rejected edit reverts to the committed text.
+            // An *invalid* regex commits: the row says "bad regex", which
+            // is the feedback the user needs while writing one.
+            parse={(text) => {
+              const p = text.trim();
+              if (!p) return null;
+              return patterns.some((q, j) => j !== i && q === p) ? null : p;
+            }}
+            onCommit={(p) => onChange(patterns.map((q, j) => (j === i ? p : q)))}
+          />
+          <span className="pattern-editor-slash" aria-hidden="true">
+            /
           </span>
           {res.valid ? (
             <span className="pattern-editor-count">

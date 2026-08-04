@@ -268,6 +268,41 @@ describe("SignalsPanel", () => {
     expect(screen.getByText("1165")).toBeInTheDocument();
   });
 
+  it("edits an existing pattern in place and re-queries the host with it", async () => {
+    // A pattern used to be removable and re-typable only. Editing the
+    // row must reach the host — the signal view evaluates the selection
+    // host-side, so the proof is the next `fetch_signal_page` carrying
+    // the new pattern in the same slot.
+    renderPanel({ params: { selection: { keys: [], patterns: ["EngineSpeed"] } } });
+    fireEvent.click(screen.getByRole("button", { name: /selection \(0 \+ 1 patterns\)/ }));
+    const input = screen.getByLabelText("pattern 1") as HTMLInputElement;
+    expect(input.value).toBe("EngineSpeed");
+    fireEvent.change(input, { target: { value: "EngineTemp" } });
+    fireEvent.blur(input);
+    await waitFor(() => {
+      const last = [...invokeCalls].reverse().find((c) => c.cmd === "fetch_signal_page");
+      const sel = last?.args?.selection as { patterns: string[] } | undefined;
+      expect(sel?.patterns).toEqual(["EngineTemp"]);
+    });
+    // Edited in place: still one pattern, not removed-and-re-added.
+    expect(screen.getByRole("button", { name: /selection \(0 \+ 1 patterns\)/ })).toBeInTheDocument();
+  });
+
+  it("abandons a pattern edit on Escape", async () => {
+    renderPanel({ params: { selection: { keys: [], patterns: ["EngineSpeed"] } } });
+    fireEvent.click(screen.getByRole("button", { name: /selection \(0 \+ 1 patterns\)/ }));
+    const input = screen.getByLabelText("pattern 1") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "nonsense" } });
+    fireEvent.keyDown(input, { key: "Escape" });
+    fireEvent.blur(input);
+    await waitFor(() => {
+      expect((screen.getByLabelText("pattern 1") as HTMLInputElement).value).toBe("EngineSpeed");
+    });
+    const last = [...invokeCalls].reverse().find((c) => c.cmd === "fetch_signal_page");
+    const sel = last?.args?.selection as { patterns: string[] } | undefined;
+    expect(sel?.patterns).toEqual(["EngineSpeed"]);
+  });
+
   it("dropping a dragged signal adds it to the manual selection", async () => {
     renderPanel();
     await waitFor(() => {

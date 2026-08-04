@@ -1765,11 +1765,14 @@ button.trace-event-swatch {
   align-items: center;
 }
 .pattern-editor-regex {
+  /* Narrower floor than the append input: a pattern row also carries
+     the match count and the remove button, and the plot's popover is
+     the narrower of the two hosts. */
+  min-width: 4rem;
+}
+.pattern-editor-slash {
+  color: #64748b;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  color: #e2e8f0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex: 1 1 0;
 }
 .pattern-editor-count {
   color: #94a3b8;
@@ -1784,8 +1787,10 @@ button.trace-event-swatch {
   gap: 0.3rem;
 }
 .pattern-editor-add input {
-  flex: 1 1 0;
   min-width: 8rem;
+}
+.pattern-editor input {
+  flex: 1 1 0;
   background: #1e293b;
   color: #e2e8f0;
   border: 1px solid #334155;

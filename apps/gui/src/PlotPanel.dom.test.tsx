@@ -766,6 +766,43 @@ describe("PlotPanel", () => {
     expect(screen.getByText("EngineSpeed")).toBeInTheDocument();
   });
 
+  it("edits an area's pattern in place and re-resolves its series", async () => {
+    // A pattern used to be removable and re-typable only. Editing the
+    // row must re-resolve the area's series and reach the host with the
+    // new signal set.
+    const registry = makeRegistry({
+      id: "el-patterns",
+      config: { areas: [{ id: "a1", signals: [], patterns: ["EngineSpeed"] }] },
+    });
+    await withSizedCanvas(async () => {
+      renderPanel({ params: { elementId: "el-patterns" }, registry });
+      await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
+      fireEvent.click(screen.getByRole("button", { name: /patterns \(1\)/ }));
+      const input = screen.getByLabelText("pattern 1") as HTMLInputElement;
+      expect(input.value).toBe("EngineSpeed");
+      fireEvent.change(input, { target: { value: "EngineTemp" } });
+      fireEvent.blur(input);
+      await waitFor(() => {
+        expect(screen.getByText("EngineTemp")).toBeInTheDocument();
+        expect(screen.queryByText("EngineSpeed")).not.toBeInTheDocument();
+      });
+      // Still one pattern — edited, not removed and re-added.
+      expect(screen.getByRole("button", { name: /patterns \(1\)/ })).toBeInTheDocument();
+      // …and the host is sampled for the pattern's new match.
+      await waitFor(() => {
+        const sampled = vi
+          .mocked(invoke)
+          .mock.calls.filter((c) => c[0] === "sample_signals")
+          .flatMap((c) =>
+            ((c[1] as { signals?: { signalName: string }[] } | undefined)?.signals ?? []).map(
+              (s) => s.signalName,
+            ),
+          );
+        expect(sampled).toContain("EngineTemp");
+      });
+    });
+  });
+
   it("hovering one area drives the crosshair readout in every area (shared hoverX)", async () => {
     // The mouse crosshair is panel-level: a hover reported by *any*
     // area's uPlot flips every area's side-panel readout to
