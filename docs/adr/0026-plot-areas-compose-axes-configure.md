@@ -167,12 +167,32 @@ below:
 - **Unit-based y-scale.** Same-unit series on an axis share one y
   scale — the union of their observed ranges, computed by the pure
   `groupScaleRanges()` helper in `plotData` — and each unit group
-  auto-scales independently to fill the axis. One refinement on the
-  decision table: **unitless series each keep their own scale**. Two
-  signals that merely both lack a DBC unit are not known to be
-  commensurable, and pinning them to a shared min/max would flatten
-  whichever has the smaller range; "shares a unit" is read as
-  "shares a *declared* unit".
+  auto-scales independently to fill the axis. Three refinements on the
+  decision table:
+  - **Unitless series each keep their own scale.** Two signals that
+    merely both lack a DBC unit are not known to be commensurable, and
+    pinning them to a shared min/max would flatten whichever has the
+    smaller range; "shares a unit" is read as "shares a *declared*
+    unit".
+  - **Hidden series contribute nothing to the union.** An axis
+    auto-scales to its data, and what is hidden is not drawn on the
+    axis — so hiding a 3000 A nominal limit rescales the axis to the
+    500 A effective one still on it. The per-signal all-time extents
+    stay host-owned model facts
+    ([ADR 0025](0025-frontend-windowed-source-contract.md)); *which* of
+    them an axis unions is a view decision (visibility is view-local
+    plot-area config the host has no reason to know), so the selection
+    is made in `PlotArea`'s normalisation and the host query is
+    unchanged.
+  - **A constant series still joins its group.** A signal that never
+    moves has a degenerate extent (`hi === lo`) and so cannot be
+    normalised on its own; it contributes its one value to its unit
+    group's union all the same, and is drawn on the group's scale — a
+    constant 3000 A limit sits at the top of a 400–3000 A axis rather
+    than at the canvas midline beside a 500 A signal filling the
+    canvas. Only when a group's *whole* union has no span does the
+    midline fallback apply, which is also what keeps the normalise
+    free of a divide-by-zero.
 - **Multi-uPlot per area.** Each derived axis is a stacked uPlot
   instance with its own canvas and signal-list slice; the panel-level
   x-sync registry (`xSyncRef` + `registerInstance`) was already
@@ -240,8 +260,9 @@ below:
   weights and double-clicks to equalize.
 - **A hidden signal leaves the layouts it would otherwise drive.**
   Hiding is not just "don't stroke this line": the signal drops out of
-  the enum-lanes stack, and — when it is the last visible signal on an
-  axis — out of the vertical height distribution.
+  the y-scale union (above), out of the enum-lanes stack, and — when
+  it is the last visible signal on an axis — out of the vertical
+  height distribution.
   - *Lanes.* `laneBandsForVisible` (`plotEnumLanes`) lays the bands out
     over the *visible* signals and returns `null` for a hidden one, so
     hiding one of three enums re-flows the other two onto a two-lane

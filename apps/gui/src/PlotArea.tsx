@@ -929,8 +929,27 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       //  * **Follow-live OFF** — the visible slice's own min/max,
       //    recomputed each tick so a zoomed-in pan fills the canvas
       //    with its local detail (shaping already-paged data).
+      //
+      // Two rules apply to every one of those branches:
+      //
+      //  * **A hidden signal contributes nothing.** It isn't drawn, so
+      //    it must not set the scale the drawn signals share — an axis
+      //    auto-scales to its data (ADR 0026), and what is hidden is
+      //    not on the axis. The host still owns each signal's all-time
+      //    extent (ADR 0025); *which* of those extents an axis unions
+      //    is a view decision, so it is made here rather than by
+      //    telling the host what the user has hidden.
+      //  * **A degenerate extent still counts.** A signal that never
+      //    moves has `hi === lo`. Dropping it left it with no range at
+      //    all, so it fell back to the canvas midline and stopped
+      //    sharing its unit group's scale — a constant 3000 A limit
+      //    drew mid-canvas next to a 500 A signal filling the canvas.
+      //    It contributes its one value to the group union instead; a
+      //    group whose *whole* union is one value still has no span,
+      //    and keeps the midline fallback below.
       const ranges = new Map<string, { lo: number; hi: number }>();
       signals.forEach((s, i) => {
+        if (s.hidden) return;
         const key = signalRefKey(s);
         if (manualFitYRef.current) {
           const m = manualRangesRef.current.get(key);
@@ -939,7 +958,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
         }
         if (lr.followLive) {
           const e = hostExtents?.[i];
-          if (e && e.hi > e.lo) ranges.set(key, { lo: e.lo, hi: e.hi });
+          if (e) ranges.set(key, { lo: e.lo, hi: e.hi });
           return;
         }
         const ser = seriesRel[i];
@@ -950,7 +969,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
           if (v < lo) lo = v;
           if (v > hi) hi = v;
         }
-        if (Number.isFinite(lo) && Number.isFinite(hi) && hi > lo) ranges.set(key, { lo, hi });
+        if (Number.isFinite(lo) && Number.isFinite(hi)) ranges.set(key, { lo, hi });
       });
       // Unit-based y-scale (ADR 0026): the per-signal latches above
       // feed `groupScaleRanges`, which hands every signal the *union*
@@ -1921,7 +1940,10 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
         if (v < lo) lo = v;
         if (v > hi) hi = v;
       }
-      if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) continue;
+      // A constant series (`hi === lo`) is kept: it still has to
+      // contribute its value to its unit group's union, the same way
+      // the auto path does.
+      if (!Number.isFinite(lo) || !Number.isFinite(hi)) continue;
       next.set(key, { lo, hi });
     }
     manualRangesRef.current = next;

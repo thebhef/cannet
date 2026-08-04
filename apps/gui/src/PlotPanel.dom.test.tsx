@@ -73,8 +73,11 @@ const SIGNALS = [
   { message_id: 256, extended: false, message_name: "EngineData", transmitter: "EngineEcu", signal_name: "EngineSpeed", unit: "rpm" },
   { message_id: 256, extended: false, message_name: "EngineData", transmitter: "EngineEcu", signal_name: "EngineTemp", unit: "degC" },
   // A third signal, so the enum-lane tests have three lanes to hide the
-  // middle one of.
+  // middle one of — and, with the fourth, a same-unit *pair*, so
+  // per-unit mode has a unit group to scale rather than one signal per
+  // axis (ADR 0026).
   { message_id: 256, extended: false, message_name: "EngineData", transmitter: "EngineEcu", signal_name: "LimitNominal", unit: "A" },
+  { message_id: 256, extended: false, message_name: "EngineData", transmitter: "EngineEcu", signal_name: "LimitEffective", unit: "A" },
 ];
 /** The window anchors `sample_signals` reports alongside the series:
  * `from` is the window's first-frame time and `last` its last-frame time
@@ -126,6 +129,10 @@ const mockValueTables: Record<string, { raw: number; label: string }[]> = {};
 // `mergeSeries`'s sample-and-hold. Unset signals fall back to the
 // default numeric fixture. Prefixed `mock` for the hoisted factory.
 const mockSampleSeries: Record<string, { t: number[]; v: number[] }> = {};
+// Per-signal all-time extents the fake host serves from `signal_min_max`
+// (ADR 0025), keyed by signal name. Unset signals fall back to the
+// default `10..20`, which matches the default sampled fixture.
+const mockSignalExtents: Record<string, { lo: number; hi: number }> = {};
 /// Settings the fake host serves from `get_settings`. Empty means "every
 /// field at its default"; a test that cares sets a key and re-hydrates.
 const mockSettings: Record<string, unknown> = {};
@@ -152,7 +159,9 @@ vi.mock("@tauri-apps/api/core", () => ({
     if (cmd === "signal_min_max")
       // Host-owned all-time per-signal extent (ADR 0025) — matches the
       // sampled values' min/max so follow-live auto-norm has a range.
-      return (args?.signals ?? []).map(() => ({ lo: 10, hi: 20 }));
+      return (args?.signals ?? []).map(
+        (s) => mockSignalExtents[(s as { signalName?: string }).signalName ?? ""] ?? { lo: 10, hi: 20 },
+      );
     if (cmd === "list_value_tables") return mockValueTables[args?.signalName ?? ""] ?? [];
     if (cmd === "get_settings") return { ...mockSettings };
     return undefined;
@@ -419,6 +428,7 @@ afterEach(() => {
   vi.clearAllMocks();
   for (const k of Object.keys(mockValueTables)) delete mockValueTables[k];
   for (const k of Object.keys(mockSampleSeries)) delete mockSampleSeries[k];
+  for (const k of Object.keys(mockSignalExtents)) delete mockSignalExtents[k];
   mockSampleBounds.from = 0;
   mockSampleBounds.last = 2;
   mockSampleStall.on = false;
@@ -1510,6 +1520,83 @@ describe("PlotArea y-normalisation", () => {
         expect(data[3]?.[0]).toBeCloseTo(0.1083333, 6);
         expect(data[3]?.[1]).toBeCloseTo(0.25, 6);
         expect(data[3]?.[2]).toBeCloseTo(0.3916667, 6);
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it("numeric: a hidden signal no longer sets its unit group's scale", async () => {
+    // Two amps signals on one per-unit axis: a 3000 A "nominal" limit
+    // and a 0–500 A "effective" one. While both are visible the group
+    // unions to 0..3000 and the effective limit is squashed into the
+    // bottom sixth; hiding the nominal must rescale the axis to what is
+    // actually drawn.
+    mockSignalExtents.LimitNominal = { lo: 0, hi: 3000 };
+    mockSignalExtents.LimitEffective = { lo: 0, hi: 500 };
+    mockSampleSeries.LimitNominal = { t: [0, 1, 2], v: [3000, 3000, 3000] };
+    mockSampleSeries.LimitEffective = { t: [0, 1, 2], v: [0, 250, 500] };
+    const restore = stubSize();
+    try {
+      renderPanel();
+      await addSignals(["LimitNominal", "LimitEffective"], "per-unit");
+      await waitFor(() => expect(document.querySelectorAll(".plot-area").length).toBe(1));
+      await waitForData((data) => {
+        expect(data[2]?.[1]).toBeCloseTo(250 / 3000, 6);
+        expect(data[2]?.[2]).toBeCloseTo(500 / 3000, 6);
+      });
+      hideSignal("LimitNominal");
+      await waitForData((data) => {
+        expect(data[2]?.[0]).toBeCloseTo(0, 6);
+        expect(data[2]?.[1]).toBeCloseTo(0.5, 6);
+        expect(data[2]?.[2]).toBeCloseTo(1, 6);
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it("numeric: same-unit signals share one scale even when one is constant", async () => {
+    // A limit that never moves has a degenerate all-time extent
+    // (`hi === lo`). It still belongs to its unit group: 3000 A must
+    // draw at the top of a 400..3000 A axis, not at the canvas midline
+    // while the other amps signal fills the canvas on a scale of its
+    // own — per-unit mode exists to keep them commensurable (ADR 0026).
+    mockSignalExtents.LimitNominal = { lo: 3000, hi: 3000 };
+    mockSignalExtents.LimitEffective = { lo: 400, hi: 500 };
+    mockSampleSeries.LimitNominal = { t: [0, 1, 2], v: [3000, 3000, 3000] };
+    mockSampleSeries.LimitEffective = { t: [0, 1, 2], v: [400, 450, 500] };
+    const restore = stubSize();
+    try {
+      renderPanel();
+      await addSignals(["LimitNominal", "LimitEffective"], "per-unit");
+      await waitFor(() => expect(document.querySelectorAll(".plot-area").length).toBe(1));
+      await waitForData((data) => {
+        // One shared scale, 400..3000 (span 2600).
+        expect(data[1]?.[0]).toBeCloseTo(1, 6);
+        expect(data[1]?.[2]).toBeCloseTo(1, 6);
+        expect(data[2]?.[0]).toBeCloseTo(0, 6);
+        expect(data[2]?.[1]).toBeCloseTo(50 / 2600, 6);
+        expect(data[2]?.[2]).toBeCloseTo(100 / 2600, 6);
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it("numeric: a unit group with no span at all draws at the midline, not NaN", async () => {
+    // The degenerate end of the case above: the group's whole range is
+    // one value, so there is nothing to normalise by. The fallback must
+    // be the canvas midline — dividing by the zero span would put NaN
+    // in the data and draw nothing at all.
+    mockSignalExtents.LimitNominal = { lo: 3000, hi: 3000 };
+    mockSampleSeries.LimitNominal = { t: [0, 1, 2], v: [3000, 3000, 3000] };
+    const restore = stubSize();
+    try {
+      renderPanel();
+      await addSignals(["LimitNominal"], "per-unit");
+      await waitForData((data) => {
+        expect(data[1]).toEqual([0.5, 0.5, 0.5]);
       });
     } finally {
       restore();
