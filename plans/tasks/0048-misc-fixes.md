@@ -397,12 +397,31 @@ draw, and is the next lever if one is ever wanted. The allocation half
 of this fix is only observable in Chromium (a CPU profile); jsdom
 neither lays out nor paints, so no test here can see it.
 
-## 13. The plot's x-axis label should show the free cursor's time
+## 13. The plot's x-axis label should show the free cursor's time — **done**
 
-The cursor readout gives each signal's value at the cursor but never the
-cursor's own time, so the one thing every signal's reading is relative to
-is invisible. The `time (s)` label at the bottom of the plot panel is
-otherwise static text and is the natural place to put it.
+The bottom-most stacked area's `time (s)` label now carries the free
+(mouse-crosshair) cursor's own time while the pointer is over the panel,
+as elapsed time on the session timeline at the same precision as the
+ticks beside it (ADR 0024).
+
+Choices made:
+
+- **The free cursor only.** Cursors A and B already label their own
+  vertical lines with their times, plus a Δt chip — that half of the
+  problem was already solved and is not duplicated here.
+- **Panel-level, not per-area.** The crosshair is one shared x for the
+  whole stack, and only the bottom area carries a labelled x axis, so
+  the readout lives on that single label.
+- **Reverts to plain `time (s)` when the pointer leaves.** A held last
+  value would have no crosshair on screen to refer to.
+- **No jitter.** The label is drawn in bold monospace and the time is
+  padded to the width of the longest string the *visible window* can
+  produce, so the string keeps one width — and so one position under
+  uPlot's centred label drawing — as the pointer moves. The width
+  changes only on a pan/zoom across a magnitude boundary.
+- **No new per-mouse-move render work.** uPlot calls `axis.label` on
+  every draw, so the label reads the area's `liveRef` and rides the
+  redraw the panel-level (rAF-coalesced) hover state already triggers.
 
 ## 14. Multi-select signals in the plot panel
 
