@@ -137,6 +137,55 @@ export function formatTimestamp(seconds: number, base: number | null): string {
   return formatElapsed(base === null ? seconds : seconds - base);
 }
 
+/// The earliest session origin that can be a wall clock
+/// (2000-01-01T00:00:00Z). ADR 0024 defines the origin as Unix-epoch
+/// seconds, but a replayed log that carries no start time of its own has
+/// no epoch to offer: the session is then anchored on the file's first
+/// frame, whose timestamps are measured from the file's own zero — a few
+/// seconds or hours, never the ~1.7e9 of a real instant. Nothing this
+/// tool captures predates 2000, and no capture-relative timeline runs for
+/// a quarter-century, so the magnitude separates the two cleanly.
+const WALL_CLOCK_FLOOR_SECONDS = 946_684_800;
+
+/// Whether the session origin `base` anchors the capture to a wall clock,
+/// i.e. whether a frame's timestamp names an absolute instant at all.
+/// `false` for a capture with no origin yet and for one replayed from a
+/// log with no start time.
+export function hasWallClockAnchor(base: number | null): boolean {
+  return base !== null && base >= WALL_CLOCK_FLOOR_SECONDS;
+}
+
+/// `fractionalSecondDigits` is an ES2021 Intl option (supported by every
+/// engine this app runs in); the project's TypeScript lib is ES2020, so
+/// it is spelled out here rather than widening the lib for one call.
+const LOCAL_TIMESTAMP_OPTIONS: Intl.DateTimeFormatOptions & {
+  fractionalSecondDigits?: 1 | 2 | 3;
+} = {
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  fractionalSecondDigits: 3,
+  timeZoneName: "short",
+};
+
+/// The absolute instant a frame happened, as local date and time —
+/// the second reading of the timestamp `formatTimestamp` renders as
+/// elapsed time. Locale-aware, with the zone named so the reading is
+/// unambiguous, and milliseconds kept (the instant of a single message
+/// is the point of asking).
+///
+/// `seconds` is the frame's own timestamp and `base` the session origin;
+/// `null` when the origin is not a wall clock (`hasWallClockAnchor`),
+/// because there is then no absolute instant to name and reading the
+/// capture-relative seconds as an epoch would invent one.
+export function formatLocalTimestamp(seconds: number, base: number | null): string | null {
+  if (!hasWallClockAnchor(base)) return null;
+  return new Date(Math.round(seconds * 1000)).toLocaleString(undefined, LOCAL_TIMESTAMP_OPTIONS);
+}
+
 /// A per-id message rate (frames/second) for the by-id "msg/s" column.
 /// Zero — an id seen only once, so no inter-arrival yet — shows blank;
 /// otherwise one decimal below 100/s, whole numbers above.

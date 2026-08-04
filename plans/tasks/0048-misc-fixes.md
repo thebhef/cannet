@@ -563,26 +563,57 @@ mechanism is unverified and is not claimed. If it turns up again it
 needs a fresh observation (which process, which column) rather than
 this hypothesis.
 
-## 17. Hovering a trace row's time shows its local date and time
+## 17. Hovering a trace row's time shows its local date and time — **done**
 
-A minor feature rather than a defect. The trace view's time column shows
-elapsed time since the session origin, per ADR 0024 — which is the right
-default and is not changing. But the absolute instant a row happened is
-sometimes the thing the user needs, and today it is nowhere on screen.
+Hovering a time cell shows a native `title` with that message's local
+date and time (locale-aware, milliseconds kept, zone named — e.g.
+`11/15/2023, 07:13:20.123 AM GMT+9`). ADR 0024 is untouched: elapsed
+time is still what the column renders, and the tooltip is derived from
+the row's own absolute timestamp rather than from a second origin.
 
-Hovering the time value shows a tooltip with that message's **local**
-date and time.
+Choices made:
 
-**When the origin is unknown, there is no tooltip.** A BLF that carries
-no start time gives a session with no wall-clock anchor — the host
-reports `session_start_seconds` as 0 and the frontend already collapses
-that to `null` — so there is no absolute instant to show, and inventing
-one (treating capture-relative seconds as an epoch) would be a lie. No
-tooltip, no placeholder.
+- **Both trace surfaces.** The chronological view and the by-id view are
+  the same panel's two modes over the same column set, so they share one
+  cell (`TraceTimeCell` in `traceTable.tsx`, which wraps `cellContent`'s
+  text rather than re-rendering it). The signal view's time column is
+  deliberately left alone — it is a different panel, and its time is a
+  signal's last-seen aggregate, not a row per message. Event rows are
+  left alone too: their time is an annotation's, and the row already
+  carries the event's own tooltip.
+- **A native `title`**, which is what every other tooltip in the app
+  uses. It shadows the row-level violation tooltip inside that one cell,
+  which is the right precedence for the thing under the pointer.
+- **No per-row formatting.** The tables are virtualized and repaint
+  continuously, so the cell derives the string from hover state *during
+  render* instead of formatting a date for every row on every pass.
+  Deriving it (rather than writing it to the node on `mouseenter`) is
+  also what keeps it right when a virtualized row slot is reused for
+  another frame under a stationary pointer.
 
-This does not touch ADR 0024's display rule: elapsed time is still what
-the column *renders*. The tooltip is an on-demand second reading of the
-same instant, not a second origin.
+**The "no wall-clock origin" condition needed a wider guard than
+`session_start_seconds > 0`.** The premise — that a BLF with no start
+time reports 0, which the frontend already collapses to `null` — holds
+only when the file's first object sits at exactly 0 ns. `SystemTime`'s
+unset sentinel makes `BlfReader::start_unix_nanos()` 0
+(`system_time_to_unix_nanos_handles_unset_sentinel`), the frame adapters
+add that 0 to each event's file-relative timestamp, and the replay pump
+anchors the session on the first frame — so a file whose first object is
+at 50 ms yields an origin of 0.05 s, which is `> 0` and reaches the view
+as a non-null base. Rendering it as an epoch would put every row in
+January 1970, which is exactly the invented instant this item forbids.
+So the frontend asks whether the origin *is* a wall clock
+(`hasWallClockAnchor`: at or after 2000-01-01) rather than whether it is
+merely non-zero — the two timelines are separated by magnitude, and no
+capture-relative log runs for a quarter-century. The host's own
+`session_start_seconds` contract is unchanged.
+
+Guarded by the `formatLocalTimestamp` / `hasWallClockAnchor` cases in
+`format.test.ts` (which fix `TZ` per case and assert the instant rather
+than a locale's spelling of it) and by
+`traceTimeTooltip.dom.test.tsx`, which hovers the time cell on both
+surfaces and asserts the tooltip, its removal on mouse-out, and the
+absence of any `title` for a null and for a capture-relative origin.
 
 ## Exit criteria
 

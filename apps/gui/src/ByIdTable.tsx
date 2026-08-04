@@ -23,7 +23,7 @@ import {
   gridTemplateColumns,
   visibleColumns,
 } from "./traceColumns";
-import { TraceHeader, cellContent, contentWidthStyle } from "./traceTable";
+import { TraceHeader, TraceTimeCell, cellContent, contentWidthStyle } from "./traceTable";
 import type { ByIdSnapshotRecord } from "./types";
 import { diagCount } from "./diag"; // DIAG
 
@@ -290,11 +290,34 @@ const ByIdRow = memo(function ByIdRow({
       style={{ position: "absolute", top, left: 0, right: 0, height, gridTemplateColumns: gridTemplate }}
       onClick={() => frame?.decoded && rowKey && onToggle(rowKey)}
     >
-      {columns.map((c) => (
-        <span key={c.key} className={columnDef(c.key).className}>
-          {cellContent(c.key, frame, frame?.index ?? 0, baseTimestamp, idFormat, isExpanded, busLookup, row?.rate, row?.count)}
-        </span>
-      ))}
+      {columns.map((c) => {
+        const content = cellContent(
+          c.key,
+          frame,
+          frame?.index ?? 0,
+          baseTimestamp,
+          idFormat,
+          isExpanded,
+          busLookup,
+          row?.rate,
+          row?.count,
+        );
+        const className = columnDef(c.key).className;
+        return c.key === "time" ? (
+          <TraceTimeCell
+            key={c.key}
+            className={className}
+            seconds={frame?.timestamp_seconds ?? null}
+            base={baseTimestamp}
+          >
+            {content}
+          </TraceTimeCell>
+        ) : (
+          <span key={c.key} className={className}>
+            {content}
+          </span>
+        );
+      })}
       {isExpanded && frame?.decoded && (
         <div className="signals">
           {frame.decoded.signals.map((sig) => (
