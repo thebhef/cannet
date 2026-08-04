@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 
 import { invoke } from "@tauri-apps/api/core";
-import { useDecimatedRange, type DecimatedRequest } from "./useDecimatedRange";
+import { fetchWindowExtent, useDecimatedRange, type DecimatedRequest } from "./useDecimatedRange";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 const mockInvoke = vi.mocked(invoke);
@@ -159,6 +159,25 @@ describe("useDecimatedRange", () => {
     expect(mockInvoke).toHaveBeenCalledTimes(2);
   });
 
+  it("reports a frozen live edge while parked — nothing here can see the capture grow", async () => {
+    // The mechanism behind the panel-level staleness this fast path
+    // causes: `unchanged` hands back the cached `lastT`, which is the
+    // live edge as of the last *real* fetch. There is no round-trip to
+    // refresh it, so anything that needs the window's current extent
+    // (rather than the rendered one) has to ask for it separately.
+    mockInvoke.mockResolvedValue(encode(100, 110, [{ t: [101, 104], v: [1, 2] }]));
+    const { result } = renderHook(() => useDecimatedRange());
+    await run(() => result.current, req({ winEnd: 1000 })); // base = 100, live edge = 110
+    await run(() => result.current, req({ winEnd: 1000, xMin: 1, xMax: 4 })); // park on 101..104
+
+    // The capture ran on — the host's live edge is now 150 s.
+    mockInvoke.mockResolvedValue(encode(100, 150, [{ t: [101, 104], v: [1, 2] }]));
+    const out = await run(() => result.current, req({ winEnd: 5000, xMin: 1, xMax: 4 }));
+
+    expect(out.kind).toBe("unchanged");
+    expect(out.lastT).toBe(10); // 110 − base, not the true 50
+  });
+
   it("still refetches when the visible slice reaches the live edge", async () => {
     // The other side of the same rule: a slice whose right edge is at or
     // past the last frame seen *can* gain samples from a longer window,
@@ -266,5 +285,34 @@ describe("useDecimatedRange", () => {
     const out2 = await run(() => result.current, req(), sidecar);
     expect(out2.kind).toBe("unchanged");
     expect(sidecar).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("fetchWindowExtent", () => {
+  it("asks for the window's anchors alone — no signals, no slice bounds", async () => {
+    // `last_seconds` is a fact about the window (the host reads it off
+    // the store's anchors), not about the queried signals, so the
+    // extent-only form of the query carries an empty signal list and
+    // costs the host no per-signal slicing.
+    mockInvoke.mockResolvedValue(encode(100, 150, []));
+
+    expect(await fetchWindowExtent(0, 5000)).toBe(150);
+
+    const args = mockInvoke.mock.calls[0][1] as Record<string, unknown>;
+    expect(args.fromIndex).toBe(0);
+    expect(args.windowEnd).toBe(5000);
+    expect(args.signals).toEqual([]);
+    expect(args.fromSeconds).toBeNull();
+    expect(args.toSeconds).toBeNull();
+  });
+
+  it("is null for a collapsed window, without a round-trip", async () => {
+    expect(await fetchWindowExtent(7, 7)).toBeNull();
+    expect(mockInvoke).not.toHaveBeenCalled();
+  });
+
+  it("is null while the window holds no frames yet", async () => {
+    mockInvoke.mockResolvedValue(encode(null, null, []));
+    expect(await fetchWindowExtent(0, 10)).toBeNull();
   });
 });

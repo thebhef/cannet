@@ -274,3 +274,33 @@ export function useDecimatedRange(): DecimatedRange {
 
   return { sample, current, reset };
 }
+
+/// The trace window `[winStart, winEnd)`'s live edge in **absolute
+/// seconds**, or `null` when the window is collapsed or holds no frames
+/// yet.
+///
+/// This is the same `last_seconds` a sample carries, and the host derives
+/// it from the store's window anchors rather than from the queried
+/// signals — so an empty signal list is that query with the per-signal
+/// slicing left out: the cheap way to ask "where does the capture end
+/// now?".
+///
+/// It exists because a [`DecimatedRange`]'s `lastT` is only as fresh as
+/// its last real fetch, and a parked window — zoomed into history while
+/// the capture grows — deliberately stops fetching. A view that needs the
+/// window's *current* extent rather than its rendered one asks here, on
+/// the user gesture that needs it (Fit Data). Calling it per tick would
+/// put the skipped round-trip straight back.
+export async function fetchWindowExtent(winStart: number, winEnd: number): Promise<number | null> {
+  if (winEnd <= winStart) return null;
+  diagCount("invoke.sample_signals"); // DIAG
+  const buf = await invoke<ArrayBuffer>("sample_signals", {
+    fromIndex: winStart,
+    windowEnd: winEnd,
+    fromSeconds: null,
+    toSeconds: null,
+    signals: [],
+    maxPoints: 1,
+  });
+  return decodeSignalsSample(buf).last_seconds;
+}

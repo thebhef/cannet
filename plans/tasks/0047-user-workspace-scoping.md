@@ -310,14 +310,33 @@ surface over it. This is the user-facing half.
   the status line — reuse it. Note that walk is currently expensive and
   holds a lock (Task 44 Tier 1 #4), so size on demand, never on a
   timer.
-- **Clear the cache for one project directory, or all of them.**
-  Clearing the active one is the existing Clear path; clearing an
-  inactive one is a directory removal plus a registry update.
+- **Two actions per row, and they mean different things** (ADR 0042
+  decision 5): **Clear** empties the cached data and keeps both the
+  cache directory and the registry entry; **Delete** removes the cache
+  directory and forgets the project. Neither touches the project
+  directory itself. A header **clear-all** empties every cache without
+  removing anything. Clearing the active project is the existing Clear
+  path and means "discard this session"; Delete is unavailable for it,
+  because its store is mapped.
+- **`Save as…` belongs on the auto-located rows.** This list is the one
+  place a user actually sees that their project is living in cache
+  space, so it is where the offer to move it belongs — far more
+  discoverable than a File-menu entry they have no reason to open.
+  Selecting a destination runs decision 9's Save As, and the row stops
+  being auto-located.
 - **Stale entries.** A directory deleted outside the app must degrade
   gracefully — show it as missing, offer to forget it, never fail to
-  open the panel.
+  open the panel. A missing project's row stays listed at zero bytes
+  until the user deletes it, rather than vanishing on clear-all; that
+  keeps Clear's meaning identical on every row.
 - Auto-created directories in cache space are the ones most likely to
   accumulate; the list is how a user finds and reclaims them.
+
+The rendered form of this list is the **Storage → Project caches**
+group in [Task 46](0046-settings-framework-and-view.md)'s prototype
+([`0046-settings-framework-and-view/settings-view-prototype.html`](0046-settings-framework-and-view/settings-view-prototype.html)),
+where it is the worked example of a setting that declares a custom
+renderer instead of a generated control. Keep the two in step.
 
 ## Sequencing
 
@@ -367,8 +386,10 @@ surface over it. This is the user-facing half.
   `.gitignore`, and the `.cannet_prj` beside it.
 - Two projects each keep their own capture: opening B and returning to
   A finds A's capture intact.
-- Opening a project a second time focuses the window that already has
-  it rather than opening a second view onto the same directory.
+- Opening a project directory that is already open is left **undefined**
+  (decision 8) — no detection, no guard, no second-view handling. This
+  criterion exists to record that the absence is deliberate, not an
+  oversight.
 - A value set at user scope and overridden at workspace scope resolves
   to the workspace value, proven by tests at the resolution layer.
 - Every persisted key declares its valid scope; a key with no scope
@@ -386,5 +407,10 @@ surface over it. This is the user-facing half.
   inside the directory are written relative, not absolute.
 - A DBC that a generator rewrites in the project directory still
   auto-reloads.
-- The project-directory list shows accurate cache sizes and can clear
-  one or all, including a directory that has vanished.
+- The project-directory list shows accurate cache sizes and each row's
+  state — active, auto-located, or orphaned. Clear empties a cache,
+  Delete removes the cache directory and forgets the project, clear-all
+  empties every cache, and no action removes a project directory the
+  user owns.
+- An auto-located row offers `Save as…`, and taking it produces a
+  complete project directory at the chosen destination.

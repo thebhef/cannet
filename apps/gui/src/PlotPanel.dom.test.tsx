@@ -35,10 +35,16 @@ vi.mock("uplot", () => {
       el.appendChild(document.createElement("canvas"));
       instances.push(this);
     }
+    /** Every `setScale("x", …)` this instance was given, in order — the
+     * panel's x-window decisions (follow-live slide, Fit Data) are only
+     * observable through this call. */
+    xCalls: { min: number; max: number }[] = [];
     setData(d: unknown) {
       this.data = d;
     }
-    setScale() {}
+    setScale(key?: string, range?: { min: number; max: number }) {
+      if (key === "x" && range) this.xCalls.push({ min: range.min, max: range.max });
+    }
     setSeries() {}
     setSelect() {}
     setSize() {}
@@ -51,9 +57,11 @@ vi.mock("uplot", () => {
     valToPos() {
       return 0;
     }
-    /** Fire a registered hook as the real uPlot would. */
-    fire(hook: string) {
-      for (const f of this.opts.hooks?.[hook] ?? []) f(this);
+    /** Fire a registered hook as the real uPlot would. Extra args are
+     * passed through after `u` (uPlot's `setScale` hook takes the scale
+     * key as its second argument). */
+    fire(hook: string, ...args: unknown[]) {
+      for (const f of this.opts.hooks?.[hook] ?? []) (f as (...a: unknown[]) => void)(this, ...args);
     }
   }
   const instances: FakeUPlot[] = [];
@@ -65,6 +73,13 @@ const SIGNALS = [
   { message_id: 256, extended: false, message_name: "EngineData", transmitter: "EngineEcu", signal_name: "EngineSpeed", unit: "rpm" },
   { message_id: 256, extended: false, message_name: "EngineData", transmitter: "EngineEcu", signal_name: "EngineTemp", unit: "degC" },
 ];
+/** The window anchors `sample_signals` reports alongside the series:
+ * `from` is the window's first-frame time and `last` its last-frame time
+ * (the live edge), both absolute seconds. Host-side these are a fact
+ * about the *window* — `window_anchors(from_index)` bounded by
+ * `window_end` — not about the queried signals, so one pair serves every
+ * area. A test that grows the capture moves `last`. */
+const mockSampleBounds = { from: 0, last: 2 };
 /** Inline encoder mirroring `lib.rs::encode_signals_sample` — keeps the
  * fixture self-contained so the test doesn't depend on Rust. Layout
  * matches what `decodeSignalsSample` parses. */
@@ -75,9 +90,9 @@ function encodeSample(series: { t: number[]; v: number[] }[]): ArrayBuffer {
   const magic = [0x53, 0x49, 0x47, 0x53, 0x41, 0x4d, 0x50, 0x01];
   for (let i = 0; i < 8; i++) view.setUint8(i, magic[i]);
   let off = 8;
-  view.setFloat64(off, 0, true);
+  view.setFloat64(off, mockSampleBounds.from, true);
   off += 8;
-  view.setFloat64(off, 2, true);
+  view.setFloat64(off, mockSampleBounds.last, true);
   off += 8;
   view.setFloat64(off, 0, true);
   off += 8;
@@ -138,12 +153,14 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 import * as uplotModule from "uplot";
 
-/** The FakeUPlot surface the hover test drives (see the mock above). */
+/** The FakeUPlot surface the tests drive (see the mock above). */
 type FakeUPlotInst = {
   cursor: { left: number };
   root: HTMLElement;
   over: HTMLElement;
-  fire: (hook: string) => void;
+  scales: Record<string, { min?: number; max?: number }>;
+  xCalls: { min: number; max: number }[];
+  fire: (hook: string, ...args: unknown[]) => void;
 };
 const uplotInstances = (uplotModule as unknown as { __instances: FakeUPlotInst[] }).__instances;
 
@@ -319,6 +336,8 @@ afterEach(() => {
   vi.clearAllMocks();
   for (const k of Object.keys(mockValueTables)) delete mockValueTables[k];
   for (const k of Object.keys(mockSampleSeries)) delete mockSampleSeries[k];
+  mockSampleBounds.from = 0;
+  mockSampleBounds.last = 2;
 });
 
 describe("PlotPanel", () => {
@@ -1363,5 +1382,191 @@ describe("PlotArea y-normalisation", () => {
     } finally {
       restore();
     }
+  });
+});
+
+// The plot's x window is *panel*-wide (`xSyncRef`), and Fit Data sets it
+// from the panel's data extent. Since the Tier 1 parked-view fast path,
+// a window zoomed into history stops re-sampling while the capture
+// grows — so the extent the panel carries stops advancing too. These
+// tests pin down what Fit Data then shows.
+//
+// `sample_signals` reports the window's live edge (`last_seconds`) as a
+// fact about the *window*, derived host-side from the store's anchors
+// and independent of which signals were asked for; `mockSampleBounds`
+// stands in for it, and moving it is this harness's "the capture grew".
+describe("PlotPanel Fit Data over a parked window", () => {
+  /// The live edge when the panel parks, and after the capture grows.
+  const PARKED_EDGE = 2;
+  const GROWN_EDGE = 9;
+  /// Visible slice to park at: entirely inside history. `PlotArea` pads
+  /// the fetch by ±20 %, so the slice actually requested ends at 1.12 —
+  /// still short of `PARKED_EDGE`, which is what makes it parked.
+  const HISTORY = { min: 0.4, max: 1.0 };
+
+  beforeEach(() => {
+    mockSampleBounds.last = PARKED_EDGE;
+  });
+
+  /// The newest uPlot instance rendered inside the named area. Areas
+  /// rebuild their instance on a signal-set change, so the last one wins.
+  function liveInstanceIn(areaLabel: string): FakeUPlotInst {
+    const areaEl = screen.getByText(areaLabel).closest(".plot-area")!;
+    for (let i = uplotInstances.length - 1; i >= 0; i--) {
+      if (areaEl.contains(uplotInstances[i].root)) return uplotInstances[i];
+    }
+    throw new Error(`no uPlot instance for ${areaLabel}`);
+  }
+
+  /// Drop a signal onto an area, the way the DBC panel / another area
+  /// does — the only way to give a *non-focused* area a signal.
+  function dropSignal(areaLabel: string, signalName: string, unit: string) {
+    const MIME = "application/x-cannet-plot-signal";
+    const payload = JSON.stringify({
+      messageId: 256,
+      extended: false,
+      signalName,
+      messageName: "EngineData",
+      unit,
+    });
+    const dt = { types: [MIME], getData: (t: string) => (t === MIME ? payload : ""), dropEffect: "" };
+    const area = screen.getByText(areaLabel).closest(".plot-area")!;
+    fireEvent.dragOver(area, { dataTransfer: dt });
+    fireEvent.drop(area, { dataTransfer: dt });
+  }
+
+  /// Replay a user zoom the way uPlot does — it moves its own x scale and
+  /// then fires `setScale`, which the panel reads as a user pan/zoom
+  /// (shared window updated, follow-live dropped).
+  async function zoomInto(inst: FakeUPlotInst, min: number, max: number) {
+    inst.scales.x = { min, max };
+    await act(async () => {
+      inst.fire("setScale", "x");
+    });
+  }
+
+  /// Press the toolbar's Fit Data and return the x window it applied.
+  async function pressFitData(inst: FakeUPlotInst): Promise<{ min: number; max: number }> {
+    inst.xCalls.length = 0;
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "fit data" }));
+    });
+    await act(async () => {});
+    const last = inst.xCalls[inst.xCalls.length - 1];
+    if (!last) throw new Error("fit data applied no x window");
+    return last;
+  }
+
+  /// Grow the capture past the parked slice: the host's live edge moves
+  /// to `GROWN_EDGE` and `winEnd` advances a few `trace-grew` ticks'
+  /// worth. Real timers are off for this so the only thing that can
+  /// re-sample is the window growth itself.
+  async function growPastTheParkedSlice(growTrace: (n: number) => void) {
+    mockSampleBounds.last = GROWN_EDGE;
+    for (let n = 1; n <= 5; n++) {
+      await act(async () => {
+        growTrace(100 + n * 10);
+      });
+    }
+  }
+
+  it("Fit Data on a parked panel fits to the capture's true live edge", async () => {
+    // THE REGRESSION. The panel parked at a live edge of 2 s, the capture
+    // ran on to 9 s, and Fit Data — whose whole job is "show me
+    // everything" — fits to 2. Nothing looks broken; the plot just ends
+    // early, as though the capture had stopped when the user panned away.
+    await withSizedCanvas(async () => {
+      const { growTrace } = renderPanel();
+      await pickCombobox(
+        screen.getByLabelText("add signal to focused plot area"),
+        "*|s:256:EngineSpeed",
+      );
+      await waitFor(() => expect(sampleCalls()).toBeGreaterThan(0));
+      // Let the 250 ms post-mount rebuild land before freezing the clock,
+      // so it can't drop the windowed source's cache mid-test.
+      await new Promise((r) => setTimeout(r, 400));
+      const inst = liveInstanceIn("Area 1");
+
+      vi.useFakeTimers();
+      try {
+        await zoomInto(inst, HISTORY.min, HISTORY.max);
+        await growPastTheParkedSlice(growTrace);
+
+        expect((await pressFitData(inst)).max).toBe(GROWN_EDGE);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  it("repeated Fit Data presses agree on the live edge", async () => {
+    // This started as the severity question: before the fix the first
+    // press fit to the stale edge, and landing the right edge *on* that
+    // edge un-parked the window, so the re-sample it forced refreshed the
+    // extent and the second press was right — one press stale, not stuck
+    // for the session. Now both presses are right, and this guards the
+    // second one against re-acquiring a stale edge from the first.
+    await withSizedCanvas(async () => {
+      const { growTrace } = renderPanel();
+      await pickCombobox(
+        screen.getByLabelText("add signal to focused plot area"),
+        "*|s:256:EngineSpeed",
+      );
+      await waitFor(() => expect(sampleCalls()).toBeGreaterThan(0));
+      await new Promise((r) => setTimeout(r, 400));
+      const inst = liveInstanceIn("Area 1");
+
+      vi.useFakeTimers();
+      try {
+        await zoomInto(inst, HISTORY.min, HISTORY.max);
+        await growPastTheParkedSlice(growTrace);
+
+        await pressFitData(inst);
+        expect((await pressFitData(inst)).max).toBe(GROWN_EDGE);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  it("every area of a panel parks together — a second area is no rescue", async () => {
+    // `sharedExtent()` maxes over the areas, so one area still reaching
+    // the live edge would keep the panel's cached extent fresh. It can't
+    // happen: the x window is panel-wide, so all areas request the same
+    // slice and park as one — which is why Fit Data can't lean on the
+    // cached extent and asks the host instead. Both areas stay quiet
+    // while the capture grows, and both land on the same fitted window.
+    await withSizedCanvas(async () => {
+      const { growTrace } = renderPanel();
+      await pickCombobox(
+        screen.getByLabelText("add signal to focused plot area"),
+        "*|s:256:EngineSpeed",
+      );
+      fireEvent.click(screen.getByRole("button", { name: "add plot area" }));
+      await act(async () => {
+        dropSignal("Area 2", "EngineTemp", "degC");
+      });
+      await new Promise((r) => setTimeout(r, 500));
+      const a1 = liveInstanceIn("Area 1");
+      const a2 = liveInstanceIn("Area 2");
+
+      vi.useFakeTimers();
+      try {
+        await zoomInto(a1, HISTORY.min, HISTORY.max);
+        const afterZoom = sampleCalls();
+        await growPastTheParkedSlice(growTrace);
+        // The Tier 1 exit criterion: no host round-trips while parked.
+        expect(sampleCalls()).toBe(afterZoom);
+
+        a2.xCalls.length = 0;
+        const fitted = await pressFitData(a1);
+        // Both areas were moved to the same window, and it spans the
+        // whole capture — not the part of it they had seen.
+        expect(a2.xCalls[a2.xCalls.length - 1]).toEqual(fitted);
+        expect(fitted.max).toBe(GROWN_EDGE);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });

@@ -15,6 +15,14 @@ app's own visual language, reusing components the repo already has. The
 storage contract does not change: `settings.json` stays the durable,
 hand-editable source of truth and this panel stays sugar over it.
 
+A working design prototype lives in
+[`0046-settings-framework-and-view/settings-view-prototype.html`](0046-settings-framework-and-view/settings-view-prototype.html)
+— open it in a browser. It carries the Task 45 inventory as real data
+and implements the descriptor model, the tag taxonomy, fzf-style
+search, the tree, the two scopes, and the project-cache editor. It is
+the reference for what the view work should produce; where this
+document and the prototype disagree, fix whichever is wrong.
+
 ## Sequencing
 
 **The tag taxonomy must be settled before Task 45 Stage 3 bulk-promotes
@@ -78,6 +86,22 @@ a fourth. Note that a host-served descriptor also makes
 `settings.json`'s self-documenting promise checkable — the file's key
 set and the descriptor's key set must match, which is a test.
 
+**The panel is a dictionary editor, and that is the point.** A row's
+control is *generated* from the descriptor's `type` — `bool` →
+checkbox, `enum` → select over `options`, `int` / `number` → number
+input with a unit suffix, `text` → text input. Nothing is hand-written
+per setting.
+
+A setting that is genuinely not a labelled input declares
+`type: "custom"` plus a named `renderer`, dispatched through one table.
+That table is the entire extension surface: a setting is either a
+generated control or one named renderer, with no third case. Custom
+rows still carry the standard header — label, key, tags — so they stay
+searchable and still teach the file. [Task 47](0047-user-workspace-scoping.md)'s
+project-directory list is the worked example. Keyboard shortcuts are
+**not** — they already have their own view, and reproducing it here
+would be a second home for one fact.
+
 ### 2. Tag taxonomy
 
 Two independent axes; a setting carries tags from both.
@@ -118,11 +142,24 @@ is small and a typo'd tag silently hides a setting.
 - **Tree grouped by tag**, VS Code-style, with the surface axis as the
   default grouping. Expand state persists per-panel; while filtering,
   matches and their ancestors show.
-- **Developer settings hidden by default**, behind a toggle that is
-  itself discoverable. When a search would have matched a hidden
-  developer setting, say so rather than silently returning nothing —
-  "3 developer settings match" with a way to reveal them. A search that
-  lies about having no results is worse than one that shows too much.
+- **Developer settings hidden by default.** The toggle is itself a
+  setting (`general.show_developer_settings`), not panel chrome — it
+  lives in the store like every other knob, and the panel grows no
+  special controls of its own.
+- **What is hidden is not advertised.** No banner, no "3 developer
+  settings match", no count in the footer. An earlier draft of this
+  task argued the opposite — that a search returning nothing while
+  hidden matches exist is a search that lies. That was overruled
+  deliberately: the banner is noise on every near-miss query, and the
+  cost of the quiet version is bounded because the toggle is itself one
+  searchable row away.
+- **Developer settings form their own tree group** rather than
+  appearing under their surface. Enabling them adds one group instead
+  of mutating all ten, so a user who flips the toggle to find one knob
+  doesn't find `Plot` has silently grown a fetch-cadence row. The cost
+  is that a developer knob is no longer where its surface says it is,
+  so each one shows a surface chip (`Plot` `developer`) beside its
+  kind.
 - **Every setting shows its key** (the `settings.json` field name), so
   the panel teaches the file. ADR 0034's promise is that the file is
   the contract; the panel should make hand-editing easier, not hide
@@ -197,11 +234,13 @@ overridden); this task carries the *metadata* and renders it.
 - The descriptor's key set and the serialized `settings.json` key set
   are proven identical by a test — the ADR 0034 "lists every knob"
   promise, mechanically checked.
-- Fuzzy search finds a setting by label, key, help text, or tag; a
-  query matching only hidden developer settings reports them rather
-  than showing an empty result.
-- Developer-tagged settings are hidden by default and revealed by one
-  discoverable toggle.
+- Fuzzy search finds a setting by label, key, help text, or tag.
+- Developer-tagged settings are hidden by default, revealed by a
+  setting rather than by panel chrome, and collect into their own tree
+  group when revealed. Nothing in the panel advertises what is hidden.
+- Every control is generated from its descriptor's `type`. The only
+  hand-written renderers are those declaring `type: "custom"`, and each
+  is registered in one dispatch table.
 - No new matcher and no new tree implementation: the panel uses `fzf`
   and the DBC panel's established tree-filter pattern.
 - A user who never opens the panel is unaffected — defaults unchanged,
