@@ -27,8 +27,9 @@ use serde::Serialize;
 
 use crate::persisted_json::{scope_of, Scope};
 use crate::settings::{
-    Settings, CAN_ID_FORMATS, MIN_INTERVAL_MS, MIN_LOG_ROTATION_BYTES, MIN_SCRATCH_CAP_BYTES,
-    MIN_SYSTEM_LOG_RING, SCOPES, SIDECAR_LOG_LEVELS, SYSTEM_LOG_LEVELS, TRACE_MODES, Y_AXIS_MODES,
+    Settings, CAN_ID_FORMATS, MIN_BUS_BITRATE_BPS, MIN_INTERVAL_MS, MIN_LOG_ROTATION_BYTES,
+    MIN_SCRATCH_CAP_BYTES, MIN_SYSTEM_LOG_RING, SCOPES, SIDECAR_LOG_LEVELS, SYSTEM_LOG_LEVELS,
+    TRACE_MODES, Y_AXIS_MODES,
 };
 
 /// A whole-millisecond interval control: the shape every cadence
@@ -332,6 +333,30 @@ const DESCRIPTORS: &[Spec] = &[
         },
     },
     Spec {
+        key: "reopen_last_project",
+        backing: Backing::Field,
+        label: "Reopen the last project on launch",
+        help: "Start cannet where you left off. Turn it off to launch with \
+               nothing open — the pointer to your last project is kept either \
+               way, so turning this back on resumes it. Its capture is kept \
+               too: every project keeps its own.",
+        surfaces: &[Surface::General],
+        kind: Kind::Behaviour,
+        control: Control::Bool,
+    },
+    Spec {
+        key: "confirm_unsaved_on_exit",
+        backing: Backing::Field,
+        label: "Ask before closing with unsaved changes",
+        help: "Prompt to save when you close the window with an unsaved project \
+               or an edited .cannet_rbs. Turned off, the window closes and those \
+               changes are gone — the prompt's only other answers are Save and \
+               Cancel, so there is nothing else for it to mean.",
+        surfaces: &[Surface::General],
+        kind: Kind::Behaviour,
+        control: Control::Bool,
+    },
+    Spec {
         key: "recent_blfs_limit",
         backing: Backing::Field,
         label: "Recent BLFs remembered",
@@ -590,6 +615,38 @@ const DESCRIPTORS: &[Spec] = &[
             scale: 1,
             min: None,
             unset: None,
+        },
+    },
+    Spec {
+        key: "default_server_address",
+        backing: Backing::Field,
+        label: "Default server address",
+        help: "The address the Add server form opens filled with, for a bus \
+               binding or a bridge. Only the starting point — type over it as \
+               usual. Point it at the cannet-server you use most so adding one \
+               is a click rather than a retype.",
+        surfaces: &[Surface::Connection],
+        kind: Kind::Default,
+        control: Control::Text {
+            placeholder: Some("host:port"),
+        },
+    },
+    Spec {
+        key: "default_bus_bitrate_bps",
+        backing: Backing::Field,
+        label: "Default bus bitrate",
+        help: "The nominal bitrate a bus you add starts at. Blank adds it with \
+               no bitrate, which leaves the adapter's own default in charge — \
+               what Add bus has always done. Fill it in when every bus you \
+               configure runs at the same rate. Each bus's own bitrate box \
+               still wins, and a bus you already have is left alone.",
+        surfaces: &[Surface::Connection],
+        kind: Kind::Default,
+        control: Control::Int {
+            unit: Some("bit/s"),
+            scale: 1,
+            min: Some(MIN_BUS_BITRATE_BPS),
+            unset: Some("the adapter's default"),
         },
     },
     Spec {

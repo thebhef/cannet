@@ -53,6 +53,16 @@ export interface Settings {
   /// rather than panel state, so it survives closing the panel; the
   /// panel's source filter stays view-local.
   system_log_min_level: SystemLogLevel;
+  /// Whether launching resumes the project cannet was last working in.
+  /// Off, the boot path opens nothing and the session stays in the
+  /// auto-located project directory the host resolved. Read once, on the
+  /// boot open.
+  reopen_last_project: boolean;
+  /// Whether closing the window with unsaved project or `.cannet_rbs`
+  /// changes prompts first. Off, the close is let through and those
+  /// changes go with it. Read at the moment of the close, so a change
+  /// takes effect without a relaunch.
+  confirm_unsaved_on_exit: boolean;
   /// How long a transient status notice dwells in the header before the
   /// bar reverts to its resting line.
   notice_dwell_ms: number;
@@ -87,6 +97,15 @@ export interface Settings {
   sidecar_restart_budget: number;
   /// Wait before reconnecting to a `cannet-server` after a drop.
   reconnect_backoff_ms: number;
+  /// The address a new-server form opens filled with — the bus binding
+  /// form and the bridge form. Read once, when the form seeds its
+  /// state; the user types over it.
+  default_server_address: string;
+  /// Nominal bitrate a newly added logical bus starts at, in bits per
+  /// second; `null` adds it with no bitrate, leaving the adapter's own
+  /// default in charge. Read once, when the bus is created — the bus
+  /// row's bitrate box wins afterwards.
+  default_bus_bitrate_bps: number | null;
   /// Directory to launch the python-can sidecar from; `""` = the one
   /// the app ships with. Host-consumed; `CANNET_SIDECAR_DIR` in the
   /// environment overrides it for one run.
@@ -149,6 +168,8 @@ export function defaultSettings(): Settings {
     keybindings: null,
     show_developer_settings: false,
     system_log_min_level: "info",
+    reopen_last_project: true,
+    confirm_unsaved_on_exit: true,
     notice_dwell_ms: 3000,
     plot_fetch_interval_ms: 67,
     view_refresh_interval_ms: 250,
@@ -163,6 +184,8 @@ export function defaultSettings(): Settings {
     health_sample_interval_ms: 20_000,
     sidecar_restart_budget: 3,
     reconnect_backoff_ms: 2000,
+    default_server_address: "127.0.0.1:50051",
+    default_bus_bitrate_bps: null,
     sidecar_dir: "",
     driver_module: "",
     log_file_min_level: "debug",

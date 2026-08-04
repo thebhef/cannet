@@ -442,10 +442,16 @@ restores the bus / binding configuration — hit **Connect** to switch),
 buffer cleared). The panel also lists the configured server(s) with
 **Connect all** / **Disconnect all** and the loaded DBCs with **Add…**
 / **Remove** / **Reload all from disk**. The
-last opened/saved project is reopened on launch (with no project, the
-layout is restored from local storage). Unsaved changes show a `●` in
+last opened/saved project is reopened on launch, unless you turn
+**`reopen_last_project`** off — then a launch starts with nothing open,
+in the auto-located project directory, and the pointer to your last
+project is kept so turning it back on resumes there. With no project,
+the layout is restored from that directory's own view state. Unsaved
+changes show a `●` in
 the project panel, and closing the window with unsaved changes prompts
-you (Save & close / Discard & close / Cancel). Not carried in the project: a trace's window
+you (Save & close / Discard & close / Cancel) — turn
+**`confirm_unsaved_on_exit`** off and the window just closes, taking
+the unsaved changes with it. Not carried in the project: a trace's window
 position (it re-anchors to the session buffer on each launch anyway),
 and the BLF replay path.
 
@@ -506,9 +512,12 @@ writes, so the panel teaches the file.
 - **Defaults you can still change per view.** Some settings only decide
   what a *new* view starts as — the trace panel's **Default trace
   view**, **Default auto-scroll**, and **Default events overlay**, the
-  plot's **Default y-axis layout**, and **Default trace columns** /
+  plot's **Default y-axis layout**, **Default trace columns** /
   **Default signal columns** (which columns a new table shows, in what
-  order, how wide).
+  order, how wide), the **Default server address** an Add server form
+  opens filled with, and the **Default bus bitrate** a bus you add
+  starts at (blank — what ships — adds it with no bitrate at all, so
+  the adapter's own applies, exactly as **Add bus** has always done).
   They are read once, when the view is created, and the view's own
   controls win from then on: changing one of these never reaches back
   into a panel you already have open, and a panel restored from a

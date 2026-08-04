@@ -191,6 +191,14 @@ Rules:
   not done until its docs match what the code does.
 - When you spot a doc-vs-code mismatch, fix whichever is wrong in the
   same change — never leave them inconsistent.
+- **When you delete a mechanism, grep for its name before you commit.**
+  The comments that describe it do not fail a build, so they survive it
+  and go on asserting how the code works. Every instance found so far
+  was of this shape: a dedup guard cited as preventing a double-fire
+  after the guard was deleted, a cache named as a reference
+  implementation after the cache was removed, `localStorage` still
+  described as where a layout lives. A stale comment is worse than no
+  comment — the next reader trusts it.
 
 ## Completing the plan as documented
 

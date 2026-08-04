@@ -311,6 +311,95 @@ name/colour/remove on any editable event row. Remaining follow-ups:
 
 ### GUI chrome and cross-cutting
 
+- `[feat]` **"Save current layout as my default" is a default
+  *project*, not a default layout.** Task 45 Stage 5 listed a seed
+  layout among the defaults with no way to change them.
+  `seedDefaultLayout` (`App.tsx`) is the hard-coded one — one trace
+  element, its panel, and the project panel — and it is genuinely not
+  adjustable. Storing a dockview blob does not fix it: every
+  content-bearing panel binds to an element by
+  `params.elementId`, and the elements are project content (a plot's
+  series, an RBS element's file, a filtered trace's predicate). Restore
+  a saved layout into an empty registry and `useElementPanel`'s
+  `ensure(elementId, kind)` creates each one *empty*, so the layout you
+  saved is not the layout you get — the failure is silent and looks
+  like data loss. Two shapes, and the second is the one worth having:
+  - **Layout-only, with elements synthesised per panel.** Cheapest to
+    build and the one described above: panels return, their contents do
+    not. Would need the seed to strip or re-key element-bound panels
+    and a rule per panel kind for what an empty one means.
+  - **A default project template.** A `.cannet_prj` nominated as what
+    **New project** starts from — one path-valued setting plus a "Save
+    as template" action. The real work is the file-reference story:
+    ADR 0030 makes a project's DBC / `.cannet_rbs` references relative
+    to *its* directory, so a template instantiated into a different
+    project directory has to decide what happens to each reference, and
+    ADR 0042 §2 forbids writing into a directory the user did not name.
+    Also needs a scope decision (user, surely) and an answer for buses
+    and bindings a template names.
+
+  Either is a task with an ADR question in it, not a settings row.
+- `[feat]` **A colour-blind-safe palette needs a palette set, not a
+  setting.** Task 45 Stage 5's palettes item says it outright: *there
+  is no global remedy for a colour-blind user — per-signal overrides
+  only*. Promoting a chooser is blocked on the thing being chosen from:
+  - **There is one palette to pick, and it is two palettes.**
+    `palette.ts`'s `SIGNAL_WHEEL` is 16 colours; `busColor.ts`'s
+    `BUS_COLORS` is 8. A user with a CVD needs both replaced, and they
+    are sized and used differently.
+  - **Sixteen distinguishable CVD-safe colours is a design problem, not
+    a table.** The canonical safe set (Okabe–Ito) is eight, and
+    `palette.test.ts` additionally requires every entry to hold WCAG-AA
+    ≥ 4.5:1 against the app background. Whoever picks the set owes both
+    properties, verified.
+  - **Switching wheels recolours existing work.** `stableSignalColor`
+    hashes a signal key onto a wheel slot, and its test pins two known
+    keys precisely because *"changing the hash silently recolours every
+    non-overridden signal"*. A palette switch is the same event by
+    another route, and the per-signal overrides in `signal_colors`
+    (project-scoped) do *not* follow it — so a user who has overridden
+    anything ends up with a mixture of the two palettes. That
+    interaction rule is the design question, and it has to be answered
+    before a field is added.
+- `[feat]` **Light mode, and UI density, triaged separately.** Task 45
+  Stage 5 listed "theme and density (dark-only, fixed type scale)" as
+  one item. Neither is a promotion, and they fail for different
+  reasons:
+  - **Light mode is a second stylesheet that does not exist.**
+    `index.css` carries ~530 literal hex colours and **zero** CSS
+    custom properties; `:root` declares `color-scheme: dark` and paints
+    `#0e1116`. Beyond the stylesheet, colour is also decided in JS —
+    `palette.ts` (AA-tested against that one background), `busColor.ts`,
+    and `PlotArea.tsx`'s uPlot canvas styling. The real task is
+    "introduce a theme token layer", after which a `theme` setting is
+    one row. Doing it in the other order produces an app that is half
+    light.
+  - **A type scale would break the virtualised views.** The rem side
+    looks cheap — ~595 rem lengths against ~307 px, most of them 1–4 px
+    borders and radii — but the scroll geometry is px in JavaScript:
+    `traceViewport.ROW_HEIGHT` (22) drives the trace and signal
+    viewports, `SystemMessagesPanel` and `dbcPanelViewport` carry their
+    own, and every one of them converts scroll offsets to row indices.
+    Grow the rendered rows without those constants and rows overlap,
+    scroll extents lie, and the index maths goes wrong. Column widths
+    are px integers too — persisted in projects *and* in the
+    `trace_columns` / `signal_columns` settings — so text would grow
+    inside fixed columns, and `PlotArea.tsx` hard-codes its canvas
+    font. Threading a scale through all of that is a design-system
+    change.
+- `[cleanup]` **The project schema version is declared twice.**
+  `PROJECT_SCHEMA_VERSION` is `7` in
+  [`project.rs`](../apps/gui/src-tauri/src/project.rs) and `7` in
+  [`types.ts`](../apps/gui/src/types.ts); `gatherProject` stamps the TS
+  copy into the struct it hands to `save_project`. The host is the side
+  that owns the version — `parse_versioned` is its check — so it could
+  stamp the field on write and the frontend could drop the constant.
+  Task 45's duplicates list carried this as item 6 and closed without
+  collapsing it: it is on the project-file write path, not in the
+  settings store, so folding it into a settings task would have been
+  scope creep. The change is small; the churn is in `Project`'s TS
+  shape (`schema_version` becomes optional on the way in) and the
+  fixtures that name it.
 - `[cleanup]` **`SystemMessagesPanelParams` in `systemLog.ts` has no
   consumer.** `SystemMessagesPanel.tsx` declares its own local
   `PanelParams` with the same one field and uses that; the exported

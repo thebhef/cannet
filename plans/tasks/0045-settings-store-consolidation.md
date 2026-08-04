@@ -677,7 +677,7 @@ other is the app / connection / appearance knobs.
 | Slice | Items | State |
 | --- | --- | --- |
 | **Data views** | Default column sets, widths, and hidden columns (trace + signal); CAN-ID and timestamp formatting; default y-axis mode; default auto-scroll / trace mode / events overlay; DBC auto-reload opt-out. | **complete** — eight fields, plus one deferred item (timestamp formatting) with its reasoning below |
-| **App, connection, appearance** | Startup behaviour; default server address; default nominal bitrate; seed layout; palettes; theme and density; confirmation-prompt suppression. | outstanding |
+| **App, connection, appearance** | Startup behaviour; default server address; default nominal bitrate; seed layout; palettes; theme and density; confirmation-prompt suppression. | **complete** — four fields, plus four deferred items (seed layout, palettes, light mode, density) with their reasoning below |
 
 Minimum system-log level is not in either: it landed in Stage 2 #2.
 
@@ -923,6 +923,210 @@ baseline after the change; the frontend tier is skipped, as in Stages 3
 and 4, because Task 44 Tier 0 still owes a self-driving capture. Eight
 new fields take `settings.json` to thirty-one.
 
+#### Stage 5 (app, connection, appearance) as built
+
+Four of the seven items are promotions; four are deferrals — theme
+splits into light mode and density, which fail for different reasons
+and are triaged separately. The deferrals are written up below and in
+`plans/backlog.md` with their options costed, in the shape Stage 5's
+data-view half used for timestamp formatting.
+
+**Startup behaviour.** *(done)*
+
+| Field | Default | Tags | Scope | Read at |
+| --- | --- | --- | --- | --- |
+| `reopen_last_project` | `true` | general / behaviour | user | `resolve_project_dir` (host) and the boot open (frontend) |
+
+Notes:
+
+- **`Behaviour`, not `Default`.** There is no per-window version of
+  "resume where I left off"; it is one app-wide policy, decided once
+  per launch.
+- **`Scope::User`, and forced to be.** ADR 0042 §1 resolves the project
+  directory *from* the value, and the workspace scope lives inside the
+  directory being resolved — so a workspace override could not be read
+  in time to matter. It is a user-scope value on the merits anyway
+  (which project to resume is about the person), which is what makes
+  the restriction cost nothing. `settings::user_scope` is the
+  single-scope read that serves it, and it exists for exactly the
+  reason `state::user_scope_last_project` does; its rustdoc says so.
+- **Two halves, one decision.** The host picks the project *directory*
+  before the WebView exists; the frontend decides whether to
+  `open_project`. Both read the same field, so a launch with it off is
+  rooted in the auto-located directory (ADR 0042 §1 — there is still a
+  project directory, because there is no no-project branch) *and* opens
+  nothing. Gating only the frontend would have left the session rooted
+  in the last project's workspace with none of it loaded.
+- **The pointer is not cleared.** `last_project` is state the app
+  records, not a consequence of this preference; leaving it alone is
+  what makes turning the setting back on resume where it says.
+- **Automation is not gated.** ADR 0031's `--project` names its project
+  outright, and a self-driving run must not depend on a persisted
+  preference, so the setting only decides whether the *pointer* is
+  consulted.
+
+Behaviour tests (each mutation-checked — by making `project_to_reopen`
+ignore the setting, which reddens both the host guard and, through the
+frontend read, the boot one): `settings.rs` → *the last project is
+reopened by default*, *reopen off starts without a project*;
+`App.bootReopen.dom.test.tsx` → *resumes the last project by default*,
+*opens nothing when `reopen_last_project` is off*, *keeps the
+last-project pointer when it is not resuming it*.
+
+**Confirmation-prompt suppression.** *(done)*
+
+| Field | Default | Tags | Scope | Read at |
+| --- | --- | --- | --- | --- |
+| `confirm_unsaved_on_exit` | `true` | general / behaviour | user | `App`'s `onCloseRequested` |
+
+Notes:
+
+- **The app has exactly one confirmation prompt**, so this one field is
+  the whole item. The unsaved-changes prompt on window close (which
+  ADR 0028 already widened to cover dirty `.cannet_rbs` files) is the
+  only modal that asks a yes/no question; the rest are editors and
+  pickers. A second prompt, if one ever appears, gets its own field —
+  "ask me about anything" is not a preference anyone holds, and a
+  blanket switch would silently take in prompts written after it.
+- **Off means the close goes through and the work is lost**, and the
+  help text says exactly that. The prompt's other two answers are Save
+  and Cancel, so suppressing it cannot mean anything else; dressing it
+  up as "save automatically instead" would be a different feature.
+- **`Scope::User`.** How much hand-holding you want is about the person
+  at the keyboard, which is the standing test for the user-scope
+  exceptions. (`clear_scratch_on_exit` is overridable despite also
+  being a destructive on-exit behaviour, because what it governs is a
+  per-project resource. A prompt is not.)
+- **Read at the moment of the close.** The handler is installed once
+  with no dependencies, so a captured value would have made turning the
+  prompt off a relaunch — the one thing this setting cannot ask for.
+
+Behaviour tests (each mutation-checked — by dropping the guard, which
+reddens the opt-out, and by capturing the value at mount, which reddens
+only the read-at-close guard): `App.closeConfirm.dom.test.tsx` →
+*prompts by default when there is unsaved work*, *lets the close through
+when `confirm_unsaved_on_exit` is off*, *reads the setting at the moment
+of the close, not at mount*.
+
+**Default server address and default nominal bitrate.** *(done)*
+
+| Field | Default | Tags | Scope | Read at |
+| --- | --- | --- | --- | --- |
+| `default_server_address` | `127.0.0.1:50051` | connection / default | user-overridable | `AddServerInline` and `AddBridgeForm`'s state seeds |
+| `default_bus_bitrate_bps` | `null` (unset) | connection / default | user-overridable | `handleAddBus` |
+
+Notes:
+
+- **The address was the same literal in two forms.** `AddServerInline`
+  named it `DEFAULT_NEW_SERVER`; the bridge form inlined it. Both now
+  seed from the setting, so the promotion collapses that pair as well.
+  Nothing validates it, for `sidecar_dir`'s reason: only a connection
+  attempt can say whether an address answers, and it reports that
+  already.
+- **The bitrate default is blank, and blank is the current
+  behaviour.** This is the item that could most easily have changed an
+  untouched install. "Add bus" has always produced a bus with *no*
+  bitrate; the wire encodes an unset nominal rate as `0` and the
+  sidecar resolves 500 kbps from that. Defaulting the setting to
+  500 000 and seeding every new bus would have made the host start
+  sending a `ConfigureBus` where it previously sent none
+  (`session.rs` skips the envelope entirely when neither `speed_bps`
+  nor `fd` is set) — a configuration action against real hardware that
+  does not happen today. `None` keeps `Add bus` producing exactly the
+  bus it always did, key-for-key, and the knob is there for a shop
+  whose buses all run at one rate.
+- **Zero is refused rather than stored** (`MIN_BUS_BITRATE_BPS`, and
+  the hard limit is the wire's, not a taste): `0` already spells
+  "unset" on the wire, so a stored zero would be indistinguishable
+  from blank while looking in the file like a choice. Nothing above one
+  is asserted — only the adapter knows what rates it opens at, and it
+  reports a refusal on connect. Stage 3's
+  `every_published_minimum_is_the_one_validate_enforces` covers the
+  bound with no new anti-drift test.
+- **`DEFAULT_NOMINAL_BITRATE_BPS` stays a constant**, and duplicates
+  item 3 is closed as *a copy that stays, with the reason recorded*.
+  It is not a value cannet chooses: it is a **preview of the sidecar's
+  fallback**, rendered as the bitrate box's placeholder so the user can
+  see what an unset field will actually resolve to. Only the sidecar
+  knows that number, nothing on the wire asks it, and moving the
+  resolution host-side would mean sending a `ConfigureBus` for every
+  bus — the behaviour change the paragraph above rejects. Its rustdoc
+  now says this, so the next reader does not mistake it for the
+  setting's default. The remaining Rust "copies" are a different fact
+  in each case (`cannet-server`'s `--speed` CLI default, `SharedBus`'s
+  virtual-bus timing), not a third mirror of this one.
+- **`withDefaultBitrate` returns the bus untouched when the setting is
+  blank** — no `speed_bps` key at all, rather than an explicit `null`
+  — so a project file written by a `Add bus` is byte-identical to one
+  written before the field existed.
+
+Behaviour tests (each mutation-checked — by pinning the form's seed to
+the literal, and by dropping `withDefaultBitrate`'s already-set guard):
+`busHardwareConfig.test.ts` → *leaves a new bus unset when no default is
+configured*, *seeds a new bus with the configured default*, *never
+overrides a bitrate the bus already names*;
+`ProjectPanel.dom.test.tsx` → *starts at the configured default server
+address*.
+
+**Four items are features wearing settings costumes, and are
+deferred.** Each is written up in `plans/backlog.md` under *GUI chrome
+and cross-cutting* as a candidate task with its options costed — the
+same treatment timestamp formatting got in the data-view half. In
+short:
+
+- **Seed layout — "save current layout as my default" is a default
+  *project*, not a default layout.** Every content-bearing panel binds
+  to an element through `params.elementId`, and the elements are
+  project content. Restoring a stored dockview blob into an empty
+  registry makes `useElementPanel` synthesise each element *empty*, so
+  a saved plot comes back with no series and a saved RBS panel with no
+  file: the layout you saved is not the layout you get, and the failure
+  is silent. The shape worth building is a **default project template**
+  — a `.cannet_prj` that **New project** starts from — and its real
+  work is the file-reference question ADR 0030 and ADR 0042 §2 pose,
+  not the settings row.
+- **Palettes — there is nothing to choose from yet.** The stage's own
+  note ("no global remedy for a colour-blind user") is the finding. A
+  chooser needs a *set*: two palettes actually need replacing
+  (`SIGNAL_WHEEL`, 16, and `BUS_COLORS`, 8), sixteen distinguishable
+  CVD-safe colours that also hold `palette.test.ts`'s AA contrast is a
+  design problem rather than a table, and — decisively — the
+  interaction rule is unsettled. `stableSignalColor` hashes onto a
+  wheel slot and its test pins the hash *because* changing it silently
+  recolours every non-overridden signal; a palette switch is that same
+  event, and the project-scoped `signal_colors` overrides do not
+  follow it, so a user who has overridden anything lands in a mixture
+  of two palettes. That rule has to be decided before a field exists.
+- **Light mode is a second stylesheet that does not exist.**
+  `index.css` holds ~530 literal hex colours and **zero** CSS custom
+  properties, `:root` declares `color-scheme: dark`, and colour is also
+  decided in JS (`palette.ts`, whose contrast test is written against
+  the one background; `busColor.ts`; `PlotArea.tsx`'s canvas styling).
+  The task is "introduce a theme token layer", after which a `theme`
+  setting is one row. In the other order the app is half light.
+- **Density / type scale would break the virtualised views** — this is
+  the one that looked cheap and is not. ~595 rem lengths against ~307
+  px (mostly 1–4 px borders) suggests a root font-size knob would just
+  work. It would not: the scroll geometry is px *in JavaScript*.
+  `traceViewport.ROW_HEIGHT` drives the trace and signal viewports,
+  `SystemMessagesPanel` and `dbcPanelViewport` carry their own, and all
+  of them convert scroll offsets to row indices — grow the rendered row
+  without them and rows overlap, extents lie, and the index maths is
+  wrong. Column widths are px integers persisted in projects *and* in
+  `trace_columns` / `signal_columns`, and `PlotArea.tsx` hard-codes its
+  canvas font.
+
+Triaging theme and density apart is deliberate: the stage lists them as
+one item, and they fail for unrelated reasons — one is a missing token
+layer, the other is a JS geometry assumption. Bundling them would have
+hidden the second behind the first.
+
+**Measured:** `cannet-perf-measurement check` passes every gated metric
+the committed baseline carries against the host modes (tracebuffer,
+grpc, hardware-peak); the frontend tier is skipped, as in Stages 3, 4
+and 5a, because Task 44 Tier 0 still owes a self-driving capture. Four
+new fields take `settings.json` to thirty-five, and close Stage 5.
+
 ## Interlock with Tasks 46 and 47
 
 This task grows the settings count past twenty-five, which is more than
@@ -963,9 +1167,21 @@ change the file layout, which is why it precedes Stage 2.
 2. ~~Scratch cap floor — Rust ↔ TS, "keep in sync by convention".~~
    *Collapsed (Stage 1 item 3): stated once host-side as validation
    metadata, published to the frontend, no TS copy.*
-3. Default nominal bitrate 500 kbps — TS ↔ Python ↔ Rust, "kept in
-   sync by convention". Crosses three languages; the most likely of
-   these to drift unnoticed.
+3. ~~Default nominal bitrate 500 kbps — TS ↔ Python ↔ Rust, "kept in
+   sync by convention".~~ *Settled (Stage 5, app half): **the TS copy
+   stays**, and it is not a mirror of a shared decision. The Python
+   constant is the sidecar's own fallback for the wire's `0 = unset`;
+   the TS constant renders that fallback as the bitrate box's
+   placeholder, so the user can see what an unset field resolves to.
+   Nothing on the wire asks the sidecar what it would use, and moving
+   the resolution host-side would mean pushing a `ConfigureBus` for
+   every bus — a configuration action against hardware that does not
+   happen today. `DEFAULT_NOMINAL_BITRATE_BPS`'s rustdoc now says it is
+   a preview rather than a choice, so it is not mistaken for the new
+   `default_bus_bitrate_bps` setting. The "Rust" side was never a third
+   copy of this number: `cannet-server`'s `--speed` CLI default and
+   `SharedBus`'s virtual-bus timing are separate facts that happen to
+   share a value.*
 4. Panel view config — written to both element `config` and dockview
    `params`, both landing in the project file. Deliberate and
    documented, but two writers for one fact.
@@ -1025,19 +1241,32 @@ properly view-local, and the window-state plugin is properly separate.
   correctly in `app_cache_dir` (it is genuinely disposable), and no
   Tauri-supported "state" root exists to move to. Revisit only if Tauri
   adds one.
-- **Stale `localStorage` comments** at five sites (`hostState.ts` ×2,
-  `types.ts`, `useElementPanel.ts` ×2) still describe an
-  "unsaved-workspace `localStorage` layout" that no longer exists.
-- **Comment rot is a pattern, not an incident.** Three independent
-  instances surfaced in one day's reading: a `renderedThrough` dedup
-  guard cited in a comment as preventing a double-fire when the guard
-  had been deleted (hiding a 10 Hz render floor for however long), an
-  "LRU chunk cache in `App.tsx`" cited by CLAUDE.md as a reference
-  implementation of the paging rule when no such cache exists, and
-  these `localStorage` remnants. Each was a comment asserting a
-  mechanism that had been removed. Worth a line in CLAUDE.md's
-  documentation rules: when you delete a mechanism, grep for its name
-  before you commit.
+- **Stale `localStorage` comments.** *(done — Stage 5, app half. The
+  original count was wrong and is corrected here: **three** sites, not
+  five.)* `types.ts` and `useElementPanel.ts` ×2 each described the
+  restore-from-`params` path as feeding an "unsaved-project
+  `localStorage` layout"; that layout is the project directory's own
+  snapshot (ADR 0042 §3) and has been host-side since ADR 0032. They now
+  say so, and drop "workspace" for "project" per ADR 0042 §7. The two
+  `hostState.ts` mentions are **not** stale and are left alone: one is
+  the module's history ("used to live in `localStorage`; they now
+  round-trip through the host"), the other is the live rationale for
+  hydrating a cache ("`localStorage` is synchronous but `invoke` is
+  not"). Neither asserts a mechanism that exists.
+- **Comment rot is a pattern, not an incident.** *(done — Stage 5, app
+  half, and it is the one change here that touches the working
+  agreement rather than the app.)* Three independent instances surfaced
+  in one day's reading: a `renderedThrough` dedup guard cited in a
+  comment as preventing a double-fire when the guard had been deleted
+  (hiding a 10 Hz render floor for however long), an "LRU chunk cache
+  in `App.tsx`" cited by CLAUDE.md as a reference implementation of the
+  paging rule when no such cache exists, and these `localStorage`
+  remnants. Each was a comment asserting a mechanism that had been
+  removed. CLAUDE.md § Documentation now carries the rule this asked
+  for — *when you delete a mechanism, grep for its name before you
+  commit* — in a commit of its own, since amending the working
+  agreement is a decision the repo's owner should be able to take or
+  drop independently of the settings work.
 
 ## Exit criteria
 
@@ -1062,14 +1291,86 @@ properly view-local, and the window-state plugin is properly separate.
   key, and both values. The criterion holds in its real form: nothing
   runs at a value nobody was told about.*
 - One source of truth for each item in the duplicates list, or an
-  explicit note saying why a copy stays.
+  explicit note saying why a copy stays. ***(met, but by note for three
+  of the six — see the walk below. Two of those notes are load-bearing
+  reasons; the third, the project schema version, is an unclaimed job
+  rather than a defensible copy, and it is in the backlog as such.)***
 - No user-facing knob promoted in Stage 3 changes behaviour for a user
   who never opens the settings file. *(Also met for Stage 4: each of
   its four fields defaults to the value the app already ran at — blank
   for the two paths, `debug` for the log file's minimum, `info` for the
   sidecar's — and the environment keeps winning, so an existing
   env-var user is unaffected whatever their file says.)*
+
+  *Met for Stage 5 too, and one item is worth naming because it nearly
+  wasn't: `default_bus_bitrate_bps` defaults to **blank**, not to
+  500 000. Seeding a rate into every new bus would have started sending
+  a `ConfigureBus` where the host sends none today — a configuration
+  action against real hardware. The general guard is
+  `a_file_written_before_a_field_existed_resolves_to_that_field_s_default`,
+  which covers all thirty-five keys.*
 - Every promoted field lands with its Task 46 tags already attached —
-  no retrofit pass.
+  no retrofit pass. *(met — and mechanically, not by convention:
+  `every_setting_has_at_least_one_surface_tag` polices the surface axis
+  and the `kind` axis is a property of the type. No field in any stage
+  was tagged after the fact.)*
 - `settings.json` on a fresh install lists every knob the app has, at
   its default — the ADR 0034 promise, still true at the new count.
+  *(met at thirty-five, and it is a test rather than a promise:
+  `default_settings_serialize_with_every_key_present`,
+  `every_settings_key_declares_a_scope`, and
+  `descriptors_and_settings_name_the_same_keys` fail the build in both
+  directions — a field with no scope, no descriptor, or a descriptor
+  with no field.)*
+
+### The duplicates list, walked
+
+Task 45 closes with all six settled. Three were collapsed to one source
+of truth; three keep a copy, and the reason is recorded with each.
+
+| # | Duplicate | Outcome |
+| --- | --- | --- |
+| 1 | View refresh cadence, 250 ms × 4 | **collapsed** (Stage 3) — one `view_refresh_interval_ms`, inherited by every paged view and by `useHostMirror` |
+| 2 | Scratch cap floor, Rust ↔ TS | **collapsed** (Stage 1 item 3) — stated once host-side, published to the frontend |
+| 3 | Default nominal bitrate | **copy stays, reason recorded** (Stage 5) — the TS constant is a *preview* of the sidecar's fallback for a placeholder, not a value cannet picks |
+| 4 | Panel view config — element `config` **and** dockview `params` | **copy stays, reason recorded** (below) |
+| 5 | Settings defaults — Rust derive ↔ TS `defaultSettings()` ↔ rustdoc prose | **copy stays, reason recorded** (below) |
+| 6 | Project schema version, Rust ↔ TS, both `7` | **not collapsed; backlogged** (below) |
+
+- **4 — panel view config is two writers for one fact, deliberately.**
+  `useElementPanel`'s `persist` writes a panel's config onto the
+  element *and* mirrors it into the dockview `params`, and both land in
+  the project file. They are read at different moments: `params` is
+  what a panel restores from when the layout snapshot is the only thing
+  that survived (the registry is not in it), and the element's `config`
+  is the durable model record `Save` serializes. `savedConfig` prefers
+  the element and falls back to `params`, so the two cannot disagree
+  about which one wins. Collapsing them means teaching the layout
+  snapshot to carry elements — which is the *same* problem the seed
+  layout deferral describes, and it should be solved once, there.
+- **5 — the TS settings defaults are a no-host fallback, and they are
+  not the source anything reads.** `loadSettings` merges the host's
+  answer over `defaultSettings()`, and the host's answer always carries
+  every key (ADR 0034: no skip-when-default), so the TS copy is only
+  reached with no host at all — unit tests — or a partial answer. What
+  it buys is that `Settings` stays a *total* type on the frontend
+  instead of `Partial<Settings>` at every read site. Drift is therefore
+  bounded to what tests assert, and several tests deliberately read
+  through it (`recentBlfs.test.ts`, `systemLog.test.ts`) rather than
+  restating a number. No cheap cross-language check exists: a generated
+  TS mirror is a build-step dependency, and the descriptor command
+  already serves the real defaults to the *view*, which is where it
+  matters. **The rustdoc prose is the weaker half** — several field
+  docs restate their number ("Default 2000 ms") and nothing checks
+  them; that is the one place this duplicate can rot silently.
+- **6 — the project schema version is not defensible, only unclaimed.**
+  `PROJECT_SCHEMA_VERSION` is `7` in `project.rs` and `7` in
+  `types.ts`, and the frontend stamps it into the struct it hands to
+  `save_project` — which the host could simply do itself, since it is
+  the side that owns `parse_versioned` and the version check. That is a
+  real collapse and it is small, but it is on the project-file write
+  path rather than in the settings store, so doing it inside a settings
+  task would be exactly the scope creep this task's own rules forbid.
+  It is in `plans/backlog.md` under *GUI chrome and cross-cutting*.
+  Recording it as "a copy that stays" would be dishonest: it stays
+  because nobody has moved it.

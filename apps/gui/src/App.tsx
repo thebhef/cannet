@@ -62,7 +62,7 @@ import {
 } from "./systemLog";
 import { splitStatus, type LogState, type RemoteStatus, type TransientStatus } from "./statusLine";
 import { useTransientStatus } from "./useTransientStatus";
-import { useSetting } from "./hostSettings";
+import { hostSettings, useSetting } from "./hostSettings";
 import { NotesContext, type NotesContextValue } from "./notesContext";
 import type { Note } from "./notes";
 import { sortNotesChronologically } from "./notes";
@@ -100,6 +100,7 @@ import {
   restoredTrace,
 } from "./trace";
 import { defaultBusColor } from "./busColor";
+import { withDefaultBitrate } from "./busHardwareConfig";
 import { useSessionReset } from "./useSessionReset";
 import { assignDefaultNames, defaultElementName, elementLabel } from "./elementLabel";
 import {
@@ -1559,6 +1560,13 @@ export function App() {
           /* host gone — nothing to save */
         }
         if (!dirtyRef.current && !rbsDirty) return; // nothing unsaved — let it close
+        // The opt-out: with the prompt suppressed the close goes
+        // through and the unsaved work goes with it — Save and Cancel
+        // are the prompt's only other answers, so there is nothing else
+        // suppressing it could mean. Read here rather than captured
+        // when this handler was installed (it has no deps), so turning
+        // it off doesn't need a relaunch.
+        if (!hostSettings().confirm_unsaved_on_exit) return;
         event.preventDefault();
         const choice = await new Promise<CloseChoice>((resolve) =>
           setPendingClose({ resolve }),
@@ -1601,12 +1609,15 @@ export function App() {
   const handleAddBus = useCallback((bus: Bus) => {
     setBuses((prev) => {
       if (prev.some((b) => b.id === bus.id)) return prev;
-      // Seed a graph colour if the caller didn't supply one — the
-      // default palette indexed by the new bus's list position.
+      // Seed the configured default nominal bitrate (blank leaves the
+      // bus without one, as it always was), then a graph colour if the
+      // caller didn't supply one — the default palette indexed by the
+      // new bus's list position.
+      const rated = withDefaultBitrate(bus, hostSettings().default_bus_bitrate_bps);
       const seeded: Bus =
-        bus.color != null
-          ? bus
-          : { ...bus, color: defaultBusColor(prev.length) };
+        rated.color != null
+          ? rated
+          : { ...rated, color: defaultBusColor(prev.length) };
       return [...prev, seeded];
     });
     setDirty(true);
@@ -2030,7 +2041,16 @@ export function App() {
         // it replaces the layout restored above (and re-applies the
         // bus/DBC config). A stale pointer (file moved/deleted) is
         // cleared so it stops failing.
-        const projectToOpen = cfg?.project ?? hostState().last_project;
+        //
+        // `reopen_last_project` gates only the pointer: automation names
+        // its project outright, and a run driven by `--project` must not
+        // depend on a persisted preference. The host makes the same
+        // decision for the project *directory* before the WebView
+        // exists, so with the setting off this session is already rooted
+        // in the auto-located directory and there is nothing to open.
+        const projectToOpen =
+          cfg?.project ??
+          (hostSettings().reopen_last_project ? hostState().last_project : null);
         if (projectToOpen) {
           try {
             const p = await invoke<Project>("open_project", { path: projectToOpen });

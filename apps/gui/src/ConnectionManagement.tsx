@@ -10,6 +10,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import { Combobox, type ComboboxOption } from "./Combobox";
+import { hostSettings } from "./hostSettings";
 import { describeSidecarStatus } from "./sidecarStatus";
 import type {
   Bus,
@@ -523,8 +524,6 @@ function optionInDiscoveries(
 
 // ---- Inline "Add server…" form -------------------------------------------
 
-const DEFAULT_NEW_SERVER = "127.0.0.1:50051";
-
 interface AddServerInlineProps {
   busLabel: string;
   onCancel: () => void;
@@ -537,7 +536,9 @@ interface AddServerInlineProps {
 /// adds the server to the project (by way of the new binding) and
 /// binds the chosen interface to this bus.
 export function AddServerInline({ busLabel, onCancel, onPick }: AddServerInlineProps) {
-  const [server, setServer] = useState(DEFAULT_NEW_SERVER);
+  // A creation default: read once, when the form seeds its state, and
+  // typed over from then on.
+  const [server, setServer] = useState(() => hostSettings().default_server_address);
   const [records, setRecords] = useState<InterfaceRecord[] | null>(null);
   const [iface, setIface] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1027,7 +1028,7 @@ interface AddBridgeFormProps {
 /// factory" checkbox. Deliberately bare: full discovery /
 /// auto-completion against the bridged server is a follow-up.
 function AddBridgeForm({ onCancel, onAdd }: AddBridgeFormProps) {
-  const [server, setServer] = useState("127.0.0.1:50051");
+  const [server, setServer] = useState(() => hostSettings().default_server_address);
   const [iface, setIface] = useState("");
   const [name, setName] = useState("");
   const [allocates, setAllocates] = useState(false);
