@@ -13,7 +13,7 @@
 /// lives here once instead of twice.
 
 import type { SignalRecord, TraceFrameRecord } from "./types";
-import { formatSignalValueWithLabel } from "./format";
+import { SignalValueText } from "./SignalValueText";
 import { type ColorResolver, colorMapTint } from "./colorMap";
 import { setSignalDragData } from "./dragSignals";
 import { SIGNAL_LINE_HEIGHT } from "./traceViewport";
@@ -68,7 +68,12 @@ export function DecodedSignalCell({
         className="signal-value"
         style={tint ? { background: colorMapTint(tint) } : undefined}
       >
-        {formatSignalValueWithLabel(sig.value, sig.unit, sig.label, sig.raw_field)}
+        <SignalValueText
+          value={sig.value}
+          unit={sig.unit}
+          label={sig.label}
+          hex={sig.raw_field}
+        />
       </span>
     </div>
   );

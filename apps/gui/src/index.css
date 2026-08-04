@@ -1329,6 +1329,21 @@ button.trace-event-swatch {
   color: #fde68a;
 }
 
+/* Signal value/unit/label parts (SignalValueText), shared by the
+   expanded-row `.signal-value` lines and the `.signal-value-cell` of the
+   signal view and DBC panel. The unit is its own element so it doesn't
+   read as part of the number: it recedes to the secondary text colour
+   and carries the spacing, so a caller with the unit in a separate
+   column renders the value alone. */
+.signal-value-unit {
+  color: #94a3b8;
+  margin-left: 0.35em;
+}
+
+.signal-value-label {
+  margin-left: 0.35em;
+}
+
 /* Plot panel ------------------------------------------------------------*/
 .plot-panel {
   display: flex;

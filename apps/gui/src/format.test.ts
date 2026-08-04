@@ -9,7 +9,6 @@ import {
   formatFrameCount,
   formatId,
   formatSignalValue,
-  formatSignalValueWithLabel,
   formatTimestamp,
   fracDigitsForSpan,
 } from "./format";
@@ -206,67 +205,37 @@ describe("formatFrameCount", () => {
   });
 });
 
+// The unit and the `VAL_` label are elements beside the value, not part
+// of this string — that separation is asserted in
+// `SignalValueCell.dom.test.tsx`.
 describe("formatSignalValue", () => {
   it("renders a raw bit field in hex", () => {
     // The host flags raw fields (unscaled, unitless, no VAL_ table):
     // ids, serials, bit patterns — read as a bit pattern, not a number.
-    expect(formatSignalValue(0xdeadbeef, "", true)).toBe("0xDEADBEEF");
+    expect(formatSignalValue(0xdeadbeef, true)).toBe("0xDEADBEEF");
     // A 64-bit raw field: what made the original report unreadable.
-    expect(formatSignalValue(2 ** 62, "", true)).toBe("0x4000000000000000");
+    expect(formatSignalValue(2 ** 62, true)).toBe("0x4000000000000000");
   });
 
   it("puts the sign outside the hex digits of a signed raw field", () => {
-    expect(formatSignalValue(-5, "", true)).toBe("-0x5");
+    expect(formatSignalValue(-5, true)).toBe("-0x5");
   });
 
-  it("keeps a scaled signal with a unit in decimal", () => {
+  it("keeps a scaled signal in decimal", () => {
     // 1000 rpm must not read as 0x3E8.
-    expect(formatSignalValue(1000, "rpm")).toBe("1000 rpm");
-    expect(formatSignalValue(1165.25, "rpm")).toBe("1165.25 rpm");
+    expect(formatSignalValue(1000)).toBe("1000");
+    expect(formatSignalValue(1165.25)).toBe("1165.25");
   });
 
   it("never renders an exact integer in scientific notation", () => {
     // Digit-exact values stay digit-exact however large, hex flag or not.
-    expect(formatSignalValue(12_345_678, "")).toBe("12345678");
-    expect(formatSignalValue(9_000_000, "rpm")).toBe("9000000 rpm");
-    expect(formatSignalValue(2 ** 62, "")).toBe("4611686018427387904");
+    expect(formatSignalValue(12_345_678)).toBe("12345678");
+    expect(formatSignalValue(9_000_000)).toBe("9000000");
+    expect(formatSignalValue(2 ** 62)).toBe("4611686018427387904");
   });
 
   it("still uses scientific notation for extreme non-integers", () => {
-    expect(formatSignalValue(1_234_567.5, "")).toBe("1.235e+6");
-    expect(formatSignalValue(0.0001, "")).toBe("1.000e-4");
-  });
-});
-
-describe("formatSignalValueWithLabel", () => {
-  it("returns just the numeric formatted value when no label is given", () => {
-    expect(formatSignalValueWithLabel(60, "degC", null)).toBe(
-      formatSignalValue(60, "degC"),
-    );
-    expect(formatSignalValueWithLabel(60, "degC", undefined)).toBe(
-      formatSignalValue(60, "degC"),
-    );
-  });
-
-  it("appends the label in quotes when present", () => {
-    expect(formatSignalValueWithLabel(3, "", "Drive")).toBe(`3 "Drive"`);
-  });
-
-  it("preserves the unit alongside the label", () => {
-    expect(formatSignalValueWithLabel(1, "deg/s", "Forward")).toBe(
-      `1 deg/s "Forward"`,
-    );
-  });
-
-  it("keeps an enum's table key in decimal", () => {
-    // The host excludes VAL_-table signals from the hex rule — the raw
-    // number is a table key the DBC itself writes in decimal.
-    expect(formatSignalValueWithLabel(3, "", "Drive")).toBe(`3 "Drive"`);
-  });
-
-  it("renders a raw field's sentinel label alongside the hex value", () => {
-    expect(formatSignalValueWithLabel(0xffff, "", "SNA", true)).toBe(
-      `0xFFFF "SNA"`,
-    );
+    expect(formatSignalValue(1_234_567.5)).toBe("1.235e+6");
+    expect(formatSignalValue(0.0001)).toBe("1.000e-4");
   });
 });

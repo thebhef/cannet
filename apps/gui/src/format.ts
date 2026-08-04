@@ -145,14 +145,17 @@ export function formatMsgRate(rate: number): string {
   return rate < 100 ? rate.toFixed(1) : Math.round(rate).toString();
 }
 
-/// A decoded signal's value. `hex` renders it as a bit pattern
-/// (`0xDEADBEEF`) instead of a number — pass the host's `raw_field`
-/// flag, which marks the unscaled, unitless, non-enum signals whose
-/// value is an id / serial / bit pattern. The classification is the
-/// host's; this only renders it.
-export function formatSignalValue(value: number, unit: string, hex = false): string {
-  const formatted = hex ? formatHex(value) : formatDecimal(value);
-  return unit ? `${formatted} ${unit}` : formatted;
+/// A decoded signal's numeric value — the magnitude alone. The unit and
+/// any `VAL_` label are rendered as their own elements beside it
+/// (`SignalValueText`), never concatenated in, so a row reads as a value
+/// and its unit rather than one token.
+///
+/// `hex` renders the value as a bit pattern (`0xDEADBEEF`) instead of a
+/// number — pass the host's `raw_field` flag, which marks the unscaled,
+/// unitless, non-enum signals whose value is an id / serial / bit
+/// pattern. The classification is the host's; this only renders it.
+export function formatSignalValue(value: number, hex = false): string {
+  return hex ? formatHex(value) : formatDecimal(value);
 }
 
 /// `0x`-prefixed uppercase hex, sign outside the digits (`-0x5`) so a
@@ -171,19 +174,4 @@ function formatDecimal(value: number): string {
   return Math.abs(value) >= 1e6 || (Math.abs(value) < 1e-3 && value !== 0)
     ? value.toExponential(3)
     : value.toFixed(3).replace(/\.?0+$/, "");
-}
-
-/// Render a decoded signal with its `VAL_` label suffix when one is
-/// present: `<value> "<label>"`. Mirrors what a typical CAN analyzer
-/// shows for enum signals, leaving the numeric value visible alongside
-/// the symbolic name so a user can still see "this raw value happens
-/// to be 3" while reading "Drive".
-export function formatSignalValueWithLabel(
-  value: number,
-  unit: string,
-  label: string | null | undefined,
-  hex = false,
-): string {
-  const numeric = formatSignalValue(value, unit, hex);
-  return label ? `${numeric} "${label}"` : numeric;
 }

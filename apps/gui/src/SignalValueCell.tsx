@@ -3,9 +3,11 @@
 /// (ADR 0029). The signal view's value column and the DBC panel's live
 /// value column both render through this, so the two surfaces cannot
 /// drift. The unit is a parameter because the signal view shows it in
-/// its own column (pass `""`) while the DBC panel appends it.
+/// its own column (pass `""`) while the DBC panel shows it beside the
+/// value — as its own element, never glued onto the value string
+/// (`SignalValueText`).
 
-import { formatSignalValueWithLabel } from "./format";
+import { SignalValueText } from "./SignalValueText";
 import { colorMapTint, type ColorResolver, type ColorTarget } from "./colorMap";
 
 interface SignalValueCellProps {
@@ -41,7 +43,7 @@ export function SignalValueCell({
       className="signal-value-cell"
       style={tint ? { background: colorMapTint(tint) } : undefined}
     >
-      {formatSignalValueWithLabel(value, unit, label, rawField)}
+      <SignalValueText value={value} unit={unit} label={label} hex={rawField} />
     </span>
   );
 }
