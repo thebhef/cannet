@@ -17,11 +17,14 @@ The same service definition is implemented by every driver context:
   drivers) speak it through a loopback channel.
 - **Local sidecar processes** (the `cannet-python-can` sidecar of
   [ADR 0008](0008-python-can-sidecar.md)) speak it over loopback TCP.
-- **Remote test rigs and Rust-native servers** speak it over the
-  network with optional TLS via tonic's `tls` feature
-  (rustls — Apache-2.0/MIT/ISC).
+- **Remote cannet servers**
+  ([ADR 0040](0040-production-cannet-server.md)) speak it over the
+  network, protected per
+  [ADR 0041](0041-remote-connection-security.md) — TLS via tonic's
+  `tls` feature (rustls — Apache-2.0/MIT/ISC).
 
-Plaintext loopback is the dev default; TLS is opt-in.
+Plaintext loopback is the dev default; non-loopback endpoints run
+TLS per ADR 0041.
 
 ### Service surface
 
@@ -90,8 +93,8 @@ state, hardware metadata) where wire-breaking changes compound.
 **One service shape for every driver context.** Picking the same
 contract for in-process, sidecar, and remote means new drivers slot
 in without touching the protocol. A `python-can` sidecar implements
-the same `.proto` as a Rust-native driver; a remote rig implements
-the same `.proto` again. Cross-language support is free: gRPC has
+the same `.proto` as a Rust-native driver; a remote cannet server
+implements the same `.proto` again. Cross-language support is free: gRPC has
 runtimes for every mainstream language.
 
 **Symmetric bidi stream, not separate up/down channels.** One
@@ -118,12 +121,13 @@ framing is sub-percent.
   to speak the same `.proto`; the wire crate exports nothing
   Python-specific.
 - **Future driver kinds add no protocol work.** A new Rust-native
-  driver, a second-vendor sidecar, or a remote rig each implements
-  the same service surface. The wire stays one contract; transport
-  details vary at the channel layer (loopback / TCP / TLS).
-- **TLS stays optional.** Loopback drivers run plaintext; remote
-  rigs opt in via the `tls` feature. The wire crate does not
-  hard-require rustls.
+  driver, a second-vendor sidecar, or a remote cannet server each
+  implements the same service surface. The wire stays one contract;
+  transport details vary at the channel layer (loopback / TCP / TLS).
+- **TLS stays out of the wire crate.** Loopback drivers run
+  plaintext; remote cannet servers terminate TLS per
+  [ADR 0041](0041-remote-connection-security.md). The wire crate
+  does not hard-require rustls.
 
 ## Rejected alternatives
 

@@ -5,8 +5,10 @@ Status: accepted (2026-05-28)
 A **hardware server** is any cannet wire server that exposes
 physical CAN interfaces. The reference implementation is the
 `cannet-python-can` sidecar ([ADR 0008](0008-python-can-sidecar.md));
-future Rust-native vendor sidecars and remote test-rig servers
-implement the same model.
+future Rust-native vendor sidecars implement the same model, and the
+production cannet server
+([ADR 0040](0040-production-cannet-server.md)) proxies it to remote
+clients unchanged.
 
 This ADR is the companion to
 [ADR 0021](0021-virtual-bus-server.md), which covers the

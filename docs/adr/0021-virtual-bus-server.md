@@ -219,10 +219,12 @@ frames from a gRPC session. Bridges on a local virtual bus are
 installed by the host opening a `cannet-client` session to the
 bridge target (typically a python-can sidecar) and wiring those
 streams into `SharedBus::attach_bridge`. `cannet-server
---virtual-bus` exists for the *remote* case — a `cannet-server`
-instance on a test-rig machine with hardware bridges, accessed
-across the network — and is built from the same workspace but is
-not bundled with the GUI for in-process use.
+--virtual-bus` exists for the *remote* case and is built from the
+same workspace, but is not bundled with the GUI for in-process
+use. Remote exposure of *hardware* is the production cannet
+server's interface proxy
+([ADR 0040](0040-production-cannet-server.md)), not a fronting
+virtual bus; bridges remain the tool for composing buses.
 
 Project bindings exist in three shapes, each round-tripped through
 the project file:
@@ -365,5 +367,5 @@ rather than encoding it in flag fields.
   id on the wire; multiple virtual participants appear as one real participant
   from the physical bus's POV, and vice-versa. Intrinsic to CAN.
 - **Cross-network bridging adds latency.** CAN-over-IP gateways
-  pay network round-trip time; suitable for distributed test rigs
+  pay network round-trip time; suitable for distributed setups
   with bandwidth headroom and millisecond-tolerant apps.
