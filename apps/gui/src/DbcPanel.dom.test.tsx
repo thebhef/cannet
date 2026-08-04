@@ -1057,7 +1057,9 @@ describe("DbcPanel", () => {
     fireEvent.click(screen.getByLabelText(/values/i));
     // The shared value renderer shows the fetched value with its unit;
     // the not-yet-seen sibling stays blank.
-    expect(await screen.findByText(/1165 rpm/)).toBeInTheDocument();
+    // Value and unit are their own elements inside the one cell.
+    const shown = await screen.findByText("1165");
+    expect(shown.closest(".signal-value-cell")).toHaveTextContent(/^1165\s*rpm$/);
     const calls = (core.invoke as ReturnType<typeof vi.fn>).mock.calls.filter(
       (c) => c[0] === "fetch_signal_page",
     );

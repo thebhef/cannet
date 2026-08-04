@@ -133,9 +133,13 @@ describe("TraceView expanded-row signal sub-rows", () => {
     const lines = container.querySelectorAll(".signals .signal");
     expect(lines).toHaveLength(2);
     expect(lines[0].querySelector(".signal-name")).toHaveTextContent("Speed");
-    expect(lines[0].querySelector(".signal-value")).toHaveTextContent("54.5 km/h");
+    // Value and unit are separate elements, so the unit doesn't read as
+    // part of the number (see SignalValueCell.dom.test.tsx).
+    expect(lines[0].querySelector(".signal-value-number")).toHaveTextContent("54.5");
+    expect(lines[0].querySelector(".signal-value-unit")).toHaveTextContent("km/h");
     expect(lines[1].querySelector(".signal-name")).toHaveTextContent("Gear");
-    expect(lines[1].querySelector(".signal-value")).toHaveTextContent('2 "Drive"');
+    expect(lines[1].querySelector(".signal-value-number")).toHaveTextContent("2");
+    expect(lines[1].querySelector(".signal-value-label")).toHaveTextContent('"Drive"');
   });
 
   it("sizes the row for one line per signal and each line at SIGNAL_LINE_HEIGHT", () => {

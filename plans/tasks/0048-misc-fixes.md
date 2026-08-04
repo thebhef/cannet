@@ -72,10 +72,23 @@ in `cannet-dbc`, `wire_signals_flag_only_raw_bit_fields` /
 "renders a host-flagged raw bit field in hex" in
 `SignalsPanel.dom.test.tsx`.
 
-## 4. The unit reads as part of the value in the signal panel
+## 4. The unit reads as part of the value in the signal panel — **done**
 
-The unit is visually glued to the value string, so a row reads as one
-token rather than a value and its unit.
+The value, the unit and the `VAL_` label are now three elements rather
+than one concatenated string. `SignalValueText`
+(`apps/gui/src/SignalValueText.tsx`) renders them, and both value
+renderers go through it: `SignalValueCell` (signal view + DBC panel live
+value column) and `DecodedSignalCell` (expanded trace rows).
+`formatSignalValue` shrank to the magnitude alone — it no longer takes a
+unit, and `formatSignalValueWithLabel` is gone with the concatenation it
+existed for. The unit recedes to the secondary text colour and carries
+the inter-part spacing (`.signal-value-unit` in `index.css`), so a
+caller with the unit in its own column (the signal view, passing `""`)
+renders the value and nothing else.
+
+Covered by `SignalValueCell.dom.test.tsx` — the value and the unit are
+separately addressable in the DOM on both surfaces, and `unit=""`
+renders no unit element and no stray spacing.
 
 ## 5. Dock panels do not scroll
 
