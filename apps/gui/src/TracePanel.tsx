@@ -82,8 +82,6 @@ export function TracePanel(props: IDockviewPanelProps) {
   );
   const switchMode = useCallback((m: TraceMode) => setMode(m), []);
 
-  const trace = useTrace(data, elementId);
-
   // Per-panel: auto-scroll (chronological) and the column layout.
   const [autoScroll, setAutoScroll] = useState(() =>
     typeof savedConfig?.autoScroll === "boolean" ? savedConfig.autoScroll : true,
@@ -138,6 +136,13 @@ export function TracePanel(props: IDockviewPanelProps) {
     elementId,
     element,
   );
+
+  // Chronological + filtered rows come from `useFilteredTrace`, and by-id
+  // rows from `useByIdView`; only the *unfiltered* chronological table
+  // reads `trace.getFrame`. Everywhere else the window's bounds and run
+  // state are all this panel wants, so it doesn't page rows (ADR 0025).
+  const chronoFiltered = mode === "chronological" && fetchFilter != null;
+  const trace = useTrace(data, elementId, mode === "chronological" && !chronoFiltered);
   // Right-click anywhere in the trace panel opens the sources
   // context menu at the cursor. The menu owns its own outside-click
   // / Escape dismissal.
@@ -169,13 +174,11 @@ export function TracePanel(props: IDockviewPanelProps) {
     trace.status === "running",
   );
 
-  // Chronological + filtered: the shared chunk cache (App.tsx) is
-  // global and unfiltered, so when this panel has a filter the
-  // chronological view is paged separately, host-side, through
-  // `useFilteredTrace` — it holds only the visible page, never the
-  // whole filtered set. A `null` `fetchFilter` (the `sources=["*"]`
-  // common case) leaves the cheap shared chunk cache in charge.
-  const chronoFiltered = mode === "chronological" && fetchFilter != null;
+  // Chronological + filtered: `useTrace`'s window is unfiltered, so when
+  // this panel has a filter the chronological view is paged separately,
+  // host-side, through `useFilteredTrace` — it holds only the visible
+  // page, never the whole filtered set. A `null` `fetchFilter` (the
+  // `sources=["*"]` common case) leaves the plain window in charge.
   const filtered = useFilteredTrace(
     chronoFiltered,
     trace.offset,

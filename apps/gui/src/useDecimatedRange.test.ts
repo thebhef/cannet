@@ -141,6 +141,40 @@ describe("useDecimatedRange", () => {
     expect(mockInvoke).toHaveBeenCalledTimes(1); // no second fetch
   });
 
+  it("skips the round-trip for a parked slice while the live edge advances", async () => {
+    // A zoomed-into-history panel pins its visible bounds while `winEnd`
+    // keeps growing. Frames appended past the last one we have already
+    // seen cannot land inside a slice that ends before it, so the
+    // request can only return the same bytes — the fast path must fire
+    // rather than refetching, decoding and re-rendering identical output.
+    mockInvoke.mockResolvedValue(encode(100, 110, [{ t: [101, 104], v: [1, 2] }]));
+    const { result } = renderHook(() => useDecimatedRange());
+    await run(() => result.current, req({ winEnd: 1000 })); // base = 100, live edge = 110
+    await run(() => result.current, req({ winEnd: 1000, xMin: 1, xMax: 4 })); // zoom to 101..104
+    expect(mockInvoke).toHaveBeenCalledTimes(2);
+
+    const out = await run(() => result.current, req({ winEnd: 5000, xMin: 1, xMax: 4 }));
+
+    expect(out.kind).toBe("unchanged");
+    expect(mockInvoke).toHaveBeenCalledTimes(2);
+  });
+
+  it("still refetches when the visible slice reaches the live edge", async () => {
+    // The other side of the same rule: a slice whose right edge is at or
+    // past the last frame seen *can* gain samples from a longer window,
+    // so a growing `winEnd` must still re-anchor the fetch.
+    mockInvoke.mockResolvedValue(encode(100, 110, [{ t: [105, 109], v: [1, 2] }]));
+    const { result } = renderHook(() => useDecimatedRange());
+    await run(() => result.current, req({ winEnd: 1000 })); // base = 100, live edge = 110
+    await run(() => result.current, req({ winEnd: 1000, xMin: 5, xMax: 20 })); // 105..120
+    expect(mockInvoke).toHaveBeenCalledTimes(2);
+
+    const out = await run(() => result.current, req({ winEnd: 5000, xMin: 5, xMax: 20 }));
+
+    expect(out.kind).toBe("sampled");
+    expect(mockInvoke).toHaveBeenCalledTimes(3);
+  });
+
   it("returns empty without fetching when the window has collapsed", async () => {
     const { result } = renderHook(() => useDecimatedRange());
 

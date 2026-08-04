@@ -114,7 +114,9 @@ export function SignalsPanel(props: IDockviewPanelProps) {
     return cfg ?? params;
   });
 
-  const trace = useTrace(data, elementId);
+  // `false`: the signals view reads the window bounds and run state,
+  // never a frame row — so it does not page one (ADR 0025).
+  const trace = useTrace(data, elementId, false);
 
   // The selection (manual keys + patterns) is this view's model input;
   // persisted with the element like other panel config.

@@ -260,3 +260,60 @@ aggregation all round-trip, per the CLAUDE.md architecture rule.
 - Each tier's before/after numbers are recorded here, including the
   ones that turned out not to matter — a finding that measured flat is
   as useful to future readers as one that paid off.
+
+## Tier 1 results
+
+Landed 2026-08-02, one commit per item. **No ADR-0031 capture was
+taken** (the machine was in use), so these are code- and test-level
+observations, not measured deltas — Tier 0 still owes the before/after
+numbers, and until it lands none of the six can be called *measured*.
+
+1. **The hidden resample trigger** — finding confirmed exactly as
+   recorded; `renderedThrough` existed only in that comment. Before: a
+   running panel issued one `sample_signals` per window growth on top of
+   its loop (6 growths → 8 fetches). After: ≤2, and that slack is fixed
+   one-off work — identical at 6 and at 18 growths. The other half of
+   the trigger (a stopped panel whose window moves under it) is now
+   covered by its own test; it previously had none.
+2. **Parked views refetch identical data** — confirmed. A slice ending
+   behind the last frame already seen now keys without `winEnd`, so a
+   zoomed-into-history panel makes no round-trip while the capture
+   grows. **Caveat for Tier 2:** its live-edge readout (`lastT`) freezes
+   with it, so *Fit Data* on such a panel fits to the extent as of the
+   moment it parked. The finding assumed the output was pixel-identical;
+   the plot data is, the live edge is not.
+3. **Trace views render twice per tick** — confirmed; measured 2 renders
+   per `count` change before, 1 after. The anchor is now derived while
+   pinned. The doc deliverable landed with it: CLAUDE.md's paging rule
+   cited an "LRU chunk cache in `App.tsx`" that does not exist —
+   `useTrace` over `useWindowedQuery` (one loaded page plus the live-tail
+   overlay) is what actually pages the chronological trace — and the
+   stale "shared chunk cache" / "the LRU" comments in `TraceView.tsx`
+   and `TracePanel.tsx` went with it.
+4. **The flusher stalls ingest** — confirmed; fixed **in part, by
+   choice**. Both `dir_footprint` walks now run off the append lock. The
+   derived-state snapshot *and* its JSON write stay inside one lock
+   hold: `start_session` deletes that file and empties `per_key`, so a
+   write outside the lock can recreate it describing the session that
+   just ended. The write is small by construction (id-space-bounded);
+   the walks are not. "Drop the redundant first walk" turned out to be
+   wrong — neither walk is redundant. The pre-flush one must see bytes
+   written since the last flush
+   (`cap_eviction_does_not_over_evict_raw_for_derived_family_footprint`
+   fails against a cached value) and the post-flush one must include
+   what this flush just wrote
+   (`scratch_footprint_bytes_is_none_for_ram_and_tracks_disk`). **No new
+   test:** the lock-hold reduction is not observable through the store's
+   public surface without a timing-dependent concurrency probe, which
+   would be flaky in both directions.
+5. **The system-log mirror is unbounded** — confirmed. Capped at the
+   host ring's capacity, dedupe against the tail alone (O(1)), and the
+   unread tally carried forward per message instead of re-scanned. The
+   bulk recount now runs once, on the boot snapshot.
+6. **`useTrace` pages rows nobody reads** — confirmed, and slightly
+   wider than recorded: `PlotPanel` and `SignalsPanel` read no rows at
+   all, and `TracePanel` reads them only in *unfiltered chronological*
+   mode (by-id pages through `useByIdView`, filtered chronological
+   through `useFilteredTrace`). Three of the four call sites now opt
+   out, so a Clear / Connect / DBC reload / Start / Stop no longer
+   fetches 1000 decoded frames per open plot, signals or by-id panel.

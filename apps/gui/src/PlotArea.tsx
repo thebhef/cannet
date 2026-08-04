@@ -1784,17 +1784,21 @@ export function PlotArea(p: PlotAreaProps) {
     };
   }, [live, winStart]);
 
-  // Safety net: re-sample whenever the trace window grows. Catches the
-  // first render after mount (where `winEnd` may still be `0` because
-  // `useTrace` hasn't resolved the registry entry yet — its one-shot
-  // resample would then see an empty window, and the renderedThrough
-  // skip would suppress later ticks of the loop too) and keeps a
-  // stopped / paused plot (whose loop is off) re-sampled when its
-  // window otherwise changes. Cheap: deduped by the busy-guard and the
-  // renderedThrough skip.
+  // Re-sample on a window change the loop above cannot see: the first
+  // non-empty window after mount (`winEnd` is still `0` on the first
+  // render, because `useTrace` hasn't resolved the registry entry yet,
+  // so the loop's one-shot resample saw nothing), and any later change
+  // while the loop is off — a stopped / paused panel whose window moved
+  // under it. While the trace is running the loop already covers every
+  // later change, and firing here too put an undeduped `trace-grew`-rate
+  // floor (~10 Hz) under the resample cadence: the busy-guard drops only
+  // *overlapping* calls, not interleaved ones.
+  const sampledWindowRef = useRef(false);
   useEffect(() => {
+    if (live && sampledWindowRef.current) return;
+    if (winEnd > 0) sampledWindowRef.current = true;
     void resampleRef.current();
-  }, [winEnd]);
+  }, [winEnd, live]);
 
   // Forced re-sample when "follow live" toggles (so it snaps to / off
   // the live edge immediately).

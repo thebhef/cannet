@@ -118,8 +118,9 @@ every new feature:
   the viewport shows (plus a bounded prefetch margin) through a paged
   Tauri command. Never hold the whole dataset — or an array that grows
   with capture length / session time — in frontend state. The
-  chronological trace (LRU chunk cache in `App.tsx`), the filtered
-  trace (`useFilteredTrace`), and the plot panel (`PlotPanel`'s
+  chronological trace (`useTrace` over the shared windowed primitive
+  `useWindowedQuery`: one loaded page plus the live-tail overlay), the
+  filtered trace (`useFilteredTrace`), and the plot panel (`PlotPanel`'s
   visible-window resample) are the reference implementations.
 - **Domain computation belongs in the model.** Decoding, aggregation,
   rate estimation, time↔index mapping, min/max and other statistics

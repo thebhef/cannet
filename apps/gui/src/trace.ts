@@ -177,7 +177,15 @@ export interface TraceHandle {
 /// resume / clear. The window state lives in the element registry — the
 /// panel must have ensured the entry exists (`reg.ensureTrace`); until
 /// then this falls back to a fresh window.
-export function useTrace(data: TraceData, elementId: string): TraceHandle {
+///
+/// `rows` says whether the caller draws frame rows. Only the unfiltered
+/// chronological table does; the plot, the signals view and a by-id
+/// trace read the window's bounds and run state and nothing else. Pass
+/// `false` there — the window is otherwise re-paged (a thousand decoded
+/// frames, fetched and dropped) on every Clear / Connect / DBC reload /
+/// Start / Stop, once per open panel. `getFrame` then always returns
+/// `null`; every other field is unaffected.
+export function useTrace(data: TraceData, elementId: string, rows: boolean): TraceHandle {
   const reg = useElementRegistry();
   const sessionCount = data.count;
   const state = reg.get(elementId)?.trace ?? clearedTrace(0);
@@ -215,12 +223,14 @@ export function useTrace(data: TraceData, elementId: string): TraceHandle {
   );
 
   const win = useWindowedQuery<TraceFrameRecord>({
-    descriptor: `${data.epoch}:${offset}`,
+    // An empty descriptor is the primitive's "inactive" state (ADR
+    // 0025): no fetch, no refresh tick, `getRow` always `null`.
+    descriptor: rows ? `${data.epoch}:${offset}` : "",
     fetchPage,
     followLive: false,
     extentSignal: data.count,
     extent: frameCount,
-    liveTail: { start: data.liveTail.start - offset, rows: data.liveTail.rows },
+    liveTail: rows ? { start: data.liveTail.start - offset, rows: data.liveTail.rows } : null,
     pageSize: CHRONO_PAGE,
   });
   const getFrame = win.getRow;

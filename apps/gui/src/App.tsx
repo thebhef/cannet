@@ -49,9 +49,12 @@ import { AboutPanel } from "./AboutPanel";
 import { EventsPanel } from "./EventsPanel";
 import { SystemLogContext, type SystemLogContextValue } from "./systemLogContext";
 import {
+  EMPTY_SYSTEM_LOG_MIRROR,
+  type SystemLogMirror,
+  clearSystemLogMirror,
+  markSystemLogRead,
   mergeSystemMessage,
   reconcileSnapshot,
-  unreadWarnOrError,
 } from "./systemLog";
 import { splitStatus, type LogState, type RemoteStatus, type TransientStatus } from "./statusLine";
 import { useTransientStatus } from "./useTransientStatus";
@@ -280,10 +283,10 @@ export function App() {
   // on Save. Starts empty; `seedDefaultLayout` (called below) fills it.
   const [registry, setRegistry] = useState<RegistryEntry[]>([]);
 
-  // Host-side log bus mirror. Bootstrapped by
-  // `fetch_system_log` and kept current by `system-log-appended`
-  // events. Session-scoped, not persisted.
-  const [systemMessages, setSystemMessages] = useState<SystemMessage[]>([]);
+  // Host-side log bus mirror, bounded and carrying its own unread
+  // tally. Bootstrapped by `fetch_system_log` and kept current by
+  // `system-log-appended` events. Session-scoped, not persisted.
+  const [systemLog, setSystemLog] = useState<SystemLogMirror>(EMPTY_SYSTEM_LOG_MIRROR);
   // Session-scoped notes mirror (host owns the canonical
   // list at `src-tauri/src/notes.rs`). Bootstrapped by
   // `fetch_notes` and kept current by `notes-changed` events.
@@ -306,11 +309,6 @@ export function App() {
       return next;
     });
   }, []);
-  /// High-water seq the user has acknowledged. The unread badge counts
-  /// warn/error entries with `seq > readHighWater`. Starts at -1 so
-  /// every initial warn/error counts as unread.
-  const [readHighWater, setReadHighWater] = useState<number>(-1);
-
   // Session-start time (Unix epoch seconds) — every trace view renders
   // frame timestamps relative to this. Driven by the `trace-grew` event,
   // which is in turn driven by `start_session` on the host. Single zero
@@ -594,11 +592,11 @@ export function App() {
     let cancelled = false;
     void invoke<SystemMessage[]>("fetch_system_log").then((snap) => {
       if (cancelled) return;
-      setSystemMessages((current) => reconcileSnapshot(current, snap));
+      setSystemLog((current) => reconcileSnapshot(current, snap));
     });
     const unlisten = listen<SystemMessage>("system-log-appended", (event) => {
       diagCount("event.system-log-appended"); // DIAG
-      setSystemMessages((current) => mergeSystemMessage(current, event.payload));
+      setSystemLog((current) => mergeSystemMessage(current, event.payload));
     });
     return () => {
       cancelled = true;
@@ -1804,34 +1802,23 @@ export function App() {
   }, [registry]);
 
 
-  // System-log context: mirror + clear + markRead. `clear`
-  // empties both the host's ring and the frontend's mirror; the host
-  // does *not* reset its seq counter (callers rely on monotonicity),
-  // so we don't reset `readHighWater` either.
+  // System-log context: mirror + clear + markRead. `clear` empties both
+  // the host's ring and the frontend's mirror; the mirror keeps its read
+  // mark across one, since the host does *not* reset its seq counter
+  // (callers rely on monotonicity).
   const clearSystemLog = useCallback(() => {
     void invoke("clear_system_log").catch(() => { /* best effort */ });
-    setSystemMessages([]);
+    setSystemLog(clearSystemLogMirror);
   }, []);
-  const markSystemLogRead = useCallback(() => {
-    setSystemMessages((current) => {
-      if (current.length === 0) return current;
-      const lastSeq = current[current.length - 1].seq;
-      setReadHighWater((prev) => (lastSeq > prev ? lastSeq : prev));
-      return current;
-    });
-  }, []);
-  const unread = useMemo(
-    () => unreadWarnOrError(systemMessages, readHighWater),
-    [systemMessages, readHighWater],
-  );
+  const markLogRead = useCallback(() => setSystemLog(markSystemLogRead), []);
   const systemLogValue: SystemLogContextValue = useMemo(
     () => ({
-      messages: systemMessages,
-      unread,
+      messages: systemLog.messages,
+      unread: systemLog.unread,
       clear: clearSystemLog,
-      markRead: markSystemLogRead,
+      markRead: markLogRead,
     }),
-    [systemMessages, unread, clearSystemLog, markSystemLogRead],
+    [systemLog, clearSystemLog, markLogRead],
   );
 
   // Notes context: dispatchers forward to the host; the
@@ -2327,6 +2314,7 @@ export function App() {
       );
     }
     if (item === "systemMessages") {
+      const unread = systemLog.unread;
       return (
         <button
           key="system-messages"
