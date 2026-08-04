@@ -108,17 +108,6 @@ trip over it.
 
 ### Trace view
 
-- `[perf]` by-ID view: **paused-snapshot tighten** (former Task 24) —
-  a paused by-ID snapshot should return the latest of each id within
-  `[since, end)` rather than reading the global latest index.
-- `[ui]` by-ID view (`useByIdView.ts`): while *running*, the live refresh
-  re-pages page 0, so a by-ID view scrolled into a later page is yanked
-  back to the top each tick. Only reachable with an unusually large id
-  space (the by-ID set is id-space-bounded, so it almost always fits one
-  page); the common case is unaffected. Fix when it bites: re-page the
-  *current* page on the live tick instead of page 0 (needs the windowed
-  primitive to expose "refresh the loaded window" distinct from
-  follow-live's "re-page the tail").
 - `[ui]` `cannet-gui`: **bitfield message visualizer**. Render a CAN
   message as its raw bits laid out as a grid (8×N cells, one per bit),
   coloured / lit by current value, with DBC-derived signal overlays
@@ -286,6 +275,20 @@ name/colour/remove on any editable event row. Remaining follow-ups:
 
 ### GUI chrome and cross-cutting
 
+- `[feat]` **Detect-and-focus when a project is already open.** Task 47
+  leaves re-opening an already-open project directory as undefined
+  behaviour, because doing it properly needs single-instance /
+  inter-window messaging the app does not have. `tauri-plugin-single-
+  instance` is the obvious candidate (the app already depends on
+  `tauri-plugin-dialog` and `tauri-plugin-window-state`, so it is not a
+  new *kind* of dependency), but it answers the per-*process* case — a
+  second app launch — and not the per-*project* case where one process
+  is asked to open a directory it already holds. Needs an
+  `evaluate-dependency` pass and a `technology-inventory.md` entry
+  before adoption. Picking this up removes an undefined behaviour, so
+  it is worth doing before the project-directory concept is load-bearing
+  for many users.
+
 - `[ui]` **Missing scroll controls on scrollable panels.** Panels that
   overflow their viewport have no visible/usable scroll affordance for
   the overflow axis: the trace view can't be scrolled horizontally
@@ -300,14 +303,6 @@ name/colour/remove on any editable event row. Remaining follow-ups:
   can't edit). Non-editable rows don't belong in a settings panel —
   drop the section (relocate anything worth surfacing to
   About/diagnostics). Deferred by priority, not an open question.
-
-- `[perf]` `cannet-gui`: **idle render churn — ~120 FPS on macOS with
-  nothing changing.** With no capture running and no scroll/pan/zoom in
-  flight, the GUI still re-renders at display rate (observed ~120 FPS on
-  macOS). Nothing needs to redraw when no view state changed. Find the
-  always-dirty source (a per-frame effect / rAF loop / unstable state)
-  and gate rendering on actual change so idle cost drops to ~0. Relates
-  to the FPS/responsiveness readout item below.
 
 - `[feat]` **Replay an already-loaded BLF.** Once a BLF is loaded into
   the session buffer, offer to replay it through the pipeline
@@ -404,16 +399,6 @@ name/colour/remove on any editable event row. Remaining follow-ups:
   can't drown the panel or grow unbounded. Natural home is the Settings
   panel. Surfaced while building the frontend perf capture, which adds
   yet another log/metric stream.
-- `[perf]` Interaction-driven render capture. The self-driving perf flags
-  capture the render tier *at rest* — they never scroll the heavy views,
-  so the interaction-triggered cost (the O(buffer) filtered / by-id scan
-  starving the UI thread, the plot over-render under active panning) goes
-  unmeasured, and the frontend baseline only gates "clean → clean." Add a
-  synthetic-scroll step to the orchestrator (no WebDriver, per ADR 0031)
-  that drives the heavy views during a capture; input→paint latency rides
-  along for free via the Event Timing API (`PerformanceObserver` `event`).
-  Skipped panel time-to-first-render — one-shot startup number, not the
-  sustained saturation that's the actual cost.
 - `[ui]` GUI-wide visual restyle: adopt the dark "scope" visual
   language from `plans/plot-panel-reference.html` (the prototype's colour
   variables, monospace type scale, panel chrome, control styling) across
@@ -546,14 +531,6 @@ next pass on this surface can address them as one piece.
   the frame-*kind* seam, which now rejects `UNSPECIFIED` on both sides.
   Unreachable from Rust peers (`frame_to_proto` always sets Rx/Tx);
   align when next touching the seam. (2026-07-26 closeout review.)
-- `[perf]` **Re-capture the frontend perf tier on a release build.** The
-  2026-07-26 zonal baseline was a dev-build capture against a
-  release-build predecessor; the same-load movers — jsheap peak +30%
-  (188→245 MB), `tx_late_ms_mean` 4.5→14.2 — are plausibly dev-build
-  overhead but unconfirmed. Drift rates were flat (no leak signal). One
-  release-build run of the ADR-0031 flow on `examples/ev-zonal` settles
-  it; promote it as the baseline if numbers move.
-
 - `[ui]` `cannet-python-can` sidecar: **suppress the `xlReceive failed
   (XL_ERROR)` warning emitted on normal close.** Closing a Vector
   channel while `_rx_pump` is blocked in `ch.recv` surfaces as a
@@ -784,27 +761,6 @@ next pass on this surface can address them as one piece.
   panel still holds the whole tree in frontend state. If it bites,
   page `list_dbc_content` the way the trace and signal views are paged
   (host-side flatten + row window) rather than shipping the tree.
-
-- `[cannet-gui]` **`scroll_jank_pct` reads 40–90 % on a healthy main
-  thread — meter or reality?** The follow-live scroll-smoothness gauge
-  ([`apps/gui/src/scrollJank.ts`](apps/gui/src/scrollJank.ts), reported
-  into the ADR-0031 `RenderReport` as a gauge) sat between 37 % and 87 %
-  through a 2026-07-28 connect run that was otherwise clean: ~1600 rx/tx
-  fps, `lag ≈ 0 ms`, `longtask = 0 ms`, window 1.3 s wide. Either the
-  window genuinely advances unevenly at that zoom, or the meter still
-  over-reads — two flaws in it were already found and fixed the same day
-  (a near-zero-rate divide, and sampling per repaint rather than per
-  window movement), so a third is plausible. Decide which before
-  promoting a baseline for it, or the gate locks in a wrong number.
-
-- `[cannet-gui]` **`PlotArea` renders ~8× per resample.** The same run
-  logged `render.PlotArea` at 300–400/s against ~50 `plotarea.resample`
-  and ~50 `plot.areaResampled`/s. The panel-level per-unit axis split
-  means several `PlotArea`s per panel, but that accounts for a factor of
-  ~4, not the render rate — something is re-rendering the component on
-  state that the imperative uPlot path already owns. Cheap to chase from
-  the existing `diagCount("render.PlotArea")` plus a `why-did-you-render`
-  pass; likely a prop identity that changes every tick.
 
 - `[cannet-gui]` **Min/max decimation buckets by slice index, not
   time.** `decimate_min_max` splits the fetched slice into
