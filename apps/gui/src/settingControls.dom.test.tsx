@@ -21,6 +21,7 @@ function descriptor(control: Control, key = "some_key"): SettingDescriptor {
     help: "What it does.",
     surfaces: ["general"],
     kind: "behaviour",
+    backing: "field",
     control,
     scope: "user",
     default: null,

@@ -326,7 +326,7 @@ export interface ByIdSnapshotRecord {
 /// columns, a plot's areas / cursors. That's model state, so it survives
 /// closing and reopening the panel within a session, not only a project
 /// save/restore. The panel also mirrors the same blob into its dockview
-/// `params` so the unsaved-workspace `localStorage` layout — which does
+/// `params` so the unsaved-project `localStorage` layout — which does
 /// not persist the registry — can restore it across an app restart. A
 /// transmit's frame list and an rbs's `.cannet_rbs` path live in their
 /// own host-side stores, not in `config`.
@@ -509,7 +509,7 @@ export interface CrcSpec {
   prefix?: string;
 }
 
-/// Mirrors `src-tauri/src/project.rs::Project` — the saved workspace.
+/// Mirrors `src-tauri/src/project.rs::Project` — the saved project.
 /// `layout` (dockview's `SerializedDockview`) and `elements` are stored
 /// by the host without interpretation, so they're typed loosely here
 /// and validated before use (`dockLayout.ts::validateLayout`,

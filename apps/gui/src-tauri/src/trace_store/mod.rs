@@ -91,6 +91,11 @@ pub struct WindowAnchors {
 pub use byid::LatestById;
 pub use cannet_spill::RawTraceFrame;
 pub use flush::Carry;
+/// The one cache-directory walk (ADR 0002 DS-8). The status readout
+/// measures the *active* project's cache with it; the project cache list
+/// measures every other project's the same way, on demand, rather than
+/// carrying a second walk.
+pub(crate) use scratch::dir_footprint;
 pub use scratch::ScratchBreakdown;
 
 pub(crate) use flush::{read_json, write_json};

@@ -47,7 +47,7 @@ impl TraceStore {
 /// segments, by-id and filter indexes, signal pyramids, and the small JSON
 /// sidecars. Best-effort: an unreadable entry counts zero, so a transient
 /// I/O hiccup can't wedge the flush path.
-pub(super) fn dir_footprint(dir: &Path) -> u64 {
+pub(crate) fn dir_footprint(dir: &Path) -> u64 {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return 0;
     };

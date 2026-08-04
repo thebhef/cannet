@@ -175,12 +175,35 @@ pub(crate) enum Control {
     Custom { renderer: &'static str },
 }
 
+/// What a row in the settings view is *about*.
+///
+/// Almost every row is a field of `settings.json`. A few are not: ADR
+/// 0042 §5 puts the project cache list in the settings view, because that
+/// is where a user looks for "reclaim the disk this project is using",
+/// and it is a management surface rather than a value anyone types. Such
+/// a row is marked here rather than smuggled in as a field that does not
+/// exist, so `descriptors_and_settings_name_the_same_keys` still holds
+/// over every row that claims to be a field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum Backing {
+    /// A field of `settings.json`; `key` names it, and the view shows the
+    /// key because the panel teaches the file (ADR 0034).
+    Field,
+    /// Not a stored value at all: a surface the settings view hosts. It
+    /// has no `settings.json` key, so `key` is an id for search and
+    /// dispatch, the view does not present it as a field, and there is no
+    /// scope, no default, and nothing to reset.
+    View,
+}
+
 /// One setting's descriptor, as written in [`DESCRIPTORS`]. The scope
 /// and the default are *not* here — they are joined in from the places
 /// that already own them when the table is served.
 struct Spec {
     /// The `settings.json` field name. The view shows it, so the panel
-    /// teaches the file (ADR 0034).
+    /// teaches the file (ADR 0034). For a [`Backing::View`] row it is an
+    /// id rather than a field name.
     key: &'static str,
     label: &'static str,
     /// One or two sentences: what it does, and what going wrong looks
@@ -190,6 +213,7 @@ struct Spec {
     surfaces: &'static [Surface],
     kind: Kind,
     control: Control,
+    backing: Backing,
 }
 
 /// Every setting `settings.json` carries, in tree order within each
@@ -198,6 +222,7 @@ struct Spec {
 const DESCRIPTORS: &[Spec] = &[
     Spec {
         key: "show_developer_settings",
+        backing: Backing::Field,
         label: "Show developer settings",
         help: "Reveal machine-load and internal-cadence knobs in the settings \
                view. They are hidden by default because they exist so that every \
@@ -208,6 +233,7 @@ const DESCRIPTORS: &[Spec] = &[
     },
     Spec {
         key: "keybindings",
+        backing: Backing::Field,
         label: "Keyboard shortcuts",
         help: "Your keybinding customisation. Edited in the Keyboard Shortcuts \
                panel, which is its only editor; it is listed here because it is a \
@@ -221,6 +247,7 @@ const DESCRIPTORS: &[Spec] = &[
     },
     Spec {
         key: "scratch_cap_bytes",
+        backing: Backing::Field,
         label: "Cache size cap",
         help: "Drop the oldest history once this project's on-disk cache exceeds \
                this. Below the minimum the pre-allocated segments dominate and the \
@@ -237,6 +264,7 @@ const DESCRIPTORS: &[Spec] = &[
     },
     Spec {
         key: "clear_scratch_on_exit",
+        backing: Backing::Field,
         label: "Discard session on exit",
         help: "Wipe this project's on-disk cache on a clean close, instead of \
                reloading the prior session on the next launch.",
@@ -245,7 +273,25 @@ const DESCRIPTORS: &[Spec] = &[
         control: Control::Bool,
     },
     Spec {
+        key: "project_caches",
+        // Not a field of `settings.json`: the cache list is a management
+        // surface, and it sits in the settings view because that is where
+        // a user looks for it (ADR 0042 §5).
+        backing: Backing::View,
+        label: "Project caches",
+        help: "Every project directory cannet has cached data for, and how much \
+               disk each one holds. Nothing is reclaimed automatically — clearing \
+               is always a deliberate action, and no action here removes a project \
+               directory.",
+        surfaces: &[Surface::Storage],
+        kind: Kind::Behaviour,
+        control: Control::Custom {
+            renderer: "project-caches",
+        },
+    },
+    Spec {
         key: "system_log_min_level",
+        backing: Backing::Field,
         label: "System log minimum level",
         help: "The lowest severity the System Messages panel lists. `info` is what \
                your own actions produced; drop to `debug` for the app's internal \
@@ -258,6 +304,7 @@ const DESCRIPTORS: &[Spec] = &[
     },
     Spec {
         key: "recent_blfs_limit",
+        backing: Backing::Field,
         label: "Recent BLFs remembered",
         help: "How many recently-opened BLFs the File menu lists. Roughly \"every \
                BLF you opened this week\" at the default. Zero remembers none.",
@@ -267,6 +314,7 @@ const DESCRIPTORS: &[Spec] = &[
     },
     Spec {
         key: "recent_commands_limit",
+        backing: Backing::Field,
         label: "Recent commands remembered",
         help: "How many recently-run commands the command palette floats to the \
                top of its list. Zero remembers none.",
@@ -276,6 +324,7 @@ const DESCRIPTORS: &[Spec] = &[
     },
     Spec {
         key: "follow_window_ms",
+        backing: Backing::Field,
         label: "Default follow-live window",
         help: "How much time a plot's follow-live window shows before you have set \
                a width by zooming or panning. The default suits a fast powertrain \
@@ -291,6 +340,7 @@ const DESCRIPTORS: &[Spec] = &[
     },
     Spec {
         key: "notice_dwell_ms",
+        backing: Backing::Field,
         label: "Status notice dwell",
         help: "How long a transient notice stays in the status bar before it \
                reverts to the resting line. Lengthen it if notices clear before \
@@ -302,6 +352,7 @@ const DESCRIPTORS: &[Spec] = &[
     },
     Spec {
         key: "plot_fetch_interval_ms",
+        backing: Backing::Field,
         label: "Plot fetch interval",
         help: "How often an open plot asks the host for a resampled window while a \
                capture runs. Raising it cuts host load on a busy machine at the \
@@ -313,6 +364,7 @@ const DESCRIPTORS: &[Spec] = &[
     },
     Spec {
         key: "view_refresh_interval_ms",
+        backing: Backing::Field,
         label: "View refresh interval",
         help: "How often a paged view re-reads the tail while a capture runs — the \
                trace, by-id, signal and transmit views. It bounds both the parse \
@@ -324,6 +376,7 @@ const DESCRIPTORS: &[Spec] = &[
     },
     Spec {
         key: "live_update_interval_ms",
+        backing: Backing::Field,
         label: "Live update rate",
         help: "How often the host tells the views a running capture has grown. \
                Covers the whole live-update loop — the rate readout's smoothing \
@@ -334,6 +387,7 @@ const DESCRIPTORS: &[Spec] = &[
     },
     Spec {
         key: "trace_flush_interval_ms",
+        backing: Backing::Field,
         label: "Capture flush interval",
         help: "How often the capture is flushed to disk. A crash loses at most \
                this much trailing capture; each flush costs an fsync and a \
@@ -344,6 +398,7 @@ const DESCRIPTORS: &[Spec] = &[
     },
     Spec {
         key: "log_rotation_bytes",
+        backing: Backing::Field,
         label: "Log file rotation size",
         help: "Size at which cannet.log rotates. One previous generation is kept, \
                so the pair uses about twice this. The rolling log is what you send \
@@ -360,6 +415,7 @@ const DESCRIPTORS: &[Spec] = &[
     },
     Spec {
         key: "system_log_ring_capacity",
+        backing: Backing::Field,
         label: "System log depth",
         help: "How many system messages are kept before the oldest is dropped. The \
                System Messages panel can show no more than this, so raising it \
@@ -375,6 +431,7 @@ const DESCRIPTORS: &[Spec] = &[
     },
     Spec {
         key: "system_log_rate_limit",
+        backing: Backing::Field,
         label: "System log rate limit",
         help: "How many identical messages one source may log per second before \
                the rest are suppressed. Set it to 0 to turn the limiter off — \
@@ -390,6 +447,7 @@ const DESCRIPTORS: &[Spec] = &[
     },
     Spec {
         key: "health_sample_interval_ms",
+        backing: Backing::Field,
         label: "Health sample interval",
         help: "How often memory and capture metrics are sampled into the system \
                log at debug level. Each sample walks the whole system process \
@@ -400,6 +458,7 @@ const DESCRIPTORS: &[Spec] = &[
     },
     Spec {
         key: "sidecar_restart_budget",
+        backing: Backing::Field,
         label: "Sidecar restart budget",
         help: "How many times a crashed python-can sidecar is restarted \
                automatically before the app gives up for the session. Raise it for \
@@ -416,6 +475,7 @@ const DESCRIPTORS: &[Spec] = &[
     },
     Spec {
         key: "reconnect_backoff_ms",
+        backing: Backing::Field,
         label: "Reconnect backoff",
         help: "How long to wait before reconnecting to a cannet-server after the \
                connection drops. Fine at the default on a LAN; a flaky link to a \
@@ -443,10 +503,14 @@ pub struct SettingDescriptor {
     surfaces: &'static [Surface],
     kind: Kind,
     control: Control,
+    /// Whether this row is a `settings.json` field or a surface the view
+    /// hosts. See [`Backing`].
+    backing: Backing,
     /// From [`crate::settings::SCOPES`] — where a write of this key
     /// lands, and therefore whether a project may override it. `None`
-    /// only if the key declares no scope, which
-    /// `every_settings_key_declares_a_scope` already rules out.
+    /// for a [`Backing::View`] row, which stores nothing; for a field it
+    /// is always `Some`, which
+    /// `every_descriptor_carries_the_scope_the_store_declares` polices.
     scope: Option<Scope>,
     /// From [`Settings::default`], so "differs from its default" is
     /// answerable in the view without the default being written twice.
@@ -479,6 +543,7 @@ fn schema() -> SettingsSchema {
                 surfaces: s.surfaces,
                 kind: s.kind,
                 control: s.control,
+                backing: s.backing,
                 scope: scope_of(SCOPES, s.key),
                 default: defaults
                     .get(s.key)
@@ -520,22 +585,31 @@ mod tests {
         }
     }
 
+    /// The keys `Settings` actually serializes — what a field-backed
+    /// descriptor must name one of, and what must each have one.
+    fn settings_keys() -> serde_json::Map<String, serde_json::Value> {
+        let serde_json::Value::Object(fields) = serde_json::to_value(Settings::default()).unwrap()
+        else {
+            panic!("settings must serialize to a JSON object");
+        };
+        fields
+    }
+
     #[test]
     fn descriptors_and_settings_name_the_same_keys() {
         // ADR 0034's "the file lists every knob", mechanically checked:
         // a field added to `Settings` without a descriptor fails here,
         // and so does a descriptor for a field that no longer exists.
-        let serde_json::Value::Object(fields) = serde_json::to_value(Settings::default()).unwrap()
-        else {
-            panic!("settings must serialize to a JSON object");
-        };
+        let fields = settings_keys();
         for key in fields.keys() {
             assert!(
-                DESCRIPTORS.iter().any(|s| s.key == key),
+                DESCRIPTORS
+                    .iter()
+                    .any(|s| s.key == key && s.backing == Backing::Field),
                 "settings key `{key}` has no descriptor"
             );
         }
-        for s in DESCRIPTORS {
+        for s in DESCRIPTORS.iter().filter(|s| s.backing == Backing::Field) {
             assert!(
                 fields.contains_key(s.key),
                 "descriptor names a stale key `{}`",
@@ -545,10 +619,51 @@ mod tests {
     }
 
     #[test]
+    fn a_view_row_stores_nothing_and_is_a_custom_renderer() {
+        // The other half of the key-set rule: a row that opts out of
+        // being a field must be a surface the view hosts, not a way to
+        // smuggle a generated control over a key nothing stores. And it
+        // must not shadow a real setting — that setting would lose its
+        // editor while still passing the key-set test above.
+        let fields = settings_keys();
+        for s in DESCRIPTORS.iter().filter(|s| s.backing == Backing::View) {
+            assert!(
+                matches!(s.control, Control::Custom { .. }),
+                "view row `{}` declares a generated control",
+                s.key
+            );
+            assert!(
+                !fields.contains_key(s.key),
+                "view row `{}` shadows a real settings key",
+                s.key
+            );
+        }
+    }
+
+    #[test]
+    fn the_project_cache_list_is_a_view_row_naming_its_renderer() {
+        // ADR 0042 §5's cache management surface, as the settings view's
+        // worked example of a custom renderer.
+        let caches = DESCRIPTORS
+            .iter()
+            .find(|s| s.key == "project_caches")
+            .expect("the cache list has a descriptor");
+        assert_eq!(caches.backing, Backing::View);
+        assert_eq!(
+            caches.control,
+            Control::Custom {
+                renderer: "project-caches"
+            }
+        );
+        assert_eq!(caches.surfaces, &[Surface::Storage]);
+    }
+
+    #[test]
     fn every_descriptor_carries_the_scope_the_store_declares() {
         // The descriptor reads `settings::SCOPES` rather than keeping a
         // second copy, so a served scope that disagreed with the write
         // routing would be a bug in this join, not a drifted duplicate.
+        // A view row stores nothing, so it has no scope to declare.
         for d in &served().settings {
             assert_eq!(
                 d.scope,
@@ -556,7 +671,10 @@ mod tests {
                 "descriptor for `{}` lost its scope",
                 d.key
             );
-            assert!(d.scope.is_some(), "`{}` declares no scope", d.key);
+            match d.backing {
+                Backing::Field => assert!(d.scope.is_some(), "`{}` declares no scope", d.key),
+                Backing::View => assert!(d.scope.is_none(), "`{}` stores nothing", d.key),
+            }
         }
     }
 
@@ -564,15 +682,24 @@ mod tests {
     fn every_descriptor_carries_the_default_the_struct_defines() {
         // The other join: the view answers "differs from its default"
         // from this, so it must be the struct's default and not a
-        // transcription of it.
+        // transcription of it. A view row has no stored value and so no
+        // default; it serves `null`, and the view shows it no reset.
         let defaults = serde_json::to_value(Settings::default()).unwrap();
         for d in &served().settings {
-            assert_eq!(
-                Some(&d.default),
-                defaults.get(d.key),
-                "descriptor for `{}` carries a stale default",
-                d.key
-            );
+            match d.backing {
+                Backing::Field => assert_eq!(
+                    Some(&d.default),
+                    defaults.get(d.key),
+                    "descriptor for `{}` carries a stale default",
+                    d.key
+                ),
+                Backing::View => assert_eq!(
+                    d.default,
+                    serde_json::Value::Null,
+                    "`{}` stores nothing, so it has no default",
+                    d.key
+                ),
+            }
         }
     }
 

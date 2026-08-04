@@ -168,10 +168,12 @@ function formatNumber(n: number): string {
   return n.toLocaleString();
 }
 
-/// Byte count as a compact binary-unit size for the status line: `512 KB`,
-/// `3.4 MB`, `1.2 GB`. Sub-kilobyte sizes show as `B`; larger units keep one
-/// decimal once past 9.9 so the readout stays short.
-function formatBytes(bytes: number): string {
+/// Byte count as a compact binary-unit size: `512 KB`, `3.4 MB`,
+/// `1.2 GB`. Sub-kilobyte sizes show as `B`; larger units keep one
+/// decimal once past 9.9 so the readout stays short. Shared with the
+/// project cache list, which reports the same kind of figure for every
+/// project rather than growing a second format for it.
+export function formatBytes(bytes: number): string {
   const units = ["B", "KB", "MB", "GB", "TB"];
   let value = bytes;
   let unit = 0;

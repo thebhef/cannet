@@ -12,6 +12,7 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 
+import { ProjectCachesList } from "./ProjectCachesList";
 import type { SettingDescriptor } from "./settingDescriptors";
 
 export interface CustomRendererProps {
@@ -26,10 +27,15 @@ export interface CustomRendererProps {
 /// here would be a second home for one fact. It exists because
 /// `keybindings` is a field of `settings.json` like any other, and every
 /// field carries a descriptor.
+///
+/// `project-caches` is the other kind: a management surface with no
+/// other home, whose descriptor is a `view` row rather than a field
+/// (ADR 0042 §5).
 export const CUSTOM_SETTING_RENDERERS: Record<
   string,
   (props: CustomRendererProps) => ReactNode
 > = {
+  "project-caches": () => <ProjectCachesList />,
   keybindings: ({ value }) => {
     const count = Array.isArray(value) ? value.length : 0;
     return (

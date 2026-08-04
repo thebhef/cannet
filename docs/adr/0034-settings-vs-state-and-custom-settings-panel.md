@@ -153,6 +153,16 @@ both a place to persist them and a way to edit them.
   that was removed — breaks the build, as does a setting with no surface
   tag. Exactly one kind tag is a property of the type rather than a
   test.
+- **A descriptor may also be a *view* rather than a field.** *(2026-08-03.)*
+  The settings view hosts one thing that is not a stored value: the
+  project cache list ([ADR 0042](0042-project-directory-and-scopes.md)
+  §5), which belongs there because that is where a user looks for
+  "reclaim the disk this project is using". Such a row declares itself a
+  view, so the key-set rule above still holds over every row that claims
+  to be a field, and it is bounded by two further tests — a view row must
+  be a custom renderer, and must not shadow a real settings key. It shows
+  no key: the panel teaches the file, and pointing at a key nothing
+  stores would teach the wrong thing.
 - **A command-palette entry opens the panel**, alongside the
   separately-added `project.close`.
 - **Keybinding customisation rides this file.** Per

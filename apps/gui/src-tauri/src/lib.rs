@@ -63,6 +63,7 @@ mod notes;
 mod persisted_json;
 mod project;
 mod project_dir;
+mod project_registry;
 mod rbs;
 mod sampling;
 mod session;
@@ -231,7 +232,26 @@ fn resolve_project_dir(app: &tauri::App) -> project_dir::ActiveProjectDir {
     let last_project = state::user_scope_last_project(app.handle());
     let dir = project_dir::resolve(last_project.as_deref(), &cache_root);
     log_project_dir(&dir, "project directory resolved");
+    remember_project_dir(app.handle(), &dir, last_project.as_deref());
     project_dir::ActiveProjectDir::new(cache_root, dir)
+}
+
+/// Record the project directory the session is working in, so the cache
+/// it accumulates can be found and reclaimed later (ADR 0042 §5).
+///
+/// Called wherever the session takes up a project directory: at startup,
+/// on opening a project, and on Save As. A registry that cannot be
+/// written costs the user a row in the cache list and nothing else, so
+/// the failure is logged where it happens rather than propagated.
+pub(crate) fn remember_project_dir(
+    app: &AppHandle,
+    dir: &project_dir::ProjectDir,
+    project_file: Option<&std::path::Path>,
+) {
+    let Ok(config) = persisted_json::config_dir(app) else {
+        return;
+    };
+    project_registry::record(&config, dir, project_file, project_registry::now_seconds());
 }
 
 /// Record which project directory the session is rooted in — at startup
@@ -425,6 +445,10 @@ pub fn run() {
             project::open_project,
             project::save_project,
             project::save_project_as,
+            project_registry::list_project_caches,
+            project_registry::clear_project_cache,
+            project_registry::delete_project_cache,
+            project_registry::clear_all_project_caches,
             state::get_state,
             state::set_state,
             settings::get_settings,
