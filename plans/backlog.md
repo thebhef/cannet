@@ -1011,14 +1011,3 @@ next pass on this surface can address them as one piece.
   unchanged re-run during the settings review pass (2026-08-03). It
   is timing-sensitive around rAF coalescing; nobody has established
   whether the test or the coalescing is at fault.
-
-- `[cannet-gui]` **Hex raw-field rendering reaches only the decoded
-  trace lines.** Task 48 item 3 put the "this is a raw bit field"
-  predicate on `SignalRecord` (the chronological / by-id trace rows'
-  decoded signals). The signal view and the DBC panel's live value
-  column render `SignalSnapshotRecord` through `SignalValueCell`, which
-  carries no such flag, so the same uint64 serial reads `0x…` in a trace
-  row and in full decimal digits there — exactly the drift the shared
-  renderer exists to prevent. The flag would come from
-  `SignalDescriptor` (add the decode fact next to `is_enum`, both being
-  per-signal DBC facts) and ride on the snapshot record.

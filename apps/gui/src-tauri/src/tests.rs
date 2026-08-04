@@ -432,6 +432,24 @@ fn fetch_signal_page_bounds_mux_groups_to_the_window() {
 }
 
 #[test]
+fn signal_snapshot_rows_flag_raw_bit_fields() {
+    // Same predicate as the trace rows' decoded lines: the signal view
+    // and the DBC panel's value column must hex the same signals the
+    // trace does.
+    let state = mux_snapshot_state();
+    state
+        .trace_store
+        .append(modes_frame(1_000_000_000, 0, 0x1234, 5));
+    let rows = fetch_all_signals(&state, u64::MAX);
+    let by_name = |n: &str| rows.iter().find(|r| r.signal_name == n).unwrap();
+    assert!(
+        by_name("ModeA").raw_field,
+        "unscaled unitless integer -> raw field"
+    );
+    assert!(!by_name("ModeB").raw_field, "factor 0.5 -> stays decimal");
+}
+
+#[test]
 fn fetch_signal_page_lists_never_seen_descriptors_as_blank_rows() {
     // An empty capture still yields one row per selected
     // descriptor — a dashboard's dead-ECU rows must not vanish.

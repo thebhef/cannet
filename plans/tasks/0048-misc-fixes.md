@@ -39,13 +39,17 @@ to a specific stage.
 
 Two changes, both landed:
 
-- **Hex for raw fields only.** `DecodedSignal` now carries the decode
-  facts `value_is_raw_integer` (integer-typed, `factor == 1`,
-  `offset == 0`) and `is_enum`; the host combines them with "no unit"
-  into `SignalRecord::raw_field`, and `formatSignalValue`'s `hex`
-  argument renders those as `0xDEADBEEF`. A literal "every
-  integer-typed signal" reading would have made 1000 rpm read `0x3E8`,
-  so anything scaled, offset, or carrying a unit stays decimal.
+- **Hex for raw fields only.** `cannet-dbc` owns one predicate:
+  `value_is_raw_integer` (integer-typed, `factor == 1`, `offset == 0`)
+  is computed from the `SG_` line and rides on both `DecodedSignal` and
+  `SignalDescriptor`, and `is_raw_field` combines it with "no unit" and
+  "not an enum". The host copies that verdict onto
+  `SignalRecord::raw_field` (trace rows' decoded lines) and
+  `SignalSnapshotRecord::raw_field` (signal view + DBC panel value
+  column), and `formatSignalValue`'s `hex` argument renders those as
+  `0xDEADBEEF` — so a signal reads the same on every surface. A literal
+  "every integer-typed signal" reading would have made 1000 rpm read
+  `0x3E8`, so anything scaled, offset, or carrying a unit stays decimal.
 - **An exact integer never renders in scientific notation**,
   unconditionally — `formatSignalValue` takes `toFixed(0)` for any
   integer-valued input. `toExponential` above 1e6 is what made the
@@ -60,10 +64,13 @@ single-member SNA sentinel on an otherwise raw field still renders hex
 
 Covered by `formatSignalValue` cases in `apps/gui/src/format.test.ts`,
 `decoded_signal_flags_a_value_that_is_exactly_the_raw_integer` /
-`decoded_signal_carries_enum_ness` in `cannet-dbc`, and
-`wire_signals_flag_only_raw_bit_fields` in `cannet-gui`. The flag only
-reaches the trace views' decoded lines; the signal / DBC panels' value
-column is a backlog item.
+`decoded_signal_carries_enum_ness` /
+`signals_descriptor_carries_value_is_raw_integer` /
+`raw_field_verdict_is_the_same_from_a_descriptor_and_a_decoded_signal`
+in `cannet-dbc`, `wire_signals_flag_only_raw_bit_fields` /
+`signal_snapshot_rows_flag_raw_bit_fields` in `cannet-gui`, and
+"renders a host-flagged raw bit field in hex" in
+`SignalsPanel.dom.test.tsx`.
 
 ## 4. The unit reads as part of the value in the signal panel
 

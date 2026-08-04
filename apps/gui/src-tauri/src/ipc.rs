@@ -603,6 +603,13 @@ pub struct SignalSnapshotRecord {
     pub signal_name: String,
     pub unit: String,
     pub is_enum: bool,
+    /// True when the signal is a *raw field* — the same
+    /// `cannet_dbc::is_raw_field` verdict [`SignalRecord::raw_field`]
+    /// carries on the trace views' decoded lines, so one signal cannot
+    /// read as hex on a trace row and as decimal here. Omitted from the
+    /// wire when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub raw_field: bool,
     /// Physical value of the signal's latest in-window update — for a
     /// mux signal, the last frame *whose selector matched its group*.
     pub value: Option<f64>,

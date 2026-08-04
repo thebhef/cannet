@@ -12,7 +12,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 
 import type { SignalDescriptorRecord, SignalSnapshotRecord } from "./types";
 
-const ROWS: SignalSnapshotRecord[] = [
+const DEFAULT_ROWS: SignalSnapshotRecord[] = [
   {
     bus_id: "p",
     transmitter: "EngineEcu",
@@ -45,6 +45,29 @@ const ROWS: SignalSnapshotRecord[] = [
     time_seconds: null,
   },
 ];
+
+/// A raw bit field: unscaled, unitless, no `VAL_` table. The host flags
+/// it and the value column renders the bits, not 16 decimal digits.
+const RAW_FIELD_ROW: SignalSnapshotRecord = {
+  bus_id: "p",
+  transmitter: "EngineEcu",
+  message_id: 257,
+  extended: false,
+  message_name: "EcuInfo",
+  signal_name: "Serial",
+  unit: "",
+  is_enum: false,
+  raw_field: true,
+  value: 5124095576030430,
+  raw: 5124095576030430,
+  rate: 1,
+  count: 3,
+  time_seconds: 2.5,
+};
+
+// The rows the mocked host returns; a test can swap them (the jsdom
+// viewport fits two).
+let ROWS: SignalSnapshotRecord[] = DEFAULT_ROWS;
 
 // The `list_signals` catalog. Empty by default; a test can set entries
 // to exercise the "add signal" picker.
@@ -179,6 +202,7 @@ beforeEach(() => {
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
   invokeCalls.length = 0;
   SIGNALS = [];
+  ROWS = DEFAULT_ROWS;
 });
 afterEach(() => {
   cleanup();
@@ -230,6 +254,18 @@ describe("SignalsPanel", () => {
     // A never-seen descriptor still gets a (blank) row.
     expect(screen.getByText(/DeadSignal/)).toBeInTheDocument();
     expect(screen.getByText("DeadEcu")).toBeInTheDocument();
+  });
+
+  it("renders a host-flagged raw bit field in hex", async () => {
+    ROWS = [RAW_FIELD_ROW, DEFAULT_ROWS[0]];
+    renderPanel();
+    await waitFor(() => {
+      expect(screen.getByText(/Serial/)).toBeInTheDocument();
+    });
+    expect(screen.getByText("0x123456789ABCDE")).toBeInTheDocument();
+    expect(screen.queryByText("5124095576030430")).not.toBeInTheDocument();
+    // A scaled, united signal is untouched.
+    expect(screen.getByText("1165")).toBeInTheDocument();
   });
 
   it("dropping a dragged signal adds it to the manual selection", async () => {

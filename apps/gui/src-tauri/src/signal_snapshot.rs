@@ -290,6 +290,7 @@ mod tests {
             signal_name: signal.into(),
             unit: String::new(),
             is_enum: false,
+            raw_field: false,
             value: None,
             raw: None,
             label: None,
