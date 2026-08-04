@@ -11,8 +11,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, render } from "@testing-library/react";
 
-import { useTraceViewport } from "./useTraceViewport";
-import { ROW_HEIGHT, maxAnchorRow, scaledHeight, visibleRowCount } from "./traceViewport";
+import { useTraceViewport, type VariableRowHeights } from "./useTraceViewport";
+import {
+  ROW_HEIGHT,
+  expandedRowHeight,
+  maxAnchorRow,
+  scaledHeight,
+  tailAnchorRow,
+  visibleRowCount,
+} from "./traceViewport";
 
 class FakeResizeObserver {
   observe() {}
@@ -20,9 +27,17 @@ class FakeResizeObserver {
   disconnect() {}
 }
 
-function Harness({ count, anchoredRow }: { count: number; anchoredRow: number }) {
+function Harness({
+  count,
+  anchoredRow,
+  variable,
+}: {
+  count: number;
+  anchoredRow: number;
+  variable?: VariableRowHeights;
+}) {
   const { containerRef, viewportHeight, rows, spacerHeight, anchorMax, firstVisibleRow, lastVisibleRow } =
-    useTraceViewport(count, anchoredRow);
+    useTraceViewport(count, anchoredRow, undefined, variable);
   return (
     <div
       ref={containerRef}
@@ -65,6 +80,26 @@ describe("useTraceViewport", () => {
     const el = getByTestId("scaffold");
     expect(el.dataset.firstVisibleRow).toBe(el.dataset.anchorMax);
     expect(Number(el.dataset.lastVisibleRow)).toBe(3);
+  });
+
+  it("sizes the spacer and the anchor bound to the expanded rows when given their heights", () => {
+    // A snapshot that fits in the viewport as plain rows but not once a
+    // row is expanded: without the variable-height geometry the spacer
+    // stops at the viewport height and the anchor is pinned to 0, so the
+    // expanded row's signal lines are past the end of the scroll range.
+    const vh = 220; // ten plain rows
+    vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(vh);
+    const rowHeightAt = (i: number) => (i === 2 ? expandedRowHeight(12) : ROW_HEIGHT);
+    const extraHeight = expandedRowHeight(12) - ROW_HEIGHT;
+    const { getByTestId } = render(
+      <Harness count={12} anchoredRow={99} variable={{ extraHeight, rowHeightAt }} />,
+    );
+    const el = getByTestId("scaffold");
+    expect(Number(el.dataset.spacerHeight)).toBe(scaledHeight(12, vh, extraHeight));
+    expect(Number(el.dataset.spacerHeight)).toBeGreaterThan(vh);
+    expect(Number(el.dataset.anchorMax)).toBe(tailAnchorRow(12, vh, rowHeightAt));
+    expect(Number(el.dataset.anchorMax)).toBeGreaterThan(maxAnchorRow(12, vh));
+    expect(el.dataset.firstVisibleRow).toBe(el.dataset.anchorMax);
   });
 
   it("floors a negative anchoredRow at 0", () => {

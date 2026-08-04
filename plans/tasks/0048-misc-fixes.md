@@ -90,15 +90,45 @@ Covered by `SignalValueCell.dom.test.tsx` — the value and the unit are
 separately addressable in the DOM on both surfaces, and `unit=""`
 renders no unit element and no stray spacing.
 
-## 5. Dock panels do not scroll
+## 5. Dock panels do not scroll — **done**
 
-Two instances, likely one fix:
+Two instances, two different mechanisms.
 
-- **Project panel has no scroll.** At 1024 px vertical it is unusable —
-  the DBC mapping could not be verified because it could not be reached.
-- **By-ID panel does not grow to accommodate expanded signals**, and
-  cannot be scrolled to the bottom when its content is taller than the
-  window.
+**Project panel.** dockview mounts a panel's React root as
+`.dv-react-part` (`height: 100%`) inside `.dv-content-container` inside
+`.dv-groupview` (`overflow: hidden`). `.project-panel` declared
+`overflow: auto` but no height, so it grew to its content and had
+nothing to scroll — the sections past the fold ran under the group,
+which clipped them. Measured in Chromium (the engine behind the Tauri
+WebView2 host) with the real stylesheets in a 1024 px group:
+`clientHeight === scrollHeight === 1333`, `scrollTop` stuck at 0, the
+DBC section 319 px below the group's bottom edge. Pinning
+`height: 100%` gives `989 / 1333`, `scrollTop` reaching 344, and the
+DBC section in reach. Guarded by `dockPanelScrolling.test.ts`, which
+asserts the declaration — jsdom does no layout, so no rendering test
+can catch this.
+
+**By-ID panel.** The virtualizer sized everything as plain rows:
+`scaledHeight` counted `count * ROW_HEIGHT`, so an expanded row's
+signal lines were past the end of the scroll range, and `maxAnchorRow`
+subtracted `visibleRowCount`, whose two-row pad puts the anchor bound
+two rows *past* the end — the tail stacked below the fold with no
+scroll position that reached it (true even with nothing expanded). The
+sticky viewport is `overflow: hidden` at exactly the panel height, so
+the overflow was clipped rather than merely off-screen. Three pieces,
+all validated against Chromium before they were written:
+`scaledHeight`/`maxScrollTop` take the expanded rows' extra height
+(`expandedExtraHeight`); `tailAnchorRow` replaces the padded anchor
+bound with the row that puts the last row fully in view; and the sticky
+viewport takes `max(panel height, rendered stack)` so a row taller than
+the panel slides into view instead of being cut off. All three are
+scroll-independent, so the geometry can't oscillate as the window
+moves. Covered by `traceViewport.test.ts`,
+`useTraceViewport.dom.test.tsx` and `ByIdTable.dom.test.tsx`.
+
+The chronological trace shares the padded anchor bound and is left
+alone here: it is a live-tail view whose anchor interacts with
+auto-scroll and `scrollForRow`, which this fix does not touch.
 
 ## 6. The window hangs or stops rendering after sitting live
 
