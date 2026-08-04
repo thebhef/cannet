@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 
 import {
   formatBytes,
@@ -8,9 +8,11 @@ import {
   formatElapsed,
   formatFrameCount,
   formatId,
+  formatLocalTimestamp,
   formatSignalValue,
   formatTimestamp,
   fracDigitsForSpan,
+  hasWallClockAnchor,
 } from "./format";
 import type { TraceFrameRecord } from "./types";
 
@@ -184,6 +186,67 @@ describe("formatTimestamp", () => {
 
   it("falls back to the raw timestamp when there is no base yet", () => {
     expect(formatTimestamp(7.5, null)).toBe("7.5000");
+  });
+});
+
+describe("formatLocalTimestamp", () => {
+  // The rendered string is locale-dependent (the tooltip follows the
+  // user's locale, so these must not pin one), but the *instant* it
+  // names is not: the same epoch second in two zones has to come out as
+  // two different wall clocks, nine hours apart and across a date
+  // boundary. Node re-reads `TZ` on assignment, so each test stubs the
+  // zone it needs and the suite restores the machine's own at the end.
+  afterAll(() => {
+    vi.unstubAllEnvs();
+  });
+
+  // 2023-11-14T22:13:20.123Z — 07:13 the next morning in Tokyo.
+  const instant = 1_700_000_000.123;
+  const anchor = 1_699_999_000;
+
+  it("renders the instant in the machine's own time zone", () => {
+    // Matched loosely on purpose: the hour is 22 or 10 PM and the date
+    // order is 11/14 or 14/11 depending on the locale, but the minute,
+    // second, millisecond and calendar day are the locale's business
+    // either way.
+    vi.stubEnv("TZ", "UTC");
+    const utc = formatLocalTimestamp(instant, anchor);
+    expect(utc).toMatch(/\b(22|10):13:20\.123\b/);
+    expect(utc).toContain("2023");
+    expect(utc).toContain("14");
+
+    vi.stubEnv("TZ", "Asia/Tokyo");
+    const tokyo = formatLocalTimestamp(instant, anchor);
+    expect(tokyo).toMatch(/\b0?7:13:20\.123\b/);
+    // Nine hours on: the next calendar day, 15 rather than 14.
+    expect(tokyo).toContain("15");
+    expect(tokyo).not.toContain("14");
+  });
+
+  it("names the zone, so the reading is unambiguous", () => {
+    vi.stubEnv("TZ", "Asia/Tokyo");
+    expect(formatLocalTimestamp(instant, anchor)).toContain("GMT+9");
+  });
+
+  it("has no instant to name when the session has no wall-clock origin", () => {
+    expect(formatLocalTimestamp(instant, null)).toBeNull();
+  });
+
+  it("has no instant to name when the origin is a capture-relative timeline", () => {
+    // A BLF with no measurement start time anchors the session on its
+    // first frame, whose timestamps run from the file's own zero — a
+    // handful of seconds, never a wall clock.
+    expect(formatLocalTimestamp(0.05, 0.05)).toBeNull();
+    expect(formatLocalTimestamp(3600, 0)).toBeNull();
+  });
+});
+
+describe("hasWallClockAnchor", () => {
+  it("accepts a real capture's origin and rejects the anchorless cases", () => {
+    expect(hasWallClockAnchor(1_700_000_000)).toBe(true);
+    expect(hasWallClockAnchor(null)).toBe(false);
+    expect(hasWallClockAnchor(0)).toBe(false);
+    expect(hasWallClockAnchor(0.05)).toBe(false);
   });
 });
 

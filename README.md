@@ -399,7 +399,13 @@ panel by its tab and drop it against an edge of the area to split it
 side-by-side, or onto another panel to tab them together. Each trace
 panel keeps its own scroll position, auto-scroll toggle (trace mode),
 and column layout — drag the divider at a column header's right edge to
-resize, and **right-click the header** to show / hide columns. Trace
+resize, and **right-click the header** to show / hide columns. The
+**time (s)** column shows elapsed time since the session start (ADR
+0024); hover a row's time to read the same instant as that message's
+local date and time. A capture with no wall clock behind it — a BLF
+carrying no measurement start time, whose session is anchored on the
+file's own zero — shows no tooltip, because there is no absolute instant
+to name. Trace
 panels carry the trace controls: the data lives in a session buffer
 that fills while connected (reset when you disconnect / reconnect;
 a quit or crash instead **persists** it to disk and reloads it on the

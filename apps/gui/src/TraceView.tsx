@@ -25,7 +25,7 @@ import {
   gridTemplateColumns,
   visibleColumns,
 } from "./traceColumns";
-import { TraceHeader, cellContent, contentWidthStyle } from "./traceTable";
+import { TraceHeader, TraceTimeCell, cellContent, contentWidthStyle } from "./traceTable";
 import { diagCount } from "./diag"; // DIAG
 
 interface TraceViewProps {
@@ -418,11 +418,32 @@ const Row = memo(function Row({
       }}
       onClick={() => frame?.decoded && onToggle(absoluteIndex)}
     >
-      {columns.map((c) => (
-        <span key={c.key} className={columnDef(c.key).className}>
-          {cellContent(c.key, frame, absoluteIndex, baseTimestamp, idFormat, isExpanded, busLookup)}
-        </span>
-      ))}
+      {columns.map((c) => {
+        const content = cellContent(
+          c.key,
+          frame,
+          absoluteIndex,
+          baseTimestamp,
+          idFormat,
+          isExpanded,
+          busLookup,
+        );
+        const className = columnDef(c.key).className;
+        return c.key === "time" ? (
+          <TraceTimeCell
+            key={c.key}
+            className={className}
+            seconds={frame?.timestamp_seconds ?? null}
+            base={baseTimestamp}
+          >
+            {content}
+          </TraceTimeCell>
+        ) : (
+          <span key={c.key} className={className}>
+            {content}
+          </span>
+        );
+      })}
       {isExpanded && frame?.decoded && (
         <div className="signals">
           {frame.decoded.signals.map((sig) => (

@@ -24,8 +24,10 @@ import {
   formatData,
   formatId,
   formatKind,
+  formatLocalTimestamp,
   formatMsgRate,
   formatTimestamp,
+  hasWallClockAnchor,
   type CanIdFormat,
 } from "./format";
 import { useDismissableMenu } from "./useDismissableMenu";
@@ -100,6 +102,49 @@ export function cellContent(
         </>
       );
   }
+}
+
+/// The `time` cell of a trace-style row: the elapsed-time text ADR 0024
+/// specifies, plus — while the pointer is on it — a native `title` with
+/// the same instant read as a local date and time. A session with no
+/// wall-clock origin (a log with no start time) has no absolute instant
+/// to name, so it gets no tooltip and no hover state at all.
+///
+/// The tooltip string is derived from hover state during render rather
+/// than written to the node on the pointer event, for two reasons. The
+/// tables are virtualized and repaint continuously, so formatting a date
+/// for every row on every pass would put that work on the scroll path;
+/// and a row slot is reused for a different frame as the view scrolls or
+/// the live tail advances, which a title written on `mouseenter` would
+/// survive as a stale reading of some other message.
+export function TraceTimeCell({
+  className,
+  seconds,
+  base,
+  children,
+}: {
+  className: string;
+  /// The row's own timestamp in Unix-epoch seconds, or `null` for a row
+  /// whose frame hasn't loaded yet.
+  seconds: number | null;
+  /// The session origin (`TraceHandle.baseTimestampSeconds`).
+  base: number | null;
+  /// The cell's rendered text — `cellContent`'s `time` output, so the
+  /// column keeps one renderer.
+  children: ReactNode;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const anchored = seconds !== null && hasWallClockAnchor(base);
+  return (
+    <span
+      className={className}
+      title={(hovered && seconds !== null ? formatLocalTimestamp(seconds, base) : null) ?? undefined}
+      onMouseEnter={anchored ? () => setHovered(true) : undefined}
+      onMouseLeave={anchored ? () => setHovered(false) : undefined}
+    >
+      {children}
+    </span>
+  );
 }
 
 interface TraceHeaderProps<K extends string> {
