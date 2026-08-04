@@ -167,12 +167,32 @@ below:
 - **Unit-based y-scale.** Same-unit series on an axis share one y
   scale — the union of their observed ranges, computed by the pure
   `groupScaleRanges()` helper in `plotData` — and each unit group
-  auto-scales independently to fill the axis. One refinement on the
-  decision table: **unitless series each keep their own scale**. Two
-  signals that merely both lack a DBC unit are not known to be
-  commensurable, and pinning them to a shared min/max would flatten
-  whichever has the smaller range; "shares a unit" is read as
-  "shares a *declared* unit".
+  auto-scales independently to fill the axis. Three refinements on the
+  decision table:
+  - **Unitless series each keep their own scale.** Two signals that
+    merely both lack a DBC unit are not known to be commensurable, and
+    pinning them to a shared min/max would flatten whichever has the
+    smaller range; "shares a unit" is read as "shares a *declared*
+    unit".
+  - **Hidden series contribute nothing to the union.** An axis
+    auto-scales to its data, and what is hidden is not drawn on the
+    axis — so hiding a 3000 A nominal limit rescales the axis to the
+    500 A effective one still on it. The per-signal all-time extents
+    stay host-owned model facts
+    ([ADR 0025](0025-frontend-windowed-source-contract.md)); *which* of
+    them an axis unions is a view decision (visibility is view-local
+    plot-area config the host has no reason to know), so the selection
+    is made in `PlotArea`'s normalisation and the host query is
+    unchanged.
+  - **A constant series still joins its group.** A signal that never
+    moves has a degenerate extent (`hi === lo`) and so cannot be
+    normalised on its own; it contributes its one value to its unit
+    group's union all the same, and is drawn on the group's scale — a
+    constant 3000 A limit sits at the top of a 400–3000 A axis rather
+    than at the canvas midline beside a 500 A signal filling the
+    canvas. Only when a group's *whole* union has no span does the
+    midline fallback apply, which is also what keeps the normalise
+    free of a divide-by-zero.
 - **Multi-uPlot per area.** Each derived axis is a stacked uPlot
   instance with its own canvas and signal-list slice; the panel-level
   x-sync registry (`xSyncRef` + `registerInstance`) was already
@@ -238,6 +258,36 @@ below:
   pair-sum conservation + min-px clamp, equalize) under unit tests. A
   `role="separator"` handle between adjacent axes drags the pair's
   weights and double-clicks to equalize.
+- **A hidden signal leaves the layouts it would otherwise drive.**
+  Hiding is not just "don't stroke this line": the signal drops out of
+  the y-scale union (above), out of the enum-lanes stack, and — when
+  it is the last visible signal on an axis — out of the vertical
+  height distribution.
+  - *Lanes.* `laneBandsForVisible` (`plotEnumLanes`) lays the bands out
+    over the *visible* signals and returns `null` for a hidden one, so
+    hiding one of three enums re-flows the other two onto a two-lane
+    axis instead of leaving a reserved gap. Both consumers use it: the
+    resample that normalises each enum into its band, and the tile draw
+    hook — which reads the signal list through a live ref, because
+    toggling `hidden` deliberately doesn't rebuild the uPlot instance
+    (`signalSetKey` excludes it) and a construction-time capture would
+    keep drawing the old lane layout over re-flowed data.
+  - *Whole axis.* When every signal on a derived axis is
+    hidden, the axis is excluded from the fit-to-panel height
+    distribution and its canvas is dropped (`.plot-area.collapsed`), while
+    its rows stay in the side panel so they remain un-hideable — in the
+    side panel's own column, at its own width, since un-hiding means
+    clicking a swatch in those rows and a strip that reflowed across the
+    empty row would have to be chased. The rows themselves render compact
+    (message name folded up beside the signal name) so a collapsed axis
+    costs a line or two of panel height. A collapsed axis must not become
+    a dead zone in the panel either: it is skipped when pairing splitters
+    (`splitterPartnerAbove` — the splitter reaches over it to the axes on
+    either side, which is where the weight can actually go), and its
+    empty canvas column is a placeholder that replays wheel and pointer
+    gestures on a live axis's surface, since it has no uPlot of its own
+    to receive them. This covers a fully-hidden numeric axis and a
+    fully-hidden enum-lanes axis alike.
 
 What's still rough:
 
@@ -249,29 +299,6 @@ What's still rough:
   signal — so in practice each axis labels itself sensibly, but the
   user can't pin a *different* explicit primary on two axes of the
   same area. Lift the key onto the derived axis if that ever bites.
-- **A fully-hidden axis collapses; a partly-hidden lane axis doesn't
-  reclaim per-lane space yet.** When every signal on a derived axis is
-  hidden, the axis is excluded from the fit-to-panel height
-  distribution and its canvas is dropped (`.plot-area.collapsed`), while
-  its rows stay in the side panel so they remain un-hideable — in the
-  side panel's own column, at its own width, since un-hiding means
-  clicking a swatch in those rows and a strip that reflowed across the
-  empty row would have to be chased. The rows themselves render compact
-  (message name folded up beside the signal name) so a collapsed axis
-  costs a line or two of panel height. A collapsed axis must not become
-  a dead zone in the panel either: it is skipped when pairing splitters
-  (`splitterPartnerAbove` — the splitter reaches over it to the axes on
-  either side, which is where the weight can actually go), and its
-  empty canvas column is a placeholder that replays wheel and pointer
-  gestures on a live axis's surface, since it has no uPlot of its own
-  to receive them. This
-  covers a fully-hidden numeric axis and a fully-hidden enum-lanes axis
-  alike. Still open: within a *still-visible* enum-lanes axis, a hidden
-  enum keeps its lane band (the band isn't reclaimed by the visible
-  lanes) — the tile draw hook captures construction-time signals and the
-  hidden toggle doesn't rebuild the instance, so a live per-lane re-flow
-  needs a signals ref threaded into the draw hook. Tracked in
-  `plans/backlog.md`.
 - **Two value-table fetches coexist.** After the panel-level
   `useValueTables` roll-up landed, `PlotArea` still keeps its own
   `useValueTables` for the side-panel readout. Folding the two into

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   type Band,
   laneBands,
+  laneBandsForVisible,
   laneTileBand,
   laneValueRange,
   normalizeIntoLane,
@@ -40,6 +41,37 @@ describe("laneBands", () => {
     const bands = laneBands(4);
     const h0 = span(bands[0]);
     for (const b of bands) expect(span(b)).toBeCloseTo(h0);
+  });
+});
+
+describe("laneBandsForVisible", () => {
+  it("with nothing hidden it is exactly laneBands(n)", () => {
+    expect(laneBandsForVisible([false, false, false])).toEqual(laneBands(3));
+  });
+
+  it("a hidden lane drops out and its space goes to the rest", () => {
+    // Three signals, the middle one hidden: the two survivors must lay
+    // out as a *two*-lane axis, not keep their three-lane slots with a
+    // hole where the hidden one was.
+    const got = laneBandsForVisible([false, true, false]);
+    const two = laneBands(2);
+    expect(got[0]).toEqual(two[0]);
+    expect(got[1]).toBeNull();
+    expect(got[2]).toEqual(two[1]);
+    // Each survivor is taller than it would have been at three lanes.
+    expect(span(got[0]!)).toBeGreaterThan(span(laneBands(3)[0]));
+  });
+
+  it("keeps input order — the visible lanes stack top-first", () => {
+    const got = laneBandsForVisible([true, false, false, true, false]);
+    const three = laneBands(3);
+    expect(got).toEqual([null, three[0], three[1], null, three[2]]);
+  });
+
+  it("all hidden → all null, with no NaN band and no lanes to divide by", () => {
+    const got = laneBandsForVisible([true, true]);
+    expect(got).toEqual([null, null]);
+    expect(laneBandsForVisible([])).toEqual([]);
   });
 });
 

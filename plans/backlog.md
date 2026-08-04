@@ -188,18 +188,6 @@ trip over it.
   cannot be gated (Task 44 Tier 0 § 3): two runs are two different
   experiments. A capture flag or a scenario-fixed window would make
   them gateable.
-- `[ui]` `cannet-gui` `PlotPanel.tsx`: **a hidden enum keeps its lane
-  band within a still-visible enum-lanes axis.** The fully-hidden-axis
-  case is done — a derived axis whose signals are *all* hidden now
-  collapses (`.plot-area.collapsed`: canvas dropped, excluded from the
-  fit-to-panel distribution, rows kept in the side panel), covering both
-  numeric and enum-lanes axes. Residual: when only *some* enums on a
-  lanes axis are hidden, the visible lanes don't reclaim the hidden
-  ones' bands. `visibleLaneBands`-style layout (bands over the visible
-  count) fixes the geometry, but the tile draw hook captures
-  construction-time `signals` and toggling `hidden` doesn't rebuild the
-  uPlot instance (`signalSetKey` excludes hidden), so a live per-lane
-  re-flow needs a `signalsRef` threaded into the draw hook. (Task 32 QA.)
 - `[bug]` `cannet-gui` `PlotPanel.tsx`: **cursor A/B marker chips and
   the x-axis intermittently don't render.** Reachable state where the
   cursor marker titles/text disappear, and possibly where the x-axis

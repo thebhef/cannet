@@ -42,7 +42,7 @@ import { type YAxisMode } from "./plotAxisDerivation";
 import { messageEcuKey, signalRowLabel } from "./plotSignalLabel";
 import { emptyJankMeter, jankPercent, jankPixels, observeScroll, scrollStepMs } from "./scrollJank";
 import { useValueTables } from "./useValueTables";
-import { laneBands, laneTileBand, laneValueRange, normalizeIntoLane, tileLabelX } from "./plotEnumLanes";
+import { laneBandsForVisible, laneTileBand, laneValueRange, normalizeIntoLane, tileLabelX } from "./plotEnumLanes";
 import { useDecimatedRange, type DecimatedOutcome } from "./useDecimatedRange";
 import { diagCount, diagGauge } from "./diag"; // DIAG
 
@@ -596,6 +596,12 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   const areaId = area.id;
   const signals = area.signals;
   const signalSetKey = signals.map(signalRefKey).join("|");
+  /** Live mirror of `signals` for the uPlot draw hook, which is
+   * captured at construction and so would otherwise see the signal
+   * list as it was then — `signalSetKey` deliberately excludes
+   * `hidden` and `color`, so neither rebuilds the instance. */
+  const signalsRef = useRef(signals);
+  signalsRef.current = signals;
   /** Which signal's raw range / unit drives the y-axis labels. Falls
    * back to the first non-hidden signal if the configured key is no
    * longer present (signal removed). `null` when the area is empty. */
@@ -923,8 +929,27 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       //  * **Follow-live OFF** — the visible slice's own min/max,
       //    recomputed each tick so a zoomed-in pan fills the canvas
       //    with its local detail (shaping already-paged data).
+      //
+      // Two rules apply to every one of those branches:
+      //
+      //  * **A hidden signal contributes nothing.** It isn't drawn, so
+      //    it must not set the scale the drawn signals share — an axis
+      //    auto-scales to its data (ADR 0026), and what is hidden is
+      //    not on the axis. The host still owns each signal's all-time
+      //    extent (ADR 0025); *which* of those extents an axis unions
+      //    is a view decision, so it is made here rather than by
+      //    telling the host what the user has hidden.
+      //  * **A degenerate extent still counts.** A signal that never
+      //    moves has `hi === lo`. Dropping it left it with no range at
+      //    all, so it fell back to the canvas midline and stopped
+      //    sharing its unit group's scale — a constant 3000 A limit
+      //    drew mid-canvas next to a 500 A signal filling the canvas.
+      //    It contributes its one value to the group union instead; a
+      //    group whose *whole* union is one value still has no span,
+      //    and keeps the midline fallback below.
       const ranges = new Map<string, { lo: number; hi: number }>();
       signals.forEach((s, i) => {
+        if (s.hidden) return;
         const key = signalRefKey(s);
         if (manualFitYRef.current) {
           const m = manualRangesRef.current.get(key);
@@ -933,7 +958,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
         }
         if (lr.followLive) {
           const e = hostExtents?.[i];
-          if (e && e.hi > e.lo) ranges.set(key, { lo: e.lo, hi: e.hi });
+          if (e) ranges.set(key, { lo: e.lo, hi: e.hi });
           return;
         }
         const ser = seriesRel[i];
@@ -944,7 +969,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
           if (v < lo) lo = v;
           if (v > hi) hi = v;
         }
-        if (Number.isFinite(lo) && Number.isFinite(hi) && hi > lo) ranges.set(key, { lo, hi });
+        if (Number.isFinite(lo) && Number.isFinite(hi)) ranges.set(key, { lo, hi });
       });
       // Unit-based y-scale (ADR 0026): the per-signal latches above
       // feed `groupScaleRanges`, which hands every signal the *union*
@@ -986,10 +1011,15 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       const rawRows = mergedRaw.slice(1);
       const displayRows: (number | null)[][] = laneActive
         ? (() => {
-            const bands = laneBands(signals.length);
+            // Hidden lanes drop out of the layout, so the visible ones
+            // share the whole axis height (ADR 0026).
+            const bands = laneBandsForVisible(signals.map((s) => !!s.hidden));
             return rawRows.map((row, i) => {
-              if (seriesRel[i].v.length === 0) return row; // all null anyway
               const band = bands[i];
+              // No lane: the series isn't drawn (`show: false`), so
+              // leave its raw codes rather than invent a position.
+              if (band == null) return row;
+              if (seriesRel[i].v.length === 0) return row; // all null anyway
               const table = valueTablesRef.current.get(signalRefKey(signals[i]));
               if (table && table.length > 0) {
                 const range = laneValueRange(table);
@@ -1422,13 +1452,22 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                 ratio,
               });
             } else if (laneModeAtConstruct) {
-              // Combined enum-lanes axis: one tile row per signal, in its
-              // lane band (ADR 0026). Lane geometry is normalized [0, 1]
-              // (top-first); convert to canvas pixels via `valToPos`.
-              const bands = laneBands(signals.length);
-              signals.forEach((s, i) => {
-                if (s.hidden) return;
+              // Combined enum-lanes axis: one tile row per *visible*
+              // signal, in its lane band (ADR 0026). Lane geometry is
+              // normalized [0, 1] (top-first); convert to canvas pixels
+              // via `valToPos`.
+              //
+              // Read the signals through the ref, not this hook's
+              // closure: hiding a signal deliberately doesn't rebuild
+              // the uPlot instance (`signalSetKey` ignores `hidden`), so
+              // a captured list would keep drawing the lanes as they
+              // were laid out at construction while the data underneath
+              // has already re-flowed.
+              const laneSignals = signalsRef.current;
+              const bands = laneBandsForVisible(laneSignals.map((s) => !!s.hidden));
+              laneSignals.forEach((s, i) => {
                 const laneNorm = bands[i];
+                if (laneNorm == null) return;
                 const laneTopPx = u.valToPos(laneNorm.hi, "y", true);
                 const laneBotPx = u.valToPos(laneNorm.lo, "y", true);
                 const tileNorm = laneTileBand(laneNorm, laneBotPx - laneTopPx);
@@ -1436,7 +1475,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                 drawEnumTiles(ctx, u, {
                   seriesIdx: i + 1,
                   table,
-                  target: laneTargetsAtConstruct[i],
+                  target: laneTargetsAtConstruct[i] ?? null,
                   resolveColor: colorResolverRef.current,
                   bandTop: u.valToPos(tileNorm.hi, "y", true),
                   bandBot: u.valToPos(tileNorm.lo, "y", true),
@@ -1901,7 +1940,10 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
         if (v < lo) lo = v;
         if (v > hi) hi = v;
       }
-      if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) continue;
+      // A constant series (`hi === lo`) is kept: it still has to
+      // contribute its value to its unit group's union, the same way
+      // the auto path does.
+      if (!Number.isFinite(lo) || !Number.isFinite(hi)) continue;
       next.set(key, { lo, hi });
     }
     manualRangesRef.current = next;

@@ -174,16 +174,38 @@ by "picking a counter signal in the calc editor keeps the editor open and
 applies the pick" and "clicking the calc editor's own chrome does not
 collapse the row under it" in `TransmitPanel.dom.test.tsx`.
 
-## 8. Per-unit y-axis scaling is wrong
+## 8. Per-unit y-axis scaling is wrong — **done**
 
-Two symptoms on the per-unit axis mode, possibly one cause:
+Two symptoms, **two separate bugs**, both in the per-signal `ranges`
+map `PlotArea`'s resample feeds to `groupScaleRanges`. Each was
+reproduced on its own before either was fixed.
 
-- **Hidden signals still affect the y limits.** A hidden 3000 A
-  "nominal" current limit still sets the scale for a visible 500 A
-  "effective" limit.
-- **Same-unit signals do not share a scale.** Despite per-unit mode, the
-  3 k value does not appear to be on the same scale as the 500 A one,
-  which is what per-unit mode exists to guarantee (ADR 0026).
+- **Hidden signals still affect the y limits.** The map was built over
+  every signal on the axis, hidden included, so a hidden extent still
+  went into the unit group's union. Measured: with a hidden 3000 A
+  nominal limit and a visible 0–500 A effective one, the effective
+  signal's 250 A sample stayed at `0.0833` (250/3000) after hiding
+  instead of moving to `0.5`. Fixed by skipping hidden signals when
+  the map is built.
+- **Same-unit signals do not share a scale.** Not a consequence of the
+  first — reproduced with nothing hidden. A signal that never moves has
+  a degenerate all-time extent (`hi === lo`), and both the follow-live
+  and visible-fit branches required `hi > lo`, so a constant dropped
+  out of its unit group entirely and fell back to the canvas midline.
+  Measured: a constant 3000 A limit drew at `0.5` while a 400–500 A
+  signal in the same unit group filled the canvas on a scale of its
+  own. Fixed by letting a degenerate extent into the group union (the
+  midline fallback now applies only when the *group's* union has no
+  span, which is also what keeps the normalise divide-free). Manual
+  Fit Y had the same exclusion and was fixed with it.
+
+Guarded by "numeric: a hidden signal no longer sets its unit group's
+scale", "numeric: same-unit signals share one scale even when one is
+constant" and "numeric: a unit group with no span at all draws at the
+midline, not NaN" in `PlotPanel.dom.test.tsx`. ADR 0026's
+implementation status records both rules, including why the visible-set
+selection is made in the frontend rather than by telling the host what
+is hidden.
 
 ## 9. The rest of the panels still do not scroll — **done**
 
@@ -246,18 +268,28 @@ and "publishes the columns' total width to the rows' scrolled content"
 in `TraceView.anchor.dom.test.tsx` / `ByIdTable.dom.test.tsx`. That the
 two halves combine into an actual scrollbar is only visible in Chromium.
 
-## 10. Hidden enum lanes still occupy vertical space
+## 10. Hidden enum lanes still occupy vertical space — **done**
 
-The enum-overlay twin of item 8. Hiding an enum signal leaves its lane
-occupying its share of the enum window's height, so hiding a signal
-does not give the remaining lanes any more room. Hidden signals should
-drop out of the lane layout entirely, the same way item 8 asks for them
-to drop out of the y-limit computation.
+Same *shape* as item 8 (a hidden signal participating in a layout it
+should be excluded from) but its own bug, in its own code: the lane
+geometry took `laneBands(signals.length)` and indexed it by the
+signal's position in the full list, so a hidden lane kept its slot.
+Measured: with three enums and the middle one hidden, the survivors
+stayed on three-lane geometry (code 0 at `0.7389` rather than the
+two-lane `0.6083`).
 
-Likely one fix with item 8 — both are "hidden signals still participate
-in a layout computation they should be excluded from" — but the lane
-band arithmetic (`plotEnumLanes`) and the y-extent path are separate
-code, so confirm before merging the work.
+Fixed with `laneBandsForVisible` (`plotEnumLanes`), which lays the
+bands out over the visible signals and returns `null` for a hidden one.
+Both consumers use it: the resample that normalises each enum into its
+band, and the tile draw hook — which now reads the signal list through
+a live ref, since toggling `hidden` deliberately doesn't rebuild the
+uPlot instance and a construction-time capture would have drawn the old
+lane layout over re-flowed data.
+
+Guarded by the `laneBandsForVisible` cases in `plotEnumLanes.test.ts`
+(including all-hidden, which computes no bands at all) and "enum lanes:
+hiding a lane hands its vertical space to the rest" in
+`PlotPanel.dom.test.tsx`.
 
 ## 11. Filters cannot be edited once added
 
