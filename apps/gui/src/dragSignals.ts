@@ -18,7 +18,7 @@ export const SIGNAL_DND_MIME = "application/x-cannet-plot-signal";
 
 /// The fields a draggable signal must carry — every field the plot
 /// panel needs to identify and sample it. `color` is intentionally
-/// absent: the receiver assigns a colour at drop time (existing plot
+/// absent: the receiver assigns a color at drop time (existing plot
 /// panel behaviour). Same shape as the plot panel's internal
 /// `SignalRef` minus `color` / `hidden`.
 export interface DraggableSignalRef {

@@ -54,11 +54,11 @@ the order below is the order of work, top first.
 7. [Task 25 — CAN HW + Virtual-Bus Bug Fixes](0025-can-hw-vbus-bugfixes.md)
    — the hardware/virtual-bus verify-and-fix pass (post-clear negative
    timestamps; the TX-timing/rate leg closed 2026-07-25) plus the
-   plot-colour bug and the `decimatePoints` dead-code removal.
+   plot-color bug and the `decimatePoints` dead-code removal.
 8. [Task 22 — CANopen](0022-canopen.md)
    — EDS ingestion and SDO / PDO decoding.
 9. [Task 49 — Multi-Select Signals in the Plot Panel](0049-plot-signal-multi-select.md)
-   — hide, remove, recolour and add several of a plot area's signals at
+   — hide, remove, recolor and add several of a plot area's signals at
    once. Split out of task 48's item 14 once it proved to need a
    selection model threaded through the signal rows, the derived axes
    and the pattern-materialization path. Ahead of task 23 so its

@@ -16,6 +16,7 @@ const {
   clearSystemLogMirror,
   distinctSources,
   formatLogLine,
+  longestMessageChars,
   markSystemLogRead,
   mergeSystemMessage,
   reconcileSnapshot,
@@ -226,5 +227,21 @@ describe("unreadWarnOrError", () => {
 
   it("is zero on an empty buffer", () => {
     expect(unreadWarnOrError([], -1)).toBe(0);
+  });
+});
+
+describe("longestMessageChars", () => {
+  it("is the longest message's character count", () => {
+    expect(
+      longestMessageChars([
+        msg(0, "dbc", "info", "short"),
+        msg(1, "dbc", "warn", "a rather longer message"),
+        msg(2, "dbc", "info", "middling"),
+      ]),
+    ).toBe("a rather longer message".length);
+  });
+
+  it("is zero for an empty set", () => {
+    expect(longestMessageChars([])).toBe(0);
   });
 });

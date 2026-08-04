@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -9,6 +16,7 @@ import {
   distinctSources,
   formatLogLine,
   formatLogTimestamp,
+  longestMessageChars,
 } from "./systemLog";
 import type { SystemLogLevel, SystemMessage } from "./types";
 import { useSystemLog } from "./systemLogContext";
@@ -134,6 +142,13 @@ export function SystemMessagesPanel(props: IDockviewPanelProps) {
   const lastVisible = Math.min(total, firstVisible + visibleCount);
   const offsetY = firstVisible * ROW_HEIGHT;
 
+  // The scrolled stack's width, in characters of the longest message.
+  // The stylesheet turns it into a length (the rows are monospace, so a
+  // character is `1ch`); measuring the *filtered* set rather than the
+  // mounted rows is what keeps the scroll range from collapsing as the
+  // virtualizer swaps rows or the tail advances.
+  const messageChars = useMemo(() => longestMessageChars(filtered), [filtered]);
+
   const copyEntry = useCallback((m: SystemMessage) => {
     void navigator.clipboard?.writeText(formatLogLine(m));
   }, []);
@@ -192,7 +207,15 @@ export function SystemMessagesPanel(props: IDockviewPanelProps) {
         onScroll={onScroll}
       >
         <div style={{ height: totalHeight, position: "relative" }}>
-          <div style={{ transform: `translateY(${offsetY}px)` }}>
+          <div
+            className="system-messages-scroll-content"
+            style={
+              {
+                transform: `translateY(${offsetY}px)`,
+                "--system-messages-message-chars": messageChars,
+              } as CSSProperties
+            }
+          >
             {filtered.slice(firstVisible, lastVisible).map((m) => (
               <div
                 key={m.seq}

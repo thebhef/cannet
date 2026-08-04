@@ -96,7 +96,7 @@ renderers go through it: `SignalValueCell` (signal view + DBC panel live
 value column) and `DecodedSignalCell` (expanded trace rows).
 `formatSignalValue` shrank to the magnitude alone — it no longer takes a
 unit, and `formatSignalValueWithLabel` is gone with the concatenation it
-existed for. The unit recedes to the secondary text colour and carries
+existed for. The unit recedes to the secondary text color and carries
 the inter-part spacing (`.signal-value-unit` in `index.css`), so a
 caller with the unit in its own column (the signal view, passing `""`)
 renders the value and nothing else.
@@ -240,7 +240,7 @@ the two declarations the new guard in `dockPanelScrolling.test.ts`
 holds. Whatever was seen, it was not this; if it recurs, it needs a
 fresh observation rather than this hypothesis.
 
-**Colour-map panel — the project panel's defect exactly.**
+**Color-map panel — the project panel's defect exactly.**
 `overflow: auto` on a panel root with no height. Measured with the real
 markup in a 300 px group and 24 range rules:
 `clientHeight === scrollHeight === 794`, `scrollTop` stuck at 0, the
@@ -437,7 +437,7 @@ primary, and whose swatch already owns both mouse buttons), the plot
 areas (in `per-unit` / `individual` mode a logical area's rows are
 split across several `PlotArea` instances, so a range selection spans
 sibling components), and the persisted per-area config (a bulk hide or
-recolour materializes pattern-derived rows into manual picks, which
+recolor materializes pattern-derived rows into manual picks, which
 rewrites the stored signal list against the area's live patterns).
 There is also a re-render constraint: `PlotArea` is memoised and
 guarded by a test that panel-local state re-renders no area, so a
@@ -615,34 +615,94 @@ than a locale's spelling of it) and by
 surfaces and asserts the tooltip, its removal on mouse-out, and the
 absence of any `title` for a null and for a capture-relative origin.
 
-## 18. The system messages view does not scroll horizontally
+## 18. The system messages view does not scroll horizontally — **done**
 
-Another instance of item 9's third sub-part, on a panel item 9 did not
-cover. A long message is cut off with no way to reach the rest of it.
+The same symptom as item 9's third sub-part, but **neither of the two
+hypotheses it suggested**. Established before anything was changed, in
+headless Chromium against the real `index.css` and the real dockview
+nesting: the rows here are ordinary in-flow grids, not absolutely
+positioned ones in a clipping viewport, and `.system-messages-list`
+already computed `overflow-x: auto` (nothing declares `overflow-x`, and
+CSS Overflow's visible→auto promotion does the rest, because
+`overflow-y: auto` is declared). So it was not the trace table's
+mechanism and it was not a missing `overflow-x`.
 
-Item 9 established the mechanism for the trace table: its rows are
-`position: absolute; left: 0; right: 0` inside an `overflow: hidden`
-sticky viewport, so each row's box was exactly the viewport width and
-the grid's fixed tracks overflowed *the row*, which the viewport
-clipped — the scroll container therefore never had scrollable overflow
-at all. The fix published the columns' summed width as
-`--trace-content-width` on the spacer and mirrored `scrollLeft` onto the
-pinned header. Check whether the system messages view shares that
-structure before assuming it shares the mechanism; it may simply be a
-missing `overflow-x`.
+**Nothing ever overflowed.** The message track was `1fr`, so it was
+sized to whatever panel width was left over rather than to its text, and
+`.system-messages-msg` ellipsised the remainder inside it (with the
+row's `overflow: hidden` behind that as a second clip). Measured in a
+600 × 300 group with a 162-character message: `scrollWidth ===
+clientWidth === 585`, `scrollLeft` stuck at 0, the message span rendered
+at 241 px against its own `scrollWidth` of 1112 — **871 px of text with
+no scroll position that reached it**.
 
-## 19. "colour" should be "color" throughout
+The fix is three declarations and one published number. The message
+track becomes `minmax(max-content, 1fr)` so it takes at least its own
+text; the row's `overflow: hidden` and the message's ellipsis go; and
+the virtualised stack (`.system-messages-scroll-content`) is sized to
+the longest message in the *filtered* set, which the panel publishes as
+`--system-messages-message-chars` — a character count, because the rows
+are monospace and a character is exactly `1ch`. The stylesheet turns it
+into a width by adding the row's own fixed tracks, gaps and padding, the
+same split item 9 used for `--trace-content-width`.
 
-Repo-wide spelling: American `color`, not British `colour`. Identifiers
-are already correct (`busColor.ts`, `ColorMapPanel.tsx`, `colorMap`); it
-is prose — comments, rustdoc, ADRs, planning docs, README — that drifted.
-Roughly 210 occurrences across 51 files.
+**Why a published count rather than `max-content` alone.** `max-content`
+measures the rows the virtualizer currently has mounted, and this view
+follows the tail, so the scroll range would collapse on every append.
+Measured: scrolled to 800, swapping the long row out of the mounted
+window took `scrollWidth` 1456 → 585 and snapped `scrollLeft` back to 0.
+With the width published from the whole filtered set both hold. It stays
+as a floor (`min-width: max-content`) for anything the `ch` arithmetic
+under-measures, and the width is `max(100%, …)` so the rows still span
+the panel when every message fits — a plain `calc()` left 15-character
+rows 447 px wide in a 585 px list, with their borders and level colors
+stopping short of the right edge.
 
-Mechanical, but not blindly so: ADRs and planning docs are historical
-records whose wording is otherwise not to be edited, and a few
-occurrences may sit inside user-visible strings, where the change is
-behavioural rather than cosmetic. Land it separately from any behaviour
-change so the diff stays reviewable.
+Measured in the **live WebView2 host** too, on a 504 px panel whose
+longest message was 184 characters: before, `scrollWidth ===
+clientWidth === 504` with `scrollLeft` stuck at 0 and the message
+rendered at 160 px of its 1263; after, `scrollWidth` 1607 against a
+`clientWidth` of 504, `scrollLeft` reaching 1103, and the message
+rendered at its full 1263 px. The 184-character row was not even
+mounted at the time — which is precisely what the published count
+covers.
+
+Guarded by `longestMessageChars` in `systemLog.test.ts`, the
+`system messages panel` block in `dockPanelScrolling.test.ts` (the
+stylesheet halves), and "publishes the longest message's length to the
+scrolled stack" / "measures the filtered set, not the whole buffer" in
+`SystemMessagesPanel.dom.test.tsx`. That the halves add up to an actual
+scrollbar is only visible in Chromium — jsdom does no layout.
+
+## 19. "colour" should be "color" throughout — **done**
+
+Swept: 244 occurrences across 52 files, on the stem rather than the
+word — `colour`, `Colour`, `colours`, `coloured`, `Coloured`,
+`uncoloured`, `recolour`, `Recolour`, `recolours`, `recoloured`,
+`recolouring`. No `COLOUR`, no `colourway`/`discolour`, no
+`colourmap`/`colour-map` variant, and no file name carried it. A
+case-insensitive search for the stem now returns nothing outside
+`node_modules/`, `target/` and `dist/`.
+
+**No identifier had to be renamed.** The premise held — `busColor.ts`,
+`ColorMapPanel.tsx`, `colorMap`, `.colormap-panel`, `foreground_color`
+were all already American. Every occurrence was prose: comments,
+rustdoc, test names, ADRs, planning docs, README.
+
+**Thirteen were user-visible strings**, which makes those a behavioural
+change rather than a cosmetic one: the color-map panel's two empty-state
+lines ("Pick a signal to color its values.", "No ranges yet — add one to
+color a value band.") and its two swatch `aria-label`s; the plot area's
+two swatch tooltips, its `pick series color` `aria-label`, and the
+pattern-derived row's "drag/recolor to pin it" tooltip; the project
+panel's bus swatch `aria-label` and its "Graph color for this bus"
+tooltip; the signal row's "right-click to recolor" tooltip; and the
+event editor's "pick a color" tooltip with its two `aria-label`s. One
+test queried by such a label (`pick series color` in
+`PlotPanel.dom.test.tsx`) and moved with it. Nothing in the Rust host is
+user-visible — its only string-literal hit was a test assertion message.
+
+ADRs and planning docs were touched for the spelling and nothing else.
 
 ## Exit criteria
 

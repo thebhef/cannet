@@ -175,7 +175,7 @@ _Avoid_: "axis" for a scale; the surface is the axis, the dimension
 is the scale.
 
 **Series**:
-One plotted signal on an axis. Colour is per-series; any series can
+One plotted signal on an axis. Color is per-series; any series can
 be its axis's **primary signal**.
 _Avoid_: "trace" for a plotted signal — the code's current "per-trace"
 naming is this overload, on the list to retire.

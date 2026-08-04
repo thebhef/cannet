@@ -168,6 +168,23 @@ export function formatLogTimestamp(tsMs: number): string {
   )}`;
 }
 
+/// Character count of the longest message in `messages`.
+///
+/// The panel's rows are monospace, so one character is exactly `1ch` and
+/// this is the message column's width in `ch`. The panel publishes it to
+/// the stylesheet so the horizontal scroll range covers the whole
+/// filtered set rather than only the rows the virtualizer happens to
+/// have mounted — this is a tail-following view, so sizing the scrolled
+/// stack by its rendered content alone would collapse the scroll range
+/// on every append.
+export function longestMessageChars(messages: readonly SystemMessage[]): number {
+  let longest = 0;
+  for (const m of messages) {
+    if (m.message.length > longest) longest = m.message.length;
+  }
+  return longest;
+}
+
 /// Render one message as plain text for copy-entry / copy-all.
 export function formatLogLine(m: SystemMessage): string {
   return `${formatLogTimestamp(m.ts_ms)} [${m.level.toUpperCase()}] ${m.source}: ${m.message}`;

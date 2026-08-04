@@ -216,8 +216,8 @@ pub struct SaveCaptureResult {
 /// `description` empty) get a synthetic id `blf-marker-<index>` so
 /// their `rename` / `remove` paths still work; this mints a stable
 /// id deterministic in the marker's position within the file.
-/// An event colour (ADR 0035) as the BLF marker's `0x00RRGGBB`
-/// foreground colour: `#RRGGBB` parses to the packed RGB; `None` (or an
+/// An event color (ADR 0035) as the BLF marker's `0x00RRGGBB`
+/// foreground color: `#RRGGBB` parses to the packed RGB; `None` (or an
 /// unparseable string) is `0`, the marker build default. Inverse of
 /// [`rgb_to_color`].
 fn color_to_rgb(color: Option<&str>) -> u32 {
@@ -227,8 +227,8 @@ fn color_to_rgb(color: Option<&str>) -> u32 {
 }
 
 /// The inverse: a packed `0x00RRGGBB` becomes `Some("#RRGGBB")`, except `0`
-/// (the marker build default / an uncoloured event) reads back as `None` so
-/// an uncoloured note round-trips as uncoloured rather than as black.
+/// (the marker build default / an uncolored event) reads back as `None` so
+/// an uncolored note round-trips as uncolored rather than as black.
 fn rgb_to_color(rgb: u32) -> Option<String> {
     let rgb = rgb & 0x00FF_FFFF;
     (rgb != 0).then(|| format!("#{rgb:06X}"))

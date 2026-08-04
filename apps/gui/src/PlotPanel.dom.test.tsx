@@ -711,9 +711,9 @@ describe("PlotPanel", () => {
     expect(screen.getByText("Δt")).toBeInTheDocument();
   });
 
-  it("seeds a dropped signal's colour from the target area's existing series count", async () => {
+  it("seeds a dropped signal's color from the target area's existing series count", async () => {
     // Drop two signals onto Area 1 in succession; the second should get
-    // a different colour from the first (target.signals.length grows).
+    // a different color from the first (target.signals.length grows).
     renderPanel();
     const picker = screen.getByLabelText("add signal to focused plot area");
     await pickCombobox(picker, "*|s:256:EngineSpeed");
@@ -729,16 +729,16 @@ describe("PlotPanel", () => {
     expect(c1).not.toBe(c2);
   });
 
-  it("changing a series' colour via the swatch picker updates the swatch", async () => {
+  it("changing a series' color via the swatch picker updates the swatch", async () => {
     renderPanel();
     await pickCombobox(
       screen.getByLabelText("add signal to focused plot area"),
       "*|s:256:EngineSpeed",
     );
     await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
-    const picker = screen.getByLabelText("pick series colour") as HTMLInputElement;
+    const picker = screen.getByLabelText("pick series color") as HTMLInputElement;
     fireEvent.change(picker, { target: { value: "#123456" } });
-    // The swatch's background style should reflect the new colour.
+    // The swatch's background style should reflect the new color.
     // jsdom normalises hex → rgb() in inline styles.
     const swatch = document.querySelector(".plot-signal-swatch") as HTMLElement;
     expect(swatch.style.background).toBe("rgb(18, 52, 86)");
@@ -1020,10 +1020,10 @@ describe("PlotPanel", () => {
     expect(lastCall.axisWeights).toEqual({ a1: 3 });
   });
 
-  it("cycles the signal wheel for new notes; no fixed-colour picker", async () => {
-    // A note dropped in "+ note" mode takes the wheel colour at the
+  it("cycles the signal wheel for new notes; no fixed-color picker", async () => {
+    // A note dropped in "+ note" mode takes the wheel color at the
     // index of the existing note count — like plot series seed by area
-    // signal count (ADR 0026) — rather than one colour picked from a
+    // signal count (ADR 0026) — rather than one color picked from a
     // toolbar swatch. Two pre-existing notes → the third gets
     // wheelColor(2) (deliberately ≠ the old default EVENT_COLOR, which
     // happens to equal wheelColor(1)).
@@ -1055,7 +1055,7 @@ describe("PlotPanel", () => {
         notes,
       });
       // The picker is gone: note mode shows no swatch.
-      expect(screen.queryByLabelText("new note colour")).toBeNull();
+      expect(screen.queryByLabelText("new note color")).toBeNull();
       await pickCombobox(
         screen.getByLabelText("add signal to focused plot area"),
         "*|s:256:EngineSpeed",

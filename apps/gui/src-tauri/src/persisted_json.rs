@@ -52,7 +52,7 @@ pub(crate) fn parse_or_default<T: DeserializeOwned + Default>(text: &str) -> T {
 /// says.
 ///
 /// The merge is by top-level key, not deep. A setting's value is one
-/// thing the user chose — a keybinding list, a colour map — and merging
+/// thing the user chose — a keybinding list, a color map — and merging
 /// *into* it would produce a value neither scope ever wrote. Overriding
 /// `keybindings` means replacing the list, not splicing it.
 ///

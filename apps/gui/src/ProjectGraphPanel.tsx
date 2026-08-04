@@ -160,7 +160,7 @@ function ProjectGraphPanelInner(props: IDockviewPanelProps) {
   const edges: Edge[] = useMemo(
     () =>
       graph.edges.map((e) => {
-        // Colour a wire by the bus it carries. The bus endpoint
+        // Color a wire by the bus it carries. The bus endpoint
         // differs by edge kind: `bus-consumer` has the bus as its
         // source, `gateway-bus` and `transmit-bus` as their target.
         // `filter-consumer` carries no single bus → neutral grey.
@@ -470,7 +470,7 @@ function addEdgeToRegistry(
   }
 }
 
-/// Edge colour for wires that don't carry a single identifiable bus
+/// Edge color for wires that don't carry a single identifiable bus
 /// (filter→consumer).
 const NEUTRAL_EDGE = "#94a3b8";
 
@@ -525,9 +525,9 @@ function BusNode({ data }: NodeProps) {
   const node = unwrap(data);
   const project = useProjectContext();
   if (node.kind !== "bus") return null;
-  // The bus's colour drives the whole node: a dark tinted body
-  // (the bus colour blended into the panel-dark base), a solid
-  // border, and the rail bar — so the node reads as the same colour
+  // The bus's color drives the whole node: a dark tinted body
+  // (the bus color blended into the panel-dark base), a solid
+  // border, and the rail bar — so the node reads as the same color
   // as every wire it carries. Overrides the hardcoded blue in the
   // `.graph-node-bus` CSS rule.
   const color = effectiveBusColor(node.bus.id, project.buses);

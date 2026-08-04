@@ -16,10 +16,10 @@ view arrived and the selection model was commonized
 area (and a signal view) persists a manual `signals` list *and* an
 optional `patterns: string[]`. The effective collection is the manual
 picks plus every catalog signal matching any pattern, deduped on the
-descriptor key — **manual wins**, so a manual pick's colour, order,
+descriptor key — **manual wins**, so a manual pick's color, order,
 and hidden state are authoritative over a pattern match of the same
-signal. Adds, drops, removes, and recolours keep working alongside
-patterns; mutating a pattern-derived entry (recolour, hide, drag)
+signal. Adds, drops, removes, and recolors keep working alongside
+patterns; mutating a pattern-derived entry (recolor, hide, drag)
 *materializes* it as a manual pick so the choice persists across
 re-evaluations.
 
@@ -54,7 +54,7 @@ to surface.
 - **Combined, not mode-exclusive (the revision).** The original
   design made filter-mode exclusive to avoid two-sources-drift. In
   practice the exclusivity blocked ordinary gestures (drop a signal
-  onto a filtered area, recolour one matched series) and forced a
+  onto a filtered area, recolor one matched series) and forced a
   modal UI. The drift problem is solved structurally instead:
   manual-wins dedup plus materialize-on-mutate means every entry's
   provenance is explicable — it's either a pick or a live match, and
@@ -94,6 +94,6 @@ to surface.
   dedup, sources scoping) + `SignalPatternEditor.tsx` (the list
   editor); the signal view's evaluation runs host-side over the same
   subject (`signal_snapshot.rs`).
-- Pattern-derived series are coloured stable-by-identity from the
-  shared wheel (`palette.ts`), so a match keeps its colour across
+- Pattern-derived series are colored stable-by-identity from the
+  shared wheel (`palette.ts`), so a match keeps its color across
   re-evaluations and surfaces.

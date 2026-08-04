@@ -30,6 +30,20 @@ vi.mock("@tauri-apps/api/core", () => ({
 const { SystemMessagesPanel } = await import("./SystemMessagesPanel");
 const { hydrateSettings } = await import("./hostSettings");
 const { pickCombobox, comboboxValue } = await import("./comboboxTestKit");
+const { SystemLogContext } = await import("./systemLogContext");
+type SystemMessage = import("./types").SystemMessage;
+
+/// Render the panel over a fixed message list. The real provider is
+/// `App.tsx`'s; the panel only reads from the context.
+function withMessages(messages: SystemMessage[], props: IDockviewPanelProps) {
+  return (
+    <SystemLogContext.Provider
+      value={{ messages, unread: 0, clear: () => {}, markRead: () => {} }}
+    >
+      <SystemMessagesPanel {...props} />
+    </SystemLogContext.Provider>
+  );
+}
 
 /// The panel takes dockview props; only `api.updateParameters` and the
 /// activity hooks are exercised here.
@@ -118,5 +132,50 @@ describe("SystemMessagesPanel minimum level", () => {
       expect(updateParameters).toHaveBeenCalledWith({ filterSource: "sidecar" }),
     );
     expect(writes).toEqual([]);
+  });
+});
+
+describe("SystemMessagesPanel horizontal scroll", () => {
+  const msg = (seq: number, message: string): SystemMessage => ({
+    seq,
+    source: "sidecar",
+    level: "info",
+    message,
+    ts_ms: 1_700_000_000_000 + seq,
+  });
+
+  // The stylesheet turns this count into the scrolled stack's width (one
+  // character is `1ch` in the panel's monospace rows) so the scroll range
+  // covers the whole filtered set, not just the rows the virtualizer has
+  // mounted. That the two halves add up to an actual scrollbar is only
+  // visible in Chromium — jsdom does no layout; see
+  // `dockPanelScrolling.test.ts` for the measurement.
+  it("publishes the longest message's length to the scrolled stack", async () => {
+    await hydrateSettings();
+    const long = "x".repeat(140);
+    const { container } = render(
+      withMessages([msg(0, "short"), msg(1, long)], panelProps().props),
+    );
+
+    const content = container.querySelector(
+      ".system-messages-scroll-content",
+    ) as HTMLElement;
+    expect(content).not.toBeNull();
+    expect(content.style.getPropertyValue("--system-messages-message-chars")).toBe("140");
+  });
+
+  it("measures the filtered set, not the whole buffer", async () => {
+    // A long message the filter hides must not leave the view scrollable
+    // past anything it can show.
+    stored = { system_log_min_level: "warn" };
+    await hydrateSettings();
+    const { container } = render(
+      withMessages([msg(0, "x".repeat(200))], panelProps().props),
+    );
+
+    const content = container.querySelector(
+      ".system-messages-scroll-content",
+    ) as HTMLElement;
+    expect(content.style.getPropertyValue("--system-messages-message-chars")).toBe("0");
   });
 });

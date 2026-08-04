@@ -84,11 +84,11 @@ export interface SelectableArea {
 const refKey = (s: SignalRef) =>
   signalKey(s.busId, s.messageId, s.extended, s.signalName);
 
-/// Resolve `patterns` to coloured refs, deduped across patterns and
+/// Resolve `patterns` to colored refs, deduped across patterns and
 /// against `exclude` (the area's manual picks — a manual pick wins, so
-/// its colour/hide state is authoritative). Pattern-matched signals get
-/// their stable-by-identity wheel colour (`palette.ts`), so a signal
-/// keeps its colour across re-evaluations, sorts, and views.
+/// its color/hide state is authoritative). Pattern-matched signals get
+/// their stable-by-identity wheel color (`palette.ts`), so a signal
+/// keeps its color across re-evaluations, sorts, and views.
 export function signalsFromPatterns(
   patterns: readonly string[],
   catalog: readonly SignalDescriptorRecord[],

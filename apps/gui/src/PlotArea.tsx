@@ -50,7 +50,7 @@ import { diagCount, diagGauge } from "./diag"; // DIAG
 
 const CURSOR_A_COLOR = "#ffd93d";
 const CURSOR_B_COLOR = "#ff5577";
-/// The mouse crosshair's line colour — uPlot's default cursor grey, kept
+/// The mouse crosshair's line color — uPlot's default cursor grey, kept
 /// now that the line is drawn by the panel's own overlay (in *every*
 /// stacked area, at the shared hover x) instead of uPlot's per-instance
 /// native cursor.
@@ -221,9 +221,9 @@ function areaDrop(e: DragEvent<HTMLElement>, onReorderArea: (id: string) => void
   return true;
 }
 
-/** Colour swatch in a plot-area signal row. Left-click toggles hidden
+/** Color swatch in a plot-area signal row. Left-click toggles hidden
  * (preserves prior behaviour); right-click opens the browser's native
- * colour picker so the user can re-skin the series. The picker is a
+ * color picker so the user can re-skin the series. The picker is a
  * stacked hidden `<input type="color">` whose value seeds from the
  * current swatch — committing fires `onPickColor` with the new
  * `#rrggbb`. (Native picker chosen over a bespoke palette so we
@@ -249,8 +249,8 @@ function SignalSwatch({
         style={{ background: color }}
         title={
           hidden
-            ? "show this signal · right-click to pick a colour"
-            : "hide this signal · right-click to pick a colour"
+            ? "show this signal · right-click to pick a color"
+            : "hide this signal · right-click to pick a color"
         }
         onClick={(e) => {
           e.stopPropagation();
@@ -265,7 +265,7 @@ function SignalSwatch({
       <input
         ref={inputRef}
         type="color"
-        aria-label="pick series colour"
+        aria-label="pick series color"
         className="plot-signal-swatch-input"
         value={color}
         onChange={(e) => onPickColor(e.target.value)}
@@ -398,8 +398,8 @@ interface PlotAreaProps {
    * cell, by-id cell, another plot panel). */
   onDropSignal: (ref: SignalRef, beforeKey: string | null, isInternalMove: boolean) => void;
   onToggleHidden: (ref: SignalRef) => void;
-  /** Set a series' colour to the given `#rrggbb` value (ADR 0026
-   * per-series colour picker). */
+  /** Set a series' color to the given `#rrggbb` value (ADR 0026
+   * per-series color picker). */
   onSetSignalColor: (ref: SignalRef, color: string) => void;
   /** Replace this area's regex pattern list (`signalSelection.ts`);
    * `undefined` / empty clears it, leaving just the manual picks. */
@@ -420,14 +420,14 @@ interface PlotAreaProps {
    * Each signal row displays its bus name so a `(message, signal)`
    * shown on two different buses is unambiguous. */
   busNameLookup: ReadonlyMap<string, string>;
-  /** Bus-id → render colour, for the swatch shown before the bus name
-   * in each signal row (matches the bus's graph colour). */
+  /** Bus-id → render color, for the swatch shown before the bus name
+   * in each signal row (matches the bus's graph color). */
   busColorLookup: ReadonlyMap<string, string>;
   /** `messageEcuKey` → transmitting ECU, for the signal row's message
    * line. The ECU isn't part of a plotted signal's identity, so the
    * panel resolves it from the catalog once and shares it. */
   ecuLookup: ReadonlyMap<string, string>;
-  /** Signal value→colour resolver (ADR 0029): tints an enum lane box by
+  /** Signal value→color resolver (ADR 0029): tints an enum lane box by
    * its held value. Read live in the draw hook via a ref. */
   resolveColor: ColorResolver;
   /** The owning plot panel's element id. Stamped on this panel's
@@ -459,7 +459,7 @@ function drawEnumTiles(
     /** Top / bottom of the tile band, in canvas pixels. */
     bandTop: number;
     bandBot: number;
-    /** Fallback border/label colour when no colormap tints the value. */
+    /** Fallback border/label color when no colormap tints the value. */
     accent: string;
     left: number;
     width: number;
@@ -700,7 +700,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   // ticks / labels read each draw to match the trace.
   const primaryColorRef = useRef<string | null>(primarySignal?.color ?? null);
   primaryColorRef.current = primarySignal?.color ?? null;
-  // Live value→colour resolver for the draw hook (ADR 0029): updated each
+  // Live value→color resolver for the draw hook (ADR 0029): updated each
   // render so a colormap edit re-tints the enum lane on the next draw
   // without rebuilding the uPlot instance.
   const colorResolverRef = useRef<ColorResolver>(resolveColor);
@@ -1280,7 +1280,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     const enumActiveAtConstruct = enumMode && valueTable != null;
     // Combined enum-lanes axis (ADR 0026): stepped paths for every
     // series, a blank y gutter (tiles carry the labels, the side panel
-    // carries identity), and per-signal colour targets for the draw
+    // carries identity), and per-signal color targets for the draw
     // hook. The lane *tables* are read live from `valueTablesRef` in
     // the draw hook (a redraw effect below shows labels once they
     // resolve), so this instance need not rebuild when they land.
@@ -1365,7 +1365,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
           size: (_u, values) => reportGutterNeed(areaId, measureAxisSize(values)),
           // Tint the y-axis to match the primary signal's trace so
           // it's obvious which series the labels correspond to. Falls
-          // back to the neutral axis colour when there's no primary
+          // back to the neutral axis color when there's no primary
           // (empty area). uPlot calls these per draw, so the ref read
           // picks up promotions immediately.
           stroke: () => primaryColorRef.current ?? AXIS_STROKE,
@@ -2533,7 +2533,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                 ) : (
                   <span
                     className="plot-signal-pattern-badge"
-                    title="added by a pattern — edit the area's patterns to remove, or drag/recolour to pin it as a manual pick"
+                    title="added by a pattern — edit the area's patterns to remove, or drag/recolor to pin it as a manual pick"
                   >
                     ◇
                   </span>

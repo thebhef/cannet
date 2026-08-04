@@ -36,9 +36,9 @@ function elementTargetKey(el: ColorMapElement): string {
 
 /**
  * Config panel for a `colormap` element (ADR 0029): pick a target signal
- * from the attached DBCs, then give each of its values a colour. For an
+ * from the attached DBCs, then give each of its values a color. For an
  * enum signal — the common case — the editor lists one sparse row per
- * `VAL_` value: its name and a colour swatch. A numeric signal falls
+ * `VAL_` value: its name and a color swatch. A numeric signal falls
  * back to inclusive `[min, max]` ranges. Any view rendering the signal
  * tints its value cell to match.
  */
@@ -82,7 +82,7 @@ export function ColorMapPanel(props: IDockviewPanelProps) {
     [update, elementId],
   );
 
-  // Pick a target signal. Seeds a colour per enum value so the map is
+  // Pick a target signal. Seeds a color per enum value so the map is
   // useful at once and every value of the signal is covered.
   const onPickSignal = useCallback(
     async (key: string) => {
@@ -123,7 +123,7 @@ export function ColorMapPanel(props: IDockviewPanelProps) {
   if (!element) return <div className="colormap-panel">loading…</div>;
 
   const rules = element.rules;
-  // Enum row → its colour (the degenerate `[raw, raw]` rule's colour).
+  // Enum row → its color (the degenerate `[raw, raw]` rule's color).
   const colorForRaw = (raw: number): string | undefined =>
     rules.find((r) => r.min === raw && r.max === raw)?.color;
   const setColorForRaw = (raw: number, color: string) => {
@@ -150,16 +150,16 @@ export function ColorMapPanel(props: IDockviewPanelProps) {
       </label>
 
       {!element.signalName ? (
-        <div className="colormap-empty">Pick a signal to colour its values.</div>
+        <div className="colormap-empty">Pick a signal to color its values.</div>
       ) : isEnumValueTable(valueTable) ? (
-        // Enum signal: one sparse row per value — its name + a colour.
+        // Enum signal: one sparse row per value — its name + a color.
         <ul className="colormap-rules">
           {valueTable.map((v) => (
             <li key={v.raw} className="colormap-rule">
               <input
                 type="color"
                 value={colorForRaw(v.raw) ?? DEFAULT_RULE_COLOR}
-                aria-label={`${v.label} colour`}
+                aria-label={`${v.label} color`}
                 onChange={(e) => setColorForRaw(v.raw, e.target.value)}
               />
               <span className="colormap-enum-label">{v.label}</span>
@@ -171,7 +171,7 @@ export function ColorMapPanel(props: IDockviewPanelProps) {
         // Numeric signal: inclusive [min, max] ranges.
         <>
           {rules.length === 0 ? (
-            <div className="colormap-empty">No ranges yet — add one to colour a value band.</div>
+            <div className="colormap-empty">No ranges yet — add one to color a value band.</div>
           ) : (
             <ul className="colormap-rules">
               {rules.map((r, i) => (
@@ -179,7 +179,7 @@ export function ColorMapPanel(props: IDockviewPanelProps) {
                   <input
                     type="color"
                     value={r.color}
-                    aria-label={`range ${i + 1} colour`}
+                    aria-label={`range ${i + 1} color`}
                     onChange={(e) => patchRule(i, { color: e.target.value })}
                   />
                   <input

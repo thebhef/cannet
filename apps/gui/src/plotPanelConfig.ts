@@ -18,8 +18,8 @@ import { DEFAULT_MEASUREMENTS, type MeasurementKey, type Series, isMeasurementKe
 import type { YAxisMode } from "./plotAxisDerivation";
 import { parseSignalDragData } from "./dragSignals";
 
-/** The shared signal colour wheel (ADR 0026, `palette.ts`) seeds a new
- * series' colour: the index for a fresh series is `(signals already in
+/** The shared signal color wheel (ADR 0026, `palette.ts`) seeds a new
+ * series' color: the index for a fresh series is `(signals already in
  * that plot area) % len`, so the first 16 series in any one area get
  * distinct hues. */
 export const TRACE_COLORS = SIGNAL_WHEEL;
@@ -37,8 +37,8 @@ export interface SignalRef {
   signalName: string;
   messageName: string;
   unit: string;
-  /** Plot colour — assigned when the signal is added and carried with
-   * it (so re-ordering / moving between areas doesn't recolour it). */
+  /** Plot color — assigned when the signal is added and carried with
+   * it (so re-ordering / moving between areas doesn't recolor it). */
   color: string;
   /** Hidden = line not drawn on the plot (swatch dimmed); the
    * side-panel value still updates. Absent ⇒ visible. */
@@ -64,7 +64,7 @@ export interface PlotAreaConfig {
    * `bus/ecu/message/signal`, OR-combined with the manual `signals`
    * list (`signalSelection.ts`). The renderer treats the area's
    * series as `signals` + the pattern matches not already picked
-   * manually — manual picks win, so their colour / order / hidden
+   * manually — manual picks win, so their color / order / hidden
    * state is authoritative. Not mode-exclusive: adds, drops, and
    * removes keep working alongside patterns. */
   patterns?: string[];
@@ -75,7 +75,7 @@ export interface NoteEvent {
   /** Time in display-relative seconds. */
   t: number;
   label: string;
-  /** Cursor colour; defaults to the note event blue. The derived
+  /** Cursor color; defaults to the note event blue. The derived
    *  truncation marker (ADR 0035) overrides it. */
   color?: string;
 }

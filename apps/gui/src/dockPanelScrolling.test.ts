@@ -37,7 +37,7 @@ describe("project panel", () => {
   });
 });
 
-describe("colour-map panel", () => {
+describe("color-map panel", () => {
   // The project panel's defect exactly: `overflow: auto` on a panel root
   // with no height. Measured in Chromium with the real stylesheets, a
   // 300 px group and 24 range rules: `clientHeight === scrollHeight ===
@@ -102,5 +102,67 @@ describe("trace table", () => {
   // the rows'. An explicit width stops the stretch.
   it("keeps the header a definite width so the scroll mirror can shift it", () => {
     expect(declarations(".trace-header")).toMatch(/\bwidth:\s*100%/);
+  });
+});
+
+describe("system messages panel", () => {
+  // The same *symptom* as the trace table (a long line cut off with no
+  // scroll position that reaches it) but not the same mechanism — the
+  // rows here are ordinary in-flow grids, not absolutely positioned ones
+  // in a clipping viewport, and the list's `overflow-x` already computes
+  // to `auto`. Nothing ever overflowed: the message track was `1fr`, so
+  // it was sized to the leftover panel width, and `.system-messages-msg`
+  // ellipsised whatever did not fit inside it (with the row's `overflow:
+  // hidden` behind that as a second clip).
+  //
+  // Measured in headless Chromium (the engine behind the WebView2 host)
+  // with the real `index.css`, a 600 x 300 dock group and a 162-character
+  // message: `.system-messages-list` reported `scrollWidth ===
+  // clientWidth === 585` with `scrollLeft` stuck at 0, while the message
+  // span's own `scrollWidth` was 1112 against a rendered width of 241 —
+  // 871 px of text unreachable. After: `scrollWidth` 1456 against a
+  // `clientWidth` of 585, `scrollLeft` reaching 871, and the message
+  // rendered at its full 1112 px.
+
+  // `overflow-x` is never declared, and CSS Overflow's visible→auto
+  // promotion (one axis non-visible makes the other `auto`) is what makes
+  // the list scroll sideways at all. Measured: computed `overflow-x` is
+  // already `auto` before the fix. Declaring `overflow-x: hidden` here
+  // would silently re-break it.
+  it("leaves the list's horizontal overflow scrollable", () => {
+    const d = declarations(".system-messages-list");
+    expect(d).toMatch(/\boverflow-y:\s*auto\b/);
+    expect(d).not.toMatch(/\boverflow-x\s*:/);
+  });
+
+  // The message column has to be able to exceed the panel, and nothing
+  // between it and the scroll container may clip it.
+  it("lets the message column grow past the panel instead of clipping it", () => {
+    const row = declarations(".system-messages-row");
+    expect(row).toContain("minmax(max-content, 1fr)");
+    expect(row).not.toMatch(/\boverflow:\s*hidden\b/);
+    expect(declarations(".system-messages-msg")).not.toContain("ellipsis");
+  });
+
+  // Sizing the scrolled stack by `max-content` alone would measure only
+  // the rows the virtualizer currently has mounted, so the scroll range
+  // would collapse as soon as the long row scrolled off — and this is a
+  // tail-following view, so that happens on every append. Measured with
+  // `min-width: max-content` alone: scrolled to 800, swapping the long
+  // row out took `scrollWidth` 1456 → 585 and snapped `scrollLeft` back
+  // to 0. With the width published from the whole filtered set both hold
+  // (1456 / 800). The count is a character count because the rows are
+  // monospace, so one character is exactly `1ch`; `max-content` stays as
+  // a floor for anything wider than the `ch` arithmetic predicts.
+  it("sizes the scrolled stack to the longest message in the filtered set", () => {
+    const d = declarations(".system-messages-scroll-content");
+    expect(d).toContain("--system-messages-message-chars");
+    expect(d).toContain("1ch");
+    expect(d).toMatch(/\bmin-width:\s*max-content\b/);
+    // ...but never narrower than the panel, or the rows' borders and
+    // level colors stop short of the right edge when every message
+    // already fits. Measured with a plain `calc()` and 15-character
+    // messages in a 585 px list: the rows came out 447 px wide.
+    expect(d).toMatch(/\bwidth:\s*max\(\s*100%/);
   });
 });

@@ -1,7 +1,7 @@
 // Pure-logic tests for the shared signal-selection model (ADR 0038):
 // the canonical-path regex subject `bus/ecu/message/signal`, invalid
 // patterns as data (not crashes), pattern↔manual dedup, and
-// stable-by-identity colours for pattern-matched signals.
+// stable-by-identity colors for pattern-matched signals.
 
 import { describe, expect, it } from "vitest";
 
@@ -125,7 +125,7 @@ describe("signalsFromPatterns", () => {
     expect(out.map((s) => s.signalName)).toEqual(["EngineTemp"]);
   });
 
-  it("colours matches stable-by-identity, independent of match order", () => {
+  it("colors matches stable-by-identity, independent of match order", () => {
     const wide = signalsFromPatterns(["."], CATALOG, BUSES);
     const narrow = signalsFromPatterns(["EngineTemp"], CATALOG, BUSES);
     const temp = (list: SignalRef[]) => list.find((s) => s.signalName === "EngineTemp");
@@ -191,7 +191,7 @@ describe("applyAreaSelections", () => {
       patterns: ["^chassis/", "^powertrain/[^/]*/EngineData/EngineTemp$"],
     };
     const out = applyAreaSelections([withPatterns], CATALOG, BUSES);
-    // Manual "Mode" keeps its slot and colour; the chassis pattern's
+    // Manual "Mode" keeps its slot and color; the chassis pattern's
     // duplicate of it is dropped; the temp match lands after.
     expect(out[0].signals.map((s) => s.signalName)).toEqual(["Mode", "EngineTemp"]);
     expect(out[0].signals[0].color).toBe("#ff0");

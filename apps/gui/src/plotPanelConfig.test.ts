@@ -61,10 +61,10 @@ describe("isSignalRefCore", () => {
 });
 
 describe("withColor", () => {
-  it("preserves a string colour", () => {
+  it("preserves a string color", () => {
     expect(withColor({ ...core, color: "#abcdef" }, 0).color).toBe("#abcdef");
   });
-  it("seeds a wheel colour by fallback index (wrapping) when absent", () => {
+  it("seeds a wheel color by fallback index (wrapping) when absent", () => {
     expect(withColor(core, 0).color).toBe(TRACE_COLORS[0]);
     expect(withColor(core, TRACE_COLORS.length + 2).color).toBe(TRACE_COLORS[2]);
   });
@@ -81,7 +81,7 @@ describe("areasFromParams", () => {
     expect(areas[0].primarySignalKey).toBeNull();
   });
 
-  it("filters malformed signals and colours the survivors", () => {
+  it("filters malformed signals and colors the survivors", () => {
     const areas = areasFromParams([
       { id: "a", signals: [core, { bogus: true }] },
     ]);

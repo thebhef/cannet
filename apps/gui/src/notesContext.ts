@@ -14,11 +14,11 @@ export interface NotesContextValue {
   /// host's add command emits `notes-changed` so the list updates
   /// for every panel; the caller's local optimistic state, if any,
   /// reconciles on the event. `color` (a `#RRGGBB` picked at creation)
-  /// is optional — omitted falls back to the view's default note colour.
+  /// is optional — omitted falls back to the view's default note color.
   addNote: (id: string, timestampNs: number, label: string, color?: string) => void;
   /// Update a note's label.
   renameNote: (id: string, label: string) => void;
-  /// Set or clear a note's colour (`#RRGGBB`, or `null` for the view
+  /// Set or clear a note's color (`#RRGGBB`, or `null` for the view
   /// default) — ADR 0035.
   recolorNote: (id: string, color: string | null) => void;
   /// Remove a note by id.

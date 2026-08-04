@@ -7,7 +7,7 @@ Status: accepted (2026-05-29)
 cannet keeps two concepts and a join:
 
 1. **Logical bus** — models a CAN bus in the user's system: a stable
-   id, a user-facing name, an optional graph colour. Trace panels,
+   id, a user-facing name, an optional graph color. Trace panels,
    plot panels, transmit panels, filters, and per-DBC scoping all
    reference this by `bus_id`. Logical buses live in `Project.buses`.
 

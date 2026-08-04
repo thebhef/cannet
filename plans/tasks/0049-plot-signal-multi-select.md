@@ -1,7 +1,7 @@
 # Task 49 — Multi-Select Signals in the Plot Panel
 
 Act on several of a plot area's signals at once — hide/show, remove,
-recolour, and add — instead of one row at a time. Split out of task 48
+recolor, and add — instead of one row at a time. Split out of task 48
 item 14, which was conditional on staying small.
 
 **It is not small, and this is why.** Task 48's own test for the item
@@ -10,8 +10,8 @@ list, the plot areas, and the persisted per-area config?" All three:
 
 - **The row's click is already spoken for.** A signal row's plain click
   promotes that signal to the area's primary (the one driving the
-  y-axis labels/units), and the colour swatch's left-click toggles
-  hidden while its right-click opens the colour picker
+  y-axis labels/units), and the color swatch's left-click toggles
+  hidden while its right-click opens the color picker
   (`SignalSwatch`, `PlotArea.tsx`). Adding selection means re-deciding
   what a row's primary gesture *is* — a UX decision, not a mechanical
   one.
@@ -48,7 +48,7 @@ missing on the add side is a multi-pick in the plot toolbar's own
 - A selection model for the plot panel's signal rows: an ordered
   selection set plus a range anchor, rendered as a row highlight,
   reaching every row of a logical area whatever its y-axis mode.
-- Bulk **hide/show**, **remove**, and **recolour** over the selection,
+- Bulk **hide/show**, **remove**, and **recolor** over the selection,
   with the pattern-materialization semantics settled (below).
 - Bulk **add** from the panel's own toolbar, or an explicit decision
   that the DBC-panel drag is the supported bulk-add path and the
@@ -64,7 +64,7 @@ missing on the add side is a multi-pick in the plot toolbar's own
 1. **Extent.** Is selection per logical area, or panel-wide across
    areas? Panel-wide makes "hide these six, wherever they live"
    natural; per-area makes the range anchor and the "select all" case
-   well-defined. Recolour and remove work either way.
+   well-defined. Recolor and remove work either way.
 2. **What a plain click does.** Either selection takes the plain click
    and promoting to primary moves to a modifier / context item, or
    selection is modifier-only (ctrl-toggle, shift-range) and the plain
@@ -73,7 +73,7 @@ missing on the add side is a multi-pick in the plot toolbar's own
    swatch and × act on the whole selection when the clicked row is in
    it — the precedent `DbcPanel`'s drag already sets), or a small
    actions strip / context menu that appears while a selection exists.
-4. **Pattern materialization in bulk.** A bulk hide or recolour over
+4. **Pattern materialization in bulk.** A bulk hide or recolor over
    pattern-derived rows pins each as a manual pick. Does that
    effectively convert the area to manual (making the patterns dead
    weight), and if so should it say so — or should it materialize only
@@ -101,7 +101,7 @@ missing on the add side is a multi-pick in the plot toolbar's own
 ## Exit criteria
 
 - Several signals can be selected in a plot panel and hidden/shown,
-  removed, and recoloured in one gesture, in every y-axis mode.
+  removed, and recolored in one gesture, in every y-axis mode.
 - Each design question above is answered in this file (or in an ADR
   where it is a durable rule) before the code that assumes the answer
   lands.

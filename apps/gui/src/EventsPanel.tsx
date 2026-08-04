@@ -16,7 +16,7 @@ import { diagCount } from "./diag"; // DIAG
 /// rendering only events — the host notes merged with the derived truncation
 /// marker, chronological. It reuses TraceView's event-row renderer (one base
 /// type, `TraceRow`), with the frame header hidden. Each editable row carries
-/// inline rename / recolour / remove controls (derived events aren't editable).
+/// inline rename / recolor / remove controls (derived events aren't editable).
 export function EventsPanel(_props: IDockviewPanelProps) {
   diagCount("render.EventsPanel"); // DIAG
   const model = useTraceModel();

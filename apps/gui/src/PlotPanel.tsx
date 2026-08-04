@@ -80,7 +80,7 @@ import {
  * plot area" appends more) that flex to fill the panel and share one x
  * (time) axis — its extent is the longest plotted signal across all
  * areas. Each plot area is a uPlot canvas (time axis at the bottom)
- * plus a **side signal panel**: per signal a colour swatch (click to
+ * plus a **side signal panel**: per signal a color swatch (click to
  * hide / show the line — the value keeps updating), name, and value (at
  * cursor A when one is placed, else at the mouse crosshair, else the
  * latest sample). The crosshair is panel-level like cursor A/B: one
@@ -92,8 +92,8 @@ import {
  * toolbar drops it into the focused area; **drag a signal row** to
  * re-order it within an area, onto another plot area, or onto another
  * plot panel (cross-panel = a copy; the source keeps it). A signal's
- * colour is assigned on add and travels with it (re-ordering / moving
- * doesn't recolour). The areas themselves re-order by dragging the
+ * color is assigned on add and travels with it (re-ordering / moving
+ * doesn't recolor). The areas themselves re-order by dragging the
  * grip in an area's side-panel heading onto another area, which drops
  * it at that area's position in the stack.
  *
@@ -129,7 +129,7 @@ import {
  * The measurement strip's cell set is configurable: A, B, Δt, 1/Δt,
  * and per-trace value@A / value@B / Δ / min / max / mean over [A, B].
  * Event markers (the window-start "T0" plus notes) draw as vertical
- * lines; "+ note" drops one. Renaming, recolouring, removing, and
+ * lines; "+ note" drops one. Renaming, recoloring, removing, and
  * jumping to a note live in the dedicated events view (ADR 0035),
  * which broadcasts a "goto" this panel re-centres its x-window on.
  *
@@ -151,7 +151,7 @@ const EMPTY_KEY_SET: ReadonlySet<string> = new Set();
 /** Stable empty list for areas with no patterns — a fresh `[]` per render
  * would defeat `PlotArea`'s memo. */
 const EMPTY_RESOLUTIONS: readonly PatternResolution[] = [];
-/// The derived truncation marker's cursor colour (ADR 0035) — a muted
+/// The derived truncation marker's cursor color (ADR 0035) — a muted
 /// amber, distinct from the note-event blue. Matches the trace floor row.
 const TRUNCATION_COLOR = "#e0a030";
 const SHOW_POINTS_OPTIONS: ComboboxOption[] = [
@@ -756,7 +756,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
       setAreas((prev) => {
         const targetId = prev.some((a) => a.id === focusedAreaId) ? focusedAreaId : prev[0]?.id;
         const target = prev.find((a) => a.id === targetId);
-        // Colour-wheel index is the count of signals *already in this
+        // Color-wheel index is the count of signals *already in this
         // plot area*, per ADR 0026 — so the first 16 series in any
         // one area get distinct hues regardless of what other areas
         // hold.
@@ -794,7 +794,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
   //
   // - **Internal move** (drag started inside this panel): strip the
   //   ref from whichever area it was in and re-insert it at the new
-  //   position (preserving colour). Re-orders within a single area,
+  //   position (preserving color). Re-orders within a single area,
   //   or moves between areas of this panel.
   // - **External add** (drag from DBC panel, trace cell, by-id
   //   cell, or another plot panel): insert into the target area
@@ -814,13 +814,13 @@ export function PlotPanel(props: IDockviewPanelProps) {
           // Move: the ref already lives in some area of this panel.
           // Strip it from its origin area (could be the target — that's
           // a reorder), and insert at the new position. Preserves the
-          // original colour by reusing the in-state ref. (Dragging a
+          // original color by reusing the in-state ref. (Dragging a
           // pattern-derived row has no manual entry to strip — the
           // insert below materializes it as a manual pick, keeping the
-          // dragged ref's stable colour.)
+          // dragged ref's stable color.)
           const existing = prev.flatMap((a) => a.signals).find((s) => signalRefKey(s) === key);
-          // The drag payload carries no colour; a materializing
-          // pattern row keeps the stable-by-identity colour it was
+          // The drag payload carries no color; a materializing
+          // pattern row keeps the stable-by-identity color it was
           // already rendered with.
           const moved = existing ?? { ...ref, color: ref.color || stableSignalColor(key) };
           const stripped = prev.map((a) => ({
@@ -840,10 +840,10 @@ export function PlotPanel(props: IDockviewPanelProps) {
         // semantic value to plotting the identical series twice on
         // one axis); duplicates across different areas are fine.
         if (target.signals.some((s) => signalRefKey(s) === key)) return prev;
-        // Re-seed the colour from the *target area's* wheel index, per
-        // ADR 0026: a dragged-in series picks the colour at the
+        // Re-seed the color from the *target area's* wheel index, per
+        // ADR 0026: a dragged-in series picks the color at the
         // position equal to the count of series already in the area.
-        // Cross-panel drags preserve the source ref's colour
+        // Cross-panel drags preserve the source ref's color
         // (`parseDroppedSignals` passes it through as-is), which we
         // discard here so the wheel index is consistent regardless of
         // where the drag started.
@@ -860,10 +860,10 @@ export function PlotPanel(props: IDockviewPanelProps) {
     },
     [],
   );
-  /** Set a series' colour after it's been added (per ADR 0026). A
+  /** Set a series' color after it's been added (per ADR 0026). A
    * manual pick updates in place; a pattern-derived row (no manual
-   * entry) is materialized as a manual pick carrying the new colour —
-   * that's what makes a per-signal colour override stick across
+   * entry) is materialized as a manual pick carrying the new color —
+   * that's what makes a per-signal color override stick across
    * pattern re-evaluations and project reloads. */
   const setSignalColor = useCallback((areaId: string, ref: SignalRef, color: string) => {
     const key = signalRefKey(ref);
@@ -952,7 +952,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     (t: number) => {
       if (baseSeconds == null || !Number.isFinite(baseSeconds)) return;
       const timestampNs = Math.round((baseSeconds + t) * 1e9);
-      // Colour cycles the shared signal wheel by the existing note
+      // Color cycles the shared signal wheel by the existing note
       // count — like plot series seed by area signal count (ADR 0026) —
       // so successive notes are visually distinct without any picking.
       dispatchAddNote(
@@ -1059,16 +1059,16 @@ export function PlotPanel(props: IDockviewPanelProps) {
 
   const busNameLookup = useMemo(() => busLookup(buses), [buses]);
 
-  // Bus id → render colour (explicit `color`, else the palette colour
+  // Bus id → render color (explicit `color`, else the palette color
   // for the bus's list position) — mirrors `effectiveBusColor` so the
-  // swatch in a signal row matches the bus's graph colour.
+  // swatch in a signal row matches the bus's graph color.
   const busColorLookup = useMemo(() => {
     const m = new Map<string, string>();
     buses.forEach((b, i) => m.set(b.id, b.color ?? defaultBusColor(i)));
     return m;
   }, [buses]);
 
-  // Signal value→colour maps (ADR 0029): one resolver over every
+  // Signal value→color maps (ADR 0029): one resolver over every
   // colormap element, fed to each area so an enum lane box can be tinted
   // by its held value. Rebuilt only when the element set changes.
   const resolveColor = useMemo(
@@ -1356,7 +1356,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
       id: n.id,
       t: n.timestampNs / 1e9 - baseSeconds,
       label: n.label,
-      // Carry the note's colour (ADR 0035) so its cursor matches the trace
+      // Carry the note's color (ADR 0035) so its cursor matches the trace
       // and events panel; `undefined` falls back to the default event blue.
       color: n.color ?? undefined,
     }));

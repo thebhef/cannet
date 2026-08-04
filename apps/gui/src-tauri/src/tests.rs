@@ -1607,8 +1607,8 @@ fn write_capture_round_trips_frames_and_notes() {
     assert_eq!(recovered.len(), 2);
     assert_eq!(recovered[0].id, "a");
     assert_eq!(recovered[0].label, "first");
-    // Colour round-trips via the marker's foreground colour (ADR 0035);
-    // the uncoloured note reads back uncoloured, not as black.
+    // Color round-trips via the marker's foreground color (ADR 0035);
+    // the uncolored note reads back uncolored, not as black.
     assert_eq!(recovered[0].color.as_deref(), Some("#FF8800"));
     assert_eq!(recovered[1].id, "b");
     assert_eq!(recovered[1].label, "second");

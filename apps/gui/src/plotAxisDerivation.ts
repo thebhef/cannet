@@ -39,7 +39,7 @@ export interface DerivedAxis {
    * thus its persisted weight — survives lane-membership churn. */
   id: string;
   /** The plot area this axis belongs to — used to dispatch edits
-   * (add/remove/colour-pick signal) back to the underlying area. */
+   * (add/remove/color-pick signal) back to the underlying area. */
   parentAreaId: string;
   /** Render style for this axis (ADR 0026). */
   kind: DerivedAxisKind;

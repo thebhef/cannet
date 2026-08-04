@@ -51,7 +51,7 @@ Each enum signal in the DBCs carries a value→color map (ADR 0029),
 authored as `colormap` project elements: `Gear`, `ContactorReq`,
 `PackStatus`, `ContactorState`, and `ChargeState`. Faults render red,
 closed/complete/drive green, transitional states amber, neutral states
-grey — so the trace cells and plot enum lanes read in colour wherever
+grey — so the trace cells and plot enum lanes read in color wherever
 those signals appear.
 
 ## Files
