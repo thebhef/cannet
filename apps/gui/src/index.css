@@ -637,8 +637,12 @@ header {
 }
 
 /* Project panel: a few stacked sections (the project file, the
-   configured bus(es), the attached DBC) with their actions. */
+   configured bus(es), the attached DBC) with their actions.
+   `height: 100%` bounds the panel to its dock group: left at `auto` it
+   grows to its content and `overflow` has nothing to scroll, so the
+   sections past the fold are clipped by the group and unreachable. */
 .project-panel {
+  height: 100%;
   padding: 0.6rem 0.8rem;
   overflow: auto;
   font-size: 0.85rem;
