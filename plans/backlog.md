@@ -1011,3 +1011,11 @@ next pass on this surface can address them as one piece.
   unchanged re-run during the settings review pass (2026-08-03). It
   is timing-sensitive around rAF coalescing; nobody has established
   whether the test or the coalescing is at fault.
+
+- **Colormap wishes.** Three related asks, all "would be nice", none
+  urgent, and probably one design rather than three: colormaps that
+  apply across a *selection* of signals sharing a type instead of being
+  bound one signal at a time; single-value colormaps (an SNA sentinel
+  being the motivating case); and gradient colormaps rather than
+  discrete bands. ADR 0029 governs the colormap model, so a design here
+  starts there.
