@@ -423,12 +423,27 @@ Choices made:
   every draw, so the label reads the area's `liveRef` and rides the
   redraw the panel-level (rAF-coalesced) hover state already triggers.
 
-## 14. Multi-select signals in the plot panel
+## 14. Multi-select signals in the plot panel — **split out**
 
-**Only if it stays small.** Selecting several signals at once (add,
-hide, remove, recolour) rather than one at a time. If it turns out to
-need a selection model threaded through the panel, it is its own task —
-split it out rather than growing this one.
+It did not stay small, so it left this task per the condition it was
+written under: it is now
+[Task 49](0049-plot-signal-multi-select.md), in the roadmap ahead of
+task 23.
+
+Assessed before any feature code was written. The item needs a
+selection model threaded through all three places the condition named:
+the signal rows (whose plain click already promotes a signal to
+primary, and whose swatch already owns both mouse buttons), the plot
+areas (in `per-unit` / `individual` mode a logical area's rows are
+split across several `PlotArea` instances, so a range selection spans
+sibling components), and the persisted per-area config (a bulk hide or
+recolour materializes pattern-derived rows into manual picks, which
+rewrites the stored signal list against the area's live patterns).
+There is also a re-render constraint: `PlotArea` is memoised and
+guarded by a test that panel-local state re-renders no area, so a
+per-click selection value has to be sliced per area. The new task file
+carries the reasoning, the design questions each of those raises, and
+the exit criteria.
 
 ## 15. Drag-reorder plot areas — **done**
 
@@ -487,7 +502,8 @@ name, and the sidecar's process name.
 - Every item above is fixed or struck with a recorded reason, and this
   file is deleted when the list empties.
 - Each fix lands with a test that fails before it.
-- Items 14 and 15 are explicitly conditional: if either grows past a
-  small change, it leaves this task rather than expanding it.
+- Items 14 and 15 were explicitly conditional: if either grew past a
+  small change, it left this task rather than expanding it. Item 15
+  stayed small and shipped here; item 14 did not and became task 49.
 - Items 1, 8 and 10 touch plot behaviour that ADR 0026 governs; if a fix
   contradicts that ADR, the ADR changes in the same commit.
