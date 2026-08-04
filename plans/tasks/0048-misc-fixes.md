@@ -615,6 +615,35 @@ than a locale's spelling of it) and by
 surfaces and asserts the tooltip, its removal on mouse-out, and the
 absence of any `title` for a null and for a capture-relative origin.
 
+## 18. The system messages view does not scroll horizontally
+
+Another instance of item 9's third sub-part, on a panel item 9 did not
+cover. A long message is cut off with no way to reach the rest of it.
+
+Item 9 established the mechanism for the trace table: its rows are
+`position: absolute; left: 0; right: 0` inside an `overflow: hidden`
+sticky viewport, so each row's box was exactly the viewport width and
+the grid's fixed tracks overflowed *the row*, which the viewport
+clipped — the scroll container therefore never had scrollable overflow
+at all. The fix published the columns' summed width as
+`--trace-content-width` on the spacer and mirrored `scrollLeft` onto the
+pinned header. Check whether the system messages view shares that
+structure before assuming it shares the mechanism; it may simply be a
+missing `overflow-x`.
+
+## 19. "colour" should be "color" throughout
+
+Repo-wide spelling: American `color`, not British `colour`. Identifiers
+are already correct (`busColor.ts`, `ColorMapPanel.tsx`, `colorMap`); it
+is prose — comments, rustdoc, ADRs, planning docs, README — that drifted.
+Roughly 210 occurrences across 51 files.
+
+Mechanical, but not blindly so: ADRs and planning docs are historical
+records whose wording is otherwise not to be edited, and a few
+occurrences may sit inside user-visible strings, where the change is
+behavioural rather than cosmetic. Land it separately from any behaviour
+change so the diff stays reviewable.
+
 ## Exit criteria
 
 - Every item above is fixed or struck with a recorded reason, and this
