@@ -1065,6 +1065,10 @@ header {
 
 /* Trace table -----------------------------------------------------------*/
 .trace {
+  /* The header's and the rows' shared horizontal padding. Named because
+     the rows' scrolled content has to add it back to the columns' own
+     width (`.trace-scroll-content`) for the tracks to fit in the rows. */
+  --trace-row-padding-x: 0.6rem;
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
@@ -1081,7 +1085,7 @@ header {
   /* `grid-template-columns` is set inline from the panel's column
      state (see `traceColumns.ts`). */
   align-items: start;
-  padding: 0 0.6rem;
+  padding: 0 var(--trace-row-padding-x);
   white-space: nowrap;
 }
 
@@ -1221,6 +1225,12 @@ button.trace-event-swatch {
   position: sticky;
   top: 0;
   z-index: 1;
+  /* The header sits outside the rows' scroll container, so the view
+     mirrors a horizontal scroll onto it as a negative margin
+     (`useHeaderScrollSync`). Left to stretch as a flex item it would
+     absorb that margin into its width instead of moving, and its
+     columns would drift out of line with the rows'. */
+  width: 100%;
 }
 
 .trace-header > span {
@@ -1275,6 +1285,21 @@ button.trace-event-swatch {
   min-height: 0;
   overflow: auto;
   contain: strict;
+}
+
+/* What `.trace-rows` scrolls: the spacer that gives the scrollbar the
+   trace's full extent, with the rows stacked in a sticky viewport
+   inside it. Its height is set inline (the scaled extent); its width
+   has to cover the columns, because the rows are `position: absolute;
+   left: 0; right: 0` against it and the viewport clips — without this
+   the grid's fixed tracks run past the panel's right edge with no
+   scroll position that reaches them. `--trace-content-width` is the
+   columns' own total, published inline by the view
+   (`contentWidthStyle`); the rows' padding is this stylesheet's fact. */
+.trace-scroll-content {
+  min-width: calc(
+    var(--trace-content-width, 0px) + 2 * var(--trace-row-padding-x)
+  );
 }
 
 .trace-row {
@@ -1867,8 +1892,12 @@ button.trace-event-swatch {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Signal value→color map config panel (ADR 0029). */
+/* Signal value→color map config panel (ADR 0029).
+   `height: 100%` bounds the panel to its dock group: left at `auto` it
+   grows to its content and `overflow` has nothing to scroll, so the
+   rules past the fold are clipped by the group and unreachable. */
 .colormap-panel {
+  height: 100%;
   display: flex;
   flex-direction: column;
   gap: 0.6rem;

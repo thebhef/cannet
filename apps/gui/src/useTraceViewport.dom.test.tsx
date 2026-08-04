@@ -9,7 +9,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, fireEvent, render } from "@testing-library/react";
 
 import { useTraceViewport, type VariableRowHeights } from "./useTraceViewport";
 import {
@@ -36,19 +36,30 @@ function Harness({
   anchoredRow: number;
   variable?: VariableRowHeights;
 }) {
-  const { containerRef, viewportHeight, rows, spacerHeight, anchorMax, firstVisibleRow, lastVisibleRow } =
-    useTraceViewport(count, anchoredRow, undefined, variable);
+  const {
+    containerRef,
+    headerRef,
+    viewportHeight,
+    rows,
+    spacerHeight,
+    anchorMax,
+    firstVisibleRow,
+    lastVisibleRow,
+  } = useTraceViewport(count, anchoredRow, undefined, variable);
   return (
-    <div
-      ref={containerRef}
-      data-testid="scaffold"
-      data-viewport-height={viewportHeight}
-      data-rows={rows}
-      data-spacer-height={spacerHeight}
-      data-anchor-max={anchorMax}
-      data-first-visible-row={firstVisibleRow}
-      data-last-visible-row={lastVisibleRow}
-    />
+    <>
+      <div ref={headerRef} data-testid="header" />
+      <div
+        ref={containerRef}
+        data-testid="scaffold"
+        data-viewport-height={viewportHeight}
+        data-rows={rows}
+        data-spacer-height={spacerHeight}
+        data-anchor-max={anchorMax}
+        data-first-visible-row={firstVisibleRow}
+        data-last-visible-row={lastVisibleRow}
+      />
+    </>
   );
 }
 
@@ -106,5 +117,25 @@ describe("useTraceViewport", () => {
     vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(220);
     const { getByTestId } = render(<Harness count={1000} anchoredRow={-4} />);
     expect(getByTestId("scaffold").dataset.firstVisibleRow).toBe("0");
+  });
+
+  // The column header is a *sibling* of the rows' scroll container (it
+  // must stay put when the rows scroll vertically), so nothing moves it
+  // when they scroll horizontally — the header and the rows would come
+  // apart by exactly `scrollLeft`. The scaffold mirrors the offset onto
+  // the header as a negative margin.
+  it("mirrors the container's horizontal scroll onto the header", () => {
+    const { getByTestId } = render(<Harness count={1000} anchoredRow={0} />);
+    const scroller = getByTestId("scaffold");
+    const header = getByTestId("header");
+    expect(header.style.marginLeft).toBe("0px");
+
+    Object.defineProperty(scroller, "scrollLeft", { value: 314, writable: true });
+    fireEvent.scroll(scroller);
+    expect(header.style.marginLeft).toBe("-314px");
+
+    scroller.scrollLeft = 0;
+    fireEvent.scroll(scroller);
+    expect(header.style.marginLeft).toBe("0px");
   });
 });

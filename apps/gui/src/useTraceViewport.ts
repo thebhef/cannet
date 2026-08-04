@@ -33,8 +33,38 @@ export interface VariableRowHeights {
   rowHeightAt: (absIdx: number) => number;
 }
 
+/// Mirrors a rows-container's horizontal scroll onto the table's column
+/// header, returning the ref to put on the header.
+///
+/// The header can't live inside the scroll container — it has to stay
+/// put while the rows scroll vertically — so nothing else moves it, and
+/// once the rows scroll sideways the two come apart by exactly
+/// `scrollLeft`. A negative margin rather than a transform: the header
+/// hosts the show/hide column menu, which is `position: fixed` at the
+/// pointer, and a transformed ancestor would become its containing
+/// block. Written straight to the DOM — view geometry, not state, and it
+/// has to keep up with the scroll.
+export function useHeaderScrollSync(
+  containerRef: RefObject<HTMLDivElement>,
+): RefObject<HTMLDivElement> {
+  const headerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const sync = () => {
+      if (headerRef.current) headerRef.current.style.marginLeft = `${-el.scrollLeft}px`;
+    };
+    sync();
+    el.addEventListener("scroll", sync, { passive: true });
+    return () => el.removeEventListener("scroll", sync);
+  }, [containerRef]);
+  return headerRef;
+}
+
 export interface TraceViewportScaffold {
   containerRef: RefObject<HTMLDivElement>;
+  /// Put this on the table's column header — see [`useHeaderScrollSync`].
+  headerRef: RefObject<HTMLDivElement>;
   viewportHeight: number;
   rows: number;
   spacerHeight: number;
@@ -59,6 +89,7 @@ export function useTraceViewport(
   variable?: VariableRowHeights,
 ): TraceViewportScaffold {
   const containerRef = useRef<HTMLDivElement>(null);
+  const headerRef = useHeaderScrollSync(containerRef);
   const [viewportHeight, setViewportHeight] = useState(600);
 
   // Observe viewport size so the visible-row count tracks resizes.
@@ -86,5 +117,14 @@ export function useTraceViewport(
     anchoredRow == null ? anchorMax : Math.min(anchorMax, Math.max(0, anchoredRow));
   const lastVisibleRow = Math.min(count, firstVisibleRow + rows);
 
-  return { containerRef, viewportHeight, rows, spacerHeight, anchorMax, firstVisibleRow, lastVisibleRow };
+  return {
+    containerRef,
+    headerRef,
+    viewportHeight,
+    rows,
+    spacerHeight,
+    anchorMax,
+    firstVisibleRow,
+    lastVisibleRow,
+  };
 }

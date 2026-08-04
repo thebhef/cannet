@@ -25,7 +25,7 @@ import {
   gridTemplateColumns,
   visibleColumns,
 } from "./traceColumns";
-import { TraceHeader, cellContent } from "./traceTable";
+import { TraceHeader, cellContent, contentWidthStyle } from "./traceTable";
 import { diagCount } from "./diag"; // DIAG
 
 interface TraceViewProps {
@@ -143,8 +143,16 @@ export function TraceView({
   // both disable auto-scroll and re-anchor the view to itself.
   const programmaticScrollRef = useRef(false);
 
-  const { containerRef, viewportHeight, rows, spacerHeight, anchorMax, firstVisibleRow, lastVisibleRow } =
-    useTraceViewport(count, anchor, "traceview.resizeObserver");
+  const {
+    containerRef,
+    headerRef,
+    viewportHeight,
+    rows,
+    spacerHeight,
+    anchorMax,
+    firstVisibleRow,
+    lastVisibleRow,
+  } = useTraceViewport(count, anchor, "traceview.resizeObserver");
   // `scrollForRow(anchorMax)` is exactly the bottom (`maxScrollTop`),
   // so this is "the bottom" while auto-scrolling and the anchored
   // row's scrollTop otherwise.
@@ -272,6 +280,7 @@ export function TraceView({
   const shown = useMemo(() => columns.filter((c) => !columnDef(c.key).byIdOnly), [columns]);
   const visible = useMemo(() => visibleColumns(shown), [shown]);
   const gridTemplate = useMemo(() => gridTemplateColumns(shown), [shown]);
+  const contentWidthVar = useMemo(() => contentWidthStyle(shown), [shown]);
 
   // Signal count for expanded-row sizing: only frames have signals; an
   // event row or a not-yet-loaded frame sizes as a plain row.
@@ -286,14 +295,22 @@ export function TraceView({
       {showHeader && (
         <TraceHeader
           columns={shown}
+          headerRef={headerRef}
           onColumnResize={onColumnResize}
           onColumnToggle={onColumnToggle}
           onColumnReorder={onColumnReorder}
         />
       )}
       <div ref={containerRef} className="trace-rows" onScroll={handleScroll}>
-        {/* Spacer: gives the scrollbar the trace's full (scaled) extent. */}
-        <div style={{ height: spacerHeight, position: "relative" }}>
+        {/* Spacer: gives the scrollbar the trace's full (scaled) extent
+            vertically, and the columns' own width horizontally — the
+            rows are absolutely positioned against it, so without that
+            the columns past the panel's right edge are clipped by the
+            sticky viewport with no scroll position that reaches them. */}
+        <div
+          className="trace-scroll-content"
+          style={{ height: spacerHeight, position: "relative", ...contentWidthVar }}
+        >
           {/* Sticky viewport: the compositor keeps this pinned to the
               top of the scroll area, so the rows never lag the
               scrollbar — React only swaps their content. */}

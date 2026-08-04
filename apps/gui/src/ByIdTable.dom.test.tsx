@@ -23,7 +23,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 import { hydrateSettings } from "./hostSettings";
 import { ByIdTable } from "./ByIdTable";
 import { byIdRowKey } from "./ByIdTable";
-import { defaultColumns } from "./traceColumns";
+import { contentWidth, defaultColumns } from "./traceColumns";
 import { ROW_HEIGHT, SIGNAL_LINE_HEIGHT } from "./traceViewport";
 import type { ByIdSnapshotRecord, TraceFrameRecord } from "./types";
 import type { ColorResolver } from "./colorMap";
@@ -181,6 +181,20 @@ describe("ByIdTable scroll extent", () => {
     );
     expect(spacer.style.height).toBe(`${40 * ROW_HEIGHT}px`);
     expect(parseFloat(sticky.style.height)).toBeGreaterThanOrEqual(stack);
+  });
+
+  // The rows are absolutely positioned against the sticky viewport and
+  // the viewport clips, so the scrolled content has to carry the
+  // columns' own total width or the columns past the panel's right edge
+  // are cut off with nothing to scroll. jsdom does no layout: this
+  // asserts the width the view publishes, not the scrollbar it earns.
+  it("publishes the columns' total width to the rows' scrolled content", () => {
+    const { container } = renderTable(null);
+    const content = container.querySelector(".trace-scroll-content") as HTMLElement;
+    expect(content).toBeTruthy();
+    expect(content.style.getPropertyValue("--trace-content-width")).toBe(
+      `${contentWidth(defaultColumns())}px`,
+    );
   });
 });
 
