@@ -207,25 +207,30 @@ fn sort_by_id_orders_by_rate() {
 #[test]
 fn sort_by_id_orders_by_bus_name_unassigned_last() {
     // Sorts by the resolved bus *name*, with the unassigned bucket
-    // after any real bus ascending (and before them descending).
+    // after any real bus ascending (and before them descending). A bus
+    // the project no longer knows falls back to its raw id.
+    // The bus ids deliberately sort the *opposite* way to their names,
+    // so an implementation that ignored `names` and ordered by raw id
+    // would fail rather than coincide.
     let names: HashMap<String, String> = [
-        ("p".to_string(), "Powertrain".to_string()),
-        ("c".to_string(), "Chassis".to_string()),
+        ("b1".to_string(), "Powertrain".to_string()),
+        ("b2".to_string(), "Chassis".to_string()),
     ]
     .into_iter()
     .collect();
     let rows = [
-        snap(0x100, 0, 0.0, Some("p")), // Powertrain
-        snap(0x200, 0, 0.0, None),      // unassigned
-        snap(0x300, 0, 0.0, Some("c")), // Chassis
+        snap(0x100, 0, 0.0, Some("b1")), // Powertrain
+        snap(0x200, 0, 0.0, None),       // unassigned -> "~"
+        snap(0x300, 0, 0.0, Some("b2")), // Chassis
+        snap(0x400, 0, 0.0, Some("z")),  // unknown bus -> "z"
     ];
     assert_eq!(
         sorted_ids(&rows, Some("bus"), Some("asc"), &names),
-        vec![0x300, 0x100, 0x200]
+        vec![0x300, 0x100, 0x400, 0x200]
     );
     assert_eq!(
         sorted_ids(&rows, Some("bus"), Some("desc"), &names),
-        vec![0x200, 0x100, 0x300]
+        vec![0x200, 0x400, 0x100, 0x300]
     );
 }
 

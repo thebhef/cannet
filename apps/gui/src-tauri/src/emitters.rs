@@ -106,12 +106,15 @@ pub(crate) fn should_emit_trace_grew(last: Option<(u64, f64)>, current: (u64, f6
 
 /// Periodic emitter that fires `trace-grew` events on a fixed cadence.
 /// Runs on Tauri's tokio runtime; doesn't own or block any worker
-/// thread. Each tick reads the cheap `(len, frames_per_second)` pair and
-/// emits only when [`should_emit_trace_grew`] says something moved — so a
-/// connected but idle session stops collecting a tail, serializing it,
-/// and waking the `WebView` listener at 10 Hz for data that hasn't changed.
-/// The `collect_trace_records` tail decode (the expensive part) runs only
-/// on a tick that actually emits.
+/// thread. Each tick takes one
+/// [`TraceStore::status_snapshot`](crate::trace_store::TraceStore::status_snapshot)
+/// — the whole store-side readout under a single lock — and emits only
+/// when [`should_emit_trace_grew`] says something moved, so a connected
+/// but idle session stops collecting a tail, serializing it, and waking
+/// the `WebView` listener at 10 Hz for data that hasn't changed. The
+/// `collect_trace_records` tail decode (the expensive part) runs only on
+/// a tick that actually emits, and takes the lock for its slice alone so
+/// the decode itself happens off it.
 pub(crate) fn spawn_trace_grew_emitter(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(TRACE_GREW_TICK);
@@ -119,23 +122,22 @@ pub(crate) fn spawn_trace_grew_emitter(app: AppHandle) {
         loop {
             interval.tick().await;
             let state: State<'_, AppState> = app.state();
-            // Read len and the low-water mark together so the status line's
-            // `count - first_index` can't go momentarily negative when a flush
-            // evicts between two separate reads (ADR 0002 DS-8). The oldest-
-            // retained ts rides along so the frontend can place the truncation
-            // marker (ADR 0035) when `first_index > 0`.
-            let (count_usize, first_index_usize, oldest_ts_ns) =
-                state.trace_store.len_and_low_water();
-            let count = u64::try_from(count_usize).unwrap_or(u64::MAX);
+            // One lock acquisition for the whole store-side readout, so it
+            // describes a single instant: `count - first_index` can't go
+            // momentarily negative when a flush evicts between two separate
+            // reads (ADR 0002 DS-8), and the rates belong to the length
+            // reported alongside them. The oldest-retained ts rides along so
+            // the frontend can place the truncation marker (ADR 0035) when
+            // `first_index > 0`.
+            let snap = state.trace_store.status_snapshot();
+            let count = u64::try_from(snap.len).unwrap_or(u64::MAX);
             // Filter the aggregate before it leaves the host: the status
             // line reads the trend, not the per-batch arrival jitter. The
             // filter state is the last *emitted* value — a skipped tick is
             // by definition one where nothing moved.
-            let frames_per_second = smooth_fps(
-                last_emitted.map(|(_, fps, _)| fps),
-                state.trace_store.frames_per_second(),
-            );
-            let session_start_ns = state.trace_store.session_start_ns();
+            let frames_per_second =
+                smooth_fps(last_emitted.map(|(_, fps, _)| fps), snap.frames_per_second);
+            let session_start_ns = snap.session_start_ns;
             if !should_emit_trace_grew(
                 last_emitted.map(|(c, fps, _)| (c, fps)),
                 (count, frames_per_second),
@@ -155,36 +157,30 @@ pub(crate) fn spawn_trace_grew_emitter(app: AppHandle) {
             };
             #[allow(clippy::cast_precision_loss)]
             let session_start_seconds = session_start_ns as f64 / 1_000_000_000.0;
-            let buffer_seconds = state.trace_store.buffer_seconds();
-            let frames_per_second_by_bus = state
-                .trace_store
-                .frames_per_second_by_bus()
+            let frames_per_second_by_bus = snap
+                .frames_per_second_by_bus
                 .into_iter()
                 .map(|(bus_id, frames_per_second)| BusFps {
                     bus_id,
                     frames_per_second,
                 })
                 .collect();
-            let frames_dropped_before_session = state.trace_store.frames_dropped_before_session();
-            let scratch_bytes = state.trace_store.scratch_footprint_bytes();
-            let first_index = first_index_usize as u64;
+            let first_index = snap.first_index as u64;
             let mem_bytes = crash::last_app_rss();
-            let (frames_per_second_rx, frames_per_second_tx) =
-                state.trace_store.frames_per_second_by_direction();
             let _ = app.emit(
                 "trace-grew",
                 TraceGrew {
                     count,
                     first_index,
-                    first_index_ts_ns: oldest_ts_ns,
+                    first_index_ts_ns: snap.first_index_ts_ns,
                     frames_per_second,
-                    frames_per_second_rx,
-                    frames_per_second_tx,
+                    frames_per_second_rx: snap.frames_per_second_rx,
+                    frames_per_second_tx: snap.frames_per_second_tx,
                     frames_per_second_by_bus,
-                    frames_dropped_before_session,
+                    frames_dropped_before_session: snap.frames_dropped_before_session,
                     session_start_seconds,
-                    buffer_seconds,
-                    scratch_bytes,
+                    buffer_seconds: snap.buffer_seconds,
+                    scratch_bytes: snap.scratch_bytes,
                     mem_bytes,
                     tail,
                 },

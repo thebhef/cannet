@@ -503,3 +503,150 @@ loop in the jsdom harness — reproduced against the pre-Tier-2 tree, so
 it is not from this work. Recorded in `plans/backlog.md`; it is why
 item 4's withdrawal test goes through the by-id mode switch rather than
 the toggle.
+
+## Tier 3 results
+
+Landed 2026-08-02, one commit per item. **This is the first tier with
+numbers.** Tier 3's own precondition — "only worth doing if Tier 0
+measurement says ingest cost is material" — could not be met as
+written, because Tier 0's ADR-0031 capture still doesn't exist. But
+four of the five items sit on the *host* ingest/query path, which
+`cannet-perf-measurement`'s `tracebuffer` and `grpc` modes exercise
+in-process with no hardware and no GUI. Those were used instead.
+
+### The instrument
+
+`tracebuffer` at its default config is **paced** (`--ingest-hz 25000`)
+and hits its offered rate exactly, before and after — so it cannot see
+a change in per-append cost at all, only in the *stall* it causes. The
+throughput measurement therefore uses a flat-out ingest-only probe:
+
+```sh
+cannet-perf-measurement tracebuffer --ingest-hz 0 --no-scan --target-frames 3000000
+```
+
+Release build, same machine, runs interleaved with nothing else.
+"Before" is `b5ac5b9` (the Tier 2 tip), "after" is the Tier 3 tip.
+
+| measurement | before (mean) | after (mean) | delta |
+| --- | --- | --- | --- |
+| flat-out `ingest_fps_overall` (3 runs each) | 1 370 874 | 1 505 039 | **+9.8 %** |
+| flat-out `append_ms_max` | 80.6 ms | 40.9 ms | **−49 %** |
+| `tracebuffer` default `ingest_fps_overall` | 25 000.12 | 25 000.12 | pinned by the pacer |
+| `tracebuffer` default `append_ms_max` (3 runs) | 6.28 ms | 2.62 ms | **−58 %** |
+| `tracebuffer` default `scan_ms_mean` | 0.118 ms | 0.109 ms | flat (noise) |
+| `tracebuffer` default `rss_growth_mb` | 22.92 | 22.79 | flat |
+| `grpc` `ingest_fps_overall` (2 runs) | 2773 | 2769 | flat — wire-bound |
+| `grpc` `append_ms_max` | 0.97 ms | 0.78 ms | −20 % |
+
+`check` against the committed `baseline.json` passes on all 12 gated
+metrics after the tier.
+
+**All of the throughput delta is item 2**, measured on its own commit
+before the rest landed (4 runs: mean 1 518 841 flat-out fps,
+`append_ms_max` 41.4 ms — i.e. the whole move, with items 3–5 adding
+nothing measurable on top). That is expected: the harness drives
+`TraceStore::append` and the filtered scan directly, so items 1, 3 and
+4 are **not on any path it executes**, and item 5 only runs on a by-id
+page fetch the harness never issues. Their claims below are verified
+against the code and pinned by tests; their cost is not priced.
+
+### The items
+
+1. **Per-frame decode + `Vec` in the signal-cache catch-up** —
+   confirmed exactly as recorded. `catch_up` called `sample_signal`
+   with a `slice::from_ref(&frame)` and took element 0, so each new
+   matching frame heap-allocated a `Vec` per candidate DBC to carry at
+   most one point. Now `sample_one`, sharing one per-frame body with
+   `sample_signal` (which still resolves the `CanId` once for its
+   loop). **Not measured** — the harness never samples signals; the
+   path is the plot's, and pricing it needs the Tier 0 capture.
+2. **Three `String` clones per frame on the ingest path** — **one of
+   the three was real and removable, as the task doc predicted; the
+   other two are not removable without an API change.**
+   - The `per_bus.entry()` clone existed only because `key` was moved
+     into `per_key` above it. Clone the key on the `per_key` *miss*
+     path instead (once per key, and the key set is id-space bounded)
+     and hand `key.0` straight to `entry()`. This is the entire +9.8 %
+     / −49 % above.
+   - `route_channel`'s clone **produces** the frame's owned `bus_id`.
+     Removing it means `RawTraceFrame::bus_id` stops being an owned
+     `String` — a type change across the store, the query paths and
+     the IPC layer, for an unmeasured gain. Skipped.
+   - The `FrameKey` clone is what a `std` `HashMap` lookup on a
+     `(Option<String>, u8, u32, bool)` key requires; there is no
+     borrowed-equivalent lookup without changing the key type or
+     taking a `hashbrown` dependency. Skipped.
+3. **The status tick's 3-on-skip / 9-on-emit locks** — confirmed;
+   collapsed into `TraceStore::status_snapshot`, one acquisition for
+   the whole store-side readout (the tail decode still takes its own
+   lock for the slice alone, so the decode stays off it). The rate
+   accessors were split into `Inner`-taking helpers plus their existing
+   locking wrappers so the snapshot reuses them verbatim rather than
+   duplicating the arithmetic.
+
+   Worth recording that this is **not only** an allocation/contention
+   change: the nine reads described no single instant, so a frame
+   landing between the length read and the rate read put a length and
+   a rate from different moments into the same event.
+   `len_and_low_water` already made that argument for one pair; the
+   snapshot extends it to the readout. The test asserts every field
+   equals what its own accessor returns.
+4. **The ingest verifier locks per frame before checking whether
+   anything is configured** — confirmed, and the more interesting half
+   of the claim is the one about *when*: with no calculated-field
+   config loaded — every project that declares none, and every project
+   before its DBCs load — the lock was taken and immediately released
+   on every received frame. Now gated on an `AtomicBool` maintained by
+   `rebuild_configs`, the only writer of `configs`.
+
+   The test holds the mutex and asks from another thread: an answer
+   that arrives while the lock is held didn't need it. Its second half
+   installs a config and shows the same probe blocking, so the first
+   half isn't vacuous.
+
+   **"Rebuilds the same keys twice" is left alone.** It is inherent to
+   the probe-then-clone split (`wants` decides whether the frame is
+   worth cloning; `observe_inner` then re-derives the same lookup under
+   its own lock), and unlike the lock it costs only frames that *are*
+   configured. `wants` does now probe the allocation-free any-bus
+   wildcard before the bus-scoped key — the result is an `or`, so the
+   order was free.
+5. **By-ID "sort by bus" allocates two `String`s per comparison** —
+   confirmed; `bus_sort_key` now returns `&str` like its `ecu` and
+   `kind` siblings already did. The existing test could not have caught
+   a regression here: its bus ids sorted the same way as their names,
+   so "sort by name" and "sort by raw id" produced identical output and
+   a mutation deleting the name lookup passed. The fixture now uses ids
+   that sort the opposite way to their names, plus a bus the project
+   doesn't know (the raw-id fallback previously had no case at all).
+
+### What this tier does and does not settle
+
+It settles that **ingest cost was material** — the precondition Tier 3
+opened with. One `String` clone per append was ~10 % of flat-out ingest
+throughput and half the worst-case append stall, on a path every mode
+of the app runs. Tier 0's absence did not have to block that finding;
+the host modes could have priced it at any point.
+
+It settles nothing about items 1, 3 and 4, whose paths the harness does
+not execute. Each is strictly less work per call with a small diff, so
+they were taken on that basis, but "measured flat" and "not measured"
+are different claims and these are the second. Item 3's lock-count
+reduction in particular would show up in `flush_ms` / `tx_late_ms` on a
+frontend capture, not here.
+
+The one exit criterion this tier touches — "the ingest pump is not
+blocked by the flusher's directory walks" — is Tier 1's; the
+`append_ms_max` halving above is a second, independent line of
+evidence for the same property.
+
+### Noticed in passing
+
+`crates/cannet-perf-measurement/README.md` says `check` reads "the
+newest file in `docs/performance-measurements/`" unless a baseline path
+is given. It does not: `default_baseline_path()` is `baseline.json`,
+and its own rustdoc says promoting a dated snapshot is "a deliberate
+copy to this path, not a 'newest file wins' guess". The code is right
+and the README is stale. Left for whoever touches that README next
+rather than fixed here, since no Tier 3 change is what made it wrong.

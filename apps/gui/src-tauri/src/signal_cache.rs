@@ -145,14 +145,9 @@ impl SignalCache {
             // Try each loaded DBC in priority order, first decode wins
             // (matches `sample_signals`' existing semantics).
             for db in dbs {
-                let decoded = signal_sampler::sample_signal(
-                    std::slice::from_ref(&frame),
-                    db,
-                    message_id,
-                    extended,
-                    signal_name,
-                );
-                if let Some(point) = decoded.into_iter().next() {
+                if let Some(point) =
+                    signal_sampler::sample_one(&frame, db, message_id, extended, signal_name)
+                {
                     if point.value < self.lo {
                         self.lo = point.value;
                     }
