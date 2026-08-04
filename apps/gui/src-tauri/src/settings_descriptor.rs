@@ -28,7 +28,7 @@ use serde::Serialize;
 use crate::persisted_json::{scope_of, Scope};
 use crate::settings::{
     Settings, MIN_INTERVAL_MS, MIN_LOG_ROTATION_BYTES, MIN_SCRATCH_CAP_BYTES, MIN_SYSTEM_LOG_RING,
-    SCOPES, SYSTEM_LOG_LEVELS,
+    SCOPES, SIDECAR_LOG_LEVELS, SYSTEM_LOG_LEVELS,
 };
 
 /// A whole-millisecond interval control: the shape every cadence
@@ -295,11 +295,40 @@ const DESCRIPTORS: &[Spec] = &[
         label: "System log minimum level",
         help: "The lowest severity the System Messages panel lists. `info` is what \
                your own actions produced; drop to `debug` for the app's internal \
-               breadcrumbs. The rolling log file keeps every level regardless.",
+               breadcrumbs. This filters the view only — what reaches the log file \
+               is its own setting.",
         surfaces: &[Surface::Logging],
         kind: Kind::Behaviour,
         control: Control::Enum {
             options: SYSTEM_LOG_LEVELS,
+        },
+    },
+    Spec {
+        key: "log_file_min_level",
+        backing: Backing::Field,
+        label: "Log file minimum level",
+        help: "The lowest severity written to cannet.log — the file you send with \
+               a bug report. The default keeps everything, including the app's own \
+               breadcrumbs and health samples. Raising it makes the file smaller \
+               and a long soak reach further back. A crash record is always \
+               written.",
+        surfaces: &[Surface::Logging],
+        kind: Kind::Behaviour,
+        control: Control::Enum {
+            options: SYSTEM_LOG_LEVELS,
+        },
+    },
+    Spec {
+        key: "sidecar_log_level",
+        backing: Backing::Field,
+        label: "Sidecar log level",
+        help: "How much the python-can sidecar reports about itself and your \
+               adapter. Its messages arrive here and in the log file like any \
+               other; drop it to debug when a hardware fault will not reproduce.",
+        surfaces: &[Surface::Logging, Surface::Connection],
+        kind: Kind::Behaviour,
+        control: Control::Enum {
+            options: SIDECAR_LOG_LEVELS,
         },
     },
     Spec {
@@ -471,6 +500,34 @@ const DESCRIPTORS: &[Spec] = &[
             scale: 1,
             min: None,
             unset: None,
+        },
+    },
+    Spec {
+        key: "sidecar_dir",
+        backing: Backing::Field,
+        label: "Sidecar directory",
+        help: "Run the python-can sidecar from this directory instead of the one \
+               shipped with the app — a patched or replaced build, without \
+               repackaging. Blank uses the bundled sidecar. A directory with no \
+               sidecar in it shows up as a spawn failure in this log.",
+        surfaces: &[Surface::Connection],
+        kind: Kind::Behaviour,
+        control: Control::Text {
+            placeholder: Some("bundled sidecar"),
+        },
+    },
+    Spec {
+        key: "driver_module",
+        backing: Backing::Field,
+        label: "Driver module",
+        help: "Python module the sidecar loads its hardware driver from. Blank \
+               uses the bundled python-can driver. Set it to run your own driver \
+               implementation; the sidecar reports on startup if the module is \
+               missing or does not implement the driver protocol.",
+        surfaces: &[Surface::Connection],
+        kind: Kind::Behaviour,
+        control: Control::Text {
+            placeholder: Some("cannet_python_can.driver_python_can"),
         },
     },
     Spec {
@@ -767,6 +824,72 @@ mod tests {
             panic!("the cap is a whole-number control");
         };
         assert_eq!(min, Some(crate::settings::MIN_SCRATCH_CAP_BYTES));
+    }
+
+    /// `Settings::default()` with one string key overwritten, by its
+    /// *serialized* name — [`settings_with`]'s counterpart for the
+    /// fixed-option fields.
+    fn settings_with_text(key: &str, value: &str) -> Settings {
+        let mut doc = serde_json::to_value(Settings::default()).unwrap();
+        doc[key] = serde_json::json!(value);
+        serde_json::from_value(doc).expect("a string key takes a string")
+    }
+
+    #[test]
+    fn every_published_option_set_is_the_one_validate_accepts() {
+        // The `Control::Enum` counterpart of
+        // `every_published_minimum_is_the_one_validate_enforces`: the
+        // view offers exactly what the host accepts. A descriptor that
+        // published an option the store refuses would let a user pick a
+        // value that silently reverted; one that omitted an option the
+        // store accepts would hide a legal value.
+        let defaults = Settings::default();
+        for spec in DESCRIPTORS {
+            let Control::Enum { options } = spec.control else {
+                continue;
+            };
+            assert!(!options.is_empty(), "`{}` publishes no options", spec.key);
+            for option in options {
+                let (_, complaints) =
+                    crate::settings::validate(settings_with_text(spec.key, option));
+                assert!(
+                    !complaints.iter().any(|c| c.contains(spec.key)),
+                    "`{}` refuses its own published option `{option}`: {complaints:?}",
+                    spec.key
+                );
+            }
+            let (accepted, complaints) =
+                crate::settings::validate(settings_with_text(spec.key, "not-an-option"));
+            assert!(
+                complaints.iter().any(|c| c.contains(spec.key)),
+                "`{}` accepts a value it does not publish",
+                spec.key
+            );
+            assert_eq!(
+                value_of(&accepted, spec.key),
+                value_of(&defaults, spec.key),
+                "a refused `{}` must resolve to its default",
+                spec.key
+            );
+        }
+    }
+
+    #[test]
+    fn the_sidecar_log_levels_are_pythons_ladder_not_ours() {
+        // The one place the two ladders differ is the third rung —
+        // Python's `warning` against our `warn` — and the host passes
+        // the value through verbatim, so publishing our spelling would
+        // make the sidecar exit at startup on a value the view offered.
+        let level = DESCRIPTORS
+            .iter()
+            .find(|s| s.key == "sidecar_log_level")
+            .expect("the sidecar level has a descriptor");
+        let Control::Enum { options } = level.control else {
+            panic!("the sidecar level is a fixed-option control");
+        };
+        assert_eq!(options, SIDECAR_LOG_LEVELS);
+        assert!(options.contains(&"warning"), "{options:?}");
+        assert_ne!(options, SYSTEM_LOG_LEVELS);
     }
 
     #[test]

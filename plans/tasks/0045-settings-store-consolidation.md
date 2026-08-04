@@ -448,7 +448,7 @@ metrics (tracebuffer, grpc, hardware-peak) against the promoted
 baseline after the change; the frontend tier is skipped as ever, since
 Task 44 Tier 0 still owes a self-driving capture.
 
-### Stage 4 — env-only configuration that needs a settings equivalent
+### Stage 4 — env-only configuration that needs a settings equivalent — **complete**
 
 1. **`CANNET_SIDECAR_DIR`** — the only way to point the app at a
    non-default sidecar. A field engineer with a patched driver build
@@ -462,6 +462,194 @@ Task 44 Tier 0 still owes a self-driving capture.
    artifact that actually matters in the field — has no verbosity
    control at all. The sidecar's `--log-level` is likewise unreachable
    because the host passes neither it nor `--bind`.
+4. **Folded in: one malformed value resolved the whole document to
+   defaults.** Not an env-var item — it is settings-store robustness,
+   noticed while Stage 3 landed and taken here because it is the same
+   code and it gets worse with every field added.
+
+#### Stage 4 as built
+
+**The precedence rule, decided once for the whole stage: the
+environment wins, and the shadowed setting is reported.**
+
+Every env var in this stage predates its setting and exists as an
+*escape hatch* — for tests, CI, packaging experiments, and deployment
+shapes nobody foresaw. An escape hatch a persisted file can override is
+not an escape hatch, and harnesses already drive cannet by setting
+these, so a settings file must not quietly change what such a run does.
+The setting is therefore the **persistent default the environment
+overrides for one run**, which also keeps the untouched-install
+promise in its strongest form: an existing env-var user's behaviour is
+unchanged whatever ends up in their settings file.
+
+The cost is that `settings.json` can show a value the app is not using
+— which the exit criteria do not let pass silently. So when the
+environment shadows a *non-blank* setting, the host says so on the
+system log at warn level, naming the variable, the key, and both
+values: the same refuse-and-report shape a rejected value already got.
+A blank setting is shadowed by nothing, so an untouched install is
+silent. One pure function, `sidecar::env_over_setting`, is the whole
+rule; blank means "nothing here" on both sides, so an empty
+`CANNET_SIDECAR_DIR` falls through to the setting instead of resolving
+to an empty path.
+
+**`RUST_LOG` is the exception, and stays env-only.** It is not a
+settings equivalent that is missing — it governs the dev-stderr
+`tracing` layer, which does not exist in a release build (no console
+under `windows_subsystem = "windows"`), and it is set per debugging
+session, not persisted as intent. That is the same argument that keeps
+the ADR-0031 automation flags as CLI. What the stage actually owed was
+verbosity control over the artifact a field engineer *ships* —
+`cannet.log` — and that is `log_file_min_level` below. Re-reading a
+filter into an already-installed `EnvFilter` would also need a reload
+layer, for a stream nobody in the field can see.
+
+**Items 1 and 2 — `sidecar_dir` and `driver_module`.** *(done)*
+
+| Field | Default | Tags | Scope | Reader |
+| --- | --- | --- | --- | --- |
+| `sidecar_dir` | `""` | connection / behaviour | user-overridable | `sidecar::resolve_sidecar_dir` |
+| `driver_module` | `""` | connection / behaviour | user-overridable | forwarded to the child as `CANNET_DRIVER_MODULE` |
+
+Notes:
+
+- **Blank is the default, and blank means the built-in behaviour** —
+  the bundled sidecar found by the existing probe, and the sidecar's
+  own `cannet_python_can.driver_python_can`. So a file that predates
+  the fields resolves to exactly what the app did before
+  (`a_file_written_before_a_field_existed_resolves_to_that_field_s_default`).
+- **Neither is validated, deliberately.** Only the sidecar can say
+  whether a directory holds a sidecar or a module implements the driver
+  protocol, and it already reports both — a spawn failure and a startup
+  fatal, each on the system log. A host-side existence check would be a
+  second, weaker opinion that goes stale between the check and the
+  launch.
+- **Both are `Behaviour`, not `Developer`.** They are not machine-load
+  or cadence knobs, and hiding them by default would hide the LGPL §4
+  replace path (`servers/cannet-python-can/LICENSING.md`) that is the
+  main reason they exist.
+- **`driver_module` needed the host to forward it at all.** The
+  variable is read by the *sidecar*; the host never set it, so
+  selecting a driver meant launching the GUI from a shell that already
+  had it. `apply_sidecar_settings` now configures the built command —
+  once, for both the frozen and the dev launcher flavours, which differ
+  in how they *find* the sidecar, not in how it is configured.
+  `--bind` is still not passed, for the reason its own test states.
+- **All three sidecar-facing settings take effect on Restart sidecar**,
+  not just on relaunch, because `resolve_command` reads them on every
+  spawn. That falls out of the design rather than being built, but it
+  is what makes "try a patched driver" a loop rather than a ceremony,
+  so the README says it.
+- **The env-var branch is now unit-testable**, which it was not: the
+  workspace forbids `unsafe`, so no test can call `set_var`, and the
+  old code read the environment inside the resolver. The read is now
+  one line at the edge and the decision is pure, so `sidecar.rs`'s
+  standing "eyeball-verify it there" note is gone.
+
+Tests (each mutation-checked): `sidecar.rs` → *the environment wins
+over the setting and says so*, *the setting applies when the
+environment is silent*, *the environment alone is not a shadowing*, *a
+blank value on either side means unset*, *an override is used verbatim
+as the sidecar dir*, *the driver module is forwarded to the sidecar
+process*, *no driver module leaves the child environment alone*.
+
+**Item 3 — log verbosity, both halves.** *(done)*
+
+| Field | Default | Tags | Scope | Reader |
+| --- | --- | --- | --- | --- |
+| `log_file_min_level` | `debug` | logging / behaviour | user-overridable | `crash::persist_message` |
+| `sidecar_log_level` | `info` | logging + connection / behaviour | user-overridable | passed to the child as `--log-level` |
+
+Notes:
+
+- **The two defaults are the two current behaviours.** `debug` is the
+  lowest rung, so the rolling log keeps exactly what it kept when it
+  had no filter at all; `info` is the sidecar's own argparse default.
+  Neither changes an untouched install.
+- **The log file's minimum is a second filter over a second sink, not
+  a rename of `system_log_min_level`.** That one narrows the System
+  Messages *view*; this one narrows the artifact a bug report carries,
+  and quieting one must not quieten the other — a user who sets the
+  panel to `warn` to stop the noise would otherwise silently ship a
+  useless log. `system_log_min_level`'s help text used to end "the
+  rolling log file keeps every level regardless", which this makes
+  false, so it is rewritten in the same change.
+- **A panic record ignores both.** It is written through
+  `append_block` directly, on the terminal path that deliberately
+  bypasses even the write lock.
+- **`SIDECAR_LOG_LEVELS` is Python's ladder, not ours** — its third
+  rung is `warning`, not `warn`. The host passes the value through
+  verbatim, so publishing our spelling would offer the view a value
+  that makes the sidecar exit at startup. Translating between the two
+  would be a mapping to get wrong; the list is what the sidecar's
+  argument parser accepts, and
+  `the_sidecar_log_levels_are_pythons_ladder_not_ours` pins that.
+- **`--bind` is still not passed.** The stage's own wording pairs the
+  two ("the host passes neither it nor `--bind`"), but the reason
+  `--bind` is absent is not oversight: `build_command_does_not_pin_a_bind_address`
+  records that pinning a port re-creates the stale-instance wedge the
+  ephemeral-port default was added to fix. The new test asserts the
+  log level arrived *and* that `--bind` still did not, so adding one
+  argument cannot smuggle in the other.
+- **Two shared pieces, matching Stage 3's shape.** `refuse_unknown` is
+  `refuse_below`'s string counterpart, so a fixed-option field is one
+  table row rather than another hand-written `if`; and
+  `LogLevel::from_name` / `rank` (the latter was test-only) turn a
+  settings level name into a comparable rung.
+  `every_published_option_set_is_the_one_validate_accepts` is the
+  `Control::Enum` counterpart of Stage 3's published-minimum test: for
+  *every* enum descriptor, the host must accept each published option
+  and refuse one it does not publish.
+
+Behaviour tests (each mutation-checked): `crash.rs` → *the rolling log
+admits exactly what its minimum level allows* (the whole 4×4 ladder,
+plus the default admitting everything and an unknown name not silencing
+the log); `sidecar.rs` → *the sidecar log level reaches the child and
+bind still does not*, over all three launcher flavours; `system_log.rs`
+→ *every declared level name maps to a level in ladder order*;
+`settings_descriptor.rs` → the two tests above.
+
+**Item 4 — a malformed value costs its field, not the file.**
+*(done)* `Settings` is `#[serde(default)]` at the *container*, which
+fills an **absent** field but does not rescue one whose value is the
+wrong type: `"plot_fetch_interval_ms": "fast"` failed the whole
+deserialize, so every other setting silently reverted too. Survivable
+at four fields; at nineteen it discards a user's whole file over one
+typo, which directly undercuts ADR 0034's hand-editable contract.
+
+The fix is in the shared merge rather than in `Settings`:
+`persisted_json::resolve_scoped_reporting` parses the merged document
+as a whole (the common case, and free), and **only on failure** walks
+the keys, admitting each one that the type accepts and dropping —
+with a complaint — each one it does not. So a refused value gets
+exactly Stage 1 item 3's treatment: reported on the system log,
+resolved to *that field's* default, the user's text left alone.
+`get_settings` concatenates these complaints with `validate`'s, so the
+two ways a value can be wrong (malformed, out of range) are reported
+through one path.
+
+Two notes:
+
+- **It lands in `persisted_json`, so `state.json` gets it too.** That
+  is the same primitive, not scope creep — the merge is where "one
+  key's value" is already the unit of work, and a bad `recent_blfs`
+  entry no longer costs the last-project pointer either. `state.rs`
+  has nowhere to report, so it uses the discarding wrapper.
+- **The complaint text is authored in `persisted_json`**, in the shape
+  `validate`'s range complaints already use, so the reporting caller
+  prints it verbatim rather than re-deriving prose from an error type.
+
+Tests (mutation-checked by reverting the per-key walk to
+`T::default()`): `persisted_json.rs` → *a value the document rejects
+costs only its own key* and *a document with nothing wrong reports
+nothing*; `settings.rs` → *one malformed value costs that field and
+not the document* (a good neighbour before it, two after it, and the
+bad one at its own default).
+
+**Measured:** `cannet-perf-measurement check` passes all 12 gated
+metrics (tracebuffer, grpc, hardware-peak) against the promoted
+baseline after the change; the frontend tier is skipped, as in Stage 3,
+because Task 44 Tier 0 still owes a self-driving capture.
 
 ### Stage 5 — defaults with no way to change them
 
@@ -610,10 +798,23 @@ properly view-local, and the window-state plugin is properly separate.
   it is the user's document — but nothing anywhere is running at a
   value the file doesn't show, and the system log says which value was
   refused and why. New knobs must follow the same rule.)*
+
+  *Stage 4 extends this twice. A value of the wrong **shape** is now
+  refused the same way and costs only its own field, instead of failing
+  the whole document (item 4). And an **environment variable** that
+  shadows a setting is the one case where the app genuinely runs at a
+  value the file does not show — the escape hatch has to win, or it is
+  not one — so it is reported on the system log naming the variable, the
+  key, and both values. The criterion holds in its real form: nothing
+  runs at a value nobody was told about.*
 - One source of truth for each item in the duplicates list, or an
   explicit note saying why a copy stays.
 - No user-facing knob promoted in Stage 3 changes behaviour for a user
-  who never opens the settings file.
+  who never opens the settings file. *(Also met for Stage 4: each of
+  its four fields defaults to the value the app already ran at — blank
+  for the two paths, `debug` for the log file's minimum, `info` for the
+  sidecar's — and the environment keeps winning, so an existing
+  env-var user is unaffected whatever their file says.)*
 - Every promoted field lands with its Task 46 tags already attached —
   no retrofit pass.
 - `settings.json` on a fresh install lists every knob the app has, at

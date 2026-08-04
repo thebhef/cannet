@@ -22,8 +22,9 @@
 //! connection made or dropped, a view created), so an untouched app
 //! produces none. Everything the app does on its own — health samples,
 //! internal lifecycle breadcrumbs, sidecar chatter — is `Debug`. Debug
-//! entries still reach the rolling log file and the panel (which filters
-//! them out by default), so a diagnosis never needs a rebuild.
+//! entries still reach the ring, the panel (which filters them out by
+//! default), and the rolling log file (whose own minimum level defaults
+//! to keeping them), so a diagnosis never needs a rebuild.
 //!
 //! The ring is bounded — the oldest message is dropped when capacity is
 //! reached — so a long-running session can't grow the buffer unboundedly.
@@ -79,8 +80,9 @@ fn budget_from(raw: u64) -> Option<usize> {
 #[serde(rename_all = "lowercase")]
 pub enum LogLevel {
     /// The app talking to itself: health samples, lifecycle
-    /// breadcrumbs, sidecar chatter. Reaches the rolling log file and
-    /// the ring, below the panel's default filter.
+    /// breadcrumbs, sidecar chatter. Reaches the ring and, at the log
+    /// file's default minimum, the rolling log file; below the panel's
+    /// default filter.
     Debug,
     /// The consequence of something the user did. Nothing here should
     /// appear in an app nobody is touching.
@@ -90,17 +92,37 @@ pub enum LogLevel {
 }
 
 impl LogLevel {
-    /// Ordering for the panel's "minimum level" filter. The frontend
+    /// Ordering for the panel's "minimum level" filter, and for the
+    /// rolling log file's own minimum ([`crate::crash`]). The frontend
     /// has its own copy of this ordering (in `types.ts`); both must
     /// agree for the panel's level filter to behave consistently.
     #[must_use]
-    #[cfg(test)]
     pub fn rank(self) -> u8 {
         match self {
             Self::Debug => 0,
             Self::Info => 1,
             Self::Warn => 2,
             Self::Error => 3,
+        }
+    }
+
+    /// The level a settings value names — one of
+    /// [`crate::settings::SYSTEM_LOG_LEVELS`], which is the same ladder
+    /// in the same order.
+    ///
+    /// `None` for anything else. `validate` refuses an unknown name at
+    /// ingress, so the only way to get here is a caller that hasn't
+    /// gone through it; the callers treat that as "no minimum" rather
+    /// than as "log nothing", because a filter nobody chose must not
+    /// silence a log.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "debug" => Some(Self::Debug),
+            "info" => Some(Self::Info),
+            "warn" => Some(Self::Warn),
+            "error" => Some(Self::Error),
+            _ => None,
         }
     }
 }
@@ -392,6 +414,26 @@ macro_rules! sys_error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_declared_level_name_maps_to_a_level_in_ladder_order() {
+        // `from_name` is a second statement of `SYSTEM_LOG_LEVELS`, so
+        // it is pinned to it: every declared name resolves, and the
+        // ranks rise in the order the list declares them. A name added
+        // to the settings list with no variant here fails.
+        let levels = crate::settings::SYSTEM_LOG_LEVELS;
+        let ranks: Vec<u8> = levels
+            .iter()
+            .map(|name| {
+                LogLevel::from_name(name)
+                    .unwrap_or_else(|| panic!("`{name}` names no level"))
+                    .rank()
+            })
+            .collect();
+        assert!(ranks.windows(2).all(|w| w[0] < w[1]), "{ranks:?}");
+        assert_eq!(ranks.len(), 4, "the ladder has four rungs");
+        assert_eq!(LogLevel::from_name("verbose"), None);
+    }
 
     #[test]
     fn push_returns_entries_with_monotonic_seq() {

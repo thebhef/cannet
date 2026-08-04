@@ -10,9 +10,14 @@
 //! trace. None of those even run a panic hook.
 //!
 //! This module's job is to make the log durable. Every message that
-//! reaches the System Messages ring is mirrored, line for line, to a
-//! single **rolling log** ([`log_dir`]/`cannet.log`), flushed each
-//! write. The log lives in the idiomatic per-OS location (Tauri's
+//! reaches the System Messages ring, at or above the file's own minimum
+//! level (`log_file_min_level`, default `debug` — everything), is
+//! mirrored line for line to a single **rolling log**
+//! ([`log_dir`]/`cannet.log`), flushed each write. That minimum is
+//! separate from the System Messages panel's: quieting the *view* must
+//! not quieten the file a bug report carries. A panic record ignores
+//! both — it is written whatever the settings say.
+//! The log lives in the idiomatic per-OS location (Tauri's
 //! `app_log_dir`: `%LOCALAPPDATA%\<id>\logs` on Windows,
 //! `~/Library/Logs/<id>` on macOS, `~/.local/share/<id>/logs` on Linux),
 //! resolved at `setup`; a panic in the brief pre-`setup` window falls
@@ -172,10 +177,27 @@ pub fn log_dir() -> PathBuf {
 
 /// Mirror one already-rung System Message to the rolling log. Called
 /// from the logging chokepoint (`crate::emit_system_log`) so every
-/// message the panel shows is also on disk. Best-effort: a write
-/// failure is swallowed (there's nowhere better to report it).
+/// message the panel shows is also on disk, down to the file's own
+/// minimum level (`log_file_min_level`, default `debug` — everything).
+/// Best-effort: a write failure is swallowed (there's nowhere better to
+/// report it).
 pub fn persist_message(msg: &SystemMessage) {
+    if !admitted_by(msg.level, &crate::settings::effective().log_file_min_level) {
+        return;
+    }
     persist_block(&format_log_line(msg));
+}
+
+/// Whether a message at `level` reaches the rolling log, given the
+/// configured minimum. Split from the settings read so the ladder is
+/// testable without touching the process-wide cache.
+///
+/// The panel's own minimum (`system_log_min_level`) is a separate
+/// filter over a separate sink: quieting the view must not quieten the
+/// file a bug report carries, and vice versa. A name outside the ladder
+/// admits everything — see [`LogLevel::from_name`].
+fn admitted_by(level: LogLevel, min: &str) -> bool {
+    LogLevel::from_name(min).is_none_or(|min| level.rank() >= min.rank())
 }
 
 /// Append a block of text to the rolling log under [`WRITE_LOCK`],
@@ -785,6 +807,35 @@ mod tests {
         // off". Zero is that switch, not a zero-length sleep.
         assert_eq!(health_interval_from(0), None);
         assert_eq!(health_interval_from(20_000), Some(Duration::from_secs(20)));
+    }
+
+    #[test]
+    fn the_rolling_log_admits_exactly_what_its_minimum_level_allows() {
+        // The artifact a field engineer ships back had no verbosity
+        // control at all: every message the ring accepted was written.
+        // The default keeps that (`debug` admits everything), and
+        // raising it drops the app's own chatter from the file without
+        // touching the panel, which filters separately.
+        use LogLevel::{Debug, Error, Info, Warn};
+        for (min, admitted) in [
+            ("debug", [true, true, true, true]),
+            ("info", [false, true, true, true]),
+            ("warn", [false, false, true, true]),
+            ("error", [false, false, false, true]),
+        ] {
+            for (level, want) in [Debug, Info, Warn, Error].into_iter().zip(admitted) {
+                assert_eq!(admitted_by(level, min), want, "{level:?} at min {min}");
+            }
+        }
+        // The default admits everything, so an untouched install writes
+        // the same file it always did.
+        assert!(admitted_by(
+            Debug,
+            &crate::settings::Settings::default().log_file_min_level
+        ));
+        // A name outside the ladder cannot reach here — `validate`
+        // refuses it — but if it did, the log must not go silent.
+        assert!(admitted_by(Debug, "verbose"));
     }
 
     #[test]

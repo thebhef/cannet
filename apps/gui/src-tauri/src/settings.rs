@@ -26,6 +26,13 @@
 //!
 //! A missing file or missing key resolves to the documented default, so a
 //! fresh install and a hand-deleted file behave identically.
+//!
+//! **One bad value costs one field.** A key whose value the struct
+//! refuses — a string where a number belongs — is dropped and reported
+//! at the read boundary and resolves to its own default; the rest of the
+//! user's file survives. A hand-editable contract cannot afford a typo
+//! that silently reverts everything
+//! ([`crate::persisted_json::resolve_scoped`]).
 
 use std::path::Path;
 use std::sync::{Arc, OnceLock, PoisonError, RwLock};
@@ -77,6 +84,10 @@ pub(crate) const SCOPES: ScopeTable = &[
     ("health_sample_interval_ms", Scope::UserOverridable),
     ("sidecar_restart_budget", Scope::UserOverridable),
     ("reconnect_backoff_ms", Scope::UserOverridable),
+    ("sidecar_dir", Scope::UserOverridable),
+    ("driver_module", Scope::UserOverridable),
+    ("log_file_min_level", Scope::UserOverridable),
+    ("sidecar_log_level", Scope::UserOverridable),
 ];
 
 /// The persisted user settings. `#[serde(default)]` fills any absent field
@@ -187,6 +198,55 @@ pub struct Settings {
     /// Default 2000 ms: fine on a LAN, short for a flaky VPN to a
     /// remote server.
     pub reconnect_backoff_ms: u64,
+    /// Directory holding the `cannet-python-can` package to launch,
+    /// instead of the one the host finds for itself. Empty (the
+    /// default) means the built-in resolution: the frozen bundled
+    /// sidecar, or the source tree found by walking up from the GUI
+    /// binary. A field engineer with a patched or replaced sidecar
+    /// build points cannet at it here instead of repackaging the app.
+    ///
+    /// Free text: a directory that holds no sidecar surfaces as the
+    /// resulting spawn failure on the system log, which is the only
+    /// place the answer is actually known.
+    ///
+    /// `CANNET_SIDECAR_DIR` in the environment overrides this for one
+    /// run and says so on the system log — see
+    /// [`crate::sidecar`]'s `env_over_setting`.
+    pub sidecar_dir: String,
+    /// Python module the sidecar loads its hardware driver from. Empty
+    /// (the default) means the sidecar's own
+    /// `cannet_python_can.driver_python_can`. The host forwards a
+    /// non-empty value to the sidecar process as
+    /// `CANNET_DRIVER_MODULE`; before this setting the host never set
+    /// that variable at all, so choosing a driver meant launching the
+    /// GUI from a shell that already had it.
+    ///
+    /// Free text, for the same reason as `sidecar_dir`: only the
+    /// sidecar can say whether a module exists and implements the
+    /// driver protocol, and it reports that on startup.
+    ///
+    /// `CANNET_DRIVER_MODULE` in the host's own environment overrides
+    /// this for one run and says so on the system log.
+    pub driver_module: String,
+    /// Lowest severity written to the rolling `cannet.log` — one of
+    /// [`SYSTEM_LOG_LEVELS`], default `debug`, which is everything and
+    /// therefore exactly what the file held before it was adjustable.
+    ///
+    /// A **separate filter over a separate sink** from
+    /// [`Settings::system_log_min_level`]: that one narrows the System
+    /// Messages *view*, this one narrows the artifact a bug report
+    /// carries, and quieting one must not quieten the other. A panic
+    /// record ignores both ([`crate::crash`]).
+    pub log_file_min_level: String,
+    /// Log level the python-can sidecar runs at — one of
+    /// [`SIDECAR_LOG_LEVELS`], default `info`, which is the sidecar's
+    /// own default, so an untouched install is unchanged.
+    ///
+    /// It governs the sidecar's stderr, which the host classifies into
+    /// System Messages, so it is the verbosity of everything a vendor
+    /// driver contributes to a log a user ships back — `debug` for a
+    /// hardware fault nobody can reproduce.
+    pub sidecar_log_level: String,
 }
 
 /// The smallest legal value of any millisecond-interval setting.
@@ -221,6 +281,18 @@ pub const MIN_LOG_ROTATION_BYTES: u64 = 1024 * 1024;
 /// re-listing them ([`crate::settings_descriptor`]).
 pub const SYSTEM_LOG_LEVELS: &[&str] = &["debug", "info", "warn", "error"];
 
+/// The level names [`Settings::sidecar_log_level`] accepts, least to
+/// most severe.
+///
+/// These are the sidecar's own `--log-level` choices — Python's ladder,
+/// where the third rung is `warning` rather than `warn` — not
+/// [`SYSTEM_LOG_LEVELS`]. The host passes the value through verbatim,
+/// so translating between the two spellings here would only create a
+/// mapping to get wrong; the list is what the sidecar's argument parser
+/// accepts, and a value outside it would make the sidecar exit at
+/// startup.
+pub const SIDECAR_LOG_LEVELS: &[&str] = &["debug", "info", "warning", "error"];
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -243,6 +315,10 @@ impl Default for Settings {
             health_sample_interval_ms: 20_000,
             sidecar_restart_budget: 3,
             reconnect_backoff_ms: 2_000,
+            sidecar_dir: String::new(),
+            driver_module: String::new(),
+            log_file_min_level: "debug".to_string(),
+            sidecar_log_level: "info".to_string(),
         }
     }
 }
@@ -344,16 +420,29 @@ pub(crate) fn validate(settings: Settings) -> (Settings, Vec<String>) {
             settings.scratch_cap_bytes = None;
         }
     }
-    if !SYSTEM_LOG_LEVELS.contains(&settings.system_log_min_level.as_str()) {
-        let bad = &settings.system_log_min_level;
-        let known = SYSTEM_LOG_LEVELS.join(", ");
-        complaints.push(format!(
-            "system_log_min_level \"{bad}\" is not one of {known}; ignoring it — the \
-             System Messages panel filters at its default"
-        ));
-        settings.system_log_min_level = Settings::default().system_log_min_level;
-    }
     let d = Settings::default();
+    for (key, value, allowed, default) in [
+        (
+            "system_log_min_level",
+            &mut settings.system_log_min_level,
+            SYSTEM_LOG_LEVELS,
+            d.system_log_min_level.clone(),
+        ),
+        (
+            "log_file_min_level",
+            &mut settings.log_file_min_level,
+            SYSTEM_LOG_LEVELS,
+            d.log_file_min_level.clone(),
+        ),
+        (
+            "sidecar_log_level",
+            &mut settings.sidecar_log_level,
+            SIDECAR_LOG_LEVELS,
+            d.sidecar_log_level.clone(),
+        ),
+    ] {
+        refuse_unknown(&mut complaints, key, value, allowed, default);
+    }
     for (key, value, min, default) in [
         (
             "notice_dwell_ms",
@@ -419,6 +508,32 @@ pub(crate) fn validate(settings: Settings) -> (Settings, Vec<String>) {
 /// resolving it to `default` — the shared shape of every numeric bound
 /// in [`validate`], so a new bounded field is one table row rather than
 /// another hand-written `if`.
+/// Refuse `value` if it is not one of `allowed`, reporting the field by
+/// name and resolving it to `default` — the string counterpart of
+/// [`refuse_below`], so a new fixed-option field is one table row
+/// rather than another hand-written `if`.
+///
+/// A serde enum would refuse the value too, but by failing the *whole*
+/// document on one typo'd level; a plain `String` checked here gets the
+/// refuse-report-default treatment the rest of the store uses.
+fn refuse_unknown(
+    complaints: &mut Vec<String>,
+    key: &str,
+    value: &mut String,
+    allowed: &[&str],
+    default: String,
+) {
+    if allowed.contains(&value.as_str()) {
+        return;
+    }
+    let known = allowed.join(", ");
+    complaints.push(format!(
+        "{key} \"{value}\" is not one of {known}; ignoring it — using the \
+         default ({default})"
+    ));
+    *value = default;
+}
+
 fn refuse_below(complaints: &mut Vec<String>, key: &str, value: &mut u64, min: u64, default: u64) {
     if *value >= min {
         return;
@@ -434,7 +549,13 @@ fn refuse_below(complaints: &mut Vec<String>, key: &str, value: &mut u64, min: u
 /// `<user_dir>/settings.json` overridden per key by
 /// `<workspace_dir>/settings.json`. A missing or unreadable file, or
 /// junk contents, contributes nothing at that scope.
-fn read_settings(user_dir: &Path, workspace_dir: &Path) -> Settings {
+///
+/// Returns the settings plus one complaint per key whose value the
+/// struct refused — a hand-edit that typed a string where a number
+/// belongs. [`get_settings`] reports those alongside [`validate`]'s, so
+/// the two ways a value can be wrong (malformed, out of range) get the
+/// same refuse-report-default treatment.
+fn read_settings(user_dir: &Path, workspace_dir: &Path) -> (Settings, Vec<String>) {
     crate::persisted_json::read_scoped(user_dir, workspace_dir, SETTINGS_FILE)
 }
 
@@ -461,16 +582,19 @@ fn warn_refused(app: &tauri::AppHandle, complaints: &[String]) {
 /// Load the effective settings: the user scope, overridden per key by
 /// the open project's workspace scope (ADR 0042 §3). Returns defaults if
 /// the config dir can't be resolved or the files are missing / corrupt —
-/// reading settings never fails for the caller. Out-of-range values in a
-/// hand-edited file are refused here, at the read boundary, and reported
-/// on the system log; the caller only ever sees values the app can honor.
+/// reading settings never fails for the caller. Malformed and
+/// out-of-range values in a hand-edited file are refused here, at the
+/// read boundary, and reported on the system log — one refused field
+/// each, never the whole document; the caller only ever sees values the
+/// app can honor.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub fn get_settings(app: tauri::AppHandle) -> Settings {
-    let raw = crate::persisted_json::config_dir(&app)
+    let (raw, mut complaints) = crate::persisted_json::config_dir(&app)
         .map(|user_dir| read_settings(&user_dir, &crate::workspace_dir(&app)))
         .unwrap_or_default();
-    let (settings, complaints) = validate(raw);
+    let (settings, refused) = validate(raw);
+    complaints.extend(refused);
     cache(&settings);
     warn_refused(&app, &complaints);
     settings
@@ -536,7 +660,16 @@ mod tests {
     /// partial documents must survive it: a corrupt settings file can
     /// never brick startup.
     fn parse_settings(text: &str) -> Settings {
-        crate::persisted_json::resolve_scoped(text, "")
+        crate::persisted_json::resolve_scoped(text, "").0
+    }
+
+    /// The effective settings alone. Most tests here are about what the
+    /// two scopes resolve to rather than about the read boundary's
+    /// complaints, which
+    /// `one_malformed_value_costs_that_field_and_not_the_document`
+    /// covers.
+    fn resolved(user_dir: &Path, workspace_dir: &Path) -> Settings {
+        read_settings(user_dir, workspace_dir).0
     }
 
     fn sample() -> Settings {
@@ -571,6 +704,10 @@ mod tests {
             health_sample_interval_ms: 0,
             sidecar_restart_budget: 1,
             reconnect_backoff_ms: 10_000,
+            sidecar_dir: "sidecar-source-tree".to_string(),
+            driver_module: "my_team.driver".to_string(),
+            log_file_min_level: "info".to_string(),
+            sidecar_log_level: "debug".to_string(),
         }
     }
 
@@ -579,16 +716,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let s = sample();
         write_user_settings(dir.path(), &s);
-        assert_eq!(read_settings(dir.path(), &no_workspace()), s);
+        assert_eq!(resolved(dir.path(), &no_workspace()), s);
     }
 
     #[test]
     fn missing_file_reads_as_default() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(
-            read_settings(dir.path(), &no_workspace()),
-            Settings::default()
-        );
+        assert_eq!(resolved(dir.path(), &no_workspace()), Settings::default());
     }
 
     #[test]
@@ -635,7 +769,7 @@ mod tests {
     fn keybindings_round_trip_with_camelcase_and_optional_skip_editable() {
         let dir = tempfile::tempdir().unwrap();
         write_user_settings(dir.path(), &sample());
-        assert_eq!(read_settings(dir.path(), &no_workspace()), sample());
+        assert_eq!(resolved(dir.path(), &no_workspace()), sample());
         // The on-disk shape matches the frontend `BindingSpec`: camelCase
         // `commandId`, and `skipEditable` present only when set.
         let text = serde_json::to_string(&sample()).unwrap();
@@ -713,6 +847,35 @@ mod tests {
         assert_eq!(
             effective().notice_dwell_ms,
             Settings::default().notice_dwell_ms
+        );
+    }
+
+    #[test]
+    fn one_malformed_value_costs_that_field_and_not_the_document() {
+        // The file is a hand-editable contract (ADR 0034), so a typo in
+        // one value must not silently discard everything else the user
+        // set. Same treatment as an out-of-range value: refused,
+        // reported, resolved to *that field's* default.
+        let doc = r#"{
+            "clear_scratch_on_exit": true,
+            "plot_fetch_interval_ms": "fast",
+            "recent_blfs_limit": 20,
+            "system_log_min_level": "warn"
+        }"#;
+        let (settings, complaints): (Settings, _) = crate::persisted_json::resolve_scoped(doc, "");
+
+        assert!(settings.clear_scratch_on_exit, "a good neighbour survives");
+        assert_eq!(settings.recent_blfs_limit, 20);
+        assert_eq!(settings.system_log_min_level, "warn");
+        assert_eq!(
+            settings.plot_fetch_interval_ms,
+            Settings::default().plot_fetch_interval_ms,
+            "the malformed field resolves to its own default"
+        );
+        assert_eq!(complaints.len(), 1, "{complaints:?}");
+        assert!(
+            complaints[0].contains("plot_fetch_interval_ms"),
+            "{complaints:?}"
         );
     }
 
@@ -808,7 +971,7 @@ mod tests {
         )
         .unwrap();
 
-        let effective = read_settings(&user, &workspace);
+        let effective = resolved(&user, &workspace);
 
         assert!(
             effective.clear_scratch_on_exit,
@@ -833,7 +996,7 @@ mod tests {
         write_user_settings(&user, &sample());
         std::fs::write(workspace.join(SETTINGS_FILE), "{}\n").unwrap();
 
-        assert_eq!(read_settings(&user, &workspace), sample());
+        assert_eq!(resolved(&user, &workspace), sample());
     }
 
     #[test]
@@ -884,15 +1047,15 @@ mod tests {
         )
         .unwrap();
 
-        let resolved = read_settings(&user, &workspace);
-        assert!(resolved.clear_scratch_on_exit);
-        write_settings(&user, &workspace, &resolved).unwrap();
+        let effective = resolved(&user, &workspace);
+        assert!(effective.clear_scratch_on_exit);
+        write_settings(&user, &workspace, &effective).unwrap();
 
         assert!(
-            !read_settings(&user, &no_workspace()).clear_scratch_on_exit,
+            !resolved(&user, &no_workspace()).clear_scratch_on_exit,
             "the user's own value must not be overwritten by the project's"
         );
-        assert!(read_settings(&user, &workspace).clear_scratch_on_exit);
+        assert!(resolved(&user, &workspace).clear_scratch_on_exit);
     }
 
     #[test]
@@ -913,7 +1076,7 @@ mod tests {
             std::fs::read_to_string(workspace.join(SETTINGS_FILE)).unwrap(),
             "{}\n"
         );
-        assert_eq!(read_settings(&user, &workspace), sample());
+        assert_eq!(resolved(&user, &workspace), sample());
     }
 
     #[test]
@@ -921,9 +1084,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_user_settings(dir.path(), &sample());
         write_user_settings(dir.path(), &Settings::default());
-        assert_eq!(
-            read_settings(dir.path(), &no_workspace()),
-            Settings::default()
-        );
+        assert_eq!(resolved(dir.path(), &no_workspace()), Settings::default());
     }
 }

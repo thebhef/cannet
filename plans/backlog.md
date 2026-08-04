@@ -289,18 +289,6 @@ name/colour/remove on any editable event row. Remaining follow-ups:
 
 ### GUI chrome and cross-cutting
 
-- `[robustness]` **One malformed value in `settings.json` resolves the
-  *whole* file to defaults.** `Settings` is `#[serde(default)]` at the
-  container, which fills *absent* fields — it does not rescue a field
-  whose value is the wrong *type*, so `"plot_fetch_interval_ms": "fast"`
-  fails the deserialize and every other setting silently reverts too.
-  Pre-existing (`scratch_cap_bytes` always had this shape), but Task 45
-  Stage 3 took the field count from four to nineteen, which multiplies
-  the chance of it. The fix is per-field tolerance — deserialize into a
-  `Map<String, Value>` and take each key on its own, reporting the ones
-  that fail with `validate`'s existing "refused and reported" wording,
-  which would then cover type errors as well as range errors. Noticed
-  while adding the Stage 3 fields.
 - `[cleanup]` **`SystemMessagesPanelParams` in `systemLog.ts` has no
   consumer.** `SystemMessagesPanel.tsx` declares its own local
   `PanelParams` with the same one field and uses that; the exported

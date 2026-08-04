@@ -147,8 +147,13 @@ fn read_state(dir: &Path) -> UiState {
 /// Precedence is uniform, not scope-gated: a project-scoped key that a
 /// pre-split `state.json` still holds at user scope keeps resolving from
 /// there until the first write moves it across.
+///
+/// A key whose value fails to parse costs that key alone, and its
+/// complaint is dropped: unlike `settings.json`, this file is
+/// best-effort scaffolding the app regenerates as the user works, so
+/// there is nothing to tell them about.
 fn read_state_scoped(user_dir: &Path, workspace_dir: &Path) -> UiState {
-    crate::persisted_json::read_scoped(user_dir, workspace_dir, STATE_FILE)
+    crate::persisted_json::read_scoped(user_dir, workspace_dir, STATE_FILE).0
 }
 
 /// Write `state` across the two scopes, each key going to the file

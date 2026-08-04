@@ -86,6 +86,7 @@
 //! sidecar holding hardware open — no `prctl(PR_SET_PDEATHSIG)` /
 //! Windows job-object plumbing required.
 
+use std::ffi::{OsStr, OsString};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
@@ -326,6 +327,34 @@ pub fn build_frozen_command(launcher: &std::path::Path) -> Command {
     Command::new(launcher)
 }
 
+/// Apply the settings-derived sidecar configuration to an already-built
+/// command, whichever launcher flavour built it — the frozen binary and
+/// the dev launchers differ in how they *find* the sidecar, not in how
+/// it is configured, so this is stated once here rather than in each
+/// `build_*_command`.
+///
+/// `log_level` is the sidecar's own `--log-level`, one of
+/// [`crate::settings::SIDECAR_LOG_LEVELS`]. It governs how much the
+/// sidecar writes to stderr, which is what
+/// [`classify_stderr_line`] turns into System Messages — so it is the
+/// verbosity of everything the sidecar contributes to a log a user
+/// ships back. It was unreachable only because the host passed the
+/// child no arguments at all.
+///
+/// `driver_module` is forwarded as [`DRIVER_MODULE_ENV`], which the
+/// sidecar reads to pick its driver implementation; `None` leaves the
+/// child environment alone so the sidecar uses its own default. The host
+/// never set this before, which is what made a replaced driver
+/// unreachable from the GUI.
+///
+/// `--bind` is still deliberately not passed — see [`build_command`].
+fn apply_sidecar_settings(cmd: &mut Command, log_level: &str, driver_module: Option<&OsStr>) {
+    cmd.arg("--log-level").arg(log_level);
+    if let Some(module) = driver_module {
+        cmd.env(DRIVER_MODULE_ENV, module);
+    }
+}
+
 /// Windows: suppress the console window a console-subsystem child would
 /// otherwise pop up. The release GUI is built `windows_subsystem =
 /// "windows"` (see `main.rs`), so it has no console of its own; spawning
@@ -350,15 +379,103 @@ fn suppress_console_window(cmd: &mut Command) {
     }
 }
 
+/// The environment variable that names the sidecar package directory —
+/// the escape hatch `sidecar_dir` is the persistent form of.
+const SIDECAR_DIR_ENV: &str = "CANNET_SIDECAR_DIR";
+
+/// The environment variable the *sidecar* reads to pick its driver
+/// implementation. Must match `helpers.DRIVER_MODULE_ENV` in the Python
+/// sidecar; the host forwards `driver_module` to the child through it.
+const DRIVER_MODULE_ENV: &str = "CANNET_DRIVER_MODULE";
+
+/// What an environment-versus-setting resolution decided.
+struct Resolved {
+    /// The effective value; `None` when neither source said anything,
+    /// so the built-in behaviour applies.
+    value: Option<OsString>,
+    /// The line to put on the system log when the environment shadowed
+    /// a value `settings.json` shows. `None` when nothing was shadowed.
+    shadowed: Option<String>,
+}
+
+/// Precedence between an environment variable and its `settings.json`
+/// equivalent: **the environment wins**, and the shadowed setting is
+/// reported rather than silently dropped.
+///
+/// The env vars predate the settings and exist as escape hatches — for
+/// tests, CI, packaging experiments, and deployment shapes nobody
+/// foresaw. An escape hatch a persisted file can override is not an
+/// escape hatch; and harnesses already drive cannet by setting these,
+/// so a settings file must not quietly change what such a run does.
+/// The setting is therefore the *persistent default* that the
+/// environment overrides for one run.
+///
+/// The cost of that order is that `settings.json` can show a value the
+/// app is not using, which ADR 0034 does not let pass silently — hence
+/// [`Resolved::shadowed`], which the caller puts on the system log, the
+/// same treatment a refused value gets.
+///
+/// Blank means "nothing here" on both sides, so an empty env var falls
+/// through to the setting rather than resolving to an empty path.
+fn env_over_setting(var: &str, key: &str, env: Option<OsString>, setting: &str) -> Resolved {
+    let setting = setting.trim();
+    let from_setting = (!setting.is_empty()).then(|| OsString::from(setting));
+    let from_env = env.filter(|v| !v.is_empty());
+    match from_env {
+        Some(value) => {
+            let shadowed = from_setting.is_some().then(|| {
+                format!(
+                    "{var}={} in the environment overrides the {key} setting (\"{setting}\") \
+                     for this run",
+                    value.to_string_lossy()
+                )
+            });
+            Resolved {
+                value: Some(value),
+                shadowed,
+            }
+        }
+        None => Resolved {
+            value: from_setting,
+            shadowed: None,
+        },
+    }
+}
+
+/// Where to look for the `cannet-python-can` package: the
+/// [`SIDECAR_DIR_ENV`] variable, else the `sidecar_dir` setting, else
+/// nowhere (the built-in walk-up applies).
+fn sidecar_dir_override() -> Resolved {
+    env_over_setting(
+        SIDECAR_DIR_ENV,
+        "sidecar_dir",
+        std::env::var_os(SIDECAR_DIR_ENV),
+        &crate::settings::effective().sidecar_dir,
+    )
+}
+
+/// Which driver module the sidecar should load: the
+/// [`DRIVER_MODULE_ENV`] variable already in the host's environment,
+/// else the `driver_module` setting, else nothing (the sidecar's own
+/// default).
+fn driver_module_override() -> Resolved {
+    env_over_setting(
+        DRIVER_MODULE_ENV,
+        "driver_module",
+        std::env::var_os(DRIVER_MODULE_ENV),
+        &crate::settings::effective().driver_module,
+    )
+}
+
 /// Resolve the absolute path to the `cannet-python-can` package
 /// directory, deliberately **independent of the GUI's CWD**.
 ///
 /// Resolution order (first hit wins):
 ///
-/// 1. **`CANNET_SIDECAR_DIR` env var** — escape hatch for tests,
-///    packaging experiments, and unforeseen deployment shapes. The
-///    value is used verbatim; if it's a non-existent path, the
-///    launcher will surface the resulting spawn failure.
+/// 1. **`override_dir`** — what [`sidecar_dir_override`] resolved from
+///    the `CANNET_SIDECAR_DIR` env var and the `sidecar_dir` setting.
+///    Used verbatim; if it's a non-existent path, the launcher will
+///    surface the resulting spawn failure.
 /// 2. **Walk up from the GUI binary's location** looking for
 ///    `pyproject.toml` under either:
 ///    - `<ancestor>/servers/cannet-python-can/` (dev / `cargo build`
@@ -372,8 +489,8 @@ fn suppress_console_window(cmd: &mut Command) {
 ///
 /// The returned path is the directory containing `pyproject.toml`,
 /// suitable for `uv --directory <path>` or `PYTHONPATH=<path>`.
-pub fn resolve_sidecar_dir() -> Option<PathBuf> {
-    if let Some(override_dir) = std::env::var_os("CANNET_SIDECAR_DIR") {
+pub fn resolve_sidecar_dir(override_dir: Option<OsString>) -> Option<PathBuf> {
+    if let Some(override_dir) = override_dir {
         return Some(PathBuf::from(override_dir));
     }
     let exe = std::env::current_exe().ok()?;
@@ -404,7 +521,7 @@ fn sidecar_dir_search_summary() -> String {
         |p| p.display().to_string(),
     );
     format!(
-        "CANNET_SIDECAR_DIR (unset) → walk up from {exe} looking for `servers/cannet-python-can/pyproject.toml` or `cannet-python-can/pyproject.toml`"
+        "{SIDECAR_DIR_ENV} and the sidecar_dir setting (both unset) → walk up from {exe} looking for `servers/cannet-python-can/pyproject.toml` or `cannet-python-can/pyproject.toml`"
     )
 }
 
@@ -473,18 +590,31 @@ pub fn spawn_sidecar(app: &AppHandle) {
 fn resolve_command(app: &AppHandle) -> Option<(Command, String)> {
     let frozen = frozen_launcher_path(app);
     let launcher = resolve_launch_path();
+    let sidecar_dir = sidecar_dir_override();
+    let driver_module = driver_module_override();
+    for note in [&sidecar_dir.shadowed, &driver_module.shadowed]
+        .into_iter()
+        .flatten()
+    {
+        sys_warn!(app, SOURCE, "{note}");
+    }
+    let log_level = crate::settings::effective().sidecar_log_level.clone();
+    let configure = |mut cmd: Command| {
+        apply_sidecar_settings(&mut cmd, &log_level, driver_module.value.as_deref());
+        cmd
+    };
     // Resolve the sidecar source directory to an absolute path
     // BEFORE we build the command — uv's `--directory` and Python's
     // `PYTHONPATH` are then independent of whatever CWD the GUI was
     // launched with. The previous relative-path version blew up with
     // a terse "No such file or directory" any time the GUI's CWD
     // wasn't the workspace root.
-    let source = launcher.zip(resolve_sidecar_dir());
+    let source = launcher.zip(resolve_sidecar_dir(sidecar_dir.value));
     match plan_launch(cfg!(dev), frozen, source) {
         Some(LaunchPlan::Frozen(path)) => {
             sys_debug!(app, SOURCE, "starting sidecar via frozen binary");
             Some((
-                build_frozen_command(&path),
+                configure(build_frozen_command(&path)),
                 "source: frozen self-contained binary".to_string(),
             ))
         }
@@ -500,7 +630,7 @@ fn resolve_command(app: &AppHandle) -> Option<(Command, String)> {
             }
             sys_debug!(app, SOURCE, "sidecar dir: {}", sidecar_dir.display());
             Some((
-                build_command(launcher, &sidecar_dir),
+                configure(build_command(launcher, &sidecar_dir)),
                 format!("sidecar dir: {}", sidecar_dir.display()),
             ))
         }
@@ -1166,10 +1296,141 @@ mod tests {
         assert_eq!(parse_listening_address(""), None);
     }
 
-    // Note: `CANNET_SIDECAR_DIR` env-var precedence isn't covered by
-    // a unit test — the workspace forbids `unsafe` blocks
-    // (`unsafe_code = "forbid"` in the top-level Cargo.toml), and
-    // `std::env::set_var` is `unsafe` since Rust 2024 because it can
-    // race with concurrent reads. The override path is one branch in
-    // `resolve_sidecar_dir`; eyeball-verify it there if it changes.
+    // The *reads* of the process environment stay untested — the
+    // workspace forbids `unsafe` (`unsafe_code = "forbid"` in the
+    // top-level Cargo.toml) and `std::env::set_var` is `unsafe` since
+    // Rust 2024, so a test cannot set one. What the reads feed is
+    // `env_over_setting`, which is pure and is covered below.
+
+    /// `value` as the environment (or a setting) hands it over.
+    fn os(value: &str) -> OsString {
+        value.into()
+    }
+
+    #[test]
+    fn the_environment_wins_over_the_setting_and_says_so() {
+        // The env vars are escape hatches — tests, CI, packaging
+        // experiments — and an escape hatch a persisted file can
+        // override is not an escape hatch. But `settings.json` must not
+        // then show a value nothing is using without a word (ADR 0034),
+        // so the shadowing is reported.
+        let r = env_over_setting(
+            "CANNET_SIDECAR_DIR",
+            "sidecar_dir",
+            Some(os("from-the-environment")),
+            "from-the-file",
+        );
+        assert_eq!(r.value, Some(os("from-the-environment")));
+        let note = r.shadowed.expect("a shadowed setting is reported");
+        assert!(note.contains("CANNET_SIDECAR_DIR"), "{note}");
+        assert!(note.contains("sidecar_dir"), "{note}");
+        assert!(note.contains("from-the-file"), "{note}");
+        assert!(note.contains("from-the-environment"), "{note}");
+    }
+
+    #[test]
+    fn the_setting_applies_when_the_environment_is_silent() {
+        let r = env_over_setting("CANNET_SIDECAR_DIR", "sidecar_dir", None, "from-the-file");
+        assert_eq!(r.value, Some(os("from-the-file")));
+        assert_eq!(r.shadowed, None, "nothing was shadowed");
+    }
+
+    #[test]
+    fn the_environment_alone_is_not_a_shadowing() {
+        // The untouched install: the setting is blank, so there is no
+        // file value to report as overridden.
+        let r = env_over_setting(
+            "CANNET_SIDECAR_DIR",
+            "sidecar_dir",
+            Some(os("only-the-env")),
+            "",
+        );
+        assert_eq!(r.value, Some(os("only-the-env")));
+        assert_eq!(r.shadowed, None);
+    }
+
+    #[test]
+    fn a_blank_value_on_either_side_means_unset() {
+        // Blank is how both sources say "nothing here", so the built-in
+        // behaviour applies and neither shadows the other.
+        for (e, setting) in [
+            (None, ""),
+            (None, "   "),
+            (Some(os("")), ""),
+            (Some(os("")), "  "),
+        ] {
+            let r = env_over_setting("CANNET_SIDECAR_DIR", "sidecar_dir", e.clone(), setting);
+            assert_eq!(r.value, None, "env {e:?} setting {setting:?}");
+            assert_eq!(r.shadowed, None);
+        }
+        // An empty env var does not shadow a real setting either.
+        let r = env_over_setting(
+            "CANNET_SIDECAR_DIR",
+            "sidecar_dir",
+            Some(os("")),
+            "from-the-file",
+        );
+        assert_eq!(r.value, Some(os("from-the-file")));
+        assert_eq!(r.shadowed, None);
+    }
+
+    #[test]
+    fn an_override_is_used_verbatim_as_the_sidecar_dir() {
+        let dir = sample_sidecar_dir();
+        assert_eq!(
+            resolve_sidecar_dir(Some(dir.clone().into_os_string())),
+            Some(dir),
+            "the override short-circuits the walk-up entirely"
+        );
+    }
+
+    #[test]
+    fn the_sidecar_log_level_reaches_the_child_and_bind_still_does_not() {
+        // The sidecar's `--log-level` was unreachable because the host
+        // passed no arguments at all. `--bind` stays unpassed for the
+        // reason `build_command_does_not_pin_a_bind_address` gives —
+        // adding one argument must not smuggle in the other.
+        for mut cmd in [
+            build_command(LaunchPath::PathUv, &sample_sidecar_dir()),
+            build_command(LaunchPath::SystemPython, &sample_sidecar_dir()),
+            build_frozen_command(&std::env::temp_dir().join(frozen_launcher_name())),
+        ] {
+            apply_sidecar_settings(&mut cmd, "warning", None);
+            let args: Vec<OsString> = cmd.get_args().map(OsStr::to_os_string).collect();
+            let at = args
+                .iter()
+                .position(|a| a == "--log-level")
+                .unwrap_or_else(|| panic!("no --log-level in {args:?}"));
+            assert_eq!(args[at + 1], OsStr::new("warning"));
+            assert!(!args.iter().any(|a| a == "--bind"), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn the_driver_module_is_forwarded_to_the_sidecar_process() {
+        // `CANNET_DRIVER_MODULE` is read by the *sidecar*, and the host
+        // never set it — so the only way to select a driver was to
+        // launch the GUI from a shell that already had it. The setting
+        // is the host-side half of that contract.
+        let mut cmd = build_command(LaunchPath::PathUv, &sample_sidecar_dir());
+        apply_sidecar_settings(&mut cmd, "info", Some(OsStr::new("my_team.driver")));
+        let value = cmd
+            .get_envs()
+            .find_map(|(k, v)| (k == DRIVER_MODULE_ENV).then_some(v))
+            .flatten()
+            .expect("the driver module must reach the child");
+        assert_eq!(value, OsStr::new("my_team.driver"));
+    }
+
+    #[test]
+    fn no_driver_module_leaves_the_child_environment_alone() {
+        // The untouched install must launch exactly as it did before
+        // the setting existed: the sidecar picks its own default.
+        let mut cmd = build_frozen_command(&std::env::temp_dir().join(frozen_launcher_name()));
+        apply_sidecar_settings(&mut cmd, "info", None);
+        assert!(
+            !cmd.get_envs().any(|(k, _)| k == DRIVER_MODULE_ENV),
+            "nothing should be set when neither the env nor the setting names one"
+        );
+    }
 }

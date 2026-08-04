@@ -46,6 +46,9 @@ install; never frozen in.
 ## Swapping `python-can`
 
 - **Frozen:** replace the modules under `_internal/can/` with an
-  interface-compatible version — no cannet rebuild.
+  interface-compatible version — no cannet rebuild. Or point cannet at a
+  whole sidecar package directory of your own: the **Sidecar directory**
+  setting (`CANNET_SIDECAR_DIR` overrides it for one run).
 - **Dev:** swap the dep in `pyproject.toml`, expose a `Driver` callable
-  matching `driver.Driver`, set `CANNET_DRIVER_MODULE`, `uv sync`.
+  matching `driver.Driver`, name it in the **Driver module** setting or
+  `CANNET_DRIVER_MODULE`, `uv sync`.
