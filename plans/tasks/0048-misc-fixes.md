@@ -563,6 +563,27 @@ mechanism is unverified and is not claimed. If it turns up again it
 needs a fresh observation (which process, which column) rather than
 this hypothesis.
 
+## 17. Hovering a trace row's time shows its local date and time
+
+A minor feature rather than a defect. The trace view's time column shows
+elapsed time since the session origin, per ADR 0024 — which is the right
+default and is not changing. But the absolute instant a row happened is
+sometimes the thing the user needs, and today it is nowhere on screen.
+
+Hovering the time value shows a tooltip with that message's **local**
+date and time.
+
+**When the origin is unknown, there is no tooltip.** A BLF that carries
+no start time gives a session with no wall-clock anchor — the host
+reports `session_start_seconds` as 0 and the frontend already collapses
+that to `null` — so there is no absolute instant to show, and inventing
+one (treating capture-relative seconds as an epoch) would be a lie. No
+tooltip, no placeholder.
+
+This does not touch ADR 0024's display rule: elapsed time is still what
+the column *renders*. The tooltip is an on-demand second reading of the
+same instant, not a second origin.
+
 ## Exit criteria
 
 - Every item above is fixed or struck with a recorded reason, and this
