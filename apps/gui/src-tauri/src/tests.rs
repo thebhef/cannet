@@ -729,6 +729,38 @@ fn collect_trace_records_uses_absolute_indices() {
 }
 
 #[test]
+fn wire_signals_flag_only_raw_bit_fields() {
+    // The hex-rendering predicate is a DBC fact, so the host computes it
+    // and the record carries it: a raw field is an unscaled, unitless
+    // integer with no `VAL_` table.
+    let state = test_state();
+    let dbc = "VERSION \"\"\n\nNS_ :\n\nBS_:\n\nBU_: ECU\n\n\
+         BO_ 256 Mixed: 8 ECU\n\
+          SG_ Serial : 0|32@1+ (1,0) [0|0] \"\" ECU\n\
+          SG_ Rpm : 32|16@1+ (0.25,0) [0|0] \"rpm\" ECU\n\
+          SG_ Counts : 48|8@1+ (1,0) [0|0] \"count\" ECU\n\
+          SG_ Gear : 56|8@1+ (1,0) [0|0] \"\" ECU\n\
+         VAL_ 256 Gear 0 \"Park\" 3 \"Drive\" ;\n";
+    *state.databases.lock().unwrap() = vec![loaded("mixed.dbc", dbc)];
+    state.trace_store.append(frame_with_data(256));
+
+    let records = collect_trace_records(&state, 0, 1);
+    let decoded = records[0].decoded.as_ref().expect("frame decodes");
+    let flag = |name: &str| {
+        decoded
+            .signals
+            .iter()
+            .find(|s| s.name == name)
+            .unwrap_or_else(|| panic!("signal {name} decoded"))
+            .raw_field
+    };
+    assert!(flag("Serial"), "unscaled unitless integer -> raw field");
+    assert!(!flag("Rpm"), "scaled and united -> stays decimal");
+    assert!(!flag("Counts"), "a unit means a measurement, not a pattern");
+    assert!(!flag("Gear"), "a VAL_ table key stays decimal");
+}
+
+#[test]
 fn decodes_against_the_loaded_dbcs_first_match_wins() {
     let state = test_state();
     // Two DBCs: each owns one unique id (256 / 512) and both define

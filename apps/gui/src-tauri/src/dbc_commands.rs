@@ -532,6 +532,10 @@ fn signal_to_wire(sig: &DecodedSignal<'_>) -> SignalRecord {
         name: sig.name.to_string(),
         value: sig.value,
         unit: sig.unit.to_string(),
+        // A raw field is a bit pattern with nothing marking it as a
+        // measurement (a unit) or a symbolic state (an enum table), so
+        // an unscaled value carries no meaning beyond its bits.
+        raw_field: sig.value_is_raw_integer && sig.unit.is_empty() && !sig.is_enum,
         label: sig.label.map(str::to_string),
     }
 }
