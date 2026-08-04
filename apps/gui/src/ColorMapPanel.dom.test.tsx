@@ -157,7 +157,7 @@ describe("ColorMapPanel", () => {
     });
   });
 
-  it("renders one row per enum value — its name + a colour picker", async () => {
+  it("renders one row per enum value — its name + a color picker", async () => {
     renderPanel({
       busId: "b1",
       messageId: 0x100,
@@ -177,7 +177,7 @@ describe("ColorMapPanel", () => {
 
     const colors = document.querySelectorAll('input[type="color"]');
     expect(colors.length).toBe(3);
-    // Each picker shows that value's stored colour.
+    // Each picker shows that value's stored color.
     expect((colors[0] as HTMLInputElement).value).toBe("#111111");
     expect((colors[2] as HTMLInputElement).value).toBe("#333333");
     // The sparse enum editor has no numeric range inputs.

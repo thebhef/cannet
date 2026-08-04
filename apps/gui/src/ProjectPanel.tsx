@@ -206,8 +206,8 @@ export function ProjectPanel(props: IDockviewPanelProps) {
                   className="project-bus-color"
                   value={bus.color ?? defaultBusColor(i)}
                   onChange={(e) => p.onUpdateBus(bus.id, { color: e.target.value })}
-                  aria-label={`bus ${bus.id} colour`}
-                  title="Graph colour for this bus"
+                  aria-label={`bus ${bus.id} color`}
+                  title="Graph color for this bus"
                 />
                 <input
                   type="text"

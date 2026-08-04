@@ -59,7 +59,7 @@ interface TraceViewProps {
   /// `autoScroll` was on, so the parent can uncheck it.
   onAutoScrollDisabled: () => void;
   /// Inline edit handlers for *editable* event rows (ADR 0035): rename (click
-  /// the label), recolour (click the swatch → native picker), remove (the row
+  /// the label), recolor (click the swatch → native picker), remove (the row
   /// button). Omitted where events aren't editable, which also hides the
   /// controls. Must be referentially stable (the row is memoised).
   eventActions?: EventActions;
@@ -461,7 +461,7 @@ const Row = memo(function Row({
   );
 });
 
-/// Default colour per event kind when an event carries no explicit colour
+/// Default color per event kind when an event carries no explicit color
 /// (ADR 0035): notes share the plot's event blue; the derived truncation
 /// marker a muted amber.
 const EVENT_KIND_COLOR: Record<string, string> = {
@@ -471,10 +471,10 @@ const EVENT_KIND_COLOR: Record<string, string> = {
 
 /// One timeline-event row (ADR 0035), rendered by the same `Row` path as a
 /// frame but with its own layout: the event time (relative to the trace
-/// origin, like a frame's time cell), a full-height colour swatch, and the
+/// origin, like a frame's time cell), a full-height color swatch, and the
 /// label. Used for the truncation marker and for notes. Editable events
 /// (notes, given `actions`) carry inline controls: click the label to rename,
-/// click the swatch to recolour (the same native picker the plot uses), and a
+/// click the swatch to recolor (the same native picker the plot uses), and a
 /// remove button on the row. Derived events (the truncation marker) render the
 /// same shape but inert.
 function EventRow({
@@ -532,22 +532,22 @@ function EventRow({
         </button>
       )}
       {editable ? (
-        // Swatch over a stacked native colour input — same control as the
+        // Swatch over a stacked native color input — same control as the
         // plot's series swatch (PlotPanel's `SignalSwatch`).
         <span className="trace-event-swatch-wrap">
           <button
             type="button"
             className="trace-event-swatch"
             style={{ background: color }}
-            title="pick a colour"
-            aria-label="pick event colour"
+            title="pick a color"
+            aria-label="pick event color"
             onClick={() => colorInputRef.current?.click()}
           />
           <input
             ref={colorInputRef}
             type="color"
             className="trace-event-swatch-input"
-            aria-label="event colour"
+            aria-label="event color"
             value={color}
             onChange={(e) => actions?.onRecolor(event.id, e.target.value)}
           />

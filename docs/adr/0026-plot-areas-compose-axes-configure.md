@@ -202,10 +202,10 @@ below:
 - **Fixed-range yMode** is gone. The old `yMode: "auto" | {min,max}`
   field is no longer persisted; old projects parse with the field
   ignored.
-- **Per-series colour picker** is on each signal-row's swatch
+- **Per-series color picker** is on each signal-row's swatch
   (right-click opens the browser's native picker).
-- **16-colour wheel** is the seed; a dragged-in series picks its
-  colour from the wheel index equal to the count of series already
+- **16-color wheel** is the seed; a dragged-in series picks its
+  color from the wheel index equal to the count of series already
   in the target area.
 - **X-axis cursor labels** render the cursor's letter + time on every
   axis (used to only render on the bottom axis). Tick spacing is
@@ -222,7 +222,7 @@ below:
   `drawEnumTiles(band)` helper. The single-enum axis reuses the same
   helper with one full-height centered band. Pure `enumSegments()`
   walks the (t, v) arrays; segments narrower than the label width draw
-  the coloured tile without text. Tile labels centre on the midpoint of
+  the colored tile without text. Tile labels centre on the midpoint of
   the tile's **visible** part (`tileLabelX`), rounded to whole pixels so
   glyphs aren't re-rasterised at a new subpixel phase each frame.
   Centring on the tile's *own* midpoint is rigid against the tile and so

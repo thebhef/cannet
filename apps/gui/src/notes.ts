@@ -22,7 +22,7 @@ export interface Note {
   /** Event kind (ADR 0035); the host sends `"note"`. Optional because
    *  the `add_note` dispatch omits it — the host defaults it. */
   kind?: EventKind;
-  /** `#RRGGBB`, or `null`/absent for the view's default colour. */
+  /** `#RRGGBB`, or `null`/absent for the view's default color. */
   color?: string | null;
 }
 
@@ -35,7 +35,7 @@ export interface TimelineEvent {
   timestampNs: number;
   label: string;
   kind: EventKind;
-  /** `#RRGGBB` or `null` (render the kind's default colour). */
+  /** `#RRGGBB` or `null` (render the kind's default color). */
   color: string | null;
   /** Derived events (truncation) are not user-editable; notes are. */
   editable: boolean;
@@ -46,7 +46,7 @@ export interface TimelineEvent {
 export const TRUNCATION_EVENT_ID = "__truncation";
 
 /// Map a host note to a [`TimelineEvent`]; defaults a pre-kind / add-path
-/// note to the `note` kind and no colour.
+/// note to the `note` kind and no color.
 export function noteToEvent(n: Note): TimelineEvent {
   return {
     id: n.id,

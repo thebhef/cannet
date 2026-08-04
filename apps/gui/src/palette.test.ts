@@ -2,11 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import { SIGNAL_WHEEL, stableSignalColor, wheelColor } from "./palette";
 
-/// The app background from index.css — the surface every wheel colour
+/// The app background from index.css — the surface every wheel color
 /// must read against.
 const APP_BACKGROUND = "#0e1116";
 
-/// WCAG 2.x relative luminance of an sRGB hex colour.
+/// WCAG 2.x relative luminance of an sRGB hex color.
 function luminance(hex: string): number {
   const channel = (i: number) => {
     const c = parseInt(hex.slice(1 + 2 * i, 3 + 2 * i), 16) / 255;
@@ -15,20 +15,20 @@ function luminance(hex: string): number {
   return 0.2126 * channel(0) + 0.7152 * channel(1) + 0.0722 * channel(2);
 }
 
-/// WCAG contrast ratio between two colours.
+/// WCAG contrast ratio between two colors.
 function contrast(a: string, b: string): number {
   const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
   return (hi + 0.05) / (lo + 0.05);
 }
 
 describe("SIGNAL_WHEEL", () => {
-  it("is 16 distinct colours", () => {
+  it("is 16 distinct colors", () => {
     expect(SIGNAL_WHEEL.length).toBe(16);
     expect(new Set(SIGNAL_WHEEL).size).toBe(16);
     for (const c of SIGNAL_WHEEL) expect(c).toMatch(/^#[0-9a-f]{6}$/);
   });
 
-  it("every colour holds AA contrast against the app background", () => {
+  it("every color holds AA contrast against the app background", () => {
     for (const c of SIGNAL_WHEEL) {
       expect(contrast(c, APP_BACKGROUND), `${c} vs ${APP_BACKGROUND}`).toBeGreaterThanOrEqual(4.5);
     }
@@ -53,8 +53,8 @@ describe("stableSignalColor", () => {
     expect(used.size).toBeGreaterThan(8);
   });
 
-  it("pins the hash: known keys keep their colour across releases", () => {
-    // Changing the hash silently recolours every non-overridden signal
+  it("pins the hash: known keys keep their color across releases", () => {
+    // Changing the hash silently recolors every non-overridden signal
     // in existing projects — if this fails, that's what just happened.
     expect(stableSignalColor("p|s:256:EngineSpeed")).toBe(SIGNAL_WHEEL[10]);
     expect(stableSignalColor("*|x:512:ModeA")).toBe(SIGNAL_WHEEL[11]);

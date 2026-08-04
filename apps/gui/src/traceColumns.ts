@@ -38,7 +38,7 @@ export interface ColumnDef<K extends string = ColumnKey> {
   /// chronological row's position vs. an id's total frame count), so
   /// the header changes to match.
   byIdLabel?: string;
-  /// CSS class on the header / cell element (carries colour, alignment).
+  /// CSS class on the header / cell element (carries color, alignment).
   className: string;
   /// Default width in px.
   defaultWidth: number;

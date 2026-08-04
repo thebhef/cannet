@@ -28,7 +28,7 @@ const filter = (id: string, name: string): ProjectElement => ({
 
 describe("elementViewEntries", () => {
   it("lists an element view by its panel id and kind-prefixed label", () => {
-    // The color-map case the go-to-view fix exists for: a closed colour map
+    // The color-map case the go-to-view fix exists for: a closed color map
     // must still be reachable, so it appears regardless of open state. The
     // label is `"Kind: name"` — the same string the palette displays and
     // fuzzy-filters on.

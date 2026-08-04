@@ -70,8 +70,8 @@ pub struct Note {
     /// readable (it reads back as [`EventKind::Note`]).
     #[serde(default)]
     pub kind: EventKind,
-    /// Optional `#RRGGBB` colour (ADR 0035). `None` renders in the view's
-    /// default event colour and round-trips through the BLF marker's
+    /// Optional `#RRGGBB` color (ADR 0035). `None` renders in the view's
+    /// default event color and round-trips through the BLF marker's
     /// `foreground_color`. `#[serde(default)]` for back-compat.
     #[serde(default)]
     pub color: Option<String>,
@@ -232,7 +232,7 @@ impl NotesStore {
         Some(applied)
     }
 
-    /// Recolour a note (ADR 0035 colour metadata): `Some("#RRGGBB")` to set,
+    /// Recolor a note (ADR 0035 color metadata): `Some("#RRGGBB")` to set,
     /// `None` to clear back to the view default. `None` return if `id` is
     /// unknown.
     pub fn recolor(&self, id: &str, color: Option<String>) -> Option<Applied> {
@@ -352,7 +352,7 @@ pub(crate) fn rename_note(app: AppHandle, id: String, label: String) {
     }
 }
 
-/// Recolour an existing note (ADR 0035): `Some("#RRGGBB")` to set, `null`
+/// Recolor an existing note (ADR 0035): `Some("#RRGGBB")` to set, `null`
 /// to clear back to the view default.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
@@ -437,7 +437,7 @@ mod tests {
         let applied = s.recolor("a", Some("#ff8800".into())).unwrap();
         assert_eq!(applied.notes[0].color.as_deref(), Some("#ff8800"));
         assert_eq!(applied.notes[0].label, "one", "label untouched");
-        // Clearing back to the default colour.
+        // Clearing back to the default color.
         let applied = s.recolor("a", None).unwrap();
         assert_eq!(applied.notes[0].color, None);
         // Unknown id is a no-op.
@@ -447,7 +447,7 @@ mod tests {
     #[test]
     fn color_and_kind_round_trip_through_scratch_json() {
         // A pre-kind notes.json (no `kind`/`color`) still parses, and a
-        // coloured note survives a persist + restore (ADR 0002 DS-7 / 0035).
+        // colored note survives a persist + restore (ADR 0002 DS-7 / 0035).
         let legacy: Note = serde_json::from_str(r#"{"id":"x","timestampNs":5,"label":"old"}"#)
             .expect("a pre-kind note still deserializes");
         assert_eq!(legacy.kind, EventKind::Note);

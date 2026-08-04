@@ -54,8 +54,8 @@ pub struct Bus {
     pub fd: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub fd_data_speed_bps: Option<u32>,
-    /// User-chosen graph colour (`#rrggbb`). The host round-trips it
-    /// without interpretation; the GUI falls back to a palette colour
+    /// User-chosen graph color (`#rrggbb`). The host round-trips it
+    /// without interpretation; the GUI falls back to a palette color
     /// when it's absent.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub color: Option<String>,
@@ -223,9 +223,9 @@ pub struct Project {
     /// Additive; no schema-version bump.
     #[serde(default)]
     pub transmit_frames: Vec<crate::transmit_frames::TransmitFrame>,
-    /// Per-signal colour overrides for the signal views: descriptor
+    /// Per-signal color overrides for the signal views: descriptor
     /// key → `#rrggbb`. Project-level (not per-panel) so a signal
-    /// keeps its colour across views and sessions; the frontend owns
+    /// keeps its color across views and sessions; the frontend owns
     /// the key format (`plotData.ts::signalKey`) and the host just
     /// round-trips the map. Additive; no schema-version bump.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]

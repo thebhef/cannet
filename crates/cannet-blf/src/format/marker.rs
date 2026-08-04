@@ -53,7 +53,7 @@ pub struct GlobalMarker {
     /// adjacent event the marker comments on.
     pub commented_event_type: u32,
     /// 24-bit RGB packed into a `u32` (`0x00RR_GGBB`). Vector tools
-    /// render markers in the chosen colour; our reader/writer
+    /// render markers in the chosen color; our reader/writer
     /// preserves the raw u32.
     pub foreground_color: u32,
     pub background_color: u32,
@@ -186,7 +186,7 @@ pub fn decode(object_bytes: &[u8]) -> Result<GlobalMarker, MarkerError> {
 
 /// Convenience constructor: build a `GLOBAL_MARKER` at a given
 /// timestamp with `group` / `marker` / `description` text.
-/// `commented_event_type` is 0 (freestanding) and the colours are
+/// `commented_event_type` is 0 (freestanding) and the colors are
 /// black-on-white by default. The caller can adjust the returned
 /// struct before encoding.
 // `expect` is unreachable on realistic note payloads.

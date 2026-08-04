@@ -275,9 +275,9 @@ export function App() {
   const [localVirtualBuses, setLocalVirtualBuses] = useState<LocalVirtualBusDef[]>(
     [],
   );
-  // Per-signal colour overrides for the signal views (descriptor key →
-  // #rrggbb). Project-level so a signal keeps its colour across views
-  // and sessions; empty = every signal renders its stable wheel colour.
+  // Per-signal color overrides for the signal views (descriptor key →
+  // #rrggbb). Project-level so a signal keeps its color across views
+  // and sessions; empty = every signal renders its stable wheel color.
   const [signalColors, setSignalColors] = useState<Record<string, string>>({});
   // Multi-server remote-session tracking, keyed by address. Connect/
   // Disconnect drives this; entries clear on a server-side hang up via
@@ -1623,7 +1623,7 @@ export function App() {
     setBuses((prev) => {
       if (prev.some((b) => b.id === bus.id)) return prev;
       // A new bus carries no bitrate — the adapter's own default stays
-      // in charge until one is set. Seed a graph colour if the caller
+      // in charge until one is set. Seed a graph color if the caller
       // didn't supply one: the default palette indexed by the new bus's
       // list position.
       const seeded: Bus =
@@ -1646,7 +1646,7 @@ export function App() {
     invalidateCache();
   }, [invalidateCache]);
   // Shallow patch of one bus's persisted fields — inline rename, graph
-  // colour, and the hardware-config knobs (nominal speed / FD toggle /
+  // color, and the hardware-config knobs (nominal speed / FD toggle /
   // data-phase speed) all go through here (mirrors
   // `handleUpdateVirtualBus`'s patch shape). Pure project state; the
   // host applies any hardware change on the next Connect.
@@ -1708,7 +1708,7 @@ export function App() {
     [],
   );
 
-  /// Set (or clear, with `null`) one signal's project-level colour
+  /// Set (or clear, with `null`) one signal's project-level color
   /// override — a model edit, so it marks the project dirty.
   const handleSetSignalColor = useCallback((key: string, color: string | null) => {
     setSignalColors((prev) => {

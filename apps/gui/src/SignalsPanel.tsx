@@ -530,7 +530,7 @@ function SignalRow({
           <span
             className="signals-name"
             style={{ color: nameColor }}
-            title={`${row.signal_name} — drag to a plot; right-click to recolour`}
+            title={`${row.signal_name} — drag to a plot; right-click to recolor`}
             draggable
             onDragStart={(e) => {
               e.stopPropagation();
@@ -546,7 +546,7 @@ function SignalRow({
               ]);
             }}
             onContextMenu={(e) => {
-              // Right-click the name opens the native colour picker —
+              // Right-click the name opens the native color picker —
               // the same affordance as a plot series swatch (ADR 0026).
               e.preventDefault();
               e.stopPropagation();

@@ -308,7 +308,7 @@ export function TracePanel(props: IDockviewPanelProps) {
     [merge, baseEnsureVisible],
   );
 
-  // Inline edit handlers for editable event rows (ADR 0035): rename / colour /
+  // Inline edit handlers for editable event rows (ADR 0035): rename / color /
   // remove, wired straight to the host notes commands. Memoised (the row is
   // memoised) — the dispatchers are themselves stable.
   const eventActions = useMemo<EventActions>(

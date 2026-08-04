@@ -142,7 +142,7 @@ trip over it.
   formatting work if that ever lands.
 - `[ui]` `cannet-gui`: **bitfield message visualizer**. Render a CAN
   message as its raw bits laid out as a grid (8×N cells, one per bit),
-  coloured / lit by current value, with DBC-derived signal overlays
+  colored / lit by current value, with DBC-derived signal overlays
   showing which bits belong to which signal and named flag labels for
   single-bit booleans. Most natural as a row-expansion mode in the
   trace view (toggle between the decoded-signal lines and a bit grid),
@@ -269,17 +269,17 @@ timestamp (`eventMerge` splices host-anchored events — `frame_indices_at_ns`
 — into the windowed frame stream, the truncation marker as the floor row); a
 **singleton `EventsPanel`** (command palette → "Show events") is the trace
 view rendering only events; and an `EventContextMenu` edits
-name/colour/remove on any editable event row. Remaining follow-ups:
+name/color/remove on any editable event row. Remaining follow-ups:
 
-- `[ui]` **Colour editing on the plot's own event list** (`EventLogRow` in
+- `[ui]` **Color editing on the plot's own event list** (`EventLogRow` in
   `PlotPanel`). The trace + events panel have it; the plot's note list still
-  only renames/removes. Add a colour swatch there for parity (the host
+  only renames/removes. Add a color swatch there for parity (the host
   `recolor_note` command + `recolorNote` context dispatcher already exist).
-- `[bug]` **macOS: the event colour picker opens in the wrong location.**
-  The native colour picker for events appears in odd positions on macOS
-  (the plot series colour picker seems to open correctly, so compare the
+- `[bug]` **macOS: the event color picker opens in the wrong location.**
+  The native color picker for events appears in odd positions on macOS
+  (the plot series color picker seems to open correctly, so compare the
   two anchoring paths). Likely a popover/anchor-positioning difference in
-  the event colour control vs. the plot swatch. (Task 32 QA.)
+  the event color control vs. the plot swatch. (Task 32 QA.)
   **Candidate fix landed (unverified on macOS):** `.trace-event-swatch-input`
   now fills the swatch's real footprint (`inset:0`, no `width/height:0`)
   instead of collapsing to a zero-size point, so the native picker has a
@@ -293,7 +293,7 @@ name/colour/remove on any editable event row. Remaining follow-ups:
 - `[ui/feat]` cursor + marker rework.
   - Each cursor-created marker carries an editable description; the
     list UI gets an expand-to-show body on the row, collapsed by
-    default, plus a per-marker colour picker.
+    default, plus a per-marker color picker.
   - Cursors / markers grow into their own top-level view (they are
     global, not per-panel; their lifecycle is similar to project
     view, graph view, system messages). The view shows both BLF
@@ -344,22 +344,22 @@ name/colour/remove on any editable event row. Remaining follow-ups:
     and bindings a template names.
 
   Either is a task with an ADR question in it, not a settings row.
-- `[feat]` **A colour-blind-safe palette needs a palette set, not a
+- `[feat]` **A color-blind-safe palette needs a palette set, not a
   setting.** Task 45 Stage 5's palettes item says it outright: *there
-  is no global remedy for a colour-blind user — per-signal overrides
+  is no global remedy for a color-blind user — per-signal overrides
   only*. Promoting a chooser is blocked on the thing being chosen from:
   - **There is one palette to pick, and it is two palettes.**
-    `palette.ts`'s `SIGNAL_WHEEL` is 16 colours; `busColor.ts`'s
+    `palette.ts`'s `SIGNAL_WHEEL` is 16 colors; `busColor.ts`'s
     `BUS_COLORS` is 8. A user with a CVD needs both replaced, and they
     are sized and used differently.
-  - **Sixteen distinguishable CVD-safe colours is a design problem, not
+  - **Sixteen distinguishable CVD-safe colors is a design problem, not
     a table.** The canonical safe set (Okabe–Ito) is eight, and
     `palette.test.ts` additionally requires every entry to hold WCAG-AA
     ≥ 4.5:1 against the app background. Whoever picks the set owes both
     properties, verified.
-  - **Switching wheels recolours existing work.** `stableSignalColor`
+  - **Switching wheels recolors existing work.** `stableSignalColor`
     hashes a signal key onto a wheel slot, and its test pins two known
-    keys precisely because *"changing the hash silently recolours every
+    keys precisely because *"changing the hash silently recolors every
     non-overridden signal"*. A palette switch is the same event by
     another route, and the per-signal overrides in `signal_colors`
     (project-scoped) do *not* follow it — so a user who has overridden
@@ -371,9 +371,9 @@ name/colour/remove on any editable event row. Remaining follow-ups:
   one item. Neither is a promotion, and they fail for different
   reasons:
   - **Light mode is a second stylesheet that does not exist.**
-    `index.css` carries ~530 literal hex colours and **zero** CSS
+    `index.css` carries ~530 literal hex colors and **zero** CSS
     custom properties; `:root` declares `color-scheme: dark` and paints
-    `#0e1116`. Beyond the stylesheet, colour is also decided in JS —
+    `#0e1116`. Beyond the stylesheet, color is also decided in JS —
     `palette.ts` (AA-tested against that one background), `busColor.ts`,
     and `PlotArea.tsx`'s uPlot canvas styling. The real task is
     "introduce a theme token layer", after which a `theme` setting is
@@ -459,7 +459,7 @@ name/colour/remove on any editable event row. Remaining follow-ups:
   serializes every open panel's full `params`, so a project's plot panels
   (`plot-<element>`, e.g. `plot-battery` / `plot-powertrain`) get their
   complete definitions — areas, `busId`-scoped signal keys like
-  `batt|s:768:PackCurrent`, colours — baked into machine-local
+  `batt|s:768:PackCurrent`, colors — baked into machine-local
   `state.json`, byte-identical to the `.cannet_prj` copy. That's
   project-owned data (thin-views principle) mirrored into UI state, and
   stale-by-construction: the signals reference project-scoped buses that
@@ -536,7 +536,7 @@ name/colour/remove on any editable event row. Remaining follow-ups:
   panel. Surfaced while building the frontend perf capture, which adds
   yet another log/metric stream.
 - `[ui]` GUI-wide visual restyle: adopt the dark "scope" visual
-  language from `plans/plot-panel-reference.html` (the prototype's colour
+  language from `plans/plot-panel-reference.html` (the prototype's color
   variables, monospace type scale, panel chrome, control styling) across
   the toolbar, trace panels, project panel, etc. — currently each panel
   has its own ad-hoc styling in `apps/gui/src/index.css`. Approved in

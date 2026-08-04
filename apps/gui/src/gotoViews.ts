@@ -2,7 +2,7 @@
 // palette can reach. Pure list-building, split out so it is unit-testable
 // without dockview — App attaches the open/focus thunks and appends the
 // singleton views. The key property: a view is listed whether or not its
-// panel is currently open, so a closed element view (e.g. a colour map) is
+// panel is currently open, so a closed element view (e.g. a color map) is
 // still reachable.
 
 import { elementPanelComponent } from "./dockLayout";

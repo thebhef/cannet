@@ -35,16 +35,16 @@ describe("notes helpers", () => {
 });
 
 describe("timeline events (ADR 0035)", () => {
-  it("maps notes to editable events, defaulting kind and colour", () => {
+  it("maps notes to editable events, defaulting kind and color", () => {
     const [e] = timelineEvents([note("a", 1_000, "hi")], null);
     expect(e).toMatchObject({
       id: "a", kind: "note", color: null, editable: true, label: "hi",
     });
   });
 
-  it("carries an explicit colour/kind through unchanged", () => {
-    const coloured: Note = { id: "a", timestampNs: 1, label: "x", kind: "note", color: "#ff8800" };
-    expect(timelineEvents([coloured], null)[0].color).toBe("#ff8800");
+  it("carries an explicit color/kind through unchanged", () => {
+    const colored: Note = { id: "a", timestampNs: 1, label: "x", kind: "note", color: "#ff8800" };
+    expect(timelineEvents([colored], null)[0].color).toBe("#ff8800");
   });
 
   it("appends a derived, non-editable truncation marker when a ts is given", () => {

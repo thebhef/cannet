@@ -132,10 +132,10 @@ export interface Bus {
   /// FD data-phase bitrate in bits/s (only meaningful when `fd` is
   /// true). Common values: 1_000_000, 2_000_000, 4_000_000, 5_000_000.
   fd_data_speed_bps?: number | null;
-  /// User-chosen colour (CSS hex, `#rrggbb`) for the bus across the
+  /// User-chosen color (CSS hex, `#rrggbb`) for the bus across the
   /// graph view — its node tint and every wire that carries it.
-  /// Optional: a bus saved before the colour field, or never edited,
-  /// falls back to a palette colour derived from its list position.
+  /// Optional: a bus saved before the color field, or never edited,
+  /// falls back to a palette color derived from its list position.
   color?: string | null;
 }
 
@@ -540,7 +540,7 @@ export interface Project {
   /// In-process virtual buses (ADR 0021). Bindings with
   /// `kind = local-virtual-bus` reference one by id.
   local_virtual_buses?: LocalVirtualBusDef[];
-  /// Per-signal colour overrides for the signal views: descriptor key
+  /// Per-signal color overrides for the signal views: descriptor key
   /// (`plotData.ts::signalKey`) → `#rrggbb`. Absent/empty = none.
   signal_colors?: Record<string, string>;
 }

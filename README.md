@@ -629,10 +629,10 @@ the re-sampling), Clear re-anchors what's plotted to "now".
   area's signal-panel heading **drags that area to another area's
   position** in the stack. Each
   plot area has a uPlot canvas (time axis at the bottom) plus a **signal
-  panel** beside it listing that area's signals: a colour swatch (click
+  panel** beside it listing that area's signals: a color swatch (click
   to hide / show the line — the value keeps updating, the swatch dims;
-  **right-click** the swatch to pick the series' colour from the
-  browser's colour picker), the name, and the value — at cursor A when one is placed, else at the
+  **right-click** the swatch to pick the series' color from the
+  browser's color picker), the name, and the value — at cursor A when one is placed, else at the
   mouse crosshair, else the latest sample. While the pointer is over the
   panel, the bottom-most area's **`time (s)` axis label** also carries
   the crosshair's own time — the instant those readouts are taken at —
@@ -647,8 +647,8 @@ the re-sampling), Clear re-anchors what's plotted to "now".
   into the *focused* plot area (click an area to focus it). **Drag a
   signal row** to re-order it, onto another plot area, or onto another
   plot panel (cross-panel drops in a copy); **×** removes it. A signal
-  keeps the colour it was given when added — re-ordering / moving
-  doesn't recolour it. The shared x-axis spans 0 to the longest plotted
+  keeps the color it was given when added — re-ordering / moving
+  doesn't recolor it. The shared x-axis spans 0 to the longest plotted
   signal across the panel's areas, so a signal added late still shows
   over the existing span.
 - **Zoom, pan & follow.** **Wheel** zooms x on every area; **shift +
@@ -942,7 +942,7 @@ one signal and assigns colors to its values — enum states each get a
 color (seeded from the DBC `VAL_` table), or a numeric band can be
 given a color over an inclusive `[min, max]` range. Unlike a filter it
 isn't wired through the graph: it's **ambient**, so any view rendering
-the target signal shows the colour. The expanded trace rows tint the
+the target signal shows the color. The expanded trace rows tint the
 signal's value cell; a plot fills the **enum logic-analyzer lane box**
 for each held value. Maps live in the project file and resolve
 first-match — the first map (and within it, the first rule) that covers

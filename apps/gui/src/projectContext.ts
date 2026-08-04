@@ -46,12 +46,12 @@ export interface ProjectContextValue {
   connectedBusIds: string[];
   /// Path of a loaded BLF replay, if one is the active source.
   blfPath: string | null;
-  /// Per-signal colour overrides for the signal views: descriptor key
+  /// Per-signal color overrides for the signal views: descriptor key
   /// (`plotData.ts::signalKey`) → `#rrggbb`. Project-level so a signal
-  /// keeps its colour across views and sessions; signals without an
-  /// entry render their stable wheel colour (`palette.ts`).
+  /// keeps its color across views and sessions; signals without an
+  /// entry render their stable wheel color (`palette.ts`).
   signalColors: Record<string, string>;
-  /// Set (or clear, with `null`) one signal's colour override.
+  /// Set (or clear, with `null`) one signal's color override.
   onSetSignalColor: (key: string, color: string | null) => void;
 
   onNewProject: () => void;
@@ -72,7 +72,7 @@ export interface ProjectContextValue {
   onRemoveBus: (id: string) => void;
   /// Shallow-patch one bus's persisted fields (mirrors
   /// {@link onUpdateVirtualBus}). Used for inline rename (`name`),
-  /// graph colour (`color`), and the hardware-config knobs: nominal
+  /// graph color (`color`), and the hardware-config knobs: nominal
   /// (arbitration) `speed_bps`, the CAN-FD toggle `fd`, and the FD
   /// data-phase `fd_data_speed_bps` — each `null`able to clear (the
   /// host falls back to the driver default / nominal rate on the next

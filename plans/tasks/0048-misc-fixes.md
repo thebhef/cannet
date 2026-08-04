@@ -96,7 +96,7 @@ renderers go through it: `SignalValueCell` (signal view + DBC panel live
 value column) and `DecodedSignalCell` (expanded trace rows).
 `formatSignalValue` shrank to the magnitude alone — it no longer takes a
 unit, and `formatSignalValueWithLabel` is gone with the concatenation it
-existed for. The unit recedes to the secondary text colour and carries
+existed for. The unit recedes to the secondary text color and carries
 the inter-part spacing (`.signal-value-unit` in `index.css`), so a
 caller with the unit in its own column (the signal view, passing `""`)
 renders the value and nothing else.
@@ -240,7 +240,7 @@ the two declarations the new guard in `dockPanelScrolling.test.ts`
 holds. Whatever was seen, it was not this; if it recurs, it needs a
 fresh observation rather than this hypothesis.
 
-**Colour-map panel — the project panel's defect exactly.**
+**Color-map panel — the project panel's defect exactly.**
 `overflow: auto` on a panel root with no height. Measured with the real
 markup in a 300 px group and 24 range rules:
 `clientHeight === scrollHeight === 794`, `scrollTop` stuck at 0, the
@@ -437,7 +437,7 @@ primary, and whose swatch already owns both mouse buttons), the plot
 areas (in `per-unit` / `individual` mode a logical area's rows are
 split across several `PlotArea` instances, so a range selection spans
 sibling components), and the persisted per-area config (a bulk hide or
-recolour materializes pattern-derived rows into manual picks, which
+recolor materializes pattern-derived rows into manual picks, which
 rewrites the stored signal list against the area's live patterns).
 There is also a re-render constraint: `PlotArea` is memoised and
 guarded by a test that panel-local state re-renders no area, so a
@@ -655,7 +655,7 @@ With the width published from the whole filtered set both hold. It stays
 as a floor (`min-width: max-content`) for anything the `ch` arithmetic
 under-measures, and the width is `max(100%, …)` so the rows still span
 the panel when every message fits — a plain `calc()` left 15-character
-rows 447 px wide in a 585 px list, with their borders and level colours
+rows 447 px wide in a 585 px list, with their borders and level colors
 stopping short of the right edge.
 
 Measured in the **live WebView2 host** too, on a 504 px panel whose
@@ -674,18 +674,35 @@ scrolled stack" / "measures the filtered set, not the whole buffer" in
 `SystemMessagesPanel.dom.test.tsx`. That the halves add up to an actual
 scrollbar is only visible in Chromium — jsdom does no layout.
 
-## 19. "colour" should be "color" throughout
+## 19. "colour" should be "color" throughout — **done**
 
-Repo-wide spelling: American `color`, not British `colour`. Identifiers
-are already correct (`busColor.ts`, `ColorMapPanel.tsx`, `colorMap`); it
-is prose — comments, rustdoc, ADRs, planning docs, README — that drifted.
-Roughly 210 occurrences across 51 files.
+Swept: 244 occurrences across 52 files, on the stem rather than the
+word — `colour`, `Colour`, `colours`, `coloured`, `Coloured`,
+`uncoloured`, `recolour`, `Recolour`, `recolours`, `recoloured`,
+`recolouring`. No `COLOUR`, no `colourway`/`discolour`, no
+`colourmap`/`colour-map` variant, and no file name carried it. A
+case-insensitive search for the stem now returns nothing outside
+`node_modules/`, `target/` and `dist/`.
 
-Mechanical, but not blindly so: ADRs and planning docs are historical
-records whose wording is otherwise not to be edited, and a few
-occurrences may sit inside user-visible strings, where the change is
-behavioural rather than cosmetic. Land it separately from any behaviour
-change so the diff stays reviewable.
+**No identifier had to be renamed.** The premise held — `busColor.ts`,
+`ColorMapPanel.tsx`, `colorMap`, `.colormap-panel`, `foreground_color`
+were all already American. Every occurrence was prose: comments,
+rustdoc, test names, ADRs, planning docs, README.
+
+**Thirteen were user-visible strings**, which makes those a behavioural
+change rather than a cosmetic one: the color-map panel's two empty-state
+lines ("Pick a signal to color its values.", "No ranges yet — add one to
+color a value band.") and its two swatch `aria-label`s; the plot area's
+two swatch tooltips, its `pick series color` `aria-label`, and the
+pattern-derived row's "drag/recolor to pin it" tooltip; the project
+panel's bus swatch `aria-label` and its "Graph color for this bus"
+tooltip; the signal row's "right-click to recolor" tooltip; and the
+event editor's "pick a color" tooltip with its two `aria-label`s. One
+test queried by such a label (`pick series color` in
+`PlotPanel.dom.test.tsx`) and moved with it. Nothing in the Rust host is
+user-visible — its only string-literal hit was a test assertion message.
+
+ADRs and planning docs were touched for the spelling and nothing else.
 
 ## Exit criteria
 

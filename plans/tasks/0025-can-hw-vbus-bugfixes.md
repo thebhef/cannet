@@ -144,11 +144,11 @@ Cheap documented-contract work that lands with the fix:
   — it claims "the trace clear cascades to the host" but
   `trace.clear()` is purely a frontend state update.
 
-### 2. Plot signal colours don't advance
+### 2. Plot signal colors don't advance
 
 ~~Signals added one-by-one all come up with the first palette
-colour…~~ **Fixed in code** (verified 2026-07-25): both add paths
-seed the colour-wheel index from the area's existing signal count per
+color…~~ **Fixed in code** (verified 2026-07-25): both add paths
+seed the color-wheel index from the area's existing signal count per
 [ADR 0026](../../docs/adr/0026-plot-areas-compose-axes-configure.md)
 (`PlotPanel.tsx` `addSignalToFocused` and the drop path). Remaining:
 the regression test the exit criterion asks for — verify one-by-one
@@ -170,7 +170,7 @@ stale comment.
   `per_id_rate_is_steady_across_delivery_gaps`).
 - The post-clear negative-timestamp bug is root-caused (per the
   experiment above) and fixed, with a regression test.
-- Adding plot signals one at a time advances the colour palette;
+- Adding plot signals one at a time advances the color palette;
   covered by a test.
 - The trace timing model is documented per ADR 0024: rustdoc on
   `TraceStore::start_session` / `append`, tsdoc on `useTrace` /

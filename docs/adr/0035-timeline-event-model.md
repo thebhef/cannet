@@ -17,7 +17,7 @@ Several pending capabilities want more of the same shape:
 - a "history truncated here" marker when the disk-spill store drops its
   oldest history, shown in both the plot and the trace;
 - message-bound markers (`EVENT_COMMENT`) created from a source message,
-  coloured and described, filterable by a user tag;
+  colored and described, filterable by a user tag;
 - those same markers rendered in the chronological/filtered trace and the
   graph view, not just the plot;
 - a global panel for browsing, filtering, and editing markers;
@@ -124,7 +124,7 @@ render. Named so far:
   the view's time origin.
 - Scratch persistence of durable events is the first persistence instance
   of this model; the BLF path remains the export/import home.
-- Coloured/described markers, message-bound `EVENT_COMMENT`, rendering in
+- Colored/described markers, message-bound `EVENT_COMMENT`, rendering in
   the trace and graph views, and the markers panel are all consequences
   of this decision, sequenced separately.
 - **Events are a separate sparse channel**, not paged through the

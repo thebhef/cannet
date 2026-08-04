@@ -37,7 +37,7 @@ describe("project panel", () => {
   });
 });
 
-describe("colour-map panel", () => {
+describe("color-map panel", () => {
   // The project panel's defect exactly: `overflow: auto` on a panel root
   // with no height. Measured in Chromium with the real stylesheets, a
   // 300 px group and 24 range rules: `clientHeight === scrollHeight ===
@@ -160,7 +160,7 @@ describe("system messages panel", () => {
     expect(d).toContain("1ch");
     expect(d).toMatch(/\bmin-width:\s*max-content\b/);
     // ...but never narrower than the panel, or the rows' borders and
-    // level colours stop short of the right edge when every message
+    // level colors stop short of the right edge when every message
     // already fits. Measured with a plain `calc()` and 15-character
     // messages in a 585 px list: the rows came out 447 px wide.
     expect(d).toMatch(/\bwidth:\s*max\(\s*100%/);
