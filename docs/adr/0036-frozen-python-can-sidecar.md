@@ -129,6 +129,17 @@ though the artifact happens to contain an interpreter.
   enumerates zero channels and the banner still fires. No per-backend
   import guard is added, by deliberate decision — that residual risk is
   accepted.
+- **The frozen launcher names itself in a process list.** Freezing puts
+  a long-lived process on the user's machine that they did not start,
+  so it has to say what it is. The file name (`cannet-python-can`)
+  carries both `cannet` and which part of cannet it is, and is the
+  process name on Linux and macOS. Windows instead reports a process's
+  identity from the binary's `VERSIONINFO` resource, which PyInstaller
+  emits only when handed one — so the build renders one
+  (`--version-file`) giving the launcher the description *cannet CAN
+  hardware sidecar (python-can)* under the `cannet` product and
+  company. The resource is Windows-only; no equivalent exists for ELF
+  or Mach-O, and none is needed.
 - **Vendor DLLs stay user-installed.** `vxlapi`/`canlib`/`PCANBasic` are
   loaded via `ctypes` from the user's hardware SDK at runtime; they are
   **not** frozen in (licensing, and they are the user's driver install).
