@@ -15,6 +15,13 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 
 import { comboboxValue, pickCombobox } from "./comboboxTestKit";
 
+/// Synthetic cost of a resample's synchronous section (see the
+/// `setData` stub below). `perTickMs` is what one tick "costs";
+/// `accMs` is the total charged so far, which a test adds to
+/// `performance.now()` so the area's own measurement sees it.
+/// Prefixed `mock` so the hoisted `vi.mock` factory may reference it.
+const mockRenderCost = { perTickMs: 0, accMs: 0 };
+
 vi.mock("uplot", () => {
   class FakeUPlot {
     // `uPlot.paths.stepped(...)` is consulted at construction to give
@@ -41,6 +48,12 @@ vi.mock("uplot", () => {
     xCalls: { min: number; max: number }[] = [];
     setData(d: unknown) {
       this.data = d;
+      // Stand in for the cost of shaping + drawing a large series set:
+      // `setData` is the one call the resample's synchronous section
+      // makes into uPlot, so charging the fake clock here is what makes
+      // an expensive area expensive from the loop's point of view.
+      // jsdom cannot make it expensive for real (no canvas, no paths).
+      mockRenderCost.accMs += mockRenderCost.perTickMs;
     }
     setScale(key?: string, range?: { min: number; max: number }) {
       if (key === "x" && range) this.xCalls.push({ min: range.min, max: range.max });
@@ -432,6 +445,8 @@ afterEach(() => {
   mockSampleBounds.from = 0;
   mockSampleBounds.last = 2;
   mockSampleStall.on = false;
+  mockRenderCost.perTickMs = 0;
+  mockRenderCost.accMs = 0;
   for (const k of Object.keys(mockSettings)) delete mockSettings[k];
   void hydrateSettings();
 });
@@ -2002,6 +2017,57 @@ describe("PlotPanel diagnostic readouts", () => {
         // slower. Well clear of the >= 10 the default produces.
         expect(resamples).toBeGreaterThanOrEqual(1);
         expect(resamples).toBeLessThanOrEqual(6);
+      } finally {
+        clock.mockRestore();
+        clearInterval(growing);
+      }
+    });
+  });
+
+  /// `performance.now()` with the synthetic per-tick render cost added
+  /// in, so the area's own measurement of its synchronous section reads
+  /// as expensive. Real elapsed time still flows underneath, so
+  /// `setTimeout` and the loop's own cadence are unaffected.
+  function costlyRenderClock(perTickMs: number) {
+    const real = performance.now.bind(performance);
+    mockRenderCost.perTickMs = perTickMs;
+    mockRenderCost.accMs = 0;
+    return vi.spyOn(performance, "now").mockImplementation(() => real() + mockRenderCost.accMs);
+  }
+
+  it("backs the fetch loop off when a tick's own render work is expensive", async () => {
+    // Task 48 item 12. The resample tail (merge onto the shared time
+    // axis, normalise, `setData`, redraw) is synchronous UI-thread work
+    // that grows with the series count. Waiting a fixed interval after
+    // it lets one heavy area take an unbounded share of the frame — at
+    // 512 series a Chromium CPU profile of the shipping app showed the
+    // main thread 98 % busy and 38 % of seconds janked. The loop now
+    // idles in proportion to what the last tick cost, so the thread
+    // always gets slots back.
+    //
+    // 250 ms per tick against the default 67 ms interval: unpaced that
+    // is ~4 ticks a second and no idle at all; paced it is 1000 ms of
+    // idle per tick, so at most one or two land in the second.
+    await withSizedCanvas(async () => {
+      renderPanel();
+      await pickCombobox(
+        screen.getByLabelText("add signal to focused plot area"),
+        "*|s:256:EngineSpeed",
+      );
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 400));
+      });
+      const growing = setInterval(() => {
+        mockSampleBounds.last += 0.05;
+      }, 20);
+      const clock = costlyRenderClock(250);
+      try {
+        const before = counter("plotarea.resample");
+        await outsideAct(() => new Promise((r) => setTimeout(r, 1000)));
+        const resamples = counter("plotarea.resample") - before;
+        expect(resamples).toBeGreaterThanOrEqual(1);
+        // Without the back-off this is the interval-paced ~13.
+        expect(resamples).toBeLessThanOrEqual(3);
       } finally {
         clock.mockRestore();
         clearInterval(growing);
