@@ -211,6 +211,15 @@ pub(crate) fn declares_nothing(path: &Path) -> bool {
     read_object(path).is_empty()
 }
 
+/// The keys the JSON document at `path` explicitly declares — empty when
+/// it is missing, unreadable, or not an object. At workspace scope this
+/// is exactly the set of keys that override the user's own, which is
+/// what lets a view mark them rather than leaving a project's override
+/// invisible.
+pub(crate) fn declared_keys(path: &Path) -> Vec<String> {
+    read_object(path).into_iter().map(|(k, _)| k).collect()
+}
+
 /// The top-level keys of the JSON document at `path` — empty when it is
 /// missing, unreadable, or not an object, the same resolution
 /// [`read_scoped`] gives those cases.
@@ -602,6 +611,27 @@ mod tests {
             ..Scoped::default()
         });
         assert_eq!(s.user_doc()["from_the_future"], serde_json::json!(42));
+    }
+
+    #[test]
+    fn declared_keys_lists_what_a_scope_file_actually_says() {
+        // At workspace scope this is the override set: a key the file
+        // names is one whose effective value came from the project.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("x.json");
+        assert!(
+            declared_keys(&path).is_empty(),
+            "a missing file declares nothing"
+        );
+        std::fs::write(&path, r#"{"beta": 2}"#).unwrap();
+        assert_eq!(declared_keys(&path), vec!["beta".to_string()]);
+        std::fs::write(&path, "{}\n").unwrap();
+        assert!(
+            declared_keys(&path).is_empty(),
+            "an empty file overrides nothing"
+        );
+        std::fs::write(&path, "not json").unwrap();
+        assert!(declared_keys(&path).is_empty(), "junk overrides nothing");
     }
 
     #[test]

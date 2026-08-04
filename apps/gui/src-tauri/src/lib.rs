@@ -67,6 +67,7 @@ mod rbs;
 mod sampling;
 mod session;
 mod settings;
+mod settings_descriptor;
 mod sidecar;
 mod state;
 // `signal_cache` and `signal_sampler` are `pub` so the
@@ -428,7 +429,8 @@ pub fn run() {
             state::set_state,
             settings::get_settings,
             settings::set_settings,
-            settings::get_settings_bounds,
+            settings::get_settings_overrides,
+            settings_descriptor::get_setting_descriptors,
             list_signals,
             list_dbc_content,
             sample_signals,

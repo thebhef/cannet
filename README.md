@@ -463,6 +463,29 @@ Settings resolve user-first, project-second: a value in
 other setting stays as you set it. See
 [`docs/adr/0042-project-directory-and-scopes.md`](docs/adr/0042-project-directory-and-scopes.md).
 
+**Settings.** The settings panel is a view over `settings.json`, not a
+replacement for it — the file is the durable contract and editing it by
+hand is a supported path (ADR 0034). Every row shows the field name it
+writes, so the panel teaches the file.
+
+- **Finding one.** Type in the search box. It matches a setting's name,
+  its `settings.json` key, its help text, and its tags, so you can find
+  a setting you can describe but can't name — searching *what it does*
+  works. The list beside it groups settings by the part of the app they
+  govern; picking a group narrows the list.
+- **What you changed.** A setting that differs from its default is
+  marked and offers **Reset to default**. One the open project
+  overrides is marked as the project's, so a value that came from
+  `.cannet/settings.json` never looks like a personal preference.
+- **`developer` settings.** Machine-load and internal-cadence knobs —
+  poll intervals, buffer depths, restart budgets. They exist so that
+  every knob the app has lives in `settings.json`, not because tuning
+  them is expected, and they are **hidden until you turn on
+  `show_developer_settings`**. Revealed, they appear in their own
+  **Developer** group rather than mixed into the others. Nothing is
+  hidden from the file: they are all in `settings.json` whether the
+  panel shows them or not.
+
 **Add plot panel** opens a signal plot (Phase 4): a uPlot-based
 oscilloscope-style view, docked like any other panel. It's backed by a
 **trace element**, like the trace panels — same windowed view over the

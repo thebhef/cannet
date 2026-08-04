@@ -36,13 +36,44 @@ both a place to persist them and a way to edit them.
    `settings.json` even if it lived in `state.json` first; at the time of
    writing, none of the existing fields do.
 
-2. **A custom, in-repo settings panel.** The settings UI is a flat,
+2. **A custom, in-repo settings panel.** The settings UI is a
    hand-rolled dockview panel in `apps/gui/src`, styled in the app's own
    visual language — not a third-party schema-driven form framework.
+
+   *Amended 2026-08-03:* it is no longer **flat**. Once the store passed
+   a handful of fields, a wall of controls stopped being usable, so each
+   setting now carries an in-repo **descriptor** — label, help text,
+   control shape, and two tags — and the panel is *generated* from it:
+   search, a tag-grouped list, and one row per setting whose widget
+   comes from its declared type. See "The descriptor" below.
 
 3. **`settings.json` is editable without the GUI.** Like VS Code's
    `settings.json`, the file is the durable contract; the panel reads and
    writes it but is not required to use it.
+
+4. **The descriptor is host-side, and joins rather than copies.**
+   *(Added 2026-08-03.)* One static table beside the `Settings` struct
+   declares, per setting, only what is genuinely new: a label, help
+   text, the control shape, and two tags. A setting's **scope** is read
+   from the store's own scope table (ADR 0042 §3) and its **default**
+   from `Settings::default()`, so the descriptor is a *view* of those
+   facts, not a transcription of them. It is served to the frontend
+   through a command; the frontend declares no schema of its own.
+
+   The tags are two closed enums: a **surface** (which part of the app
+   the setting governs — what the panel groups by) and a **kind**
+   (`default`, `behaviour`, or `developer`). `developer` marks the
+   machine-load and internal-cadence knobs that exist so that every knob
+   is *in the file*, not because tuning them is expected: the panel
+   hides them unless an ordinary setting, `show_developer_settings`,
+   says otherwise, and **nothing in the panel advertises what is
+   hidden** — no banner, no count. The toggle is itself a searchable
+   row.
+
+   A row's control is generated from the descriptor's type. The one
+   exception declares `type: "custom"` and names a renderer dispatched
+   through a single table; that table is the entire extension surface,
+   and there is no third case.
 
 ## Why
 
@@ -59,6 +90,21 @@ both a place to persist them and a way to edit them.
   fights the app's bespoke panels. A flat panel is smaller to read and
   matches the rest of the UI. The storage contract doesn't depend on it,
   so the panel can be swapped if settings proliferate.
+- **A descriptor is not that framework.** *(2026-08-03.)* The rejection
+  above is of a *third-party* library that owns the schema language, the
+  widgets, and the styling. What decision 4 adds is none of those: no
+  dependency, a schema that is a Rust table beside the struct it
+  describes, and the app's own visual language. What it buys is what the
+  rejection anticipated ("if settings proliferate") — the panel stops
+  growing per setting, and the settings themselves stay one table entry
+  each. The matcher and the tree pattern are ones the app already ships
+  (`fzf`, the DBC panel), so the lean-stack argument is untouched.
+- **Host-side, because that is where the promise can be checked.**
+  Putting the descriptor beside `Settings` lets a test assert the two
+  name the same keys — which turns "the file lists every knob" from a
+  convention into something that fails a build. A frontend registry
+  could not do that, and would have kept the hand-written mirror this
+  replaces.
 - **Hand-editability is the durable win.** A real file the user can open
   is what "VS Code-like settings" actually means; it holds regardless of
   how rich the panel is.
@@ -87,7 +133,14 @@ both a place to persist them and a way to edit them.
   `preferences.json` rather than reading it — it was best-effort to begin
   with; recents and the last-project pointer regenerate as the user works.
 - **`plans/technology-inventory.md` records @rjsf as `rejected`** with
-  this rationale, so the decision is traceable if settings grow.
+  this rationale, so the decision is traceable if settings grow. It
+  stays rejected: settings did grow, and the answer was an in-repo
+  descriptor, not a form library.
+- **Every field carries a descriptor, or a test fails.** Adding a field
+  to `Settings` without one — or leaving a descriptor behind for a field
+  that was removed — breaks the build, as does a setting with no surface
+  tag. Exactly one kind tag is a property of the type rather than a
+  test.
 - **A command-palette entry opens the panel**, alongside the
   separately-added `project.close`.
 - **Keybinding customisation rides this file.** Per

@@ -844,3 +844,15 @@ next pass on this surface can address them as one piece.
   re-roots onto the unsaved auto-located directory
   (`project_dir::resolve(None, cache_root)`) with `Carry::Nothing`,
   which is a small thing once there is a New Project command at all.
+
+- `[cannet-gui]` **The settings view shows a value's scope but cannot
+  change it.** Task 46's panel marks a setting the open project
+  overrides (`get_settings_overrides`) so the scope of every value is
+  visible, but there is no way to *move* a value between the user and
+  workspace files — the design prototype's scope tabs and its "Set for
+  this project…" action. That needs per-scope read and write commands,
+  and it changes the premise `persisted_json::Scope::UserOverridable`
+  was built on ("there is no UI for choosing a scope, so leave the value
+  where it already is"). Worth doing once projects have settings worth
+  moving — i.e. alongside Task 45's promotions — rather than now, when
+  three keys are overridable and none is by default.
