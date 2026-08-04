@@ -43,7 +43,7 @@ import { messageEcuKey, signalRowLabel } from "./plotSignalLabel";
 import { emptyJankMeter, jankPercent, jankPixels, observeScroll, scrollStepMs } from "./scrollJank";
 import { useValueTables } from "./useValueTables";
 import { laneBands, laneTileBand, laneValueRange, normalizeIntoLane, tileLabelX } from "./plotEnumLanes";
-import { useDecimatedRange } from "./useDecimatedRange";
+import { useDecimatedRange, type DecimatedOutcome } from "./useDecimatedRange";
 import { diagCount, diagGauge } from "./diag"; // DIAG
 
 const CURSOR_A_COLOR = "#ffd93d";
@@ -563,6 +563,21 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
    * compensates for restored-from-project panels where the canvas
    * isn't laid out yet at uPlot's first construction? */
   const postMountRebuildDoneRef = useRef(false);
+  /** The signal set the live uPlot instance was constructed for, so the
+   * construction effect can tell a set change (cache is stale) from a
+   * rebuild for any other reason (cache is still good). `null` before
+   * the first construction. */
+  const builtSignalSetRef = useRef<string | null>(null);
+  /** Set by the construction effect when the fresh — and therefore
+   * empty — uPlot instance should be repainted from the windowed
+   * source's cached window instead of waiting on a refetch. Consumed by
+   * the next resample. */
+  const repaintFromCacheRef = useRef(false);
+  /** The host's per-signal all-time extents from the most recent fetch
+   * that asked for them, so a repaint normalises against the same range
+   * the drawn window was normalised against (ADR 0025 — the extent is a
+   * model fact; this is just the last answer, not a substitute for it). */
+  const hostExtentsRef = useRef<(SignalExtent | null)[] | null>(null);
   const lastResampleTsRef = useRef(0);
   const rateEmaRef = useRef(0);
   const [valueTick, setValueTick] = useState(0); // bump → re-render side panel
@@ -810,25 +825,36 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       // average-rate frame-index error on zoomed panels with non-uniform
       // per-id rates), and the descriptor-memo skips the round-trip when
       // nothing changed.
-      const outcome = await sampleRange<(SignalExtent | null)[]>(
-        {
-          descriptor: signals.map(signalRefKey).join("|"),
-          signals: signals.map((s) => ({
-            key: signalRefKey(s),
-            busId: s.busId,
-            messageId: s.messageId,
-            extended: s.extended,
-            signalName: s.signalName,
-          })),
-          winStart: lr.winStart,
-          winEnd: lr.winEnd,
-          xMin: fetchMin,
-          xMax: fetchMax,
-          origin: lr.originSeconds,
-          maxPoints: maxPts,
-        },
-        sidecar,
-      );
+      // A rebuilt uPlot starts empty while the windowed source still
+      // holds the window that was on screen. Draw that cached window
+      // straight back instead of dropping the cache to force a refetch:
+      // the refetch is a whole round-trip, and a cold one — dropping the
+      // cache drops the `base` that makes it a *slice* fetch — so the
+      // panel would sit blank for as long as a full-window sample takes.
+      // The normal fetch cycle resumes on the next tick.
+      const cached = repaintFromCacheRef.current ? currentRange() : null;
+      repaintFromCacheRef.current = false;
+      const outcome: DecimatedOutcome<(SignalExtent | null)[]> = cached
+        ? { kind: "sampled", snapshot: cached, extra: hostExtentsRef.current }
+        : await sampleRange<(SignalExtent | null)[]>(
+            {
+              descriptor: signals.map(signalRefKey).join("|"),
+              signals: signals.map((s) => ({
+                key: signalRefKey(s),
+                busId: s.busId,
+                messageId: s.messageId,
+                extended: s.extended,
+                signalName: s.signalName,
+              })),
+              winStart: lr.winStart,
+              winEnd: lr.winEnd,
+              xMin: fetchMin,
+              xMax: fetchMax,
+              origin: lr.originSeconds,
+              maxPoints: maxPts,
+            },
+            sidecar,
+          );
       // uPlot was rebuilt while the fetch was in flight — this resample
       // belongs to the old instance; the rebuild kicks a fresh one.
       if (uplotRef.current !== u) return;
@@ -866,6 +892,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       // outcome.kind === "sampled" — render the fresh window.
       const { snapshot } = outcome;
       const hostExtents = outcome.extra;
+      if (hostExtents) hostExtentsRef.current = hostExtents;
       const base = snapshot.base;
       lr.reports.hostMs(areaId, snapshot.sliceMs + snapshot.decodeMs);
       // Areas share x, so a panel-level base from any area lets
@@ -1699,14 +1726,24 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     });
     uplotRef.current = u;
     registerInstance(areaId, u);
-    // The signal set changed (or this is the first mount): the old
-    // cache (anchored to the old set) is stale — drop it so the
-    // re-sample below rebuilds it from a full fetch. Also clear the
-    // busy-guard (a re-sample for the *previous* uPlot may still be in
-    // flight; it'll no-op once it sees `uplotRef.current` moved on) so
-    // this fresh instance gets its data even when the trace isn't
-    // running (no timer to retry it).
-    resetRange();
+    // Only a changed signal set makes the cached window stale (it is
+    // anchored to the old set) — drop it, and the host extents that go
+    // with it, so the re-sample below rebuilds both from a full fetch.
+    // Every other reason this effect re-runs (the post-mount layout
+    // rebuild below, a resize, an axis / value-table change) leaves the
+    // cache valid over an empty instance, so repaint from it instead:
+    // throwing it away costs a full-window round-trip and shows a blank
+    // panel until that lands. Also clear the busy-guard (a re-sample for
+    // the *previous* uPlot may still be in flight; it'll no-op once it
+    // sees `uplotRef.current` moved on) so this fresh instance gets its
+    // data even when the trace isn't running (no timer to retry it).
+    if (builtSignalSetRef.current !== signalSetKey) {
+      builtSignalSetRef.current = signalSetKey;
+      hostExtentsRef.current = null;
+      resetRange();
+    } else {
+      repaintFromCacheRef.current = true;
+    }
     resampleBusyRef.current = false;
     void resampleRef.current();
     // ...and once more after layout settles, in case the first call ran

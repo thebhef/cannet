@@ -89,17 +89,20 @@ repos:
         files: '\.rs$|(^|/)Cargo\.(toml|lock)$|^rust-toolchain\.toml$'
         pass_filenames: false
         entry: cargo clippy --workspace --all-targets -- -D warnings
-      - id: cargo-test
-        name: cargo test (workspace)
-        language: system
-        files: '\.rs$|(^|/)Cargo\.(toml|lock)$|^rust-toolchain\.toml$'
-        pass_filenames: false
-        entry: cargo test --workspace
+      # The workspace test run is deliberately NOT a commit gate. clippy
+      # above already builds every target, so it catches what a compile
+      # error would; adding `cargo test --workspace` on top pays for
+      # linking and running every test binary on every commit touching a
+      # `.rs` file, which dominates commit time during a run of small
+      # fixes. Run the tests you are working on as you go; CI runs the
+      # whole workspace per-PR.
 
       # --- Frontend (apps/gui, excluding the Rust src-tauri crate) ---
+      # `pnpm build` is the typecheck, so it stays. The full vitest suite
+      # is not a commit gate, for the same reason cargo test isn't.
       - id: frontend
-        name: frontend vitest + build
+        name: frontend build
         language: system
         files: '^apps/gui/(?!src-tauri/).*'
         pass_filenames: false
-        entry: "bash -c 'pnpm --dir apps/gui test && pnpm --dir apps/gui build'"
+        entry: "bash -c 'pnpm --dir apps/gui build'"

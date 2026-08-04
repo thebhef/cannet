@@ -126,11 +126,16 @@ const mockSampleSeries: Record<string, { t: number[]; v: number[] }> = {};
 /// Settings the fake host serves from `get_settings`. Empty means "every
 /// field at its default"; a test that cares sets a key and re-hydrates.
 const mockSettings: Record<string, unknown> = {};
+/// While set, every `sample_signals` call returns a promise that never
+/// settles — so a test can observe what the panel draws with no further
+/// fetch able to land. Prefixed `mock` for the hoisted factory.
+const mockSampleStall = { on: false };
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: { signals?: unknown[]; signalName?: string }) => {
     if (cmd === "list_signals") return SIGNALS;
-    if (cmd === "sample_signals")
+    if (cmd === "sample_signals") {
+      if (mockSampleStall.on) return new Promise<ArrayBuffer>(() => {});
       return encodeSample(
         (args?.signals ?? []).map(
           (s) =>
@@ -140,6 +145,7 @@ vi.mock("@tauri-apps/api/core", () => ({
             },
         ),
       );
+    }
     if (cmd === "signal_min_max")
       // Host-owned all-time per-signal extent (ADR 0025) — matches the
       // sampled values' min/max so follow-live auto-norm has a range.
@@ -163,6 +169,7 @@ type FakeUPlotInst = {
   cursor: { left: number };
   root: HTMLElement;
   over: HTMLElement;
+  data: unknown;
   scales: Record<string, { min?: number; max?: number }>;
   xCalls: { min: number; max: number }[];
   fire: (hook: string, ...args: unknown[]) => void;
@@ -348,6 +355,10 @@ function liveInstanceIn(areaLabel: string): FakeUPlotInst {
   throw new Error(`no uPlot instance for ${areaLabel}`);
 }
 
+/// How many x samples an instance currently holds — `0` for a freshly
+/// constructed (or cleared) chart.
+const drawnPoints = (inst: FakeUPlotInst) => ((inst.data as unknown[][])[0] ?? []).length;
+
 /// Drop a signal onto an area, the way the DBC panel / another area
 /// does — the only way to give a *non-focused* area a signal.
 function dropSignal(areaLabel: string, signalName: string, unit: string) {
@@ -407,6 +418,7 @@ afterEach(() => {
   for (const k of Object.keys(mockSampleSeries)) delete mockSampleSeries[k];
   mockSampleBounds.from = 0;
   mockSampleBounds.last = 2;
+  mockSampleStall.on = false;
   for (const k of Object.keys(mockSettings)) delete mockSettings[k];
   void hydrateSettings();
 });
@@ -1081,6 +1093,31 @@ describe("PlotPanel", () => {
     }
   });
 
+  it("the post-mount rebuild repaints the fresh uPlot from the cached window", async () => {
+    // THE REGRESSION: the ~250 ms post-mount rebuild dropped the windowed
+    // source's cache, so a panel that had already drawn went blank and
+    // refetched its whole window from scratch — seconds of nothing on a
+    // real capture, with the data popping in, vanishing, and returning.
+    //
+    // Stalling every fetch from the moment the first window is on screen
+    // makes that observable without racing the self-paced resample loop:
+    // once the rebuilt instance exists, the only thing that can fill it
+    // is the cache, because no further round-trip can ever land.
+    await withSizedCanvas(async () => {
+      renderPanel();
+      await pickCombobox(
+        screen.getByLabelText("add signal to focused plot area"),
+        "*|s:256:EngineSpeed",
+      );
+      await waitFor(() => expect(drawnPoints(liveInstanceIn("Area 1"))).toBeGreaterThan(0));
+      mockSampleStall.on = true;
+      const before = uplotInstances.length;
+      // The rebuild lands ~250 ms after the instance was constructed.
+      await waitFor(() => expect(uplotInstances.length).toBeGreaterThan(before), { timeout: 2000 });
+      await waitFor(() => expect(drawnPoints(liveInstanceIn("Area 1"))).toBeGreaterThan(0));
+    });
+  });
+
   it("a lanes axis constructs uPlot with stepped series and a blank y axis", async () => {
     mockValueTables.EngineSpeed = [{ raw: 0, label: "Idle" }, { raw: 1, label: "Run" }];
     mockValueTables.EngineTemp = [{ raw: 0, label: "Cold" }, { raw: 1, label: "Hot" }];
@@ -1526,8 +1563,9 @@ describe("PlotPanel Fit Data over a parked window", () => {
         "*|s:256:EngineSpeed",
       );
       await waitFor(() => expect(sampleCalls()).toBeGreaterThan(0));
-      // Let the 250 ms post-mount rebuild land before freezing the clock,
-      // so it can't drop the windowed source's cache mid-test.
+      // Let the 250 ms post-mount rebuild land before freezing the clock:
+      // it destroys and replaces the area's uPlot, and `inst` is captured
+      // by identity here and driven for the rest of the test.
       await new Promise((r) => setTimeout(r, 400));
       const inst = liveInstanceIn("Area 1");
 
