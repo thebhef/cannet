@@ -1,13 +1,26 @@
-//! User settings, persisted host-side (ADR 0034).
+//! User settings, persisted host-side (ADR 0034), across two scopes
+//! (ADR 0042).
 //!
 //! Choices the user deliberately sets — as opposed to the machine state
-//! the app records as it works ([`crate::state`]) — live in a single JSON
-//! file in Tauri's `app_config_dir` (`settings.json`), read and written
-//! through the [`get_settings`] / [`set_settings`] commands. The file is a
-//! durable, hand-editable contract (ADR 0034): every field is written
-//! explicitly (no skip-when-default) so opening `settings.json` shows the
-//! full set of knobs and their current values, VS Code-style. The GUI's
-//! settings panel is sugar over it, not the only way to edit it.
+//! the app records as it works ([`crate::state`]) — live in
+//! `settings.json`, read and written through the [`get_settings`] /
+//! [`set_settings`] commands. The file is a durable, hand-editable
+//! contract (ADR 0034): every field is written explicitly (no
+//! skip-when-default) so opening `settings.json` shows the full set of
+//! knobs and their current values, VS Code-style. The GUI's settings
+//! panel is sugar over it, not the only way to edit it.
+//!
+//! **Two scopes, one filename.** The *user* copy is in Tauri's
+//! `app_config_dir` and follows the person; the *workspace* copy is
+//! `.cannet/settings.json` inside the open project directory and holds
+//! that project's overrides. A read resolves the two — a workspace value
+//! wins for the key it declares, and every other key keeps the user's
+//! value. The path carries the scope, not the filename.
+//!
+//! Writes go to the user scope only, so cannet reads the workspace file
+//! and never authors it: routing a key to the project's copy needs
+//! per-setting metadata saying which keys may be overridden there, which
+//! does not exist yet.
 //!
 //! A missing file or missing key resolves to the documented default, so a
 //! fresh install and a hand-deleted file behave identically.
@@ -102,26 +115,23 @@ fn validate(settings: Settings) -> (Settings, Vec<String>) {
     (settings, complaints)
 }
 
-/// Parse settings JSON, tolerating junk. A malformed or partial file
-/// yields [`Settings::default`] rather than an error — a corrupt settings
-/// file must never brick startup. Split from IO so it's testable without
-/// the filesystem.
-fn parse_settings(text: &str) -> Settings {
-    crate::persisted_json::parse_or_default(text)
-}
-
-/// Read `dir/settings.json`. A missing or unreadable file, or junk
-/// contents, yields [`Settings::default`].
-fn read_settings(dir: &Path) -> Settings {
-    match std::fs::read_to_string(dir.join(SETTINGS_FILE)) {
-        Ok(text) => parse_settings(&text),
-        Err(_) => Settings::default(),
-    }
+/// Read the effective settings across both scopes (ADR 0042 §3):
+/// `<user_dir>/settings.json` overridden per key by
+/// `<workspace_dir>/settings.json`. A missing or unreadable file, or
+/// junk contents, contributes nothing at that scope.
+fn read_settings(user_dir: &Path, workspace_dir: &Path) -> Settings {
+    crate::persisted_json::read_scoped(user_dir, workspace_dir, SETTINGS_FILE)
 }
 
 /// Write `settings` to `dir/settings.json`, creating `dir` if needed.
 /// Written to a temp sibling and renamed over the target so a crash
 /// mid-write can't leave a half-written file.
+///
+/// The write always goes to the **user scope**. Routing a key to the
+/// workspace file needs the per-setting metadata that says which keys
+/// may be overridden there, which is not yet defined; until it is,
+/// `.cannet/settings.json` is a hand-authored override document that
+/// cannet reads and never writes.
 fn write_settings(dir: &Path, settings: &Settings) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     crate::persisted_json::write_json_atomic(&dir.join(SETTINGS_FILE), settings)
@@ -145,16 +155,17 @@ pub fn get_settings_bounds() -> SettingsBounds {
     }
 }
 
-/// Load the persisted settings. Returns defaults if the config dir can't
-/// be resolved or the file is missing / corrupt — reading settings never
-/// fails for the caller. Out-of-range values in a hand-edited file are
-/// refused here, at the read boundary, and reported on the system log; the
-/// caller only ever sees values the app can honor.
+/// Load the effective settings: the user scope, overridden per key by
+/// the open project's workspace scope (ADR 0042 §3). Returns defaults if
+/// the config dir can't be resolved or the files are missing / corrupt —
+/// reading settings never fails for the caller. Out-of-range values in a
+/// hand-edited file are refused here, at the read boundary, and reported
+/// on the system log; the caller only ever sees values the app can honor.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub fn get_settings(app: tauri::AppHandle) -> Settings {
     let raw = crate::persisted_json::config_dir(&app)
-        .map(|dir| read_settings(&dir))
+        .map(|user_dir| read_settings(&user_dir, &crate::workspace_dir(&app)))
         .unwrap_or_default();
     let (settings, complaints) = validate(raw);
     warn_refused(&app, &complaints);
@@ -188,6 +199,23 @@ pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<Setting
 mod tests {
     use super::*;
 
+    /// A project directory with no workspace overrides — what cannet
+    /// creates (`.cannet/settings.json` is written empty, so it shadows
+    /// nothing). Reads through it must behave exactly as a single-scope
+    /// read did.
+    fn no_workspace() -> std::path::PathBuf {
+        std::path::PathBuf::from("no-such-workspace-dir")
+    }
+
+    /// A user-scope settings document resolved with no workspace
+    /// overrides — the same path production takes for a project that
+    /// overrides nothing, without touching the filesystem. Junk and
+    /// partial documents must survive it: a corrupt settings file can
+    /// never brick startup.
+    fn parse_settings(text: &str) -> Settings {
+        crate::persisted_json::resolve_scoped(text, "")
+    }
+
     fn sample() -> Settings {
         Settings {
             scratch_cap_bytes: Some(8 * 1024 * 1024 * 1024),
@@ -212,13 +240,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let s = sample();
         write_settings(dir.path(), &s).unwrap();
-        assert_eq!(read_settings(dir.path()), s);
+        assert_eq!(read_settings(dir.path(), &no_workspace()), s);
     }
 
     #[test]
     fn missing_file_reads_as_default() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(read_settings(dir.path()), Settings::default());
+        assert_eq!(
+            read_settings(dir.path(), &no_workspace()),
+            Settings::default()
+        );
     }
 
     #[test]
@@ -233,7 +264,7 @@ mod tests {
     fn keybindings_round_trip_with_camelcase_and_optional_skip_editable() {
         let dir = tempfile::tempdir().unwrap();
         write_settings(dir.path(), &sample()).unwrap();
-        assert_eq!(read_settings(dir.path()), sample());
+        assert_eq!(read_settings(dir.path(), &no_workspace()), sample());
         // The on-disk shape matches the frontend `BindingSpec`: camelCase
         // `commandId`, and `skipEditable` present only when set.
         let text = serde_json::to_string(&sample()).unwrap();
@@ -346,10 +377,65 @@ mod tests {
     }
 
     #[test]
+    fn a_workspace_setting_overrides_the_user_setting_for_the_same_key() {
+        // ADR 0042 §3, through the real file layout: the user's
+        // `settings.json` and the project's `.cannet/settings.json`.
+        let tmp = tempfile::tempdir().unwrap();
+        let user = tmp.path().join("config");
+        let workspace = tmp.path().join("project").join(".cannet");
+        std::fs::create_dir_all(&user).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        write_settings(
+            &user,
+            &Settings {
+                scratch_cap_bytes: Some(4 * 1024 * 1024 * 1024),
+                clear_scratch_on_exit: false,
+                keybindings: None,
+            },
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.join(SETTINGS_FILE),
+            r#"{"clear_scratch_on_exit": true}"#,
+        )
+        .unwrap();
+
+        let effective = read_settings(&user, &workspace);
+
+        assert!(
+            effective.clear_scratch_on_exit,
+            "the workspace value wins for the key it declares"
+        );
+        assert_eq!(
+            effective.scratch_cap_bytes,
+            Some(4 * 1024 * 1024 * 1024),
+            "a key the workspace is silent about keeps the user's value"
+        );
+    }
+
+    #[test]
+    fn an_empty_workspace_file_leaves_the_user_settings_exactly_as_they_were() {
+        // What a freshly created project directory holds. A user who
+        // never touches workspace settings must see no change at all.
+        let tmp = tempfile::tempdir().unwrap();
+        let user = tmp.path().join("config");
+        let workspace = tmp.path().join("project").join(".cannet");
+        std::fs::create_dir_all(&user).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        write_settings(&user, &sample()).unwrap();
+        std::fs::write(workspace.join(SETTINGS_FILE), "{}\n").unwrap();
+
+        assert_eq!(read_settings(&user, &workspace), sample());
+    }
+
+    #[test]
     fn write_replaces_rather_than_merges() {
         let dir = tempfile::tempdir().unwrap();
         write_settings(dir.path(), &sample()).unwrap();
         write_settings(dir.path(), &Settings::default()).unwrap();
-        assert_eq!(read_settings(dir.path()), Settings::default());
+        assert_eq!(
+            read_settings(dir.path(), &no_workspace()),
+            Settings::default()
+        );
     }
 }

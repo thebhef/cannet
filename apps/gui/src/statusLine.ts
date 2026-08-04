@@ -75,7 +75,7 @@ export function splitStatus(inp: StatusInputs): StatusSplit {
   // Rust host plus its WebView children, the figure a task manager shows —
   // and not a store-only number: mmap'd cache pages come and go under the
   // kernel, so store residency is bounded by design and not separately
-  // metered. `cache` is the `current/` scratch footprint on disk. Each
+  // metered. `cache` is the `cache/` scratch footprint on disk. Each
   // shows only when present.
   const mem = inp.memBytes != null && inp.memBytes > 0 ? ` · ${formatBytes(inp.memBytes)} RAM` : "";
   const cache =

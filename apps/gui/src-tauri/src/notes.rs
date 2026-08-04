@@ -20,7 +20,8 @@
 //! the path from a plot click to a saved BLF is direct.
 //!
 //! Notes also ride the disk-spill scratch (ADR 0002 DS-7): a store built
-//! with [`NotesStore::with_scratch`] writes `current/notes.json` on **every
+//! with [`NotesStore::with_scratch`] writes `notes.json` into the scratch
+//! dir on **every
 //! edit** — not on the frame-flush cadence, since a user can add a marker to
 //! a stopped, reloaded trace with no ingest underway — and the host restores
 //! it when a prior session reopens through the manifest gate, so a

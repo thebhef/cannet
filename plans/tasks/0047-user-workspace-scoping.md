@@ -196,6 +196,38 @@ where they are today.
     this manually when the task lands — find the existing project
     directories on disk and move them into the new layout.*
 
+    **What is actually on the one install** (surveyed 2026-08-02, after
+    branch 1). The old disk-spill scratch
+    (`%LOCALAPPDATA%\dev.cannet.app\current`, 1.2 GB) is pure
+    recomputable cache and can just be deleted — nothing user-authored
+    was in it, no `notes.json`. `settings.json` is three user-scope
+    fields and stays put; `.window-state.json` belongs to the plugin
+    and stays put. The one file that splits is `state.json`:
+
+    | Field | Bytes | Goes to |
+    | --- | --- | --- |
+    | `layout` | 7948 | workspace |
+    | `blf_channel_maps` | 591 | workspace (its `project_id` key drops) |
+    | `recent_blfs` | 253 | workspace |
+    | `recent_commands` | 206 | user — stays |
+    | `last_project` | 66 | user — stays |
+
+    **Do not move the workspace half until branch 2 routes the
+    writes.** `state.json` already *reads* through `resolve_scoped`, so
+    a workspace copy would take effect immediately — but every write
+    still goes to the user file. The workspace copy would then never
+    update while permanently winning the merge, so `layout` (the
+    highest-churn field there) would revert to a frozen snapshot on
+    every restart. Migrate after the write path is scope-aware, not
+    before.
+
+    Settle the destination first, too: the install's `last_project` is
+    `examples/ev-zonal/ev-zonal.cannet_prj`, which has no `.cannet/`
+    beside it and therefore auto-locates. Anything migrated into that
+    auto-located directory is stranded if the project is later promoted
+    by hand, because decision 10 says a hand-created `.cannet/` starts
+    clean.
+
 12. **The local cache directory is keyed by a hash of the project
     directory's path.** Reclaiming is a user action, not a garbage
     collector: the settings view lists cache directories and lets the
@@ -208,7 +240,6 @@ where they are today.
     those usages. "Workspace" is reserved for the scoped data —
     `.cannet/` is the workspace directory, and workspace scope is the
     per-project half of the scope matrix.
-
 
 ## Scope-review every `UiState` field
 
@@ -337,6 +368,107 @@ group in [Task 46](0046-settings-framework-and-view.md)'s prototype
 ([`0046-settings-framework-and-view/settings-view-prototype.html`](0046-settings-framework-and-view/settings-view-prototype.html)),
 where it is the worked example of a setting that declares a custom
 renderer instead of a generated control. Keep the two in step.
+
+## Implementation status
+
+The implementation is being landed in three branches. This section is
+the running record of what is done and what moved.
+
+**Branch 1 — the foundation (`task-47-project-dir`).**
+
+- **Done: project-directory resolution.**
+  [`project_dir.rs`](../../apps/gui/src-tauri/src/project_dir.rs) —
+  `resolve(project_file, cache_root)` returns a `ProjectDir`
+  unconditionally. A project file with a `.cannet/` beside it resolves
+  to its own directory; a loose one, an orphaned `.cannet/`, or no
+  project file at all gets an auto-located directory under
+  `<app_cache_dir>/projects/<key>`. Resolution is **infallible** — the
+  paths are well-defined even when the filesystem refuses, so no caller
+  carries a "no project directory" branch.
+- **Done: the cache link.** `.cannet/cache/` is a directory junction on
+  Windows (`mklink /J` through `cmd`, since `unsafe_code = "forbid"`
+  rules out the `FSCTL_SET_REPARSE_POINT` ioctl and a new crate was out
+  of scope) and a symlink elsewhere. It points at
+  `<app_cache_dir>/cache/<hash of the project directory's path>`.
+  **The store opens the link *target*, not `.cannet/cache/`.** A
+  project directory on a filesystem that cannot hold a reparse point —
+  an SMB share, the exact case the link exists for — would otherwise
+  lose its cache entirely. The link stays as the browsable view, and
+  failing to create it is a logged warning rather than a failure. This
+  began as a deviation from decision 2, whose wording said cannet
+  "still just opens `.cannet/cache/`"; ADR 0042 §4 has since been
+  corrected to record the target-opening rule and why following the
+  layout literally would defeat it.
+- **Done: the key is deterministic across builds.** `path_key` is a v5
+  (name-based) UUID over the path text, via a feature flag on the `uuid`
+  crate already in use. `DefaultHasher` was the obvious reach and is
+  wrong here: its output is explicitly not stable across releases, and
+  this key names a directory that has to be found again next launch.
+- **Done: `.cannet/.gitignore`** ignoring `cache/`, written at creation
+  (decision 4), plus empty `settings.json` / `state.json`. They are
+  written **empty** on purpose: a workspace value overrides the user
+  value (decision 3), so seeding them with defaults would shadow the
+  user's own settings the moment a directory was created.
+- **Done: the scratch root is the project's cache** (decision 6). The
+  disk-spill store, filter index, signal pyramids, and notes all root in
+  `ProjectDir::cache_dir()`.
+- **Done: the two-scope read path** (decision 3).
+  `persisted_json::resolve_scoped` is the one precedence rule — a
+  workspace value overrides the user value for the same key — and
+  `read_scoped` applies it to a filename in two directories. Both
+  `settings.json` and `state.json` read through it. The merge is by
+  **top-level key, not deep**: overriding `keybindings` replaces the
+  list rather than splicing it, so an override is always a value some
+  scope actually wrote.
+- **Known gap, for whoever adds workspace writes:** reads merge, writes
+  go to the user scope. If a workspace override exists and the frontend
+  echoes the merged value back through `set_settings`, that value is
+  written into the *user* file — the override is silently promoted.
+  Unreachable today (cannet creates `.cannet/settings.json` empty and
+  never writes it, so an override only exists by hand-edit), but the
+  per-setting scope metadata has to route the write, not just gate the
+  read.
+
+**Deferred out of branch 1, and why:**
+
+- **Re-rooting mid-session.** The project directory is resolved **once,
+  at startup**, from the user-scope `last_project`. Opening a *different*
+  project without relaunching leaves the store rooted where it was, so
+  that project's capture lands in the previous project's cache — the
+  same outcome as today's single machine-wide scratch, so no regression,
+  but not yet the full decision-6 behaviour. Re-rooting means swapping
+  the live `TraceStore`'s raw store plus `SignalCacheStore`,
+  `filter_index_dir`, and `NotesStore`, against a running flusher
+  thread; that is a branch of its own. **Branch 2.**
+- Registry, cache-management UI, `Save as…`, `blf_channel_maps` move,
+  `UiState` scope split, project-relative writes, terminology sweep —
+  all as originally planned for branches 2 and 3.
+
+**Docs updated with branch 1:** ADR 0002 (DS-7's location and the
+per-project split, plus its "per-session subdirectory" rejected
+alternative), ADR 0034 (two files × two scopes, its settings-vs-state
+distinction untouched), README (the project directory, and that a
+capture belongs to its project), and the module rustdoc on
+`project_dir`, `persisted_json`, `settings`, and `state`.
+
+**Corrections to this document found while implementing:**
+
+- The documentation deliverable claims ADR 0002 **DS-6** says "rooted at
+  the scratch dir". It does not — DS-6 is only "the disk store is the
+  only production path". The phrase lives in *code comments* citing
+  DS-6. DS-7 is where the location was recorded, and DS-7 is what
+  changed.
+- **`open_trace_store`'s RAM fallback was unreachable, not just
+  untested.** The disk store maps segments lazily, so handed an
+  unusable directory it opened happily and panicked on the first flush;
+  the only thing that ever reached the fallback was the old
+  scratch-*resolution* error, which no longer exists. It now creates the
+  directory before opening, which is what turns an unusable path back
+  into the documented RAM degradation.
+- **Decision 12's "hash of the path" needs a *stable* hash.**
+  `DefaultHasher` does not promise stability across releases, so a key
+  built from it would silently orphan every project's cache on some
+  future toolchain bump. See the `path_key` note above.
 
 ## Sequencing
 

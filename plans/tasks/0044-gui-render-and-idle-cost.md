@@ -13,6 +13,48 @@ resample, a "max Hz" plot control that demonstrably did nothing — and a
 root shape: **fixed-cadence polling with dedup guards that don't
 dedup**. Those findings are recorded in "Findings" below.
 
+## Status
+
+| Tier | State |
+| --- | --- |
+| 0 — measurement | **outstanding, and it is the only thing left** |
+| 1 — pure waste | done (see "Tier 1 results") |
+| 2 — structural | done (see "Tier 2 results") |
+| 3 — hot-path allocation | done, measured (see "Tier 3 results") |
+| 4 — the cadence knob | **deferred** into [Task 45](0045-settings-store-consolidation.md) Stage 3 |
+
+Tier 4 moved because it is one settings field and nothing forces it
+early. Landing it with Stage 3 means it arrives with its `developer`
+tag and its scope already attached instead of needing a retrofit — and
+it becomes the first real exercise of Task 46's descriptor.
+
+**What Tier 0 still owes, and why it matters.** The host half is
+measured: `cannet-perf-measurement`'s `tracebuffer`, `grpc` and
+`hardware-peak` modes need no GUI, and Tier 3 was priced with them
+(+9.8 % ingest, `append_ms_max` −49 %). Tier 2's filter-candidate memo
+shows up there too — `hardware-peak scan_ms_max` 0.886 → 0.045.
+
+The **frontend** half is not measured at all:
+
+1. **No frontend capture has been run.** `check` skips that tier unless
+   given `--frontend-report` from a self-driving GUI run, so every
+   frontend number this task claims is a diag counter in jsdom, not a
+   measurement.
+2. **The interaction-driven capture step (item 2 below) was never
+   added**, so the capture still cannot see the interaction cost this
+   task targets — a fresh baseline would not fix that on its own.
+3. **`scroll_jank_pct` (item 3) is still unsettled.**
+
+Consequence: three exit criteria remain unprovable — idle cost
+measurably ~0, `render.PlotArea` tracking `plotarea.resample`, and
+per-tier before/after for the frontend. The work is done; the evidence
+for the frontend half is not.
+
+Separately, a **pre-existing** render loop was found while writing the
+Tier 2 tests (auto-scroll toggle spins `TracePanel` ⟷ `TraceView`). It
+predates this task and is recorded in
+[`backlog.md`](../backlog.md), not here.
+
 ## The shape of the problem
 
 Three distinct cadences are tangled together and none of them is

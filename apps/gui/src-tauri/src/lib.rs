@@ -62,6 +62,7 @@ mod local_buses;
 mod notes;
 mod persisted_json;
 mod project;
+mod project_dir;
 mod rbs;
 mod sampling;
 mod session;
@@ -205,35 +206,62 @@ fn report_js_heap(bytes: u64) {
     crash::record_js_heap(bytes);
 }
 
-/// The live disk-spill scratch directory: `<app cache dir>/current`
-/// (ADR 0002 DS-7), where `<app cache dir>` is Tauri's `app_cache_dir()`
-/// — `$XDG_CACHE_HOME/dev.cannet.app` on Linux and the per-OS
-/// equivalents. Rooting under the app-identifier namespace keeps the
-/// cache alongside the config (`app_config_dir`) and log (`app_log_dir`)
-/// roots instead of a bare `cannet/` sibling. Created if absent. This is
-/// the single working store location — ephemeral scratch, not an export
-/// — wiped only when the session buffer is (Clear / Start), so a prior
-/// session present at launch can be reloaded as a stopped historical
-/// trace.
-fn scratch_current_dir(app: &tauri::App) -> std::io::Result<std::path::PathBuf> {
-    let base = app.path().app_cache_dir().map_err(|e| {
-        std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("no app cache directory: {e}"),
-        )
-    })?;
-    let dir = base.join("current");
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir)
+/// Resolve the session's project directory (ADR 0042 §1): the directory
+/// whose `.cannet/` carries this project's workspace scope and whose
+/// `cache/` is the disk-spill scratch (ADR 0002 DS-6/DS-7).
+///
+/// The project to resolve for is the one the frontend is about to
+/// reopen — the user-scope `last_project`. A project file the user put
+/// a `.cannet/` beside resolves to its own directory; anything else
+/// (a loose project file, or none at all) gets an auto-located directory
+/// under Tauri's `app_cache_dir()` — `$XDG_CACHE_HOME/dev.cannet.app` on
+/// Linux and the per-OS equivalents, the same identifier namespace as
+/// the config (`app_config_dir`) and log (`app_log_dir`) roots. Either
+/// way there is a project directory, so nothing downstream has a
+/// no-project branch.
+fn resolve_project_dir(app: &tauri::App) -> project_dir::ProjectDir {
+    // No cache dir at all is not a reason to have no project directory:
+    // fall back to an OS-temp root, the same degradation the filter
+    // index and signal pyramids already take.
+    let cache_root = app
+        .path()
+        .app_cache_dir()
+        .unwrap_or_else(|_| std::env::temp_dir().join("cannet"));
+    let last_project = state::user_scope_last_project(app.handle());
+    let dir = project_dir::resolve(last_project.as_deref(), &cache_root);
+    tracing::info!(
+        root = %dir.root().display(),
+        cache = %dir.cache_dir().display(),
+        auto_located = dir.is_auto_located(),
+        "project directory resolved"
+    );
+    dir
+}
+
+/// The open project's workspace-scoped data directory — `.cannet/`
+/// inside the session's project directory (ADR 0042 §3). This is the
+/// override half of every two-scope read; the user half is
+/// `app_config_dir`.
+///
+/// The project directory is managed as Tauri state at the top of
+/// `setup`, before any command can run, so this is always answerable —
+/// there is no session without a project directory (ADR 0042 §1).
+pub(crate) fn workspace_dir(app: &AppHandle) -> std::path::PathBuf {
+    app.state::<project_dir::ProjectDir>().workspace_dir()
 }
 
 /// Open the production trace store on the disk-spill backend rooted at
-/// `scratch` (ADR 0002 DS-6: the disk store is the only production path).
-/// Falls back to the in-RAM store — logging why — if the scratch dir can't
-/// be resolved or the disk store can't be opened, so a capture still runs
-/// (degraded to RAM-bounded) rather than the app failing to boot.
-fn open_trace_store(scratch: std::io::Result<std::path::PathBuf>) -> Arc<TraceStore> {
-    match scratch.and_then(|dir| TraceStore::new_disk(&dir)) {
+/// `scratch` — the project directory's cache (ADR 0002 DS-6: the disk
+/// store is the only production path). Falls back to the in-RAM store —
+/// logging why — if the disk store can't be opened, so a capture still
+/// runs (degraded to RAM-bounded) rather than the app failing to boot.
+///
+/// The directory is (re)created first, because the disk store maps its
+/// segments lazily: handed an unusable path it opens happily and dies on
+/// the first flush instead. `create_dir_all` on a path that is a file, or
+/// that permissions forbid, is what turns that into the fallback here.
+fn open_trace_store(scratch: &std::path::Path) -> Arc<TraceStore> {
+    match std::fs::create_dir_all(scratch).and_then(|()| TraceStore::new_disk(scratch)) {
         Ok(store) => Arc::new(store),
         Err(e) => {
             tracing::error!(
@@ -255,29 +283,22 @@ pub(crate) fn apply_scratch_cap(app: &AppHandle) {
     app.state::<AppState>().trace_store.set_scratch_cap(cap);
 }
 
-/// The directory the live filter index roots in: a `filter/` subdir of the
-/// disk-spill scratch (ADR 0002 DS-3/DS-7), or an OS-temp fallback if the
-/// scratch is unavailable. Created if absent; failure to create is left to
-/// `FilterIndex::new` to surface on first use.
-fn filter_index_dir(scratch: Option<&std::path::Path>) -> std::path::PathBuf {
-    let dir = match scratch {
-        Some(s) => s.join("filter"),
-        None => std::env::temp_dir().join("cannet").join("filter"),
-    };
+/// The directory the live filter index roots in: a `filter/` subdir of
+/// the disk-spill scratch (ADR 0002 DS-3/DS-7). Created if absent;
+/// failure to create is left to `FilterIndex::new` to surface on first
+/// use.
+fn filter_index_dir(scratch: &std::path::Path) -> std::path::PathBuf {
+    let dir = scratch.join("filter");
     let _ = std::fs::create_dir_all(&dir);
     dir
 }
 
 /// The directory the per-signal decimation pyramids spill into: a
-/// `signals/` subdir of the disk-spill scratch (ADR 0002 DS-5/DS-7), or an
-/// OS-temp fallback if the scratch is unavailable. `SignalCacheStore::new`
-/// wipes it on construction (a pyramid is derived state).
-fn signal_cache_dir(scratch: Option<&std::path::Path>) -> std::path::PathBuf {
-    let sub = signal_cache::PYRAMID_SUBDIR;
-    match scratch {
-        Some(s) => s.join(sub),
-        None => std::env::temp_dir().join("cannet").join(sub),
-    }
+/// `signals/` subdir of the disk-spill scratch (ADR 0002 DS-5/DS-7).
+/// `SignalCacheStore::new` wipes it on construction (a pyramid is
+/// derived state).
+fn signal_cache_dir(scratch: &std::path::Path) -> std::path::PathBuf {
+    scratch.join(signal_cache::PYRAMID_SUBDIR)
 }
 
 /// Boot the Tauri runtime.
@@ -417,24 +438,29 @@ pub fn run() {
             report_js_heap,
         ])
         .setup(move |app| {
-            // Resolve the disk-spill scratch (ADR 0002 DS-7) now that the
-            // `AppHandle` exists, so it roots under Tauri's
-            // `app_cache_dir()` (`<cache>/dev.cannet.app/current`) — the
-            // same identifier namespace as the config and log dirs. The
-            // trace store opens on the disk backend, or falls back to RAM
-            // (logging why) if the cache dir can't be resolved or opened.
-            // The filter index, signal pyramids, and notes hang off the
-            // same scratch. `AppState` is managed here rather than on the
-            // builder because that resolution needs the handle; no command
-            // can run before `setup` returns, so it is in place for every
-            // consumer (including `apply_scratch_cap` and the DBC watcher
-            // below).
-            let scratch = scratch_current_dir(app);
-            let scratch_path = scratch.as_ref().ok().map(std::path::PathBuf::as_path);
-            let filter_dir = filter_index_dir(scratch_path);
-            let signal_dir = signal_cache_dir(scratch_path);
-            let notes_dir = scratch_path.map(std::path::Path::to_path_buf);
-            let trace_store = open_trace_store(scratch);
+            // Resolve the session's project directory (ADR 0042) now that
+            // the `AppHandle` exists — resolution reads the user-scope
+            // `last_project` and Tauri's `app_cache_dir()`. Its cache is
+            // the disk-spill scratch (ADR 0002 DS-6/DS-7), so each project
+            // keeps its own capture instead of sharing one machine-wide
+            // scratch. The trace store opens on the disk backend, or falls
+            // back to RAM (logging why) if it can't be opened. The filter
+            // index, signal pyramids, and notes hang off the same cache.
+            // `AppState` is managed here rather than on the builder because
+            // that resolution needs the handle; no command can run before
+            // `setup` returns, so it is in place for every consumer
+            // (including `apply_scratch_cap` and the DBC watcher below).
+            let project_dir = resolve_project_dir(app);
+            let scratch = project_dir.cache_dir().to_path_buf();
+            let filter_dir = filter_index_dir(&scratch);
+            let signal_dir = signal_cache_dir(&scratch);
+            let trace_store = open_trace_store(&scratch);
+            // Managed on its own rather than as an `AppState` field: it
+            // is the session's identity, not part of the trace model, and
+            // the scoped settings / state reads that need it
+            // (`workspace_dir`) run from commands that hold nothing but an
+            // `AppHandle`.
+            app.manage(project_dir);
             app.manage(AppState {
                 databases: Mutex::new(Vec::new()),
                 descriptor_snapshot: Mutex::new(None),
@@ -442,14 +468,11 @@ pub fn run() {
                 trace_store,
                 signal_caches: SignalCacheStore::new(signal_dir),
                 system_log: SystemLog::new(),
-                // Notes share the scratch `current/` dir with the trace
+                // Notes share the project's cache dir with the trace
                 // store's identity/derived files (ADR 0002 DS-7); they
                 // persist on every edit, so a marker added to a stopped
                 // trace survives reopen.
-                notes: match notes_dir {
-                    Some(p) => NotesStore::with_scratch(p),
-                    None => NotesStore::new(),
-                },
+                notes: NotesStore::with_scratch(scratch),
                 dbc_watcher: Mutex::new(None),
                 local_buses: local_buses::LocalBusRegistry::default(),
                 transmit_frames: Mutex::new(transmit_frames::TransmitFrameRegistry::default()),

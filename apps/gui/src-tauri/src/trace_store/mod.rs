@@ -256,13 +256,13 @@ struct Inner {
     /// manifest (in the raw store) plus the host-side identity and derived
     /// files this facade writes (ADR 0002 DS-7).
     scratch_dir: Option<PathBuf>,
-    /// Windowed-ring cap (ADR 0002 DS-8): the maximum total `current/`
+    /// Windowed-ring cap (ADR 0002 DS-8): the maximum total `cache/`
     /// footprint in bytes before a flush sheds the oldest raw history.
     /// `None` (the default) is unbounded — the scratch grows with the
     /// capture. Set from `settings.json` (`scratch_cap_bytes`) at launch
     /// and on each settings change.
     scratch_cap_bytes: Option<u64>,
-    /// Total `current/` scratch footprint in bytes as of the last flush —
+    /// Total `cache/` scratch footprint in bytes as of the last flush —
     /// the figure the status readout shows. Measured on the flush cadence
     /// (the dir walk is too costly for the ~10 Hz status tick), so a
     /// growing capture's reported size lags real growth by at most one

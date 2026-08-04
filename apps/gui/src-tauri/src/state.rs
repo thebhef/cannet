@@ -1,11 +1,20 @@
-//! Machine-local UI state, persisted host-side (ADR 0032, ADR 0034).
+//! Machine-local UI state, persisted host-side (ADR 0032, ADR 0034),
+//! across two scopes (ADR 0042).
 //!
 //! Things the app records as the user works — last project, no-project
-//! layout snapshot, recent BLFs, recent commands — live in a single JSON
-//! file in Tauri's `app_config_dir` (`state.json`), read and written
-//! through the [`get_state`] / [`set_state`] commands. The frontend holds
-//! no authoritative copy: it hydrates [`UiState`] at boot and writes the
-//! whole struct back on change.
+//! layout snapshot, recent BLFs, recent commands — live in `state.json`,
+//! read and written through the [`get_state`] / [`set_state`] commands.
+//! The frontend holds no authoritative copy: it hydrates [`UiState`] at
+//! boot and writes the whole struct back on change.
+//!
+//! **Two scopes, one filename.** The *user* copy is in Tauri's
+//! `app_config_dir`; the *workspace* copy is `.cannet/state.json` inside
+//! the open project directory. A read resolves the two, workspace over
+//! user per key. Every field is still *written* at user scope — some of
+//! them (the layout snapshot, the BLF recents, the BLF channel maps) are
+//! per-project by nature and belong in the project's own `.cannet/`, but
+//! moving them there is a separate change; the precedence exists first so
+//! that change is a matter of moving fields, not of building a mechanism.
 //!
 //! This is *state*, not *settings*: none of it is a choice the user
 //! deliberately sets. ADR 0034 splits the two — user intent lives in a
@@ -89,13 +98,26 @@ fn parse_state(text: &str) -> UiState {
     crate::persisted_json::parse_or_default(text)
 }
 
-/// Read `dir/state.json`. A missing or unreadable file, or junk contents,
-/// yields [`UiState::default`].
+/// Read `dir/state.json` from a single scope. A missing or unreadable
+/// file, or junk contents, yields [`UiState::default`].
 fn read_state(dir: &Path) -> UiState {
     match std::fs::read_to_string(dir.join(STATE_FILE)) {
         Ok(text) => parse_state(&text),
         Err(_) => UiState::default(),
     }
+}
+
+/// Read the effective UI state across both scopes (ADR 0042 §3):
+/// `<user_dir>/state.json` overridden per key by
+/// `<workspace_dir>/state.json`.
+///
+/// Every field is still written at user scope — which fields belong in
+/// the project's own `.cannet/` is the scope review this struct still
+/// owes — so today the workspace file is one cannet creates empty and
+/// only a hand-edit fills. The precedence is here so the split is a
+/// matter of moving fields, not of building a mechanism.
+fn read_state_scoped(user_dir: &Path, workspace_dir: &Path) -> UiState {
+    crate::persisted_json::read_scoped(user_dir, workspace_dir, STATE_FILE)
 }
 
 /// Write `state` to `dir/state.json`, creating `dir` if needed. Written to
@@ -113,8 +135,21 @@ fn write_state(dir: &Path, state: &UiState) -> std::io::Result<()> {
 #[allow(clippy::needless_pass_by_value)]
 pub fn get_state(app: tauri::AppHandle) -> UiState {
     crate::persisted_json::config_dir(&app)
-        .map(|dir| read_state(&dir))
+        .map(|user_dir| read_state_scoped(&user_dir, &crate::workspace_dir(&app)))
         .unwrap_or_default()
+}
+
+/// The path of the last project opened or saved-as, read from the
+/// **user scope only**.
+///
+/// This is what the project directory is resolved from at startup
+/// (ADR 0042 §1), which is why it can't go through the scoped read path:
+/// the workspace scope lives *inside* the directory being resolved.
+/// `last_project` is a user-scope value anyway — which project to reopen
+/// is about the person, not about any one project.
+pub(crate) fn user_scope_last_project(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    let dir = crate::persisted_json::config_dir(app).ok()?;
+    read_state(&dir).last_project.map(std::path::PathBuf::from)
 }
 
 /// Persist the whole UI-state struct, replacing the file. Errors (with a

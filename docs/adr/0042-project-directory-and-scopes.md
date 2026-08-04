@@ -161,8 +161,16 @@ disk-spill store is memory-mapped. A project directory on a network
 share — an entirely plausible shared project folder — would put an
 mmap'd, multi-GB, continuously-appended store on a network filesystem,
 which is a known route to corruption and stalls. A link keeps the
-layout honest (cannet still just opens `.cannet/cache/`) while the
-bytes land somewhere that can carry them. The `.gitignore` covers the
+layout honest — `.cannet/cache/` is where a user looks and finds their
+cache — while the bytes land somewhere that can carry them.
+
+**The store opens the link's target, not the link.** This is the one
+place where following the layout literally would defeat it: a project
+directory on an SMB share cannot hold a reparse point at all, so a
+store that opened `.cannet/cache/` would fail in exactly the case the
+link exists to protect. The link is the browsable view of the cache,
+not the path the store resolves; failing to create it is a logged
+warning, not an error. The `.gitignore` covers the
 adjacent hazard: a project directory is plausibly a repo, and a
 multi-GB scratch tree has no business in someone's `git status`.
 
@@ -209,7 +217,8 @@ operation.
   not have; that is tracked in the backlog as a dependency decision.
 - ADR 0034's two files become two files × two scopes. Its
   settings-vs-state distinction is unchanged and still correct.
-- ADR 0002's scratch root becomes `.cannet/cache/`, and its DS-7 reload
-  story becomes per-project rather than per-app.
+- ADR 0002's scratch root becomes the per-project cache that
+  `.cannet/cache/` points at, and its DS-7 reload story becomes
+  per-project rather than per-app.
 - Projects predating this get **hand-migrated**, not migrated by
   shipped code. The affected population is one install.

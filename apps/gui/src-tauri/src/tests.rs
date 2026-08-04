@@ -28,7 +28,7 @@ fn open_trace_store_uses_the_disk_backend_at_the_scratch_dir() {
     let root = tempfile::TempDir::new().unwrap();
     let dir = root.path().join("current");
     std::fs::create_dir_all(&dir).unwrap();
-    let store = open_trace_store(Ok(dir.clone()));
+    let store = open_trace_store(&dir);
     store.append(dummy_frame(1_000, 0x123));
     assert_eq!(store.len(), 1);
     let has_segments = std::fs::read_dir(&dir)
@@ -44,12 +44,17 @@ fn open_trace_store_uses_the_disk_backend_at_the_scratch_dir() {
 
 #[test]
 fn open_trace_store_falls_back_to_in_ram_when_scratch_is_unavailable() {
-    // A scratch dir that can't be resolved/opened must not down the app:
-    // the store falls back to the in-RAM backend and a capture still runs.
-    let store = open_trace_store(Err(std::io::Error::new(
-        std::io::ErrorKind::NotFound,
-        "no cache dir",
-    )));
+    // A scratch dir that can't be opened must not down the app: the store
+    // falls back to the in-RAM backend and a capture still runs. The
+    // project directory always resolves (ADR 0042), so the failure this
+    // guards is now the directory not existing on disk, not the absence
+    // of a project.
+    // A regular file where the scratch dir should be: unopenable as a
+    // directory, however hard the store tries.
+    let root = tempfile::TempDir::new().unwrap();
+    let blocked = root.path().join("blocked");
+    std::fs::write(&blocked, b"not a directory").unwrap();
+    let store = open_trace_store(&blocked);
     store.append(dummy_frame(1_000, 0x1));
     assert_eq!(store.len(), 1);
 }
