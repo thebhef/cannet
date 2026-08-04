@@ -123,6 +123,40 @@ function measureLabelWidth(text: string): number {
   return axisMeasureCtx.measureText(text).width;
 }
 
+/** The bottom stacked area's x-axis label, with no cursor over the
+ * panel. */
+const X_AXIS_LABEL = "time (s)";
+/** Bold monospace for that label, so the digits appended below are
+ * fixed-pitch. uPlot centres the label string, so a proportional font
+ * would shift it under the plot every time a digit changed shape. Same
+ * family as the tick font (`AXIS_FONT`) at uPlot's own label size. */
+const X_AXIS_LABEL_FONT = "bold 12px ui-monospace, SFMono-Regular, Menlo, monospace";
+
+/** The bottom x-axis's label text.
+ *
+ * With no free cursor over the panel it is the plain axis label. With
+ * one, it also carries the cursor's own position on the timeline — the
+ * instant every side-panel value readout is taken at, which is
+ * otherwise nowhere on screen. Elapsed time since the session origin,
+ * at the same precision as the ticks beside it (ADR 0024), so the
+ * cursor's time reads on the same scale as everything else.
+ *
+ * `xMax` is the visible window's upper bound: the cursor's time is
+ * padded to the width of the longest string that window can produce, so
+ * the label keeps one width — and so one position under uPlot's centred
+ * drawing — as the pointer moves. A label that re-centres on every
+ * mouse move is worse than no label at all. The width only changes when
+ * the *window* crosses a magnitude boundary, which is a pan/zoom, not a
+ * mouse move.
+ */
+function xAxisLabelText(hoverX: number | null, xMax: number | null, fracDigits: number): string {
+  if (hoverX == null || !Number.isFinite(hoverX)) return X_AXIS_LABEL;
+  const text = formatElapsed(hoverX, fracDigits);
+  const width =
+    xMax != null && Number.isFinite(xMax) ? formatElapsed(xMax, fracDigits).length : text.length;
+  return `${X_AXIS_LABEL} · ${text.padStart(width)}`;
+}
+
 const Y_AXIS_MODES: YAxisMode[] = ["unified", "per-unit", "individual"];
 const Y_AXIS_MODE_OPTIONS: ComboboxOption[] = Y_AXIS_MODES.map((m) => ({ value: m, label: m }));
 
@@ -1315,10 +1349,24 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     // shared x-grid still reads across the whole stack) but drop the
     // label and the numbers — they're identical on every area, so
     // repeating them just wastes vertical space.
+    //
+    // That one label is also where the free cursor's own time is read
+    // out. The crosshair is panel-level (one shared x for the whole
+    // stack), so the readout is too: it belongs to the single labelled
+    // axis at the foot of the panel, not to each area. uPlot calls
+    // `label` on every draw, so this reads `liveRef` and costs no React
+    // state of its own — the redraw the shared hover already triggers
+    // repaints it.
     const xAxis: uPlot.Axis = isLast
       ? {
           ...axisCommon,
-          label: "time (s)",
+          label: (u: uPlot) =>
+            xAxisLabelText(
+              liveRef.current.hoverX,
+              u.scales.x.max ?? null,
+              fracDigitsForSpan((u.scales.x.max ?? 0) - (u.scales.x.min ?? 0)),
+            ),
+          labelFont: X_AXIS_LABEL_FONT,
           labelSize: 16,
           size: 34,
           space: xTickSpace,

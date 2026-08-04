@@ -624,7 +624,12 @@ the re-sampling), Clear re-anchors what's plotted to "now".
   to hide / show the line — the value keeps updating, the swatch dims;
   **right-click** the swatch to pick the series' colour from the
   browser's colour picker), the name, and the value — at cursor A when one is placed, else at the
-  mouse crosshair, else the latest sample. The signal-panel head shows
+  mouse crosshair, else the latest sample. While the pointer is over the
+  panel, the bottom-most area's **`time (s)` axis label** also carries
+  the crosshair's own time — the instant those readouts are taken at —
+  as elapsed time on the shared timeline (ADR 0024); it reverts to the
+  plain label when the pointer leaves. (Cursors A and B already label
+  their own lines with their times.) The signal-panel head shows
   the H1/H2 Y-cursor values + ΔH when those are placed; y scales are
   always auto-derived (per ADR 0026) and **fit y** refits the
   auto-norm latch to the visible window. With a DBC

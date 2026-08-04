@@ -883,6 +883,59 @@ describe("PlotPanel", () => {
     }
   });
 
+  it("the bottom x-axis label reads out the free cursor's time", async () => {
+    // The per-signal readouts give each signal's value *at the cursor*;
+    // the cursor's own position on the timeline is what they're all
+    // relative to, and the bottom axis label is where it goes. Elapsed
+    // time since the session origin, same convention as the ticks
+    // beside it (ADR 0024). With no cursor the label is its static self.
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      queueMicrotask(() => cb(0));
+      return 1;
+    });
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    const cw = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(600);
+    const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
+    try {
+      renderPanel();
+      await pickCombobox(
+        screen.getByLabelText("add signal to focused plot area"),
+        "*|s:256:EngineSpeed",
+      );
+      await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
+      await waitFor(() => expect(uplotInstances.length).toBeGreaterThan(0));
+      const inst = uplotInstances[uplotInstances.length - 1];
+      // uPlot calls the label at draw time with the live instance; the
+      // window it reports drives both the precision and the reserved
+      // width.
+      inst.scales.x = { min: 0, max: 10 };
+      const label = () => {
+        const xAxis = (inst as unknown as { opts: { axes: { label: unknown }[] } }).opts.axes[0];
+        expect(typeof xAxis.label).toBe("function");
+        return (xAxis.label as (u: unknown) => string)(inst);
+      };
+      expect(label()).toBe("time (s)");
+      // Hover at x = 1.5 (the fake's posToVal is px / 100).
+      await act(async () => {
+        inst.cursor.left = 150;
+        inst.fire("setCursor");
+      });
+      // Padded to the width of the window's widest time ("10.0000"), so
+      // the string can't change width as the pointer moves.
+      expect(label()).toBe("time (s) ·  1.5000");
+      // Pointer leaves → back to the static label; a held number would
+      // have no crosshair on screen to refer to.
+      await act(async () => {
+        inst.cursor.left = -10;
+        inst.fire("setCursor");
+      });
+      expect(label()).toBe("time (s)");
+    } finally {
+      cw.mockRestore();
+      ch.mockRestore();
+    }
+  });
+
   it("each derived axis carries a resolved flex-grow weight (default 1)", () => {
     renderPanel();
     const area = screen.getByText("Area 1").closest(".plot-area") as HTMLElement;
