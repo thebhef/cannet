@@ -40,7 +40,7 @@ import type { PatternResolution } from "./signalSelection";
 import { SignalPatternEditor } from "./SignalPatternEditor";
 import { type YAxisMode } from "./plotAxisDerivation";
 import { messageEcuKey, signalRowLabel } from "./plotSignalLabel";
-import { emptyJankMeter, jankPercent, observeScroll } from "./scrollJank";
+import { emptyJankMeter, jankPercent, jankPixels, observeScroll, scrollStepMs } from "./scrollJank";
 import { useValueTables } from "./useValueTables";
 import { laneBands, laneTileBand, laneValueRange, normalizeIntoLane, tileLabelX } from "./plotEnumLanes";
 import { useDecimatedRange } from "./useDecimatedRange";
@@ -1332,13 +1332,26 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                 jankRef.current = observeScroll(jankRef.current, xs.min, performance.now(), JANK_ALPHA);
                 const pct = jankPercent(jankRef.current);
                 lr.reports.jank(areaId, pct);
-                // Also a diag gauge, so the ADR 0031 capture carries it
-                // into the RenderReport and scroll smoothness can be
-                // compared between runs instead of eyeballed. Distinct
-                // from the report's long-task `jank_fraction`: this is
-                // how evenly the window scrolls, not how busy the main
-                // thread was.
+                // Also diag gauges, so the ADR 0031 capture carries scroll
+                // smoothness into the RenderReport instead of it being
+                // eyeballed. Distinct from the report's long-task
+                // `jank_fraction`: this is how evenly the window scrolls,
+                // not how busy the main thread was.
+                //
+                // Three numbers, because one is not interpretable: the
+                // percentage is a *rate* deviation and so moves with the
+                // zoom and with the cadence the window advances at, while
+                // the pixels a user can actually see stay put. `_px` is
+                // the same wobble with both of those divided out and
+                // `_step_ms` is the cadence, without which neither of the
+                // other two can be read.
                 if (pct != null) diagGauge("scroll_jank_pct", pct);
+                const pxPerSecond =
+                  xs.max != null && xs.max > xs.min ? width / ratio / (xs.max - xs.min) : 0;
+                const px = jankPixels(jankRef.current, pxPerSecond);
+                if (px != null) diagGauge("scroll_jank_px", px);
+                const step = scrollStepMs(jankRef.current);
+                if (step != null) diagGauge("scroll_step_ms", step);
               }
             }
             ctx.save();

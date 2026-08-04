@@ -47,19 +47,15 @@ refinements), and **Task 16** (hotkey framework).
 
 ### CI / checks
 
-- `[docs]` **`cannet-perf-measurement` CLI help text for
-  `--expected-rx-fps` mischaracterizes its own gate.** The doc comment
-  on `Cli::expected_rx_fps`
-  ([`crates/cannet-perf-measurement/src/main.rs:46-49`](crates/cannet-perf-measurement/src/main.rs))
-  says the metric is "gated ... as an absolute floor (measured ≥ 0.85×
-  expected)", but `check.rs`'s `expected_band_verdict` (and its own doc
-  comment, `tol::EXPECTED_FPS_BAND`) implements a genuine **two-sided**
-  ±15% band — both a shortfall and an overshoot fail. The 0.85 in the
-  CLI text is just the band's lower edge, mislabeled as the whole
-  story; the upper edge (1.15×) isn't mentioned at all. The README
-  already describes the real two-sided behavior correctly. Fix the
-  `--help` doc comment in `main.rs` to match. (Found auditing the
-  perf-measurement README against the CLI, chore-fmt-and-hooks branch.)
+- `[cleanup]` **`apps/gui/src-tauri/Cargo.toml` has no `custom-protocol`
+  feature**, so `cargo build --release -p cannet-gui` produces a binary
+  that still points at the Vite dev server and comes up with no frontend
+  — silently, since the window opens and the host runs. The Tauri
+  template carries `custom-protocol = ["tauri/custom-protocol"]` for
+  exactly this. `pnpm --dir apps/gui tauri build` is unaffected (the CLI
+  passes the feature), and the README now says to use it, but the
+  failure mode costs whoever hits it a debugging session. (Found taking
+  the Task 44 release capture.)
 
 Static and automated checks we'd like running on the repo to catch a
 class of bug before it ships, rather than relying on the next user to
@@ -171,6 +167,27 @@ trip over it.
 
 ### Plot panel
 
+- `[perf]` `cannet-gui` `PlotPanel.tsx` / `scrollJank.ts`: **the
+  follow-live window advances with ~2–3 ms of timing error per step.**
+  Measured, not diagnosed — Task 44 Tier 0's job was the measurement.
+  Two release captures (`2026-08-03-e0b83f9-release-resting` and
+  `-release-follow`): the window's rate of advance deviates by ~6.5–7 %
+  of the scroll rate at *both* a 24.2 s and a 0.7 s window, i.e. the
+  error is fixed in time (~1.8 ms/step at 28 ms cadence, ~3.4 ms/step at
+  49 ms). Invisible when zoomed out (0.12 px) and ~7 px mean / 30 px
+  worst when zoomed in, because pixels-per-second scales with the zoom.
+  Candidates, none tested: `advanceLiveEdge`'s EMA pull toward the data
+  edge injects a correction that varies with arrival jitter; the slide
+  is armed by a resample rather than by a frame, so its cadence
+  inherits the fetch loop's jitter. Worth an experiment before any
+  change — the numbers to move are `scroll_jank_px` at a *fixed* zoom.
+- `[perf]` **Nothing pins the plot's x-window width for a measurement
+  run.** `winw` read 170.4 s, 24.2 s and 0.7 s across ADR-0031 captures
+  of the same project, because the saved panel config carries whatever
+  the window was last left at. That is why the scroll-smoothness gauges
+  cannot be gated (Task 44 Tier 0 § 3): two runs are two different
+  experiments. A capture flag or a scenario-fixed window would make
+  them gateable.
 - `[ui]` `cannet-gui` `PlotPanel.tsx`: **a hidden enum keeps its lane
   band within a still-visible enum-lanes axis.** The fully-hidden-axis
   case is done — a derived axis whose signals are *all* hidden now

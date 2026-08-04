@@ -631,6 +631,13 @@ pub struct AutomationConfig {
     /// `--perf-label <text>`: label stamped on the report (the webview
     /// falls back to the project path / `"perf"` when absent).
     pub label: Option<String>,
+    /// `--perf-interact <script>`: drive synthetic scroll / pan / zoom
+    /// gestures at the heavy views while the capture runs, so the
+    /// interaction cost of the render tier is in the measurement rather
+    /// than only its resting cost. The webview owns the script names
+    /// (`perfInteract.ts`); an unrecognised one falls back to the
+    /// scrubbing script there. `None` leaves the run gestureless.
+    pub interact: Option<String>,
 }
 
 impl AutomationConfig {
@@ -666,6 +673,10 @@ impl AutomationConfig {
                 }
                 "--perf-label" => {
                     cfg.label = it.next();
+                    seen = true;
+                }
+                "--perf-interact" => {
+                    cfg.interact = it.next();
                     seen = true;
                 }
                 _ => {}
@@ -950,6 +961,8 @@ mod tests {
             "out/report.json",
             "--perf-label",
             "2 plots + 2 traces",
+            "--perf-interact",
+            "scrub",
         ]))
         .expect("flags arm autostart");
         assert_eq!(cfg.project.as_deref(), Some("demo.cannet_prj"));
@@ -957,6 +970,16 @@ mod tests {
         assert_eq!(cfg.capture_secs, Some(30));
         assert_eq!(cfg.out.as_deref(), Some("out/report.json"));
         assert_eq!(cfg.label.as_deref(), Some("2 plots + 2 traces"));
+        assert_eq!(cfg.interact.as_deref(), Some("scrub"));
+    }
+
+    #[test]
+    fn autostart_without_interact_is_gestureless() {
+        // The interaction script is opt-in: a capture that doesn't ask
+        // for one must measure the resting cost, unperturbed.
+        let cfg = AutomationConfig::from_args(args(&["cannet", "--perf-capture-secs", "30"]))
+            .expect("flag arms autostart");
+        assert_eq!(cfg.interact, None);
     }
 
     #[test]

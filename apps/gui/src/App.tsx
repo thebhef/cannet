@@ -141,6 +141,11 @@ import {
   endDiagCapture,
   startDiagReporter,
 } from "./diag"; // DIAG
+import {
+  INTERACT_WARMUP_MS,
+  parseInteractScript,
+  startPerfInteraction,
+} from "./perfInteract";
 
 // BLF + global error state. Remote sessions are tracked separately
 // (multi-server: one entry per address in `remoteSessions`).
@@ -157,6 +162,7 @@ type AutomationConfig = {
   captureSecs: number | null;
   out: string | null;
   label: string | null;
+  interact: string | null;
 };
 
 // How long to let the connected session settle before bracketing a
@@ -1481,6 +1487,7 @@ export function App() {
     if (automationRanRef.current) return; // one-shot (see the ref's docs)
     automationRanRef.current = true;
     let cancelled = false;
+    let stopInteraction: (() => void) | null = null;
     const sleep = (ms: number) =>
       new Promise<void>((resolve) => setTimeout(resolve, ms));
     // Poll `pred` until it holds or `timeoutMs` elapses (returns whether
@@ -1508,6 +1515,18 @@ export function App() {
           if (ready) await handleConnectRef.current();
         }
         if (automation.captureSecs != null) {
+          // Synthetic interaction (ADR 0031) starts *before* the capture
+          // brackets: its warm-up zooms the plot from whatever width the
+          // project was saved at down to a working one, and those 30-odd
+          // zoom steps are setup, not the workload under measurement.
+          if (automation.interact != null) {
+            stopInteraction = startPerfInteraction(
+              document,
+              parseInteractScript(automation.interact),
+            );
+            await sleep(INTERACT_WARMUP_MS);
+            if (cancelled) return;
+          }
           await sleep(AUTOMATION_SETTLE_MS);
           if (cancelled) return;
           await beginDiagCapture(
@@ -1521,6 +1540,7 @@ export function App() {
         // eslint-disable-next-line no-console
         console.error("perf automation run failed", err);
       } finally {
+        stopInteraction?.();
         // A capture run is unattended — exit so the launching CLI
         // returns. `destroy` skips the dirty-close prompt (applying the
         // project marks it dirty). A connect-only / project-only
@@ -1532,6 +1552,7 @@ export function App() {
     })();
     return () => {
       cancelled = true;
+      stopInteraction?.();
     };
   }, [automation]);
 

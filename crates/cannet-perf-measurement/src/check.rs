@@ -96,13 +96,13 @@ pub mod tol {
 
 /// Operator-supplied absolute throughput expectations for the sim, handed
 /// to `check` on the command line (not stored in the baseline, which is
-/// host-relative). A measured rate below
-/// `expected * `[`tol::EXPECTED_FPS_MIN_FRACTION`] gates independently of
+/// host-relative). A measured rate outside
+/// `expected * (1 ± `[`tol::EXPECTED_FPS_BAND`]`)` gates independently of
 /// the baseline comparison — so a uniformly-slow run is caught even when
-/// it hasn't *regressed* against a slow baseline. `None` leaves that
-/// direction ungated. RX applies to every tier; TX only to tiers that
-/// measure it separately (the frontend), since the host modes track a
-/// single ingest rate.
+/// it hasn't *regressed* against a slow baseline, and a runaway overshoot
+/// with it. `None` leaves that direction ungated. RX applies to every
+/// tier; TX only to tiers that measure it separately (the frontend),
+/// since the host modes track a single ingest rate.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Expected {
     pub rx_fps: Option<f64>,

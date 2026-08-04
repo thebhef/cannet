@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { emptyJankMeter, jankPercent, observeScroll, type JankMeter } from "./scrollJank";
+import {
+  emptyJankMeter,
+  jankPercent,
+  jankPixels,
+  observeScroll,
+  scrollStepMs,
+  type JankMeter,
+} from "./scrollJank";
 
 const ALPHA = 0.15;
 
@@ -115,6 +122,88 @@ describe("observeScroll / jankPercent", () => {
     const lastMs = live[live.length - 1][1];
     for (let k = 1; k < 10; k++) paused.push([lastX, lastMs + k * 600]);
     expect(jankPercent(run(paused))).toBeNull();
+  });
+
+  // --- What the percentage actually measures ---
+  //
+  // The reading sat between 37 % and 87 % through a connect run that was
+  // subjectively smooth, so the question is whether it grades smoothness
+  // at all. These feed the meter a scroll whose misplacement is *known
+  // in pixels* and read both numbers back. If the percentage graded
+  // smoothness, the same pixel error would score the same however the
+  // run was configured.
+
+  /** A uniform scroll of `rate` data-s per wall-s, repainted every
+   * `dtMs`, whose position alternates ±`jitterS` seconds around where
+   * uniform motion would put it. */
+  function jittered(jitterS: number, dtMs: number, rate = 1, n = 200) {
+    return Array.from({ length: n }, (_, k) => {
+      const wobble = (k % 2 === 0 ? 1 : -1) * jitterS;
+      return [100 + (k * dtMs * rate) / 1000 + wobble, 1000 + k * dtMs] as [number, number];
+    });
+  }
+
+  it("reads back a known misplacement in pixels", () => {
+    // 1000 px of plot across a 1.3 s window → 769 px/s. A ±1 px wobble
+    // is ±1/769 s of position; the alternating pattern makes each step
+    // land 2 px from uniform, so that is what the reading must be.
+    const pxPerSecond = 1000 / 1.3;
+    const onePx = 1 / pxPerSecond;
+    // The EMA damps a strictly alternating input by ~8 % (each new
+    // sample pulls the average toward itself before the deviation is
+    // taken), so the reading lands just under the geometric 2 px.
+    const m = run(jittered(onePx, 16));
+    expect(jankPixels(m, pxPerSecond)!).toBeGreaterThan(1.7);
+    expect(jankPixels(m, pxPerSecond)!).toBeLessThan(2.1);
+    // Nothing to misplace when the scroll is uniform.
+    expect(jankPixels(run(perfect(60)), pxPerSecond)!).toBeLessThan(0.01);
+  });
+
+  it("the percentage rises with repaint rate for an unchanged misplacement", () => {
+    // Same ±1 px wobble, sampled every 16 ms vs every 66 ms. The pixels
+    // on screen are identical; the percentage quadruples, because it
+    // divides a fixed positional error by a rate measured over a
+    // shorter interval. A gate on the percentage would therefore fire
+    // on a change to the plot fetch interval alone.
+    const pxPerSecond = 1000 / 1.3;
+    const onePx = 1 / pxPerSecond;
+    const fast = run(jittered(onePx, 16));
+    const slow = run(jittered(onePx, 66));
+    expect(jankPixels(fast, pxPerSecond)!).toBeCloseTo(jankPixels(slow, pxPerSecond)!, 1);
+    expect(jankPercent(fast)!).toBeGreaterThan(jankPercent(slow)! * 3);
+    // For the record: ~16 % at 16 ms, ~4 % at 66 ms, for one pixel.
+    expect(jankPercent(fast)!).toBeGreaterThan(10);
+    expect(jankPercent(slow)!).toBeLessThan(6);
+  });
+
+  it("the percentage rises with zoom for an unchanged misplacement", () => {
+    // The same ±1 px wobble at a 1.3 s window and at a 13 s window. Same
+    // pixels, ten times the percentage — the reading is normalised by
+    // the scroll *rate*, and rate is in data-seconds, so zooming in
+    // shrinks the denominator's worth of pixels without changing
+    // anything about the render path.
+    const zoomedIn = 1000 / 1.3;
+    const zoomedOut = 1000 / 13;
+    const tight = run(jittered(1 / zoomedIn, 16));
+    const wide = run(jittered(1 / zoomedOut, 16));
+    expect(jankPixels(tight, zoomedIn)!).toBeCloseTo(jankPixels(wide, zoomedOut)!, 1);
+    expect(jankPercent(wide)!).toBeGreaterThan(jankPercent(tight)! * 5);
+  });
+
+  it("reports the cadence the window moves at, not the repaint rate", () => {
+    // The window steps once per 66 ms fetch while the plot repaints
+    // between steps. Reading either jank number without knowing which
+    // of those two the interval is makes it uninterpretable.
+    const samples: Array<[number, number]> = [];
+    let x = 100;
+    for (let tick = 0; tick < 40; tick++) {
+      const tickMs = 1000 + tick * 66;
+      samples.push([x, tickMs + 10], [x, tickMs + 30], [x, tickMs + 50]);
+      x += 0.066;
+      samples.push([x, tickMs + 66]);
+    }
+    expect(scrollStepMs(run(samples))!).toBeCloseTo(66, 0);
+    expect(scrollStepMs(run(perfect(60)))!).toBeCloseTo(16, 0);
   });
 
   it("reports nothing while the window is stationary", () => {
