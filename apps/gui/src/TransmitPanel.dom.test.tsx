@@ -386,7 +386,78 @@ describe("TransmitPanel (thin view over host registry)", () => {
       expect(data[0]).toBe(0xab);
     });
   });
+
+  // The calculated-fields modal is a floating layer hosted inside an
+  // expandable row whose background click toggles expansion. Picking a
+  // signal in the modal's combobox must not read as a row click:
+  // collapsing the row unmounts the modal mid-edit.
+  it("picking a counter signal in the calc editor keeps the editor open and applies the pick", async () => {
+    POOL = [frame("a")];
+    DESCRIBE = twoSignalDescriptor();
+    renderPanel("el", ["a"]);
+    fireEvent.click(await screen.findByTitle("expand"));
+    fireEvent.click(await screen.findByText("fields…"));
+    // Turn the counter section on — it defaults to the first signal.
+    fireEvent.click(await screen.findByLabelText("counter configured"));
+    const trigger = await screen.findByLabelText("counter signal");
+    expect(trigger).toHaveTextContent("AliveCtr");
+
+    // Open the combobox and pick the other signal.
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("option", { name: "RollCtr" }));
+
+    // The editor is still mounted and the pick took effect.
+    expect(screen.getByRole("dialog", { name: "Calculated fields" })).toBeInTheDocument();
+    expect(screen.getByLabelText("counter signal")).toHaveTextContent("RollCtr");
+
+    fireEvent.click(screen.getByText("Apply"));
+    await waitFor(() => {
+      const call = lastCall("set_transmit_frame");
+      const frameArg = (call?.args as { frame?: { calc?: unknown } }).frame;
+      expect(frameArg?.calc).toMatchObject({ counter: { signal: "RollCtr" } });
+    });
+  });
+
+  it("clicking the calc editor's own chrome does not collapse the row under it", async () => {
+    POOL = [frame("a")];
+    DESCRIBE = twoSignalDescriptor();
+    renderPanel("el", ["a"]);
+    fireEvent.click(await screen.findByTitle("expand"));
+    fireEvent.click(await screen.findByText("fields…"));
+    fireEvent.click(await screen.findByText(/^Calculated fields — /));
+    expect(screen.getByRole("dialog", { name: "Calculated fields" })).toBeInTheDocument();
+  });
 });
+
+/// A DBC message with two counter-shaped signals, so the calc editor's
+/// destination combobox has something to switch between.
+function twoSignalDescriptor() {
+  const sig = (name: string) => ({
+    name,
+    unit: "",
+    factor: 1,
+    offset: 0,
+    min: 0,
+    max: 15,
+    size: 4,
+    signed: false,
+    mux: { kind: "plain" },
+    floatKind: "integer",
+    hasValueTable: false,
+    startValueRaw: null,
+  });
+  return {
+    name: "Status",
+    expectedLen: 8,
+    isFd: false,
+    brs: false,
+    genMsgCycleTimeMs: 100,
+    genMsgSendType: null,
+    usesExtendedMux: false,
+    calcFields: null,
+    signals: [sig("AliveCtr"), sig("RollCtr")],
+  };
+}
 
 describe("payload sizing helpers", () => {
   it("carries the calc override through set_transmit_frame via the shared editor", async () => {

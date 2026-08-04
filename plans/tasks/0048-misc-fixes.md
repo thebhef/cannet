@@ -138,10 +138,41 @@ observed, and a remote-desktop compositor is a plausible participant in
 a WebView repaint stall, so establish whether it reproduces locally
 before hunting in app code.
 
-## 7. Transmit panel: the sequence editor disappears mid-edit
+## 7. Transmit panel: the sequence editor disappears mid-edit — **done**
 
-Adding a sequence, then changing the signal-selection combobox, makes
-the window disappear. No change is applied.
+The calculated-fields modal (`CalcFieldEditor`, where "Sequence
+counter" is configured) is opened from `CalcFieldsStrip` inside a
+`TransmitFrameRow`, whose whole box is click-to-expand: any click that
+isn't on an `input`/`button`/`label`/… toggles the row. Collapsing the
+row unmounts `.tx-expanded`, and with it the strip that holds the
+modal's `open` state.
+
+Two ways in, both confirmed by disabling only the row's `onClick` and
+watching the reproduction tests go green:
+
+- **The combobox pick.** The dropdown renders through a portal to
+  `document.body`, and React bubbles a portal's events up the
+  *component* tree, not the DOM tree — so clicking an option arrived at
+  the row's handler, whose `closest(…)` guard saw an `<li>` with no
+  interactive ancestor and read it as a background click. (Same for the
+  identity line's bus picker and the frame-shape strip's kind picker,
+  which were silently collapsing the row on every pick.)
+- **The modal's own chrome.** The modal was rendered inline in the
+  row's DOM, so clicking its title or backdrop was literally a click on
+  the row.
+
+"No change is applied" is the same cause, not a second defect: the pick
+does reach `counterSignal`, but the strip unmounts in the same batch, so
+the user never reaches Apply. The commit path is fine — the fixed test
+picks a signal and Apply carries it through `set_transmit_frame`.
+
+Fixed with both halves, each shown necessary: the row's click handler
+now ignores anything not DOM-contained in the row (killing the portal
+route), and `CalcFieldEditor` renders through a portal to `document.body`
+like the floating layer it is (killing the inline-chrome route). Guarded
+by "picking a counter signal in the calc editor keeps the editor open and
+applies the pick" and "clicking the calc editor's own chrome does not
+collapse the row under it" in `TransmitPanel.dom.test.tsx`.
 
 ## 8. Per-unit y-axis scaling is wrong
 
