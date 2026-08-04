@@ -27,9 +27,8 @@ use serde::Serialize;
 
 use crate::persisted_json::{scope_of, Scope};
 use crate::settings::{
-    Settings, CAN_ID_FORMATS, MIN_BUS_BITRATE_BPS, MIN_INTERVAL_MS, MIN_LOG_ROTATION_BYTES,
-    MIN_SCRATCH_CAP_BYTES, MIN_SYSTEM_LOG_RING, SCOPES, SIDECAR_LOG_LEVELS, SYSTEM_LOG_LEVELS,
-    TRACE_MODES, Y_AXIS_MODES,
+    Settings, CAN_ID_FORMATS, MIN_INTERVAL_MS, MIN_LOG_ROTATION_BYTES, MIN_SCRATCH_CAP_BYTES,
+    MIN_SYSTEM_LOG_RING, SCOPES, SIDECAR_LOG_LEVELS, SYSTEM_LOG_LEVELS, TRACE_MODES, Y_AXIS_MODES,
 };
 
 /// A whole-millisecond interval control: the shape every cadence
@@ -79,9 +78,7 @@ pub(crate) enum Surface {
     Plot,
     Trace,
     Signals,
-    ById,
     Dbc,
-    Transmit,
     Connection,
     Logging,
     Storage,
@@ -96,9 +93,7 @@ impl Surface {
         (Self::Plot, "Plot"),
         (Self::Trace, "Trace"),
         (Self::Signals, "Signals"),
-        (Self::ById, "By-ID"),
         (Self::Dbc, "DBC"),
-        (Self::Transmit, "Transmit"),
         (Self::Connection, "Connection"),
         (Self::Logging, "Logging"),
         (Self::Storage, "Storage"),
@@ -198,6 +193,35 @@ pub(crate) enum Backing {
     View,
 }
 
+/// Fields of `settings.json` the settings view deliberately lists **no
+/// row for**, each paired with where the knob is edited instead.
+///
+/// [`Backing`] covers the two cases a row can be in. This is the third
+/// case, and the one no row can express: a real, serialized setting
+/// whose editor lives somewhere else entirely, so a row here could only
+/// ever be a pointer at that editor — a second home for one fact, which
+/// is exactly what ADR 0018's shortcuts panel already rules out for
+/// `keybindings`.
+///
+/// It is a declaration, not an escape hatch. A field in neither this
+/// table nor [`DESCRIPTORS`] still fails
+/// `descriptors_and_settings_name_the_same_keys`, so ADR 0034's "the
+/// file lists every knob" promise stays mechanically checked — adding a
+/// field still forces a deliberate choice, it is just now a choice
+/// between two answers rather than one. Naming the other editor is part
+/// of the entry, because "there is no row" is only defensible when
+/// there is somewhere else to go.
+// Read only by the tests that enforce the rule, which is the whole point
+// of it: nothing at runtime consults this, because the behaviour it
+// describes is the *absence* of a row. It stays in the shipping file
+// rather than behind `cfg(test)` so that a reader of the descriptor
+// table can see why `keybindings` is missing from it.
+#[allow(dead_code)]
+const EDITED_ELSEWHERE: &[(&str, &str)] = &[(
+    "keybindings",
+    "the Keyboard Shortcuts panel (ADR 0018), its only editor",
+)];
+
 /// One setting's descriptor, as written in [`DESCRIPTORS`]. The scope
 /// and the default are *not* here — they are joined in from the places
 /// that already own them when the table is served.
@@ -225,35 +249,17 @@ const DESCRIPTORS: &[Spec] = &[
         key: "show_developer_settings",
         backing: Backing::Field,
         label: "Show developer settings",
-        help: "Reveal machine-load and internal-cadence knobs in the settings \
-               view. They are hidden by default because they exist so that every \
-               knob lives in settings.json, not because tuning them is expected.",
+        help: "",
         surfaces: &[Surface::General],
         kind: Kind::Behaviour,
         control: Control::Bool,
     },
     Spec {
-        key: "keybindings",
-        backing: Backing::Field,
-        label: "Keyboard shortcuts",
-        help: "Your keybinding customisation. Edited in the Keyboard Shortcuts \
-               panel, which is its only editor; it is listed here because it is a \
-               field of settings.json like any other. Absent means the built-in \
-               default bindings.",
-        surfaces: &[Surface::General],
-        kind: Kind::Behaviour,
-        control: Control::Custom {
-            renderer: "keybindings",
-        },
-    },
-    Spec {
         key: "scratch_cap_bytes",
         backing: Backing::Field,
         label: "Cache size cap",
-        help: "Drop the oldest history once this project's on-disk cache exceeds \
-               this. Below the minimum the pre-allocated segments dominate and the \
-               cap cannot be honoured, so a smaller value is refused. Blank is \
-               unbounded.",
+        help: "Drops the oldest history once this project's on-disk cache \
+               exceeds this. Minimum 100 MB.",
         surfaces: &[Surface::Storage],
         kind: Kind::Behaviour,
         control: Control::Int {
@@ -267,8 +273,8 @@ const DESCRIPTORS: &[Spec] = &[
         key: "clear_scratch_on_exit",
         backing: Backing::Field,
         label: "Discard session on exit",
-        help: "Wipe this project's on-disk cache on a clean close, instead of \
-               reloading the prior session on the next launch.",
+        help: "Wipes this project's on-disk cache on a clean close, so the next \
+               launch starts empty instead of reloading the prior session.",
         surfaces: &[Surface::Storage],
         kind: Kind::Behaviour,
         control: Control::Bool,
@@ -280,10 +286,8 @@ const DESCRIPTORS: &[Spec] = &[
         // a user looks for it (ADR 0042 §5).
         backing: Backing::View,
         label: "Project caches",
-        help: "Every project directory cannet has cached data for, and how much \
-               disk each one holds. Nothing is reclaimed automatically — clearing \
-               is always a deliberate action, and no action here removes a project \
-               directory.",
+        help: "Nothing is reclaimed automatically, and no action here removes a \
+               project directory.",
         surfaces: &[Surface::Storage],
         kind: Kind::Behaviour,
         control: Control::Custom {
@@ -294,10 +298,8 @@ const DESCRIPTORS: &[Spec] = &[
         key: "system_log_min_level",
         backing: Backing::Field,
         label: "System log minimum level",
-        help: "The lowest severity the System Messages panel lists. `info` is what \
-               your own actions produced; drop to `debug` for the app's internal \
-               breadcrumbs. This filters the view only — what reaches the log file \
-               is its own setting.",
+        help: "Filters the panel only — what reaches the log file is its own \
+               setting.",
         surfaces: &[Surface::Logging],
         kind: Kind::Behaviour,
         control: Control::Enum {
@@ -308,11 +310,8 @@ const DESCRIPTORS: &[Spec] = &[
         key: "log_file_min_level",
         backing: Backing::Field,
         label: "Log file minimum level",
-        help: "The lowest severity written to cannet.log — the file you send with \
-               a bug report. The default keeps everything, including the app's own \
-               breadcrumbs and health samples. Raising it makes the file smaller \
-               and a long soak reach further back. A crash record is always \
-               written.",
+        help: "cannet.log is the file you send with a bug report. A crash \
+               record is written whatever this is set to.",
         surfaces: &[Surface::Logging],
         kind: Kind::Behaviour,
         control: Control::Enum {
@@ -323,9 +322,7 @@ const DESCRIPTORS: &[Spec] = &[
         key: "sidecar_log_level",
         backing: Backing::Field,
         label: "Sidecar log level",
-        help: "How much the python-can sidecar reports about itself and your \
-               adapter. Its messages arrive here and in the log file like any \
-               other; drop it to debug when a hardware fault will not reproduce.",
+        help: "",
         surfaces: &[Surface::Logging, Surface::Connection],
         kind: Kind::Behaviour,
         control: Control::Enum {
@@ -336,22 +333,7 @@ const DESCRIPTORS: &[Spec] = &[
         key: "reopen_last_project",
         backing: Backing::Field,
         label: "Reopen the last project on launch",
-        help: "Start cannet where you left off. Turn it off to launch with \
-               nothing open — the pointer to your last project is kept either \
-               way, so turning this back on resumes it. Its capture is kept \
-               too: every project keeps its own.",
-        surfaces: &[Surface::General],
-        kind: Kind::Behaviour,
-        control: Control::Bool,
-    },
-    Spec {
-        key: "confirm_unsaved_on_exit",
-        backing: Backing::Field,
-        label: "Ask before closing with unsaved changes",
-        help: "Prompt to save when you close the window with an unsaved project \
-               or an edited .cannet_rbs. Turned off, the window closes and those \
-               changes are gone — the prompt's only other answers are Save and \
-               Cancel, so there is nothing else for it to mean.",
+        help: "",
         surfaces: &[Surface::General],
         kind: Kind::Behaviour,
         control: Control::Bool,
@@ -360,8 +342,7 @@ const DESCRIPTORS: &[Spec] = &[
         key: "recent_blfs_limit",
         backing: Backing::Field,
         label: "Recent BLFs remembered",
-        help: "How many recently-opened BLFs the File menu lists. Roughly \"every \
-               BLF you opened this week\" at the default. Zero remembers none.",
+        help: "Zero remembers none.",
         surfaces: &[Surface::General],
         kind: Kind::Behaviour,
         control: count(),
@@ -370,8 +351,7 @@ const DESCRIPTORS: &[Spec] = &[
         key: "recent_commands_limit",
         backing: Backing::Field,
         label: "Recent commands remembered",
-        help: "How many recently-run commands the command palette floats to the \
-               top of its list. Zero remembers none.",
+        help: "Zero remembers none.",
         surfaces: &[Surface::General],
         kind: Kind::Behaviour,
         control: count(),
@@ -380,11 +360,9 @@ const DESCRIPTORS: &[Spec] = &[
         key: "follow_window_ms",
         backing: Backing::Field,
         label: "Default follow-live window",
-        help: "How much time a plot's follow-live window shows before you have set \
-               a width by zooming or panning. The default suits a fast powertrain \
-               bus; a slow body bus wants more.",
+        help: "Applies until you set a width by zooming or panning.",
         surfaces: &[Surface::Plot],
-        kind: Kind::Default,
+        kind: Kind::Developer,
         control: Control::Int {
             unit: Some("s"),
             scale: 1000,
@@ -396,10 +374,7 @@ const DESCRIPTORS: &[Spec] = &[
         key: "trace_mode",
         backing: Backing::Field,
         label: "Default trace view",
-        help: "Which view a new trace panel opens in: by-ID, one row per \
-               arbitration id, or the chronological row-per-frame trace. Only \
-               the starting point — the panel's own buttons still switch it, \
-               and a panel that is already open keeps what you set there.",
+        help: "",
         surfaces: &[Surface::Trace],
         kind: Kind::Default,
         control: Control::Enum {
@@ -410,10 +385,7 @@ const DESCRIPTORS: &[Spec] = &[
         key: "trace_auto_scroll",
         backing: Backing::Field,
         label: "Default auto-scroll",
-        help: "Whether a new chronological trace starts pinned to the live \
-               edge. Turn it off to open looking at the beginning of a \
-               capture. The panel's auto-scroll box — and scrolling away from \
-               the tail — still wins once it is open.",
+        help: "",
         surfaces: &[Surface::Trace],
         kind: Kind::Default,
         control: Control::Bool,
@@ -422,9 +394,8 @@ const DESCRIPTORS: &[Spec] = &[
         key: "trace_show_events",
         backing: Backing::Field,
         label: "Default events overlay",
-        help: "Whether a new chronological trace interleaves timeline events — \
-               your notes and the capture-truncation marker — among the frame \
-               rows. The panel's events box still wins once it is open.",
+        help: "Timeline events are your notes and the capture-truncation \
+               marker.",
         surfaces: &[Surface::Trace],
         kind: Kind::Default,
         control: Control::Bool,
@@ -433,7 +404,7 @@ const DESCRIPTORS: &[Spec] = &[
         key: "plot_y_axis_mode",
         backing: Backing::Field,
         label: "Default y-axis layout",
-        help: "How a new plot area spreads its signals over y-axes: all                overlaid on one, one axis per unit, or one axis per signal.                Only the starting point — each area's own picker still wins,                and a plot you already have is left as it is drawn.",
+        help: "",
         surfaces: &[Surface::Plot],
         kind: Kind::Default,
         control: Control::Enum {
@@ -444,9 +415,10 @@ const DESCRIPTORS: &[Spec] = &[
         key: "trace_columns",
         backing: Backing::Field,
         label: "Default trace columns",
-        help: "Which columns a new trace or by-ID table shows, in what order,                and how wide. Only the starting point — drag a header to                reorder, drag its right edge to resize, right-click it to show                or hide, and a panel you already have keeps what you set there.",
-        surfaces: &[Surface::Trace, Surface::ById],
-        kind: Kind::Default,
+        help: "Which columns a new trace or by-ID table shows, in what order, \
+               and how wide.",
+        surfaces: &[Surface::Trace],
+        kind: Kind::Developer,
         control: Control::Custom {
             renderer: "column-defaults",
         },
@@ -455,9 +427,9 @@ const DESCRIPTORS: &[Spec] = &[
         key: "signal_columns",
         backing: Backing::Field,
         label: "Default signal columns",
-        help: "The same, for the signal table, which has its own columns.                Count, rate and bus start hidden by default because a signal                list is usually read for values.",
+        help: "The same, for the signal table, which has its own columns.",
         surfaces: &[Surface::Signals],
-        kind: Kind::Default,
+        kind: Kind::Developer,
         control: Control::Custom {
             renderer: "column-defaults",
         },
@@ -466,8 +438,10 @@ const DESCRIPTORS: &[Spec] = &[
         key: "can_id_format",
         backing: Backing::Field,
         label: "CAN-ID format",
-        help: "How the trace and by-ID tables spell an arbitration id:                zero-padded hex, or plain decimal. The s: / x: prefix stays                either way — 11-bit and 29-bit ids overlap as numbers. Only the                display columns follow this; the transmit and filter editors                still take hex.",
-        surfaces: &[Surface::Trace, Surface::ById],
+        help: "The s: / x: prefix stays either way — 11-bit and 29-bit ids \
+               overlap as numbers. The transmit and filter editors still take \
+               hex.",
+        surfaces: &[Surface::Trace],
         kind: Kind::Behaviour,
         control: Control::Enum {
             options: CAN_ID_FORMATS,
@@ -477,19 +451,17 @@ const DESCRIPTORS: &[Spec] = &[
         key: "dbc_auto_reload",
         backing: Backing::Field,
         label: "Reload a DBC when it changes on disk",
-        help: "Re-read a loaded DBC as soon as the file is saved by another                tool, instead of waiting for Reload DBC. Turn it off when you                are editing a DBC while analysing a capture and would rather                choose the moment the decoding changes. A DBC that disappears                is reported either way.",
+        help: "A DBC that disappears is reported either way.",
         surfaces: &[Surface::Dbc],
-        kind: Kind::Behaviour,
+        kind: Kind::Developer,
         control: Control::Bool,
     },
     Spec {
         key: "notice_dwell_ms",
         backing: Backing::Field,
         label: "Status notice dwell",
-        help: "How long a transient notice stays in the status bar before it \
-               reverts to the resting line. Lengthen it if notices clear before \
-               you have read them; nothing is lost either way, since every notice \
-               is also in the system log.",
+        help: "Nothing is lost either way: every notice is also in the system \
+               log.",
         surfaces: &[Surface::General],
         kind: Kind::Developer,
         control: interval_ms(),
@@ -498,10 +470,7 @@ const DESCRIPTORS: &[Spec] = &[
         key: "plot_fetch_interval_ms",
         backing: Backing::Field,
         label: "Plot fetch interval",
-        help: "How often an open plot asks the host for a resampled window while a \
-               capture runs. Raising it cuts host load on a busy machine at the \
-               cost of a choppier live plot; drawing stays at display rate either \
-               way.",
+        help: "Drawing stays at display rate either way.",
         surfaces: &[Surface::Plot],
         kind: Kind::Developer,
         control: interval_ms(),
@@ -510,10 +479,7 @@ const DESCRIPTORS: &[Spec] = &[
         key: "view_refresh_interval_ms",
         backing: Backing::Field,
         label: "View refresh interval",
-        help: "How often a paged view re-reads the tail while a capture runs — the \
-               trace, by-id, signal and transmit views. It bounds both the parse \
-               cost on the UI thread and the host-side window scans under a \
-               high-rate stream.",
+        help: "Covers the trace, by-id, signal and transmit views.",
         surfaces: &[Surface::General],
         kind: Kind::Developer,
         control: interval_ms(),
@@ -522,9 +488,8 @@ const DESCRIPTORS: &[Spec] = &[
         key: "live_update_interval_ms",
         backing: Backing::Field,
         label: "Live update rate",
-        help: "How often the host tells the views a running capture has grown. \
-               Covers the whole live-update loop — the rate readout's smoothing \
-               and the live-tail size are tuned against this one number.",
+        help: "The rate readout's smoothing and the live-tail size are tuned \
+               against this one number.",
         surfaces: &[Surface::Trace],
         kind: Kind::Developer,
         control: interval_ms(),
@@ -533,23 +498,19 @@ const DESCRIPTORS: &[Spec] = &[
         key: "trace_flush_interval_ms",
         backing: Backing::Field,
         label: "Capture flush interval",
-        help: "How often the capture is flushed to disk. A crash loses at most \
-               this much trailing capture; each flush costs an fsync and a \
-               manifest rewrite, so lengthening it trades durability for I/O.",
+        help: "A crash loses at most this much trailing capture.",
         surfaces: &[Surface::Storage],
-        kind: Kind::Behaviour,
+        kind: Kind::Developer,
         control: interval_ms(),
     },
     Spec {
         key: "log_rotation_bytes",
         backing: Backing::Field,
         label: "Log file rotation size",
-        help: "Size at which cannet.log rotates. One previous generation is kept, \
-               so the pair uses about twice this. The rolling log is what you send \
-               with a bug report — a long soak at a small size loses its \
-               beginning.",
+        help: "One previous generation is kept, so the pair uses about twice \
+               this.",
         surfaces: &[Surface::Logging],
-        kind: Kind::Behaviour,
+        kind: Kind::Developer,
         control: Control::Int {
             unit: Some("MiB"),
             scale: 1024 * 1024,
@@ -561,11 +522,9 @@ const DESCRIPTORS: &[Spec] = &[
         key: "system_log_ring_capacity",
         backing: Backing::Field,
         label: "System log depth",
-        help: "How many system messages are kept before the oldest is dropped. The \
-               System Messages panel can show no more than this, so raising it \
-               makes more of a long session reachable.",
+        help: "The System Messages panel can show no more than this.",
         surfaces: &[Surface::Logging],
-        kind: Kind::Behaviour,
+        kind: Kind::Developer,
         control: Control::Int {
             unit: Some("entries"),
             scale: 1,
@@ -577,11 +536,10 @@ const DESCRIPTORS: &[Spec] = &[
         key: "system_log_rate_limit",
         backing: Backing::Field,
         label: "System log rate limit",
-        help: "How many identical messages one source may log per second before \
-               the rest are suppressed. Set it to 0 to turn the limiter off — \
-               diagnosing a message flood is exactly when you want all of it.",
+        help: "Set it to 0 to turn the limiter off — diagnosing a message flood \
+               is exactly when you want all of it.",
         surfaces: &[Surface::Logging],
-        kind: Kind::Behaviour,
+        kind: Kind::Developer,
         control: Control::Int {
             unit: Some("per second"),
             scale: 1,
@@ -593,9 +551,8 @@ const DESCRIPTORS: &[Spec] = &[
         key: "health_sample_interval_ms",
         backing: Backing::Field,
         label: "Health sample interval",
-        help: "How often memory and capture metrics are sampled into the system \
-               log at debug level. Each sample walks the whole system process \
-               table, so it is not free; set it to 0 to turn sampling off.",
+        help: "Each sample walks the whole system process table, so it is not \
+               free. Set it to 0 to turn sampling off.",
         surfaces: &[Surface::Logging],
         kind: Kind::Developer,
         control: interval_ms_or_off(),
@@ -604,10 +561,7 @@ const DESCRIPTORS: &[Spec] = &[
         key: "sidecar_restart_budget",
         backing: Backing::Field,
         label: "Sidecar restart budget",
-        help: "How many times a crashed python-can sidecar is restarted \
-               automatically before the app gives up for the session. Raise it for \
-               a flaky adapter; lower it so a CI soak fails loudly. Restart \
-               sidecar resets the count.",
+        help: "Restart sidecar resets the count.",
         surfaces: &[Surface::Connection],
         kind: Kind::Behaviour,
         control: Control::Int {
@@ -621,10 +575,7 @@ const DESCRIPTORS: &[Spec] = &[
         key: "default_server_address",
         backing: Backing::Field,
         label: "Default server address",
-        help: "The address the Add server form opens filled with, for a bus \
-               binding or a bridge. Only the starting point — type over it as \
-               usual. Point it at the cannet-server you use most so adding one \
-               is a click rather than a retype.",
+        help: "",
         surfaces: &[Surface::Connection],
         kind: Kind::Default,
         control: Control::Text {
@@ -632,33 +583,12 @@ const DESCRIPTORS: &[Spec] = &[
         },
     },
     Spec {
-        key: "default_bus_bitrate_bps",
-        backing: Backing::Field,
-        label: "Default bus bitrate",
-        help: "The nominal bitrate a bus you add starts at. Blank adds it with \
-               no bitrate, which leaves the adapter's own default in charge — \
-               what Add bus has always done. Fill it in when every bus you \
-               configure runs at the same rate. Each bus's own bitrate box \
-               still wins, and a bus you already have is left alone.",
-        surfaces: &[Surface::Connection],
-        kind: Kind::Default,
-        control: Control::Int {
-            unit: Some("bit/s"),
-            scale: 1,
-            min: Some(MIN_BUS_BITRATE_BPS),
-            unset: Some("the adapter's default"),
-        },
-    },
-    Spec {
         key: "sidecar_dir",
         backing: Backing::Field,
         label: "Sidecar directory",
-        help: "Run the python-can sidecar from this directory instead of the one \
-               shipped with the app — a patched or replaced build, without \
-               repackaging. Blank uses the bundled sidecar. A directory with no \
-               sidecar in it shows up as a spawn failure in this log.",
+        help: "Blank uses the bundled sidecar.",
         surfaces: &[Surface::Connection],
-        kind: Kind::Behaviour,
+        kind: Kind::Developer,
         control: Control::Text {
             placeholder: Some("bundled sidecar"),
         },
@@ -667,12 +597,9 @@ const DESCRIPTORS: &[Spec] = &[
         key: "driver_module",
         backing: Backing::Field,
         label: "Driver module",
-        help: "Python module the sidecar loads its hardware driver from. Blank \
-               uses the bundled python-can driver. Set it to run your own driver \
-               implementation; the sidecar reports on startup if the module is \
-               missing or does not implement the driver protocol.",
+        help: "Blank uses the bundled python-can driver.",
         surfaces: &[Surface::Connection],
-        kind: Kind::Behaviour,
+        kind: Kind::Developer,
         control: Control::Text {
             placeholder: Some("cannet_python_can.driver_python_can"),
         },
@@ -681,9 +608,7 @@ const DESCRIPTORS: &[Spec] = &[
         key: "reconnect_backoff_ms",
         backing: Backing::Field,
         label: "Reconnect backoff",
-        help: "How long to wait before reconnecting to a cannet-server after the \
-               connection drops. Fine at the default on a LAN; a flaky link to a \
-               remote server wants longer so a down server is not hammered.",
+        help: "",
         surfaces: &[Surface::Connection],
         kind: Kind::Developer,
         control: interval_ms(),
@@ -802,15 +727,19 @@ mod tests {
     #[test]
     fn descriptors_and_settings_name_the_same_keys() {
         // ADR 0034's "the file lists every knob", mechanically checked:
-        // a field added to `Settings` without a descriptor fails here,
-        // and so does a descriptor for a field that no longer exists.
+        // a field added to `Settings` and accounted for nowhere fails
+        // here, and so does a descriptor for a field that no longer
+        // exists. A field may be accounted for in one of two ways — a
+        // panel row, or a declaration that it is edited elsewhere — and
+        // both are a deliberate table entry.
         let fields = settings_keys();
         for key in fields.keys() {
             assert!(
                 DESCRIPTORS
                     .iter()
-                    .any(|s| s.key == key && s.backing == Backing::Field),
-                "settings key `{key}` has no descriptor"
+                    .any(|s| s.key == key && s.backing == Backing::Field)
+                    || EDITED_ELSEWHERE.iter().any(|(k, _)| k == key),
+                "settings key `{key}` has neither a descriptor nor a declared editor"
             );
         }
         for s in DESCRIPTORS.iter().filter(|s| s.backing == Backing::Field) {
@@ -820,6 +749,38 @@ mod tests {
                 s.key
             );
         }
+    }
+
+    #[test]
+    fn a_field_edited_elsewhere_is_a_real_key_with_no_row() {
+        // The bound on the second answer, and what stops it becoming a
+        // way to quiet the test above: an entry must name a field that
+        // actually exists, must not also have a row (which would make
+        // the panel the second editor the entry exists to avoid), and
+        // must say where the knob *is* edited.
+        let fields = settings_keys();
+        for (key, home) in EDITED_ELSEWHERE {
+            assert!(
+                fields.contains_key(*key),
+                "`{key}` is edited elsewhere but is not a settings key"
+            );
+            assert!(
+                !DESCRIPTORS.iter().any(|s| s.key == *key),
+                "`{key}` is edited elsewhere and yet has a panel row"
+            );
+            assert!(!home.is_empty(), "`{key}` does not say where it is edited");
+        }
+    }
+
+    #[test]
+    fn keybindings_are_edited_elsewhere_rather_than_shown_as_a_row() {
+        // The worked example, and the one this table exists for.
+        // Keyboard shortcuts have their own view (ADR 0018), so a row
+        // here could only be a pointer at it — a second home for one
+        // fact. `keybindings` is still a field of `settings.json`, and
+        // still hand-editable; it just is not a settings-panel row.
+        assert!(EDITED_ELSEWHERE.iter().any(|(k, _)| *k == "keybindings"));
+        assert!(!DESCRIPTORS.iter().any(|s| s.key == "keybindings"));
     }
 
     #[test]

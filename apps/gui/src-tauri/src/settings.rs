@@ -59,12 +59,10 @@ const SETTINGS_FILE: &str = "settings.json";
 /// rather than about the work: what the settings view reveals
 /// (`show_developer_settings`), how verbose their log view is
 /// (`system_log_min_level`), how long a status notice dwells before it
-/// clears (`notice_dwell_ms`, a reading-speed accommodation),
+/// clears (`notice_dwell_ms`, a reading-speed accommodation), and
 /// whether launching resumes the last project (`reopen_last_project`,
 /// which is read before any project — and therefore any workspace file
-/// — has been resolved at all), and whether closing with unsaved work
-/// asks first (`confirm_unsaved_on_exit`, which is about how much
-/// hand-holding the person wants). None of those are a project's
+/// — has been resolved at all). None of those are a project's
 /// business, so they stay at user scope.
 ///
 /// The names are the serialized ones. `every_settings_key_declares_a_scope`
@@ -77,7 +75,6 @@ pub(crate) const SCOPES: ScopeTable = &[
     ("system_log_min_level", Scope::User),
     ("notice_dwell_ms", Scope::User),
     ("reopen_last_project", Scope::User),
-    ("confirm_unsaved_on_exit", Scope::User),
     ("plot_fetch_interval_ms", Scope::UserOverridable),
     ("view_refresh_interval_ms", Scope::UserOverridable),
     ("follow_window_ms", Scope::UserOverridable),
@@ -92,7 +89,6 @@ pub(crate) const SCOPES: ScopeTable = &[
     ("sidecar_restart_budget", Scope::UserOverridable),
     ("reconnect_backoff_ms", Scope::UserOverridable),
     ("default_server_address", Scope::UserOverridable),
-    ("default_bus_bitrate_bps", Scope::UserOverridable),
     ("sidecar_dir", Scope::UserOverridable),
     ("driver_module", Scope::UserOverridable),
     ("log_file_min_level", Scope::UserOverridable),
@@ -165,21 +161,6 @@ pub struct Settings {
     /// it cannot take part in deciding it. That it is not a project's
     /// business either is what makes the restriction cost nothing.
     pub reopen_last_project: bool,
-    /// Whether closing the window with unsaved project or `.cannet_rbs`
-    /// changes asks first (ADR 0028 puts both through the one prompt).
-    /// Default `true`, which is what closing has always done.
-    ///
-    /// Off, the close is let through and the unsaved work goes with it —
-    /// the prompt's *only* other outcomes are Save and Cancel, so
-    /// suppressing it can mean nothing else. It is the app's one
-    /// confirmation dialog, so this is the whole of "confirmation-prompt
-    /// suppression"; a second one would get its own field rather than
-    /// widening this one, since "ask me about anything" is not a
-    /// preference anybody holds.
-    ///
-    /// Read at the moment of the close, not when the handler is
-    /// installed, so turning it off takes effect without a relaunch.
-    pub confirm_unsaved_on_exit: bool,
     /// How long a transient status notice stays frozen in the header
     /// before the bar reverts to the resting residency line. Default
     /// 3000 ms. Nothing is lost by shortening or lengthening it —
@@ -259,21 +240,6 @@ pub struct Settings {
     /// validates [`Settings::sidecar_dir`] — only a connection attempt
     /// can say whether an address answers, and it reports that already.
     pub default_server_address: String,
-    /// Nominal (arbitration-phase) bitrate a **newly added** logical bus
-    /// starts with, in bits per second. `None` (the default) adds a bus
-    /// with no bitrate at all, which is what "Add bus" has always done:
-    /// the wire encodes an unset rate as `0` and the sidecar resolves
-    /// its own default from that.
-    ///
-    /// A *default*, not a policy: the bus row's own bitrate box still
-    /// wins, a bus that arrives with a rate keeps it, and changing this
-    /// never touches a bus that already exists. Set it when every bus
-    /// you configure runs at the same rate.
-    ///
-    /// Zero is refused rather than stored ([`MIN_BUS_BITRATE_BPS`]):
-    /// the wire already spells "unset" as zero, so a stored zero would
-    /// be indistinguishable from blank while looking like a choice.
-    pub default_bus_bitrate_bps: Option<u64>,
     /// Directory holding the `cannet-python-can` package to launch,
     /// instead of the one the host finds for itself. Empty (the
     /// default) means the built-in resolution: the frozen bundled
@@ -436,17 +402,6 @@ pub const MIN_SYSTEM_LOG_RING: u64 = 1;
 /// out of it.
 pub const MIN_LOG_ROTATION_BYTES: u64 = 1024 * 1024;
 
-/// The smallest legal [`Settings::default_bus_bitrate_bps`].
-///
-/// A hard limit rather than a taste, and it is the wire's, not ours:
-/// `ConfigureBus` encodes an unset nominal rate as `0`, so a stored zero
-/// would be indistinguishable from "no default" while looking in the
-/// file like a deliberate choice. Blank is how the field says unset;
-/// zero is refused. Nothing above one is asserted — only the adapter
-/// knows what rates it can be opened at, and it reports a refusal on
-/// connect.
-pub const MIN_BUS_BITRATE_BPS: u64 = 1;
-
 /// The severity names [`Settings::system_log_min_level`] accepts, least
 /// to most severe — the same ladder the frontend's
 /// `SYSTEM_LOG_LEVEL_RANK` and [`crate::system_log::LogLevel`] order by.
@@ -495,7 +450,6 @@ impl Default for Settings {
             show_developer_settings: false,
             system_log_min_level: "info".to_string(),
             reopen_last_project: true,
-            confirm_unsaved_on_exit: true,
             notice_dwell_ms: 3_000,
             plot_fetch_interval_ms: 67,
             view_refresh_interval_ms: 250,
@@ -511,7 +465,6 @@ impl Default for Settings {
             sidecar_restart_budget: 3,
             reconnect_backoff_ms: 2_000,
             default_server_address: "127.0.0.1:50051".to_string(),
-            default_bus_bitrate_bps: None,
             sidecar_dir: String::new(),
             driver_module: String::new(),
             log_file_min_level: "debug".to_string(),
@@ -623,16 +576,6 @@ pub(crate) fn validate(settings: Settings) -> (Settings, Vec<String>) {
                  (a smaller cap can't be honored); ignoring it — the cache is unbounded"
             ));
             settings.scratch_cap_bytes = None;
-        }
-    }
-    if let Some(bps) = settings.default_bus_bitrate_bps {
-        if bps < MIN_BUS_BITRATE_BPS {
-            complaints.push(format!(
-                "default_bus_bitrate_bps {bps} is below the minimum of \
-                 {MIN_BUS_BITRATE_BPS} (the wire already spells an unset rate as \
-                 zero); ignoring it — a new bus takes no bitrate"
-            ));
-            settings.default_bus_bitrate_bps = None;
         }
     }
     refuse_unknown_options(&mut settings, &mut complaints);
@@ -976,7 +919,6 @@ mod tests {
             show_developer_settings: true,
             system_log_min_level: "warn".to_string(),
             reopen_last_project: false,
-            confirm_unsaved_on_exit: false,
             notice_dwell_ms: 1_500,
             plot_fetch_interval_ms: 33,
             view_refresh_interval_ms: 500,
@@ -992,7 +934,6 @@ mod tests {
             sidecar_restart_budget: 1,
             reconnect_backoff_ms: 10_000,
             default_server_address: "10.0.0.5:50051".to_string(),
-            default_bus_bitrate_bps: Some(250_000),
             sidecar_dir: "sidecar-source-tree".to_string(),
             driver_module: "my_team.driver".to_string(),
             log_file_min_level: "info".to_string(),
@@ -1204,7 +1145,6 @@ mod tests {
                 Some(std::path::PathBuf::from("/jobs/friday.cannet_prj")),
                 &Settings {
                     reopen_last_project: false,
-                    confirm_unsaved_on_exit: false,
                     ..Settings::default()
                 },
             ),

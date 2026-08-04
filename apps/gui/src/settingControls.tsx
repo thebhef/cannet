@@ -27,20 +27,17 @@ export interface CustomRendererProps {
 
 /// Every custom renderer, keyed by the descriptor's `renderer` name.
 ///
-/// `keybindings` is a *pointer*, not an editor: the shortcuts panel is
-/// the one place bindings are edited (ADR 0018), and a second editor
-/// here would be a second home for one fact. It exists because
-/// `keybindings` is a field of `settings.json` like any other, and every
-/// field carries a descriptor.
+/// `project-caches` is a management surface with no other home, whose
+/// descriptor is a `view` row rather than a field (ADR 0042 §5).
 ///
-/// `project-caches` is the other kind: a management surface with no
-/// other home, whose descriptor is a `view` row rather than a field
-/// (ADR 0042 §5).
+/// `column-defaults` is a real editor, because a table header adjusts
+/// the panel in front of you and there is nowhere else to say what the
+/// *next* one should open as. Two settings share it — the trace/by-ID
+/// column set and the signal one.
 ///
-/// `column-defaults` is the third: a real editor, because a table
-/// header adjusts the panel in front of you and there is nowhere else
-/// to say what the *next* one should open as. Two settings share it —
-/// the trace/by-ID column set and the signal one.
+/// A setting whose editor lives elsewhere gets no renderer and no row
+/// at all — see `EDITED_ELSEWHERE` on the host. A pointer row would be
+/// a second home for one fact.
 export const CUSTOM_SETTING_RENDERERS: Record<
   string,
   (props: CustomRendererProps) => ReactNode
@@ -49,17 +46,6 @@ export const CUSTOM_SETTING_RENDERERS: Record<
   "column-defaults": ({ descriptor, value, onCommit }) => (
     <ColumnDefaultsEditor descriptor={descriptor} value={value} onCommit={onCommit} />
   ),
-  keybindings: ({ value }) => {
-    const count = Array.isArray(value) ? value.length : 0;
-    return (
-      <p className="setting-custom">
-        {count === 0
-          ? "Using the app's built-in default bindings."
-          : `${count} binding${count === 1 ? "" : "s"} customised.`}{" "}
-        Edited in the Keyboard Shortcuts panel.
-      </p>
-    );
-  },
 };
 
 export interface SettingControlProps {

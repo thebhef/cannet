@@ -100,7 +100,6 @@ import {
   restoredTrace,
 } from "./trace";
 import { defaultBusColor } from "./busColor";
-import { withDefaultBitrate } from "./busHardwareConfig";
 import { useSessionReset } from "./useSessionReset";
 import { assignDefaultNames, defaultElementName, elementLabel } from "./elementLabel";
 import {
@@ -1581,13 +1580,6 @@ export function App() {
           /* host gone — nothing to save */
         }
         if (!dirtyRef.current && !rbsDirty) return; // nothing unsaved — let it close
-        // The opt-out: with the prompt suppressed the close goes
-        // through and the unsaved work goes with it — Save and Cancel
-        // are the prompt's only other answers, so there is nothing else
-        // suppressing it could mean. Read here rather than captured
-        // when this handler was installed (it has no deps), so turning
-        // it off doesn't need a relaunch.
-        if (!hostSettings().confirm_unsaved_on_exit) return;
         event.preventDefault();
         const choice = await new Promise<CloseChoice>((resolve) =>
           setPendingClose({ resolve }),
@@ -1630,15 +1622,12 @@ export function App() {
   const handleAddBus = useCallback((bus: Bus) => {
     setBuses((prev) => {
       if (prev.some((b) => b.id === bus.id)) return prev;
-      // Seed the configured default nominal bitrate (blank leaves the
-      // bus without one, as it always was), then a graph colour if the
-      // caller didn't supply one — the default palette indexed by the
-      // new bus's list position.
-      const rated = withDefaultBitrate(bus, hostSettings().default_bus_bitrate_bps);
+      // A new bus carries no bitrate — the adapter's own default stays
+      // in charge until one is set. Seed a graph colour if the caller
+      // didn't supply one: the default palette indexed by the new bus's
+      // list position.
       const seeded: Bus =
-        rated.color != null
-          ? rated
-          : { ...rated, color: defaultBusColor(prev.length) };
+        bus.color != null ? bus : { ...bus, color: defaultBusColor(prev.length) };
       return [...prev, seeded];
     });
     setDirty(true);

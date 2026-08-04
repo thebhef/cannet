@@ -2,8 +2,6 @@
 /// in the logical-buses panel. Extracted from `ProjectPanel.tsx` so
 /// the format/parse round-trip is unit-testable without React.
 
-import type { Bus } from "./types";
-
 /// Standard nominal (arbitration-phase) bitrates offered as presets
 /// in the bitrate input's datalist. Any value the user types is still
 /// accepted — the input is a free-form text field with a `list=`
@@ -21,10 +19,9 @@ export const NOMINAL_BITRATE_PRESETS_BPS = [
 /// pushed.
 ///
 /// This is a *preview of the sidecar's fallback*, not a value cannet
-/// chooses — which is why it stays a constant while the bitrate a new
-/// bus starts at is the `default_bus_bitrate_bps` setting. Only the
-/// sidecar knows what it resolves an unset rate to, and nothing on the
-/// wire asks it.
+/// chooses — a new bus carries no bitrate at all. Only the sidecar
+/// knows what it resolves an unset rate to, and nothing on the wire
+/// asks it.
 export const DEFAULT_NOMINAL_BITRATE_BPS = 500_000;
 
 /// Standard CAN-FD data-phase bitrates offered as presets. Same
@@ -32,20 +29,6 @@ export const DEFAULT_NOMINAL_BITRATE_BPS = 500_000;
 export const FD_DATA_BITRATE_PRESETS_BPS = [
   1_000_000, 2_000_000, 4_000_000, 5_000_000, 8_000_000,
 ];
-
-/// A newly added logical bus with the configured default nominal
-/// bitrate filled in.
-///
-/// `defaultBitrateBps` is `null` when the setting is blank, and then
-/// the bus is returned untouched — with no `speed_bps` key at all, not
-/// an explicit null — which is what "Add bus" produced before the
-/// setting existed: the wire's `0 = unset` stands and the adapter's own
-/// default applies. A bus that already names a rate keeps it, so this
-/// seeds a new bus and never overrides one.
-export function withDefaultBitrate(bus: Bus, defaultBitrateBps: number | null): Bus {
-  if (defaultBitrateBps == null || bus.speed_bps != null) return bus;
-  return { ...bus, speed_bps: defaultBitrateBps };
-}
 
 /// Render a bps value as a short SI string: `"500k"`, `"1M"`, or the
 /// raw integer for values that aren't a clean k / M multiple.

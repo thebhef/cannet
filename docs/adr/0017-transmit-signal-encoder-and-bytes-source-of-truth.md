@@ -2,8 +2,7 @@
 
 Status: accepted (2026-05-26)
 
-Phase 11 ([`../../plans/phased-implementation.md`](../../plans/phased-implementation.md))
-introduces real per-signal editing in the transmit panel — until now
+The transmit panel supports real per-signal editing. Before it did,
 the panel only let the user type raw hex into `dataHex` or pick an
 enum signal's raw value from a dropdown that copied one byte into the
 payload, and numeric signals had no input at all. This ADR records
@@ -16,13 +15,12 @@ three coordinated decisions made for that work.
 [u8])` is the inverse of the existing
 [`Database::decode`](../../crates/cannet-dbc/) — it writes only the
 bits the named signals cover, preserving all other bytes in `base`
-(a *partial encode*). Factor / offset, signedness, big- and little-
-endian, multi-byte signals, IEEE-754 floats / doubles, and simple
-multiplexing (one `M` switch + `m<N>` sub-signals) all land in this
-phase. **Nested / extended multiplexing (`m0M`, `m1M`, …)** is
-out of scope and tracked in `plans/backlog.md`; messages declaring
-it degrade the transmit panel to "raw bytes only" mode with a clear
-note.
+(a *partial encode*). It covers factor / offset, signedness, big- and
+little-endian, multi-byte signals, IEEE-754 floats / doubles, and
+simple multiplexing (one `M` switch + `m<N>` sub-signals). **Nested /
+extended multiplexing (`m0M`, `m1M`, …)** is out of scope; messages
+declaring it degrade the transmit panel to "raw bytes only" mode with
+a clear note.
 
 **2. The GUI host exposes the encoder via a Tauri command.**
 `encode_frame(message_id, extended, signals, base) → bytes`. The
@@ -80,9 +78,9 @@ must keep producing the same frame on the wire.
   produces surprising diffs in any byte the DBC happens to leave
   partially unmapped.
 - **Encoder in the GUI host (Rust) without a `cannet-dbc` API.**
-  Splits the DBC-walking logic across two crates. Future callers
-  (server-side simulation in Phase 14, CANopen SDO/PDO in Phase 22)
-  would each have to reach into the GUI host or copy the walk.
+  Splits the DBC-walking logic across two crates. Other callers —
+  server-side simulation, CANopen SDO/PDO — would each have to reach
+  into the GUI host or copy the walk.
 - **Encoder in TypeScript on the frontend.** Reimplements decode-
   semantics on the wrong side of the model/view boundary, in a
   language without `cannet-dbc`'s test surface.
