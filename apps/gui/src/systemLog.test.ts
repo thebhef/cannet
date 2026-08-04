@@ -50,6 +50,14 @@ describe("applySystemLogFilter", () => {
       applySystemLogFilter(all, "dbc", "error").map((m) => m.seq),
     ).toEqual([3]);
   });
+
+  it("debug sits below info — hidden at the default filter, shown at `debug`", () => {
+    const withDebug = [msg(4, "health", "debug", "1 Hz sample"), ...all];
+    expect(applySystemLogFilter(withDebug, undefined, "info").map((m) => m.seq)).toEqual([
+      0, 1, 2, 3,
+    ]);
+    expect(applySystemLogFilter(withDebug, undefined, "debug")).toHaveLength(5);
+  });
 });
 
 describe("distinctSources", () => {

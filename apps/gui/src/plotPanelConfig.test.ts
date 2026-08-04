@@ -8,7 +8,6 @@ import {
   fmtFreq,
   fmtVal,
   isSignalRefCore,
-  maxRateFromRaw,
   measKeysFromRaw,
   signalRefKey,
   signalsWidthFromRaw,
@@ -122,12 +121,6 @@ describe("scalar param parsers", () => {
     expect(signalsWidthFromRaw(9999)).toBe(600);
     expect(signalsWidthFromRaw(221.6)).toBe(222);
     expect(signalsWidthFromRaw("x")).toBe(220);
-  });
-
-  it("maxRateFromRaw only accepts an offered option, else the default", () => {
-    expect(maxRateFromRaw(30)).toBe(30);
-    expect(maxRateFromRaw(7)).toBe(15);
-    expect(maxRateFromRaw(undefined)).toBe(15);
   });
 
   it("yAxisModeFromRaw accepts the non-default modes, else unified", () => {

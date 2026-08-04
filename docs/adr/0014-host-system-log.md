@@ -31,7 +31,14 @@ The bus has four architectural properties:
 
 Messages carry `{ ts, source, level, message, optional_payload }`.
 Sources are tagged (`project`, `dbc`, `connection`, `blf-import`,
-`sidecar:<vendor>`, …). Levels are `info` / `warn` / `error`.
+`sidecar:<vendor>`, …). Levels are `debug` / `info` / `warn` /
+`error`, and the bottom two split by *cause*, not importance:
+`info` is what the user's own actions produced (a file opened or
+saved, a connection made or dropped), so an untouched app emits
+none; everything the app does on its own — health sampling,
+lifecycle breadcrumbs, sidecar chatter — is `debug`. Both reach the
+ring and the rolling log; only the panel's level filter (default
+`info`) decides what is on screen.
 
 Sidecars contribute log entries via the wire-protocol `Log`
 envelope ([ADR 0004](0004-grpc-wire-protocol.md) — distinct from

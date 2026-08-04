@@ -897,6 +897,26 @@ fn trace_grew_skips_only_when_count_and_rate_are_unchanged() {
 }
 
 #[test]
+fn smooth_fps_filters_bursts_but_snaps_to_zero() {
+    // First reading has nothing to filter against — passes through.
+    assert!((smooth_fps(None, 400.0) - 400.0).abs() < f64::EPSILON);
+    // A burst only moves the readout part of the way.
+    let stepped = smooth_fps(Some(100.0), 200.0);
+    assert!(stepped > 100.0 && stepped < 200.0, "{stepped}");
+    // Repeated ticks converge on the raw rate.
+    let mut fps = 100.0;
+    for _ in 0..50 {
+        fps = smooth_fps(Some(fps), 200.0);
+    }
+    assert!((fps - 200.0).abs() < 0.5, "{fps}");
+    // A stalled stream reads *exactly* zero, so the emitter can go quiet
+    // instead of trickling asymptotic updates at 10 Hz forever.
+    // Bit-compared, because that is exactly how `should_emit_trace_grew`
+    // decides an idle session has stopped moving.
+    assert_eq!(smooth_fps(Some(123.0), 0.0).to_bits(), 0.0f64.to_bits());
+}
+
+#[test]
 fn unscoped_dbc_decodes_every_bus() {
     let state = test_state();
     let dbc = tiny_dbc(256, "Anywhere", "Sig");

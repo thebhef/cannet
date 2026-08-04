@@ -2757,6 +2757,7 @@ button.trace-event-swatch {
   overflow: hidden;
   border-bottom: 1px solid rgba(30, 41, 59, 0.5);
 }
+.system-messages-row-debug { color: #7c8899; }
 .system-messages-row-info { color: #cbd5e1; }
 .system-messages-row-warn { color: #fbbf24; }
 .system-messages-row-error { color: #f87171; }

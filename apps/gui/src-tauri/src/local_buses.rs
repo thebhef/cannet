@@ -287,7 +287,7 @@ use tauri::{AppHandle, State};
 
 use crate::app_state::AppState;
 use crate::project;
-use crate::{sys_info, sys_warn};
+use crate::{sys_debug, sys_info, sys_warn};
 
 // local-virtual-bus commands (ADR 0021)
 // ------------------------------------------------------------------
@@ -316,7 +316,7 @@ pub(crate) fn replay_local_virtual_buses(
         sys_warn!(&app, "virtual-bus", "{err}");
     }
     let ids = state.local_buses.bus_ids();
-    sys_info!(
+    sys_debug!(
         &app,
         "virtual-bus",
         "replayed {} local virtual bus(es)",

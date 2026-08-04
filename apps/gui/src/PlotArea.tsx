@@ -20,6 +20,7 @@ import { isEnumValueTable, type SignalDescriptorRecord, type SignalExtent, type 
 import { type ColorResolver, type ColorTarget, colorMapLaneFill } from "./colorMap";
 import { enumSegments, groupScaleRanges, mergeSeries } from "./plotData";
 import {
+  RESAMPLE_INTERVAL_MS,
   fmtVal,
   parseDroppedSignals,
   signalRefKey,
@@ -254,8 +255,6 @@ interface PlotAreaProps {
   /** Show-points tri-state from the panel toolbar — applied to every
    * series on this area's axis. See {@link ShowPointsMode}. */
   showPoints: ShowPointsMode;
-  /** Min spacing between live re-samples (ms) — `1000 / maxRateHz`. */
-  resampleIntervalMs: number;
   /** Pixel width of this area's right-hand side panel (signal rows
    * + headings). Set from a drag handle between the canvas and the
    * side panel. */
@@ -465,7 +464,6 @@ export function PlotArea(p: PlotAreaProps) {
     live,
     followLive,
     showPoints,
-    resampleIntervalMs,
     signalsWidth,
     onResizeSignalsWidth,
     cursorMode,
@@ -1775,16 +1773,16 @@ export function PlotArea(p: PlotAreaProps) {
         /* a transient sample failure must not kill the loop */
       }
       if (stopped) return;
-      timer = window.setTimeout(() => void tick(), resampleIntervalMs);
+      timer = window.setTimeout(() => void tick(), RESAMPLE_INTERVAL_MS);
     };
-    timer = window.setTimeout(() => void tick(), resampleIntervalMs);
+    timer = window.setTimeout(() => void tick(), RESAMPLE_INTERVAL_MS);
     return () => {
       stopped = true;
       window.clearTimeout(timer);
       rateEmaRef.current = 0;
       lastResampleTsRef.current = 0;
     };
-  }, [live, winStart, resampleIntervalMs]);
+  }, [live, winStart]);
 
   // Safety net: re-sample whenever the trace window grows. Catches the
   // first render after mount (where `winEnd` may still be `0` because

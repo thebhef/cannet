@@ -39,15 +39,19 @@ describe("splitStatus", () => {
     );
     expect(transient).toBeNull();
     expect(resting).toContain("Streaming drive.blf");
-    expect(resting).toContain("disk");
+    expect(resting).toContain("cache");
   });
 
-  it("relabels the memory figure as `host`, not `RAM`", () => {
+  it("names the two residency figures `RAM` and `cache`", () => {
     const { resting } = splitStatus(
-      inputs({ state: { kind: "running", result: { blf_path: "a.blf" } }, memBytes: 128 * 1024 * 1024 }),
+      inputs({
+        state: { kind: "running", result: { blf_path: "a.blf" } },
+        memBytes: 128 * 1024 * 1024,
+        scratchBytes: 42 * 1024 * 1024,
+      }),
     );
-    expect(resting).toContain("host");
-    expect(resting).not.toContain("RAM");
+    expect(resting).toContain("128 MB RAM");
+    expect(resting).toContain("42.0 MB cache");
   });
 
   it("an error is a transient at error level; the bar rests at the idle prompt", () => {

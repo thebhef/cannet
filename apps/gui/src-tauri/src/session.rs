@@ -23,7 +23,7 @@ use crate::capture::restamp_scratch_for_capture;
 use crate::ipc::{self, InterfaceRecord, LogFinished, RemoteSessionResult};
 use crate::project;
 use crate::trace_store::RawTraceFrame;
-use crate::{sys_error, sys_info, sys_warn};
+use crate::{sys_debug, sys_error, sys_info, sys_warn};
 
 /// State for an active session — remote (over `cannet-client`) or
 /// in-process (an `local-vbus://` URL). The two share the same
@@ -275,7 +275,7 @@ pub(crate) async fn connect_remote_server(
         return connect_local_vbus(&app, address.clone(), vbus_id, &binding_lookup);
     }
 
-    sys_info!(&app, "connection", "connecting to {address}");
+    sys_debug!(&app, "connection", "connecting to {address}");
     let interfaces = match cannet_client::list_interfaces(&address).await {
         Ok(v) => v,
         Err(e) => {
@@ -426,7 +426,7 @@ fn connect_local_vbus(
     vbus_id: &str,
     binding_lookup: &[InterfaceBusBinding],
 ) -> Result<RemoteSessionResult, String> {
-    sys_info!(
+    sys_debug!(
         &app,
         "connection",
         "opening in-process session against {address}"
@@ -518,7 +518,7 @@ fn connect_local_vbus(
                 // session down.
                 let state: State<'_, AppState> = app_for_thread.state();
                 if state.remove_vbus_session_if_dead(&address_for_cleanup) {
-                    sys_info!(
+                    sys_debug!(
                         &app_for_thread,
                         "connection",
                         "in-process session {cleanup_addr_for_log} closed",

@@ -127,7 +127,7 @@ use cannet_core::CanFrameSource;
 #[cfg(test)]
 use cannet_dbc::Database;
 #[cfg(test)]
-use emitters::{should_emit_trace_grew, TRACE_GREW_TAIL};
+use emitters::{should_emit_trace_grew, smooth_fps, TRACE_GREW_TAIL};
 #[cfg(test)]
 use app_state::{invalidate_derived_caches, LoadedDbc};
 #[cfg(test)]

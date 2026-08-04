@@ -148,7 +148,7 @@ pub fn ensure_on_screen(window: &tauri::WebviewWindow) {
 
     if let Some((nx, ny)) = corrected_origin(window_rect, band_h, &monitor_rects, primary_rect) {
         match window.set_position(PhysicalPosition::new(nx, ny)) {
-            Ok(()) => crate::sys_info!(
+            Ok(()) => crate::sys_debug!(
                 window.app_handle(),
                 "window",
                 "restored window was off-screen; recentred on primary monitor"

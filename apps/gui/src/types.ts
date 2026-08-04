@@ -85,9 +85,10 @@ export interface TraceGrew {
   /// disk-spill `current/` dir). Shown in the status line as the cache
   /// size; `null` when the store is in-RAM (no disk scratch).
   scratch_bytes: number | null;
-  /// Host-process resident memory in bytes (~1 Hz sample) — the in-memory
-  /// counterpart to `scratch_bytes` in the status line. `null` until the
-  /// first health sample.
+  /// Whole-application resident memory in bytes (~1 Hz sample) — the Rust
+  /// host plus its WebView children, the in-memory counterpart to
+  /// `scratch_bytes` in the status line. `null` until the first health
+  /// sample.
   mem_bytes: number | null;
   tail: TraceFrameRecord[];
 }
@@ -917,7 +918,7 @@ export interface SignalExtent {
 /// Severity of a {@link SystemMessage}. The frontend's
 /// minimum-level filter compares two levels by `SYSTEM_LOG_LEVEL_RANK`
 /// — see `systemLog.ts`.
-export type SystemLogLevel = "info" | "warn" | "error";
+export type SystemLogLevel = "debug" | "info" | "warn" | "error";
 
 /// One entry on the host's structured log bus. Mirrors
 /// `src-tauri/src/system_log.rs::SystemMessage`. `seq` is monotonic

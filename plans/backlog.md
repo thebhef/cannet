@@ -563,14 +563,15 @@ next pass on this surface can address them as one piece.
   channel only after the pump exits) so a clean unsubscribe doesn't
   log a scary error.
 - `[perf]` `cannet-gui` status residency (task 0018 6g-C, deferred): the
-  status line's memory figure is whole-process RSS labelled `host`, not a
-  store-only residency estimate. A true mapped-resident metric
-  (`mincore` on Linux / `VirtualQuery` on Windows over the mmap'd cache
-  segments) plus a health-log breakdown refinement (split `other` into
-  by-id / filter / JSON; surface pyramid *file count* rather than depth)
-  would make the split honest. Low value / fragile cross-platform — mmap
-  paging already bounds store residency and the `host` label no longer
-  implies otherwise. Pick up only if residency needs real metering.
+  status line's memory figure is whole-application RSS (host + WebView
+  children) labelled `RAM`, not a store-only residency estimate. A true
+  mapped-resident metric (`mincore` on Linux / `VirtualQuery` on Windows
+  over the mmap'd cache segments) plus a health-log breakdown refinement
+  (split `other` into by-id / filter / JSON; surface pyramid *file count*
+  rather than depth) would make the split honest. Low value / fragile
+  cross-platform — mmap paging already bounds store residency and the
+  `RAM` label doesn't claim otherwise. Pick up only if residency needs
+  real metering.
 - `[perf]` `cannet-gui` `save_capture` **materializes the entire capture in
   RAM** (lib.rs:925–947, 1058–1113): it pulls the whole store into one
   `Vec` before writing the BLF, under a comment saying "which we'll
