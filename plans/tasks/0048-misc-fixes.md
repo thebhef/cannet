@@ -154,25 +154,66 @@ Two symptoms on the per-unit axis mode, possibly one cause:
   3 k value does not appear to be on the same scale as the 500 A one,
   which is what per-unit mode exists to guarantee (ADR 0026).
 
-## 9. The rest of the panels still do not scroll
+## 9. The rest of the panels still do not scroll — **done**
 
-Item 5 fixed two panels; the same class of defect is still present
-elsewhere, and item 5's investigation is the map for all of it.
+Three sub-parts, two defects. All three measured in Chromium and in the
+WebView2 host itself (jsdom does no layout), driven over CDP.
 
-- **Transmit panel has no vertical scroll.** Same symptom as the project
-  panel had.
-- **`.colormap-panel` has the project panel's exact defect** —
-  `overflow: auto` with no height, mounted on a dockview root, so it
-  sizes to its content and scrolls nothing. Found while fixing item 5
-  and deliberately not fixed there.
-- **The trace panel cannot scroll horizontally.** Different axis, and
-  possibly a different mechanism — a virtualized table's horizontal
-  overflow is not the same problem as a panel that never got a height.
-  Confirm before assuming it shares a cause.
+**Transmit panel — not a defect.** It scrolls, in every state that
+could be built: real panel markup in a 80/120/200/400/900 px dock group,
+collapsed and expanded; and the live WebView2 host with 40 frames, all
+expanded, `scrollHeight` 11260 against a `clientHeight` of 1943, a
+trusted wheel event reaching the bottom, and the last frame fully inside
+the group. (The RBS panel, the other transmit-side surface, scrolls too:
+`.rbs-tree` 7368/1897.) It works because `.tx-panel` is pinned to the
+group and `.tx-panel-list`'s non-visible overflow zeroes its automatic
+minimum size, so it shrinks to the panel instead of growing past it —
+the two declarations the new guard in `dockPanelScrolling.test.ts`
+holds. Whatever was seen, it was not this; if it recurs, it needs a
+fresh observation rather than this hypothesis.
 
-Item 5 measured its mechanisms in Chromium (the engine behind the
-WebView2 host) because jsdom does no layout. Do the same rather than
-reasoning from the CSS.
+**Colour-map panel — the project panel's defect exactly.**
+`overflow: auto` on a panel root with no height. Measured with the real
+markup in a 300 px group and 24 range rules:
+`clientHeight === scrollHeight === 794`, `scrollTop` stuck at 0, the
+"+ range" button 485 px below the group's bottom edge. `height: 100%`
+gives 300 / 794 and `scrollTop` reaching 494; in the live host the panel
+now measures exactly its dock group (1975 px) where it measured its
+content (95 px).
+
+**Trace panel horizontal — its own mechanism, not item 5's.** The rows
+are `position: absolute; left: 0; right: 0` inside a sticky viewport
+that is `overflow: hidden`, so each row's box was exactly the viewport
+width and the grid's fixed tracks overflowed *the row*, which the
+viewport clipped. `.trace-rows` therefore had no scrollable overflow at
+all. Measured in the live host on a 972 px trace panel with the default
+columns (1208 px of tracks): `scrollWidth === clientWidth === 957`,
+`scrollLeft` stuck at 0, the row's own `scrollWidth` 1218, and the `dir`
+column 246 px past the panel's right edge. Nothing was squeezing the
+columns and no ancestor above `.trace-rows` was involved.
+
+The fix widens the scrolled content to the columns' own total:
+`contentWidth` (`traceColumns.ts`) sums the visible tracks, each view
+publishes it on the spacer as `--trace-content-width`, and
+`.trace-scroll-content` adds the rows' own padding. The header can't
+live inside that scroll container (it must not scroll away vertically),
+so `useHeaderScrollSync` mirrors `scrollLeft` onto it as a negative
+margin — a transform would become the containing block of the
+`position: fixed` column menu it hosts — and `.trace-header` takes an
+explicit width so a stretched flex item doesn't absorb the margin
+instead of moving (measured: it grew 700 → 1242 px and its columns came
+14.8 px out of line). Live host after: `scrollWidth` 1227 against a
+`clientWidth` of 957, `scrollLeft` reaching 270, header margin
+`-270px`, header and rows aligned to the pixel, the `dir` column in
+view. Applied to all three tables that share this chrome — the
+chronological view, the by-id view and the signal view.
+
+Guarded by `dockPanelScrolling.test.ts` (the stylesheet halves),
+`contentWidth` cases in `traceColumns.test.ts`, "mirrors the container's
+horizontal scroll onto the header" in `useTraceViewport.dom.test.tsx`,
+and "publishes the columns' total width to the rows' scrolled content"
+in `TraceView.anchor.dom.test.tsx` / `ByIdTable.dom.test.tsx`. That the
+two halves combine into an actual scrollbar is only visible in Chromium.
 
 ## 10. Hidden enum lanes still occupy vertical space
 

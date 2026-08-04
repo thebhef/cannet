@@ -14,7 +14,7 @@ import { useState } from "react";
 import { cleanup, fireEvent, render } from "@testing-library/react";
 
 import { TraceView } from "./TraceView";
-import { defaultColumns } from "./traceColumns";
+import { columnDef, contentWidth, defaultColumns } from "./traceColumns";
 import { diagCounts } from "./diag";
 import { maxAnchorRow } from "./traceViewport";
 
@@ -130,5 +130,26 @@ describe("TraceView anchoring", () => {
     rerender(view(1_200, true));
 
     expect(anchorShown(container)).toBe(maxAnchorRow(1_200, 0));
+  });
+});
+
+describe("TraceView horizontal extent", () => {
+  // The rows are absolutely positioned against the sticky viewport, so
+  // they are only ever as wide as the scrolled content is — and the
+  // viewport clips (`overflow: hidden`). The scrolled content therefore
+  // has to carry the columns' own total width, or the columns past the
+  // panel's right edge are cut off with no scroll position that reaches
+  // them. jsdom does no layout: this asserts the width the view
+  // *publishes*; `dockPanelScrolling.test.ts` asserts the stylesheet
+  // half, and only Chromium shows the two combining into a scrollbar.
+  it("publishes the columns' total width to the rows' scrolled content", () => {
+    const { container } = render(view(1_000, true));
+    const content = container.querySelector(".trace-scroll-content") as HTMLElement;
+    expect(content).toBeTruthy();
+    // The chronological view drops the by-id-only columns.
+    const shown = defaultColumns().filter((c) => !columnDef(c.key).byIdOnly);
+    expect(content.style.getPropertyValue("--trace-content-width")).toBe(
+      `${contentWidth(shown)}px`,
+    );
   });
 });

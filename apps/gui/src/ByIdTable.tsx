@@ -23,7 +23,7 @@ import {
   gridTemplateColumns,
   visibleColumns,
 } from "./traceColumns";
-import { TraceHeader, cellContent } from "./traceTable";
+import { TraceHeader, cellContent, contentWidthStyle } from "./traceTable";
 import type { ByIdSnapshotRecord } from "./types";
 import { diagCount } from "./diag"; // DIAG
 
@@ -99,6 +99,7 @@ export function ByIdTable({
 
   const visible = useMemo(() => visibleColumns(columns), [columns]);
   const gridTemplate = useMemo(() => gridTemplateColumns(columns), [columns]);
+  const contentWidthVar = useMemo(() => contentWidthStyle(columns), [columns]);
 
   // Rendered height of a row: an expanded row carries a line per decoded
   // signal, everything else is a plain row. A row outside the loaded
@@ -124,8 +125,16 @@ export function ByIdTable({
     [expanded, count, rowHeightAt],
   );
 
-  const { containerRef, viewportHeight, rows, spacerHeight, anchorMax, firstVisibleRow, lastVisibleRow } =
-    useTraceViewport(count, anchoredRow, undefined, { extraHeight, rowHeightAt });
+  const {
+    containerRef,
+    headerRef,
+    viewportHeight,
+    rows,
+    spacerHeight,
+    anchorMax,
+    firstVisibleRow,
+    lastVisibleRow,
+  } = useTraceViewport(count, anchoredRow, undefined, { extraHeight, rowHeightAt });
 
   // Prefetch the covering page for the visible rows.
   useEffect(() => {
@@ -190,6 +199,7 @@ export function ByIdTable({
     <div className="trace">
       <TraceHeader
         columns={columns}
+        headerRef={headerRef}
         onColumnResize={onColumnResize}
         onColumnToggle={onColumnToggle}
         onColumnReorder={onColumnReorder}
@@ -198,8 +208,15 @@ export function ByIdTable({
         byId
       />
       <div ref={containerRef} className="trace-rows" onScroll={handleScroll}>
-        {/* Spacer: gives the scrollbar the snapshot's full extent. */}
-        <div style={{ height: spacerHeight, position: "relative" }}>
+        {/* Spacer: gives the scrollbar the snapshot's full extent
+            vertically, and the columns' own width horizontally — the rows
+            are absolutely positioned against it, so without that the
+            columns past the panel's right edge are clipped by the sticky
+            viewport with no scroll position that reaches them. */}
+        <div
+          className="trace-scroll-content"
+          style={{ height: spacerHeight, position: "relative", ...contentWidthVar }}
+        >
           {/* Sticky viewport: the compositor keeps this pinned so the rows
               never lag the scrollbar — React only swaps their content. */}
           <div

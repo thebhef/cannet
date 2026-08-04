@@ -3,12 +3,13 @@ import type { IDockviewPanelProps } from "dockview";
 
 import type { SignalSelectionWire, SignalSnapshotRecord } from "./types";
 import { TraceControls } from "./TraceControls";
-import { TraceHeader } from "./traceTable";
+import { TraceHeader, contentWidthStyle } from "./traceTable";
 import { useTrace } from "./trace";
 import { useElementRegistry } from "./projectElements";
 import { useProjectContext } from "./projectContext";
 import { useSignalCatalog } from "./signalCatalogContext";
 import { useSignalView } from "./useSignalView";
+import { useHeaderScrollSync } from "./useTraceViewport";
 import { busDisplayName, busLookup, nextSort, reorderColumn, resizeColumn, toggleColumn } from "./traceColumns";
 import {
   DEFAULT_SIGNAL_SORT,
@@ -323,6 +324,7 @@ export function SignalsPanel(props: IDockviewPanelProps) {
 
   // --- virtualized rows (fixed height, no expansion) ---
   const containerRef = useRef<HTMLDivElement>(null);
+  const headerRef = useHeaderScrollSync(containerRef);
   const [viewportHeight, setViewportHeight] = useState(600);
   const [anchoredRow, setAnchoredRow] = useState(0);
   useEffect(() => {
@@ -356,6 +358,7 @@ export function SignalsPanel(props: IDockviewPanelProps) {
 
   const visible = useMemo(() => columns.filter((c) => c.visible), [columns]);
   const gridTemplate = useMemo(() => signalGridTemplateColumns(columns), [columns]);
+  const contentWidthVar = useMemo(() => contentWidthStyle(columns), [columns]);
   const manualKeys = useMemo(() => new Set(selection.keys.map(keyOf)), [selection.keys]);
   const signalColors = project.signalColors;
 
@@ -444,6 +447,7 @@ export function SignalsPanel(props: IDockviewPanelProps) {
       <div className="trace">
         <TraceHeader<SignalColumnKey>
           columns={columns}
+          headerRef={headerRef}
           defs={SIGNAL_COLUMN_DEFS}
           onColumnResize={handleColumnResize}
           onColumnToggle={handleColumnToggle}
@@ -452,7 +456,14 @@ export function SignalsPanel(props: IDockviewPanelProps) {
           onSortColumn={onSortColumn}
         />
         <div ref={containerRef} className="trace-rows" onScroll={handleScroll}>
-          <div style={{ height: spacerHeight, position: "relative" }}>
+          {/* The scrolled content carries the columns' own width as well
+              as the snapshot's extent: the rows are absolutely positioned
+              against it inside a viewport that clips, so without it the
+              columns past the panel's right edge are unreachable. */}
+          <div
+            className="trace-scroll-content"
+            style={{ height: spacerHeight, position: "relative", ...contentWidthVar }}
+          >
             <div style={{ position: "sticky", top: 0, height: viewportHeight, overflow: "hidden" }}>
               {positions.map((abs, i) => (
                 <SignalRow

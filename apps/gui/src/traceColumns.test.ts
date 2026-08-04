@@ -16,6 +16,7 @@ import {
   busDisplayName,
   busLookup,
   columnsFromParams,
+  contentWidth,
   defaultColumns,
   gridTemplateColumns,
   nextSort,
@@ -116,6 +117,40 @@ describe("gridTemplateColumns", () => {
 
   it("reflects a resized width", () => {
     expect(gridTemplateColumns(resizeColumn(defaultColumns(), "idx", 200))).toContain("200px");
+  });
+});
+
+describe("contentWidth", () => {
+  it("totals the visible columns' track widths", () => {
+    const cols = defaultColumns();
+    const expected = cols
+      .filter((c) => c.visible)
+      .reduce((total, c) => total + c.width, 0);
+    expect(contentWidth(cols)).toBe(expected);
+  });
+
+  it("drops hidden columns from the total", () => {
+    const cols = defaultColumns();
+    const hidden = toggleColumn(cols, "bus");
+    expect(contentWidth(hidden)).toBe(contentWidth(cols) - 100); // bus default width
+  });
+
+  it("counts a resized column at its new width", () => {
+    const cols = defaultColumns();
+    expect(contentWidth(resizeColumn(cols, "idx", 200))).toBe(contentWidth(cols) + 136);
+  });
+
+  it("counts a column at the minimum the grid track will actually take", () => {
+    // `gridTemplateColumns` clamps each track to `MIN_COLUMN_WIDTH`, so
+    // a narrower stored width would under-count the content.
+    const cols = defaultColumns();
+    const tiny = resizeColumn(cols, "idx", 1);
+    expect(tiny.find((c) => c.key === "idx")?.width).toBe(MIN_COLUMN_WIDTH);
+    expect(contentWidth(tiny)).toBe(contentWidth(cols) - 64 + MIN_COLUMN_WIDTH);
+  });
+
+  it("is zero when nothing is visible", () => {
+    expect(contentWidth(defaultColumns().map((c) => ({ ...c, visible: false })))).toBe(0);
   });
 });
 

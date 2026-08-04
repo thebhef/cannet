@@ -1,5 +1,10 @@
 import { useState } from "react";
-import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
+import type {
+  CSSProperties,
+  PointerEvent as ReactPointerEvent,
+  ReactNode,
+  RefObject,
+} from "react";
 
 import type { TraceFrameRecord } from "./types";
 import {
@@ -11,6 +16,7 @@ import {
   type SortState,
   busDisplayName,
   columnDefFor,
+  contentWidth,
   gridTemplateColumnsFor,
   visibleColumns,
 } from "./traceColumns";
@@ -27,6 +33,17 @@ import { useDismissableMenu } from "./useDismissableMenu";
 /// DnD payload type for dragging a column header to reorder it. Carries
 /// the dragged column's `ColumnKey` as plain text.
 const COLUMN_DND_MIME = "application/x-cannet-trace-column";
+
+/// The visible columns' total width, published to the stylesheet as a
+/// custom property for the rows' scrolled content
+/// (`.trace-scroll-content` in `index.css`) to size itself from. The
+/// stylesheet adds the rows' own horizontal padding — that is its fact,
+/// not this module's, so the two stay where they belong.
+export function contentWidthStyle<K extends string>(
+  columns: readonly ColumnState<K>[],
+): CSSProperties {
+  return { "--trace-content-width": `${contentWidth(columns)}px` } as CSSProperties;
+}
 
 /// The content for one trace cell, given the column. The `#` column is
 /// the row's 1-based index in the chronological view, and the total
@@ -89,6 +106,10 @@ interface TraceHeaderProps<K extends string> {
   /// The full column set (visible + hidden), so the right-click menu can
   /// re-show hidden ones.
   columns: readonly ColumnState<K>[];
+  /// `useTraceViewport`'s `headerRef`: the scaffold shifts this element
+  /// to follow the rows' horizontal scroll, since the header sits
+  /// outside their scroll container.
+  headerRef?: RefObject<HTMLDivElement>;
   /// The column definitions the state refers to. Defaults to the trace
   /// set; the signal view passes its own (`signalColumns.ts`) so both
   /// tables share this one header implementation.
@@ -113,6 +134,7 @@ interface TraceHeaderProps<K extends string> {
 /// click-to-sort with a direction marker.
 export function TraceHeader<K extends string = ColumnKey>({
   columns,
+  headerRef,
   defs = COLUMN_DEFS as unknown as readonly ColumnDef<K>[],
   onColumnResize,
   onColumnToggle,
@@ -158,6 +180,7 @@ export function TraceHeader<K extends string = ColumnKey>({
 
   return (
     <div
+      ref={headerRef}
       className="trace-header"
       style={{ gridTemplateColumns: gridTemplate }}
       onContextMenu={(e) => {

@@ -243,6 +243,24 @@ export function gridTemplateColumns(columns: readonly ColumnState[]): string {
   return gridTemplateColumnsFor(COLUMN_DEFS, columns);
 }
 
+/// How wide the visible columns are altogether, in px — the sum of the
+/// widths [`gridTemplateColumnsFor`] emits, so the flex column counts at
+/// its own width (the `minmax` floor) and every track counts at least
+/// [`MIN_COLUMN_WIDTH`].
+///
+/// The table's tracks are fixed px, so a panel narrower than this total
+/// has to *scroll* to the columns past its right edge: this is the width
+/// the rows' scrolled content is given. No `defs` argument — a flex
+/// column's floor is its own width, which the state already carries.
+export function contentWidth<K extends string>(
+  columns: readonly ColumnState<K>[],
+): number {
+  return visibleColumns(columns).reduce(
+    (total, c) => total + Math.max(MIN_COLUMN_WIDTH, Math.round(c.width)),
+    0,
+  );
+}
+
 /// Set one column's width (clamped to [`MIN_COLUMN_WIDTH`]), returning
 /// a new array; unknown keys are a no-op.
 export function resizeColumn<K extends string>(
