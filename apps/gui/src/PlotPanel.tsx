@@ -17,10 +17,10 @@ import { useNotes } from "./notesContext";
 import { TRUNCATION_EVENT_ID } from "./notes";
 import { GOTO_EVENT, type GotoPayload } from "./gotoEvent";
 import { mergeSeries, signalKey } from "./plotData";
+import { hostSettings, useSetting } from "./hostSettings";
 import { fetchWindowExtent } from "./useDecimatedRange";
 import { stableSignalColor, wheelColor } from "./palette";
 import {
-  RESAMPLE_INTERVAL_MS,
   SIGNALS_WIDTH_MAX,
   SIGNALS_WIDTH_MIN,
   TRACE_COLORS,
@@ -161,11 +161,6 @@ const CURSOR_MODE_OPTIONS: ComboboxOption[] = [
   { value: "y", label: "Y (H1 / H2)" },
   { value: "note", label: "+ note" },
 ];
-/** Width (seconds) of the follow-live x-window before the user has set
- * one by zooming/panning. The window grows from t=0 up to this and then
- * slides; once the user picks a width, that width is what follow-live
- * keeps. */
-const DEFAULT_FOLLOW_WIDTH_SECONDS = 10;
 /** How far the follow-live clock may fall behind the data edge before it
  * gives up nudging and resyncs hard (a stalled loop, a backgrounded
  * tab). Generous, because the nudge below closes ordinary errors on its
@@ -189,6 +184,14 @@ const FOLLOW_TARGET_LAG_MAX_S = 0.9;
  * than a per-update fraction keeps the behaviour idempotent across the
  * per-area calls. */
 const FOLLOW_EDGE_TAU_SECONDS = 0.25;
+/** The follow-live target lag for a given plot fetch interval, within
+ * the bounds above. */
+function targetLagFor(fetchIntervalMs: number): number {
+  return Math.min(
+    FOLLOW_TARGET_LAG_MAX_S,
+    Math.max(FOLLOW_TARGET_LAG_MIN_S, (FOLLOW_TARGET_LAG_TICKS * fetchIntervalMs) / 1000),
+  );
+}
 
 // Pattern-selection helpers live in `./signalSelection` so the
 // pure-logic tests can import them without dragging uplot into a jsdom run.
@@ -454,16 +457,18 @@ export function PlotPanel(props: IDockviewPanelProps) {
    * a pause — the next slide re-anchors on the data edge. */
   const liveEdgeRef = useRef<LiveEdge | null>(null);
   /** Clock tuning, in a ref so the resample callback stays stable. The
-   * target lag follows the resample interval: a longer gap between
-   * fetches means the window has to sit further back to stay full. */
+   * target lag follows the plot fetch interval: a longer gap between
+   * fetches means the window has to sit further back to stay full, so
+   * it is derived from the setting rather than fixed. */
   const liveEdgeTuningRef = useRef<LiveEdgeTuning>({
     maxLagSeconds: FOLLOW_MAX_LAG_SECONDS,
     tauSeconds: FOLLOW_EDGE_TAU_SECONDS,
-    targetLagSeconds: Math.min(
-      FOLLOW_TARGET_LAG_MAX_S,
-      Math.max(FOLLOW_TARGET_LAG_MIN_S, (FOLLOW_TARGET_LAG_TICKS * RESAMPLE_INTERVAL_MS) / 1000),
-    ),
+    targetLagSeconds: targetLagFor(hostSettings().plot_fetch_interval_ms),
   });
+  const fetchIntervalMs = useSetting("plot_fetch_interval_ms");
+  useEffect(() => {
+    liveEdgeTuningRef.current.targetLagSeconds = targetLagFor(fetchIntervalMs);
+  }, [fetchIntervalMs]);
   /** Pending coalesced slide, or `0` when none is scheduled (ADR 0024 —
    * "one slide per frame"). */
   const slideRafRef = useRef(0);
@@ -500,7 +505,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
         sync.xMin,
         sync.xMax,
         edgeT,
-        DEFAULT_FOLLOW_WIDTH_SECONDS,
+        hostSettings().follow_window_ms / 1000,
         sharedStart(),
       );
       if (win) {
@@ -958,7 +963,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
       const [min, max] = centerWindowOn(
         t,
         { min: sync.xMin, max: sync.xMax },
-        DEFAULT_FOLLOW_WIDTH_SECONDS,
+        hostSettings().follow_window_ms / 1000,
       );
       applyXAll(min, max, null);
       setFollowLive(false);

@@ -6,18 +6,6 @@ import type { SortState } from "./traceColumns";
 import { useWindowedQuery, type WindowPage } from "./useWindowedQuery";
 import { diagCount } from "./diag"; // DIAG
 
-/// Rows fetched per by-id page. The by-id set is bounded by id-space (one
-/// row per arbitration id), so in practice a single page covers it; the
-/// virtualizer fetches more only for a capture with an unusually large id
-/// space. Big enough that ordinary scrolling stays inside the loaded
-/// page; small enough to stay a cheap IPC payload.
-const PAGE = 1024;
-
-/// Spacing between the live "keep up with the trace" refreshes — the
-/// by-id values (latest frame, rate, new ids) lag the tail by at most
-/// this while running.
-const REFRESH_MS = 250;
-
 /// Host `fetch_by_id_page` reply (see `ipc.rs::RowPage`).
 interface ByIdPage {
   count: number;
@@ -54,7 +42,7 @@ export interface ByIdView {
 /// static. The refresh re-fetches the page the view *has*
 /// (`refresh: "window"`), not page 0 — this source goes stale in place
 /// rather than growing at one end, and re-paging from 0 yanked a view
-/// scrolled into a large id space back to the top four times a second.
+/// scrolled into a large id space back to the top on every refresh tick.
 /// Bounding the host scan to `winEnd` (not the live tip) is what makes a
 /// paused snapshot reflect the window it shows.
 export function useByIdView(
@@ -112,8 +100,6 @@ export function useByIdView(
       refresh: "window",
       // `winEnd` advances every grow tick; `running` flips on Start/Stop.
       extentSignal: winEnd + (running ? 0 : 1),
-      pageSize: PAGE,
-      refreshMs: REFRESH_MS,
     });
 
   return { count, version, getRow, ensureVisible };

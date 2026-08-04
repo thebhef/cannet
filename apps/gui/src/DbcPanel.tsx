@@ -76,6 +76,10 @@ interface PanelParams {
   /// showing bit layout, scale, range, mux, attributes, value table,
   /// etc. — every DBC field we have a frontend representation for.
   showDetails?: unknown;
+  /// Panel-wide "live values" toggle: whether each signal row carries a
+  /// live-latest decoded value column. Persisted like the other
+  /// toggles, so reopening from a saved layout restores it.
+  showValues?: unknown;
 }
 
 function filterFromParams(raw: unknown): string {
@@ -164,6 +168,12 @@ const ALL_BUSES_BUS_ID = ":::all";
 /// fallback so the two per-ECU groupings read the same.
 const NO_TRANSMITTER_ECU_KEY = ":::none";
 const NO_TRANSMITTER_LABEL = "(no transmitter)";
+
+/// Spacing between live-value refreshes while the value column is on
+/// and the panel is on screen. Dirty-gated on `trace-grew`, so a quiet
+/// capture costs nothing; this only bounds how often a *growing* one
+/// pays the decode-and-join round-trip.
+const VALUE_POLL_MS = 500;
 
 /// One per-transmitter group of a DBC's messages — the ECU tree
 /// level. `key` feeds the node id (stable across renames of the
@@ -723,14 +733,15 @@ export function DbcPanel(props: IDockviewPanelProps) {
   /// panel is a singleton navigator with no trace-window state
   /// (pausing belongs to signal-view elements).
   const [showValues, setShowValues] = useState<boolean>(
-    () => (params as { showValues?: unknown } | undefined)?.showValues === true,
+    () => params?.showValues === true,
   );
   const [content, setContent] = useState<DbcContentRecord[]>([]);
   /// Whether the panel is on screen — false while it sits in a
   /// background tab of its dockview group. The value poll below is a
   /// standing host round-trip that decodes and joins one row per
   /// visible signal; a hidden panel has no rows anyone can read, so it
-  /// stops polling entirely rather than paying that every 500 ms.
+  /// stops polling entirely rather than paying that every
+  /// `VALUE_POLL_MS`.
   const [panelVisible, setPanelVisible] = useState<boolean>(api.isVisible);
   useEffect(() => {
     const d = api.onDidVisibilityChange((e) => setPanelVisible(e.isVisible));
@@ -957,7 +968,7 @@ export function DbcPanel(props: IDockviewPanelProps) {
     // at once rather than after a tick.
     valuesDirtyRef.current = true;
     tick();
-    const id = window.setInterval(tick, 500);
+    const id = window.setInterval(tick, VALUE_POLL_MS);
     return () => {
       live = false;
       window.clearInterval(id);

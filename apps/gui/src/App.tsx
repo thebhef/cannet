@@ -62,6 +62,7 @@ import {
 } from "./systemLog";
 import { splitStatus, type LogState, type RemoteStatus, type TransientStatus } from "./statusLine";
 import { useTransientStatus } from "./useTransientStatus";
+import { useSetting } from "./hostSettings";
 import { NotesContext, type NotesContextValue } from "./notesContext";
 import type { Note } from "./notes";
 import { sortNotesChronologically } from "./notes";
@@ -142,11 +143,6 @@ import {
 
 // BLF + global error state. Remote sessions are tracked separately
 // (multi-server: one entry per address in `remoteSessions`).
-
-/// How long a transient status notice stays frozen in the header before
-/// the bar reverts to the resting residency line (ADR 0002 DS-8). The
-/// notice is mirrored to the system log so it outlives the flash.
-const STATUS_TRANSIENT_DWELL_MS = 3000;
 
 // Self-driving perf automation config, served by the host's
 // `diag_autostart` command from the launch flags (ADR 0031). `null` for
@@ -2099,11 +2095,15 @@ export function App() {
       /* best effort - the bar still reverts on its own */
     });
   }, []);
+  // How long a transient notice stays frozen in the header before the
+  // bar reverts to the resting residency line (ADR 0002 DS-8). The
+  // notice is mirrored to the system log so it outlives the flash,
+  // which is why lengthening or shortening it loses nothing.
   const status = useTransientStatus(
     restingStatus,
     transientStatus,
     emitStatusToLog,
-    STATUS_TRANSIENT_DWELL_MS,
+    useSetting("notice_dwell_ms"),
   );
 
   const traceData: TraceData = useMemo(() => {

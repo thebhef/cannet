@@ -19,8 +19,8 @@ import uPlot from "uplot";
 import { isEnumValueTable, type SignalDescriptorRecord, type SignalExtent, type ValueTableEntryRecord } from "./types";
 import { type ColorResolver, type ColorTarget, colorMapLaneFill } from "./colorMap";
 import { enumSegments, groupScaleRanges, mergeSeries } from "./plotData";
+import { useSetting } from "./hostSettings";
 import {
-  RESAMPLE_INTERVAL_MS,
   fmtVal,
   parseDroppedSignals,
   signalRefKey,
@@ -513,6 +513,11 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     resolveColor,
     panelElementId,
   } = p;
+
+  /** How often the live loop below re-samples, from `settings.json`
+   * (ADR 0034). Drawing stays pinned to rAF — this is the fetch, which
+   * is where the host-side cost is. */
+  const fetchIntervalMs = useSetting("plot_fetch_interval_ms");
 
   const canvasRef = useRef<HTMLDivElement | null>(null);
   /** The empty stand-in drawn in the canvas column while collapsed. */
@@ -1779,16 +1784,16 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
         /* a transient sample failure must not kill the loop */
       }
       if (stopped) return;
-      timer = window.setTimeout(() => void tick(), RESAMPLE_INTERVAL_MS);
+      timer = window.setTimeout(() => void tick(), fetchIntervalMs);
     };
-    timer = window.setTimeout(() => void tick(), RESAMPLE_INTERVAL_MS);
+    timer = window.setTimeout(() => void tick(), fetchIntervalMs);
     return () => {
       stopped = true;
       window.clearTimeout(timer);
       rateEmaRef.current = 0;
       lastResampleTsRef.current = 0;
     };
-  }, [live, winStart]);
+  }, [live, winStart, fetchIntervalMs]);
 
   // Re-sample on a window change the loop above cannot see: the first
   // non-empty window after mount (`winEnd` is still `0` on the first

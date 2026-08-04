@@ -477,11 +477,21 @@ writes, so the panel teaches the file.
   marked and offers **Reset to default**. One the open project
   overrides is marked as the project's, so a value that came from
   `.cannet/settings.json` never looks like a personal preference.
+- **A value the app can't honour is refused, not repaired.** Every
+  bounded field states its limit once, host-side; a hand-edit outside
+  it is rejected on the way in, reported on the **System Messages**
+  panel with the field named, and the field falls back to its default.
+  Your file is left as you wrote it — nothing runs at a number the file
+  doesn't show. A few fields treat `0` as "off" rather than as a
+  minimum (`system_log_rate_limit`, `health_sample_interval_ms`,
+  `sidecar_restart_budget`, the two recents depths); their help text
+  says so.
 - **`developer` settings.** Machine-load and internal-cadence knobs —
-  poll intervals, buffer depths, restart budgets. They exist so that
-  every knob the app has lives in `settings.json`, not because tuning
-  them is expected, and they are **hidden until you turn on
-  `show_developer_settings`**. Revealed, they appear in their own
+  the plot's fetch interval, the view refresh interval, the live-update
+  rate, the reconnect backoff, the health-sample cadence, the status
+  notice dwell. They exist so that every knob the app has lives in
+  `settings.json`, not because tuning them is expected, and they are
+  **hidden until you turn on `show_developer_settings`**. Revealed, they appear in their own
   **Developer** group rather than mixed into the others. Nothing is
   hidden from the file: they are all in `settings.json` whether the
   panel shows them or not.
@@ -980,7 +990,11 @@ samples, lifecycle breadcrumbs, sidecar status) is `debug`. A
 per-`(source, template)` rate
 limiter caps any one emitter at five entries per second; the first
 drop in a window records a single suppression note so the panel
-doesn't go silent under a flood. Sources currently in use:
+doesn't go silent under a flood. The ring's depth and the limiter's
+budget are settings (`system_log_ring_capacity`,
+`system_log_rate_limit`), and setting the budget to `0` turns the
+limiter off — diagnosing a message flood is exactly when you want all
+of it. Sources currently in use:
 `project`, `dbc`, `connection`, `blf-import` (vendor sidecars will
 use `sidecar:<vendor>` in Phase 8).
 
@@ -1046,9 +1060,10 @@ parses it into `SidecarState` and exposes it through the
 event, which the project panel's "Local sidecar" row reads so the
 user can bind interfaces without typing an address. The sidecar's
 stdout / stderr and exit code feed the **System Messages** panel
-tagged `sidecar:python-can`. A crashing sidecar gets up to three
-auto-restart attempts per session; once the budget is exhausted,
-the **Restart sidecar** Tauri command clears it.
+tagged `sidecar:python-can`. A crashing sidecar gets a budget of
+auto-restart attempts per session (`sidecar_restart_budget`, three by
+default); once the budget is exhausted, the **Restart sidecar** Tauri
+command clears it.
 
 **Lifecycle: dies with the host**. The host pipes the sidecar's
 stdin and writes nothing to it. When the host process exits (clean

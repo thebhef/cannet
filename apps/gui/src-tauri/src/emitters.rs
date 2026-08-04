@@ -17,17 +17,36 @@ use crate::trace_query::collect_trace_records;
 use crate::{crash, diag};
 
 /// How often the host pushes a `trace-grew` IPC event with the latest
-/// count + rate. Slow enough to not flood the frontend, fast enough that
-/// the status line and auto-scroll feel live.
-const TRACE_GREW_TICK: Duration = Duration::from_millis(100);
+/// count + rate, from `settings.json` (`live_update_interval_ms`). Slow
+/// enough to not flood the frontend, fast enough that the status line
+/// and auto-scroll feel live.
+///
+/// It is exposed as *one* setting covering the whole live-update loop:
+/// [`FPS_SMOOTHING`] and [`TRACE_GREW_TAIL`] are both tuned against this
+/// cadence, so surfacing one of the three would invite a combination
+/// none of them was designed for.
+fn trace_grew_tick() -> Duration {
+    Duration::from_millis(crate::settings::effective().live_update_interval_ms)
+}
 
 /// How often the host flushes the trace store to disk (ADR 0002
-/// DS-2/DS-7). Much slower than [`TRACE_GREW_TICK`]: a flush fsyncs
-/// segments and rewrites the reopen manifest, so it trades a small,
-/// bounded I/O cost for crash durability — a crash loses at most this
-/// much trailing capture — and there is nothing to gain by doing it at UI
-/// cadence.
-const TRACE_FLUSH_TICK: Duration = Duration::from_secs(2);
+/// DS-2/DS-7), from `settings.json` (`trace_flush_interval_ms`). Much
+/// slower than [`trace_grew_tick`]: a flush fsyncs segments and rewrites
+/// the reopen manifest, so it trades a small, bounded I/O cost for crash
+/// durability — a crash loses at most this much trailing capture — and
+/// there is nothing to gain by doing it at UI cadence.
+fn trace_flush_tick() -> Duration {
+    Duration::from_millis(crate::settings::effective().trace_flush_interval_ms)
+}
+
+/// Re-arm `interval` if the cadence setting moved since it was built, so
+/// a changed knob takes effect on the next tick instead of at relaunch.
+fn retune(interval: &mut tokio::time::Interval, period: &mut Duration, want: Duration) {
+    if want != *period {
+        *period = want;
+        *interval = tokio::time::interval(want);
+    }
+}
 
 /// Ceiling on the trailing frames shipped with a `trace-grew` event so
 /// the auto-scrolling trace view can paint its live tail without a fetch
@@ -67,7 +86,8 @@ pub(crate) fn set_live_tail_rows(state: State<'_, AppState>, rows: u64) {
 }
 
 /// Fraction of the gap to the raw rate that [`smooth_fps`] closes per
-/// tick. At [`TRACE_GREW_TICK`] (10 Hz) that is a ~300 ms time constant:
+/// tick. At the default [`trace_grew_tick`] (10 Hz) that is a ~300 ms
+/// time constant:
 /// enough to take the burst out of a batched arrival without making the
 /// readout feel detached from the bus.
 const FPS_SMOOTHING: f64 = 0.3;
@@ -117,10 +137,12 @@ pub(crate) fn should_emit_trace_grew(last: Option<(u64, f64)>, current: (u64, f6
 /// the decode itself happens off it.
 pub(crate) fn spawn_trace_grew_emitter(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
-        let mut interval = tokio::time::interval(TRACE_GREW_TICK);
+        let mut period = trace_grew_tick();
+        let mut interval = tokio::time::interval(period);
         let mut last_emitted: Option<(u64, f64, u64)> = None;
         loop {
             interval.tick().await;
+            retune(&mut interval, &mut period, trace_grew_tick());
             let state: State<'_, AppState> = app.state();
             // One lock acquisition for the whole store-side readout, so it
             // describes a single instant: `count - first_index` can't go
@@ -200,11 +222,13 @@ pub(crate) fn spawn_trace_grew_emitter(app: AppHandle) {
 /// state, so a cleanly stopped trace is reloadable within one tick.
 pub(crate) fn spawn_trace_flusher(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
-        let mut interval = tokio::time::interval(TRACE_FLUSH_TICK);
+        let mut period = trace_flush_tick();
+        let mut interval = tokio::time::interval(period);
         let mut last_flushed_len = 0usize;
         let mut last_trimmed_mark = 0usize;
         loop {
             interval.tick().await;
+            retune(&mut interval, &mut period, trace_flush_tick());
             let state: State<'_, AppState> = app.state();
             let len = state.trace_store.len();
             if len == last_flushed_len {

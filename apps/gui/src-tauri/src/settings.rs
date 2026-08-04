@@ -28,6 +28,7 @@
 //! fresh install and a hand-deleted file behave identically.
 
 use std::path::Path;
+use std::sync::{Arc, OnceLock, PoisonError, RwLock};
 
 use serde::{Deserialize, Serialize};
 
@@ -47,9 +48,12 @@ const SETTINGS_FILE: &str = "settings.json";
 /// per-project resource — is settled with the rest of the settings
 /// promotion work, not here.
 ///
-/// `show_developer_settings` is the exception: it governs what *you* see
-/// in the settings view, which is not a project's business, so it stays
-/// at user scope.
+/// The exceptions are the settings about *the person at the keyboard*
+/// rather than about the work: what the settings view reveals
+/// (`show_developer_settings`), how verbose their log view is
+/// (`system_log_min_level`), and how long a status notice dwells before
+/// it clears (`notice_dwell_ms`, a reading-speed accommodation). None of
+/// those are a project's business, so they stay at user scope.
 ///
 /// The names are the serialized ones. `every_settings_key_declares_a_scope`
 /// is what keeps this table from drifting away from the struct.
@@ -58,6 +62,21 @@ pub(crate) const SCOPES: ScopeTable = &[
     ("clear_scratch_on_exit", Scope::UserOverridable),
     ("keybindings", Scope::UserOverridable),
     ("show_developer_settings", Scope::User),
+    ("system_log_min_level", Scope::User),
+    ("notice_dwell_ms", Scope::User),
+    ("plot_fetch_interval_ms", Scope::UserOverridable),
+    ("view_refresh_interval_ms", Scope::UserOverridable),
+    ("follow_window_ms", Scope::UserOverridable),
+    ("recent_blfs_limit", Scope::UserOverridable),
+    ("recent_commands_limit", Scope::UserOverridable),
+    ("live_update_interval_ms", Scope::UserOverridable),
+    ("trace_flush_interval_ms", Scope::UserOverridable),
+    ("log_rotation_bytes", Scope::UserOverridable),
+    ("system_log_ring_capacity", Scope::UserOverridable),
+    ("system_log_rate_limit", Scope::UserOverridable),
+    ("health_sample_interval_ms", Scope::UserOverridable),
+    ("sidecar_restart_budget", Scope::UserOverridable),
+    ("reconnect_backoff_ms", Scope::UserOverridable),
 ];
 
 /// The persisted user settings. `#[serde(default)]` fills any absent field
@@ -69,7 +88,7 @@ pub(crate) const SCOPES: ScopeTable = &[
 // struct's own name. The field name *is* the `settings.json` key a user
 // reads and hand-edits, so it is named for the file, not for Rust.
 #[allow(clippy::struct_field_names)]
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     /// Maximum bytes the disk-spill scratch may grow to before the oldest
@@ -92,6 +111,184 @@ pub struct Settings {
     /// that the view grows no controls of its own — and so that the
     /// toggle is itself findable by searching for it.
     pub show_developer_settings: bool,
+    /// Lowest severity the System Messages panel shows — one of
+    /// [`SYSTEM_LOG_LEVELS`], default `info`. It is a preference ("how
+    /// verbose do I want my log view") rather than panel state, so it
+    /// survives closing and reopening the panel; the panel's *source*
+    /// filter is view-local and stays in its dockview params.
+    pub system_log_min_level: String,
+    /// How long a transient status notice stays frozen in the header
+    /// before the bar reverts to the resting residency line. Default
+    /// 3000 ms. Nothing is lost by shortening or lengthening it —
+    /// notices are mirrored to the system log — so it is purely a
+    /// reading-speed accommodation.
+    pub notice_dwell_ms: u64,
+    /// How often an open plot asks the host for a resampled window
+    /// while a capture runs. Default 67 ms (~15 Hz). Redraw stays
+    /// pinned to rAF; this governs only the fetch, which is where the
+    /// host-side cost is (ADR 0025).
+    pub plot_fetch_interval_ms: u64,
+    /// How often a paged view re-reads the tail while a capture runs —
+    /// the chronological and filtered traces, by-id, signals, and the
+    /// transmit/RBS host mirrors. Default 250 ms. It bounds both the
+    /// UI-thread parse cost and the host-side window scans under a
+    /// high-rate stream.
+    pub view_refresh_interval_ms: u64,
+    /// Width of a plot's follow-live x-window before the user has set
+    /// one by zooming or panning, in milliseconds (the settings view
+    /// edits it in seconds). Default 10 000 ms. Site-specific: 10 s is
+    /// wrong for a slow body bus.
+    pub follow_window_ms: u64,
+    /// How many recently-opened BLFs the File menu remembers. Default
+    /// 8. `0` remembers none.
+    pub recent_blfs_limit: u64,
+    /// How many recently-run commands the palette floats to the top.
+    /// Default 10. `0` remembers none.
+    pub recent_commands_limit: u64,
+    /// How often the host pushes a `trace-grew` event with the latest
+    /// count, rate, and live tail. Default 100 ms. It is *one* setting
+    /// covering the whole live-update loop: the smoothing constant and
+    /// the tail ceiling are tuned against this cadence, and exposing
+    /// one of the three would invite a combination none of them was
+    /// designed for.
+    pub live_update_interval_ms: u64,
+    /// How often the host flushes the trace store to disk (ADR 0002
+    /// DS-2/DS-7). Default 2000 ms — a crash loses at most this much
+    /// trailing capture, at the cost of an fsync and a manifest
+    /// rewrite each time. The same durability-versus-I/O decision
+    /// `scratch_cap_bytes` already exposes.
+    pub trace_flush_interval_ms: u64,
+    /// Size at which `cannet.log` rotates to `cannet.log.1`. Default
+    /// 5 MiB; one generation is kept, so disk use is bounded to about
+    /// twice this. The rolling log is the artifact a field engineer
+    /// ships back, and a long soak at the default silently loses its
+    /// head.
+    pub log_rotation_bytes: u64,
+    /// Entries the host's in-process system-log ring holds before the
+    /// oldest is evicted. Default 4096. The frontend mirror follows it,
+    /// so raising it makes more history reachable in the panel as well.
+    pub system_log_ring_capacity: u64,
+    /// How many messages one `(source, template)` pair may contribute
+    /// per second before the rest are suppressed. Default 5. **`0`
+    /// turns the limiter off** — debugging a message flood is exactly
+    /// when you want to see all of it.
+    pub system_log_rate_limit: u64,
+    /// How often the health recorder samples memory and store metrics.
+    /// Default 20 000 ms. Each sample walks the whole system process
+    /// table, so it is genuinely expensive. **`0` turns sampling off.**
+    pub health_sample_interval_ms: u64,
+    /// How many times the host auto-restarts a crashed sidecar before
+    /// giving up for the session. Default 3 — too few for a flaky
+    /// dongle, too many for a CI soak. `0` never auto-restarts. A
+    /// manual "Restart sidecar" resets the counter either way.
+    pub sidecar_restart_budget: u64,
+    /// How long the interface watcher waits before reconnecting to a
+    /// `cannet-server` after the stream ends or a connect fails.
+    /// Default 2000 ms: fine on a LAN, short for a flaky VPN to a
+    /// remote server.
+    pub reconnect_backoff_ms: u64,
+}
+
+/// The smallest legal value of any millisecond-interval setting.
+///
+/// A hard implementation limit rather than a taste: an interval of zero
+/// is a busy loop, and below one millisecond is not representable in the
+/// timer APIs on either side of the IPC. Stated once, enforced in
+/// [`validate`], and published as the `min` of every interval field's
+/// descriptor rather than restated there
+/// (`every_published_minimum_is_the_one_validate_enforces`).
+pub const MIN_INTERVAL_MS: u64 = 1;
+
+/// The smallest legal [`Settings::system_log_ring_capacity`]. A ring
+/// that holds nothing cannot hold the message being pushed into it, so
+/// one entry is the floor the data structure itself imposes.
+pub const MIN_SYSTEM_LOG_RING: u64 = 1;
+
+/// The smallest legal [`Settings::log_rotation_bytes`], and the unit the
+/// settings view edits it in. A rotation cap is stored in bytes but
+/// typed in MiB — the control's `scale` — so one mebibyte is the
+/// smallest value that control can express, and a cap below one block
+/// write would rotate the log away faster than anything could be read
+/// out of it.
+pub const MIN_LOG_ROTATION_BYTES: u64 = 1024 * 1024;
+
+/// The severity names [`Settings::system_log_min_level`] accepts, least
+/// to most severe — the same ladder the frontend's
+/// `SYSTEM_LOG_LEVEL_RANK` and [`crate::system_log::LogLevel`] order by.
+///
+/// Stated once: [`validate`] refuses anything outside it, and it is what
+/// the field's descriptor publishes as its `enum` options rather than
+/// re-listing them ([`crate::settings_descriptor`]).
+pub const SYSTEM_LOG_LEVELS: &[&str] = &["debug", "info", "warn", "error"];
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            scratch_cap_bytes: None,
+            clear_scratch_on_exit: false,
+            keybindings: None,
+            show_developer_settings: false,
+            system_log_min_level: "info".to_string(),
+            notice_dwell_ms: 3_000,
+            plot_fetch_interval_ms: 67,
+            view_refresh_interval_ms: 250,
+            follow_window_ms: 10_000,
+            recent_blfs_limit: 8,
+            recent_commands_limit: 10,
+            live_update_interval_ms: 100,
+            trace_flush_interval_ms: 2_000,
+            log_rotation_bytes: 5 * 1024 * 1024,
+            system_log_ring_capacity: 4_096,
+            system_log_rate_limit: 5,
+            health_sample_interval_ms: 20_000,
+            sidecar_restart_budget: 3,
+            reconnect_backoff_ms: 2_000,
+        }
+    }
+}
+
+/// The effective settings, cached for host code that needs a value
+/// somewhere re-reading the file is not an option — a per-message log
+/// write, a timer loop, the system-log ring. Refreshed by every
+/// [`get_settings`] / [`set_settings`], and hydrated once at startup, so
+/// it is never staler than the last read.
+///
+/// It is deliberately **not** the base of a write. Stage 1's rule
+/// stands: `set_settings` merges over a fresh read of the file, because
+/// the file is hand-editable and a cache can always be stale. This is a
+/// read cache and nothing else.
+static EFFECTIVE: OnceLock<RwLock<Arc<Settings>>> = OnceLock::new();
+
+fn effective_cell() -> &'static RwLock<Arc<Settings>> {
+    EFFECTIVE.get_or_init(|| RwLock::new(Arc::new(Settings::default())))
+}
+
+/// The current effective settings — one `Arc` clone, no filesystem, no
+/// lock held past the read. Safe from any thread, including from inside
+/// the system-log path, which is why it must never touch the disk.
+///
+/// Before the first [`hydrate`] it answers [`Settings::default`], which
+/// is the same answer a missing file gives.
+#[must_use]
+pub fn effective() -> Arc<Settings> {
+    let guard = effective_cell()
+        .read()
+        .unwrap_or_else(PoisonError::into_inner);
+    Arc::clone(&guard)
+}
+
+fn cache(settings: &Settings) {
+    let mut guard = effective_cell()
+        .write()
+        .unwrap_or_else(PoisonError::into_inner);
+    *guard = Arc::new(settings.clone());
+}
+
+/// Fill the [`effective`] cache from disk. Called once during setup, so
+/// the loops and log writers that read it start on the user's values
+/// rather than on the defaults.
+pub fn hydrate(app: &tauri::AppHandle) {
+    let _ = get_settings(app.clone());
 }
 
 /// One persisted keybinding — the on-disk mirror of the frontend's
@@ -129,7 +326,13 @@ pub const MIN_SCRATCH_CAP_BYTES: u64 = 100 * 1024 * 1024;
 /// file is a user-authored document (ADR 0034): we report what we refuse and
 /// leave their text alone, exactly as a hand-edited keybinding that names an
 /// unknown command is dropped and reported rather than rewritten.
-fn validate(settings: Settings) -> (Settings, Vec<String>) {
+///
+/// Crate-visible only so the descriptor table can be tested against it —
+/// `every_published_minimum_is_the_one_validate_enforces` proves the
+/// bound a control publishes is the bound this function applies. The
+/// ingress calls are [`get_settings`] and [`set_settings`]; there is no
+/// other caller.
+pub(crate) fn validate(settings: Settings) -> (Settings, Vec<String>) {
     let mut complaints = Vec::new();
     let mut settings = settings;
     if let Some(cap) = settings.scratch_cap_bytes {
@@ -141,7 +344,90 @@ fn validate(settings: Settings) -> (Settings, Vec<String>) {
             settings.scratch_cap_bytes = None;
         }
     }
+    if !SYSTEM_LOG_LEVELS.contains(&settings.system_log_min_level.as_str()) {
+        let bad = &settings.system_log_min_level;
+        let known = SYSTEM_LOG_LEVELS.join(", ");
+        complaints.push(format!(
+            "system_log_min_level \"{bad}\" is not one of {known}; ignoring it — the \
+             System Messages panel filters at its default"
+        ));
+        settings.system_log_min_level = Settings::default().system_log_min_level;
+    }
+    let d = Settings::default();
+    for (key, value, min, default) in [
+        (
+            "notice_dwell_ms",
+            &mut settings.notice_dwell_ms,
+            MIN_INTERVAL_MS,
+            d.notice_dwell_ms,
+        ),
+        (
+            "plot_fetch_interval_ms",
+            &mut settings.plot_fetch_interval_ms,
+            MIN_INTERVAL_MS,
+            d.plot_fetch_interval_ms,
+        ),
+        (
+            "view_refresh_interval_ms",
+            &mut settings.view_refresh_interval_ms,
+            MIN_INTERVAL_MS,
+            d.view_refresh_interval_ms,
+        ),
+        (
+            "follow_window_ms",
+            &mut settings.follow_window_ms,
+            MIN_INTERVAL_MS,
+            d.follow_window_ms,
+        ),
+        (
+            "live_update_interval_ms",
+            &mut settings.live_update_interval_ms,
+            MIN_INTERVAL_MS,
+            d.live_update_interval_ms,
+        ),
+        (
+            "trace_flush_interval_ms",
+            &mut settings.trace_flush_interval_ms,
+            MIN_INTERVAL_MS,
+            d.trace_flush_interval_ms,
+        ),
+        (
+            "reconnect_backoff_ms",
+            &mut settings.reconnect_backoff_ms,
+            MIN_INTERVAL_MS,
+            d.reconnect_backoff_ms,
+        ),
+        (
+            "system_log_ring_capacity",
+            &mut settings.system_log_ring_capacity,
+            MIN_SYSTEM_LOG_RING,
+            d.system_log_ring_capacity,
+        ),
+        (
+            "log_rotation_bytes",
+            &mut settings.log_rotation_bytes,
+            MIN_LOG_ROTATION_BYTES,
+            d.log_rotation_bytes,
+        ),
+    ] {
+        refuse_below(&mut complaints, key, value, min, default);
+    }
     (settings, complaints)
+}
+
+/// Refuse `value` if it is below `min`, reporting the field by name and
+/// resolving it to `default` — the shared shape of every numeric bound
+/// in [`validate`], so a new bounded field is one table row rather than
+/// another hand-written `if`.
+fn refuse_below(complaints: &mut Vec<String>, key: &str, value: &mut u64, min: u64, default: u64) {
+    if *value >= min {
+        return;
+    }
+    complaints.push(format!(
+        "{key} {value} is below the minimum of {min}; ignoring it — using the \
+         default ({default})"
+    ));
+    *value = default;
 }
 
 /// Read the effective settings across both scopes (ADR 0042 §3):
@@ -185,6 +471,7 @@ pub fn get_settings(app: tauri::AppHandle) -> Settings {
         .map(|user_dir| read_settings(&user_dir, &crate::workspace_dir(&app)))
         .unwrap_or_default();
     let (settings, complaints) = validate(raw);
+    cache(&settings);
     warn_refused(&app, &complaints);
     settings
 }
@@ -212,6 +499,7 @@ pub fn get_settings_overrides(app: tauri::AppHandle) -> Vec<String> {
 pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<Settings, String> {
     let dir = crate::persisted_json::config_dir(&app)?;
     let (settings, complaints) = validate(settings);
+    cache(&settings);
     warn_refused(&app, &complaints);
     write_settings(&dir, &crate::workspace_dir(&app), &settings).map_err(|e| {
         let msg = format!("failed to write settings: {e}");
@@ -268,6 +556,21 @@ mod tests {
                 },
             ]),
             show_developer_settings: true,
+            system_log_min_level: "warn".to_string(),
+            notice_dwell_ms: 1_500,
+            plot_fetch_interval_ms: 33,
+            view_refresh_interval_ms: 500,
+            follow_window_ms: 30_000,
+            recent_blfs_limit: 20,
+            recent_commands_limit: 3,
+            live_update_interval_ms: 250,
+            trace_flush_interval_ms: 5_000,
+            log_rotation_bytes: 32 * 1024 * 1024,
+            system_log_ring_capacity: 512,
+            system_log_rate_limit: 0,
+            health_sample_interval_ms: 0,
+            sidecar_restart_budget: 1,
+            reconnect_backoff_ms: 10_000,
         }
     }
 
@@ -295,6 +598,37 @@ mod tests {
         assert!(!d.clear_scratch_on_exit);
         assert_eq!(d.keybindings, None);
         assert!(!d.show_developer_settings);
+        assert_eq!(d.system_log_min_level, "info");
+    }
+
+    #[test]
+    fn an_unknown_system_log_level_is_refused_and_reported() {
+        // Same contract as the cap (ADR 0034 / Stage 1 item 3): a value
+        // the app can't honor is refused and reported, and resolves to
+        // the default — never silently repaired to something else.
+        let (accepted, complaints) = validate(Settings {
+            system_log_min_level: "verbose".to_string(),
+            ..Settings::default()
+        });
+        assert_eq!(accepted.system_log_min_level, "info");
+        assert_eq!(complaints.len(), 1, "{complaints:?}");
+        assert!(
+            complaints[0].contains("system_log_min_level"),
+            "{complaints:?}"
+        );
+        assert!(complaints[0].contains("verbose"), "{complaints:?}");
+    }
+
+    #[test]
+    fn every_declared_system_log_level_is_accepted() {
+        for level in SYSTEM_LOG_LEVELS {
+            let (accepted, complaints) = validate(Settings {
+                system_log_min_level: (*level).to_string(),
+                ..Settings::default()
+            });
+            assert_eq!(&accepted.system_log_min_level, level);
+            assert!(complaints.is_empty(), "{level}: {complaints:?}");
+        }
     }
 
     #[test]
@@ -331,6 +665,55 @@ mod tests {
         let s = parse_settings(r#"{"clear_scratch_on_exit": true}"#);
         assert!(s.clear_scratch_on_exit);
         assert_eq!(s.scratch_cap_bytes, None);
+    }
+
+    #[test]
+    fn a_file_written_before_a_field_existed_resolves_to_that_field_s_default() {
+        // The promotion promise, in its strongest form: a settings
+        // document carrying only the keys the store had before Stage 3
+        // must produce exactly the defaults — so an install nobody has
+        // touched behaves as it did before the fields existed.
+        let legacy = r#"{
+            "scratch_cap_bytes": null,
+            "clear_scratch_on_exit": false,
+            "keybindings": null,
+            "show_developer_settings": false
+        }"#;
+        assert_eq!(parse_settings(legacy), Settings::default());
+        // Same for the empty document and the missing one.
+        assert_eq!(parse_settings("{}"), Settings::default());
+    }
+
+    #[test]
+    fn the_effective_cache_answers_defaults_until_something_publishes() {
+        // Host code on paths that cannot read the file — the log
+        // writer, the timer loops, the system-log ring — reads this
+        // cache, so before the boot hydrate it must answer exactly what
+        // a missing file answers.
+        //
+        // Deliberately exercised through `notice_dwell_ms` alone: the
+        // cache is process-wide, and every other field is read by some
+        // other module whose tests run concurrently with this one.
+        // Nothing host-side reads the dwell, so publishing it here
+        // cannot perturb them.
+        let before = effective();
+        assert_eq!(
+            before.notice_dwell_ms,
+            Settings::default().notice_dwell_ms,
+            "un-hydrated cache must read as the defaults"
+        );
+
+        cache(&Settings {
+            notice_dwell_ms: 12_345,
+            ..(*before).clone()
+        });
+        assert_eq!(effective().notice_dwell_ms, 12_345);
+
+        cache(&before);
+        assert_eq!(
+            effective().notice_dwell_ms,
+            Settings::default().notice_dwell_ms
+        );
     }
 
     #[test]
@@ -387,12 +770,20 @@ mod tests {
     #[test]
     fn default_settings_serialize_with_every_key_present() {
         // Unlike state.json, settings.json lists every knob even at its
-        // default so the file is discoverable when hand-edited.
-        let text = serde_json::to_string(&Settings::default()).unwrap();
-        assert!(text.contains("scratch_cap_bytes"), "{text}");
-        assert!(text.contains("clear_scratch_on_exit"), "{text}");
-        assert!(text.contains("keybindings"), "{text}");
-        assert!(text.contains("show_developer_settings"), "{text}");
+        // default so the file is discoverable when hand-edited. Checked
+        // against `SCOPES` rather than a hand-written key list, which
+        // `every_settings_key_declares_a_scope` already pins to the
+        // struct in both directions.
+        let serde_json::Value::Object(keys) = serde_json::to_value(Settings::default()).unwrap()
+        else {
+            panic!("settings must serialize to a JSON object");
+        };
+        for (name, _) in SCOPES {
+            assert!(
+                keys.contains_key(*name),
+                "`{name}` is not in the written file"
+            );
+        }
     }
 
     #[test]

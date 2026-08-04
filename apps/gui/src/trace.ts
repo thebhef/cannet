@@ -26,11 +26,6 @@ export type TraceRow =
   | { row: "frame"; frame: TraceFrameRecord }
   | { row: "event"; event: TimelineEvent };
 
-/// Rows fetched per unfiltered-chrono window. Big enough that ordinary
-/// scrolling stays inside the loaded page (the view shows ~tens of rows
-/// at a time); small enough to stay a cheap IPC payload per fetch.
-const CHRONO_PAGE = 1000;
-
 export type TraceStatus = "running" | "paused" | "stopped";
 
 /// `start` / `end` are session-buffer frame counts; an `end` of `null`
@@ -235,7 +230,6 @@ export function useTrace(elementId: string, rows: boolean): TraceHandle {
     extentSignal: live.count,
     extent: frameCount,
     liveTail: rows ? { start: live.liveTail.start - offset, rows: live.liveTail.rows } : null,
-    pageSize: CHRONO_PAGE,
   });
   const getFrame = win.getRow;
   const ensureVisible = win.ensureVisible;

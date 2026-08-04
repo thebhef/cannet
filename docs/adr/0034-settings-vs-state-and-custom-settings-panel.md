@@ -31,10 +31,22 @@ both a place to persist them and a way to edit them.
      `preferences.json`, renamed because none of its contents are
      preferences. Best-effort, unversioned, regenerated as the user works.
 
-   The deciding question is *did the user choose this, or did the app
-   observe it?* A field that is genuinely a user choice belongs in
-   `settings.json` even if it lived in `state.json` first; at the time of
-   writing, none of the existing fields do.
+   The deciding question is *is this a behavioural preference, or a memo
+   about specific files and sessions?* A field that is genuinely a
+   preference belongs in `settings.json` even if it lived in
+   `state.json` first.
+
+   *Sharpened 2026-08-03.* It used to read "did the user choose this, or
+   did the app observe it?", which is ambiguous for a value a user typed
+   into a dialog once. `blf_channel_maps` is the worked example: the
+   user *did* choose those channel-to-bus assignments, and its own
+   rustdoc calls them "user-authored" — yet it is state, because
+   **user-authored is not the same as a user preference**. A mapping
+   keyed to specific files is the app remembering what you accepted last
+   time for *that* BLF, not a behavioural choice you set. (The rustdoc's
+   "user-authored" note is about eviction policy — don't drop it, you
+   can't recompute it — not about its category.) Ask what the value is
+   *about*: the app's behaviour, or a particular file or session.
 
 2. **A custom, in-repo settings panel.** The settings UI is a
    hand-rolled dockview panel in `apps/gui/src`, styled in the app's own

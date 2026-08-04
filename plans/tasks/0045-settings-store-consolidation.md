@@ -156,9 +156,18 @@ the fix is not host-side).
    only by the settings panel", false since `useCommands` reads them at
    boot — and doubly false now that the module hydrates.
 
-### Stage 2 — move what is misfiled
+### Stage 2 — move what is misfiled — **complete**
 
-1. **`blf_channel_maps` stays in `state.json` — no move.** A read of
+All three items are settled. Item 1 needed no work here (Task 47 did
+it); items 2 and 3 landed together.
+
+1. **`blf_channel_maps` stays in `state.json` — no move.** *(done by
+   [Task 47](0047-user-workspace-scoping.md), not here.)* It is now
+   `Scope::Workspace` in `state.rs`'s scope table, so it lives in the
+   project's `.cannet/state.json` — the workspace-scoped state this
+   item said it belonged in. Nothing was left for this stage. The
+   reasoning is kept because it is the worked example ADR 0034's
+   sharpened deciding question needs. A read of
    its rustdoc (*"unlike the spill caches this is user-authored and not
    recomputable, so it must not be evicted"*) suggested it fails
    ADR 0034's placement test, since the ADR asserts nothing in
@@ -174,28 +183,53 @@ the fix is not host-side).
 
    Where it *does* belong is **workspace-scoped state** — per-project,
    beside the other things scoped to that working context. That is
-   [Task 47](0047-user-workspace-scoping.md), which is scheduled ahead
-   of this task's Stage 2, so the move happens there rather than here.
-   Until then it stays where it is; it is not misfiled badly enough to
-   justify moving it twice.
+   where Task 47 put it.
 
-   ADR 0034 therefore needs no amendment on this point. Sharpening its
-   deciding question would still help — "did the user *choose* this, or
-   did the app *observe* it?" reads ambiguously for a value the user
-   typed into a dialog once.
+   ADR 0034 therefore needs no amendment on this point. Its deciding
+   question *is* now sharpened — "did the user choose this, or did the
+   app observe it?" read ambiguously for a value the user typed into a
+   dialog once, and decision 1 now asks *is this a behavioural
+   preference, or a memo about specific files and sessions?*, with
+   `blf_channel_maps` written up as the worked example.
 2. **System-log minimum level is an app preference stuck in panel
-   state.** "How verbose do I want my log view" survives a panel close
-   in nobody's mental model; today it lives in an untyped dockview
-   `params` blob and resets with every new panel. `filterSource`
-   alongside it is correctly view-local — only the level moves.
-3. **`showValues` is written to `params` but absent from that panel's
-   params interface.** Right location, broken contract. Type it.
+   state.** *(done)* "How verbose do I want my log view" survives a
+   panel close in nobody's mental model; it lived in an untyped
+   dockview `params` blob and reset with every new panel. It is now the
+   `system_log_min_level` setting (`Scope::User` — what *you* see in a
+   log view is not a project's business), and the panel's "Min level"
+   combobox is that setting's editor: it reads through `hostSettings`,
+   subscribes so a change made in the settings view or by a hand-edit
+   follows, and writes through `updateSettings`. `filterSource` stays
+   in `params`, and the panel's rustdoc now says why the two filters
+   sit in different places.
 
-### Stage 3 — promote constants that are really policy
+   The value is a `String` validated against
+   [`SYSTEM_LOG_LEVELS`](../../apps/gui/src-tauri/src/settings.rs)
+   rather than a serde enum: a serde enum would fail the *whole*
+   document on one typo'd level, whereas the string goes through
+   `validate` and gets Stage 1 item 3's treatment — refused, reported
+   on the system log, resolved to the default, user's text left alone.
+   The same list is what the descriptor publishes as the control's
+   options, so the view offers exactly what the host accepts
+   (`the_published_log_levels_are_the_ones_validate_accepts`).
+
+   Tests: `SystemMessagesPanel.dom.test.tsx` (level comes from
+   settings not params; a pick persists and never lands in
+   `updateParameters`; it survives close/reopen; the source filter
+   still goes to `params` and writes no setting) and `settings.rs`
+   (unknown level refused and reported; every declared level accepted).
+3. **`showValues` is written to `params` but absent from that panel's
+   params interface.** *(done)* Right location, broken contract.
+   `DbcPanel`'s `PanelParams` now declares it, and the inline
+   `params as { showValues?: unknown }` cast at the `useState` seed is
+   gone.
+
+### Stage 3 — promote constants that are really policy — **complete**
 
 Ranked by how likely a real user is to want the knob. Each becomes a
 `settings.json` field with the current value as its default, so an
-untouched install behaves identically.
+untouched install behaves identically. **What landed, and what
+deviated, is recorded under "Stage 3 as built" below the tables.**
 
 | Knob | Today | Why a user cares |
 | --- | --- | --- |
@@ -225,7 +259,11 @@ so they go in:
 
 Independent of the settings question: the DBC panel's live-value poll
 is a bare `500` literal where every sibling cadence has a named
-constant. Name it while in here.
+constant. Name it while in here. *(done — `VALUE_POLL_MS` in
+`DbcPanel.tsx`, with the prose copy of the number in the
+`panelVisible` comment replaced by the name. It stays a constant: it is
+not one of the promoted knobs, and the row above about the host-mirror
+poll is about `useHostMirror`, not this one.)*
 
 **Explicitly staying constants** — recorded so this is not re-audited
 every six months: page sizes, `MAX_SCROLL_HEIGHT_PX` (a browser
@@ -237,7 +275,178 @@ not persistent intent.
 
 Separately, page sizes are 512 / 1000 / 1024 for the same job across
 four call sites. Not a settings question; just unexplained drift worth
-normalising while in here.
+normalising while in here. *(done — one exported `PAGE_ROWS = 1024` in
+`useWindowedQuery.ts`; the four call sites no longer pass `pageSize` at
+all, so the hook's default* is *the page size and there is nothing left
+to drift. 1024 was already the value at two of the four, is a power of
+two, and is within 2.4 % of the chronological view's 1000; the filtered
+view's 512 was the outlier and nothing in git history ties any of the
+three to a measurement. The same number also sets the scroll-back
+prefetch margin (`pageSize / 4`), which the drift had moving between
+128, 250 and 256 rows. Guarded by* `pages at PAGE_ROWS when the caller
+names no page size` *in `useWindowedQuery.test.ts`.)*
+
+#### Stage 3 as built
+
+Every field below lands with its scope and both tag axes attached — no
+retrofit — and with the current value as its default, so a file that
+predates it resolves to exactly what the app did before
+(`a_file_written_before_a_field_existed_resolves_to_that_field_s_default`).
+
+**Shared machinery, added once.**
+
+- **`MIN_INTERVAL_MS`.** Every promoted cadence is a millisecond count
+  and zero is a busy loop, so one host-side constant states the floor,
+  `validate` enforces it through a shared `refuse_below` helper, and
+  each interval control publishes it as its `min` rather than restating
+  it. `every_published_minimum_is_the_one_validate_enforces` is the
+  general form of Stage 1's cap-minimum test: for *every* descriptor
+  with an `Int` floor, the host must accept that value, refuse the one
+  under it, name the field in the complaint, and resolve it to its
+  default. A future field that published a bound nobody enforced fails
+  that test.
+- **`useSetting(key)`** in `hostSettings.ts` — `useSyncExternalStore`
+  over the existing cache, for a component that must *react* to a
+  change (an interval whose effect has to be rebuilt). Code that only
+  needs the value at the moment it acts reads `hostSettings()`
+  directly and skips the render; both kinds are in use.
+
+**Frontend-consumed fields.**
+
+| Field | Default | Tags | Scope |
+| --- | --- | --- | --- |
+| `plot_fetch_interval_ms` | 67 | plot / developer | user-overridable |
+| `view_refresh_interval_ms` | 250 | general / developer | user-overridable |
+| `follow_window_ms` | 10 000 | plot / default | user-overridable |
+| `recent_blfs_limit` | 8 | general / behaviour | user-overridable |
+| `recent_commands_limit` | 10 | general / behaviour | user-overridable |
+| `notice_dwell_ms` | 3 000 | general / developer | user |
+
+Notes on the ones that deviated from the table above:
+
+- **The view refresh cadence took the host-mirror poll with it, and
+  that is a real behaviour change.** The four 250 ms copies collapsed
+  into `useWindowedQuery`'s one default, which every view now inherits
+  by not passing `refreshMs` at all. `useHostMirror`'s separate 500 ms
+  default is gone too — its row says it "rides with the view-refresh
+  cadence rather than standing alone", and a host mirror going stale in
+  place is the same "keep up with the host" job — so the transmit and
+  RBS panels now poll at 250 ms while a message is running instead of
+  500 ms. **This is the one place Stage 3 changes what an untouched
+  install does**, and it is a consequence of the collapse, not of the
+  promotion: the alternative was to keep two numbers for one concept,
+  which is the drift the stage exists to remove. The poll is
+  `pollWhile`-gated, so it only applies while something is actually
+  running.
+- **Recents retention is two fields, not one.** The table lists it as
+  one row ("8 BLFs / 10 commands") but they are two independent lists
+  with different natural depths, and — unlike the live-update-rate
+  row — nothing interlocks them, so one shared number would have had to
+  change one of the two defaults. There is no incoherent-tuning risk in
+  two separate caps.
+- **`follow_window_ms`, not `follow_window_seconds`.** Stored in
+  milliseconds like every other duration in the file, and edited in
+  seconds through the control's `scale` — the same mechanism that lets
+  the cache cap be stored in bytes and typed in MB. It keeps `Settings`
+  free of a float, and `PlotPanel`'s follow-live target lag (which is a
+  multiple of the fetch interval) now derives from
+  `plot_fetch_interval_ms` instead of the deleted module constant.
+- **`notice_dwell_ms` is `Scope::User`.** The argument for the knob is
+  reading speed, which follows the person, not the project — the same
+  reasoning as `show_developer_settings` and `system_log_min_level`.
+
+Behaviour tests (each mutation-checked): `useWindowedQuery.test.ts`
+→ *throttles live refreshes at the configured view refresh interval*
+and *pages at PAGE_ROWS…*; `PlotPanel.dom.test.tsx` → *paces the fetch
+loop from the plot fetch interval setting* (a real-time counterpart to
+the existing default-cadence test); `recentBlfs.test.ts` /
+`recentCommands.test.ts` → *caps at the configured depth, not a
+hard-coded one*.
+
+**Host-consumed fields, and the cache they read.**
+
+The host half needed one thing the frontend half did not: a way to read
+a setting on a path where re-reading `settings.json` is out of the
+question — a per-message rolling-log write, a `tokio` timer loop, the
+system-log ring itself. `settings::effective()` is that: an
+`Arc<Settings>` behind an `RwLock`, refreshed by every `get_settings` /
+`set_settings` and hydrated once in `setup` before any of its readers
+start. One `Arc` clone per read, no filesystem, safe to call from
+inside the system-log path — which is the constraint that ruled out
+"just read the file".
+
+It is a **read** cache and never the base of a write. Stage 1 item 5's
+rule is untouched: `set_settings` still merges over a fresh read,
+because the file is hand-editable and a cache can always be stale.
+Before the boot hydrate it answers `Settings::default()`, which is the
+same answer a missing file gives, so the pre-hydrate window behaves
+identically to a fresh install rather than specially.
+
+| Field | Default | Tags | Reader |
+| --- | --- | --- | --- |
+| `live_update_interval_ms` | 100 | trace / developer | `emitters::spawn_trace_grew_emitter` |
+| `trace_flush_interval_ms` | 2 000 | storage / behaviour | `emitters::spawn_trace_flusher` |
+| `log_rotation_bytes` | 5 MiB | logging / behaviour | `crash::persist_block`, the panic hook |
+| `system_log_ring_capacity` | 4 096 | logging / behaviour | `system_log::push_ring` **and the frontend mirror** |
+| `system_log_rate_limit` | 5 | logging / behaviour | `system_log::burst_budget` |
+| `health_sample_interval_ms` | 20 000 | logging / developer | `crash::spawn_health_recorder` |
+| `sidecar_restart_budget` | 3 | connection / behaviour | `sidecar::maybe_restart` |
+| `reconnect_backoff_ms` | 2 000 | connection / developer | `interfaces::run_watch` |
+
+Notes:
+
+- **The two `tokio` loops re-arm.** Both read the cadence at the top of
+  each tick and rebuild their `Interval` when it moved (`retune`), so a
+  changed cadence takes effect on the next tick rather than at
+  relaunch. Same for the health recorder, which additionally parks on a
+  short poll while sampling is switched off so switching it back on
+  does not need a restart either.
+- **Live update rate is one setting, per its row.** `FPS_SMOOTHING` and
+  `TRACE_GREW_TAIL` stay constants and their rustdoc now says they are
+  tuned *against* this cadence, which is the reason the row gives for
+  not surfacing all three.
+- **Three fields treat `0` as "off", not as a floor**, so they carry no
+  published minimum and their help text says what zero does:
+  `system_log_rate_limit` (the row's own argument — "debugging a
+  message flood is exactly when you want the limiter off"),
+  `health_sample_interval_ms` ("a user on a loaded machine may want it
+  off"), and `sidecar_restart_budget` (never auto-restart). The
+  zero-is-off mapping is split into a pure `budget_from` /
+  `health_interval_from` so it is testable without touching the
+  process-wide cache.
+- **`RING_CAPACITY` crossed a language boundary by hand and no longer
+  does.** The frontend's `SYSTEM_LOG_MIRROR_CAPACITY` was a
+  hand-maintained copy of the host constant with a comment asking for
+  it to be kept in sync. Both sides now read
+  `system_log_ring_capacity`, so raising the depth actually makes more
+  history reachable in the panel instead of only in the host.
+- **`push_ring` takes its capacity as a parameter and evicts in a
+  loop.** Lowering the depth mid-session leaves an over-long ring; the
+  old single `==` check would have left it stuck at its old size.
+- **`log_rotation_bytes` has a floor of 1 MiB, and that floor is
+  mechanical rather than taste.** The control edits in MiB via its
+  `scale`, so one mebibyte is the smallest value the control can
+  express at all. Generation count stays structural (one `.1`) — making
+  it a knob means rewriting `rotate_if_needed` into a shift loop, which
+  is not what the row asks for.
+- **`RATE_LIMIT_WINDOW` stays a constant.** The row promotes the ring
+  depth and the burst budget; the budget is the number a user reasons
+  about ("identical messages per second"), and making the window
+  adjustable too would express one rate two ways.
+
+Behaviour tests (each mutation-checked): `settings.rs` → *the effective
+cache answers defaults until something publishes* (deliberately driven
+through `notice_dwell_ms`, the one field no host module reads, because
+the cache is process-wide and the other fields' readers have concurrent
+tests); `system_log.rs` → *a rate limit of zero means no limit*, *the
+ring shrinks to a lowered capacity*; `crash.rs` → *a health interval of
+zero turns sampling off*; `systemLog.test.ts` → *caps at the configured
+ring depth, not a hard-coded one*.
+
+**Measured:** `cannet-perf-measurement check` passes all 12 gated
+metrics (tracebuffer, grpc, hardware-peak) against the promoted
+baseline after the change; the frontend tier is skipped as ever, since
+Task 44 Tier 0 still owes a self-driving capture.
 
 ### Stage 4 — env-only configuration that needs a settings equivalent
 
@@ -305,7 +514,10 @@ change the file layout, which is why it precedes Stage 2.
 
 ## Duplicate sources of truth to collapse
 
-1. View refresh cadence — 250 ms in four files.
+1. ~~View refresh cadence — 250 ms in four files.~~ *Collapsed
+   (Stage 3): one `view_refresh_interval_ms` setting, defaulted in
+   `useWindowedQuery` and inherited by every paged view and by
+   `useHostMirror`, which gives up its own 500 ms as well.*
 2. ~~Scratch cap floor — Rust ↔ TS, "keep in sync by convention".~~
    *Collapsed (Stage 1 item 3): stated once host-side as validation
    metadata, published to the frontend, no TS copy.*
@@ -337,14 +549,14 @@ properly view-local, and the window-state plugin is properly separate.
 
 ## Documentation deliverables
 
-- **ADR 0034 clarification.** Not the amendment first thought
-  necessary — its `state.json` claim holds. What it needs is a sharper
-  deciding question: "did the user choose this, or did the app observe
-  it?" is ambiguous for a value a user typed into a dialog once. State
-  the test as *is this a behavioural preference, or a memo about
-  specific files/sessions?*, with `blf_channel_maps` as the worked
-  example. Task 46 amends the same ADR for the descriptor/tagged-view
-  decision — fold both into one amendment.
+- **ADR 0034 clarification.** *(done — Stage 3.)* Not the amendment
+  first thought necessary; its `state.json` claim holds. What it needed
+  was a sharper deciding question, and decision 1 now asks *is this a
+  behavioural preference, or a memo about specific files and
+  sessions?*, with `blf_channel_maps` as the worked example and a note
+  that user-authored is not the same as a user preference. Task 46's
+  descriptor/tagged-view amendment to the same ADR landed separately
+  rather than folded in, because it shipped first.
 - **Base directories: answered — no change, and it should stop being
   raised.** The question was whether `state.json` is misfiled by living
   in `app_config_dir` next to `settings.json`, given that XDG separates

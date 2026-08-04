@@ -9,7 +9,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 
-import { useWindowedQuery, type WindowPage } from "./useWindowedQuery";
+// The refresh cadence is the `view_refresh_interval_ms` setting, so
+// these tests need a host to hydrate it from.
+let stored: Record<string, unknown> = {};
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(async (cmd: string) => (cmd === "get_settings" ? { ...stored } : null)),
+}));
+
+const { PAGE_ROWS, useWindowedQuery } = await import("./useWindowedQuery");
+const { hydrateSettings } = await import("./hostSettings");
+type WindowPage<T> = import("./useWindowedQuery").WindowPage<T>;
 
 /// A fake host page source over a contiguous integer "model" of
 /// `total` rows: row at index `i` is the string `r{i}`. Counts calls so
@@ -39,7 +48,11 @@ const base = {
   refreshMs: 50,
 };
 
-beforeEach(() => vi.useFakeTimers());
+beforeEach(async () => {
+  stored = {};
+  await hydrateSettings();
+  vi.useFakeTimers();
+});
 afterEach(() => vi.useRealTimers());
 
 /// Let the immediate load's promise resolve and state settle.
@@ -280,5 +293,62 @@ describe("useWindowedQuery", () => {
     // Past the loaded page, the overlay answers so the live edge never
     // shows a placeholder between throttled re-pages.
     expect(result.current.getRow(1001)).toBe("t1001");
+  });
+
+  it("pages at PAGE_ROWS when the caller names no page size", async () => {
+    // Every paged view now omits `pageSize`, so this default *is* the
+    // one page size — the four views used to carry 1000 / 512 / 1024
+    // for the same job.
+    const { fetchPage } = fakeSource(100_000);
+    renderHook(() =>
+      useWindowedQuery({
+        ...base,
+        pageSize: undefined,
+        descriptor: "cap1",
+        extent: 100_000,
+        fetchPage,
+      }),
+    );
+    await flush();
+
+    expect(fetchPage).toHaveBeenCalledWith(0, PAGE_ROWS, false);
+  });
+
+  it("throttles live refreshes at the configured view refresh interval", async () => {
+    // The four views that page through this hook used to declare four
+    // 250 ms constants; the cadence is now one `settings.json` field
+    // and none of them names a number. 400 ms is not the default, so a
+    // hook still using a hard-coded 250 would fire an extra time here.
+    stored = { view_refresh_interval_ms: 400 };
+    await hydrateSettings();
+    const { fetchPage } = fakeSource(1000);
+    const { rerender } = renderHook(
+      ({ signal }: { signal: number }) =>
+        useWindowedQuery({
+          ...base,
+          refreshMs: undefined,
+          descriptor: "cap1",
+          followLive: true,
+          extent: 1000,
+          extentSignal: signal,
+          fetchPage,
+        }),
+      { initialProps: { signal: 0 } },
+    );
+    await flush();
+    const afterMount = fetchPage.mock.calls.length;
+
+    // Mark stale, then step to just under the configured interval: the
+    // throttle must not have fired yet.
+    rerender({ signal: 1 });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(fetchPage.mock.calls.length).toBe(afterMount);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(150);
+    });
+    expect(fetchPage.mock.calls.length).toBeGreaterThan(afterMount);
   });
 });

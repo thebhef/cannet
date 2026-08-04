@@ -123,6 +123,10 @@ const mockValueTables: Record<string, { raw: number; label: string }[]> = {};
 // `mergeSeries`'s sample-and-hold. Unset signals fall back to the
 // default numeric fixture. Prefixed `mock` for the hoisted factory.
 const mockSampleSeries: Record<string, { t: number[]; v: number[] }> = {};
+/// Settings the fake host serves from `get_settings`. Empty means "every
+/// field at its default"; a test that cares sets a key and re-hydrates.
+const mockSettings: Record<string, unknown> = {};
+
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: { signals?: unknown[]; signalName?: string }) => {
     if (cmd === "list_signals") return SIGNALS;
@@ -141,6 +145,7 @@ vi.mock("@tauri-apps/api/core", () => ({
       // sampled values' min/max so follow-live auto-norm has a range.
       return (args?.signals ?? []).map(() => ({ lo: 10, hi: 20 }));
     if (cmd === "list_value_tables") return mockValueTables[args?.signalName ?? ""] ?? [];
+    if (cmd === "get_settings") return { ...mockSettings };
     return undefined;
   }),
 }));
@@ -176,6 +181,7 @@ import { SignalCatalogProvider } from "./signalCatalogContext";
 import { wheelColor } from "./palette";
 import { freshTrace } from "./trace";
 import { diagCounts } from "./diag";
+import { hydrateSettings } from "./hostSettings";
 
 class FakeResizeObserver {
   observe() {}
@@ -401,6 +407,8 @@ afterEach(() => {
   for (const k of Object.keys(mockSampleSeries)) delete mockSampleSeries[k];
   mockSampleBounds.from = 0;
   mockSampleBounds.last = 2;
+  for (const k of Object.keys(mockSettings)) delete mockSettings[k];
+  void hydrateSettings();
 });
 
 describe("PlotPanel", () => {
@@ -1752,6 +1760,43 @@ describe("PlotPanel diagnostic readouts", () => {
         // An area re-renders for its own side-panel values, and for
         // nothing else — no cross-area fan-out.
         expect(counter("render.PlotArea") - before.area).toBeLessThanOrEqual(resamples + 4);
+      } finally {
+        clock.mockRestore();
+        clearInterval(growing);
+      }
+    });
+  });
+
+  it("paces the fetch loop from the plot fetch interval setting", async () => {
+    // Task 44's Tier 4: the plot's fetch cadence is a `settings.json`
+    // field, not the per-panel toolbar control that was removed. The
+    // test above measures the default (67 ms, so >= 10 fetches in a
+    // second); this one raises the interval and the round-trips have
+    // to actually thin out. The redraw path is untouched — it stays on
+    // rAF — so only the fetch count moves.
+    await withSizedCanvas(async () => {
+      mockSettings.plot_fetch_interval_ms = 300;
+      await hydrateSettings();
+      renderPanel();
+      await pickCombobox(
+        screen.getByLabelText("add signal to focused plot area"),
+        "*|s:256:EngineSpeed",
+      );
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 400));
+      });
+      const growing = setInterval(() => {
+        mockSampleBounds.last += 0.05;
+      }, 20);
+      const clock = jitteryClock();
+      try {
+        const before = counter("plotarea.resample");
+        await outsideAct(() => new Promise((r) => setTimeout(r, 1000)));
+        const resamples = counter("plotarea.resample") - before;
+        // ~3 at 300 ms; the loop is self-paced, so it can only be
+        // slower. Well clear of the >= 10 the default produces.
+        expect(resamples).toBeGreaterThanOrEqual(1);
+        expect(resamples).toBeLessThanOrEqual(6);
       } finally {
         clock.mockRestore();
         clearInterval(growing);

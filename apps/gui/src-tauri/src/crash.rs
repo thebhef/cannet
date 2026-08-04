@@ -64,14 +64,35 @@ pub const LOG_FILE: &str = "cannet.log";
 /// Rotate the log once it passes this size: the current file is renamed
 /// to `cannet.log.1` (one generation kept) and a fresh one started, so
 /// disk use is bounded to ~2× this.
-const LOG_CAP_BYTES: u64 = 5 * 1024 * 1024;
+fn log_cap_bytes() -> u64 {
+    crate::settings::effective().log_rotation_bytes
+}
 
 /// How often [`spawn_health_recorder`] emits a resource sample. Each
 /// sample walks the whole system process table (see [`read_memory`]),
 /// which is far too expensive to repeat every second for a trail whose
 /// job is spotting slow trends — a leak or an approaching OOM shows up
 /// just as clearly at this cadence, for a twentieth of the cost.
-const HEALTH_INTERVAL: Duration = Duration::from_secs(20);
+/// How long the health thread parks between checks while sampling is
+/// switched off (`health_sample_interval_ms == 0`), so switching it back
+/// on takes effect without a relaunch. Nothing but the check itself
+/// happens on these wakeups.
+const HEALTH_DISABLED_POLL: Duration = Duration::from_secs(5);
+
+/// Cadence of the health sample, from `settings.json`
+/// (`health_sample_interval_ms`), or `None` when sampling is off.
+fn health_interval() -> Option<Duration> {
+    health_interval_from(crate::settings::effective().health_sample_interval_ms)
+}
+
+/// The settings value read as a cadence, split out from the read so the
+/// "`0` is off" rule is testable without touching global state.
+fn health_interval_from(ms: u64) -> Option<Duration> {
+    match ms {
+        0 => None,
+        ms => Some(Duration::from_millis(ms)),
+    }
+}
 
 /// Serializes writes from the many threads that log concurrently (pump,
 /// recorder, command handlers) so their lines don't interleave.
@@ -161,7 +182,7 @@ pub fn persist_message(msg: &SystemMessage) {
 /// rotating first if needed. Errors are swallowed.
 fn persist_block(block: &str) {
     let _guard = WRITE_LOCK.lock();
-    let _ = append_block(&log_dir(), LOG_FILE, LOG_CAP_BYTES, block);
+    let _ = append_block(&log_dir(), LOG_FILE, log_cap_bytes(), block);
 }
 
 /// Install the process-wide panic hook, chaining the previous one so
@@ -184,13 +205,13 @@ pub fn install_panic_hook() {
         // Bypass WRITE_LOCK on this terminal path: if the panicking
         // thread already held it we'd deadlock. A rare interleave with a
         // concurrent line is an acceptable price during a crash.
-        let _ = append_block(&log_dir(), LOG_FILE, LOG_CAP_BYTES, &block);
+        let _ = append_block(&log_dir(), LOG_FILE, log_cap_bytes(), &block);
         previous(info);
     }));
 }
 
 /// Spawn the health recorder on a named OS thread (cadence:
-/// [`HEALTH_INTERVAL`]). It reads only
+/// [`health_interval`]). It reads only
 /// the cheap O(1) trace metrics plus process RSS and emits them as a
 /// System Message, so the sample lands in the ring, the panel, and the
 /// rolling log through the normal pipe. Debug level keeps it below the
@@ -216,7 +237,16 @@ pub fn spawn_health_recorder(app: AppHandle) {
     let _ = std::thread::Builder::new()
         .name("cannet-health-recorder".into())
         .spawn(move || loop {
-            std::thread::sleep(HEALTH_INTERVAL);
+            // Re-read each time round, so a change takes effect without
+            // a relaunch — including switching sampling off entirely.
+            let Some(interval) = health_interval() else {
+                std::thread::sleep(HEALTH_DISABLED_POLL);
+                continue;
+            };
+            std::thread::sleep(interval);
+            if health_interval().is_none() {
+                continue; // switched off while we slept
+            }
             let state: tauri::State<'_, AppState> = app.state();
             let trace_len = state.trace_store.len();
             let buffer_seconds = state.trace_store.buffer_seconds();
@@ -749,10 +779,19 @@ mod tests {
     }
 
     #[test]
+    fn a_health_interval_of_zero_turns_sampling_off() {
+        // The row's argument for the knob: the sample walks the whole
+        // process table, so a user on a loaded machine "may want it
+        // off". Zero is that switch, not a zero-length sleep.
+        assert_eq!(health_interval_from(0), None);
+        assert_eq!(health_interval_from(20_000), Some(Duration::from_secs(20)));
+    }
+
+    #[test]
     fn append_block_accumulates_across_calls() {
         let dir = tempfile::tempdir().unwrap();
-        append_block(dir.path(), LOG_FILE, LOG_CAP_BYTES, "first\n").unwrap();
-        append_block(dir.path(), LOG_FILE, LOG_CAP_BYTES, "second\n").unwrap();
+        append_block(dir.path(), LOG_FILE, log_cap_bytes(), "first\n").unwrap();
+        append_block(dir.path(), LOG_FILE, log_cap_bytes(), "second\n").unwrap();
         let body = std::fs::read_to_string(dir.path().join(LOG_FILE)).unwrap();
         assert_eq!(body, "first\nsecond\n");
     }

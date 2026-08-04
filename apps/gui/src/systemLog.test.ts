@@ -1,10 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { SystemMessage } from "./types";
-import {
+
+// The mirror's cap is the `system_log_ring_capacity` setting — the same
+// number that bounds the host ring — so these tests need a host to
+// hydrate it from.
+let stored: Record<string, unknown> = {};
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(async (cmd: string) => (cmd === "get_settings" ? { ...stored } : null)),
+}));
+
+const {
   EMPTY_SYSTEM_LOG_MIRROR,
-  SYSTEM_LOG_MIRROR_CAPACITY,
-  type SystemLogMirror,
   applySystemLogFilter,
   clearSystemLogMirror,
   distinctSources,
@@ -13,7 +20,16 @@ import {
   mergeSystemMessage,
   reconcileSnapshot,
   unreadWarnOrError,
-} from "./systemLog";
+} = await import("./systemLog");
+type SystemLogMirror = import("./systemLog").SystemLogMirror;
+const { defaultSettings, hydrateSettings } = await import("./hostSettings");
+
+const SYSTEM_LOG_MIRROR_CAPACITY = defaultSettings().system_log_ring_capacity;
+
+beforeEach(async () => {
+  stored = {};
+  await hydrateSettings();
+});
 
 const msg = (
   seq: number,
@@ -107,6 +123,19 @@ describe("mergeSystemMessage", () => {
     expect(mirror.messages[mirror.messages.length - 1].seq).toBe(
       SYSTEM_LOG_MIRROR_CAPACITY + 49,
     );
+  });
+
+  it("caps at the configured ring depth, not a hard-coded one", async () => {
+    // Raising `system_log_ring_capacity` makes more of a long session
+    // reachable in the panel, which only works if the mirror follows
+    // the same number the host ring uses.
+    stored = { system_log_ring_capacity: 4 };
+    await hydrateSettings();
+    let mirror = EMPTY_SYSTEM_LOG_MIRROR;
+    for (let seq = 0; seq < 10; seq++) {
+      mirror = mergeSystemMessage(mirror, msg(seq, "dbc", "info"));
+    }
+    expect(mirror.messages.map((m) => m.seq)).toEqual([6, 7, 8, 9]);
   });
 
   it("tracks the unread warn/error tally as it appends", () => {

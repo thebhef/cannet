@@ -37,18 +37,40 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
-/// Capacity of the in-process ring. Comfortably larger than any
-/// realistic per-session message volume but small enough that a worst-
-/// case dump (every entry copied into one IPC response) stays cheap.
-pub const RING_CAPACITY: usize = 4096;
-
 /// Rate-limiter window. A `(source, template)` pair contributes at
-/// most [`RATE_LIMIT_BURST`] messages inside one window.
+/// most [`burst_budget`] messages inside one window.
+///
+/// The window stays a constant while the *budget* is a setting: the
+/// budget is the number a user reasons about ("how many identical
+/// messages per second"), and making both adjustable would express one
+/// rate two ways.
 const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(1);
-/// Burst budget per `(source, template)` per window. Past this, a
-/// short suppression note is recorded once and further duplicates are
-/// silently dropped until the window rolls over.
-const RATE_LIMIT_BURST: usize = 5;
+
+/// Capacity of the in-process ring, from `settings.json`
+/// (`system_log_ring_capacity`). The oldest entry is evicted past this;
+/// the frontend mirror reads the same setting, so the two agree without
+/// a hand-kept copy of the number on either side.
+fn ring_capacity() -> usize {
+    usize::try_from(crate::settings::effective().system_log_ring_capacity).unwrap_or(usize::MAX)
+}
+
+/// Burst budget per `(source, template)` per [`RATE_LIMIT_WINDOW`], from
+/// `settings.json` (`system_log_rate_limit`). Past it, a short
+/// suppression note is recorded once and further duplicates are silently
+/// dropped until the window rolls over. **`0` means no limit** —
+/// diagnosing a message flood is exactly when you want all of it.
+fn burst_budget() -> Option<usize> {
+    budget_from(crate::settings::effective().system_log_rate_limit)
+}
+
+/// The settings value read as a budget, split out from the read so the
+/// "`0` is no limit" rule is testable without touching global state.
+fn budget_from(raw: u64) -> Option<usize> {
+    match raw {
+        0 => None,
+        n => Some(usize::try_from(n).unwrap_or(usize::MAX)),
+    }
+}
 
 /// Severity of a system message. Maps onto the panel's level-filter
 /// dropdown, which defaults to `Info` — a session's worth of user
@@ -112,7 +134,7 @@ struct Inner {
     /// usually just the message (the call sites that need a real
     /// template separator can pass one explicitly via
     /// [`SystemLog::push_with_template`]). The deque holds the last
-    /// [`RATE_LIMIT_BURST`] push times within the current
+    /// [`burst_budget`] push times within the current
     /// [`RATE_LIMIT_WINDOW`]; older entries are pruned on each push.
     recent: std::collections::HashMap<(String, String), VecDeque<Instant>>,
 }
@@ -122,7 +144,7 @@ impl SystemLog {
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(Inner {
-                ring: VecDeque::with_capacity(RING_CAPACITY),
+                ring: VecDeque::with_capacity(ring_capacity()),
                 next_seq: 0,
                 recent: std::collections::HashMap::new(),
             }),
@@ -166,14 +188,16 @@ impl SystemLog {
         {
             times.pop_front();
         }
-        let suppressed = times.len() >= RATE_LIMIT_BURST;
+        let capacity = ring_capacity();
+        let budget = burst_budget();
+        let suppressed = budget.is_some_and(|b| times.len() >= b);
         times.push_back(now);
         let ts_ms = current_unix_ms();
         if suppressed {
             // First suppression in this window emits a single note so
             // the panel doesn't go silent under a flood; further drops
             // are invisible until the window rolls.
-            if times.len() == RATE_LIMIT_BURST + 1 {
+            if budget.is_some_and(|b| times.len() == b + 1) {
                 let note = SystemMessage {
                     seq: inner.next_seq,
                     ts_ms,
@@ -184,7 +208,7 @@ impl SystemLog {
                     ),
                 };
                 inner.next_seq += 1;
-                push_ring(&mut inner.ring, note.clone());
+                push_ring(&mut inner.ring, capacity, note.clone());
                 return Some(note);
             }
             return None;
@@ -197,7 +221,7 @@ impl SystemLog {
             message,
         };
         inner.next_seq += 1;
-        push_ring(&mut inner.ring, entry.clone());
+        push_ring(&mut inner.ring, capacity, entry.clone());
         Some(entry)
     }
 
@@ -235,8 +259,15 @@ impl Default for SystemLog {
     }
 }
 
-fn push_ring(ring: &mut VecDeque<SystemMessage>, msg: SystemMessage) {
-    if ring.len() == RING_CAPACITY {
+/// Append `msg`, evicting from the front until the ring is within
+/// `capacity`. `capacity` is a parameter rather than a read of the
+/// setting so the eviction rule is testable on its own.
+///
+/// A loop against `>=`, not a single `==` check: lowering the capacity
+/// setting mid-session leaves an over-long ring that has to shrink back
+/// rather than stay stuck at its old size.
+fn push_ring(ring: &mut VecDeque<SystemMessage>, capacity: usize, msg: SystemMessage) {
+    while ring.len() >= capacity.max(1) {
         ring.pop_front();
     }
     ring.push_back(msg);
@@ -383,10 +414,21 @@ mod tests {
         );
     }
 
+    /// The values the tests below run at — the defaults, since a test
+    /// never hydrates the settings cache and `effective()` answers
+    /// `Settings::default()` until something does.
+    fn default_ring_capacity() -> usize {
+        usize::try_from(crate::settings::Settings::default().system_log_ring_capacity).unwrap()
+    }
+    fn default_rate_limit() -> usize {
+        usize::try_from(crate::settings::Settings::default().system_log_rate_limit).unwrap()
+    }
+
     #[test]
     fn ring_evicts_oldest_at_capacity() {
+        let ring_capacity = default_ring_capacity();
         let log = SystemLog::new();
-        for i in 0..(RING_CAPACITY + 10) {
+        for i in 0..(ring_capacity + 10) {
             log.push_with_template(
                 "test",
                 LogLevel::Info,
@@ -394,23 +436,64 @@ mod tests {
                 format!("msg {i}"),
             );
         }
-        assert_eq!(log.len(), RING_CAPACITY);
+        assert_eq!(log.len(), ring_capacity);
         let snap = log.snapshot();
         // Oldest 10 entries were evicted.
         assert_eq!(snap.first().unwrap().message, format!("msg 10"));
         assert_eq!(
             snap.last().unwrap().message,
-            format!("msg {}", RING_CAPACITY + 9),
+            format!("msg {}", ring_capacity + 9),
         );
+    }
+
+    #[test]
+    fn a_rate_limit_of_zero_means_no_limit() {
+        // The setting's stated purpose: "debugging a message flood is
+        // exactly when you want the limiter off". Zero is that switch,
+        // and it must not read as "suppress everything".
+        assert_eq!(budget_from(0), None);
+        assert_eq!(budget_from(1), Some(1));
+        assert_eq!(budget_from(5), Some(5));
+    }
+
+    #[test]
+    fn the_ring_shrinks_to_a_lowered_capacity() {
+        // Capacity is a setting now, so it can drop under a ring that
+        // is already longer. Evicting only one entry per push would
+        // leave it stuck above the new limit for as long as it took to
+        // push that many more messages.
+        let mut ring = VecDeque::new();
+        for i in 0..6u64 {
+            push_ring(&mut ring, 6, msg(i));
+        }
+        assert_eq!(ring.len(), 6, "a capacity of six holds six");
+        push_ring(&mut ring, 2, msg(99));
+        assert_eq!(ring.len(), 2);
+        assert_eq!(ring.back().unwrap().message, "msg 99");
+        // A capacity of zero cannot mean "drop the message being
+        // pushed" — the floor is one entry.
+        push_ring(&mut ring, 0, msg(100));
+        assert_eq!(ring.len(), 1);
+        assert_eq!(ring.back().unwrap().message, "msg 100");
+    }
+
+    fn msg(i: u64) -> SystemMessage {
+        SystemMessage {
+            seq: i,
+            ts_ms: 0,
+            source: "test".into(),
+            level: LogLevel::Info,
+            message: format!("msg {i}"),
+        }
     }
 
     #[test]
     fn rate_limiter_caps_duplicates_in_a_window() {
         let log = SystemLog::new();
-        // RATE_LIMIT_BURST pushes succeed; the very next push records
-        // one suppression note (Warn) and then further pushes return
-        // None until the window rolls.
-        for _ in 0..RATE_LIMIT_BURST {
+        // The budget's worth of pushes succeed; the very next push
+        // records one suppression note (Warn) and then further pushes
+        // return None until the window rolls.
+        for _ in 0..default_rate_limit() {
             assert!(log.push("dbc", LogLevel::Error, "boom").is_some());
         }
         let note = log
@@ -499,7 +582,7 @@ mod tests {
     #[test]
     fn template_separates_rate_limit_buckets() {
         let log = SystemLog::new();
-        for i in 0..RATE_LIMIT_BURST {
+        for i in 0..default_rate_limit() {
             log.push_with_template("project", LogLevel::Info, "tpl-A", format!("variant {i}"));
         }
         // Same template, distinct message text — still rate-limited.

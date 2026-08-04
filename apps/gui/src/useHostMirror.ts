@@ -15,6 +15,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
+import { useSetting } from "./hostSettings";
+
 export interface UseHostMirrorOptions<T, P = unknown> {
   /// Fetch one snapshot from the host. Memoize this (`useCallback`) —
   /// its identity gates the listener-registration effect, so a fresh
@@ -28,12 +30,16 @@ export interface UseHostMirrorOptions<T, P = unknown> {
   /// element-scoped event: `payload === elementId || payload === "*"`).
   /// Omit to always refetch on `event`.
   matches?: (payload: P) => boolean;
-  /// Re-fetch every `pollIntervalMs` while this returns true for the
+  /// Re-fetch every poll interval while this returns true for the
   /// latest snapshot (e.g. "some entry is running"). Evaluated fresh
   /// each render but only its boolean *result* gates the poll
   /// effect's dependency, so the interval isn't torn down and rebuilt
   /// on every tick — only when the result actually flips.
   pollWhile?: (value: T) => boolean;
+  /// Spacing between poll ticks. Defaults to the app-wide view refresh
+  /// cadence (`view_refresh_interval_ms`) — a host mirror going stale
+  /// in place is the same "keep up with the host" job the paged views
+  /// do, and it used to carry its own separate number for it.
   pollIntervalMs?: number;
 }
 
@@ -48,8 +54,10 @@ export function useHostMirror<T, P = unknown>({
   event,
   matches,
   pollWhile,
-  pollIntervalMs = 500,
+  pollIntervalMs,
 }: UseHostMirrorOptions<T, P>): UseHostMirrorResult<T> {
+  const configuredPollMs = useSetting("view_refresh_interval_ms");
+  const pollMs = pollIntervalMs ?? configuredPollMs;
   const [value, setValue] = useState<T>(fallback);
 
   // `fallback`/`matches` are read through refs rather than made
@@ -91,9 +99,9 @@ export function useHostMirror<T, P = unknown>({
   const shouldPoll = pollWhileRef.current?.(value) ?? false;
   useEffect(() => {
     if (!shouldPoll) return;
-    const timer = window.setInterval(refresh, pollIntervalMs);
+    const timer = window.setInterval(refresh, pollMs);
     return () => window.clearInterval(timer);
-  }, [shouldPoll, pollIntervalMs, refresh]);
+  }, [shouldPoll, pollMs, refresh]);
 
   return { value, refresh };
 }

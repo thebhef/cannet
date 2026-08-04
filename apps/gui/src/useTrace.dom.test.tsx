@@ -15,6 +15,7 @@ import { ElementRegistryContext, type ElementRegistry } from "./projectElements"
 import { TraceDataProvider, type TraceData } from "./traceData";
 import type { TraceFrameRecord } from "./types";
 import { freshTrace, useTrace } from "./trace";
+import { PAGE_ROWS } from "./useWindowedQuery";
 
 function harness(rows: boolean) {
   const fetchRange = vi.fn(async (): Promise<TraceFrameRecord[]> => []);
@@ -60,7 +61,7 @@ describe("useTrace", () => {
 
     await waitFor(() => expect(fetchRange).toHaveBeenCalled());
 
-    expect(fetchRange).toHaveBeenCalledWith(0, 1_000);
+    expect(fetchRange).toHaveBeenCalledWith(0, PAGE_ROWS);
   });
 
   it("reports the same window either way", async () => {

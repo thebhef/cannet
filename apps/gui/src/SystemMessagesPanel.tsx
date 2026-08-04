@@ -3,8 +3,8 @@ import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
 
 import { Combobox } from "./Combobox";
+import { hostSettings, subscribeSettings, updateSettings } from "./hostSettings";
 import {
-  DEFAULT_MIN_LEVEL,
   applySystemLogFilter,
   distinctSources,
   formatLogLine,
@@ -26,7 +26,6 @@ const OVERSCAN = 6;
 
 interface PanelParams {
   filterSource?: string;
-  minLevel?: SystemLogLevel;
 }
 
 /**
@@ -35,9 +34,16 @@ interface PanelParams {
  * columns. Filterable by source and by minimum level (default `info`
  * — what the user's actions produced; drop to `debug` for the app's
  * internal breadcrumbs).
- * Per-panel filter state lives in dockview `params`; the bus itself
- * lives in the host (`src-tauri/src/system_log.rs`) and is delivered
- * to the frontend by `fetch_system_log` plus incremental
+ *
+ * The two filters sit in different places on purpose. The **source**
+ * filter is view-local and lives in dockview `params`. The **minimum
+ * level** is a preference that outlives the panel, so it is the
+ * `system_log_min_level` setting (ADR 0034): this combobox is that
+ * setting's editor, and a level chosen here survives closing and
+ * reopening the panel.
+ *
+ * The bus itself lives in the host (`src-tauri/src/system_log.rs`) and
+ * is delivered to the frontend by `fetch_system_log` plus incremental
  * `system-log-appended` events.
  */
 export function SystemMessagesPanel(props: IDockviewPanelProps) {
@@ -47,12 +53,26 @@ export function SystemMessagesPanel(props: IDockviewPanelProps) {
   const params = props.params as PanelParams | undefined;
   const [filterSource, setFilterSource] = useState(params?.filterSource ?? "");
   const [minLevel, setMinLevel] = useState<SystemLogLevel>(
-    params?.minLevel ?? DEFAULT_MIN_LEVEL,
+    () => hostSettings().system_log_min_level,
   );
 
+  // Follow a level set anywhere else — the settings panel, or a
+  // hand-edit picked up by a re-hydrate.
+  useEffect(
+    () => subscribeSettings((s) => setMinLevel(s.system_log_min_level)),
+    [],
+  );
+
+  const chooseLevel = useCallback((level: SystemLogLevel) => {
+    setMinLevel(level);
+    void updateSettings({ system_log_min_level: level }).catch(() => {
+      /* host logs the failure; the in-memory level still holds */
+    });
+  }, []);
+
   useEffect(() => {
-    api.updateParameters({ filterSource, minLevel });
-  }, [api, filterSource, minLevel]);
+    api.updateParameters({ filterSource });
+  }, [api, filterSource]);
 
   // Focusing the panel marks every current warn/error as read so the
   // toolbar badge clears. Triggered on mount and any time the panel's
@@ -146,7 +166,7 @@ export function SystemMessagesPanel(props: IDockviewPanelProps) {
           <Combobox
             options={MIN_LEVEL_OPTIONS}
             value={minLevel}
-            onChange={(v) => setMinLevel(v as SystemLogLevel)}
+            onChange={(v) => chooseLevel(v as SystemLogLevel)}
           />
         </label>
         <button type="button" onClick={copyAll} disabled={filtered.length === 0}>
