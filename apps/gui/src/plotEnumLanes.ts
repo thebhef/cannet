@@ -44,6 +44,25 @@ export function laneBands(count: number, gapFraction = DEFAULT_GAP_FRACTION): Ba
   return bands;
 }
 
+/** Lane bands for a signal list in which some signals are hidden.
+ *
+ * A hidden signal drops out of the lane layout entirely: the visible
+ * lanes are laid out as if it were not there, so hiding one gives the
+ * rest more room rather than leaving a reserved gap. Returns one entry
+ * per input signal, in input order — the band a visible signal
+ * occupies, or `null` for a hidden one (which draws nothing). All
+ * hidden → all `null`, and no lane band is computed at all. */
+export function laneBandsForVisible(
+  hidden: readonly boolean[],
+  gapFraction = DEFAULT_GAP_FRACTION,
+): (Band | null)[] {
+  let visible = 0;
+  for (const h of hidden) if (!h) visible++;
+  const bands = laneBands(visible, gapFraction);
+  let next = 0;
+  return hidden.map((h) => (h ? null : bands[next++]));
+}
+
 /** The padded raw-value range for a lane: the table's raw min/max, each
  * pushed out half a code so the extreme codes sit inside the band
  * rather than on its edge. Empty table → a unit fallback so the lane

@@ -246,18 +246,29 @@ and "publishes the columns' total width to the rows' scrolled content"
 in `TraceView.anchor.dom.test.tsx` / `ByIdTable.dom.test.tsx`. That the
 two halves combine into an actual scrollbar is only visible in Chromium.
 
-## 10. Hidden enum lanes still occupy vertical space
+## 10. Hidden enum lanes still occupy vertical space — **done**
 
-The enum-overlay twin of item 8. Hiding an enum signal leaves its lane
-occupying its share of the enum window's height, so hiding a signal
-does not give the remaining lanes any more room. Hidden signals should
-drop out of the lane layout entirely, the same way item 8 asks for them
-to drop out of the y-limit computation.
+Same *shape* as item 8 (a hidden signal participating in a layout it
+should be excluded from) but **its own bug, in its own code** — the two
+were reproduced separately and fixed separately. Here: the lane
+geometry took `laneBands(signals.length)` and indexed it by the
+signal's position in the full list, so a hidden lane kept its slot.
+Measured: with three enums and the middle one hidden, the survivors
+stayed on three-lane geometry (code 0 at `0.7389` rather than the
+two-lane `0.6083`).
 
-Likely one fix with item 8 — both are "hidden signals still participate
-in a layout computation they should be excluded from" — but the lane
-band arithmetic (`plotEnumLanes`) and the y-extent path are separate
-code, so confirm before merging the work.
+Fixed with `laneBandsForVisible` (`plotEnumLanes`), which lays the
+bands out over the visible signals and returns `null` for a hidden one.
+Both consumers use it: the resample that normalises each enum into its
+band, and the tile draw hook — which now reads the signal list through
+a live ref, since toggling `hidden` deliberately doesn't rebuild the
+uPlot instance and a construction-time capture would have drawn the old
+lane layout over re-flowed data.
+
+Guarded by the `laneBandsForVisible` cases in `plotEnumLanes.test.ts`
+(including all-hidden, which computes no bands at all) and "enum lanes:
+hiding a lane hands its vertical space to the rest" in
+`PlotPanel.dom.test.tsx`.
 
 ## 11. Filters cannot be edited once added
 

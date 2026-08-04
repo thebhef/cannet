@@ -72,6 +72,9 @@ vi.mock("uplot/dist/uPlot.min.css", () => ({}));
 const SIGNALS = [
   { message_id: 256, extended: false, message_name: "EngineData", transmitter: "EngineEcu", signal_name: "EngineSpeed", unit: "rpm" },
   { message_id: 256, extended: false, message_name: "EngineData", transmitter: "EngineEcu", signal_name: "EngineTemp", unit: "degC" },
+  // A third signal, so the enum-lane tests have three lanes to hide the
+  // middle one of.
+  { message_id: 256, extended: false, message_name: "EngineData", transmitter: "EngineEcu", signal_name: "LimitNominal", unit: "A" },
 ];
 /** The window anchors `sample_signals` reports alongside the series:
  * `from` is the window's first-frame time and `last` its last-frame time
@@ -1363,6 +1366,12 @@ describe("PlotArea y-normalisation", () => {
     if (mode) await pickCombobox(screen.getByLabelText("y-axis mode"), mode);
   }
 
+  /** Click the hide swatch on `name`'s side-panel row. */
+  function hideSignal(name: string) {
+    const row = screen.getByText(name).closest(".plot-signal-row")!;
+    fireEvent.click(row.querySelector(".plot-signal-swatch")!);
+  }
+
   it("enum lanes: each signal is normalised into its own lane band", async () => {
     // Two 3-code enums on one per-unit area → a two-lane axis. Lane 0
     // (top) spans [0.5375, 0.9625], lane 1 spans [0.0375, 0.4625]; each
@@ -1467,6 +1476,40 @@ describe("PlotArea y-normalisation", () => {
         expect(data[2]?.[0]).toBeCloseTo(0, 6);
         expect(data[2]?.[1]).toBeCloseTo(1, 6);
         expect(data[2]?.[2]).toBeCloseTo(0.5, 6);
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it("enum lanes: hiding a lane hands its vertical space to the rest", async () => {
+    // Three enums on one per-unit area → a three-lane axis. Hide the
+    // middle one and the two survivors must re-flow onto a *two*-lane
+    // layout — the hidden lane's share of the axis height goes to them,
+    // it does not stay reserved.
+    mockValueTables.EngineSpeed = ENUM3;
+    mockValueTables.EngineTemp = ENUM3;
+    mockValueTables.LimitNominal = ENUM3;
+    for (const n of ["EngineSpeed", "EngineTemp", "LimitNominal"]) {
+      mockSampleSeries[n] = { t: [0, 1, 2], v: [0, 1, 2] };
+    }
+    const restore = stubSize();
+    try {
+      renderPanel();
+      await addSignals(["EngineSpeed", "EngineTemp", "LimitNominal"], "per-unit");
+      await waitFor(() => expect(document.querySelectorAll(".plot-area").length).toBe(1));
+      // Three lanes: lane 1 (the middle) centres on 0.5.
+      await waitForData((data) => expect(data[2]?.[1]).toBeCloseTo(0.5, 6));
+      hideSignal("EngineTemp");
+      // Two lanes: [0.5375, 0.9625] and [0.0375, 0.4625]; code 1 sits
+      // at the band midpoint, codes 0 / 2 at 1/6 and 5/6 of the band.
+      await waitForData((data) => {
+        expect(data[1]?.[0]).toBeCloseTo(0.6083333, 6);
+        expect(data[1]?.[1]).toBeCloseTo(0.75, 6);
+        expect(data[1]?.[2]).toBeCloseTo(0.8916667, 6);
+        expect(data[3]?.[0]).toBeCloseTo(0.1083333, 6);
+        expect(data[3]?.[1]).toBeCloseTo(0.25, 6);
+        expect(data[3]?.[2]).toBeCloseTo(0.3916667, 6);
       });
     } finally {
       restore();
