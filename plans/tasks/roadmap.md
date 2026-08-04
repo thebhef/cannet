@@ -57,29 +57,35 @@ the order below is the order of work, top first.
    plot-colour bug and the `decimatePoints` dead-code removal.
 8. [Task 22 — CANopen](0022-canopen.md)
    — EDS ingestion and SDO / PDO decoding.
-9. [Task 23 — Plot Measurements and Triggers](0023-plot-measurements-and-triggers.md)
-   — triggers, math channels, manual per-series y, export, drag a
-   plot area.
-10. [Task 27 — Live Disk-Watch for Project & RBS Files](0027-project-rbs-disk-watch.md)
+9. [Task 49 — Multi-Select Signals in the Plot Panel](0049-plot-signal-multi-select.md)
+   — hide, remove, recolour and add several of a plot area's signals at
+   once. Split out of task 48's item 14 once it proved to need a
+   selection model threaded through the signal rows, the derived axes
+   and the pattern-materialization path. Ahead of task 23 so its
+   per-series features can act on a selection that already exists.
+10. [Task 23 — Plot Measurements and Triggers](0023-plot-measurements-and-triggers.md)
+    — triggers, math channels, manual per-series y, export, drag a
+    plot area between panels.
+11. [Task 27 — Live Disk-Watch for Project & RBS Files](0027-project-rbs-disk-watch.md)
     — generalize the DBC auto-reload watcher to project (`.cannet_prj`)
     and RBS (`.cannet_rbs`) files so external edits are picked up
     automatically.
-11. [Task 28 — RBS External Value-Source Binding](0028-rbs-external-value-source.md)
+12. [Task 28 — RBS External Value-Source Binding](0028-rbs-external-value-source.md)
     — cannet connects out to a value-source server that streams sparse
     `(signal, value)` updates by name; RBS applies them as overrides and
     keeps its own cadence/CRC/counters. Lets an external, out-of-repo sim
     (e.g. an EV drive cycle) drive the RBS.
-12. [Task 38 — MDF (MF4) Logger-File Import](0038-mdf-import.md)
+13. [Task 38 — MDF (MF4) Logger-File Import](0038-mdf-import.md)
     — import ASAM MDF 4.x bus-logging files (CANedge, Vector loggers)
     through the existing `CanFrameSource` seam; library
     evaluate-dependency pass is the blocking prerequisite. Signal-shape
     MF4 and MF4 export are explicitly later.
-13. [Task 39 — Automotive Ethernet Signals](0039-ethernet-signals.md)
+14. [Task 39 — Automotive Ethernet Signals](0039-ethernet-signals.md)
     — staged: pcapng import (CAN linktypes, no model change), step/hold
     plot semantics for on-change series, then the multi-protocol trace
     model and ARXML/FIBEX-described SOME/IP + signal-PDU decode.
     Research detail in [`0039-ethernet-signals/`](0039-ethernet-signals/).
-14. [Task 40 — bridge_client / cannet-client Session-Machinery
+15. [Task 40 — bridge_client / cannet-client Session-Machinery
     Consolidation](0040-bridge-client-consolidation.md) — gated on
     cannet-client growing a subscribe-timeout / dynamic-allocation
     capability; split out from task 30's item #9 once everything else

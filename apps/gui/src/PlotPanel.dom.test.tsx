@@ -401,6 +401,24 @@ function dropSignal(areaLabel: string, signalName: string, unit: string) {
   fireEvent.drop(area, { dataTransfer: dt });
 }
 
+/// One `DataTransfer` stand-in for a plot-area drag gesture: dragStart
+/// writes the dragged area's id onto it and the drop target reads it
+/// back, so every event in the gesture must be handed the *same* object.
+function areaDragTransfer() {
+  const store = new Map<string, string>();
+  const types: string[] = [];
+  return {
+    types,
+    setData(t: string, v: string) {
+      store.set(t, v);
+      if (!types.includes(t)) types.push(t);
+    },
+    getData: (t: string) => store.get(t) ?? "",
+    dropEffect: "",
+    effectAllowed: "",
+  };
+}
+
 /// Let React render the way it does in the app — batched per update,
 /// not collected into an `act` scope. Render *cadence* is only
 /// measurable outside `act`, which flushes everything queued in its
@@ -472,6 +490,38 @@ describe("PlotPanel", () => {
     fireEvent.click(screen.getAllByTitle("remove this plot area")[1]);
     expect(screen.queryByText("Area 2")).not.toBeInTheDocument();
     expect(screen.queryAllByTitle("remove this plot area").length).toBe(0);
+  });
+
+  it("drag-reorders plot areas, carrying each area's signals with it", () => {
+    // Areas are labelled by position ("Area 1" is whichever is on top),
+    // so the reorder is observable through the *signals* each stacked
+    // area holds, not through its label.
+    renderPanel();
+    fireEvent.click(screen.getByRole("button", { name: "add plot area" }));
+    dropSignal("Area 1", "TopSignal", "rpm");
+    dropSignal("Area 2", "BottomSignal", "rpm");
+    const stackedSignal = () =>
+      Array.from(document.querySelectorAll(".plot-area")).map(
+        (el) => el.querySelector(".plot-signal-name")?.textContent,
+      );
+    expect(stackedSignal()).toEqual(["TopSignal", "BottomSignal"]);
+
+    // Drag the second area's grip onto the first — dragging up drops it
+    // above the target.
+    const grips = screen.getAllByLabelText("reorder plot area");
+    expect(grips.length).toBe(2);
+    const dt = areaDragTransfer();
+    fireEvent.dragStart(grips[1], { dataTransfer: dt });
+    const first = document.querySelectorAll(".plot-area")[0];
+    fireEvent.dragOver(first, { dataTransfer: dt });
+    fireEvent.drop(first, { dataTransfer: dt });
+
+    expect(stackedSignal()).toEqual(["BottomSignal", "TopSignal"]);
+  });
+
+  it("offers no reorder grip while a panel holds a single area", () => {
+    renderPanel();
+    expect(screen.queryAllByLabelText("reorder plot area").length).toBe(0);
   });
 
   it("groups picker options under transmitter-ECU and message headers", async () => {

@@ -1602,6 +1602,24 @@ button.trace-event-swatch {
   font-size: 0.66rem;
 }
 
+/* Drag handle for reordering a panel's plot areas. Only the grip is
+   draggable, so the head's own controls keep their pointer gestures. */
+.plot-area-grip {
+  color: #475569;
+  cursor: grab;
+  line-height: 1;
+  padding: 0 0.2rem 0 0;
+  user-select: none;
+}
+
+.plot-area-grip:hover {
+  color: #94a3b8;
+}
+
+.plot-area-grip:active {
+  cursor: grabbing;
+}
+
 .plot-area-remove,
 .plot-signal-remove {
   background: none;

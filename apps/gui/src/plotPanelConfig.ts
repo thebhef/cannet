@@ -141,6 +141,7 @@ export interface AxisHandlers {
   onSetYAxisMode: (mode: YAxisMode) => void;
   onFocus: () => void;
   onRemoveArea: () => void;
+  onReorderArea: (draggedAreaId: string) => void;
   onRemoveSignal: (key: string) => void;
   onDropSignal: (ref: SignalRef, beforeKey: string | null, isInternalMove: boolean) => void;
   onToggleHidden: (ref: SignalRef) => void;
@@ -278,6 +279,38 @@ export function areasFromParams(raw: unknown): PlotAreaConfig[] {
     if (out.length > 0) return out;
   }
   return [newPlotArea()];
+}
+
+/** Mime type a plot-area drag carries, holding the dragged area's id.
+ * Distinct from the signal drag's `SIGNAL_DND_MIME` (`dragSignals.ts`)
+ * so an area drag and a signal drag can share the same drop surface —
+ * the plot area — without either handler having to guess which gesture
+ * is in flight. */
+export const PLOT_AREA_DND_MIME = "application/x-cannet-plot-area";
+
+/** Move the area `draggedId` to where `targetId` currently sits — the
+ * whole of a plot-area drag-reorder. Ordering *is* the areas array (the
+ * panel renders and persists it in order), so a reorder is a pure
+ * permutation of it and nothing keyed by area id has to move with it.
+ *
+ * Insertion uses the target's index in the *original* list, so the
+ * dragged area lands where the pointer let go in both directions:
+ * dragging down puts it after the target, dragging up puts it before.
+ * A no-op (same area, or an id that isn't here) returns the input
+ * reference so the caller's `setState` bails out. */
+export function reorderAreas(
+  areas: PlotAreaConfig[],
+  draggedId: string,
+  targetId: string,
+): PlotAreaConfig[] {
+  if (draggedId === targetId) return areas;
+  const from = areas.findIndex((a) => a.id === draggedId);
+  const to = areas.findIndex((a) => a.id === targetId);
+  if (from < 0 || to < 0) return areas;
+  const next = areas.slice();
+  const [moved] = next.splice(from, 1);
+  next.splice(to, 0, moved);
+  return next;
 }
 
 export function cursorModeFromRaw(raw: unknown): CursorMode {

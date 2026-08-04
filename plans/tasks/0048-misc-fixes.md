@@ -423,17 +423,67 @@ Choices made:
   every draw, so the label reads the area's `liveRef` and rides the
   redraw the panel-level (rAF-coalesced) hover state already triggers.
 
-## 14. Multi-select signals in the plot panel
+## 14. Multi-select signals in the plot panel — **split out**
 
-**Only if it stays small.** Selecting several signals at once (add,
-hide, remove, recolour) rather than one at a time. If it turns out to
-need a selection model threaded through the panel, it is its own task —
-split it out rather than growing this one.
+It did not stay small, so it left this task per the condition it was
+written under: it is now
+[Task 49](0049-plot-signal-multi-select.md), in the roadmap ahead of
+task 23.
 
-## 15. Drag-reorder plot areas
+Assessed before any feature code was written. The item needs a
+selection model threaded through all three places the condition named:
+the signal rows (whose plain click already promotes a signal to
+primary, and whose swatch already owns both mouse buttons), the plot
+areas (in `per-unit` / `individual` mode a logical area's rows are
+split across several `PlotArea` instances, so a range selection spans
+sibling components), and the persisted per-area config (a bulk hide or
+recolour materializes pattern-derived rows into manual picks, which
+rewrites the stored signal list against the area's live patterns).
+There is also a re-render constraint: `PlotArea` is memoised and
+guarded by a test that panel-local state re-renders no area, so a
+per-click selection value has to be sliced per area. The new task file
+carries the reasoning, the design questions each of those raises, and
+the exit criteria.
 
-**Only if it stays small.** Same caveat as item 14: if it needs more
-than the existing area-ordering state, it becomes its own task.
+## 15. Drag-reorder plot areas — **done**
+
+It stayed small, because ordering was already first-class: a panel's
+`areas` is an ordered array that the render loop and the persisted
+config both take in order, and every other per-area fact (axis
+weights, Y cursors, sampled series, focus) is keyed by area id. So a
+reorder is a pure permutation of that one array and nothing has to be
+re-keyed, re-derived, or migrated — `reorderAreas` (`plotPanelConfig.ts`)
+is the whole model change.
+
+Choices made:
+
+- **A grip, not the whole heading.** The signal-panel head holds a
+  combobox and buttons, and a `draggable` ancestor eats their pointer
+  gestures — so only the `⠿` grip is draggable. It appears once per
+  *logical* area (the parent head, like the remove ×) and only once a
+  panel holds more than one area.
+- **Its own mime type** (`application/x-cannet-plot-area`, carrying the
+  dragged area's id) alongside the existing signal drag, so one drop
+  surface serves both gestures without either handler guessing which is
+  in flight.
+- **Drop lands where the pointer let go.** Insertion uses the target's
+  index in the *original* list, so dragging down puts the area after
+  the target and dragging up puts it before.
+- **No insertion marker.** Drawing one would mean a React commit per
+  `dragover` over a canvas whose resample loop is already paced against
+  its own render cost (item 12). The drag ghost and the "move" cursor
+  carry the affordance, and areas are large enough that the target is
+  unambiguous.
+
+Guarded by the `reorderAreas` cases in `plotPanelConfig.test.ts` (both
+directions, the same-reference no-op, config carried with the area) and
+"drag-reorders plot areas, carrying each area's signals with it" /
+"offers no reorder grip while a panel holds a single area" in
+`PlotPanel.dom.test.tsx` — which assert the resulting stack order, since
+jsdom does no layout.
+
+Moving a plot area *between panels* is a different feature and stays
+where it is, in task 23.
 
 ## 16. Process names do not say what they are
 
@@ -452,7 +502,8 @@ name, and the sidecar's process name.
 - Every item above is fixed or struck with a recorded reason, and this
   file is deleted when the list empties.
 - Each fix lands with a test that fails before it.
-- Items 14 and 15 are explicitly conditional: if either grows past a
-  small change, it leaves this task rather than expanding it.
+- Items 14 and 15 were explicitly conditional: if either grew past a
+  small change, it left this task rather than expanding it. Item 15
+  stayed small and shipped here; item 14 did not and became task 49.
 - Items 1, 8 and 10 touch plot behaviour that ADR 0026 governs; if a fix
   contradicts that ADR, the ADR changes in the same commit.

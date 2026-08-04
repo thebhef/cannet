@@ -18,6 +18,7 @@ const {
   measKeysFromRaw,
   newPlotArea,
   signalRefKey,
+  reorderAreas,
   signalsWidthFromRaw,
   withColor,
   yAxisModeFromRaw,
@@ -192,6 +193,40 @@ describe("formatters", () => {
     expect(fmtCount(42)).toBe("42");
     expect(fmtCount(1500)).toBe("1.5k");
     expect(fmtCount(2_500_000)).toBe("2.5M");
+  });
+});
+
+describe("reorderAreas", () => {
+  const ids = (as: { id: string }[]) => as.map((a) => a.id);
+  const list = () => areasFromParams([{ id: "a" }, { id: "b" }, { id: "c" }]);
+
+  it("drops a dragged area at the target's own position when dragging down", () => {
+    // a onto c: a comes out, then goes back in where c was — i.e. after
+    // c, which is where the pointer let go.
+    expect(ids(reorderAreas(list(), "a", "c"))).toEqual(["b", "c", "a"]);
+  });
+
+  it("drops a dragged area before the target when dragging up", () => {
+    expect(ids(reorderAreas(list(), "c", "a"))).toEqual(["c", "a", "b"]);
+    expect(ids(reorderAreas(list(), "b", "a"))).toEqual(["b", "a", "c"]);
+  });
+
+  it("returns the same list (same reference) for a no-op reorder", () => {
+    const before = list();
+    expect(reorderAreas(before, "b", "b")).toBe(before);
+    expect(reorderAreas(before, "zzz", "a")).toBe(before);
+    expect(reorderAreas(before, "a", "zzz")).toBe(before);
+  });
+
+  it("carries each area's own config with it", () => {
+    const areas = areasFromParams([
+      { id: "a", signals: [{ ...core }] },
+      { id: "b", patterns: ["rpm$"] },
+    ]);
+    const moved = reorderAreas(areas, "b", "a");
+    expect(moved[0].id).toBe("b");
+    expect(moved[0].patterns).toEqual(["rpm$"]);
+    expect(moved[1].signals[0].signalName).toBe("Speed");
   });
 });
 
