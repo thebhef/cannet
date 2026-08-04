@@ -92,6 +92,15 @@ pub struct SignalRecord {
     /// Physical value (raw * factor + offset).
     pub value: f64,
     pub unit: String,
+    /// True when the signal is a *raw field* — an unscaled
+    /// (`factor == 1`, `offset == 0`) integer with no unit and no enum
+    /// `VAL_` table, i.e. an id / serial / bit pattern rather than a
+    /// measurement. Views render these in hex; everything else stays
+    /// decimal (1000 rpm must not read as `0x3E8`). Whether a signal is
+    /// one is a DBC fact, so the host decides it and the frontend only
+    /// renders. Omitted from the wire when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub raw_field: bool,
     /// `VAL_` label matching this decoded value, if any. The trace
     /// view's decoded-signal lines render `<value> "<label>"` when
     /// this is present; otherwise just `<value>`.

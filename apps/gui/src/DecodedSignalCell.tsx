@@ -68,7 +68,7 @@ export function DecodedSignalCell({
         className="signal-value"
         style={tint ? { background: colorMapTint(tint) } : undefined}
       >
-        {formatSignalValueWithLabel(sig.value, sig.unit, sig.label)}
+        {formatSignalValueWithLabel(sig.value, sig.unit, sig.label, sig.raw_field)}
       </span>
     </div>
   );

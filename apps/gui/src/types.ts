@@ -12,6 +12,12 @@ export interface SignalRecord {
   name: string;
   value: number;
   unit: string;
+  /// True when the host classed this signal as a *raw field* — an
+  /// unscaled, unitless integer with no enum `VAL_` table, i.e. an id /
+  /// serial / bit pattern. Views render those in hex. Absent means
+  /// false; the predicate is the host's to compute, never re-derived
+  /// here from the value.
+  raw_field?: boolean;
   /// `VAL_` label matching this decoded value, if the DBC defines one.
   /// Trace rows render `<value> "<label>"` when present.
   label?: string | null;

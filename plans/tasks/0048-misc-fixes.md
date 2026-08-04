@@ -35,33 +35,35 @@ reload, make the first sample cheap, or show progress rather than a
 blank canvas. Measure before choosing — the cost has not been attributed
 to a specific stage.
 
-## 3. Integer signals render in scientific notation
+## 3. Integer signals render in scientific notation — **done**
 
-A `uint64` signal displays as scientific notation. Signals whose type is
-a signed or unsigned integer should render as **hex**, not as a float.
+Two changes, both landed:
 
-**Decided — hex applies to raw fields only.** A literal reading ("every
-integer-typed signal") would hex every non-float DBC signal, so an engine
-speed of 1000 rpm would read `0x3E8`. The rule instead is: render hex when
-the signal is integer-typed **and** `factor == 1` **and** `offset == 0`
-**and** it carries no unit — which is exactly the bit-pattern / id /
-serial case the `uint64` is. Anything scaled, offset, or carrying a unit
-stays decimal.
+- **Hex for raw fields only.** `DecodedSignal` now carries the decode
+  facts `value_is_raw_integer` (integer-typed, `factor == 1`,
+  `offset == 0`) and `is_enum`; the host combines them with "no unit"
+  into `SignalRecord::raw_field`, and `formatSignalValue`'s `hex`
+  argument renders those as `0xDEADBEEF`. A literal "every
+  integer-typed signal" reading would have made 1000 rpm read `0x3E8`,
+  so anything scaled, offset, or carrying a unit stays decimal.
+- **An exact integer never renders in scientific notation**,
+  unconditionally — `formatSignalValue` takes `toFixed(0)` for any
+  integer-valued input. `toExponential` above 1e6 is what made the
+  `uint64` unreadable, and it is lossy for a digit-exact value.
 
-Separately and unconditionally: an exact-integer value never renders in
-scientific notation. `toExponential` above 1e6 is what made the `uint64`
-unreadable, and it is lossy for a value the user needs digit-exact.
+The open sub-question resolved as suggested: **enum signals are
+excluded** — the raw number under a `VAL_` table is a table key the DBC
+itself writes in decimal, so `3 "Drive"` stays decimal. The exclusion
+uses the repo's `is_enum` predicate (two or more members), so a
+single-member SNA sentinel on an otherwise raw field still renders hex
+(`0xFFFF "SNA"`).
 
-`SignalRecord` carries only the physical value today, so the predicate is
-computed host-side and travels as a flag on the record — the model owns
-the domain fact, the frontend only renders it.
-
-Open sub-question for whoever takes this: a signal with a `VAL_` table
-matches the predicate (enums are unscaled and unitless), which would turn
-`3 "Drive"` into `0x03 "Drive"`. Existing tests assert the decimal form.
-Excluding value-table signals from the hex rule is the suggested
-reading — the raw number there is a table key the DBC itself writes in
-decimal.
+Covered by `formatSignalValue` cases in `apps/gui/src/format.test.ts`,
+`decoded_signal_flags_a_value_that_is_exactly_the_raw_integer` /
+`decoded_signal_carries_enum_ness` in `cannet-dbc`, and
+`wire_signals_flag_only_raw_bit_fields` in `cannet-gui`. The flag only
+reaches the trace views' decoded lines; the signal / DBC panels' value
+column is a backlog item.
 
 ## 4. The unit reads as part of the value in the signal panel
 

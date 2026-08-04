@@ -421,6 +421,7 @@ mod tests {
                     name: (*n).into(),
                     value: *v,
                     unit: String::new(),
+                    raw_field: false,
                     label: None,
                 })
                 .collect(),

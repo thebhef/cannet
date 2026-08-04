@@ -145,12 +145,32 @@ export function formatMsgRate(rate: number): string {
   return rate < 100 ? rate.toFixed(1) : Math.round(rate).toString();
 }
 
-export function formatSignalValue(value: number, unit: string): string {
-  // Trim insignificant trailing zeros and avoid noise like "60.000000".
-  const formatted = Math.abs(value) >= 1e6 || Math.abs(value) < 1e-3 && value !== 0
+/// A decoded signal's value. `hex` renders it as a bit pattern
+/// (`0xDEADBEEF`) instead of a number — pass the host's `raw_field`
+/// flag, which marks the unscaled, unitless, non-enum signals whose
+/// value is an id / serial / bit pattern. The classification is the
+/// host's; this only renders it.
+export function formatSignalValue(value: number, unit: string, hex = false): string {
+  const formatted = hex ? formatHex(value) : formatDecimal(value);
+  return unit ? `${formatted} ${unit}` : formatted;
+}
+
+/// `0x`-prefixed uppercase hex, sign outside the digits (`-0x5`) so a
+/// signed raw field stays readable.
+function formatHex(value: number): string {
+  return `${value < 0 ? "-" : ""}0x${Math.abs(value).toString(16).toUpperCase()}`;
+}
+
+function formatDecimal(value: number): string {
+  // An exact integer always renders in full digits, however large: it is
+  // a value the user needs digit-exact (a count, an id), and
+  // `toExponential` drops the low digits.
+  if (Number.isInteger(value)) return value.toFixed(0);
+  // Otherwise trim insignificant trailing zeros and avoid noise like
+  // "60.000000", falling back to exponential at the extremes.
+  return Math.abs(value) >= 1e6 || (Math.abs(value) < 1e-3 && value !== 0)
     ? value.toExponential(3)
     : value.toFixed(3).replace(/\.?0+$/, "");
-  return unit ? `${formatted} ${unit}` : formatted;
 }
 
 /// Render a decoded signal with its `VAL_` label suffix when one is
@@ -162,7 +182,8 @@ export function formatSignalValueWithLabel(
   value: number,
   unit: string,
   label: string | null | undefined,
+  hex = false,
 ): string {
-  const numeric = formatSignalValue(value, unit);
+  const numeric = formatSignalValue(value, unit, hex);
   return label ? `${numeric} "${label}"` : numeric;
 }

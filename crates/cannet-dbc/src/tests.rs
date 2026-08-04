@@ -352,6 +352,53 @@ fn decoded_signal_label_is_none_for_unmapped_value() {
 }
 
 #[test]
+fn decoded_signal_flags_a_value_that_is_exactly_the_raw_integer() {
+    let db = Database::parse(SAMPLE_DBC).unwrap();
+    // BeUnsigned: integer-typed, factor 1, offset 0 — the physical
+    // value *is* the raw integer.
+    let frame = make_frame(257, false, vec![0x12, 0x34, 0, 0, 0, 0, 0, 0]);
+    let decoded = db.decode(&frame).unwrap();
+    assert!(signal_by_name(&decoded, "BeUnsigned").value_is_raw_integer);
+
+    // Scaled or offset signals are not.
+    let frame = make_frame(256, false, vec![0x34, 0x12, 100, 50, 0, 0, 0, 0]);
+    let decoded = db.decode(&frame).unwrap();
+    assert!(
+        !signal_by_name(&decoded, "EngineSpeed").value_is_raw_integer,
+        "factor 0.25"
+    );
+    assert!(
+        !signal_by_name(&decoded, "EngineTemp").value_is_raw_integer,
+        "offset -40"
+    );
+
+    // Lat has `SIG_VALTYPE_ … 1;` — factor 1 / offset 0, but the bits
+    // are an IEEE float, so the value is not the raw integer.
+    let frame = make_frame(513, false, vec![0; 8]);
+    let decoded = db.decode(&frame).unwrap();
+    assert!(!signal_by_name(&decoded, "Lat").value_is_raw_integer);
+}
+
+#[test]
+fn decoded_signal_carries_enum_ness() {
+    let db = Database::parse(VAL_DBC).unwrap();
+    let frame = make_frame(256, false, vec![3, 0, 0, 0, 0xFF, 0xFF, 0, 0]);
+    let decoded = db.decode(&frame).unwrap();
+    assert!(
+        signal_by_name(&decoded, "Mode").is_enum,
+        "multi-member VAL_ table -> enum"
+    );
+    assert!(
+        !signal_by_name(&decoded, "Rpm").is_enum,
+        "no VAL_ table -> not an enum"
+    );
+    assert!(
+        !signal_by_name(&decoded, "Counter").is_enum,
+        "single-member VAL_ table (SNA sentinel) -> not an enum"
+    );
+}
+
+#[test]
 fn signals_descriptor_is_enum_requires_two_members() {
     let db = Database::parse(VAL_DBC).unwrap();
     let sigs = db.signals();
