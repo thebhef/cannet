@@ -20,7 +20,7 @@ pub use calc::{
 };
 pub use decode::{decode_signal_bits, sign_extend, DecodedMessage, DecodedSignal};
 pub use encode::{encode_signal_bits, EncodeReport, EncodedSignal, SkipReason, SkippedSignal};
-pub use model::{is_enum, Database, DbcAttribute, ValueTableEntry};
+pub use model::{is_enum, is_raw_field, Database, DbcAttribute, ValueTableEntry};
 pub use parse::DbcError;
 pub use view_builders::{
     ByteOrder, DbcMessageContent, DbcSignalContent, FloatKind, MessageDescriptor, SignalDescriptor,

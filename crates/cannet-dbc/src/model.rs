@@ -115,6 +115,48 @@ pub fn is_enum(value_table: &[ValueTableEntry]) -> bool {
     value_table.len() >= 2
 }
 
+/// Whether the signal's physical value is *exactly* its raw integer: the
+/// bits decode as an integer (no `SIG_VALTYPE_` float override for the
+/// declared width) and the DBC applies no scaling (`factor == 1`,
+/// `offset == 0`). A property of the `SG_` line alone, so both the
+/// decode path ([`DecodedSignal::value_is_raw_integer`]) and the
+/// catalog path ([`SignalDescriptor::value_is_raw_integer`]) read it
+/// from here rather than each deriving it.
+///
+/// [`DecodedSignal::value_is_raw_integer`]: crate::DecodedSignal::value_is_raw_integer
+/// [`SignalDescriptor::value_is_raw_integer`]: crate::SignalDescriptor::value_is_raw_integer
+pub(crate) fn value_is_raw_integer(sig: &SignalEntry) -> bool {
+    // The float arms mirror the physical-value match in `decode_signal`:
+    // an IEEE type whose declared width doesn't match its signal falls
+    // through to the integer arms there, so it is a raw integer here.
+    let decodes_as_float = match sig.extended_type {
+        SignalExtendedValueType::IEEEfloat32Bit => sig.signal.size == 32,
+        SignalExtendedValueType::IEEEdouble64bit => sig.signal.size == 64,
+        SignalExtendedValueType::SignedOrUnsignedInteger => false,
+    };
+    // Exact comparison is the point: a factor of exactly 1 and an offset
+    // of exactly 0 are what "unscaled" means; anything else is scaled.
+    #[allow(clippy::float_cmp)]
+    let unscaled = sig.signal.factor == 1.0 && sig.signal.offset == 0.0;
+    !decodes_as_float && unscaled
+}
+
+/// Whether a signal is a *raw field*: an opaque bit pattern carrying no
+/// engineering meaning — an id, a serial, a CRC, a flag word. Its value
+/// is exactly the raw integer (unscaled, integer-typed), it declares no
+/// unit, and no `VAL_` table makes it an enum, so nothing about it
+/// claims to be a measurement or a symbolic state.
+///
+/// The arguments are the three facts every signal-shaped type in this
+/// crate carries ([`crate::DecodedSignal`], [`crate::SignalDescriptor`]),
+/// so every surface reaches the same verdict from the same code — a
+/// signal cannot read one way on a trace row and another in the signal
+/// view.
+#[must_use]
+pub fn is_raw_field(value_is_raw_integer: bool, unit: &str, is_enum: bool) -> bool {
+    value_is_raw_integer && unit.is_empty() && !is_enum
+}
+
 /// One row of a signal's `VAL_` value table: a raw value and its
 /// symbolic label.
 #[derive(Debug, Clone, PartialEq, Eq)]

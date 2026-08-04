@@ -6,7 +6,9 @@ use can_dbc::{ByteOrder, MultiplexIndicator, SignalExtendedValueType, ValueType}
 use cannet_core::CanFrame;
 
 use crate::bitwalk;
-use crate::model::{canid_to_message_id, is_enum, Database, MessageEntry, SignalEntry};
+use crate::model::{
+    canid_to_message_id, is_enum, value_is_raw_integer, Database, MessageEntry, SignalEntry,
+};
 
 /// Extract `size` bits from `data` starting at `start_bit`, interpreting
 /// the layout per `byte_order`. Returns `None` if any required bit lies
@@ -155,21 +157,6 @@ fn decode_signal<'a>(entry: &'a SignalEntry, data: &[u8]) -> Option<DecodedSigna
         _ => (raw_unsigned as f64).mul_add(sig.factor, sig.offset),
     };
 
-    // Whether the physical value is exactly the raw integer: the bits
-    // decode as an integer rather than an IEEE float, and the DBC
-    // applies no scaling. The float arms mirror the `physical` match
-    // above — an IEEE type whose declared width doesn't match falls
-    // through to the integer arms there, so it is a raw integer here.
-    let decodes_as_float = match entry.extended_type {
-        SignalExtendedValueType::IEEEfloat32Bit => size == 32,
-        SignalExtendedValueType::IEEEdouble64bit => size == 64,
-        SignalExtendedValueType::SignedOrUnsignedInteger => false,
-    };
-    // Exact comparison is the point: a factor of exactly 1 and an offset
-    // of exactly 0 are what "unscaled" means; anything else is scaled.
-    #[allow(clippy::float_cmp)]
-    let value_is_raw_integer = !decodes_as_float && sig.factor == 1.0 && sig.offset == 0.0;
-
     // Resolve the value-table label, if any. Signed signals compare
     // against `raw_signed`; unsigned against `raw_unsigned` widened to
     // `i64` (signal sizes are <=64 bits; values above `i64::MAX` would
@@ -192,7 +179,7 @@ fn decode_signal<'a>(entry: &'a SignalEntry, data: &[u8]) -> Option<DecodedSigna
         raw_unsigned,
         raw_signed,
         value: physical,
-        value_is_raw_integer,
+        value_is_raw_integer: value_is_raw_integer(entry),
         is_enum: is_enum(&entry.value_table),
         label,
     })
@@ -231,7 +218,12 @@ pub struct DecodedSignal<'a> {
     /// integer-typed (no `SIG_VALTYPE_` float override for its width)
     /// and the DBC declares `factor == 1` with `offset == 0`, so no
     /// scaling was applied. Consumers use it to tell a bit pattern /
-    /// id / serial from a scaled measurement.
+    /// id / serial from a scaled measurement — combined with `unit` and
+    /// `is_enum` through [`crate::is_raw_field`]. The catalog-side twin
+    /// is [`SignalDescriptor::value_is_raw_integer`], from the same
+    /// internal predicate.
+    ///
+    /// [`SignalDescriptor::value_is_raw_integer`]: crate::SignalDescriptor::value_is_raw_integer
     pub value_is_raw_integer: bool,
     /// True when the signal's `VAL_` table makes it an enum — per
     /// [`crate::is_enum`], at least two members. A single-member table
