@@ -11,8 +11,24 @@ export function formatCanIdHex(id: number, extended: boolean): string {
   return id.toString(16).toUpperCase().padStart(width, "0");
 }
 
-export function formatId(frame: TraceFrameRecord): string {
-  return `${frame.extended ? "x" : "s"}:${formatCanIdHex(frame.id, frame.extended)}`;
+/// How a trace-style table renders an arbitration id — the
+/// `can_id_format` setting, mirrored as a type so a call site cannot
+/// pass a name the host would refuse.
+export type CanIdFormat = "hex" | "decimal";
+
+/// A frame's arbitration id for a trace-style table's `id` column.
+///
+/// The `s:` / `x:` prefix is not a formatting choice and stays in both
+/// modes: 11-bit and 29-bit ids overlap numerically, so the width alone
+/// cannot say which frame you are looking at. `format` is required
+/// rather than defaulted — a caller that forgot it is how "hex only"
+/// happened in the first place.
+export function formatId(frame: TraceFrameRecord, format: CanIdFormat): string {
+  const id =
+    format === "decimal"
+      ? frame.id.toString(10)
+      : formatCanIdHex(frame.id, frame.extended);
+  return `${frame.extended ? "x" : "s"}:${id}`;
 }
 
 export function formatKind(frame: TraceFrameRecord): string {

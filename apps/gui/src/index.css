@@ -3420,6 +3420,44 @@ button.trace-event-swatch {
 .setting-missing-renderer {
   color: #d98a8a;
 }
+.column-defaults {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  align-items: flex-start;
+}
+.column-default-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.column-default-label {
+  min-width: 9rem;
+}
+.column-default-row input[type="number"] {
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 3px;
+  color: #e2e8f0;
+  font: inherit;
+  padding: 0.1rem 0.3rem;
+  width: 4.5rem;
+}
+.column-default-row button {
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 3px;
+  color: #e2e8f0;
+  font: inherit;
+  font-size: 0.7rem;
+  line-height: 1;
+  padding: 0.15rem 0.35rem;
+  cursor: pointer;
+}
+.column-default-row button:disabled {
+  color: #475569;
+  cursor: default;
+}
 .setting-meta {
   display: flex;
   align-items: center;

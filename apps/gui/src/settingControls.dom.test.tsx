@@ -146,6 +146,58 @@ describe("the custom-renderer dispatch table", () => {
     expect(screen.getByText(/No renderer registered/)).toBeInTheDocument();
   });
 
+  // The column-default rows are the one custom renderer that *edits*.
+  // A table header adjusts the panel in front of you; there is nowhere
+  // else to say what the next one should open as.
+  function renderColumnDefaults(value: unknown, key = "trace_columns") {
+    const onCommit = vi.fn();
+    render(
+      <SettingControl
+        descriptor={descriptor({ type: "custom", renderer: "column-defaults" }, key)}
+        value={value}
+        onCommit={onCommit}
+      />,
+    );
+    return onCommit;
+  }
+
+  it("edits a column default through the same moves the table header makes", () => {
+    // An unset value shows the built-in layout, so the first edit
+    // starts from what a fresh panel actually opens with.
+    const onCommit = renderColumnDefaults(null);
+    fireEvent.click(screen.getByLabelText("show data"));
+    const hidden = onCommit.mock.calls[0][0] as { key: string; visible: boolean }[];
+    expect(hidden.find((c) => c.key === "data")?.visible).toBe(false);
+    // Every other column survives the edit — the row commits a whole
+    // layout, not a patch.
+    expect(hidden).toHaveLength(11);
+
+    const width = screen.getByLabelText("data width");
+    fireEvent.change(width, { target: { value: "420" } });
+    expect(onCommit).toHaveBeenCalledTimes(1); // not per keystroke
+    fireEvent.blur(width);
+    const resized = onCommit.mock.calls[1][0] as { key: string; width: number }[];
+    expect(resized.find((c) => c.key === "data")?.width).toBe(420);
+
+    fireEvent.click(screen.getByLabelText("move data up"));
+    const moved = onCommit.mock.calls[2][0] as { key: string }[];
+    expect(moved.map((c) => c.key).indexOf("data")).toBe(7);
+  });
+
+  it("commits null to go back to the built-in layout", () => {
+    const onCommit = renderColumnDefaults([{ key: "id", width: 200, visible: true }]);
+    fireEvent.click(screen.getByText("Use the built-in layout"));
+    expect(onCommit).toHaveBeenCalledWith(null);
+  });
+
+  it("edits the signal table's own column set for its own key", () => {
+    // One renderer, two settings: the row it offers must come from the
+    // column set the *descriptor* names.
+    renderColumnDefaults(null, "signal_columns");
+    expect(screen.getByLabelText("show signal")).toBeInTheDocument();
+    expect(screen.queryByLabelText("show data")).not.toBeInTheDocument();
+  });
+
   // The shortcuts panel is the one editor for bindings (ADR 0018); this
   // row points at it and must never grow into a second one.
   it("renders keybindings as a pointer to the shortcuts panel, not an editor", () => {

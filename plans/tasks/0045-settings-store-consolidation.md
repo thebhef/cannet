@@ -669,6 +669,260 @@ suppression.
 This stage is large and mostly independent per item. It should be
 sliced by surface, not landed as one change.
 
+#### How Stage 5 is sliced
+
+Two slices, split by surface. **This half is the data views**; the
+other is the app / connection / appearance knobs.
+
+| Slice | Items | State |
+| --- | --- | --- |
+| **Data views** | Default column sets, widths, and hidden columns (trace + signal); CAN-ID and timestamp formatting; default y-axis mode; default auto-scroll / trace mode / events overlay; DBC auto-reload opt-out. | **complete** — eight fields, plus one deferred item (timestamp formatting) with its reasoning below |
+| **App, connection, appearance** | Startup behaviour; default server address; default nominal bitrate; seed layout; palettes; theme and density; confirmation-prompt suppression. | outstanding |
+
+Minimum system-log level is not in either: it landed in Stage 2 #2.
+
+Every field below lands with the current value as its default, so an
+untouched install behaves identically
+(`a_file_written_before_a_field_existed_resolves_to_that_field_s_default`
+covers the new keys as it covered Stage 3's and Stage 4's), and with
+its scope and both tag axes attached.
+
+**Most of this half is `Kind::Default`, and that tag has a rule.** A
+default seeds a view *at creation* and never afterwards. It must not
+remove the per-view control, must not override a value the view already
+carries, and must not reach back into a view that already exists — so
+it is read in the state seed, not on render, and a settings change is
+not a broadcast. Where a knob has no per-view equivalent it is
+`Kind::Behaviour` instead, and the item's note says so.
+
+#### Stage 5 (data views) as built
+
+**Trace view defaults.** *(done)*
+
+| Field | Default | Tags | Scope | Read at |
+| --- | --- | --- | --- | --- |
+| `trace_mode` | `by-id` | trace / default | user-overridable | `TracePanel`'s state seed |
+| `trace_auto_scroll` | `true` | trace / default | user-overridable | `TracePanel`'s state seed |
+| `trace_show_events` | `true` | trace / default | user-overridable | `TracePanel`'s state seed |
+
+Notes:
+
+- **`trace_mode` is a `String` against
+  [`TRACE_MODES`](../../apps/gui/src-tauri/src/settings.rs), not a
+  serde enum** — Stage 2 item 2's reasoning, unchanged: a serde enum fails
+  the *whole* document on one typo'd mode, whereas the string is
+  refused, reported, and resolved to its own default by `validate`'s
+  `refuse_unknown` table. The published option set is the one
+  `validate` accepts, so Stage 4's
+  `every_published_option_set_is_the_one_validate_accepts` covers it
+  with no new anti-drift test.
+- **The panel already had the fallbacks; they just pointed at
+  literals.** `savedConfig?.mode === "chronological" ? … : "by-id"` and
+  two `: true`s became `?? hostSettings().trace_*`. The saved value
+  still wins, which is what keeps a restored project — and a reopened
+  panel — exactly as the user left it.
+- **`struct_excessive_bools` now fires on `Settings`** and is allowed,
+  with the same reasoning as the existing `struct_field_names` allow:
+  this is the serde mirror of a hand-editable document, not a state
+  machine, and folding independent on/off keys into two-variant enums
+  would change what the file looks like without clarifying anything.
+
+Behaviour tests (each mutation-checked by seeding the panel from the
+setting *unconditionally*, which reddens the two guards below plus the
+pre-existing `restores config from the element over bare reopen
+params`): `TracePanel.dom.test.tsx` → *opens a fresh panel in the
+configured default mode*, *takes auto-scroll and the events overlay
+from the settings*, *lets a panel's own saved config win over the
+default*, *does not retro-fit an open panel when the default changes*.
+
+**Plot default y-axis mode.** *(done)*
+
+| Field | Default | Tags | Scope | Read at |
+| --- | --- | --- | --- | --- |
+| `plot_y_axis_mode` | `unified` | plot / default | user-overridable | `newPlotArea` |
+
+Notes:
+
+- **The setting is read in exactly one place, and it is not
+  `yAxisModeFromRaw`.** That parser's `unified` fallback answers "what
+  was this area drawn as before the field existed" — an area saved
+  without a `yAxisMode` must keep reading as unified, or changing the
+  *creation* default silently re-lays-out plots the user already has.
+  The two creation sites (a panel with no saved layout, and "add plot
+  area") now share one `newPlotArea()`, which is where the setting is
+  read.
+- **`plotPanelConfig.ts` takes its first runtime import**, so its
+  "no React / uPlot imports live here" note is now "no uPlot and no
+  components; the one runtime dependency is `hostSettings`". The
+  module stays testable without a DOM.
+- **`validate` outgrew `too_many_lines`** with the two new fixed-option
+  fields and is split into `refuse_unknown_options` /
+  `refuse_below_minimums` — the two tables it already had, each in its
+  own function. No behaviour change; the anti-drift tests are unmoved.
+
+Behaviour tests (each mutation-checked): `plotPanelConfig.test.ts` →
+*seeds a new area from the setting, not from a literal* (red when
+creation hard-codes `unified`), *leaves an area that already has a mode
+alone* (red when the parsed branch drops `o.yAxisMode`), *does not
+retro-fit an area saved before the field existed* (red when
+`yAxisModeFromRaw`'s fallback reads the setting).
+
+**Default column sets, widths, and hidden columns.** *(done)*
+
+| Field | Default | Tags | Scope | Read at |
+| --- | --- | --- | --- | --- |
+| `trace_columns` | `null` (built-in) | trace + by-id / default | user-overridable | `columnsFromParams`, at panel creation |
+| `signal_columns` | `null` (built-in) | signals / default | user-overridable | `signalColumnsFromParams`, at panel creation |
+
+Notes:
+
+- **`null` is the default, and it means the built-in layout.** Writing
+  the built-in layout out as the default would have frozen it: a column
+  added later would not appear in a file that predates it. `null` keeps
+  `COLUMN_DEFS` / `SIGNAL_COLUMN_DEFS` the single source of the
+  built-in answer, and an untouched install opens exactly the table it
+  always did.
+- **Two fields, not one.** The two tables have different column sets,
+  so one shared layout could not name both. (Unlike Stage 3's recents
+  pair, this is forced rather than a judgement.)
+- **Stored and round-tripped, not validated host-side** — the same
+  contract as `keybindings`, for Stage 1 item 4's reason: the column key
+  set is declared in the frontend, so a host-side check would need a
+  second copy of it. The frontend's existing parser is the validation,
+  and a configured layout naming a column that does not exist falls back
+  to the built-in rather than producing a broken table.
+- **The configured default enters through `columnsFromParamsFor`'s new
+  `fallback`**, so it is used in exactly the places the built-in used to
+  be: a panel with no saved layout, a malformed one, and the fill-in
+  slot for a column too new for a saved layout to name. A panel that
+  *has* a layout is untouched.
+- **The settings row is a real editor, and it is the one custom
+  renderer that edits.** `keybindings` points at the shortcuts panel
+  because that panel is the editor; there is no equivalent for a
+  *default* — a table header adjusts the panel in front of you, not the
+  one you will open next. `CustomRendererProps` therefore gains
+  `onCommit`, which the generated controls already had. The editor owns
+  no arithmetic: every move goes through the same
+  `toggleColumn` / `resizeColumn` / `reorderColumn` the header uses, so
+  a default and a live layout cannot disagree about what a move means.
+  ADR 0034 needs no amendment — its "one table is the entire extension
+  surface, and there is no third case" still holds; nothing in it said
+  a named renderer may not write.
+
+Behaviour tests (each mutation-checked — by making `configuredColumnsFor`
+ignore its configured value, by making `columnsFromParams` ignore the
+saved one, and by pinning the editor to the trace column set):
+`traceColumns.test.ts` → *is what a panel with no saved layout opens
+at*, *loses to a layout the panel already saved*, *falls back to the
+built-in when it names a column that does not exist*;
+`signalColumns.test.ts` → *seeds a fresh signal table, and has its own
+setting*; `settingControls.dom.test.tsx` → *edits a column default
+through the same moves the table header makes* (toggle, width on blur
+rather than per keystroke, reorder), *commits null to go back to the
+built-in layout*, *edits the signal table's own column set for its own
+key*.
+
+**CAN-ID formatting.** *(done)* — **timestamp formatting is not, and
+that is a finding, not an omission.** See below the table.
+
+| Field | Default | Tags | Scope | Read at |
+| --- | --- | --- | --- | --- |
+| `can_id_format` | `hex` | trace + by-id / behaviour | user-overridable | `TraceView` / `ByIdTable` |
+
+Notes:
+
+- **`Behaviour`, not `Default`**, for the same reason as
+  `dbc_auto_reload`: there is no per-panel id format, and two panels
+  spelling the same id differently would be worse than either choice.
+- **The `s:` / `x:` prefix is not part of the choice.** 11-bit and
+  29-bit ids overlap numerically, so the prefix is the only thing
+  saying which frame a row is; `formatId` keeps it in both formats.
+- **`formatId` takes the format as a required argument.** A defaulted
+  parameter would let a new call site silently re-create the hex-only
+  behaviour this item exists to remove.
+- **The two table renderers read the setting, not `cellContent`.** The
+  rows are memoised, so the value has to arrive as a *changed prop* —
+  reading it inside the cell renderer leaves the visible window
+  painting the old format until something unrelated moves. `useSetting`
+  rather than `hostSettings()` for the same reason.
+- **Editors keep hex.** The transmit id box and the filter predicate
+  editor have their own input contract (and their own prefix control);
+  the setting governs display columns.
+
+Behaviour tests (each mutation-checked — by pinning `idFormat` to a
+literal, and by swapping `useSetting` for a non-reactive
+`hostSettings()` read, which reddens only the repaint guard):
+`format.test.ts` → *renders the id in base ten when asked, unpadded*,
+*keeps the s: / x: discriminator in both formats*;
+`TraceView.signals.dom.test.tsx` → *spells the arbitration id the way
+can_id_format says*, *repaints already-rendered rows when the format
+changes*; `ByIdTable.dom.test.tsx` → *spells the arbitration id the way
+can_id_format says* (its own guard, because it reads the setting
+itself).
+
+**Timestamp formatting is a feature wearing a settings costume, and is
+deferred.** The stage lists it alongside the CAN-ID format as a
+standard toggle, and it is — in tools whose time model is not
+[ADR 0024](../../docs/adr/0024-trace-like-view-timing.md)'s. Here:
+
+- **Absolute (wall-clock) display** contradicts ADR 0024 decision 2 —
+  "every renderer displays elapsed time since that origin, this is the
+  only formula" — unless *every* renderer follows. Applying it to the
+  row tables alone produces precisely the failure the ADR exists to
+  prevent: a trace row and a plot marker labelling the same frame
+  differently. Applying it everywhere means the plot's x-axis ticks and
+  cursor readouts too, whose gutter-width and split geometry are tuned
+  to elapsed-format label widths, plus an amendment to the ADR
+  separating "one origin" (which would still hold) from "one
+  rendering" (which would not).
+- **Delta (since the previous row)** is a difference against an
+  adjacent row that the paged, event-merged view may not have loaded.
+  Deriving it in the renderer is the model computation CLAUDE.md's
+  thin-views rule forbids; done properly it is a host-side derived
+  column beside the existing ones.
+
+Neither is a promotion of an existing default, so neither was smuggled
+in here. The item is written up in `plans/backlog.md` under *Trace
+view* as a candidate task, with both options and their costs.
+
+**DBC auto-reload opt-out.** *(done)*
+
+| Field | Default | Tags | Scope | Reader |
+| --- | --- | --- | --- | --- |
+| `dbc_auto_reload` | `true` | dbc / behaviour | user-overridable | `dbc_watcher::on_event` |
+
+Notes:
+
+- **`Behaviour`, not `Default`** — the only item in this half that is.
+  There is no per-panel version of "reload when the file changes"; it
+  is one app-wide policy, so the `default` tag's contract (seeds a view,
+  never overrides it) does not apply.
+- **Read per event, not at startup**, matching Stage 3's re-arming
+  loops: switching it off stops the *next* swap rather than the next
+  launch.
+- **A removal is still reported when it is off.** The opt-out is "do not
+  replace the database under an analysis in progress", not "go quiet" —
+  a DBC vanishing from disk is news either way, and the warning does not
+  touch in-memory state.
+- **The event-kind filter became a pure function** (`reaction_to` →
+  `Reload` / `NoteRemoval` / `Ignore`) so both it and the gate are unit
+  tested. This module's own note explains why its end-to-end path is
+  left to manual verification (FS watchers are timing-dependent enough
+  to be flaky in CI); the decision no longer has to be.
+
+Behaviour tests (mutation-checked by dropping the `auto_reload` guard,
+and by moving the removal branch under it): `dbc_watcher.rs` → *a save
+reloads while auto-reload is on* (over all five event kinds an editor's
+save produces), *auto-reload off leaves the in-memory copy alone*, *a
+removal is reported whichever way the setting is set*, *an event that
+touches no content is ignored either way*.
+
+**Measured:** `cannet-perf-measurement check` passes all 12 gated
+metrics (tracebuffer, grpc, hardware-peak) against the promoted
+baseline after the change; the frontend tier is skipped, as in Stages 3
+and 4, because Task 44 Tier 0 still owes a self-driving capture. Eight
+new fields take `settings.json` to thirty-one.
+
 ## Interlock with Tasks 46 and 47
 
 This task grows the settings count past twenty-five, which is more than

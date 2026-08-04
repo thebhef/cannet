@@ -14,7 +14,14 @@ import {
   gridTemplateColumnsFor,
   visibleColumns,
 } from "./traceColumns";
-import { formatData, formatId, formatKind, formatMsgRate, formatTimestamp } from "./format";
+import {
+  formatData,
+  formatId,
+  formatKind,
+  formatMsgRate,
+  formatTimestamp,
+  type CanIdFormat,
+} from "./format";
 import { useDismissableMenu } from "./useDismissableMenu";
 
 /// DnD payload type for dragging a column header to reorder it. Carries
@@ -28,13 +35,17 @@ const COLUMN_DND_MIME = "application/x-cannet-trace-column";
 /// until the frame arrives. `rate` and `count` are only meaningful in
 /// by-id mode (the "msg/s" column and the per-id frame total);
 /// elsewhere they're omitted. `busLookup` resolves a frame's `bus_id`
-/// to the project's bus name for the "bus" column. Shared by the
-/// chronological rows (`TraceView`) and the by-id rows (`ByIdTable`).
+/// to the project's bus name for the "bus" column, and `idFormat` (the
+/// `can_id_format` setting) says how the "id" column renders. Shared by
+/// the chronological rows (`TraceView`) and the by-id rows
+/// (`ByIdTable`); both read the setting themselves and pass it down to
+/// their memoised rows, so a change to it actually repaints.
 export function cellContent(
   key: ColumnKey,
   frame: TraceFrameRecord | null,
   absoluteIndex: number,
   baseTimestamp: number | null,
+  idFormat: CanIdFormat,
   isExpanded: boolean,
   busLookup: BusLookup,
   rate?: number,
@@ -57,7 +68,7 @@ export function cellContent(
     case "dir":
       return frame.direction;
     case "id":
-      return formatId(frame);
+      return formatId(frame, idFormat);
     case "kind":
       return formatKind(frame);
     case "len":

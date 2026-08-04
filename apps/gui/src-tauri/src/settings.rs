@@ -88,6 +88,14 @@ pub(crate) const SCOPES: ScopeTable = &[
     ("driver_module", Scope::UserOverridable),
     ("log_file_min_level", Scope::UserOverridable),
     ("sidecar_log_level", Scope::UserOverridable),
+    ("trace_mode", Scope::UserOverridable),
+    ("trace_auto_scroll", Scope::UserOverridable),
+    ("trace_show_events", Scope::UserOverridable),
+    ("plot_y_axis_mode", Scope::UserOverridable),
+    ("dbc_auto_reload", Scope::UserOverridable),
+    ("can_id_format", Scope::UserOverridable),
+    ("trace_columns", Scope::UserOverridable),
+    ("signal_columns", Scope::UserOverridable),
 ];
 
 /// The persisted user settings. `#[serde(default)]` fills any absent field
@@ -98,7 +106,13 @@ pub(crate) const SCOPES: ScopeTable = &[
 // `show_developer_settings` trips `struct_field_names` by ending in the
 // struct's own name. The field name *is* the `settings.json` key a user
 // reads and hand-edits, so it is named for the file, not for Rust.
-#[allow(clippy::struct_field_names)]
+//
+// `struct_excessive_bools` fires for the same reason and gets the same
+// answer: this is not a state machine whose flags interact, it is the
+// serde mirror of a hand-editable JSON document (ADR 0034) in which each
+// on/off knob is independent. Folding pairs into two-variant enums would
+// change what the file looks like without making any of them clearer.
+#[allow(clippy::struct_field_names, clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -247,6 +261,94 @@ pub struct Settings {
     /// driver contributes to a log a user ships back — `debug` for a
     /// hardware fault nobody can reproduce.
     pub sidecar_log_level: String,
+    /// Which view a **freshly created** trace panel opens in — one of
+    /// [`TRACE_MODES`], default `by-id`, which is what a new panel has
+    /// always opened in.
+    ///
+    /// A *default*, not a policy: the panel's mode buttons still switch
+    /// it, and the choice is persisted on the element, so changing this
+    /// never rewrites a panel that already exists. Read once, when the
+    /// panel seeds its state.
+    pub trace_mode: String,
+    /// Whether a **freshly created** chronological trace pins to the
+    /// live tail. Default `true`.
+    ///
+    /// Read once at panel creation, like [`Settings::trace_mode`]; the
+    /// panel's auto-scroll checkbox (and scrolling away from the tail)
+    /// still wins for a panel that exists.
+    pub trace_auto_scroll: bool,
+    /// Whether a **freshly created** chronological trace interleaves
+    /// timeline events (ADR 0035) among its frame rows. Default `true`.
+    ///
+    /// Read once at panel creation, like [`Settings::trace_mode`]; the
+    /// panel's events checkbox still wins for a panel that exists.
+    pub trace_show_events: bool,
+    /// How a **newly created** plot area lays its series out across
+    /// y-axes (ADR 0026) — one of [`Y_AXIS_MODES`], default `unified`.
+    ///
+    /// Read once, when an area is created: the panel's first area, or
+    /// one added with "add plot area". The per-area mode picker still
+    /// wins afterwards, and an area saved before this field existed
+    /// keeps reading as `unified` rather than being re-laid-out.
+    pub plot_y_axis_mode: String,
+    /// Whether a loaded DBC is re-read and swapped in when the file
+    /// changes on disk (ADR-free; see [`crate::dbc_watcher`]). Default
+    /// `true`, which is what the app has always done.
+    ///
+    /// App-wide policy rather than a per-view default: there is no
+    /// "this panel only" version of it. Read on every filesystem
+    /// event, so switching it off stops the next swap rather than the
+    /// next launch, and a file *disappearing* is still reported either
+    /// way — the opt-out is about not replacing the database under an
+    /// analysis in progress, not about going quiet.
+    pub dbc_auto_reload: bool,
+    /// How a trace-style table's `id` column renders an arbitration
+    /// id — one of [`CAN_ID_FORMATS`], default `hex`, which is what the
+    /// column has always shown.
+    ///
+    /// App-wide policy rather than a per-view default: there is no
+    /// per-panel id format, and two panels disagreeing about how to
+    /// spell the same id would be worse than either choice. It governs
+    /// the *display* columns only — the transmit and filter editors
+    /// keep typing ids in hex, which is their own input contract.
+    ///
+    /// The `s:` / `x:` prefix is not part of the choice and survives
+    /// both: 11-bit and 29-bit ids overlap numerically.
+    pub can_id_format: String,
+    /// The column layout a **newly created** trace or by-ID table opens
+    /// with — order, width, and which columns start hidden. `None` (the
+    /// default) means the built-in layout, so a file that predates this
+    /// field opens exactly the table the app always opened.
+    ///
+    /// Read once, when the panel seeds its state. The header's own
+    /// drag-to-resize, drag-to-reorder, and right-click show/hide still
+    /// win for a panel that exists, and a panel restored from a project
+    /// keeps the layout saved on its element.
+    ///
+    /// **Stored and round-tripped, not validated**, exactly like
+    /// [`Settings::keybindings`]: the column key set is declared in the
+    /// frontend (`traceColumns.ts`), so a host-side check would need a
+    /// second copy of it. The frontend's own parser accepts a known key
+    /// at most once and falls back to the built-in layout otherwise.
+    pub trace_columns: Option<Vec<ColumnLayout>>,
+    /// The column layout a **newly created** signal table opens with —
+    /// [`Settings::trace_columns`] for the signal view's own column set
+    /// (`signalColumns.ts`), with the same contract.
+    ///
+    /// Two fields rather than one: the two tables have different
+    /// columns, so one shared layout could not name them both.
+    pub signal_columns: Option<Vec<ColumnLayout>>,
+}
+
+/// One column of a table's default layout — the on-disk mirror of the
+/// frontend's `ColumnState`. Its `key` names a column of whichever
+/// table the setting belongs to; the host does not interpret it (see
+/// [`Settings::trace_columns`]).
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ColumnLayout {
+    pub key: String,
+    pub width: u64,
+    pub visible: bool,
 }
 
 /// The smallest legal value of any millisecond-interval setting.
@@ -293,6 +395,24 @@ pub const SYSTEM_LOG_LEVELS: &[&str] = &["debug", "info", "warn", "error"];
 /// startup.
 pub const SIDECAR_LOG_LEVELS: &[&str] = &["debug", "info", "warning", "error"];
 
+/// The view names [`Settings::trace_mode`] accepts — the two modes a
+/// trace panel switches between, spelled as the panel's own `TraceMode`
+/// spells them, since the value crosses the IPC verbatim.
+///
+/// Stated once: [`validate`] refuses anything outside it, and it is what
+/// the field's descriptor publishes as its `enum` options.
+pub const TRACE_MODES: &[&str] = &["chronological", "by-id"];
+
+/// The layout names [`Settings::plot_y_axis_mode`] accepts — the plot's
+/// own `YAxisMode` spellings (ADR 0026), since the value crosses the IPC
+/// verbatim and is narrowed by `yAxisModeFromRaw` on arrival.
+pub const Y_AXIS_MODES: &[&str] = &["unified", "per-unit", "individual"];
+
+/// The renderings [`Settings::can_id_format`] accepts for a trace-style
+/// table's `id` column. The names are the frontend's `CanIdFormat`
+/// spellings, since the value crosses the IPC verbatim.
+pub const CAN_ID_FORMATS: &[&str] = &["hex", "decimal"];
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -319,6 +439,14 @@ impl Default for Settings {
             driver_module: String::new(),
             log_file_min_level: "debug".to_string(),
             sidecar_log_level: "info".to_string(),
+            trace_mode: "by-id".to_string(),
+            trace_auto_scroll: true,
+            trace_show_events: true,
+            plot_y_axis_mode: "unified".to_string(),
+            dbc_auto_reload: true,
+            can_id_format: "hex".to_string(),
+            trace_columns: None,
+            signal_columns: None,
         }
     }
 }
@@ -420,6 +548,15 @@ pub(crate) fn validate(settings: Settings) -> (Settings, Vec<String>) {
             settings.scratch_cap_bytes = None;
         }
     }
+    refuse_unknown_options(&mut settings, &mut complaints);
+    refuse_below_minimums(&mut settings, &mut complaints);
+    (settings, complaints)
+}
+
+/// The fixed-option half of [`validate`]: one table row per field whose
+/// value must be one of a published list. Split out of `validate` only
+/// because the two tables together outgrew one function.
+fn refuse_unknown_options(settings: &mut Settings, complaints: &mut Vec<String>) {
     let d = Settings::default();
     for (key, value, allowed, default) in [
         (
@@ -440,9 +577,33 @@ pub(crate) fn validate(settings: Settings) -> (Settings, Vec<String>) {
             SIDECAR_LOG_LEVELS,
             d.sidecar_log_level.clone(),
         ),
+        (
+            "trace_mode",
+            &mut settings.trace_mode,
+            TRACE_MODES,
+            d.trace_mode.clone(),
+        ),
+        (
+            "plot_y_axis_mode",
+            &mut settings.plot_y_axis_mode,
+            Y_AXIS_MODES,
+            d.plot_y_axis_mode.clone(),
+        ),
+        (
+            "can_id_format",
+            &mut settings.can_id_format,
+            CAN_ID_FORMATS,
+            d.can_id_format.clone(),
+        ),
     ] {
-        refuse_unknown(&mut complaints, key, value, allowed, default);
+        refuse_unknown(complaints, key, value, allowed, default);
     }
+}
+
+/// The numeric-floor half of [`validate`]: one table row per field with
+/// a published minimum. Its counterpart is [`refuse_unknown_options`].
+fn refuse_below_minimums(settings: &mut Settings, complaints: &mut Vec<String>) {
+    let d = Settings::default();
     for (key, value, min, default) in [
         (
             "notice_dwell_ms",
@@ -499,9 +660,8 @@ pub(crate) fn validate(settings: Settings) -> (Settings, Vec<String>) {
             d.log_rotation_bytes,
         ),
     ] {
-        refuse_below(&mut complaints, key, value, min, default);
+        refuse_below(complaints, key, value, min, default);
     }
-    (settings, complaints)
 }
 
 /// Refuse `value` if it is below `min`, reporting the field by name and
@@ -708,6 +868,18 @@ mod tests {
             driver_module: "my_team.driver".to_string(),
             log_file_min_level: "info".to_string(),
             sidecar_log_level: "debug".to_string(),
+            trace_mode: "chronological".to_string(),
+            trace_auto_scroll: false,
+            trace_show_events: false,
+            plot_y_axis_mode: "individual".to_string(),
+            dbc_auto_reload: false,
+            can_id_format: "decimal".to_string(),
+            trace_columns: Some(vec![ColumnLayout {
+                key: "data".to_string(),
+                width: 400,
+                visible: false,
+            }]),
+            signal_columns: None,
         }
     }
 

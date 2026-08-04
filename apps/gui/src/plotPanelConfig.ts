@@ -7,8 +7,11 @@
  * Split out of `PlotPanel.tsx` so the renderer components
  * (`PlotPanel` / `PlotArea`) share one definition without importing each
  * other, and so the parse/format logic is unit-testable without dragging
- * uPlot into a jsdom run. No React / uPlot imports live here.
+ * uPlot into a jsdom run. No uPlot and no components live here; the one
+ * runtime dependency it takes is `hostSettings`, which {@link newPlotArea}
+ * reads for the configured default y-axis mode.
  */
+import { hostSettings } from "./hostSettings";
 import { signalKey } from "./plotData";
 import { SIGNAL_WHEEL } from "./palette";
 import { DEFAULT_MEASUREMENTS, type MeasurementKey, type Series, isMeasurementKey } from "./plotCursors";
@@ -219,8 +222,27 @@ export function parseDroppedSignals(s: string): {
   };
 }
 
+/** Narrow a persisted `yAxisMode` to a {@link YAxisMode}. The `unified`
+ * fallback here is a *compatibility* answer — what an area saved before
+ * the field existed was drawn as — and deliberately **not** the
+ * `plot_y_axis_mode` setting: re-reading that for an existing area would
+ * re-lay-out plots the user already has. Only {@link newPlotArea} reads
+ * the setting. */
 export function yAxisModeFromRaw(v: unknown): YAxisMode {
   return v === "per-unit" || v === "individual" ? v : "unified";
+}
+
+/** A brand-new, empty plot area — the panel's "add plot area" button and
+ * the first area of a panel with no saved layout. This is the one place
+ * the `plot_y_axis_mode` setting is read: a *default* seeds a view at
+ * creation and never touches one that exists. */
+export function newPlotArea(): PlotAreaConfig {
+  return {
+    id: crypto.randomUUID(),
+    signals: [],
+    primarySignalKey: null,
+    yAxisMode: yAxisModeFromRaw(hostSettings().plot_y_axis_mode),
+  };
 }
 
 export function areasFromParams(raw: unknown): PlotAreaConfig[] {
@@ -255,7 +277,7 @@ export function areasFromParams(raw: unknown): PlotAreaConfig[] {
     }
     if (out.length > 0) return out;
   }
-  return [{ id: crypto.randomUUID(), signals: [], primarySignalKey: null }];
+  return [newPlotArea()];
 }
 
 export function cursorModeFromRaw(raw: unknown): CursorMode {

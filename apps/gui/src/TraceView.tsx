@@ -3,7 +3,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import type { TraceFrameRecord } from "./types";
 import type { TimelineEvent } from "./notes";
 import type { TraceRow } from "./trace";
-import { formatTimestamp } from "./format";
+import { formatTimestamp, type CanIdFormat } from "./format";
 import { type ColorResolver } from "./colorMap";
 import { DecodedSignalCell } from "./DecodedSignalCell";
 import {
@@ -15,6 +15,7 @@ import {
   wheelDeltaPx,
 } from "./traceViewport";
 import { useTraceViewport } from "./useTraceViewport";
+import { useSetting } from "./hostSettings";
 import { toggleInSet } from "./toggleSet";
 import {
   type BusLookup,
@@ -110,6 +111,12 @@ export function TraceView({
   showHeader = true,
 }: TraceViewProps) {
   diagCount("render.TraceView"); // DIAG
+
+  // How the `id` column renders (`can_id_format`). Read through
+  // `useSetting` — not `hostSettings()` — because the rows are memoised:
+  // a change has to arrive as a *changed prop* or the visible window
+  // keeps painting the old format until something else moves.
+  const idFormat = useSetting("can_id_format") as CanIdFormat;
 
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   // Absolute row at the top of the viewport, and the single source of
@@ -315,6 +322,7 @@ export function TraceView({
                   frame={r?.row === "frame" ? r.frame : null}
                   event={r?.row === "event" ? r.event : null}
                   baseTimestamp={baseTimestampSeconds}
+                  idFormat={idFormat}
                   columns={visible}
                   gridTemplate={gridTemplate}
                   busLookup={busLookup}
@@ -343,6 +351,7 @@ interface RowProps {
   /// the single renderer draws an event row instead of frame cells.
   event: TimelineEvent | null;
   baseTimestamp: number | null;
+  idFormat: CanIdFormat;
   columns: readonly ColumnState[];
   gridTemplate: string;
   busLookup: BusLookup;
@@ -359,6 +368,7 @@ const Row = memo(function Row({
   frame,
   event,
   baseTimestamp,
+  idFormat,
   columns,
   gridTemplate,
   busLookup,
@@ -393,7 +403,7 @@ const Row = memo(function Row({
     >
       {columns.map((c) => (
         <span key={c.key} className={columnDef(c.key).className}>
-          {cellContent(c.key, frame, absoluteIndex, baseTimestamp, isExpanded, busLookup)}
+          {cellContent(c.key, frame, absoluteIndex, baseTimestamp, idFormat, isExpanded, busLookup)}
         </span>
       ))}
       {isExpanded && frame?.decoded && (

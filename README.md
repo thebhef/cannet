@@ -364,7 +364,11 @@ the transmit panel to create a new TX frame for that message;
 multi-select (click / Shift-click / Cmd-Ctrl-click) drags the whole
 selection at once. The host watches every loaded DBC file and
 auto-reloads the in-memory copy when the file changes on disk — no
-need to click Reload after editing a DBC in another tool. Singleton
+need to click Reload after editing a DBC in another tool. Turn
+**`dbc_auto_reload`** off if you would rather choose the moment the
+decoding changes while you are editing a DBC mid-analysis; a file that
+disappears is still reported either way, and Reload DBC still works.
+Singleton
 like the project panel, and read-only (DBCs are added / removed from
 the project panel, not from here). New panels arrive as a tab
 in the active group — drag a
@@ -499,6 +503,25 @@ writes, so the panel teaches the file.
   launched with — its directory, its driver module, its log level —
   are re-read on every spawn, so **Restart sidecar** applies a change
   without relaunching cannet.
+- **Defaults you can still change per view.** Some settings only decide
+  what a *new* view starts as — the trace panel's **Default trace
+  view**, **Default auto-scroll**, and **Default events overlay**, the
+  plot's **Default y-axis layout**, and **Default trace columns** /
+  **Default signal columns** (which columns a new table shows, in what
+  order, how wide).
+  They are read once, when the view is created, and the view's own
+  controls win from then on: changing one of these never reaches back
+  into a panel you already have open, and a panel restored from a
+  project keeps what you set in it. The column rows are the one setting
+  with a purpose-built editor rather than a plain control — a table
+  header adjusts the panel in front of you, so the default needs a home
+  of its own; **Use the built-in layout** puts it back.
+- **CAN-ID format.** The trace and by-ID tables spell an arbitration id
+  in zero-padded hex by default; **`can_id_format`** switches them to
+  decimal. The `s:` / `x:` prefix stays either way — 11-bit and 29-bit
+  ids overlap as numbers, so it is the only thing saying which frame a
+  row is. Display columns only: the transmit and filter editors still
+  take hex.
 - **`developer` settings.** Machine-load and internal-cadence knobs —
   the plot's fetch interval, the view refresh interval, the live-update
   rate, the reconnect backoff, the health-sample cadence, the status

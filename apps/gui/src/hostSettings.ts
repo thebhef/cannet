@@ -102,6 +102,44 @@ export interface Settings {
   /// Log level the python-can sidecar runs at — Python's ladder, whose
   /// third rung is `warning`, not `warn`.
   sidecar_log_level: string;
+  /// Which view a *freshly created* trace panel opens in. Read once,
+  /// when the panel seeds its state; the panel's own buttons still win
+  /// afterwards, and changing this never rewrites an open panel.
+  trace_mode: string;
+  /// Whether a *freshly created* chronological trace starts pinned to
+  /// the live tail. Read once at panel creation.
+  trace_auto_scroll: boolean;
+  /// Whether a *freshly created* chronological trace interleaves
+  /// timeline events among its rows. Read once at panel creation.
+  trace_show_events: boolean;
+  /// How a *newly created* plot area spreads its series over y-axes
+  /// (ADR 0026). Read once, when the area is created; an area that
+  /// already exists keeps the layout it was drawn with.
+  plot_y_axis_mode: string;
+  /// Whether a loaded DBC is re-read when the file changes on disk.
+  /// Host-consumed (`dbc_watcher`); listed here because the mirror
+  /// carries every field of `settings.json`.
+  dbc_auto_reload: boolean;
+  /// How a trace-style table's `id` column spells an arbitration id —
+  /// the frontend's `CanIdFormat`. App-wide: the trace and by-ID tables
+  /// read it and pass it to their rows.
+  can_id_format: string;
+  /// The column layout a *newly created* trace or by-ID table opens
+  /// with; `null` = the app's built-in layout. Round-tripped by the
+  /// host without interpretation — the column key set is declared here
+  /// (`traceColumns.ts`), so this side validates it.
+  trace_columns: ColumnLayout[] | null;
+  /// The same for the signal table's own column set
+  /// (`signalColumns.ts`).
+  signal_columns: ColumnLayout[] | null;
+}
+
+/// One column of a stored default table layout — the wire mirror of
+/// `ColumnState` in `traceColumns.ts`.
+export interface ColumnLayout {
+  key: string;
+  width: number;
+  visible: boolean;
 }
 
 export function defaultSettings(): Settings {
@@ -129,6 +167,14 @@ export function defaultSettings(): Settings {
     driver_module: "",
     log_file_min_level: "debug",
     sidecar_log_level: "info",
+    trace_mode: "by-id",
+    trace_auto_scroll: true,
+    trace_show_events: true,
+    plot_y_axis_mode: "unified",
+    dbc_auto_reload: true,
+    can_id_format: "hex",
+    trace_columns: null,
+    signal_columns: null,
   };
 }
 

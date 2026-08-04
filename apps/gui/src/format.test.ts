@@ -30,14 +30,36 @@ describe("formatCanIdHex", () => {
 describe("formatId", () => {
   it("prefixes a standard id with s: and 3 hex digits", () => {
     const frame = { id: 0x100, extended: false } as TraceFrameRecord;
-    expect(formatId(frame)).toBe(`s:${formatCanIdHex(0x100, false)}`);
-    expect(formatId(frame)).toBe("s:100");
+    expect(formatId(frame, "hex")).toBe(`s:${formatCanIdHex(0x100, false)}`);
+    expect(formatId(frame, "hex")).toBe("s:100");
   });
 
   it("prefixes an extended id with x: and 8 hex digits", () => {
     const frame = { id: 0x100, extended: true } as TraceFrameRecord;
-    expect(formatId(frame)).toBe(`x:${formatCanIdHex(0x100, true)}`);
-    expect(formatId(frame)).toBe("x:00000100");
+    expect(formatId(frame, "hex")).toBe(`x:${formatCanIdHex(0x100, true)}`);
+    expect(formatId(frame, "hex")).toBe("x:00000100");
+  });
+
+  it("renders the id in base ten when asked, unpadded", () => {
+    // The `can_id_format` setting's other value. Decimal has no
+    // natural width, so there is nothing to pad to.
+    expect(formatId({ id: 0x100, extended: false } as TraceFrameRecord, "decimal")).toBe("s:256");
+    expect(formatId({ id: 0x1fffffff, extended: true } as TraceFrameRecord, "decimal")).toBe(
+      "x:536870911",
+    );
+  });
+
+  it("keeps the s: / x: discriminator in both formats", () => {
+    // 11-bit and 29-bit ids overlap numerically, so the prefix is the
+    // only thing saying which frame a row is — it is not part of the
+    // formatting choice.
+    const std = { id: 0x100, extended: false } as TraceFrameRecord;
+    const ext = { id: 0x100, extended: true } as TraceFrameRecord;
+    for (const format of ["hex", "decimal"] as const) {
+      expect(formatId(std, format).startsWith("s:")).toBe(true);
+      expect(formatId(ext, format).startsWith("x:")).toBe(true);
+      expect(formatId(std, format)).not.toBe(formatId(ext, format));
+    }
   });
 });
 

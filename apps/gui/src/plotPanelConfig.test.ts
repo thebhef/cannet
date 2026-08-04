@@ -1,6 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
+// A new plot area takes its y-axis mode from `plot_y_axis_mode`, so
+// these tests need a host to hydrate that setting from.
+let storedSettings: Record<string, unknown> = {};
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(async (cmd: string) => (cmd === "get_settings" ? { ...storedSettings } : null)),
+}));
+
+const {
   TRACE_COLORS,
   areasFromParams,
   cursorModeFromRaw,
@@ -9,12 +16,19 @@ import {
   fmtVal,
   isSignalRefCore,
   measKeysFromRaw,
+  newPlotArea,
   signalRefKey,
   signalsWidthFromRaw,
   withColor,
   yAxisModeFromRaw,
-  type SignalRef,
-} from "./plotPanelConfig";
+} = await import("./plotPanelConfig");
+type SignalRef = import("./plotPanelConfig").SignalRef;
+const { hydrateSettings } = await import("./hostSettings");
+
+beforeEach(async () => {
+  storedSettings = {};
+  await hydrateSettings();
+});
 
 const core = {
   busId: "b1",
@@ -128,6 +142,35 @@ describe("scalar param parsers", () => {
     expect(yAxisModeFromRaw("individual")).toBe("individual");
     expect(yAxisModeFromRaw("unified")).toBe("unified");
     expect(yAxisModeFromRaw("bogus")).toBe("unified");
+  });
+});
+
+describe("the default y-axis mode", () => {
+  it("seeds a new area from the setting, not from a literal", async () => {
+    // `unified` is the built-in default, so a configured `per-unit`
+    // proves the mode came from `settings.json`.
+    storedSettings = { plot_y_axis_mode: "per-unit" };
+    await hydrateSettings();
+    expect(newPlotArea().yAxisMode).toBe("per-unit");
+    // Same for the area a panel with no saved layout opens with.
+    expect(areasFromParams(undefined)[0].yAxisMode).toBe("per-unit");
+  });
+
+  it("leaves an area that already has a mode alone", async () => {
+    storedSettings = { plot_y_axis_mode: "individual" };
+    await hydrateSettings();
+    const areas = areasFromParams([{ id: "a", signals: [], yAxisMode: "per-unit" }]);
+    expect(areas[0].yAxisMode).toBe("per-unit");
+  });
+
+  it("does not retro-fit an area saved before the field existed", async () => {
+    // A saved area with no `yAxisMode` was drawn unified, and changing
+    // the *creation* default must not silently re-lay-it-out. Only a
+    // brand-new area reads the setting.
+    storedSettings = { plot_y_axis_mode: "individual" };
+    await hydrateSettings();
+    const areas = areasFromParams([{ id: "a", signals: [] }]);
+    expect(areas[0].yAxisMode).toBe("unified");
   });
 });
 

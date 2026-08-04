@@ -9,8 +9,16 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render } from "@testing-library/react";
+import { act, cleanup, fireEvent, render } from "@testing-library/react";
 
+/// The `id` column's format is the `can_id_format` setting, so this
+/// file needs a host to hydrate it from.
+let storedSettings: Record<string, unknown> = {};
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(async (cmd: string) => (cmd === "get_settings" ? { ...storedSettings } : null)),
+}));
+
+import { hydrateSettings } from "./hostSettings";
 import { TraceView } from "./TraceView";
 import { defaultColumns } from "./traceColumns";
 import { SIGNAL_DND_MIME } from "./dragSignals";
@@ -82,12 +90,41 @@ function renderExpandedRow() {
   return { container, row };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+  storedSettings = {};
+  await hydrateSettings();
 });
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+});
+
+describe("TraceView id column", () => {
+  const idCell = (container: HTMLElement) =>
+    container.querySelector(".trace-row .col-id")?.textContent;
+
+  it("spells the arbitration id the way can_id_format says", async () => {
+    // Hex is the default, so decimal proves the column read the
+    // setting rather than the old hex-only formatter.
+    storedSettings = { can_id_format: "decimal" };
+    await hydrateSettings();
+    const { container } = renderExpandedRow();
+    expect(idCell(container)).toBe("s:256");
+  });
+
+  it("repaints already-rendered rows when the format changes", async () => {
+    // The rows are memoised, so the setting has to reach them as a
+    // changed prop — reading it inside the cell renderer would leave
+    // the visible window showing the old format.
+    const { container } = renderExpandedRow();
+    expect(idCell(container)).toBe("s:100");
+    storedSettings = { can_id_format: "decimal" };
+    await act(async () => {
+      await hydrateSettings();
+    });
+    expect(idCell(container)).toBe("s:256");
+  });
 });
 
 describe("TraceView expanded-row signal sub-rows", () => {

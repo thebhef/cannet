@@ -28,6 +28,7 @@ import {
   cursorModeFromRaw,
   fmtCount,
   measKeysFromRaw,
+  newPlotArea,
   signalRefKey,
   signalsWidthFromRaw,
   type AxisHandlers,
@@ -676,7 +677,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
   // --- area ops ---
   const addArea = useCallback(() => {
     setAreas((prev) => {
-      const next: PlotAreaConfig = { id: crypto.randomUUID(), signals: [], primarySignalKey: null };
+      const next: PlotAreaConfig = newPlotArea();
       setFocusedAreaId(next.id);
       return [...prev, next];
     });

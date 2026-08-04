@@ -27,8 +27,8 @@ use serde::Serialize;
 
 use crate::persisted_json::{scope_of, Scope};
 use crate::settings::{
-    Settings, MIN_INTERVAL_MS, MIN_LOG_ROTATION_BYTES, MIN_SCRATCH_CAP_BYTES, MIN_SYSTEM_LOG_RING,
-    SCOPES, SIDECAR_LOG_LEVELS, SYSTEM_LOG_LEVELS,
+    Settings, CAN_ID_FORMATS, MIN_INTERVAL_MS, MIN_LOG_ROTATION_BYTES, MIN_SCRATCH_CAP_BYTES,
+    MIN_SYSTEM_LOG_RING, SCOPES, SIDECAR_LOG_LEVELS, SYSTEM_LOG_LEVELS, TRACE_MODES, Y_AXIS_MODES,
 };
 
 /// A whole-millisecond interval control: the shape every cadence
@@ -366,6 +366,96 @@ const DESCRIPTORS: &[Spec] = &[
             min: Some(MIN_INTERVAL_MS),
             unset: None,
         },
+    },
+    Spec {
+        key: "trace_mode",
+        backing: Backing::Field,
+        label: "Default trace view",
+        help: "Which view a new trace panel opens in: by-ID, one row per \
+               arbitration id, or the chronological row-per-frame trace. Only \
+               the starting point — the panel's own buttons still switch it, \
+               and a panel that is already open keeps what you set there.",
+        surfaces: &[Surface::Trace],
+        kind: Kind::Default,
+        control: Control::Enum {
+            options: TRACE_MODES,
+        },
+    },
+    Spec {
+        key: "trace_auto_scroll",
+        backing: Backing::Field,
+        label: "Default auto-scroll",
+        help: "Whether a new chronological trace starts pinned to the live \
+               edge. Turn it off to open looking at the beginning of a \
+               capture. The panel's auto-scroll box — and scrolling away from \
+               the tail — still wins once it is open.",
+        surfaces: &[Surface::Trace],
+        kind: Kind::Default,
+        control: Control::Bool,
+    },
+    Spec {
+        key: "trace_show_events",
+        backing: Backing::Field,
+        label: "Default events overlay",
+        help: "Whether a new chronological trace interleaves timeline events — \
+               your notes and the capture-truncation marker — among the frame \
+               rows. The panel's events box still wins once it is open.",
+        surfaces: &[Surface::Trace],
+        kind: Kind::Default,
+        control: Control::Bool,
+    },
+    Spec {
+        key: "plot_y_axis_mode",
+        backing: Backing::Field,
+        label: "Default y-axis layout",
+        help: "How a new plot area spreads its signals over y-axes: all                overlaid on one, one axis per unit, or one axis per signal.                Only the starting point — each area's own picker still wins,                and a plot you already have is left as it is drawn.",
+        surfaces: &[Surface::Plot],
+        kind: Kind::Default,
+        control: Control::Enum {
+            options: Y_AXIS_MODES,
+        },
+    },
+    Spec {
+        key: "trace_columns",
+        backing: Backing::Field,
+        label: "Default trace columns",
+        help: "Which columns a new trace or by-ID table shows, in what order,                and how wide. Only the starting point — drag a header to                reorder, drag its right edge to resize, right-click it to show                or hide, and a panel you already have keeps what you set there.",
+        surfaces: &[Surface::Trace, Surface::ById],
+        kind: Kind::Default,
+        control: Control::Custom {
+            renderer: "column-defaults",
+        },
+    },
+    Spec {
+        key: "signal_columns",
+        backing: Backing::Field,
+        label: "Default signal columns",
+        help: "The same, for the signal table, which has its own columns.                Count, rate and bus start hidden by default because a signal                list is usually read for values.",
+        surfaces: &[Surface::Signals],
+        kind: Kind::Default,
+        control: Control::Custom {
+            renderer: "column-defaults",
+        },
+    },
+    Spec {
+        key: "can_id_format",
+        backing: Backing::Field,
+        label: "CAN-ID format",
+        help: "How the trace and by-ID tables spell an arbitration id:                zero-padded hex, or plain decimal. The s: / x: prefix stays                either way — 11-bit and 29-bit ids overlap as numbers. Only the                display columns follow this; the transmit and filter editors                still take hex.",
+        surfaces: &[Surface::Trace, Surface::ById],
+        kind: Kind::Behaviour,
+        control: Control::Enum {
+            options: CAN_ID_FORMATS,
+        },
+    },
+    Spec {
+        key: "dbc_auto_reload",
+        backing: Backing::Field,
+        label: "Reload a DBC when it changes on disk",
+        help: "Re-read a loaded DBC as soon as the file is saved by another                tool, instead of waiting for Reload DBC. Turn it off when you                are editing a DBC while analysing a capture and would rather                choose the moment the decoding changes. A DBC that disappears                is reported either way.",
+        surfaces: &[Surface::Dbc],
+        kind: Kind::Behaviour,
+        control: Control::Bool,
     },
     Spec {
         key: "notice_dwell_ms",
