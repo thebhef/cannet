@@ -2,6 +2,7 @@ import {
   type DragEvent,
   type MouseEvent,
   useEffect,
+  useRef,
   useState,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -131,8 +132,18 @@ export function TransmitFrameRow({
   // isn't an interactive element. `closest(...)` catches clicks
   // inside the bus picker, byte cells, value-cells, send button, etc.
   // so those keep their own behaviour.
+  //
+  // The containment check is what keeps the row's floating layers
+  // alive: a combobox dropdown (and the calculated-fields modal) render
+  // through a portal, and React bubbles a portal's events up the
+  // *component* tree, so picking an option would otherwise land here as
+  // a background click — collapsing the row and unmounting the editor
+  // the user was in the middle of. Only clicks inside the row's own box
+  // are row clicks.
+  const rowRef = useRef<HTMLDivElement | null>(null);
   const onRowClick = (e: MouseEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement;
+    if (!rowRef.current?.contains(target)) return;
     if (
       target.closest(
         "input, button, textarea, label, [contenteditable], [draggable=true]",
@@ -145,6 +156,7 @@ export function TransmitFrameRow({
 
   return (
     <div
+      ref={rowRef}
       className="tx-frame-row"
       onDragOver={onFrameRowDragOver}
       onDrop={(e) => onFrameRowDrop(e, frame.id, onReorder)}

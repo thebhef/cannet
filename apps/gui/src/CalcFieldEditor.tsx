@@ -13,6 +13,7 @@
 // warnings when the config resolves.
 
 import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 
 import { Combobox } from "./Combobox";
@@ -198,7 +199,12 @@ export function CalcFieldEditor({
   const defaultCounter = dbcDefaults?.counter ?? null;
   const defaultCrc = dbcDefaults?.crc ?? null;
 
-  return (
+  // Rendered through a portal: the backdrop is `position: fixed` over
+  // the whole window, and one of its call sites (the transmit panel's
+  // frame row) is a click-to-expand container — a modal nested in that
+  // container's DOM turns every click on its own chrome into a
+  // background click on the row beneath it.
+  return createPortal(
     <div className="modal-backdrop" role="dialog" aria-label="Calculated fields">
       <div className="modal calc-editor">
         <div className="modal-title">Calculated fields — {messageLabel}</div>
@@ -373,6 +379,7 @@ export function CalcFieldEditor({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
