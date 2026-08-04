@@ -54,9 +54,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use tauri::{AppHandle, Manager};
 
+use crate::app_state::AppState;
 use crate::sys_debug;
 use crate::system_log::{LogLevel, SystemMessage};
-use crate::app_state::AppState;
 
 /// Rolling log file name under [`log_dir`].
 pub const LOG_FILE: &str = "cannet.log";

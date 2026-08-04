@@ -25,9 +25,9 @@ use cannet_core::{CanFramePayload, Direction};
 use cannet_dbc::{CalculatedFieldsConfig, FieldViolation, ResolvedCalculatedFields};
 use tauri::AppHandle;
 
-use crate::trace_store::RawTraceFrame;
 use crate::app_state::LoadedDbc;
 use crate::sys_debug;
+use crate::trace_store::RawTraceFrame;
 
 /// Minimum spacing of valid→invalid Info messages per `(bus, id)`.
 const TRANSITION_LOG_INTERVAL: Duration = Duration::from_secs(1);
@@ -153,7 +153,8 @@ impl VerificationState {
         inner
             .validity
             .retain(|(_, id, ext), _| live_ids.contains(&(*id, *ext)));
-        self.configured.store(!configs.is_empty(), Ordering::Relaxed);
+        self.configured
+            .store(!configs.is_empty(), Ordering::Relaxed);
         inner.configs = configs;
     }
 

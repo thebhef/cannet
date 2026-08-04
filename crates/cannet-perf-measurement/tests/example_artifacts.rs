@@ -70,8 +70,14 @@ fn layout_opens_representative_views() {
     // Declared element ids, keyed by kind.
     let mut elements_by_kind: HashMap<&str, HashSet<&str>> = HashMap::new();
     for e in &ex.project.elements {
-        let kind = e.get("kind").and_then(|v| v.as_str()).expect("element has kind");
-        let id = e.get("id").and_then(|v| v.as_str()).expect("element has id");
+        let kind = e
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .expect("element has kind");
+        let id = e
+            .get("id")
+            .and_then(|v| v.as_str())
+            .expect("element has id");
         elements_by_kind.entry(kind).or_default().insert(id);
     }
 
@@ -86,7 +92,10 @@ fn layout_opens_representative_views() {
         elements_by_kind.get("plot").is_some_and(|s| s.len() >= 2),
         "expected >=2 plot elements"
     );
-    assert!(elements_by_kind.contains_key("rbs"), "expected an rbs element");
+    assert!(
+        elements_by_kind.contains_key("rbs"),
+        "expected an rbs element"
+    );
 
     // The layout must be populated — an empty grid/panels renders nothing.
     let panels = ex
@@ -126,7 +135,9 @@ fn layout_opens_representative_views() {
             .and_then(serde_json::Value::as_str)
             .unwrap_or_else(|| panic!("panel {panel_id} has no params.elementId"));
         assert!(
-            elements_by_kind.get(kind).is_some_and(|s| s.contains(element_id)),
+            elements_by_kind
+                .get(kind)
+                .is_some_and(|s| s.contains(element_id)),
             "panel {panel_id} references unknown {kind} element {element_id:?}"
         );
         assert_eq!(
@@ -162,7 +173,10 @@ fn layout_opens_representative_views() {
     collect_leaf_views(root, &mut leaf_views);
     assert!(!leaf_views.is_empty(), "grid has no leaf views");
     for v in &leaf_views {
-        assert!(panels.contains_key(v), "grid references panel {v:?} absent from the panels map");
+        assert!(
+            panels.contains_key(v),
+            "grid references panel {v:?} absent from the panels map"
+        );
     }
     for panel_id in panels.keys() {
         assert!(
@@ -212,10 +226,16 @@ fn colormaps_match_dbc_enum_value_tables() {
         .iter()
         .filter(|e| e.get("kind").and_then(serde_json::Value::as_str) == Some("colormap"))
         .collect();
-    assert!(!colormaps.is_empty(), "expected colormap elements in the example");
+    assert!(
+        !colormaps.is_empty(),
+        "expected colormap elements in the example"
+    );
 
     for cm in colormaps {
-        let name = cm.get("name").and_then(serde_json::Value::as_str).unwrap_or("?");
+        let name = cm
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("?");
         let message_id = u32::try_from(
             cm.get("messageId")
                 .and_then(serde_json::Value::as_u64)
@@ -250,9 +270,18 @@ fn colormaps_match_dbc_enum_value_tables() {
             .and_then(serde_json::Value::as_array)
             .unwrap_or_else(|| panic!("{name}: rules missing"));
         for rule in rules {
-            let min = rule.get("min").and_then(serde_json::Value::as_i64).expect("rule.min");
-            let max = rule.get("max").and_then(serde_json::Value::as_i64).expect("rule.max");
-            assert_eq!(min, max, "{name}: enum rule should be degenerate, got [{min}, {max}]");
+            let min = rule
+                .get("min")
+                .and_then(serde_json::Value::as_i64)
+                .expect("rule.min");
+            let max = rule
+                .get("max")
+                .and_then(serde_json::Value::as_i64)
+                .expect("rule.max");
+            assert_eq!(
+                min, max,
+                "{name}: enum rule should be degenerate, got [{min}, {max}]"
+            );
             assert!(
                 enum_values.contains(&min),
                 "{name}: rule value {min} is not in {signal}'s VAL_ table"

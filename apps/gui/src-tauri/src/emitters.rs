@@ -29,7 +29,6 @@ const TRACE_GREW_TICK: Duration = Duration::from_millis(100);
 /// cadence.
 const TRACE_FLUSH_TICK: Duration = Duration::from_secs(2);
 
-
 /// Ceiling on the trailing frames shipped with a `trace-grew` event so
 /// the auto-scrolling trace view can paint its live tail without a fetch
 /// round-trip. Comfortably larger than any plausible visible-row count
@@ -61,9 +60,10 @@ pub(crate) fn live_tail_range(count: u64, requested: u64) -> Option<(u64, u64)> 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn set_live_tail_rows(state: State<'_, AppState>, rows: u64) {
-    state
-        .live_tail_rows
-        .store(rows.min(TRACE_GREW_TAIL), std::sync::atomic::Ordering::Relaxed);
+    state.live_tail_rows.store(
+        rows.min(TRACE_GREW_TAIL),
+        std::sync::atomic::Ordering::Relaxed,
+    );
 }
 
 /// Fraction of the gap to the raw rate that [`smooth_fps`] closes per
@@ -150,7 +150,9 @@ pub(crate) fn spawn_trace_grew_emitter(app: AppHandle) {
             // the decode runs only when one has said it wants it.
             let tail = match live_tail_range(
                 count,
-                state.live_tail_rows.load(std::sync::atomic::Ordering::Relaxed),
+                state
+                    .live_tail_rows
+                    .load(std::sync::atomic::Ordering::Relaxed),
             ) {
                 Some((from, to)) => collect_trace_records(state.inner(), from, to),
                 None => Vec::new(),
@@ -239,10 +241,7 @@ pub(crate) fn spawn_trace_flusher(app: AppHandle) {
                 if let Some(ts) = ts_seconds {
                     state.signal_caches.evict_below(ts);
                 }
-                if let Some(active) = state
-                    .filter_index()
-                    .as_mut()
-                {
+                if let Some(active) = state.filter_index().as_mut() {
                     active.index.evict_below(mark);
                 }
                 last_trimmed_mark = mark;

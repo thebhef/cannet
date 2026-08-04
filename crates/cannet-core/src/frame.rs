@@ -41,14 +41,20 @@ impl CanId {
         if raw > STANDARD_ID_MAX {
             return Err(IdError::StandardOutOfRange(raw));
         }
-        Ok(Self { raw, extended: false })
+        Ok(Self {
+            raw,
+            extended: false,
+        })
     }
 
     pub fn extended(raw: u32) -> Result<Self, IdError> {
         if raw > EXTENDED_ID_MAX {
             return Err(IdError::ExtendedOutOfRange(raw));
         }
-        Ok(Self { raw, extended: true })
+        Ok(Self {
+            raw,
+            extended: true,
+        })
     }
 
     pub fn raw(self) -> u32 {
@@ -311,7 +317,10 @@ mod tests {
     #[test]
     fn fd_frame_carries_brs_and_esi() {
         let id = CanId::extended(0x1AB).unwrap();
-        let flags = CanFdFlags { bitrate_switch: true, error_state_indicator: false };
+        let flags = CanFdFlags {
+            bitrate_switch: true,
+            error_state_indicator: false,
+        };
         let frame = CanFrame::fd(0, 1, id, Direction::Tx, vec![0xDE, 0xAD], flags).unwrap();
         match &frame.payload {
             CanFramePayload::Fd { data, flags } => {
@@ -326,14 +335,16 @@ mod tests {
     #[test]
     fn fd_frame_accepts_64_byte_payload() {
         let id = CanId::standard(0x1).unwrap();
-        let frame = CanFrame::fd(0, 0, id, Direction::Rx, vec![0; 64], CanFdFlags::default()).unwrap();
+        let frame =
+            CanFrame::fd(0, 0, id, Direction::Rx, vec![0; 64], CanFdFlags::default()).unwrap();
         assert_eq!(frame.payload.data().len(), 64);
     }
 
     #[test]
     fn fd_frame_rejects_oversize_payload() {
         let id = CanId::standard(0x1).unwrap();
-        let err = CanFrame::fd(0, 0, id, Direction::Rx, vec![0; 65], CanFdFlags::default()).unwrap_err();
+        let err =
+            CanFrame::fd(0, 0, id, Direction::Rx, vec![0; 65], CanFdFlags::default()).unwrap_err();
         assert_eq!(err, CanFrameError::FdPayloadTooLarge(65));
     }
 

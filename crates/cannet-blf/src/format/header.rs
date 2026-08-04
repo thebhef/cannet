@@ -116,7 +116,7 @@ impl SystemTime {
             year: u16::try_from(year).unwrap_or(0),
             month: u16::try_from(month).unwrap_or(0),
             day_of_week: 0, // BLF readers don't require this; Vector
-                            // populates it but it's redundant info
+            // populates it but it's redundant info
             day: u16::try_from(day).unwrap_or(0),
             hour: u16::try_from(day_secs / 3_600).unwrap_or(0),
             minute: u16::try_from((day_secs % 3_600) / 60).unwrap_or(0),
@@ -142,7 +142,11 @@ fn write_system_time(dst: &mut [u8], t: SystemTime) {
 /// from days." Returns (year, month, day).
 fn civil_from_days(days_since_epoch: i64) -> (i32, u32, u32) {
     let z = days_since_epoch + 719_468;
-    let era = if z >= 0 { z / 146_097 } else { (z - 146_096) / 146_097 };
+    let era = if z >= 0 {
+        z / 146_097
+    } else {
+        (z - 146_096) / 146_097
+    };
     let doe = u32::try_from(z - era * 146_097).unwrap_or(0); // [0, 146097)
     let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365; // [0, 400)
     let y_offset = i64::from(yoe) + era * 400;

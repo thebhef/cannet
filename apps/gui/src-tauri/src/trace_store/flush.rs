@@ -226,8 +226,7 @@ impl TraceStore {
                 let footprint = dir_footprint(dir);
                 (footprint > cap).then(|| {
                     u64::try_from(
-                        u128::from(footprint - cap) * u128::from(raw_bytes)
-                            / u128::from(footprint),
+                        u128::from(footprint - cap) * u128::from(raw_bytes) / u128::from(footprint),
                     )
                     .unwrap_or(footprint - cap)
                 })

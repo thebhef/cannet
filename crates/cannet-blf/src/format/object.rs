@@ -328,10 +328,8 @@ pub fn decode_framed(
             base.object_size,
         ));
     }
-    let event = ObjectHeaderV1::parse(
-        &object_bytes[OBJECT_HEADER_BASE_BYTES..EVENT_HEADER_BYTES],
-    )
-    .map_err(PreambleError::EventHeader)?;
+    let event = ObjectHeaderV1::parse(&object_bytes[OBJECT_HEADER_BASE_BYTES..EVENT_HEADER_BYTES])
+        .map_err(PreambleError::EventHeader)?;
     let body = &object_bytes[EVENT_HEADER_BYTES..base.object_size as usize];
     Ok(FramedObject { base, event, body })
 }
@@ -345,7 +343,12 @@ mod tests {
         assert_eq!(OBJECT_SIGNATURE.to_le_bytes(), *b"LOBJ");
     }
 
-    fn synth_header(header_size: u16, header_version: u16, object_size: u32, object_type: u32) -> [u8; 16] {
+    fn synth_header(
+        header_size: u16,
+        header_version: u16,
+        object_size: u32,
+        object_type: u32,
+    ) -> [u8; 16] {
         let mut bytes = [0u8; 16];
         bytes[0..4].copy_from_slice(b"LOBJ");
         bytes[4..6].copy_from_slice(&header_size.to_le_bytes());

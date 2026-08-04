@@ -47,6 +47,20 @@ refinements), and **Task 16** (hotkey framework).
 
 ### CI / checks
 
+- `[docs]` **`cannet-perf-measurement` CLI help text for
+  `--expected-rx-fps` mischaracterizes its own gate.** The doc comment
+  on `Cli::expected_rx_fps`
+  ([`crates/cannet-perf-measurement/src/main.rs:46-49`](crates/cannet-perf-measurement/src/main.rs))
+  says the metric is "gated ... as an absolute floor (measured ≥ 0.85×
+  expected)", but `check.rs`'s `expected_band_verdict` (and its own doc
+  comment, `tol::EXPECTED_FPS_BAND`) implements a genuine **two-sided**
+  ±15% band — both a shortfall and an overshoot fail. The 0.85 in the
+  CLI text is just the band's lower edge, mislabeled as the whole
+  story; the upper edge (1.15×) isn't mentioned at all. The README
+  already describes the real two-sided behavior correctly. Fix the
+  `--help` doc comment in `main.rs` to match. (Found auditing the
+  perf-measurement README against the CLI, chore-fmt-and-hooks branch.)
+
 Static and automated checks we'd like running on the repo to catch a
 class of bug before it ships, rather than relying on the next user to
 trip over it.

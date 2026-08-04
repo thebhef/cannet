@@ -162,7 +162,6 @@ impl SampleSeq {
         }
         Ok(())
     }
-
 }
 
 fn seg_path(dir: &Path, prefix: &str, seg: usize) -> PathBuf {
@@ -232,10 +231,17 @@ mod tests {
         assert!(before >= 4, "2000 points span several geometric segments");
         seq.evict_below(500);
         assert_eq!(seq.first_slot(), 500);
-        assert_eq!(seq.get(500), (500.0, 1000.0), "kept slot reads across the base shift");
+        assert_eq!(
+            seq.get(500),
+            (500.0, 1000.0),
+            "kept slot reads across the base shift"
+        );
         assert_eq!(seq.get(1999), (1999.0, 3998.0));
         let after = std::fs::read_dir(dir.path()).unwrap().count();
-        assert!(after < before, "leading pyramid segment files reclaimed: {after} < {before}");
+        assert!(
+            after < before,
+            "leading pyramid segment files reclaimed: {after} < {before}"
+        );
     }
 
     #[test]

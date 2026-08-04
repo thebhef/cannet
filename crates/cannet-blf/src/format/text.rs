@@ -25,8 +25,8 @@
 //! [`ObjectHeaderV1`]: super::object::ObjectHeaderV1
 
 use super::object::{
-    decode_framed, object_type, ObjectHeaderBase, ObjectHeaderError, ObjectHeaderV1,
-    PreambleError, OBJECT_FLAG_TIME_ONE_NANS, OBJECT_HEADER_BASE_BYTES, OBJECT_HEADER_V1_BYTES,
+    decode_framed, object_type, ObjectHeaderBase, ObjectHeaderError, ObjectHeaderV1, PreambleError,
+    OBJECT_FLAG_TIME_ONE_NANS, OBJECT_HEADER_BASE_BYTES, OBJECT_HEADER_V1_BYTES,
 };
 
 /// Width of the per-event header (base + v1) that prefixes both
@@ -110,9 +110,7 @@ impl std::error::Error for TextError {
 impl From<PreambleError> for TextError {
     fn from(e: PreambleError) -> Self {
         match e {
-            PreambleError::WrongObjectType(expected, got) => {
-                Self::WrongObjectType(expected, got)
-            }
+            PreambleError::WrongObjectType(expected, got) => Self::WrongObjectType(expected, got),
             PreambleError::BaseHeader(e) => Self::BaseHeader(e),
             PreambleError::EventHeader(e) => Self::EventHeader(e),
             PreambleError::TooSmall(got, required) => Self::TooSmall(got, required),
@@ -155,9 +153,9 @@ pub fn decode_event_comment(object_bytes: &[u8]) -> Result<EventComment, TextErr
     if text_length as usize > avail {
         return Err(TextError::TextLengthOverflowsBody(text_length, avail));
     }
-    let text =
-        body[EVENT_COMMENT_FIXED_PREFIX_BYTES..EVENT_COMMENT_FIXED_PREFIX_BYTES + text_length as usize]
-            .to_vec();
+    let text = body
+        [EVENT_COMMENT_FIXED_PREFIX_BYTES..EVENT_COMMENT_FIXED_PREFIX_BYTES + text_length as usize]
+        .to_vec();
     Ok(EventComment {
         base,
         event,
@@ -175,10 +173,9 @@ pub fn build_event_comment(
     commented_event_type: u32,
     text: Vec<u8>,
 ) -> EventComment {
-    let object_size = u32::try_from(
-        TEXT_EVENT_HEADER_BYTES + EVENT_COMMENT_FIXED_PREFIX_BYTES + text.len(),
-    )
-    .expect("EVENT_COMMENT size fits in u32 for realistic text payloads");
+    let object_size =
+        u32::try_from(TEXT_EVENT_HEADER_BYTES + EVENT_COMMENT_FIXED_PREFIX_BYTES + text.len())
+            .expect("EVENT_COMMENT size fits in u32 for realistic text payloads");
     EventComment {
         base: ObjectHeaderBase {
             header_size: 32,
@@ -260,9 +257,9 @@ pub fn decode_app_text(object_bytes: &[u8]) -> Result<AppText, TextError> {
     if text_length as usize > avail {
         return Err(TextError::TextLengthOverflowsBody(text_length, avail));
     }
-    let text =
-        body[APP_TEXT_FIXED_PREFIX_BYTES..APP_TEXT_FIXED_PREFIX_BYTES + text_length as usize]
-            .to_vec();
+    let text = body
+        [APP_TEXT_FIXED_PREFIX_BYTES..APP_TEXT_FIXED_PREFIX_BYTES + text_length as usize]
+        .to_vec();
     Ok(AppText {
         base,
         event,
@@ -416,7 +413,9 @@ mod tests {
 
     #[test]
     fn app_text_round_trips_db_channel_info() {
-        let packed = pack_db_channel_info(/*version*/ 1, /*channel*/ 2, /*bus*/ 1, /*fd*/ true);
+        let packed = pack_db_channel_info(
+            /*version*/ 1, /*channel*/ 2, /*bus*/ 1, /*fd*/ true,
+        );
         let a = build_app_text(
             0,
             APP_TEXT_SOURCE_DB_CHANNEL_INFO,

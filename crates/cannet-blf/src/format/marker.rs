@@ -30,8 +30,8 @@
 //! `from_utf8_lossy` as it sees fit.
 
 use super::object::{
-    decode_framed, object_type, ObjectHeaderBase, ObjectHeaderError, ObjectHeaderV1,
-    PreambleError, OBJECT_HEADER_BASE_BYTES, OBJECT_HEADER_V1_BYTES,
+    decode_framed, object_type, ObjectHeaderBase, ObjectHeaderError, ObjectHeaderV1, PreambleError,
+    OBJECT_HEADER_BASE_BYTES, OBJECT_HEADER_V1_BYTES,
 };
 
 /// Width of the per-event header that prefixes a `GLOBAL_MARKER`:
@@ -238,18 +238,16 @@ pub fn build(
 #[allow(clippy::missing_panics_doc)]
 #[must_use]
 pub fn encode(m: &GlobalMarker) -> Vec<u8> {
-    let body_size = MARKER_FIXED_PREFIX_BYTES
-        + m.group_name.len()
-        + m.marker_name.len()
-        + m.description.len();
+    let body_size =
+        MARKER_FIXED_PREFIX_BYTES + m.group_name.len() + m.marker_name.len() + m.description.len();
     let object_size = u32::try_from(MARKER_EVENT_HEADER_BYTES + body_size)
         .expect("GLOBAL_MARKER object_size fits in u32 for realistic note payloads");
-    let group_name_length = u32::try_from(m.group_name.len())
-        .expect("group_name length fits in u32");
-    let marker_name_length = u32::try_from(m.marker_name.len())
-        .expect("marker_name length fits in u32");
-    let description_length = u32::try_from(m.description.len())
-        .expect("description length fits in u32");
+    let group_name_length =
+        u32::try_from(m.group_name.len()).expect("group_name length fits in u32");
+    let marker_name_length =
+        u32::try_from(m.marker_name.len()).expect("marker_name length fits in u32");
+    let description_length =
+        u32::try_from(m.description.len()).expect("description length fits in u32");
 
     let base = ObjectHeaderBase {
         object_size,

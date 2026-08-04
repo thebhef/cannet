@@ -36,7 +36,10 @@ impl RawStore for MemRawStore {
             .entry((frame.id, frame.extended))
             .or_default()
             .push(idx);
-        self.max_ts = Some(self.max_ts.map_or(frame.timestamp_ns, |m| m.max(frame.timestamp_ns)));
+        self.max_ts = Some(
+            self.max_ts
+                .map_or(frame.timestamp_ns, |m| m.max(frame.timestamp_ns)),
+        );
         self.frames.push(frame);
         idx
     }

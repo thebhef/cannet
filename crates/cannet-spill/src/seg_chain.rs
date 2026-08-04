@@ -98,8 +98,7 @@ pub(crate) fn grow_fixed(
 ) {
     while seg_base + segs.len() <= target {
         let i = seg_base + segs.len();
-        let seg = create_segment(&path(i), seg_bytes(i))
-            .expect("cannet-spill: segment I/O failed");
+        let seg = create_segment(&path(i), seg_bytes(i)).expect("cannet-spill: segment I/O failed");
         segs.push(seg);
     }
 }
@@ -141,7 +140,12 @@ pub(crate) fn evict_leading(
 // so pass-by-value is the natural, zero-cost ergonomic API — `&T` would
 // force every caller to take a reference to a temporary.
 #[allow(clippy::needless_pass_by_value)]
-pub fn lower_bound<T: PartialOrd>(lo: usize, hi: usize, target: T, at: impl Fn(usize) -> T) -> usize {
+pub fn lower_bound<T: PartialOrd>(
+    lo: usize,
+    hi: usize,
+    target: T,
+    at: impl Fn(usize) -> T,
+) -> usize {
     let mut lo = lo;
     let mut hi = hi;
     while lo < hi {

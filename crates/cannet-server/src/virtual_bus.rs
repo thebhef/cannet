@@ -37,9 +37,9 @@ use cannet_wire::{
         cannet_server_server::{CannetServer as CannetServerTrait, CannetServerServer},
         envelope::Body,
         error::Code,
-        AttachBridge, DetachBridge, Envelope, FrameBatch,
-        Interface as ProtoInterface, InterfaceAllocated, InterfaceList, ListInterfacesRequest,
-        Subscribe, Unsubscribe, WatchInterfacesRequest,
+        AttachBridge, DetachBridge, Envelope, FrameBatch, Interface as ProtoInterface,
+        InterfaceAllocated, InterfaceList, ListInterfacesRequest, Subscribe, Unsubscribe,
+        WatchInterfacesRequest,
     },
     proto_to_frame,
 };
@@ -475,4 +475,3 @@ fn spawn_drain(
         })
         .expect("spawning vbus drain")
 }
-

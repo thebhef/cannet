@@ -473,10 +473,8 @@ pub(crate) async fn scan_blf_channels(app: AppHandle, blf_path: String) -> Resul
 /// `start_session` already wiped the raw store, the reopen manifest, and
 /// the prior identity / derived files; this writes the fresh identity.
 pub(crate) fn restamp_scratch_for_capture(state: &AppState) {
-    *state
-        .filter_index() = None;
-    let active = *state
-        .active_project_id();
+    *state.filter_index() = None;
+    let active = *state.active_project_id();
     state.trace_store.write_scratch_identity(active);
     // Drop the scratch copy of notes too (ADR 0002 DS-7): a reset session
     // starts with no events. The live `NotesStore` is cleared / replaced by
@@ -531,9 +529,11 @@ pub struct RestoredCapture {
 /// [`TraceStore::try_reload`], which only reloads on a matching identity.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub(crate) fn restore_scratch_capture(app: AppHandle, state: State<'_, AppState>) -> RestoredCapture {
-    let active = *state
-        .active_project_id();
+pub(crate) fn restore_scratch_capture(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> RestoredCapture {
+    let active = *state.active_project_id();
     if !active.is_some_and(|pid| state.trace_store.try_reload(pid)) {
         return RestoredCapture {
             count: 0,

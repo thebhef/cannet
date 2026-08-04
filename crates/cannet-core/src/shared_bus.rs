@@ -415,7 +415,11 @@ impl LocalSink {
             if state.shutdown {
                 return Err(BusClosed);
             }
-            let Some(participant) = state.participants.iter_mut().find(|n| n.id == self.participant_id) else {
+            let Some(participant) = state
+                .participants
+                .iter_mut()
+                .find(|n| n.id == self.participant_id)
+            else {
                 return Err(BusClosed);
             };
             let now = Instant::now();
@@ -613,7 +617,9 @@ fn broadcast(
 
 fn send_no_acknowledger(state: &BusState, originator_id: ParticipantId, frame: CanFrame) {
     if let Some(participant) = state.participants.iter().find(|n| n.id == originator_id) {
-        let _ = participant.events_tx.send(ParticipantEvent::NoAcknowledger(frame));
+        let _ = participant
+            .events_tx
+            .send(ParticipantEvent::NoAcknowledger(frame));
     }
 }
 
@@ -669,7 +675,7 @@ fn wall_clock_ns() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frame::{CanFrame, CanFdFlags, CanId, Direction};
+    use crate::frame::{CanFdFlags, CanFrame, CanId, Direction};
 
     fn classic(id: u32, data: Vec<u8>) -> CanFrame {
         CanFrame::classic(0, 0, CanId::standard(id).unwrap(), Direction::Tx, data).unwrap()
@@ -690,7 +696,11 @@ mod tests {
         .unwrap()
     }
 
-    fn drain_events(src: &mut LocalSource, count: usize, timeout: Duration) -> Vec<ParticipantEvent> {
+    fn drain_events(
+        src: &mut LocalSource,
+        count: usize,
+        timeout: Duration,
+    ) -> Vec<ParticipantEvent> {
         let deadline = Instant::now() + timeout;
         let mut out = Vec::with_capacity(count);
         while out.len() < count && Instant::now() < deadline {
@@ -856,8 +866,16 @@ mod tests {
         // ride the wall clock (paced by, but no longer derived from, the
         // simulated on-wire duration), so they can't be used to measure
         // the simulated spacing deterministically.
-        let slow_cfg = BusConfig { speed_bps: 50_000, fd_data_speed_bps: None, fd_enabled: false };
-        let fast_cfg = BusConfig { speed_bps: 5_000_000, fd_data_speed_bps: None, fd_enabled: false };
+        let slow_cfg = BusConfig {
+            speed_bps: 50_000,
+            fd_data_speed_bps: None,
+            fd_enabled: false,
+        };
+        let fast_cfg = BusConfig {
+            speed_bps: 5_000_000,
+            fd_data_speed_bps: None,
+            fd_enabled: false,
+        };
         let frame = classic(0x100, vec![0; 8]);
         assert!(
             frame_duration(&frame, &fast_cfg) * 10 < frame_duration(&frame, &slow_cfg),

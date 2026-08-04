@@ -19,6 +19,7 @@ use crate::model::{Database, DbcAttribute, MessageEntry, SignalEntry, ValueTable
 
 impl Database {
     /// Parse a DBC file from text.
+    #[allow(clippy::too_many_lines)] // rustfmt's struct-literal expansion pushed this over the limit
     pub fn parse(text: &str) -> Result<Self, DbcError> {
         let dbc = Dbc::try_from(text).map_err(|e| DbcError::Parse(e.to_string()))?;
 
@@ -116,20 +117,23 @@ impl Database {
             let comment = message_comments.get(&msg.id).cloned().unwrap_or_default();
             let attributes = message_attributes.remove(&msg.id).unwrap_or_default();
             let calc_fields = collect_calc_fields(&name, &signals, &mut warnings);
-            messages.insert(msg.id, MessageEntry {
-                name,
-                expected_len,
-                is_fd,
-                brs,
-                gen_msg_cycle_time_ms,
-                comment,
-                gen_msg_send_type,
-                transmitter,
-                attributes,
-                calc_fields,
-                multiplexor: multiplexor_index(&signals),
-                signals,
-            });
+            messages.insert(
+                msg.id,
+                MessageEntry {
+                    name,
+                    expected_len,
+                    is_fd,
+                    brs,
+                    gen_msg_cycle_time_ms,
+                    comment,
+                    gen_msg_send_type,
+                    transmitter,
+                    attributes,
+                    calc_fields,
+                    multiplexor: multiplexor_index(&signals),
+                    signals,
+                },
+            );
         }
         Ok(Self { messages, warnings })
     }
@@ -228,11 +232,7 @@ fn send_type_enum_labels(dbc: &Dbc) -> Option<&Vec<String>> {
 /// ENUM-typed definitions map the integer value through the
 /// `BA_DEF_` label list; STRING values pass through verbatim; a
 /// numeric value with no ENUM definition stringifies as-is.
-fn message_send_type(
-    dbc: &Dbc,
-    msg_id: MessageId,
-    labels: Option<&Vec<String>>,
-) -> Option<String> {
+fn message_send_type(dbc: &Dbc, msg_id: MessageId, labels: Option<&Vec<String>>) -> Option<String> {
     let av = dbc
         .attribute_values_message
         .iter()

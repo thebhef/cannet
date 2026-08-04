@@ -169,11 +169,13 @@ an uncommitted tree). A mode that can't run (e.g. no hardware) is omitted
 from the file rather than failing the capture.
 
 `check` re-runs each captured mode with the *same config the baseline
-stored* and compares; it reads the newest file in
-`docs/performance-measurements/` unless `--baseline <path>` is given. A
-mode present in the baseline but unrunnable now (no hardware) is
-**skipped, not failed**, so `check` still gates `tracebuffer` + `grpc` on
-a machine without PEAK adapters.
+stored* and compares; it defaults to reading the promoted
+`docs/performance-measurements/baseline.json` unless `--baseline <path>`
+is given — promoting a dated snapshot is a deliberate copy over
+`baseline.json`, not a "newest file wins" guess. A mode present in the
+baseline but unrunnable now (no hardware) is **skipped, not failed**, so
+`check` still gates `tracebuffer` + `grpc` on a machine without PEAK
+adapters.
 
 Gated metrics and tolerances (per host mode):
 

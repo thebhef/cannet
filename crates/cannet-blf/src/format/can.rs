@@ -31,8 +31,8 @@
 //! [`ObjectHeaderV1`]: super::object::ObjectHeaderV1
 
 use super::object::{
-    decode_framed, object_type, ObjectHeaderBase, ObjectHeaderError, ObjectHeaderV1,
-    PreambleError, OBJECT_FLAG_TIME_ONE_NANS, OBJECT_HEADER_BASE_BYTES, OBJECT_HEADER_V1_BYTES,
+    decode_framed, object_type, ObjectHeaderBase, ObjectHeaderError, ObjectHeaderV1, PreambleError,
+    OBJECT_FLAG_TIME_ONE_NANS, OBJECT_HEADER_BASE_BYTES, OBJECT_HEADER_V1_BYTES,
 };
 
 /// Width of the per-event header that prefixes every CAN-class
@@ -129,9 +129,7 @@ impl std::error::Error for CanObjectError {
 impl From<PreambleError> for CanObjectError {
     fn from(e: PreambleError) -> Self {
         match e {
-            PreambleError::WrongObjectType(expected, got) => {
-                Self::WrongObjectType(expected, got)
-            }
+            PreambleError::WrongObjectType(expected, got) => Self::WrongObjectType(expected, got),
             PreambleError::BaseHeader(e) => Self::BaseHeader(e),
             PreambleError::EventHeader(e) => Self::EventHeader(e),
             PreambleError::TooSmall(got, required) => Self::TooSmall(got, required),
@@ -236,10 +234,9 @@ pub fn build_can_message2(
     id_raw: u32,
     data: Vec<u8>,
 ) -> CanMessage2 {
-    let object_size = u32::try_from(
-        CAN_EVENT_HEADER_BYTES + CAN_MESSAGE2_FIXED_BODY_BYTES + data.len(),
-    )
-    .expect("CAN_MESSAGE2 size fits in u32");
+    let object_size =
+        u32::try_from(CAN_EVENT_HEADER_BYTES + CAN_MESSAGE2_FIXED_BODY_BYTES + data.len())
+            .expect("CAN_MESSAGE2 size fits in u32");
     CanMessage2 {
         base: ObjectHeaderBase {
             header_size: 32,
@@ -627,9 +624,7 @@ impl CanFdMessage64 {
 // `try_into().unwrap()` calls are unreachable: every slice is
 // length-checked at the top.
 #[allow(clippy::missing_panics_doc)]
-pub fn decode_can_fd_message_64(
-    object_bytes: &[u8],
-) -> Result<CanFdMessage64, CanObjectError> {
+pub fn decode_can_fd_message_64(object_bytes: &[u8]) -> Result<CanFdMessage64, CanObjectError> {
     let framed = decode_framed(
         object_bytes,
         object_type::CAN_FD_MESSAGE_64,
@@ -728,10 +723,9 @@ pub fn build_can_fd_message_64(
     dir: u8,
     data: Vec<u8>,
 ) -> CanFdMessage64 {
-    let object_size = u32::try_from(
-        CAN_EVENT_HEADER_BYTES + CAN_FD_MESSAGE_64_FIXED_PREFIX_BYTES + data.len(),
-    )
-    .expect("CAN_FD_MESSAGE_64 size fits in u32");
+    let object_size =
+        u32::try_from(CAN_EVENT_HEADER_BYTES + CAN_FD_MESSAGE_64_FIXED_PREFIX_BYTES + data.len())
+            .expect("CAN_FD_MESSAGE_64 size fits in u32");
     CanFdMessage64 {
         base: ObjectHeaderBase {
             header_size: 32,
@@ -885,7 +879,12 @@ pub fn encode_can_error_ext(m: &CanErrorExt) -> Vec<u8> {
 // The `expect` is unreachable on every realistic input.
 #[allow(clippy::missing_panics_doc)]
 #[must_use]
-pub fn build_can_error_ext(timestamp_ns: u64, channel: u16, id_raw: u32, flags_ext: u16) -> CanErrorExt {
+pub fn build_can_error_ext(
+    timestamp_ns: u64,
+    channel: u16,
+    id_raw: u32,
+    flags_ext: u16,
+) -> CanErrorExt {
     let object_size = u32::try_from(CAN_EVENT_HEADER_BYTES + CAN_ERROR_EXT_FIXED_PREFIX_BYTES)
         .expect("CAN_ERROR_EXT size fits in u32");
     CanErrorExt {
@@ -950,12 +949,13 @@ mod tests {
 
     /// Build one full on-disk `CAN_MESSAGE2` object (no inter-object padding).
     fn synth_can_message2(f: Cm2Fixture<'_>) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(CAN_EVENT_HEADER_BYTES + CAN_MESSAGE2_FIXED_BODY_BYTES + f.data.len());
-
-        let object_size = u32::try_from(
+        let mut bytes = Vec::with_capacity(
             CAN_EVENT_HEADER_BYTES + CAN_MESSAGE2_FIXED_BODY_BYTES + f.data.len(),
-        )
-        .unwrap();
+        );
+
+        let object_size =
+            u32::try_from(CAN_EVENT_HEADER_BYTES + CAN_MESSAGE2_FIXED_BODY_BYTES + f.data.len())
+                .unwrap();
 
         // ObjectHeaderBase
         bytes.extend_from_slice(b"LOBJ");
@@ -1094,21 +1094,22 @@ mod tests {
         writer.finish().unwrap();
 
         let mut all = Vec::new();
-        std::fs::File::open(&path).unwrap().read_to_end(&mut all).unwrap();
+        std::fs::File::open(&path)
+            .unwrap()
+            .read_to_end(&mut all)
+            .unwrap();
         let after_stats = &all[FILE_STATISTICS_MIN_BYTES..];
         let base = ObjectHeaderBase::parse(after_stats).unwrap();
-        let container =
-            log_container::decode(&after_stats[..base.object_size as usize]).unwrap();
+        let container = log_container::decode(&after_stats[..base.object_size as usize]).unwrap();
 
         let inner_base = ObjectHeaderBase::parse(&container.uncompressed_payload).unwrap();
         if inner_base.object_type != object_type::CAN_MESSAGE2 {
             // `blf_asc` writes CAN_MESSAGE (type 1) — wait for step 6.
             return;
         }
-        let m = decode_can_message2(
-            &container.uncompressed_payload[..inner_base.object_size as usize],
-        )
-        .unwrap();
+        let m =
+            decode_can_message2(&container.uncompressed_payload[..inner_base.object_size as usize])
+                .unwrap();
         assert_eq!(m.can_id(), 0x321);
         assert_eq!(m.data, vec![0xDE, 0xAD, 0xBE, 0xEF]);
     }
@@ -1209,21 +1210,22 @@ mod tests {
         writer.finish().unwrap();
 
         let mut all = Vec::new();
-        std::fs::File::open(&path).unwrap().read_to_end(&mut all).unwrap();
+        std::fs::File::open(&path)
+            .unwrap()
+            .read_to_end(&mut all)
+            .unwrap();
         let after_stats = &all[FILE_STATISTICS_MIN_BYTES..];
         let base = ObjectHeaderBase::parse(after_stats).unwrap();
-        let container =
-            log_container::decode(&after_stats[..base.object_size as usize]).unwrap();
+        let container = log_container::decode(&after_stats[..base.object_size as usize]).unwrap();
         let inner_base = ObjectHeaderBase::parse(&container.uncompressed_payload).unwrap();
         if inner_base.object_type != object_type::CAN_MESSAGE {
             // If `blf_asc` ever flips to CAN_MESSAGE2, the other test
             // covers it; this one is then a no-op.
             return;
         }
-        let m = decode_can_message(
-            &container.uncompressed_payload[..inner_base.object_size as usize],
-        )
-        .unwrap();
+        let m =
+            decode_can_message(&container.uncompressed_payload[..inner_base.object_size as usize])
+                .unwrap();
         assert_eq!(m.can_id(), 0x456);
         assert_eq!(m.payload(), &[0xCA, 0xFE]);
         // Channel-convention reconciliation (BLF stores 1-based,
@@ -1231,7 +1233,11 @@ mod tests {
         // 6); at the format layer we only assert the raw on-disk
         // value is non-zero — which is the spec's "known channel"
         // sentinel.
-        assert!(m.channel >= 1, "expected non-zero channel, got {}", m.channel);
+        assert!(
+            m.channel >= 1,
+            "expected non-zero channel, got {}",
+            m.channel
+        );
     }
 
     // ----- CAN_FD_MESSAGE ---------------------------------------
@@ -1240,7 +1246,8 @@ mod tests {
     fn decodes_a_can_fd_message() {
         // Hand-build: 32-byte event header + 88-byte body.
         let mut bytes = Vec::with_capacity(CAN_EVENT_HEADER_BYTES + CAN_FD_MESSAGE_BODY_BYTES);
-        let object_size = u32::try_from(CAN_EVENT_HEADER_BYTES + CAN_FD_MESSAGE_BODY_BYTES).unwrap();
+        let object_size =
+            u32::try_from(CAN_EVENT_HEADER_BYTES + CAN_FD_MESSAGE_BODY_BYTES).unwrap();
         bytes.extend_from_slice(b"LOBJ");
         bytes.extend_from_slice(&32u16.to_le_bytes());
         bytes.extend_from_slice(&1u16.to_le_bytes());
@@ -1250,7 +1257,7 @@ mod tests {
         bytes.extend_from_slice(&0u16.to_le_bytes());
         bytes.extend_from_slice(&0u16.to_le_bytes());
         bytes.extend_from_slice(&42_u64.to_le_bytes()); // timestamp
-        // Body
+                                                        // Body
         bytes.extend_from_slice(&0u16.to_le_bytes()); // channel
         bytes.push(CAN_FLAG_TX); // flags
         bytes.push(9); // dlc (FD DLC 9 = 12 bytes)
@@ -1430,7 +1437,14 @@ mod tests {
 
     #[test]
     fn encode_can_message_round_trips() {
-        let bytes_in = synth_can_message(5_000_000, 1, CAN_FLAG_TX, 4, 0x123, [1, 2, 3, 4, 0, 0, 0, 0]);
+        let bytes_in = synth_can_message(
+            5_000_000,
+            1,
+            CAN_FLAG_TX,
+            4,
+            0x123,
+            [1, 2, 3, 4, 0, 0, 0, 0],
+        );
         let decoded = decode_can_message(&bytes_in).unwrap();
         let bytes_out = encode_can_message(&decoded);
         assert_eq!(bytes_out, bytes_in, "encode→decode→encode preserves bytes");
@@ -1520,7 +1534,15 @@ mod tests {
 
     fn dummy_can_message(id_raw: u32) -> CanMessage {
         let (base, event) = dummy_header();
-        CanMessage { base, event, channel: 0, flags: 0, dlc: 0, id_raw, data: [0; 8] }
+        CanMessage {
+            base,
+            event,
+            channel: 0,
+            flags: 0,
+            dlc: 0,
+            id_raw,
+            data: [0; 8],
+        }
     }
 
     fn dummy_can_message2(id_raw: u32) -> CanMessage2 {
@@ -1608,10 +1630,10 @@ mod tests {
         let cases: &[u32] = &[
             0x000,
             0x123,
-            0x7FF,                              // max standard id
-            CAN_ID_EXTENDED_BIT,                 // extended, value 0
+            0x7FF,               // max standard id
+            CAN_ID_EXTENDED_BIT, // extended, value 0
             0x01AB_CDEF | CAN_ID_EXTENDED_BIT,
-            0x1FFF_FFFF | CAN_ID_EXTENDED_BIT,   // max extended id
+            0x1FFF_FFFF | CAN_ID_EXTENDED_BIT, // max extended id
         ];
 
         for &id_raw in cases {
@@ -1623,23 +1645,43 @@ mod tests {
             };
 
             let cm = dummy_can_message(id_raw);
-            assert_eq!(cm.is_extended_id(), want_extended, "CanMessage id_raw={id_raw:#x}");
+            assert_eq!(
+                cm.is_extended_id(),
+                want_extended,
+                "CanMessage id_raw={id_raw:#x}"
+            );
             assert_eq!(cm.can_id(), want_id, "CanMessage id_raw={id_raw:#x}");
 
             let cm2 = dummy_can_message2(id_raw);
-            assert_eq!(cm2.is_extended_id(), want_extended, "CanMessage2 id_raw={id_raw:#x}");
+            assert_eq!(
+                cm2.is_extended_id(),
+                want_extended,
+                "CanMessage2 id_raw={id_raw:#x}"
+            );
             assert_eq!(cm2.can_id(), want_id, "CanMessage2 id_raw={id_raw:#x}");
 
             let fd = dummy_can_fd_message(id_raw);
-            assert_eq!(fd.is_extended_id(), want_extended, "CanFdMessage id_raw={id_raw:#x}");
+            assert_eq!(
+                fd.is_extended_id(),
+                want_extended,
+                "CanFdMessage id_raw={id_raw:#x}"
+            );
             assert_eq!(fd.can_id(), want_id, "CanFdMessage id_raw={id_raw:#x}");
 
             let fd64 = dummy_can_fd_message_64(id_raw);
-            assert_eq!(fd64.is_extended_id(), want_extended, "CanFdMessage64 id_raw={id_raw:#x}");
+            assert_eq!(
+                fd64.is_extended_id(),
+                want_extended,
+                "CanFdMessage64 id_raw={id_raw:#x}"
+            );
             assert_eq!(fd64.can_id(), want_id, "CanFdMessage64 id_raw={id_raw:#x}");
 
             let err = dummy_can_error_ext(id_raw);
-            assert_eq!(err.is_extended_id(), want_extended, "CanErrorExt id_raw={id_raw:#x}");
+            assert_eq!(
+                err.is_extended_id(),
+                want_extended,
+                "CanErrorExt id_raw={id_raw:#x}"
+            );
             assert_eq!(err.can_id(), want_id, "CanErrorExt id_raw={id_raw:#x}");
         }
     }

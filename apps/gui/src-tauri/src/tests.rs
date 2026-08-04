@@ -317,7 +317,10 @@ fn descriptor_snapshot_is_reused_across_calls_and_dropped_on_dbc_change() {
     let first = state.scoped_descriptor_snapshot(&buses);
     assert!(!first.is_empty());
     // Same inputs → literally the same allocation, no rebuild.
-    assert!(Arc::ptr_eq(&first, &state.scoped_descriptor_snapshot(&buses)));
+    assert!(Arc::ptr_eq(
+        &first,
+        &state.scoped_descriptor_snapshot(&buses)
+    ));
     // A different project-bus list is a different universe.
     let other = state.scoped_descriptor_snapshot(&["chassis".to_string()]);
     assert!(!Arc::ptr_eq(&first, &other));
@@ -528,7 +531,9 @@ pub(crate) fn test_state() -> AppState {
 
 /// A minimal vbus-flavoured session for exercising the session-map
 /// seam without gRPC machinery.
-fn seam_session(sinks: Vec<(u8, std::sync::Arc<std::sync::Mutex<cannet_core::LocalSink>>)>) -> RemoteSession {
+fn seam_session(
+    sinks: Vec<(u8, std::sync::Arc<std::sync::Mutex<cannet_core::LocalSink>>)>,
+) -> RemoteSession {
     RemoteSession {
         handle: None,
         tx: SessionTx::Vbus(sinks),
@@ -791,8 +796,7 @@ fn decode_candidates_resolve_name_and_signal_leaves_to_ids() {
     let parse = |t: &str| serde_json::from_str::<FilterPredicate>(t).unwrap();
 
     // Name leaf: only the message whose name matches contributes.
-    let by_name =
-        decode_candidate_ids(&dbs, &parse(r#"{"name_regex": "String1JustDetected.*?"}"#));
+    let by_name = decode_candidate_ids(&dbs, &parse(r#"{"name_regex": "String1JustDetected.*?"}"#));
     assert_eq!(by_name, HashSet::from([256]));
 
     // Signal leaf: only the message carrying the signal contributes.
@@ -1233,7 +1237,7 @@ fn transmit_frame_inner_routes_through_local_virtual_bus_session() {
 /// bus X" must include `Direction::Tx` rows.
 #[test]
 fn tx_confirm_is_visible_via_sample_signals_signal_cache() {
-            let state = test_state();
+    let state = test_state();
 
     // One-message DBC: id 0x123, 8-bit signal "Sig" at byte 0.
     let dbc_text = tiny_dbc(0x123, "Msg", "Sig");
@@ -1295,7 +1299,7 @@ fn tx_confirm_is_visible_via_sample_signals_signal_cache() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn full_vbus_session_tx_decodes_for_sender_and_receiver_plots() {
-            let state = test_state();
+    let state = test_state();
 
     let dbc_text = tiny_dbc(0x456, "Msg", "Sig");
     state

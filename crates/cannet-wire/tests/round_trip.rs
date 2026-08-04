@@ -15,14 +15,7 @@ fn classic(ts: u64, channel: u8, id: u32, dir: Direction, data: Vec<u8>) -> CanF
     CanFrame::classic(ts, channel, CanId::standard(id).unwrap(), dir, data).unwrap()
 }
 
-fn fd(
-    ts: u64,
-    channel: u8,
-    id: u32,
-    dir: Direction,
-    data: Vec<u8>,
-    flags: CanFdFlags,
-) -> CanFrame {
+fn fd(ts: u64, channel: u8, id: u32, dir: Direction, data: Vec<u8>, flags: CanFdFlags) -> CanFrame {
     CanFrame::fd(ts, channel, CanId::extended(id).unwrap(), dir, data, flags).unwrap()
 }
 
@@ -38,7 +31,10 @@ fn classic_frame_round_trips() {
 
 #[test]
 fn fd_frame_round_trips_with_brs_and_esi() {
-    let flags = CanFdFlags { bitrate_switch: true, error_state_indicator: true };
+    let flags = CanFdFlags {
+        bitrate_switch: true,
+        error_state_indicator: true,
+    };
     let original = fd(
         2_500_000,
         1,
@@ -54,13 +50,7 @@ fn fd_frame_round_trips_with_brs_and_esi() {
 
 #[test]
 fn remote_frame_round_trips_with_dlc() {
-    let original = CanFrame::remote(
-        500,
-        0,
-        CanId::standard(0x7FF).unwrap(),
-        Direction::Rx,
-        4,
-    );
+    let original = CanFrame::remote(500, 0, CanId::standard(0x7FF).unwrap(), Direction::Rx, 4);
     let wire = frame_to_proto(&original);
     let decoded = proto_to_frame(&wire, original.channel).unwrap();
     assert_eq!(decoded, original);

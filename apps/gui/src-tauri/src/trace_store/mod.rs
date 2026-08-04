@@ -678,7 +678,6 @@ impl TraceStore {
     pub fn frames_dropped_before_session(&self) -> u64 {
         self.lock_inner().dropped_before_session
     }
-
 }
 
 /// Lets a [`FilterIndex`] build against the facade without exposing the
@@ -804,7 +803,10 @@ mod tests {
         let (rx, tx) = store.frames_per_second_by_direction();
         assert_eq!(snap.frames_per_second_rx, rx);
         assert_eq!(snap.frames_per_second_tx, tx);
-        assert_eq!(snap.frames_per_second_by_bus, store.frames_per_second_by_bus());
+        assert_eq!(
+            snap.frames_per_second_by_bus,
+            store.frames_per_second_by_bus()
+        );
 
         // The fixture has to be able to tell the fields apart, or the
         // equalities above are satisfiable by any wiring.

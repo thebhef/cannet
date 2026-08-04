@@ -26,9 +26,9 @@ use cannet_dbc::Database;
 use crate::dbc_watcher::DbcWatcher;
 use crate::notes::NotesStore;
 use crate::signal_cache::SignalCacheStore;
+use crate::sys_warn;
 use crate::system_log::SystemLog;
 use crate::trace_store::{RawTraceFrame, TraceStore};
-use crate::sys_warn;
 use crate::{
     filter, ipc, local_buses, rbs, signal_snapshot, transmit_frames, transmit_scheduler,
     verification,
@@ -37,9 +37,9 @@ use crate::{
 // referenced from here but live in the `trace_query` / `session` /
 // `transmit_commands` modules once those are split out; they resolve at
 // the crate root until then.
+use crate::session::RemoteSession;
 use crate::trace_query::ActiveFilterIndex;
 use crate::transmit_commands::{merge_calc_override, resolve_effective_calc};
-use crate::session::RemoteSession;
 
 /// A loaded DBC: its source path, the parsed database, and the set of
 /// logical bus ids this DBC is scoped to. Decoders walk the
@@ -193,7 +193,9 @@ impl AppState {
     }
 
     pub(crate) fn filter_index(&self) -> MutexGuard<'_, Option<ActiveFilterIndex>> {
-        self.filter_index.lock().expect("filter index mutex poisoned")
+        self.filter_index
+            .lock()
+            .expect("filter index mutex poisoned")
     }
 
     pub(crate) fn active_project_id(&self) -> MutexGuard<'_, Option<uuid::Uuid>> {
@@ -271,8 +273,7 @@ impl AppState {
 /// rebuild it when its inputs change).
 pub(crate) fn invalidate_derived_caches(state: &AppState) {
     state.signal_caches.clear();
-    *state
-        .filter_index() = None;
+    *state.filter_index() = None;
     // The descriptor universe is derived from the DBC set the same way,
     // and has the same staleness failure: a removed DBC's signals would
     // keep appearing in the signal view and the DBC panel's value column
@@ -337,7 +338,9 @@ pub(crate) fn rebuild_verification(state: &AppState) {
                         let Ok((id, extended)) = rbs::parse_message_key(msg_key) else {
                             continue;
                         };
-                        let Ok(can_id) = CanId::new(id, extended) else { continue };
+                        let Ok(can_id) = CanId::new(id, extended) else {
+                            continue;
+                        };
                         let spec = ipc::CalcFieldsSpec {
                             counter: msg.counter.clone(),
                             crc: msg.crc.clone(),
@@ -375,8 +378,7 @@ pub(crate) fn rebuild_verification(state: &AppState) {
 pub(crate) fn refresh_calc_resolutions(app: &AppHandle) {
     let state: State<'_, AppState> = app.state();
     let dbs = state.databases();
-    let mut registry = state
-        .transmit_frames();
+    let mut registry = state.transmit_frames();
     for (id, request, spec) in registry.resolution_inputs() {
         match resolve_effective_calc(&dbs, &request, spec.as_ref()) {
             Ok(resolved) => registry.set_resolved_calc(&id, resolved),

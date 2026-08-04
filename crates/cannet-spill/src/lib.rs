@@ -152,8 +152,12 @@ pub trait RawStore: Send {
     /// and return the absolute indices of the matches in ascending order.
     /// Nothing is cloned. The bounded unit of a filtered scan — the caller
     /// chunks a large window so the store lock is released between chunks.
-    fn scan_chunk(&self, start: usize, end: usize, keep: &dyn Fn(&RawTraceFrame) -> bool)
-        -> Vec<usize>;
+    fn scan_chunk(
+        &self,
+        start: usize,
+        end: usize,
+        keep: &dyn Fn(&RawTraceFrame) -> bool,
+    ) -> Vec<usize>;
 
     /// Clone the frames at the given absolute indices, each paired with
     /// its index, in `idxs` order; indices past the end are skipped.

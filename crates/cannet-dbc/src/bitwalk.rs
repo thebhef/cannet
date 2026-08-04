@@ -82,10 +82,26 @@ mod tests {
         assert_eq!(
             positions,
             vec![
-                BitPos { byte_idx: 0, bit_in_byte: 2, value_bit: 0 },
-                BitPos { byte_idx: 0, bit_in_byte: 3, value_bit: 1 },
-                BitPos { byte_idx: 0, bit_in_byte: 4, value_bit: 2 },
-                BitPos { byte_idx: 0, bit_in_byte: 5, value_bit: 3 },
+                BitPos {
+                    byte_idx: 0,
+                    bit_in_byte: 2,
+                    value_bit: 0
+                },
+                BitPos {
+                    byte_idx: 0,
+                    bit_in_byte: 3,
+                    value_bit: 1
+                },
+                BitPos {
+                    byte_idx: 0,
+                    bit_in_byte: 4,
+                    value_bit: 2
+                },
+                BitPos {
+                    byte_idx: 0,
+                    bit_in_byte: 5,
+                    value_bit: 3
+                },
             ]
         );
     }
@@ -95,8 +111,22 @@ mod tests {
         // start_bit=3, size=8: matches the decode/encode partial-byte-
         // crossing tests (bit3,2,1,0 of byte 0, then bit7..4 of byte 1).
         let positions = walk(3, 8, ByteOrder::BigEndian).unwrap();
-        assert_eq!(positions[0], BitPos { byte_idx: 0, bit_in_byte: 3, value_bit: 7 });
-        assert_eq!(positions[7], BitPos { byte_idx: 1, bit_in_byte: 4, value_bit: 0 });
+        assert_eq!(
+            positions[0],
+            BitPos {
+                byte_idx: 0,
+                bit_in_byte: 3,
+                value_bit: 7
+            }
+        );
+        assert_eq!(
+            positions[7],
+            BitPos {
+                byte_idx: 1,
+                bit_in_byte: 4,
+                value_bit: 0
+            }
+        );
     }
 
     #[test]

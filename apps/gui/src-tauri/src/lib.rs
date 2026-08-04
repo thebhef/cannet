@@ -39,10 +39,10 @@ mod app_state;
 mod capture;
 mod crash;
 mod dbc_commands;
-mod emitters;
-mod trace_query;
 mod dbc_watcher;
 mod diag;
+mod emitters;
+mod trace_query;
 // `filter` and `trace_store` are `pub` so the `cannet-perf-measurement` performance
 // harness can drive the real host model — the same `TraceStore` and
 // filter predicate the GUI runs — rather than reimplementing them and
@@ -63,9 +63,9 @@ mod notes;
 mod persisted_json;
 mod project;
 mod rbs;
+mod sampling;
 mod session;
 mod settings;
-mod sampling;
 mod sidecar;
 mod state;
 // `signal_cache` and `signal_sampler` are `pub` so the
@@ -104,13 +104,12 @@ use tauri::{AppHandle, Manager, State};
 
 use dbc_watcher::DbcWatcher;
 
-
-use notes::{
-    add_note, clear_notes, fetch_notes, recolor_note, remove_note, rename_note, NotesStore,
-};
 use local_buses::{
     attach_local_bus_bridge, create_local_virtual_bus, detach_local_bus_bridge,
     drop_local_virtual_bus, list_local_bus_bridges, replay_local_virtual_buses,
+};
+use notes::{
+    add_note, clear_notes, fetch_notes, recolor_note, remove_note, rename_note, NotesStore,
 };
 use signal_cache::SignalCacheStore;
 use system_log::SystemLog;
@@ -118,38 +117,18 @@ use trace_store::TraceStore;
 
 use app_state::AppState;
 #[cfg(test)]
-use std::collections::HashSet;
-#[cfg(test)]
-use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(test)]
-use std::time::Duration;
+use app_state::{invalidate_derived_caches, LoadedDbc};
 #[cfg(test)]
 use cannet_core::CanFrameSource;
 #[cfg(test)]
 use cannet_dbc::Database;
-#[cfg(test)]
-use emitters::{live_tail_range, should_emit_trace_grew, smooth_fps, TRACE_GREW_TAIL};
-#[cfg(test)]
-use app_state::{invalidate_derived_caches, LoadedDbc};
-#[cfg(test)]
-use trace_store::RawTraceFrame;
-#[cfg(test)]
-use dbc_commands::decode_against;
-#[cfg(test)]
-use filter::FilterPredicate;
-#[cfg(test)]
-use ipc::{ByIdSnapshot, DecodedRecord, SignalSelection, SignalSnapshotRecord, TraceFrameRecord};
-#[cfg(test)]
-use session::{panic_message, route_channel, LocalSourceFrameSource, RemoteSession, SessionTx};
-#[cfg(test)]
-use transmit_commands::{
-    group_wire_batches, next_tick_deadline, resolve_effective_calc, transmit_frame_inner,
-};
 use capture::{
     clear_trace_store, open_log, restore_scratch_capture, save_capture, scan_blf_channels,
 };
 #[cfg(test)]
 use capture::{read_notes_from_blf, write_capture};
+#[cfg(test)]
+use dbc_commands::decode_against;
 use dbc_commands::{
     add_dbc, clear_dbcs, decode_frame, describe_message, encode_frame, list_dbc_content,
     list_signals, list_value_tables, remove_dbc, set_dbc_buses,
@@ -159,29 +138,44 @@ use dbc_commands::{decode_frame_inner, describe_message_inner, encode_frame_inne
 pub(crate) use emitters::emit_system_log;
 use emitters::{
     clear_system_log, fetch_system_log, gui_emit_system_log, set_live_tail_rows,
-    spawn_trace_flusher,
-    spawn_trace_grew_emitter,
+    spawn_trace_flusher, spawn_trace_grew_emitter,
 };
+#[cfg(test)]
+use emitters::{live_tail_range, should_emit_trace_grew, smooth_fps, TRACE_GREW_TAIL};
+#[cfg(test)]
+use filter::FilterPredicate;
+#[cfg(test)]
+use ipc::{ByIdSnapshot, DecodedRecord, SignalSelection, SignalSnapshotRecord, TraceFrameRecord};
 use sampling::{sample_signals, signal_min_max};
 use session::{connect_remote_server, disconnect_remote_server};
-use transmit_commands::{
-    clear_transmit_frames, fetch_field_validity, list_transmit_frames, remove_transmit_frame,
-    reorder_transmit_frames, run_transmit_scheduler, set_transmit_frame, start_periodic_transmit,
-    stop_periodic_transmit, transmit_frame_once,
+#[cfg(test)]
+use session::{panic_message, route_channel, LocalSourceFrameSource, RemoteSession, SessionTx};
+#[cfg(test)]
+use std::collections::HashSet;
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(test)]
+use std::time::Duration;
+#[cfg(test)]
+use trace_query::{
+    apply_filter_records, collect_trace_records, decode_candidate_ids, fetch_signal_page_inner,
+    sort_by_id, windowed_filter_page, ActiveFilterIndex,
 };
 use trace_query::{
     fetch_by_id_page, fetch_filtered_trace, fetch_signal_page, fetch_trace_range,
     filtered_positions_at_ns, frame_indices_at_ns,
 };
 #[cfg(test)]
-use trace_query::{
-    apply_filter_records, collect_trace_records, decode_candidate_ids, fetch_signal_page_inner,
-    sort_by_id, windowed_filter_page, ActiveFilterIndex,
+use trace_store::RawTraceFrame;
+use transmit_commands::{
+    clear_transmit_frames, fetch_field_validity, list_transmit_frames, remove_transmit_frame,
+    reorder_transmit_frames, run_transmit_scheduler, set_transmit_frame, start_periodic_transmit,
+    stop_periodic_transmit, transmit_frame_once,
 };
-
-
-
-
+#[cfg(test)]
+use transmit_commands::{
+    group_wire_batches, next_tick_deadline, resolve_effective_calc, transmit_frame_inner,
+};
 
 /// The build's version string: `git describe --tags` as captured by
 /// `build.rs` (vergen), e.g. `v0.1.0` on a release tag or
@@ -501,8 +495,7 @@ pub fn run() {
             // DBC IPC commands can watch / unwatch paths.
             let watcher = DbcWatcher::new(app.handle());
             let state: State<'_, AppState> = app.state();
-            *state
-                .dbc_watcher() = Some(watcher);
+            *state.dbc_watcher() = Some(watcher);
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -526,22 +519,6 @@ pub fn run() {
             }
         });
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 // ------------------------------------------------------------------
 

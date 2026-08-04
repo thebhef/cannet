@@ -107,7 +107,10 @@ pub(crate) fn named_algorithms() -> &'static [(&'static str, Algorithm<u64>)] {
                 ("CRC-16/GSM", widen(&crc::CRC_16_GSM)),
                 ("CRC-16/IBM-3740", widen(&crc::CRC_16_IBM_3740)),
                 ("CRC-16/IBM-SDLC", widen(&crc::CRC_16_IBM_SDLC)),
-                ("CRC-16/ISO-IEC-14443-3-A", widen(&crc::CRC_16_ISO_IEC_14443_3_A)),
+                (
+                    "CRC-16/ISO-IEC-14443-3-A",
+                    widen(&crc::CRC_16_ISO_IEC_14443_3_A),
+                ),
                 ("CRC-16/KERMIT", widen(&crc::CRC_16_KERMIT)),
                 ("CRC-16/LJ1200", widen(&crc::CRC_16_LJ1200)),
                 ("CRC-16/M17", widen(&crc::CRC_16_M17)),
