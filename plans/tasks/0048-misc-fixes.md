@@ -430,10 +430,45 @@ hide, remove, recolour) rather than one at a time. If it turns out to
 need a selection model threaded through the panel, it is its own task —
 split it out rather than growing this one.
 
-## 15. Drag-reorder plot areas
+## 15. Drag-reorder plot areas — **done**
 
-**Only if it stays small.** Same caveat as item 14: if it needs more
-than the existing area-ordering state, it becomes its own task.
+It stayed small, because ordering was already first-class: a panel's
+`areas` is an ordered array that the render loop and the persisted
+config both take in order, and every other per-area fact (axis
+weights, Y cursors, sampled series, focus) is keyed by area id. So a
+reorder is a pure permutation of that one array and nothing has to be
+re-keyed, re-derived, or migrated — `reorderAreas` (`plotPanelConfig.ts`)
+is the whole model change.
+
+Choices made:
+
+- **A grip, not the whole heading.** The signal-panel head holds a
+  combobox and buttons, and a `draggable` ancestor eats their pointer
+  gestures — so only the `⠿` grip is draggable. It appears once per
+  *logical* area (the parent head, like the remove ×) and only once a
+  panel holds more than one area.
+- **Its own mime type** (`application/x-cannet-plot-area`, carrying the
+  dragged area's id) alongside the existing signal drag, so one drop
+  surface serves both gestures without either handler guessing which is
+  in flight.
+- **Drop lands where the pointer let go.** Insertion uses the target's
+  index in the *original* list, so dragging down puts the area after
+  the target and dragging up puts it before.
+- **No insertion marker.** Drawing one would mean a React commit per
+  `dragover` over a canvas whose resample loop is already paced against
+  its own render cost (item 12). The drag ghost and the "move" cursor
+  carry the affordance, and areas are large enough that the target is
+  unambiguous.
+
+Guarded by the `reorderAreas` cases in `plotPanelConfig.test.ts` (both
+directions, the same-reference no-op, config carried with the area) and
+"drag-reorders plot areas, carrying each area's signals with it" /
+"offers no reorder grip while a panel holds a single area" in
+`PlotPanel.dom.test.tsx` — which assert the resulting stack order, since
+jsdom does no layout.
+
+Moving a plot area *between panels* is a different feature and stays
+where it is, in task 23.
 
 ## 16. Process names do not say what they are
 

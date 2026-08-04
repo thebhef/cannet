@@ -618,7 +618,10 @@ the re-sampling), Clear re-anchors what's plotted to "now".
   `plans/backlog.md`.
 - **Plot areas.** A plot panel is a **stack of plot areas** — it starts
   with one; **add plot area** appends more, all sharing one time axis,
-  and they flex to fill the panel (one fills it; several split it). Each
+  and they flex to fill the panel (one fills it; several split it).
+  Once a panel holds more than one, the **grip (⠿)** at the left of an
+  area's signal-panel heading **drags that area to another area's
+  position** in the stack. Each
   plot area has a uPlot canvas (time axis at the bottom) plus a **signal
   panel** beside it listing that area's signals: a colour swatch (click
   to hide / show the line — the value keeps updating, the swatch dims;

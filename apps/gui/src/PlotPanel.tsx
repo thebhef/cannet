@@ -29,6 +29,7 @@ import {
   fmtCount,
   measKeysFromRaw,
   newPlotArea,
+  reorderAreas,
   signalRefKey,
   signalsWidthFromRaw,
   type AxisHandlers,
@@ -92,7 +93,9 @@ import {
  * re-order it within an area, onto another plot area, or onto another
  * plot panel (cross-panel = a copy; the source keeps it). A signal's
  * colour is assigned on add and travels with it (re-ordering / moving
- * doesn't recolour).
+ * doesn't recolour). The areas themselves re-order by dragging the
+ * grip in an area's side-panel heading onto another area, which drops
+ * it at that area's position in the stack.
  *
  * Data: while running, each area re-samples on a self-paced loop at a
  * configurable rate (toolbar; decoupled from React re-renders; Pause/Stop
@@ -704,6 +707,13 @@ export function PlotPanel(props: IDockviewPanelProps) {
       return next;
     });
   }, []);
+  /// Drag-reorder: move `draggedId` to where `targetId` sits in the
+  /// stack. Ordering is the `areas` array itself, so this is a pure
+  /// permutation — everything else about an area (weights, cursors,
+  /// sampled series, focus) is keyed by id and rides along untouched.
+  const reorderArea = useCallback((draggedId: string, targetId: string) => {
+    setAreas((prev) => reorderAreas(prev, draggedId, targetId));
+  }, []);
   const setAreaYAxisMode = useCallback((id: string, mode: YAxisMode) => {
     setAreas((prev) => prev.map((a) => (a.id === id ? { ...a, yAxisMode: mode } : a)));
   }, []);
@@ -1282,6 +1292,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
         onSetYAxisMode: (mode) => setAreaYAxisMode(parent.id, mode),
         onFocus: () => setFocusedAreaId(parent.id),
         onRemoveArea: () => removeArea(parent.id),
+        onReorderArea: (draggedId) => reorderArea(draggedId, parent.id),
         onRemoveSignal: (key) => removeSignal(parent.id, key),
         onDropSignal: (ref, beforeKey, isInternalMove) =>
           placeSignal(ref, parent.id, beforeKey, isInternalMove),
@@ -1298,6 +1309,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     setAreaPrimarySignal,
     setAreaYAxisMode,
     removeArea,
+    reorderArea,
     removeSignal,
     placeSignal,
     toggleSignalHidden,
@@ -1620,6 +1632,11 @@ export function PlotPanel(props: IDockviewPanelProps) {
               // first derived axis of each parent so we don't render N
               // remove buttons for one logical area.
               removable={effectiveAreas.length > 1 && d.isFirstOfParent}
+              // Reorder is parent-area level too: one grip per logical
+              // area, and only once there is another area to trade
+              // places with.
+              parentAreaId={parent.id}
+              reorderable={effectiveAreas.length > 1}
               // Per-axis chrome (y-axis-mode selector, filter editor,
               // primary-signal click) lives on the first derived axis
               // of each parent so the user has one source of truth.

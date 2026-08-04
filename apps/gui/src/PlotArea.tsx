@@ -21,6 +21,7 @@ import { type ColorResolver, type ColorTarget, colorMapLaneFill } from "./colorM
 import { enumSegments, groupScaleRanges, mergeSeries } from "./plotData";
 import { useSetting } from "./hostSettings";
 import {
+  PLOT_AREA_DND_MIME,
   fmtVal,
   parseDroppedSignals,
   signalRefKey,
@@ -197,6 +198,29 @@ function signalDrop(
   for (const r of refs) opts.onDropSignal(r, opts.beforeKey, isInternalMove);
 }
 
+/** Drag-over / drop for a plot-area *reorder* — the gesture that
+ * permutes the panel's area stack. It shares the plot area's drop
+ * surface with the signal drop above, discriminated by mime type.
+ *
+ * Deliberately no per-`dragover` state: an insertion marker would be a
+ * React commit per mouse move over a canvas whose resample loop is
+ * already paced against its own render cost. The drag ghost plus the
+ * "move" cursor carry the affordance; the areas are large enough that
+ * which one the pointer is over is unambiguous. */
+function areaDragOver(e: DragEvent<HTMLElement>): void {
+  if (!e.dataTransfer.types.includes(PLOT_AREA_DND_MIME)) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "move";
+}
+
+function areaDrop(e: DragEvent<HTMLElement>, onReorderArea: (id: string) => void): boolean {
+  const dragged = e.dataTransfer.getData(PLOT_AREA_DND_MIME);
+  if (!dragged) return false;
+  e.preventDefault();
+  onReorderArea(dragged);
+  return true;
+}
+
 /** Colour swatch in a plot-area signal row. Left-click toggles hidden
  * (preserves prior behaviour); right-click opens the browser's native
  * colour picker so the user can re-skin the series. The picker is a
@@ -279,6 +303,14 @@ interface PlotAreaProps {
    * only on the head so we don't surface N copies of the same control
    * when an area is in per-unit or individual mode. */
   isParentHead: boolean;
+  /** The id of the *logical* area this axis belongs to — what an area
+   * drag carries and what a drop reorders. Differs from `area.id` in
+   * per-unit / individual mode, where `area` is a derived axis. */
+  parentAreaId: string;
+  /** Offer the drag-to-reorder grip (only meaningful once the panel has
+   * more than one area). Like `removable`, the panel sets it on the
+   * parent head so one logical area shows one grip. */
+  reorderable: boolean;
   winStart: number;
   winEnd: number;
   /** The application-level trace start (absolute seconds, ADR 0024): the
@@ -353,6 +385,9 @@ interface PlotAreaProps {
   onSetYAxisMode: (mode: YAxisMode) => void;
   onFocus: () => void;
   onRemoveArea: () => void;
+  /** Another area of this panel was dropped on this one: move it to
+   * this area's position in the stack. */
+  onReorderArea: (draggedAreaId: string) => void;
   onRemoveSignal: (key: string) => void;
   /** A signal was dropped here. `beforeKey` null ⇒ append to this area;
    * otherwise insert before that row (re-order / move). `isInternalMove`
@@ -499,6 +534,8 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     focused,
     removable,
     isParentHead,
+    parentAreaId,
+    reorderable,
     winStart,
     winEnd,
     originSeconds,
@@ -533,6 +570,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     onSetYAxisMode,
     onFocus,
     onRemoveArea,
+    onReorderArea,
     onRemoveSignal,
     onDropSignal,
     onToggleHidden,
@@ -2219,8 +2257,14 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       data-area-id={areaId}
       style={flexGrow == null ? undefined : { flexGrow }}
       onMouseDown={onFocus}
-      onDragOver={(e) => signalDragOver(e, false)}
-      onDrop={(e) => signalDrop(e, { beforeKey: null, stopEvent: false, panelElementId, onDropSignal })}
+      onDragOver={(e) => {
+        areaDragOver(e);
+        signalDragOver(e, false);
+      }}
+      onDrop={(e) => {
+        if (areaDrop(e, onReorderArea)) return;
+        signalDrop(e, { beforeKey: null, stopEvent: false, panelElementId, onDropSignal });
+      }}
     >
       <div className="plot-area-canvas" ref={canvasRef} />
       {collapsed && <div className="plot-area-placeholder" ref={placeholderRef} />}
@@ -2249,6 +2293,23 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       />
       <div className="plot-area-signals" style={{ flexBasis: `${signalsWidth}px` }}>
         <div className="plot-area-signals-head">
+          {isParentHead && reorderable && (
+            // The grip alone is draggable, not the whole head: the head
+            // holds a combobox and buttons, and a draggable ancestor
+            // eats their pointer gestures.
+            <span
+              className="plot-area-grip"
+              aria-label="reorder plot area"
+              title="drag to reorder this plot area"
+              draggable
+              onDragStart={(e) => {
+                e.dataTransfer.setData(PLOT_AREA_DND_MIME, parentAreaId);
+                e.dataTransfer.effectAllowed = "move";
+              }}
+            >
+              ⠿
+            </span>
+          )}
           <span
             className="plot-area-label"
             title={(() => {
