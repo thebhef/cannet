@@ -3,7 +3,14 @@ import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import type { TraceFrameRecord } from "./types";
 import { type ColorResolver } from "./colorMap";
 import { DecodedSignalCell } from "./DecodedSignalCell";
-import { buildPlacements, rowFromScroll } from "./traceViewport";
+import {
+  ROW_HEIGHT,
+  anchorFromScroll,
+  buildPlacements,
+  expandedExtraHeight,
+  expandedRowHeight,
+  maxScrollTop,
+} from "./traceViewport";
 import { useTraceViewport } from "./useTraceViewport";
 import { useSetting } from "./hostSettings";
 import type { CanIdFormat } from "./format";
@@ -93,8 +100,32 @@ export function ByIdTable({
   const visible = useMemo(() => visibleColumns(columns), [columns]);
   const gridTemplate = useMemo(() => gridTemplateColumns(columns), [columns]);
 
-  const { containerRef, viewportHeight, rows, spacerHeight, firstVisibleRow, lastVisibleRow } =
-    useTraceViewport(count, anchoredRow);
+  // Rendered height of a row: an expanded row carries a line per decoded
+  // signal, everything else is a plain row. A row outside the loaded
+  // page reads as a plain row until it lands — the same degradation as
+  // `signalCount` below.
+  const rowHeightAt = useCallback(
+    (absIdx: number) => {
+      const r = getRow(absIdx);
+      if (!r || !expanded.has(byIdRowKey(r.frame))) return ROW_HEIGHT;
+      return expandedRowHeight(r.frame.decoded?.signals.length ?? 0);
+    },
+    // `version` is a dep so a page landing / live refresh re-derives the
+    // heights even though it isn't read directly (what `getRow` answers
+    // changes behind it).
+    [getRow, expanded, version],
+  );
+
+  // What the expanded rows add to the snapshot's height, so the scroll
+  // range covers them. Bounded work over the id space, and only when
+  // something is expanded — the common case skips the walk entirely.
+  const extraHeight = useMemo(
+    () => (expanded.size === 0 ? 0 : expandedExtraHeight(count, rowHeightAt)),
+    [expanded, count, rowHeightAt],
+  );
+
+  const { containerRef, viewportHeight, rows, spacerHeight, anchorMax, firstVisibleRow, lastVisibleRow } =
+    useTraceViewport(count, anchoredRow, undefined, { extraHeight, rowHeightAt });
 
   // Prefetch the covering page for the visible rows.
   useEffect(() => {
@@ -110,8 +141,14 @@ export function ByIdTable({
   const handleScroll = useCallback(() => {
     const el = containerRef.current;
     if (!el) return;
-    setAnchoredRow(rowFromScroll(el.scrollTop, count, viewportHeight));
-  }, [count, viewportHeight]);
+    setAnchoredRow(
+      anchorFromScroll(
+        el.scrollTop,
+        anchorMax,
+        maxScrollTop(count, viewportHeight, extraHeight),
+      ),
+    );
+  }, [anchorMax, count, viewportHeight, extraHeight]);
 
   // Which visible positions are expanded — derived from the loaded rows'
   // stable keys, so `buildPlacements` can size them. `version` is a dep so
@@ -141,6 +178,13 @@ export function ByIdTable({
     expandedPositions,
     signalCount,
   );
+  // How tall the rendered rows actually stack. The sticky viewport clips
+  // (`overflow: hidden`), so it takes the larger of the panel height and
+  // the stack — an expanded row taller than the panel then slides into
+  // view as the scroll runs past the sticky element's own height instead
+  // of being cut off at the fold.
+  const last = placements[placements.length - 1];
+  const stackHeight = last ? last.top + last.height : 0;
 
   return (
     <div className="trace">
@@ -158,7 +202,14 @@ export function ByIdTable({
         <div style={{ height: spacerHeight, position: "relative" }}>
           {/* Sticky viewport: the compositor keeps this pinned so the rows
               never lag the scrollbar — React only swaps their content. */}
-          <div style={{ position: "sticky", top: 0, height: viewportHeight, overflow: "hidden" }}>
+          <div
+            style={{
+              position: "sticky",
+              top: 0,
+              height: Math.max(viewportHeight, stackHeight),
+              overflow: "hidden",
+            }}
+          >
             {placements.map(({ posKey, absIdx, top, isExpanded, height }) => {
               const row = getRow(absIdx);
               return (

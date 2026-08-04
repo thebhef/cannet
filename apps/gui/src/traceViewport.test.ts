@@ -4,13 +4,17 @@ import {
   MAX_SCROLL_HEIGHT_PX,
   ROW_HEIGHT,
   SIGNAL_LINE_HEIGHT,
+  anchorFromScroll,
   buildPlacements,
+  expandedExtraHeight,
   expandedRowHeight,
   maxAnchorRow,
+  maxScrollTop,
   maxWheelRows,
   rowFromScroll,
   scaledHeight,
   scrollForRow,
+  tailAnchorRow,
   visibleRowCount,
   wheelDeltaPx,
 } from "./traceViewport";
@@ -29,6 +33,96 @@ describe("scaledHeight", () => {
 
   it("caps at the browser-safe maximum for huge traces", () => {
     expect(scaledHeight(100_000_000, VH)).toBe(MAX_SCROLL_HEIGHT_PX);
+  });
+});
+
+describe("scaledHeight / maxScrollTop with expanded rows", () => {
+  it("carries the expanded rows' extra height into the scroll extent", () => {
+    // Without this the scrollbar only ever represents plain rows, so the
+    // pixels an expanded row adds are past the end of the scroll range.
+    const extra = 10 * SIGNAL_LINE_HEIGHT;
+    expect(scaledHeight(100, VH, extra)).toBe(100 * ROW_HEIGHT + extra);
+    expect(maxScrollTop(100, VH, extra)).toBe(100 * ROW_HEIGHT + extra - VH);
+  });
+
+  it("lets a snapshot that only overflows once expanded scroll at all", () => {
+    // 20 rows (440 px) fit in the 660 px viewport; expanding one row with
+    // 20 signals does not.
+    const extra = 20 * SIGNAL_LINE_HEIGHT;
+    expect(maxScrollTop(20, VH, 0)).toBe(1); // the "nothing to scroll" floor
+    expect(maxScrollTop(20, VH, extra)).toBe(20 * ROW_HEIGHT + extra - VH);
+  });
+
+  it("still caps at the browser-safe maximum", () => {
+    expect(scaledHeight(100_000_000, VH, 5_000)).toBe(MAX_SCROLL_HEIGHT_PX);
+  });
+});
+
+describe("expandedExtraHeight", () => {
+  const plain = () => ROW_HEIGHT;
+
+  it("is zero when every row is a plain row", () => {
+    expect(expandedExtraHeight(500, plain)).toBe(0);
+  });
+
+  it("sums what the expanded rows add over the plain-row baseline", () => {
+    const heights = (i: number) =>
+      i === 3 ? expandedRowHeight(4) : i === 40 ? expandedRowHeight(9) : ROW_HEIGHT;
+    expect(expandedExtraHeight(100, heights)).toBe(13 * SIGNAL_LINE_HEIGHT);
+  });
+
+  it("is zero for an empty snapshot", () => {
+    expect(expandedExtraHeight(0, plain)).toBe(0);
+  });
+});
+
+describe("tailAnchorRow", () => {
+  const plain = () => ROW_HEIGHT;
+
+  it("puts the last row fully inside the viewport, unlike the padded bound", () => {
+    // `maxAnchorRow` subtracts `visibleRowCount`, which pads by two rows
+    // for the partial rows at the edges — as an anchor bound that pads
+    // two whole rows *past* the end, so the final rows stack below the
+    // fold and no scroll position reaches them.
+    const count = 100;
+    expect(tailAnchorRow(count, VH, plain)).toBe(count - Math.floor(VH / ROW_HEIGHT));
+    expect(tailAnchorRow(count, VH, plain)).toBeGreaterThan(maxAnchorRow(count, VH));
+  });
+
+  it("starts later when the rows at the end are expanded", () => {
+    const withBigTail = (i: number) => (i === 99 ? expandedRowHeight(10) : ROW_HEIGHT);
+    const fits = Math.floor((VH - expandedRowHeight(10)) / ROW_HEIGHT) + 1;
+    expect(tailAnchorRow(100, VH, withBigTail)).toBe(100 - fits);
+  });
+
+  it("stays at zero while the whole snapshot fits", () => {
+    expect(tailAnchorRow(10, VH, plain)).toBe(0);
+    expect(tailAnchorRow(0, VH, plain)).toBe(0);
+  });
+
+  it("never leaves the last row unrenderable, even taller than the viewport", () => {
+    // A single expanded row taller than the panel: the anchor stops on it
+    // rather than past it, and the sticky viewport slides to reveal the
+    // rest (see `ByIdTable`).
+    const huge = (i: number) => (i === 9 ? expandedRowHeight(80) : ROW_HEIGHT);
+    expect(tailAnchorRow(10, VH, huge)).toBe(9);
+  });
+});
+
+describe("anchorFromScroll", () => {
+  it("maps the ends of the scroll range to the first and last anchor", () => {
+    expect(anchorFromScroll(0, 40, 800)).toBe(0);
+    expect(anchorFromScroll(800, 40, 800)).toBe(40);
+    expect(anchorFromScroll(400, 40, 800)).toBe(20);
+  });
+
+  it("clamps out-of-range scroll positions", () => {
+    expect(anchorFromScroll(-50, 40, 800)).toBe(0);
+    expect(anchorFromScroll(9_999, 40, 800)).toBe(40);
+  });
+
+  it("pins to row 0 when there is nowhere to scroll", () => {
+    expect(anchorFromScroll(999, 0, 1)).toBe(0);
   });
 });
 

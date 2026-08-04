@@ -13,7 +13,25 @@
 import { type RefObject, useEffect, useRef, useState } from "react";
 
 import { diagCount } from "./diag";
-import { maxAnchorRow, scaledHeight, visibleRowCount } from "./traceViewport";
+import {
+  maxAnchorRow,
+  scaledHeight,
+  tailAnchorRow,
+  visibleRowCount,
+} from "./traceViewport";
+
+/// Row heights for a view whose rows are not all `ROW_HEIGHT` — the
+/// by-id table, where an expanded row carries a line per decoded
+/// signal. Without it the scaffold sizes everything as plain rows, and
+/// the pixels the expanded rows add fall past the end of the scroll
+/// range.
+export interface VariableRowHeights {
+  /// Total height the expanded rows add over the plain-row baseline
+  /// (`expandedExtraHeight`).
+  extraHeight: number;
+  /// The rendered height of the row at `absIdx`.
+  rowHeightAt: (absIdx: number) => number;
+}
 
 export interface TraceViewportScaffold {
   containerRef: RefObject<HTMLDivElement>;
@@ -36,6 +54,9 @@ export function useTraceViewport(
   /// omitted to stay silent (`ByIdTable` has never carried one;
   /// `TraceView` passes `"traceview.resizeObserver"`).
   resizeDiagKey?: string,
+  /// Row heights, when the view has rows taller than `ROW_HEIGHT`.
+  /// Omitted (the chronological view) every row is a plain row.
+  variable?: VariableRowHeights,
 ): TraceViewportScaffold {
   const containerRef = useRef<HTMLDivElement>(null);
   const [viewportHeight, setViewportHeight] = useState(600);
@@ -54,8 +75,13 @@ export function useTraceViewport(
   }, [resizeDiagKey]);
 
   const rows = visibleRowCount(viewportHeight);
-  const spacerHeight = scaledHeight(count, viewportHeight);
-  const anchorMax = maxAnchorRow(count, viewportHeight);
+  const spacerHeight = scaledHeight(count, viewportHeight, variable?.extraHeight ?? 0);
+  // With variable heights the bound is the row that puts the *last* row
+  // fully in the viewport; `maxAnchorRow`'s two-row pad would leave the
+  // tail stacked below the fold with no scroll position that reaches it.
+  const anchorMax = variable
+    ? tailAnchorRow(count, viewportHeight, variable.rowHeightAt)
+    : maxAnchorRow(count, viewportHeight);
   const firstVisibleRow =
     anchoredRow == null ? anchorMax : Math.min(anchorMax, Math.max(0, anchoredRow));
   const lastVisibleRow = Math.min(count, firstVisibleRow + rows);

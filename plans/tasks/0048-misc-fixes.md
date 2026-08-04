@@ -90,15 +90,45 @@ Covered by `SignalValueCell.dom.test.tsx` — the value and the unit are
 separately addressable in the DOM on both surfaces, and `unit=""`
 renders no unit element and no stray spacing.
 
-## 5. Dock panels do not scroll
+## 5. Dock panels do not scroll — **done**
 
-Two instances, likely one fix:
+Two instances, two different mechanisms.
 
-- **Project panel has no scroll.** At 1024 px vertical it is unusable —
-  the DBC mapping could not be verified because it could not be reached.
-- **By-ID panel does not grow to accommodate expanded signals**, and
-  cannot be scrolled to the bottom when its content is taller than the
-  window.
+**Project panel.** dockview mounts a panel's React root as
+`.dv-react-part` (`height: 100%`) inside `.dv-content-container` inside
+`.dv-groupview` (`overflow: hidden`). `.project-panel` declared
+`overflow: auto` but no height, so it grew to its content and had
+nothing to scroll — the sections past the fold ran under the group,
+which clipped them. Measured in Chromium (the engine behind the Tauri
+WebView2 host) with the real stylesheets in a 1024 px group:
+`clientHeight === scrollHeight === 1333`, `scrollTop` stuck at 0, the
+DBC section 319 px below the group's bottom edge. Pinning
+`height: 100%` gives `989 / 1333`, `scrollTop` reaching 344, and the
+DBC section in reach. Guarded by `dockPanelScrolling.test.ts`, which
+asserts the declaration — jsdom does no layout, so no rendering test
+can catch this.
+
+**By-ID panel.** The virtualizer sized everything as plain rows:
+`scaledHeight` counted `count * ROW_HEIGHT`, so an expanded row's
+signal lines were past the end of the scroll range, and `maxAnchorRow`
+subtracted `visibleRowCount`, whose two-row pad puts the anchor bound
+two rows *past* the end — the tail stacked below the fold with no
+scroll position that reached it (true even with nothing expanded). The
+sticky viewport is `overflow: hidden` at exactly the panel height, so
+the overflow was clipped rather than merely off-screen. Three pieces,
+all validated against Chromium before they were written:
+`scaledHeight`/`maxScrollTop` take the expanded rows' extra height
+(`expandedExtraHeight`); `tailAnchorRow` replaces the padded anchor
+bound with the row that puts the last row fully in view; and the sticky
+viewport takes `max(panel height, rendered stack)` so a row taller than
+the panel slides into view instead of being cut off. All three are
+scroll-independent, so the geometry can't oscillate as the window
+moves. Covered by `traceViewport.test.ts`,
+`useTraceViewport.dom.test.tsx` and `ByIdTable.dom.test.tsx`.
+
+The chronological trace shares the padded anchor bound and is left
+alone here: it is a live-tail view whose anchor interacts with
+auto-scroll and `scrollForRow`, which this fix does not touch.
 
 ## 6. The window hangs or stops rendering after sitting live
 
@@ -124,10 +154,95 @@ Two symptoms on the per-unit axis mode, possibly one cause:
   3 k value does not appear to be on the same scale as the 500 A one,
   which is what per-unit mode exists to guarantee (ADR 0026).
 
+## 9. The rest of the panels still do not scroll
+
+Item 5 fixed two panels; the same class of defect is still present
+elsewhere, and item 5's investigation is the map for all of it.
+
+- **Transmit panel has no vertical scroll.** Same symptom as the project
+  panel had.
+- **`.colormap-panel` has the project panel's exact defect** —
+  `overflow: auto` with no height, mounted on a dockview root, so it
+  sizes to its content and scrolls nothing. Found while fixing item 5
+  and deliberately not fixed there.
+- **The trace panel cannot scroll horizontally.** Different axis, and
+  possibly a different mechanism — a virtualized table's horizontal
+  overflow is not the same problem as a panel that never got a height.
+  Confirm before assuming it shares a cause.
+
+Item 5 measured its mechanisms in Chromium (the engine behind the
+WebView2 host) because jsdom does no layout. Do the same rather than
+reasoning from the CSS.
+
+## 10. Hidden enum lanes still occupy vertical space
+
+The enum-overlay twin of item 8. Hiding an enum signal leaves its lane
+occupying its share of the enum window's height, so hiding a signal
+does not give the remaining lanes any more room. Hidden signals should
+drop out of the lane layout entirely, the same way item 8 asks for them
+to drop out of the y-limit computation.
+
+Likely one fix with item 8 — both are "hidden signals still participate
+in a layout computation they should be excluded from" — but the lane
+band arithmetic (`plotEnumLanes`) and the y-extent path are separate
+code, so confirm before merging the work.
+
+## 11. Filters cannot be edited once added
+
+A filter added to the plot view cannot be edited afterwards — only
+removed and re-added. Possibly true of the signal panel's filters too;
+check both before deciding the fix's shape.
+
+## 12. Adding many signals to a plot hangs the frontend
+
+Observed when adding signals to a plot area against a reasonably full
+trace buffer: the frontend stops responding rather than merely taking a
+while. May share a cause with items 1 and 2 (each added signal is a cold
+pyramid build, and enough of them in flight starves the UI), but "slow"
+and "hung" are different failures — establish which this is before
+assuming it falls out of item 2.
+
+Whatever the cause, the exit condition is that adding signals never
+blocks the UI thread, however many are added and however full the
+buffer.
+
+## 13. The plot's x-axis label should show the free cursor's time
+
+The cursor readout gives each signal's value at the cursor but never the
+cursor's own time, so the one thing every signal's reading is relative to
+is invisible. The `time (s)` label at the bottom of the plot panel is
+otherwise static text and is the natural place to put it.
+
+## 14. Multi-select signals in the plot panel
+
+**Only if it stays small.** Selecting several signals at once (add,
+hide, remove, recolour) rather than one at a time. If it turns out to
+need a selection model threaded through the panel, it is its own task —
+split it out rather than growing this one.
+
+## 15. Drag-reorder plot areas
+
+**Only if it stays small.** Same caveat as item 14: if it needs more
+than the existing area-ordering state, it becomes its own task.
+
+## 16. Process names do not say what they are
+
+Processes the app spawns show up under generic names — nothing should
+appear in a task manager as `tauri` alone. Every process this app is
+responsible for should carry `cannet` in its name and enough beyond that
+to say which part it is (host, sidecar, WebView helper where we control
+the name), so a user looking at a process list can tell what is ours and
+what each one does.
+
+Covers whatever we actually control: the binary name, the Tauri product
+name, and the sidecar's process name.
+
 ## Exit criteria
 
 - Every item above is fixed or struck with a recorded reason, and this
   file is deleted when the list empties.
 - Each fix lands with a test that fails before it.
-- Items 1 and 8 touch plot behaviour that ADR 0026 governs; if a fix
+- Items 14 and 15 are explicitly conditional: if either grows past a
+  small change, it leaves this task rather than expanding it.
+- Items 1, 8 and 10 touch plot behaviour that ADR 0026 governs; if a fix
   contradicts that ADR, the ADR changes in the same commit.

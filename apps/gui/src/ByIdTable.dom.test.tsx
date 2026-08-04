@@ -5,6 +5,10 @@
 // returns a color, and leaves it untinted otherwise. The resolver and
 // tint string are unit-tested in colorMap.test.ts; this guards that the
 // row renderer actually applies them.
+//
+// Also the scroll geometry of an expanded row. jsdom does no layout, so
+// these assert the heights the component *writes* — the scroll spacer
+// and the sticky viewport — not what a browser would paint from them.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
@@ -20,6 +24,7 @@ import { hydrateSettings } from "./hostSettings";
 import { ByIdTable } from "./ByIdTable";
 import { byIdRowKey } from "./ByIdTable";
 import { defaultColumns } from "./traceColumns";
+import { ROW_HEIGHT, SIGNAL_LINE_HEIGHT } from "./traceViewport";
 import type { ByIdSnapshotRecord, TraceFrameRecord } from "./types";
 import type { ColorResolver } from "./colorMap";
 
@@ -84,6 +89,98 @@ describe("ByIdTable id column", () => {
     await hydrateSettings();
     const { container } = renderTable(null);
     expect(container.querySelector(".trace-row .col-id")?.textContent).toBe("s:256");
+  });
+});
+
+describe("ByIdTable scroll extent", () => {
+  /// A snapshot of `count` ids, all decoding to `signals` signals.
+  function manyRows(count: number, signals: number) {
+    const rows: ByIdSnapshotRecord[] = Array.from({ length: count }, (_, i) => ({
+      frame: {
+        ...frame,
+        id: 0x100 + i,
+        decoded: {
+          name: "GearBox",
+          signals: Array.from({ length: signals }, (_, s) => ({
+            name: `Sig${s}`,
+            value: s,
+            unit: "",
+            label: null,
+          })),
+        },
+      },
+      rate: 0,
+      count: 1,
+    }));
+    return rows;
+  }
+
+  function renderRows(rows: ByIdSnapshotRecord[], expanded: Set<string>) {
+    return render(
+      <ByIdTable
+        count={rows.length}
+        version={0}
+        getRow={(i) => rows[i] ?? null}
+        ensureVisible={() => {}}
+        columns={defaultColumns()}
+        onColumnResize={() => {}}
+        onColumnToggle={() => {}}
+        onColumnReorder={() => {}}
+        resolveColor={null}
+        sort={null}
+        onSortColumn={() => {}}
+        baseTimestamp={0}
+        busLookup={new Map([["b1", "Chassis"]])}
+        expanded={expanded}
+        onToggleExpand={() => {}}
+      />,
+    );
+  }
+
+  const VH = 220; // ten plain rows
+
+  it("grows the scroll spacer by the expanded rows' signal lines", () => {
+    // Ten plain rows exactly fill the viewport; expanding one adds six
+    // signal lines that have to be inside the scroll range, or nothing
+    // below the expanded row can ever be reached.
+    vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(VH);
+    const rows = manyRows(10, 6);
+    const { container } = renderRows(rows, new Set([byIdRowKey(rows[3].frame)]));
+    const spacer = container.querySelector(".trace-rows > div") as HTMLElement;
+    expect(spacer.style.height).toBe(
+      `${10 * ROW_HEIGHT + 6 * SIGNAL_LINE_HEIGHT}px`,
+    );
+  });
+
+  it("grows the sticky viewport to the rendered stack, so nothing is clipped away", () => {
+    // The sticky element clips (`overflow: hidden`), so it must be at
+    // least as tall as the rows stacked inside it.
+    vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(VH);
+    const rows = manyRows(10, 6);
+    const { container } = renderRows(rows, new Set([byIdRowKey(rows[0].frame)]));
+    const sticky = container.querySelector(".trace-rows > div > div") as HTMLElement;
+    const stack = [...container.querySelectorAll<HTMLElement>(".trace-row")].reduce(
+      (h, el) => h + parseFloat(el.style.height),
+      0,
+    );
+    expect(stack).toBeGreaterThan(VH);
+    expect(parseFloat(sticky.style.height)).toBe(stack);
+  });
+
+  it("keeps a plain snapshot's spacer at the plain-row extent", () => {
+    // Nothing expanded: the spacer is the snapshot at one row each, and
+    // the sticky viewport still covers everything rendered into it.
+    vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(VH);
+    const rows = manyRows(40, 6);
+    const { container } = renderRows(rows, new Set());
+    const spacer = container.querySelector(".trace-rows > div") as HTMLElement;
+    const sticky = container.querySelector(".trace-rows > div > div") as HTMLElement;
+    const stack = [...container.querySelectorAll<HTMLElement>(".trace-row")].reduce(
+      (h, el) => h + parseFloat(el.style.height),
+      0,
+    );
+    expect(spacer.style.height).toBe(`${40 * ROW_HEIGHT}px`);
+    expect(parseFloat(sticky.style.height)).toBeGreaterThanOrEqual(stack);
   });
 });
 

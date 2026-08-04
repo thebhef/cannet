@@ -43,17 +43,82 @@ export function visibleRowCount(viewportHeight: number): number {
 
 /// Height of the scroll spacer: the trace at its full extent, but never
 /// shorter than the viewport and never taller than the browser cap.
-export function scaledHeight(count: number, viewportHeight: number): number {
+/// `extraPx` is the height expanded rows add over the plain-row
+/// baseline (see [`expandedExtraHeight`]) — without it the scroll range
+/// stops short of the expanded content and no scroll position reaches
+/// the rows below it.
+export function scaledHeight(
+  count: number,
+  viewportHeight: number,
+  extraPx = 0,
+): number {
   return Math.max(
     viewportHeight,
-    Math.min(count * ROW_HEIGHT, MAX_SCROLL_HEIGHT_PX),
+    Math.min(count * ROW_HEIGHT + extraPx, MAX_SCROLL_HEIGHT_PX),
   );
 }
 
 /// The scrollable distance: spacer height minus the viewport, floored
 /// at 1 so callers can divide by it unconditionally.
-export function maxScrollTop(count: number, viewportHeight: number): number {
-  return Math.max(1, scaledHeight(count, viewportHeight) - viewportHeight);
+export function maxScrollTop(
+  count: number,
+  viewportHeight: number,
+  extraPx = 0,
+): number {
+  return Math.max(
+    1,
+    scaledHeight(count, viewportHeight, extraPx) - viewportHeight,
+  );
+}
+
+/// Total height the expanded rows add over the plain-row baseline, for
+/// [`scaledHeight`]'s `extraPx`. Walks the whole row range, so callers
+/// should skip it when nothing is expanded (the answer is then `0`);
+/// `rowHeightAt` reads `ROW_HEIGHT` for rows outside the loaded page, so
+/// an expanded row that hasn't landed yet contributes nothing until it
+/// does.
+export function expandedExtraHeight(
+  count: number,
+  rowHeightAt: (absIdx: number) => number,
+): number {
+  let extra = 0;
+  for (let i = 0; i < count; i++) extra += rowHeightAt(i) - ROW_HEIGHT;
+  return extra;
+}
+
+/// The largest valid first-visible-row index when rows have variable
+/// heights: the earliest row whose stack, walked back from the end,
+/// still fits in `viewportHeight`. Unlike [`maxAnchorRow`] — which
+/// subtracts [`visibleRowCount`] and so pads the bound two whole rows
+/// *past* the end — anchoring here leaves the last row fully inside the
+/// viewport. When a single row is taller than the viewport the anchor
+/// stops on it rather than past it; the renderer's sticky viewport
+/// grows to the row's height so the scroll still reaches its bottom.
+export function tailAnchorRow(
+  count: number,
+  viewportHeight: number,
+  rowHeightAt: (absIdx: number) => number,
+): number {
+  let used = 0;
+  let i = count - 1;
+  for (; i >= 0; i--) {
+    const h = rowHeightAt(i);
+    if (used + h > viewportHeight) break;
+    used += h;
+  }
+  return Math.max(0, Math.min(count - 1, i + 1));
+}
+
+/// Map a scroll position to an anchor row: the scrollbar's fraction of
+/// `scrollRange` is the anchor's fraction of `anchorMax`.
+export function anchorFromScroll(
+  scrollTop: number,
+  anchorMax: number,
+  scrollRange: number,
+): number {
+  if (anchorMax === 0) return 0;
+  const fraction = Math.min(1, Math.max(0, scrollTop / scrollRange));
+  return Math.min(anchorMax, Math.round(fraction * anchorMax));
 }
 
 /// The largest valid first-visible-row index — the row that sits at the
@@ -68,13 +133,11 @@ export function rowFromScroll(
   count: number,
   viewportHeight: number,
 ): number {
-  const anchorMax = maxAnchorRow(count, viewportHeight);
-  if (anchorMax === 0) return 0;
-  const fraction = Math.min(
-    1,
-    Math.max(0, scrollTop / maxScrollTop(count, viewportHeight)),
+  return anchorFromScroll(
+    scrollTop,
+    maxAnchorRow(count, viewportHeight),
+    maxScrollTop(count, viewportHeight),
   );
-  return Math.min(anchorMax, Math.round(fraction * anchorMax));
 }
 
 /// Inverse of `rowFromScroll`: the scrollTop that puts `row` at the top
