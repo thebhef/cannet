@@ -2818,14 +2818,36 @@ button.trace-event-swatch {
   font-size: 0.78rem;
   position: relative;
 }
+/* What the list scrolls horizontally. The message column is as wide as
+   the longest message in the filtered set, so a line longer than the
+   panel can be scrolled to instead of being cut off — sizing this by its
+   rendered content alone would measure only the rows the virtualizer has
+   mounted, and this view follows the tail. `--system-messages-message-chars`
+   is that length in characters, published inline by the panel; the rows
+   are monospace, so a character is `1ch`, and the fixed part below is
+   `.system-messages-row`'s own tracks, gaps and padding — this
+   stylesheet's fact, not the panel's. `max-content` is the floor for
+   anything the `ch` arithmetic under-measures, and the `100%` keeps the
+   rows spanning the panel when every message already fits. */
+.system-messages-scroll-content {
+  width: max(
+    100%,
+    calc(
+      7rem + 8rem + 4rem + 3 * 0.5rem + 2 * 0.5rem +
+        var(--system-messages-message-chars, 0) * 1ch
+    )
+  );
+  min-width: max-content;
+}
 .system-messages-row {
   display: grid;
-  grid-template-columns: 7rem 8rem 4rem 1fr;
+  /* The message track takes at least its own text: a bare `1fr` sized it
+     to the leftover panel width, which is what truncated a long line. */
+  grid-template-columns: 7rem 8rem 4rem minmax(max-content, 1fr);
   gap: 0.5rem;
   padding: 0 0.5rem;
   align-items: center;
   white-space: nowrap;
-  overflow: hidden;
   border-bottom: 1px solid rgba(30, 41, 59, 0.5);
 }
 .system-messages-row-debug { color: #7c8899; }
@@ -2835,7 +2857,11 @@ button.trace-event-swatch {
 .system-messages-ts { color: #64748b; }
 .system-messages-source { color: #a5b4fc; }
 .system-messages-level { text-transform: uppercase; font-weight: 600; }
-.system-messages-msg { overflow: hidden; text-overflow: ellipsis; }
+/* No ellipsis, and nothing clipped: the track is sized to the text and
+   the whole line is reachable by scrolling the list sideways. Staying
+   visible is also what lets a line the `ch` arithmetic under-measures
+   spill far enough for the stack's `max-content` floor to catch it. */
+.system-messages-msg { overflow: visible; }
 .system-messages-empty {
   padding: 1rem;
   color: #64748b;

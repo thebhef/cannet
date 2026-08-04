@@ -615,21 +615,64 @@ than a locale's spelling of it) and by
 surfaces and asserts the tooltip, its removal on mouse-out, and the
 absence of any `title` for a null and for a capture-relative origin.
 
-## 18. The system messages view does not scroll horizontally
+## 18. The system messages view does not scroll horizontally — **done**
 
-Another instance of item 9's third sub-part, on a panel item 9 did not
-cover. A long message is cut off with no way to reach the rest of it.
+The same symptom as item 9's third sub-part, but **neither of the two
+hypotheses it suggested**. Established before anything was changed, in
+headless Chromium against the real `index.css` and the real dockview
+nesting: the rows here are ordinary in-flow grids, not absolutely
+positioned ones in a clipping viewport, and `.system-messages-list`
+already computed `overflow-x: auto` (nothing declares `overflow-x`, and
+CSS Overflow's visible→auto promotion does the rest, because
+`overflow-y: auto` is declared). So it was not the trace table's
+mechanism and it was not a missing `overflow-x`.
 
-Item 9 established the mechanism for the trace table: its rows are
-`position: absolute; left: 0; right: 0` inside an `overflow: hidden`
-sticky viewport, so each row's box was exactly the viewport width and
-the grid's fixed tracks overflowed *the row*, which the viewport
-clipped — the scroll container therefore never had scrollable overflow
-at all. The fix published the columns' summed width as
-`--trace-content-width` on the spacer and mirrored `scrollLeft` onto the
-pinned header. Check whether the system messages view shares that
-structure before assuming it shares the mechanism; it may simply be a
-missing `overflow-x`.
+**Nothing ever overflowed.** The message track was `1fr`, so it was
+sized to whatever panel width was left over rather than to its text, and
+`.system-messages-msg` ellipsised the remainder inside it (with the
+row's `overflow: hidden` behind that as a second clip). Measured in a
+600 × 300 group with a 162-character message: `scrollWidth ===
+clientWidth === 585`, `scrollLeft` stuck at 0, the message span rendered
+at 241 px against its own `scrollWidth` of 1112 — **871 px of text with
+no scroll position that reached it**.
+
+The fix is three declarations and one published number. The message
+track becomes `minmax(max-content, 1fr)` so it takes at least its own
+text; the row's `overflow: hidden` and the message's ellipsis go; and
+the virtualised stack (`.system-messages-scroll-content`) is sized to
+the longest message in the *filtered* set, which the panel publishes as
+`--system-messages-message-chars` — a character count, because the rows
+are monospace and a character is exactly `1ch`. The stylesheet turns it
+into a width by adding the row's own fixed tracks, gaps and padding, the
+same split item 9 used for `--trace-content-width`.
+
+**Why a published count rather than `max-content` alone.** `max-content`
+measures the rows the virtualizer currently has mounted, and this view
+follows the tail, so the scroll range would collapse on every append.
+Measured: scrolled to 800, swapping the long row out of the mounted
+window took `scrollWidth` 1456 → 585 and snapped `scrollLeft` back to 0.
+With the width published from the whole filtered set both hold. It stays
+as a floor (`min-width: max-content`) for anything the `ch` arithmetic
+under-measures, and the width is `max(100%, …)` so the rows still span
+the panel when every message fits — a plain `calc()` left 15-character
+rows 447 px wide in a 585 px list, with their borders and level colours
+stopping short of the right edge.
+
+Measured in the **live WebView2 host** too, on a 504 px panel whose
+longest message was 184 characters: before, `scrollWidth ===
+clientWidth === 504` with `scrollLeft` stuck at 0 and the message
+rendered at 160 px of its 1263; after, `scrollWidth` 1607 against a
+`clientWidth` of 504, `scrollLeft` reaching 1103, and the message
+rendered at its full 1263 px. The 184-character row was not even
+mounted at the time — which is precisely what the published count
+covers.
+
+Guarded by `longestMessageChars` in `systemLog.test.ts`, the
+`system messages panel` block in `dockPanelScrolling.test.ts` (the
+stylesheet halves), and "publishes the longest message's length to the
+scrolled stack" / "measures the filtered set, not the whole buffer" in
+`SystemMessagesPanel.dom.test.tsx`. That the halves add up to an actual
+scrollbar is only visible in Chromium — jsdom does no layout.
 
 ## 19. "colour" should be "color" throughout
 
