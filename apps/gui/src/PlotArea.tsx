@@ -32,6 +32,7 @@ import {
   type XSync,
 } from "./plotPanelConfig";
 import { showPointsToUplot, type ShowPointsMode } from "./plotPoints";
+import { nextResampleDelayMs } from "./plotPacing";
 import { Combobox, type ComboboxOption } from "./Combobox";
 import { formatDurationSeconds, formatElapsed, fracDigitsForSpan } from "./format";
 import { SIGNAL_DND_MIME, setSignalDragData } from "./dragSignals";
@@ -580,6 +581,10 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   const hostExtentsRef = useRef<(SignalExtent | null)[] | null>(null);
   const lastResampleTsRef = useRef(0);
   const rateEmaRef = useRef(0);
+  /** Synchronous cost (ms) of the last resample's render section — what
+   * the fetch loop paces itself against so a many-series area can't take
+   * the whole UI thread (`plotPacing.ts`). */
+  const renderCostMsRef = useRef(0);
   const [valueTick, setValueTick] = useState(0); // bump → re-render side panel
   /** Filter-editor visibility (ADR 0020). Closed by default;
    * the "filter…" button in the side-panel head toggles it. The
@@ -763,6 +768,12 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     diagCount("plotarea.resample"); // DIAG
     resampleBusyRef.current = true;
     const t0 = performance.now();
+    // Start of this tick's *synchronous* section — everything from the
+    // sample landing to `setData` runs without yielding, and it is what
+    // the loop paces itself against (`plotPacing.ts`). Set once the
+    // round-trip is back so the host's latency (which costs the UI
+    // thread nothing) never inflates the back-off.
+    let syncStart = t0;
     try {
       const lr = liveRef.current;
       if (signals.length === 0) {
@@ -861,6 +872,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
             },
             sidecar,
           );
+      syncStart = performance.now();
       // uPlot was rebuilt while the fetch was in flight — this resample
       // belongs to the old instance; the rebuild kicks a fresh one.
       if (uplotRef.current !== u) return;
@@ -1031,21 +1043,36 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
           })()
         : enumActive
         ? rawRows
-        : rawRows.map((row, i) => {
+        : // Normalise **in place**. `rawRows` were just allocated by
+          // `mergeSeries` and, off the lane path, nothing else reads them
+          // (`laneRawRef` is only set in lane mode), so a `map` here just
+          // buys a second array per series — one full `signals.length ×
+          // xs.length` allocation per tick, churned every tick. A
+          // Chromium CPU profile of a 512-series area put those two
+          // `map`s at 17 % of the UI thread and most of another 14 % in
+          // the GC they fed.
+          rawRows.map((row, i) => {
             if (seriesRel[i].v.length === 0) return row; // all null anyway
             const key = signalRefKey(signals[i]);
             const r = scaleRanges.get(key);
             if (r && r.hi > r.lo) {
               effective.set(key, r);
               const span = r.hi - r.lo;
-              return row.map((v) => (v == null ? null : (v - r.lo) / span));
+              for (let j = 0; j < row.length; j++) {
+                const v = row[j];
+                if (v != null) row[j] = (v - r.lo) / span;
+              }
+              return row;
             }
             // No range available yet (signal hasn't decoded, or all
             // observed values are equal so far). Render at the canvas
             // midline so the line is *visible* — without this fallback
             // the raw values get drawn against the y = [0, 1] pin and
             // clipped to nothing.
-            return row.map((v) => (v == null ? null : 0.5));
+            for (let j = 0; j < row.length; j++) {
+              if (row[j] != null) row[j] = 0.5;
+            }
+            return row;
           });
       const merged = [xs, ...displayRows] as uPlot.AlignedData;
       // Raw codes for the lane draw hook, same row order as `u.data`.
@@ -1132,6 +1159,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     } catch {
       /* a failed sample just leaves the last one on screen */
     } finally {
+      renderCostMsRef.current = performance.now() - syncStart;
       resampleBusyRef.current = false;
     }
   }, [signals, areaId, withSuppressed, recordRate, sampleRange, currentRange, resetRange]);
@@ -1857,6 +1885,12 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   // edge captures the frozen state. Also re-sample once when the window
   // re-anchors (Clear / Start gives a new `winStart`) or the rate
   // changes.
+  //
+  // The interval is a floor, not the cadence: a tick that did expensive
+  // synchronous work is followed by proportional idle time, so however
+  // many signals the area holds it can never occupy more than a bounded
+  // share of the UI thread (`plotPacing.ts`). At the ordinary handful of
+  // series the tick is far cheaper than the interval and this is a no-op.
   useEffect(() => {
     void resampleRef.current();
     if (!live) {
@@ -1865,6 +1899,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     }
     let stopped = false;
     let timer = 0;
+    const nextDelay = () => nextResampleDelayMs(fetchIntervalMs, renderCostMsRef.current);
     const tick = async () => {
       if (stopped) return;
       try {
@@ -1873,9 +1908,9 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
         /* a transient sample failure must not kill the loop */
       }
       if (stopped) return;
-      timer = window.setTimeout(() => void tick(), fetchIntervalMs);
+      timer = window.setTimeout(() => void tick(), nextDelay());
     };
-    timer = window.setTimeout(() => void tick(), fetchIntervalMs);
+    timer = window.setTimeout(() => void tick(), nextDelay());
     return () => {
       stopped = true;
       window.clearTimeout(timer);

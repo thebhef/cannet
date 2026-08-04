@@ -35,6 +35,21 @@ reload, make the first sample cheap, or show progress rather than a
 blank canvas. Measure before choosing — the cost has not been attributed
 to a specific stage.
 
+Two facts item 12's investigation turned up that bear on this:
+
+- **The first fetch after *any* signal-set change is a whole-window
+  one.** Changing an area's signal list re-anchors `useDecimatedRange`'s
+  cache, which clears `base` — and with no `base` the request carries
+  `fromSeconds`/`toSeconds` of `null`, i.e. the whole window at full
+  point budget. So adding one signal to an N-signal area pays a cold
+  whole-window sample of all N + 1, not of the one that was added.
+- **Host latency is not on the UI thread.** In a CPU profile of the
+  shipping app under a heavy plot, `fetch` — every host round-trip the
+  panel makes — was 0.6 % of the main thread. A slow `sample_signals`
+  shows up as a blank canvas, never as an unresponsive window; the plot
+  loop's back-off (item 12) measures only its own synchronous section,
+  so a slow cold sample does not throttle it either.
+
 ## 3. Integer signals render in scientific notation — **done**
 
 Two changes, both landed:
@@ -323,18 +338,64 @@ with it" / "abandons a pattern edit on Escape"
 (`SignalsPanel.dom.test.tsx`) and "edits an area's pattern in place and
 re-resolves its series" (`PlotPanel.dom.test.tsx`).
 
-## 12. Adding many signals to a plot hangs the frontend
+## 12. Adding many signals to a plot hangs the frontend — **done**
 
-Observed when adding signals to a plot area against a reasonably full
-trace buffer: the frontend stops responding rather than merely taking a
-while. May share a cause with items 1 and 2 (each added signal is a cold
-pyramid build, and enough of them in flight starves the UI), but "slow"
-and "hung" are different failures — establish which this is before
-assuming it falls out of item 2.
+**It is a UI-thread block in the frontend, not host saturation** — so it
+does not fall out of item 2. Established with a Chromium CPU profile of
+the shipping release binary over CDP, driven by the self-driving perf
+harness (ADR 0031) against the ev-zonal RBS simulation with one plot
+area holding N signals. At N = 512 the main thread was **2.6 % idle**;
+the work on it was uPlot path building (35 %), the resample's per-row
+normalise (17 %), GC (14 %) and `mergeSeries` (13 %). `fetch` — every
+host round-trip the panel makes — was **0.6 %**. The host is not the
+bottleneck; the frontend's own per-tick shaping and redraw are.
 
-Whatever the cause, the exit condition is that adding signals never
-blocks the UI thread, however many are added and however full the
-buffer.
+The mechanism is that a resample's tail (merge onto the shared time
+axis, normalise, `setData`, redraw) is synchronous work proportional to
+`series × merged rows`, and the loop then waited a *fixed* interval
+after it. Past some series count the interval is shorter than the tail,
+so the thread never gets an idle slot — a plot that is merely slow to
+fill becomes a window that has stopped responding. Two changes:
+
+- **The loop paces itself against what the last tick cost**
+  (`plotPacing.ts`): it idles at least `RESAMPLE_IDLE_RATIO` times the
+  tick's own synchronous span, so an area can never occupy more than a
+  bounded share of the thread however many signals it holds, and
+  whatever the buffer's density. The host round-trip is deliberately
+  outside the measured span — a slow cold sample (item 2) must not
+  throttle the plot. At the ordinary handful of series the tick is far
+  cheaper than the interval and the pacing is a no-op.
+- **The auto-normalise writes in place** instead of `map`-ing a second
+  array per series — one full `series × rows` allocation per tick,
+  churned every tick, which the profile put at 17 % of the thread plus
+  most of the GC it fed.
+
+Measured interleaved A/B, two reps each, release binaries, 40 s captures
+(`longtask_ms_per_s.mean` — UI-thread block time per second):
+
+| N | before | after |
+| --- | --- | --- |
+| 128 | 228 / 208 ms | 74 / 74 ms |
+| 512 | 643 / 632 ms | 315 / 313 ms |
+
+Main-thread idle at N = 512 goes 2.6 % → 34 %, event-loop lag max 310 ms
+→ 156 ms, JS heap peak 484 MB → 389 MB. Guarded by `plotPacing.test.ts`
+(the duty-cycle invariant, the interval floor, the back-off cap) and
+"backs the fetch loop off when a tick's own render work is expensive" in
+`PlotPanel.dom.test.tsx`, which counts resamples over a second with a
+synthetic 250 ms render cost — 16 without the fix, ≤ 3 with it.
+
+**What is left, honestly.** At 512 series in one area the individual
+blocks that remain are one `mergeSeries` (~40 ms) and one uPlot draw
+(~66 ms); neither can be subdivided, so the run still reports
+`jank_fraction` 1.0 there (any second with > 50 ms of long-task time
+counts). The pacing bounds the *share* of the thread, not the size of a
+single indivisible block — the app responds, it refreshes less often.
+Making a single block smaller means drawing less: capping the merged x
+grid at the canvas's own resolution would cut both the merge and the
+draw, and is the next lever if one is ever wanted. The allocation half
+of this fix is only observable in Chromium (a CPU profile); jsdom
+neither lays out nor paints, so no test here can see it.
 
 ## 13. The plot's x-axis label should show the free cursor's time
 
