@@ -10,17 +10,26 @@ project file's own directory**, and a relative reference is resolved
 against that directory when the project is opened. Absolute references
 are honoured as-is.
 
-The GUI writes absolute paths when you add a file through the picker
-(it has nowhere else to anchor them). A relative reference is something
-you author deliberately — chiefly so a self-contained project that
-ships its DBCs and RBS alongside it (the `examples/` projects) opens
-correctly from any clone location, not just from whatever directory the
-app happened to launch in.
+**A reference to a file inside the project directory is written
+relative; everything else is written absolute.** That is the rule in
+both directions — the GUI stores what it can anchor and leaves the rest
+alone. So a self-contained project that ships its DBCs and RBS
+alongside it (the `examples/` projects, and now any project directory)
+opens correctly from any clone location, not just from whatever
+directory the app happened to launch in, and a project directory is
+movable and shareable as a unit.
+
+Containment is decided on the path text, not by asking the filesystem —
+the renderer, which does this, has none. A reference the test is unsure
+about stays absolute, which is always correct. Nothing climbs out with
+`../`: a reference that escaped the project directory would break the
+moment the directory moved, which is the very thing the relative form
+exists to survive.
 
 Resolution happens once, on open, before the paths reach the host
-commands (`add_dbc`, `rbs_load`) that read straight from disk. Those
-commands continue to take a single ready-to-open path; they do not know
-about project directories.
+commands (`add_dbc`, `rbs_load`) that read straight from disk, and the
+inverse rewrite happens once, on save. Those commands continue to take a
+single ready-to-open path; they do not know about project directories.
 
 ## Why
 
@@ -45,9 +54,13 @@ references, not sidecars carrying the project's own state.
 - The backend harness already resolves the example's DBC and RBS paths
   against the example directory; this aligns the GUI's open path with
   that behaviour, so both consume the same artifacts the same way.
-- Resolution is open-time only. Saving a project through the GUI
-  snapshots the host's currently-loaded (absolute) paths — it does not
-  re-derive the relative form. Re-saving a relative-path example over
-  itself would rewrite its references to absolute; the examples are
-  read-mostly, so this is an accepted limitation rather than a feature
-  to build.
+- Re-saving a relative-path example over itself keeps its references
+  relative. That was not true when the GUI wrote absolute paths
+  unconditionally: a save rewrote every reference to a machine-local
+  absolute path, which is why the `relativize-project-paths` pre-commit
+  hook exists. The hook stays as the backstop — it relativizes anything
+  inside the *repository*, a wider net than the project directory — but
+  it should now have nothing to do.
+- The rule applies to what the project *stores*. In memory the host and
+  the frontend still work in absolute paths throughout; the translation
+  happens at the project-document boundary, on open and on save.

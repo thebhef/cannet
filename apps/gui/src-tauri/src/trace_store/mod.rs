@@ -90,6 +90,7 @@ pub struct WindowAnchors {
 
 pub use byid::LatestById;
 pub use cannet_spill::RawTraceFrame;
+pub use flush::Carry;
 pub use scratch::ScratchBreakdown;
 
 pub(crate) use flush::{read_json, write_json};

@@ -32,7 +32,11 @@ import {
 } from "./types";
 import { resolveBindingInterface } from "./bindingResolution";
 import { useSidecarStatus } from "./sidecarStatus";
-import { projectDir, resolveProjectPath } from "./projectPaths";
+import {
+  projectDir,
+  relativizeProjectPath,
+  resolveProjectPath,
+} from "./projectPaths";
 import { windowTitle } from "./windowTitle";
 import { TracePanel } from "./TracePanel";
 import { ProjectPanel } from "./ProjectPanel";
@@ -66,6 +70,7 @@ import { KeybindingsContext } from "./keybindingsContext";
 import { recordRecentBlf, forgetRecentBlf } from "./recentBlfs";
 import {
   hostState,
+  hydrateState,
   setRecentBlfs as persistRecentBlfs,
   setLastProject as persistLastProject,
   setLayout as persistLayout,
@@ -188,6 +193,30 @@ const DOCK_COMPONENTS = {
   [SHORTCUTS_PANEL_COMPONENT]: ShortcutsPanel,
 };
 
+/// Rewrite a project's file references into the form it should be
+/// *stored* in (ADR 0030): a DBC or `.cannet_rbs` inside the project
+/// directory is recorded relative to the project file, so the directory
+/// can be copied to another path or another machine and still resolve
+/// its own files. Anything outside it stays absolute.
+///
+/// The exact inverse of what `applyProject` resolves on open, and applied
+/// at the same layer — the host commands keep taking ready-to-open paths.
+function withStoredPaths(project: Project, projectFilePath: string): Project {
+  const dir = projectDir(projectFilePath);
+  return {
+    ...project,
+    dbcs: project.dbcs.map((d) => ({
+      ...d,
+      path: relativizeProjectPath(dir, d.path),
+    })),
+    elements: project.elements.map((el) =>
+      isProjectElement(el) && el.kind === "rbs" && el.path
+        ? { ...el, path: relativizeProjectPath(dir, el.path) }
+        : el,
+    ),
+  };
+}
+
 export function App() {
   diagCount("render.App"); // DIAG
   useEffect(() => startDiagReporter(), []); // DIAG
@@ -265,11 +294,6 @@ export function App() {
   >(() => new Map());
   // Path of the open project file, or null for an unsaved workspace.
   const [projectPath, setProjectPath] = useState<string | null>(null);
-  // Stable id of the open project (host-managed, carried on what
-  // `open_project` / `save_project` return). Keys the per-project
-  // remembered BLF channel↔bus mappings; null (unsaved, never-saved
-  // workspace) means those mappings have nothing durable to bind to.
-  const [projectId, setProjectId] = useState<string | null>(null);
   // True when the workspace has changed since it was last saved/opened.
   const [dirty, setDirty] = useState(false);
   // Set while the "unsaved changes — Save / Discard / Cancel?" modal is
@@ -767,7 +791,7 @@ export function App() {
       // fallback) so the next open of this BLF — or a same-shaped one —
       // pre-fills the dialog with it.
       persistBlfChannelMaps(
-        recordBlfChannelMap(hostState().blf_channel_maps, projectId, blfPath, choices),
+        recordBlfChannelMap(hostState().blf_channel_maps, blfPath, choices),
       );
       // Abort the import if the host clear fails — and drop the recent
       // entry, since the open won't happen.
@@ -800,7 +824,7 @@ export function App() {
         dropRecentBlf(blfPath);
       }
     },
-    [pendingBlf, projectId, resetSession, rememberRecentBlf, dropRecentBlf],
+    [pendingBlf, resetSession, rememberRecentBlf, dropRecentBlf],
   );
 
   // Add one or more DBCs to the loaded set (each goes through the host's
@@ -1154,7 +1178,6 @@ export function App() {
   // into the fields; hit Connect to switch.
   const applyProject = useCallback(
     async (project: Project, projectFilePath: string) => {
-      setProjectId(project.project_id ?? null);
       // DBC and `.cannet_rbs` references in the project may be relative
       // to the project file's own directory (ADR 0030); resolve them to
       // absolute before they reach the host commands, which read from
@@ -1286,7 +1309,6 @@ export function App() {
     }
     seedDefaultLayout();
     rememberProject(null);
-    setProjectId(null);
     void loadDbcSet([], {});
     setDbcBuses({});
     setBuses([]);
@@ -1321,6 +1343,12 @@ export function App() {
     if (typeof selected !== "string") return;
     try {
       const project = await invoke<Project>("open_project", { path: selected });
+      // Opening a project re-roots the host onto that project's own
+      // directory (ADR 0042 §1), so the project-scoped half of the host
+      // state — the layout, its recent BLFs, its channel maps — is a
+      // different file's now. Re-read before anything writes the previous
+      // project's values into it.
+      await hydrateState();
       void applyProject(project, selected);
       rememberProject(selected);
       setDirty(false);
@@ -1331,11 +1359,23 @@ export function App() {
 
   // Returns true if the project was written, false if it wasn't (e.g.
   // the user cancelled the file picker, or the write failed).
+  //
+  // `promote` picks the command: `save_project_as` also makes the
+  // destination a project directory and moves the session into it,
+  // carrying the project's data along (ADR 0042 §6). Plain Save writes
+  // the file and touches no directory — cannet never creates a
+  // `.cannet/` as a side effect, only where the user pointed it.
   const saveProjectTo = useCallback(
-    async (path: string): Promise<boolean> => {
+    async (path: string, promote = false): Promise<boolean> => {
       try {
-        const id = await invoke<string>("save_project", { path, project: gatherProject() });
-        setProjectId(id);
+        await invoke<string>(promote ? "save_project_as" : "save_project", {
+          path,
+          project: withStoredPaths(gatherProject(), path),
+        });
+        // The project directory may have moved, so the project-scoped
+        // half of the host state now resolves somewhere else; re-read it
+        // before anything writes the stale copy back.
+        if (promote) await hydrateState();
         rememberProject(path);
         setDirty(false);
         return true;
@@ -1353,7 +1393,7 @@ export function App() {
       defaultPath: projectPath ?? "cannet-project.cannet_prj",
     });
     if (!path) return false;
-    return saveProjectTo(path);
+    return saveProjectTo(path, true);
   }, [projectPath, saveProjectTo]);
 
   const handleSaveProject = useCallback(
@@ -2391,7 +2431,6 @@ export function App() {
           buses={buses}
           initial={savedBlfChannelMap(
             hostState().blf_channel_maps,
-            projectId,
             pendingBlf.blfPath,
             pendingBlf.channels.length,
             new Set(buses.map((b) => b.id)),

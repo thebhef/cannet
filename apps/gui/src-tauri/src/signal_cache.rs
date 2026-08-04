@@ -405,8 +405,16 @@ fn wipe_dir(dir: &Path) {
 /// to mmap'd files under `root` (a `signals/` subdir of the disk-spill
 /// scratch), so the resident set stays bounded (ADR 0002 DS-5/DS-7).
 pub struct SignalCacheStore {
+    caches: Mutex<Caches>,
+}
+
+/// The store's interior: where the pyramids spill, and the live caches
+/// rooted there. One lock over both, so re-rooting the store
+/// ([`SignalCacheStore::reroot`]) cannot interleave with a cache being
+/// created under the root it is replacing.
+struct Caches {
     root: PathBuf,
-    caches: Mutex<HashMap<SignalKey, SignalCache>>,
+    by_key: HashMap<SignalKey, SignalCache>,
 }
 
 impl SignalCacheStore {
@@ -418,8 +426,10 @@ impl SignalCacheStore {
         let _ = std::fs::create_dir_all(&root);
         wipe_dir(&root);
         Self {
-            root,
-            caches: Mutex::new(HashMap::new()),
+            caches: Mutex::new(Caches {
+                root,
+                by_key: HashMap::new(),
+            }),
         }
     }
 
@@ -430,8 +440,25 @@ impl SignalCacheStore {
     /// file).
     pub fn clear(&self) {
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
-        *caches = HashMap::new();
-        wipe_dir(&self.root);
+        caches.by_key = HashMap::new();
+        wipe_dir(&caches.root);
+    }
+
+    /// Move the pyramids to `root` — the cache directory of a project
+    /// directory the session has switched to (ADR 0042).
+    ///
+    /// Every cached series is dropped first: its levels are mmap'd files
+    /// under the *old* root, and on Windows a mapped file cannot even be
+    /// removed. Nothing is carried across, because nothing needs to be — a
+    /// pyramid is derived state that rebuilds from the raw frames on the
+    /// next slice. The new root is prepared exactly as [`Self::new`]
+    /// prepares one.
+    pub fn reroot(&self, root: impl AsRef<Path>) {
+        let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
+        caches.by_key = HashMap::new();
+        caches.root = root.as_ref().to_path_buf();
+        let _ = std::fs::create_dir_all(&caches.root);
+        wipe_dir(&caches.root);
     }
 
     /// Front-trim every cached pyramid to the truncation time `ts_seconds`
@@ -441,7 +468,7 @@ impl SignalCacheStore {
     /// no points that old are unaffected.
     pub fn evict_below(&self, ts_seconds: f64) {
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
-        for cache in caches.values_mut() {
+        for cache in caches.by_key.values_mut() {
             cache.evict_below(ts_seconds);
         }
     }
@@ -492,9 +519,10 @@ impl SignalCacheStore {
             signal_name.to_string(),
         );
         let base = key_prefix(&key);
-        let cache = caches
+        let Caches { root, by_key } = &mut *caches;
+        let cache = by_key
             .entry(key)
-            .or_insert_with(|| SignalCache::new(&self.root, &base));
+            .or_insert_with(|| SignalCache::new(root, &base));
 
         cache.catch_up(bus_id, message_id, extended, signal_name, store, dbs);
         cache.window(from_seconds, to_seconds, max_points)
@@ -524,9 +552,10 @@ impl SignalCacheStore {
             signal_name.to_string(),
         );
         let base = key_prefix(&key);
-        let cache = caches
+        let Caches { root, by_key } = &mut *caches;
+        let cache = by_key
             .entry(key)
-            .or_insert_with(|| SignalCache::new(&self.root, &base));
+            .or_insert_with(|| SignalCache::new(root, &base));
         cache.catch_up(bus_id, message_id, extended, signal_name, store, dbs);
         cache.extent()
     }
@@ -900,6 +929,42 @@ mod tests {
         // A subsequent serve rebuilds the pyramid from the raw store.
         let rebuilt = cache.slice(None, 256, false, "X", 0.0, 1000.0, 0, &store, dbs);
         assert_eq!(rebuilt.len(), 200);
+    }
+
+    #[test]
+    fn rerooting_unmaps_the_old_pyramids_and_spills_into_the_new_root() {
+        // Re-rooting the session (ADR 0042) has to leave the old cache
+        // directory's files unmapped — on Windows a mapped file cannot even
+        // be removed, and the trace store is about to move its own files
+        // out from beside them. Nothing is carried: a pyramid rebuilds from
+        // the raw frames on the next serve.
+        let store = TraceStore::new();
+        for i in 0..200u64 {
+            store.append(val_frame(i * S, (i % 50) as u16));
+        }
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let a = TempDir::new().unwrap();
+        let b = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(a.path());
+        let _ = cache.slice(None, 256, false, "X", 0.0, 1000.0, 100, &store, dbs);
+        assert!(std::fs::read_dir(a.path()).unwrap().flatten().count() > 0);
+
+        cache.reroot(b.path());
+
+        // Unmapped: the old root's files can now be removed, which is the
+        // operational form of "nothing holds them any more".
+        for entry in std::fs::read_dir(a.path()).unwrap().flatten() {
+            std::fs::remove_file(entry.path()).expect("the old pyramids must be unmapped");
+        }
+        assert_eq!(std::fs::read_dir(b.path()).unwrap().flatten().count(), 0);
+
+        let rebuilt = cache.slice(None, 256, false, "X", 0.0, 1000.0, 0, &store, dbs);
+        assert_eq!(rebuilt.len(), 200, "the pyramid rebuilds on demand");
+        assert!(
+            std::fs::read_dir(b.path()).unwrap().flatten().count() > 0,
+            "and it spills into the new root"
+        );
     }
 
     #[test]

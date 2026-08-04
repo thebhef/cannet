@@ -527,7 +527,7 @@ pub(crate) fn test_state() -> AppState {
         transmit_scheduler: transmit_scheduler::channel().0,
         rbs: Mutex::new(rbs::RbsRuntime::default()),
         verifier: verification::VerificationState::default(),
-        filter_index_dir: std::env::temp_dir().join("cannet-test-filter"),
+        filter_index_dir: Mutex::new(std::env::temp_dir().join("cannet-test-filter")),
         filter_index: Mutex::new(None),
         live_tail_rows: std::sync::atomic::AtomicU64::new(0),
         active_project_id: Mutex::new(None),
@@ -926,10 +926,10 @@ fn filter_candidate_resolution_is_memoised_until_a_new_id_is_seen() {
     // and signal names. All of it is a pure function of (predicate, DBCs,
     // ids seen), and the first two can't move without the index being
     // dropped, so the only live input is the store's key generation.
-    let mut state = test_state();
-    state.filter_index_dir =
+    let state = test_state();
+    *state.filter_index_dir() =
         std::env::temp_dir().join(format!("cannet-test-fi-memo-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&state.filter_index_dir).unwrap();
+    std::fs::create_dir_all(&*state.filter_index_dir()).unwrap();
     let filter: FilterPredicate = serde_json::from_str(r#"{"id_list": [256]}"#).unwrap();
 
     state.trace_store.append(dummy_frame(1_000, 256));

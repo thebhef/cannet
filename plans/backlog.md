@@ -831,3 +831,16 @@ next pass on this surface can address them as one piece.
   Either way a toggle should settle. The live-tail withdrawal is
   therefore covered through the mode switch rather than this toggle;
   restore the tighter test once the loop is fixed.
+
+- `[cannet-gui]` **New Project does not re-root the session.** Opening a
+  project and Save As both move the session onto the right project
+  directory (ADR 0042 §1), but **New Project** — which has no host
+  command of its own; the frontend just clears everything — leaves the
+  session rooted in the *previous* project's directory. So a capture
+  taken in a new, unsaved project lands in the last project's cache, and
+  the `resetSession` that New runs clears that project's scratch. Both
+  are the pre-existing single-scratch behaviour rather than a
+  regression, which is why it was left. The fix is a host command that
+  re-roots onto the unsaved auto-located directory
+  (`project_dir::resolve(None, cache_root)`) with `Carry::Nothing`,
+  which is a small thing once there is a New Project command at all.

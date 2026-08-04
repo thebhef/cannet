@@ -100,8 +100,10 @@ pub struct NotesStore {
     inner: Mutex<Vec<Note>>,
     /// Scratch dir for durable-kind persistence (ADR 0002 DS-7), or `None`
     /// for the in-RAM test double. When set, every edit rewrites
-    /// [`SCRATCH_NOTES_FILE`] under it.
-    scratch_dir: Option<PathBuf>,
+    /// [`SCRATCH_NOTES_FILE`] under it. Behind its own lock because the
+    /// session can move to a different project directory mid-flight
+    /// ([`Self::reroot`], ADR 0042).
+    scratch_dir: Mutex<Option<PathBuf>>,
 }
 
 /// What [`NotesStore::apply`] returns so the host can decide
@@ -125,7 +127,7 @@ impl NotesStore {
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(Vec::new()),
-            scratch_dir: None,
+            scratch_dir: Mutex::new(None),
         }
     }
 
@@ -137,8 +139,37 @@ impl NotesStore {
     pub fn with_scratch(dir: PathBuf) -> Self {
         Self {
             inner: Mutex::new(Vec::new()),
-            scratch_dir: Some(dir),
+            scratch_dir: Mutex::new(Some(dir)),
         }
+    }
+
+    /// The directory this store persists into, if any.
+    fn scratch_dir(&self) -> Option<PathBuf> {
+        self.scratch_dir
+            .lock()
+            .expect("notes scratch dir mutex poisoned")
+            .clone()
+    }
+
+    /// Persist into `dir` from now on — the cache directory of a project
+    /// directory the session has switched to (ADR 0042).
+    ///
+    /// The notes themselves are *not* carried over: they belong to the
+    /// capture, and the caller has just swapped which capture this session
+    /// holds. The store takes on whatever the new directory already has —
+    /// nothing, for a project that has none — and returns it so the host
+    /// can emit a `notes-changed`.
+    ///
+    /// The new directory's file is read *before* the store is emptied.
+    /// Emptying first would persist that empty list through the new
+    /// pointer and destroy the notes it was about to load.
+    pub fn reroot(&self, dir: PathBuf) -> Vec<Note> {
+        let arriving: Vec<Note> = read_json(&dir.join(SCRATCH_NOTES_FILE)).unwrap_or_default();
+        *self
+            .scratch_dir
+            .lock()
+            .expect("notes scratch dir mutex poisoned") = Some(dir);
+        self.replace(arriving).notes
     }
 
     /// Chronological snapshot of the current notes — what the
@@ -153,7 +184,7 @@ impl NotesStore {
     /// scratch dir. A write failure is logged, not propagated — a dropped
     /// scratch write is a durability gap, not a reason to fail the edit.
     fn persist(&self) {
-        let Some(dir) = self.scratch_dir.clone() else {
+        let Some(dir) = self.scratch_dir() else {
             return;
         };
         let notes = self.snapshot();
@@ -269,7 +300,7 @@ impl NotesStore {
     /// host can emit a `notes-changed`. `None` when there is no scratch dir
     /// or no file (a clean miss) — the store is left untouched.
     pub fn restore(&self) -> Option<Vec<Note>> {
-        let dir = self.scratch_dir.clone()?;
+        let dir = self.scratch_dir()?;
         let notes: Vec<Note> = read_json(&dir.join(SCRATCH_NOTES_FILE))?;
         self.replace(notes.clone());
         Some(notes)
@@ -280,7 +311,7 @@ impl NotesStore {
     /// live store is cleared / replaced separately by the caller; a no-op
     /// without a scratch dir.
     pub fn wipe_scratch(&self) {
-        if let Some(dir) = &self.scratch_dir {
+        if let Some(dir) = self.scratch_dir() {
             let _ = std::fs::remove_file(dir.join(SCRATCH_NOTES_FILE));
         }
     }
@@ -507,6 +538,59 @@ mod tests {
         let after_wipe = NotesStore::with_scratch(dir.path().to_path_buf());
         assert!(after_wipe.restore().is_none());
         assert!(after_wipe.snapshot().is_empty());
+    }
+
+    #[test]
+    fn rerooting_swaps_which_project_directory_the_notes_belong_to() {
+        // A note belongs to a capture, and a re-root swaps which capture
+        // this session holds (ADR 0042). So the store takes on the new
+        // directory's notes rather than carrying the old ones into it —
+        // and the old directory keeps its own, for when the user comes
+        // back to that project.
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        NotesStore::with_scratch(b.path().to_path_buf()).add(note("b1", 9_000, "B's marker"));
+
+        let store = NotesStore::with_scratch(a.path().to_path_buf());
+        store.add(note("a1", 1_000, "A's marker"));
+
+        let restored = store.reroot(b.path().to_path_buf());
+
+        assert_eq!(
+            restored.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(),
+            vec!["b1"]
+        );
+        assert_eq!(store.snapshot(), restored);
+        assert_eq!(
+            NotesStore::with_scratch(a.path().to_path_buf())
+                .restore()
+                .unwrap()
+                .iter()
+                .map(|n| n.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a1"],
+            "A's notes stay in A"
+        );
+        // And edits now persist into the new directory.
+        store.add(note("b2", 10_000, "later"));
+        assert_eq!(
+            NotesStore::with_scratch(b.path().to_path_buf())
+                .restore()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn rerooting_into_an_empty_directory_leaves_the_store_empty() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let store = NotesStore::with_scratch(a.path().to_path_buf());
+        store.add(note("a1", 1_000, "A's marker"));
+
+        assert!(store.reroot(b.path().to_path_buf()).is_empty());
+        assert!(store.snapshot().is_empty());
     }
 
     #[test]

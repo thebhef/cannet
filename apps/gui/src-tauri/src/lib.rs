@@ -101,7 +101,7 @@ pub use rbs::{format_message_key, parse_message_key, RbsFile, RbsMessage, RbsVal
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use dbc_watcher::DbcWatcher;
 
@@ -219,7 +219,7 @@ fn report_js_heap(bytes: u64) {
 /// the config (`app_config_dir`) and log (`app_log_dir`) roots. Either
 /// way there is a project directory, so nothing downstream has a
 /// no-project branch.
-fn resolve_project_dir(app: &tauri::App) -> project_dir::ProjectDir {
+fn resolve_project_dir(app: &tauri::App) -> project_dir::ActiveProjectDir {
     // No cache dir at all is not a reason to have no project directory:
     // fall back to an OS-temp root, the same degradation the filter
     // index and signal pyramids already take.
@@ -229,13 +229,67 @@ fn resolve_project_dir(app: &tauri::App) -> project_dir::ProjectDir {
         .unwrap_or_else(|_| std::env::temp_dir().join("cannet"));
     let last_project = state::user_scope_last_project(app.handle());
     let dir = project_dir::resolve(last_project.as_deref(), &cache_root);
+    log_project_dir(&dir, "project directory resolved");
+    project_dir::ActiveProjectDir::new(cache_root, dir)
+}
+
+/// Record which project directory the session is rooted in — at startup
+/// and after every re-root, so the log says where a capture went.
+fn log_project_dir(dir: &project_dir::ProjectDir, what: &'static str) {
     tracing::info!(
         root = %dir.root().display(),
         cache = %dir.cache_dir().display(),
         auto_located = dir.is_auto_located(),
-        "project directory resolved"
+        "{what}"
     );
-    dir
+}
+
+/// Move the session onto `dest` — everything rooted in a project
+/// directory's cache follows the project directory (ADR 0042 §1).
+///
+/// `carry` decides whether the capture comes too: [`Carry::Contents`] for
+/// Save As, which is cannet's managed workflow and would surprise the user
+/// by arriving without their data (ADR 0042 §6); [`Carry::Nothing`] for
+/// opening a different project, whose own capture is what belongs there.
+///
+/// Order matters, and it is the mmap that dictates it. The derived caches
+/// — the filter index and the signal pyramids — hold mapped files under
+/// the *old* cache directory, and a mapped file cannot be moved (Windows
+/// will not even rename one). They are dropped first, and they lose
+/// nothing by it: both rebuild from the raw frames on demand. The trace
+/// store then swaps its own files under its own lock, which is what makes
+/// the whole thing safe against live ingest and the flusher thread.
+pub(crate) fn reroot_session(
+    app: &AppHandle,
+    dest: &project_dir::ProjectDir,
+    carry: trace_store::Carry,
+) {
+    let active = app.state::<project_dir::ActiveProjectDir>();
+    if active.get().root() == dest.root() {
+        return;
+    }
+    let state = app.state::<AppState>();
+    let cache = dest.cache_dir();
+    *state.filter_index() = None;
+    state.signal_caches.reroot(signal_cache_dir(cache));
+    if let Err(e) = state.trace_store.reroot(cache, carry) {
+        // The store is left on whatever it could open; the session keeps
+        // running rather than dying on a directory problem, exactly as the
+        // RAM fallback does at startup.
+        tracing::error!(
+            cache = %cache.display(),
+            error = %e,
+            "could not re-root the trace store onto the new project directory"
+        );
+    }
+    *state.filter_index_dir() = filter_index_dir(cache);
+    let notes = state.notes.reroot(cache.to_path_buf());
+    let _ = app.emit("notes-changed", notes);
+    active.set(dest.clone());
+    log_project_dir(dest, "session re-rooted");
+    // Settings resolve through the new project's `.cannet/`, which may
+    // override the scratch cap.
+    apply_scratch_cap(app);
 }
 
 /// The open project's workspace-scoped data directory — `.cannet/`
@@ -247,7 +301,9 @@ fn resolve_project_dir(app: &tauri::App) -> project_dir::ProjectDir {
 /// `setup`, before any command can run, so this is always answerable —
 /// there is no session without a project directory (ADR 0042 §1).
 pub(crate) fn workspace_dir(app: &AppHandle) -> std::path::PathBuf {
-    app.state::<project_dir::ProjectDir>().workspace_dir()
+    app.state::<project_dir::ActiveProjectDir>()
+        .get()
+        .workspace_dir()
 }
 
 /// Open the production trace store on the disk-spill backend rooted at
@@ -367,6 +423,7 @@ pub fn run() {
             disconnect_remote_server,
             project::open_project,
             project::save_project,
+            project::save_project_as,
             state::get_state,
             state::set_state,
             settings::get_settings,
@@ -451,7 +508,7 @@ pub fn run() {
             // `setup` returns, so it is in place for every consumer
             // (including `apply_scratch_cap` and the DBC watcher below).
             let project_dir = resolve_project_dir(app);
-            let scratch = project_dir.cache_dir().to_path_buf();
+            let scratch = project_dir.get().cache_dir().to_path_buf();
             let filter_dir = filter_index_dir(&scratch);
             let signal_dir = signal_cache_dir(&scratch);
             let trace_store = open_trace_store(&scratch);
@@ -479,7 +536,7 @@ pub fn run() {
                 transmit_scheduler,
                 rbs: Mutex::new(rbs::RbsRuntime::default()),
                 verifier: verification::VerificationState::default(),
-                filter_index_dir: filter_dir,
+                filter_index_dir: Mutex::new(filter_dir),
                 filter_index: Mutex::new(None),
                 live_tail_rows: std::sync::atomic::AtomicU64::new(0),
                 active_project_id: Mutex::new(None),

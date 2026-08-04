@@ -139,8 +139,10 @@ pub(crate) struct AppState {
     pub(crate) verifier: verification::VerificationState,
     /// Directory the live filter index roots in (a `filter/` subdir of the
     /// disk-spill scratch). The materialized filtered-trace index
-    /// ([`ActiveFilterIndex`]) writes its segment files here.
-    pub(crate) filter_index_dir: std::path::PathBuf,
+    /// ([`ActiveFilterIndex`]) writes its segment files here. Behind a lock
+    /// because the session can move to a different project directory
+    /// mid-flight (ADR 0042).
+    pub(crate) filter_index_dir: Mutex<std::path::PathBuf>,
     /// The filter index for the trace's current filtered chronological view
     /// (ADR 0002 DS-3). `None` until the first filtered fetch builds one;
     /// rebuilt on a predicate or capture-session change, extended
@@ -190,6 +192,12 @@ impl AppState {
 
     pub(crate) fn rbs(&self) -> MutexGuard<'_, rbs::RbsRuntime> {
         self.rbs.lock().expect("rbs mutex poisoned")
+    }
+
+    pub(crate) fn filter_index_dir(&self) -> MutexGuard<'_, std::path::PathBuf> {
+        self.filter_index_dir
+            .lock()
+            .expect("filter index dir mutex poisoned")
     }
 
     pub(crate) fn filter_index(&self) -> MutexGuard<'_, Option<ActiveFilterIndex>> {

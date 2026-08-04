@@ -448,9 +448,11 @@ and the BLF replay path.
 **The project directory.** To keep a project's data with the project
 rather than in cannet's cache, make a `.cannet/` folder next to the
 `.cannet_prj` file. That pair — a project file *beside* a `.cannet/` —
-is what makes a folder a project directory, and it is the only way one
-comes into being: cannet never creates a `.cannet/` in your folders
-because you opened a file there. Inside it, cannet keeps that project's
+is what makes a folder a project directory. There is one other way one
+comes into being — **Save project as…**, which makes the folder you
+pick into a complete project directory and moves the open project's
+data there with it. Otherwise cannet never creates a `.cannet/` in your
+folders because you opened a file there. Inside it, cannet keeps that project's
 settings overrides, its view state, and `cache/` — a link to the
 machine-local storage the capture actually lands in, kept out of the
 project directory itself so a memory-mapped multi-gigabyte scratch

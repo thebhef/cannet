@@ -747,7 +747,7 @@ pub(crate) fn ensure_active_filter_index<'a>(
         None => true,
     };
     if needs_rebuild {
-        let index = match cannet_spill::FilterIndex::new(&state.filter_index_dir) {
+        let index = match cannet_spill::FilterIndex::new(&*state.filter_index_dir()) {
             Ok(i) => i,
             Err(e) => {
                 tracing::error!("filter index unavailable ({e})");

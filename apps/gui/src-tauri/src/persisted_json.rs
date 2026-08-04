@@ -90,6 +90,150 @@ pub(crate) fn read_scoped<T: DeserializeOwned + Default>(
     resolve_scoped(&read(user_dir), &read(workspace_dir))
 }
 
+/// Where a persisted key may be written, and therefore which of the two
+/// scope files a write of that key lands in (ADR 0042 §3).
+///
+/// Precedence on *read* is uniform — a workspace value overrides the user
+/// value for any key ([`resolve_scoped`]). This is the other half: the
+/// declaration that says where a value the app writes back belongs, so
+/// echoing a resolved document back cannot move a value between scopes.
+/// Every persisted key declares one.
+///
+/// `Serialize`d so the settings view can render a key's scope beside it
+/// rather than keeping its own copy of the table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum Scope {
+    /// User scope only — the value follows the person and no project
+    /// carries its own. Writes always go to the user file.
+    User,
+    /// User scope, overridable per project. Writes go to whichever scope
+    /// currently holds the key: the workspace file if it declares one,
+    /// the user file otherwise. There is no UI for choosing a scope, so
+    /// "leave the value where it already is" is the only rule that
+    /// neither promotes an override into the user's own settings nor
+    /// silently demotes one.
+    UserOverridable,
+    /// Workspace scope only — the value belongs to one project. Writes
+    /// always go to `.cannet/`.
+    Workspace,
+}
+
+/// One document's scope declaration: every top-level key it persists,
+/// with the [`Scope`] that routes writes of that key.
+pub(crate) type ScopeTable = &'static [(&'static str, Scope)];
+
+/// The declared scope of `key`, or `None` if `scopes` doesn't mention it.
+pub(crate) fn scope_of(scopes: ScopeTable, key: &str) -> Option<Scope> {
+    scopes
+        .iter()
+        .find(|(name, _)| *name == key)
+        .map(|(_, scope)| *scope)
+}
+
+/// Write `value` across the two scopes, routing each key by its declared
+/// [`Scope`] (ADR 0042 §3). The counterpart of [`read_scoped`].
+///
+/// Each declared key is written to — or, when the serialization omits it,
+/// removed from — exactly one of the two files. Nothing else in either
+/// file is touched: a key routed to the other scope keeps the value it
+/// had there, and a key neither scope declares (one a newer build wrote)
+/// is preserved rather than clobbered. A file whose content this write
+/// doesn't change is not rewritten at all, so cannet doesn't author
+/// `.cannet/settings.json` merely because a user-scope setting changed.
+///
+/// **A key with no declared scope is a bug**, not a case to handle: it
+/// trips a `debug_assert` (so a test catches it) and, in a release build,
+/// is written at user scope and logged rather than dropped.
+pub(crate) fn write_scoped<T: Serialize>(
+    user_dir: &Path,
+    workspace_dir: &Path,
+    file: &str,
+    value: &T,
+    scopes: ScopeTable,
+) -> std::io::Result<()> {
+    let serialized = to_object(value)?;
+    let user_before = read_object(&user_dir.join(file));
+    let workspace_before = read_object(&workspace_dir.join(file));
+    let mut user = user_before.clone();
+    let mut workspace = workspace_before.clone();
+    for (key, scope) in scopes {
+        let to_workspace = match scope {
+            Scope::User => false,
+            Scope::Workspace => true,
+            // Stay in the scope that already holds it; see `Scope`.
+            Scope::UserOverridable => workspace_before.contains_key(*key),
+        };
+        let target = if to_workspace {
+            &mut workspace
+        } else {
+            &mut user
+        };
+        match serialized.get(*key) {
+            Some(v) => target.insert((*key).to_string(), v.clone()),
+            None => target.remove(*key),
+        };
+    }
+    for (key, v) in &serialized {
+        if scope_of(scopes, key).is_none() {
+            debug_assert!(false, "persisted key `{key}` in {file} declares no scope");
+            tracing::warn!(
+                key,
+                file,
+                "persisted key declares no scope; writing it at user scope"
+            );
+            user.insert(key.clone(), v.clone());
+        }
+    }
+    write_object_if_changed(&user_dir.join(file), &user_before, &user)?;
+    write_object_if_changed(&workspace_dir.join(file), &workspace_before, &workspace)
+}
+
+/// `value` as a JSON object. A document that doesn't serialize to one has
+/// no top-level keys to route, which is a programming error rather than a
+/// runtime condition.
+fn to_object<T: Serialize>(
+    value: &T,
+) -> std::io::Result<serde_json::Map<String, serde_json::Value>> {
+    match serde_json::to_value(value).map_err(std::io::Error::other)? {
+        serde_json::Value::Object(map) => Ok(map),
+        other => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("a scoped document must serialize to a JSON object, got {other}"),
+        )),
+    }
+}
+
+/// Whether the JSON document at `path` declares nothing at all — absent,
+/// empty, junk, or `{}`. What a scope file cannet just created holds, and
+/// therefore the test for "there is nothing here to preserve".
+pub(crate) fn declares_nothing(path: &Path) -> bool {
+    read_object(path).is_empty()
+}
+
+/// The top-level keys of the JSON document at `path` — empty when it is
+/// missing, unreadable, or not an object, the same resolution
+/// [`read_scoped`] gives those cases.
+fn read_object(path: &Path) -> serde_json::Map<String, serde_json::Value> {
+    top_level_keys(&std::fs::read_to_string(path).unwrap_or_default())
+}
+
+/// Write `after` to `path` unless it is what is already there, creating
+/// the parent directory if needed.
+fn write_object_if_changed(
+    path: &Path,
+    before: &serde_json::Map<String, serde_json::Value>,
+    after: &serde_json::Map<String, serde_json::Value>,
+) -> std::io::Result<()> {
+    if before == after {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    write_json_atomic(path, after)
+}
+
 /// Resolve the per-OS config directory (`$XDG_CONFIG_HOME/<id>`,
 /// `%APPDATA%\<id>`, `~/Library/Application Support/<id>`).
 pub(crate) fn config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -202,11 +346,17 @@ mod tests {
         assert_eq!(parse_or_default::<Sample>("[1, 2, 3]"), Sample::default());
     }
 
+    /// A two-scope document in the shape the real ones have: every field
+    /// optional, and absent from the serialization when it has nothing to
+    /// say (which is how a write asks for a key to be *removed*).
     #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
     #[serde(default)]
     struct Scoped {
+        #[serde(skip_serializing_if = "Option::is_none")]
         alpha: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         beta: Option<u32>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
         list: Vec<u32>,
     }
 
@@ -283,6 +433,182 @@ mod tests {
         std::fs::write(ws.join("x.json"), r#"{"alpha": 2}"#).unwrap();
         let s: Scoped = read_scoped(&user, &ws, "x.json");
         assert_eq!((s.alpha, s.beta), (Some(2), Some(7)));
+    }
+
+    /// The scope declaration for [`Scoped`], the test document.
+    const SCOPED_SCOPES: ScopeTable = &[
+        ("alpha", Scope::User),
+        ("beta", Scope::UserOverridable),
+        ("list", Scope::Workspace),
+    ];
+
+    /// The two scope directories plus a reader for what each file holds.
+    struct Scopes {
+        _tmp: tempfile::TempDir,
+        user: PathBuf,
+        workspace: PathBuf,
+    }
+
+    impl Scopes {
+        fn new() -> Self {
+            let tmp = tempfile::tempdir().unwrap();
+            let user = tmp.path().join("config");
+            let workspace = tmp.path().join("project").join(".cannet");
+            std::fs::create_dir_all(&user).unwrap();
+            std::fs::create_dir_all(&workspace).unwrap();
+            Self {
+                _tmp: tmp,
+                user,
+                workspace,
+            }
+        }
+
+        fn write(&self, value: &Scoped) {
+            write_scoped(&self.user, &self.workspace, "x.json", value, SCOPED_SCOPES).unwrap();
+        }
+
+        fn user_doc(&self) -> serde_json::Map<String, serde_json::Value> {
+            top_level_keys(&std::fs::read_to_string(self.user.join("x.json")).unwrap_or_default())
+        }
+
+        fn workspace_doc(&self) -> serde_json::Map<String, serde_json::Value> {
+            top_level_keys(
+                &std::fs::read_to_string(self.workspace.join("x.json")).unwrap_or_default(),
+            )
+        }
+    }
+
+    #[test]
+    fn a_user_scope_key_is_written_to_the_user_file() {
+        let s = Scopes::new();
+        s.write(&Scoped {
+            alpha: Some(1),
+            ..Scoped::default()
+        });
+        assert_eq!(s.user_doc()["alpha"], serde_json::json!(1));
+        assert!(!s.workspace_doc().contains_key("alpha"));
+    }
+
+    #[test]
+    fn a_workspace_scope_key_is_written_to_the_workspace_file() {
+        // The half of the split that makes `.cannet/state.json` real:
+        // a per-project value never lands in the user's file.
+        let s = Scopes::new();
+        s.write(&Scoped {
+            list: vec![1, 2],
+            ..Scoped::default()
+        });
+        assert_eq!(s.workspace_doc()["list"], serde_json::json!([1, 2]));
+        assert!(!s.user_doc().contains_key("list"));
+    }
+
+    #[test]
+    fn an_echoed_override_is_written_back_to_the_workspace_not_promoted_to_the_user_file() {
+        // The bug this routing exists to kill: a workspace override, read
+        // through `resolve_scoped` and echoed back by the frontend, used
+        // to be written into the *user* file — silently promoting the
+        // project's choice into the person's.
+        let s = Scopes::new();
+        std::fs::write(s.user.join("x.json"), r#"{"beta": 1}"#).unwrap();
+        std::fs::write(s.workspace.join("x.json"), r#"{"beta": 2}"#).unwrap();
+
+        let effective: Scoped = read_scoped(&s.user, &s.workspace, "x.json");
+        assert_eq!(effective.beta, Some(2), "the override is what was read");
+        s.write(&effective);
+
+        assert_eq!(
+            s.user_doc()["beta"],
+            serde_json::json!(1),
+            "the user's own value must survive the echo"
+        );
+        assert_eq!(s.workspace_doc()["beta"], serde_json::json!(2));
+    }
+
+    #[test]
+    fn an_overridable_key_with_no_override_is_written_to_the_user_file() {
+        let s = Scopes::new();
+        s.write(&Scoped {
+            beta: Some(7),
+            ..Scoped::default()
+        });
+        assert_eq!(s.user_doc()["beta"], serde_json::json!(7));
+        assert!(!s.workspace_doc().contains_key("beta"));
+    }
+
+    #[test]
+    fn editing_an_overridden_key_updates_the_override_in_place() {
+        let s = Scopes::new();
+        std::fs::write(s.user.join("x.json"), r#"{"beta": 1}"#).unwrap();
+        std::fs::write(s.workspace.join("x.json"), r#"{"beta": 2}"#).unwrap();
+
+        s.write(&Scoped {
+            beta: Some(5),
+            ..Scoped::default()
+        });
+
+        assert_eq!(s.workspace_doc()["beta"], serde_json::json!(5));
+        assert_eq!(s.user_doc()["beta"], serde_json::json!(1));
+    }
+
+    #[test]
+    fn a_key_absent_from_the_written_value_is_removed_from_its_own_file_only() {
+        // `skip_serializing_if` is how these documents say "empty":
+        // clearing the recents must clear the stored list, and must not
+        // reach into the other scope's file to do it.
+        let s = Scopes::new();
+        s.write(&Scoped {
+            alpha: Some(1),
+            list: vec![9],
+            ..Scoped::default()
+        });
+        assert!(s.workspace_doc().contains_key("list"));
+
+        s.write(&Scoped {
+            alpha: Some(1),
+            ..Scoped::default()
+        });
+
+        assert!(!s.workspace_doc().contains_key("list"), "cleared");
+        assert_eq!(s.user_doc()["alpha"], serde_json::json!(1), "untouched");
+    }
+
+    #[test]
+    fn a_scope_file_a_write_has_nothing_to_say_about_is_left_alone() {
+        // cannet must not author `.cannet/settings.json` just because a
+        // setting changed: with no override in it, the file it created
+        // empty stays exactly as it wrote it (ADR 0042 §2).
+        let s = Scopes::new();
+        std::fs::write(s.workspace.join("x.json"), "{}\n").unwrap();
+        s.write(&Scoped {
+            alpha: Some(1),
+            beta: Some(2),
+            ..Scoped::default()
+        });
+        assert_eq!(
+            std::fs::read_to_string(s.workspace.join("x.json")).unwrap(),
+            "{}\n",
+            "an untouched scope file must not even be rewritten"
+        );
+    }
+
+    #[test]
+    fn a_key_neither_scope_declares_is_preserved_rather_than_clobbered() {
+        // A key a *newer* build wrote is not this build's to delete —
+        // the write only replaces the keys it declares.
+        let s = Scopes::new();
+        std::fs::write(s.user.join("x.json"), r#"{"from_the_future": 42}"#).unwrap();
+        s.write(&Scoped {
+            alpha: Some(1),
+            ..Scoped::default()
+        });
+        assert_eq!(s.user_doc()["from_the_future"], serde_json::json!(42));
+    }
+
+    #[test]
+    fn scope_of_answers_for_a_declared_key_and_not_for_anything_else() {
+        assert_eq!(scope_of(SCOPED_SCOPES, "alpha"), Some(Scope::User));
+        assert_eq!(scope_of(SCOPED_SCOPES, "list"), Some(Scope::Workspace));
+        assert_eq!(scope_of(SCOPED_SCOPES, "nope"), None);
     }
 
     #[test]
