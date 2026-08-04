@@ -8,6 +8,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import type { AddPanelOptions, DockviewApi } from "dockview";
 
@@ -18,7 +19,7 @@ import { GOTO_EVENT, gotoEventItems } from "./gotoEvent";
 import { elementViewEntries } from "./gotoViews";
 import { elementLabel } from "./elementLabel";
 import type { KeybindingsController } from "./keybindingsContext";
-import { loadSettings, saveSettings } from "./hostSettings";
+import { hostSettings, subscribeSettings, updateSettings } from "./hostSettings";
 import { setRecentCommands as persistRecentCommands, hostState } from "./hostState";
 import {
   ABOUT_PANEL_COMPONENT,
@@ -47,6 +48,7 @@ import {
   commandsAvailableIn,
   parseBindings,
   resolveBindings,
+  reviewBindings,
   type BindingSpec,
   type CommandContext,
 } from "./commands";
@@ -110,6 +112,34 @@ export interface UseCommandsResult {
   palettes: ReactNode;
 }
 
+/// Identity of a persisted binding list, for "has this changed?" — the
+/// settings cache hands out a fresh array on every read, so reference
+/// equality would report a change on every unrelated settings write.
+function bindingsKey(bindings: BindingSpec[] | null): string {
+  return JSON.stringify(bindings);
+}
+
+/// Warn on the system log about every binding the sanitiser refuses, so a
+/// hand-edited `settings.json` naming a command that doesn't exist doesn't
+/// just quietly lose that shortcut. Deduped by binding set: the same
+/// refusal isn't re-reported when some unrelated setting is written.
+let lastReportedBindings: string | null = null;
+function reportRejectedBindings(bindings: BindingSpec[] | null): void {
+  const key = bindingsKey(bindings);
+  if (key === lastReportedBindings) return;
+  lastReportedBindings = key;
+  if (bindings == null) return;
+  for (const { binding, reason } of reviewBindings(bindings, COMMANDS).rejected) {
+    void invoke("gui_emit_system_log", {
+      level: "warn",
+      source: "keybindings",
+      message: `ignoring keybinding "${binding.chord}" → ${binding.commandId}: ${reason}`,
+    }).catch(() => {
+      /* best effort - the binding is dropped either way */
+    });
+  }
+}
+
 /// The command + hotkey + palette subsystem (ADR 0018), extracted from
 /// `App` as the provider `commands.ts` was always meant to delegate to.
 ///
@@ -150,9 +180,12 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
     null,
   );
   // User keybinding customisation (ADR 0018): `null` = the built-in
-  // defaults are in effect. Loaded from `settings.json` on mount and
-  // persisted on each edit from the shortcuts panel.
-  const [userBindings, setUserBindings] = useState<BindingSpec[] | null>(null);
+  // defaults are in effect. Read synchronously from the settings cache
+  // (hydrated before first render) and persisted on each edit from the
+  // shortcuts panel; the effect below follows later changes.
+  const [userBindings, setUserBindings] = useState<BindingSpec[] | null>(
+    () => hostSettings().keybindings,
+  );
   // The last few commands run (MRU, capped — see recentCommands.ts); the
   // command palette floats them to the top, VS Code-style.
   const [recentCommands, setRecentCommands] = useState<string[]>(
@@ -391,29 +424,33 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
   const parsedBindingsRef = useRef(parsedBindings);
   parsedBindingsRef.current = parsedBindings;
 
-  // Load the persisted keybindings once on mount. Absent / null = defaults.
+  // Follow the settings cache: another consumer's write — or a re-hydrate
+  // after the file was hand-edited — takes effect without a restart.
+  // Anything the sanitiser refuses is reported on the system log: a
+  // hand-edited `settings.json` naming a command that doesn't exist used to
+  // just lose that shortcut, with nothing anywhere saying why.
   useEffect(() => {
-    let live = true;
-    void loadSettings().then((s) => {
-      if (live) setUserBindings(s.keybindings);
+    let applied = bindingsKey(hostSettings().keybindings);
+    reportRejectedBindings(hostSettings().keybindings);
+    return subscribeSettings((s) => {
+      const key = bindingsKey(s.keybindings);
+      if (key === applied) return;
+      applied = key;
+      setUserBindings(s.keybindings);
+      reportRejectedBindings(s.keybindings);
     });
-    return () => {
-      live = false;
-    };
   }, []);
 
-  // Persist a keybinding change: load the current settings and write the
-  // whole struct back with the new `keybindings`, so a concurrent settings
-  // edit isn't clobbered. `null` resets to the built-in defaults. The host
-  // is authoritative; a failed write is logged host-side.
+  // Persist a keybinding change through the shared cache, which merges it
+  // over a fresh read of the file so a concurrent settings edit isn't
+  // clobbered. `null` resets to the built-in defaults. The host is
+  // authoritative; a failed write is logged host-side.
   const persistUserBindings = useCallback((next: readonly BindingSpec[] | null) => {
     const value = next == null ? null : [...next];
     setUserBindings(value);
-    void loadSettings()
-      .then((s) => saveSettings({ ...s, keybindings: value }))
-      .catch(() => {
-        /* host logs the failure; the in-memory value still holds */
-      });
+    void updateSettings({ keybindings: value }).catch(() => {
+      /* host logs the failure; the in-memory value still holds */
+    });
   }, []);
 
   const keybindings: KeybindingsController = useMemo(

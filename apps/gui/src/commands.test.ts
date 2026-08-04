@@ -7,6 +7,7 @@ import {
   commandsAvailableIn,
   findBindingConflicts,
   resolveBindings,
+  reviewBindings,
   sanitizeBindings,
   type BindingSpec,
   type CommandContext,
@@ -233,5 +234,64 @@ describe("resolveBindings / sanitizeBindings", () => {
     );
     expect(clean).toHaveLength(1);
     expect(disjoint).toHaveLength(2);
+  });
+});
+
+// A binding dropped on load used to vanish without a trace: the command it
+// named simply stopped having a shortcut and nothing said why. `reviewBindings`
+// is the reporting half of the same pass `sanitizeBindings` runs, so a
+// hand-edited `settings.json` can be told what the app refused.
+describe("reviewBindings", () => {
+  it("reports nothing when every binding is usable", () => {
+    const good: BindingSpec[] = [
+      { chord: "Mod+k", commandId: "palette.show" },
+      { chord: "Mod+j", commandId: "goto.view" },
+    ];
+    const review = reviewBindings(good, COMMANDS);
+    expect(review.accepted).toEqual(good);
+    expect(review.rejected).toEqual([]);
+  });
+
+  it("names the binding and the reason for an unknown command id", () => {
+    const bad = { chord: "Mod+j", commandId: "does.not.exist" };
+    const review = reviewBindings([{ chord: "Mod+k", commandId: "palette.show" }, bad], COMMANDS);
+    expect(review.accepted).toEqual([{ chord: "Mod+k", commandId: "palette.show" }]);
+    expect(review.rejected).toHaveLength(1);
+    expect(review.rejected[0].binding).toEqual(bad);
+    expect(review.rejected[0].reason).toContain("does.not.exist");
+    expect(review.rejected[0].reason).toMatch(/unknown command/i);
+  });
+
+  it("names the binding and the reason for an unparseable chord", () => {
+    const bad = { chord: "Bogus+", commandId: "palette.show" };
+    const review = reviewBindings([bad], COMMANDS);
+    expect(review.accepted).toEqual([]);
+    expect(review.rejected).toHaveLength(1);
+    expect(review.rejected[0].binding).toEqual(bad);
+    expect(review.rejected[0].reason).toMatch(/chord/i);
+  });
+
+  it("names the earlier binding a collision lost to", () => {
+    const review = reviewBindings(
+      [
+        { chord: "Mod+k", commandId: "palette.show" },
+        { chord: "Mod+k", commandId: "goto.view" },
+      ],
+      COMMANDS,
+    );
+    expect(review.accepted).toEqual([{ chord: "Mod+k", commandId: "palette.show" }]);
+    expect(review.rejected).toHaveLength(1);
+    expect(review.rejected[0].reason).toContain("palette.show");
+  });
+
+  it("is the same pass sanitizeBindings runs", () => {
+    const mixed: BindingSpec[] = [
+      { chord: "Mod+k", commandId: "palette.show" },
+      { chord: "Mod+j", commandId: "does.not.exist" },
+      { chord: "Bogus+", commandId: "goto.view" },
+      { chord: "Mod+k", commandId: "goto.view" },
+    ];
+    expect(reviewBindings(mixed, COMMANDS).accepted).toEqual(sanitizeBindings(mixed, COMMANDS));
+    expect(reviewBindings(mixed, COMMANDS).rejected).toHaveLength(3);
   });
 });

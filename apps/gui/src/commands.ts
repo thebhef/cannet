@@ -174,29 +174,67 @@ export function parseBindings(bindings: readonly BindingSpec[]): ParsedBinding[]
   }));
 }
 
-/// Drop bindings that can't be trusted (ADR 0018): unknown command ids,
-/// unparseable chords, and any that would collide with a
-/// previously-accepted binding. Order-preserving and greedy — the first
-/// binding to claim a chord/context keeps it. Used on load so a
-/// hand-edited or stale `settings.json` can never brick dispatch or
-/// smuggle in the keystroke ambiguity the framework forbids.
+/// A binding the sanitiser refused, with the reason in words. Reported on
+/// the system log at load so a hand-edited `settings.json` that names a
+/// command that doesn't exist doesn't just silently lose its shortcut.
+export interface RejectedBinding {
+  binding: BindingSpec;
+  reason: string;
+}
+
+/// The outcome of validating a persisted binding list: what survived, and
+/// what was refused and why.
+export interface BindingReview {
+  accepted: BindingSpec[];
+  rejected: RejectedBinding[];
+}
+
+/// Validate persisted bindings (ADR 0018), keeping what can be trusted and
+/// naming what can't: unknown command ids, unparseable chords, and any that
+/// would collide with a previously-accepted binding. Order-preserving and
+/// greedy — the first binding to claim a chord/context keeps it. This is the
+/// ingress check for the hand-editable `keybindings` field: the chord
+/// grammar and the command registry are both declared in the frontend, so
+/// this is the one place that can judge a binding, and it reports rather
+/// than repairs — the same contract the host applies to an out-of-range
+/// `scratch_cap_bytes`.
+export function reviewBindings(
+  bindings: readonly BindingSpec[],
+  commands: readonly CommandSpec[],
+): BindingReview {
+  const known = new Set(commands.map((c) => c.id));
+  const accepted: BindingSpec[] = [];
+  const rejected: RejectedBinding[] = [];
+  for (const b of bindings) {
+    if (!known.has(b.commandId)) {
+      rejected.push({ binding: b, reason: `unknown command "${b.commandId}"` });
+      continue;
+    }
+    try {
+      parseChord(b.chord);
+    } catch {
+      rejected.push({ binding: b, reason: `unparseable chord "${b.chord}"` });
+      continue;
+    }
+    const conflicts = findBindingConflicts(commands, [...accepted, b]);
+    if (conflicts.length > 0) {
+      rejected.push({ binding: b, reason: conflicts[0] });
+      continue;
+    }
+    accepted.push(b);
+  }
+  return { accepted, rejected };
+}
+
+/// Drop bindings that can't be trusted (ADR 0018) — [`reviewBindings`]
+/// without the reasons. Used on load so a hand-edited or stale
+/// `settings.json` can never brick dispatch or smuggle in the keystroke
+/// ambiguity the framework forbids.
 export function sanitizeBindings(
   bindings: readonly BindingSpec[],
   commands: readonly CommandSpec[],
 ): BindingSpec[] {
-  const known = new Set(commands.map((c) => c.id));
-  const accepted: BindingSpec[] = [];
-  for (const b of bindings) {
-    if (!known.has(b.commandId)) continue;
-    try {
-      parseChord(b.chord);
-    } catch {
-      continue;
-    }
-    if (findBindingConflicts(commands, [...accepted, b]).length > 0) continue;
-    accepted.push(b);
-  }
-  return accepted;
+  return reviewBindings(bindings, commands).accepted;
 }
 
 /// The effective binding set: the user's customisation if present

@@ -56,22 +56,50 @@ pub struct Binding {
     pub skip_editable: Option<bool>,
 }
 
-/// Minimum effective windowed-ring scratch cap (ADR 0002 DS-8). Below this
-/// the pre-allocated segment families dominate the budget — one payload
-/// segment (4 MiB) plus one filter segment (8 MiB) for a single filtered
-/// view already exceed a small cap — so the retained frame window thrashes a
-/// whole meta segment at a time and a smaller cap can't be honored usefully.
-/// A cap set below the floor is raised to it; `None` (unbounded) is untouched.
+/// The smallest legal [`Settings::scratch_cap_bytes`] (ADR 0002 DS-8).
+///
+/// This is a **hard implementation limit, not a setting**: below it the
+/// pre-allocated segment families dominate the budget — one payload segment
+/// (4 MiB) plus one filter segment (8 MiB) for a single filtered view
+/// already exceed a small cap — so the retained frame window thrashes a
+/// whole meta segment at a time and the cap cannot be honored at all. It is
+/// therefore *validation metadata on the field*: stated once, here, enforced
+/// where a value enters the app ([`validate`]), and surfaced to the frontend
+/// through [`get_settings_bounds`] rather than re-declared there. `None`
+/// (unbounded) is always legal.
 pub const MIN_SCRATCH_CAP_BYTES: u64 = 100 * 1024 * 1024;
 
-/// Apply the cap floor (ADR 0002 DS-8): raise a below-floor cap up to
-/// [`MIN_SCRATCH_CAP_BYTES`], passing `None` (unbounded) through unchanged.
-/// The floor is policy applied where settings meet the store, not in the
-/// low-level `set_scratch_cap`, so tests can still drive eviction with a
-/// tiny cap.
-#[must_use]
-pub fn floored_scratch_cap(cap: Option<u64>) -> Option<u64> {
-    cap.map(|v| v.max(MIN_SCRATCH_CAP_BYTES))
+/// The bounds the frontend needs to render the settings controls — the same
+/// limits [`validate`] enforces, so the UI cannot offer a value the host
+/// will refuse. Returned by [`get_settings_bounds`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsBounds {
+    /// Smallest legal `scratch_cap_bytes`; see [`MIN_SCRATCH_CAP_BYTES`].
+    pub min_scratch_cap_bytes: u64,
+}
+
+/// Check every settings value against its documented bounds, returning the
+/// accepted settings plus one human-readable complaint per refused field.
+///
+/// A refused field falls back to its default — the same resolution an absent
+/// field gets — rather than being repaired to the nearest legal value. The
+/// file is a user-authored document (ADR 0034): we report what we refuse and
+/// leave their text alone, exactly as a hand-edited keybinding that names an
+/// unknown command is dropped and reported rather than rewritten.
+fn validate(settings: Settings) -> (Settings, Vec<String>) {
+    let mut complaints = Vec::new();
+    let mut settings = settings;
+    if let Some(cap) = settings.scratch_cap_bytes {
+        if cap < MIN_SCRATCH_CAP_BYTES {
+            complaints.push(format!(
+                "scratch_cap_bytes {cap} is below the {MIN_SCRATCH_CAP_BYTES}-byte minimum \
+                 (a smaller cap can't be honored); ignoring it — the cache is unbounded"
+            ));
+            settings.scratch_cap_bytes = None;
+        }
+    }
+    (settings, complaints)
 }
 
 /// Parse settings JSON, tolerating junk. A malformed or partial file
@@ -99,24 +127,52 @@ fn write_settings(dir: &Path, settings: &Settings) -> std::io::Result<()> {
     crate::persisted_json::write_json_atomic(&dir.join(SETTINGS_FILE), settings)
 }
 
+/// Report each refused field on the system log, so a hand-edit that the
+/// app can't honor is visible rather than silently inert.
+fn warn_refused(app: &tauri::AppHandle, complaints: &[String]) {
+    for c in complaints {
+        crate::sys_warn!(app, "settings", "{c}");
+    }
+}
+
+/// The validation bounds for the settings fields (ADR 0002 DS-8). The
+/// frontend reads these instead of re-declaring the limits it renders.
+#[tauri::command]
+#[must_use]
+pub fn get_settings_bounds() -> SettingsBounds {
+    SettingsBounds {
+        min_scratch_cap_bytes: MIN_SCRATCH_CAP_BYTES,
+    }
+}
+
 /// Load the persisted settings. Returns defaults if the config dir can't
 /// be resolved or the file is missing / corrupt — reading settings never
-/// fails for the caller.
+/// fails for the caller. Out-of-range values in a hand-edited file are
+/// refused here, at the read boundary, and reported on the system log; the
+/// caller only ever sees values the app can honor.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub fn get_settings(app: tauri::AppHandle) -> Settings {
-    crate::persisted_json::config_dir(&app)
+    let raw = crate::persisted_json::config_dir(&app)
         .map(|dir| read_settings(&dir))
-        .unwrap_or_default()
+        .unwrap_or_default();
+    let (settings, complaints) = validate(raw);
+    warn_refused(&app, &complaints);
+    settings
 }
 
-/// Persist the whole settings struct, replacing the file. Errors (with a
-/// user-facing message) only if the config dir can't be resolved or the
-/// write fails; on failure it also lands on the system log.
+/// Persist the whole settings struct, replacing the file, and return what
+/// was actually stored: out-of-range values are refused (and reported)
+/// before the write, so the file never records a value the app would not
+/// honor and the caller can show what it got. Errors (with a user-facing
+/// message) only if the config dir can't be resolved or the write fails; on
+/// failure it also lands on the system log.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<(), String> {
+pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<Settings, String> {
     let dir = crate::persisted_json::config_dir(&app)?;
+    let (settings, complaints) = validate(settings);
+    warn_refused(&app, &complaints);
     write_settings(&dir, &settings).map_err(|e| {
         let msg = format!("failed to write settings: {e}");
         crate::sys_warn!(&app, "settings", "{msg}");
@@ -125,7 +181,7 @@ pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<(), Str
     // Apply the windowed-ring scratch cap (ADR 0002 DS-8) to the live store
     // so a changed cap takes effect on the next flush, not just next launch.
     crate::apply_scratch_cap(&app);
-    Ok(())
+    Ok(settings)
 }
 
 #[cfg(test)]
@@ -216,21 +272,67 @@ mod tests {
     }
 
     #[test]
-    fn cap_floor_raises_below_minimum_and_leaves_unbounded_alone() {
-        // Unbounded passes through; a below-floor cap is raised to the floor;
-        // at-or-above is untouched (ADR 0002 DS-8).
-        assert_eq!(floored_scratch_cap(None), None);
-        assert_eq!(
-            floored_scratch_cap(Some(15 * 1024 * 1024)),
-            Some(MIN_SCRATCH_CAP_BYTES)
-        );
-        assert_eq!(floored_scratch_cap(Some(0)), Some(MIN_SCRATCH_CAP_BYTES));
-        assert_eq!(
-            floored_scratch_cap(Some(MIN_SCRATCH_CAP_BYTES)),
+    fn the_published_bound_is_the_one_validate_enforces() {
+        // The frontend renders `get_settings_bounds` rather than its own
+        // copy of the limit, so the published bound and the enforced one
+        // must be the same number — this is what keeps them from drifting.
+        let min = get_settings_bounds().min_scratch_cap_bytes;
+        let at_bound = validate(Settings {
+            scratch_cap_bytes: Some(min),
+            ..Settings::default()
+        });
+        assert!(at_bound.1.is_empty(), "{:?}", at_bound.1);
+        assert_eq!(at_bound.0.scratch_cap_bytes, Some(min));
+        let below = validate(Settings {
+            scratch_cap_bytes: Some(min - 1),
+            ..Settings::default()
+        });
+        assert_eq!(below.1.len(), 1, "{:?}", below.1);
+    }
+
+    #[test]
+    fn in_range_and_unbounded_caps_are_accepted_unchanged() {
+        // Unbounded is always legal; at-or-above the minimum passes through
+        // untouched (ADR 0002 DS-8).
+        for cap in [
+            None,
             Some(MIN_SCRATCH_CAP_BYTES),
-        );
-        let big = 8 * 1024 * 1024 * 1024;
-        assert_eq!(floored_scratch_cap(Some(big)), Some(big));
+            Some(8 * 1024 * 1024 * 1024),
+        ] {
+            let (accepted, complaints) = validate(Settings {
+                scratch_cap_bytes: cap,
+                ..Settings::default()
+            });
+            assert_eq!(accepted.scratch_cap_bytes, cap);
+            assert!(complaints.is_empty(), "{complaints:?}");
+        }
+    }
+
+    #[test]
+    fn below_minimum_cap_is_rejected_and_reported_not_repaired() {
+        // The minimum is a hard implementation limit (ADR 0002 DS-8), not a
+        // setting: an out-of-range value is refused and reported, never
+        // silently repaired to the nearest legal value. A refused field
+        // resolves to its default, exactly as an absent one does.
+        for cap in [
+            Some(0),
+            Some(15 * 1024 * 1024),
+            Some(MIN_SCRATCH_CAP_BYTES - 1),
+        ] {
+            let (accepted, complaints) = validate(Settings {
+                scratch_cap_bytes: cap,
+                clear_scratch_on_exit: true,
+                keybindings: None,
+            });
+            assert_eq!(accepted.scratch_cap_bytes, None, "cap {cap:?}");
+            assert_eq!(complaints.len(), 1, "cap {cap:?}: {complaints:?}");
+            assert!(
+                complaints[0].contains("scratch_cap_bytes"),
+                "{complaints:?}"
+            );
+            // Only the offending field is refused; the rest is kept.
+            assert!(accepted.clear_scratch_on_exit);
+        }
     }
 
     #[test]

@@ -33,39 +33,128 @@ this, or did the app observe it?"*
 
 ## Scope
 
-### Stage 1 — fix the store that exists
+### Stage 1 — fix the store that exists — **complete**
 
-1. **The lost-update race.** *(verified)*
-   [`SettingsPanel.tsx`](../../apps/gui/src/SettingsPanel.tsx) loads
-   settings once on mount and then writes the *whole* struct from that
+All six items below are done. Stage 1 ran ahead of Task 47 (see
+"Interlock"). Two of the six claims turned out to be inaccurate as
+written and are corrected in place: item 3 (the cap floor is not a
+clamping-strategy choice — it is validation metadata) and item 4 (the
+`keybindings` validation already existed; the *reporting* did not, and
+the fix is not host-side).
+
+1. **The lost-update race.** *(done)*
+   [`SettingsPanel.tsx`](../../apps/gui/src/SettingsPanel.tsx) loaded
+   settings once on mount and then wrote the *whole* struct from that
    mount-time snapshot on every edit (`{...prev, ...patch}`).
    `useCommands`' `persistUserBindings` does it correctly — re-read,
    merge, write — and its comment even says it does so "so a concurrent
    settings edit isn't clobbered". The panels are singletons and both
    can be open at once, so: rebind a key, then tick a Settings
-   checkbox, and **the rebind is silently reverted**. Make the panel
-   re-read before merge, as `useCommands` already does. This is a
-   user-visible bug, not just untidiness — it wants a regression test.
-2. **The cap floor is duplicated by admission.** `MIN_SCRATCH_CAP_BYTES`
-   (Rust) and `MIN_CAP_MB` (TS) carry a "keep in sync" comment. One
-   source of truth.
-3. **Flooring on read, not on write.** `floored_scratch_cap` runs where
-   settings meet the store, so a hand-edited 15 MB cap stays 15 MB in
-   the file, is enforced at 100 MB in the store, and is *displayed* as
-   100 MB. Three answers to one question. For a file whose entire
-   selling point is hand-editability, the file lying about the
-   effective value is the wrong failure mode — normalise on write, or
-   surface the correction.
-4. **No host-side validation of `keybindings`.** The host round-trips
-   any `{chord, commandId}`; a typo'd hand-edit silently disables a
-   command with nothing on the system log. Validate and warn.
-5. **No boot hydrate, no change notification.** Two independent
-   consumers read settings lazily. A hand-edit while the app runs needs
-   a restart *and* gets clobbered by the next panel edit. This
-   asymmetry with `hostState` (which does hydrate) is what enables
-   defect 1.
-6. Stale doc comment: `hostSettings.ts` claims "settings are read only
-   by the settings panel", false since `useCommands` reads them at boot.
+   checkbox, and **the rebind was silently reverted**. The panel now
+   re-reads before merging, as `useCommands` already did; the edit still
+   shows immediately in local state, only the *write* base changed.
+   Regression test: `SettingsPanel.dom.test.tsx` → "keeps a keybinding
+   written by another panel while it was open" (mutates the mock store
+   between mount and click; fails on the pre-fix code).
+2. **The cap floor is duplicated by admission.** *(done — folded into
+   item 3)* `MIN_SCRATCH_CAP_BYTES` (Rust) and `MIN_CAP_MB` (TS)
+   carried a "keep in sync" comment. The duplication is gone because
+   the bound is no longer mirrored: `MIN_CAP_MB` is deleted and the
+   panel reads the limit from the host through `get_settings_bounds`.
+   Anti-drift test: `settings.rs` →
+   `the_published_bound_is_the_one_validate_enforces` (the published
+   bound must be the number `validate` enforces) plus
+   `SettingsPanel.dom.test.tsx` → "takes the cap minimum from the host
+   rather than restating it", whose fake host publishes a *different*
+   minimum (64 MB) so a panel that hard-codes 100 fails.
+3. **The floor is validation metadata, not settings data.** *(done)*
+   This is not a choice between clamping strategies, and it should not
+   be re-litigated as one. `MIN_SCRATCH_CAP_BYTES` is a **hard
+   implementation limit** (ADR 0002 DS-8): below it the pre-allocated
+   segment families dominate the budget, so a smaller cap cannot be
+   honored at all. That makes it a *constraint on the
+   `scratch_cap_bytes` field* — a `min` — not a value to flow through
+   settings logic and clamp at a read boundary. So:
+
+   - the bound is **stated once**, host-side, next to the field it
+     bounds;
+   - it is **enforced at ingress** — `get_settings` (a hand-edited
+     file) and `set_settings` (a panel write) both run `validate`,
+     which **refuses** an out-of-range value, resolves the field to its
+     default, and **reports it on the system log**. Same contract as
+     item 4's treatment of a typo'd keybinding: one rule for
+     hand-editing the file, not two;
+   - `floored_scratch_cap`'s read-time clamp is **gone**. The store
+     does not silently repair a value that should never have been
+     accepted;
+   - the bound is **published** to the frontend
+     (`get_settings_bounds`) rather than re-declared there.
+
+   Deliberately *not* done: normalising the user's file on our own
+   initiative (rewriting a refused 15 MB to 100 MB). The file is a
+   user-authored document; we report what we refuse and leave their
+   text alone, which is also what a dropped keybinding does. And
+   deliberately not built: the per-setting descriptor. When it lands
+   (Task 46), `MIN_SCRATCH_CAP_BYTES` *becomes* that descriptor's `min`
+   with no behavioural change — one host-side source of truth, enforced
+   on write, surfaced to the frontend.
+
+   One consequence worth recording: because the host now refuses a
+   below-minimum cap instead of clamping it, the cap box could no
+   longer write through on every keystroke — "500" would be refused at
+   "5" and the box reset before the last digit arrived. It now commits
+   on blur / Enter, with the typed text held as local draft state.
+4. **A refused `keybindings` entry said nothing.** *(done — the
+   original claim was half wrong)* The claim was "no validation of
+   `keybindings`: the host round-trips any `{chord, commandId}`". The
+   *validation* was already there — `resolveBindings` →
+   `sanitizeBindings` has always dropped unknown command ids,
+   unparseable chords, and colliding bindings on load. What was missing
+   is the **reporting**: a typo'd hand-edit lost its shortcut with
+   nothing anywhere saying why.
+
+   It is also not host-side work, and shouldn't become host-side work.
+   The chord grammar (`keybindings.ts`) and the command registry
+   (`commands.ts`) are both declared in the frontend, so the host cannot
+   judge a binding without a second copy of both — exactly the
+   duplication item 3 just removed for the cap bound. Validation belongs
+   where the rule is stated; that is the frontend. The *report* goes
+   host-side, on the system log, via `gui_emit_system_log` (the
+   sanctioned frontend→syslog path, whose rustdoc already anticipates
+   this use).
+
+   `sanitizeBindings` is now a thin wrapper over `reviewBindings`, which
+   returns the accepted list *and* the refusals with reasons;
+   `useCommands`' load effect warns one line per refusal. Tests:
+   `commands.test.ts` → `reviewBindings` (reason names the offending
+   command id / chord / the binding it lost to, and the accepted half
+   still matches `sanitizeBindings` exactly).
+5. **No boot hydrate, no change notification.** *(done)* Two
+   independent consumers read settings lazily; a hand-edit while the app
+   ran needed a restart, and the asymmetry with `hostState` (which does
+   hydrate) is what enabled defect 1. `hostSettings` now mirrors
+   `hostState`: `hydrateSettings()` from `main.tsx` before first render,
+   `hostSettings()` for synchronous reads, `subscribeSettings()` for
+   change notification.
+
+   The one place it deliberately does *not* mirror `hostState`: **the
+   cache is never the base of a write.** `updateSettings(patch)` merges
+   over a fresh read of the file, then caches and publishes what the
+   host says it accepted. A cache-based write would have re-introduced
+   defect 1 in a worse form — `hostState` can write from its cache
+   because nothing else edits `state.json`, but `settings.json` is
+   hand-editable by contract, so its cache can always be stale.
+   Re-opening the settings panel re-hydrates, which is how a hand-edit
+   made mid-session reaches the app.
+
+   Tests: `hostSettings.test.ts` — synchronous read after hydrate,
+   defaults for a partial host answer, patch merged over a fresh read
+   (not the cache), subscribers notified with the *accepted* settings
+   rather than what was sent, and a re-hydrate notifying subscribers.
+6. **Stale doc comment** *(done, in the same change as item 5, which
+   rewrote the paragraph)*: `hostSettings.ts` claimed "settings are read
+   only by the settings panel", false since `useCommands` reads them at
+   boot — and doubly false now that the module hydrates.
 
 ### Stage 2 — move what is misfiled
 
@@ -206,8 +295,9 @@ Three hard dependencies run between them:
   defensible.** Those knobs were borderline precisely because exposing
   them risked clutter and incoherent tuning; hidden-by-default answers
   both, so they are promoted rather than argued one at a time.
-- **Stage 1 runs before either.** The lost-update race is a live bug
-  and nothing else should be built on a racy store.
+- **Stage 1 runs before either.** *(done — it ran ahead of Task 47, and
+  the roadmap now says so.)* The lost-update race was a live bug and
+  nothing else should be built on a racy store.
 
 The storage contract does not depend on the view — ADR 0034 says so
 explicitly — so Task 46 gates the panel, never the file. Task 47 *does*
@@ -216,7 +306,9 @@ change the file layout, which is why it precedes Stage 2.
 ## Duplicate sources of truth to collapse
 
 1. View refresh cadence — 250 ms in four files.
-2. Scratch cap floor — Rust ↔ TS, "keep in sync by convention".
+2. ~~Scratch cap floor — Rust ↔ TS, "keep in sync by convention".~~
+   *Collapsed (Stage 1 item 3): stated once host-side as validation
+   metadata, published to the frontend, no TS copy.*
 3. Default nominal bitrate 500 kbps — TS ↔ Python ↔ Rust, "kept in
    sync by convention". Crosses three languages; the most likely of
    these to drift unnoticed.
@@ -253,16 +345,32 @@ properly view-local, and the window-state plugin is properly separate.
   specific files/sessions?*, with `blf_channel_maps` as the worked
   example. Task 46 amends the same ADR for the descriptor/tagged-view
   decision — fold both into one amendment.
-- **Open question: are we using the right base directories?** Both
-  `settings.json` and `state.json` live in Tauri's `app_config_dir`,
-  while the scratch lives in `app_cache_dir`. On XDG those are three
-  distinct roots (`XDG_CONFIG_HOME`, `XDG_STATE_HOME`,
-  `XDG_CACHE_HOME`), and `state.json` is by its own module doc *state*,
-  sitting in the *config* dir. Worth checking what Tauri 2 actually
-  exposes before deciding whether this is worth correcting — a base-dir
-  move is a migration, and ADR 0011 says we drop rather than migrate.
-  Low priority; record the answer either way so it stops being a
-  recurring question.
+- **Base directories: answered — no change, and it should stop being
+  raised.** The question was whether `state.json` is misfiled by living
+  in `app_config_dir` next to `settings.json`, given that XDG separates
+  `XDG_CONFIG_HOME` / `XDG_STATE_HOME` / `XDG_CACHE_HOME`.
+
+  Checked against tauri 2.11.1's `PathResolver`
+  (`tauri/src/path/desktop.rs`) and its `BaseDirectory` enum. It exposes
+  `config`, `data`, `local_data`, `cache`, `runtime`, `home`, `temp`,
+  `resource`, the `app_*` variants of those, and `app_log` — and **no
+  state dir**. There is no `state_dir()` and no `BaseDirectory::State`.
+  The underlying `dirs` 6.0 crate *does* have `state_dir()`, but it
+  returns `Some` only on Linux (`$XDG_STATE_HOME`, else
+  `~/.local/state`) and `None` on both macOS and Windows.
+
+  So honouring `XDG_STATE_HOME` would mean bypassing Tauri's resolver,
+  taking `dirs` as a direct dependency (a technology-inventory
+  decision), and hand-rolling the macOS/Windows fallback that Tauri
+  currently supplies — to move a best-effort, regenerable file. Against
+  that: ADR 0011 says we drop rather than migrate, so the move would
+  discard everyone's recents and last-project pointer. The cost is real
+  and the benefit is XDG tidiness on one of three platforms.
+
+  **Verdict: keep `state.json` in `app_config_dir`.** The scratch is
+  correctly in `app_cache_dir` (it is genuinely disposable), and no
+  Tauri-supported "state" root exists to move to. Revisit only if Tauri
+  adds one.
 - **Stale `localStorage` comments** at five sites (`hostState.ts` ×2,
   `types.ts`, `useElementPanel.ts` ×2) still describe an
   "unsaved-workspace `localStorage` layout" that no longer exists.
@@ -279,10 +387,17 @@ properly view-local, and the window-state plugin is properly separate.
 
 ## Exit criteria
 
-- Editing a keybinding and a setting in the same session cannot lose
-  either, with a regression test proving it.
+- ~~Editing a keybinding and a setting in the same session cannot lose
+  either, with a regression test proving it.~~ *(met — Stage 1 items 1
+  and 5.)*
 - Every value in `settings.json` means what the file says: no knob
-  enforced at a value the file does not show.
+  enforced at a value the file does not show. *(met for
+  `scratch_cap_bytes` — Stage 1 item 3. Note the shape this took: a
+  value the app cannot honor is **refused and reported**, not enforced
+  at some other number. The file may still contain the refused text —
+  it is the user's document — but nothing anywhere is running at a
+  value the file doesn't show, and the system log says which value was
+  refused and why. New knobs must follow the same rule.)*
 - One source of truth for each item in the duplicates list, or an
   explicit note saying why a copy stays.
 - No user-facing knob promoted in Stage 3 changes behaviour for a user
