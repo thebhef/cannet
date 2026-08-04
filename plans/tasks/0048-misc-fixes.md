@@ -485,17 +485,83 @@ jsdom does no layout.
 Moving a plot area *between panels* is a different feature and stays
 where it is, in task 23.
 
-## 16. Process names do not say what they are
+## 16. Process names do not say what they are — **done**
 
-Processes the app spawns show up under generic names — nothing should
-appear in a task manager as `tauri` alone. Every process this app is
-responsible for should carry `cannet` in its name and enough beyond that
-to say which part it is (host, sidecar, WebView helper where we control
-the name), so a user looking at a process list can tell what is ours and
-what each one does.
+Enumerated first, on Windows 11, before anything was edited: the
+release binary (`pnpm --dir apps/gui tauri build --no-bundle`, run
+directly from `target/release/`) and, separately, a `pnpm --dir apps/gui
+tauri dev` run, both read with `Get-CimInstance Win32_Process` (parent
+PIDs + command lines) and `Get-Process | Select Name, Description`.
 
-Covers whatever we actually control: the binary name, the Tauri product
-name, and the sidecar's process name.
+**The shipping process tree (release), before → after.** "Description"
+is what a task manager shows next to the image name; on Windows it is
+the binary's `VERSIONINFO` `FileDescription`.
+
+| Process | Image name | Description before | Description after |
+| --- | --- | --- | --- |
+| GUI host | `cannet-gui.exe` | `cannet` | unchanged |
+| Vendor-driver sidecar | `cannet-python-can.exe` | *(blank)* | `cannet CAN hardware sidecar (python-can)` |
+| WebView2 browser + GPU + renderer + network + storage + crashpad (6) | `msedgewebview2.exe` | `Microsoft Edge WebView2` | unchanged — not ours |
+
+The one defect the enumeration found in the shipping tree was the
+sidecar: PyInstaller emits no `VERSIONINFO` resource unless it is handed
+one, so the frozen launcher had **no description at all** and read as a
+nameless executable. `scripts/build-sidecar.py` now renders one and
+passes it as `--version-file` (Windows only — ELF and Mach-O have no
+equivalent, and there the file name *is* the process name). Verified on
+the rebuilt artifact and on the live process:
+`Get-Process | Select Name, Description` reports
+`cannet-python-can` / `cannet CAN hardware sidecar (python-can)`.
+Guarded by `tests/test_frozen_version_resource.py` in the sidecar
+project (the rendering, the version→four-number padding, the version
+coming from `pyproject.toml`, the flag being passed on Windows and not
+off it, and `--name` still being `cannet-python-can`). That the resource
+lands in the built `.exe` is only observable by building it, so that
+half is the evidence above rather than a test.
+
+**What we do not control, with the evidence.**
+
+- **The WebView2 processes.** All six are
+  `C:\Program Files (x86)\Microsoft\EdgeWebView\Application\150.0.4078.105\msedgewebview2.exe`
+  — Microsoft's machine-wide runtime, which we never ship and only
+  reach through `WebView2Loader`; the name and description are
+  Microsoft's version resource on Microsoft's binary. WebView2 exposes
+  no option to rename its children. The one identity we do get to set
+  is already set for us: the browser process's command line carries
+  `--webview-exe-name=cannet-gui.exe`, i.e. WebView2 records the host
+  that owns it. The same holds on the other platforms with the other
+  vendors' engines (WebKitGTK's `WebKitWebProcess`, macOS's
+  `com.apple.WebKit.WebContent`).
+- **The host's Windows description.** `tauri-build` sets
+  `FileDescription` to `productName` unconditionally
+  (`tauri-build-2.6.1/src/lib.rs`: `product_name` first in the fallback
+  chain, then the crate name) and exposes no override —
+  `WindowsAttributes` offers only `window_icon_path`, `app_manifest`
+  and `append_rc_content`. So the only lever is `productName` itself,
+  and it stays `cannet`: it also names the installer
+  (`cannet_<ver>_x64-setup.exe`), the install directory
+  (`%LOCALAPPDATA%\cannet`), the Start Menu entry and the macOS
+  `.app`, where a role suffix would be wrong. The host says which part
+  it is through its image name, `cannet-gui.exe`, which is what the
+  Details tab lists it under.
+- **The dev-only sidecar chain.** `tauri dev` prefers the source tree
+  (ADR 0036), so the host spawns `uv.exe` → `uv.exe` →
+  `cannet-python-can.exe` (the venv console script) → `python.exe` →
+  `python.exe`. `uv.exe` is Astral's binary and `python.exe` is
+  CPython's interpreter out of the project venv; neither is ours to
+  rename and neither ships to a user.
+
+**On `tauri` alone: not reproduced.** No process in either tree is named
+`tauri`, and none has it as a description. The only occurrence of the
+string anywhere in either tree is the command line of a
+`cmd.exe /d /s /c tauri "dev"` shim inside the `pnpm --dir apps/gui
+tauri dev` chain — `@tauri-apps/cli` build tooling, not something the
+app spawns, and gone the moment the dev server stops. Windows lists a
+console process by its console window title, which would plausibly be
+`tauri` there, but `tasklist /v` did not return on this machine so that
+mechanism is unverified and is not claimed. If it turns up again it
+needs a fresh observation (which process, which column) rather than
+this hypothesis.
 
 ## Exit criteria
 
