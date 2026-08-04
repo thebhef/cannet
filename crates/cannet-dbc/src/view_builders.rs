@@ -13,7 +13,8 @@ use can_dbc::{
 
 use crate::calc::CalculatedFieldsConfig;
 use crate::model::{
-    canid_to_message_id, is_enum, message_id_parts, Database, DbcAttribute, ValueTableEntry,
+    canid_to_message_id, is_enum, message_id_parts, value_is_raw_integer, Database, DbcAttribute,
+    ValueTableEntry,
 };
 
 /// Map can-dbc's `MultiplexIndicator` to this crate's [`SignalMux`].
@@ -91,6 +92,7 @@ impl Database {
                     signal_name: sig.signal.name.clone(),
                     unit: sig.signal.unit.clone(),
                     is_enum: is_enum(&sig.value_table),
+                    value_is_raw_integer: value_is_raw_integer(sig),
                     mux_selector: match sig.signal.multiplexer_indicator {
                         MultiplexIndicator::MultiplexedSignal(s)
                         | MultiplexIndicator::MultiplexorAndMultiplexedSignal(s) => Some(s),
@@ -307,6 +309,17 @@ pub struct SignalDescriptor {
     /// separate `value_table` round-trip to decide between numeric and
     /// symbolic rendering.
     pub is_enum: bool,
+    /// True when the signal's physical value is exactly its raw integer
+    /// — integer-typed (no `SIG_VALTYPE_` float override for its width),
+    /// `factor == 1`, `offset == 0`. The catalog-side twin of
+    /// [`DecodedSignal::value_is_raw_integer`], from the same internal
+    /// predicate, so a view that has only a descriptor (the signal
+    /// view's snapshot rows) classifies a signal the same way a decoded
+    /// frame does. Combine with `unit` and `is_enum` through
+    /// [`crate::is_raw_field`] for the "opaque bit pattern" verdict.
+    ///
+    /// [`DecodedSignal::value_is_raw_integer`]: crate::DecodedSignal::value_is_raw_integer
+    pub value_is_raw_integer: bool,
     /// The multiplexor-selector group this signal belongs to, or `None`
     /// for plain signals and the multiplexor itself. A frame carries
     /// this signal only when the message's multiplexor decodes to this

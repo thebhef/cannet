@@ -566,6 +566,7 @@ function SignalRow({
             value={row.value}
             unit=""
             label={row.label}
+            rawField={row.raw_field}
             target={{
               messageId: row.message_id,
               extended: row.extended,

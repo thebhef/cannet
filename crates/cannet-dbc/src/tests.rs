@@ -399,6 +399,80 @@ fn decoded_signal_carries_enum_ness() {
 }
 
 #[test]
+fn signals_descriptor_carries_value_is_raw_integer() {
+    let sigs = Database::parse(SAMPLE_DBC).unwrap().signals();
+    let d = |name: &str| sigs.iter().find(|s| s.signal_name == name).unwrap();
+    assert!(
+        d("BeUnsigned").value_is_raw_integer,
+        "integer-typed, factor 1, offset 0"
+    );
+    assert!(!d("EngineSpeed").value_is_raw_integer, "factor 0.25");
+    assert!(!d("EngineTemp").value_is_raw_integer, "offset -40");
+    assert!(
+        !d("Lat").value_is_raw_integer,
+        "SIG_VALTYPE_ float: the bits are not the value"
+    );
+
+    // An enum's raw value is an unscaled integer too — `is_enum` is what
+    // keeps it out of `is_raw_field`, not this fact.
+    let sigs = Database::parse(VAL_DBC).unwrap().signals();
+    let mode = sigs.iter().find(|s| s.signal_name == "Mode").unwrap();
+    assert!(mode.value_is_raw_integer);
+    assert!(mode.is_enum);
+}
+
+#[test]
+fn raw_field_verdict_is_the_same_from_a_descriptor_and_a_decoded_signal() {
+    // One predicate, two carriers: whichever surface asks, the answer
+    // must match, or the trace rows and the signal view drift apart.
+    for (dbc, id) in [(SAMPLE_DBC, 257u32), (VAL_DBC, 256)] {
+        let db = Database::parse(dbc).unwrap();
+        let frame = make_frame(id, false, vec![0; 8]);
+        let decoded = db.decode(&frame).unwrap();
+        for sig in &decoded.signals {
+            let d = db
+                .signals()
+                .into_iter()
+                .find(|d| d.signal_name == sig.name)
+                .unwrap();
+            assert_eq!(
+                is_raw_field(sig.value_is_raw_integer, sig.unit, sig.is_enum),
+                is_raw_field(d.value_is_raw_integer, &d.unit, d.is_enum),
+                "{} disagrees across carriers",
+                sig.name,
+            );
+        }
+    }
+
+    // And the verdict itself: unscaled + unitless + not an enum.
+    let db = Database::parse(VAL_DBC).unwrap();
+    let d = |name: &str| {
+        db.signals()
+            .into_iter()
+            .find(|d| d.signal_name == name)
+            .unwrap()
+    };
+    let verdict = |name: &str| {
+        let d = d(name);
+        is_raw_field(d.value_is_raw_integer, &d.unit, d.is_enum)
+    };
+    assert!(!verdict("Mode"), "VAL_ table key stays decimal");
+    assert!(!verdict("Rpm"), "a unit means a measurement");
+    assert!(
+        !verdict("Counter"),
+        "a single-member SNA table is not an enum, but the unit still rules it out"
+    );
+
+    let db = Database::parse(SAMPLE_DBC).unwrap();
+    let be = db
+        .signals()
+        .into_iter()
+        .find(|d| d.signal_name == "BeUnsigned")
+        .unwrap();
+    assert!(is_raw_field(be.value_is_raw_integer, &be.unit, be.is_enum));
+}
+
+#[test]
 fn signals_descriptor_is_enum_requires_two_members() {
     let db = Database::parse(VAL_DBC).unwrap();
     let sigs = db.signals();

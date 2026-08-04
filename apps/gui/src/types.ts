@@ -601,6 +601,12 @@ export interface SignalSnapshotRecord {
   signal_name: string;
   unit: string;
   is_enum: boolean;
+  /// True when the signal is a *raw field* — an unscaled, unitless,
+  /// non-enum integer whose value is a bit pattern (an id, a serial).
+  /// The host decides it (`cannet_dbc::is_raw_field`), the same verdict
+  /// `SignalRecord.raw_field` carries on the trace views' decoded
+  /// lines; views render these in hex. Absent when false.
+  raw_field?: boolean;
   value: number | null;
   raw: number | null;
   label?: string | null;
