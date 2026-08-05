@@ -20,8 +20,8 @@ use crate::app_state::{AppState, LoadedDbc};
 use crate::dbc_commands::decode_against;
 use crate::filter::{self, DecodeDependentLeaf, FilterPredicate};
 use crate::ipc::{
-    self, ByIdSnapshot, FilteredTracePage, RowPage, SignalSelection, SignalSnapshotRecord,
-    TraceFrameRecord,
+    self, ByIdSnapshot, FilteredTracePage, RowPage, SignalPageRow, SignalSections, SignalSelection,
+    SignalSnapshotRecord, TraceFrameRecord,
 };
 use crate::signal_snapshot;
 use crate::trace_store::{self, RawTraceFrame, TraceStore};
@@ -335,6 +335,12 @@ pub(crate) async fn fetch_by_id_page(
 /// The DBC panel's live value column calls this too (keys-only
 /// selection over its visible slice) — one decode path, one row shape,
 /// so the two surfaces cannot drift.
+///
+/// `sections` carries the view's user-authored sections. It orders the
+/// rows, inserts a header row per section, and drops a folded section's
+/// rows — so `count` is the fold-aware extent and every page row is
+/// addressed in the same uniform row space. Omitted (or empty) it is
+/// the flat list it always was.
 #[tauri::command]
 #[allow(
     clippy::unused_async,
@@ -344,6 +350,7 @@ pub(crate) async fn fetch_by_id_page(
 pub(crate) async fn fetch_signal_page(
     app: AppHandle,
     selection: SignalSelection,
+    sections: Option<SignalSections>,
     scan_start: u64,
     scan_end: u64,
     sort_key: Option<String>,
@@ -353,11 +360,12 @@ pub(crate) async fn fetch_signal_page(
     source_buses: Option<Vec<String>>,
     offset: u64,
     limit: u64,
-) -> Result<RowPage<SignalSnapshotRecord>, String> {
+) -> Result<RowPage<SignalPageRow>, String> {
     let state: State<'_, AppState> = app.state();
     fetch_signal_page_inner(
         state.inner(),
         &selection,
+        sections.as_ref(),
         scan_start,
         scan_end,
         sort_key.as_deref(),
@@ -374,6 +382,7 @@ pub(crate) async fn fetch_signal_page(
 pub(crate) fn fetch_signal_page_inner(
     state: &AppState,
     selection: &SignalSelection,
+    sections: Option<&SignalSections>,
     scan_start: u64,
     scan_end: u64,
     sort_key: Option<&str>,
@@ -383,7 +392,7 @@ pub(crate) fn fetch_signal_page_inner(
     source_buses: Option<&[String]>,
     offset: u64,
     limit: u64,
-) -> Result<RowPage<SignalSnapshotRecord>, String> {
+) -> Result<RowPage<SignalPageRow>, String> {
     let start = usize::try_from(scan_start).unwrap_or(usize::MAX);
     let end = usize::try_from(scan_end).unwrap_or(usize::MAX);
     let names: HashMap<String, String> = bus_names.into_iter().collect();
@@ -402,15 +411,24 @@ pub(crate) fn fetch_signal_page_inner(
     // scan instead of by pruning `all`, so the snapshot stays shareable.
     let all = state.scoped_descriptor_snapshot(project_buses);
     let selected = signal_snapshot::select_descriptors(&all, selection, &names, source_buses)?;
-    let mut rows = collect_signal_rows(state, &dbs, &all, &selected, start, end);
-    signal_snapshot::sort_rows(&mut rows, sort_key, sort_dir, &names);
+    let rows = collect_signal_rows(state, &dbs, &all, &selected, start, end);
+    // Sectioning subsumes the sort: rows sort *within* a section, so the
+    // two cannot be separate passes.
+    let no_sections = SignalSections::default();
+    let rows = signal_snapshot::arrange_sections(
+        rows,
+        sections.unwrap_or(&no_sections),
+        sort_key,
+        sort_dir,
+        &names,
+    );
 
     let count = u64::try_from(rows.len()).unwrap_or(u64::MAX);
     let off = usize::try_from(offset)
         .unwrap_or(usize::MAX)
         .min(rows.len());
     let lim = usize::try_from(limit).unwrap_or(usize::MAX);
-    let page: Vec<SignalSnapshotRecord> = rows.into_iter().skip(off).take(lim).collect();
+    let page: Vec<SignalPageRow> = rows.into_iter().skip(off).take(lim).collect();
     Ok(RowPage {
         count,
         start: u64::try_from(off).unwrap_or(0),
