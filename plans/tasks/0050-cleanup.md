@@ -153,7 +153,11 @@ check) Skipped", and `pre-commit run frontend --files
 apps/gui/src/App.tsx` passes in 45.6 s. Both hooks were also shown to
 *fail*: a planted failing `cannet-dbc` test, a planted TS type error
 (the build log printed, the test log not), and a planted failing vitest
-case (the test log printed, the build log not).
+case (the test log printed, the build log not). `pre-commit run
+--all-files` is green end to end, all eleven hooks, in 3 m 9 s. Both
+scripts were also run with CRLF line endings — `core.autocrlf` is on and
+the repo has no `.gitattributes`, so that is how they arrive in a
+Windows clone — and behave identically.
 
 **Docs.** README § Pre-commit hook said the whole-project checks include
 `cargo test` and the frontend `vitest` — which was false in both

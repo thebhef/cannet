@@ -1,7 +1,9 @@
 # Local commit gate. Every hook is repo:local / language:system — it runs a
 # tool this project already pins (uv, cargo, pnpm) or a small script in
-# scripts/, so there are no third-party hook repos to keep in sync and the
-# checks mirror .github/workflows/ci.yml. Enable in a clone with
+# scripts/, so there are no third-party hook repos to keep in sync. The
+# checks are the ones in .github/workflows/ci.yml, narrowed to what a
+# commit touches where that is a big enough saving to matter (each such
+# hook says what it therefore leaves to CI). Enable in a clone with
 # `pre-commit install` (needs the `pre-commit` tool: `uv tool install
 # pre-commit` or `pipx install pre-commit`).
 minimum_pre_commit_version: "3.5.0"
