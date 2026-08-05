@@ -1226,7 +1226,9 @@ button.trace-event-swatch {
   background: #17202c;
   box-shadow: inset 2px 0 0 #38bdf8;
 }
-.trace-event-row:focus-visible {
+/* Focusable trace rows: the timeline event rows, and the by-id rows,
+   which are their own disclosure control. */
+.trace-row:focus-visible {
   outline: 1px solid #38bdf8;
   outline-offset: -1px;
 }
@@ -1422,9 +1424,9 @@ button.trace-event-swatch {
   color: #475569;
 }
 
-/* The by-id row's disclosure: the caret beside the message name, as a
-   real control rather than a bare glyph. Sized and coloured like the
-   glyph it replaces so a dense row reads unchanged. */
+/* A caret disclosure at the *start* of a row — the signal view's
+   section headers. Sized and coloured like a bare glyph so a dense row
+   reads unchanged. */
 .trace-disclosure {
   background: none;
   border: none;

@@ -146,15 +146,16 @@ function lastParams(api: { updateParameters: ReturnType<typeof vi.fn> }) {
   return (calls[calls.length - 1]?.[0] ?? {}) as Record<string, unknown>;
 }
 
-/// The disclosure button of the row whose message cell reads `name`.
-function toggleFor(container: HTMLElement, name: string) {
-  const cells = [...container.querySelectorAll<HTMLElement>(".trace-row .col-msg")];
-  const cell = cells.find((c) => c.textContent?.includes(name));
-  return cell?.querySelector("button") as HTMLButtonElement | undefined;
+/// The row whose message cell reads `name`. The row *is* the disclosure
+/// control, so this is both the thing to click and the thing that
+/// carries `aria-expanded`.
+function rowFor(container: HTMLElement, name: string) {
+  const rows = [...container.querySelectorAll<HTMLElement>(".trace-row")];
+  return rows.find((r) => r.querySelector(".col-msg")?.textContent?.includes(name));
 }
 
 async function waitForRows(container: HTMLElement) {
-  await waitFor(() => expect(toggleFor(container, "GearBox")).toBeTruthy());
+  await waitFor(() => expect(rowFor(container, "GearBox")).toBeTruthy());
 }
 
 beforeEach(async () => {
@@ -174,23 +175,23 @@ describe("by-id fold persistence", () => {
     const { container, api } = renderPanel({});
     await waitForRows(container);
     expect(lastParams(api).expanded).toEqual([]);
-    fireEvent.click(toggleFor(container, "GearBox")!);
+    fireEvent.click(rowFor(container, "GearBox")!);
     await waitFor(() => expect(lastParams(api).expanded).toEqual([gearBoxKey]));
   });
 
   it("takes the id back out when the row folds again", async () => {
     const { container, api } = renderPanel({});
     await waitForRows(container);
-    fireEvent.click(toggleFor(container, "GearBox")!);
+    fireEvent.click(rowFor(container, "GearBox")!);
     await waitFor(() => expect(lastParams(api).expanded).toEqual([gearBoxKey]));
-    fireEvent.click(toggleFor(container, "GearBox")!);
+    fireEvent.click(rowFor(container, "GearBox")!);
     await waitFor(() => expect(lastParams(api).expanded).toEqual([]));
   });
 
   it("mirrors the set onto the element, so a reopen restores it", async () => {
     const { container, registry } = renderPanel({});
     await waitForRows(container);
-    fireEvent.click(toggleFor(container, "PackState")!);
+    fireEvent.click(rowFor(container, "PackState")!);
     await waitFor(() => {
       const cfg = (registry.get("t1")!.element as { config?: { expanded?: unknown } }).config;
       expect(cfg?.expanded).toEqual([packStateKey]);
@@ -200,8 +201,8 @@ describe("by-id fold persistence", () => {
   it("opens the rows the params name", async () => {
     const { container } = renderPanel({ expanded: [packStateKey] });
     await waitForRows(container);
-    expect(toggleFor(container, "GearBox")).toHaveAttribute("aria-expanded", "false");
-    expect(toggleFor(container, "PackState")).toHaveAttribute("aria-expanded", "true");
+    expect(rowFor(container, "GearBox")).toHaveAttribute("aria-expanded", "false");
+    expect(rowFor(container, "PackState")).toHaveAttribute("aria-expanded", "true");
     // The signal lines are rendered, not merely marked.
     expect(container.querySelectorAll(".trace-row.expanded .signals").length).toBe(1);
   });
@@ -209,20 +210,20 @@ describe("by-id fold persistence", () => {
   it("survives an unmount / remount through the params it wrote", async () => {
     const first = renderPanel({});
     await waitForRows(first.container);
-    fireEvent.click(toggleFor(first.container, "GearBox")!);
+    fireEvent.click(rowFor(first.container, "GearBox")!);
     await waitFor(() => expect(lastParams(first.api).expanded).toEqual([gearBoxKey]));
     const written = lastParams(first.api);
     first.unmount();
 
     const second = renderPanel(written);
     await waitForRows(second.container);
-    expect(toggleFor(second.container, "GearBox")).toHaveAttribute("aria-expanded", "true");
+    expect(rowFor(second.container, "GearBox")).toHaveAttribute("aria-expanded", "true");
   });
 
   it("tolerates junk in the persisted set", async () => {
     const { container } = renderPanel({ expanded: [7, null, packStateKey, { a: 1 }] });
     await waitForRows(container);
-    expect(toggleFor(container, "PackState")).toHaveAttribute("aria-expanded", "true");
+    expect(rowFor(container, "PackState")).toHaveAttribute("aria-expanded", "true");
     expect(container.querySelectorAll(".trace-row.expanded").length).toBe(1);
   });
 
