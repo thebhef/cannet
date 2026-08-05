@@ -12,7 +12,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, fireEvent, render } from "@testing-library/react";
 
 /// The `id` column's format is the `can_id_format` setting.
 let storedSettings: Record<string, unknown> = {};
@@ -195,6 +195,83 @@ describe("ByIdTable scroll extent", () => {
     expect(content.style.getPropertyValue("--trace-content-width")).toBe(
       `${contentWidth(defaultColumns())}px`,
     );
+  });
+});
+
+// A message's decoded signals fold under its ID row. The caret is the
+// disclosure control (button + `aria-expanded` + an `aria-hidden`
+// glyph), matching the project panel's sections; clicking the row is
+// kept as the direct-manipulation shortcut.
+describe("ByIdTable disclosure control", () => {
+  function renderRow(
+    expanded: boolean,
+    onToggleExpand: (rowKey: string) => void,
+    r: ByIdSnapshotRecord = row,
+  ) {
+    return render(
+      <ByIdTable
+        count={1}
+        version={0}
+        getRow={(i) => (i === 0 ? r : null)}
+        ensureVisible={() => {}}
+        columns={defaultColumns()}
+        onColumnResize={() => {}}
+        onColumnToggle={() => {}}
+        onColumnReorder={() => {}}
+        resolveColor={null}
+        sort={null}
+        onSortColumn={() => {}}
+        baseTimestamp={0}
+        busLookup={new Map([["b1", "Chassis"]])}
+        expanded={expanded ? new Set([byIdRowKey(r.frame)]) : new Set()}
+        onToggleExpand={onToggleExpand}
+      />,
+    );
+  }
+
+  it("makes the message caret a button carrying aria-expanded", () => {
+    const { container } = renderRow(false, () => {});
+    const toggle = container.querySelector(".col-msg button") as HTMLButtonElement;
+    expect(toggle).toBeTruthy();
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    // The glyph says the same thing the attribute does, so it is hidden
+    // from the accessible name.
+    const glyph = toggle.querySelector("[aria-hidden='true']") as HTMLElement;
+    expect(glyph.textContent?.trim()).toBe("▸");
+    expect(toggle.getAttribute("aria-label")).toContain("GearBox");
+  });
+
+  it("swaps the glyph and the state when the row is expanded", () => {
+    const { container } = renderRow(true, () => {});
+    const toggle = container.querySelector(".col-msg button") as HTMLButtonElement;
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(toggle.querySelector("[aria-hidden='true']")?.textContent?.trim()).toBe("▾");
+  });
+
+  it("toggles exactly once from the button, by the row's stable id", () => {
+    // The row itself also toggles on click, so the button has to stop
+    // the event bubbling or a single press folds and unfolds.
+    const onToggle = vi.fn();
+    const { container } = renderRow(false, onToggle);
+    fireEvent.click(container.querySelector(".col-msg button")!);
+    expect(onToggle.mock.calls).toEqual([[byIdRowKey(frame)]]);
+  });
+
+  it("keeps the row click as the shortcut", () => {
+    const onToggle = vi.fn();
+    const { container } = renderRow(false, onToggle);
+    fireEvent.click(container.querySelector(".trace-row")!);
+    expect(onToggle.mock.calls).toEqual([[byIdRowKey(frame)]]);
+  });
+
+  it("offers no disclosure on a row with nothing to expand", () => {
+    const undecoded: ByIdSnapshotRecord = {
+      frame: { ...frame, decoded: null },
+      rate: 0,
+      count: 1,
+    };
+    const { container } = renderRow(false, () => {}, undecoded);
+    expect(container.querySelector(".col-msg button")).toBeNull();
   });
 });
 

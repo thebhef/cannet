@@ -1425,6 +1425,18 @@ button.trace-event-swatch {
   color: #475569;
 }
 
+/* The by-id row's disclosure: the caret beside the message name, as a
+   real control rather than a bare glyph. Sized and coloured like the
+   glyph it replaces so a dense row reads unchanged. */
+.trace-disclosure {
+  background: none;
+  border: none;
+  padding: 0 0 0 0.25rem;
+  font: inherit;
+  line-height: inherit;
+  cursor: pointer;
+}
+
 /* Expanded-row decoded signals: one indented sub-row per signal. Each
    `.signal` line's height is set inline from `SIGNAL_LINE_HEIGHT`
    (traceViewport.ts) so it can't drift from the row-placement math. */

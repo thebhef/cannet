@@ -862,20 +862,106 @@ action rather than a value edit, so it is left as it is.
 
 ## 15. Collapsible sections in the signals view
 
-Requested from usage 2026-08-04, following item 5's pattern in the
-project view: the signals (by-ID) view should get collapsible sections.
+**Done, for the by-ID view. The per-signal signals view is a recorded
+blocker** (below) — it needs host-side awareness that is out of this
+item's scope.
 
-**Investigate first.** Item 5's subject had six ready-made `<section>`
-blocks; the signals view's structure is different (rows grouped under
-message ids), so establish what the natural collapse unit is — most
-plausibly a message's signal rows folding under its ID row — and record
-the intended structure here before implementing. Reuse item 5's
-disclosure pattern (button-in-heading, `aria-expanded`, glyph swap,
-sparse persisted fold state riding the layout's panel params) rather
-than inventing a second idiom. Mind the paged-viewport architecture:
-the by-ID view pages over a windowed query, so folding must compose
-with the anchor/viewport math (`traceViewport.ts`) rather than assume
-an all-in-memory list.
+**The collapse unit: one message's decoded-signal block, folding under
+its ID row in the by-ID trace view** (`ByIdTable` / `TracePanel`).
+That is the only view in the app whose rows are already "grouped under
+message ids", which is how the item describes its subject; the
+per-signal signals view (`SignalsPanel`) is a *flat* host-sorted list
+with one row per selected signal and no message grouping at all. The
+fold key is `byIdRowKey` — bus + arbitration id + std/ext — the stable
+identity the expand set already used, chosen precisely so a fold
+survives a re-sort or a new id appearing above it.
+
+**It composes with the paged viewport without touching the anchor
+math, because the fold *is* the geometry that was already there.** The
+by-ID table sizes an expanded row through `expandedRowHeight` /
+`expandedExtraHeight` / `rowHeightAt` / `buildPlacements`, anchors with
+`tailAnchorRow` (task 48 item 5), and derives the expanded *positions*
+from the loaded page only — a row outside it reads as a plain row until
+it lands. Nothing in `traceViewport.ts` or `useTraceViewport` changed.
+What was missing was a control and a memory:
+
+- **A real disclosure control.** The `▾` / `▸` in the message cell was
+  a bare `<span className="hint">` and the toggle was a click anywhere
+  on the row — undiscoverable, and unreachable by keyboard. It is now a
+  `<button aria-expanded>` with the glyph in an `aria-hidden` span and
+  an `aria-label` of `<message> signals`, the caret idiom item 5 took
+  from RBS/transmit. The row click stays as the direct-manipulation
+  shortcut, so the button `stopPropagation`s — without that one press
+  folds *and* unfolds, which is what the "exactly once" test pins.
+  Rendered in `ByIdRow` rather than in the shared `cellContent`, so the
+  chronological trace's own expansion is untouched.
+- **Persistence.** The expanded set was `useState` in `TracePanel` and
+  died with the panel. It joins that panel's existing dual-write config
+  (element `config` + dockview `params`, through `useElementPanel`'s
+  `persist`) as `expanded` — no new channel, no `UiState` field, no
+  host change, exactly item 5's mechanism. Stored **sparsely, as stable
+  ids**: item 5 persisted what is *folded* because its sections default
+  to open; a by-ID row defaults to *collapsed*, so the sparse set here
+  is what is **expanded**. Same rule — persist only the deviation from
+  the default — inverted because the default is. Junk in the array is
+  filtered rather than thrown on, matching `collapsedFromParams`.
+
+One ordering consequence: the `persist` effect moved below the by-id
+state block, since it now reads `expanded` and a dep array evaluated
+above the `const` is a TDZ error.
+
+Tests: `apps/gui/src/ByIdTable.dom.test.tsx` gains five disclosure
+cases (the button and its `aria-expanded`, the glyph swap, one toggle
+per button press, the row-click shortcut still working, and no button
+on a row with no decode); three failed before the change, and the other
+two are the regression guards for what already worked. New
+`apps/gui/src/TracePanel.byIdCollapse.dom.test.tsx` — seven cases over
+the state travelling: the id written to the params, taken back out on
+unfold, mirrored onto the element, restored from params, an
+unmount/remount round-trip through the params the panel itself wrote,
+junk tolerance, and the restored fold reaching the scroll spacer (the
+paging composition, asserted on the height the view *writes* — jsdom
+does no layout). All seven failed before the change.
+
+**Blocker: per-message grouping in the per-signal signals view
+(`SignalsPanel`) needs host-side awareness, so it is not in this
+item.** Recorded here for review rather than built. That panel's rows
+come from `fetch_signal_page`: the host resolves the selection
+(manual keys + ADR 0038 regex patterns), sorts by the user's column,
+and returns `count` plus one page of up to `PAGE_ROWS` rows. The
+frontend holds only the page. Folding a message there means inserting
+group header rows and removing a group's rows from the row space, and
+both need facts only the host has:
+
+- *Where a group starts and how long it is,* for every group above the
+  viewport — needed to map a visible index to an absolute one. That is
+  a walk of the whole ordered row list, which is exactly the array the
+  frontend must not hold.
+- *The visible row count,* which drives the scrollbar extent. It is
+  `count` minus the folded groups' lengths, and only the host can
+  count.
+
+The three frontend-only escapes were considered and all fail: a
+render-time row filter over the loaded page leaves the scroll extent
+at the unfolded total and punches holes wherever a folded group sits;
+subtracting the folded messages from the wire selection works for
+manual keys but a pattern cannot be subtracted (the selection is
+additive, and a folded group with no rows left has no header to unfold
+from); and re-deriving the group structure from the catalog in JS
+duplicates `select_descriptors`, which the panel's own `view.error`
+proves can disagree with the host (the two regex dialects differ), so
+the scroll geometry would silently desync from the row list. Groups
+are also only contiguous under the *default* (null) sort — the host's
+descriptor order — and scatter under any column sort, so grouping
+there is not even well-defined for most of the panel's states.
+
+The correct implementation is host-side: `fetch_signal_page` takes the
+folded `(bus, id, extended)` set, emits a group row per message
+boundary in descriptor order, and returns a `count` that already
+excludes folded groups' signals. That is a shape change to
+`SignalSnapshotRecord` and a new parameter on the command, i.e. new
+model surface — out of this item's scope and left for the user to
+schedule.
 
 ## Exit criteria
 
