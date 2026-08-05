@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { DockviewReact, themeAbyss } from "dockview";
+import { DockviewDefaultTab, DockviewReact, themeAbyss } from "dockview";
 import type { DockviewApi, DockviewReadyEvent } from "dockview";
 
 import type {
@@ -132,7 +132,6 @@ import {
   type LayoutHistory,
 } from "./viewHistory";
 import { PanelCommandsContext } from "./panelCommands";
-import { RenamableTab } from "./RenamableTab";
 import { useCommands } from "./useCommands";
 import {
   beginDiagCapture,
@@ -2472,13 +2471,12 @@ export function App() {
                         tab (same DOM, same class names) adds close on
                         middle-click. The `mousedown` capture listener above
                         keeps the browser's middle-button autoscroll from
-                        eating the press. `RenamableTab` wraps that default
-                        with double-click-to-rename. */}
+                        eating the press. */}
                     <DockviewReact
                       className="dock-area"
                       theme={themeAbyss}
                       components={DOCK_COMPONENTS}
-                      defaultTabComponent={RenamableTab}
+                      defaultTabComponent={DockviewDefaultTab}
                       onReady={handleDockReady}
                     />
                   </PanelCommandsContext.Provider>

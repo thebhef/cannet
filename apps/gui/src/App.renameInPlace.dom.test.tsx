@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
 //
-// `panel.rename` renames in place, two ways. The command collects the
-// new name in the palette's own second stage (ADR 0037 — the command
-// stays the entry point, the palette stays open and becomes a text
-// input), and a tab can be renamed directly by double-clicking it.
-// Both write the model-owned name (ADR 0019); neither sends the user
-// off to the project panel. Real App, real dockview, Tauri IPC mocked
-// (same harness as the other App dom tests).
+// `panel.rename` renames in place: the command collects the new name in
+// the palette's own second stage (ADR 0037 — the command stays the
+// entry point, the palette stays open and becomes a text input) and
+// writes the model-owned name (ADR 0019), without sending the user off
+// to the project panel. That palette prompt is the only way to rename a
+// panel; the tab itself carries no edit affordance. Real App, real
+// dockview, Tauri IPC mocked (same harness as the other App dom tests).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
@@ -117,11 +117,6 @@ function findTab(title: string): HTMLElement {
   );
   if (!tab) throw new Error(`tab "${title}" not found`);
   return tab;
-}
-
-/// The tab currently showing a rename input, if any.
-function renameInput(): HTMLInputElement | null {
-  return document.querySelector<HTMLInputElement>(".dv-tab input.dock-tab-rename-input");
 }
 
 /// The palette's second-stage text input, if the palette is asking for
@@ -238,34 +233,5 @@ describe("panel.rename", () => {
       findTab("Trace 1");
     });
     expect(projectPanelNameInput().value).toBe("Trace 1");
-  }, 30_000);
-});
-
-describe("tab rename", () => {
-  it("double-clicking a tab edits it in place and commits on Enter", async () => {
-    await mountApp();
-
-    // A real double-click lands on the tab's content and bubbles; fire
-    // it there rather than on dockview's outer `.dv-tab` wrapper.
-    await act(async () => {
-      fireEvent.doubleClick(findTab("Trace 1").querySelector(".dv-default-tab-content")!);
-    });
-    const input = await waitFor(() => {
-      const el = renameInput();
-      if (!el) throw new Error("tab did not enter rename mode");
-      return el;
-    });
-    expect(input.value).toBe("Trace 1");
-
-    await act(async () => {
-      fireEvent.change(input, { target: { value: "Cabin sweep" } });
-      fireEvent.keyDown(input, { key: "Enter" });
-    });
-
-    await waitFor(() => {
-      if (renameInput()) throw new Error("still editing");
-      findTab("Cabin sweep");
-    });
-    expect(projectPanelNameInput().value).toBe("Cabin sweep");
   }, 30_000);
 });
