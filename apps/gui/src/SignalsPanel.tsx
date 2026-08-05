@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 
-import type { SignalSelectionWire, SignalSnapshotRecord } from "./types";
+import type {
+  SignalSectionHeaderRecord,
+  SignalSectionsWire,
+  SignalSelectionWire,
+  SignalSnapshotRecord,
+} from "./types";
+import { sectionHeaderOf, signalOf } from "./types";
 import { TraceControls } from "./TraceControls";
 import { TraceHeader, contentWidthStyle } from "./traceTable";
 import { useTrace } from "./trace";
@@ -39,6 +45,8 @@ import {
   type DraggableSignalRef,
 } from "./dragSignals";
 import { anchorFromScroll, maxScrollTop, ROW_HEIGHT } from "./traceViewport";
+import { useDismissableMenu } from "./useDismissableMenu";
+import { toggleInSet } from "./toggleSet";
 import { diagCount } from "./diag"; // DIAG
 
 /// The element id from a panel's params, or a fresh one if absent.
@@ -72,6 +80,46 @@ function selectionFromParams(raw: unknown): { keys: SelectedKey[]; patterns: str
 const keyOf = (k: { busId: string | null; messageId: number; extended: boolean; signalName: string }) =>
   signalKey(k.busId, k.messageId, k.extended, k.signalName);
 
+/// The view's user-authored sections: names in creation order, plus the
+/// canonical-identity → name assignment map. Project data — persisted on
+/// the element with the selection, because it describes what the view
+/// *means*. The fold set is deliberately not here: which sections happen
+/// to be shut is workspace state and rides the dockview params alone.
+interface SectionState {
+  names: string[];
+  assignments: Record<string, string>;
+}
+
+/// The label the implicit unassigned section wears. Its wire name is the
+/// empty string, so it can never collide with a name the user typed.
+const UNSECTIONED = "Unsectioned";
+
+/// Parse the persisted sections from config, tolerating whatever an
+/// older or hand-edited blob carries — nothing upstream validates it.
+function sectionsFromConfig(raw: unknown): SectionState {
+  const o = raw as { names?: unknown; assignments?: unknown } | undefined;
+  const names: string[] = [];
+  if (Array.isArray(o?.names)) {
+    for (const n of o.names) {
+      if (typeof n === "string" && n !== "" && !names.includes(n)) names.push(n);
+    }
+  }
+  const assignments: Record<string, string> = {};
+  if (o?.assignments != null && typeof o.assignments === "object") {
+    for (const [k, v] of Object.entries(o.assignments as Record<string, unknown>)) {
+      if (typeof v === "string" && v !== "") assignments[k] = v;
+    }
+  }
+  return { names, assignments };
+}
+
+/// Read the persisted fold set from the panel params (item 5's idiom):
+/// sparse, so a panel nobody folded persists nothing.
+function foldedFromParams(raw: unknown): Set<string> {
+  if (!Array.isArray(raw)) return new Set();
+  return new Set(raw.filter((v): v is string => typeof v === "string"));
+}
+
 /**
  * The signal view panel: the by-id view's per-signal analog. One row
  * per *selected* signal (manual picks + regex patterns over the
@@ -96,7 +144,13 @@ export function SignalsPanel(props: IDockviewPanelProps) {
   );
 
   const params = props.params as
-    | { elementId?: unknown; selection?: unknown; columns?: unknown }
+    | {
+        elementId?: unknown;
+        selection?: unknown;
+        columns?: unknown;
+        sections?: unknown;
+        folded?: unknown;
+      }
     | undefined;
   const [elementId] = useState(() => elementIdFromParams(params));
   useEffect(() => {
@@ -136,13 +190,72 @@ export function SignalsPanel(props: IDockviewPanelProps) {
     [],
   );
 
+  // The view's sections and which of them are shut. The sections are
+  // project data and travel with the element; the fold set is workspace
+  // state and rides the dockview params only — the same split items 5
+  // and 15 made, with the two halves landing in different scopes here
+  // because they are different kinds of fact.
+  const [sections, setSections] = useState<SectionState>(() =>
+    sectionsFromConfig(savedConfig?.sections),
+  );
+  const [folded, setFolded] = useState<Set<string>>(() => foldedFromParams(params?.folded));
+  const toggleFold = useCallback((name: string) => {
+    setFolded((prev) => toggleInSet(prev, name));
+  }, []);
+  /// Create `name` (or reuse it if it already exists) and optionally
+  /// move one signal into it — the row menu's "new section…" is the same
+  /// operation as the toolbar's, with an assignment attached.
+  const createSection = useCallback((raw: string, assign: string | null) => {
+    const name = raw.trim();
+    if (name === "") return;
+    setSections((prev) => ({
+      names: prev.names.includes(name) ? prev.names : [...prev.names, name],
+      assignments: assign == null ? prev.assignments : { ...prev.assignments, [assign]: name },
+    }));
+  }, []);
+  const renameSection = useCallback((from: string, raw: string) => {
+    const to = raw.trim();
+    if (to === "" || to === from) return;
+    setSections((prev) => {
+      if (prev.names.includes(to)) return prev;
+      const assignments: Record<string, string> = {};
+      // Members follow the name: an assignment left pointing at the old
+      // name would read as unassigned and silently empty the section.
+      for (const [k, v] of Object.entries(prev.assignments)) assignments[k] = v === from ? to : v;
+      return { names: prev.names.map((n) => (n === from ? to : n)), assignments };
+    });
+  }, []);
+  /// Delete a section: a `names` edit and nothing else. Its signals fall
+  /// back to unassigned (the host resolves an assignment naming no
+  /// existing section that way) and stay in the selection; the
+  /// assignments stay dormant, so re-creating the name restores the
+  /// membership — the same reasoning as retained plot series ids.
+  const deleteSection = useCallback((name: string) => {
+    setSections((prev) => ({ ...prev, names: prev.names.filter((n) => n !== name) }));
+    setFolded((prev) => {
+      if (!prev.has(name)) return prev;
+      const next = new Set(prev);
+      next.delete(name);
+      return next;
+    });
+  }, []);
+  const assignSignal = useCallback((key: string, name: string | null) => {
+    setSections((prev) => {
+      const assignments = { ...prev.assignments };
+      if (name == null) delete assignments[key];
+      else assignments[key] = name;
+      return { ...prev, assignments };
+    });
+  }, []);
+
   // Dual-write the persistable config (element + dockview params), the
-  // same pattern as the trace/plot panels.
+  // same pattern as the trace/plot panels. `folded` goes to the params
+  // only — it is workspace state, not part of what the view means.
   useEffect(() => {
-    const config = { selection, columns };
+    const config = { selection, columns, sections };
     update(elementId, { config });
-    api.updateParameters({ elementId, ...config });
-  }, [api, update, elementId, selection, columns]);
+    api.updateParameters({ elementId, ...config, folded: [...folded] });
+  }, [api, update, elementId, selection, columns, sections, folded]);
 
   // Sources wiring (sink node): bounds the catalog, the patterns, and
   // the rows to the buses this view consumes.
@@ -246,6 +359,13 @@ export function SignalsPanel(props: IDockviewPanelProps) {
     }),
     [selection],
   );
+  // The wire sections: the host orders the rows, emits the header rows
+  // and counts fold-aware, so the panel states the structure and holds
+  // only the page it gets back.
+  const wireSections = useMemo<SignalSectionsWire>(
+    () => ({ names: sections.names, assignments: sections.assignments, folded: [...folded] }),
+    [sections, folded],
+  );
   const busNames = useMemo<[string, string][]>(() => buses.map((b) => [b.id, b.name]), [buses]);
   const projectBusIds = useMemo(() => buses.map((b) => b.id), [buses]);
 
@@ -254,6 +374,7 @@ export function SignalsPanel(props: IDockviewPanelProps) {
     trace.offset,
     trace.offset + trace.frameCount,
     wireSelection,
+    wireSections,
     sort,
     busNames,
     projectBusIds,
@@ -316,6 +437,22 @@ export function SignalsPanel(props: IDockviewPanelProps) {
 
   const [editOpen, setEditOpen] = useState(false);
 
+  // Section editing surfaces. `creating` holds the signal the new
+  // section should swallow (`null` = the toolbar's unattached create);
+  // `renaming` is the section whose header is in edit mode; the move
+  // menu is positioned at the panel root like the sources menu, because
+  // a popup inside a row would be clipped by the sticky viewport.
+  const [creating, setCreating] = useState<{ assign: string | null } | null>(null);
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [sectionMenu, setSectionMenu] = useState<{ x: number; y: number; key: string; signalName: string } | null>(
+    null,
+  );
+  const openSectionMenu = useCallback((e: React.MouseEvent, key: string, signalName: string) => {
+    e.stopPropagation();
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    setSectionMenu({ x: r.left, y: r.bottom, key, signalName });
+  }, []);
+
   // --- virtualized rows (fixed height, no expansion) ---
   // The scaffold is the shared one (`useTraceViewport`): container
   // measurement, the render window, the spacer and — the part that
@@ -368,6 +505,23 @@ export function SignalsPanel(props: IDockviewPanelProps) {
 
   return (
     <div className="trace-panel signals-panel" onContextMenu={handleContextMenu} onDragOver={onDragOver} onDrop={onDrop}>
+      {sectionMenu && (
+        <MoveToSectionMenu
+          position={sectionMenu}
+          signalName={sectionMenu.signalName}
+          names={sections.names}
+          current={sections.assignments[sectionMenu.key] ?? null}
+          onMove={(name) => {
+            assignSignal(sectionMenu.key, name);
+            setSectionMenu(null);
+          }}
+          onNewSection={() => {
+            setCreating({ assign: sectionMenu.key });
+            setSectionMenu(null);
+          }}
+          onClose={() => setSectionMenu(null)}
+        />
+      )}
       {sourcesMenu && (
         <SourcesContextMenu
           position={sourcesMenu}
@@ -404,6 +558,26 @@ export function SignalsPanel(props: IDockviewPanelProps) {
           selection ({selection.keys.length}
           {selection.patterns.length > 0 ? ` + ${selection.patterns.length} patterns` : ""})
         </button>
+        {creating ? (
+          <SectionNameInput
+            ariaLabel="new section name"
+            initial=""
+            onCommit={(name) => {
+              createSection(name, creating.assign);
+              setCreating(null);
+            }}
+            onCancel={() => setCreating(null)}
+          />
+        ) : (
+          <button
+            type="button"
+            aria-label="add section"
+            title="group this view's signals under a named section"
+            onClick={() => setCreating({ assign: null })}
+          >
+            + section
+          </button>
+        )}
         {view.error && (
           <span className="signals-error" role="alert" title={view.error}>
             {view.error}
@@ -462,25 +636,212 @@ export function SignalsPanel(props: IDockviewPanelProps) {
             style={{ height: spacerHeight, position: "relative", ...contentWidthVar }}
           >
             <div style={{ position: "sticky", top: 0, height: viewportHeight, overflow: "hidden" }}>
-              {positions.map((abs, i) => (
-                <SignalRow
-                  key={abs}
-                  top={i * ROW_HEIGHT}
-                  row={view.getRow(abs)}
-                  columns={visible}
-                  gridTemplate={gridTemplate}
-                  baseTimestamp={trace.baseTimestampSeconds}
-                  busLookup={lookup}
-                  resolveColor={resolveColor}
-                  manual={manualKeys}
-                  signalColors={signalColors}
-                  onSetSignalColor={project.onSetSignalColor}
-                />
-              ))}
+              {positions.map((abs, i) => {
+                const pageRow = view.getRow(abs);
+                const header = sectionHeaderOf(pageRow);
+                if (header) {
+                  return (
+                    <SectionHeaderRow
+                      key={abs}
+                      top={i * ROW_HEIGHT}
+                      header={header}
+                      folded={folded.has(header.name)}
+                      renaming={renaming === header.name}
+                      onToggleFold={() => toggleFold(header.name)}
+                      onStartRename={() => setRenaming(header.name)}
+                      onRename={(next) => {
+                        renameSection(header.name, next);
+                        setRenaming(null);
+                      }}
+                      onCancelRename={() => setRenaming(null)}
+                      onDelete={() => deleteSection(header.name)}
+                    />
+                  );
+                }
+                return (
+                  <SignalRow
+                    key={abs}
+                    top={i * ROW_HEIGHT}
+                    row={signalOf(pageRow)}
+                    columns={visible}
+                    gridTemplate={gridTemplate}
+                    baseTimestamp={trace.baseTimestampSeconds}
+                    busLookup={lookup}
+                    resolveColor={resolveColor}
+                    manual={manualKeys}
+                    signalColors={signalColors}
+                    onSetSignalColor={project.onSetSignalColor}
+                    onOpenSectionMenu={openSectionMenu}
+                  />
+                );
+              })}
             </div>
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/// A section name field. Enter commits, Escape reverts and exits, blur
+/// commits, an empty box reverts — the repo's one inline-edit semantic
+/// (`EventRow`, the project panel's rename).
+function SectionNameInput({
+  ariaLabel,
+  initial,
+  onCommit,
+  onCancel,
+}: {
+  ariaLabel: string;
+  initial: string;
+  onCommit: (name: string) => void;
+  onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState(initial);
+  const commit = () => {
+    if (draft.trim() === "") onCancel();
+    else onCommit(draft);
+  };
+  return (
+    <input
+      className="signals-section-name-input"
+      aria-label={ariaLabel}
+      autoFocus
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") commit();
+        else if (e.key === "Escape") onCancel();
+      }}
+      onBlur={commit}
+    />
+  );
+}
+
+/// One section header, occupying a row slot of its own in the paged row
+/// space. The disclosure is item 5's idiom: a `<button aria-expanded>`
+/// with an `aria-hidden` glyph swap. The implicit unassigned section
+/// (empty name) can be folded but not renamed or deleted — it is not a
+/// thing the user made.
+function SectionHeaderRow({
+  top,
+  header,
+  folded,
+  renaming,
+  onToggleFold,
+  onStartRename,
+  onRename,
+  onCancelRename,
+  onDelete,
+}: {
+  top: number;
+  header: SignalSectionHeaderRecord;
+  folded: boolean;
+  renaming: boolean;
+  onToggleFold: () => void;
+  onStartRename: () => void;
+  onRename: (next: string) => void;
+  onCancelRename: () => void;
+  onDelete: () => void;
+}) {
+  const label = header.name === "" ? UNSECTIONED : header.name;
+  return (
+    <div
+      className="trace-row signals-section-header"
+      style={{ position: "absolute", top, left: 0, right: 0, height: ROW_HEIGHT }}
+    >
+      <button
+        type="button"
+        className="trace-disclosure"
+        aria-expanded={!folded}
+        aria-label={`${label} section`}
+        onClick={onToggleFold}
+      >
+        <span className="hint" aria-hidden="true">
+          {folded ? "▸" : "▾"}
+        </span>
+      </button>
+      {renaming ? (
+        <SectionNameInput
+          ariaLabel="section name"
+          initial={header.name}
+          onCommit={onRename}
+          onCancel={onCancelRename}
+        />
+      ) : (
+        <span className="signals-section-label">{label}</span>
+      )}
+      <span className="hint">({header.signal_count})</span>
+      {header.name !== "" && !renaming && (
+        <>
+          <button type="button" aria-label={`rename section ${header.name}`} onClick={onStartRename}>
+            ✎
+          </button>
+          <button
+            type="button"
+            aria-label={`delete section ${header.name}`}
+            title="delete this section; its signals stay in the view, unsectioned"
+            onClick={onDelete}
+          >
+            ×
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+/// The per-row move-to-section menu: the existing sections, the way back
+/// out to unsectioned, and "new section…". Positioned at the panel root
+/// (`position: fixed`) because the rows live in a clipping viewport.
+function MoveToSectionMenu({
+  position,
+  signalName,
+  names,
+  current,
+  onMove,
+  onNewSection,
+  onClose,
+}: {
+  position: { x: number; y: number };
+  signalName: string;
+  names: readonly string[];
+  current: string | null;
+  onMove: (name: string | null) => void;
+  onNewSection: () => void;
+  onClose: () => void;
+}) {
+  const menuRef = useDismissableMenu<HTMLDivElement>(true, onClose);
+  return (
+    <div
+      ref={menuRef}
+      className="signals-section-menu"
+      style={{ left: position.x, top: position.y }}
+      role="menu"
+      aria-label={`section for ${signalName}`}
+    >
+      <button
+        type="button"
+        className={current == null ? "active" : undefined}
+        aria-label={`move to ${UNSECTIONED}`}
+        onClick={() => onMove(null)}
+      >
+        {UNSECTIONED}
+      </button>
+      {names.map((n) => (
+        <button
+          key={n}
+          type="button"
+          className={current === n ? "active" : undefined}
+          aria-label={`move to ${n}`}
+          onClick={() => onMove(n)}
+        >
+          {n}
+        </button>
+      ))}
+      <button type="button" aria-label="new section…" onClick={onNewSection}>
+        new section…
+      </button>
     </div>
   );
 }
@@ -496,6 +857,7 @@ interface SignalRowProps {
   manual: ReadonlySet<string>;
   signalColors: Record<string, string>;
   onSetSignalColor: (key: string, color: string | null) => void;
+  onOpenSectionMenu: (e: React.MouseEvent, key: string, signalName: string) => void;
 }
 
 function SignalRow({
@@ -509,6 +871,7 @@ function SignalRow({
   manual,
   signalColors,
   onSetSignalColor,
+  onOpenSectionMenu,
 }: SignalRowProps) {
   const key = row ? signalKey(row.bus_id, row.message_id, row.extended, row.signal_name) : "";
   const nameColor = row ? signalColors[key] ?? stableSignalColor(key) : undefined;
@@ -552,6 +915,17 @@ function SignalRow({
           >
             {row.signal_name}
             {manual.has(key) ? "" : " ◇"}
+            <button
+              type="button"
+              className="signals-section-pick"
+              aria-label={`move ${row.signal_name} to section`}
+              title="move this signal to a section"
+              onClick={(e) => onOpenSectionMenu(e, key, row.signal_name)}
+            >
+              <span className="hint" aria-hidden="true">
+                ▾
+              </span>
+            </button>
             <input
               ref={colorInputRef}
               type="color"
