@@ -24,6 +24,7 @@ export type SignalColumnKey =
   | "ecu"
   | "msg"
   | "signal"
+  | "section"
   | "rate"
   | "time"
   | "count"
@@ -39,6 +40,12 @@ export const SIGNAL_COLUMN_DEFS: readonly ColumnDef<SignalColumnKey>[] = [
   { key: "ecu", label: "ecu", className: "col-ecu", defaultWidth: 110 },
   { key: "msg", label: "message", className: "col-msg", defaultWidth: 200 },
   { key: "signal", label: "signal", className: "col-signal", defaultWidth: 220 },
+  // The section cell is also the move-to-section control. It gets its
+  // own fixed-width column rather than riding in the signal cell: that
+  // cell is a `draggable` grid item under
+  // `.trace-row span { overflow: hidden }`, which clipped the control
+  // away behind any signal name long enough to fill 220px.
+  { key: "section", label: "section", className: "col-section", defaultWidth: 120 },
   { key: "value", label: "value", className: "col-value", defaultWidth: 260, flex: true },
   { key: "unit", label: "unit", className: "col-unit", defaultWidth: 60 },
 ];

@@ -2005,15 +2005,47 @@ button.trace-event-swatch {
   padding: 0 0.25rem;
   min-width: 8rem;
 }
+/* The section cell is the move control. Full-width inside its own
+   column so the whole cell is the hit target — the first cut hid a
+   glyph-sized button at the end of the signal cell, where the name
+   pushed it past an `overflow: hidden` edge. */
+.col-section {
+  color: #94a3b8;
+}
 .signals-section-pick {
+  display: block;
+  width: 100%;
   background: none;
   border: 0;
-  color: #64748b;
+  border-radius: 3px;
+  color: inherit;
   cursor: pointer;
-  padding: 0 0.15rem;
+  font: inherit;
+  overflow: hidden;
+  padding: 0 0.2rem;
+  text-align: left;
+  text-overflow: ellipsis;
 }
 .signals-section-pick:hover {
+  background: #1c2530;
   color: #e2e8f0;
+}
+/* A section's own pattern list, anchored at the panel root like the
+   move menu. */
+.signals-section-patterns {
+  position: fixed;
+  z-index: 200;
+  min-width: 22rem;
+  background: #0d1114;
+  border: 1px solid #2c3444;
+  border-radius: 4px;
+  padding: 0.4rem 0.5rem;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+.signals-section-patterns-title {
+  color: #94a3b8;
+  font-size: 0.72rem;
+  margin-bottom: 0.3rem;
 }
 /* Positioned at the panel root, like `.sources-context-menu`: the rows
    live in a clipping viewport, so a popup inside one is unreachable. */

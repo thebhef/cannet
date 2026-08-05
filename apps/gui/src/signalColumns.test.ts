@@ -44,6 +44,7 @@ describe("defaultSignalColumns", () => {
       "ecu",
       "msg",
       "signal",
+      "section",
       "value",
       "unit",
     ]);
