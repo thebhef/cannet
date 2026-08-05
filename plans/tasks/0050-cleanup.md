@@ -227,6 +227,11 @@ components.
 
 ## 6. Rename should rename in place
 
+**Superseded in part by item 13**, which moved the command onto the
+palette's second stage: the tab edit below is now triggered by
+double-clicking the tab and `RenameTabContext` is gone. Everything the
+record says about *where the name lives* still holds.
+
 **Fixed.** `panel.rename` no longer maps to `showProjectPanel`; it
 records the focused panel's dockview id as the rename target, and that
 panel's own tab renders an input in place of its title.
