@@ -211,9 +211,16 @@ import {
   GUTTER_HYSTERESIS_PX,
   createGutterCoordinator,
   deriveAxesForArea,
+  retainedAxisIds,
   type GutterCoordinator,
   type YAxisMode,
 } from "./plotAxisDerivation";
+import {
+  axisScalesFromRaw,
+  pruneAxisScales,
+  setAxisScale,
+  type AxisScales,
+} from "./plotAxisScale";
 import { messageEcuLookup } from "./plotSignalLabel";
 import { useValueTables } from "./useValueTables";
 import {
@@ -277,6 +284,13 @@ export function PlotPanel(props: IDockviewPanelProps) {
    * resolved (defaults filled) at render (ADR 0026). */
   const [axisWeights, setAxisWeights] = useState<AxisWeights>(() =>
     axisWeightsFromRaw(savedConfig?.axisWeights),
+  );
+  /** Per-derived-axis manual y range + log flag (ADR 0026), keyed by
+   * axis id. Persisted sparsely — an entry only where the user
+   * overrode a default — and retired when the signals that give an
+   * axis its identity leave the plot (`retainedAxisIds`). */
+  const [axisScales, setAxisScales] = useState<AxisScales>(() =>
+    axisScalesFromRaw(savedConfig?.axisScales),
   );
   const [focusedAreaId, setFocusedAreaId] = useState<string>(() => areas[0]?.id ?? "");
   const { catalog, refresh: refreshCatalog } = useSignalCatalog();
@@ -662,6 +676,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
       signalsWidthPx: signalsWidth,
       showPoints,
       axisWeights,
+      axisScales,
     });
   }, [
     persist,
@@ -676,6 +691,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     signalsWidth,
     showPoints,
     axisWeights,
+    axisScales,
   ]);
 
   // --- area ops ---
@@ -1218,6 +1234,21 @@ export function PlotPanel(props: IDockviewPanelProps) {
     setAxisWeights((prev) => pruneAxisWeights(prev, derivedAxisIds));
   }, [derivedAxisIds]);
 
+  // Manual y ranges retire on a different rule from the weights: they
+  // are pruned to every id the areas' signals *could* mint in any
+  // y-axis mode, not to the ids currently derived. A weight describes
+  // the layout the user is looking at, so a mode change resetting it is
+  // right; a manual range is what the user asked of an axis, and the
+  // ids regenerate identically, so switching to `individual` and back
+  // must restore it (`retainedAxisIds`, ADR 0026).
+  const retainedScaleIds = useMemo(
+    () => effectiveAreas.flatMap((a) => retainedAxisIds(a.id, a.signals)),
+    [effectiveAreas],
+  );
+  useEffect(() => {
+    setAxisScales((prev) => pruneAxisScales(prev, retainedScaleIds));
+  }, [retainedScaleIds]);
+
   /// Bus-rename invalidation (ADR 0020). Track the previous match
   /// count for each filter-mode area; when a buses-list change drops
   /// any area's count from non-zero to zero, emit a System Messages
@@ -1307,6 +1338,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
         onSetSignalColor: (ref, color) => setSignalColor(parent.id, ref, color),
         onSetPatterns: (ps) => setAreaPatterns(parent.id, ps),
         onMaterializePatterns: () => materializePatterns(parent.id, parent.signals),
+        onSetYScale: (patch) => setAxisScales((prev) => setAxisScale(prev, axisId, patch)),
       });
     }
     return m;
@@ -1628,6 +1660,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
                 flexGrow={d.collapsed ? 0 : resolvedAxisWeights[d.area.id]}
                 collapsed={d.collapsed}
                 enumLanes={d.enumLanes}
+                yScale={axisScales[d.area.id]}
               label={
                 d.subtitle == null
                   ? areaLabels.get(parent.id) ?? "Area"

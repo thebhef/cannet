@@ -17,6 +17,7 @@ import { signalKey } from "./plotData";
 import { SIGNAL_WHEEL } from "./palette";
 import { DEFAULT_MEASUREMENTS, type MeasurementKey, type Series, isMeasurementKey } from "./plotCursors";
 import type { YAxisMode } from "./plotAxisDerivation";
+import type { AxisScalePatch } from "./plotAxisScale";
 import type { SignalDescriptorRecord } from "./types";
 import { parseSignalDragData } from "./dragSignals";
 
@@ -158,6 +159,10 @@ export interface AxisHandlers {
   onSetSignalColor: (ref: SignalRef, color: string) => void;
   onSetPatterns: (patterns: string[] | undefined) => void;
   onMaterializePatterns: () => void;
+  /** Set / clear this axis's manual y bounds or log flag. A `null`
+   * bound clears it (back to automatic); an absent key leaves it
+   * alone. The panel owns the sparse store (ADR 0026). */
+  onSetYScale: (patch: AxisScalePatch) => void;
 }
 
 /** The shared current x-window + a suppress flag so a programmatic

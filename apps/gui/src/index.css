@@ -1660,6 +1660,28 @@ button.trace-event-swatch {
   }
 }
 
+/* A standing note over the canvas column — today, that a log axis has
+   no positive values to draw for some series. Same overlay geometry as
+   `.plot-area-building` (the side panel keeps its width, set inline) so
+   nothing reflows when it clears, but stationary: it reports a state
+   rather than progress. */
+.plot-area-note {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 0.6rem;
+  text-align: center;
+  pointer-events: none;
+  z-index: 4;
+  font-size: 0.72rem;
+  font-style: italic;
+  color: #64748b;
+}
+
 .plot-area-canvas {
   flex: 1 1 auto;
   min-width: 0;
