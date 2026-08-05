@@ -107,9 +107,11 @@ export function useTraceViewport(
 
   const rows = visibleRowCount(viewportHeight);
   const spacerHeight = scaledHeight(count, viewportHeight, variable?.extraHeight ?? 0);
-  // With variable heights the bound is the row that puts the *last* row
-  // fully in the viewport; `maxAnchorRow`'s two-row pad would leave the
-  // tail stacked below the fold with no scroll position that reaches it.
+  // The bound is the row that puts the *last* row fully in the
+  // viewport, either way — `maxAnchorRow` is the same walk over plain
+  // rows. The two must agree, or a view's tail is unreachable in
+  // exactly the two-row way `visibleRowCount`'s render pad used to make
+  // it (`maxAnchorRow`).
   const anchorMax = variable
     ? tailAnchorRow(count, viewportHeight, variable.rowHeightAt)
     : maxAnchorRow(count, viewportHeight);
