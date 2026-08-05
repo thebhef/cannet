@@ -7,12 +7,14 @@ import {
   anchorFromScroll,
   buildPlacements,
   expandedExtraHeight,
+  expandedExtraHeightOf,
   expandedRowHeight,
   maxAnchorRow,
   maxScrollTop,
   maxWheelRows,
   rowFromScroll,
   scaledHeight,
+  scrollForAnchor,
   scrollForRow,
   tailAnchorRow,
   visibleRowCount,
@@ -258,5 +260,104 @@ describe("buildPlacements", () => {
     const p = buildPlacements(0, 100, 2, new Set([0]), noSignals);
     expect(p.map((r) => r.top)).toEqual([0, ROW_HEIGHT]);
     expect(p[0].height).toBe(ROW_HEIGHT);
+  });
+});
+
+describe("expandedExtraHeightOf", () => {
+  // The chronological trace's form: its expansion set is keyed by
+  // absolute row index, so the extra height can be summed over the
+  // *set*. `expandedExtraHeight` has to walk `count` because the by-id
+  // table's set is keyed by a stable row key — and `count` here is the
+  // whole capture, which reaches millions.
+  const expanded = new Set([3, 40]);
+  const heights = (i: number) =>
+    i === 3 ? expandedRowHeight(4) : i === 40 ? expandedRowHeight(9) : ROW_HEIGHT;
+
+  it("agrees with the walking form", () => {
+    expect(expandedExtraHeightOf(expanded, 100, heights)).toBe(
+      expandedExtraHeight(100, heights),
+    );
+    expect(expandedExtraHeightOf(expanded, 100, heights)).toBe(13 * SIGNAL_LINE_HEIGHT);
+  });
+
+  it("costs the expanded set, not the trace", () => {
+    let asked = 0;
+    const counted = (i: number) => {
+      asked++;
+      return heights(i);
+    };
+    expandedExtraHeightOf(expanded, 5_000_000, counted);
+    expect(asked).toBe(expanded.size);
+  });
+
+  it("ignores indices past the end of a trace that shrank", () => {
+    expect(expandedExtraHeightOf(new Set([3, 999]), 100, heights)).toBe(
+      4 * SIGNAL_LINE_HEIGHT,
+    );
+    expect(expandedExtraHeightOf(new Set(), 100, heights)).toBe(0);
+  });
+});
+
+describe("anchorFromScroll / scrollForAnchor", () => {
+  // The two directions of the mapping, given the same bound and range.
+  // A view that derives one direction from expanded heights and the
+  // other from plain ones sends the bottom of the scrollbar to a row
+  // short of the end — which is how the chronological trace's expanded
+  // tail became unreachable.
+  it("round-trips through any bound and range", () => {
+    for (const [anchorMax, range] of [
+      [40, 800],
+      [985, 22_108],
+      [700_000, 16_000_000],
+    ]) {
+      for (const row of [0, 1, Math.floor(anchorMax / 3), anchorMax - 1, anchorMax]) {
+        expect(anchorFromScroll(scrollForAnchor(row, anchorMax, range), anchorMax, range)).toBe(
+          row,
+        );
+      }
+    }
+  });
+
+  it("puts the last anchor at exactly the end of the range", () => {
+    expect(scrollForAnchor(40, 40, 800)).toBe(800);
+    expect(scrollForAnchor(0, 40, 800)).toBe(0);
+  });
+
+  it("clamps an out-of-range row, and pins to 0 with nowhere to go", () => {
+    expect(scrollForAnchor(99, 40, 800)).toBe(800);
+    expect(scrollForAnchor(-5, 40, 800)).toBe(0);
+    expect(scrollForAnchor(7, 0, 800)).toBe(0);
+  });
+});
+
+describe("the tail bound over expanded rows", () => {
+  // The invariant the chronological view was breaking: whatever the
+  // bound is, the rows stacked from it must fit in the viewport, or the
+  // ones past the fold are unreachable — the sticky viewport clips and
+  // the scrollbar is already at its end.
+  const tailExpanded = (i: number) => (i >= 97 ? expandedRowHeight(2) : ROW_HEIGHT);
+  const stackFrom = (anchor: number, count: number, h: (i: number) => number) => {
+    let used = 0;
+    for (let i = anchor; i < count; i++) used += h(i);
+    return used;
+  };
+
+  it("fits the stack in the viewport when the tail rows are expanded", () => {
+    const anchor = tailAnchorRow(100, VH, tailExpanded);
+    expect(stackFrom(anchor, 100, tailExpanded)).toBeLessThanOrEqual(VH);
+  });
+
+  it("the plain-row bound does not — which is what the view was using", () => {
+    // 3 rows of `expandedRowHeight(2)` over a 660 px viewport: the
+    // plain bound leaves 3 * (58 - 22) = 108 px past the fold.
+    expect(stackFrom(maxAnchorRow(100, VH), 100, tailExpanded)).toBe(VH + 108);
+  });
+
+  it("carries the same extra height into the scroll range", () => {
+    // …and the range has to grow by it too, or there is no scroll
+    // position past the one the user is already on.
+    const extra = expandedExtraHeightOf(new Set([97, 98, 99]), 100, tailExpanded);
+    expect(extra).toBe(108);
+    expect(maxScrollTop(100, VH, extra) - maxScrollTop(100, VH)).toBe(108);
   });
 });

@@ -218,3 +218,189 @@ describe("TraceView horizontal extent", () => {
     );
   });
 });
+
+describe("TraceView expanded tail reachability", () => {
+  // The reopened defect. Reviewing a captured trace: scroll to the
+  // bottom, expand the tail messages to see their signals — the signal
+  // lines flow out of the bottom of the panel and the view will not
+  // scroll further.
+  //
+  // The chronological view sizes and stacks its expanded rows
+  // (`buildPlacements` takes the expanded set) but never fed those
+  // heights to the *scaffold*: `useTraceViewport` was called without
+  // its `variable` argument, so the anchor bound and the scroll spacer
+  // were both computed as if every row were `ROW_HEIGHT`.
+  //
+  // jsdom does no layout, so the viewport height is stubbed and the
+  // assertions are on the geometry the view *writes*: the rows' own
+  // `top`/`height`, and the spacer's height. The sticky viewport clips
+  // at `viewportHeight`, so a row stacked past it is rendered and
+  // invisible. Chromium confirms the same stack against the real
+  // stylesheet.
+  const VH = 440; // exactly 20 plain rows
+  const SIGNALS = 2; // expandedRowHeight(2) === 58
+  let restore: (() => void) | null = null;
+
+  beforeEach(() => {
+    const prev = Object.getOwnPropertyDescriptor(Element.prototype, "clientHeight");
+    Object.defineProperty(Element.prototype, "clientHeight", {
+      configurable: true,
+      get: () => VH,
+    });
+    restore = () => Object.defineProperty(Element.prototype, "clientHeight", prev!);
+  });
+  afterEach(() => restore?.());
+
+  const frame = (i: number, signals = SIGNALS) => ({
+    row: "frame" as const,
+    frame: {
+      index: i,
+      timestamp_seconds: i / 1000,
+      channel: 0,
+      id: 0x100,
+      extended: false,
+      direction: "Rx" as const,
+      kind: { kind: "classic" as const },
+      data: [1, 2],
+      decoded: {
+        name: "GearBox",
+        signals: Array.from({ length: signals }, (_, s) => ({
+          name: `Sig${s}`,
+          value: s,
+          unit: "km/h",
+          label: null,
+        })),
+      },
+      bus_id: "b1",
+    },
+  });
+
+  function decodedView(count: number, signals = SIGNALS) {
+    return (
+      <TraceView
+        count={count}
+        version={0}
+        autoScroll={false}
+        baseTimestampSeconds={0}
+        columns={defaultColumns()}
+        onColumnResize={noop}
+        onColumnToggle={noop}
+        onColumnReorder={noop}
+        resolveColor={null}
+        busLookup={new Map([["b1", "Chassis"]])}
+        getRow={(i) => frame(i, signals)}
+        ensureVisible={noop}
+        onAutoScrollDisabled={noop}
+      />
+    );
+  }
+
+  /// The rendered rows as `{ abs, top, bottom }`, in stacking order.
+  function stack(container: HTMLElement) {
+    return [...container.querySelectorAll<HTMLElement>(".trace-row")].map((el) => {
+      const top = Number.parseFloat(el.style.top);
+      return {
+        abs: Number(el.querySelector(".col-idx")?.textContent?.replace(/\D/g, "")) - 1,
+        top,
+        bottom: top + Number.parseFloat(el.style.height),
+      };
+    });
+  }
+
+  const spacerHeight = (container: HTMLElement) =>
+    Number.parseFloat((container.querySelector(".trace-scroll-content") as HTMLElement).style.height);
+
+  /// A scroll container that clamps like a real one: `scrollTop` cannot
+  /// exceed `scrollHeight - clientHeight`, and `scrollHeight` follows
+  /// the spacer the view writes. Without the clamp the view's own re-pin
+  /// effect sees an impossible scrollTop, treats the next scroll event
+  /// as its own correction and swallows it — an artefact of the fake,
+  /// not of the app.
+  function installScrollModel(rowsEl: HTMLElement, container: HTMLElement) {
+    let pos = 0;
+    Object.defineProperty(rowsEl, "scrollHeight", {
+      configurable: true,
+      get: () => spacerHeight(container),
+    });
+    Object.defineProperty(rowsEl, "scrollTop", {
+      configurable: true,
+      get: () => pos,
+      set: (next: number) => {
+        pos = Math.min(Math.max(0, next), Math.max(0, spacerHeight(container) - VH));
+      },
+    });
+  }
+
+  function scrollToBottom(rowsEl: HTMLElement) {
+    rowsEl.scrollTop = Number.MAX_SAFE_INTEGER; // drag the thumb all the way down
+    fireEvent.scroll(rowsEl);
+  }
+
+  it("reaches the last row when the tail rows are expanded", () => {
+    const count = 1_000;
+    const { container } = render(decodedView(count));
+    const rowsEl = container.querySelector(".trace-rows") as HTMLElement;
+    installScrollModel(rowsEl, container);
+
+    scrollToBottom(rowsEl);
+    // Expand the three rows at the very end of the trace, the way the
+    // repro does — the tail is what the user is looking at.
+    const shown = stack(container);
+    for (const target of [count - 3, count - 2, count - 1]) {
+      const row = [...container.querySelectorAll<HTMLElement>(".trace-row")].find(
+        (el) => Number(el.querySelector(".col-idx")?.textContent?.replace(/\D/g, "")) - 1 === target,
+      );
+      expect(row, `row ${target} was rendered before expanding`).toBeTruthy();
+      fireEvent.click(row!);
+    }
+    expect(shown.length).toBeGreaterThan(0);
+    scrollToBottom(rowsEl); // and drag back down, now that it is taller
+
+    const after = stack(container);
+    const last = after[after.length - 1];
+    expect(last.abs).toBe(count - 1);
+    expect(last.bottom).toBeLessThanOrEqual(VH);
+  });
+
+  it("grows the scroll range by what the expanded rows add", () => {
+    // The other half of "will not scroll further": the spacer is the
+    // scrollbar's extent, so if it does not grow there is no scroll
+    // position past the one the user is already on.
+    const count = 1_000;
+    const { container } = render(decodedView(count));
+    const rowsEl = container.querySelector(".trace-rows") as HTMLElement;
+    installScrollModel(rowsEl, container);
+    scrollToBottom(rowsEl);
+    const before = spacerHeight(container);
+
+    const row = container.querySelectorAll<HTMLElement>(".trace-row")[0];
+    fireEvent.click(row);
+
+    const extra = SIGNALS * 18; // one SIGNAL_LINE_HEIGHT per signal
+    expect(spacerHeight(container) - before).toBe(extra);
+  });
+
+  it("slides a row taller than the panel into view instead of cutting it off", () => {
+    // A message with more signals than the panel is tall (30 lines =
+    // 562 px against a 440 px panel). The anchor stops *on* that row
+    // rather than past it, so the sticky viewport — which clips —
+    // has to grow to the stack instead of holding at the panel height,
+    // or the bottom of the row is unreachable at every scroll position.
+    // Same rule as `ByIdTable`.
+    const count = 50;
+    const { container } = render(decodedView(count, 30));
+    const rowsEl = container.querySelector(".trace-rows") as HTMLElement;
+    installScrollModel(rowsEl, container);
+    scrollToBottom(rowsEl);
+    const rows = [...container.querySelectorAll<HTMLElement>(".trace-row")];
+    fireEvent.click(rows[rows.length - 1]!);
+    scrollToBottom(rowsEl);
+
+    const after = stack(container);
+    const last = after[after.length - 1];
+    expect(last.abs).toBe(count - 1);
+    expect(last.bottom - last.top).toBeGreaterThan(VH); // the row really is taller
+    const sticky = container.querySelector<HTMLElement>(".trace-rows div[style*='sticky']");
+    expect(Number.parseFloat(sticky!.style.height)).toBeGreaterThanOrEqual(last.bottom);
+  });
+});
