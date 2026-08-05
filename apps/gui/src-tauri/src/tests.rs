@@ -2191,3 +2191,27 @@ fn calc_spec_serde_matches_the_adr_shapes() {
     let spec: ipc::CalcFieldsSpec = serde_json::from_str(mixed).unwrap();
     assert!(spec.to_config().is_err());
 }
+
+/// The window title is set at runtime by the frontend
+/// (`getCurrentWindow().setTitle`), and Tauri's `core:default` grants
+/// only the *getter* (`core:window:allow-title`). Without an explicit
+/// `core:window:allow-set-title` every call is denied at the ACL, the
+/// rejection lands in the frontend rather than anywhere a user looks,
+/// and the static `tauri.conf.json` title silently survives — which is
+/// exactly how a non-functional title bar shipped once already. Pinned
+/// here so the regression cannot be silent a second time.
+#[test]
+fn the_capability_set_grants_set_title() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("capabilities")
+        .join("default.json");
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let granted = json["permissions"]
+        .as_array()
+        .expect("capability file has a `permissions` array");
+    assert!(
+        granted.iter().any(|p| p == "core:window:allow-set-title"),
+        "capabilities/default.json must grant core:window:allow-set-title          (core:default covers only the title getter). Granted: {granted:?}"
+    );
+}

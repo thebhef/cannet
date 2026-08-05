@@ -690,6 +690,79 @@ mounts the real App with `setTitle` spied and asserts the settled title
 carries the mocked host version — and the `•`, since seeding the default
 layout already marks the session dirty. Both failed before the change.
 
+### The title never reached the window — a missing capability
+
+The work above shipped **inert**, and so had the effect it widened: the
+running app still showed the static `tauri.conf.json` title. Every jsdom
+test passed because the mocked `setTitle` enforces no capabilities.
+
+**Root cause.** `getCurrentWindow().setTitle` is ACL-gated on
+`core:window:allow-set-title`, and
+`apps/gui/src-tauri/capabilities/default.json` never granted it.
+Tauri's `core:default` does **not** cover it: the generated
+`core:window` default set (`gen/schemas/acl-manifests.json`) grants
+`allow-title` — the *getter* — and nothing that writes. So every call
+rejected, the `.catch` swallowed it, and the static title survived.
+This predates the title-bar work: the pre-existing
+`<project> — cannet` effect never worked either, which is why nobody
+had noticed that the About panel's claim that "the native title bar
+carries only the project name" was describing something that never
+happened.
+
+**Confirmed by experiment, not inspection.** With the rejection routed
+to the system log (below) and the capability still absent, a real run
+logged Tauri's own message verbatim:
+
+```text
+2026-08-05T16:56:28.369Z ERROR window: window title could not be set:
+window.set_title not allowed. Permissions associated with this command:
+core:window:allow-set-title — the host may be missing the
+core:window:allow-set-title capability
+```
+
+**The fix, in three parts:**
+
+1. `core:window:allow-set-title` added to `capabilities/default.json`.
+2. **The rejection is no longer swallowed.** The effect now reports the
+   first failure per session (a denied `setTitle` fails identically on
+   every later change) to both `console.error` and the host system log
+   via `gui_emit_system_log`, at `error`, source `window` — so it
+   reaches `cannet.log` and the system-messages badge. A permission
+   regression cannot be silent again.
+3. **A regression test pins the capability file.**
+   `the_capability_set_grants_set_title` in
+   `apps/gui/src-tauri/src/tests.rs` parses `capabilities/default.json`
+   and asserts the grant, with the reason in the failure message. It
+   was confirmed to fail with the permission removed and pass with it
+   present.
+
+**Real-window verification.** The user confirmed the fixed title in
+their own `tauri dev` session on 2026-08-05. Independently observed
+from that session's live process before it exited, the Win32
+`MainWindowTitle` read:
+
+```text
+• ev-zonal — cannet 0.6.0-49-gc41f3cc-dirty
+```
+
+recorded through a non-UTF-8 console as `" ev-zonal - cannet
+0.6.0-49-gc41f3cc-dirty"` — the console renders `—` as `-` and drops
+the `•`, so the ASCII rendering is what was literally captured and the
+line above is the same string with its real characters. It shows the
+project segment, the unsaved marker, the omitted capture segment
+(nothing loaded) and the `v`-stripped `git describe` version, all as
+specified.
+
+**A trap worth writing down for the next person who verifies a GUI
+change.** Neither `target/debug/cannet-gui.exe` nor `cargo build
+--release -p cannet-gui` produces a runnable app: both lack the
+`custom-protocol` feature, so the binary points at `devUrl`
+(`localhost:5173`) and comes up with **no frontend at all** — the tells
+are `jsheap_mb=?` and `trace_len=0` on every `health:` tick in
+`cannet.log`, and no `opened project` line. The two ways to get a real
+window are `pnpm --dir apps/gui tauri dev` and `pnpm --dir apps/gui
+tauri build --no-bundle`, and the README documents the latter.
+
 ## 9. Manual y-axis control from a right-click menu on the axis
 
 **Done.** Right-clicking a y axis opens a menu with a **min**, a
