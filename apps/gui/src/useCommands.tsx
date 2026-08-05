@@ -72,6 +72,7 @@ import {
   sortRecentFirst,
 } from "./recentCommands";
 import { createPanelCommandRegistry } from "./panelCommands";
+import type { RenameTabController } from "./RenamableTab";
 
 /// The active dockview panel, tracked by `App`'s `onDidActivePanelChange`
 /// (dockview lifecycle) and read here to route panel-local commands.
@@ -108,6 +109,8 @@ export interface UseCommandsResult {
   keybindings: KeybindingsController;
   /// The panel-local command registry for `PanelCommandsContext`.
   panelCommands: ReturnType<typeof createPanelCommandRegistry>;
+  /// Which tab is in rename mode, for `RenameTabContext`.
+  renameTab: RenameTabController;
   /// The command / go-to-view / go-to-event palette modals.
   palettes: ReactNode;
 }
@@ -193,6 +196,9 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
   );
   // Panel-local command implementations (plot fit / follow-live).
   const [panelCommands] = useState(createPanelCommandRegistry);
+  // The dockview panel whose tab is being renamed in place, if any
+  // (`panel.rename`); the tab component clears it on commit / cancel.
+  const [renameTarget, setRenameTarget] = useState<string | null>(null);
 
   // --- singleton view-show helpers ---
   // Show-or-focus a singleton panel keyed by its fixed id: bring it
@@ -370,9 +376,14 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
     "panel.show.about": showAboutPanel,
     "panel.show.events": showEventsPanel,
     "panel.show.shortcuts": showShortcutsPanel,
-    // Renaming happens in the project panel (the canonical edit
-    // surface — ADR 0019); the command surfaces it.
-    "panel.rename": showProjectPanel,
+    // Rename in place: the focused panel's own tab title becomes
+    // editable (see `RenamableTab`), so the user stays where they are.
+    // The name is still the model-owned one (ADR 0019) — the tab
+    // writes it through the element registry.
+    "panel.rename": () => {
+      const panel = activePanelRef.current;
+      if (panel?.elementId) setRenameTarget(panel.id);
+    },
     "palette.show": () => setOpenPalette("commands"),
     "goto.view": () => setOpenPalette("goto"),
     "goto.event": () => setOpenPalette("gotoEvent"),
@@ -659,5 +670,10 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
     </>
   );
 
-  return { runCommand, keybindings, panelCommands, palettes };
+  const renameTab: RenameTabController = useMemo(
+    () => ({ target: renameTarget, end: () => setRenameTarget(null) }),
+    [renameTarget],
+  );
+
+  return { runCommand, keybindings, panelCommands, renameTab, palettes };
 }

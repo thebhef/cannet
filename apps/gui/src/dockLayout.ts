@@ -93,7 +93,8 @@ export function panelKindForFocus(
     elementKind === "plot" ||
     elementKind === "signals" ||
     elementKind === "transmit" ||
-    elementKind === "rbs"
+    elementKind === "rbs" ||
+    elementKind === "colormap"
   ) {
     return elementKind;
   }

@@ -54,6 +54,18 @@ describe("the shipped command set", () => {
     expect(available(ctx())).not.toContain("plot.followLive.enable");
   });
 
+  it("rename is offered only for panels that carry a model-owned name", () => {
+    const available = (c: CommandContext) =>
+      commandsAvailableIn(COMMANDS, c).map((s) => s.id);
+    for (const kind of ["trace", "plot", "signals", "transmit", "rbs", "colormap"] as const) {
+      expect(available(ctx({ focusedPanelKind: kind }))).toContain("panel.rename");
+    }
+    // Singletons have fixed titles — there's nothing to rename.
+    expect(available(ctx({ focusedPanelKind: "project" }))).not.toContain("panel.rename");
+    expect(available(ctx({ focusedPanelKind: "settings" }))).not.toContain("panel.rename");
+    expect(available(ctx())).not.toContain("panel.rename");
+  });
+
   it("exit-full-screen (Escape) is gated to a maximized view", () => {
     const available = (c: CommandContext) =>
       commandsAvailableIn(COMMANDS, c).map((s) => s.id);

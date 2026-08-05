@@ -147,6 +147,19 @@ header {
   min-height: 0;
 }
 
+/* A tab being renamed in place (`panel.rename`): the title is replaced
+   by an input sized to sit inside the tab it came from. */
+.dock-tab-rename-input {
+  width: 10ch;
+  min-width: 0;
+  padding: 0 2px;
+  font: inherit;
+  color: inherit;
+  background: rgb(0 0 0 / 0.35);
+  border: 1px solid #38bdf8;
+  border-radius: 2px;
+}
+
 /* One trace panel inside the dock layout: a slim per-panel toolbar on
    top, the trace table filling the rest. */
 .trace-panel,

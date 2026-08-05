@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { DockviewDefaultTab, DockviewReact, themeAbyss } from "dockview";
+import { DockviewReact, themeAbyss } from "dockview";
 import type { DockviewApi, DockviewReadyEvent } from "dockview";
 
 import type {
@@ -132,6 +132,7 @@ import {
   type LayoutHistory,
 } from "./viewHistory";
 import { PanelCommandsContext } from "./panelCommands";
+import { RenamableTab, RenameTabContext } from "./RenamableTab";
 import { useCommands } from "./useCommands";
 import {
   beginDiagCapture,
@@ -2427,6 +2428,7 @@ export function App() {
                 <TraceDataProvider value={traceData}>
                   <KeybindingsContext.Provider value={commands.keybindings}>
                   <PanelCommandsContext.Provider value={commands.panelCommands}>
+                    <RenameTabContext.Provider value={commands.renameTab}>
                     {/* dockview drags tabs with the HTML5 drag-and-drop API, which
                         Tauri's OS-level drag-drop handler breaks on WebView2 — hence
                         `dragDropEnabled: false` in tauri.conf.json. The GUI takes
@@ -2436,14 +2438,16 @@ export function App() {
                         tab (same DOM, same class names) adds close on
                         middle-click. The `mousedown` capture listener above
                         keeps the browser's middle-button autoscroll from
-                        eating the press. */}
+                        eating the press. `RenamableTab` wraps that default
+                        with the in-place rename `panel.rename` drives. */}
                     <DockviewReact
                       className="dock-area"
                       theme={themeAbyss}
                       components={DOCK_COMPONENTS}
-                      defaultTabComponent={DockviewDefaultTab}
+                      defaultTabComponent={RenamableTab}
                       onReady={handleDockReady}
                     />
+                    </RenameTabContext.Provider>
                   </PanelCommandsContext.Provider>
                   </KeybindingsContext.Provider>
                 </TraceDataProvider>

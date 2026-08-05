@@ -178,10 +178,47 @@ Task 48 item 5 fixed this panel's scrolling because it was unusable at
 
 ## 6. Rename should rename in place
 
-The `panel.rename` command ("Rename panel…") sends the user to the
-project view to do the rename. It should rename in place — the panel's
-own dock tab title becomes editable where the user already is — and
-leave them where they were.
+**Fixed.** `panel.rename` no longer maps to `showProjectPanel`; it
+records the focused panel's dockview id as the rename target, and that
+panel's own tab renders an input in place of its title.
+
+**Where it lives:** a new `RenamableTab` (`apps/gui/src/RenamableTab.tsx`)
+replaces `DockviewDefaultTab` as the dock's `defaultTabComponent` — it
+renders the untouched default tab unless its panel is the target, so
+middle-click-to-close and every other tab behaviour is unchanged. The
+target is held in `useCommands` and published through
+`RenameTabContext` (same shape as the existing `PanelCommandsContext`
+wiring); the tab clears it on commit or cancel.
+
+**No second rename path.** The edit writes `registry.update(id, { name })`
+— the same mutation the project panel's inline rename performs — and
+`App`'s existing title-lockstep effect carries the new name into the tab
+title, the graph and the go-to-view palette. ADR 0019 already allowed
+this ("other views may add inline-rename affordances later, but the
+project panel is the canonical edit surface"), so no ADR changed.
+
+**Semantics match the one existing inline-edit precedent** (`EventRow`
+in `TraceView.tsx`): Enter commits, Escape reverts the draft and exits,
+blur commits, an empty box reverts rather than clearing the name.
+
+**Command context.** The command was ungated (offered everywhere, doing
+nothing useful anywhere) — the `focusedPanelKind === "project"` predicate
+in `commands.test.ts` is a local fixture in a binding-conflict test, not
+the shipped spec. It is now gated to the panel kinds whose title is a
+model-owned name: trace, plot, signals, transmit, rbs, colormap. That
+required adding `colormap` to `FOCUSED_PANEL_KINDS` and
+`panelKindForFocus` — an element-backed panel that could hold focus but
+reported `null`, so no context-gated command could ever see it. The
+keybinding path is unchanged (the command has no default chord; the
+palette is the entry point).
+
+Tests: `apps/gui/src/App.renameInPlace.dom.test.tsx` runs the command
+through the real palette against the real App and asserts the tab enters
+edit mode inside the still-active group (not the project panel's),
+that Enter writes the name through to the project panel's own input,
+and that Escape leaves it alone; plus a `commands.test.ts` case for the
+context gate. Both DOM tests failed before the change with "tab did not
+enter rename mode".
 
 ## 7. Audit every view for scroll correctness
 
