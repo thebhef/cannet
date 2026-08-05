@@ -2139,7 +2139,7 @@ describe("PlotPanel diagnostic readouts", () => {
   }
 
   it("backs the fetch loop off when a tick's own render work is expensive", async () => {
-    // Task 48 item 12. The resample tail (merge onto the shared time
+    // The resample tail (merge onto the shared time
     // axis, normalise, `setData`, redraw) is synchronous UI-thread work
     // that grows with the series count. Waiting a fixed interval after
     // it lets one heavy area take an unbounded share of the frame — at

@@ -994,12 +994,6 @@ next pass on this surface can address them as one piece.
   that one in its own cache space unasked, and decision 2's symmetry
   would let it remove one there too.
 
-- **`PlotPanel.dom.test.tsx` "slides the shared x window once per
-  frame, not once per area" is flaky.** Failed once and passed on an
-  unchanged re-run during the settings review pass (2026-08-03). It
-  is timing-sensitive around rAF coalescing; nobody has established
-  whether the test or the coalescing is at fault.
-
 - **Colormap wishes.** Three related asks, all "would be nice", none
   urgent, and probably one design rather than three: colormaps that
   apply across a *selection* of signals sharing a type instead of being
@@ -1007,3 +1001,12 @@ next pass on this surface can address them as one piece.
   being the motivating case); and gradient colormaps rather than
   discrete bands. ADR 0029 governs the colormap model, so a design here
   starts there.
+
+- **The window hangs or stops rendering after sitting live — needs a
+  reproduction.** Observed while scrolling up in the by-ID trace panel
+  after the app had been live for a while. **RDP was present**, and a
+  remote-desktop compositor is a plausible participant in a WebView
+  repaint stall, so the first question is whether it reproduces in a
+  local session at all — that single observation decides whether this is
+  our bug. Parked here rather than scheduled because nobody can act on
+  it until someone reproduces it. Carried out of task 48.
