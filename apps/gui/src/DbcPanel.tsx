@@ -930,6 +930,8 @@ export function DbcPanel(props: IDockviewPanelProps) {
       if (keys.length === 0) return;
       void invoke<{ rows: SignalSnapshotRecord[] }>("fetch_signal_page", {
         selection: { keys, patterns: [] },
+        // No sections: this is a keyed value lookup, not a view.
+        sections: null,
         // Live-latest only: scan to the buffer tip (host clamps).
         scanStart: 0,
         scanEnd: Number.MAX_SAFE_INTEGER,

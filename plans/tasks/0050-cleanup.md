@@ -1089,9 +1089,17 @@ action rather than a value edit, so it is left as it is.
 
 ## 15. Collapsible sections in the signals view
 
-**Done, for the by-ID view. The per-signal signals view is a recorded
-blocker** (below) — it needs host-side awareness that is out of this
-item's scope.
+**Done, for the by-ID view — but this item misread the request.** The
+user's intent (clarified 2026-08-05) was **arbitrary named sections in
+the per-signal signal view, as a way to organize signals** — not
+per-message grouping. That feature is now item 16, and the per-message
+blocker recorded at the bottom of this item is moot: nobody asked for
+per-message grouping, so its host-side design is not scheduled.
+
+The by-ID fold work below stands as landed, but **awaits user review in
+the running app before it is accepted** — and if kept, it likely wants
+a way to disable it. Decision pending; nothing further built here until
+the user has seen it.
 
 **The collapse unit: one message's decoded-signal block, folding under
 its ID row in the by-ID trace view** (`ByIdTable` / `TracePanel`).
@@ -1189,6 +1197,110 @@ excludes folded groups' signals. That is a shape change to
 `SignalSnapshotRecord` and a new parameter on the command, i.e. new
 model surface — out of this item's scope and left for the user to
 schedule.
+
+## 16. Named sections in the signal view
+
+**Done.** The signal view takes user-authored named sections: create,
+rename, delete, and a per-row move-to-section menu with a "new
+section…" entry. A signal is in at most one section; everything else
+sits in an implicit unnamed section, and a user who makes no sections
+sees no change at all.
+
+**The arrangement is host-side, because the item 15 blocker analysis
+says it has to be.** `fetch_signal_page` owns selection, sort, count
+and paging; the frontend holds one page. So the query grew a
+`sections` argument and the reply grew a row kind:
+
+```text
+sections: {
+  names:       [String],            // creation order
+  assignments: { <identity>: name },// canonical signal identity → name
+  folded:      [String],            // sparse; "" is the implicit section
+}
+```
+
+```text
+rows: [ { kind: "signal", ...SignalSnapshotRecord }
+      | { kind: "section_header", name, signal_count } ]
+```
+
+`arrange_sections` (`signal_snapshot.rs`) buckets the collected rows,
+sorts each bucket, and emits header-then-rows per section. Everything
+downstream is unchanged: `RowPage::count` is the arranged length, so it
+is already fold-aware, and `start + i` addresses a row exactly as in
+every other paged view (ADR 0025).
+
+The decisions this item owned:
+
+- **A section header is a page row, not a side table.** It occupies one
+  row slot, so the view stays *one uniform row space* and the panel's
+  anchor/spacer arithmetic — the shared scaffold from item 7 — did not
+  change by a line. The alternative (rows plus a section-boundary
+  table) would have put header placement and index→row mapping back in
+  JS, which is the arithmetic CLAUDE.md keeps in the model and which
+  item 15 showed the frontend cannot do from one page.
+- **The implicit section renders first**, and prints no header when it
+  is the only section. First because creating your first section must
+  not reshuffle the list under you: the signals you have not moved stay
+  where they were, and everything that arrives later (a new pick, a new
+  pattern match) appears in a known place at the top rather than after
+  an arbitrary number of sections. A named section always prints its
+  header even when empty — otherwise a section you just made would be
+  invisible and undeletable.
+- **Assignments key on the canonical signal identity**
+  (`signal_identity`, the ADR 0038 stable descriptor key
+  `bus|s|x:id:name`, byte-for-byte the frontend's `signalKey`). That is
+  the identity the selection, the per-signal colours and the plot
+  series already use, so an assignment survives selection edits and DBC
+  renames of ECUs/messages.
+- **Regex selections compose with no special case.** Assignment is by
+  identity and sectioning runs *after* selection resolution, so a
+  pattern-matched row is bucketed like a manual pick and its row
+  carries the same move menu. The host test asserts this directly: its
+  selection is pattern-only and its two assignments are canonical keys.
+- **An assignment whose signal leaves the selection stays dormant.** It
+  is simply never consulted while there is no row for it, and the
+  signal returns to its section if it comes back — item 9's
+  retained-ids reasoning. Nothing prunes assignments, so nothing has to
+  decide when a signal is "gone".
+- **Deleting a section is a `names` edit and nothing else.** The host
+  reads an assignment naming no existing section as unassigned, so its
+  signals fall back to the implicit section and stay in the selection;
+  the assignments stay dormant, which makes re-creating the name an
+  undo. **Renaming does rewrite** the assignments that pointed at the
+  old name — otherwise a rename would silently empty the section.
+- **Sort sorts within a section.** Sectioning subsumes the sort rather
+  than following it: `arrange_sections` sorts each bucket, so there is
+  no pass that could order rows across a boundary.
+- **Section order is creation order**; no reordering UI (it did not
+  fall out cheaply — it needs a drag surface on the header rows).
+
+**Persistence splits across the two scopes on purpose.** The section
+names and assignments are element config — project data, alongside the
+selection, because they say what the view *means*. The fold set rides
+the dockview params **only** (sparse, junk-tolerant, item 5's idiom):
+which sections happen to be shut is workspace state. That is a
+sharper split than items 5 and 15 needed, and it is why the panel's
+dual write is no longer symmetric — `folded` goes to
+`api.updateParameters` and never to `update(elementId, {config})`.
+
+Tests, all failing first. Rust: seven in `signal_snapshot.rs` (the
+identity string matching `signalKey`, the no-sections flat list, order
+with the implicit section first, an empty named section keeping its
+header, a folded section keeping its header and count, sort within
+rather than across sections, and an assignment to a deleted section
+falling back), plus `fetch_signal_page_pages_across_section_headers_
+with_a_fold_aware_count` in `tests.rs` — the paging claim end to end: a
+page straddling a boundary carries the header as an ordinary row, and
+folding drops rows from `count` but not the header. Frontend:
+`SignalsPanel.sections.dom.test.tsx`, eleven cases over no-sections
+rendering unchanged, header rendering, the disclosure fold reaching
+both the params and the query, restore-from-params with junk, the
+scope split (fold in params, sections on the element), toolbar create in
+creation order, the row menu's move both ways, "new section…"
+creating-and-assigning, rename carrying its members, Escape abandoning
+a rename, and delete leaving the selection alone with the assignment
+dormant.
 
 ## Exit criteria
 

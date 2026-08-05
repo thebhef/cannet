@@ -1,7 +1,7 @@
 import { useCallback, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-import type { SignalSelectionWire, SignalSnapshotRecord } from "./types";
+import type { SignalPageRow, SignalSectionsWire, SignalSelectionWire } from "./types";
 import type { SignalSortState } from "./signalColumns";
 import { useWindowedQuery, type WindowPage } from "./useWindowedQuery";
 import { diagCount } from "./diag"; // DIAG
@@ -10,7 +10,7 @@ import { diagCount } from "./diag"; // DIAG
 interface SignalPage {
   count: number;
   start: number;
-  rows: SignalSnapshotRecord[];
+  rows: SignalPageRow[];
 }
 
 /// A paged, host-sorted latest-per-signal snapshot of the trace window,
@@ -19,20 +19,24 @@ interface SignalPage {
 export interface SignalView {
   count: number;
   version: number;
-  getRow: (index: number) => SignalSnapshotRecord | null;
+  getRow: (index: number) => SignalPageRow | null;
   ensureVisible: (start: number, end: number) => void;
   error: string | null;
 }
 
 /// Page the host-side per-signal snapshot of `[winStart, winEnd)` —
 /// `useByIdView`'s per-signal sibling, over the same windowed-source
-/// primitive. Selection, sort, and paging all evaluate host-side
-/// (`fetch_signal_page`); the panel holds only the visible page.
+/// primitive. Selection, sectioning, sort, and paging all evaluate
+/// host-side (`fetch_signal_page`); the panel holds only the visible
+/// page, and a page row is a signal *or* a section header — the header
+/// occupies a row slot, so `count` is the fold-aware extent and the
+/// panel's viewport arithmetic stays one uniform row space.
 export function useSignalView(
   active: boolean,
   winStart: number,
   winEnd: number,
   selection: SignalSelectionWire,
+  sections: SignalSectionsWire,
   sort: SignalSortState,
   busNames: [string, string][],
   projectBuses: string[],
@@ -43,11 +47,11 @@ export function useSignalView(
   const sortDir = sort?.dir ?? null;
   const [error, setError] = useState<string | null>(null);
   const descriptor = active
-    ? `${winStart}:${sortKey ?? ""}:${sortDir ?? ""}:${JSON.stringify(selection)}:${JSON.stringify(sourceBuses)}`
+    ? `${winStart}:${sortKey ?? ""}:${sortDir ?? ""}:${JSON.stringify(selection)}:${JSON.stringify(sections)}:${JSON.stringify(sourceBuses)}`
     : "";
 
   const fetchPage = useCallback(
-    async (offset: number, limit: number): Promise<WindowPage<SignalSnapshotRecord>> => {
+    async (offset: number, limit: number): Promise<WindowPage<SignalPageRow>> => {
       diagCount("invoke.fetch_signal_page"); // DIAG
       // While running, snapshot to the live tip (host clamps and takes
       // its O(keys)/O(groups) fast paths); the window bound only
@@ -57,6 +61,7 @@ export function useSignalView(
       try {
         const res = await invoke<SignalPage>("fetch_signal_page", {
           selection,
+          sections,
           scanStart: winStart,
           scanEnd,
           sortKey,
@@ -76,10 +81,21 @@ export function useSignalView(
         return { total: 0, start: 0, rows: [] };
       }
     },
-    [selection, winStart, winEnd, sortKey, sortDir, busNames, projectBuses, sourceBuses, running],
+    [
+      selection,
+      sections,
+      winStart,
+      winEnd,
+      sortKey,
+      sortDir,
+      busNames,
+      projectBuses,
+      sourceBuses,
+      running,
+    ],
   );
 
-  const { count, version, getRow, ensureVisible } = useWindowedQuery<SignalSnapshotRecord>({
+  const { count, version, getRow, ensureVisible } = useWindowedQuery<SignalPageRow>({
     descriptor,
     fetchPage,
     followLive: running,

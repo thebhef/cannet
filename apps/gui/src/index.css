@@ -1969,6 +1969,83 @@ button.trace-event-swatch {
 .signals-name {
   cursor: grab;
 }
+
+/* User-authored sections. A header is an ordinary row slot in the paged
+   row space (the host emits it), so it is laid out like a trace row but
+   spans the columns instead of gridding into them. */
+.signals-section-header {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding-left: 0.25rem;
+  background: #131a24;
+  border-bottom: 1px solid #2c3444;
+  color: #cbd5e1;
+  font-weight: 600;
+  font-size: 0.75rem;
+}
+.signals-section-header button {
+  background: none;
+  border: 0;
+  color: #94a3b8;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 400;
+  padding: 0 0.15rem;
+}
+.signals-section-header button:hover {
+  color: #e2e8f0;
+}
+.signals-section-name-input {
+  background: #0f141d;
+  color: #e2e8f0;
+  border: 1px solid #2c3444;
+  border-radius: 3px;
+  font: inherit;
+  padding: 0 0.25rem;
+  min-width: 8rem;
+}
+.signals-section-pick {
+  background: none;
+  border: 0;
+  color: #64748b;
+  cursor: pointer;
+  padding: 0 0.15rem;
+}
+.signals-section-pick:hover {
+  color: #e2e8f0;
+}
+/* Positioned at the panel root, like `.sources-context-menu`: the rows
+   live in a clipping viewport, so a popup inside one is unreachable. */
+.signals-section-menu {
+  position: fixed;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  min-width: 9rem;
+  background: #0d1114;
+  border: 1px solid #2c3444;
+  border-radius: 4px;
+  padding: 0.25rem;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+.signals-section-menu button {
+  background: transparent;
+  border: 0;
+  border-radius: 3px;
+  color: #cbd5e1;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.2rem 0.4rem;
+  text-align: left;
+}
+.signals-section-menu button:hover {
+  background: #1c2530;
+}
+.signals-section-menu button.active {
+  color: #7dd3fc;
+}
 .col-value .signal-value-cell {
   border-radius: 3px;
   padding: 0 0.25rem;

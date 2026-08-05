@@ -11,7 +11,9 @@ use std::sync::Arc;
 
 use cannet_dbc::{Database, SignalDescriptor};
 
-use crate::ipc::{SignalSelection, SignalSnapshotRecord};
+use crate::ipc::{
+    SignalPageRow, SignalSectionHeaderRecord, SignalSections, SignalSelection, SignalSnapshotRecord,
+};
 
 /// The bus-expanded descriptor universe: one entry per `(bus,
 /// descriptor)` pair, in descriptor-key order. What
@@ -244,6 +246,111 @@ fn row_cmp(
     }
 }
 
+/// The stable signal identity `bus|s|x:id:name` — the descriptor key
+/// `(bus, message id, extended, signal name)` ADR 0038 keeps as *the*
+/// identity for persistence and equality, rendered as one string.
+///
+/// Byte-for-byte the frontend's `signalKey` (`plotData.ts`), which is
+/// already what the signal view keys its manual picks and its per-signal
+/// colours on — so a section assignment keyed on it survives selection
+/// edits, DBC renames of ECUs/messages, and a pattern-matched signal
+/// becoming a manual pick.
+#[must_use]
+pub fn signal_identity(
+    bus_id: Option<&str>,
+    message_id: u32,
+    extended: bool,
+    signal_name: &str,
+) -> String {
+    format!(
+        "{}|{}:{message_id}:{signal_name}",
+        bus_id.unwrap_or("*"),
+        if extended { "x" } else { "s" },
+    )
+}
+
+/// Arrange the selected rows into the view's user-authored sections and
+/// return the page-row space the panel scrolls: a header row per
+/// section followed by that section's rows, sorted *within* the section.
+///
+/// The implicit unassigned section comes **first** and is unnamed. With
+/// no sections at all it is the whole list and prints no header, so a
+/// user who never made a section sees the flat list unchanged.
+///
+/// A folded section keeps its header (with its full signal count) and
+/// contributes no signal rows, which is what makes the returned length
+/// the fold-aware extent the scrollbar needs.
+pub fn arrange_sections(
+    rows: Vec<SignalSnapshotRecord>,
+    sections: &SignalSections,
+    sort_key: Option<&str>,
+    sort_dir: Option<&str>,
+    bus_names: &HashMap<String, String>,
+) -> Vec<SignalPageRow> {
+    // Bucket 0 is the implicit section; the rest are `names` in creation
+    // order, deduped (a duplicate name is one section, not two headers
+    // fighting over the same assignment).
+    let mut names: Vec<&str> = Vec::with_capacity(sections.names.len() + 1);
+    names.push("");
+    for n in &sections.names {
+        if !n.is_empty() && !names.contains(&n.as_str()) {
+            names.push(n);
+        }
+    }
+    let index: HashMap<&str, usize> = names.iter().enumerate().map(|(i, n)| (*n, i)).collect();
+    let folded: HashSet<&str> = sections.folded.iter().map(String::as_str).collect();
+
+    let mut buckets: Vec<Vec<SignalSnapshotRecord>> = vec![Vec::new(); names.len()];
+    for row in rows {
+        let id = signal_identity(
+            row.bus_id.as_deref(),
+            row.message_id,
+            row.extended,
+            &row.signal_name,
+        );
+        // An assignment naming a section that no longer exists reads as
+        // unassigned — deleting a section returns its signals without
+        // rewriting every assignment, and re-creating it restores them.
+        let slot = sections
+            .assignments
+            .get(&id)
+            .and_then(|s| index.get(s.as_str()).copied())
+            .unwrap_or(0);
+        buckets[slot].push(row);
+    }
+
+    let mut out = Vec::new();
+    for (slot, name) in names.iter().enumerate() {
+        let bucket = &mut buckets[slot];
+        sort_rows(bucket, sort_key, sort_dir, bus_names);
+        let count = u64::try_from(bucket.len()).unwrap_or(u64::MAX);
+        // No sections at all: the implicit section *is* the view, and a
+        // header over the whole list would be a change to a panel
+        // nobody asked to change. An empty implicit section likewise has
+        // nothing to head — unlike a named one, you cannot lose it.
+        let headed = if name.is_empty() {
+            names.len() > 1 && count > 0
+        } else {
+            true
+        };
+        if headed {
+            out.push(SignalPageRow::SectionHeader(SignalSectionHeaderRecord {
+                name: (*name).to_string(),
+                signal_count: count,
+            }));
+        }
+        if headed && folded.contains(name) {
+            continue;
+        }
+        out.extend(
+            std::mem::take(bucket)
+                .into_iter()
+                .map(SignalPageRow::Signal),
+        );
+    }
+    out
+}
+
 fn cmp_opt_f64(a: Option<f64>, b: Option<f64>) -> std::cmp::Ordering {
     match (a, b) {
         (Some(x), Some(y)) => x.total_cmp(&y),
@@ -255,7 +362,34 @@ fn cmp_opt_f64(a: Option<f64>, b: Option<f64>) -> std::cmp::Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ipc::SignalQuery;
+    use crate::ipc::{SignalQuery, SignalSections};
+
+    fn sections(names: &[&str], assignments: &[(&str, &str)], folded: &[&str]) -> SignalSections {
+        SignalSections {
+            names: names.iter().map(|s| (*s).to_string()).collect(),
+            assignments: assignments
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+            folded: folded.iter().map(|s| (*s).to_string()).collect(),
+        }
+    }
+
+    /// `name` for a header row, `+name` for a signal row — one flat
+    /// transcript of the arranged row space, which is what the panel
+    /// pages through.
+    fn transcript(rows: &[SignalPageRow]) -> Vec<String> {
+        rows.iter()
+            .map(|r| match r {
+                SignalPageRow::SectionHeader(h) => format!("{}({})", h.name, h.signal_count),
+                SignalPageRow::Signal(s) => format!("+{}", s.signal_name),
+            })
+            .collect()
+    }
+
+    fn ident(signal: &str) -> String {
+        signal_identity(None, 0, false, signal)
+    }
 
     const TWO_ECU_DBC: &str = "VERSION \"\"\n\nNS_ :\n\nBS_:\n\nBU_: Bms Vcu\n\n\
         BO_ 256 PackStatus: 8 Bms\n SG_ PackVolts : 0|16@1+ (0.1,0) [0|0] \"V\" Vcu\n SG_ PackTemp : 16|8@1+ (1,-40) [0|0] \"degC\" Vcu\n\n\
@@ -426,6 +560,121 @@ mod tests {
         sort_rows(&mut rows, Some("value"), Some("desc"), &HashMap::new());
         let order: Vec<&str> = rows.iter().map(|r| r.signal_name.as_str()).collect();
         assert_eq!(order, vec!["b", "c", "a", "dead"]);
+    }
+
+    #[test]
+    fn signal_identity_is_the_descriptor_key_the_frontend_writes() {
+        // Must match `signalKey` in `plotData.ts` byte for byte — it is
+        // the assignment key the panel persists.
+        assert_eq!(
+            signal_identity(Some("p"), 256, false, "EngineSpeed"),
+            "p|s:256:EngineSpeed",
+        );
+        assert_eq!(signal_identity(None, 7, true, "S"), "*|x:7:S");
+    }
+
+    #[test]
+    fn no_sections_arranges_the_flat_sorted_list_with_no_headers() {
+        // The whole point of the implicit section: a user who never made
+        // a section sees exactly the list they had.
+        let rows = vec![valued_row("b", 2.0), valued_row("a", 1.0)];
+        let out = arrange_sections(
+            rows,
+            &SignalSections::default(),
+            Some("signal"),
+            Some("asc"),
+            &HashMap::new(),
+        );
+        assert_eq!(transcript(&out), vec!["+a", "+b"]);
+    }
+
+    #[test]
+    fn sections_render_unassigned_first_then_creation_order() {
+        let rows = vec![
+            valued_row("loose", 1.0),
+            valued_row("packv", 2.0),
+            valued_row("relay", 3.0),
+        ];
+        let s = sections(
+            &["Pack", "Contactors"],
+            &[(&ident("packv"), "Pack"), (&ident("relay"), "Contactors")],
+            &[],
+        );
+        let out = arrange_sections(rows, &s, None, None, &HashMap::new());
+        assert_eq!(
+            transcript(&out),
+            vec![
+                "(1)",
+                "+loose",
+                "Pack(1)",
+                "+packv",
+                "Contactors(1)",
+                "+relay",
+            ],
+        );
+    }
+
+    #[test]
+    fn an_empty_named_section_still_gets_its_header() {
+        // A section you created but haven't filled must stay visible —
+        // otherwise there is nothing to drop a signal onto or delete.
+        let rows = vec![valued_row("loose", 1.0)];
+        let s = sections(&["Empty"], &[], &[]);
+        let out = arrange_sections(rows, &s, None, None, &HashMap::new());
+        assert_eq!(transcript(&out), vec!["(1)", "+loose", "Empty(0)"]);
+        // …but the implicit section with nothing in it prints nothing.
+        let s = sections(&["Pack"], &[(&ident("loose"), "Pack")], &[]);
+        let out = arrange_sections(
+            vec![valued_row("loose", 1.0)],
+            &s,
+            None,
+            None,
+            &HashMap::new(),
+        );
+        assert_eq!(transcript(&out), vec!["Pack(1)", "+loose"]);
+    }
+
+    #[test]
+    fn a_folded_section_keeps_its_header_and_count_but_drops_its_rows() {
+        let rows = vec![valued_row("loose", 1.0), valued_row("packv", 2.0)];
+        let s = sections(&["Pack"], &[(&ident("packv"), "Pack")], &["Pack", ""]);
+        let out = arrange_sections(rows, &s, None, None, &HashMap::new());
+        // Both folded: two header rows, no signal rows — and that is the
+        // count the scrollbar gets.
+        assert_eq!(transcript(&out), vec!["(1)", "Pack(1)"]);
+    }
+
+    #[test]
+    fn sort_applies_within_each_section_not_across_them() {
+        let rows = vec![
+            valued_row("a", 9.0),
+            valued_row("z", 1.0),
+            valued_row("m", 5.0),
+            valued_row("b", 4.0),
+        ];
+        let s = sections(
+            &["Pack"],
+            &[(&ident("m"), "Pack"), (&ident("b"), "Pack")],
+            &[],
+        );
+        let out = arrange_sections(rows, &s, Some("value"), Some("asc"), &HashMap::new());
+        // Unassigned sorts z(1) before a(9); Pack sorts b(4) before m(5).
+        // A cross-section sort would have produced z, b, m, a.
+        assert_eq!(
+            transcript(&out),
+            vec!["(2)", "+z", "+a", "Pack(2)", "+b", "+m"],
+        );
+    }
+
+    #[test]
+    fn an_assignment_to_a_deleted_section_falls_back_to_unassigned() {
+        // Deleting a section is a `names` edit: its signals come back to
+        // the implicit section, and the stale assignment stays dormant so
+        // re-creating the section restores them.
+        let rows = vec![valued_row("packv", 1.0)];
+        let s = sections(&[], &[(&ident("packv"), "Pack")], &[]);
+        let out = arrange_sections(rows, &s, None, None, &HashMap::new());
+        assert_eq!(transcript(&out), vec!["+packv"]);
     }
 
     #[test]

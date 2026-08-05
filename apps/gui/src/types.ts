@@ -635,6 +635,50 @@ export interface SignalSnapshotRecord {
   time_seconds: number | null;
 }
 
+/// A signal view's user-authored sections, sent with its query. Mirrors
+/// `ipc.rs::SignalSections`. Ordering, membership, header placement and
+/// the fold-aware row count are model facts, so the panel states the
+/// structure and the host arranges the rows.
+export interface SignalSectionsWire {
+  /// Section names in creation order.
+  names: string[];
+  /// Canonical signal identity (`signalKey`) → section name. An
+  /// assignment naming a section that no longer exists reads as
+  /// unassigned and stays dormant.
+  assignments: Record<string, string>;
+  /// The folded sections; the implicit unassigned section is `""`.
+  folded: string[];
+}
+
+/// A section header row — one row slot of its own in the page's row
+/// space. Mirrors `ipc.rs::SignalSectionHeaderRecord`.
+export interface SignalSectionHeaderRecord {
+  /// The section's name; empty for the implicit unassigned section.
+  name: string;
+  /// Signals the section holds, folded or not.
+  signal_count: number;
+}
+
+/// One row of a signal-view page: a signal, or a section header.
+/// Mirrors `ipc.rs::SignalPageRow` (internally tagged on `kind`); a row
+/// with no tag reads as a signal, since the tag only ever discriminates
+/// the header case.
+export type SignalPageRow =
+  | ({ kind?: "signal" } & SignalSnapshotRecord)
+  | ({ kind: "section_header" } & SignalSectionHeaderRecord);
+
+/// Narrow a page row to its header, or `null` when it is a signal.
+export function sectionHeaderOf(
+  row: SignalPageRow | null,
+): SignalSectionHeaderRecord | null {
+  return row != null && row.kind === "section_header" ? row : null;
+}
+
+/// Narrow a page row to its signal, or `null` when it is a header.
+export function signalOf(row: SignalPageRow | null): SignalSnapshotRecord | null {
+  return row == null || row.kind === "section_header" ? null : row;
+}
+
 /// One `(raw_value, label)` row of a signal's `VAL_` table — mirrors
 /// `cannet_dbc::ValueTableEntry`. Returned by `list_value_tables`.
 export interface ValueTableEntryRecord {

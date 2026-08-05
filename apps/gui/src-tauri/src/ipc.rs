@@ -608,6 +608,79 @@ pub struct SignalSelection {
     pub patterns: Vec<String>,
 }
 
+/// A signal view's user-authored sections: the names the user created,
+/// which signal sits in which, and which are folded shut. Sent with the
+/// view's query because ordering, membership, header placement and the
+/// fold-aware row count are *model* facts — a frontend holding one page
+/// of a host-ordered list cannot regroup it. `camelCase` on the wire
+/// (nested command arg), like [`SignalSelection`].
+#[derive(serde::Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SignalSections {
+    /// Section names in creation order. Empty means the view has no
+    /// sections at all, and its page is the flat list it always was.
+    pub names: Vec<String>,
+    /// Canonical signal identity
+    /// ([`crate::signal_snapshot::signal_identity`] — the ADR 0038
+    /// stable descriptor key rendered as one string) → section name. An
+    /// assignment naming a section that is not in `names` reads as
+    /// unassigned, which is what makes deleting a section a `names`
+    /// edit that returns its signals rather than dropping them.
+    pub assignments: std::collections::HashMap<String, String>,
+    /// The sections currently folded shut; the implicit unassigned
+    /// section is the empty name. Sparse — only the deviation from
+    /// open is carried.
+    pub folded: Vec<String>,
+}
+
+/// One row of a signal-view page: a signal, or a section header that
+/// occupies a row slot of its own.
+///
+/// Headers are page rows rather than a side table so the whole view
+/// stays *one uniform row space*: the panel's anchor/spacer arithmetic
+/// (the shared viewport scaffold) is unchanged, `RowPage::count` is
+/// already fold-aware, and `RowPage::start + i` addresses a row the
+/// same way it does in every other paged view (ADR 0025).
+#[derive(serde::Serialize, Clone, Debug)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SignalPageRow {
+    Signal(SignalSnapshotRecord),
+    SectionHeader(SignalSectionHeaderRecord),
+}
+
+/// Row-kind accessors — the wire is serialize-only, so these exist for
+/// the tests that read a page back.
+#[cfg(test)]
+impl SignalPageRow {
+    /// The signal this row carries, or `None` for a section header.
+    #[must_use]
+    pub fn signal(&self) -> Option<&SignalSnapshotRecord> {
+        match self {
+            Self::Signal(r) => Some(r),
+            Self::SectionHeader(_) => None,
+        }
+    }
+
+    /// The section header this row carries, or `None` for a signal.
+    #[must_use]
+    pub fn header(&self) -> Option<&SignalSectionHeaderRecord> {
+        match self {
+            Self::SectionHeader(h) => Some(h),
+            Self::Signal(_) => None,
+        }
+    }
+}
+
+/// A section header row.
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct SignalSectionHeaderRecord {
+    /// The section's name; empty for the implicit unassigned section.
+    pub name: String,
+    /// How many signals the section holds — reported whether or not it
+    /// is folded, so a folded header can still say what it hides.
+    pub signal_count: u64,
+}
+
 /// One signal-view row: a descriptor joined with its latest in-window
 /// value and per-signal update statistics. Returned (paged) by
 /// `fetch_signal_page`; the DBC panel's value column uses the same rows

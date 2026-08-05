@@ -309,9 +309,26 @@ fn fetch_all_signals(state: &AppState, end: u64) -> Vec<SignalSnapshotRecord> {
         keys: vec![],
         patterns: vec!["^/Zonal/Modes/".to_string()],
     };
-    fetch_signal_page_inner(state, &sel, 0, end, None, None, vec![], &[], None, 0, 100)
-        .expect("valid pattern")
-        .rows
+    fetch_signal_page_inner(
+        state,
+        &sel,
+        None,
+        0,
+        end,
+        None,
+        None,
+        vec![],
+        &[],
+        None,
+        0,
+        100,
+    )
+    .expect("valid pattern")
+    .rows
+    .iter()
+    .filter_map(ipc::SignalPageRow::signal)
+    .cloned()
+    .collect()
 }
 
 #[test]
@@ -354,6 +371,7 @@ fn fetch_signal_page_scopes_to_source_buses() {
     let page = fetch_signal_page_inner(
         &state,
         &sel,
+        None,
         0,
         u64::MAX,
         None,
@@ -369,6 +387,7 @@ fn fetch_signal_page_scopes_to_source_buses() {
     let unrestricted = fetch_signal_page_inner(
         &state,
         &sel,
+        None,
         0,
         u64::MAX,
         None,
@@ -483,6 +502,7 @@ fn fetch_signal_page_pages_and_sorts_host_side() {
     let page = fetch_signal_page_inner(
         &state,
         &sel,
+        None,
         0,
         u64::MAX,
         Some("value"),
@@ -496,8 +516,84 @@ fn fetch_signal_page_pages_and_sorts_host_side() {
     .unwrap();
     assert_eq!(page.count, 4);
     assert_eq!(page.start, 1);
-    let names: Vec<&str> = page.rows.iter().map(|r| r.signal_name.as_str()).collect();
+    let names: Vec<&str> = page
+        .rows
+        .iter()
+        .filter_map(|r| r.signal().map(|s| s.signal_name.as_str()))
+        .collect();
     assert_eq!(names, vec!["Always", "ModeA"]);
+}
+
+#[test]
+fn fetch_signal_page_pages_across_section_headers_with_a_fold_aware_count() {
+    // The paged-architecture claim behind item 16: header rows are page
+    // rows, so `count` is already the fold-aware extent and a page that
+    // straddles a section boundary carries the header in its row space.
+    let state = mux_snapshot_state();
+    state
+        .trace_store
+        .append(modes_frame(1_000_000_000, 0, 40, 5));
+    let sel = SignalSelection {
+        keys: vec![],
+        patterns: vec!["^/Zonal/Modes/".to_string()],
+    };
+    let sections = ipc::SignalSections {
+        names: vec!["Modes".to_string()],
+        assignments: [
+            ("*|s:512:ModeA".to_string(), "Modes".to_string()),
+            ("*|s:512:ModeB".to_string(), "Modes".to_string()),
+        ]
+        .into_iter()
+        .collect(),
+        folded: vec![],
+    };
+    let transcript = |sections: &ipc::SignalSections, offset, limit| {
+        let page = fetch_signal_page_inner(
+            &state,
+            &sel,
+            Some(sections),
+            0,
+            u64::MAX,
+            Some("signal"),
+            Some("asc"),
+            vec![],
+            &[],
+            None,
+            offset,
+            limit,
+        )
+        .unwrap();
+        let rows: Vec<String> = page
+            .rows
+            .iter()
+            .map(|r| match (r.signal(), r.header()) {
+                (Some(s), _) => format!("+{}", s.signal_name),
+                (_, Some(h)) => format!("{}({})", h.name, h.signal_count),
+                _ => unreachable!(),
+            })
+            .collect();
+        (page.count, page.start, rows)
+    };
+    // 4 signals + 2 headers: unassigned (Always, Mux) then Modes.
+    let (count, start, rows) = transcript(&sections, 0, 100);
+    assert_eq!(count, 6);
+    assert_eq!(start, 0);
+    assert_eq!(
+        rows,
+        vec!["(2)", "+Always", "+Mux", "Modes(2)", "+ModeA", "+ModeB"],
+    );
+    // A page straddling the boundary gets the header as an ordinary row.
+    let (_, start, rows) = transcript(&sections, 2, 2);
+    assert_eq!(start, 2);
+    assert_eq!(rows, vec!["+Mux", "Modes(2)"]);
+    // Folding Modes drops its two rows from the extent, not its header.
+    let folded = ipc::SignalSections {
+        folded: vec!["Modes".to_string()],
+        ..sections
+    };
+    let (count, _, rows) = transcript(&folded, 0, 100);
+    assert_eq!(count, 4);
+    assert_eq!(rows, vec!["(2)", "+Always", "+Mux", "Modes(2)"]);
 }
 
 #[test]
