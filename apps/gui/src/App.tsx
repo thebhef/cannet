@@ -37,7 +37,7 @@ import {
   relativizeProjectPath,
   resolveProjectPath,
 } from "./projectPaths";
-import { windowTitle } from "./windowTitle";
+import { captureLabel, windowTitle } from "./windowTitle";
 import { TracePanel } from "./TracePanel";
 import { ProjectPanel } from "./ProjectPanel";
 import { ProjectGraphPanel } from "./ProjectGraphPanel";
@@ -299,6 +299,9 @@ export function App() {
   const [projectPath, setProjectPath] = useState<string | null>(null);
   // True when the project has changed since it was last saved/opened.
   const [dirty, setDirty] = useState(false);
+  // The host build's version string, for the window title. Empty until
+  // `app_version` answers.
+  const [appVersion, setAppVersion] = useState("");
   // Set while the "unsaved changes — Save / Discard / Cancel?" modal is
   // up (the window-close handler awaits the choice via `resolve`).
   const [pendingClose, setPendingClose] = useState<{
@@ -1556,16 +1559,40 @@ export function App() {
     };
   }, [automation]);
 
-  // Native window title: `<project name> — cannet` while a project is
-  // open, bare `cannet` otherwise. The OS chrome is the only title
-  // surface (no custom title bar).
+  // The build version, for the title bar's trailing `cannet <version>`
+  // segment. Same host command the About view reads — the version is
+  // stamped into the binary, so one fetch per session is enough.
+  useEffect(() => {
+    let live = true;
+    invoke<string>("app_version")
+      .then((v) => {
+        if (live) setAppVersion(v);
+      })
+      .catch(() => {
+        /* no host — the title just omits the version */
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  // Native window title: `<project> — <capture source> — cannet
+  // <version>`, with a `• ` prefix while unsaved. The OS chrome is the
+  // only title surface (no custom title bar).
   useEffect(() => {
     void getCurrentWindow()
-      .setTitle(windowTitle(projectPath))
+      .setTitle(
+        windowTitle({
+          projectPath,
+          dirty,
+          capture: captureLabel(state, remoteSessions),
+          version: appVersion,
+        }),
+      )
       .catch(() => {
         /* headless test host — no window to title */
       });
-  }, [projectPath]);
+  }, [projectPath, dirty, state, remoteSessions, appVersion]);
 
   useEffect(() => {
     const win = getCurrentWindow();

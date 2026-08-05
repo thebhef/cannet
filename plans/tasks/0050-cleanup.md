@@ -252,27 +252,54 @@ mechanisms found so far turned out not to be what the CSS suggested.
 
 ## 8. Put the version and project in the title bar
 
-The About panel is the only place the version appears, and it is buried.
+**Done.** The title reads `<project> — <capture source> — cannet
+<version>`, with a `•` prefix while there are unsaved changes and the
+capture segment omitted when nothing is loaded — the decided format,
+unchanged.
 
-**Decided format** — project first, then the capture source, then the
-app and version:
+**Mechanism.** The app already had the wiring: `windowTitle`
+(`apps/gui/src/windowTitle.ts`) is a pure builder and an `App` effect
+pushes its result through `getCurrentWindow().setTitle`. Both were
+widened rather than replaced — no new IPC, no `document.title`, no
+custom title bar.
 
-```text
-ev-zonal — drive-cycle.blf — cannet 0.9.3     project + capture
-• ev-zonal — drive-cycle.blf — cannet 0.9.3   unsaved changes
-ev-zonal — cannet 0.9.3                       project, nothing loaded
-ev-zonal — PCAN-USB — cannet 0.9.3            live connection
-cannet 0.9.3                                  no project
-```
+Where each fact comes from:
 
-The project name leads because it is what distinguishes one window from
-another — it is what survives truncation in a taskbar hover or alt-tab
-preview, where a title starting with the app name is identical for every
-window. The **capture source segment is omitted entirely when nothing is
-loaded**, so the title only grows when it has something to say.
+| Segment | Source |
+| --- | --- |
+| Project name | `projectPath` state, basename minus its last extension (unchanged) |
+| Unsaved `•` | `App`'s `dirty` — the flag the project view's `●` marker and the close prompt already read |
+| Capture source | new pure `captureLabel(state, remoteSessions)` in the same module |
+| `cannet <version>` | `app_version`, the host command the About panel reads; fetched once per session |
 
-The About panel stays: it carries build info and licences, not just the
-version.
+`captureLabel` gives a **live session priority over a loaded BLF**, the
+same precedence `splitStatus` applies in the status line. A session
+reports its one subscribed interface's `display_name`, or `N
+interfaces` when it carries several (the status line's existing
+phrasing); with none running it falls back to the BLF's basename while
+the log is loading, streaming or done. The version is `git describe`
+output, so a leading `v` is stripped (`v0.9.3` → `0.9.3`) and the rest
+kept verbatim; an empty version drops the segment rather than showing a
+placeholder.
+
+**One deviation, recorded rather than fixed:** the close prompt treats
+"unsaved" as a dirty project **or** any dirty `.cannet_rbs`, and the
+RBS half is only knowable by calling `rbs_dirty` — the host publishes no
+event for it and the frontend holds no reactive mirror. The title
+therefore tracks the project `dirty` flag, exactly as the project
+view's own `●` marker does. Making the title cover RBS too means giving
+that fact a reactive home, which is host work and not this item's.
+
+**The About panel is unchanged** apart from a stale comment: it said the
+native title bar carries only the project name, which this makes false.
+
+Tests: `apps/gui/src/windowTitle.test.ts` covers all five documented
+states plus the version-prefix and empty-version edges, and
+`captureLabel` across idle / streaming / done / errored / one interface
+/ several / live-beats-BLF. `apps/gui/src/App.windowTitle.dom.test.tsx`
+mounts the real App with `setTitle` spied and asserts the settled title
+carries the mocked host version — and the `•`, since seeding the default
+layout already marks the session dirty. Both failed before the change.
 
 ## 9. Manual y-axis control from a right-click menu on the axis
 
