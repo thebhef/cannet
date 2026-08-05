@@ -1985,6 +1985,20 @@ describe("PlotPanel follow-live slide cadence", () => {
       await runFrames();
       await act(async () => {});
       await runFrames();
+      // Wait out every area's one-shot post-mount uPlot rebuild before
+      // capturing instances. That rebuild is a real 250 ms timer *per
+      // area*, and the three areas mount at three different instants, so
+      // on a loaded machine the assertions below straddle it: a rebuild
+      // deregisters the captured instance and registers a fresh one, and
+      // the panel's fan-out then lands on an instance the test isn't
+      // holding. The captured one records nothing, which reads exactly
+      // like "the panel slid one area's window but not another's" — the
+      // flake this test used to show. It fires once per area, so once
+      // it's past, no later delay can move the instances again.
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 400));
+      });
+      await runFrames();
       const areas = ["Area 1", "Area 2", "Area 3"].map(liveInstanceIn);
 
       const clock = steppingClock(5);
@@ -2001,6 +2015,11 @@ describe("PlotPanel follow-live slide cadence", () => {
         await runFrames();
 
         for (const a of areas) {
+          // The one coalesced panel-wide slide reached this area — a
+          // silent instance would satisfy the equality below vacuously
+          // (`undefined` equals `undefined`), which is how the flake
+          // could also pass for the wrong reason.
+          expect(a.xCalls.length).toBeGreaterThanOrEqual(1);
           // At most the area's own re-pin of the shared window inside
           // `resample`, plus the one coalesced panel-wide slide.
           expect(a.xCalls.length).toBeLessThanOrEqual(2);
