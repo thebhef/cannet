@@ -1882,6 +1882,270 @@ describe("PlotArea y-normalisation", () => {
     }
   });
 
+  /// Unit each fixture signal declares — needed to seed an area
+  /// through saved config, where the signal refs are written out in
+  /// full rather than picked from the catalog.
+  const unitOf = (name: string) => SIGNALS.find((s) => s.signal_name === name)?.unit ?? "";
+  let seedCounter = 0;
+
+  /// A panel restored from saved config holding one area with `signals`
+  /// and (optionally) per-axis scale settings. The saved-config path is
+  /// the only way to pin a *known* axis id: a freshly added area's id
+  /// is a UUID, and the derived-axis ids the settings key off are built
+  /// from it.
+  function renderSeeded(opts: { signals: string[]; axisScales?: Record<string, unknown> }) {
+    const elementId = `el-scale-${seedCounter++}`;
+    return renderPanel({
+      params: { elementId },
+      registry: makeRegistry({
+        id: elementId,
+        config: {
+          areas: [
+            {
+              id: "a1",
+              signals: opts.signals.map((n) => ({
+                busId: null,
+                messageId: 256,
+                extended: false,
+                signalName: n,
+                messageName: "EngineData",
+                unit: unitOf(n),
+                color: "#4ecbff",
+              })),
+            },
+          ],
+          ...(opts.axisScales ? { axisScales: opts.axisScales } : {}),
+        },
+      }),
+    });
+  }
+
+  /// The `axisScales` dict in the panel's most recent persist.
+  function persistedScales(api: { updateParameters: { mock: { calls: unknown[][] } } }) {
+    const calls = api.updateParameters.mock.calls;
+    return (calls[calls.length - 1]?.[0] ?? {}) as { axisScales?: Record<string, unknown> };
+  }
+
+  it("a manual max beats the follow-live extent", async () => {
+    // The whole point of pinning a bound: it must not silently stop
+    // applying the moment the capture grows past it. The host's
+    // all-time extent says 400..500; the axis draws 400..1000.
+    mockSignalExtents.LimitEffective = { lo: 400, hi: 500 };
+    mockSampleSeries.LimitEffective = { t: [0, 1, 2], v: [400, 450, 500] };
+    const restore = stubSize();
+    try {
+      renderSeeded({ signals: ["LimitEffective"], axisScales: { a1: { max: 1000 } } });
+      await waitForData((data) => {
+        expect(data[1]?.[0]).toBeCloseTo(0, 6);
+        expect(data[1]?.[1]).toBeCloseTo(50 / 600, 6);
+        expect(data[1]?.[2]).toBeCloseTo(100 / 600, 6);
+      });
+      await waitFor(() => expect(yTickLabels([0, 0.5, 1])).toEqual(["400 A", "700 A", "1000 A"]));
+    } finally {
+      restore();
+    }
+  });
+
+  it("either bound stands alone — a manual min leaves the max automatic", async () => {
+    mockSignalExtents.LimitEffective = { lo: 400, hi: 500 };
+    mockSampleSeries.LimitEffective = { t: [0, 1, 2], v: [400, 450, 500] };
+    const restore = stubSize();
+    try {
+      renderSeeded({ signals: ["LimitEffective"], axisScales: { a1: { min: 0 } } });
+      await waitForData((data) => {
+        expect(data[1]?.[0]).toBeCloseTo(0.8, 6);
+        expect(data[1]?.[2]).toBeCloseTo(1, 6);
+      });
+      await waitFor(() => expect(yTickLabels([0, 1])).toEqual(["0 A", "500 A"]));
+    } finally {
+      restore();
+    }
+  });
+
+  it("log: values map by decades and the ticks land on decade boundaries", async () => {
+    mockSignalExtents.LimitEffective = { lo: 1, hi: 100 };
+    mockSampleSeries.LimitEffective = { t: [0, 1, 2], v: [1, 10, 100] };
+    const restore = stubSize();
+    try {
+      renderSeeded({ signals: ["LimitEffective"], axisScales: { a1: { log: true } } });
+      await waitForData((data) => {
+        expect(data[1]?.[0]).toBeCloseTo(0, 6);
+        expect(data[1]?.[1]).toBeCloseTo(0.5, 6);
+        expect(data[1]?.[2]).toBeCloseTo(1, 6);
+      });
+      const inst = uplotInstances[uplotInstances.length - 1] as unknown as {
+        opts: { axes: { splits: () => number[] }[] };
+      };
+      expect(inst.opts.axes[1].splits()).toEqual([0, 0.5, 1]);
+      await waitFor(() => expect(yTickLabels([0, 0.5, 1])).toEqual(["1 A", "10 A", "100 A"]));
+    } finally {
+      restore();
+    }
+  });
+
+  it("log: a non-positive point is dropped, not clamped onto the floor", async () => {
+    // A clamped point sitting on the axis floor reads as a real
+    // reading, so the sample leaves a gap instead.
+    mockSignalExtents.LimitEffective = { lo: -5, hi: 10 };
+    mockSampleSeries.LimitEffective = { t: [0, 1, 2], v: [-5, 0, 10] };
+    const restore = stubSize();
+    try {
+      renderSeeded({ signals: ["LimitEffective"], axisScales: { a1: { log: true } } });
+      await waitForData((data) => {
+        expect(data[1]?.[0]).toBeNull();
+        expect(data[1]?.[1]).toBeNull();
+        expect(data[1]?.[2]).toBeCloseTo(0, 6);
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it("log: a series with no positive value at all says so rather than drawing an empty axis", async () => {
+    mockSignalExtents.LimitEffective = { lo: -5, hi: -1 };
+    mockSampleSeries.LimitEffective = { t: [0, 1, 2], v: [-5, -3, -1] };
+    const restore = stubSize();
+    try {
+      renderSeeded({ signals: ["LimitEffective"], axisScales: { a1: { log: true } } });
+      await waitFor(() => expect(screen.getByText(/no positive values/i)).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByText(/no positive values/i).textContent).toContain("LimitEffective"));
+    } finally {
+      restore();
+    }
+  });
+
+  it("fit y clears a manual range instead of writing numbers into it", async () => {
+    // Under a sparse store, "fit y" and "clear the fields" are the same
+    // intent — go back to automatic — so they do the same thing. Fit y
+    // seeding the fields would silently pin every axis it ever fitted.
+    mockSignalExtents.LimitEffective = { lo: 400, hi: 500 };
+    mockSampleSeries.LimitEffective = { t: [0, 1, 2], v: [400, 450, 500] };
+    const restore = stubSize();
+    try {
+      const { api } = renderSeeded({
+        signals: ["LimitEffective"],
+        axisScales: { a1: { min: 0, max: 1000 } },
+      });
+      await waitFor(() => expect(persistedScales(api).axisScales).toEqual({ a1: { min: 0, max: 1000 } }));
+      await act(async () => {
+        fireEvent.click(document.querySelector(".plot-area-fit-y")!);
+      });
+      await waitFor(() => expect(persistedScales(api).axisScales).toEqual({}));
+    } finally {
+      restore();
+    }
+  });
+
+  it("keeps an axis's settings across a mode change and drops them when its signals go", async () => {
+    // `a1/u:unit:A` is a *per-unit* axis id, and the area is in
+    // `unified` mode — so nothing derives it right now. It survives all
+    // the same, because switching back to per-unit must restore the
+    // amps axis's range. `a1/u:unit:zz` has no signal of that unit left
+    // in the area, so it retires.
+    const restore = stubSize();
+    try {
+      const { api } = renderSeeded({
+        signals: ["LimitEffective"],
+        axisScales: { "a1/u:unit:A": { max: 5 }, "a1/u:unit:zz": { max: 1 } },
+      });
+      await waitFor(() =>
+        expect(persistedScales(api).axisScales).toEqual({ "a1/u:unit:A": { max: 5 } }),
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  /// Right-click the y-axis gutter — the strip left of the plot box.
+  /// jsdom lays nothing out, so every rect is at x = 0 and a small
+  /// `clientX` is inside the gutter while a large one is inside the
+  /// plot box (which is what the real geometry check compares).
+  function rightClickAxis(clientX: number) {
+    const canvas = document.querySelectorAll(".plot-area-canvas");
+    fireEvent.contextMenu(canvas[canvas.length - 1], { clientX, clientY: 10 });
+  }
+
+  it("right-clicking the y axis opens its scale menu; right-clicking the plot does not", async () => {
+    const restore = stubSize();
+    try {
+      renderSeeded({ signals: ["LimitEffective"] });
+      await waitFor(() => expect(document.querySelector(".plot-area-canvas")).toBeInTheDocument());
+      rightClickAxis(400);
+      expect(screen.queryByLabelText("y axis maximum")).not.toBeInTheDocument();
+      rightClickAxis(4);
+      expect(screen.getByLabelText("y axis minimum")).toBeInTheDocument();
+      expect(screen.getByLabelText("y axis maximum")).toBeInTheDocument();
+      expect(screen.getByLabelText("log scale")).not.toBeChecked();
+    } finally {
+      restore();
+    }
+  });
+
+  it("a typed bound pins the axis, and clearing the field returns it to automatic", async () => {
+    const restore = stubSize();
+    try {
+      const { api } = renderSeeded({ signals: ["LimitEffective"] });
+      await waitFor(() => expect(document.querySelector(".plot-area-canvas")).toBeInTheDocument());
+      rightClickAxis(4);
+      const max = screen.getByLabelText("y axis maximum");
+      await act(async () => {
+        fireEvent.change(max, { target: { value: "1000" } });
+        fireEvent.keyDown(max, { key: "Enter" });
+      });
+      await waitFor(() => expect(persistedScales(api).axisScales).toEqual({ a1: { max: 1000 } }));
+      await act(async () => {
+        fireEvent.change(max, { target: { value: "" } });
+        fireEvent.keyDown(max, { key: "Enter" });
+      });
+      await waitFor(() => expect(persistedScales(api).axisScales).toEqual({}));
+    } finally {
+      restore();
+    }
+  });
+
+  it("log hides the min box and gives it back, still holding its value", async () => {
+    const restore = stubSize();
+    try {
+      const { api } = renderSeeded({ signals: ["LimitEffective"], axisScales: { a1: { min: 5 } } });
+      await waitFor(() => expect(document.querySelector(".plot-area-canvas")).toBeInTheDocument());
+      rightClickAxis(4);
+      expect(screen.getByLabelText("y axis minimum")).toHaveValue("5");
+      await act(async () => {
+        fireEvent.click(screen.getByLabelText("log scale"));
+      });
+      // The min stops being settable — a log axis derives it — but the
+      // value the user typed is held, not discarded.
+      expect(screen.queryByLabelText("y axis minimum")).not.toBeInTheDocument();
+      await waitFor(() => expect(persistedScales(api).axisScales).toEqual({ a1: { min: 5, log: true } }));
+      await act(async () => {
+        fireEvent.click(screen.getByLabelText("log scale"));
+      });
+      expect(screen.getByLabelText("y axis minimum")).toHaveValue("5");
+      await waitFor(() => expect(persistedScales(api).axisScales).toEqual({ a1: { min: 5 } }));
+    } finally {
+      restore();
+    }
+  });
+
+  it("an enum-lanes axis offers no scale menu", async () => {
+    // A lane's geometry comes from `laneBandsForVisible`, not from a
+    // value range, so neither a bound nor a log mapping means anything
+    // there — the menu is omitted rather than offering something inert.
+    mockValueTables.EngineSpeed = ENUM3;
+    mockSampleSeries.EngineSpeed = { t: [0, 1, 2], v: [0, 1, 2] };
+    const restore = stubSize();
+    try {
+      renderPanel();
+      await addSignals(["EngineSpeed"], "per-unit");
+      await waitFor(() => expect(document.querySelectorAll(".plot-area").length).toBe(1));
+      await waitForData((data) => expect(data[1]?.[0]).not.toBe(0));
+      rightClickAxis(4);
+      expect(screen.queryByLabelText("y axis maximum")).not.toBeInTheDocument();
+    } finally {
+      restore();
+    }
+  });
+
   it("single-enum axis: raw codes pass through un-normalised", async () => {
     // One enum on its own axis keeps the codes as-is — the y scale is
     // pinned to the table's raw range instead. This is the axis mode

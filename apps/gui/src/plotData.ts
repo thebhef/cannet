@@ -211,14 +211,22 @@ export function enumSegments(
  * of that value either side of it, so the axis labels read the value
  * it holds instead of a bare 0–1. See {@link constantRange}.
  */
+/** Which y-scale group a signal belongs to: its unit, or itself when
+ * it declares none (two signals that merely both lack a unit are not
+ * known to be commensurable). Shared with the renderer, which has to
+ * fold per-group facts — a log axis's smallest positive value — over
+ * the same grouping {@link groupScaleRanges} unions by. */
+export function scaleGroupKey(m: { key: string; unit: string }): string {
+  return m.unit ? `unit:${m.unit}` : `sig:${m.key}`;
+}
+
 export function groupScaleRanges(
   members: ReadonlyArray<{ key: string; unit: string }>,
   perSignalRanges: ReadonlyMap<string, { lo: number; hi: number }>,
 ): Map<string, { lo: number; hi: number }> {
   // Pass 1: union each unit group's range.
   const groupRange = new Map<string, { lo: number; hi: number }>();
-  const groupKeyFor = (m: { key: string; unit: string }) =>
-    m.unit ? `unit:${m.unit}` : `sig:${m.key}`;
+  const groupKeyFor = scaleGroupKey;
   for (const m of members) {
     const r = perSignalRanges.get(m.key);
     if (!r) continue;

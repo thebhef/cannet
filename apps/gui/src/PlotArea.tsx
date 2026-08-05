@@ -18,7 +18,16 @@ import uPlot from "uplot";
 
 import { isEnumValueTable, type SignalDescriptorRecord, type SignalExtent, type ValueTableEntryRecord } from "./types";
 import { type ColorResolver, type ColorTarget, colorMapLaneFill } from "./colorMap";
-import { enumSegments, groupScaleRanges, mergeSeries } from "./plotData";
+import { enumSegments, groupScaleRanges, mergeSeries, scaleGroupKey } from "./plotData";
+import {
+  denormalizeOnAxis,
+  logDecadeSplits,
+  resolveAxisRange,
+  type AxisScale,
+  type AxisScalePatch,
+  type ResolvedAxisRange,
+} from "./plotAxisScale";
+import { useDismissableMenu } from "./useDismissableMenu";
 import { useSetting } from "./hostSettings";
 import {
   PLOT_AREA_DND_MIME,
@@ -285,6 +294,94 @@ function SignalSwatch({
   );
 }
 
+/** Default y-gutter width (px) before uPlot's first layout pass has
+ * reported one — the floor `measureAxisSize` never goes below. Used to
+ * decide whether a right-click landed on the axis or in the plot box. */
+const DEFAULT_Y_GUTTER_PX = 52;
+
+/**
+ * The y axis's own context menu (ADR 0026): a manual min, a manual max
+ * and a log-scale toggle for one derived axis.
+ *
+ * Both bounds default to **empty, meaning automatic** — the axis keeps
+ * the auto-scaling it has always done — so a user who never opens this
+ * sees no change, and clearing a field puts the axis back. Committing
+ * follows the repo's one inline-edit precedent (`EventRow`): Enter and
+ * blur commit, and the menu's Escape dismisses without committing the
+ * draft.
+ *
+ * The min box is absent while log is on: a log axis cannot render zero
+ * or negatives, so rather than accept a min and then reject it the min
+ * becomes derived. The value the user typed is *held* by the store, so
+ * turning log back off returns it.
+ */
+function YAxisScaleMenu({
+  position,
+  scale,
+  onSet,
+  onClose,
+}: {
+  position: { x: number; y: number };
+  scale: AxisScale | undefined;
+  onSet: (patch: AxisScalePatch) => void;
+  onClose: () => void;
+}) {
+  const menuRef = useDismissableMenu<HTMLDivElement>(true, onClose);
+  const log = !!scale?.log;
+  const [minDraft, setMinDraft] = useState(scale?.min == null ? "" : String(scale.min));
+  const [maxDraft, setMaxDraft] = useState(scale?.max == null ? "" : String(scale.max));
+  const commit = (which: "min" | "max", text: string) => {
+    const t = text.trim();
+    if (t === "") {
+      onSet({ [which]: null });
+      return;
+    }
+    const v = Number(t);
+    // Unparseable input is left in the box rather than silently
+    // committed as a clear — the user is mid-edit, not asking for auto.
+    if (Number.isFinite(v)) onSet({ [which]: v });
+  };
+  const boundRow = (which: "min" | "max", draft: string, setDraft: (s: string) => void) => (
+    <label className="plot-axis-menu-row">
+      <span>{which}</span>
+      <input
+        aria-label={`y axis ${which === "min" ? "minimum" : "maximum"}`}
+        placeholder="auto"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit(which, draft);
+        }}
+        onBlur={() => commit(which, draft)}
+      />
+    </label>
+  );
+  return (
+    <div
+      ref={menuRef}
+      className="plot-axis-menu"
+      style={{ left: position.x, top: position.y }}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      <div className="plot-axis-menu-title">y axis</div>
+      {!log && boundRow("min", minDraft, setMinDraft)}
+      {boundRow("max", maxDraft, setMaxDraft)}
+      <label className="plot-axis-menu-row">
+        <input
+          type="checkbox"
+          aria-label="log scale"
+          checked={log}
+          onChange={(e) => onSet({ log: e.target.checked })}
+        />
+        <span>log scale</span>
+      </label>
+      <div className="plot-axis-menu-hint">
+        {log ? "min is the smallest positive value" : "empty = automatic"}
+      </div>
+    </div>
+  );
+}
+
 interface PlotAreaProps {
   area: PlotAreaConfig;
   /** Vertical flex-grow weight for this axis (ADR 0026 fit-to-panel).
@@ -415,6 +512,12 @@ interface PlotAreaProps {
   /** Convert regex → manual: materialize the area's current effective
    * series into the persisted manual list and clear the patterns. */
   onMaterializePatterns: () => void;
+  /** This axis's manual y bounds + log flag, or `undefined` when the
+   * axis is fully automatic (ADR 0026). The panel holds the sparse
+   * store keyed by derived-axis id. */
+  yScale?: AxisScale;
+  /** Set / clear one of those settings. A `null` bound is a clear. */
+  onSetYScale: (patch: AxisScalePatch) => void;
   /** Keys of this area's *manual* picks — how the row renderer tells
    * a manual pick (removable) from a pattern-derived row (removed by
    * editing the pattern; shows a pattern badge instead of ×). */
@@ -590,6 +693,8 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     onSetSignalColor,
     onSetPatterns,
     onMaterializePatterns,
+    yScale,
+    onSetYScale,
     manualKeys,
     patternResolutions,
     catalog,
@@ -638,14 +743,14 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
    * the !follow-live visible-fit, whichever was active. Surfaced in
    * the side-panel rows so users can see what range the auto-norm is
    * operating against. */
-  const effectiveRangesRef = useRef<Map<string, { lo: number; hi: number }>>(new Map());
+  const effectiveRangesRef = useRef<Map<string, ResolvedAxisRange>>(new Map());
   /** The primary signal's `{lo, hi, unit}` as of the most recent
    * resample, read by the y-axis value formatter to render real units
    * on the y-tick labels (the underlying data is normalised to
    * [0, 1]). Lives in a ref because the formatter is captured at
    * uPlot construction time and we don't want to recreate the chart
    * every time the primary changes. */
-  const primaryAxisRef = useRef<{ lo: number; hi: number; unit: string | null } | null>(null);
+  const primaryAxisRef = useRef<(ResolvedAxisRange & { unit: string | null }) | null>(null);
   /** One-shot: have we already done the post-mount rebuild that
    * compensates for restored-from-project panels where the canvas
    * isn't laid out yet at uPlot's first construction? */
@@ -788,6 +893,50 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   enumModeRef.current = enumMode;
   const valueTableRef = useRef(valueTable);
   valueTableRef.current = valueTable;
+
+  /** Manual y control (ADR 0026) is offered on *numeric* axes only. An
+   * enum-lanes axis takes its geometry from `laneBandsForVisible` and a
+   * single-enum axis from its value table's raw range, so neither a
+   * min/max nor a log mapping means anything on them — the menu omits
+   * them rather than offering something inert, and any setting a mode
+   * change left behind is ignored while the axis renders that way. */
+  const yScaleSettable = !laneMode && !enumMode;
+  const effectiveYScale = yScaleSettable ? yScale : undefined;
+  // Read through a ref for the same reason the enum state is: the
+  // resample callback is deps-stable and would otherwise close over the
+  // setting as it was when the signal set last changed.
+  const yScaleRef = useRef(effectiveYScale);
+  yScaleRef.current = effectiveYScale;
+  /** Log changes the *shape* of the axis, not just its numbers: the
+   * tick splits move onto decade boundaries, which uPlot takes at
+   * construction. Toggling it is a user gesture, so rebuilding the
+   * instance is cheap and keeps the splits callback honest. */
+  const logActive = !!effectiveYScale?.log;
+  /** Series that hold data but nothing positive, so a log axis draws
+   * none of them. Named rather than counted: the point of the message
+   * is that a *specific* trace is missing, not that something is. */
+  const [logEmptySignals, setLogEmptySignals] = useState<string>("");
+  /** Where the axis's scale menu is open, in client coordinates.
+   * `null` when closed. */
+  const [axisMenu, setAxisMenu] = useState<{ x: number; y: number } | null>(null);
+  /** Width the y gutter currently reserves — what tells a right-click
+   * on the *axis* from one in the plot box, where uPlot owns the
+   * gesture (right-drag box zoom). Tracked from the same `axis.size`
+   * report the panel latches, so it follows the agreed width rather
+   * than guessing; it moves rarely, so the state write is cheap. */
+  const [gutterPx, setGutterPx] = useState(DEFAULT_Y_GUTTER_PX);
+  const gutterPxRef = useRef(gutterPx);
+  const trackGutter = useCallback(
+    (id: string, needed: number) => {
+      const w = reportGutterNeed(id, needed);
+      if (w !== gutterPxRef.current) {
+        gutterPxRef.current = w;
+        setGutterPx(w);
+      }
+      return w;
+    },
+    [reportGutterNeed],
+  );
 
   const withSuppressed = useCallback(
     (fn: () => void) => {
@@ -1088,17 +1237,57 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       // the axis. Unitless signals each keep their own range (two
       // signals that merely both lack a unit aren't known
       // commensurable).
-      const scaleRanges = groupScaleRanges(
-        signals.map((s) => ({ key: signalRefKey(s), unit: s.unit })),
-        ranges,
-      );
+      const members = signals.map((s) => ({ key: signalRefKey(s), unit: s.unit }));
+      const scaleRanges = groupScaleRanges(members, ranges);
+      // Manual y control (ADR 0026) sits on top of that: a user-set
+      // bound replaces the derived one — and so beats the follow-live
+      // extent and the visible fit alike — while an unset bound keeps
+      // auto-scaling, item-4 constant widening included. It is applied
+      // per *group*, because the axis's setting governs every scale
+      // drawn on it, and the groups are what those scales are.
+      //
+      // A log axis derives its own minimum from the data: the smallest
+      // positive value each group actually holds. That is not
+      // recoverable from the group's `(lo, hi)` — a group spanning zero
+      // has a non-positive `lo` and positive samples both — so it is
+      // folded over the sampled values, once per group, and only when
+      // a log axis asked for it.
+      const setting = yScaleRef.current;
+      const minPositive = new Map<string, number>();
+      if (setting?.log) {
+        signals.forEach((s, i) => {
+          if (s.hidden) return;
+          const gk = scaleGroupKey(members[i]);
+          let m = minPositive.get(gk) ?? Infinity;
+          for (const v of seriesRel[i].v) if (v > 0 && v < m) m = v;
+          if (Number.isFinite(m)) minPositive.set(gk, m);
+        });
+      }
+      const axisRanges = new Map<string, ResolvedAxisRange>();
+      const noPositive: string[] = [];
+      if (setting) {
+        signals.forEach((s, i) => {
+          if (s.hidden) return;
+          const key = members[i].key;
+          const resolved = resolveAxisRange(
+            scaleRanges.get(key) ?? null,
+            setting,
+            minPositive.get(scaleGroupKey(members[i])) ?? null,
+          );
+          if (resolved) axisRanges.set(key, resolved);
+          else if (setting.log && seriesRel[i].v.length > 0) noPositive.push(s.signalName);
+        });
+      } else {
+        for (const [key, r] of scaleRanges) axisRanges.set(key, { ...r, log: false });
+      }
+      setLogEmptySignals(noPositive.join(", "));
       // Enum-mode: skip auto-normalisation and pass raw enum codes
       // through. The y scale is pinned to the table's raw-value range
       // below so the trace's discrete codes plot at their natural
       // positions and the axis tick labels (set in `opts`) are
       // symbolic.
       const enumActive = enumModeRef.current && valueTableRef.current != null;
-      const effective = new Map<string, { lo: number; hi: number }>();
+      const effective = new Map<string, ResolvedAxisRange>();
       // Lane axis: normalise each enum into its own lane band on the
       // [0, 1] scale (ADR 0026). The lane's value range is a *table*
       // fact (padded raw min/max), independent of observed data; a
@@ -1151,15 +1340,35 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
           // the GC they fed.
           rawRows.map((row, i) => {
             if (seriesRel[i].v.length === 0) return row; // all null anyway
-            const key = signalRefKey(signals[i]);
-            const r = scaleRanges.get(key);
+            const key = members[i].key;
+            const r = axisRanges.get(key);
             if (r && r.hi > r.lo) {
               effective.set(key, r);
+              if (r.log) {
+                // Non-positive samples are **dropped** (`null`, so uPlot
+                // leaves a gap), not clamped onto the floor — a clamped
+                // point reads as a real reading (ADR 0026).
+                const loE = Math.log10(r.lo);
+                const inv = 1 / (Math.log10(r.hi) - loE);
+                for (let j = 0; j < row.length; j++) {
+                  const v = row[j];
+                  if (v != null) row[j] = v > 0 ? (Math.log10(v) - loE) * inv : null;
+                }
+                return row;
+              }
               const span = r.hi - r.lo;
               for (let j = 0; j < row.length; j++) {
                 const v = row[j];
                 if (v != null) row[j] = (v - r.lo) / span;
               }
+              return row;
+            }
+            if (setting?.log) {
+              // A log axis over a series with nothing positive in it has
+              // no range at all. Blank the row rather than fall to the
+              // midline below, which would draw a flat line where the
+              // axis can show no reading (the side panel says so).
+              for (let j = 0; j < row.length; j++) row[j] = null;
               return row;
             }
             // No range available yet — the signal hasn't decoded, so
@@ -1245,7 +1454,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       if (labelKey) {
         const r = effective.get(labelKey)!;
         const sig = signals.find((s) => signalRefKey(s) === labelKey);
-        primaryAxisRef.current = { lo: r.lo, hi: r.hi, unit: sig?.unit ?? null };
+        primaryAxisRef.current = { ...r, unit: sig?.unit ?? null };
       } else {
         primaryAxisRef.current = null;
       }
@@ -1347,7 +1556,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
           // have to start at the same x for the shared cursor to be
           // collinear — it just leaves it empty.
           ...axisCommon,
-          size: () => reportGutterNeed(areaId, 14),
+          size: () => trackGutter(areaId, 14),
           grid: { show: false },
           ticks: { show: false },
           splits: () => [],
@@ -1356,27 +1565,32 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       : enumActiveAtConstruct
       ? {
           ...axisCommon,
-          size: () => reportGutterNeed(areaId, 80),
+          size: () => trackGutter(areaId, 80),
           splits: () => enumRaws,
           values: (_u, splits) =>
             splits.map((v) => `${v} "${enumLabelFor(Math.round(v))}"`),
         }
       : {
           ...axisCommon,
-          // Tick *positions* stay on the underlying [0, 1] (or custom
-          // yMode) scale — what changes is how we format each split's
-          // value for display. In auto-mode the plot data is normalised
-          // to [0, 1], so each split is mapped through the primary
-          // signal's current `(lo, hi)` to recover a raw signal value
-          // for the label (and the signal's unit is suffixed when the
-          // DBC supplied one). In custom-mode the scale already *is*
-          // the raw range, so the split value is taken as-is.
+          // Tick *positions* stay on the underlying [0, 1] scale — what
+          // changes is how we format each split's value for display.
+          // The plot data is normalised to [0, 1], so each split is
+          // mapped back through the primary signal's current range to
+          // recover a raw signal value for the label (and the signal's
+          // unit is suffixed when the DBC supplied one). That mapping
+          // is the axis's own: linear by default, by decades when the
+          // axis is on a log scale.
           values: (_u, splits) => splits.map((v) => {
             const p = primaryAxisRef.current;
             if (p == null) return fmtTickValue(v);
-            const raw = p.lo + v * (p.hi - p.lo);
-            return `${fmtTickValue(raw)}${p.unit ? ` ${p.unit}` : ""}`;
+            return `${fmtTickValue(denormalizeOnAxis(v, p))}${p.unit ? ` ${p.unit}` : ""}`;
           }),
+          // A log axis puts its ticks on decade boundaries; uPlot's own
+          // even splits over the normalised [0, 1] would read `1`,
+          // `3.98`, `15.8`… Installed only when the axis is log at
+          // construction, so a linear axis keeps uPlot's default
+          // spacing untouched.
+          ...(logActive ? { splits: () => logDecadeSplits(primaryAxisRef.current) } : {}),
           // Sized from the formatted tick strings each layout pass: a
           // signal with units like `degC` and 5-digit raw values needs
           // far more than 52 px of gutter, otherwise labels run off the
@@ -1389,7 +1603,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
           // — a per-axis width leaves the plot boxes starting at
           // different x, and an unlatched one makes the left edge
           // twitch frame to frame under an auto-fitted scale.
-          size: (_u, values) => reportGutterNeed(areaId, measureAxisSize(values)),
+          size: (_u, values) => trackGutter(areaId, measureAxisSize(values)),
           // Tint the y-axis to match the primary signal's trace so
           // it's obvious which series the labels correspond to. Falls
           // back to the neutral axis color when there's no primary
@@ -1988,7 +2202,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       if (uplotRef.current === u) uplotRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [signalSetKey, areaId, resizeTick, valueTable, showPoints, isLast]);
+  }, [signalSetKey, areaId, resizeTick, valueTable, showPoints, isLast, logActive]);
 
   // While the trace is running, re-sample on a self-paced loop at the
   // configured rate (each tick scheduled after the previous one
@@ -2078,6 +2292,13 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     // (ADR 0026) — Fit Y has nothing to snapshot and must not leave a
     // stale manual latch that survives a mode switch.
     if (laneModeRef.current) return;
+    // Fit Y *clears* a manual range rather than writing the fitted
+    // numbers into it. Under a sparse store "fit y" and "clear the
+    // fields" are the same intent — go back to automatic — and seeding
+    // the fields would silently pin every axis the user ever fitted.
+    // The log flag is not a range and survives: fitting a log axis to
+    // its visible data is still a log axis.
+    onSetYScale({ min: null, max: null });
     const sm = seriesRef.current;
     const next = new Map<string, { lo: number; hi: number }>();
     for (const [key, ser] of sm) {
@@ -2097,7 +2318,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     manualRangesRef.current = next;
     manualFitYRef.current = true;
     void resampleRef.current();
-  }, []);
+  }, [onSetYScale]);
   // Wire the toolbar's "fit y" button to this area's `fitY`. Skip the
   // first run so we don't fire one on initial mount.
   const fitYEpochPrevRef = useRef(fitYEpoch);
@@ -2117,7 +2338,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       const r = effectiveRangesRef.current.get(primaryKey);
       if (r) {
         const sig = signals.find((s) => signalRefKey(s) === primaryKey);
-        primaryAxisRef.current = { lo: r.lo, hi: r.hi, unit: sig?.unit ?? null };
+        primaryAxisRef.current = { ...r, unit: sig?.unit ?? null };
       } else {
         primaryAxisRef.current = null;
       }
@@ -2149,6 +2370,21 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     void resampleRef.current();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hiddenKey]);
+
+  // A changed manual bound re-normalises the data, and normalisation
+  // only happens on a resample — so take the same proven path the
+  // hidden-signal toggle above does: drop the fetch memo (an unchanged
+  // request short-circuits before the normalise) and resample. One host
+  // fetch per gesture, and it is what makes a *stopped* trace redraw at
+  // the new bound instead of waiting for a tick that never comes.
+  const yScaleKey = `${effectiveYScale?.min ?? ""}|${effectiveYScale?.max ?? ""}|${logActive ? "log" : ""}`;
+  const yScaleKeyPrevRef = useRef(yScaleKey);
+  useEffect(() => {
+    if (yScaleKeyPrevRef.current === yScaleKey) return;
+    yScaleKeyPrevRef.current = yScaleKey;
+    resetRange();
+    void resampleRef.current();
+  }, [yScaleKey, resetRange]);
 
   // Redraw the overlay when cursors / the shared crosshair / events
   // change (no resample).
@@ -2294,7 +2530,29 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
         signalDrop(e, { beforeKey: null, stopEvent: false, panelElementId, onDropSignal });
       }}
     >
-      <div className="plot-area-canvas" ref={canvasRef} />
+      <div
+        className="plot-area-canvas"
+        ref={canvasRef}
+        onContextMenu={(e) => {
+          // Only on the y-axis gutter: inside the plot box uPlot owns
+          // the right button (box zoom / cursor B), and the event
+          // bubbles here from its overlay. The gutter is the strip
+          // left of the box, whose width the axis reports.
+          if (!yScaleSettable) return;
+          if (e.clientX - e.currentTarget.getBoundingClientRect().left > gutterPx) return;
+          e.preventDefault();
+          e.stopPropagation();
+          setAxisMenu({ x: e.clientX, y: e.clientY });
+        }}
+      />
+      {axisMenu && (
+        <YAxisScaleMenu
+          position={axisMenu}
+          scale={effectiveYScale}
+          onSet={onSetYScale}
+          onClose={() => setAxisMenu(null)}
+        />
+      )}
       {collapsed && <div className="plot-area-placeholder" ref={placeholderRef} />}
       {buildingFirstSample && !collapsed && (
         // Overlaid on the canvas column rather than placed in the flow,
@@ -2308,6 +2566,20 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
         >
           <span className="plot-area-building-bar" aria-hidden="true" />
           <span>building…</span>
+        </div>
+      )}
+      {logEmptySignals !== "" && !collapsed && (
+        // A log axis cannot render zero or negatives, and those points
+        // are dropped rather than clamped — so a series with nothing
+        // positive in it draws nothing at all. Say which one, rather
+        // than leaving a silently empty axis (ADR 0026).
+        <div
+          className="plot-area-note"
+          role="status"
+          style={{ right: `${signalsWidth}px` }}
+          title="a log axis cannot show zero or negative values, and non-positive samples are dropped rather than clamped"
+        >
+          {logEmptySignals}: no positive values to plot on a log axis
         </div>
       )}
       <div

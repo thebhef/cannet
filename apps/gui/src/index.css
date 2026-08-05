@@ -1660,6 +1660,74 @@ button.trace-event-swatch {
   }
 }
 
+/* The y axis's own context menu (ADR 0026): manual bounds + log scale,
+   opened by right-clicking the axis gutter. Same floating shell as the
+   other context menus in the app (`.rbs-context-menu`,
+   `.sources-context-menu`), with rows sized for a numeric field. */
+.plot-axis-menu {
+  position: fixed;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.4rem;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 4px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+  color: #cbd5e1;
+  font-size: 0.72rem;
+}
+.plot-axis-menu-title {
+  font-weight: 700;
+  color: #94a3b8;
+}
+.plot-axis-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.plot-axis-menu-row > span {
+  flex: 0 0 2rem;
+}
+.plot-axis-menu-row input[type="text"],
+.plot-axis-menu-row input:not([type]) {
+  flex: 1 1 auto;
+  width: 6rem;
+  background: #0d1114;
+  border: 1px solid #334155;
+  border-radius: 3px;
+  color: #cbd5e1;
+  font: inherit;
+  padding: 0.1rem 0.25rem;
+}
+.plot-axis-menu-hint {
+  color: #64748b;
+  font-style: italic;
+}
+
+/* A standing note over the canvas column — today, that a log axis has
+   no positive values to draw for some series. Same overlay geometry as
+   `.plot-area-building` (the side panel keeps its width, set inline) so
+   nothing reflows when it clears, but stationary: it reports a state
+   rather than progress. */
+.plot-area-note {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 0.6rem;
+  text-align: center;
+  pointer-events: none;
+  z-index: 4;
+  font-size: 0.72rem;
+  font-style: italic;
+  color: #64748b;
+}
+
 .plot-area-canvas {
   flex: 1 1 auto;
   min-width: 0;

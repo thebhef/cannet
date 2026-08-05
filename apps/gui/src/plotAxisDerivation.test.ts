@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { axisGutterWidth, createGutterCoordinator, deriveAxesForArea } from "./plotAxisDerivation";
+import {
+  axisGutterWidth,
+  createGutterCoordinator,
+  deriveAxesForArea,
+  retainedAxisIds,
+} from "./plotAxisDerivation";
 
 describe("axisGutterWidth", () => {
   const H = 12;
@@ -172,6 +177,54 @@ describe("deriveAxesForArea", () => {
     // Re-running gives the same ids.
     const again = deriveAxesForArea("area-7", sigs, "per-unit");
     expect(again[0].id).toBe(out[0].id);
+  });
+});
+
+describe("retainedAxisIds", () => {
+  it("covers every id the area's signals could mint, in any mode", () => {
+    const ids = new Set(retainedAxisIds("a", [s("A", "V"), s("B", "V"), s("C", "")]));
+    expect(ids).toEqual(
+      new Set([
+        "a",
+        "a/u:enum",
+        "a/u:unit:V",
+        "a/u:unit:",
+        "a/i:b1|s:100:A",
+        "a/i:b1|s:100:B",
+        "a/i:b1|s:100:C",
+      ]),
+    );
+  });
+
+  it("matches what every mode actually derives, so no live axis is ever pruned", () => {
+    const sigs = [s("A", "V"), s("B", "A"), s("C", "V")];
+    const isEnum = (k: string) => k === "b1|s:100:C";
+    const retained = new Set(retainedAxisIds("a", sigs));
+    for (const mode of ["unified", "per-unit", "individual"] as const) {
+      for (const ax of deriveAxesForArea("a", sigs, mode, isEnum)) {
+        expect(retained.has(ax.id)).toBe(true);
+      }
+    }
+  });
+
+  it("keeps a per-unit axis while any signal of that unit remains", () => {
+    const both = [s("A", "V"), s("B", "V")];
+    expect(retainedAxisIds("a", both)).toContain("a/u:unit:V");
+    // One of the pair removed: the unit axis is still there.
+    expect(retainedAxisIds("a", [both[1]])).toContain("a/u:unit:V");
+    // The last one removed: it retires.
+    expect(retainedAxisIds("a", [])).not.toContain("a/u:unit:V");
+  });
+
+  it("retires an individual axis with its own signal, and only that one", () => {
+    const sigs = [s("A", "V"), s("B", "A")];
+    const after = retainedAxisIds("a", [sigs[0]]);
+    expect(after).toContain("a/i:b1|s:100:A");
+    expect(after).not.toContain("a/i:b1|s:100:B");
+  });
+
+  it("keeps the empty area's own axis", () => {
+    expect(retainedAxisIds("a", [])).toEqual(["a"]);
   });
 });
 
