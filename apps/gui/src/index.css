@@ -1493,6 +1493,8 @@ button.trace-event-swatch {
   flex: 1 1 0;
   min-height: 24px;
   border-bottom: 1px solid #1f2630;
+  /* Containing block for the "building…" overlay. */
+  position: relative;
 }
 .plot-area:last-child {
   border-bottom: none;
@@ -1602,6 +1604,60 @@ button.trace-event-swatch {
   width: 0.8rem;
   height: 0.8rem;
   margin-top: 0;
+}
+
+/* An area waiting on the *first* sample for its signal set: the
+   decimation cache is cold, so the host is decoding the whole window
+   and the canvas is blank. Indeterminate — the host discovers the work
+   while doing it, so there is no percentage to show — and only rendered
+   once the wait passes its gate, so a fast signal add never flashes it.
+   Overlays the canvas column (the side panel keeps its width, set
+   inline) so the layout doesn't move when it clears. */
+.plot-area-building {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  pointer-events: none;
+  z-index: 4;
+  font-size: 0.72rem;
+  font-style: italic;
+  color: #64748b;
+}
+/* Indeterminate: a chip sliding along a track, sized so it reads as
+   activity without competing with the plot. */
+.plot-area-building-bar {
+  width: 6rem;
+  height: 2px;
+  border-radius: 1px;
+  background: #1f2630;
+  overflow: hidden;
+}
+.plot-area-building-bar::after {
+  content: "";
+  display: block;
+  width: 35%;
+  height: 100%;
+  background: #4ecbff;
+  animation: plot-area-building-slide 1.1s ease-in-out infinite;
+}
+@keyframes plot-area-building-slide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(286%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .plot-area-building-bar::after {
+    animation: none;
+  }
 }
 
 .plot-area-canvas {

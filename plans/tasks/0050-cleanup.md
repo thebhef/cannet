@@ -8,49 +8,55 @@ commit each, and strike each as it goes.
 
 ## 1. Show progress while a cold signal cache builds
 
-Carried from task 48 item 2. **Decided: show progress.** Not warming the
-pyramids on reload, and not persisting a manifest.
+**Done.** An area waiting on the first sample for its signal set draws an
+indeterminate `building…` overlay over its canvas. Frontend only — no
+host-side progress reporting, no new IPC, and the cold-pyramid design
+(`SignalCacheStore::new` wipes its root every launch) is unchanged.
 
-After a disk-cache reload the decimation pyramids are cold, so the first
-`sample_signals` for a given signal set builds them on demand — seconds
-on a real capture. This is by design: a pyramid is derived state that
-carries no reopen manifest, and `SignalCacheStore::new` wipes its root on
-every launch (`apps/gui/src-tauri/src/signal_cache.rs`), so it is rebuilt
-by re-decoding the reopened raw frames. **That design is not changing** —
-persisting a manifest would have amended ADR 0002 and put a correctness
-burden on reopen, and warming only helps signals a restored panel names.
+**Where the pending state lives: a new
+`apps/gui/src/useFirstSampleWait.ts`**, a view-local hook holding one
+boolean and one timer. It is armed by the *signal set*, not the area:
+`PlotArea` passes `signals.length > 0 ? signalSetKey : null`, so a
+changed set re-arms and an empty area arms nothing. `PlotArea`'s
+`resample` calls the hook's `settled()` immediately after the
+`outcome.kind === "pending"` early-return — past that point the area
+knows what it holds, and `settled()` disarms until the set changes
+again. That one call site covers `empty`, `unchanged` and `sampled`.
 
-So the wait stays; what changes is that the user can see it. A plot area
-waiting on its first sample must say so rather than showing a blank
-canvas that is indistinguishable from "no data" or "hung".
+**Threshold: 300 ms** (`FIRST_SAMPLE_INDICATOR_MS`). The gate is the
+load-bearing half — the first fetch after *any* signal-set change is a
+whole-window one (the re-anchor clears `useDecimatedRange`'s `base`, and
+with no `base` the request carries `fromSeconds`/`toSeconds` of `null`),
+so this path fires on every signal add and an ungated indicator would
+flash as jitter.
 
-**Decided: an indeterminate indicator, gated behind a short delay.**
-Frontend only — no host-side progress reporting, no new IPC. A
-determinate percentage was rejected because the host discovers the work
-while decoding rather than knowing it up front, so it would have to grow
-a progress channel to answer "how much longer"; that cost is not worth it
-for a wait the user is not blocked by.
+**How it is distinguished from "no data":** three states, three
+renderings. *No signals* — the side panel's existing "pick a signal
+above" empty state, and the gate is never armed (`null` key). *No data* —
+the `empty` outcome settles the wait, so a collapsed window draws a bare
+canvas exactly as before. *Not yet* — the overlay, and only after the
+gate. Indeterminate rather than a percentage because the host discovers
+the decode work while doing it; and the round-trip costs the UI thread
+nothing (0.6 % of the main thread in task 48 item 12's profile), so this
+informs rather than unblocks.
 
-The delay gate is the load-bearing half, not a refinement: because this
-fires on **every** signal add against a large buffer (see below), an
-indicator with no threshold would flash on sub-100 ms adds and read as
-jitter rather than information. Only an area whose first sample has not
-landed within roughly 300 ms should say anything.
+**Presentation:** `.plot-area-building` — a sliding chip on a 6 rem
+track plus italic muted `building…`, matching `.plot-area-empty`'s
+muted-italic idiom and the panel's `#4ecbff` accent. Absolutely
+positioned over the canvas column (`.plot-area` gains `position:
+relative`; the side panel's width is excluded by an inline `right`), so
+nothing reflows when it clears, and `pointer-events: none` keeps the
+canvas's gestures. It is the repo's first `@keyframes`, so it carries a
+`prefers-reduced-motion` opt-out.
 
-Two facts from task 48 item 12's profiling that bear on the design:
-
-- **Host latency is not on the UI thread.** In a CPU profile of the
-  shipping app under a heavy plot, `fetch` — every host round-trip the
-  panel makes — was 0.6 % of the main thread. So the window stays
-  responsive throughout; the progress indication is about informing, not
-  about unblocking.
-- **The first fetch after *any* signal-set change is a whole-window
-  one.** Changing an area's signal list re-anchors `useDecimatedRange`'s
-  cache, which clears `base` — and with no `base` the request carries
-  `fromSeconds`/`toSeconds` of `null`, i.e. the whole window at full
-  point budget. So adding one signal to an N-signal area pays a cold
-  whole-window sample of all N + 1. That means this indication fires on
-  every signal add against a large buffer, not only after a reload.
+Tests: `apps/gui/src/useFirstSampleWait.test.tsx` — six fake-timer cases
+(nothing under the gate, indication after it, cleared on arrival, no
+signals never arms, a changed set re-arms, emptying the area clears).
+Wiring is covered by two `PlotPanel.dom.test.tsx` cases over a stalled
+`sample_signals`; both failed before the change. The stall fixture now
+parks its resolver so a test can let the slow fetch *finish* — a fresh
+fetch could not, since the in-flight one holds the area's resample guard,
+which is exactly what the real slow sample does.
 
 ## 2. Restore the commit gate — surgically
 
@@ -663,6 +669,55 @@ fields section carries a worked `BA_DEF_` / `BA_` example). Both get the
 new attribute in the same commit. The full set is small enough that the
 README block is the natural place for it to stay complete — if it grows
 much past this, it wants its own reference page.
+
+## 12. Plot series don't take a changed color
+
+Reported from usage 2026-08-04. Changing a series' color updates the
+signal panel's swatch but **the plotted line keeps its old color**. So
+the color state propagates to one consumer and not the other — likely
+the uPlot series config is not rebuilt (or not applied) on a color-only
+change.
+
+**Investigate first, then plan.** Establish where the color lives, which
+path the signal panel reads, and why the uPlot series misses the update
+(stale series options vs. a rebuild that never fires vs. a memo that
+doesn't key on color). Record the diagnosis here before fixing; fix with
+a failing test first.
+
+## 13. Rename: palette second stage, and trace-panel field editing
+
+Two usage findings from 2026-08-04, both about renaming. Note item 6
+landed in-place renaming via an editable dock tab (this task, branch
+`task50/06-rename-in-place`); the first point below **supersedes that
+interaction** — reconcile rather than stack a third mechanism.
+
+- **`panel.rename` should collect the name through a second-stage
+  command-palette input** — invoke the command, the palette stays open
+  and becomes a text input seeded with the current name, Enter applies.
+  It must not navigate to the project view. Check whether the palette
+  already has a second-stage/argument input; if not, this item adds one.
+  Decide what happens to item 6's editable-tab affordance (keep both or
+  replace) and record the decision here.
+- **Elements in the trace panel, when clicked, should focus** the
+  element, **and carry a button that enables editing the field** —
+  today editing is not discoverable/reachable where the element is.
+  Investigate the current trace-panel element interaction and record
+  the intended click/focus/edit model here before implementing.
+
+## 14. RBS enum values commit late, and enum selection costs an extra click
+
+Reported from usage 2026-08-04. In the RBS panel, an enum signal's new
+value **does not take effect until the control loses focus** — possibly
+true of all value inputs there, check both. And enum selection in
+general seems to take **one more click than expected** to have an
+effect — across the app, not just RBS.
+
+**Investigate first, then plan.** Find where RBS inputs commit
+(blur-commit vs change-commit), whether the extra click is a real event
+ordering issue (e.g. focus-then-open, or a select that swallows the
+first click), and whether the same pattern exists in other enum
+dropdowns. Record the diagnosis and the intended commit model here, then
+fix with failing tests first.
 
 ## Exit criteria
 

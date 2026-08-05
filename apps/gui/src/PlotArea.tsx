@@ -46,6 +46,7 @@ import { emptyJankMeter, jankPercent, jankPixels, observeScroll, scrollStepMs } 
 import { useValueTables } from "./useValueTables";
 import { laneBandsForVisible, laneTileBand, laneValueRange, normalizeIntoLane, tileLabelX } from "./plotEnumLanes";
 import { useDecimatedRange, type DecimatedOutcome } from "./useDecimatedRange";
+import { useFirstSampleWait } from "./useFirstSampleWait";
 import { diagCount, diagGauge } from "./diag"; // DIAG
 
 const CURSOR_A_COLOR = "#ffd93d";
@@ -673,6 +674,14 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   const areaId = area.id;
   const signals = area.signals;
   const signalSetKey = signals.map(signalRefKey).join("|");
+  /** "Nothing drawn *yet*" for the current signal set, as opposed to
+   * "nothing to draw". A signal-set change re-anchors the windowed
+   * source, so the next sample is a cold whole-window one — seconds
+   * against a large buffer with a cold decimation cache. Gated behind a
+   * short delay so a fast add never flashes it. */
+  const { waiting: buildingFirstSample, settled: firstSampleSettled } = useFirstSampleWait(
+    signals.length > 0 ? signalSetKey : null,
+  );
   /** Live mirror of `signals` for the uPlot draw hook, which is
    * captured at construction and so would otherwise see the signal
    * list as it was then — `signalSetKey` deliberately excludes
@@ -949,6 +958,9 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       // belongs to the old instance; the rebuild kicks a fresh one.
       if (uplotRef.current !== u) return;
       if (outcome.kind === "pending") return; // nothing real yet — retry next tick
+      // Past `pending` the area knows what it holds — a window to draw,
+      // or a definitive "there is none". Either way the wait is over.
+      firstSampleSettled();
 
       if (outcome.kind === "empty") {
         // Window collapsed (trace just started, no frames yet, or the
@@ -1236,7 +1248,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       renderCostMsRef.current = performance.now() - syncStart;
       resampleBusyRef.current = false;
     }
-  }, [signals, areaId, withSuppressed, recordRate, sampleRange, currentRange, resetRange]);
+  }, [signals, areaId, withSuppressed, recordRate, sampleRange, currentRange, resetRange, firstSampleSettled]);
 
   const resampleRef = useRef(resample);
   useEffect(() => {
@@ -2270,6 +2282,20 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     >
       <div className="plot-area-canvas" ref={canvasRef} />
       {collapsed && <div className="plot-area-placeholder" ref={placeholderRef} />}
+      {buildingFirstSample && !collapsed && (
+        // Overlaid on the canvas column rather than placed in the flow,
+        // so nothing moves when it clears. The side panel keeps its own
+        // width, hence the inline `right`.
+        <div
+          className="plot-area-building"
+          role="status"
+          style={{ right: `${signalsWidth}px` }}
+          title="building this signal set's decimation cache — the first sample after a signal change decodes the whole window"
+        >
+          <span className="plot-area-building-bar" aria-hidden="true" />
+          <span>building…</span>
+        </div>
+      )}
       <div
         className="plot-area-resizer"
         role="separator"
