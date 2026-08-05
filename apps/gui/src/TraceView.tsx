@@ -119,6 +119,10 @@ export function TraceView({
   const idFormat = useSetting("can_id_format") as CanIdFormat;
 
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  // The event row the user last clicked, by event id (ADR 0035) — view-local
+  // selection, keyed by identity rather than row position because the row
+  // slots are recycled as the view scrolls. `null` means none.
+  const [focusedEvent, setFocusedEvent] = useState<string | null>(null);
   // Absolute row at the top of the viewport, and the single source of
   // truth for what's shown: `firstVisibleRow` and the scrollbar
   // position both derive from it, so the rendered rows never depend on
@@ -237,6 +241,7 @@ export function TraceView({
   useEffect(() => {
     if (count === 0) {
       setExpanded(new Set());
+      setFocusedEvent(null);
       setAnchoredRow(autoScroll ? null : 0);
     }
   }, [count, autoScroll]);
@@ -271,6 +276,7 @@ export function TraceView({
   const toggleExpanded = useCallback((absoluteIndex: number) => {
     setExpanded((prev) => toggleInSet(prev, absoluteIndex));
   }, []);
+  const focusEvent = useCallback((id: string) => setFocusedEvent(id), []);
 
   // The chronological view drops by-id-only columns (e.g. "msg/s" — a
   // single frame has no rate). Memoised so a `trace-grew` re-render
@@ -346,6 +352,10 @@ export function TraceView({
                   resolveColor={resolveColor}
                   onToggle={toggleExpanded}
                   eventActions={eventActions}
+                  // A boolean rather than the focused id, so moving the
+                  // focus re-renders the two rows it touches and no others.
+                  eventFocused={r?.row === "event" && r.event.id === focusedEvent}
+                  onEventFocus={focusEvent}
                 />
               );
             })}
@@ -375,6 +385,9 @@ interface RowProps {
   resolveColor: ColorResolver | null;
   onToggle: (absoluteIndex: number) => void;
   eventActions?: EventActions;
+  /// This row is the focused event row (event rows only).
+  eventFocused: boolean;
+  onEventFocus: (id: string) => void;
 }
 
 const Row = memo(function Row({
@@ -392,11 +405,22 @@ const Row = memo(function Row({
   resolveColor,
   onToggle,
   eventActions,
+  eventFocused,
+  onEventFocus,
 }: RowProps) {
   // Event rows (truncation marker, notes) render through the same renderer
   // as frames but with their own row layout (ADR 0035).
   if (event) {
-    return <EventRow top={top} event={event} baseTimestamp={baseTimestamp} actions={eventActions} />;
+    return (
+      <EventRow
+        top={top}
+        event={event}
+        baseTimestamp={baseTimestamp}
+        actions={eventActions}
+        focused={eventFocused}
+        onFocus={onEventFocus}
+      />
+    );
   }
   return (
     <div
@@ -472,21 +496,29 @@ const EVENT_KIND_COLOR: Record<string, string> = {
 /// One timeline-event row (ADR 0035), rendered by the same `Row` path as a
 /// frame but with its own layout: the event time (relative to the trace
 /// origin, like a frame's time cell), a full-height color swatch, and the
-/// label. Used for the truncation marker and for notes. Editable events
-/// (notes, given `actions`) carry inline controls: click the label to rename,
-/// click the swatch to recolor (the same native picker the plot uses), and a
-/// remove button on the row. Derived events (the truncation marker) render the
-/// same shape but inert.
+/// label. Used for the truncation marker and for notes.
+///
+/// **Clicking the row focuses it** — it is a focus target in its own right,
+/// and the focused row is the one the row's controls act on. Editable events
+/// (notes, given `actions`) carry those controls inline: a rename button
+/// (which is what turns the label into a field), the swatch (click to recolor,
+/// the same native picker the plot uses), and a remove button. Double-clicking
+/// the label renames it too, as the direct-manipulation shortcut. Derived
+/// events (the truncation marker) render the same shape, focusable but inert.
 function EventRow({
   top,
   event,
   baseTimestamp,
   actions,
+  focused,
+  onFocus,
 }: {
   top: number;
   event: TimelineEvent;
   baseTimestamp: number | null;
   actions?: EventActions;
+  focused: boolean;
+  onFocus: (id: string) => void;
 }) {
   const color = event.color ?? EVENT_KIND_COLOR[event.kind] ?? EVENT_KIND_COLOR.note;
   const editable = event.editable && actions != null;
@@ -513,9 +545,11 @@ function EventRow({
     <div
       className={`trace-row trace-event-row trace-event-${event.kind}${
         editable ? " trace-event-editable" : ""
-      }`}
+      }${focused ? " trace-event-focused" : ""}`}
       style={{ position: "absolute", top, left: 0, right: 0, height: ROW_HEIGHT }}
       title={event.label}
+      tabIndex={0}
+      onClick={() => onFocus(event.id)}
     >
       <span className="trace-event-time">
         {formatTimestamp(event.timestampNs / 1e9, baseTimestamp)}
@@ -574,11 +608,22 @@ function EventRow({
       ) : (
         <span
           className={`trace-event-label${editable ? " trace-event-label-editable" : ""}`}
-          title={editable ? "click to rename" : undefined}
-          onClick={editable ? () => setEditing(true) : undefined}
+          title={editable ? "double-click to rename" : undefined}
+          onDoubleClick={editable ? () => setEditing(true) : undefined}
         >
           {event.label}
         </span>
+      )}
+      {editable && !editing && (
+        <button
+          type="button"
+          className="trace-event-edit"
+          title="rename"
+          aria-label="rename event"
+          onClick={() => setEditing(true)}
+        >
+          ✎
+        </button>
       )}
       {editable && (
         <button

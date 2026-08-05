@@ -1223,13 +1223,25 @@ button.trace-event-swatch {
   padding: 0;
 }
 
+/* The clicked event row. Selection is view-local and keyed by event id,
+   so it survives the row slots being recycled by a scroll. */
+.trace-event-focused {
+  background: #17202c;
+  box-shadow: inset 2px 0 0 #38bdf8;
+}
+.trace-event-row:focus-visible {
+  outline: 1px solid #38bdf8;
+  outline-offset: -1px;
+}
+
 .trace-event-label {
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* Click the label of an editable event to rename it inline. */
+/* Double-click the label of an editable event to rename it inline — the
+   shortcut for the row's ✎ button. */
 .trace-event-label-editable {
   cursor: text;
 }
@@ -1248,6 +1260,27 @@ button.trace-event-swatch {
   border-radius: 3px;
   padding: 0 0.25rem;
 }
+/* Turn the label into a field. Pinned right, with the remove button
+   following it; while the field is open the button is gone and remove's
+   own auto margin pins it instead. */
+.trace-event-edit {
+  margin-left: auto;
+  flex: 0 0 auto;
+  font: inherit;
+  line-height: 1;
+  background: transparent;
+  color: #64748b;
+  border: none;
+  padding: 0 0.35rem;
+  cursor: pointer;
+}
+.trace-event-edit:hover {
+  color: #cbd5e1;
+}
+.trace-event-edit + .trace-event-remove {
+  margin-left: 0;
+}
+
 /* Pinned to the right edge of the row. */
 .trace-event-remove {
   margin-left: auto;
