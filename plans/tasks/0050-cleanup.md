@@ -772,18 +772,93 @@ default-tab div, which a real click reaches by bubbling.
 
 ## 14. RBS enum values commit late, and enum selection costs an extra click
 
-Reported from usage 2026-08-04. In the RBS panel, an enum signal's new
-value **does not take effect until the control loses focus** — possibly
-true of all value inputs there, check both. And enum selection in
-general seems to take **one more click than expected** to have an
-effect — across the app, not just RBS.
+**Fixed, and both reports were the same defect.** An enum label picked
+from a value cell's datalist now takes effect on the pick.
 
-**Investigate first, then plan.** Find where RBS inputs commit
-(blur-commit vs change-commit), whether the extra click is a real event
-ordering issue (e.g. focus-then-open, or a select that swallows the
-first click), and whether the same pattern exists in other enum
-dropdowns. Record the diagnosis and the intended commit model here, then
-fix with failing tests first.
+**Report 1 — where RBS value edits commit.** Every value input in the
+panel is a `ValidatedInput` (`apps/gui/src/ValidatedInput.tsx`), the
+shared draft-then-commit box: the message period, the numeric signal
+cell and the enum signal cell alike. Its only commit triggers were
+`onBlur` and Enter (which just calls `blur()`). So the report is
+literally true and it *was* true of all of them — but only for the
+enum cell is it wrong. The blur commit is deliberate and load-bearing
+for free text: an RBS signal edit partial-encodes into the message's
+payload buffer, which goes out on the wire on the next emission while
+the row is running, so a per-keystroke commit would put "1", "12" and
+"127" on the bus on the way to `127`. A label picked from a list has
+no half-typed states.
+
+**Report 2 — the extra click, and it is not the selects.** The
+mechanism is the `<datalist>`, not event ordering: picking a suggestion
+replaces the input's value and fires `input` with focus unmoved (HTML
+§ input suggestions), so a blur-commit box cannot see it. The user's
+next click — anywhere — is what blurs the box and commits, which is
+exactly one more click than a pick should cost. Every other
+enum-selection surface was already correct and stays untouched:
+
+| Surface | Commit trigger | Verdict |
+| --- | --- | --- |
+| `Combobox` — 19 call sites over 12 files (plot, trace filters, colormap, transmit, calc editor, sources, BLF channel map, RBS add-bus) | option click → `onChange` | already correct (`Combobox.dom.test.tsx`) |
+| Native `<select>` (`settingControls.tsx`, enum settings) | `change` | already correct (`settingControls.dom.test.tsx`) |
+| Bitrate / FD-rate preset datalists (`ConnectionManagement.tsx`) | `change`, per keystroke | already correct |
+| RBS signal value cell, transmit signal value cell | **blur / Enter only** | the defect |
+
+The two clicks a *closed* picker costs (open, then choose) are inherent
+to any dropdown, native or not, and are not what was reported.
+
+**Commit model adopted — one rule, both panels: a discrete choice
+commits when it lands; free text commits on Enter or blur.** It lives
+in `ValidatedInput` as one optional prop, `choices` — the texts that
+are a choice rather than a prefix of one, which for these cells is the
+signal's VAL_ table labels. `onChange` commits through the same path
+the blur would have taken (parse, drop the draft, `onCommit`), so the
+box ends the edit either way and a following blur cannot send it twice.
+Anything not in `choices` — a raw out-of-table value, `0x…`, a number
+for fault injection — is unchanged.
+
+**No `inputType` sniffing.** Chromium tags a datalist pick with
+`insertReplacementText`, which would distinguish a pick from typing the
+label out, but it is untestable in jsdom and not uniform across the
+WebViews the app ships on. Matching against the label set is
+browser-independent and treats a typed-out label as what it is: the
+same choice. The one behavioural consequence is a label that is a
+strict prefix of another (`Park` before `Parking`) committing once on
+the way if it is typed rather than picked — accepted, since the final
+value is still what the user typed and the override is idempotent.
+
+**The transmit enum cell moved onto `ValidatedInput`** rather than
+growing a second copy of the rule. It was a hand-rolled duplicate of
+that component (draft state, focus-clear, blur commit, Enter→blur)
+inside `TransmitSignalsTable.tsx`, contradicting `ValidatedInput`'s own
+docstring — "the one shared implementation the transmit and RBS panels
+both use". The swap is net smaller, keeps the label-then-number parse
+order verbatim, and picks up Escape-to-revert for free. Its numeric
+sibling `NumericValueCell` is still hand-rolled; it is already on the
+right model, so it was left alone.
+
+**What jsdom cannot show.** A datalist popup is browser chrome with no
+DOM presence — neither jsdom nor CDP can click a suggestion — so the
+"a pick does not blur" half of the diagnosis is not directly
+reproducible in a test. What the tests pin is the consequence that
+makes the click cost real and the fix observable: the value arriving by
+`change` alone must commit. Both new panel cases failed that way before
+the change.
+
+Tests: `apps/gui/src/ValidatedInput.dom.test.tsx` (new) — six cases
+over the model itself: free text on blur only, a choice on the change,
+no double commit when the blur follows, free text still deferred while
+choices exist, a choice with surrounding whitespace, Escape. Plus
+`RbsPanel.dom.test.tsx` — the label committing without a blur (and the
+blur not re-sending), free text in an enum cell still deferred, and a
+numeric cell still deferred (its `sampleView` fixture grew a plain
+`PackVoltage` signal, since every other signal there is either an enum
+or a calc destination) — and `TransmitPanel.dom.test.tsx` for the same
+pick-commits case on the transmit cell. Four failed before the change.
+
+Noticed in passing, not acted on: the RBS "Add bus to simulation"
+control is the one place where an enum pick alone still does nothing —
+a `Combobox` plus a separate button. That is a deliberate two-step add
+action rather than a value edit, so it is left as it is.
 
 ## 15. Collapsible sections in the signals view
 

@@ -10,6 +10,7 @@ import type {
   SignalRecord,
 } from "./types";
 import { useValueTables, type ValueTableSignal } from "./useValueTables";
+import { ValidatedInput, parseFiniteNumber } from "./ValidatedInput";
 import {
   type TransmitFrameConfig,
   bytesToHexString,
@@ -253,6 +254,11 @@ interface EnumValueCellProps {
 ///   2. numeric → that number directly
 ///   3. neither → cancel the edit (keep the current value)
 ///
+/// A label is a discrete choice, so it commits as soon as it is
+/// picked; the raw-number path is free text and keeps the Enter/blur
+/// commit (`ValidatedInput`, the shared implementation this and the
+/// RBS panel's signal cells both use).
+///
 /// The label table is loaded once per `(messageId, extended,
 /// signal_name)` via the shared `useValueTables` hook.
 function EnumValueCell({
@@ -268,61 +274,42 @@ function EnumValueCell({
   );
   const [rows = []] = useValueTables(valueTableSignals).values();
 
-  const [draft, setDraft] = useState<string | null>(null);
   // Display: if decoded carries a label use it; else show the raw
   // physical (which for enum signals is typically raw=physical since
   // factor=1, offset=0).
   const currentLabel = decoded?.label ?? null;
   const currentRaw = decoded ? decoded.value : null;
   const display =
-    draft ??
-    (currentLabel
-      ? currentLabel
-      : currentRaw != null
-        ? formatPhysical(currentRaw)
-        : "");
+    currentLabel ?? (currentRaw != null ? formatPhysical(currentRaw) : "");
   const datalistId = `tx-enum-${messageId}-${extended ? "x" : "s"}-${sig.name}`;
   return (
     <>
-      <input
+      <ValidatedInput<number>
         className="tx-col-value tx-signal-input"
-        type="text"
-        list={datalistId}
         value={display}
+        list={datalistId}
+        choices={rows.map((r) => r.label)}
         // Clear on focus so the datalist offers *all* labels instead
         // of filtering on the current one (which locked the picker to
         // the already-selected value); the placeholder keeps the
         // committed label visible, and blurring untouched reverts.
-        placeholder={
-          currentLabel ?? (currentRaw != null ? formatPhysical(currentRaw) : "")
-        }
-        onFocus={() => setDraft("")}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={() => {
-          if (draft === null) return;
-          const text = draft.trim();
-          setDraft(null);
-          if (text === "") return;
+        focusBehavior="clear"
+        parse={(text) => {
+          if (text === "") return null;
           // Exact label match first — typing "Park" picks raw=0
           // regardless of how many "Park"-prefixed labels existed in
           // the datalist suggestions.
           const labelMatch = rows.find((r) => r.label === text);
-          if (labelMatch) {
-            onCommit(labelMatch.raw);
-            return;
-          }
+          if (labelMatch) return labelMatch.raw;
           // Else parse as a number (raw value). For enum signals the
           // physical-vs-raw distinction collapses since factor/offset
           // are typically 1/0; if they aren't, this still sends the
           // physical value the user typed through `encode_frame` and
           // the encoder maps it back to bits.
-          const n = Number(text);
-          if (Number.isFinite(n)) onCommit(n);
+          return parseFiniteNumber(text);
         }}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();
-        }}
-        aria-label={`${sig.name} value (enum)`}
+        onCommit={onCommit}
+        ariaLabel={`${sig.name} value (enum)`}
       />
       <datalist id={datalistId}>
         {rows.map((r) => (
