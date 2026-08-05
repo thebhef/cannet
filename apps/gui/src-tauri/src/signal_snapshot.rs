@@ -291,6 +291,7 @@ mod tests {
             unit: String::new(),
             is_enum: false,
             raw_field: false,
+            display_hex: false,
             value: None,
             raw: None,
             label: None,

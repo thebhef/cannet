@@ -72,7 +72,7 @@ export function DecodedSignalCell({
           value={sig.value}
           unit={sig.unit}
           label={sig.label}
-          hex={sig.raw_field}
+          hex={sig.display_hex}
         />
       </span>
     </div>

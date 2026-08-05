@@ -95,12 +95,21 @@ pub struct SignalRecord {
     /// True when the signal is a *raw field* — an unscaled
     /// (`factor == 1`, `offset == 0`) integer with no unit and no enum
     /// `VAL_` table, i.e. an id / serial / bit pattern rather than a
-    /// measurement. Views render these in hex; everything else stays
-    /// decimal (1000 rpm must not read as `0x3E8`). Whether a signal is
-    /// one is a DBC fact, so the host decides it and the frontend only
-    /// renders. Omitted from the wire when false.
+    /// measurement. A value formatter reads it to know the value is a
+    /// digit-exact integer rather than a scaled reading; the *radix*
+    /// is [`SignalRecord::display_hex`]'s job, not this flag's.
+    /// Whether a signal is one is a DBC fact, so the host decides it
+    /// and the frontend only renders. Omitted from the wire when
+    /// false.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub raw_field: bool,
+    /// True when the DBC asks for this signal's value to render as a
+    /// bit pattern (`CannetDisplay "radix=hex"` on a raw field —
+    /// ADR 0043). A raw field reads base 10 unless its DBC says
+    /// otherwise, so this is the whole hex verdict: the host has
+    /// already checked eligibility. Omitted from the wire when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub display_hex: bool,
     /// `VAL_` label matching this decoded value, if any. The trace
     /// view's decoded-signal lines render `<value> "<label>"` when
     /// this is present; otherwise just `<value>`.
@@ -593,6 +602,9 @@ pub struct SignalSelection {
 /// dashboard that silently drops a dead ECU's rows hides exactly the
 /// failure being watched for).
 #[derive(serde::Serialize, Clone, Debug)]
+// `extended`, `is_enum`, `raw_field` and `display_hex` are independent
+// DBC facts on a serialized row, not a state machine.
+#[allow(clippy::struct_excessive_bools)]
 pub struct SignalSnapshotRecord {
     pub bus_id: Option<String>,
     /// Sending ECU (`BO_` transmitter); `None` for `Vector__XXX`.
@@ -606,10 +618,16 @@ pub struct SignalSnapshotRecord {
     /// True when the signal is a *raw field* — the same
     /// `cannet_dbc::is_raw_field` verdict [`SignalRecord::raw_field`]
     /// carries on the trace views' decoded lines, so one signal cannot
-    /// read as hex on a trace row and as decimal here. Omitted from the
-    /// wire when false.
+    /// be classified one way on a trace row and another way here.
+    /// Omitted from the wire when false.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub raw_field: bool,
+    /// True when the DBC asks for this signal to render as a bit
+    /// pattern — the twin of [`SignalRecord::display_hex`], so a
+    /// signal cannot read as hex on a trace row and as decimal here.
+    /// Omitted from the wire when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub display_hex: bool,
     /// Physical value of the signal's latest in-window update — for a
     /// mux signal, the last frame *whose selector matched its group*.
     pub value: Option<f64>,

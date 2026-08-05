@@ -25,7 +25,7 @@ import { SIGNAL_DND_MIME } from "./dragSignals";
 import { ROW_HEIGHT, SIGNAL_LINE_HEIGHT, expandedRowHeight } from "./traceViewport";
 import type { TraceFrameRecord } from "./types";
 
-const frame: TraceFrameRecord = {
+const defaultFrame: TraceFrameRecord = {
   index: 0,
   timestamp_seconds: 0,
   channel: 0,
@@ -67,7 +67,7 @@ function fakeDataTransfer() {
   };
 }
 
-function renderExpandedRow() {
+function renderExpandedRow(frame: TraceFrameRecord = defaultFrame) {
   const { container } = render(
     <TraceView
       count={1}
@@ -140,6 +140,30 @@ describe("TraceView expanded-row signal sub-rows", () => {
     expect(lines[1].querySelector(".signal-name")).toHaveTextContent("Gear");
     expect(lines[1].querySelector(".signal-value-number")).toHaveTextContent("2");
     expect(lines[1].querySelector(".signal-value-label")).toHaveTextContent('"Drive"');
+  });
+
+  it("reads a raw bit field in base 10, and in hex only where the DBC asks", () => {
+    const { container } = renderExpandedRow({
+      ...defaultFrame,
+      decoded: {
+        name: "Ident",
+        signals: [
+          { name: "Plain", value: 0xdeadbeef, unit: "", raw_field: true, label: null },
+          {
+            name: "Serial",
+            value: 0xdeadbeef,
+            unit: "",
+            raw_field: true,
+            display_hex: true,
+            label: null,
+          },
+        ],
+      },
+    });
+    const lines = container.querySelectorAll(".signals .signal");
+    // Base 10 — and digit-exact, never scientific, however large.
+    expect(lines[0].querySelector(".signal-value-number")).toHaveTextContent("3735928559");
+    expect(lines[1].querySelector(".signal-value-number")).toHaveTextContent("0xDEADBEEF");
   });
 
   it("sizes the row for one line per signal and each line at SIGNAL_LINE_HEIGHT", () => {

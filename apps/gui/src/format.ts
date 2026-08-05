@@ -200,9 +200,10 @@ export function formatMsgRate(rate: number): string {
 /// and its unit rather than one token.
 ///
 /// `hex` renders the value as a bit pattern (`0xDEADBEEF`) instead of a
-/// number — pass the host's `raw_field` flag, which marks the unscaled,
-/// unitless, non-enum signals whose value is an id / serial / bit
-/// pattern. The classification is the host's; this only renders it.
+/// number — pass the host's `display_hex` flag, which marks the raw bit
+/// fields whose DBC asked for hex (`CannetDisplay "radix=hex"`, ADR
+/// 0043). Everything else, raw fields included, reads base 10. The
+/// verdict is the host's; this only renders it.
 export function formatSignalValue(value: number, hex = false): string {
   return hex ? formatHex(value) : formatDecimal(value);
 }

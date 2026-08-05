@@ -18,10 +18,11 @@ interface SignalValueCellProps {
   unit: string;
   /// `VAL_` label for the decoded raw value, if any.
   label?: string | null;
-  /// The host's `raw_field` verdict: the signal is an opaque bit
-  /// pattern, so its value renders in hex. Never re-derived here — the
-  /// classification is a DBC fact the model owns.
-  rawField?: boolean;
+  /// The host's `display_hex` verdict: the signal's DBC asks for its
+  /// value as a bit pattern, so it renders in hex. Never re-derived
+  /// here — a raw field reads base 10 unless its DBC says otherwise,
+  /// and that is a DBC fact the model owns (ADR 0043).
+  displayHex?: boolean;
   /// The signal's identity for colormap resolution; with `resolveColor`
   /// null (no colormaps) the cell renders untinted.
   target: ColorTarget;
@@ -32,7 +33,7 @@ export function SignalValueCell({
   value,
   unit,
   label,
-  rawField,
+  displayHex,
   target,
   resolveColor,
 }: SignalValueCellProps) {
@@ -43,7 +44,7 @@ export function SignalValueCell({
       className="signal-value-cell"
       style={tint ? { background: colorMapTint(tint) } : undefined}
     >
-      <SignalValueText value={value} unit={unit} label={label} hex={rawField} />
+      <SignalValueText value={value} unit={unit} label={label} hex={displayHex} />
     </span>
   );
 }

@@ -1328,7 +1328,7 @@ const DbcRow = memo(function DbcRow({
               value={value?.value}
               unit={value?.unit ?? ""}
               label={value?.label}
-              rawField={value?.raw_field}
+              displayHex={value?.display_hex}
               target={{
                 messageId: row.kind.messageId,
                 extended: row.kind.extended,

@@ -530,145 +530,80 @@ Scope notes:
 
 ## 11. Raw integers default to base-10; hex becomes a per-signal opt-in
 
-**This reverses a shipped default.** Task 48 item 3 made raw integer bit
-fields render as hex everywhere — trace rows, the signal view, the DBC
-panel's value column. The new rule: **base-10 by default**, with hex
-available per signal for the fields where it actually helps (ids,
-serials, bitmasks).
+**Done.** Raw integer bit fields render **base-10** everywhere task 48
+item 3 made them hex — expanded trace rows, the signal view, the DBC
+panel's value column. Hex is now a per-signal DBC opt-in. The
+unconditional half of item 3 is untouched: an exact integer still never
+renders in scientific notation (`0xDEADBEEF` reads `3735928559`, not
+`3.7e+9`).
 
-The classification work all survives — `value_is_raw_integer` and
-`is_raw_field` still identify which signals are eligible. What changes is
-what happens to an eligible signal by default, and that there is now a
-per-signal choice on top.
+**The attribute.** `BA_DEF_ SG_ "CannetDisplay" STRING ;`, default
+`""`, value a `key=value;key=value` one-liner — the grammar
+`CannetCounter` / `CannetCrc` already use (`key_value_pairs` in
+`crates/cannet-dbc/src/calc.rs` is now `pub(crate)` and shared). One
+key is implemented: `radix=hex`. `scale=log` is **not** in scope and
+ADR 0043 records why. Read-only: no DBC writer, no project-side
+override, no UI.
 
-The unconditional half of item 3 is **not** affected: an exact integer
-still never renders in scientific notation. That was the original
-complaint (a `uint64` reading as `1.235e+18`) and base-10 answers it just
-as well as hex did.
+Three warnings, all through the existing `Database::parse_warnings`
+channel and all leaving the default rendering in place:
 
-### Where the per-signal flag lives
+| Input | Warning |
+| --- | --- |
+| unknown key / unknown radix / malformed pair | `<msg>.<sig>: bad CannetDisplay attribute: …` |
+| `radix=hex` on a signal with a unit, a scale factor or a `VAL_` table | `<msg>.<sig>: CannetDisplay radix=hex ignored — not a raw integer field …` |
+| empty value | none — "unconfigured", same as `CannetCounter` |
 
-A DBC extension is the right instinct and **not** a last resort — it is
-what ADR 0010 asks for, and cannet already defines its own `BA_`
-attributes (ADRs 0027 and 0028). Per-signal `BA_ "<name>" SG_ <id>
-<signal> <value>` attributes are **already parsed** and bucketed
-per-signal by `cannet-dbc`. Reading one costs almost nothing.
+**Where the verdict is settled: at parse, once.** `SignalEntry` gains
+`display_hex`, set only when the attribute asks for hex *and*
+`is_raw_field` passes, so no consumer combines two flags — a renderer
+renders what it is told. It rides out on `DecodedSignal::display_hex`
+and `SignalDescriptor::display_hex` (the same twin pattern
+`value_is_raw_integer` uses), then over the wire as `display_hex` on
+`SignalRecord` and `SignalSnapshotRecord`, omitted when false.
 
-**The obstacle is writing, not reading.** `can-dbc` has no serialiser —
-the DBC stack is parse-only. ADR 0029 hit this exact wall for colour maps
-and put them in the project file instead. So:
+**`raw_field` stays and keeps its meaning** — the signal is an opaque
+bit pattern rather than a measurement. It no longer decides the radix;
+it says the value is a digit-exact integer.
 
-- **Honouring a `BA_` attribute the DBC already carries** works today. A
-  hand-edited DBC, or one emitted by whatever generates it, can mark a
-  signal hex and cannet will respect it. This is the cheap, correct,
-  ADR-0010-aligned half.
-- **Setting it from the UI** needs either a DBC writer (a real piece of
-  work, and a destructive one — rewriting a user's DBC) or a
-  project-side override that does not travel with the DBC.
+**For item 10:** consume **`display_hex`** for the radix and
+**`raw_field`** for "this is an integer, format it as one". Both are
+already on `SignalRecord` / `SignalSnapshotRecord`; `SignalDescriptor`
+(the plot's `list_signals` catalog) carries `display_hex` and
+`value_is_raw_integer` but *not* the combined `raw_field` — the plot
+either combines it host-side through `cannet_dbc::is_raw_field(…)` the
+way `trace_query.rs` does, or the descriptor grows the combined flag
+alongside the `decimals` fact item 10 needs anyway.
 
-Note the situation differs from ADR 0029's. There, `BA_` was *structurally*
-incapable of carrying the data (it cannot attach to individual `VAL_`
-entries), so the project file was the only home. Here the mechanism fits
-the data exactly and only the write path is missing — which argues for
-reading the attribute now rather than declaring the DBC unusable.
+**Docs.** New **ADR 0043** — the `Cannet*` namespace and its
+conventions, that cannet never writes a DBC, the DBC-versus-project
+test (*a fact about the signal itself → DBC; a fact that varies per
+rig / session / user → project*), project-wins precedence, and the
+per-value / per-axis asymmetry that is why `radix` ships and `scale`
+does not. **ADR 0026** gains the axis half: a log scale is an axis
+property and a DBC hint never overrides an explicit per-axis setting
+(item 9 implements it; this only records the rule). **ADR 0027** gains
+a pointer to 0043 as the general rule it was the first instance of.
+**README** grows `CannetDisplay` in the calculated-fields `BA_DEF_` /
+`BA_` block plus a paragraph on the attribute set, and
+`examples/cannet-demo.dbc` carries a real example (`BmsCommand.Crc8`)
+so the block is not describing a signal that doesn't exist.
 
-**Decided: read-only, exactly like the existing custom attributes.** No
-DBC writer, no project-side override, no UI for setting it. A DBC author
-writes the attribute; cannet honours it. Absent means base-10.
+Tests: `crates/cannet-dbc/src/tests.rs` — the attribute read (catalog
+and decode sides agree), each bad-value shape, the ineligible-signal
+warning on both a united/scaled signal and an enum, and the demo DBC's
+example. Host: `wire_signals_flag_only_raw_bit_fields` and
+`signal_snapshot_rows_flag_raw_bit_fields` now separate the two flags
+(a raw field with no attribute stays base-10). Frontend:
+`SignalValueCell.dom.test.tsx` (base-10 default, hex on the flag),
+`TraceView.signals.dom.test.tsx` (expanded row, both renderings), and
+`SignalsPanel.dom.test.tsx` (the same row with and without the flag).
 
-Name and grammar, following `CannetCounter` / `CannetCrc` (per-signal,
-`STRING`, empty means unconfigured):
-
-```text
-BA_DEF_ SG_ "CannetDisplay" STRING ;
-BA_DEF_DEF_ "CannetDisplay" "";
-BA_ "CannetDisplay" SG_ 291 SerialNumber "radix=hex";
-BA_ "CannetDisplay" SG_ 512 LeakCurrent "scale=log";
-```
-
-**`CannetDisplay` is a display-mode slot, not a radix flag**, and takes
-the same `key=value;key=value` grammar as `CannetCounter` and
-`CannetCrc` — so further simple modes get a home here rather than each
-earning its own attribute.
-
-**`radix=hex` is the only key this task implements.** `scale=log` is
-shown above as the shape of a future key, and it is *not* in scope here —
-see the interaction below before adding it. An unrecognised key or value
-is a parse warning and falls back to the default rendering, matching how
-`CannetCounter` handles a bad value, so a DBC written for a later cannet
-stays readable by an earlier one.
-
-`radix=hex` on a signal that is not raw-integer eligible (it has a unit,
-a scale factor, or a `VAL_` table) should warn rather than silently do
-nothing — a DBC author who wrote it meant something by it.
-
-### `scale=log` collides with item 9 — resolve before implementing it
-
-Item 9 makes log scale a property of an **axis**, on the explicit
-reasoning that a log scale changes how a range maps to pixels and every
-series on that axis shares it. `CannetDisplay scale=log` would make it a
-property of a **signal**. Both cannot be the authority.
-
-The case that breaks: two signals share a unit, so `per-unit` mode puts
-them on one axis; one declares `scale=log` and the other does not. The
-axis has to be one or the other.
-
-`radix=hex` has no such problem — a radix is per-value, so signals on a
-shared axis can render differently without contradiction. That asymmetry
-is why only `radix` ships here.
-
-A plausible resolution, not decided: the DBC value is a **default** that
-seeds an axis when nothing contradicts it — unambiguous in `individual`
-mode where an axis is one signal, and in `per-unit` when every signal on
-the axis agrees — with the project's own per-axis setting (item 9) always
-overriding, and a mixed axis warning and staying linear. Settle it when
-`scale` is actually added.
-
-### This needs an ADR — write it with this item
-
-**New ADR 0043 (next free number): cannet's DBC custom attributes, and
-where display authority lives.** Three things it has to settle, none of
-which is written down today:
-
-1. **The `Cannet*` attribute namespace, and that it is read-only.**
-   `CannetCounter` and `CannetCrc` exist, but only inside ADR 0027 as
-   part of calculated fields — nothing states that cannet has a namespace,
-   what the convention is, or that cannet never writes a DBC (it can't:
-   `can-dbc` has no serialiser, and rewriting a user's DBC is destructive
-   besides). Every future attribute needs that stated once.
-
-2. **The DBC-versus-project test.** The rule already exists, but only
-   scattered through three rejected-alternatives sections: ADR 0028 —
-   "right home for the calculated-field *designation*, wrong one for
-   per-simulation values and cadence: those vary per rig and would churn a
-   shared DBC"; ADR 0029 — colour maps to the project, partly because
-   `BA_` structurally cannot attach to a `VAL_` entry; ADR 0027 — the
-   designation itself belongs in the DBC. Stated positively: **a fact
-   about the signal itself goes in the DBC; a fact that varies per rig,
-   per session, or per user goes in the project.** `radix=hex` passes —
-   a signal being an opaque bit pattern is intrinsic to it.
-
-3. **Precedence, and the per-value / per-axis asymmetry.** When both the
-   DBC and the project speak, the project wins. And a display fact that
-   is *per value* (radix) can safely be a signal property, while one that
-   is *per axis* (log scale) cannot, because signals sharing an axis
-   share it. That asymmetry is the thing a future contributor will
-   otherwise rediscover by shipping `scale=log` and finding it
-   contradictory.
-
-**Amend ADR 0026** in the same change: it governs per-unit axes and must
-record that log scale is an axis property and that a DBC hint never
-overrides an explicit per-axis setting.
-
-ADR 0027 keeps its attributes; it gains a pointer to 0043 as the general
-rule it was the first instance of.
-
-**Document it with the others.** cannet's custom attributes are
-currently spelled out in ADR 0027 and in `README.md` (the calculated
-fields section carries a worked `BA_DEF_` / `BA_` example). Both get the
-new attribute in the same commit. The full set is small enough that the
-README block is the natural place for it to stay complete — if it grows
-much past this, it wants its own reference page.
+Noticed in passing, not acted on: `PlotPanel.dom.test.tsx > re-renders
+no plot area when only panel-local state changes` failed once in a
+full-suite run (`expected 1 to be +0`) and passed in the file alone and
+in a repeat full run — a render-count assertion racing a loaded
+machine, the same family as item 3. Not touched by this item's change.
 
 ## 12. Plot series don't take a changed color
 

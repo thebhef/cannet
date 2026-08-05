@@ -275,7 +275,10 @@ const MUX_SNAPSHOT_DBC: &str = "VERSION \"\"\n\nNS_ :\n\nBS_:\n\nBU_: Zonal\n\n\
     \x20SG_ Mux M : 0|8@1+ (1,0) [0|0] \"\" Zonal\n\
     \x20SG_ ModeA m0 : 8|16@1+ (1,0) [0|0] \"\" Zonal\n\
     \x20SG_ ModeB m1 : 8|16@1+ (0.5,0) [0|0] \"\" Zonal\n\
-    \x20SG_ Always : 24|8@1+ (1,0) [0|0] \"\" Zonal\n";
+    \x20SG_ Always : 24|8@1+ (1,0) [0|0] \"\" Zonal\n\
+    \nBA_DEF_ SG_ \"CannetDisplay\" STRING ;\n\
+    BA_DEF_DEF_ \"CannetDisplay\" \"\";\n\
+    BA_ \"CannetDisplay\" SG_ 512 ModeA \"radix=hex\";\n";
 
 /// A `Modes` frame: selector byte + a little-endian 16-bit field +
 /// the unconditional byte.
@@ -433,9 +436,9 @@ fn fetch_signal_page_bounds_mux_groups_to_the_window() {
 
 #[test]
 fn signal_snapshot_rows_flag_raw_bit_fields() {
-    // Same predicate as the trace rows' decoded lines: the signal view
-    // and the DBC panel's value column must hex the same signals the
-    // trace does.
+    // Same predicates as the trace rows' decoded lines: the signal view
+    // and the DBC panel's value column must classify — and hex — the
+    // same signals the trace does.
     let state = mux_snapshot_state();
     state
         .trace_store
@@ -447,6 +450,12 @@ fn signal_snapshot_rows_flag_raw_bit_fields() {
         "unscaled unitless integer -> raw field"
     );
     assert!(!by_name("ModeB").raw_field, "factor 0.5 -> stays decimal");
+    // Hex is the DBC's per-signal opt-in, not the classification:
+    // `ModeA` carries `CannetDisplay "radix=hex"`, `Always` is just as
+    // raw a field and reads base 10.
+    assert!(by_name("ModeA").display_hex);
+    assert!(by_name("Always").raw_field && !by_name("Always").display_hex);
+    assert!(!by_name("ModeB").display_hex);
 }
 
 #[test]
@@ -748,34 +757,45 @@ fn collect_trace_records_uses_absolute_indices() {
 
 #[test]
 fn wire_signals_flag_only_raw_bit_fields() {
-    // The hex-rendering predicate is a DBC fact, so the host computes it
-    // and the record carries it: a raw field is an unscaled, unitless
-    // integer with no `VAL_` table.
+    // Both predicates are DBC facts, so the host computes them and the
+    // record carries them: a raw field is an unscaled, unitless integer
+    // with no `VAL_` table, and it renders as a bit pattern only where
+    // the DBC's `CannetDisplay` asks for it.
     let state = test_state();
     let dbc = "VERSION \"\"\n\nNS_ :\n\nBS_:\n\nBU_: ECU\n\n\
          BO_ 256 Mixed: 8 ECU\n\
-          SG_ Serial : 0|32@1+ (1,0) [0|0] \"\" ECU\n\
+          SG_ Serial : 0|24@1+ (1,0) [0|0] \"\" ECU\n\
+          SG_ Flags : 24|8@1+ (1,0) [0|0] \"\" ECU\n\
           SG_ Rpm : 32|16@1+ (0.25,0) [0|0] \"rpm\" ECU\n\
           SG_ Counts : 48|8@1+ (1,0) [0|0] \"count\" ECU\n\
           SG_ Gear : 56|8@1+ (1,0) [0|0] \"\" ECU\n\
-         VAL_ 256 Gear 0 \"Park\" 3 \"Drive\" ;\n";
+         VAL_ 256 Gear 0 \"Park\" 3 \"Drive\" ;\n\
+         BA_DEF_ SG_ \"CannetDisplay\" STRING ;\n\
+         BA_DEF_DEF_ \"CannetDisplay\" \"\";\n\
+         BA_ \"CannetDisplay\" SG_ 256 Serial \"radix=hex\";\n";
     *state.databases.lock().unwrap() = vec![loaded("mixed.dbc", dbc)];
     state.trace_store.append(frame_with_data(256));
 
     let records = collect_trace_records(&state, 0, 1);
     let decoded = records[0].decoded.as_ref().expect("frame decodes");
-    let flag = |name: &str| {
+    let signal = |name: &str| {
         decoded
             .signals
             .iter()
             .find(|s| s.name == name)
             .unwrap_or_else(|| panic!("signal {name} decoded"))
-            .raw_field
     };
+    let flag = |name: &str| signal(name).raw_field;
     assert!(flag("Serial"), "unscaled unitless integer -> raw field");
+    assert!(flag("Flags"), "likewise");
     assert!(!flag("Rpm"), "scaled and united -> stays decimal");
     assert!(!flag("Counts"), "a unit means a measurement, not a pattern");
     assert!(!flag("Gear"), "a VAL_ table key stays decimal");
+
+    let hex = |name: &str| signal(name).display_hex;
+    assert!(hex("Serial"), "CannetDisplay radix=hex");
+    assert!(!hex("Flags"), "a raw field with no attribute reads base 10");
+    assert!(!hex("Rpm"));
 }
 
 #[test]

@@ -14,10 +14,16 @@ export interface SignalRecord {
   unit: string;
   /// True when the host classed this signal as a *raw field* — an
   /// unscaled, unitless integer with no enum `VAL_` table, i.e. an id /
-  /// serial / bit pattern. Views render those in hex. Absent means
-  /// false; the predicate is the host's to compute, never re-derived
-  /// here from the value.
+  /// serial / bit pattern rather than a measurement. It says the value
+  /// is a digit-exact integer, not what radix to draw it in — that is
+  /// `display_hex`. Absent means false; the predicate is the host's to
+  /// compute, never re-derived here from the value.
   raw_field?: boolean;
+  /// True when the signal's DBC asks for its value as a bit pattern
+  /// (`CannetDisplay "radix=hex"` — ADR 0043). This is the whole hex
+  /// verdict: the host has already checked the signal is eligible, and
+  /// a raw field reads base 10 without it. Absent means false.
+  display_hex?: boolean;
   /// `VAL_` label matching this decoded value, if the DBC defines one.
   /// Trace rows render `<value> "<label>"` when present.
   label?: string | null;
@@ -605,8 +611,12 @@ export interface SignalSnapshotRecord {
   /// non-enum integer whose value is a bit pattern (an id, a serial).
   /// The host decides it (`cannet_dbc::is_raw_field`), the same verdict
   /// `SignalRecord.raw_field` carries on the trace views' decoded
-  /// lines; views render these in hex. Absent when false.
+  /// lines. Absent when false.
   raw_field?: boolean;
+  /// True when the signal's DBC asks for its value in hex — the twin
+  /// of `SignalRecord.display_hex`, so a signal cannot read as hex on
+  /// a trace row and as decimal here. Absent when false.
+  display_hex?: boolean;
   value: number | null;
   raw: number | null;
   label?: string | null;
