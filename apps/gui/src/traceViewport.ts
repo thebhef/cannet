@@ -77,12 +77,36 @@ export function maxScrollTop(
 /// `rowHeightAt` reads `ROW_HEIGHT` for rows outside the loaded page, so
 /// an expanded row that hasn't landed yet contributes nothing until it
 /// does.
+///
+/// The walk is why this form is only for views bounded by *id* space
+/// (the by-id table): its expansion set is keyed by a stable row key,
+/// so there is no way to ask which indices are expanded without asking
+/// every index. Where the set is keyed by absolute index, use
+/// [`expandedExtraHeightOf`] instead — a chronological trace's `count`
+/// reaches millions and this would walk all of them on every render.
 export function expandedExtraHeight(
   count: number,
   rowHeightAt: (absIdx: number) => number,
 ): number {
   let extra = 0;
   for (let i = 0; i < count; i++) extra += rowHeightAt(i) - ROW_HEIGHT;
+  return extra;
+}
+
+/// [`expandedExtraHeight`] for a view whose expansion set is keyed by
+/// absolute row index: it iterates the *set*, so the cost is the number
+/// of expanded rows rather than the length of the trace. Indices past
+/// the end (a trace that shrank under a stale set) contribute nothing.
+export function expandedExtraHeightOf(
+  expanded: ReadonlySet<number>,
+  count: number,
+  rowHeightAt: (absIdx: number) => number,
+): number {
+  let extra = 0;
+  for (const i of expanded) {
+    if (i < 0 || i >= count) continue;
+    extra += rowHeightAt(i) - ROW_HEIGHT;
+  }
   return extra;
 }
 
@@ -151,18 +175,40 @@ export function rowFromScroll(
   );
 }
 
-/// Inverse of `rowFromScroll`: the scrollTop that puts `row` at the top
-/// of the viewport. `rowFromScroll(scrollForRow(r, …), …) === r` for
-/// any in-range `r`.
+/// Inverse of [`anchorFromScroll`]: the scroll position that puts
+/// `row` at the top of the viewport, given the same bound and range the
+/// forward mapping was given. `anchorFromScroll(scrollForAnchor(r, …),
+/// …) === r` for any in-range `r`.
+///
+/// Taking the bound and the range as arguments — rather than deriving
+/// them from `count` and the viewport — is what lets a view with
+/// variable row heights map both ways through *its* geometry. A view
+/// that derives one direction from expanded heights and the other from
+/// plain ones sends the bottom of the scrollbar to a row short of the
+/// end.
+export function scrollForAnchor(
+  row: number,
+  anchorMax: number,
+  scrollRange: number,
+): number {
+  if (anchorMax === 0) return 0;
+  return (Math.min(anchorMax, Math.max(0, row)) / anchorMax) * scrollRange;
+}
+
+/// Inverse of `rowFromScroll` for a view whose rows are all
+/// [`ROW_HEIGHT`]: the scrollTop that puts `row` at the top of the
+/// viewport. `rowFromScroll(scrollForRow(r, …), …) === r` for any
+/// in-range `r`.
 export function scrollForRow(
   row: number,
   count: number,
   viewportHeight: number,
 ): number {
-  const anchorMax = maxAnchorRow(count, viewportHeight);
-  if (anchorMax === 0) return 0;
-  const clamped = Math.min(anchorMax, Math.max(0, row));
-  return (clamped / anchorMax) * maxScrollTop(count, viewportHeight);
+  return scrollForAnchor(
+    row,
+    maxAnchorRow(count, viewportHeight),
+    maxScrollTop(count, viewportHeight),
+  );
 }
 
 /// Largest number of rows a single wheel event may move the view. A

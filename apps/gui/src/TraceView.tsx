@@ -8,10 +8,13 @@ import { type ColorResolver } from "./colorMap";
 import { DecodedSignalCell } from "./DecodedSignalCell";
 import {
   ROW_HEIGHT,
+  anchorFromScroll,
   buildPlacements,
+  expandedExtraHeightOf,
+  expandedRowHeight,
+  maxScrollTop,
   maxWheelRows,
-  rowFromScroll,
-  scrollForRow,
+  scrollForAnchor,
   wheelDeltaPx,
 } from "./traceViewport";
 import { useTraceViewport } from "./useTraceViewport";
@@ -95,6 +98,7 @@ const REPIN_THRESHOLD_PX = ROW_HEIGHT;
 
 export function TraceView({
   count,
+  version,
   autoScroll,
   baseTimestampSeconds,
   columns,
@@ -147,6 +151,38 @@ export function TraceView({
   // both disable auto-scroll and re-anchor the view to itself.
   const programmaticScrollRef = useRef(false);
 
+  // Signal count for expanded-row sizing: only frames have signals; an
+  // event row or a not-yet-loaded frame sizes as a plain row.
+  const signalCount = useCallback(
+    (absIdx: number) => {
+      const r = getRow(absIdx);
+      return r?.row === "frame" ? r.frame.decoded?.signals.length ?? 0 : 0;
+    },
+    // `version` is a dep so a page landing re-derives the heights even
+    // though it isn't read directly (what `getRow` answers changes
+    // behind it).
+    [getRow, version],
+  );
+
+  // The rendered height of a row, and what the expanded ones add over
+  // the plain-row baseline. Both go to the scaffold, so the anchor
+  // bound and the scroll spacer are computed over the rows this view
+  // actually draws — without them, expanding a row near the tail
+  // stacks its signal lines below the sticky viewport's fold with no
+  // scroll position that reaches them, and the scroll range doesn't
+  // grow to make one.
+  const rowHeightAt = useCallback(
+    (absIdx: number) =>
+      expanded.has(absIdx) ? expandedRowHeight(signalCount(absIdx)) : ROW_HEIGHT,
+    [expanded, signalCount],
+  );
+  // Iterates the expanded set, not the trace: `count` here is the whole
+  // capture and reaches millions.
+  const extraHeight = useMemo(
+    () => (expanded.size === 0 ? 0 : expandedExtraHeightOf(expanded, count, rowHeightAt)),
+    [expanded, count, rowHeightAt],
+  );
+
   const {
     containerRef,
     headerRef,
@@ -156,11 +192,18 @@ export function TraceView({
     anchorMax,
     firstVisibleRow,
     lastVisibleRow,
-  } = useTraceViewport(count, anchor, "traceview.resizeObserver");
-  // `scrollForRow(anchorMax)` is exactly the bottom (`maxScrollTop`),
-  // so this is "the bottom" while auto-scrolling and the anchored
-  // row's scrollTop otherwise.
-  const targetScrollTop = scrollForRow(firstVisibleRow, count, viewportHeight);
+  } = useTraceViewport(count, anchor, "traceview.resizeObserver", {
+    extraHeight,
+    rowHeightAt,
+  });
+  // The scroll range the anchor maps through, in both directions. Read
+  // from the same `extraHeight` the scaffold used, so the bottom of the
+  // scrollbar and the tail anchor are the same place.
+  const scrollRange = maxScrollTop(count, viewportHeight, extraHeight);
+  // `scrollForAnchor(anchorMax)` is exactly the bottom, so this is "the
+  // bottom" while auto-scrolling and the anchored row's scrollTop
+  // otherwise.
+  const targetScrollTop = scrollForAnchor(firstVisibleRow, anchorMax, scrollRange);
 
   // Tell the parent which absolute rows are visible so it can page them
   // in — but skip this while auto-scrolling: the `trace-grew` live-tail
@@ -218,8 +261,8 @@ export function TraceView({
       if (e.ctrlKey) return; // ctrl+wheel is zoom — leave it alone
       if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return; // horizontal scroll
       const px = wheelDeltaPx(e.deltaY, e.deltaMode, viewportHeight);
-      const fromRow = rowFromScroll(el.scrollTop, count, viewportHeight);
-      const toRow = rowFromScroll(el.scrollTop + px, count, viewportHeight);
+      const fromRow = anchorFromScroll(el.scrollTop, anchorMax, scrollRange);
+      const toRow = anchorFromScroll(el.scrollTop + px, anchorMax, scrollRange);
       const max = maxWheelRows(viewportHeight);
       if (Math.abs(toRow - fromRow) <= max) return; // small enough — native scroll
       e.preventDefault();
@@ -235,7 +278,7 @@ export function TraceView({
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
-  }, [viewportHeight, autoScroll, anchorMax, count, onAutoScrollDisabled]);
+  }, [viewportHeight, autoScroll, anchorMax, scrollRange, onAutoScrollDisabled]);
 
   // Reset transient view state when the trace is cleared.
   useEffect(() => {
@@ -270,8 +313,8 @@ export function TraceView({
     // otherwise the re-pin effect snaps us back next render anyway.
     const offBottom = el.scrollHeight - el.clientHeight - el.scrollTop;
     if (autoScroll && offBottom > REPIN_THRESHOLD_PX) onAutoScrollDisabled();
-    setAnchoredRow(rowFromScroll(el.scrollTop, count, viewportHeight));
-  }, [autoScroll, onAutoScrollDisabled, count, viewportHeight]);
+    setAnchoredRow(anchorFromScroll(el.scrollTop, anchorMax, scrollRange));
+  }, [autoScroll, onAutoScrollDisabled, anchorMax, scrollRange]);
 
   const toggleExpanded = useCallback((absoluteIndex: number) => {
     setExpanded((prev) => toggleInSet(prev, absoluteIndex));
@@ -288,13 +331,15 @@ export function TraceView({
   const gridTemplate = useMemo(() => gridTemplateColumns(shown), [shown]);
   const contentWidthVar = useMemo(() => contentWidthStyle(shown), [shown]);
 
-  // Signal count for expanded-row sizing: only frames have signals; an
-  // event row or a not-yet-loaded frame sizes as a plain row.
-  const signalCount = (absIdx: number) => {
-    const r = getRow(absIdx);
-    return r?.row === "frame" ? r.frame.decoded?.signals.length ?? 0 : 0;
-  };
   const placements = buildPlacements(firstVisibleRow, count, rows, expanded, signalCount);
+  // How tall the rendered rows actually stack. The sticky viewport
+  // clips (`overflow: hidden`), so it takes the larger of the panel
+  // height and the stack — an expanded row taller than the panel then
+  // slides into view as the scroll runs past the sticky element's own
+  // height instead of being cut off at the fold. Same rule as
+  // `ByIdTable`.
+  const lastPlacement = placements[placements.length - 1];
+  const stackHeight = lastPlacement ? lastPlacement.top + lastPlacement.height : 0;
 
   return (
     <div className="trace">
@@ -324,7 +369,7 @@ export function TraceView({
             style={{
               position: "sticky",
               top: 0,
-              height: viewportHeight,
+              height: Math.max(viewportHeight, stackHeight),
               overflow: "hidden",
             }}
           >
