@@ -684,6 +684,13 @@ path the signal panel reads, and why the uPlot series misses the update
 doesn't key on color). Record the diagnosis here before fixing; fix with
 a failing test first.
 
+Additional observation (2026-08-04): **closing and reopening the plot
+panel is enough to make the new color take effect.** So the color is
+persisted and read correctly on construction — the defect is purely that
+a live uPlot instance is never told about a color-only change. That
+narrows the search to whatever diffing decides when an existing instance
+is rebuilt or restyled.
+
 ## 13. Rename: palette second stage, and trace-panel field editing
 
 Two usage findings from 2026-08-04, both about renaming. Note item 6
@@ -718,6 +725,23 @@ ordering issue (e.g. focus-then-open, or a select that swallows the
 first click), and whether the same pattern exists in other enum
 dropdowns. Record the diagnosis and the intended commit model here, then
 fix with failing tests first.
+
+## 15. Collapsible sections in the signals view
+
+Requested from usage 2026-08-04, following item 5's pattern in the
+project view: the signals (by-ID) view should get collapsible sections.
+
+**Investigate first.** Item 5's subject had six ready-made `<section>`
+blocks; the signals view's structure is different (rows grouped under
+message ids), so establish what the natural collapse unit is — most
+plausibly a message's signal rows folding under its ID row — and record
+the intended structure here before implementing. Reuse item 5's
+disclosure pattern (button-in-heading, `aria-expanded`, glyph swap,
+sparse persisted fold state riding the layout's panel params) rather
+than inventing a second idiom. Mind the paged-viewport architecture:
+the by-ID view pages over a windowed query, so folding must compose
+with the anchor/viewport math (`traceViewport.ts`) rather than assume
+an all-in-memory list.
 
 ## Exit criteria
 
