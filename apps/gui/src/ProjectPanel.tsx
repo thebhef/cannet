@@ -4,13 +4,14 @@ import {
   useMemo,
   useReducer,
   useState,
+  type ReactNode,
 } from "react";
 import type { IDockviewPanel, IDockviewPanelProps } from "dockview";
 
 import { useProjectContext } from "./projectContext";
-import { useElementRegistry } from "./projectElements";
+import { useElementRegistry, type RegistryEntry } from "./projectElements";
 import { useSidecarStatus } from "./sidecarStatus";
-import type { Bus, ProjectElement } from "./types";
+import type { Bus, ProjectElement, ProjectElementKind } from "./types";
 import { elementKindLabel, elementLabel } from "./elementLabel";
 import { localVbusBinding, localVbusId, resolveServer } from "./types";
 import {
@@ -32,6 +33,51 @@ import {
   type ComboPick,
 } from "./ConnectionManagement";
 
+interface PanelParams {
+  /// Ids of the sections (and Elements type groups) the user has
+  /// folded away. Stored sparsely — a panel nobody folded persists
+  /// nothing — and round-tripped through the dockview panel params, so
+  /// it rides the layout blob into the workspace scope (ADR 0042 §3)
+  /// and the project file, like every other panel's view state.
+  collapsed?: unknown;
+}
+
+/// Section ids as persisted. Stable strings, not the header text: a
+/// reworded header must not silently unfold everyone's panel.
+const SECTION_PROJECT = "project";
+const SECTION_ELEMENTS = "elements";
+const SECTION_BUSES = "buses";
+const SECTION_VBUSES = "virtual-buses";
+const SECTION_CONNECTION = "connection";
+const SECTION_DBC = "dbc";
+
+/// Persisted id of one Elements type group.
+function elementGroupId(kind: ProjectElementKind): string {
+  return `${SECTION_ELEMENTS}/${kind}`;
+}
+
+/// The order the Elements inventory lists its type groups in — the
+/// declaration order of `elementKindLabel`. A `Record` over the whole
+/// union rather than an array, so adding an element kind is a compile
+/// error here instead of a group that silently sorts first.
+const KIND_ORDER: Record<ProjectElementKind, number> = {
+  trace: 0,
+  plot: 1,
+  signals: 2,
+  transmit: 3,
+  filter: 4,
+  rbs: 5,
+  colormap: 6,
+};
+
+/// Read the persisted collapse set, tolerating whatever a hand-edited
+/// or older layout carries (the params blob is round-tripped
+/// opaquely, so nothing upstream validates it).
+function collapsedFromParams(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((v): v is string => typeof v === "string");
+}
+
 /**
  * The project panel: New / Open / Save / Save As for the project file;
  * the project's elements (traces — and later plots, transmit messages
@@ -39,12 +85,45 @@ import {
  * Disconnect; and the loaded DBCs with add / remove / "reload all from
  * disk". State and actions come from {@link useProjectContext} /
  * {@link useElementRegistry}.
+ *
+ * Every section folds, and so does each of the Elements inventory's
+ * per-type groups; what is folded is persisted in the panel params.
  */
 export function ProjectPanel(props: IDockviewPanelProps) {
   const p = useProjectContext();
   const reg = useElementRegistry();
   const sidecar = useSidecarStatus();
-  const { containerApi } = props;
+  const { api, containerApi } = props;
+  const params = props.params as PanelParams | undefined;
+
+  const [collapsed, setCollapsed] = useState<readonly string[]>(() =>
+    collapsedFromParams(params?.collapsed),
+  );
+  const isCollapsed = (id: string) => collapsed.includes(id);
+  const toggleCollapsed = (id: string) => {
+    const next = collapsed.includes(id)
+      ? collapsed.filter((k) => k !== id)
+      : [...collapsed, id];
+    setCollapsed(next);
+    api.updateParameters({ ...(params ?? {}), collapsed: next });
+  };
+  /// Props every section header needs, so a section reads as one line.
+  const fold = (id: string) => ({
+    collapsed: isCollapsed(id),
+    onToggle: () => toggleCollapsed(id),
+  });
+
+  // The Elements inventory, grouped by element kind. Registry order is
+  // kept inside a group; the groups themselves take `KIND_ORDER`.
+  const elementGroups = useMemo(() => {
+    const byKind = new Map<ProjectElementKind, RegistryEntry[]>();
+    for (const entry of reg.entries) {
+      const list = byKind.get(entry.element.kind);
+      if (list) list.push(entry);
+      else byKind.set(entry.element.kind, [entry]);
+    }
+    return [...byKind].sort(([a], [b]) => KIND_ORDER[a] - KIND_ORDER[b]);
+  }, [reg.entries]);
 
   // The element list re-renders us (the registry context value
   // changes); also re-render when *panels* come and go so the Open /
@@ -149,8 +228,7 @@ export function ProjectPanel(props: IDockviewPanelProps) {
 
   return (
     <div className="project-panel">
-      <section className="project-section">
-        <h3>Project</h3>
+      <CollapsibleSection title="Project" {...fold(SECTION_PROJECT)}>
         <div className="project-path" title={p.projectPath ?? undefined}>
           {p.dirty && <span className="project-dirty" title="unsaved changes">●</span>}
           {p.projectPath ? basename(p.projectPath) : "(unsaved)"}
@@ -169,25 +247,32 @@ export function ProjectPanel(props: IDockviewPanelProps) {
             Save As…
           </button>
         </div>
-      </section>
+      </CollapsibleSection>
 
-      <section className="project-section">
-        <h3>Elements</h3>
-        {reg.entries.length === 0 && <div className="project-empty">No elements.</div>}
-        {reg.entries.map((entry) => (
-          <ElementRow
-            key={entry.element.id}
-            element={entry.element}
-            panel={panelFor(entry.element.id)}
-            onOpen={() => openElement(entry.element)}
-            onRename={(name) => reg.update(entry.element.id, { name })}
-            onRemove={() => reg.remove(entry.element.id)}
-          />
+      <CollapsibleSection title="Elements" {...fold(SECTION_ELEMENTS)}>
+        {elementGroups.length === 0 && <div className="project-empty">No elements.</div>}
+        {elementGroups.map(([kind, entries]) => (
+          <CollapsibleSection
+            key={kind}
+            variant="group"
+            title={elementKindLabel(kind)}
+            {...fold(elementGroupId(kind))}
+          >
+            {entries.map((entry) => (
+              <ElementRow
+                key={entry.element.id}
+                element={entry.element}
+                panel={panelFor(entry.element.id)}
+                onOpen={() => openElement(entry.element)}
+                onRename={(name) => reg.update(entry.element.id, { name })}
+                onRemove={() => reg.remove(entry.element.id)}
+              />
+            ))}
+          </CollapsibleSection>
         ))}
-      </section>
+      </CollapsibleSection>
 
-      <section className="project-section">
-        <h3>Logical buses</h3>
+      <CollapsibleSection title="Logical buses" {...fold(SECTION_BUSES)}>
         {p.buses.length === 0 && <div className="project-empty">No buses.</div>}
         {p.buses.map((bus, i) => {
           const binding = p.interfaceBindings.find((b) => b.bus_id === bus.id);
@@ -282,10 +367,9 @@ export function ProjectPanel(props: IDockviewPanelProps) {
             Add bus
           </button>
         </div>
-      </section>
+      </CollapsibleSection>
 
-      <section className="project-section">
-        <h3>Virtual buses</h3>
+      <CollapsibleSection title="Virtual buses" {...fold(SECTION_VBUSES)}>
         {p.localVirtualBuses.length === 0 && (
           <div className="project-empty">
             No virtual buses. Add one from a logical-bus combo, or here.
@@ -318,10 +402,9 @@ export function ProjectPanel(props: IDockviewPanelProps) {
             Add virtual bus
           </button>
         </div>
-      </section>
+      </CollapsibleSection>
 
-      <section className="project-section">
-        <h3>Connection</h3>
+      <CollapsibleSection title="Connection" {...fold(SECTION_CONNECTION)}>
         {p.blfPath && (
           <div className="project-bus">
             <span className="project-bus-name" title={p.blfPath}>
@@ -372,10 +455,9 @@ export function ProjectPanel(props: IDockviewPanelProps) {
             )}
           </div>
         )}
-      </section>
+      </CollapsibleSection>
 
-      <section className="project-section">
-        <h3>DBC</h3>
+      <CollapsibleSection title="DBC" {...fold(SECTION_DBC)}>
         {p.dbcPaths.length === 0 && <div className="project-empty">No DBCs loaded.</div>}
         {p.dbcPaths.map((path) => {
           const scoped = p.dbcBuses[path] ?? [];
@@ -425,8 +507,55 @@ export function ProjectPanel(props: IDockviewPanelProps) {
             </button>
           )}
         </div>
-      </section>
+      </CollapsibleSection>
     </div>
+  );
+}
+
+/// One folding block: the heading stays a heading (so the panel keeps
+/// its outline) and the disclosure button inside it carries
+/// `aria-expanded`. The body is unmounted rather than hidden, matching
+/// the RBS panel's collapsible rows — and keeping the panel's own
+/// scroll range honest.
+///
+/// `variant="group"` is the smaller, indented form the Elements
+/// inventory's per-type groups use.
+function CollapsibleSection({
+  title,
+  collapsed,
+  onToggle,
+  variant = "section",
+  children,
+}: {
+  title: string;
+  collapsed: boolean;
+  onToggle: () => void;
+  variant?: "section" | "group";
+  children?: ReactNode;
+}) {
+  const group = variant === "group";
+  const Heading = group ? "h4" : "h3";
+  return (
+    <section className={group ? "project-group" : "project-section"}>
+      <Heading>
+        <button
+          type="button"
+          className="project-section-toggle"
+          aria-expanded={!collapsed}
+          onClick={onToggle}
+        >
+          {/* Glyph swap rather than a rotate, matching the RBS and
+              transmit carets. Hidden from the accessible name — the
+              button's own `aria-expanded` already says which way it
+              points. */}
+          <span className="project-section-caret" aria-hidden="true">
+            {collapsed ? "▸" : "▾"}
+          </span>
+          {title}
+        </button>
+      </Heading>
+      {!collapsed && children}
+    </section>
   );
 }
 
@@ -434,10 +563,11 @@ export function ProjectPanel(props: IDockviewPanelProps) {
 /// Stable in the sense that two buses on the same project never share
 /// an id; not stable across renames (since renaming doesn't change the
 /// id).
-/// One row in the project panel's Elements inventory: the kind, an
-/// inline-rename input bound to the element's model-owned `name`
-/// (the project panel is the canonical edit surface — ADR 0019), and
-/// Open / Focus / Remove.
+/// One row in the project panel's Elements inventory: an inline-rename
+/// input bound to the element's model-owned `name` (the project panel
+/// is the canonical edit surface — ADR 0019), and Open / Focus /
+/// Remove. The kind isn't repeated per row — the row sits under its
+/// kind's group header.
 export function ElementRow({
   element,
   panel,
@@ -453,7 +583,6 @@ export function ElementRow({
 }) {
   return (
     <div className="project-element">
-      <span className="project-element-kind">{elementKindLabel(element.kind)}</span>
       <input
         type="text"
         className="project-bus-name-input"

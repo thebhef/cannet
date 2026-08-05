@@ -675,6 +675,54 @@ header {
   color: #64748b;
 }
 
+/* Section (and Elements type-group) headers are disclosure buttons.
+   The heading keeps the panel's outline; the button inside it carries
+   `aria-expanded`. The `.project-panel button` rule below styles every
+   button in the panel as a bordered control, which a header is not —
+   hence the two-class selector to outrank it. */
+.project-panel .project-section-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  width: 100%;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+}
+
+.project-panel .project-section-toggle:hover:not(:disabled) {
+  background: none;
+  color: #94a3b8;
+}
+
+.project-section-caret {
+  flex: 0 0 auto;
+  width: 0.7rem;
+}
+
+/* One Elements type group: a section within the Elements section, so
+   it is indented and its heading is a shade brighter than the
+   top-level ones rather than louder. */
+.project-group {
+  margin: 0 0 0.4rem 0.3rem;
+}
+
+.project-group h4 {
+  margin: 0 0 0.2rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #94a3b8;
+}
+
 .project-path,
 .project-bus,
 .project-dbc,
@@ -683,15 +731,6 @@ header {
   align-items: center;
   gap: 0.4rem;
   margin-bottom: 0.3rem;
-}
-
-.project-element-kind {
-  flex: 0 0 auto;
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: #94a3b8;
-  min-width: 4.5rem;
 }
 
 .project-path {
