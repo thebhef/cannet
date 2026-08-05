@@ -1507,6 +1507,17 @@ describe("PlotArea y-normalisation", () => {
     return inst.data;
   }
 
+  /** The y-axis tick labels the newest instance would draw at `splits`.
+   * Tick *positions* stay on the normalised [0, 1] scale; the label
+   * formatter maps them back through the axis's range, so this is where
+   * the scale an axis actually settled on is observable. */
+  function yTickLabels(splits: number[]): string[] {
+    const inst = uplotInstances[uplotInstances.length - 1] as unknown as {
+      opts: { axes: { values: (u: unknown, s: number[]) => string[] }[] };
+    };
+    return inst.opts.axes[1].values(inst, splits);
+  }
+
   /** Wait for the newest instance's data to satisfy `check`.
    *
    * Value tables resolve asynchronously, after the area has rendered at
@@ -1739,11 +1750,12 @@ describe("PlotArea y-normalisation", () => {
     }
   });
 
-  it("numeric: a unit group with no span at all draws at the midline, not NaN", async () => {
+  it("numeric: a unit group with no span reads as its value, not a bare 0–1 scale", async () => {
     // The degenerate end of the case above: the group's whole range is
-    // one value, so there is nothing to normalise by. The fallback must
-    // be the canvas midline — dividing by the zero span would put NaN
-    // in the data and draw nothing at all.
+    // one value, so there is nothing to normalise by. It gets a ±10 %
+    // minimum range instead, so the trace still sits mid-canvas (never
+    // NaN — dividing by a zero span would draw nothing at all) but the
+    // axis labels read the value it holds rather than 0…1.
     mockSignalExtents.LimitNominal = { lo: 3000, hi: 3000 };
     mockSampleSeries.LimitNominal = { t: [0, 1, 2], v: [3000, 3000, 3000] };
     const restore = stubSize();
@@ -1753,6 +1765,25 @@ describe("PlotArea y-normalisation", () => {
       await waitForData((data) => {
         expect(data[1]).toEqual([0.5, 0.5, 0.5]);
       });
+      await waitFor(() => expect(yTickLabels([0, 0.5, 1])).toEqual(["2700 A", "3000 A", "3300 A"]));
+    } finally {
+      restore();
+    }
+  });
+
+  it("numeric: a constant of exactly zero gets an absolute ±1 band", async () => {
+    // A proportional band collapses at zero, so the fraction cannot be
+    // the rule there — the axis falls back to an absolute ±1.
+    mockSignalExtents.LimitNominal = { lo: 0, hi: 0 };
+    mockSampleSeries.LimitNominal = { t: [0, 1, 2], v: [0, 0, 0] };
+    const restore = stubSize();
+    try {
+      renderPanel();
+      await addSignals(["LimitNominal"], "per-unit");
+      await waitForData((data) => {
+        expect(data[1]).toEqual([0.5, 0.5, 0.5]);
+      });
+      await waitFor(() => expect(yTickLabels([0, 0.5, 1])).toEqual(["-1 A", "0 A", "1 A"]));
     } finally {
       restore();
     }

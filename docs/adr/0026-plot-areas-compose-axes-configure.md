@@ -167,7 +167,7 @@ below:
 - **Unit-based y-scale.** Same-unit series on an axis share one y
   scale — the union of their observed ranges, computed by the pure
   `groupScaleRanges()` helper in `plotData` — and each unit group
-  auto-scales independently to fill the axis. Three refinements on the
+  auto-scales independently to fill the axis. Four refinements on the
   decision table:
   - **Unitless series each keep their own scale.** Two signals that
     merely both lack a DBC unit are not known to be commensurable, and
@@ -190,9 +190,23 @@ below:
     group's union all the same, and is drawn on the group's scale — a
     constant 3000 A limit sits at the top of a 400–3000 A axis rather
     than at the canvas midline beside a 500 A signal filling the
-    canvas. Only when a group's *whole* union has no span does the
-    midline fallback apply, which is also what keeps the normalise
-    free of a divide-by-zero.
+    canvas.
+  - **A group with no span at all gets a minimum range.** When every
+    member is constant at the same value the union has no span, so
+    there is nothing to normalise by and no measurement to draw. The
+    group is widened to **±10 % of that value**, centred on it — the
+    trace still sits mid-canvas, but the axis labels read the value it
+    holds instead of a bare 0–1 that says nothing. At exactly zero the
+    proportional band collapses, so the fallback there is an absolute
+    **±1**: there is no magnitude to take a fraction of, and ±1 keeps
+    the axis in the signal's own units rather than inventing one. A
+    constant has no span, so any scale for it is a *choice*, not a
+    measurement — this records which choice. The widening happens in
+    `groupScaleRanges`, on the group union rather than per signal, so
+    a constant sharing its group with a moving signal still takes the
+    plain union above. The midline fallback in the renderer now covers
+    only a signal with no range at all (nothing decoded yet), which is
+    what keeps the normalise free of a divide-by-zero.
 - **Multi-uPlot per area.** Each derived axis is a stacked uPlot
   instance with its own canvas and signal-list slice; the panel-level
   x-sync registry (`xSyncRef` + `registerInstance`) was already

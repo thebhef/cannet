@@ -213,6 +213,45 @@ describe("groupScaleRanges", () => {
     expect(out.has("v2")).toBe(false);
   });
 
+  it("a group with no span gets a ±10 % minimum range around its value", () => {
+    // A signal that never moves has a degenerate extent, and a group
+    // made only of such signals has no span at all. Without a minimum
+    // range it cannot be normalised, so it drew on the bare 0–1 canvas
+    // with the trace on the midline — an axis that says nothing about
+    // the value it holds.
+    const out = groupScaleRanges([{ key: "i", unit: "A" }], ranges([["i", { lo: 3000, hi: 3000 }]]));
+    expect(out.get("i")).toEqual({ lo: 2700, hi: 3300 });
+  });
+
+  it("the minimum range follows the sign of a negative constant", () => {
+    const out = groupScaleRanges([{ key: "i", unit: "A" }], ranges([["i", { lo: -50, hi: -50 }]]));
+    expect(out.get("i")).toEqual({ lo: -55, hi: -45 });
+  });
+
+  it("a constant at exactly zero falls back to an absolute ±1", () => {
+    // A proportional band collapses at zero, so the fraction cannot be
+    // the rule there.
+    const out = groupScaleRanges([{ key: "i", unit: "A" }], ranges([["i", { lo: 0, hi: 0 }]]));
+    expect(out.get("i")).toEqual({ lo: -1, hi: 1 });
+  });
+
+  it("a constant that shares its group with a moving signal keeps the plain union", () => {
+    // The minimum range applies to the *group*, not to each member: a
+    // union that already has a span is a measurement and is left alone.
+    const out = groupScaleRanges(
+      [
+        { key: "nominal", unit: "A" },
+        { key: "effective", unit: "A" },
+      ],
+      ranges([
+        ["nominal", { lo: 3000, hi: 3000 }],
+        ["effective", { lo: 400, hi: 500 }],
+      ]),
+    );
+    expect(out.get("nominal")).toEqual({ lo: 400, hi: 3000 });
+    expect(out.get("effective")).toEqual({ lo: 400, hi: 3000 });
+  });
+
   it("returns copies — mutating an output range does not affect group mates", () => {
     const out = groupScaleRanges(
       [
