@@ -589,10 +589,22 @@ a pointer to 0043 as the general rule it was the first instance of.
 `examples/cannet-demo.dbc` carries a real example (`BmsCommand.Crc8`)
 so the block is not describing a signal that doesn't exist.
 
+**The large fixture got one too.** `examples/ev-zonal/dbc/zonal.dbc`
+gains `PackStateCommand` (id `0x60A`, CentralCompute): a `CannetCounter`
+rollover counter and a `CannetCrc` CRC-8/SAE-J1850, with `radix=hex` on
+the CRC only — the counter beside it is just as raw a field and stays
+decimal, which is the per-signal point. That file is generated, so
+`generate_dbcs.py` grew a per-signal `cannet` attribute map that
+declares only the `BA_DEF_`s a file actually uses (`pack.dbc`
+regenerates byte-identical).
+
 Tests: `crates/cannet-dbc/src/tests.rs` — the attribute read (catalog
 and decode sides agree), each bad-value shape, the ineligible-signal
 warning on both a united/scaled signal and an enum, and the demo DBC's
-example. Host: `wire_signals_flag_only_raw_bit_fields` and
+example; `tests/ev_zonal_fixture.rs` pins the `PackStateCommand`
+example (the fixture loader already asserts a warning-free parse, which
+is what proves `radix=hex` landed somewhere eligible). Host:
+`wire_signals_flag_only_raw_bit_fields` and
 `signal_snapshot_rows_flag_raw_bit_fields` now separate the two flags
 (a raw field with no attribute stays base-10). Frontend:
 `SignalValueCell.dom.test.tsx` (base-10 default, hex on the flag),

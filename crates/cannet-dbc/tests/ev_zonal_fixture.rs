@@ -71,3 +71,33 @@ fn zonal_dbc_parses_at_the_promised_scale() {
         .any(|m| m.signals.iter().any(|s| !s.value_table.is_empty())));
     assert!(content.iter().any(|m| !m.comment.is_empty()));
 }
+
+/// The fixture carries a worked example of cannet's own DBC
+/// attributes: `PackStateCommand` is E2E-protected (ADR 0027) and its
+/// CRC asks to be read as a bit pattern (ADR 0043). `load` already
+/// asserts the file parses warning-free, which is what proves
+/// `radix=hex` landed on a signal that can take it.
+#[test]
+fn zonal_dbc_carries_the_cannet_attribute_example() {
+    let db = load("zonal.dbc");
+    let id = cannet_core::CanId::standard(0x60A).unwrap();
+    let calc = db
+        .dbc_calculated_fields(id)
+        .expect("PackStateCommand present");
+    assert_eq!(calc.counter.as_ref().expect("counter").signal, "AliveCtr");
+    assert_eq!(calc.crc.as_ref().expect("crc").signal, "Crc8");
+    db.resolve_calculated_fields(id, calc)
+        .expect("the designation resolves against the message layout");
+
+    let sigs = db.signals();
+    let sig = |name: &str| {
+        sigs.iter()
+            .find(|s| s.message_name == "PackStateCommand" && s.signal_name == name)
+            .unwrap_or_else(|| panic!("PackStateCommand.{name}"))
+    };
+    assert!(sig("Crc8").display_hex, "CannetDisplay radix=hex");
+    assert!(
+        !sig("AliveCtr").display_hex,
+        "a rollover counter reads as a number"
+    );
+}

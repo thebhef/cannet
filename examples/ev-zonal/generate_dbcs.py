@@ -37,6 +37,11 @@ class Sig:
     mux: str = ""  # "" plain, "M" selector, "m<N>" arm
     receivers: str = "Vector__XXX"
     float32: bool = False
+    # cannet's own per-signal `BA_` attributes, as {name: value} --
+    # e.g. {"CannetCrc": "alg=CRC-8/SAE-J1850;range=0:56;prefix=B7"}.
+    # `render_dbc` declares each name it sees, so a file that uses none
+    # gains no attribute lines. See ADR 0027 and ADR 0043.
+    cannet: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -91,6 +96,8 @@ def render_dbc(version: str, ecus: list[str], messages: list[Msg]) -> str:
 
     comments: list[str] = []
     bas: list[str] = []
+    cannet_bas: list[str] = []
+    cannet_names: list[str] = []  # declaration order, first use wins
     vals: list[str] = []
     valtypes: list[str] = []
 
@@ -114,6 +121,10 @@ def render_dbc(version: str, ecus: list[str], messages: list[Msg]) -> str:
                 vals.append(f"VAL_ {raw_id} {s.name} {pairs} ;")
             if s.float32:
                 valtypes.append(f"SIG_VALTYPE_ {raw_id} {s.name} : 1;")
+            for attr, value in s.cannet.items():
+                if attr not in cannet_names:
+                    cannet_names.append(attr)
+                cannet_bas.append(f'BA_ "{attr}" SG_ {raw_id} {s.name} "{value}";')
         out.append("")
         if m.comment:
             comments.append(f'CM_ BO_ {raw_id} "{m.comment}";')
@@ -121,11 +132,12 @@ def render_dbc(version: str, ecus: list[str], messages: list[Msg]) -> str:
             bas.append(f'BA_ "GenMsgCycleTime" BO_ {raw_id} {m.cycle_ms};')
 
     out += comments
-    out += [
-        'BA_DEF_ BO_ "GenMsgCycleTime" INT 0 100000;',
-        'BA_DEF_DEF_ "GenMsgCycleTime" 0;',
-    ]
+    out.append('BA_DEF_ BO_ "GenMsgCycleTime" INT 0 100000;')
+    out += [f'BA_DEF_ SG_ "{n}" STRING ;' for n in cannet_names]
+    out.append('BA_DEF_DEF_ "GenMsgCycleTime" 0;')
+    out += [f'BA_DEF_DEF_ "{n}" "";' for n in cannet_names]
     out += bas
+    out += cannet_bas
     out += vals
     out += valtypes
     out.append("")
@@ -692,6 +704,25 @@ def zonal_messages() -> list[Msg]:
                              u("OnePedalActive", 1)]),
         ("RegenSetting", [u("RegenLevelRequest", 3),
                           u("CreepModeEnable", 1)]),
+        # The E2E-protected command in this fixture: cannet's own DBC
+        # attributes on a message that warrants them. `AliveCtr` and
+        # `Crc8` are both raw bit fields (factor 1, no unit, no VAL_
+        # table); only the CRC asks to be read as one, which is the
+        # per-signal point of `CannetDisplay`.
+        ("PackStateCommand", [
+            u("RequestedPackState", 3, values={0: "Idle", 1: "Standby", 2: "Drive",
+                                               3: "Charge", 4: "Balance", 5: "ServiceOpen"}),
+            u("ContactorRequest", 2, values={0: "Open", 1: "Precharge", 2: "Closed",
+                                             3: "Fault"}),
+            u("CurrentLimitRequest", 12, factor=0.1, unit="A"),
+            u("AliveCtr", 4, start=48,
+              cannet={"CannetCounter": "increment=1;rollover=15"},
+              comment="E2E sequence counter -- rolls 0-15 on every send."),
+            u("Crc8", 8, start=56,
+              cannet={"CannetCrc": "alg=CRC-8/SAE-J1850;range=0:56;prefix=B7",
+                      "CannetDisplay": "radix=hex"},
+              comment="CRC-8/SAE-J1850 over bytes 0-6, prefixed with Data ID 0xB7."),
+        ]),
     ]
     for i, (name, sigs) in enumerate(central):
         msgs.append(Msg(name, 0x600 + i, "CentralCompute", sigs, cycle_ms=100))

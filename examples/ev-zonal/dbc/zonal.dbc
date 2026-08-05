@@ -615,6 +615,13 @@ BO_ 1545 RegenSetting: 8 CentralCompute
  SG_ RegenLevelRequest : 0|3@1+ (1,0) [0|0] "" Vector__XXX
  SG_ CreepModeEnable : 3|1@1+ (1,0) [0|0] "" Vector__XXX
 
+BO_ 1546 PackStateCommand: 8 CentralCompute
+ SG_ RequestedPackState : 0|3@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ ContactorRequest : 3|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ CurrentLimitRequest : 5|12@1+ (0.1,0) [0|0] "A" Vector__XXX
+ SG_ AliveCtr : 48|4@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Crc8 : 56|8@1+ (1,0) [0|0] "" Vector__XXX
+
 BO_ 800 AdasLaneLeft: 8 AdasDomain
  SG_ LaneLeftC0 : 0|32@1+ (1,0) [0|0] "m" Vector__XXX
  SG_ LaneLeftC1 : 32|32@1+ (1,0) [0|0] "rad" Vector__XXX
@@ -890,6 +897,8 @@ CM_ SG_ 1224 PulseCount "Raw tooth count since power-on, wraps.";
 CM_ SG_ 1227 EfuseTrippedMask "Bit per e-fuse channel, 1 = tripped.";
 CM_ SG_ 1384 EfuseEnableMask "Bit per e-fuse channel, 1 = enable.";
 CM_ SG_ 1538 HvShutdownRequested "Set with any deployment -- pack must open contactors.";
+CM_ SG_ 1546 AliveCtr "E2E sequence counter -- rolls 0-15 on every send.";
+CM_ SG_ 1546 Crc8 "CRC-8/SAE-J1850 over bytes 0-6, prefixed with Data ID 0xB7.";
 CM_ SG_ 800 LaneLeftC0 "Polynomial offset coefficient, IEEE float.";
 CM_ SG_ 802 ActiveFeatureMask "Bit per feature: ACC, LKA, AEB, BSD...";
 CM_ SG_ 784 ObjectIndex "Multiplex selector -- which tracked object this frame carries.";
@@ -911,7 +920,13 @@ CM_ SG_ 784 Obj14DistX "Object 14 longitudinal distance.";
 CM_ SG_ 784 Obj15DistX "Object 15 longitudinal distance.";
 CM_ BO_ 784 "Fused front object list -- cycles ObjectIndex over active tracks.";
 BA_DEF_ BO_ "GenMsgCycleTime" INT 0 100000;
+BA_DEF_ SG_ "CannetCounter" STRING ;
+BA_DEF_ SG_ "CannetCrc" STRING ;
+BA_DEF_ SG_ "CannetDisplay" STRING ;
 BA_DEF_DEF_ "GenMsgCycleTime" 0;
+BA_DEF_DEF_ "CannetCounter" "";
+BA_DEF_DEF_ "CannetCrc" "";
+BA_DEF_DEF_ "CannetDisplay" "";
 BA_ "GenMsgCycleTime" BO_ 1024 100;
 BA_ "GenMsgCycleTime" BO_ 1025 100;
 BA_ "GenMsgCycleTime" BO_ 1026 100;
@@ -1030,6 +1045,7 @@ BA_ "GenMsgCycleTime" BO_ 1542 100;
 BA_ "GenMsgCycleTime" BO_ 1543 100;
 BA_ "GenMsgCycleTime" BO_ 1544 100;
 BA_ "GenMsgCycleTime" BO_ 1545 100;
+BA_ "GenMsgCycleTime" BO_ 1546 100;
 BA_ "GenMsgCycleTime" BO_ 800 40;
 BA_ "GenMsgCycleTime" BO_ 801 40;
 BA_ "GenMsgCycleTime" BO_ 802 40;
@@ -1062,6 +1078,9 @@ BA_ "GenMsgCycleTime" BO_ 1646 200;
 BA_ "GenMsgCycleTime" BO_ 1647 200;
 BA_ "GenMsgCycleTime" BO_ 1648 200;
 BA_ "GenMsgCycleTime" BO_ 1649 200;
+BA_ "CannetCounter" SG_ 1546 AliveCtr "increment=1;rollover=15";
+BA_ "CannetCrc" SG_ 1546 Crc8 "alg=CRC-8/SAE-J1850;range=0:56;prefix=B7";
+BA_ "CannetDisplay" SG_ 1546 Crc8 "radix=hex";
 VAL_ 1024 LockState 0 "Unlocked" 1 "Locked" 2 "DoubleLocked" 3 "Moving" 4 "Fault" ;
 VAL_ 1026 CinchState 0 "Idle" 1 "Cinching" 2 "Done" 3 "Fault" ;
 VAL_ 1032 WheelDirection 0 "Stopped" 1 "Forward" 2 "Reverse" 3 "Invalid" ;
@@ -1092,6 +1111,8 @@ VAL_ 1537 WakeReason 0 "None" 1 "Keyfob" 2 "Door" 3 "Charge" 4 "Preconditioning"
 VAL_ 1538 CrashSeverity 0 "None" 1 "Low" 2 "Medium" 3 "High" ;
 VAL_ 1541 TimeSource 0 "Rtc" 1 "Gnss" 2 "Cellular" 3 "Manual" ;
 VAL_ 1544 SelectedProfile 0 "Comfort" 1 "Sport" 2 "Eco" 3 "Snow" 4 "Custom" ;
+VAL_ 1546 RequestedPackState 0 "Idle" 1 "Standby" 2 "Drive" 3 "Charge" 4 "Balance" 5 "ServiceOpen" ;
+VAL_ 1546 ContactorRequest 0 "Open" 1 "Precharge" 2 "Closed" 3 "Fault" ;
 VAL_ 805 CalibrationState 0 "Ok" 1 "Drifting" 2 "Required" 3 "Running" ;
 VAL_ 810 AebState 0 "Standby" 1 "Warning" 2 "Braking" 3 "Inhibited" ;
 VAL_ 784 Obj00Class 0 "Unknown" 1 "Car" 2 "Truck" 3 "Motorcycle" 4 "Bicycle" 5 "Pedestrian" 6 "Animal" 7 "Debris" ;
