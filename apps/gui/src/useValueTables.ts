@@ -14,6 +14,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { signalKey } from "./plotData";
 import type { ValueTableEntryRecord } from "./types";
+import type { ComboboxOption } from "./Combobox";
 import { diagCount } from "./diag"; // DIAG
 
 /** The minimal signal identity `useValueTables` needs — a subset of
@@ -69,4 +70,21 @@ export function useValueTables(
     };
   }, [signalsKey]);
   return tables;
+}
+
+/**
+ * One `Combobox` option per `VAL_` row — the shared shape every enum
+ * value picker renders, so they cannot drift apart.
+ *
+ * The row text is a single line, `<label> (<raw>)`: the same enum
+ * readout the plot's side panel uses (`formatValueFor` in
+ * `PlotArea.tsx`), which is why it carries the space the app's other
+ * parenthesised readouts do. The submitted value is the **label** —
+ * the RBS file stores labels (`RbsValue::Text`), and a cell that needs
+ * the raw maps back through the same table it built these from.
+ */
+export function valueTableOptions(
+  rows: readonly ValueTableEntryRecord[],
+): ComboboxOption[] {
+  return rows.map((r) => ({ value: r.label, label: `${r.label} (${r.raw})` }));
 }

@@ -1143,6 +1143,11 @@ enum-selection surface was already correct and stays untouched:
 The two clicks a *closed* picker costs (open, then choose) are inherent
 to any dropdown, native or not, and are not what was reported.
 
+**The `choices` mechanism below is superseded by item 19**, which
+moved both enum cells onto the shared `Combobox` and deleted the prop.
+The commit model it records still holds — a discrete choice commits
+when it lands — but the combobox's `onChange` is what delivers it now.
+
 **Commit model adopted — one rule, both panels: a discrete choice
 commits when it lands; free text commits on Enter or blur.** It lives
 in `ValidatedInput` as one optional prop, `choices` — the texts that
@@ -1575,18 +1580,118 @@ panels, not per-panel implementations. Design items 17 and 18 together.
 
 ## 19. Enum dropdown rendering and the reopen-filter bug
 
-Two defects in the enum choice UI, reported 2026-08-05. Both are to be
-fixed in the **common control** (`Combobox` / `ValidatedInput`'s
-choices path) so they are fixed once:
+**Fixed. Both defects were the native `<datalist>`, not our code** —
+and neither is reachable from JS, so the enum value cells moved onto
+the shared `Combobox` instead.
 
-- **Rendering:** enum options render multiline, which reads badly. An
-  option should be one line: `Name(Value)`.
-- **Reopen filter bug**, repro: Tab to the combobox → down arrow —
-  picker opens, all options present → make a selection — picker
-  collapses → down arrow again — picker opens showing **only the
-  current selection** instead of everything. The committed value is
-  evidently being used as a filter on reopen; opening the picker should
-  always list every option.
+**The two controls, and which one is at fault.** The app had two
+select-like things. `Combobox` (`Combobox.tsx`), the designated one —
+"any new select/combobox is one of these" — used by 19 call sites
+across 12 files. And the RBS / transmit *signal value cells*, which
+were `ValidatedInput` text boxes with a native `<datalist>` attached.
+Only the second reproduces either report.
+
+*Rendering.* Those datalists emitted an option carrying both a `value`
+(the label) **and** text content (the raw). Chromium renders a
+suggestion carrying both as two lines — the value, then the option's
+text beneath it. That is the multiline. `Combobox` renders one list
+item per option and never did this.
+
+*Reopen filter — the differential experiment.* Walking the user's
+four-step repro against each control decides it. `Combobox`: ArrowDown
+on the closed trigger calls `openDropdown("")`, which **seeds the
+filter empty regardless of `value`**, so step 4 lists everything — and
+a new test asserting exactly that (`reopening after a pick lists every
+option, not just the picked one`) **passed before any change**, which
+falsifies the "it's the Combobox" hypothesis outright. The datalist
+path reproduces all four steps: Chromium filters the suggestion popup
+by the input's current text, focus never leaves the field between
+steps 3 and 4, and after a commit the box holds the committed label —
+so the popup matches one row.
+
+The confirming evidence for that mechanism is **in the repository,
+written by whoever hit the first half of it**: `ValidatedInput`'s
+`focusBehavior="clear"` existed solely to empty the box *on focus* so
+"the datalist offers all labels instead of filtering on the current
+one (which locked the picker to the already-selected value)". The
+reported repro is the hole that patch left — a reopen with no focus
+change never re-fires `onFocus`.
+
+**Why not patch the datalist.** The suggestion popup is browser chrome
+with no DOM presence: it cannot be styled, its filtering cannot be
+turned off, and neither jsdom nor CDP can click a row in it. The only
+lever from JS is blanking the input's text, which is what the focus
+patch did and what would have to be repeated on ArrowDown, on click,
+and on every other gesture that reopens the popup — each of them
+unobservable in a test. There is no fix in that control; there is only
+a longer chain of workarounds.
+
+**So both cells now render `Combobox`,** and the two defects are fixed
+by the same move — which is also the "common control" the user asked
+for and what the codebase's own convention already required.
+
+| Where | What changed |
+| --- | --- |
+| `Combobox.tsx` | new `freeText` |
+| `useValueTables.ts` | new `valueTableOptions` — the shared option shape |
+| `RbsPanel.tsx`, `TransmitSignalsTable.tsx` | enum cell → `Combobox`; datalists gone |
+| `ValidatedInput.tsx` | `list`, `choices`, `focusBehavior="clear"` removed — no callers left |
+| every other `Combobox` call site | untouched; they never had either defect |
+
+**`freeText`, because a value cell is not a closed list.** An RBS or
+transmit enum signal must still take a raw code the DBC never named —
+fault injection is the point of a rest-of-bus simulator. When the
+filter text matches no option, it becomes **one extra row at the end
+of the list** (`use "127"`). Last, not first, is load-bearing: the
+active row resets to index 0 on every keystroke, so a leading free-text
+row would steal Enter from the label the user was half-way through
+typing. At the end it is unreachable by accident and is the only
+pickable row when nothing matches, which is exactly when it is wanted.
+No row is offered when the text already *is* an option.
+
+**Option text: `<label> (<raw>)`, one line — a deliberate deviation
+from the requested `Name(Value)`,** by the escape clause the item
+allowed. The app already renders an enum reading that way in the plot's
+side panel (`formatValueFor` in `PlotArea.tsx`, and `useValueTables`'s
+own docstring describes the shape), so `Standby (1)` in a picker and
+`Standby (1)` in the readout are the same fact rendered the same way.
+The one-line requirement — the actual complaint — is met either way.
+It lives in `valueTableOptions` next to the shared fetcher, so any
+future enum picker inherits it rather than re-deriving it.
+
+**What the cells submit.** The option's value is the **label**, which
+is what the RBS file stores (`RbsValue::Text`) and what the host
+resolves through the VAL_ table; the transmit cell maps the label back
+to its raw through the same table it built the options from. Free text
+commits as a number (RBS also still accepts `0x…`, via the extracted
+`parseSignalText` its numeric cells share). The closed trigger shows
+the matched option, falling back to a `placeholder` of the decoded
+value so an out-of-table code is still legible.
+
+**Item 14's guarantee survives:** picking commits in one click, with no
+second send. It is now the combobox's `onChange` doing it rather than
+`ValidatedInput`'s `choices`, so that prop went with the datalist —
+**item 14's `choices` mechanism is superseded, its behaviour is not.**
+
+**Not verified in jsdom:** that the trigger button styles like the
+input it replaced. Both site classes (`.rbs-signal-input`,
+`.tx-signal-input`) are declared *after* `.combobox-trigger`, so at
+equal specificity they win on source order and keep the cells' own
+background, border, width and monospace font; the overridden-cell
+marker (`.rbs-signal-overridden .rbs-signal-input`) and the disabled
+colour (`.combobox-trigger:disabled`, higher specificity) both still
+apply. No CSS was added.
+
+Tests: `Combobox.dom.test.tsx` — reopen-after-pick lists everything
+(the control-level pin for the user's repro), and four `freeText`
+cases: the typed row appears and commits, it sorts last so a matching
+option still wins Enter, it is absent when the text is exactly an
+option, and nothing changes when `freeText` is off. `RbsPanel.dom.test.tsx`
+and `TransmitPanel.dom.test.tsx` — one line per option reading
+`label (raw)`, pick-commits-once, reopen-after-selection lists every
+label, and a raw out-of-table value going through as free text. Eleven
+failed before the change; the one that passed is the one that
+falsified the Combobox hypothesis.
 
 ## Exit criteria
 

@@ -227,6 +227,60 @@ describe("Combobox", () => {
     expect(document.querySelector('[role="option"]')).toBeNull();
   });
 
+  it("reopening after a pick lists every option, not just the picked one", () => {
+    const { trigger } = renderFlat();
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole("option", { name: "off" }));
+    expect(document.querySelector('[role="option"]')).toBeNull();
+    // The committed value must not act as a filter on the way back in:
+    // arrowing the closed trigger open shows the whole list again.
+    fireEvent.keyDown(trigger, { key: "ArrowDown" });
+    expect(optionLabels()).toEqual(["off", "X (A / B)", "Y (H1 / H2)"]);
+  });
+
+  it("freeText: offers the typed text as a trailing option and commits it", () => {
+    const { onChange, trigger } = renderFlat({ freeText: true });
+    fireEvent.click(trigger);
+    fireEvent.change(screen.getByLabelText("cursor mode filter"), {
+      target: { value: "127" },
+    });
+    // Nothing in the list matches, so the typed text is the only
+    // pickable row and Enter takes it.
+    expect(optionLabels()).toEqual(['use "127"']);
+    fireEvent.keyDown(screen.getByLabelText("cursor mode filter"), { key: "Enter" });
+    expect(onChange).toHaveBeenCalledWith("127");
+  });
+
+  it("freeText: the typed row sorts last so a matching option still wins Enter", () => {
+    const { onChange, trigger } = renderFlat({ freeText: true });
+    fireEvent.click(trigger);
+    fireEvent.change(screen.getByLabelText("cursor mode filter"), {
+      target: { value: "of" },
+    });
+    expect(optionLabels()).toEqual(["off", 'use "of"']);
+    fireEvent.keyDown(screen.getByLabelText("cursor mode filter"), { key: "Enter" });
+    expect(onChange).toHaveBeenCalledWith("off");
+  });
+
+  it("freeText: no typed row when the text is exactly an option's label", () => {
+    const { trigger } = renderFlat({ freeText: true });
+    fireEvent.click(trigger);
+    fireEvent.change(screen.getByLabelText("cursor mode filter"), {
+      target: { value: "off" },
+    });
+    expect(optionLabels()).toEqual(["off"]);
+  });
+
+  it("freeText changes nothing when it is off", () => {
+    const { trigger } = renderFlat();
+    fireEvent.click(trigger);
+    fireEvent.change(screen.getByLabelText("cursor mode filter"), {
+      target: { value: "127" },
+    });
+    expect(optionLabels()).toEqual([]);
+    expect(screen.getByText("No matches.")).toBeInTheDocument();
+  });
+
   it("passes className and title through to the trigger", () => {
     const { trigger } = renderFlat({ className: "tx-bus", title: "destination" });
     expect(trigger).toHaveClass("combobox-trigger", "tx-bus");

@@ -49,6 +49,11 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 }));
 
 import { RbsPanel } from "./RbsPanel";
+import {
+  comboboxOptionLabels,
+  openCombobox,
+  pickCombobox,
+} from "./comboboxTestKit";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import {
   ElementRegistryContext,
@@ -299,20 +304,18 @@ describe("RbsPanel (thin view over the host RBS model)", () => {
     );
   });
 
-  it("commits a signal override through rbs_set_signal and clears with ×", async () => {
+  it("commits a picked label through rbs_set_signal and clears with ×", async () => {
     VIEW = sampleView();
     renderPanel("/tmp/sim.cannet_rbs");
     // Expand the message to reach the signal grid.
     fireEvent.click(await screen.findByLabelText("toggle 0x123"));
-    const input = await screen.findByLabelText("TargetMode value");
-    fireEvent.change(input, { target: { value: "403.2" } });
-    fireEvent.blur(input);
+    await pickCombobox(await screen.findByLabelText("TargetMode value"), "Off");
     await waitFor(() =>
       expect(lastCall("rbs_set_signal")?.args).toMatchObject({
         elementId: "el",
         target: { bus: "Powertrain", ecu: "BMS", message: "0x123" },
         signal: "TargetMode",
-        value: 403.2,
+        value: "Off",
       }),
     );
     // The overridden signal carries a clear control; clearing sends
@@ -326,87 +329,51 @@ describe("RbsPanel (thin view over the host RBS model)", () => {
     );
   });
 
-  it("clears enum cells on focus so the datalist offers every label", async () => {
+  it("renders one line per enum option: `label (raw)`", async () => {
     VIEW = sampleView();
     renderPanel("/tmp/sim.cannet_rbs");
     fireEvent.click(await screen.findByLabelText("toggle 0x123"));
-    const input = await screen.findByLabelText("TargetMode value");
-    expect(input).toHaveValue("Standby");
-    // Focus empties the draft (so the datalist isn't filtered by the
-    // committed label) while the placeholder keeps it visible…
-    fireEvent.focus(input);
-    expect(input).toHaveValue("");
-    expect(input).toHaveAttribute("placeholder", "Standby");
-    // …and blurring without typing reverts instead of committing.
-    fireEvent.blur(input);
-    expect(input).toHaveValue("Standby");
-    expect(lastCall("rbs_set_signal")).toBeUndefined();
-  });
-
-  it("resolves a typed label through the fetched VAL_ table", async () => {
-    VIEW = sampleView();
-    renderPanel("/tmp/sim.cannet_rbs");
-    fireEvent.click(await screen.findByLabelText("toggle 0x123"));
-    const input = await screen.findByLabelText("TargetMode value");
-    // Wait for the signal's VAL_ table (list_value_tables) to resolve
-    // into the datalist before typing a label it — not the currently
-    // committed one — defines.
+    const picker = await screen.findByLabelText("TargetMode value");
+    openCombobox(picker);
     await waitFor(() =>
-      expect(
-        document.querySelector('#rbs-enum-0x123-TargetMode option[value="Off"]'),
-      ).toBeTruthy(),
-    );
-    fireEvent.change(input, { target: { value: "Off" } });
-    fireEvent.blur(input);
-    await waitFor(() =>
-      expect(lastCall("rbs_set_signal")?.args).toMatchObject({
-        signal: "TargetMode",
-        value: "Off",
-      }),
+      expect(comboboxOptionLabels()).toEqual(["Off (0)", "Standby (1)"]),
     );
   });
 
-  it("commits an enum label the moment it is picked, not on blur", async () => {
+  it("picks a label in one click and does not send it twice", async () => {
     VIEW = sampleView();
     renderPanel("/tmp/sim.cannet_rbs");
     fireEvent.click(await screen.findByLabelText("toggle 0x123"));
-    const input = await screen.findByLabelText("TargetMode value");
+    await pickCombobox(await screen.findByLabelText("TargetMode value"), "Off");
     await waitFor(() =>
-      expect(
-        document.querySelector('#rbs-enum-0x123-TargetMode option[value="Off"]'),
-      ).toBeTruthy(),
+      expect(calls.filter((c) => c.cmd === "rbs_set_signal")).toHaveLength(1),
     );
-    // Picking a datalist suggestion replaces the value without moving
-    // focus, so the commit cannot wait for a blur.
-    fireEvent.change(input, { target: { value: "Off" } });
-    await waitFor(() =>
-      expect(lastCall("rbs_set_signal")?.args).toMatchObject({
-        signal: "TargetMode",
-        value: "Off",
-      }),
-    );
-    // …and the blur that eventually follows must not send it twice.
-    const before = calls.filter((c) => c.cmd === "rbs_set_signal").length;
-    fireEvent.blur(input);
-    expect(calls.filter((c) => c.cmd === "rbs_set_signal")).toHaveLength(before);
+    expect(lastCall("rbs_set_signal")?.args).toMatchObject({ value: "Off" });
   });
 
-  it("keeps the Enter/blur commit for free text in an enum cell", async () => {
+  it("reopening the picker after a selection still lists every label", async () => {
     VIEW = sampleView();
     renderPanel("/tmp/sim.cannet_rbs");
     fireEvent.click(await screen.findByLabelText("toggle 0x123"));
-    const input = await screen.findByLabelText("TargetMode value");
-    await waitFor(() =>
-      expect(
-        document.querySelector('#rbs-enum-0x123-TargetMode option[value="Off"]'),
-      ).toBeTruthy(),
-    );
-    // A raw value outside the VAL_ table (fault injection) is free
-    // text: half-typed "12" must not go out on the way to "127".
-    fireEvent.change(input, { target: { value: "12" } });
-    expect(lastCall("rbs_set_signal")).toBeUndefined();
-    fireEvent.change(input, { target: { value: "127" } });
-    fireEvent.blur(input);
+    const picker = await screen.findByLabelText("TargetMode value");
+    await pickCombobox(picker, "Off");
+    // The picker collapsed on the pick. Arrowing it open again must
+    // not filter the list down to the value just committed.
+    fireEvent.keyDown(picker, { key: "ArrowDown" });
+    expect(comboboxOptionLabels()).toEqual(["Off (0)", "Standby (1)"]);
+  });
+
+  it("takes a raw value outside the VAL_ table as free text", async () => {
+    VIEW = sampleView();
+    renderPanel("/tmp/sim.cannet_rbs");
+    fireEvent.click(await screen.findByLabelText("toggle 0x123"));
+    const picker = await screen.findByLabelText("TargetMode value");
+    openCombobox(picker);
+    // Fault injection: a code the DBC never named still has to be
+    // sendable, so the typed text is offered as a row of its own.
+    const filter = screen.getByLabelText("TargetMode value filter");
+    fireEvent.change(filter, { target: { value: "127" } });
+    fireEvent.keyDown(filter, { key: "Enter" });
     await waitFor(() =>
       expect(lastCall("rbs_set_signal")?.args).toMatchObject({
         signal: "TargetMode",

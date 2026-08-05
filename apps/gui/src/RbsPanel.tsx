@@ -37,12 +37,17 @@ import type {
   RbsMessageView,
   RbsSignalView,
   RbsView,
+  ValueTableEntryRecord,
 } from "./types";
 import { useProjectContext } from "./projectContext";
 import { CalcFieldEditor } from "./CalcFieldEditor";
 import { Combobox } from "./Combobox";
 import { ValidatedInput, parsePositiveInt } from "./ValidatedInput";
-import { useValueTables, type ValueTableSignal } from "./useValueTables";
+import {
+  useValueTables,
+  valueTableOptions,
+  type ValueTableSignal,
+} from "./useValueTables";
 import { useElementPanel } from "./useElementPanel";
 import { useHostMirror } from "./useHostMirror";
 import { useDismissableMenu } from "./useDismissableMenu";
@@ -658,11 +663,11 @@ interface SignalRowProps {
 }
 
 function SignalRow({ elementId, target, message, signal: s, inert, onMenu }: SignalRowProps) {
-  // Enum signals get a datalist of labels (committed as the label
-  // string — the host resolves it through the VAL_ table), fetched via
-  // the shared useValueTables hook. A label is a discrete choice and
-  // commits as soon as it is picked; a raw out-of-table value is free
-  // text and keeps the Enter/blur commit.
+  // Enum signals are picked from the shared Combobox over their VAL_
+  // labels (fetched via the shared useValueTables hook) and commit the
+  // label string — the host resolves it through the table, and the
+  // file stores it. `freeText` keeps a raw out-of-table code sendable.
+  // Everything else is a free-text ValidatedInput.
   const valueTableSignals = useMemo<ValueTableSignal[]>(
     () =>
       s.hasValueTable
@@ -671,9 +676,9 @@ function SignalRow({ elementId, target, message, signal: s, inert, onMenu }: Sig
     [s.hasValueTable, s.name, message.messageId, message.extended],
   );
   const [labels = []] = useValueTables(valueTableSignals).values();
+  const enumOptions = useMemo(() => valueTableOptions(labels), [labels]);
 
   const display = s.label ?? (s.value != null ? formatValue(s.value) : "—");
-  const datalistId = `rbs-enum-${message.key}-${s.name}`;
   const commit = (value: string | number) => {
     void invoke("rbs_set_signal", {
       elementId,
@@ -702,34 +707,30 @@ function SignalRow({ elementId, target, message, signal: s, inert, onMenu }: Sig
           </span>
         ) : (
           <>
-            <ValidatedInput
-              value={display === "—" ? "" : display}
-              focusBehavior={s.hasValueTable ? "clear" : "select"}
-              parse={(text) => {
-                if (text === "") return null;
-                const labelMatch = labels.find((l) => l.label === text);
-                if (labelMatch) return labelMatch.label;
-                const n = Number(text);
-                if (Number.isFinite(n)) return n;
-                // 0x raw values pass through as strings.
-                if (/^0x[0-9a-fA-F]+$/.test(text)) return text;
-                return null;
-              }}
-              onCommit={commit}
-              className="rbs-signal-input"
-              ariaLabel={`${s.name} value`}
-              list={s.hasValueTable ? datalistId : undefined}
-              choices={labels.map((l) => l.label)}
-              disabled={inert}
-            />
-            {s.hasValueTable && (
-              <datalist id={datalistId}>
-                {labels.map((l) => (
-                  <option key={l.raw} value={l.label}>
-                    {l.raw}
-                  </option>
-                ))}
-              </datalist>
+            {s.hasValueTable ? (
+              <Combobox
+                options={enumOptions}
+                value={s.label ?? ""}
+                placeholder={display === "—" ? "" : display}
+                onChange={(v) => {
+                  const parsed = parseSignalText(v, labels);
+                  if (parsed !== null) commit(parsed);
+                }}
+                className="rbs-signal-input"
+                ariaLabel={`${s.name} value`}
+                disabled={inert}
+                freeText
+              />
+            ) : (
+              <ValidatedInput
+                value={display === "—" ? "" : display}
+                focusBehavior="select"
+                parse={(text) => parseSignalText(text, labels)}
+                onCommit={commit}
+                className="rbs-signal-input"
+                ariaLabel={`${s.name} value`}
+                disabled={inert}
+              />
             )}
             {s.overridden && (
               <button
@@ -755,6 +756,22 @@ function SignalRow({ elementId, target, message, signal: s, inert, onMenu }: Sig
       <td className="rbs-sig-unit">{s.unit}</td>
     </tr>
   );
+}
+
+/// A signal cell's text → the value `rbs_set_signal` takes: a VAL_
+/// label verbatim (the file stores labels), else a number, else a `0x`
+/// raw. Anything else is rejected — the edit reverts.
+function parseSignalText(
+  text: string,
+  labels: readonly ValueTableEntryRecord[],
+): string | number | null {
+  const t = text.trim();
+  if (t === "") return null;
+  if (labels.some((l) => l.label === t)) return t;
+  const n = Number(t);
+  if (Number.isFinite(n)) return n;
+  if (/^0x[0-9a-fA-F]+$/.test(t)) return t;
+  return null;
 }
 
 function formatValue(v: number): string {
