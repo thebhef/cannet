@@ -24,6 +24,19 @@ So the wait stays; what changes is that the user can see it. A plot area
 waiting on its first sample must say so rather than showing a blank
 canvas that is indistinguishable from "no data" or "hung".
 
+**Decided: an indeterminate indicator, gated behind a short delay.**
+Frontend only — no host-side progress reporting, no new IPC. A
+determinate percentage was rejected because the host discovers the work
+while decoding rather than knowing it up front, so it would have to grow
+a progress channel to answer "how much longer"; that cost is not worth it
+for a wait the user is not blocked by.
+
+The delay gate is the load-bearing half, not a refinement: because this
+fires on **every** signal add against a large buffer (see below), an
+indicator with no threshold would flash on sub-100 ms adds and read as
+jitter rather than information. Only an area whose first sample has not
+landed within roughly 300 ms should say anything.
+
 Two facts from task 48 item 12's profiling that bear on the design:
 
 - **Host latency is not on the UI thread.** In a CPU profile of the
@@ -106,39 +119,85 @@ to say something about constant signals, it changes in the same commit.
 
 ## 5. Collapsible sections in the project view
 
-The project view's sections mostly have headers already; they just do not
-collapse. Make them collapsible.
+`ProjectPanel` already renders six `<section class="project-section">`
+blocks with `<h3>` headers — Project, Elements, Logical buses, Virtual
+buses, Connection, DBC. They just do not collapse. Make them collapsible.
 
-Alongside that: **group the project's elements by type** — trace, plot,
-signals, and so on — rather than listing them flat. The two go together,
-since collapsing is most of what makes grouping worth having on a short
-display. Note task 48 item 5 fixed this panel's scrolling for exactly
-that reason; collapsing is the other half of making it usable at 1024 px.
+Alongside that: **group the Elements section's contents by type** —
+trace, plot, signals, and so on. This is sub-structure *within* one
+existing section, not a reorganisation of the panel; the type groups get
+their own headers and collapse the same way the outer sections do.
+
+Assumptions taken rather than asked, correct them if wrong: collapse
+state persists in the workspace scope alongside the rest of the layout
+(ADR 0042 §3), because a panel that forgets what you folded away is
+worse than one that never folded; and the type grouping replaces the
+flat list rather than being a toggle, since a toggle implies two layouts
+to maintain for a panel this small.
+
+Task 48 item 5 fixed this panel's scrolling because it was unusable at
+1024 px vertical. Collapsing is the other half of that fix.
 
 ## 6. Rename should rename in place
 
-The rename command navigates to the project view to do the rename.
-It should rename in place, wherever the user invoked it, and leave them
-where they were.
+The `panel.rename` command ("Rename panel…") sends the user to the
+project view to do the rename. It should rename in place — the panel's
+own dock tab title becomes editable where the user already is — and
+leave them where they were.
 
-## 7. History-mode trace does not scroll correctly
+## 7. Audit every view for scroll correctness
 
-The trace view in history mode scrolls wrongly. Establish the actual
-misbehaviour before hypothesising — task 48 items 5 and 9 both found that
-this panel's scroll geometry has several independent faults, and both
-found that the mechanism was not what it looked like from the CSS. The
-established method is measuring in Chromium against the real stylesheets
-or the live WebView2 host, because jsdom does no layout.
+**Confirmed symptom, and it is a known-unfixed defect.** Reviewing
+captured (not live) data in the chronological trace, the last rows cannot
+be reached: scrolling to the bottom stops short. That is precisely what
+task 48 item 5 fixed in the by-ID panel — `maxAnchorRow` subtracts
+`visibleRowCount`, whose two-row pad puts the anchor bound two rows
+*past* the end — and explicitly did not fix here, on the grounds that the
+chronological view's anchor interacts with auto-scroll and
+`scrollForRow`. The same presentation was meant to be fixed alongside it.
+So: apply `tailAnchorRow` here too, and deal with the auto-scroll
+interaction that was the reason for deferring.
 
-## 8. The version is buried in the About panel
+**Then widen it.** Scroll defects have now been found in the project
+panel, the by-ID panel, the colormap panel, the trace table's horizontal
+axis, the system messages view, and now the chronological trace — six
+surfaces, four distinct mechanisms. That rate says the next one is not
+far off. **Review every scrollable view**, and answer the question the
+count raises: is there a base implementation — a shared scroll container
+or viewport primitive — that would satisfy them all, rather than each
+panel getting its geometry right independently?
 
-The About panel is the only place the version appears, and it is hard to
-reach. Put the version in the title bar — **probably alongside the
-project name**, which is the other thing a user looking at the title bar
-wants to know.
+If such a primitive exists, adopting it is the deliverable and the
+individual fixes fall out. If it does not, say why in the record, because
+the next reader will ask the same question.
 
-Decide what the title bar shows when there is no project open, and
-whether the About panel stays as it is once the version has a home.
+Method is settled: jsdom does no layout, so measure in Chromium against
+the real stylesheets or the live WebView2 host. Every one of the four
+mechanisms found so far turned out not to be what the CSS suggested.
+
+## 8. Put the version and project in the title bar
+
+The About panel is the only place the version appears, and it is buried.
+
+**Decided format** — project first, then the capture source, then the
+app and version:
+
+```text
+ev-zonal — drive-cycle.blf — cannet 0.9.3     project + capture
+• ev-zonal — drive-cycle.blf — cannet 0.9.3   unsaved changes
+ev-zonal — cannet 0.9.3                       project, nothing loaded
+ev-zonal — PCAN-USB — cannet 0.9.3            live connection
+cannet 0.9.3                                  no project
+```
+
+The project name leads because it is what distinguishes one window from
+another — it is what survives truncation in a taskbar hover or alt-tab
+preview, where a title starting with the app name is identical for every
+window. The **capture source segment is omitted entirely when nothing is
+loaded**, so the title only grows when it has something to say.
+
+The About panel stays: it carries build info and licences, not just the
+version.
 
 ## Exit criteria
 
@@ -150,3 +209,10 @@ whether the About panel stays as it is once the version has a home.
   needs to say something about constant signals.
 - Item 2 records any new tool in `plans/technology-inventory.md`,
   adopted or rejected.
+- Item 7 answers the base-implementation question explicitly — either a
+  shared scroll primitive lands and the individual fixes fall out of it,
+  or the record says why one does not fit. "We fixed the six we knew
+  about" does not close it.
+- Where jsdom cannot verify a layout claim, the record says so and the
+  claim is backed by a Chromium measurement instead. No test that passes
+  either way.
