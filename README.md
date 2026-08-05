@@ -1431,9 +1431,14 @@ pre-commit install
 ```
 
 Linters that take file arguments (ruff) run only on the staged files;
-the whole-project checks (mypy, pytest, `cargo clippy`/`test`, the
-frontend `vitest`/`build`) run when files in their area are staged. Run
-everything on demand with `pre-commit run --all-files`.
+the sidecar's whole-project checks (mypy, pytest) and `cargo clippy`
+run when files in their area are staged. `cargo test` is **scoped to
+the crates the commit touches**, so a break in a crate that merely
+*depends* on what you changed is caught by CI rather than locally — the
+trade-off, and the measurements behind it, are written out in
+`.pre-commit-config.yaml`. The frontend hook runs the `vitest` suite
+and the `build` typecheck concurrently. Run everything on demand with
+`pre-commit run --all-files`.
 
 ## License
 
