@@ -627,6 +627,13 @@ pub struct SignalSections {
     /// unassigned, which is what makes deleting a section a `names`
     /// edit that returns its signals rather than dropping them.
     pub assignments: std::collections::HashMap<String, String>,
+    /// Section name → that section's own regex patterns, in the same
+    /// ADR 0038 canonical-path dialect the view-level selection uses. A
+    /// section's patterns both *widen the view's selection* (their
+    /// matches get rows) and *claim* those rows for the section, so a
+    /// pattern group is organised — and moves — as a unit.
+    #[serde(default)]
+    pub patterns: std::collections::HashMap<String, Vec<String>>,
     /// The sections currently folded shut; the implicit unassigned
     /// section is the empty name. Sparse — only the deviation from
     /// open is carried.

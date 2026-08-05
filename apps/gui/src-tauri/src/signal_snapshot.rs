@@ -269,6 +269,36 @@ pub fn signal_identity(
     )
 }
 
+/// The view's selection widened by every live section's own patterns.
+///
+/// A section's patterns are part of what the view *selects*, not merely
+/// a re-ordering of rows that were already there — otherwise a pattern
+/// typed into a section would collect nothing until the same pattern
+/// was also typed into the view-level selection. Deduped, and patterns
+/// belonging to a section that no longer exists are dropped, so a
+/// deleted section stops contributing rows the moment it is gone.
+#[must_use]
+pub fn selection_with_section_patterns(
+    base: &SignalSelection,
+    sections: &SignalSections,
+) -> SignalSelection {
+    let mut patterns = base.patterns.clone();
+    for name in &sections.names {
+        let Some(ps) = sections.patterns.get(name) else {
+            continue;
+        };
+        for p in ps {
+            if !patterns.contains(p) {
+                patterns.push(p.clone());
+            }
+        }
+    }
+    SignalSelection {
+        keys: base.keys.clone(),
+        patterns,
+    }
+}
+
 /// Arrange the selected rows into the view's user-authored sections and
 /// return the page-row space the panel scrolls: a header row per
 /// section followed by that section's rows, sorted *within* the section.
@@ -280,6 +310,16 @@ pub fn signal_identity(
 /// A folded section keeps its header (with its full signal count) and
 /// contributes no signal rows, which is what makes the returned length
 /// the fold-aware extent the scrollbar needs.
+///
+/// Two ways a row lands in a section, in this precedence:
+///
+/// 1. **An explicit assignment wins.** The user moved that signal by
+///    hand; another section's pattern must not drag it back.
+/// 2. **Otherwise the first section, in creation order, whose own
+///    patterns match the row's canonical path** (ADR 0038). Creation
+///    order rather than "most specific" or "last wins" because it is
+///    the order the user already sees on screen, so the tie-break is
+///    readable off the panel instead of inferred.
 pub fn arrange_sections(
     rows: Vec<SignalSnapshotRecord>,
     sections: &SignalSections,
@@ -299,6 +339,23 @@ pub fn arrange_sections(
     }
     let index: HashMap<&str, usize> = names.iter().enumerate().map(|(i, n)| (*n, i)).collect();
     let folded: HashSet<&str> = sections.folded.iter().map(String::as_str).collect();
+    // Each live section's patterns, compiled once, in creation order —
+    // the order the first-match tie-break reads. A pattern that does not
+    // compile simply never matches: `select_descriptors` is what reports
+    // the compile error to the panel.
+    let claims: Vec<(usize, Vec<regex::Regex>)> = names
+        .iter()
+        .enumerate()
+        .skip(1)
+        .filter_map(|(slot, name)| {
+            let ps = sections.patterns.get(*name)?;
+            let res: Vec<regex::Regex> = ps
+                .iter()
+                .filter_map(|p| regex::Regex::new(p).ok())
+                .collect();
+            (!res.is_empty()).then_some((slot, res))
+        })
+        .collect();
 
     let mut buckets: Vec<Vec<SignalSnapshotRecord>> = vec![Vec::new(); names.len()];
     for row in rows {
@@ -315,6 +372,7 @@ pub fn arrange_sections(
             .assignments
             .get(&id)
             .and_then(|s| index.get(s.as_str()).copied())
+            .or_else(|| claim_slot(&claims, &row, bus_names))
             .unwrap_or(0);
         buckets[slot].push(row);
     }
@@ -351,6 +409,35 @@ pub fn arrange_sections(
     out
 }
 
+/// The first section (creation order) whose patterns claim this row,
+/// matched against the row's canonical path — the same subject string
+/// [`select_descriptors`] matches the view-level patterns against, so a
+/// pattern cannot mean one thing for selection and another for
+/// grouping.
+fn claim_slot(
+    claims: &[(usize, Vec<regex::Regex>)],
+    row: &SignalSnapshotRecord,
+    bus_names: &HashMap<String, String>,
+) -> Option<usize> {
+    if claims.is_empty() {
+        return None;
+    }
+    let bus_name = row
+        .bus_id
+        .as_deref()
+        .map(|id| bus_names.get(id).map_or(id, String::as_str));
+    let path = signal_path(
+        bus_name,
+        row.transmitter.as_deref(),
+        &row.message_name,
+        &row.signal_name,
+    );
+    claims
+        .iter()
+        .find(|(_, res)| res.iter().any(|re| re.is_match(&path)))
+        .map(|(slot, _)| *slot)
+}
+
 fn cmp_opt_f64(a: Option<f64>, b: Option<f64>) -> std::cmp::Ordering {
     match (a, b) {
         (Some(x), Some(y)) => x.total_cmp(&y),
@@ -371,7 +458,28 @@ mod tests {
                 .iter()
                 .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
                 .collect(),
+            patterns: HashMap::new(),
             folded: folded.iter().map(|s| (*s).to_string()).collect(),
+        }
+    }
+
+    fn with_patterns(mut s: SignalSections, patterns: &[(&str, &[&str])]) -> SignalSections {
+        for (name, ps) in patterns {
+            s.patterns.insert(
+                (*name).to_string(),
+                ps.iter().map(|p| (*p).to_string()).collect(),
+            );
+        }
+        s
+    }
+
+    /// A row whose canonical path is `bus/ecu/message/signal`.
+    fn pathed_row(bus: &str, ecu: &str, message: &str, signal: &str) -> SignalSnapshotRecord {
+        SignalSnapshotRecord {
+            bus_id: Some(bus.into()),
+            transmitter: Some(ecu.into()),
+            message_name: message.into(),
+            ..valued_row(signal, 1.0)
         }
     }
 
@@ -574,6 +682,25 @@ mod tests {
     }
 
     #[test]
+    fn experiment_frontend_json_buckets_a_row() {
+        // EXPERIMENT (item 16 defect): the exact `sections` payload the
+        // panel builds, deserialized the way the command deserializes
+        // it, against a row with the matching descriptor.
+        let wire = r#"{"names":["Pack"],"assignments":{"p|s:256:EngineSpeed":"Pack"},"folded":[]}"#;
+        let s: SignalSections = serde_json::from_str(wire).expect("frontend payload deserializes");
+        assert_eq!(s.names, vec!["Pack".to_string()]);
+        assert_eq!(
+            s.assignments.get("p|s:256:EngineSpeed"),
+            Some(&"Pack".into())
+        );
+        let mut row = valued_row("EngineSpeed", 1.0);
+        row.bus_id = Some("p".into());
+        row.message_id = 256;
+        let out = arrange_sections(vec![row], &s, None, None, &HashMap::new());
+        assert_eq!(transcript(&out), vec!["Pack(1)", "+EngineSpeed"]);
+    }
+
+    #[test]
     fn no_sections_arranges_the_flat_sorted_list_with_no_headers() {
         // The whole point of the implicit section: a user who never made
         // a section sees exactly the list they had.
@@ -675,6 +802,102 @@ mod tests {
         let s = sections(&[], &[(&ident("packv"), "Pack")], &[]);
         let out = arrange_sections(rows, &s, None, None, &HashMap::new());
         assert_eq!(transcript(&out), vec!["+packv"]);
+    }
+
+    #[test]
+    fn a_section_pattern_collects_its_matches_under_that_section() {
+        let rows = vec![
+            pathed_row("p", "Bms", "PackStatus", "PackVolts"),
+            pathed_row("p", "Vcu", "DriveCmd", "TorqueReq"),
+        ];
+        let s = with_patterns(sections(&["Pack"], &[], &[]), &[("Pack", &["/Bms/"])]);
+        let out = arrange_sections(rows, &s, None, None, &HashMap::new());
+        assert_eq!(
+            transcript(&out),
+            vec!["(1)", "+TorqueReq", "Pack(1)", "+PackVolts"]
+        );
+    }
+
+    #[test]
+    fn an_explicit_assignment_beats_a_section_pattern() {
+        // The user moved this signal by hand; a pattern in another
+        // section must not drag it back.
+        let row = pathed_row("p", "Bms", "PackStatus", "PackVolts");
+        let id = signal_identity(Some("p"), 0, false, "PackVolts");
+        let s = with_patterns(
+            sections(&["Pack", "Debug"], &[(&id, "Debug")], &[]),
+            &[("Pack", &["/Bms/"])],
+        );
+        let out = arrange_sections(vec![row], &s, None, None, &HashMap::new());
+        assert_eq!(transcript(&out), vec!["Pack(0)", "Debug(1)", "+PackVolts"]);
+    }
+
+    #[test]
+    fn two_matching_section_patterns_resolve_to_the_earlier_section() {
+        let row = pathed_row("p", "Bms", "PackStatus", "PackVolts");
+        let s = with_patterns(
+            sections(&["First", "Second"], &[], &[]),
+            &[("First", &["Pack"]), ("Second", &["Pack"])],
+        );
+        let out = arrange_sections(vec![row.clone()], &s, None, None, &HashMap::new());
+        assert_eq!(
+            transcript(&out),
+            vec!["First(1)", "+PackVolts", "Second(0)"]
+        );
+        // Creation order decides it, not name order: flip the names and
+        // the same signal follows.
+        let s = with_patterns(
+            sections(&["Second", "First"], &[], &[]),
+            &[("First", &["Pack"]), ("Second", &["Pack"])],
+        );
+        let out = arrange_sections(vec![row], &s, None, None, &HashMap::new());
+        assert_eq!(
+            transcript(&out),
+            vec!["Second(1)", "+PackVolts", "First(0)"]
+        );
+    }
+
+    #[test]
+    fn a_pattern_on_a_deleted_section_collects_nothing() {
+        let row = pathed_row("p", "Bms", "PackStatus", "PackVolts");
+        let s = with_patterns(sections(&[], &[], &[]), &[("Pack", &["/Bms/"])]);
+        let out = arrange_sections(vec![row], &s, None, None, &HashMap::new());
+        assert_eq!(transcript(&out), vec!["+PackVolts"]);
+    }
+
+    #[test]
+    fn a_bad_section_pattern_buckets_nothing_rather_than_panicking() {
+        // `select_descriptors` is what reports the compile error to the
+        // panel; the arrangement must simply not match on it.
+        let row = pathed_row("p", "Bms", "PackStatus", "PackVolts");
+        let s = with_patterns(sections(&["Pack"], &[], &[]), &[("Pack", &["([unclosed"])]);
+        let out = arrange_sections(vec![row], &s, None, None, &HashMap::new());
+        assert_eq!(transcript(&out), vec!["(1)", "+PackVolts", "Pack(0)"]);
+    }
+
+    #[test]
+    fn section_patterns_widen_the_views_selection() {
+        // A section's patterns are part of what the view selects — a
+        // signal matched only by a section pattern must have a row to
+        // organize in the first place.
+        let base = SignalSelection {
+            keys: vec![],
+            patterns: vec!["^first$".into()],
+        };
+        // "Gone" carries patterns but is not in `names` — a deleted
+        // section whose patterns went dormant with it.
+        let s = with_patterns(
+            sections(&["Pack"], &[], &[]),
+            &[("Pack", &["/Bms/", "/Bms/"]), ("Gone", &["never"])],
+        );
+        let wide = selection_with_section_patterns(&base, &s);
+        // The view's own pattern, then each live section's, deduped; a
+        // section that no longer exists contributes nothing.
+        assert_eq!(
+            wide.patterns,
+            vec!["^first$".to_string(), "/Bms/".to_string()]
+        );
+        assert!(wide.keys.is_empty());
     }
 
     #[test]

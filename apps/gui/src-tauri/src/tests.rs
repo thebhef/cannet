@@ -545,6 +545,7 @@ fn fetch_signal_page_pages_across_section_headers_with_a_fold_aware_count() {
         ]
         .into_iter()
         .collect(),
+        patterns: std::collections::HashMap::new(),
         folded: vec![],
     };
     let transcript = |sections: &ipc::SignalSections, offset, limit| {
